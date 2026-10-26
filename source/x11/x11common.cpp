@@ -89,8 +89,16 @@ static void x11_InitThread(CPU* cpu) {
     EAX = 1;
 }
 
+// int XClearArea(Display* display, Window w, int x, int y, unsigned int width, unsigned int height, Bool exposures)
 static void x11_ClearArea(CPU* cpu) {
-    kpanic("x11_ClearArea");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    EAX = window->clearArea(thread, (S32)ARG3, (S32)ARG4, ARG5, ARG6, ARG7 != 0);
 }
 
 // int XSync(Display* display, Bool discard)
@@ -234,8 +242,32 @@ static void x11_ReparentWindow(CPU* cpu) {
     
 }
 
+// Status XQueryTree(Display* display, Window w, Window* root_return, Window* parent_return, Window** children_return, unsigned int* nchildren_return)
+//
+// Children are listed bottom-most first, mapped or not. The children array is guest memory that the caller releases with XFree.
 static void x11_QueryTree(CPU* cpu) {
-    kpanic("x11_QueryTree");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr w = server->getWindow(ARG2);
+    if (!w) {
+        EAX = 0;
+        return;
+    }
+    std::vector<XWindowPtr> children = w->getChildrenBottomToTop();
+    XWindowPtr parent = w->getParent();
+    U32 childrenAddress = 0;
+    if (!children.empty()) {
+        childrenAddress = thread->process->alloc(thread, (U32)(sizeof(U32) * children.size()));
+        for (U32 i = 0; i < children.size(); i++) {
+            memory->writed(childrenAddress + i * sizeof(U32), children[i]->id);
+        }
+    }
+    memory->writed(ARG3, server->getRoot()->id);
+    memory->writed(ARG4, parent ? parent->id : 0);
+    memory->writed(ARG5, childrenAddress);
+    memory->writed(ARG6, (U32)children.size());
+    EAX = 1;
 }
 
 //int XChangeWindowAttributes(Display* display, Window w, unsigned long valuemask, XSetWindowAttributes* attributes)
@@ -440,8 +472,11 @@ static void x11_GetInputFocus(CPU* cpu) {
     }
 }
 
+// int XFreeFont(Display* display, XFontStruct* font_struct)
+//
+// The legacy path never loads a font, so there is no server font to close. The font struct belongs to the caller's Xlib and is not freed here.
 static void x11_FreeFont(CPU* cpu) {
-    kpanic("x11_FreeFont");
+    EAX = Success;
 }
 
 // int XMoveResizeWindow(Display* display, Window w, int x, int y, unsigned int width, unsigned int height)
@@ -502,16 +537,28 @@ static void x11_GrabPointer(CPU* cpu) {
         return;
     }
     if (ARG3) {
-        // not used by winex11
-        kpanic("XGrabPointer owner_events not implemented");
+        // owner_events is accepted but not honoured: every pointer event goes to the grab window
+        static bool loggedOwnerEvents = false;
+        if (!loggedOwnerEvents) {
+            loggedOwnerEvents = true;
+            klog("XGrabPointer owner_events=True is treated as False: pointer events go to the grab window only");
+        }
     }
-    if (ARG4 == GrabModeSync || ARG5 == GrabModeSync) {
-        // not used by winex11
-        kpanic("XGrabPointer GrabModeSync not implemented");
+    if (ARG5 == GrabModeSync) {
+        // pointer_mode is ARG5 (ARG4 is the event mask). Accepted, but events are not frozen until XAllowEvents
+        static bool loggedSyncMode = false;
+        if (!loggedSyncMode) {
+            loggedSyncMode = true;
+            klog("XGrabPointer GrabModeSync is treated as GrabModeAsync: pointer events are not frozen until XAllowEvents");
+        }
     }
+    XCursorPtr grabCursor;
     if (ARG8) {
-        // not used by winex11
-        kpanic("XGrabPointer cursor not implemented");
+        grabCursor = server->getCursor(ARG8);
+        if (!grabCursor) {
+            EAX = BadCursor;
+            return;
+        }
     }
     XWindowPtr confined;
 
@@ -537,7 +584,7 @@ static void x11_GrabPointer(CPU* cpu) {
         klog(log.c_str());
     }
 
-    EAX = server->grabPointer(data, window, confined, ARG4, ARG9);
+    EAX = server->grabPointer(data, window, confined, grabCursor, ARG4, ARG9);
 }
 
 // int XUngrabPointer(Display* display, Time time)
@@ -683,18 +730,17 @@ static void x11_UnlockEvents(CPU* cpu) {
 static void x11_PutBackEvent(CPU* cpu) {
     KMemory* memory = cpu->memory;
     XServer* server = XServer::getServer();
-    DisplayDataPtr display = server->getDisplayDataById(ARG1);
+    DisplayDataPtr display = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
     if (!display) {
         EAX = BadValue;
         return;
     }
+    // The guest shim passes the event as the second argument (CALL_2_R in
+    // tools/x11/X11.c). The bytes are copied through KMemory, which is the
+    // marshal: the guest XEvent is never cast to a host pointer, so host
+    // alignment rules do not apply to it.
     XEvent event = {};
-#ifdef UNALIGNED_MEMORY
-    // :TODO: properly marshal
-    oops
-#else
-    memory->memcpy(&event, ARG5, sizeof(XEvent));
-#endif
+    memory->memcpy(&event, ARG2, sizeof(XEvent));
     display->putEvent(event, true);
     EAX = Success;
 }
@@ -712,26 +758,26 @@ static void x11_SendEvent(CPU* cpu) {
         EAX = Success;
         return;
     }
-    if (windowId == PointerWindow) {
-        // not used in winex11
-        kpanic("XSendEvent w=PointerWindow not implemented");
-    } else if (windowId == InputFocus) {
-        // not used in winex11
-        kpanic("XSendEvent w=InputFocus not implemented");
-    } else if (!window) {
+    if (windowId != PointerWindow && windowId != InputFocus && !window) {
         EAX = BadWindow;
         return;
     }
 
+    // The event is the fifth argument of the guest shim (CALL_5_R in
+    // tools/x11/X11.c) and is copied through KMemory for the same reason as
+    // in x11_PutBackEvent: guest bytes are marshalled, never cast.
     XEvent event = {};
-#ifdef UNALIGNED_MEMORY
-    // :TODO: properly marshal
-    oops
-#else
     memory->memcpy(&event, ARG5, sizeof(XEvent));
-#endif
+    if (windowId == PointerWindow) window = server->pointerWindow;
+    else if (windowId == InputFocus) window = server->inputFocus ? server->inputFocus : server->getRoot();
+    if (!window) { EAX = Success; return; }
     if (event.type == ClientMessage && event.xclient.message_type == _NET_WM_STATE) {
         EAX = window->handleNetWmStatePropertyEvent(event);
+        return;
+    }
+    if (event.type == ClientMessage && event.xclient.message_type == _NET_ACTIVE_WINDOW) {
+        DisplayDataPtr dst = server->getDisplayDataById(window->displayId);
+        EAX = dst ? server->setInputFocus(dst, windowId, 2 /* RevertToParent */, 0 /* CurrentTime */) : BadValue;
         return;
     }
     event.xany.send_event = True;    
@@ -751,14 +797,85 @@ static void x11_SendEvent(CPU* cpu) {
             dst->putEvent(event);
             });
     } else {
-        // not used in winex11
-        kpanic("XSendEvent propagate not implemented");
+        for (XWindowPtr recipient = window; recipient; recipient = recipient->getParent()) {
+            if (server->iterateEventMask(recipient->id, event_mask, [&event](const DisplayDataPtr dst) {
+                    event.xany.serial = dst->getNextEventSerial();
+                    event.xany.display = dst->displayAddress;
+                    dst->putEvent(event);
+                })) break;
+        }
     }
 }
 
 // Bool XFilterEvent(XEvent* event, Window window)
 static void x11_FilterEvent(CPU* cpu) {
     EAX = False;
+}
+
+static bool x11IsDeadKey(U32 keysym) {
+    return keysym >= 0xfe50 && keysym <= 0xfe5c;
+}
+
+// The XComposeStatus storage is per caller. Keep the pending dead keysym in
+// compose_ptr and chars_matched, and emit UTF-8 for the Latin compose pairs
+// used by XLookupString when no XIM is present. The table covers the full
+// dead-key range x11IsDeadKey accepts (0xfe50-0xfe5c) with the standard
+// en_US.UTF-8 Compose pairs whose result is a single codepoint below
+// U+0800, plus the dead+space rule (the accent character itself). Pairs
+// with no entry fall back to the base key's own text, as libX11 does for
+// sequences its compose table does not list. Multi-key Compose sequences
+// are an XIM facility and stay with the XIM disposition (host XIM is
+// rejected-loudly; browser IME composition arrives via bw64_inject_text).
+static U32 x11ComposeLatin(U32 dead, U32 base, char* out) {
+    struct ComposePair { U32 dead, base, composed; };
+    static const ComposePair pairs[] = {
+        {0xfe50,'a',0x00e0},{0xfe50,'e',0x00e8},{0xfe50,'i',0x00ec},{0xfe50,'o',0x00f2},{0xfe50,'u',0x00f9},{0xfe50,' ',0x0060},
+        {0xfe50,'A',0x00c0},{0xfe50,'E',0x00c8},{0xfe50,'I',0x00cc},{0xfe50,'O',0x00d2},{0xfe50,'U',0x00d9},
+        {0xfe51,'a',0x00e1},{0xfe51,'e',0x00e9},{0xfe51,'i',0x00ed},{0xfe51,'o',0x00f3},{0xfe51,'u',0x00fa},{0xfe51,'y',0x00fd},{0xfe51,'c',0x0107},{0xfe51,'n',0x0144},
+        {0xfe51,'s',0x015b},{0xfe51,'z',0x017a},{0xfe51,'l',0x013a},{0xfe51,'r',0x0155},{0xfe51,'g',0x01f5},{0xfe51,' ',0x00b4},
+        {0xfe51,'A',0x00c1},{0xfe51,'E',0x00c9},{0xfe51,'I',0x00cd},{0xfe51,'O',0x00d3},{0xfe51,'U',0x00da},{0xfe51,'Y',0x00dd},{0xfe51,'C',0x0106},{0xfe51,'N',0x0143},
+        {0xfe51,'S',0x015a},{0xfe51,'Z',0x0179},{0xfe51,'L',0x0139},{0xfe51,'R',0x0154},{0xfe51,'G',0x01f4},
+        {0xfe52,'a',0x00e2},{0xfe52,'e',0x00ea},{0xfe52,'i',0x00ee},{0xfe52,'o',0x00f4},{0xfe52,'u',0x00fb},
+        {0xfe52,'c',0x0109},{0xfe52,'g',0x011d},{0xfe52,'h',0x0125},{0xfe52,'j',0x0135},{0xfe52,'s',0x015d},{0xfe52,'y',0x0177},{0xfe52,'w',0x0175},{0xfe52,' ',0x005e},
+        {0xfe52,'A',0x00c2},{0xfe52,'E',0x00ca},{0xfe52,'I',0x00ce},{0xfe52,'O',0x00d4},{0xfe52,'U',0x00db},
+        {0xfe52,'C',0x0108},{0xfe52,'G',0x011c},{0xfe52,'H',0x0124},{0xfe52,'J',0x0134},{0xfe52,'S',0x015c},{0xfe52,'Y',0x0176},{0xfe52,'W',0x0174},
+        {0xfe53,'a',0x00e3},{0xfe53,'o',0x00f5},{0xfe53,'n',0x00f1},{0xfe53,'i',0x0129},{0xfe53,'u',0x0169},{0xfe53,' ',0x007e},
+        {0xfe53,'A',0x00c3},{0xfe53,'O',0x00d5},{0xfe53,'N',0x00d1},{0xfe53,'I',0x0128},{0xfe53,'U',0x0168},
+        {0xfe54,'a',0x0101},{0xfe54,'e',0x0113},{0xfe54,'i',0x012b},{0xfe54,'o',0x014d},{0xfe54,'u',0x016b},{0xfe54,' ',0x00af},
+        {0xfe54,'A',0x0100},{0xfe54,'E',0x0112},{0xfe54,'I',0x012a},{0xfe54,'O',0x014c},{0xfe54,'U',0x016a},
+        {0xfe55,'a',0x0103},{0xfe55,'e',0x0115},{0xfe55,'g',0x011f},{0xfe55,'i',0x012d},{0xfe55,'o',0x014f},{0xfe55,'u',0x016d},{0xfe55,' ',0x02d8},
+        {0xfe55,'A',0x0102},{0xfe55,'E',0x0114},{0xfe55,'G',0x011e},{0xfe55,'I',0x012c},{0xfe55,'O',0x014e},{0xfe55,'U',0x016c},
+        {0xfe56,'c',0x010b},{0xfe56,'e',0x0117},{0xfe56,'g',0x0121},{0xfe56,'z',0x017c},{0xfe56,' ',0x02d9},
+        {0xfe56,'C',0x010a},{0xfe56,'E',0x0116},{0xfe56,'G',0x0120},{0xfe56,'Z',0x017b},
+        {0xfe57,'a',0x00e4},{0xfe57,'e',0x00eb},{0xfe57,'i',0x00ef},{0xfe57,'o',0x00f6},{0xfe57,'u',0x00fc},{0xfe57,'y',0x00ff},{0xfe57,' ',0x00a8},
+        {0xfe57,'A',0x00c4},{0xfe57,'E',0x00cb},{0xfe57,'I',0x00cf},{0xfe57,'O',0x00d6},{0xfe57,'U',0x00dc},
+        {0xfe58,'a',0x00e5},{0xfe58,'u',0x016f},{0xfe58,' ',0x02da},
+        {0xfe58,'A',0x00c5},{0xfe58,'U',0x016e},
+        {0xfe59,'o',0x0151},{0xfe59,'u',0x0171},{0xfe59,' ',0x02dd},
+        {0xfe59,'O',0x0150},{0xfe59,'U',0x0170},
+        {0xfe5a,'c',0x010d},{0xfe5a,'d',0x010f},{0xfe5a,'e',0x011b},{0xfe5a,'g',0x01e7},{0xfe5a,'l',0x013e},{0xfe5a,'n',0x0148},
+        {0xfe5a,'r',0x0159},{0xfe5a,'s',0x0161},{0xfe5a,'t',0x0165},{0xfe5a,'z',0x017e},{0xfe5a,' ',0x02c7},
+        {0xfe5a,'C',0x010c},{0xfe5a,'D',0x010e},{0xfe5a,'E',0x011a},{0xfe5a,'G',0x01e6},{0xfe5a,'L',0x013d},{0xfe5a,'N',0x0147},
+        {0xfe5a,'R',0x0158},{0xfe5a,'S',0x0160},{0xfe5a,'T',0x0164},{0xfe5a,'Z',0x017d},
+        {0xfe5b,'c',0x00e7},{0xfe5b,'s',0x015f},{0xfe5b,'t',0x0163},{0xfe5b,'g',0x0123},{0xfe5b,'k',0x0137},{0xfe5b,'l',0x013c},
+        {0xfe5b,'n',0x0146},{0xfe5b,'r',0x0157},{0xfe5b,' ',0x00b8},
+        {0xfe5b,'C',0x00c7},{0xfe5b,'S',0x015e},{0xfe5b,'T',0x0162},{0xfe5b,'G',0x0122},{0xfe5b,'K',0x0136},{0xfe5b,'L',0x013b},
+        {0xfe5b,'N',0x0145},{0xfe5b,'R',0x0156},
+        {0xfe5c,'a',0x0105},{0xfe5c,'e',0x0119},{0xfe5c,'i',0x012f},{0xfe5c,'o',0x01eb},{0xfe5c,'u',0x0173},{0xfe5c,' ',0x02db},
+        {0xfe5c,'A',0x0104},{0xfe5c,'E',0x0118},{0xfe5c,'I',0x012e},{0xfe5c,'O',0x01ea},{0xfe5c,'U',0x0172}
+    };
+    U32 codepoint = 0;
+    for (const ComposePair& pair : pairs) {
+        if (pair.dead == dead && pair.base == base) { codepoint = pair.composed; break; }
+    }
+    if (!codepoint) return 0;
+    if (codepoint < 0x80) {
+        out[0] = (char)codepoint;
+        return 1;
+    }
+    out[0] = (char)(0xc0 | (codepoint >> 6));
+    out[1] = (char)(0x80 | (codepoint & 0x3f));
+    return 2;
 }
 
 // int XLookupString(XKeyEvent* event_struct, char* buffer_return, int bytes_buffer, KeySym* keysym_return, XComposeStatus* status_in_out) 
@@ -771,12 +888,10 @@ static void x11_LookupString(CPU* cpu) {
     U32 keysym_return = ARG4;
     U32 status_in_out = ARG5;
     char buffer[16];
+    const U32 capacity = ARG3 > 0 ? std::min<U32>((U32)ARG3, sizeof(buffer)) : 0;
 
-    if (status_in_out) {
-        // winex11 always passes null for this
-        kpanic("x11_LookupString status_in_out was not null");
-    }
     U32 keysym = 0;
+    if (keysym_return) memory->writed(keysym_return, 0);
     
     if (event.state & NumMask) {
         keysym = XKeyboard::keycodeToKeysym(event.keycode, 5);
@@ -790,9 +905,24 @@ static void x11_LookupString(CPU* cpu) {
     if (!keysym) {
         return;
     }
-    U32 result = XKeyboard::translate(keysym, event.state, buffer, 16);    
+    U32 result = XKeyboard::translate(keysym, event.state, buffer, capacity);
+    if (status_in_out) {
+        U32 pending = memory->readd(status_in_out + 4) == 1 ? memory->readd(status_in_out) : 0;
+        if (x11IsDeadKey(keysym)) {
+            memory->writed(status_in_out, keysym);
+            memory->writed(status_in_out + 4, 1);
+            return;
+        }
+        if (x11IsDeadKey(pending)) {
+            memory->writed(status_in_out, 0);
+            memory->writed(status_in_out + 4, 0);
+            U32 composed = x11ComposeLatin(pending, keysym, buffer);
+            if (composed) result = composed;
+        }
+    }
+    result = std::min(result, capacity);
     if (result) {
-        if (buffer[0] != 0) {
+        if (buffer_return && buffer[0] != 0) {
             memory->memcpy(buffer_return, buffer, result);
             EAX = result;
         }        
@@ -803,7 +933,22 @@ static void x11_LookupString(CPU* cpu) {
 }
 
 static void x11_MbLookupString(CPU* cpu) {
-    kpanic("x11_MbLookupString");
+    KMemory* memory = cpu->memory;
+    XKeyEvent event;
+    event.read(memory, ARG2);
+    U32 keysym = XKeyboard::keycodeToKeysym(event.keycode,
+        (event.state & NumMask) ? 5 : ((event.state & ShiftMask) ? 1 : 0));
+    char buffer[16] = {};
+    U32 count = keysym ? XKeyboard::translate(keysym, event.state, buffer, sizeof(buffer)) : 0;
+    U32 capacity = ARG4 > 0 ? (U32)ARG4 : 0;
+    if (ARG5) memory->writed(ARG5, keysym);
+    if (ARG6) memory->writed(ARG6, count ? (ARG5 && keysym ? 4 /* XLookupBoth */ : 2 /* XLookupChars */) : (keysym ? 3 /* XLookupKeySym */ : 1 /* XLookupNone */));
+    if (count > capacity) {
+        EAX = 0xffffffff; // XBufferOverflow; caller can retry with a larger buffer
+        return;
+    }
+    if (count && ARG3) memory->memcpy(ARG3, buffer, count);
+    EAX = count;
 }
 
 // char* XKeysymToString(KeySym keysym)
@@ -843,14 +988,13 @@ static void x11_KbTranslateKeysym(CPU* cpu) {
 
     U32 result = XKeyboard::translate(keysym, modifiers, buffer, 16);
     if (result) {
-        if (result > nbytes && extra_rtrn) {
-            kpanic("x11_KbTranslateKeysym extra_rtrn not implemented");
-        }
-        memory->memcpy(bufferAddress, buffer, result);
-        memory->writeb(bufferAddress + result, 0);
+        const U32 copied = std::min(result, nbytes);
+        if (copied) memory->memcpy(bufferAddress, buffer, copied);
+        if (bufferAddress && copied < nbytes) memory->writeb(bufferAddress + copied, 0);
+        if (extra_rtrn) memory->writed(extra_rtrn, result - copied);
         memory->writed(sys_return, keysym);
     }
-    EAX = result;
+    EAX = std::min(result, nbytes);
 }
 
 // KeySym XLookupKeysym(XKeyEvent* key_event, int index) {
@@ -937,7 +1081,10 @@ static void x11_FreeModifierMap(CPU* cpu) {
 }
 
 static void x11_RefreshKeyboardMapping(CPU* cpu) {
-    kpanic("x11_RefreshKeyboardMapping");
+    // The browser keyboard map is fixed for the life of this connection. There
+    // is no server-side mapping to reload, but a MappingNotify must not abort a
+    // client; MappingSuccess tells it to retry using the active keymap.
+    EAX = 1;
 }
 
 // int XBell(Display* display, int percent)
@@ -1181,8 +1328,31 @@ static void x11_CheckTypedWindowEvent(CPU* cpu) {
     }
 }
 
+// Status XGetGeometry(Display* display, Drawable d, Window* root_return, int* x_return, int* y_return, unsigned int* width_return, unsigned int* height_return, unsigned int* border_width_return, unsigned int* depth_return)
+//
+// A pixmap has no position or border, so both are reported as 0. A window reports its position in its parent.
 static void x11_GetGeometry(CPU* cpu) {
-    kpanic("x11_GetGeometry");
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XDrawablePtr d = server->getDrawable(ARG2);
+    if (!d) {
+        EAX = BadDrawable;
+        return;
+    }
+    S32 x = 0;
+    S32 y = 0;
+    U32 border = 0;
+    if (d->isWindow) {
+        std::static_pointer_cast<XWindow>(d)->getPlacement(x, y, border);
+    }
+    memory->writed(ARG3, server->getRoot()->id);
+    memory->writed(ARG4, x);
+    memory->writed(ARG5, y);
+    memory->writed(ARG6, d->width());
+    memory->writed(ARG7, d->height());
+    memory->writed(ARG8, border);
+    memory->writed(ARG9, d->getDepth());
+    EAX = 1;
 }
 
 // Status XInternAtoms(Display* dpy, char** names, int count, Bool onlyIfExists, Atom* atoms_return)
@@ -1278,7 +1448,8 @@ static void x11_CreateColorMap(CPU* cpu) {
 }
 
 static void x11_FreeColorMap(CPU* cpu) {
-    //kpanic("x11_FreeColorMap");
+    XServer* server = XServer::getServer();
+    EAX = server->freeColorMap(ARG2) ? Success : BadColor;
 }
 
 // int XFreeColors(Display* display, Colormap colormap, unsigned long* pixels, int npixels, unsigned long planes)
@@ -1426,12 +1597,11 @@ static void x11_AllocColor(CPU* cpu) {
             EAX = 1;
             memory->writed(colorAddress, i);
             c.uses.set(displayId, 1);
-            c.flags = COLOR_ALLOCATED;
+            // an exact match on a read/write cell (from XAllocColorCells) shares
+            // that cell; COLOR_WRITE is kept so the owner's XStoreColor still works
             return;
         } else if (freeIndex == -1 && !(c.flags & COLOR_ALLOCATED)) {
             freeIndex = i;
-        } else if (c.flags & COLOR_WRITE) {
-            kwarn("x11_AllocColor COLOR_WRITE not implemented");
         }
     }
     if (freeIndex >= 0) {
@@ -1657,20 +1827,166 @@ static void x11_DestroyImage(CPU* cpu) {
     EAX = Success;
 }
 
+static U32 roundUp(U32 numToRound, U32 multiple)
+{
+    if (!multiple) {
+        return numToRound;
+    }
+    return ((numToRound + multiple - 1) / multiple) * multiple;
+}
+
+// XImage pixels are read and written in client memory; the server is not involved. Packed 1/2/4-bit pixels and byte-aligned
+// 8/16/24/32-bit pixels are supported, including XImage's leading xoffset.
+static bool imagePixelsSupported(const XImage& image) {
+    if ((image.bits_per_pixel == 1 || image.bits_per_pixel == 2 || image.bits_per_pixel == 4 || image.bits_per_pixel == 8 ||
+         image.bits_per_pixel == 16 || image.bits_per_pixel == 24 || image.bits_per_pixel == 32) && image.xoffset >= 0) {
+        return true;
+    }
+    static bool loggedUnhandled = false;
+    if (!loggedUnhandled) {
+        loggedUnhandled = true;
+        klog("x11 image not handled: bits per pixel not handled by XPutPixel, XGetPixel, XSubImage or XAddPixel");
+    }
+    return false;
+}
+
+static bool imagePixelIsInside(const XImage& image, S32 x, S32 y) {
+    return x >= 0 && y >= 0 && x < image.width && y < image.height;
+}
+
+static U32 imagePixelAddress(const XImage& image, S32 x, S32 y) {
+    return image.data + (U32)image.bytes_per_line * y + ((U32)image.xoffset + (U32)x) * (image.bits_per_pixel / 8);
+}
+
+// the least significant byte goes first unless the image is MSBFirst
+static U32 readImagePixelAt(KMemory* memory, const XImage& image, S32 x, S32 y) {
+    if (image.bits_per_pixel < 8) {
+        const U32 bits = (U32)image.bits_per_pixel;
+        const U32 bit = ((U32)image.xoffset + (U32)x) * bits;
+        const U32 address = image.data + (U32)image.bytes_per_line * (U32)y + bit / 8;
+        const U32 shift = image.bitmap_bit_order == MSBFirst ? 8 - bits - (bit & 7) : bit & 7;
+        return (memory->readb(address) >> shift) & ((1u << bits) - 1);
+    }
+    const U32 address = imagePixelAddress(image, x, y);
+    const S32 bytes = image.bits_per_pixel / 8;
+    U32 pixel = 0;
+    for (S32 i = 0; i < bytes; i++) {
+        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
+        pixel |= (U32)memory->readb(address + i) << (8 * shift);
+    }
+    return pixel;
+}
+
+static void writeImagePixelAt(KMemory* memory, const XImage& image, S32 x, S32 y, U32 pixel) {
+    if (image.bits_per_pixel < 8) {
+        const U32 bits = (U32)image.bits_per_pixel;
+        const U32 bit = ((U32)image.xoffset + (U32)x) * bits;
+        const U32 address = image.data + (U32)image.bytes_per_line * (U32)y + bit / 8;
+        const U32 shift = image.bitmap_bit_order == MSBFirst ? 8 - bits - (bit & 7) : bit & 7;
+        const U8 mask = (U8)(((1u << bits) - 1) << shift);
+        const U8 value = (U8)((pixel << shift) & mask);
+        memory->writeb(address, (U8)((memory->readb(address) & ~mask) | value));
+        return;
+    }
+    const U32 address = imagePixelAddress(image, x, y);
+    const S32 bytes = image.bits_per_pixel / 8;
+    for (S32 i = 0; i < bytes; i++) {
+        S32 shift = image.byte_order == MSBFirst ? bytes - 1 - i : i;
+        memory->writeb(address + i, (U8)(pixel >> (8 * shift)));
+    }
+}
+
+// unsigned long XGetPixel(XImage* ximage, int x, int y)
+//
+// A pixel outside the image reads as 0.
 static void x11_GetPixel(CPU* cpu) {
-    kpanic("x11_GetPixel");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    if (!imagePixelIsInside(image, x, y) || !imagePixelsSupported(image)) {
+        EAX = 0;
+        return;
+    }
+    EAX = readImagePixelAt(memory, image, x, y);
 }
 
+// int XPutPixel(XImage* ximage, int x, int y, unsigned long pixel)
+//
+// XPutPixel edits the image in client memory; the server is not involved. A pixel outside the image is ignored.
+// Only byte-aligned depths with xoffset 0 are written; the others are logged once and not written.
 static void x11_PutPixel(CPU* cpu) {
-    //kpanic("x11_PutPixel");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    U32 pixel = ARG4;
+    if (!imagePixelIsInside(image, x, y) || !imagePixelsSupported(image)) {
+        EAX = 0;
+        return;
+    }
+    writeImagePixelAt(memory, image, x, y, pixel);
+    EAX = 1;
 }
 
+// XImage* XSubImage(XImage* ximage, int x, int y, unsigned int width, unsigned int height)
+//
+// The result is a new image in guest memory with the same depth, format and byte order. Pixels of the requested area that lie
+// outside the source are 0. XDestroyImage releases the result.
 static void x11_SubImage(CPU* cpu) {
-    kpanic("x11_SubImage");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XImage source;
+    XImage::read(memory, ARG1, &source);
+    S32 x = (S32)ARG2;
+    S32 y = (S32)ARG3;
+    S32 width = (S32)ARG4;
+    S32 height = (S32)ARG5;
+    if (width <= 0 || height <= 0 || !imagePixelsSupported(source)) {
+        EAX = 0;
+        return;
+    }
+    U32 packedBytes = ((U32)width * (U32)source.bits_per_pixel + 7) / 8;
+    U32 bytesPerLine = roundUp(packedBytes, (U32)source.bitmap_pad);
+    U32 image = thread->process->alloc(thread, sizeof(XImage));
+    U32 data = thread->process->alloc(thread, bytesPerLine * height);
+    XImage::set(memory, image, width, height, 0, source.format, data, source.bitmap_pad, source.depth, bytesPerLine, source.bits_per_pixel, source.red_mask, source.green_mask, source.blue_mask);
+    X11_WRITED(XImage, image, byte_order, source.byte_order);
+    XImage result;
+    XImage::read(memory, image, &result);
+    for (S32 dy = 0; dy < height; dy++) {
+        for (S32 dx = 0; dx < width; dx++) {
+            if (!imagePixelIsInside(source, x + dx, y + dy)) {
+                continue;
+            }
+            U32 pixel = readImagePixelAt(memory, source, x + dx, y + dy);
+            writeImagePixelAt(memory, result, dx, dy, pixel);
+        }
+    }
+    EAX = image;
 }
 
+// int XAddPixel(XImage* ximage, long value)
+//
+// Adds value to every pixel of the image in place. Each sum wraps at the depth of the pixel.
 static void x11_AddPixel(CPU* cpu) {
-    kpanic("x11_AddPixel");
+    KMemory* memory = cpu->memory;
+    XImage image;
+    XImage::read(memory, ARG1, &image);
+    U32 value = ARG2;
+    if (!imagePixelsSupported(image)) {
+        EAX = 0;
+        return;
+    }
+    U32 mask = image.bits_per_pixel == 32 ? 0xffffffff : (1U << image.bits_per_pixel) - 1;
+    for (S32 y = 0; y < image.height; y++) {
+        for (S32 x = 0; x < image.width; x++) {
+            writeImagePixelAt(memory, image, x, y, (readImagePixelAt(memory, image, x, y) + value) & mask);
+        }
+    }
+    EAX = 1;
 }
 
 // Pixmap XCreatePixmap(Display* display, Drawable d, unsigned int width, unsigned int height, unsigned int depth)
@@ -1792,8 +2108,22 @@ static void x11_SetForeground(CPU* cpu) {
     EAX = Success;
 }
 
+// int XCopyPlane(Display* display, Drawable src, Drawable dest, GC gc, int src_x, int src_y, unsigned int width, unsigned int height, int dest_x, int dest_y, unsigned long plane)
 static void x11_CopyPlane(CPU* cpu) {
-    kpanic("x11_CopyPlane");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr src = server->getDrawable(ARG2);
+    XDrawablePtr dest = server->getDrawable(ARG3);
+    if (!src || !dest) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG4);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = dest->copyPlane(thread, gc, src, (S32)ARG5, (S32)ARG6, ARG7, ARG8, (S32)ARG9, (S32)ARG10, ARG11);
 }
 
 // GC XCreateGC(Display* display, Drawable d, unsigned long valuemask, XGCValues* values) {
@@ -1802,14 +2132,17 @@ static void x11_CreateGC(CPU* cpu) {
     // Display* display = X11::getDisplay(thread, ARG1);
     XDrawablePtr drawable = server->getDrawable(ARG2);
     U32 valuemask = ARG3;
-    if (valuemask) {
-        kpanic("x11_CreateGC valuemask not implemented"); // winex11 doesn't use this
-    }
     if (!drawable) {
         EAX = BadDrawable;
         return;
     }
     XGCPtr gc = server->createGC(drawable);
+    if (valuemask) {
+        // only the fields named in the valuemask are set, the same as XChangeGC
+        XGCValues values;
+        values.read(cpu->memory, ARG4);
+        gc->updateValues(valuemask, &values);
+    }
     if (server->traceGC) {
         BString log;
         DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(cpu->memory, ARG1);
@@ -1824,8 +2157,32 @@ static void x11_CreateGC(CPU* cpu) {
     EAX = gc->id;
 }
 
+// int XSetDashes(Display* display, GC gc, int dash_offset, char* dash_list, int n)
+//
+// XSetDashes replaces the GC dash pattern. Zero-length entries are invalid.
 static void x11_SetDashes(CPU* cpu) {
-    kpanic("x11_SetDashes");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    S32 n = (S32)ARG5;
+    if (n <= 0) {
+        EAX = BadValue;
+        return;
+    }
+	std::vector<U8> pattern;
+	pattern.reserve((size_t)n);
+	for (S32 i = 0; i < n; ++i) {
+		U8 length = cpu->memory->readb(ARG4 + i);
+		if (!length) { EAX = BadValue; return; }
+		pattern.push_back(length);
+	}
+    gc->values.dash_offset = (S32)ARG3;
+	gc->values.dashes = (S8)pattern.front();
+	gc->dash_list = std::move(pattern);
+    EAX = Success;
 }
 
 // int XDrawLine(Display* display, Drawable d, GC gc, int x1, int y1, int x2, int y2)
@@ -1864,20 +2221,90 @@ static void x11_DrawLine(CPU* cpu) {
     EAX = drawable->drawLine(thread, gc, ARG4, ARG5, ARG6, ARG7);
 }
 
+// Reads count XPoint records (x, y as signed 16-bit values) from guest memory
+static std::vector<S32> readPoints(KMemory* memory, U32 address, U32 count) {
+    std::vector<S32> values;
+    for (U32 i = 0; i < count * 2; i++) {
+        values.push_back((S16)memory->readw(address + i * 2));
+    }
+    return values;
+}
+
+// Reads count XRectangle records (x, y signed; width, height unsigned) from guest memory
+static std::vector<S32> readRectangles(KMemory* memory, U32 address, U32 count) {
+    std::vector<S32> values;
+    for (U32 i = 0; i < count * 4; i++) {
+        U16 field = memory->readw(address + i * 2);
+        values.push_back(i % 4 >= 2 ? (S32)field : (S32)(S16)field);
+    }
+    return values;
+}
+
+// int XDrawLines(Display* display, Drawable d, GC gc, XPoint* points, int npoints, int mode)
 static void x11_DrawLines(CPU* cpu) {
-    //kpanic("x11_DrawLines");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->drawLines(thread, gc, readPoints(cpu->memory, ARG4, ARG5), ARG6 == CoordModePrevious);
 }
 
+// int XSetArcMode(Display* display, GC gc, int arc_mode)
 static void x11_SetArcMode(CPU* cpu) {
-    kpanic("x11_SetArcMode");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    gc->values.arc_mode = ARG3;
+    EAX = Success;
 }
 
+// int XFillArc(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height, int angle1, int angle2)
 static void x11_FillArc(CPU* cpu) {
-    kpanic("x11_FillArc");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->fillArc(thread, gc, (S32)ARG4, (S32)ARG5, ARG6, ARG7, (S32)ARG8, (S32)ARG9);
 }
 
+// int XDrawArc(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height, int angle1, int angle2)
 static void x11_DrawArc(CPU* cpu) {
-    kpanic("x11_DrawArc");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->drawArc(thread, gc, (S32)ARG4, (S32)ARG5, ARG6, ARG7, (S32)ARG8, (S32)ARG9);
 }
 
 // int XDrawRectangle(Display* display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height)
@@ -1952,16 +2379,64 @@ static void x11_FillRectangle(CPU* cpu) {
     EAX = drawable->fillRectangle(thread, gc, ARG4, ARG5, ARG6, ARG7);
 }
 
+// int XFillRectangles(Display* display, Drawable d, GC gc, XRectangle* rectangles, int nrectangles)
 static void x11_FillRectangles(CPU* cpu) {
-    kpanic("x11_FillRectangles");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->fillRectangles(thread, gc, readRectangles(cpu->memory, ARG4, ARG5));
 }
 
+// int XDrawPoint(Display* display, Drawable d, GC gc, int x, int y)
 static void x11_DrawPoint(CPU* cpu) {
-    kpanic("x11_DrawPoint");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    EAX = drawable->drawLine(thread, gc, (S32)ARG4, (S32)ARG5, (S32)ARG4, (S32)ARG5);
 }
 
+// int XFillPolygon(Display* display, Drawable d, GC gc, XPoint* points, int npoints, int shape, int mode)
+// shape is not read: the scan conversion handles convex, non-convex and complex polygons alike
 static void x11_FillPolygon(CPU* cpu) {
-    kpanic("x11_FillPolygon");
+    KThread* thread = cpu->thread;
+    XServer* server = XServer::getServer();
+    XDrawablePtr drawable = server->getDrawable(ARG2);
+    if (!drawable) {
+        EAX = BadDrawable;
+        return;
+    }
+    XGCPtr gc = server->getGC(ARG3);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    if ((S32)ARG5 < 0) {
+        EAX = BadValue;
+        return;
+    }
+    EAX = drawable->fillPolygon(thread, gc, readPoints(cpu->memory, ARG4, ARG5), ARG7 == CoordModePrevious);
 }
 
 // int XChangeGC(Display* display, GC gc, unsigned long valuemask, XGCValues* values)
@@ -2122,8 +2597,16 @@ static void x11_SetGraphicsExposures(CPU* cpu) {
     EAX = Success;
 }
 
+// int XSetFillStyle(Display* display, GC gc, int fill_style)
 static void x11_SetFillStyle(CPU* cpu) {
-    kpanic("x11_SetFillStyle");
+    XServer* server = XServer::getServer();
+    XGCPtr gc = server->getGC(ARG2);
+    if (!gc) {
+        EAX = BadGC;
+        return;
+    }
+    gc->values.fill_style = ARG3;
+    EAX = Success;
 }
 
 // int XFree(void* data)
@@ -2146,7 +2629,13 @@ static void x11_SetClipMask(CPU* cpu) {
         EAX = BadGC;
         return;
     }
+    if (ARG3) {
+        XPixmapPtr mask = server->getPixmap(ARG3);
+        if (!mask) { EAX = BadPixmap; return; }
+        if (mask->getDepth() != 1) { EAX = BadMatch; return; }
+    }
     gc->values.clip_mask = ARG3;
+    gc->clip_rects.clear();
     EAX = Success;
 }
 
@@ -2162,6 +2651,7 @@ static void x11_SetClipRectangles(CPU* cpu) {
     }
     gc->values.clip_x_origin = (S32)ARG3;
     gc->values.clip_y_origin = (S32)ARG4;
+    gc->values.clip_mask = 0;
     gc->clip_rects.clear();
 
     U32 count = ARG6;
@@ -2331,6 +2821,22 @@ static void x11_AllocSizeHints(CPU* cpu) {
     EAX = thread->process->alloc(thread, sizeof(XSizeHints));
 }
 
+static void x11_SetWmCommand(KThread* thread, XWindowPtr window, U32 argv, S32 argc) {
+    if (!argv) return;
+    if (argc <= 0) {
+        window->deleteProperty(XA_WM_COMMAND, true);
+        return;
+    }
+    std::vector<U8> command;
+    for (S32 i = 0; i < argc; i++) {
+        BString argument = thread->memory->readString(thread->memory->readd(argv + (U32)i * 4));
+        const char* text = argument.c_str();
+        command.insert(command.end(), text, text + argument.length());
+        command.push_back(0);
+    }
+    window->setProperty(XA_WM_COMMAND, XA_STRING, 8, (U32)command.size(), command.data(), true);
+}
+
 // void XSetWMProperties(Display* display, Window w, XTextProperty* window_name, XTextProperty* icon_name, char** argv, int argc, XSizeHints* normal_hints, XWMHints* wm_hints, XClassHint* class_hints)
 static void x11_SetWMProperties(CPU* cpu) {
     KThread* thread = cpu->thread;
@@ -2368,66 +2874,86 @@ static void x11_SetWMProperties(CPU* cpu) {
     w->setProperty(XA_WM_CLIENT_MACHINE, XA_STRING, 8, 6, (U8*)"debian", true);
     w->setProperty(server->internAtom(B("WM_LOCALE_NAME"), false), XA_STRING, 8, 11, (U8*)"en_US.UTF-8", true);
 
-    if (ARG5 || ARG6) {
-        kpanic("x11_SetWMProperties not implemented");
-    }
+    x11_SetWmCommand(thread, w, ARG5, (S32)ARG6);
     EAX = Success;
 }
 
 static void x11_VaCreateNestedList(CPU* cpu) {
-    kpanic("x11_VaCreateNestedList");
+    EAX = 0; // No XIM is available; callers should not create nested IC attrs.
 }
 
 static void x11_UnsetICFocus(CPU* cpu) {
-    kpanic("x11_UnsetICFocus");
+    EAX = Success;
 }
 
 static void x11_SetICFocus(CPU* cpu) {
-    kpanic("x11_SetICFocus");
+    EAX = Success;
 }
 
 static void x11_DestroyIC(CPU* cpu) {
-    kpanic("x11_DestroyIC");
+    EAX = Success;
 }
 
 static void x11_SetICValues(CPU* cpu) {
-    kpanic("x11_SetICValues");
+    EAX = 0; // XSetICValues returns the name of the first attribute it cannot set; this implementation has none, so it returns NULL.
 }
 
 static void x11_MbResetIC(CPU* cpu) {
-    kpanic("x11_MbResetIC");
+    EAX = 0; // No composition state to reset.
 }
 
 // char* XSetLocaleModifiers(const char* modifier_list)
 static void x11_SetLocaleModifiers(CPU* cpu) {
-    // :TODO:
-    EAX = 1;
+    KThread* thread = cpu->thread;
+    if (!ARG1) {
+        EAX = thread->process->createString(thread, B(""));
+        return;
+    }
+    if (cpu->memory->readString(ARG1).isEmpty()) {
+        EAX = ARG1;
+        return;
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XSetLocaleModifiers does not support nonempty input-method modifiers");
+    }
+    EAX = 0;
+}
+
+static void x11LogImeUnavailable() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XIM unavailable: browser text composition is not connected; use key lookup for basic input");
+    }
 }
 
 // XIM XOpenIM(Display* dpy, struct _XrmHashBucketRec* rdb, char* res_name, char* res_class) {
 static void x11_OpenIM(CPU* cpu) {
+    x11LogImeUnavailable();
     EAX = 0;
 }
 
 static void x11_CloseIM(CPU* cpu) {
-    kpanic("x11_CloseIM");
+    EAX = Success;
 }
 
 // char* XSetIMValues(XIM im, ...) 
 static void x11_SetIMValues(CPU* cpu) {
-    kpanic("x11_SetIMValues");
+    EAX = 0;
 }
 
 static void x11_GetIMValues(CPU* cpu) {
-    kpanic("x11_GetIMValues");
+    EAX = 0;
 }
 
 static void x11_DisplayOfIM(CPU* cpu) {
-    kpanic("x11_DisplayOfIM");
+    EAX = 0;
 }
 
 static void x11_UnregisterIMInstantiateCallback(CPU* cpu) {
-    kpanic("x11_UnregisterIMInstantiateCallback");
+    EAX = False;
 }
 
 // Bool XRegisterIMInstantiateCallback(Display* dpy, struct _XrmHashBucketRec* rdb, char* res_name, char* res_class, XIDProc callback, XPointer client_data)
@@ -2436,7 +2962,16 @@ static void x11_RegisterIMInstantiateCallback(CPU* cpu) {
 }
 
 static void x11_FreeStringList(CPU* cpu) {
-    kpanic("x11_FreeStringList");
+    if (ARG1) {
+        KMemory* memory = cpu->memory;
+        KProcessPtr process = cpu->thread->process;
+        for (U32 i = 0; i < 1024; i++) {
+            U32 entry = memory->readd(ARG1 + i * 4);
+            if (!entry) break;
+            process->free(entry);
+        }
+        process->free(ARG1);
+    }
 }
 
 // XFontSet XCreateFontSet(Display* display, _Xconst char* base_font_name_list, char*** missing_charset_list, int* missing_charset_count, char** def_string) {
@@ -2457,16 +2992,9 @@ static void x11_FreeFontSet(CPU* cpu) {
 }
 
 static void x11_CreateIC(CPU* cpu) {
-    kpanic("x11_CreateIC");
+    EAX = 0; // XOpenIM reports no configured method, so no XIC can be created.
 }
 
-static U32 roundUp(U32 numToRound, U32 multiple)
-{
-    if (!multiple) {
-        return numToRound;
-    }
-    return ((numToRound + multiple - 1) / multiple) * multiple;
-}
 
 // XImage* XCreateImage(Display* display, Visual* visual, unsigned int depth, int format, int offset, char* data, unsigned int width, unsigned int height, int bitmap_pad, int bytes_per_line)
 static void x11_CreateImage(CPU* cpu) {
@@ -2501,32 +3029,129 @@ static void x11_CreateImage(CPU* cpu) {
 }
 
 static void x11_DisplayName(CPU* cpu) {
-    kpanic("x11_DisplayName");
+    if (ARG1) {
+        EAX = ARG1;
+    } else {
+        EAX = cpu->thread->process->createString(cpu->thread, B(":0"));
+    }
+}
+
+static void x11LogXrmUnavailable() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        kwarn_fmt("X11 XGetDefault has no resource database loaded; returning NULL");
+    }
 }
 
 static void x11_GetDefault(CPU* cpu) {
-    kpanic("x11_GetDefault");
+    x11LogXrmUnavailable();
+    EAX = 0;
 }
 
 static void x11_GetWindowAttributes(CPU* cpu) {
-    kpanic("x11_GetWindowAttributes");
+    struct XWindowAttributes32 {
+        S32 x, y, width, height, border_width, depth;
+        U32 visual, root;
+        S32 c_class, bit_gravity, win_gravity, backing_store;
+        U32 backing_planes, backing_pixel;
+        S32 save_under;
+        U32 colormap;
+        S32 map_installed, map_state;
+        U32 all_event_masks, your_event_mask, do_not_propagate_mask;
+        S32 override_redirect;
+        U32 screen;
+    };
+    static_assert(sizeof(XWindowAttributes32) == 92, "emulation expects 32-bit XWindowAttributes layout");
+    constexpr S32 IsUnmapped = 0, IsUnviewable = 1, IsViewable = 2;
+
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    XWindowAttributes32 result = {};
+    U32 border = 0;
+    window->getPlacement(result.x, result.y, border);
+    result.width = window->width();
+    result.height = window->height();
+    result.border_width = border;
+    result.depth = window->getDepth();
+    result.root = data ? data->root : server->getRoot()->id;
+    result.c_class = window->c_class;
+    const XSetWindowAttributes& attributes = window->getAttributes();
+    result.bit_gravity = attributes.bit_gravity;
+    result.win_gravity = attributes.win_gravity;
+    result.backing_store = attributes.backing_store;
+    result.backing_planes = attributes.backing_planes;
+    result.backing_pixel = attributes.backing_pixel;
+    result.save_under = attributes.save_under;
+    result.colormap = window->colorMap ? window->colorMap->id : attributes.colormap;
+    result.map_installed = window->colorMap ? True : False;
+    result.map_state = window->mapped() ? (window->isThisAndAncestorsMapped() ? IsViewable : IsUnviewable) : IsUnmapped;
+    result.your_event_mask = data ? data->getEventMask(window->id) : 0;
+    result.all_event_masks = server->getAllEventMask(window->id);
+    result.do_not_propagate_mask = attributes.do_not_propagate_mask;
+    result.override_redirect = attributes.override_redirect;
+    result.screen = memory->readd(ARG1 + 0x8c);
+    Visual* windowVisual = window->getVisual().get();
+    Display::iterateVisuals(cpu->thread, ARG1, [&result, windowVisual](S32, U32 visualAddress, Depth*, Visual* visual) {
+        if (visual == windowVisual) {
+            result.visual = visualAddress;
+            return false;
+        }
+        return true;
+    });
+    memory->memcpy(ARG3, &result, sizeof(result));
+    EAX = True;
 }
 
 static void x11_IconifyWindow(CPU* cpu) {
-    //kpanic("x11_IconifyWindow");
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!window) {
+        EAX = BadWindow;
+        return;
+    }
+    const int result = window->unmapWindow();
+    XWMState state = { IconicState, 0 };
+    window->setProperty(WM_STATE, WM_STATE, 32, sizeof(state), (const U8*)&state, true);
+    EAX = result == Success ? True : False;
 }
 
 static void x11_InternAtom(CPU* cpu) {
-    kpanic("x11_InternAtom");
+    XServer* server = XServer::getServer();
+    BString name = cpu->memory->readString(ARG2);
+    EAX = server->internAtom(name, ARG3 != 0);
 }
 
 
 static void x11_LocaleOfIM(CPU* cpu) {
-    kpanic("x11_LocaleOfIM");
+    x11LogImeUnavailable();
+    EAX = 0;
 }
 
 static void x11_MatchVisualInfo(CPU* cpu) {
-    kpanic("x11_MatchVisualInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    const S32 requestedScreen = (S32)ARG2;
+    const S32 requestedDepth = (S32)ARG3;
+    const S32 requestedClass = (S32)ARG4;
+    const U32 output = ARG5;
+    bool matched = false;
+    Display::iterateVisuals(thread, ARG1, [=, &matched](S32 screenIndex, U32 visualAddress, Depth* depth, Visual* visual) {
+        if (!matched && screenIndex == requestedScreen && depth->depth == (U32)requestedDepth && visual->c_class == requestedClass) {
+            XVisualInfo result;
+            result.set(screenIndex, visualAddress, depth->depth, visual);
+            result.write(memory, output);
+            matched = true;
+        }
+        return !matched;
+    });
+    EAX = matched ? True : False;
 }
 
 // Bool XQueryExtension(Display* display, _Xconst char* name, int* major_opcode_return, int* first_event_return, int* first_error_return) 
@@ -2541,42 +3166,85 @@ static void x11_QueryExtension(CPU* cpu) {
         cpu->memory->writed(ARG3, XServer::getServer()->getExtensionGLX());
         cpu->memory->writed(ARG4, 0);
         cpu->memory->writed(ARG5, 0);
+    } else if (name == "MIT-SHM") {
+        static bool logged = false;
+        if (!logged) { logged = true; kwarn_fmt("X11 MIT-SHM unavailable; clients must use XPutImage"); }
+        EAX = False;
     }  else {
         EAX = False;
     }
 }
 
+// This server keeps no window shape regions: windows are composited and
+// hit-tested as rectangles, so a SHAPE request cannot take effect. The Xlib
+// shape calls are void and have no error channel, so the rejection is one
+// greppable warning and a no-op instead of the previous abort.
+static void x11LogShapeIgnored() {
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 SHAPE: shape requests are ignored; this server keeps windows rectangular"); }
+}
+
 static void x11_ShapeCombineMask(CPU* cpu) {
-    kpanic("x11_ShapeCombineMask");
+    x11LogShapeIgnored();
 }
 
 static void x11_ShapeCombineRectangles(CPU* cpu) {
-    kpanic("x11_ShapeCombineRectangles");
+    x11LogShapeIgnored();
 }
 
 static void x11_ShapeOffsetShape(CPU* cpu) {
-    kpanic("x11_ShapeOffsetShape");
+    x11LogShapeIgnored();
+}
+
+static void x11LogShmUnavailable() {
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 MIT-SHM unavailable: shared mappings are unavailable; use XPutImage"); }
 }
 
 static void x11_ShmAttach(CPU* cpu) {
-    kpanic("x11_ShmAttach");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
 // XImage* XShmCreateImage(Display* dpy, Visual* visual, unsigned int depth, int format, char* data, XShmSegmentInfo* shminfo, unsigned int width, unsigned int height)
 static void x11_ShmCreateImage(CPU* cpu) {
-    kpanic("x11_ShmCreateImage");
+    x11LogShmUnavailable();
+    EAX = 0;
 }
 
 static void x11_ShmDetach(CPU* cpu) {
-    kpanic("x11_ShmDetach");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
 static void x11_ShmPutImage(CPU* cpu) {
-    kpanic("x11_ShmPutImage");
+    x11LogShmUnavailable();
+    EAX = False;
 }
 
+// int XWindowEvent(Display* display, Window w, long event_mask, XEvent* event_return)
+// A matching event that is already queued is removed and returned. The
+// blocking wait cannot run inside a guest callback (the event sources are
+// other threads and the browser pump), so with nothing queued the call logs
+// once and returns False instead of the previous abort.
 static void x11_WindowEvent(CPU* cpu) {
-    kpanic("x11_WindowEvent");
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XWindowPtr window = server->getWindow(ARG2);
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!window || !data) {
+        EAX = False;
+        return;
+    }
+    XEvent event = { 0 };
+    if (data->findAndRemoveEventByMask(window->id, ARG3, event)) {
+        memory->memcpy(ARG4, &event, sizeof(XEvent));
+        EAX = True;
+        return;
+    }
+    static bool logged = false;
+    if (!logged) { logged = true; kwarn_fmt("X11 XWindowEvent: no queued event matches the mask; the blocking wait cannot run inside a guest callback, returning False"); }
+    EAX = False;
 }
 
 // Status XWithdrawWindow(Display* display, Window w, int screen_number)
@@ -2660,7 +3328,7 @@ static void x11_XRRQueryExtension(CPU* cpu) {
 static void x11_XRRQueryVersion(CPU* cpu) {
     EAX = 1;
     cpu->memory->writed(ARG2, 1);
-    cpu->memory->writed(ARG3, 1); // :TODO: maybe figure out 1.4?
+    cpu->memory->writed(ARG3, 2); // XRandR 1.2 resources and CRTC/output APIs are implemented.
 }
 
 // short* XRRRates(Display* dpy, int screen, int size_index, int* nrates)
@@ -2674,8 +3342,22 @@ static void x11_XRRRates(CPU* cpu) {
 
 // Status XRRSetScreenConfig(Display* dpy, XRRScreenConfiguration* config, Drawable draw, int size_index, Rotation rotation, Time timestamp)
 static void x11_XRRSetScreenConfig(CPU* cpu) {
-    //kpanic("x11_XRRSetScreenConfig");
-    EAX = RRSetConfigSuccess;  // emscripten gets here
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || ARG5 != RR_Rotate_0) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    U32 cx = 0;
+    U32 cy = 0;
+    if (!XrrGetSize(thread, data, ARG4, cx, cy)) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    server->changeScreen(cx, cy);
+    EAX = RRSetConfigSuccess;
 }
 
 // Status XRRSetScreenConfigAndRate(Display* dpy, XRRScreenConfiguration* config, Drawable draw, int size_index, Rotation rotation, short rate, Time timestamp)
@@ -2687,7 +3369,7 @@ static void x11_XRRSetScreenConfigAndRate(CPU* cpu) {
     U32 cx = 0;
     U32 cy = 0;
 
-    if (!XrrGetSize(thread, data, ARG4, cx, cy)) {
+    if (ARG5 != RR_Rotate_0 || !XrrGetSize(thread, data, ARG4, cx, cy)) {
         EAX = RRSetConfigFailed;
         return;        
     }
@@ -2706,87 +3388,270 @@ static void x11_XRRSizes(CPU* cpu) {
 
 // void XRRFreeCrtcInfo(XRRCrtcInfo* crtcInfo)
 static void x11_XRRFreeCrtcInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeCrtcInfo");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(ARG1, sizeof(XRRCrtcInfo), true);
+    if (info->outputs) thread->process->free(info->outputs);
+    if (info->possible) thread->process->free(info->possible);
+    thread->process->free(ARG1);
 }
 
 // void XRRFreeOutputInfo(XRROutputInfo* outputInfo)
 static void x11_XRRFreeOutputInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeOutputInfo");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(ARG1, sizeof(XRROutputInfo), true);
+    if (info->name) thread->process->free(info->name);
+    if (info->crtcs) thread->process->free(info->crtcs);
+    if (info->clones) thread->process->free(info->clones);
+    if (info->modes) thread->process->free(info->modes);
+    thread->process->free(ARG1);
 }
 
 // void XRRFreeScreenResources(XRRScreenResources* resources)
 static void x11_XRRFreeScreenResources(CPU* cpu) {
-    kpanic("x11_XRRFreeScreenResources");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    KMemory* memory = thread->memory;
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG1, sizeof(XRRScreenResources), true);
+    if (resources->modes) {
+        XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+        for (S32 i = 0; i < resources->nmode; i++) {
+            if (modes[i].name) thread->process->free(modes[i].name);
+        }
+        thread->process->free(resources->modes);
+    }
+    if (resources->crtcs) thread->process->free(resources->crtcs);
+    if (resources->outputs) thread->process->free(resources->outputs);
+    thread->process->free(ARG1);
 }
 
 // XRRCrtcInfo* XRRGetCrtcInfo(Display* dpy, XRRScreenResources* resources, RRCrtc crtc)
 static void x11_XRRGetCrtcInfo(CPU* cpu) {
-    kpanic("x11_XRRGetCrtcInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    if (resources->ncrtc < 1) { EAX = 0; return; }
+    KNativeScreenPtr screen = KNativeSystem::getScreen();
+    U32 address = thread->process->alloc(thread, sizeof(XRRCrtcInfo));
+    U32 outputsAddress = thread->process->alloc(thread, sizeof(RROutput));
+    U32 possibleAddress = thread->process->alloc(thread, sizeof(RROutput));
+    memory->writed(outputsAddress, 1);
+    memory->writed(possibleAddress, 1);
+    XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(address, sizeof(XRRCrtcInfo), true);
+    info->timestamp = resources->timestamp;
+    info->x = 0; info->y = 0; info->width = screen->screenWidth(); info->height = screen->screenHeight();
+    info->mode = 0;
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+    for (S32 i = 0; i < resources->nmode; i++) {
+        if (modes[i].width == info->width && modes[i].height == info->height) { info->mode = modes[i].id; break; }
+    }
+    info->rotation = RR_Rotate_0; info->noutput = 1;
+    info->outputs = outputsAddress; info->rotations = RR_Rotate_0;
+    info->npossible = 1; info->possible = possibleAddress;
+    EAX = address;
 }
 
 // XRROutputInfo* XRRGetOutputInfo(Display* dpy, XRRScreenResources* resources, RROutput output)
 static void x11_XRRGetOutputInfo(CPU* cpu) {
-    kpanic("x11_XRRGetOutputInfo");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    if (resources->noutput < 1) { EAX = 0; return; }
+    static const char name[] = "Boxedwine-0";
+    U32 address = thread->process->alloc(thread, sizeof(XRROutputInfo));
+    U32 nameAddress = thread->process->alloc(thread, sizeof(name));
+    U32 crtcAddress = thread->process->alloc(thread, sizeof(RRCrtc));
+    U32 modesAddress = thread->process->alloc(thread, sizeof(RRMode) * resources->nmode);
+    memory->memcpy(nameAddress, name, sizeof(name));
+    memory->writed(crtcAddress, 1);
+    for (S32 i = 0; i < resources->nmode; i++) memory->writed(modesAddress + i * sizeof(RRMode), i + 1);
+    XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(address, sizeof(XRROutputInfo), true);
+    info->timestamp = resources->timestamp; info->crtc = 1;
+    info->name = nameAddress; info->nameLen = sizeof(name) - 1;
+    info->mm_width = 0; info->mm_height = 0;
+    info->connection = 0; info->subpixel_order = 0;
+    info->ncrtc = 1; info->crtcs = crtcAddress;
+    info->nclone = 0; info->clones = 0;
+    info->nmode = resources->nmode; info->npreferred = resources->nmode ? 1 : 0; info->modes = modesAddress;
+    EAX = address;
 }
 
 // int XRRGetOutputProperty(Display* dpy, RROutput output, Atom property, long offset, long length, Bool _delete, Bool pending, Atom req_type, Atom* actual_type, int* actual_format, unsigned long* nitems, unsigned long* bytes_after, unsigned char** prop)
 static void x11_XRRGetOutputProperty(CPU* cpu) {
-    kpanic("x11_XRRGetOutputProperty");
+    KMemory* memory = cpu->memory;
+    memory->writed(ARG9, 0);  // None: this virtual output has no properties.
+    memory->writed(ARG10, 0);
+    memory->writed(ARG11, 0);
+    memory->writed(ARG12, 0);
+    memory->writed(cpu->peek32(13), 0);
+    EAX = Success;
 }
 
 // XRRScreenResources* XRRGetScreenResources(Display* dpy, Window window)
 static void x11_XRRGetScreenResources(CPU* cpu) {
-    kpanic("x11_XRRGetScreenResources");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = 0; return; }
+    U32 count = 0;
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizesAddress = XrrGetSizes(thread, data, 0, countAddress);
+    count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    if (!count) { EAX = 0; return; }
+    U32 address = thread->process->alloc(thread, sizeof(XRRScreenResources));
+    U32 crtcsAddress = thread->process->alloc(thread, sizeof(RRCrtc));
+    U32 outputsAddress = thread->process->alloc(thread, sizeof(RROutput));
+    U32 modesAddress = thread->process->alloc(thread, sizeof(XRRModeInfo) * count);
+    memory->writed(crtcsAddress, 1); memory->writed(outputsAddress, 1);
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(modesAddress, sizeof(XRRModeInfo) * count, true);
+    for (U32 i = 0; i < count; i++) {
+        U32 width = memory->readd(sizesAddress + i * sizeof(XRRScreenSize));
+        U32 height = memory->readd(sizesAddress + i * sizeof(XRRScreenSize) + 4);
+        char modeName[32];
+        snprintf(modeName, sizeof(modeName), "%ux%u", width, height);
+        U32 nameAddress = thread->process->alloc(thread, (U32)strlen(modeName) + 1);
+        memory->memcpy(nameAddress, modeName, (U32)strlen(modeName) + 1);
+        modes[i].id = i + 1; modes[i].width = width; modes[i].height = height;
+        modes[i].dotClock = 0; modes[i].hSyncStart = width; modes[i].hSyncEnd = width;
+        modes[i].hTotal = width; modes[i].hSkew = 0; modes[i].vSyncStart = height;
+        modes[i].vSyncEnd = height; modes[i].vTotal = height; modes[i].name = nameAddress;
+        modes[i].nameLength = (U32)strlen(modeName); modes[i].modeFlags = 0;
+    }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(address, sizeof(XRRScreenResources), true);
+    resources->timestamp = KSystem::getMilliesSinceStart(); resources->configTimestamp = resources->timestamp;
+    resources->ncrtc = 1; resources->crtcs = crtcsAddress;
+    resources->noutput = 1; resources->outputs = outputsAddress;
+    resources->nmode = count; resources->modes = modesAddress;
+    EAX = address;
 }
 
 // XRRScreenResources* XRRGetScreenResourcesCurrent(Display* dpy, Window window)
 static void x11_XRRGetScreenResourcesCurrent(CPU* cpu) {
-    kpanic("x11_XRRGetScreenResourcesCurrent");
+    x11_XRRGetScreenResources(cpu);
 }
 
 // Status XRRGetScreenSizeRange(Display* dpy, Window window, int* minWidth, int* minHeight, int* maxWidth, int* maxHeight)
 static void x11_XRRGetScreenSizeRange(CPU* cpu) {
-    kpanic("x11_XRRGetScreenSizeRange");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = False; return; }
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizes = XrrGetSizes(thread, data, 0, countAddress);
+    U32 count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    if (!sizes || !count) { EAX = False; return; }
+    U32 minWidth = 0xFFFFFFFF, minHeight = 0xFFFFFFFF, maxWidth = 0, maxHeight = 0;
+    for (U32 i = 0; i < count; i++) {
+        U32 width = memory->readd(sizes + i * sizeof(XRRScreenSize));
+        U32 height = memory->readd(sizes + i * sizeof(XRRScreenSize) + 4);
+        minWidth = std::min(minWidth, width); minHeight = std::min(minHeight, height);
+        maxWidth = std::max(maxWidth, width); maxHeight = std::max(maxHeight, height);
+    }
+    memory->writed(ARG3, minWidth); memory->writed(ARG4, minHeight);
+    memory->writed(ARG5, maxWidth); memory->writed(ARG6, maxHeight);
+    EAX = True;
 }
 
 // Status XRRSetCrtcConfig(Display* dpy, XRRScreenResources* resources, RRCrtc crtc, Time timestamp, int x, int y, RRMode mode, Rotation rotation, RROutput* outputs, int noutputs)
 static void x11_XRRSetCrtcConfig(CPU* cpu) {
-    kpanic("x11_XRRSetCrtcConfig");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    if (!ARG2 || ARG3 != 1 || (S32)ARG5 != 0 || (S32)ARG6 != 0 || ARG8 != RR_Rotate_0 || ARG10 != 1 || !ARG9 || memory->readd(ARG9) != 1) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    U32 modeId = ARG7;
+    if (!modeId || modeId > (U32)resources->nmode || resources->ncrtc < 1 || resources->noutput < 1) {
+        EAX = RRSetConfigFailed;
+        return;
+    }
+    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+    XServer* server = XServer::getServer();
+    server->changeScreen(modes[modeId - 1].width, modes[modeId - 1].height);
+    EAX = RRSetConfigSuccess;
 }
 
 // void XRRSetScreenSize(Display* dpy, Window window, int width, int height, int mmWidth, int mmHeight)
 static void x11_XRRSetScreenSize(CPU* cpu) {
-    kpanic("x11_XRRSetScreenSize");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr data = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    if (!data || !server->getWindow(ARG2)) { EAX = 0; return; }
+    U32 countAddress = thread->process->alloc(thread, sizeof(U32));
+    U32 sizes = XrrGetSizes(thread, data, 0, countAddress);
+    U32 count = memory->readd(countAddress);
+    thread->process->free(countAddress);
+    for (U32 i = 0; sizes && i < count; i++) {
+        if (memory->readd(sizes + i * sizeof(XRRScreenSize)) == ARG3 && memory->readd(sizes + i * sizeof(XRRScreenSize) + 4) == ARG4) {
+            server->changeScreen(ARG3, ARG4);
+            return;
+        }
+    }
+    static bool logged = false;
+    if (!logged) { logged = true; klog("XRRSetScreenSize requested a size not present in the emulated mode list"); }
 }
 
 // void XRRSelectInput(Display* dpy, Window window, int mask)
 static void x11_XRRSelectInput(CPU* cpu) {
-    kpanic("x11_XRRSelectInput");
+    KThread* thread = cpu->thread;
+    KMemory* memory = thread->memory;
+    XServer* server = XServer::getServer();
+    DisplayDataPtr display = server->getDisplayDataByAddressOfDisplay(memory, ARG1);
+    XWindowPtr window = server->getWindow(ARG2);
+    if (!display || !window) {
+        static bool logged = false;
+        if (!logged) { logged = true; klog("XRRSelectInput ignored an invalid display or window"); }
+        return;
+    }
+    if (!display->xrrData) display->xrrData = new XrrData();
+    display->xrrData->eventWindow = ARG2;
+    display->xrrData->eventMask = ARG3 & (RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask);
 }
 
 // RROutput XRRGetOutputPrimary(Display* dpy, Window window)
 static void x11_XRRGetOutputPrimary(CPU* cpu) {
-    kpanic("x11_XRRGetOutputPrimary");
+    EAX = 1; // the emulated desktop has one connected primary output
 }
 
 // XRRProviderResources* XRRGetProviderResources(Display* dpy, Window window)
 static void x11_XRRGetProviderResources(CPU* cpu) {
-    kpanic("x11_XRRGetProviderResources");
+    KThread* thread = cpu->thread;
+    U32 address = thread->process->alloc(thread, sizeof(XRRProviderResources));
+    XRRProviderResources* resources = (XRRProviderResources*)thread->memory->getRamPtr(address, sizeof(XRRProviderResources), true);
+    resources->timestamp = KSystem::getMilliesSinceStart();
+    resources->nproviders = 0;
+    resources->providers = 0;
+    EAX = address;
 }
 
 // void XRRFreeProviderResources(XRRProviderResources* resources)
 static void x11_XRRFreeProviderResources(CPU* cpu) {
-    kpanic("x11_XRRFreeProviderResources");
+    KThread* thread = cpu->thread;
+    if (!ARG1) return;
+    XRRProviderResources* resources = (XRRProviderResources*)thread->memory->getRamPtr(ARG1, sizeof(XRRProviderResources), true);
+    if (resources->providers) thread->process->free(resources->providers);
+    thread->process->free(ARG1);
 }
 
 // XRRProviderInfo* XRRGetProviderInfo(Display* dpy, XRRScreenResources* resources, RRProvider provider)
 static void x11_XRRGetProviderInfo(CPU* cpu) {
-    kpanic("x11_XRRGetProviderInfo");
+    EAX = 0; // There are no provider XIDs in this single-output implementation.
 }
 
 // void XRRFreeProviderInfo(XRRProviderInfo* provider)
 static void x11_XRRFreeProviderInfo(CPU* cpu) {
-    kpanic("x11_XRRFreeProviderInfo");
+    if (ARG1) cpu->thread->process->free(ARG1);
 }
 
 // Bool XIGetClientPointer(Display* dpy, Window win, int* deviceid)
@@ -2833,6 +3698,17 @@ static void x11_XIQueryVersion(CPU* cpu) {
     EAX = Success;
 }
 
+static bool x11DecodeXIEventMask(const U8* bytes, U32 byteCount, U64& value) {
+    value = 0;
+    if (byteCount > sizeof(value)) {
+        for (U32 i = sizeof(value); i < byteCount; i++) if (bytes[i]) return false;
+        byteCount = sizeof(value);
+    }
+    for (U32 i = 0; i < byteCount; i++) value |= (U64)bytes[i] << (i * 8);
+    const U64 supportedBits = ((U64)1 << (XI_LASTEVENT + 1)) - 1;
+    return (value & ~supportedBits) == 0;
+}
+
 // int XISelectEvents(Display* dpy, Window win, XIEventMask* masks, int num_masks)
 static void x11_XISelectEvents(CPU* cpu) {
     KMemory* memory = cpu->memory;
@@ -2844,22 +3720,33 @@ static void x11_XISelectEvents(CPU* cpu) {
         EAX = BadWindow;
         return;
     }
-    if (ARG4 != 1) {
-        // wine only passes 1
-        kpanic("x11_XISelectEvents num_masks was expected to be 1");
+    if (ARG4 > 64) {
+        kwarn_fmt("XISelectEvents has too many device masks: %u", ARG4);
+        EAX = BadValue;
+        return;
     }
-    XIEventMask mask;
-    mask.read(memory, ARG3);
-    if (mask.mask_len > 4 && memory->readb(mask.maskAddress + 4)) {
-        kpanic("x11_XISelectEvents currently expecting masks in the first 32-bits");
+    U64 value = 0;
+    for (U32 i = 0; i < ARG4; i++) {
+        XIEventMask mask;
+        mask.read(memory, ARG3 + i * sizeof(XIEventMask));
+        if (mask.mask_len < 0 || mask.mask_len > 64) {
+            kwarn_fmt("XISelectEvents invalid mask length %d", mask.mask_len);
+            EAX = BadValue;
+            return;
+        }
+        std::vector<U8> bytes((U32)mask.mask_len);
+        for (U32 j = 0; j < bytes.size(); j++) bytes[j] = memory->readb(mask.maskAddress + j);
+        U64 selected = 0;
+        if (!x11DecodeXIEventMask(bytes.data(), bytes.size(), selected)) {
+            kwarn_fmt("XISelectEvents mask contains bits outside the XI2 event range");
+            EAX = BadValue;
+            return;
+        }
+        value |= selected;
     }
-    U32 value = 0;
-    if (mask.mask_len == 0) {
-        EAX = data->setInput2Mask(ARG2, 0);
-    } else {
-        value = memory->readd(mask.maskAddress);
-        EAX = data->setInput2Mask(ARG2, value);
-    }
+    // This server has one virtual pointer. Device-specific masks are folded
+    // together because the host input source has no separate XI device streams.
+    EAX = data->setInput2Mask(ARG2, value);
     if (server->trace) {
         BString log;
 
@@ -2940,8 +3827,17 @@ void x11_CursorImageDestroy(CPU* cpu) {
 
 // Cursor XcursorImageLoadCursor(Display* dpy, const XcursorImage* image)
 void x11_CursorImageLoadCursor(CPU* cpu) {
-    // not actually used in wine even though it gets the function pointer
-    kpanic("x11_CursorImageLoadCursor");
+    KThread* thread = cpu->thread;
+    KMemory* memory = cpu->memory;
+    XServer* server = XServer::getServer();
+    XcursorImage image;
+    image.read(memory, ARG2);
+    if (!image.width || !image.height || !image.pixelsAddress) { EAX = 0; return; }
+    XCursorPtr cursor = std::make_shared<XCursor>(0);
+    server->addCursor(cursor);
+    KNativeSystem::getScreen()->buildCursor(thread, cursor, image.pixelsAddress,
+        image.width, image.height, image.xhot, image.yhot);
+    EAX = cursor->id;
 }
 
 // XcursorImages* XcursorImagesCreate(int size) 
@@ -2982,16 +3878,39 @@ void x11_CursorImagesLoadCursor(CPU* cpu) {
         EAX = 0;
         return;
     }
-    if (images.nimage > 1) {
-        klog("x11_CursorImagesLoadCursor animated cursors not supported, will use first frame");
-    }
     XCursorPtr cursor = std::make_shared<XCursor>(0);
     server->addCursor(cursor);
     EAX = cursor->id;
 
-    XcursorImage frame;
-    frame.read(memory, memory->readd(images.imagesAddress));
-    KNativeSystem::getScreen()->buildCursor(thread, cursor, frame.pixelsAddress, frame.width, frame.height, frame.xhot, frame.yhot);
+    // Copy every frame into the cursor: the guest may free its images as soon
+    // as this call returns, and the host cycles the frames by their delays
+    // (KNativeScreenSDL::setCursor starts the animation for >1 frame).
+    U32 firstPixelsAddress = 0;
+    for (U32 i = 0; i < images.nimage; i++) {
+        XcursorImage frame;
+        frame.read(memory, memory->readd(images.imagesAddress + i * sizeof(U32)));
+        if (!frame.width || !frame.height || !frame.pixelsAddress) {
+            continue;
+        }
+        if (cursor->animFrames.empty()) {
+            firstPixelsAddress = frame.pixelsAddress;
+        }
+        XCursorAnimFrame anim;
+        anim.width = frame.width;
+        anim.height = frame.height;
+        anim.xhot = frame.xhot;
+        anim.yhot = frame.yhot;
+        anim.delay = frame.delay;
+        anim.pixels.resize((size_t)frame.width * frame.height);
+        memory->memcpy(anim.pixels.data(), frame.pixelsAddress, (U32)anim.pixels.size() * 4);
+        cursor->animFrames.push_back(std::move(anim));
+    }
+    if (cursor->animFrames.empty()) {
+        EAX = 0;
+        return;
+    }
+    const XCursorAnimFrame& first = cursor->animFrames.front();
+    KNativeSystem::getScreen()->buildCursor(thread, cursor, firstPixelsAddress, first.width, first.height, first.xhot, first.yhot);
 }
 
 // Cursor XcursorLibraryLoadCursor(Display* dpy, const char* file)

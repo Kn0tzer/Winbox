@@ -22,7 +22,7 @@ test('X11 GetInputFocus reports the Vulkan focus window despite a stale GDI desk
 #include <map>
 #include <utility>
 struct Window {int16_t x=0,y=0;bool mapped=true,isRoot=false;};
-struct XWireServer { std::map<uint32_t,Window> windows;std::mutex regMutex;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0,pointerConfineWindow=0;void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;} };
+struct XWireServer { std::map<uint32_t,Window> windows;std::mutex regMutex;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0,pointerConfineWindow=0;void clearPointerGrab(){pointerGrabClient=pointerGrabWindow=pointerConfineWindow=0;}void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;} };
 static std::pair<int,int> xwireWindowOrigin(const XWireServer&,uint32_t){return {0,0};}
 uint8_t reply[32];void writeToClient(const uint8_t* p,unsigned n){assert(n==32);memcpy(reply,p,n);}
 void query(){uint32_t rootWindow=0x260,sequence=0x1234;enum{X_GetInputFocus=43};switch(X_GetInputFocus){${body}}}

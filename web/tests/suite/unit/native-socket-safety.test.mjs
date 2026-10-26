@@ -1,10 +1,14 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const source = readFileSync(join(repoRoot, 'source/kernel/knativesocket.cpp'), 'utf8');
 function run(code, sanitizer = false) {
   const dir = mkdtempSync(join(tmpdir(), 'bw64-native-socket-'));
   try {
@@ -44,7 +48,7 @@ static void readMsgHdr(KThread*,U32,MsgHdr* output){*output=fixture;}
 static void readCMsgHdr(KThread*,U32,CMsgHdr*){}
 static std::vector<U8> captured;
 struct KNativeSocketObject {U32 sendmsg(KThread*,const KFileDescriptorPtr&,U32,U32);};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
  captured.assign(buffer,buffer+len);return len;
 }
 int main(){
@@ -89,7 +93,7 @@ struct Guard{~Guard(){if(afterUnlock)afterUnlock();}};
 struct Socket{int nativeSocket;BOXEDWINE_CONDITION readingCond=std::make_shared<Condition>(),writingCond=std::make_shared<Condition>();Socket(int fd):nativeSocket(fd){writingCond->parents=0;}};
 static std::vector<std::shared_ptr<Socket>> waitingNativeSockets;
 static fd_set waitingReadset,waitingWriteset,waitingErrorset;static int maxSocketId,nativeSocketPipe[2];
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){
  int input[2];assert(pipe(input)==0);assert(pipe(nativeSocketPipe)==0);
  waitingNativeSockets.push_back(std::make_shared<Socket>(input[0]));assert(write(input[1],"x",1)==1);
@@ -123,7 +127,7 @@ struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{vir
 static bool monitored=false;
 static void addWaitingNativeSocket(const std::shared_ptr<KNativeSocketObject>&){monitored=true;}
 static void removeWaitingSocket(int){monitored=false;}
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){auto socket=std::make_shared<KNativeSocketObject>();auto a=std::make_shared<Condition>(),b=std::make_shared<Condition>();
  socket->waitForEvents(a,K_POLLIN);socket->waitForEvents(b,K_POLLIN);assert(monitored);
  socket->waitForEvents(a,0);assert(monitored && "remaining reader must stay monitored");socket->waitForEvents(b,0);assert(!monitored);
@@ -133,8 +137,8 @@ int main(){auto socket=std::make_shared<KNativeSocketObject>();auto a=std::make_
 });
 
 test('native socket creation reports descriptor exhaustion without publishing an invalid fd', () => {
-  const translate = source.slice(source.indexOf('S32 translateNativeSocketError('), source.indexOf('S32 handleNativeSocketError('));
-  const constructor = source.slice(source.indexOf('KNativeSocketObject::KNativeSocketObject('), source.indexOf('KNativeSocketObject::~KNativeSocketObject('));
+  const translate = extractSourceRange(source, source.indexOf('S32 translateNativeSocketError('), source.indexOf('S32 handleNativeSocketError('));
+  const constructor = extractSourceRange(source, source.indexOf('KNativeSocketObject::KNativeSocketObject('), source.indexOf('KNativeSocketObject::~KNativeSocketObject('));
   const errors = readFileSync(new URL('../../../../include/kerror.h', import.meta.url), 'utf8');
   run(`
 #include <cassert>
@@ -202,7 +206,7 @@ static int receive(int,char* buffer,size_t length,int flags,sockaddr*,socklen_t*
 #define recvfrom receive
 struct KNativeSocketObject:std::enable_shared_from_this<KNativeSocketObject>{struct LoopbackPacket{std::vector<U8> bytes;U32 sourceAddress=0;U16 sourcePort=0;};virtual ~KNativeSocketObject()=default;U32 type=K_SOCK_STREAM,error=0;int nativeSocket=3;bool loopbackDatagram=false,loopbackStream=false,loopbackStreamConnected=false;U16 loopbackPort=0;std::mutex loopbackStreamMutex;U32 recvLoopbackStream(U8*,U32,U32){return 0;}U32 takeLoopbackPacket(LoopbackPacket&,U32){return U32(-K_EAGAIN);}U32 recvmsg(KThread*,const KFileDescriptorPtr&,U32,U32);};
 static U32 handleNativeSocketError(const std::shared_ptr<KNativeSocketObject>&,bool){return U32(-1);}
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){auto socket=std::make_shared<KNativeSocketObject>();KMemory memory;KThread thread{&memory};
  assert(socket->recvmsg(&thread,0,0,0)==4096);assert(cursor==4096);assert(memory.bytes[4095]=='x' && memory.bytes[4096]==0 && memory.bytes[8192]==0);
  memory=KMemory{};memory.lengths[0]=4;cursor=0;assert(socket->recvmsg(&thread,0,0,K_MSG_PEEK)==4);assert(cursor==0 && memory.bytes[3]=='x' && memory.bytes[8192]==0);
@@ -214,7 +218,7 @@ int main(){auto socket=std::make_shared<KNativeSocketObject>();KMemory memory;KT
 test('browser TCP distinguishes pending nonblocking connects from blocking completion', () => {
   const start = source.indexOf('U32 KNativeSocketObject::connect(');
   const end = source.indexOf('U32 KNativeSocketObject::listen(', start);
-  const method = source.slice(start,end).replace('::connect(this->nativeSocket', '::nativeConnect(this->nativeSocket').replace('::poll(', '::nativePoll(').replaceAll('::getsockopt(', '::nativeGetOption(');
+  const method = extractSourceRange(source, start,end).replace('::connect(this->nativeSocket', '::nativeConnect(this->nativeSocket').replace('::poll(', '::nativePoll(').replaceAll('::getsockopt(', '::nativeGetOption(');
   run(`
 #include <cassert>
 #include <cstdint>

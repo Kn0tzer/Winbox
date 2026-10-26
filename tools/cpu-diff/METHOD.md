@@ -105,8 +105,49 @@ per-form table in `REPORT.md` makes every bucket auditable.
   but harness lacks RSI/RDI per-side infrastructure), control flow (jcc/
   loops/calls), segment overrides, privileged/system instructions, most of
   SSE2+ integer SIMD, FPU environment (fldcw/fstenv).
-- AVX/AVX2: intentionally unsupported. Emulator clears AVX bit in CPUID
-  (cpu64.cpp:2852) so glibc selects non-AVX paths. Documented, not a bug.
+- AVX/AVX2/FMA/BMI: not implemented. The emulator reports no AVX, so
+  guests do not see it, but VEX-encoded instructions are still not
+  executed. Source facts: CPUID leaf 1 ECX omits OSXSAVE (bit 27) and AVX
+  (bit 28); leaf 7 reports no BMI1, AVX2 or BMI2 (`cpu64.cpp:3220-3262`);
+  XGETBV(0) returns `0x3`, x87+SSE state only (`cpu64.cpp:4906-4916`). VEX
+  prefixes C4/C5 have no handler and go to the `unhandled` path
+  (`cpu64.cpp:1225`, `:7531`).
+  - Affected software, by how it selects code:
+    1. Code that runs VEX instructions with no CPUID check: builds for
+       x86-64-v3 or with `-mavx`/`-mavx2`/`-mfma`/`-mbmi2` across the
+       whole program, and AVX intrinsics without runtime dispatch. These
+       reach the unhandled VEX path.
+    2. Runtime-dispatched code: glibc IFUNC selection for memcpy, strlen,
+       and libm variants, and any library that queries CPUID. It sees no
+       AVX and takes its SSE path. That is correct and is what the
+       differential harness exercises.
+    3. Baseline x86-64 and x86-64-v2 builds (SSE4.2/POPCNT) do not use
+       VEX and are not affected.
+  - Silent-skip risk: on the Emscripten build `BW64_RECOVER` defaults on
+    (`source/util/log.cpp:60-70`), so the unhandled path skips the
+    instruction and the guest continues. The per-RIP cap
+    (`recoverFaultsAtRip < 3`, `cpu64.cpp:7613`) resets at the start of
+    every step whose RIP differs from the last one (`cpu64.cpp:979-981`).
+    A skip always advances RIP, so the cap cannot stop this path. Native
+    builds default recover off and stop at the unimplemented-opcode
+    bail-out. A skipped VEX instruction leaves its destination unchanged
+    and logs at most one `recover: skipped` line per RIP.
+  - Detection: `tools/cpu-diff/avx-probe.c` (build line in its header).
+    It prints `cpuid.1.ecx.osxsave`, `cpuid.1.ecx.avx`,
+    `cpuid.7.0.ebx.{bmi1,avx2,bmi2}`, `xgetbv0.eax` when OSXSAVE is set,
+    and `vex.vmovd`, which is `executed`, `SIGILL`, or `NOT_EXECUTED`.
+    `NOT_EXECUTED` is the skip case: the destination register is checked,
+    because a skipped instruction raises no signal. Measured under
+    `qemu-x86_64` (2026-10-24): default CPU model gives AVX/AVX2 present
+    and `vex.vmovd=executed`; `-cpu max,avx=off,avx2=off` gives
+    `vex.vmovd=SIGILL`; a copy with the VEX bytes replaced by NOPs gives
+    `NOT_EXECUTED`. Expected emulator output, from source and not yet run
+    on CPU64: `cpuid.1.ecx.avx=0`, `cpuid.7.0.ebx.avx2=0`, and
+    `vex.vmovd` of `SIGILL` (native recover off) or `NOT_EXECUTED`
+    (Emscripten recover on). The `cpuid` set in `harness.cpp` also checks
+    the emulator's CPUID values against the advertised feature set.
+  - Owner decision, not made here: implement AVX, keep CPUID clear and
+    make unhandled VEX fail closed on every build, or leave it as is.
 - MMX: advertised in CPUID (MMX=1) but no instruction handlers implemented
   (0F 6E/6F/7E/7F unhandled). Known gap; MMX is deprecated (superseded by
   SSE) and rarely used by modern games.

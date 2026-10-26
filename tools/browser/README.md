@@ -65,6 +65,17 @@ directory. The runtime export includes the renderer protocol, WGSL helpers,
 SPIR-V pre-pass, and shader compilers; vendor copies are generated from their
 canonical inputs rather than maintained twice.
 
+### Static host headers
+
+The exported files need cross-origin isolation for threaded WASM. The
+production `/winbox/*` Caddyfile matcher must send
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` on both the launcher and runtime
+paths. If deploying to a static host that reads a `_headers` file, include
+equivalent rules for `/*` and `/runtime/*`; the runtime iframe must receive the
+same isolation policy as the launcher. These response headers are configured
+by the host and are not emitted as files by `build.mjs`.
+
 ## Native verifiers
 
 ```sh

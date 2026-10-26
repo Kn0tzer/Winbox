@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "files": {
+    "source/emulation/cpu/normal/normalPlatformMultiThreaded.cpp": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "source/emulation/cpu/wasm/jitWasmCodeGen.cpp": {
+      "emptyCatch": 4,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "source/kernel/kscheduler.cpp": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "source/kernel/syscall64.cpp": {
+      "emptyCatch": 0,
+      "unloggedDefault": 5,
+      "unloggedErrno": 48
+    },
+    "source/opengl/gl64bridge.cpp": {
+      "emptyCatch": 22,
+      "unloggedDefault": 22,
+      "unloggedErrno": 0
+    },
+    "source/sdl/emscripten/mainloop.cpp": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "source/vulkan/vk64bridge.cpp": {
+      "emptyCatch": 2,
+      "unloggedDefault": 8,
+      "unloggedErrno": 0
+    },
+    "web/app.mjs": {
+      "emptyCatch": 4,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/bridge-recovery.mjs": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/enhancement.mjs": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/gl-webgpu.mjs": {
+      "emptyCatch": 3,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/naga-rt.mjs": {
+      "emptyCatch": 7,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/package-archive.mjs": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/shader-cache.mjs": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/shader.mjs": {
+      "emptyCatch": 1,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/vk-log.mjs": {
+      "emptyCatch": 3,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "web/vkwebgpu.mjs": {
+      "emptyCatch": 18,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    }
+  }
+}

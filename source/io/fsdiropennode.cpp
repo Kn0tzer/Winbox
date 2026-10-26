@@ -59,15 +59,20 @@ U32 FsDirOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsDirOpenNode::setAsync(bool isAsync) {
-    FsOpenNode::setAsync(isAsync);
+    this->applyAsyncFlag(isAsync);
 }
 
 bool FsDirOpenNode::isAsync() {
-    return FsOpenNode::isAsync();
+    return this->asyncEnabled;
 }
 
 void FsDirOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
-    kdebug("FsDirOpenNode::waitForEvents not implemented");
+    // Readiness for fs nodes is static (driven by the open mode), so mirror
+    // DevDsp::waitForEvents: if the requested readiness already holds, wake
+    // the poller instead of leaving it to time out.
+    if (((events & K_POLLIN) && this->isReadReady()) || ((events & K_POLLOUT) && this->isWriteReady())) {
+        BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+    }
 }
 
 bool FsDirOpenNode::isWriteReady() {

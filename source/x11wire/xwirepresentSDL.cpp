@@ -549,6 +549,18 @@ public:
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvText) {
+            // Committed text: position it at the pointer like key events,
+            // and keep state 0. The connection assigns the exact modifier
+            // state (Shift for shifted keysyms) when it expands the code
+            // point into a press/release pair; live host modifiers must not
+            // leak in, or the client would translate the press using the
+            // shifted keysym and produce a different character.
+            e2.x = lastX; e2.y = lastY;
+            e2.state = 0;
+            push(e2);
+            return;
+        }
         e2.state = sdlModState();
         push(e2);
     }
@@ -710,6 +722,18 @@ public:
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
+        if (e2.type == XWireInputEvent::EvText) {
+            // Committed text: position it at the pointer like key events,
+            // and keep state 0. The connection assigns the exact modifier
+            // state (Shift for shifted keysyms) when it expands the code
+            // point into a press/release pair; live host modifiers must not
+            // leak in, or the client would translate the press using the
+            // shifted keysym and produce a different character.
+            e2.x = lastX; e2.y = lastY;
+            e2.state = 0;
+            push(e2);
+            return;
+        }
         e2.state = sdlModState();
         push(e2);
     }
@@ -782,6 +806,58 @@ void xwireInjectKey(uint32_t sdlScancode, int down) {
 static void injectToActiveSink(const XWireInputEvent& ie) {
     if (g_xwirePresentSink == &g_sink) g_sink.injectEvent(ie);
     else if (g_xwirePresentSink) g_inputSink.injectEvent(ie);
+}
+
+// Decode one UTF-8 sequence from s[0..n). On success returns the byte count
+// (1-4) and stores the code point in cp. Returns 0 for an invalid or
+// truncated sequence (the caller skips one byte and retries), so malformed
+// input can never stall or read past the buffer. Rejects overlong forms,
+// UTF-16 surrogate halves and values above U+10FFFF: none of them is a
+// Unicode scalar value a keysym can name.
+static int xwireUtf8DecodeOne(const unsigned char* s, size_t n, uint32_t& cp) {
+    if (n == 0) return 0;
+    unsigned char c = s[0];
+    if (c < 0x80) { cp = c; return 1; }
+    int len;
+    uint32_t minCp;
+    if ((c & 0xE0) == 0xC0) { len = 2; minCp = 0x80; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; minCp = 0x800; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; minCp = 0x10000; cp = c & 0x07; }
+    else return 0;
+    if ((size_t)len > n) return 0;
+    for (int i = 1; i < len; i++) {
+        if ((s[i] & 0xC0) != 0x80) return 0;
+        cp = (cp << 6) | (uint32_t)(s[i] & 0x3F);
+    }
+    if (cp < minCp) return 0;                    // overlong encoding
+    if (cp > 0x10FFFF) return 0;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return 0;  // surrogate half
+    return len;
+}
+
+// Direct text injection for browser IME commits: decode the UTF-8 string
+// and queue one EvText per code point on the active sink. The wire
+// connection expands each into a KeyPress/KeyRelease pair at delivery time
+// (deliverInputEvents in xwireconnection.cpp). Safe from any thread: the
+// sink push is mutex-guarded. No-op when no sink is installed. Malformed
+// bytes are skipped one at a time; NUL and U+FEFF (a stray BOM riding a
+// commit) carry no text and are dropped.
+void xwireInjectText(const char* utf8) {
+    if (!g_xwirePresentSink || !utf8) return;
+    const unsigned char* s = (const unsigned char*)utf8;
+    size_t n = strlen(utf8);
+    size_t i = 0;
+    while (i < n) {
+        uint32_t cp = 0;
+        int len = xwireUtf8DecodeOne(s + i, n - i, cp);
+        if (len == 0) { i++; continue; }
+        i += (size_t)len;
+        if (cp == 0 || cp == 0xFEFF) continue;
+        XWireInputEvent ie;
+        ie.type = XWireInputEvent::EvText;
+        ie.detail = cp;
+        injectToActiveSink(ie);
+    }
 }
 
 void xwireInjectMouseMove(int x, int y) {
@@ -866,6 +942,40 @@ static void syncXWirePointerCapture() {
     }
 }
 
+static void syncXWireGrabCursor() {
+    static bool hadGrab = false;
+    static uint32_t previousGrabWindow = 0;
+    static int lastShape = -1;
+    int shape = -1;
+    {
+        auto& server = XWireServer::instance();
+        std::unique_lock<std::mutex> lock(server.regMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        const bool grabbed = server.pointerGrabClient != 0;
+        const uint32_t cursorId = grabbed ? server.pointerGrabCursor : 0;
+        const uint32_t windowId = grabbed ? server.pointerGrabWindow : (hadGrab ? previousGrabWindow : 0);
+        if (grabbed) previousGrabWindow = server.pointerGrabWindow;
+        if (grabbed || hadGrab) {
+            auto cursor = server.cursorShapes.find(cursorId);
+            if (cursorId && cursor != server.cursorShapes.end()) shape = (int)cursor->second;
+            else {
+                auto window = server.windows.find(windowId);
+                if (window != server.windows.end()) {
+                    auto windowCursor = server.cursorShapes.find(window->second.cursor);
+                    if (window->second.cursor && windowCursor != server.cursorShapes.end()) shape = (int)windowCursor->second;
+                }
+                if (shape < 0) shape = 68; // XC_left_ptr
+            }
+        }
+        hadGrab = grabbed;
+    }
+    if (shape >= 0 && shape != lastShape) {
+        KNativeScreenPtr screen = KNativeSystem::getScreen();
+        if (screen) screen->setCursorByX11Shape(shape);
+        lastShape = shape;
+    }
+}
+
 // Drive present + input from the main loop (main thread). Safe to call when no
 // sink is installed.
 void tickXWirePresent() {
@@ -876,6 +986,7 @@ void tickXWirePresent() {
     // with no sink) so a headless-but-GL path still drains.
     drainMainThreadWork();
     syncXWirePointerCapture();
+    syncXWireGrabCursor();
     xwireRecordInputPhase(2);
     if (g_xwirePresentSink) {
         // Coalesced present: the wire server's draw handlers (PutImage bands,

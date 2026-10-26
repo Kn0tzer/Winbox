@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('Java TCP pipe can set and read TCP_NODELAY on a guest accepted socket', () => {
-  const source = readFileSync('source/kernel/knativesocket.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/knativesocket.cpp'), 'utf8');
   const setStart = source.indexOf('U32 KNativeSocketObject::setsockopt(');
   const setEnd = source.indexOf('    KMemory* memory = thread->memory;', setStart);
   const getStart = source.indexOf('U32 KNativeSocketObject::getsockopt(');
@@ -25,8 +29,8 @@ struct KThread{KMemory* memory;};using KFileDescriptorPtr=int;
 struct KNativeSocketObject{bool loopbackDatagram=false,loopbackStream=true,loopbackStreamConnected=true,loopbackReuseAddress=false,loopbackNoDelay=false,connected=true,listening=false;int nativeSocket=-1;U32 error=0,loopbackPort=1234,type=1,protocol=6,recvLen=4096,sendLen=4096;
  U32 setsockopt(KThread*,const KFileDescriptorPtr&,U32,U32,U32,U32);U32 getsockopt(KThread*,const KFileDescriptorPtr&,U32,U32,U32,U32);
 };
-${source.slice(setStart, setEnd)} return -K_ENOPROTOOPT; }
-${source.slice(getStart, getEnd)} native_getsockopt: return -K_ENOPROTOOPT; }
+${extractSourceRange(source, setStart, setEnd)} return -K_ENOPROTOOPT; }
+${extractSourceRange(source, getStart, getEnd)} native_getsockopt: return -K_ENOPROTOOPT; }
 int main(){KMemory m;KThread t{&m};KNativeSocketObject accepted;
  m.option=1;assert(accepted.setsockopt(&t,0,K_IPPROTO_TCP,K_TCP_NODELAY,0,4)==0);
  m.option=0;assert(accepted.getsockopt(&t,0,K_IPPROTO_TCP,K_TCP_NODELAY,0,4)==0&&m.option==1&&m.length==4);

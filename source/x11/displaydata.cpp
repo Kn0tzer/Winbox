@@ -68,6 +68,48 @@ bool DisplayData::findAndRemoveEvent(U32 window, S32 type, XEvent& event) {
 	return false;
 }
 
+// The event-mask bits a queued event type satisfies for XWindowEvent's mask
+// argument. Types with no mask in libX11's event table (client, selection and
+// mapping events) return all bits so they match any mask.
+static U32 x11EventMaskBits(S32 type) {
+	switch (type) {
+		case KeyPress: return KeyPressMask;
+		case KeyRelease: return KeyReleaseMask;
+		case ButtonPress: return ButtonPressMask;
+		case ButtonRelease: return ButtonReleaseMask;
+		case MotionNotify: return PointerMotionMask | PointerMotionHintMask | ButtonMotionMask | Button1MotionMask | Button2MotionMask | Button3MotionMask | Button4MotionMask | Button5MotionMask;
+		case EnterNotify: return EnterWindowMask;
+		case LeaveNotify: return LeaveWindowMask;
+		case FocusIn: case FocusOut: return FocusChangeMask;
+		case KeymapNotify: return KeymapStateMask;
+		case Expose: case GraphicsExpose: case NoExpose: return ExposureMask;
+		case VisibilityNotify: return VisibilityChangeMask;
+		case CreateNotify: return SubstructureNotifyMask;
+		case DestroyNotify: case UnmapNotify: case MapNotify: case ReparentNotify: case ConfigureNotify: case GravityNotify: case CirculateNotify: return StructureNotifyMask | SubstructureNotifyMask;
+		case MapRequest: case ConfigureRequest: case CirculateRequest: return SubstructureRedirectMask;
+		case ResizeRequest: return ResizeRedirectMask;
+		case PropertyNotify: return PropertyChangeMask;
+		case ColormapNotify: return ColormapChangeMask;
+		default: return 0xffffffff;
+	}
+}
+
+bool DisplayData::findAndRemoveEventByMask(U32 window, U32 mask, XEvent& event) {
+#ifdef BOXEDWINE_MULTI_THREADED
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(eventMutex);
+#endif
+	U32 count = (U32)eventQueue.size();
+	for (U32 i = 0; i < count; i++) {
+		XEvent* e = &eventQueue.at(i);
+		if (e->xany.window == window && (mask & x11EventMaskBits(e->type)) != 0) {
+			event = *e;
+			removeEvent(i);
+			return true;
+		}
+	}
+	return false;
+}
+
 U32 DisplayData::lockEvents() {
 	
 #ifdef BOXEDWINE_MULTI_THREADED
@@ -133,14 +175,14 @@ void DisplayData::setEventMask(U32 window, U32 mask) {
 	perWindowEventMask.set(window, mask);
 }
 
-U32 DisplayData::getInput2Mask(U32 window) {
+U64 DisplayData::getInput2Mask(U32 window) {
 	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(eventMaskMutex);
-	U32 result = 0;
+	U64 result = 0;
 	perWindowEventMask2.get(window, result);
 	return result;
 }
 
-int DisplayData::setInput2Mask(U32 window, U32 mask) {
+int DisplayData::setInput2Mask(U32 window, U64 mask) {
 	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(eventMaskMutex);
 	perWindowEventMask2.set(window, mask);
 	return Success;

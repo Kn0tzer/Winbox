@@ -157,5 +157,5 @@ PYCODE
 mkdir -p "$REPO/web/runtime"
 for asset in boxedwine64.wasm boxedwine64.js BUILD_INFO.json; do cp "$BUILD_OUT/$asset" "$REPO/web/runtime/$asset"; done
 cd "$REPO"
-node tools/browser/build.mjs
+node tools/browser/build.mjs && node tools/browser/verify-dist.mjs
 log 'BUILD COMPLETE'

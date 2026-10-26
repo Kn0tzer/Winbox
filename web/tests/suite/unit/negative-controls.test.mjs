@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const R = (p) => { try { return readFileSync(join(repoRoot, p), 'utf8'); } catch { return ''; } };
+const R = (p) => readFileSync(join(repoRoot, p), 'utf8');
 
 test('PEB/env setup is Wine ntdll responsibility (Boxedwine hands SysV stack)', () => {
   const loader = R('source/kernel/loader/loader.cpp') + R('source/kernel/loader/loader64.cpp');
@@ -19,7 +19,9 @@ test('PEB/env setup is Wine ntdll responsibility (Boxedwine hands SysV stack)', 
 });
 
 test('pthread_once works in 32-bit (do not re-investigate)', () => {
-  assert.ok(true, 'pthread_once 32-bit path verified working — negative control, no test needed beyond boot');
+  const fixture = R('tools/desktoptest/pthread_once_test.c');
+  assert.match(fixture, /pthread_once\(&test_once, test_callback\)/);
+  assert.match(fixture, /PTHREAD_ONCE_INIT/);
 });
 
 test('FS-override load path works (3509 diagnostic hits)', () => {
@@ -40,16 +42,21 @@ test('GOT/loader relocation delegated to emulated ld.so (theory was wrong)', () 
 });
 
 test('TLS/GS 0x352D31A9 was patch-induced (not a real TLS bug)', () => {
-  assert.ok(true, 'TLS/GS fault was skipcalls1-induced — do not re-chase as TLS bug without ruling out patches first');
+  const cpu = R('source/emulation/cpu/cpu64.cpp');
+  assert.doesNotMatch(cpu, /skipcalls1|0x352D31A9/i,
+    'the probe-only workaround must stay out of production execution');
 });
 
 test('32-bit LEA segment-base "fix" was disproven (c80d8c4a reverted 1455108d)', () => {
-  const cpuFiles = R('source/emulation/cpu/normal/normal_move.h') + R('source/emulation/cpu/x32/instructions.cpp');
-  assert.ok(cpuFiles.length > 100, 'LEA path must exist; segment-base fix must be probe-proven, never static (commit policy P1)');
+  const move = R('source/emulation/cpu/normal/normal_move.h');
+  assert.match(move, /normal_leaR16\([\s\S]*?cpu->reg\[op->reg\]\.u16 = eaa\(cpu, op\)/);
+  assert.match(move, /normal_leaR32\([\s\S]*?cpu->reg\[op->reg\]\.u32 = eaa\(cpu, op\)/);
 });
 
 test('.update-timestamp/FsZip suspicion exonerated', () => {
-  assert.ok(true, 'FsZip timestamp theory exonerated — check LRU/coalescing first (see vfs-socket-isolation.test.mjs)');
+  const zip = R('source/io/fszipurl.cpp');
+  assert.match(zip, /MAX_CACHED_BLOCKS|LRU/);
+  assert.match(zip, /inFlight/);
 });
 
 test('kunixsocket "1110-line rewrite" was 4 lines (scope guard)', () => {
@@ -63,11 +70,15 @@ test('GetCopyableFootprints was never missing; vkCmdCopyImage stub removal was f
 });
 
 test('D3D12 pipeBad disproven by cache-busted re-probe; absolute-vertex-ID replay reverted', () => {
-  assert.ok(true, 'cache-bust before pipeBad verdicts; absolute-vertex-ID replay stays reverted');
+  const probe = R('web/tests/d3d12-pixels-nocache.mjs');
+  assert.match(probe, /Cache-bust/);
+  assert.match(probe, /searchParams\.set\('_cb'/);
 });
 
 test('98K-pixel D3D12 target invalid (old probe used buggy scene12.exe)', () => {
-  assert.ok(true, 'D3D12 pixel targets must be re-baselined per scene12.exe version, never blindly reused');
+  const report = R('tools/vkd3d/patches/README.md');
+  assert.match(report, /98k lit-pixel target is unachievable/);
+  assert.match(report, /old scene12\.exe/);
 });
 
 test('libasound.so.2 was not audio root cause; BSS coherency was shim truncation', () => {
@@ -76,5 +87,7 @@ test('libasound.so.2 was not audio root cause; BSS coherency was shim truncation
 });
 
 test('dead async submission worker was wrong (475 submissions; ncmd=0 init submits normal)', () => {
-  assert.ok(true, 'ncmd=0 empty init submits are normal — do not diagnose as dead worker');
+  const bridge = R('source/vulkan/vk64bridge.cpp');
+  assert.match(bridge, /Skip serialization if no command buffers have commands/);
+  assert.match(bridge, /empty init submits/);
 });

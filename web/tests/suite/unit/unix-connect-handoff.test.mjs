@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
@@ -9,7 +10,7 @@ function implementation(name) {
  const signature=name==='~KUnixSocketObject'?'KUnixSocketObject::~KUnixSocketObject()':`U32 KUnixSocketObject::${name}(`; const start=source.indexOf(signature);assert.ok(start>=0);
  let end=source.indexOf('{',start),depth=1;
  for(end++;depth&&end<source.length;end++){if(source[end]==='{')depth++;if(source[end]==='}')depth--;}
- return source.slice(start,end);
+ return extractSourceRange(source, start,end);
 }
 test('a blocking retry of a pending UNIX connect completes when the listener accepts',()=>{
  const dir=mkdtempSync(join(tmpdir(),'bw64-unix-handoff-'));

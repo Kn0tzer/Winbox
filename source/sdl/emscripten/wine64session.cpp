@@ -388,6 +388,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_xwire_key(int sdlScancode, int down) {
     xwireInjectKey((uint32_t)sdlScancode, down);
 }
 
+// bw64_inject_text: inject a committed text string (a finished browser IME
+// composition) into the guest as X key events. Called via
+// Module.ccall("bw64_inject_text",null,["string"],[text]); the string is
+// the raw UTF-8 commit (ccall encodes it). Characters with no key on the
+// guest keymap are delivered through the wire server's dynamically rebound
+// scratch keycode (see xwireInjectText). Safe from the browser main
+// thread: the sink queue push is mutex-guarded. No-op until the session
+// is up (no sink installed).
+extern "C" EMSCRIPTEN_KEEPALIVE void bw64_inject_text(const char* utf8Text) {
+    xwireInjectText(utf8Text);
+}
+
 // bw64_xwire_mouse_move(x, y): absolute pointer position in guest window coords.
 // bw64_xwire_mouse_rel(dx, dy): relative deltas (FPS mouse-look).
 // bw64_xwire_mouse_button(button, down): X11 button 1=left,2=middle,3=right,8=X1,9=X2.

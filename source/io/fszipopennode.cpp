@@ -40,7 +40,7 @@ S64 FsZipOpenNode::length() {
 
 bool FsZipOpenNode::setLength(S64 len) {
     // if this file was open for write, it would have been copied to the file system
-    kpanic("FsZipOpenNode::setLength should not have been called");
+    kwarn("FsZipOpenNode::setLength called on a read-only zip node; length unchanged");
     return false;
 }
 
@@ -71,15 +71,20 @@ U32 FsZipOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsZipOpenNode::setAsync(bool isAsync) {
-    FsOpenNode::setAsync(isAsync);
+    this->applyAsyncFlag(isAsync);
 }
 
 bool FsZipOpenNode::isAsync() {
-    return FsOpenNode::isAsync();
+    return this->asyncEnabled;
 }
 
 void FsZipOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
-    kdebug("FsZipOpenNode::waitForEvents not implemented");
+    // Readiness for fs nodes is static (driven by the open mode), so mirror
+    // DevDsp::waitForEvents: if the requested readiness already holds, wake
+    // the poller instead of leaving it to time out.
+    if (((events & K_POLLIN) && this->isReadReady()) || ((events & K_POLLOUT) && this->isWriteReady())) {
+        BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+    }
 }
 
 bool FsZipOpenNode::isWriteReady() {
@@ -232,7 +237,7 @@ U32 FsZipOpenNode::readNative(U8* buffer, U32 len) {
 }
 
 U32 FsZipOpenNode::writeNative(U8* buffer, U32 len) {
-    kpanic("FsZipOpenNode::writeNative not implemented");
+    kwarn("FsZipOpenNode::writeNative called on a read-only zip node; nothing written");
     return 0;
 }
 

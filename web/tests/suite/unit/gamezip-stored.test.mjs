@@ -1,8 +1,11 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('game ZIP conversion preserves entries and supports direct reads deep inside stored files', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gamezip-stored-'));
@@ -11,7 +14,7 @@ test('game ZIP conversion preserves entries and supports direct reads deep insid
 import zipfile,sys,hashlib
 from pathlib import Path
 sys.dont_write_bytecode=True
-sys.path.insert(0,'tools')
+sys.path.insert(0,sys.argv[2])
 from optimize_gamezip import optimize
 p=Path(sys.argv[1]);src=p/'source.zip';dst=p/'stored.zip'
 data=bytes(range(256))*4096
@@ -30,6 +33,6 @@ with zipfile.ZipFile(dst) as z:
 try:optimize(src,src);raise AssertionError('Source replacement accepted')
 except ValueError:pass
 assert not list(p.glob('.gamezip-*'))
-`, dir], { stdio:'pipe' });
+`, dir, join(repoRoot, 'tools')], { stdio:'pipe' });
   } finally { rmSync(dir, { recursive:true, force:true }); }
 });

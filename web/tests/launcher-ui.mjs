@@ -12,7 +12,7 @@ let browser, server;
 const errors = [], checks = [];
 const temp = await mkdtemp('/tmp/launcher-ui-');
 try {
-  server = await serve('dist');
+  server = await serve(process.env.BW_TEST_DIST || 'dist');
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/local/bin/chromium', args: ['--no-sandbox','--disable-dev-shm-usage'] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, colorScheme: 'light' });
   page.on('pageerror', error => errors.push(error.message));

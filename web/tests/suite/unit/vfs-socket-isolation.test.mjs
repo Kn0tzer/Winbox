@@ -23,7 +23,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..',
 const kproc = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
 const fsnode = readFileSync(join(repoRoot, 'source/io/fsnode.cpp'), 'utf8');
 const fsfile = readFileSync(join(repoRoot, 'source/io/fsfilenode.cpp'), 'utf8');
-const fszip = (() => { try { return readFileSync(join(repoRoot, 'source/io/fszipurl.cpp'), 'utf8'); } catch { return ''; } })();
+const fszip = readFileSync(join(repoRoot, 'source/io/fszipurl.cpp'), 'utf8');
 
 test('chdir stores resolved node path (4e0b32d7 repeating-path corruption)', () => {
   assert.ok(kproc.includes('currentDirectory = node->path') || kproc.includes('node->path'),
@@ -56,7 +56,6 @@ test('session startup does not block the main loop on a forged Wine handshake', 
 });
 
 test('FsZip has LRU + coalesced fetches + per-node streams (Celeste 600MB bank)', () => {
-  if (!fszip) return;
   assert.ok(fszip.includes('LRU') || fszip.includes('MAX_CACHED_BLOCKS'),
     'FsZip must have 512-block/256MiB LRU (unbounded 512KiB cache guard)');
   assert.ok(fszip.includes('coalesc') || fszip.includes('in-flight') || fszip.includes('inflight') || fszip.includes('Inflight'),

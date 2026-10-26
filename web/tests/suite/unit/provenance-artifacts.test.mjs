@@ -17,14 +17,22 @@ import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { provenanceDistRoot, missingExportMessage } from '../lib/provenance-hint.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const distRoot = provenanceDistRoot(repoRoot);
+const artifactPath = (path, ...rest) => path.startsWith('dist/')
+  ? join(distRoot, path.slice(5), ...rest) : join(repoRoot, path, ...rest);
 const sha256File = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
 test('BUILD_INFO.json exists in both dist/runtime and web/runtime', () => {
   for (const d of ['dist/runtime/BUILD_INFO.json', 'web/runtime/BUILD_INFO.json']) {
-    const p = join(repoRoot, d);
-    assert.ok(existsSync(p), `${d} must exist (bw64-build.sh writes provenance)`);
+    const p = artifactPath(d);
+    // Absent dist/ is a FAIL by design; the message carries the fix.
+    const msg = d.startsWith('dist/')
+      ? missingExportMessage(distRoot)
+      : `${d} must exist (bw64-build.sh writes provenance)`;
+    assert.ok(existsSync(p), msg);
     const j = JSON.parse(readFileSync(p, 'utf8'));
     assert.ok(j.git_sha && j.git_sha.length >= 7, `${d}: git_sha must be recorded`);
     assert.ok(j.wasm_sha256 && j.wasm_sha256.length === 64, `${d}: wasm_sha256 must be recorded`);
@@ -35,28 +43,28 @@ test('BUILD_INFO.json exists in both dist/runtime and web/runtime', () => {
 
 test('wasm/js pair hashes match BUILD_INFO.json (no torn builds)', () => {
   for (const d of ['dist/runtime', 'web/runtime']) {
-    const info = JSON.parse(readFileSync(join(repoRoot, d, 'BUILD_INFO.json'), 'utf8'));
-    const wasmHash = sha256File(join(repoRoot, d, 'boxedwine64.wasm'));
-    const jsHash = sha256File(join(repoRoot, d, 'boxedwine64.js'));
+    const info = JSON.parse(readFileSync(artifactPath(d, 'BUILD_INFO.json'), 'utf8'));
+    const wasmHash = sha256File(artifactPath(d, 'boxedwine64.wasm'));
+    const jsHash = sha256File(artifactPath(d, 'boxedwine64.js'));
     assert.equal(wasmHash, info.wasm_sha256, `${d}: boxedwine64.wasm hash must match BUILD_INFO.json (torn build?)`);
     assert.equal(jsHash, info.js_sha256, `${d}: boxedwine64.js hash must match BUILD_INFO.json (JS/WASM pair drift → func is not a function)`);
   }
 });
 
 test('dist/runtime and web/runtime wasm/js pairs are in sync', () => {
-  const distWasm = sha256File(join(repoRoot, 'dist/runtime/boxedwine64.wasm'));
+  const distWasm = sha256File(artifactPath('dist/runtime/boxedwine64.wasm'));
   const webWasm = sha256File(join(repoRoot, 'web/runtime/boxedwine64.wasm'));
   assert.equal(distWasm, webWasm, 'dist vs web boxedwine64.wasm must match (d01c6f5a: fix staged in web/ but probes serve dist/ → blank canvas)');
-  const distJs = sha256File(join(repoRoot, 'dist/runtime/boxedwine64.js'));
+  const distJs = sha256File(artifactPath('dist/runtime/boxedwine64.js'));
   const webJs = sha256File(join(repoRoot, 'web/runtime/boxedwine64.js'));
   assert.equal(distJs, webJs, 'dist vs web boxedwine64.js must match (stale JS + new WASM → __emscripten_receive_on_main_thread_js crash)');
 });
 
 test('Wine exports preserve pinned files except desktop helpers and the Wine32 Arial alias', () => {
   for (const z of ['wine32.zip', 'wine64.zip', 'prefix32.zip', 'prefix64.zip']) {
-    const a = join(repoRoot, 'dist/runtime', z);
+    const a = artifactPath('dist/runtime', z);
     const b = join(repoRoot, 'web/runtime', z);
-    if (!existsSync(a) || !existsSync(b)) continue;
+    assert.ok(existsSync(a) && existsSync(b), `${z}: both pinned and exported archives are required`);
     if (z.startsWith('wine')) assert.equal(sha256File(a), sha256File(b), `${z}: dist vs web must match`);
     else execFileSync('python3', ['-c', `
 import pathlib, sys, zipfile, json, hashlib, importlib.util
@@ -89,7 +97,7 @@ assert provenance['prefix_sha256'] == hashlib.sha256(pathlib.Path(exported).read
 
 test('wasm has valid magic (not a truncated/poisoned build)', () => {
   for (const d of ['dist/runtime/boxedwine64.wasm', 'web/runtime/boxedwine64.wasm']) {
-    const buf = readFileSync(join(repoRoot, d));
+    const buf = readFileSync(artifactPath(d));
     assert.equal(buf[0], 0x00, `${d}: WASM magic byte 0`);
     assert.equal(buf[1], 0x61, `${d}: WASM magic byte 1 ('a')`);
     assert.equal(buf[2], 0x73, `${d}: WASM magic byte 2 ('s')`);
@@ -118,7 +126,7 @@ test('Wine32 export adds only the pinned architecture-independent Wine fonts', (
 import hashlib, json, pathlib, zipfile
 root = pathlib.Path(${JSON.stringify(repoRoot)})
 base = root / 'web/runtime/glibc-rootfs32.zip'
-exported = root / 'dist/runtime/glibc-rootfs32.zip'
+exported = pathlib.Path(${JSON.stringify(distRoot)}) / 'runtime/glibc-rootfs32.zip'
 wine = root / 'web/runtime/wine64.zip'
 record = json.loads((exported.parent / 'wine32-font-provenance.json').read_text())
 with zipfile.ZipFile(base) as old, zipfile.ZipFile(exported) as new, zipfile.ZipFile(wine) as source:

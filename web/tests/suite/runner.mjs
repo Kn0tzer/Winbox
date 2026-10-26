@@ -18,15 +18,17 @@
 //                or: FAIL <name> (<duration>ms)\n  <error message>
 
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { withTimeout } from './lib/probe-base.mjs';
 import { gamePrerequisites, prerequisiteSelection, prerequisiteEvidence } from './lib/game-prerequisites.mjs';
+import { provenanceHint } from './lib/provenance-hint.mjs';
 
 const suiteDir = dirname(fileURLToPath(import.meta.url));
 const unitDir = join(suiteDir, "unit");
 const browserDir = join(suiteDir, "browser");
+const repoRoot = join(suiteDir, "..", "..", "..");
 
 const args = process.argv.slice(2);
 const onlyUnit = args.includes("--unit");
@@ -72,10 +74,15 @@ async function runUnitFile(file) {
       const durationMs = Date.now() - t0;
       // Parse TAP: look for "not ok" lines
       const failures = stdout.split("\n").filter(l => l.startsWith("not ok"));
-      if (code === 0 && failures.length === 0) {
+      // A file that registers no tests still exits 0: node --test reports the
+      // file itself as its only subtest. Refuse the vacuous pass — an empty
+      // file proves nothing. Real files list their tests by name.
+      const subtests = stdout.split("\n").filter(l => l.startsWith("# Subtest: "));
+      const zeroTests = subtests.length === 1 && subtests[0] === `# Subtest: ${file}`;
+      if (code === 0 && failures.length === 0 && !zeroTests) {
         finish({ passed: true, durationMs });
       } else {
-        const detail = failures.join("\n") || stderr.slice(0, 1000) || `exit code ${code}`;
+        const detail = failures.join("\n") || (zeroTests ? `FAIL ${name}: file registered 0 tests (vacuous pass refused)` : stderr.slice(0, 1000) || `exit code ${code}`);
         finish({ passed: false, durationMs, error: detail });
       }
     });
@@ -129,7 +136,20 @@ async function main() {
   const runUnit = !onlyBrowser;
   const runBrowser = !onlyUnit;
 
+  // The suite tests the tree it lives in, wherever it was launched from.
+  // Unit children inherit this process's cwd, browser tests run in-process,
+  // and the --game summary path is cwd-relative: left unanchored, launching
+  // from another worktree's root would silently run this tree's tests
+  // against that tree's sources. Anchor cwd to the runner's own tree.
+  if (resolve(process.cwd()) !== resolve(repoRoot)) {
+    log(`NOTE: launched from ${process.cwd()}; running against the suite tree at ${repoRoot}`);
+    process.chdir(repoRoot);
+  }
+
   if (runUnit) {
+    // Print the fix before any result: provenance-artifacts fails without an export.
+    const hint = provenanceHint(repoRoot);
+    if (hint) log(`NOTE: ${hint}`);
     log("Unit tests (fast, no browser):");
     let files = [];
     try { files = readdirSync(unitDir).filter(f => f.endsWith(".test.mjs")).sort(); } catch {}

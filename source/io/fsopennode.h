@@ -77,6 +77,12 @@ public:
 protected:
     virtual U32 internalRead(KThread* thread, U32 address, U32 len);
 
+    // F_SETFL O_ASYNC state, tracked faithfully so F_GETFL (which reads
+    // isAsync) reports what the guest set. SIGIO delivery is not wired:
+    // applyAsyncFlag warns once per process when async is enabled, and the
+    // delivery contract is registered in docs/known-gaps/coverage.md.
+    void applyAsyncFlag(bool isAsync);
+
 private:
     std::vector<std::shared_ptr<FsNode> > dirEntries;
     void loadDirEntries();

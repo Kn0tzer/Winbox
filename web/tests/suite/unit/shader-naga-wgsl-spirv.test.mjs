@@ -23,6 +23,6 @@ test('WGSL uniform array + per-stage size handling exists (960B vs 4352B guard)'
   assert.ok(page.includes('wgslUniform') || page.includes('Uniform') || page.includes('uniform'), 'WGSL uniform size handling must exist (comma-in-array + u-suffix + stride guards)');
 });
 test('naga runtime + validation path exists', () => {
-  const rt = (() => { try { return readFileSync(join(repoRoot, 'web/naga-rt.mjs'), 'utf8'); } catch { return ''; } })();
+  const rt = readFileSync(join(repoRoot, 'web/naga-rt.mjs'), 'utf8');
   assert.ok(rt.includes('naga') || rt.includes('toWGSL') || page.includes('translateSPIRV') || fix.includes('naga'), 'naga SPIR-V→WGSL path must exist (30.2.0 InvalidId/SpecConstantOp guards)');
 });

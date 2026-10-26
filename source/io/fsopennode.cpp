@@ -18,6 +18,7 @@
 
 #include "boxedwine.h"
 #include "ksignal.h"
+#include <atomic>
 
 FsOpenNode::FsOpenNode(std::shared_ptr<FsNode> node, U32 flags) : node(node), flags(flags), listNode(this) {
     node->addOpenNode(&this->listNode);
@@ -78,6 +79,16 @@ void FsOpenNode::loadDirEntries() {
             this->dirEntries.push_back(parent);
         }
         this->node->getAllChildren(this->dirEntries);        
+    }
+}
+
+void FsOpenNode::applyAsyncFlag(bool isAsync) {
+    this->asyncEnabled = isAsync;
+    if (isAsync) {
+        static std::atomic<bool> sigioWarned{false};
+        if (!sigioWarned.exchange(true)) {
+            kwarn("FsOpenNode: O_ASYNC enabled on a file node; SIGIO delivery is unavailable, poll/epoll readiness is unaffected");
+        }
     }
 }
 

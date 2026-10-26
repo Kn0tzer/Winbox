@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as naga from '../../../vendor/naga/node.js';
 import { rewriteGlslForWebGPU } from '../../../gl-webgpu.mjs';
 
-const fixtureDir = resolve('web/tests/fixtures/glsl');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const fixtureDir = resolve(repoRoot, 'web/tests/fixtures/glsl');
 const cases = [
   ['libGDX SpriteBatch vertex', 'libgdx-spritebatch.vert.glsl', 'vertex', 'libgdx'],
   ['libGDX SpriteBatch fragment', 'libgdx-spritebatch.frag.glsl', 'fragment', 'libgdx'],

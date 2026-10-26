@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -23,7 +24,7 @@ test('render passes retain independent stencil load/store and attachment aspects
  const w=writer().u64(1).u64(2).u32(4).u32(4).u32(2);[37,1,0,1,0,129,0,0,1,1].forEach(n=>w.u32(n));[0,0,0,1,1].forEach(n=>w.f32(n));w.u32(3);[10,11,12,13].forEach(n=>w.u64(n));w.u32(0x31505453).u32(2);[0,0,1,1,0,6].forEach(n=>w.u32(n));const p=frame([{type:3,payload:w.bytes()}]).passes[0];assert.equal(p.clearStencil,3);assert.equal(p.attachments[1].stencilLoadOp,1);assert.equal(p.attachments[1].stencilStoreOp,0);assert.equal(p.attachments[1].aspectMask,6);
 });
 
-function ids(source){const first=source.indexOf('VK64_fn_'),start=source.lastIndexOf('enum',first),end=source.indexOf('VK64_fn__MAX',first);const body=source.slice(start,end).replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');const map=new Map();let value=-1;for(const part of body.split(',')){const m=part.match(/(VK64_fn_\w+)\s*(?:=\s*(\d+))?/);if(!m)continue;value=m[2]===undefined?value+1:Number(m[2]);map.set(m[1],value);}return map;}
+function ids(source){const first=source.indexOf('VK64_fn_'),start=source.lastIndexOf('enum',first),end=source.indexOf('VK64_fn__MAX',first);const body=extractSourceRange(source, start,end).replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');const map=new Map();let value=-1;for(const part of body.split(',')){const m=part.match(/(VK64_fn_\w+)\s*(?:=\s*(\d+))?/);if(!m)continue;value=m[2]===undefined?value+1:Number(m[2]);map.set(m[1],value);}return map;}
 test('both guest shims expose appended dynamic-state traps without renumbering old calls',()=>{
  const paths=['source/vulkan/vk64bridge_abi.h','tools/rootfs64/libvk32/libvk32.c','tools/rootfs64/libvk64/libvk64.c'];const names=['vkCmdSetBlendConstants','vkCmdSetStencilCompareMask','vkCmdSetStencilWriteMask','vkCmdSetStencilReference'];
  for(const path of paths){const source=readFileSync(new URL('../../../../'+path,import.meta.url),'utf8'),table=ids(source);assert.equal(table.get('VK64_fn_vkCreateInstance'),200,path);assert.equal(table.get('VK64_fn_vkBeginCommandBuffer'),500,path);for(let i=0;i<names.length;i++)assert.equal(table.get('VK64_fn_'+names[i]),900+i,path+':'+names[i]);if(path.endsWith('.c'))for(const name of names){assert.ok(source.includes('API void '+name+'('),name);assert.ok(source.includes('E('+name+','),name);assert.ok(!source.includes('TAIL('+name+')'),name);}}

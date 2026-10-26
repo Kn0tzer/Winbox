@@ -4,12 +4,13 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { extractSourceSlice } from '../lib/source-slice.mjs';
 
 test('image uploads preserve BC mip/layer offsets, row padding, and allocation bounds', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
-  const helpers = source.slice(source.indexOf('struct FormatBlock'), source.indexOf('// Fills a guest VkMemoryRequirements2')) +
-    source.slice(source.indexOf('U64 imageSubresourceOffset('), source.indexOf('const char* fmt_name'));
-  const copy = source.slice(source.indexOf('static void execCopyFail('), source.indexOf('std::vector<U8> readGuestRange'));
+  const helpers = extractSourceSlice(source, 'struct FormatBlock', '// Fills a guest VkMemoryRequirements2', { sourceName: 'source/vulkan/vk64bridge.cpp' })
+    + extractSourceSlice(source, 'U64 imageSubresourceOffset(', 'const char* fmt_name', { sourceName: 'source/vulkan/vk64bridge.cpp' });
+  const copy = extractSourceSlice(source, 'static void execCopyFail(', 'std::vector<U8> readGuestRange', { sourceName: 'source/vulkan/vk64bridge.cpp' });
   const dir = mkdtempSync(join(tmpdir(), 'vk-image-transfer-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `

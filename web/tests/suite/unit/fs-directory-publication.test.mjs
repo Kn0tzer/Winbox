@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('a concurrent directory lookup waits until native children are published', () => {
-  const source = readFileSync('source/io/fsnode.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/io/fsnode.cpp'), 'utf8');
   const start = source.indexOf('void FsNode::loadChildren()');
   const end = source.indexOf('std::shared_ptr<FsNode> FsNode::getChildByName(', start);
   assert.ok(start >= 0 && end > start);
@@ -63,7 +67,7 @@ struct Fs {
  static U32 readNativeFile(const BString&,U8*,U32){return 0;}
  static void addFileNode(const BString& path,const BString&,const BString&,bool,std::shared_ptr<FsNode> parent){parent->children.push_back(path);}
 };
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 int main(){
  auto node=std::make_shared<FsNode>();
  std::thread loader([&]{node->loadChildren();});

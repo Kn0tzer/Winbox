@@ -103,7 +103,10 @@ void OptionsView::createGeneralTab() {
 
     saveLocationControl = section->addTextInputRow(Msg::OPTIONSVIEW_SAVE_FOLDER_LABEL, Msg::OPTIONSVIEW_SAVE_FOLDER_HELP, GlobalSettings::getDataFolder());
     saveLocationControl->setBrowseDirButton();
-    // :TODO: track when we loose focus and save
+    // No focus-loss tracking is needed for this field: every way out of the
+    // view (gotoView on a switch, SDL_QUIT in uiLoop) runs saveChanges(),
+    // which validates the path, stores it and writes the config, and a
+    // failed save blocks the switch/quit. The edit cannot be lost silently.
 
     std::vector<ComboboxItem> resolutions;
     for (auto& res : GlobalSettings::getAvailableResolutions()) {
