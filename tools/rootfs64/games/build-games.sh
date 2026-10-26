@@ -4,7 +4,9 @@
 # into prefix64.zip so the in-browser app launcher (wine64.html "Games" row) can
 # run them against the pre-booted prefix.
 #
-# Requires: x86_64-w64-mingw32-gcc (brew install mingw-w64).
+# Requires: x86_64-w64-mingw32-gcc (brew install mingw-w64) and coreutils
+# (dirname). `file` is used only to describe the outputs and is optional:
+# where it is absent the descriptions are skipped with a note.
 #
 # snake.exe / tetris.exe are self-contained Win32+GDI sources in src/ (the proven
 # render path under the emulator — same as notepad/winemine: RegisterClass /
@@ -16,14 +18,22 @@
 # needs the doomgeneric checkout; the prebuilt doom.exe + the freely-
 # redistributable shareware doom1.wad are committed alongside it.
 set -euo pipefail
+# Fail early and by name if a required tool is missing, instead of dying
+# mid-run with exit 127 on a minimal box. (dirname locates this script
+# before anything else runs, so it is checked first.)
+command -v dirname >/dev/null || { echo "ERROR: dirname not found (install coreutils)" >&2; exit 1; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CC=x86_64-w64-mingw32-gcc
-command -v "$CC" >/dev/null || { echo "ERROR: $CC not found (brew install mingw-w64)" >&2; exit 1; }
+command -v "$CC" >/dev/null || { echo "ERROR: $CC not found (install mingw-w64)" >&2; exit 1; }
+# `file` only describes each built .exe below; it is informational, so
+# degrade gracefully where the file package is absent.
+HAVE_FILE=1
+command -v file >/dev/null 2>&1 || { HAVE_FILE=0; echo "note: 'file' not found; skipping file-type descriptions" >&2; }
 
 for g in snake tetris clipset clipget; do
   echo "=== building $g.exe ==="
   "$CC" -O2 -std=gnu11 -mwindows "$HERE/src/$g.c" -o "$HERE/$g.exe" -lgdi32 -luser32
-  file "$HERE/$g.exe"
+  if [ "$HAVE_FILE" = 1 ]; then file "$HERE/$g.exe"; fi
 done
 echo "=== done (snake.exe, tetris.exe, clipset.exe, clipget.exe) ==="
 

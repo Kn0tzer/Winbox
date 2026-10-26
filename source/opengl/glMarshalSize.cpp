@@ -17,13 +17,20 @@
  */
 
 #include "boxedwine.h"
+#include <atomic>
 
 // gl64bridge.cpp replaces this legacy 32-bit GL marshaling for the x64 guest,
 // and these files include the native GL header (GLH) which the WASM/WebGL2 build
 // does not provide -- so compile them out when building the 64-bit guest.
 #if defined(BOXEDWINE_OPENGL) && !defined(BOXEDWINE_GUEST_X64)
 #include GLH
+static std::atomic_flag invalidPixelFormatWarning = ATOMIC_FLAG_INIT;
 #include "glcommon.h"
+static std::atomic_flag unknownMarshalSizeWarning = ATOMIC_FLAG_INIT;
+static void logUnknownMarshalSize(const char* what, U32 value) {
+    if (!unknownMarshalSizeWarning.test_and_set())
+        klog_fmt("glMarshalSize: %s unknown value 0x%x; using fallback size", what, value);
+}
 #include "glMarshal.h"
 
 U32 getDataSize(GLenum type) {
@@ -656,6 +663,7 @@ int glcommon_glLightv_size(GLenum e)
     case GL_POSITION:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glLightv_size", e);
         return 0;
     }
 }
@@ -670,6 +678,7 @@ int glcommon_glLightModelv_size(GLenum e)
     case GL_LIGHT_MODEL_AMBIENT:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glLightModelv_size", e);
         return 0;
     }
 }
@@ -688,6 +697,7 @@ int glcommon_glMaterialv_size(GLenum e)
     case GL_AMBIENT_AND_DIFFUSE:
         return 4;
     default:
+        logUnknownMarshalSize("glcommon_glMaterialv_size", e);
         return 0;
     }
 }
@@ -735,7 +745,8 @@ GLint components_in_format(GLenum format )
       case GL_DU8DV8_ATI:
          return 2;
       default:
-          kpanic_fmt("Opengl components_in_format %d", format);
+          if (!invalidPixelFormatWarning.test_and_set())
+             klog_fmt("glPixelMarshal: invalid pixel format 0x%x", format);
          return -1;
    }
 }
@@ -1050,6 +1061,7 @@ GLsizei floatPerTransformList(GLenum transformType)
     case 0x9099: // GL_TRANSPOSE_PROJECTIVE_3D_NV:
         return 16;
     default:
+        logUnknownMarshalSize("floatPerTransformList", transformType);
         return 0;
     }
 }
@@ -1207,6 +1219,7 @@ static U32 marshalUniformComponentCount(GLenum type) {
     case GL_DOUBLE_MAT4:
         return 16;
     default:
+        logUnknownMarshalSize("marshalUniformComponentCount", type);
         return 1;
     }
 }

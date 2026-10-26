@@ -11,7 +11,7 @@
 # ABI matches exactly. gcc is installed into a one-shot container (cheap; the
 # result is committed to the repo so the heavy rootfs build just copies it).
 #
-# Usage:  tools/rootfs64/build-libgl64.sh
+# Usage:  tools/rootfs64/build-libgl64.sh [--check]
 # Output: tools/rootfs64/libgl64/libGL.so.1   (commit this)
 set -euo pipefail
 
@@ -20,6 +20,27 @@ SRC="$HERE/libgl64"
 IMAGE="boxedwine64/wine64-debian:bookworm"
 
 [ -f "$SRC/libgl64.c" ] || { echo "error: $SRC/libgl64.c missing" >&2; exit 1; }
+
+# --check: rebuild in a scratch copy and byte-compare against the committed
+# binary, without modifying the worktree. Modelled on
+# build_vulkan_shims.py --check; stage-dependencies.py runs this before
+# staging, so a stale committed binary cannot ship silently (the libgl32
+# no-op-stub divergence was only caught by a unit test, after the fact).
+if [ "${1:-}" = "--check" ]; then
+    command -v cmp >/dev/null 2>&1 || { echo "error: cmp not found (install diffutils)" >&2; exit 1; }
+    SCRATCH="$(mktemp -d)"
+    trap 'rm -rf "$SCRATCH"' EXIT
+    mkdir -p "$SCRATCH/rootfs64"
+    cp "$HERE/build-libgl64.sh" "$SCRATCH/rootfs64/build-libgl64.sh"
+    cp -a "$SRC" "$SCRATCH/rootfs64/libgl64"
+    bash "$SCRATCH/rootfs64/build-libgl64.sh" >/dev/null
+    if cmp -s "$SCRATCH/rootfs64/libgl64/libGL.so.1" "$SRC/libGL.so.1"; then
+        echo "libgl64: committed libGL.so.1 matches a fresh build of libgl64.c"
+        exit 0
+    fi
+    echo "error: committed tools/rootfs64/libgl64/libGL.so.1 does not match a fresh build of libgl64.c; rerun tools/rootfs64/build-libgl64.sh and commit the binary" >&2
+    exit 1
+fi
 
 echo "=== building guest libGL.so.1 (linux/amd64) ==="
 
@@ -49,6 +70,12 @@ elif command -v clang >/dev/null 2>&1 && [ -n "$LLD" ]; then
         -o "$SRC/libGL.so.1" "$SRC/libgl64.o"
     rm -f "$SRC/libgl64.o"
 else
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "error: no x86_64-linux compiler found and docker is unavailable." >&2
+        echo "       install x86_64-linux-gnu-gcc, or a clang that can target" >&2
+        echo "       x86_64-linux-gnu + ld.lld, or make docker available." >&2
+        exit 1
+    fi
     echo "--- compiling inside $IMAGE ---"
     docker run --rm --platform linux/amd64 -v "$SRC":/src "$IMAGE" bash -c '
         set -euo pipefail

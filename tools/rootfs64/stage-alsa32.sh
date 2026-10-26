@@ -13,6 +13,10 @@ SOURCE="$HERE/alsa32"
 [[ -f "$WINE32" && -f "$GLIBC32" ]] || { echo "stage-alsa32: expected wine32.zip and glibc-rootfs32.zip in $RUNTIME" >&2; exit 2; }
 [[ -f "$SOURCE/usr/lib/i386-linux-gnu/alsa-lib/libasound_module_pcm_oss.so" ]] || { echo "stage-alsa32: missing i386 pcm_oss plugin" >&2; exit 2; }
 [[ -f "$SOURCE/usr/lib/i386-linux-gnu/alsa-lib/libasound_module_ctl_oss.so" ]] || { echo "stage-alsa32: missing i386 ctl_oss plugin" >&2; exit 2; }
+# Fail early and by name if a required tool is missing, instead of dying
+# mid-run with exit 127 on a minimal box.
+command -v zip >/dev/null || { echo "stage-alsa32: zip not found (install zip)" >&2; exit 2; }
+command -v unzip >/dev/null || { echo "stage-alsa32: unzip not found (install unzip)" >&2; exit 2; }
 
 cd "$SOURCE"
 zip -q "$WINE32" \

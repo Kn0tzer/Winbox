@@ -40,6 +40,9 @@ static int gl_strcmp(const char* a, const char* b) {
 #define memset gl_memset
 #define strcmp gl_strcmp
 
+extern void* malloc(unsigned long size);
+extern void free(void* ptr);
+
 // ---- ABI shared with the host (copy kept in sync with source/opengl) -------
 #define GL64_SYSCALL_NR  ((uint64_t)0x474C0000ULL)
 #define GL64_MAX_ARGS 16
@@ -398,7 +401,11 @@ enum {
     GL64_fn_glLoadMatrixd,
     GL64_fn_glMultMatrixd,
     GL64_fn_glMultiTexCoord2fARB = 884,
-    GL64_fn_glClientActiveTextureARB
+    GL64_fn_glClientActiveTextureARB,
+    GL64_fn_glFogf = 886,
+    GL64_fn_glFogi,
+    GL64_fn_glFogfv,
+    GL64_fn_glFogiv
 };
 
 // ---- the trap ---------------------------------------------------------------
@@ -609,6 +616,10 @@ API void glVertexPointer(GLint size, GLenum type, GLsizei stride, const void* po
 API void glColorPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glColorPointer,&a); }
 API void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const void* pointer) { GL64Args a={{0}}; a.a[0]=(uint64_t)(uint32_t)size; a.a[1]=type; a.a[2]=(uint64_t)(uint32_t)stride; a.a[3]=(uint64_t)(uintptr_t)pointer; (void)gl64_trap(GL64_fn_glTexCoordPointer,&a); }
 API void glAlphaFunc(GLenum func, GLfloat ref) { GL64Args a={{0}}; a.a[0]=func; a.a[1]=F2U(ref); (void)gl64_trap(GL64_fn_glAlphaFunc,&a); }
+API void glFogf(GLenum pname, GLfloat param) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=F2U(param); (void)gl64_trap(GL64_fn_glFogf,&a); }
+API void glFogi(GLenum pname, GLint param) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glFogi,&a); }
+API void glFogfv(GLenum pname, const GLfloat* params) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glFogfv,&a); }
+API void glFogiv(GLenum pname, const GLint* params) { GL64Args a={{0}}; a.a[0]=pname; a.a[1]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glFogiv,&a); }
 API void glTexEnvf(GLenum target, GLenum pname, GLfloat param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=F2U(param); (void)gl64_trap(GL64_fn_glTexEnvf,&a); }
 API void glTexEnvi(GLenum target, GLenum pname, GLint param) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uint32_t)param; (void)gl64_trap(GL64_fn_glTexEnvi,&a); }
 API void glTexEnvfv(GLenum target, GLenum pname, const GLfloat* params) { GL64Args a={{0}}; a.a[0]=target; a.a[1]=pname; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glTexEnvfv,&a); }
@@ -830,7 +841,7 @@ API void glGenBuffers(GLsizei n, GLuint* buffers){ GL64Args a={{0}}; a.a[0]=(uin
 // the whole-buffer glMapBuffer needs to flush the right amount on unmap).
 #define GL_ARRAY_BUFFER_          0x8892
 #define GL_ELEMENT_ARRAY_BUFFER_  0x8893
-static struct { GLsizeiptr bufSize; GLintptr off; GLsizeiptr len; int active; } g_mapArray, g_mapElem;
+static struct { GLsizeiptr bufSize; GLintptr off; GLsizeiptr len; int active; int writable; int explicitFlush; } g_mapArray, g_mapElem;
 
 API void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage){
     if (target == GL_ELEMENT_ARRAY_BUFFER_) g_mapElem.bufSize = size; else if (target == GL_ARRAY_BUFFER_) g_mapArray.bufSize = size;
@@ -846,57 +857,77 @@ API void glDeleteBuffers(GLsizei n, const GLuint* buffers){ GL64Args a={{0}}; a.
 // guest writes into, remember (target, offset, length), and on glUnmapBuffer push
 // the scratch into the real buffer via the (bridged) glBufferSubData. One active
 // map per target is enough — wined3d unmaps before mapping the same target again.
-#define GL64_MAP_SCRATCH (8u*1024u*1024u)   // per-target scratch; covers typical VBO maps
-static unsigned char g_mapScratchArray[GL64_MAP_SCRATCH];
-static unsigned char g_mapScratchElem[GL64_MAP_SCRATCH];
+static unsigned char* g_mapScratchArray;
+static unsigned char* g_mapScratchElem;
+static GLsizeiptr g_mapScratchArraySize, g_mapScratchElemSize;
 // g_mapArray/g_mapElem (bufSize/off/len/active) are declared up by glBufferData so it
-// can record each buffer's size — glMapBuffer (whole-buffer, no length arg) MUST flush
-// exactly that size on unmap; flushing the full scratch overruns the real VBO and
-// glBufferSubData fails (GL_INVALID_VALUE), leaving the VBO empty (#119).
+// can record each buffer's size — glMapBuffer (whole-buffer, no length arg) flushes
+// exactly that size on unmap.
+API void glGetBufferSubData(GLenum t, GLintptr off, GLsizeiptr size, void* data);
 
-static unsigned char* gl64_map_scratch_for(GLenum target){
-    if (target == GL_ELEMENT_ARRAY_BUFFER_) return g_mapScratchElem;
-    return g_mapScratchArray; /* default: array buffer */
+static unsigned char** gl64_map_scratch_for(GLenum target, GLsizeiptr** capacity){
+    if (target == GL_ELEMENT_ARRAY_BUFFER_) { *capacity=&g_mapScratchElemSize; return &g_mapScratchElem; }
+    *capacity=&g_mapScratchArraySize;
+    return &g_mapScratchArray; /* default: array buffer */
+}
+static unsigned char* gl64_prepare_map(GLenum target, GLintptr offset, GLsizeiptr length, int readContents){
+    GLsizeiptr* capacity;
+    unsigned char** storage=gl64_map_scratch_for(target,&capacity);
+    if (offset < 0 || length <= 0 || (uint64_t)offset > 0x7fffffffffffffffULL - (uint64_t)length) return 0;
+    if (*capacity < length) {
+        unsigned char* replacement=(unsigned char*)malloc((unsigned long)length);
+        if (!replacement) return 0;
+        if (*storage) free(*storage);
+        *storage=replacement; *capacity=length;
+    }
+    if (readContents) glGetBufferSubData(target,offset,length,*storage);
+    return *storage;
 }
 API void glBindBuffer(GLenum target, GLuint buffer){ GL64Args a={{0}}; a.a[0]=target; a.a[1]=buffer; (void)gl64_trap(GL64_fn_glBindBuffer,&a); }
 API void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access){
-    (void)access;
-    if (length <= 0 || (uint64_t)length > GL64_MAP_SCRATCH) return 0;
-    unsigned char* p = gl64_map_scratch_for(target);
-    if (target == GL_ELEMENT_ARRAY_BUFFER_) { g_mapElem.off=offset; g_mapElem.len=length; g_mapElem.active=1; }
-    else                                    { g_mapArray.off=offset; g_mapArray.len=length; g_mapArray.active=1; }
-    return p; /* wined3d writes its vertices/indices here; flushed on glUnmapBuffer */
+    /* A second map on a slot that already has an active map would silently
+       overwrite the first map's recorded range and lose its writes on unmap.
+       Real GL fails an already-mapped buffer; return NULL instead (check
+       ported from the runtime lane's parallel fix, 53fa5b05f). The guard runs
+       before gl64_prepare_map so a rejected map has no side effects. */
+    if ((target == GL_ELEMENT_ARRAY_BUFFER_ ? g_mapElem.active : g_mapArray.active)) return 0;
+    const GLbitfield MAP_READ=0x0001, MAP_INVALIDATE_RANGE=0x0004, MAP_INVALIDATE_BUFFER=0x0008;
+    int readContents=(access&MAP_READ)!=0 && !(access&(MAP_INVALIDATE_RANGE|MAP_INVALIDATE_BUFFER));
+    unsigned char* p=gl64_prepare_map(target,offset,length,readContents);
+    if (!p) return 0;
+    if (target == GL_ELEMENT_ARRAY_BUFFER_) { g_mapElem.off=offset; g_mapElem.len=length; g_mapElem.active=1; g_mapElem.writable=(access&0x0002)!=0; g_mapElem.explicitFlush=(access&0x0010)!=0; }
+    else { g_mapArray.off=offset; g_mapArray.len=length; g_mapArray.active=1; g_mapArray.writable=(access&0x0002)!=0; g_mapArray.explicitFlush=(access&0x0010)!=0; }
+    return p;
 }
 API void* glMapBuffer(GLenum target, GLenum access){
-    /* Whole-buffer map: flush the WHOLE bound buffer (its glBufferData size) on unmap. */
-    (void)access;
-    unsigned char* p = gl64_map_scratch_for(target);
-    if (target == GL_ELEMENT_ARRAY_BUFFER_) {
-        GLsizeiptr s = g_mapElem.bufSize; if (s<=0||(uint64_t)s>GL64_MAP_SCRATCH) return 0;
-        g_mapElem.off=0; g_mapElem.len=s; g_mapElem.active=1;
-    } else {
-        GLsizeiptr s = g_mapArray.bufSize; if (s<=0||(uint64_t)s>GL64_MAP_SCRATCH) return 0;
-        g_mapArray.off=0; g_mapArray.len=s; g_mapArray.active=1;
-    }
+    if ((target == GL_ELEMENT_ARRAY_BUFFER_ ? g_mapElem.active : g_mapArray.active)) return 0; /* already mapped: see glMapBufferRange */
+    GLsizeiptr size=(target==GL_ELEMENT_ARRAY_BUFFER_)?g_mapElem.bufSize:g_mapArray.bufSize;
+    if (size<=0) return 0;
+    int readContents=(access==0x88BA /* GL_READ_WRITE */ || access==0x88B8 /* GL_READ_ONLY */);
+    unsigned char* p=gl64_prepare_map(target,0,size,readContents);
+    if (!p) return 0;
+    if (target == GL_ELEMENT_ARRAY_BUFFER_) { g_mapElem.off=0; g_mapElem.len=size; g_mapElem.active=1; g_mapElem.writable=(access!=0x88B8); g_mapElem.explicitFlush=0; }
+    else { g_mapArray.off=0; g_mapArray.len=size; g_mapArray.active=1; g_mapArray.writable=(access!=0x88B8); g_mapArray.explicitFlush=0; }
     return p;
 }
 API GLboolean glUnmapBuffer(GLenum target){
     if (target == GL_ELEMENT_ARRAY_BUFFER_) {
         if (!g_mapElem.active) return 1;
-        glBufferSubData(target, g_mapElem.off, g_mapElem.len, g_mapScratchElem);
+        if (g_mapElem.writable && !g_mapElem.explicitFlush) glBufferSubData(target, g_mapElem.off, g_mapElem.len, g_mapScratchElem);
         g_mapElem.active = 0;
     } else {
         if (!g_mapArray.active) return 1;
-        glBufferSubData(target, g_mapArray.off, g_mapArray.len, g_mapScratchArray);
+        if (g_mapArray.writable && !g_mapArray.explicitFlush) glBufferSubData(target, g_mapArray.off, g_mapArray.len, g_mapScratchArray);
         g_mapArray.active = 0;
     }
-    return 1; /* GL_TRUE */
+    return 1;
 }
 API void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length){
-    /* Explicit-flush maps (GL_MAP_FLUSH_EXPLICIT_BIT): push just this sub-range now. */
-    unsigned char* p = gl64_map_scratch_for(target);
-    if (length > 0 && (uint64_t)(offset+length) <= GL64_MAP_SCRATCH)
-        glBufferSubData(target, offset, length, p + offset);
+    unsigned char** storage=gl64_map_scratch_for(target,&(GLsizeiptr*){0});
+    GLintptr base=(target==GL_ELEMENT_ARRAY_BUFFER_)?g_mapElem.off:g_mapArray.off;
+    GLsizeiptr mapped=(target==GL_ELEMENT_ARRAY_BUFFER_)?g_mapElem.len:g_mapArray.len;
+    if (*storage && length>0 && offset>=0 && offset<=mapped-length && (uint64_t)base<=0x7fffffffffffffffULL-(uint64_t)offset && ((target==GL_ELEMENT_ARRAY_BUFFER_)?g_mapElem.active&&g_mapElem.explicitFlush:g_mapArray.active&&g_mapArray.explicitFlush))
+        glBufferSubData(target, base+offset, length, *storage+offset);
 }
 
 // ARB_vertex_buffer_object entry points. We advertise GL_ARB_vertex_buffer_object,
@@ -1298,12 +1329,10 @@ API void glUniform4uiv(GLint location, GLsizei count, const GLuint* value){ GL64
 API void glGetUniformuiv(GLuint program, const GLint* locs, GLuint* params){ GL64Args a={{0}}; a.a[0]=program; a.a[1]=(uint64_t)(uintptr_t)locs; a.a[2]=(uint64_t)(uintptr_t)params; (void)gl64_trap(GL64_fn_glGetUniformuiv,&a); }
 
 // glXGetProcAddressARB — opengl32/winex11 resolve every gl*/glX* through here.
-// Return our own wrapper for names we implement, or a harmless no-op stub for
-// the rest (so an unimplemented call is silently ignored rather than crashing).
+// Return our own wrapper for names we implement. Unknown names are traced and
+// return NULL, matching GLX lookup semantics instead of installing a silent stub.
 // ===========================================================================
 typedef void (*GLproc)(void);
-
-static void gl64_noop(void) { /* unimplemented GL entry — ignore for first light */ }
 // ARB spelling of the core multitexture selector uses the same ABI.
 API void glActiveTextureARB(GLenum texture) { glActiveTexture(texture); }
 API void glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t) {
@@ -1334,6 +1363,7 @@ static const struct procEntry g_procs[] = {
     E(glLockArraysEXT), E(glUnlockArraysEXT),
     E(glVertexPointer), E(glColorPointer), E(glTexCoordPointer), E(glAlphaFunc),
     E(glTexEnvf), E(glTexEnvi), E(glTexEnvfv), E(glTexEnviv),
+    E(glFogf), E(glFogi), E(glFogfv), E(glFogiv),
     E(glDepthFunc), E(glCullFace), E(glFrontFace),
     E(glHint), E(glFlush), E(glFinish), E(glGetError), E(glGetString),
     E(glGetIntegerv), E(glGetFloatv), E(glColor3f), E(glColor4f),
@@ -1460,14 +1490,12 @@ API GLproc glXGetProcAddressARB(const GLubyte* name) {
             return g_procs[i].fn;
         }
     }
-    // Unknown gl* function: trace it (hit=0) so the host log names exactly which
-    // modern-GL entry point wined3d wanted that we don't implement yet — the
-    // worklist for D3D. Then hand back a no-op so opengl32's dispatch fills its
-    // table with a callable pointer (returning 0 would make wine think the
-    // driver is broken and disable OpenGL).
+    // Unknown GL function: trace it (hit=0) so the host reports the exact name.
+    // GLX specifies NULL for an unresolved function; the caller can use its
+    // extension fallback or report the missing entry point.
     GL64Args a = {{0}}; a.a[0] = (uint64_t)(uintptr_t)name; a.a[1] = 0;
     (void)gl64_trap(GL64_fn_traceProc, &a);
-    return gl64_noop;
+    return 0;
 }
 API GLproc glXGetProcAddress(const GLubyte* name) { return glXGetProcAddressARB(name); }
 

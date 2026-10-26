@@ -4,6 +4,71 @@ import { WebGPUGL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
 import * as naga from '../../../vendor/naga/node.js';
 
+test('alphaFunc and texEnvi reject invalid enums and values through getError', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.alphaFunc(0xdead, 0.25);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl._fixedFunction.alphaFunc, 0x0207, 'invalid comparison leaves previous state intact');
+    gl.alphaFunc(0x0201, Number.NaN);
+    assert.equal(gl.getError(), 0x0501);
+    gl.texEnvi(0x2300, 0xdead, 0x8570);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl._fixedFunction.texEnv[0], 0x2100, 'invalid pname leaves the active texture environment unchanged');
+  } finally {
+    gpu.restore();
+  }
+});
+
+test('fixed-function fog validates state and emits linear, exp, and exp2 shader paths', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.fogf(0x0b62, 0.5);
+    gl.fogf(0x0b63, 2);
+    gl.fogf(0x0b64, 12);
+    gl.fogfv(0x0b66, [0.2, 0.3, 0.4, 1]);
+    gl.enable(0x0b60);
+    assert.equal(gl.isEnabled(0x0b60), true);
+    for (const [mode, expression] of [[0x0800, /exp\(-fragmentGlobals\.u_fogDensity \* input\.fogCoord\)/],
+      [0x0801, /exp\(-pow\(fragmentGlobals\.u_fogDensity \* input\.fogCoord, 2\.0\)\)/],
+      [0x2601, /fragmentGlobals\.u_fogEnd - input\.fogCoord/]]) {
+      gl.fogi(0x0b65, mode);
+      const program = gl._fixedFunctionProgram([], false, false, 0x0207, gl._fixedFunction.texEnv);
+      assert.match(program.stages.vertex.wgsl, /u_modelView/);
+      assert.match(program.stages.vertex.wgsl, /output\.fogCoord = abs\(/);
+      assert.match(program.stages.fragment.wgsl, expression);
+      assert.doesNotThrow(() => naga.validate(naga.parseWgsl(program.stages.vertex.wgsl)));
+      assert.doesNotThrow(() => naga.validate(naga.parseWgsl(program.stages.fragment.wgsl)));
+    }
+    gl.fogi(0x0b65, 0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.fogf(0x0b62, -1);
+    assert.equal(gl.getError(), 0x0501);
+    gl.fogfv(0x0b66, [0, 0, 2, 1]);
+    assert.equal(gl.getError(), 0x0501);
+  } finally { gpu.restore(); }
+});
+
+test('fixed-function CPU mirror applies fog after texturing and preserves alpha', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const program = { fixedFunction: { fogEnabled: true, fog: { mode: 0x2601, start: 0, end: 2, density: 1, color: [1, 0, 0, 1] }, textureUnits: [], alphaEnabled: false } };
+    const state = { program, enabled: new Set(), scissor: [0, 0, 4, 4], colorMask: [true, true, true, true], blend: {} };
+    gl._rasterizeMirrorTriangle([
+      { x: 0, y: 0, invW: 1, color: [1, 1, 1, 0.75], fogCoord: 1, texCoords: new Map() },
+      { x: 3, y: 0, invW: 1, color: [1, 1, 1, 0.75], fogCoord: 1, texCoords: new Map() },
+      { x: 0, y: 3, invW: 1, color: [1, 1, 1, 0.75], fogCoord: 1, texCoords: new Map() },
+    ], state);
+    assert.deepEqual([...gl._pixels.slice((1 * 4 + 1) * 4, (1 * 4 + 1) * 4 + 4)], [255, 128, 128, 191]);
+  } finally { gpu.restore(); }
+});
+
 test('program-zero fixed-function indexed draws build a textured alpha-test pipeline', async () => {
   const gpu = createValidationDevice();
   const logs = [];

@@ -25,7 +25,20 @@
 
 #include "boxedwine.h"
 
-#ifdef BOXEDWINE_OPENGL
+// The implementation below is the Emscripten/WebGL2 host backend. It needs
+// all three of: BOXEDWINE_OPENGL (the ksyscall/ksyscall64 trap dispatch is
+// keyed on it), BOXEDWINE_GUEST_X64 (include/kmemory64.h and include/cpu64.h
+// only define KMemory64/CPU64 under it), and __EMSCRIPTEN__ (the guest->host
+// object-management layer and ~25 dispatcher cases call the page-side GL
+// object through EM_ASM/GLctx, and the fixed-function/GLSL-translation
+// helpers are WebGL-only). A BOXEDWINE_OPENGL config without the other two
+// (e.g. the native Linux release desktop build, which sets
+// BOXEDWINE_OPENGL_SDL for the legacy 32-bit GL marshaling) gets the
+// -K_ENOSYS entry-point stubs at the bottom of this file instead -- the same
+// treatment the test build uses (source/test/cpu/test_bridge_stubs.cpp).
+// A native host backend is new work: it must replace the EM_ASM dispatcher
+// cases and the WebGPU helper layer, not just relax this guard.
+#if defined(BOXEDWINE_OPENGL) && defined(BOXEDWINE_GUEST_X64) && defined(__EMSCRIPTEN__)
 
 #include "gl64bridge.h"
 #include "gl64bridge_abi.h"
@@ -39,6 +52,7 @@
 #include "../x11wire/xwireserver.h"
 
 #include <SDL.h>
+#include <unordered_set>
 #ifdef __EMSCRIPTEN__
 // WASM backend: the host GL context is WebGL2 (GLES3) with NO fixed-function
 // pipeline of its own — Emscripten's -sLEGACY_GL_EMULATION glemu layer
@@ -78,6 +92,7 @@
 #include <cstdlib>
 #include <string>
 #include <mutex>
+#include <set>
 #include <cmath>
 #include <chrono>
 
@@ -244,6 +259,13 @@ inline void restoreFramebufferBindings() {
     bindDrawTarget();
 }
 
+// Query bookkeeping is shared by the native and Emscripten bridge paths: the
+// dispatcher below tracks object identity and availability even where the
+// backend reports deterministic zero query results.
+struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = false; bool available = false; };
+static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
+static std::map<GLenum, GLuint> g_glActiveQueries;
+
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
 // Every gl* call normally hops to the GL-owning thread via glOnMain (a blocking
@@ -390,6 +412,22 @@ bool ensureContext() {
     // context is thread-affine and must live where present() runs. glemu's FFP
     // shaders need WebGL2, so request majorVersion 2.
     glOnMain([&]{
+        EM_ASM({
+            if (!globalThis.__bw64glReportBridgeException) {
+                globalThis.__bw64glBridgeErrors = globalThis.__bw64glBridgeErrors || new Set();
+                globalThis.__bw64glReportBridgeException = function (name, error) {
+                    var seen = globalThis.__bw64glBridgeErrors;
+                    if (!seen.has(name)) {
+                        seen.add(name);
+                        console.warn('gl64 ' + name + ' failed:', error);
+                    }
+                    if (typeof GLctx !== 'undefined' && GLctx && typeof GLctx._recordError === 'function')
+                        GLctx._recordError(0x0502);
+                    else if (typeof GL !== 'undefined' && GL.recordError)
+                        GL.recordError(0x0502);
+                };
+            }
+        });
         EmscriptenWebGLContextAttributes attr;
         emscripten_webgl_init_context_attributes(&attr);
         attr.majorVersion = 2;
@@ -490,7 +528,7 @@ bool ensureContext() {
                 if (typeof GLImmediate.init === 'function' &&
                     (!GLImmediate.matrix || GLImmediate.matrix.length === 0)) {
                     GLImmediate.initted = false;
-                    try { GLImmediate.init(); rc = 2; } catch (e) { rc = 3; }
+                    try { GLImmediate.init(); rc = 2; } catch (e) { globalThis.__bw64glReportBridgeException('GLImmediate.init', e); rc = 3; }
                 }
                 // If init() still threw before building the renderer cache (needed by
                 // glEnd's flush: rendererCache.getStaticKeyView()), build it directly.
@@ -534,7 +572,7 @@ bool ensureContext() {
                     try {
                         if (typeof GL.generateTempBuffers === 'function')
                             GL.generateTempBuffers(true, GL.currentContext);
-                    } catch (e) {}
+                    } catch (e) { globalThis.__bw64glReportBridgeException('GL.generateTempBuffers', e); }
                     rc += 20; // marks the vertex-buffer fallback ran
                 }
                 // GL_QUADS index buffer. glcube draws its faces with glBegin(GL_QUADS);
@@ -579,10 +617,10 @@ bool ensureContext() {
                         GLctx.bindBuffer(GLctx.ELEMENT_ARRAY_BUFFER, savedEab || null);
                         GL.currentContext.tempQuadIndexBuffer = qb;
                         rc += 4; // marks the quad-index-buffer fallback ran
-                    } catch (e) {}
+                    } catch (e) { globalThis.__bw64glReportBridgeException('GL.quadIndexBufferInitialization', e); }
                 }
                 return rc + (GLImmediate.matrix ? GLImmediate.matrix.length * 100 : 0);
-            } catch (e) { return 99; }
+            } catch (e) { globalThis.__bw64glReportBridgeException('GLImmediate.initFallback', e); return 99; }
         });
         if (getenv("BW64_GLTRACE"))
             klog_fmt("gl64: GLImmediate init rc=%d (rc%%100: 2=init-ok 3=init-threw "
@@ -954,7 +992,7 @@ void webGpuFixedCall(const char* method, double a = 0, double b = 0, double c = 
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].apply(target, [$1, $2, $3, $4, $5].slice(0, $6));
-        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, a, b, c, d, e, count);
 }
 
@@ -965,7 +1003,7 @@ void webGpuFixedCall6(const char* method, double a, double b, double c, double d
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, $1, $2, $3, $4, $5, $6);
-        } catch (error) { console.error('gl64 fixed-function call failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, a, b, c, d, e, f);
 }
 
@@ -976,7 +1014,7 @@ void webGpuFixedMatrixCall(const char* method, const GLfloat* matrix) {
             var target = GLctx;
             if (target && typeof target[method] === 'function')
                 target[method].call(target, HEAPF32.slice($1 >>> 2, ($1 >>> 2) + 16));
-        } catch (error) { console.error('gl64 fixed-function matrix failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, matrix);
 }
 
@@ -988,7 +1026,7 @@ void webGpuFixedTexEnvArrayCall(const char* method, GLenum target, GLenum pname,
             var ctx = GLctx;
             if (ctx && typeof ctx[method] === 'function')
                 ctx[method].call(ctx, $1, $2, HEAPF32.slice($3 >>> 2, ($3 >>> 2) + $4));
-        } catch (error) { console.error('gl64 fixed-function texture environment failed', error); }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.' + method, error); }
     })(), method, target, pname, values, count);
 }
 
@@ -1042,7 +1080,7 @@ int webGpuFixedDraw(GLenum mode, GLint first, GLsizei count, bool indexed, GLenu
                 return GLctx.fixedFunctionDrawElements(mode, count, word(4), word(5), bytes(word(42), word(43)), arrays) ? 1 : 0;
             }
             return GLctx.fixedFunctionDrawArrays(mode, first, count, arrays) ? 1 : 0;
-        } catch (error) { console.error('gl64 fixed-function draw failed', error); return 0; }
+        } catch (error) { globalThis.__bw64glReportBridgeException('GLctx.fixedFunctionDraw', error); return 0; }
     })(); }, packet);
 }
 #endif
@@ -1227,6 +1265,16 @@ inline GLuint ensureHostFramebuffer(GLuint guestId) {
 GLenum g_allocationError = GL_NO_ERROR;
 void recordBridgeError(GLenum error) {
     if (error && !g_allocationError) g_allocationError = error;
+}
+void rejectBridgeEntry(const char* functionName) {
+    static std::mutex warningMutex;
+    static std::set<std::string> warnedFunctions;
+    {
+        std::lock_guard<std::mutex> lock(warningMutex);
+        if (warnedFunctions.insert(functionName).second)
+            klog_fmt("gl64 %s is unsupported by the active GL backend (GL_INVALID_OPERATION)", functionName);
+    }
+    recordBridgeError(GL_INVALID_OPERATION);
 }
 // Desktop pack layout: alignment applies to rows, skips are relative to the
 // caller's destination, and the last row has no trailing padding requirement.
@@ -1655,7 +1703,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
         case 0x1903 /*GL_RED*/: case GL_ALPHA: case GL_LUMINANCE: comps = 1; break;
         case GL_LUMINANCE_ALPHA: case 0x8227 /*GL_RG*/: comps = 2; break;
         case GL_DEPTH_COMPONENT: comps = 1; break;
-        default: comps = 4; break;
+        default: { static std::atomic_flag warned = ATOMIC_FLAG_INIT; if (!warned.test_and_set()) klog_fmt("gl64 texImageBytes: unknown format 0x%x; assuming 4 components", format); comps = 4; break; }
     }
     int bytesPerComp;
     switch (type) {
@@ -1678,7 +1726,7 @@ size_t texImageBytes(GLsizei w, GLsizei h, GLenum format, GLenum type) {
         case 0x8036 /*GL_UNSIGNED_INT_10_10_10_2*/:
             return (size_t)w * h * 4;
         case GL_UNSIGNED_INT: case GL_INT: case GL_FLOAT: bytesPerComp = 4; break;
-        default: bytesPerComp = 1; break;
+        default: { static std::atomic_flag warned = ATOMIC_FLAG_INIT; if (!warned.test_and_set()) klog_fmt("gl64 texImageBytes: unknown type 0x%x; assuming 1 byte per component", type); bytesPerComp = 1; break; }
     }
     return (size_t)w * h * comps * bytesPerComp;
 }
@@ -2020,6 +2068,35 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 else GL_MT(glAlphaFunc((GLenum)ai(args,0), af(args,1)));
             }
             return 0;
+        case GL64_fn_glFogf:
+        case GL64_fn_glFogi:
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall(fnId == GL64_fn_glFogf ? "fogf" : "fogi", ai(args,0), fnId == GL64_fn_glFogf ? af(args,1) : ai(args,1), 0, 0, 0, 2));
+                else if (fnId == GL64_fn_glFogf) GL_MT(glFogf((GLenum)ai(args,0), af(args,1)));
+                else GL_MT(glFogi((GLenum)ai(args,0), (GLint)ai(args,1)));
+            }
+            return 0;
+        case GL64_fn_glFogfv:
+        case GL64_fn_glFogiv: {
+            if (g_glContext && args.a[1]) {
+                const bool isInt = fnId == GL64_fn_glFogiv;
+                const size_t n = ai(args,0) == 0x0b66 /*GL_FOG_COLOR*/ ? 4 : 1;
+                if (isInt) {
+                    std::vector<GLint> values(n);
+                    cpu->memory->memcpyFromGuest(values.data(), args.a[1], n * sizeof(GLint));
+                    if (g_emWebGpu) {
+                        std::vector<GLfloat> floats(values.begin(), values.end());
+                        GL_MT(webGpuFixedTexEnvArrayCall("fogiv", (GLenum)ai(args,0), 0, floats.data(), n));
+                    } else GL_MT(glFogiv((GLenum)ai(args,0), values.data()));
+                } else {
+                    std::vector<GLfloat> values(n);
+                    cpu->memory->memcpyFromGuest(values.data(), args.a[1], n * sizeof(GLfloat));
+                    if (g_emWebGpu) GL_MT(webGpuFixedTexEnvArrayCall("fogfv", (GLenum)ai(args,0), 0, values.data(), n));
+                    else GL_MT(glFogfv((GLenum)ai(args,0), values.data()));
+                }
+            }
+            return 0;
+        }
         case GL64_fn_glTexEnvf:
             if (g_glContext) {
                 if (g_emWebGpu) GL_MT(webGpuFixedCall("texEnvf", ai(args,0), ai(args,1), af(args,2), 0, 0, 3));
@@ -2469,7 +2546,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                                 GLctx.bufferData(GLctx.ELEMENT_ARRAY_BUFFER, qa, GLctx.STATIC_DRAW);
                                 GLctx.bindBuffer(GLctx.ELEMENT_ARRAY_BUFFER, saved || null);
                                 GL.currentContext.tempQuadIndexBuffer = qb;
-                            } catch (e) {}
+                            } catch (e) { globalThis.__bw64glReportBridgeException('glBegin/glEnd quad setup', e); }
                         });
                     }
                     glBegin(mode);
@@ -2576,6 +2653,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         (unsigned long long)args.a[2], (unsigned long long)args.a[3],
                         (unsigned long long)args.a[4], (unsigned long long)args.a[5]);
             }
+            if (args.a[1] == 0) {
+                char name[128] = {0};
+                if (args.a[0]) cpu->memory->memcpyFromGuest(name, args.a[0], sizeof(name)-1);
+                static std::unordered_set<std::string> warned;
+                if (name[0] && warned.emplace(name).second)
+                    klog_fmt("gl64 PROC unsupported %s: glXGetProcAddressARB returned NULL", name);
+            }
             return 0;
         }
 
@@ -2673,16 +2757,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
         case GL64_fn_glDeleteShader:
-            // DEFER (no-op): wined3d does create→source→compile→attach→glDeleteShader,
-            // but its GL calls reach this bridge slightly reordered across the
-            // trap/main-thread hops, so the delete can land BEFORE the matching
-            // glCompileShader. Emscripten's glDeleteShader nulls GL.shaders[id], which
-            // then makes the deferred glCompileShader(id) throw "parameter 1 is not a
-            // WebGLShader" and the whole program fails to link (the D3D triangle never
-            // renders). A deleted-but-attached shader is retained by GL until the
-            // program links anyway, so skipping the delete is safe; the only cost is a
-            // small, bounded shader leak (wined3d creates few shaders). This is THE fix
-            // that lets wined3d's GLSL programs compile+link under our bridge.
+            if (g_glContext) GL_MT(glDeleteShader((GLuint)ai(args,0)));
             return 0;
         case GL64_fn_glCreateProgram: {
             if (!ensureContext()) return 0;
@@ -2734,11 +2809,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) { GLuint p=(GLuint)ai(args,0); GL_MT(glUseProgram(p)); }
             return 0;
         case GL64_fn_glDeleteProgram:
-            // DEFER (no-op), same reasoning as glDeleteShader: the delete can reach
-            // this bridge before a still-pending glUseProgram/glGetUniformLocation on
-            // the same handle (reordered across trap/main-thread hops), which would
-            // then hit a nulled GL.programs[id]. Bounded leak; wined3d makes few
-            // programs. Keeps the program object alive for the whole app.
+            if (g_glContext) GL_MT(glDeleteProgram((GLuint)ai(args,0)));
             return 0;
         case GL64_fn_glGetUniformLocation: {
             if (!g_glContext) return (U64)(S64)-1;
@@ -2871,7 +2942,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[1]) deleteObjects(cpu, args, GenKind::Buffer);
             return 0;
         case GL64_fn_glMapBufferRange:
-            return 0; // unsupported in WebGL2; guest wrapper already returns 0
+            // The shipped guest libGL returns its mapped scratch pointer directly;
+            // alternate wrappers reaching this trap cannot receive a host pointer.
+            GL_MT(rejectBridgeEntry("glMapBufferRange direct bridge call"));
+            return 0;
 
         // --- vertex attrib arrays / VAO ---
         case GL64_fn_glEnableVertexAttribArray:
@@ -3057,7 +3131,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) GL_MT(glPolygonOffset(af(args,0), af(args,1)));
             return 0;
         case GL64_fn_glPolygonMode:
-            return 0; // no glPolygonMode in GLES — wireframe not supported, ignore
+            if (g_glContext) {
+                if (g_emWebGpu) GL_MT(webGpuFixedCall("polygonMode", ai(args,0), ai(args,1), 0, 0, 0, 2));
+                else GL_MT(glPolygonMode((GLenum)ai(args,0), (GLenum)ai(args,1)));
+            }
+            return 0;
         case GL64_fn_glDepthRange:
             if (g_glContext) { float n=(float)ad(args,0), f=(float)ad(args,1); GL_MT(glDepthRangef(n, f)); }
             return 0;
@@ -3278,6 +3356,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 if (n > 0 && n <= 65536) {
                     std::vector<GLuint> ids((size_t)n, 0); GLuint* p = ids.data();
                     GL_MT(glGenQueries(n, p));
+                    for (GLuint id : ids) if (id) g_glQueryStatus[id] = GLQueryStatus{};
                     cpu->memory->memcpyToGuest(args.a[1], ids.data(), (U64)n * 4);
                 }
             }
@@ -3291,42 +3370,103 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     cpu->memory->memcpyFromGuest(ids.data(), args.a[1], (U64)n * 4);
                     const GLuint* p = ids.data();
                     GL_MT(glDeleteQueries(n, p));
+                    for (GLuint id : ids) {
+                        auto found = g_glQueryStatus.find(id);
+                        if (found != g_glQueryStatus.end() && found->second.active) g_glActiveQueries.erase(found->second.target);
+                        g_glQueryStatus.erase(id);
+                    }
                 }
             }
             return 0;
         }
-        case GL64_fn_glIsQuery:
-            return (ai(args,0) != 0) ? 1 : 0;
+        case GL64_fn_glIsQuery: {
+            // find(), not operator[]: probing an unknown id must not create a
+            // bookkeeping entry (a created entry would make a later
+            // glGetQueryObject on that garbage id look legitimate).
+            auto foundQuery = g_glQueryStatus.find((GLuint)ai(args,0));
+            return foundQuery != g_glQueryStatus.end() && foundQuery->second.generated ? 1 : 0;
+        }
         case GL64_fn_glBeginQuery:
-            // Many wined3d query targets (TIMESTAMP, etc.) aren't valid in WebGL2;
-            // begin/end are best-effort and errors are swallowed by the GLERR path.
-            if (g_glContext) GL_MT(glBeginQuery((GLenum)ai(args,0), (GLuint)ai(args,1)));
+            if (g_glContext) {
+                const GLenum target = (GLenum)ai(args,0); const GLuint id = (GLuint)ai(args,1);
+                // Validate against our own bookkeeping first. Forwarding a
+                // begin the host must reject (busy target, id 0, an id that is
+                // already active, or an object already typed for another
+                // target) and then recording it anyway would displace the
+                // really-active query in g_glActiveQueries and corrupt every
+                // later CURRENT_QUERY / availability answer.
+                auto existingQuery = g_glQueryStatus.find(id);
+                if (!id || g_glActiveQueries.count(target)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.active)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.target && existingQuery->second.target != target)) {
+                    recordBridgeError(GL_INVALID_OPERATION);
+                    return 0;
+                }
+                GL_MT(glBeginQuery(target, id));
+                auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = true; query.available = false;
+                g_glActiveQueries[target] = id;
+            }
             return 0;
         case GL64_fn_glEndQuery:
-            if (g_glContext) GL_MT(glEndQuery((GLenum)ai(args,0)));
+            if (g_glContext) {
+                const GLenum target = (GLenum)ai(args,0);
+                GL_MT(glEndQuery(target));
+                auto active = g_glActiveQueries.find(target);
+                if (active != g_glActiveQueries.end()) {
+                    auto query = g_glQueryStatus.find(active->second);
+                    if (query != g_glQueryStatus.end()) { query->second.active = false; query->second.available = true; }
+                    g_glActiveQueries.erase(active);
+                }
+            }
             return 0;
         case GL64_fn_glQueryCounter:
-            return 0; // GL_TIMESTAMP — not in WebGL2; ignore
+            if (g_glContext) {
+                const GLuint id = (GLuint)ai(args,0); const GLenum target = (GLenum)ai(args,1);
+                if (target != 0x8E28 /*GL_TIMESTAMP*/) { recordBridgeError(GL_INVALID_ENUM); return 0; }
+                // A counter stamp must not clobber an in-flight begin/end
+                // query (it would report the result available mid-query) nor
+                // silently retype an object created for another target.
+                auto existingQuery = g_glQueryStatus.find(id);
+                if (!id
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.active)
+                    || (existingQuery != g_glQueryStatus.end() && existingQuery->second.target && existingQuery->second.target != target)) {
+                    recordBridgeError(GL_INVALID_OPERATION);
+                    return 0;
+                }
+                auto& query = g_glQueryStatus[id]; query.target = target; query.generated = true; query.active = false; query.available = true;
+            }
+            return 0; // Query values are deterministic zero; availability still follows begin/end.
         case GL64_fn_glGetQueryiv: {
-            // (target, pname, params*). GL_QUERY_COUNTER_BITS=0, current query=0.
-            if (args.a[2]) cpu->memory->writed(args.a[2], 0);
+            const GLenum target = (GLenum)ai(args,0), pname = (GLenum)ai(args,1);
+            U32 value = 0;
+            if (pname == 0x8865 /*GL_CURRENT_QUERY*/) {
+                auto active = g_glActiveQueries.find(target);
+                if (active != g_glActiveQueries.end()) value = active->second;
+            }
+            if (args.a[2]) cpu->memory->writed(args.a[2], value);
             return 0;
         }
         case GL64_fn_glGetQueryObjectiv:
         case GL64_fn_glGetQueryObjectuiv: {
-            // (id, pname, params*). Report RESULT_AVAILABLE=true and RESULT=0/1.
-            GLenum pname = (GLenum)ai(args,1);
+            // The bridge has no synchronous GPU query readback; return zero data,
+            // while availability follows the query object's actual begin/end state.
+            const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
+            auto query = g_glQueryStatus.find(id);
+            // An id with no bookkeeping entry never existed or was deleted:
+            // GL_INVALID_OPERATION per spec, not a silent benign zero. (A
+            // generated-but-unused id HAS an entry and stays benign.)
+            if (query == g_glQueryStatus.end()) recordBridgeError(GL_INVALID_OPERATION);
             U32 v = 0;
-            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = 1;
-            else if (pname == 0x8866 /*GL_QUERY_RESULT*/)      v = 1; // samples passed
+            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writed(args.a[2], v);
             return 0;
         }
         case GL64_fn_glGetQueryObjectui64v: {
-            GLenum pname = (GLenum)ai(args,1);
+            const GLuint id = (GLuint)ai(args,0); GLenum pname = (GLenum)ai(args,1);
+            auto query = g_glQueryStatus.find(id);
+            if (query == g_glQueryStatus.end()) recordBridgeError(GL_INVALID_OPERATION);
             U64 v = 0;
-            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = 1;
-            else if (pname == 0x8866 /*GL_QUERY_RESULT*/)      v = 1;
+            if (pname == 0x8867 /*GL_QUERY_RESULT_AVAILABLE*/) v = query != g_glQueryStatus.end() && query->second.available ? 1 : 0;
             if (args.a[2]) cpu->memory->writeq(args.a[2], v);
             return 0;
         }
@@ -3428,7 +3568,15 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     GLuint hostTex = ensureHostTexture(guestTex);
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.framebufferTexture($0, $1, $2, $3); } catch (e) {} },
+                        GLctx.framebufferTexture($0, $1, $2, $3);
+                      } catch (e) {
+                        if (!globalThis.__bw64glBridgeErrors) globalThis.__bw64glBridgeErrors = new Set();
+                        if (!globalThis.__bw64glBridgeErrors.has('glFramebufferTexture')) {
+                          globalThis.__bw64glBridgeErrors.add('glFramebufferTexture');
+                          console.warn('gl64 glFramebufferTexture failed:', e);
+                        }
+                        if (GLctx && typeof GLctx._recordError === 'function') GLctx._recordError(0x0502);
+                      } },
                       (int)tgt, (int)att, (int)hostTex, (int)lvl); });
             }
             return 0;
@@ -3708,7 +3856,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                                     if (typeof GLctx === 'undefined') return;
                                     Module['gl64_sampIiv'] =
                                         GLctx.getSamplerParameterIiv($0, $1)[0] | 0;
-                                } catch (e) { Module['gl64_sampIiv'] = 0; } }, (int)s, (int)pn);
+                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetSamplerParameterIiv', e); Module['gl64_sampIiv'] = 0; } }, (int)s, (int)pn);
                                 v0 = EM_ASM_INT({ return Module['gl64_sampIiv'] | 0; });
                             });
                             raw = (U32)v0; break;
@@ -3720,7 +3868,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                                     if (typeof GLctx === 'undefined') return;
                                     Module['gl64_sampIuiv'] =
                                         GLctx.getSamplerParameterIuiv($0, $1)[0] >>> 0;
-                                } catch (e) { Module['gl64_sampIuiv'] = 0; } }, (int)s, (int)pn);
+                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetSamplerParameterIuiv', e); Module['gl64_sampIuiv'] = 0; } }, (int)s, (int)pn);
                                 v0 = EM_ASM_INT({ return Module['gl64_sampIuiv'] | 0; });
                             });
                             raw = (U32)v0; break;
@@ -3739,12 +3887,12 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                             glOnMain([&]{ EM_ASM({ try {
                                     if (typeof GLctx === 'undefined') return;
                                     GLctx.samplerParameterIiv($0, $1, new Int32Array([$2]));
-                                } catch (e) {} }, (int)s, (int)pn, (int)iv); }); break;
+                                } catch (e) { globalThis.__bw64glReportBridgeException('glSamplerParameterIiv', e); } }, (int)s, (int)pn, (int)iv); }); break;
                         case GL64_fn_glSamplerParameterIuiv:
                             glOnMain([&]{ EM_ASM({ try {
                                     if (typeof GLctx === 'undefined') return;
                                     GLctx.samplerParameterIuiv($0, $1, new Uint32Array([$2 >>> 0]));
-                                } catch (e) {} }, (int)s, (int)pn, (double)uv); }); break;
+                                } catch (e) { globalThis.__bw64glReportBridgeException('glSamplerParameterIuiv', e); } }, (int)s, (int)pn, (double)uv); }); break;
                         case GL64_fn_glSamplerParameteriv:
                             GL_MT(glSamplerParameteriv(s, pn, &iv)); break;
                         default: break;
@@ -3864,7 +4012,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         if (typeof GLctx === 'undefined') return;
                         if ($0) GLctx.texImage3DMultisample($1, $2, $3, $4, $5, $6, false);
                         else      GLctx.texImage2DMultisample($1, $2, $3, $4, $5, false);
-                    } catch (e) {} },
+                    } catch (e) { globalThis.__bw64glReportBridgeException(is3D ? 'glTexImage3DMultisample' : 'glTexImage2DMultisample', e); } },
                     (int)is3D, tgt, smp, ifmt, w, h, d);
                     e = glGetError();
                     if (e && !trace && !g_allocationError) g_allocationError = e;
@@ -3938,7 +4086,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         if (typeof GLctx === 'undefined') return;
                         var r = GLctx.getMultisamplefv($0, $1);
                         if (r && r.length >= 2) { HEAPF32[$2 >>> 2] = r[0]; HEAPF32[($2 + 4) >>> 2] = r[1]; }
-                    } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
+                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetMultisamplefv', e); } }, (int)pname, (int)idx, (int)(uintptr_t)vp);
                 });
                 cpu->memory->memcpyToGuest(args.a[2], v, sizeof(v));
             }
@@ -4134,7 +4282,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         var lost = GLctx.isContextLost();
                         var r = null; var err = "";
                         try { r = prog ? GLctx.getAttachedShaders(prog) : null; }
-                        catch (e) { err = " THREW=" + String(e).slice(0, 60); }
+                        catch (e) { globalThis.__bw64glReportBridgeException('glGetAttachedShaders', e); err = " THREW=" + String(e).slice(0, 60); }
                         console.log("DIAG gAS p=" + p + " has=" + has +
                                     " prog=" + (prog ? "obj" : String(prog)) +
                                     " ctxLost=" + lost +
@@ -4517,7 +4665,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         if ($0) GLctx.disable($1, $2); else GLctx.enable($1, $2);
-                    } catch (e) {} }, disableIt, (int)cap, (int)idx);
+                    } catch (e) { globalThis.__bw64glReportBridgeException(disableIt ? 'glDisablei' : 'glEnablei', e); } }, disableIt, (int)cap, (int)idx);
                 });
             }
             return 0;
@@ -4531,7 +4679,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 EM_ASM({ try {
                     if (typeof GLctx === 'undefined') return;
                     Module['gl64_isEnabledI'] = GLctx.isEnabled($0, $1) ? 1 : 0;
-                } catch (e) { Module['gl64_isEnabledI'] = 0; } }, (int)cap, (int)idx);
+                } catch (e) { globalThis.__bw64glReportBridgeException('glIsEnabledi', e); Module['gl64_isEnabledI'] = 0; } }, (int)cap, (int)idx);
                 r = EM_ASM_INT({ return Module['gl64_isEnabledI'] | 0; });
             });
             return (U64)(r ? 1 : 0);
@@ -4541,7 +4689,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum mode=(GLenum)ai(args,1); GLuint buf=(GLuint)ai(args,0);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.blendEquationSeparate($0, $1); } catch (e) {} },
+                        GLctx.blendEquationSeparate($0, $1); } catch (e) { globalThis.__bw64glReportBridgeException('glBlendEquationi', e); } },
                       (int)buf, (int)mode); });
             }
             return 0;
@@ -4550,7 +4698,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLuint buf=(GLuint)ai(args,0); GLenum rgb=(GLenum)ai(args,1); GLenum a=(GLenum)ai(args,2);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.blendEquationSeparate($0, $1, $2); } catch (e) {} },
+                        GLctx.blendEquationSeparate($0, $1, $2); } catch (e) { globalThis.__bw64glReportBridgeException('glBlendEquationSeparatei', e); } },
                       (int)buf, (int)rgb, (int)a); });
             }
             return 0;
@@ -4559,7 +4707,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLuint buf=(GLuint)ai(args,0); GLenum s=(GLenum)ai(args,1); GLenum d=(GLenum)ai(args,2);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.blendFuncSeparate($0, $1, $2, $1, $2); } catch (e) {} },
+                        GLctx.blendFuncSeparate($0, $1, $2, $1, $2); } catch (e) { globalThis.__bw64glReportBridgeException('glBlendFunci', e); } },
                       (int)buf, (int)s, (int)d); });
             }
             return 0;
@@ -4569,7 +4717,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLenum sr=(GLenum)ai(args,1), dr=(GLenum)ai(args,2), sa=(GLenum)ai(args,3), da=(GLenum)ai(args,4);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.blendFuncSeparate($0, $1, $2, $3, $4); } catch (e) {} },
+                        GLctx.blendFuncSeparate($0, $1, $2, $3, $4); } catch (e) { globalThis.__bw64glReportBridgeException('glBlendFuncSeparatei', e); } },
                       (int)buf, (int)sr, (int)dr, (int)sa, (int)da); });
             }
             return 0;
@@ -4579,7 +4727,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 int r=(int)ai(args,1), g=(int)ai(args,2), b=(int)ai(args,3), al=(int)ai(args,4);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.colorMask($0, $1 != 0, $2 != 0, $3 != 0, $4 != 0); } catch (e) {} },
+                        GLctx.colorMask($0, $1 != 0, $2 != 0, $3 != 0, $4 != 0); } catch (e) { globalThis.__bw64glReportBridgeException('glColorMaski', e); } },
                       (int)buf, r, g, b, al); });
             }
             return 0;
@@ -4588,7 +4736,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 int v = (int)(af(args,0) * 100.0f);
                 glOnMain([&]{ EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
-                        GLctx.minSampleShading($0 / 100.0); } catch (e) {} }, v); });
+                        GLctx.minSampleShading($0 / 100.0); } catch (e) { globalThis.__bw64glReportBridgeException('glMinSampleShading', e); } }, v); });
             }
             return 0;
         }
@@ -4619,7 +4767,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         // draw with the instance offsets folded away. Never before a working device
         // in Unity's forward renderer, so a graceful degradation is acceptable.
         case GL64_fn_glDrawArraysInstancedBaseInstance:
+            GL_MT(rejectBridgeEntry("glDrawArraysInstancedBaseInstance"));
+            return 0;
         case GL64_fn_glDrawRangeElementsBaseVertex:
+            GL_MT(rejectBridgeEntry("glDrawRangeElementsBaseVertex"));
             return 0;
         // glDrawElementsBaseVertex: WebGL2 has drawElementsBaseVertex but
         // Emscripten exports no C symbol. The index pointer is a byte offset into the
@@ -4631,7 +4782,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 GLint baseVertex=(GLint)ai(args,4);
                 glOnMain([&]{
                     bindDrawTarget();
-                    EM_ASM({ try { GLctx.drawElementsBaseVertex($0,$1,$2,$3,$4); } catch (e) {} },
+                    EM_ASM({ try { GLctx.drawElementsBaseVertex($0,$1,$2,$3,$4); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsBaseVertex', e); } },
                           (int)mode, (int)count, (int)type, off, (int)baseVertex);
                 });
                 g_glDrew = true;
@@ -4653,11 +4804,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 glOnMain([&]{
                     bindDrawTarget();
                     if (withBaseInst)
-                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertexBaseInstance($0,$1,$2,$3,$4,$5,$6); } catch (e) {} },
+                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertexBaseInstance($0,$1,$2,$3,$4,$5,$6); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsInstancedBaseVertexBaseInstance', e); } },
                               (int)mode, (int)count, (int)type, idxOff, (int)prim,
                               (int)baseVertex, baseInst);
                     else
-                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) {} },
+                        EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) { globalThis.__bw64glReportBridgeException('glDrawElementsInstancedBaseVertex', e); } },
                               (int)mode, (int)count, (int)type, idxOff, (int)prim, (int)baseVertex);
                 });
                 g_glDrew = true;
@@ -4686,7 +4837,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         GLsizei cnt = c[k];
                         glOnMain([&]{
                             bindDrawTarget();
-                            EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) {} },
+                            EM_ASM({ try { GLctx.drawElementsInstancedBaseVertex($0,$1,$2,$3,$4,$5); } catch (e) { globalThis.__bw64glReportBridgeException('glMultiDrawElementsBaseVertex', e); } },
                                   (int)mode, (int)cnt, (int)type, off, (int)prim, (int)bv);
                         });
                     }
@@ -4705,20 +4856,35 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext) GL_MT(glPolygonOffset(af(args,0), af(args,1)));
             return 0;
         case GL64_fn_glTextureBarrier:
-            return 0;   // no GLES3 equivalent; not reached by Unity's forward renderer
+            GL_MT(rejectBridgeEntry("glTextureBarrier"));
+            return 0;
 
-        // --- best-effort / safe no-ops ------------------------------------
-        // Never reached before a working device (Unity's forward renderer does not
-        // use debug messages, transform feedback or texture buffers), so the old
-        // gl64_noop behaviour is correct here — the guest-side pointer now at least
-        // reaches the bridge instead of an unaudited no-op.
+        case GL64_fn_glBeginTransformFeedback:
+            if (g_glContext) GL_MT(glBeginTransformFeedback((GLenum)ai(args,0)));
+            return 0;
+        case GL64_fn_glEndTransformFeedback:
+            if (g_glContext) GL_MT(glEndTransformFeedback());
+            return 0;
+        case GL64_fn_glTransformFeedbackVaryings: {
+            const GLsizei count = (GLsizei)ai(args,1);
+            if (g_glContext && count > 0 && count <= 4096 && args.a[2]) {
+                std::vector<std::string> names((size_t)count);
+                std::vector<const GLchar*> pointers((size_t)count);
+                const std::vector<U64> addresses = cpu->memory->readPointers(args.a[2], (size_t)count);
+                for (GLsizei i = 0; i < count; ++i) {
+                    names[(size_t)i] = readGuestCStr(cpu, addresses[(size_t)i], 4096);
+                    pointers[(size_t)i] = names[(size_t)i].c_str();
+                }
+                GL_MT(glTransformFeedbackVaryings((GLuint)ai(args,0), count, pointers.data(), (GLenum)ai(args,3)));
+            }
+            return 0;
+        }
+
+        // --- explicitly unsupported backend features ---------------------
         case GL64_fn_glDebugMessageCallback:
         case GL64_fn_glDebugMessageControl:
         case GL64_fn_glDebugMessageInsert:
         case GL64_fn_glGetDebugMessageLog:
-        case GL64_fn_glBeginTransformFeedback:
-        case GL64_fn_glEndTransformFeedback:
-        case GL64_fn_glTransformFeedbackVaryings:
         case GL64_fn_glPointParameteri:
         case GL64_fn_glPointParameteriv:
         case GL64_fn_glPointParameterf:
@@ -4729,6 +4895,17 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glTexBufferRangeARB:
         case GL64_fn_glTextureBarrierNV:
         case GL64_fn_glFinalCombinerInputNV:
+            GL_MT(rejectBridgeEntry(fnId == GL64_fn_glDebugMessageCallback ? "glDebugMessageCallback" :
+                fnId == GL64_fn_glDebugMessageControl ? "glDebugMessageControl" :
+                fnId == GL64_fn_glDebugMessageInsert ? "glDebugMessageInsert" :
+                fnId == GL64_fn_glGetDebugMessageLog ? "glGetDebugMessageLog" :
+                fnId == GL64_fn_glPointParameteri ? "glPointParameteri" :
+                fnId == GL64_fn_glPointParameteriv ? "glPointParameteriv" :
+                fnId == GL64_fn_glPointParameterf ? "glPointParameterf" :
+                fnId == GL64_fn_glPointParameterfv ? "glPointParameterfv" :
+                (fnId == GL64_fn_glTexBuffer || fnId == GL64_fn_glTexBufferARB) ? "glTexBuffer" :
+                (fnId == GL64_fn_glTexBufferRange || fnId == GL64_fn_glTexBufferRangeARB) ? "glTexBufferRange" :
+                fnId == GL64_fn_glTextureBarrierNV ? "glTextureBarrierNV" : "glFinalCombinerInputNV"));
             return 0;
         // Vertex-attrib component setters. Emscripten exports the 1f..3f/1fv..4fv
         // and I4i/I4ui/I4iv/I4uiv forms; the double (d/dv) spellings do not exist
@@ -4787,8 +4964,30 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         case GL64_fn_glVertexAttrib1d: case GL64_fn_glVertexAttrib2d:
         case GL64_fn_glVertexAttrib3d: case GL64_fn_glVertexAttrib4d:
         case GL64_fn_glVertexAttrib1dv: case GL64_fn_glVertexAttrib2dv:
-        case GL64_fn_glVertexAttrib3dv: case GL64_fn_glVertexAttrib4dv:
-            return 0;   // no GLES3 equivalent (Emscripten exports no C symbol)
+        case GL64_fn_glVertexAttrib3dv: case GL64_fn_glVertexAttrib4dv: {
+            if (g_glContext) {
+                const GLuint index=(GLuint)ai(args,0);
+                const int comps = (fnId==GL64_fn_glVertexAttrib1d || fnId==GL64_fn_glVertexAttrib1dv)?1:
+                    (fnId==GL64_fn_glVertexAttrib2d || fnId==GL64_fn_glVertexAttrib2dv)?2:
+                    (fnId==GL64_fn_glVertexAttrib3d || fnId==GL64_fn_glVertexAttrib3dv)?3:4;
+                GLfloat v[4] = {0, 0, 0, 1};
+                if (fnId >= GL64_fn_glVertexAttrib1dv) {
+                    if (!args.a[1]) { GL_MT(rejectBridgeEntry("glVertexAttrib*d null vector")); return 0; }
+                    GLdouble values[4] = {0, 0, 0, 1};
+                    cpu->memory->memcpyFromGuest(values, args.a[1], (U64)comps * sizeof(GLdouble));
+                    for (int i=0;i<comps;i++) v[i]=(GLfloat)values[i];
+                } else {
+                    for (int i=0;i<comps;i++) v[i]=(GLfloat)ad(args,i+1);
+                }
+                switch (comps) {
+                    case 1: GL_MT(glVertexAttrib1f(index,v[0])); break;
+                    case 2: GL_MT(glVertexAttrib2f(index,v[0],v[1])); break;
+                    case 3: GL_MT(glVertexAttrib3f(index,v[0],v[1],v[2])); break;
+                    default: GL_MT(glVertexAttrib4f(index,v[0],v[1],v[2],v[3])); break;
+                }
+            }
+            return 0;
+        }
 
         default:
         // --- 3.0 forward-only gap set --------------------------------------
@@ -4832,7 +5031,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     EM_ASM({ try {
                         if (typeof GLctx === 'undefined') return;
                         GLctx.clearBufferfi($0, $1, $2, $3);
-                    } catch (e) {} }, (int)buf, db, depth, stencil);
+                    } catch (e) { globalThis.__bw64glReportBridgeException('glClearBufferfi', e); } }, (int)buf, db, depth, stencil);
                 });
 #else
                 GL_MT(glClearBufferfi(buf, db, depth, stencil));
@@ -4861,7 +5060,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         var r = GLctx.getIndexedParameter($0, $1);
                         if (r && r.length !== undefined) r = r[0];
                         HEAPU8[$2 >>> 0] = r ? 1 : 0;
-                    } catch (e) {} }, (int)pname, (int)idx, (int)(uintptr_t)vp);
+                    } catch (e) { globalThis.__bw64glReportBridgeException('glGetBooleani_v', e); } }, (int)pname, (int)idx, (int)(uintptr_t)vp);
                 });
 #else
                 GLboolean v=0; GLboolean* vp=&v;
@@ -4914,7 +5113,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 0;
         }
 
-            klog_fmt("gl64: unimplemented fn id %llu", (unsigned long long)fnId);
+            {
+                char name[64];
+                snprintf(name, sizeof(name), "unknown ABI function id %llu", (unsigned long long)fnId);
+                GL_MT(rejectBridgeEntry(name));
+            }
             return 0;
     }
 }
@@ -4942,4 +5145,24 @@ U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     return result;
 }
 
-#endif // BOXEDWINE_OPENGL
+#elif defined(BOXEDWINE_OPENGL)
+
+// Entry-point stubs for BOXEDWINE_OPENGL configs that lack the implementation
+// prerequisites named at the top of this file: the GL trap dispatch in
+// ksyscall/ksyscall64 still recognizes the magic syscall number, and the
+// call fails loudly with -K_ENOSYS -- the same contract as the test build's
+// test_bridge_stubs.cpp and ksyscall's own #else path.
+
+#include "gl64bridge.h"
+
+U64 gl64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
+    (void)cpu; (void)fnId; (void)argsAddr;
+    return (U64)(U32)-K_ENOSYS;
+}
+
+U64 gl32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
+    (void)cpu; (void)fnId; (void)argsAddr;
+    return (U64)(U32)-K_ENOSYS;
+}
+
+#endif // BOXEDWINE_OPENGL (full implementation also requires BOXEDWINE_GUEST_X64 + __EMSCRIPTEN__)

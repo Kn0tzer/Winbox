@@ -118,6 +118,8 @@ def stage(destination):
         'x86_64': ROOT / 'tools/rootfs64/libgl64/libGL.so.1',
     }
     subprocess.run(['python3', str(ROOT / 'tools/rootfs64/build_vulkan_shims.py'), '--check'], check=True)
+    subprocess.run(['bash', str(ROOT / 'tools/rootfs64/build-libgl64.sh'), '--check'], check=True)
+    subprocess.run(['bash', str(ROOT / 'tools/rootfs64/build-libgl32.sh'), '--check'], check=True)
     vulkan = {arch: ROOT / f'tools/rootfs64/libvk{bits}/libvulkan.so.1'
               for arch, bits in [('i386', '32'), ('x86_64', '64')]}
     direct3d = {}
