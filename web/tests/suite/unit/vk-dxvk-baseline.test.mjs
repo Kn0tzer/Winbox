@@ -110,9 +110,9 @@ test('page-flag-gated DXVK baseline features are published before guest boot', (
   // BC as unsupported and every D3D11/D3D10 device fails with feature
   // level 0 (the second half of the 2026-10-26 defect).
   const runtime = read('web/runtime.html');
-  assert.match(runtime, /bwVkTextureCompressionBC\s*=\s*adapter\.features\?\.has\('texture-compression-bc'\)/,
+  assert.match(runtime, /bwVkTextureCompressionBC\s*=\s*adapter\.features\??\.has\('texture-compression-bc'\)/,
     'runtime.html must publish bwVkTextureCompressionBC from the adapter before guest boot');
-  assert.match(runtime, /bwVkDepth32FloatStencil8\s*=\s*adapter\.features\?\.has\('depth32float-stencil8'\)/,
+  assert.match(runtime, /bwVkDepth32FloatStencil8\s*=\s*adapter\.features\??\.has\('depth32float-stencil8'\)/,
     'runtime.html must publish bwVkDepth32FloatStencil8 from the adapter before guest boot');
   const bridge = read('source/vulkan/vk64bridge.cpp');
   assert.match(bridge, /textureCompressionBC\s*=\s*v2WebGpuBcSupported\(\)/,
