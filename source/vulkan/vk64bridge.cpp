@@ -2923,8 +2923,14 @@ struct VkProfAcc {
     U64 accHopChunks = 0, accHopBytes = 0;
     U64 accBufHashed = 0, accBufSent = 0, accImgHashed = 0, accImgSent = 0;
     U64 accBufCalls = 0, accImgCalls = 0;
-    double trapWall[256] = {}; // per-fnId wall for trapOther top-3 (fnIds < 256)
-    U64 trapCnt[256] = {};
+    // Per-fnId wall for trapOther top-3. ABI fnIds are section-based and
+    // run 0..920 (vk64bridge_abi.h), so the table must cover the full id
+    // space: at 256 slots every vkCmd* record function (ids 500+) was
+    // silently dropped from attribution while its wall still landed in
+    // accTrapOther.
+    static constexpr U64 kTrapSlots = 1024;
+    double trapWall[kTrapSlots] = {};
+    U64 trapCnt[kTrapSlots] = {};
 };
 inline VkProfAcc& vkProfAcc() { static VkProfAcc a; return a; }
 inline void vkProfReset(VkProfAcc& a) {
@@ -2934,7 +2940,7 @@ inline void vkProfReset(VkProfAcc& a) {
     a.accTrapCalls = a.accHopChunks = a.accHopBytes = 0;
     a.accBufHashed = a.accBufSent = a.accImgHashed = a.accImgSent = 0;
     a.accBufCalls = a.accImgCalls = 0;
-    for (int i = 0; i < 256; i++) { a.trapWall[i] = 0; a.trapCnt[i] = 0; }
+    for (U64 i = 0; i < VkProfAcc::kTrapSlots; i++) { a.trapWall[i] = 0; a.trapCnt[i] = 0; }
 }
 // RAII per-trap timer, constructed first in vk64Bridge(): attributes every
 // trap's wall to accTrapOther EXCEPT submit/submit2/submit2KHR/present, which
@@ -2951,7 +2957,7 @@ struct VkProfTrapTimer {
         VkProfAcc& a = vkProfAcc();
         a.accTrapOther += dt;
         a.accTrapCalls++;
-        if (fn < 256) { a.trapWall[fn] += dt; a.trapCnt[fn]++; }
+        if (fn < VkProfAcc::kTrapSlots) { a.trapWall[fn] += dt; a.trapCnt[fn]++; }
     }
 };
 static void appendPresentCaptureInfo(std::string& json, U64 scId, U32 index, Swapchain* sc) {
@@ -7834,7 +7840,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 {
                     struct TE { U64 id; double w; U64 c; };
                     TE top[3] = {};
-                    for (U64 i = 0; i < 256; i++) {
+                    for (U64 i = 0; i < VkProfAcc::kTrapSlots; i++) {
                         double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
                         VK64_DROP_IF(continue, w <= 0);
                         for (int k = 0; k < 3; k++) if (w > top[k].w) {
@@ -8248,6 +8254,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
 
     VK32Args args = {};
     if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&args, argsAddr, sizeof(args));
+
+    // BW64_VKPROF parity with the 64-bit dispatcher: attribute every trap's
+    // wall to the shared accumulator (submit/present exclude themselves and
+    // time at finer granularity; the vk32 present case is the frame boundary
+    // that consumes and resets it).
+    VkProfTrapTimer vkprofTrap(fnId);
 
     switch (fnId) {
     // ================= B. Queries =================
@@ -10135,6 +10147,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkQueueSubmit:
     case VK64_fn_vkQueueSubmit2:
     case VK64_fn_vkQueueSubmit2KHR: {
+        double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
         Queue* q = objOf32<Queue>(args.a[0], K_QUEUE, "vkQueueSubmit");
         if (!q) return VK_ERROR_INITIALIZATION_FAILED;
         U32 nsub = (U32)args.a[1];
@@ -10228,9 +10241,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             Fence* f = objOf32<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
             if (f) f->signalled = 1;
         }
+        if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
     }
     case VK64_fn_vkQueuePresentKHR: {
+        double vkprofPresentT0 = vkProfNow(); // BW64_VKPROF (additive)
         Queue* q = objOf32<Queue>(args.a[0], K_QUEUE, "vkQueuePresentKHR");
         if (!q || !args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
         // VkPresentInfoKHR 32-bit: 32 bytes. swapchainCount at +16,
@@ -10263,23 +10278,98 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             if (pRes) wr32_32(pRes + i * 4, VK_SUCCESS);
         }
         if (vkSchemaV2()) hopV2ToPage(presentInfo + "],\"lastSubmission\":" + std::to_string(g_frameNo ? g_frameNo - 1 : 0) + "}"); else emitFrameNow();
-        // Live metrics for the 32-bit guest Vulkan path: present count and the
-        // present-to-present wall ONLY. vk32Bridge has no per-trap timers, so
-        // submit/trap/hop/guest stay unavailable (never zero) and the panel
-        // says why.
-        if (vkMetricsEnabled()) {
+        // ---- BW64_VKPROF / BW64_METRICS frame boundary (additive) ----
+        // Mirrors the 64-bit present boundary: vk32 traps carry the same
+        // per-trap timers (VkProfTrapTimer at vk32Bridge entry, the submit
+        // timer in the vk32 submit case, and the serializeSubmitV2 /
+        // hopV2ToPage accumulators both ABIs share), so the 32-bit path now
+        // reports the full per-stage breakdown instead of wall-only. The
+        // first-frame gate is also set here: without it neither VKPROF nor
+        // the metrics timers could ever activate in a session that only
+        // ever presents through the 32-bit bridge.
+        if (vkTimingEnabled()) {
             double t1 = vkProfNow();
+            VkProfAcc& pa = vkProfAcc();
+            double bodyDt = t1 - vkprofPresentT0;
             if (g_vk32HaveFrame) {
-                Bw64VkFrame mf = {};
-                mf.frameNo = ++g_vk32FrameNo;
-                mf.wallMs = t1 - g_vk32LastPresentT;
-                mf.breakdown = 0;
-                mf.arch = 1;
-                bw64_metrics_vk_frame(&mf);
+                double wall = t1 - g_vk32LastPresentT;
+                double guest = wall - pa.accSubmit - pa.accTrapOther - bodyDt;
+                const U64 profFrameNo = ++g_vk32FrameNo;
+                if (vkMetricsEnabled()) {
+                    Bw64VkFrame mf = {};
+                    mf.frameNo = profFrameNo;
+                    mf.wallMs = wall;
+                    mf.submitMs = pa.accSubmit;
+                    mf.trapOtherMs = pa.accTrapOther;
+                    mf.presentMs = bodyDt;
+                    mf.hopMs = pa.accHop;
+                    mf.bufMs = pa.accBufData;
+                    mf.imgMs = pa.accImgData;
+                    mf.guestMs = guest;
+                    mf.trapCalls = pa.accTrapCalls;
+                    mf.hopChunks = pa.accHopChunks;
+                    mf.hopBytes = pa.accHopBytes;
+                    mf.breakdown = 1;
+                    mf.arch = 1;
+                    bw64_metrics_vk_frame(&mf);
+                }
+                if (vkProfEnabled()) {
+                // Top-3 trapOther contributors by wall time (additive).
+                char topT[256] = {0};
+                {
+                    struct TE { U64 id; double w; U64 c; };
+                    TE top[3] = {};
+                    for (U64 i = 0; i < VkProfAcc::kTrapSlots; i++) {
+                        double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
+                        VK64_DROP_IF(continue, w <= 0);
+                        for (int k = 0; k < 3; k++) if (w > top[k].w) {
+                            for (int m = 2; m > k; m--) top[m] = top[m-1];
+                            top[k] = {i, w, c};
+                            break;
+                        }
+                    }
+                    char* pp = topT; size_t rem = sizeof(topT);
+                    for (int k = 0; k < 3 && top[k].w > 0; k++) {
+                        int nn = snprintf(pp, rem, "%s%s:%.2f(%llu)", k ? ";" : "",
+                                          fnName(top[k].id), top[k].w,
+                                          (unsigned long long)top[k].c);
+                        if (nn > 0 && (size_t)nn < rem) { pp += nn; rem -= (size_t)nn; }
+                    }
+                }
+                klog_fmt("vk32: VKPROF frame=%llu wall=%.3fms submit=%.3fms bufdata=%.3fms bufB=%llu/%llu imgdata=%.3fms imgB=%llu/%llu trapOther=%.3fms(%llu calls) present=%.3fms hop=%.3fms hopB=%lluch/%lluB guest=%.3fms bufC=%llu imgC=%llu ser2=%.3fms queue=%.3fms topT=%s",
+                         (unsigned long long)profFrameNo, wall, pa.accSubmit,
+                         pa.accBufData, (unsigned long long)pa.accBufHashed, (unsigned long long)pa.accBufSent,
+                         pa.accImgData, (unsigned long long)pa.accImgHashed, (unsigned long long)pa.accImgSent,
+                         pa.accTrapOther, (unsigned long long)pa.accTrapCalls, bodyDt, pa.accHop,
+                         (unsigned long long)pa.accHopChunks, (unsigned long long)pa.accHopBytes, guest,
+                         (unsigned long long)pa.accBufCalls, (unsigned long long)pa.accImgCalls,
+                         pa.accSer2, pa.accQueue, topT);
+                if (vkEncodeDetailEnabled()) {
+                    std::string detail = "{\"rootMs\":" + std::to_string(pa.encode.rootMs) + ",\"stages\":{";
+                    for (unsigned i = 0; i < vkencode::Count; ++i) {
+                        char entry[192];
+                        snprintf(entry, sizeof(entry), "%s\"%s\":{\"exclusiveMs\":%.3f,\"inclusiveMs\":%.3f,\"calls\":%llu}",
+                            i ? "," : "", vkencode::names[i], pa.encode.exclusive[i], pa.encode.inclusive[i],
+                            (unsigned long long)pa.encode.calls[i]);
+                        detail += entry;
+                    }
+                    detail += "}}";
+                    klog_fmt("vk32: VKPROF2 frame=%llu %s", (unsigned long long)profFrameNo, detail.c_str());
+                }
+                if (ripSamplerProfileEnabled() && cpu && cpu->thread && cpu->thread->process)
+                    ripSamplerProfDumpReset((int)cpu->thread->process->id);
+                }
+            } else if (vkProfEnabled()) {
+                klog_fmt("vk32: VKPROF enabled: per-frame breakdown follows (wall/submit/bufdata/imgdata/trapOther/present/hop/guest, ms)");
             }
             g_vk32HaveFrame = true;
             g_vk32LastPresentT = t1;
+            vkProfReset(pa);
         }
+        // First-frame gate for BW64_VKPROF / metrics (see vkProfEnabled):
+        // profiling activates only after the first present has fully
+        // completed, so bridge setup during WASM init is never profiled.
+        g_vkProfFirstFrameDone = true;
         return VK_SUCCESS;
     }
 
