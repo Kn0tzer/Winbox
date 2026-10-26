@@ -458,3 +458,43 @@ unimplemented (vkd3d tolerates the refusal today), and one
 5. Fold vkd3d staging into the prefix build pipeline; x86 vkd3d build.
 6. Present-less chunk drain so offscreen probes (tri12) verify pixels,
    not just API success.
+
+## 4.14 Real program: godot-squash --rendering-driver d3d12 (2026-10-26, post-commit runs)
+
+Six demo-matrix attempts against the final dist (build #13). Attempts 1-3 were
+rig failures, recorded for the next runner: (1) the demo archive is fetched
+from the production origin, which emits no CORS headers - the local mirror
+rig (127.0.0.1:8901, CORS *) only helps if the SERVED demos list points at
+it (dist/demos.mjs archiveBase; the gamezip URL param is overridden by the
+launcher and does NOT work); (2) demo-matrix waits on the shared build lock
+and its wait can time out under other lanes' builds.
+
+Attempt 4 (mirror fixed): the engine BOOTED - banner "Godot Engine
+v4.7.2.stable.official", stage=mapped at 206.6s - and entered its D3D12
+driver, failing at load: ERROR: Parameter "lib_d3d12" is null.
+(d3d12.dll not found: demos run with working dir home/username/apps/, the
+game archive's extract root; the prefix staging of section 4.12 lands in
+home/username/, one level up, and demos have no app-dir copy.)
+
+Attempt 5 (+ overlay zip with d3d12.dll/d3d12core.dll at
+home/username/apps/, served from the mirror as vkd3d-overlay.zip, mounted
+via ?overlay=&overlaysize= - the same channel the Portal DXVK probe uses):
+lib_d3d12 error GONE, DLL loaded; new failure one layer deeper:
+ERROR: D3D12CreateDevice failed with error 0x80070057.
+(_initialize_device, rendering_device_driver_d3d12.cpp:6025.)
+
+Attempt 6 (same + VKD3D_DEBUG=trace): vkd3d-proton names the gate verbatim:
+"err:vkd3d-proton:vkd3d_init_device_caps: maintenance5 and/or maintenance6
+not supported by this implementation. This is required for correct
+operation." That is this lane's patch-2 gate. CONCLUSION: the demo
+environment's Vulkan chain (Wine builtin winevulkan + the libvulkan.so.1
+staged inside the pre-campaign support/rootfs archives) predates ALL ten
+bridge patches of this lane; the d3d12 probe harness bypasses those
+archives (it uploads the worktree's fresh shim and .so), which is why
+the probes pass and the demo does not. Step 5 therefore reduces to a
+PACKAGING restage: rebuild the rootfs/support staging from the patched
+tree (the pipeline that produces tools/rootfs64/libvk64 and the support
+archive), after which the demo should meet the same device caps the
+probes verified. No new bridge code is implicated by this failure.
+framesPresented stayed 0 in all Godot attempts; the engine fell back
+after the D3D12 error (screenshots show a static ~5.6k-lit-px screen).
