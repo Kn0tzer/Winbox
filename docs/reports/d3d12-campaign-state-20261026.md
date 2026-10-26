@@ -451,11 +451,26 @@ unimplemented (vkd3d tolerates the refusal today), and one
    expansion for heap-indexed shader accesses.
 2. V2 compute record + tier compute dispatch (unlocks D3D12 compute,
    UAV clears, execute-indirect).
-3. godot-squash `--rendering-driver d3d12` on the mirror rig with the
-   staged prefix; pin the driver banner from console.txt.
+3. DONE (lane 2, section 4.15): godot-squash `--rendering-driver d3d12`
+   re-run on the restaged environment - the maintenance5/6 gate passes
+   and D3D12 device creation completes; the run now stops one layer
+   deeper, at vkd3d's shader-model 6.0 gate (next item).
 4. Implement `vkGetDeviceImageMemoryRequirements` from the existing
-   image-requirements code.
-5. Fold vkd3d staging into the prefix build pipeline; x86 vkd3d build.
+   image-requirements code. (Godot's run calls it during device init
+   and tolerates the FEATURE_NOT_PRESENT answer today; it is not the
+   current blocker, but it is on the real-program path now.)
+5. DONE in part (lane 2): vkd3d staging is folded into the standard
+   pipeline (build-wine64-zip.sh staging block, stage-vkd3d-payloads.sh
+   merge path, apply-runtime-poststeps.sh, completeness pins). Still
+   open: x86 vkd3d build.
+7. Shader-model 6.0 caps lane: vkd3d grants SM 6.0 only when the
+   bridge's VkPhysicalDeviceVulkan12Features reports scalarBlockLayout
+   or uniformBufferStandardLayout (device.c SM gate); both are
+   currently FALSE (fillVulkan12Features omits them and
+   fillScalarBlockLayout is an empty stub). Decide honesty from the
+   page tier's buffer-layout behaviour, fill, and re-run Godot: expect
+   the D3D12 driver to initialize; the following wall is then shader
+   compilation / descriptor addressing (cap 5347, item 1).
 6. Present-less chunk drain so offscreen probes (tri12) verify pixels,
    not just API success.
 
@@ -498,3 +513,138 @@ archive), after which the demo should meet the same device caps the
 probes verified. No new bridge code is implicated by this failure.
 framesPresented stayed 0 in all Godot attempts; the engine fell back
 after the D3D12 error (screenshots show a static ~5.6k-lit-px screen).
+
+## 4.15 Lane 2: demo-environment restage + Godot re-run (2026-10-26)
+
+Mission: close the gap section 4.14 named - the demo environment's
+Vulkan chain predated the bridge patches, so Godot met the
+maintenance5/6 gate while the probes (which upload fresh binaries)
+passed. Outcome: the gate is gone in the demo environment, D3D12
+device creation completes inside Godot, and the run stops at a new,
+precisely identified layer (shader-model 6.0 caps, below). No bridge
+code changed in this lane; everything is packaging plus one harness.
+
+### Root cause, refined (two layers, both proven on the box)
+
+Lane 1's framing ("stale rootfs/support archives") was half the story.
+Hash archaeology: the guest ELF shim in the support archive
+(libvulkan.so.1, md5 0e39a3f4...) is byte-identical to the current
+tools/rootfs64 build - probes and demos share it. The stale link is
+the PE side: demos resolve Vulkan through Wine 8.0's builtin
+winevulkan, whose conversion tables (Vulkan 1.3.239 registry) know
+only VK_KHR_maintenance1/2 - the bridge's patched caps never reach
+vkd3d. And the decisive detail, read from the vendored source
+(tools/vkd3d/src/libs/d3d12core/main.c, load_modules_once): the
+Boxedwine64 patch makes vkd3d try loader DLLs in the order
+"bw64vulkan.dll", "winevulkan.dll", "vulkan-1.dll". Probes pass
+because they upload bw64vulkan.dll next to the exe (first choice
+hits); demos fell through to winevulkan because no bw64vulkan.dll
+existed anywhere in the demo environment. Experiments S1-S3 confirmed
+the negative space: replacing system vulkan-1.dll with the shim, a
+user.reg DllOverrides entry, and a WINEDLLOVERRIDES vulkan-1=n all
+left the gate standing (the shim was third in line and never reached).
+The fix is therefore additive and fleet-safe: stage bw64vulkan.dll
+under its own name at system placement.
+
+### What was staged (wine64.zip, web/runtime + dist/runtime)
+
+- usr/lib/x86_64-linux-gnu/wine/x86_64-windows/bw64vulkan.dll
+  = tools/vkd3d/probe/bw64vulkan.dll (159,504 B, sha256 8084b4de...).
+  The prefix's system32 is a .link into this tree, so plain
+  LoadLibrary search finds it - no app-dir copies, no overrides.
+- d3d12.dll (517,717 B, sha256 d77fdad5...) and d3d12core.dll
+  (8,825,383 B, sha256 d2bd847a...) replaced by the vkd3d-proton
+  3.1.0 build at the same system placement; d3d12core's previous
+  provenance (winehq10 backport) is retired - the pair moves together.
+- vulkan-1.dll deliberately UNTOUCHED (Wine's 83,473 B forwarder,
+  sha256 f7d151a8...): with bw64vulkan.dll present vkd3d never falls
+  through to it, and DXVK demos keep the exact winevulkan path they
+  were verified on. (An interim vulkan-1.dll swap was staged, tested
+  in S1-S3, and restored byte-exact from backup.)
+
+### Pipeline encoding (a clean build reproduces this state)
+
+- tools/rootfs64/stage-vkd3d-payloads.sh (new): merge-script staging
+  of the three members into web/runtime + dist/runtime wine64.zip;
+  idempotent, byte-verified, backups under /home/ubuntu/backups.
+- tools/rootfs64/build-wine64-zip.sh: preflight now hard-fails when
+  any of the three payload files is missing, and the staging step
+  copies them into the wine tree (canonical container path).
+- tools/rootfs64/check_runtime_completeness.py: new VKD3D_PINS +
+  'vkd3d payloads (source + shipped zip)' check; winehq10 pin set
+  drops d3d12core. Gate result on the shipped set: 0 failures.
+- tools/rootfs64/apply-runtime-poststeps.sh runs the vkd3d step;
+  re-run on the finished set exits 0 ("already complete").
+- tools/vkd3d/stage-vkd3d.sh now stages only tri12.exe into the
+  prefix (system placement carries the DLLs) and strips any legacy
+  app-dir d3d12 copies.
+- tools/browser/runtime-assets.json re-pinned (wine64.zip plus a
+  container-only re-zip drift of the two 32-bit archives - member
+  CRCs verified identical); retained tar rebuilt as
+  browser-runtime-20261026.tar (512,153,600 B, sha256 78f3d7f2...)
+  in /home/ubuntu/backups/winbox-runtime-assets-20261026/; bootstrap
+  verifies 13 files. (Uploading the tar to the GitHub release
+  remains user-gated, as with the 20261025 set.)
+- Final export via bw64-build.sh --export-only: "Browser export
+  verified: 34 .mjs syntax files; ... dependency archive
+  108f781c5c8d verified" and the in-export completeness run passes
+  the vkd3d check.
+
+### Probe verdicts
+
+- New harness web/tests/d3d12-system.mjs: the staged draw probe with
+  NOTHING uploaded and no LD_LIBRARY_PATH - the demo's exact
+  resolution path. S1-S3 (pre-discovery configurations): FAIL at the
+  maintenance gate. S4 (bw64vulkan.dll staged): tri12 RESULT 0,
+  "D3D12CreateDevice OK", 10 frames cleared+submitted. (S4's printed
+  verdict was false only because the harness's failure regex matched
+  a benign vkd3d INFO line from vkd3d_init_device_caps about EXT_dgc;
+  the regex was narrowed to the real failure signatures.) S5 with the
+  fixed verdict: passed:true.
+- First-light regression on the final dist (d3d12-pixels.mjs,
+  run test-results/dxvk-d3d12-draw-restage1): passed:true,
+  208,556 triangle pixels, center [127, 64, 64] - identical to
+  lane 1's first-light numbers. The restage did not regress the
+  proven path.
+
+### Godot re-run (test-results/demo-matrix/godot-squash-jit0-20261026T203028)
+
+DEMO=godot-squash, JIT=0, no overlay zip (system placement replaces
+it), WINEDLLOVERRIDES=d3d12=n;d3d12core=n, VKD3D_DEBUG=trace.
+Engine mapped at 168.6s. The maintenance5/6 gate line is ABSENT.
+vkd3d-proton runs inside the game (instance + device extension
+checks, vkd3d_create_vk_device at 161.1s, format-property probing at
+164.4s): D3D12 device creation completes - the exact step that
+returned 0x80070057 in every lane-1 attempt. The run then stops at
+the NEXT layer, named by Godot at 165.3s:
+
+  ERROR: No support for any of the suitable shader models (6.0-6.6)
+  has been found.
+  ERROR: Failed to initialize driver for device.
+  WARNING: Your video card drivers seem not to support Direct3D 12,
+  switching to Vulkan.  (177.9s; the Vulkan fallback presented 0
+  frames in the run window, demo verdict FAIL on display only)
+
+Root cause, from the vendored source: vkd3d grants shader model 6.0
+only if (device.c, the d3d12_caps shader-model gate) subgroup props,
+scalar block layout, and shaderInt16 all hold. Subgroups
+(size 32, ops/stages all-ones) and shaderInt16 are served; the layout
+conjunct is not: vkd3d chains only VkPhysicalDeviceVulkan12Features
+(device.c:1238) and reads its scalarBlockLayout /
+uniformBufferStandardLayout fields, and the bridge's
+fillVulkan12Features (vk64bridge.cpp:4498) sets neither - while the
+standalone VkPhysicalDeviceScalarBlockLayoutFeatures filler,
+fillScalarBlockLayout (vk64bridge.cpp:4494), is an empty stub.
+max_shader_model therefore stays below 6.0 and Godot's 6.6-to-6.0
+CheckFeatureSupport sweep fails every entry. Fixing it is a bridge
+caps decision (is scalar block layout honestly servable by the page
+tier's buffer layout rules?) - section 6 item 7. Also observed on
+this path: vkGetDeviceImageMemoryRequirements is called during
+device init and its FEATURE_NOT_PRESENT answer is tolerated today
+(section 6 item 4); it is not this blocker.
+
+framesPresented stayed 0, as in lane 1 - but the campaign state
+moved: the D3D12 wall for real programs is no longer packaging; it
+is one named capability bit away from driver initialization, with
+shader compilation (DXIL) and descriptor addressing (cap 5347)
+behind it.

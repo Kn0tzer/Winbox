@@ -10,12 +10,12 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 210270035 | `67bdbc5dc32655d221583f60bfd4770a67c343413afa443f1d1052d610b96fba` | 1256 |
-| w32 | `web/runtime/wine32.zip` | 236650075 | `ce9a29ee2d41eb16e3ebccb9458649acb69631f19a2ad7e7d1f9254f9047923f` | 1926 |
+| w64 | `web/runtime/wine64.zip` | 211965507 | `c07415af69c77f276a72cb3667b54d4b6b6719d82ab8bce97b66a6d4e95d569b` | 1257 |
+| w32 | `web/runtime/wine32.zip` | 236650075 | `5203eb540b5af9ac7ef1dbe1598f64bd4968efc3550e53bbf2389a059c59993b` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5914534 | `ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
-| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `84e343abb45eaac5ee9b0b693be91d7272c82f30791887d341b362e0d273f926` | 154 |
+| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `5f77055dddcb8a5e398f19bd2ed795f24380cab3afb00aeffc64c3f9c3b2bc67` | 154 |
 | support | `dist/runtime/support-108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe.zip` | 517854544 | `108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe` | 3543 |
 
 Labels match the register legend in `runtime.md`
@@ -198,8 +198,8 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10.dll` (1531455 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10core.dll` (192842 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d11.dll` (3427605 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll` (588985 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll` (70654 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll` (517717 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll` (8825383 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d8.dll` (1294568 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll` (1839425 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/ddraw.dll` (3266205 bytes)

@@ -82,9 +82,23 @@ def sha(data):
 
 
 WINEHQ_PINS = {
-    'd3d12core.dll': 'a00b2ea3454d2569dcebf52bb99d79f18c8153071990601953773e0d9537cd1e',
     'msmpeg2vdec.dll': 'bbf91fc84f2bc66c70802e41e5ff1ee2e18335ef9cf07769957b0fb37484d046',
     'msvcp140_codecvt_ids.dll': '2215e3312bcc817c628669ec69baff3f050ec0bef91c099e0d12fd66f2c3d9b1',
+}
+# The D3D12 payload staged into wine64.zip at system placement by
+# build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
+# bw64vulkan.dll must be the bw64 PE shim (the vendored vkd3d-proton's
+# loader tries that name first to bypass Wine 8.0's winevulkan, which
+# cannot expose VK_KHR_maintenance5/6), and the d3d12 pair must be the
+# vkd3d-proton 3.1.0 build (tools/vkd3d/BUILD.md). d3d12core.dll was a
+# winehq10 backport until this restage; the pair now moves together
+# from the proton build. Re-pins are deliberate: a vkd3d or shim
+# rebuild that changes bytes fails here until the new bytes are
+# reviewed and pinned.
+VKD3D_PINS = {
+    'bw64vulkan.dll': '8084b4de88fcfd89771ecb6bc09cd9bc4f4c70b2a962756b8b2fd6767b9825db',
+    'd3d12.dll': 'd77fdad5d3a1426287cec7e642ca8e43f1f52c2f54c7de3bb24a64174ec2284a',
+    'd3d12core.dll': 'd2bd847a7d564fb64aee51461998b0014767b73a3b4f0ec46a977702da0076b3',
 }
 FONTS32_PINS = {
     'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
@@ -98,7 +112,20 @@ RUNTIME = ROOT / 'web/runtime'
 def wine64_members():
     with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
         return {n: z.read(n) for n in z.namelist()
-                if n.endswith(('d3d12core.dll', 'msmpeg2vdec.dll', 'msvcp140_codecvt_ids.dll'))}
+                if n.endswith(('msmpeg2vdec.dll', 'msvcp140_codecvt_ids.dll'))}
+
+
+def t_vkd3d_payloads():
+    shim = ROOT / 'tools/vkd3d/probe/bw64vulkan.dll'
+    assert sha(shim.read_bytes()) == VKD3D_PINS['bw64vulkan.dll'], \
+        'bw64vulkan.dll source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()
+                   if n.rsplit('/', 1)[-1] in VKD3D_PINS}
+    for name, pin in VKD3D_PINS.items():
+        hits = [n for n in members if n.rsplit('/', 1)[-1] == name]
+        assert hits, f'{name} missing from shipped wine64.zip'
+        assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned vkd3d payload bytes'
 
 
 def t_winehq_source_and_zip():
@@ -363,6 +390,7 @@ def t_prefix64_built():
 
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
+    check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('DirectX redist sets complete (both zips)', t_directx_sets)

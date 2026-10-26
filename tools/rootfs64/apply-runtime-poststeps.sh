@@ -57,6 +57,9 @@ fi
 # winehq10 backport DLLs into wine64.zip (web/runtime and dist/runtime);
 # the merge-script path for when the container build is unavailable.
 tools/rootfs64/stage-wine64-payloads.sh
+# vkd3d D3D12 payload (bw64 vulkan-1.dll shim + vkd3d-proton d3d12 pair)
+# into wine64.zip at system placement; same merge-script path.
+tools/rootfs64/stage-vkd3d-payloads.sh
 
 # The manifest is generated from the shipped zips; regenerate it from the
 # final bytes before gating so the gate compares like with like.
