@@ -68,9 +68,9 @@ test('page-tier-translated capabilities are whitelisted in the audit', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   const exempt = [...audit.matchAll(/c != (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-  assert.deepEqual(exempt, [0, 1, 32, 43, 50, 51, 5301, 5379],
-    'the audit loop exemption set is exactly {Matrix, Shader, ShaderNonUniform, ClipDistance, Sampled1D, ImageQuery, DerivativeControl, DemoteToHelperInvocationEXT}');
-  for (const cap of [32, 43, 50, 51, 5379]) {
+  assert.deepEqual(exempt, [0, 1, 32, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
+    'the audit loop exemption set is exactly {Matrix, Shader, ShaderNonUniform, ClipDistance, Sampled1D, ImageQuery, DerivativeControl, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT}');
+  for (const cap of [32, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5345, 5379]) {
     assert.ok(table.includes(`case ${cap}: return nullptr;`),
       `cap ${cap} must be a nullptr (non-rejecting) case in vk64SpirvCapabilityName`);
   }
@@ -107,6 +107,7 @@ test('whitelisted-capability modules convert through spirvfix + naga', () => {
     'testdata/spirv/dxvk-live/present.vert.spv',
     'testdata/spirv/p9-cull-unused.vert.spv',   // cap 33 declared, unused
     'testdata/spirv/p10-drawparams-unused.vert.spv', // cap 4427 declared, unused
+    'testdata/spirv/dxvk-live/tropics-dxbc.vert.spv', // caps 4465 + 5345 (DXBC vertex shader, real capture)
   ];
   for (const rel of cases) {
     const bytes = new Uint8Array(readFileSync(new URL(`../../../../${rel}`, import.meta.url)));
@@ -114,6 +115,27 @@ test('whitelisted-capability modules convert through spirvfix + naga', () => {
     const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed }));
     assert.ok(wgsl.length > 0, `${rel}: empty WGSL`);
   }
+});
+
+// The float-controls family (4464-4468) and VulkanMemoryModel (5345) are
+// module-level declarations, not constructs: the DXBC compiler puts 5345 on
+// every module it emits and adds 4465 (+ its execution mode) to state D3D FP
+// semantics whenever the device float-controls features allow it. The bridge
+// admits all six; the page tier strips the float-controls family for naga
+// (spirvfix R7) and ingests the Vulkan memory model natively. The genuine
+// ShaderViewportIndexLayerEXT capability is 5254 -- the table carried it
+// against 5345 (VulkanMemoryModel) until 2026-10-26, which made the audit
+// reject every DXBC module while reporting a viewport feature no shader had
+// declared; 5254 stays a named rejection under its correct number.
+test('float-controls and VulkanMemoryModel are whitelisted; 5254 is the real viewport-index-layer cap', () => {
+  const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
+  for (const cap of [4464, 4465, 4466, 4467, 4468, 5345]) {
+    assert.ok(table.includes(`case ${cap}: return nullptr;`), `cap ${cap} must be whitelisted`);
+  }
+  assert.ok(table.includes('case 5254: return "ShaderViewportIndexLayerEXT"'),
+    'ShaderViewportIndexLayerEXT is capability 5254');
+  assert.ok(!table.includes('case 5345: return "ShaderViewportIndexLayerEXT"'),
+    'capability 5345 (VulkanMemoryModel) must not be mislabeled ShaderViewportIndexLayerEXT');
 });
 
 // The used forms stay rejected at the bridge because the page tier cannot

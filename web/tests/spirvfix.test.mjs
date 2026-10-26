@@ -49,6 +49,7 @@ const EXPECTED = {
   'dxvk-live/tri9.vert.spv': ['fold-spec-constants', 'strip-point-builtins'],
   'dxvk-live/tri9.frag.spv': ['fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill'],
   'dxvk-live/present.frag.spv': ['split-combined-sampler', 'fold-spec-constants'],
+  'dxvk-live/tropics-dxbc.vert.spv': ['strip-point-builtins', 'strip-draw-parameters', 'strip-float-controls'],
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
@@ -79,7 +80,7 @@ test('every corpus module converts through toWGSL(spirv) with the pre-pass', asy
     const wgsl = await toWGSL('spirv', bytesOf(f), stageOf(f));
     assert.ok(typeof wgsl === 'string' && wgsl.length > 0, `${f}: empty WGSL`);
   }
-  assert.deepEqual([...seen].sort(), ['fold-spec-constants', 'split-combined-sampler', 'strip-draw-parameters', 'strip-point-builtins', 'tail-demote-to-kill']);
+  assert.deepEqual([...seen].sort(), ['fold-spec-constants', 'split-combined-sampler', 'strip-draw-parameters', 'strip-float-controls', 'strip-point-builtins', 'tail-demote-to-kill']);
 });
 
 test('pre-pass is idempotent; clean modules pass through byte-identical', () => {

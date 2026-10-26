@@ -508,7 +508,14 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 4448: return "StorageBuffer8BitAccess";
         case 4449: return "UniformAndStorageBuffer8BitAccess";
         case 4450: return "StoragePushConstant8";
-        case 5345: return "ShaderViewportIndexLayerEXT";  case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
+        case 4464: return nullptr;            // DenormPreserve: SPV_KHR_float_controls FP-behaviour declarations;
+        case 4465: return nullptr;            // DenormFlushToZero: the DXBC compiler emits this one (with its
+        case 4466: return nullptr;            // SignedZeroInfNanPreserve: execution mode) to state D3D FP semantics;
+        case 4467: return nullptr;            // RoundingModeRTE: the page tier strips the whole family for naga
+        case 4468: return nullptr;            // RoundingModeRTZ: (spirvfix R7). None of the five gates a construct.
+        case 5254: return "ShaderViewportIndexLayerEXT"; // the genuine EXT capability: a shader writing BuiltIn Layer/ViewportIndex has no WebGPU mapping
+        case 5345: return nullptr;             // VulkanMemoryModel(KHR): the memory-model declaration the DXBC compiler puts on every module; naga requires/accepts it. (Mislabeled ShaderViewportIndexLayerEXT until 2026-10-26; that capability is 5254.)
+        case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
         case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
         // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
         // per binding number, so runtime indexing into a resource array cannot be
@@ -572,7 +579,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
-        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379) { // Matrix, Shader, ShaderNonUniform, and the page-tier-translated caps (nullptr cases above) are harmless here.
+        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 4464 && c != 4465 && c != 4466 && c != 4467 && c != 4468 && c != 5345) { // Matrix, Shader, ShaderNonUniform, the page-tier-translated caps, the Vulkan memory model, and the float-controls FP-behaviour declarations (nullptr cases above) are harmless here.
             vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
         }
