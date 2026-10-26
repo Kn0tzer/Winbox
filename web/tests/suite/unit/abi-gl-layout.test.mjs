@@ -34,7 +34,7 @@ const hostIds = parseIds(abiSource, 'host ABI');
 const guestIds = parseIds(guestSource, 'guest libGL');
 
 test('guest GL shim function names and numeric ids match the host ABI', () => {
-  assert.equal(hostIds.size, 322, 'keep the full append-only GL ABI inventory');
+  assert.equal(hostIds.size, 326, 'keep the full append-only GL ABI inventory');
   assert.deepEqual([...guestIds], [...hostIds], 'guest enum ids must stay byte-for-byte aligned with host ids');
 });
 
