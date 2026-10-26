@@ -103,6 +103,7 @@ fi
 rm -f "$OUT_ZIP"
 mkdir -p "$(dirname "$OUT_ZIP")"
 (cd "$PKG" && zip -q -r "$OUT_ZIP" home)
+python3 "$HERE/rootfs64/prepare_prefixes.py" sanitize --archive "$OUT_ZIP"
 echo "Built $OUT_ZIP ($(stat -c%s "$OUT_ZIP") bytes)"
 grep -q '"PROCESSOR_ARCHITECTURE"="x86"' "$PKG/home/username/.wine/system.reg" \
     && echo "Registry arch: x86 OK" || echo "WARNING: arch key missing"

@@ -133,7 +133,28 @@
             }
             var inflight = pending.get(key);
             if (inflight) return inflight;
-            var job = nativeFetch(url, { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" })
+            // Stall backstop: a nativeFetch whose body stalls never settles,
+            // which would wedge this pending entry (and every later fetch of
+            // the same block that joins it) forever. The watchdog aborts the
+            // underlying fetch after the deadline, rejecting the job so
+            // pending clears and callers surface an error. 120 s is
+            // deliberately 2x the fszipurl EM_JS stall window (60 s, see
+            // source/io/fszipurl.cpp): the guest-side fetch normally reports
+            // the stall first, and this layer only fires for jobs nobody is
+            // watching (prefetches) or if the guest side somehow cannot.
+            // BW64_PREFETCH_STALL_MS on the global object overrides the
+            // deadline (unit-test seam).
+            var stallMs = Number(globalThis.BW64_PREFETCH_STALL_MS) > 0
+                ? Number(globalThis.BW64_PREFETCH_STALL_MS) : 120000;
+            var ctrl = (typeof AbortController === "function") ? new AbortController() : null;
+            var init = { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" };
+            if (ctrl) init.signal = ctrl.signal;
+            var timer = setTimeout(function () {
+                console.error("bw64-prefetch: fetch STALL url=" + url + " off=" + start +
+                              " len=" + (end - start + 1) + " stallMs=" + stallMs);
+                if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+            }, stallMs);
+            var job = nativeFetch(url, init)
                 .then(function (response) {
                     if (response.status !== 206) throw new Error("range " + response.status);
                     var contentRange = response.headers.get("Content-Range") || "";
@@ -142,10 +163,12 @@
                     return response.arrayBuffer();
                 })
                 .then(function (buffer) {
+                    clearTimeout(timer);
                     pending.delete(key);
                     put(key, buffer);
                     return buffer;
                 }, function (error) {
+                    clearTimeout(timer);
                     pending.delete(key);
                     throw error;
                 });
@@ -372,6 +395,11 @@
             // quit when the app exits) by spawning `wineserver64 -p` right after
             // boot to pin the running server persistent (see maybeStartSessionApp),
             // and switch apps via bw64_spawn with no reload.
+            // This direct wine64 <program> command also avoids an explicit
+            // wineboot --init for the already initialized prefix. Wine still
+            // starts its required service stack on the first server instance;
+            // wineboot -u means update, not skip, and a bare persistent server
+            // leaves GUI apps without those services.
             prefixEnv().forEach(function (kv) { args.push("-env", kv); });
             wineProgArgv(PROG).forEach(function (tok) { args.push(tok); });
         } else if (USE_PREFIX) {

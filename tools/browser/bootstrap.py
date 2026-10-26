@@ -61,6 +61,28 @@ def restore(manifest, archive, root=ROOT):
                     pending.unlink(missing_ok=True)
 
 
+def check_completeness():
+    """Fail if the pinned runtime set is byte-correct but incomplete.
+
+    The pins only prove the local zips match the recorded hashes; they say
+    nothing about whether the recorded artifacts carry every staged member
+    class (2026-10-25: incomplete 32-bit zips were re-pinned after the
+    manual stage-alsa32.sh post-step was skipped, and --check passed).
+    Run the completeness checker so a re-pin of incomplete artifacts
+    cannot verify clean.
+    """
+    import subprocess
+    import sys
+    checker = ROOT / "tools/rootfs64/check_runtime_completeness.py"
+    result = subprocess.run([sys.executable, str(checker)])
+    if result.returncode != 0:
+        raise SystemExit(
+            "Runtime assets match their pins but are INCOMPLETE "
+            "(see check_runtime_completeness.py failures above); "
+            "run tools/rootfs64/apply-runtime-poststeps.sh and re-pin."
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local", type=Path, help="restore from a previously downloaded archive")
@@ -69,6 +91,8 @@ def main():
     manifest = json.loads((Path(__file__).with_name("runtime-assets.json")).read_text())
     missing = [entry["path"] for entry in manifest["files"] if not matches(ROOT / entry["path"], entry)]
     if not missing:
+        if args.check:
+            check_completeness()
         print(f"Runtime assets verified ({len(manifest['files'])} files).")
         return
     if args.check:

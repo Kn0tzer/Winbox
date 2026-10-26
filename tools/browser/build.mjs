@@ -52,11 +52,22 @@ if (!buildDir) throw new Error(`Unknown BW64_BUILD_TARGET: ${buildTarget}`);
 for (const name of ['boxedwine64.js', 'boxedwine64.wasm', 'BUILD_INFO.json']) await copyFile(resolve(root, 'project/emscripten/Build', buildDir, name), resolve(out, 'runtime', name));
 await copyFile(resolve(root, 'project/emscripten/wine64-launcher.js'), resolve(out, 'runtime/wine64-launcher.js'));
 for (const name of ['glibc-rootfs64.zip', 'wine64.zip', 'prefix64.zip', 'glibc-rootfs32.zip', 'wine32.zip', 'prefix32.zip']) await copyFile(resolve(root, 'web/runtime', name), resolve(out, 'runtime', name));
-// Keep pinned archives intact; stage Wine fonts and the DirectWrite Arial alias
-// in the export before recording the final desktop-helper prefix hashes.
+// Keep pinned archives intact. Strip the browser-irrelevant winemenubuilder
+// RunServices autostart from exported prefixes, then stage fonts and the
+// DirectWrite Arial alias before recording final desktop-helper prefix hashes.
+for (const name of ['prefix32.zip', 'prefix64.zip'])
+  execFileSync('python3', [resolve(root, 'tools/rootfs64/prepare_prefixes.py'), 'sanitize', '--archive', resolve(out, 'runtime', name)], { stdio: 'inherit' });
 execFileSync('python3', [resolve(root, 'tools/browser/stage-wine32-fonts.py'), resolve(out, 'runtime')]);
 // Record final prefix hashes after both font aliases and desktop helpers.
 execFileSync('python3', [resolve(root, 'tools/browser/stage-desktop-pin.py'), resolve(out, 'runtime')]);
+// Hard completeness gate: the shipped runtime set must be complete before
+// this export can succeed. A web/runtime zip that silently lost a staged
+// member class (the 32-bit ALSA-to-OSS bridge went missing exactly this
+// way, 2026-10-25: the manual stage-alsa32.sh post-step was never applied
+// and no check named the members) fails the build here, naming the missing
+// members, instead of shipping. The checker reads the canonical
+// web/runtime zips plus this export's freshly built support pack.
+execFileSync('python3', [resolve(root, 'tools/rootfs64/check_runtime_completeness.py')], { stdio: 'inherit', env: { ...process.env, BW64_SUPPORT_DIR: resolve(out, 'runtime') } });
 await copyFile(resolve(root, 'web/runtime.html'), resolve(out, 'runtime/index.html'));
 // Keep the cached runtime shell and loader together across UI deployments.
 const runtimeBuild = JSON.parse(await readFile(resolve(out, 'runtime/BUILD_INFO.json'), 'utf8'));

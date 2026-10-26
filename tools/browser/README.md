@@ -2,7 +2,7 @@
 
 The browser app is built from `web/` and the Emscripten emulator. `dist/` is the
 generated export. Wine/rootfs archives and Slang are restored from the immutable
-`runtime-assets-20261013` GitHub release; `runtime-assets.json` pins their sizes
+`runtime-assets-20261025` GitHub release; `runtime-assets.json` pins their sizes
 and SHA256 hashes. Naga and zip.js come from `pnpm-lock.yaml`.
 
 ## Fresh checkout
@@ -24,7 +24,7 @@ pnpm test
 an archived local copy:
 
 ```sh
-python3 tools/browser/bootstrap.py --local /path/to/browser-runtime-20261013.tar
+python3 tools/browser/bootstrap.py --local /path/to/browser-runtime-20261025.tar
 node tools/browser/stage-vendor.mjs
 ```
 
