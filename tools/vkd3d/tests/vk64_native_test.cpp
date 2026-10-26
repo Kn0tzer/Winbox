@@ -1497,6 +1497,110 @@ int main() {
             assert(vk64BridgeUnsupportedCount("mirror-clamp-to-edge") == m0 + 1);
             puts("PASS: GUARD unsupported sampler state is reported at vkCreateSampler");
         }
+        // ---- Query pools: creation succeeds and begin/end/timestamp complete.
+        // Regression guard for the Portal load crash: vkCreateQueryPool used to
+        // return VK_ERROR_FEATURE_NOT_PRESENT with a null handle. DXVK's
+        // DxvkGpuQueryAllocator answers that with query handles whose allocator
+        // pointer is null, and DxvkGpuQuery's destructor dereferences it (an SRW
+        // lock at null+0x10), killing the guest at map load. These blocks drive
+        // the exact DXVK sequence (create pool -> reset/begin/end in a command
+        // buffer -> execute at submit -> vkGetQueryPoolResults) on both ABIs.
+        {
+            auto callQ = [&](U64 fn, const VK64Args& args) {
+                memory.memcpyToGuest(128, &args, sizeof(args));
+                return vk64Bridge(&cpu, fn, 128);
+            };
+            QueryPoolCreateInfo64Local ci{};
+            ci.queryType = vkquery::VKQUERY_OCCLUSION; ci.queryCount = 4;
+            memory.memcpyToGuest(2048, &ci, sizeof(ci));
+            memory.writeq(2080, 0);
+            VK64Args cr{}; cr.a[0] = deviceId; cr.a[1] = 2048; cr.a[3] = 2080;
+            assert(callQ(VK64_fn_vkCreateQueryPool, cr) == VK_SUCCESS);
+            U64 poolId = memory.readq(2080);
+            assert(poolId != 0);
+            auto* pool = objOf<QueryPool>(poolId, K_QUERYPOOL, "test");
+            assert(pool && pool->type == vkquery::VKQUERY_OCCLUSION && pool->count == 4
+                   && pool->available.size() == 4);
+            VK64Args gr{}; gr.a[0] = deviceId; gr.a[1] = poolId; gr.a[2] = 0; gr.a[3] = 1;
+            gr.a[4] = 8; gr.a[5] = 2112; gr.a[6] = 8; gr.a[7] = vkquery::VKQUERY_64_BIT;
+            assert(callQ(VK64_fn_vkGetQueryPoolResults, gr) == VK_NOT_READY);
+            U64 qcbId; CmdBuf* qcb = createObj<CmdBuf>(K_CMDBUF, qcbId);
+            VK64Args rs{}; rs.a[0] = qcbId; rs.a[1] = poolId; rs.a[2] = 0; rs.a[3] = 4;
+            assert(callQ(VK64_fn_vkCmdResetQueryPool, rs) == 0);
+            VK64Args bq{}; bq.a[0] = qcbId; bq.a[1] = poolId; bq.a[2] = 2;
+            assert(callQ(VK64_fn_vkCmdBeginQuery, bq) == 0);
+            VK64Args eq{}; eq.a[0] = qcbId; eq.a[1] = poolId; eq.a[2] = 2;
+            assert(callQ(VK64_fn_vkCmdEndQuery, eq) == 0);
+            assert(qcb->cmds.size() == 3 && qcb->cmds[0].kind == CMD_RESET_QUERY
+                   && qcb->cmds[1].kind == CMD_BEGIN_QUERY && qcb->cmds[2].kind == CMD_END_QUERY);
+            for (const Cmd& k : qcb->cmds) execQueryCommand(k);
+            gr.a[2] = 2; memory.writeq(2112, 0);
+            assert(callQ(VK64_fn_vkGetQueryPoolResults, gr) == VK_SUCCESS);
+            assert(memory.readq(2112) == 1); // one sample passed: not fully occluded
+            gr.a[2] = 0;
+            assert(callQ(VK64_fn_vkGetQueryPoolResults, gr) == VK_NOT_READY);
+            QueryPoolCreateInfo64Local tci{};
+            tci.queryType = vkquery::VKQUERY_TIMESTAMP; tci.queryCount = 2;
+            memory.memcpyToGuest(2048, &tci, sizeof(tci));
+            memory.writeq(2080, 0);
+            assert(callQ(VK64_fn_vkCreateQueryPool, cr) == VK_SUCCESS);
+            U64 tsPoolId = memory.readq(2080);
+            assert(tsPoolId != 0 && tsPoolId != poolId);
+            U64 tcbId; CmdBuf* tcb = createObj<CmdBuf>(K_CMDBUF, tcbId);
+            VK64Args wt{}; wt.a[0] = tcbId; wt.a[1] = 1; wt.a[2] = tsPoolId; wt.a[3] = 0;
+            assert(callQ(VK64_fn_vkCmdWriteTimestamp, wt) == 0);
+            wt.a[3] = 1;
+            assert(callQ(VK64_fn_vkCmdWriteTimestamp, wt) == 0);
+            assert(tcb->cmds.size() == 2 && tcb->cmds[0].kind == CMD_WRITE_TIMESTAMP
+                   && tcb->cmds[1].kind == CMD_WRITE_TIMESTAMP);
+            for (const Cmd& k : tcb->cmds) execQueryCommand(k);
+            VK64Args tg{}; tg.a[0] = deviceId; tg.a[1] = tsPoolId; tg.a[2] = 0; tg.a[3] = 2;
+            tg.a[4] = 16; tg.a[5] = 2112; tg.a[6] = 8; tg.a[7] = vkquery::VKQUERY_64_BIT;
+            assert(callQ(VK64_fn_vkGetQueryPoolResults, tg) == VK_SUCCESS);
+            assert(memory.readq(2112) != 0 && memory.readq(2120) > memory.readq(2112));
+            VK64Args de{}; de.a[0] = deviceId; de.a[1] = poolId;
+            assert(callQ(VK64_fn_vkDestroyQueryPool, de) == 0);
+            assert(!findObj(poolId, K_QUERYPOOL));
+            de.a[1] = tsPoolId;
+            assert(callQ(VK64_fn_vkDestroyQueryPool, de) == 0);
+            assert(!findObj(tsPoolId, K_QUERYPOOL));
+            puts("PASS: query pools create, record, complete and destroy (64-bit)");
+        }
+        {
+            KMemory memory32; CPU cpu32{&memory32};
+            g_mem32 = &memory32;
+            auto call32q = [&](U32 fn, const VK32Args& args) {
+                memory32.memcpyToGuest(128, &args, sizeof(args));
+                return vk32Bridge(&cpu32, fn, 128);
+            };
+            QueryPoolCreateInfo32Local ci{};
+            ci.queryType = vkquery::VKQUERY_OCCLUSION; ci.queryCount = 16384; // DXVK occlusion allocator size
+            memory32.memcpyToGuest(2048, &ci, sizeof(ci));
+            memory32.writeq(2080, 0);
+            VK32Args cr{}; cr.a[0] = 1; cr.a[1] = 2048; cr.a[3] = 2080;
+            assert(call32q(VK64_fn_vkCreateQueryPool, cr) == VK_SUCCESS);
+            U64 poolId = memory32.readq(2080);
+            assert(poolId != 0);
+            auto* pool = objOf32<QueryPool>(poolId, K_QUERYPOOL, "test");
+            assert(pool && pool->count == 16384 && pool->available.size() == 16384);
+            U64 qcbId; CmdBuf* qcb = createObj32<CmdBuf>(K_CMDBUF, qcbId);
+            VK32Args bq{}; bq.a[0] = (U32)qcbId; bq.a[1] = (U32)poolId; bq.a[2] = 7;
+            assert(call32q(VK64_fn_vkCmdBeginQuery, bq) == 0);
+            VK32Args eq{}; eq.a[0] = (U32)qcbId; eq.a[1] = (U32)poolId; eq.a[2] = 7;
+            assert(call32q(VK64_fn_vkCmdEndQuery, eq) == 0);
+            assert(qcb->cmds.size() == 2 && qcb->cmds[0].kind == CMD_BEGIN_QUERY
+                   && qcb->cmds[1].kind == CMD_END_QUERY);
+            for (const Cmd& k : qcb->cmds) execQueryCommand(k);
+            VK32Args gr{}; gr.a[1] = (U32)poolId; gr.a[2] = 7; gr.a[3] = 1;
+            gr.a[4] = 8; gr.a[5] = 2112; gr.a[6] = 8; gr.a[7] = vkquery::VKQUERY_64_BIT;
+            assert(call32q(VK64_fn_vkGetQueryPoolResults, gr) == VK_SUCCESS);
+            assert(memory32.readq(2112) == 1);
+            VK32Args de{}; de.a[1] = (U32)poolId;
+            assert(call32q(VK64_fn_vkDestroyQueryPool, de) == 0);
+            assert(!findObj(poolId, K_QUERYPOOL));
+            g_mem32 = nullptr;
+            puts("PASS: query pools create, record, complete and destroy (32-bit)");
+        }
         while (!g_objs.empty()) dropObj(g_objs.begin()->first);
     }
 }
