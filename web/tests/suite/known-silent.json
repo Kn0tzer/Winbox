@@ -18,8 +18,8 @@
     },
     "source/kernel/syscall64.cpp": {
       "emptyCatch": 0,
-      "unloggedDefault": 5,
-      "unloggedErrno": 48
+      "unloggedDefault": 7,
+      "unloggedErrno": 112
     },
     "source/opengl/gl64bridge.cpp": {
       "emptyCatch": 22,
@@ -33,7 +33,7 @@
     },
     "source/vulkan/vk64bridge.cpp": {
       "emptyCatch": 2,
-      "unloggedDefault": 8,
+      "unloggedDefault": 16,
       "unloggedErrno": 0
     },
     "web/app.mjs": {
@@ -52,7 +52,7 @@
       "unloggedErrno": 0
     },
     "web/gl-webgpu.mjs": {
-      "emptyCatch": 3,
+      "emptyCatch": 4,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     },
@@ -83,6 +83,11 @@
     },
     "web/vkwebgpu.mjs": {
       "emptyCatch": 18,
+      "unloggedDefault": 0,
+      "unloggedErrno": 0
+    },
+    "source/io/fszipurl.cpp": {
+      "emptyCatch": 1,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     }
