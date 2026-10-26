@@ -61,6 +61,7 @@ namespace vk32abi {
 #include "vk_query_results.h"
 #include "vk_encode_profile.h"
 #include "vk_cb_lifecycle.h" // queue-submit fallback recording lifecycle
+#include "vk_gs_passthrough.h" // layer-passthrough geometry shape: meta-copy serve/drop disposition
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -483,14 +484,24 @@ static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, 
 
 static const char* vk64SpirvCapabilityName(U32 cap) {
     switch (cap) {
-        case 2: return "Geometry";            case 3: return "Tessellation";
+        case 2: return nullptr;                // Geometry: declared by every DXVK meta fragment shader (it reads
+                                               // gl_Layer; spirvfix R11 rewrites the read to 0 and naga then accepts
+                                               // the module) and by true geometry-stage modules. Creation passes for
+                                               // both: geometry pipelines are recorded, and submit governs their draws
+                                               // (layer-passthrough shape served by stage omission, others loud-
+                                               // dropped; see vk_gs_passthrough.h and serializeSubmitV2).
+        case 3: return "Tessellation";
         case 9: return "Float16";             case 10: return "Float64";
         case 11: return "Int64";              case 12: return "Int64Atomics";
         case 22: return "Int16";              case 23: return "TessellationPointSize";
         case 24: return "GeometryPointSize";  case 25: return "ImageGatherExtended";
         case 27: return "StorageImageMultisample";
         case 32: return nullptr;             // ClipDistance: shaderClipDistance advertised; naga translates it
-        case 33: return "CullDistance";       case 35: return "SampleRateShading";
+        case 33: return "CullDistance";
+        case 35: return nullptr;               // SampleRateShading: translation-gated pass - naga translates the
+                                               // SampleId read (corpus module dxvk-meta-copy-color-ms converts end to
+                                               // end); the fixed-function half (sampleShadingEnable) still rejects in
+                                               // the pipeline audit below.
         case 39: return "Int8";               case 41: return "SparseResidency";
         case 42: return "MinLod";             case 43: return nullptr; // Sampled1D: core; the page tier serves 1D textures
         case 49: return "StorageImageExtendedFormats";
@@ -579,7 +590,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
-        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 4464 && c != 4465 && c != 4466 && c != 4467 && c != 4468 && c != 5345) { // Matrix, Shader, ShaderNonUniform, the page-tier-translated caps, the Vulkan memory model, and the float-controls FP-behaviour declarations (nullptr cases above) are harmless here.
+        } else if (c != 0 && c != 1 && c != 2 && c != 5301 && c != 32 && c != 35 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 4464 && c != 4465 && c != 4466 && c != 4467 && c != 4468 && c != 5345) { // Matrix, Shader, ShaderNonUniform, the page-tier-translated caps, the Vulkan memory model, and the float-controls FP-behaviour declarations (nullptr cases above) are harmless here.
             vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
         }
@@ -823,6 +834,10 @@ struct ShaderModule : Obj {
                                    // after pipeline creation (legal), so destroy
                                    // is a refcount drop (P1 section 1.2).
     int destroyed = 0;
+    bool geomPassthrough = false;   // set at creation: the module is the proven
+                                   // layer-passthrough geometry shape
+                                   // (vk_gs_passthrough.h); governs the pipeline
+                                   // audit log + submit-time serving.
 };
 // Descriptor model. A layout keeps EVERY binding it declares (binding numbers
 // are sparse and unbounded: vkd3d-proton uses binding numbers in the thousands),
@@ -1074,6 +1089,11 @@ struct Pipeline : Obj {
     U32 vaOffset[VK64_MAX_VERT_ATTRIBS] = {0};
     U32 vaLocation[VK64_MAX_VERT_ATTRIBS] = {0};
     U64 vs = 0, fs = 0, cs = 0, layout = 0, rp = 0;
+    U64 gs = 0;                     // geometry stage module when the guest pipeline
+                                   // has one: recorded, never serialised (WebGPU has
+                                   // no geometry stage); draws governed at submit.
+    bool gsServe = false;           // gs is the layer-passthrough shape AND strip-
+                                   // equivalent to fs: draws served by omission.
 };
 template <class T>
 static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
@@ -1106,10 +1126,15 @@ enum { VK64_DYN_CULL = 0, VK64_DYN_FRONT = 1, VK64_DYN_TOPOLOGY = 2, VK64_DYN_DE
 // Everything vkCreateGraphicsPipelines does not model is reported here, once
 // per feature (rate-limited, greppable "vk64: UNSUPPORTED <feature>"). Stages
 // with no V2 representation cannot be approximated, so they fail the pipeline
-// with VK_ERROR_FEATURE_NOT_PRESENT. No unsupported state is approximated:
+// with VK_ERROR_FEATURE_NOT_PRESENT. One exception: the geometry stage is
+// recorded, not rejected, and its draws are governed at submit (served by
+// omission for the layer-passthrough shape, loud-dropped otherwise), because
+// DXVK meta pipelines carry one and their constructor throws on failure.
+// No unsupported state is approximated:
 // DXVK/vkd3d must choose a path compatible with the advertised feature bits.
 struct PipelineAudit {
     U32 stageMask = 0;            // OR of VkShaderStageFlagBits
+    bool gsPassthroughShape = false; // the geometry stage module is the layer-passthrough shape (served by omission)
     U32 topology = 0;
     U32 polygonMode = 0;
     U32 viewportCount = 0;
@@ -1132,7 +1157,17 @@ static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
     const U32 extra = a.stageMask & ~kV2SupportedStageMask;
     if (extra & 0x2u)  { vk64Unsupported("tessellation-control-stage", "pipeline rejected"); reject = true; }
     if (extra & 0x4u)  { vk64Unsupported("tessellation-evaluation-stage", "pipeline rejected"); reject = true; }
-    if (extra & 0x8u)  { vk64Unsupported("geometry-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x8u)  {
+        // Geometry stage: NOT a creation rejection. The pipeline is created
+        // and recorded (Pipeline.gs); WebGPU has no geometry stage, so submit
+        // governs the draws: served by stage omission when the module is the
+        // proven layer-passthrough shape and strip-equivalent to the fragment
+        // stage, loud-dropped with the geometry-stage-draw counter otherwise.
+        // Rejecting here killed Gang Beasts in its first scene: DXVK's
+        // meta-copy constructor throws on any pipeline creation failure. The
+        // passthrough shape logs nothing here: it is served, not unsupported.
+        if (!a.gsPassthroughShape) vk64Unsupported("geometry-stage", "geometry-stage pipeline recorded; its draws are not produced (WebGPU has no geometry stage) and are loud-dropped at submit");
+    }
     if (extra & 0x40u) { vk64Unsupported("task-stage", "pipeline rejected"); reject = true; }
     if (extra & 0x80u) { vk64Unsupported("mesh-stage", "pipeline rejected"); reject = true; }
     if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
@@ -2452,6 +2487,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_SCISSOR:  sci = k.f; break;
                 case CMD_PUSH_CONST: pushes.push_back(&k); break;
                 case CMD_DRAW:
+                    if (pipe && pipe->gs && !pipe->gsServe) { vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)"); break; }
                     // Baked in draw order like indexed: captured draws get
                     // firstVertex = current baked-verts offset for replay.
                     if (draws.size() < VK64_MAX_DRAWS) {
@@ -2467,6 +2503,7 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 case CMD_DRAW_INDEXED:
+                    if (pipe && pipe->gs && !pipe->gsServe) { vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)"); break; }
                     // Baked in draw order. Concatenate all baked verts so the
                     // replay shader has every quad, with firstVertex offsets.
                     if (draws.size() < VK64_MAX_DRAWS) {
@@ -4112,7 +4149,12 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 }
-                case CMD_DRAW:
+                case CMD_DRAW: {
+                    Pipeline* gsPipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
+                    if (gsPipe && gsPipe->gs && !gsPipe->gsServe) {
+                        vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)");
+                        break;
+                    }
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
@@ -4120,7 +4162,13 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32(0); p.u32(0); p.u32(0);
                     });
                     break;
-                case CMD_DRAW_INDEXED:
+                }
+                case CMD_DRAW_INDEXED: {
+                    Pipeline* gsPipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
+                    if (gsPipe && gsPipe->gs && !gsPipe->gsServe) {
+                        vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)");
+                        break;
+                    }
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
@@ -4128,6 +4176,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32((U32)k.a); p.u32((U32)k.c); p.u32((U32)(int32_t)k.copy.ox);
                     });
                     break;
+                }
                 case CMD_COPY_IMAGE: {
                     const ImageCopy& copy = k.imageCopy;
                     emit(V2_IMAGE_COPY, [&](ChunkWriter& p) {
@@ -5765,7 +5814,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             readArray(ci.pStages, ci.stageCount, stages);
             {
                 PipelineAudit audit;
-                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                for (const auto& st : stages) {
+                    audit.stageMask |= (U32)st.stage;
+                    if ((U32)st.stage == (U32)VK_SHADER_STAGE_GEOMETRY_BIT) {
+                        ShaderModule* gm = objOf<ShaderModule>(st.module, K_SHADER, "vkCreateGraphicsPipelines");
+                        if (gm) audit.gsPassthroughShape = gm->geomPassthrough;
+                    }
+                }
                 audit.topology = ia.topology;
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
@@ -5810,6 +5865,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     p->fs = st.module;
                     captureStageSpec(st.pSpecializationInfo, p->fsSpec);
                 }
+                if (st.stage == VK_SHADER_STAGE_GEOMETRY_BIT) {
+                    p->gs = st.module;
+                }
+            }
+            if (p->gs) {
+                ShaderModule* gm = objOf<ShaderModule>(p->gs, K_SHADER, "vkCreateGraphicsPipelines");
+                ShaderModule* fm = p->fs ? objOf<ShaderModule>(p->fs, K_SHADER, "vkCreateGraphicsPipelines") : nullptr;
+                p->gsServe = gm && gm->geomPassthrough && fm &&
+                    vkgs::stripServeOk((const uint32_t*)gm->code.data(), gm->code.size() / 4,
+                                       (const uint32_t*)fm->code.data(), fm->code.size() / 4);
             }
             p->layout = ci.layout;
             p->rp = ci.renderPass;
@@ -5899,6 +5964,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             wr64(args.a[3], 0);
             return auditResult;
         }
+        m->geomPassthrough = vkgs::isLayerPassthroughGeom((const uint32_t*)m->code.data(), m->code.size() / 4);
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
                  (unsigned long long)ci.codeSize, (unsigned long long)m->hash);
@@ -8973,6 +9039,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 wr64_32((U32)args.a[3], 0);
                 return auditResult;
             }
+            m->geomPassthrough = vkgs::isLayerPassthroughGeom((const uint32_t*)m->code.data(), m->code.size() / 4);
         }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
@@ -9050,7 +9117,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             readArray32(ci.pStages, ci.stageCount, stages);
             {
                 PipelineAudit audit;
-                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                for (const auto& st : stages) {
+                    audit.stageMask |= (U32)st.stage;
+                    if ((U32)st.stage == (U32)VK_SHADER_STAGE_GEOMETRY_BIT) {
+                        ShaderModule* gm = objOf<ShaderModule>(st.module, K_SHADER, "vkCreateGraphicsPipelines");
+                        if (gm) audit.gsPassthroughShape = gm->geomPassthrough;
+                    }
+                }
                 audit.topology = ia.topology;
                 audit.polygonMode = rs.polygonMode;
                 audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
@@ -9098,6 +9171,16 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     p->fs = st.module;
                     captureStageSpec32(st.pSpecializationInfo, p->fsSpec);
                 }
+                if ((U32)st.stage == (U32)VK_SHADER_STAGE_GEOMETRY_BIT) {
+                    p->gs = st.module;
+                }
+            }
+            if (p->gs) {
+                ShaderModule* gm = objOf<ShaderModule>(p->gs, K_SHADER, "vkCreateGraphicsPipelines");
+                ShaderModule* fm = p->fs ? objOf<ShaderModule>(p->fs, K_SHADER, "vkCreateGraphicsPipelines") : nullptr;
+                p->gsServe = gm && gm->geomPassthrough && fm &&
+                    vkgs::stripServeOk((const uint32_t*)gm->code.data(), gm->code.size() / 4,
+                                       (const uint32_t*)fm->code.data(), fm->code.size() / 4);
             }
             p->layout = ci.layout;
             p->rp = ci.renderPass;

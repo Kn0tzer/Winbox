@@ -31,8 +31,14 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
   for (const [field, feature] of unsupported) {
     assert.match(body, new RegExp(`a\\.${field}[^\\n]*vk64Unsupported\\([^\\n]*"${feature}"[^\\n]*reject = true`), feature);
   }
+  // 'geometry-stage' is NOT in this list any more (2026-10-26, Gang Beasts
+  // geometry disposition): geometry pipelines are created and recorded;
+  // their draws are governed at submit - served by stage omission for the
+  // layer-passthrough shape, loud-dropped otherwise. Rejecting at creation
+  // is fatal inside DXVK's meta constructors. The disposition is pinned in
+  // vk-gs-passthrough.test.mjs; the remaining stages still reject here.
   for (const feature of [
-    'tessellation-control-stage', 'tessellation-evaluation-stage', 'geometry-stage', 'task-stage', 'mesh-stage',
+    'tessellation-control-stage', 'tessellation-evaluation-stage', 'task-stage', 'mesh-stage',
     'unknown-graphics-stage', 'patch-list-topology', 'adjacency-topology',
   ]) assert.match(body, new RegExp(`vk64Unsupported\\("${feature}"[^\\n]*reject = true`), feature);
   assert.match(body, /return reject;/);
