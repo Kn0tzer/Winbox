@@ -88,12 +88,18 @@ test('no advertised feature or extension may use an exception status', () => {
   }
 });
 
-test('occlusion queries remain disabled because render sample counting is unavailable', () => {
+test('occlusion feature bits stay unadvertised; basic occlusion is served by bridge emulation', () => {
   assert.ok(manifest.notAdvertised.includes('fillCoreFeatures.occlusionQueryPrecise'));
   assert.ok(manifest.notAdvertised.includes('fillCoreFeatures.occlusionQuery'));
   assert.doesNotMatch(bridge, /f->occlusionQueryPrecise\s*=\s*VK_TRUE/);
   assert.doesNotMatch(bridge, /f->occlusionQuery\s*=\s*VK_TRUE/);
-  assert.match(bridge, /"occlusion queries are not implemented; device feature bit is false"/);
+  // Begin/end are recorded and completed with an emulated result (one
+  // sample passed); the old not-implemented warning stub is gone.
+  assert.doesNotMatch(bridge, /"occlusion queries are not implemented; device feature bit is false"/);
+  assert.equal((bridge.match(/c\.kind = CMD_BEGIN_QUERY/g) || []).length, 2,
+    'both guest ABIs record occlusion begin commands');
+  assert.equal((bridge.match(/c\.kind = CMD_END_QUERY/g) || []).length, 2,
+    'both guest ABIs record occlusion end commands');
 });
 
 test('descriptor-set limit matches the three WebGPU groups left after push constants', () => {
