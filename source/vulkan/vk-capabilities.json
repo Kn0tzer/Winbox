@@ -49,6 +49,15 @@
     "fillVulkan12Features.timelineSemaphore": {
       "status": "implemented"
     },
+    "fillVulkan12Features.uniformBufferStandardLayout": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.shaderInt16": {
+      "status": "implemented"
+    },
+    "fillUniformBufferStandardLayout.uniformBufferStandardLayout": {
+      "status": "implemented"
+    },
     "fillVulkan11Features.shaderDrawParameters": {
       "status": "implemented"
     },
@@ -161,7 +170,6 @@
     "fillCoreFeatures.shaderTessellationAndGeometryPointSize",
     "fillCoreFeatures.shaderFloat64",
     "fillCoreFeatures.shaderImageGatherExtended",
-    "fillCoreFeatures.shaderInt16",
     "fillCoreFeatures.shaderInt64",
     "fillCoreFeatures.shaderResourceMinLod",
     "fillCoreFeatures.shaderResourceResidency",

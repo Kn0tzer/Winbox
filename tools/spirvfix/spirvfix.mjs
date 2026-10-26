@@ -39,6 +39,15 @@
 //      control. Rewrite: drop the capability and any OpExecutionMode
 //      SignedZeroInfNanPreserve instructions. Safe for rendering: it only
 //      governs NaN/inf edge-case preservation.
+//   R13 "uniform-block-to-storage": the bridge advertises
+//      VK_KHR_uniform_buffer_standard_layout, whose std430 uniform-block
+//      packing WGSL's uniform address space cannot express (strides and
+//      struct sizes there round up to 16) but WGSL's storage address space
+//      expresses byte-for-byte. A DescriptorSet-bound uniform block whose
+//      layout is storage-expressible but not uniform-expressible is demoted
+//      to a read-only storage variable; scalar-packed blocks match neither
+//      layout and are left to fail loudly. See the rule body for the exact
+//      conditions and the fail-closed trace.
 //   R8 "strip-unused-physical-storage-buffer": naga rejects OpCapability
 //      PhysicalStorageBufferAddresses (5346/5347) and the
 //      SPV_KHR_physical_storage_buffer extension. vkd3d-proton emits them
@@ -67,7 +76,7 @@ const Op = {
   SpecConstantTrue: 48, SpecConstantFalse: 49, SpecConstant: 50,
   SpecConstantComposite: 51, SpecConstantOp: 52,
   Function: 54, FunctionParameter: 55, FunctionEnd: 56, FunctionCall: 57,
-  Variable: 59, Load: 61, Store: 62, AccessChain: 65,
+  Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, PtrAccessChain: 67,
   Decorate: 71, MemberDecorate: 72, GroupDecorate: 74,
   SampledImage: 86,
   Capability: 17, ImageFetch: 95, Image: 100, Bitcast: 124, UDiv: 134, UMod: 137,
@@ -1715,6 +1724,300 @@ export function texelBuffersTo2D(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
+// --- R13: uniform-block-to-storage -------------------------------------------
+// The bridge advertises VK_KHR_uniform_buffer_standard_layout (the honest
+// half of vkd3d's shader-model 6.0 gate): a uniform block may carry std430
+// packing. WGSL's storage address space IS std430, byte for byte -- but
+// WGSL's uniform address space is not: array strides and struct sizes /
+// member offsets there round up to 16, so naga rejects a std430-packed
+// uniform block ("The array stride 4 is not a multiple of the required
+// alignment 16") even though every byte offset is exactly representable one
+// address space over. dxil-spv emits precisely those blocks for D3D12
+// constant buffers (a wrapper struct around a tightly-strided array whose
+// element type is the shader's widest cbuffer access: float -> stride 4,
+// vec2 -> stride 8).
+//
+// Rewrite: a DescriptorSet-bound Uniform block variable whose decorated
+// layout is NOT expressible in WGSL's uniform layout but IS exactly
+// expressible in WGSL's storage layout is demoted to a read-only
+// StorageBuffer variable (storage class flip on the variable and on every
+// pointer type its access chains produce, plus a NonWritable decoration on
+// the variable so naga emits var<storage> (read) -- legal in every stage,
+// and the page tier derives the bind-group layout entry and the GPU buffer
+// usage from the WGSL declaration, so the guest's bytes are bound as a
+// storage buffer and read at identical offsets). Blocks whose layout
+// matches NEITHER WGSL layout (scalar packing: vec3 arrays at stride 12,
+// MatrixStride 12, scalar-packed members) are left untouched -- they keep
+// failing loudly at naga, which is the honest outcome for
+// scalarBlockLayout = VK_FALSE. Anything the checker cannot model exactly
+// (bool members, runtime arrays in a uniform block, spec-constant array
+// lengths, a flipped pointer flowing into a function call / store / phi)
+// aborts the demotion for that variable: fail closed, module unchanged.
+const R13_SC = { Uniform: 2, StorageBuffer: 12 };
+// Declaration opcodes above 56 whose operands are decoration targets,
+// literals or strings rather than consumed values (Variable 59 is for its
+// initializer operand).
+const R13_TRACE_SKIP = new Set([59, 71, 72, 73, 74, 328, 330, 331, 332, 5632, 5633]);
+const R13_DEC = {
+  Block: 2, BufferBlock: 3, RowMajor: 4, ColMajor: 5, ArrayStride: 6,
+  MatrixStride: 7, NonWritable: 24, Offset: 35,
+};
+
+export function uniformBlocksToStorage(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+
+  // ---- decorations ---------------------------------------------------------
+  const typeDeco = new Map();       // typeId -> { arrayStride }
+  const structKind = new Map();     // structId -> 'block' | 'bufferblock'
+  const memberDeco = new Map();     // `${structId}:${idx}` -> { offset, matrixStride, rowMajor }
+  const varDeco = new Map();        // varId -> Set of decorations applied to the variable
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Decorate) {
+      const [target, deco, val] = ins.words;
+      if (deco === R13_DEC.ArrayStride) {
+        const d = typeDeco.get(target) || {}; d.arrayStride = val; typeDeco.set(target, d);
+      } else if (deco === R13_DEC.Block) structKind.set(target, 'block');
+      else if (deco === R13_DEC.BufferBlock) structKind.set(target, 'bufferblock');
+      else {
+        const s = varDeco.get(target) || new Set(); s.add(deco); varDeco.set(target, s);
+      }
+    } else if (ins.op === Op.MemberDecorate) {
+      const [st, idx, deco, val] = ins.words;
+      const key = st + ':' + idx;
+      const d = memberDeco.get(key) || {};
+      if (deco === R13_DEC.Offset) d.offset = val;
+      else if (deco === R13_DEC.MatrixStride) d.matrixStride = val;
+      else if (deco === R13_DEC.RowMajor) d.rowMajor = true;
+      else if (deco === R13_DEC.ColMajor) d.rowMajor = false;
+      memberDeco.set(key, d);
+    }
+  }
+  const constVal = (id) => {
+    const c = byId.get(id);
+    if (!c || c.op !== Op.Constant) return null;
+    const t = byId.get(c.words[0]);
+    if (!t || t.op !== Op.TypeInt) return null;
+    const w = t.words[1];
+    const v = w === 64 ? (BigInt(c.words[2] >>> 0) | (BigInt(c.words[3] || 0) << 32n)) : BigInt(c.words[2] >>> 0);
+    return v <= 0x7fffffffn ? Number(v) : null;
+  };
+  const roundUp = (a, v) => (v + a - 1) & ~(a - 1);
+  const isPow2 = (v) => v > 0 && (v & (v - 1)) === 0;
+
+  // WGSL host-shareable layout, per address space ('storage' | 'uniform').
+  // measure(typeId, space, mDeco) -> { size, align, ok } | null
+  //   ok: every decorated stride / offset inside the type equals the value
+  //       this space's WGSL layout computes (so naga's re-layout is a
+  //       byte-exact no-op). null: a shape this checker does not model.
+  // mDeco is the enclosing struct member's decorations (matrix stride /
+  // majorness live there, not on the type); arrays pass it through, nested
+  // structs replace it with their own members' decorations.
+  function measure(typeId, space, mDeco) {
+    const t = byId.get(typeId);
+    if (!t) return null;
+    switch (t.op) {
+      case Op.TypeInt:
+      case Op.TypeFloat: {
+        const size = t.words[1] / 8;
+        return { size, align: size, ok: true };
+      }
+      case Op.TypeVector: {
+        const comp = measure(t.words[1], space, null);
+        if (!comp) return null;
+        const n = t.words[2];
+        return { size: comp.size * n, align: comp.size * (n === 2 ? 2 : 4), ok: comp.ok };
+      }
+      case Op.TypeMatrix: {
+        if (!mDeco || mDeco.matrixStride == null) return null;
+        const col = byId.get(t.words[1]);
+        if (!col || col.op !== Op.TypeVector) return null;
+        const comp = measure(col.words[1], space, null);
+        if (!comp) return null;
+        const rows = col.words[2], cols = t.words[2];
+        // The vectors the buffer actually stores: columns (ColMajor) or
+        // rows (RowMajor). Stride rule is the vector-array rule in BOTH
+        // spaces (proven: mat2 at MatrixStride 8 converts as var<uniform>).
+        const vecSize = mDeco.rowMajor ? comp.size * cols : comp.size * rows;
+        const vecAlign = comp.size * ((mDeco.rowMajor ? cols : rows) === 2 ? 2 : 4);
+        const vecCount = mDeco.rowMajor ? rows : cols;
+        const stride = roundUp(vecAlign, vecSize);
+        return { size: stride * vecCount, align: vecAlign, ok: mDeco.matrixStride === stride };
+      }
+      case Op.TypeArray: {
+        const len = constVal(t.words[2]);
+        const deco = typeDeco.get(typeId);
+        if (len == null || !deco || deco.arrayStride == null) return null;
+        const elem = measure(t.words[1], space, mDeco);
+        if (!elem) return null;
+        let stride = roundUp(elem.align, elem.size);
+        if (space === 'uniform') stride = roundUp(16, stride);
+        const align = space === 'uniform' ? Math.max(16, elem.align) : elem.align;
+        return { size: stride * len, align, ok: elem.ok && deco.arrayStride === stride };
+      }
+      case Op.TypeStruct: {
+        let endU = 0, endS = 0, alignU = 0, alignS = 0, okU = true, okS = true;
+        for (let i = 1; i < t.words.length; i++) {
+          const mt = t.words[i];
+          const md = memberDeco.get(typeId + ':' + (i - 1));
+          if (!md || md.offset == null) return null;
+          const mu = measure(mt, 'uniform', md), ms = measure(mt, 'storage', md);
+          if (!mu || !ms) return null;
+          const offU = roundUp(mu.align, endU), offS = roundUp(ms.align, endS);
+          if (md.offset !== offU || !mu.ok) okU = false;
+          if (md.offset !== offS || !ms.ok) okS = false;
+          endU = offU + mu.size; endS = offS + ms.size;
+          alignU = Math.max(alignU, mu.align); alignS = Math.max(alignS, ms.align);
+        }
+        if (space === 'uniform')
+          return { size: roundUp(Math.max(16, alignU), endU), align: Math.max(16, alignU), ok: okU };
+        return { size: roundUp(alignS, endS), align: alignS, ok: okS };
+      }
+      default:
+        return null; // bool, runtime array, pointer, image, ...: unmodelled
+    }
+  }
+  // For the block struct itself only member checks matter (nothing follows
+  // it, so its own size/align never gate conversion).
+  function blockVerdict(structId) {
+    const t = byId.get(structId);
+    if (!t || t.op !== Op.TypeStruct) return null;
+    let endU = 0, endS = 0, okU = true, okS = true;
+    for (let i = 1; i < t.words.length; i++) {
+      const md = memberDeco.get(structId + ':' + (i - 1));
+      if (!md || md.offset == null) return null;
+      const mu = measure(t.words[i], 'uniform', md), ms = measure(t.words[i], 'storage', md);
+      if (!mu || !ms) return null;
+      if (md.offset !== roundUp(mu.align, endU)) okU = false;
+      if (md.offset !== roundUp(ms.align, endS)) okS = false;
+      okU = okU && mu.ok; okS = okS && ms.ok;
+      endU = roundUp(mu.align, endU) + mu.size;
+      endS = roundUp(ms.align, endS) + ms.size;
+    }
+    return { uniform: okU, storage: okS };
+  }
+
+  // ---- candidate variables ---------------------------------------------------
+  const candidates = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== R13_SC.Uniform) continue;
+    const decos = varDeco.get(ins.resultId);
+    if (!decos || !decos.has(Dec.DescriptorSet)) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer || ptr.words[1] !== R13_SC.Uniform) continue;
+    const structId = ptr.words[2];
+    if (structKind.get(structId) !== 'block') continue;
+    const verdict = blockVerdict(structId);
+    if (!verdict || verdict.uniform || !verdict.storage) continue;
+    candidates.push({ varIns: ins, varId: ins.resultId, structId, ptrTypeId: ins.words[0] });
+  }
+  if (!candidates.length) return false;
+
+  // SPIR-V < 1.3 spells a storage block BufferBlock, not Block: the struct
+  // decoration flips with the variable, which is only sound when no other
+  // variable keeps the struct.
+  const pre13 = mod.header.version < 0x00010300;
+  const structUsers = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (ptr && ptr.op === Op.TypePointer) {
+      const s = structUsers.get(ptr.words[2]) || new Set();
+      s.add(ins.resultId); structUsers.set(ptr.words[2], s);
+    }
+  }
+
+  const nextId = makeIdSource(mod);
+  const twinOf = new Map();   // pointer type id -> StorageBuffer twin id
+  let pendingTwins = [];      // twins created for the candidate being mutated
+  const twinPointer = (ptrTypeId) => {
+    if (twinOf.has(ptrTypeId)) return twinOf.get(ptrTypeId);
+    const src = byId.get(ptrTypeId);
+    const id = nextId();
+    const ins = { op: Op.TypePointer, words: [id, R13_SC.StorageBuffer, src.words[2]], resultType: null, resultId: id };
+    twinOf.set(ptrTypeId, id); pendingTwins.push(ins);
+    return id;
+  };
+
+  let changed = 0;
+  for (const cand of candidates) {
+    // ---- forward value trace from the variable (fail closed) ---------------
+    const traced = new Set([cand.varId]);
+    const typeRewrites = [];  // instructions whose resultType needs the twin
+    let abort = false;
+    let grew = true;
+    while (grew && !abort) {
+      grew = false;
+      for (const ins of mod.insns) {
+        if (ins.resultId != null && traced.has(ins.resultId)) continue;
+        // Only executable instructions consume values. Declarations
+        // (types, constants, OpEntryPoint interface lists, OpFunction
+        // control masks, decorations) also *mention* ids or small literals
+        // that can numerically equal an id; scanning them would refuse
+        // every demotion. OpVariable (59) is excluded for its initializer.
+        if (ins.op < 57 || R13_TRACE_SKIP.has(ins.op)) continue;
+        const w = ins.words;
+        // first value operand index: after (resultType, resultId) when the
+        // instruction has them, else after resultId alone, else 0.
+        const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+        let hit = -1;
+        for (let k = start; k < w.length; k++) if (traced.has(w[k])) { hit = k; break; }
+        if (hit < 0) continue;
+        if (ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain || ins.op === Op.PtrAccessChain || ins.op === Op.CopyObject) {
+          // access chains / pointer copies: the base must be the operand in
+          // base position (first value operand); anything else is exotic.
+          if (hit !== start) { abort = true; break; }
+          traced.add(ins.resultId); typeRewrites.push(ins); grew = true;
+        } else if (ins.op === Op.Load) {
+          // loading a VALUE through the pointer: fine, nothing to rewrite.
+        } else {
+          abort = true; break; // call, store, phi, select, ...: fail closed
+        }
+      }
+    }
+    if (abort) {
+      log.push(`spirvfix R13: demotion of uniform block %${cand.varId} refused (pointer value escapes the access-chain trace)`);
+      continue;
+    }
+    if (pre13) {
+      const users = structUsers.get(cand.structId) || new Set();
+      const others = [...users].filter((u) => u !== cand.varId && !candidates.some((c) => c.varId === u));
+      if (others.length) {
+        log.push(`spirvfix R13: demotion of uniform block %${cand.varId} refused (pre-1.3 struct shared with another variable)`);
+        continue;
+      }
+    }
+    // ---- mutate -------------------------------------------------------------
+    pendingTwins = [];
+    cand.varIns.words[0] = twinPointer(cand.ptrTypeId);
+    cand.varIns.resultType = cand.varIns.words[0];
+    cand.varIns.words[2] = R13_SC.StorageBuffer;
+    // serializeSpirv emits ins.words verbatim: the result type lives at
+    // words[0] AND in ins.resultType; both must move to the twin.
+    for (const ins of typeRewrites) { ins.resultType = twinPointer(ins.resultType); ins.words[0] = ins.resultType; }
+    // Twins go immediately before the variable that first uses them: its
+    // pointee closure is fully defined there in any valid module, however
+    // the producer interleaved its sections.
+    if (pendingTwins.length) mod.insns.splice(mod.insns.indexOf(cand.varIns), 0, ...pendingTwins);
+    // NonWritable on the variable: UBO semantics (the shader cannot write
+    // a uniform block) and what makes naga emit var<storage> (read-only)
+    // instead of var<storage, read_write> -- read_write storage is illegal
+    // in a WebGPU vertex stage, read-only is not.
+    const nw = { op: Op.Decorate, words: [cand.varId, R13_DEC.NonWritable], resultType: null, resultId: null };
+    const sec = sections(mod);
+    mod.insns.splice((sec.lastAnnot >= 0 ? sec.lastAnnot : sec.lastDebug) + 1, 0, nw);
+    if (pre13) {
+      for (const ins of mod.insns)
+        if (ins.op === Op.Decorate && ins.words[0] === cand.structId && ins.words[1] === R13_DEC.Block)
+          ins.words[1] = R13_DEC.BufferBlock;
+    }
+    changed++;
+    log.push(`spirvfix R13: uniform block %${cand.varId} (struct %${cand.structId}) demoted to read-only storage (std430 layout is not WGSL-uniform-expressible)`);
+  }
+  if (!changed) return false;
+  return true;
+}
+
 export function applySpirvFix(bytes, { specOverrides } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
@@ -1789,6 +2092,9 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   try {
     if (fragmentLayerToZero(mod, log)) applied.push('fragment-layer-to-zero');
   } catch (e) { log.push('R11 failed: ' + (e.message || e)); }
+  try {
+    if (uniformBlocksToStorage(mod, log)) applied.push('uniform-block-to-storage');
+  } catch (e) { log.push('R13 failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -1797,4 +2103,4 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage'];

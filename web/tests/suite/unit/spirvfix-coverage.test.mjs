@@ -42,6 +42,7 @@ test('REWRITES exports every rule', () => {
     'prune-specialized-aliases',
     'flat-integer-varyings',
     'fragment-layer-to-zero',
+    'uniform-block-to-storage',
   ]);
 });
 

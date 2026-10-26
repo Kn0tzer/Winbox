@@ -4336,6 +4336,21 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * DXVK caps D3D11 at the feature levels that need neither. FL 9_3 targets
      * (D3D9 via d3d9.dll, Portal; tri11 9_3) have no geometry/tessellation
      * stages and are the safe path; FL 10_0+ device creation falls back to it. */
+    /* shaderInt16 is the fourth conjunct of vkd3d's shader-model 6.0 gate
+     * (device.c d3d12_device_caps_init_shader_model), and the only other
+     * live consumer of the bit in vkd3d is itself conjunctive on
+     * shaderFloat16 / storageBuffer16BitAccess / shaderInt64, all honestly
+     * FALSE here, so the bit selects no 16-bit code path by itself.
+     * vkd3d-shader treats Int16 as a hard requirement of its translator.
+     * Honesty boundary, recorded in the register: a module that actually
+     * declares the Int16 capability is still rejected loudly at
+     * vkCreateShaderModule ("spirv-capability:Int16") -- browser WebGPU
+     * has no 16-bit integer type (naga can only emit the non-standard
+     * `enable wgpu_int16`), so native-16-bit shaders fail by name at
+     * creation, never silently. What the bit grants is the shader MODEL:
+     * SM 6.0 DXIL/DXBC translation for shaders that do not use native
+     * 16-bit integer ops, which the tier serves end to end. */
+    f->shaderInt16 = VK_TRUE;
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
@@ -4474,6 +4489,23 @@ static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divis
 // page tier's per-instance step mode; any other divisor is reported by
 // vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and the pipeline is
 // rejected loudly (VK_ERROR_FEATURE_NOT_PRESENT), never silently mis-stepped.
+// vk64_guest.h does not define VkPhysicalDeviceUniformBufferStandardLayout
+// Features either; local mirrors again (canonical layout: sType, pNext, one
+// VkBool32). The feature is advertised (see fillUniformBufferStandardLayout).
+struct Vk64UniformBufferStandardLayoutFeatures {
+    VkStructureType sType;
+    U64             pNext;
+    VkBool32        uniformBufferStandardLayout;
+};
+static_assert(sizeof(Vk64UniformBufferStandardLayoutFeatures) == 24,
+              "UBSL features mirror layout");
+struct Vk32UniformBufferStandardLayoutFeatures {
+    VkStructureType sType;
+    U32             pNext;
+    VkBool32        uniformBufferStandardLayout;
+};
+static_assert(sizeof(Vk32UniformBufferStandardLayoutFeatures) == 12,
+              "32-bit UBSL features mirror layout");
 template <class T> inline void fillVertexAttributeDivisor(T& f) {
     f.vertexAttributeInstanceRateDivisor = VK_TRUE;
     f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
@@ -4485,13 +4517,29 @@ template <class T> inline void fillVertexAttributeDivisor(T& f) {
 // that uses them fails at pipeline creation in the page tier (noteUnsupported).
 template <class T> inline void fillDescriptorIndexing(T& f) {
 }
-// shaderFloat16 / shaderInt8 / 16-bit and 8-bit storage / scalar block layout
-// are NOT advertised: WGSL has no 8-bit types and the f16 extension is not
-// wired through the shader translator. DXVK and vkd3d fall back to 32-bit.
+// shaderFloat16 / shaderInt8 / 16-bit and 8-bit storage are NOT advertised:
+// WGSL has no 8-bit types and the f16 extension is not wired through the
+// shader translator. DXVK and vkd3d fall back to 32-bit.
 template <class T> inline void fillFloat16Int8(T&) {}
 template <class T> inline void fillStorage16(T&) {}
 template <class T> inline void fillStorage8(T&) {}
+// Scalar block layout is NOT advertised, on layout evidence (SM 6.0 caps
+// lane, 2026-10-26): its distinguishing shapes -- arrays of vec3 at stride
+// 12, matrices at MatrixStride 12, members at scalar-packed offsets -- are
+// inexpressible in WGSL in EVERY address space (naga requires array strides
+// to be multiples of the element alignment, 16 for vec3, even for storage
+// buffers; a stride-12 matrix is worse: naga accepts it and silently reads
+// at WGSL's stride 16). Advertising it would also switch vkd3d's DXIL
+// converter into scalar-layout codegen (NPOT vectorised buffer loads), i.e.
+// precisely those shapes. uniformBufferStandardLayout below is the honest
+// half of vkd3d's shader-model 6.0 gate: std430-packed uniform blocks are
+// byte-identical to WGSL's storage layout, and spirvfix R13
+// (uniform-block-to-storage) serves them through a read-only storage
+// binding whenever a block's layout is not WGSL-uniform-expressible.
 template <class T> inline void fillScalarBlockLayout(T&) {}
+template <class T> inline void fillUniformBufferStandardLayout(T& f) {
+    f.uniformBufferStandardLayout = VK_TRUE;
+}
 template <class T> inline void fillDepthClipEnable(T& f) {
     f.depthClipEnable = VK_TRUE;        // page requests depth-clip-control when the browser has it
 }
@@ -4502,6 +4550,11 @@ template <class T> inline void fillVulkan12Features(T& f) {
     // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
     f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
+    // SM 6.0 gate half (vkd3d device.c shader-model init reads this struct
+    // only): std430 layout for uniform blocks, served by spirvfix R13 --
+    // see fillUniformBufferStandardLayout / fillScalarBlockLayout above.
+    // scalarBlockLayout in this same struct stays FALSE (same comment).
+    f.uniformBufferStandardLayout = VK_TRUE;
     // vkd3d-proton bindless gate (state.c:8343, vkd3d_bindless_state_init,
     // called from device creation): without these four bits the device is
     // refused with E_NOTIMPL before any draw. The descriptor-set side is
@@ -4570,6 +4623,8 @@ void walkFeatures2(U64 pNextAddr) {
                 SET_FEATURES(cur, fillStorage8, VkPhysicalDevice8BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
                 SET_FEATURES(cur, fillScalarBlockLayout, VkPhysicalDeviceScalarBlockLayoutFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES:
+                SET_FEATURES(cur, fillUniformBufferStandardLayout, Vk64UniformBufferStandardLayoutFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
                 SET_FEATURES(cur, fillDepthClipEnable, VkPhysicalDeviceDepthClipEnableFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
@@ -8155,6 +8210,8 @@ void vk32_walkFeatures2(U32 pNextAddr) {
                 SET_FEATURES32(cur, fillStorage8, vk32abi::VkPhysicalDevice8BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
                 SET_FEATURES32(cur, fillScalarBlockLayout, vk32abi::VkPhysicalDeviceScalarBlockLayoutFeatures); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES:
+                SET_FEATURES32(cur, fillUniformBufferStandardLayout, Vk32UniformBufferStandardLayoutFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
                 SET_FEATURES32(cur, fillDepthClipEnable, vk32abi::VkPhysicalDeviceDepthClipEnableFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:

@@ -463,14 +463,17 @@ unimplemented (vkd3d tolerates the refusal today), and one
    pipeline (build-wine64-zip.sh staging block, stage-vkd3d-payloads.sh
    merge path, apply-runtime-poststeps.sh, completeness pins). Still
    open: x86 vkd3d build.
-7. Shader-model 6.0 caps lane: vkd3d grants SM 6.0 only when the
-   bridge's VkPhysicalDeviceVulkan12Features reports scalarBlockLayout
-   or uniformBufferStandardLayout (device.c SM gate); both are
-   currently FALSE (fillVulkan12Features omits them and
-   fillScalarBlockLayout is an empty stub). Decide honesty from the
-   page tier's buffer-layout behaviour, fill, and re-run Godot: expect
-   the D3D12 driver to initialize; the following wall is then shader
-   compilation / descriptor addressing (cap 5347, item 1).
+7. DONE (SM 6.0 caps lane, section 4.16): shader model 6.0 is granted.
+   The gate needed two conjuncts, not one: uniformBufferStandardLayout
+   (honest half of the layout bit; scalarBlockLayout stays FALSE — its
+   shapes match no WGSL layout) served by spirvfix R13's
+   uniform-block-to-storage demotion, AND shaderInt16 (section 4.15
+   wrongly recorded it as already served). Guest A/B: highest shader
+   model 0x51 -> 0x60. Godot's D3D12 driver now passes the
+   shader-model sweep and stops at the next capability check, Typed
+   UAV Load Additional Formats (a D3D12_OPTIONS format question —
+   follow-on lane); shader compilation (DXIL) and descriptor
+   addressing (cap 5347, item 1) still wait behind it.
 6. Present-less chunk drain so offscreen probes (tri12) verify pixels,
    not just API success.
 
@@ -648,3 +651,140 @@ moved: the D3D12 wall for real programs is no longer packaging; it
 is one named capability bit away from driver initialization, with
 shader compilation (DXIL) and descriptor addressing (cap 5347)
 behind it.
+
+## 4.16 SM 6.0 caps lane: shader model 6.0 granted; Godot stops one layer deeper, at Typed UAV Load Additional Formats (2026-10-26)
+
+Section 6 item 7, executed. Correction to section 4.15 first: it says
+the gate's subgroup and shaderInt16 conjuncts "are served". Subgroups
+are; **shaderInt16 was not** — `fillCoreFeatures` never set it and the
+capability manifest listed it under `notAdvertised`. The gate had TWO
+missing conjuncts, not one; the first build of this lane (layout bit
+only) still reported SM 5.1 in the guest, which is how the second was
+found. The gate (vendored device.c, `d3d12_device_caps_init_shader_model`):
+subgroupSize >= 4 + required subgroup ops/stages +
+(`scalarBlockLayout` OR `uniformBufferStandardLayout`) + `shaderInt16`,
+all read from the chains the bridge fills.
+
+### Layout honesty (the layout conjunct)
+
+Proven with hand-built SPIR-V shapes run through the tier's own path
+(spirvfix + vendored naga, the same conversion the page tier performs),
+not by argument:
+
+- WGSL's storage address-space layout IS std430, byte for byte; WGSL's
+  uniform layout is not — array strides, struct/array member alignment
+  and struct sizes there round up to 16 (matrices excepted: their stride
+  rule is the vector rule in both spaces). A std430-packed uniform block
+  — exactly dxil-spv's D3D12 cbuffer form, a wrapper struct around a
+  tightly-strided array whose element type is the shader's widest access
+  (float -> stride 4, vec2 -> stride 8) — is rejected by naga as
+  `var<uniform>` ("The array stride 4 is not a multiple of the required
+  alignment 16") while being exactly representable one address space
+  over. The page tier derives bind-group layout entries and GPU buffer
+  usage from the converted WGSL declaration, so a storage demotion
+  propagates end to end with no page-tier change.
+- Scalar packing is NOT servable in any WGSL address space: vec3 arrays
+  at stride 12 and MatrixStride-12 matrices match neither WGSL layout
+  (WGSL fixes vec3 array stride at 16 and mat3x3 column stride at 16).
+  One shape is worse than rejected: a mat3 block at MatrixStride 12 is
+  CONVERTED SILENTLY WRONG by naga today (columns read at stride 16
+  from stride-12 data). That hazard pre-dates this lane, is named here
+  for the register, and is not a shape the descriptor-mode translators
+  emit; a module-creation layout audit is the fix shape, not attempted
+  here.
+- In dxil-spv the `SCALAR_BLOCK_LAYOUT` compile option's only codegen
+  effect is NPOT-vec3 vectorization of buffer loads — i.e. advertising
+  scalar layout would switch the translator INTO the inexpressible
+  shapes. `uniformBufferStandardLayout` has no codegen consumer at all;
+  its only consumer in vkd3d is the SM gate itself.
+
+Grant: `uniformBufferStandardLayout = VK_TRUE` in the monolithic
+Vulkan 1.2 features struct AND the standalone features struct, both
+ABIs (new `fillUniformBufferStandardLayout` + walker arms; the guest
+headers lack the struct, so the bridge carries exact-layout mirrors,
+24 B / 12 B, static_asserted). `scalarBlockLayout` stays VK_FALSE.
+
+Serving: spirvfix R13 `uniform-block-to-storage`. A DescriptorSet-bound
+Uniform block variable whose decorated layout is storage-expressible
+but not uniform-expressible is demoted to a read-only StorageBuffer
+variable (storage-class flip on the variable and every pointer type its
+access chains produce, twins inserted before the variable; variable-level
+NonWritable so naga emits `var<storage>` read — legal in every stage —
+not `var<storage, read_write>`). The checker requires decorated
+ArrayStride/MatrixStride/member Offset to EQUAL the WGSL-computed
+values under each layout (equality, not >=: a stride-16 decoration over
+a stride-4 type is a different silent-misread shape, also proven in the
+matrix). Fail-closed: bool members, runtime arrays in uniform blocks,
+spec-constant lengths, shared structs (pre-1.3), or a block pointer
+escaping the access-chain trace (function call, store, phi, select)
+all refuse the demotion and leave the module to its previous loud
+outcome. `spirvfix-r13.test.mjs`: 11 tests over 9 fixtures (flip set,
+uniform-expressible controls, scalar negatives, phi-escape refusal,
+decoration sabotage); spirvfix corpus gate stays 22/22.
+
+### shaderInt16 (the second conjunct)
+
+`shaderInt16 = VK_TRUE` in `fillCoreFeatures`, manifest moved from
+`notAdvertised` to implemented. Boundary, recorded in the register row:
+vkd3d's only other consumers of the bit are conjunctive on
+shaderFloat16 / storageBuffer16BitAccess / shaderInt64 + 8-bit storage
+(all honestly FALSE here), so the bit selects no 16-bit code path by
+itself, and vkd3d-shader treats Int16 as a hard requirement of its
+translator. A module that actually declares the Int16 capability still
+fails loudly at `vkCreateShaderModule` (`spirv-capability:Int16`):
+browser WebGPU has no 16-bit integer type and naga can only emit the
+non-standard `enable wgpu_int16` (proven on a hand-built Int16 module:
+correct native-i16 WGSL, unusable in a browser). The bit grants the
+shader MODEL — SM 6.0 translation for shaders that do not use native
+16-bit integer ops, which the tier serves end to end.
+
+### Verification
+
+- Guest A/B (`tools/vkd3d/probe/sm12.c`: D3D12CreateDevice +
+  CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL) asking down from 6.6,
+  run via web/tests/d3d12-system.mjs, system placement): BEFORE —
+  highest shader model 0x51, RESULT 1 (test-results/dxvk-sm12-before);
+  layout-bit-only build — still 0x51; AFTER both grants — **highest
+  shader model 0x60, RESULT 0** (test-results/dxvk-sm12-after2).
+- Godot re-run (DEMO=godot-squash, JIT=0, local games mirror;
+  test-results/demo-matrix/godot-squash-jit0-20261026T222709):
+  vkd3d-proton runs in-game, D3D12 device creation completes, and the
+  shader-model sweep PASSES — the "No support for any of the suitable
+  shader models (6.0-6.6)" error is absent. Driver init proceeds into
+  `_check_capabilities` and stops at the NEXT named requirement, 181.2s
+  into the run, verbatim:
+
+    ERROR: No support for Typed UAV Load Additional Formats has been found.
+       at: _check_capabilities (drivers/d3d12/rendering_device_driver_d3d12.cpp:6166)
+    ERROR: Condition "err != OK" is true. Returning: ERR_CANT_CREATE
+       at: initialize (drivers/d3d12/rendering_device_driver_d3d12.cpp:6402)
+    ERROR: Failed to initialize driver for device.
+
+  Then the engine falls back to Vulkan (0 frames presented, as in prior
+  runs). The wall behind the SM gate is therefore a FORMAT capability —
+  D3D12_OPTIONS TypedUAVLoadAdditionalFormats, which vkd3d derives from
+  typed-load format support beyond the core set — not shader compilation
+  and not the cap-5347 descriptor wall; those still wait behind it for a
+  program that gets past this check. vkGetDeviceImageMemoryRequirements
+  was called during init and tolerated again (section 6 item 4).
+- First-light regression: the staged draw probe is pixel-identical —
+  passed, 208,556 triangle pixels, center [127, 64, 64]
+  (test-results/dxvk-sm6-draw2).
+- JS unit suite (`node web/tests/suite/runner.mjs --unit`,
+  BW_TEST_DIST=/home/ubuntu/wt-vkd3d/dist): 286 passed / 8 failed. All
+  8 failures reproduce at pristine HEAD 0b82f40b6 against the same dist
+  (packaging-prefix, provenance-artifacts, v2-draw-contract,
+  vk-image-dirty-generation, vk-register-citations, vk-sampler-rejection,
+  vk32-properties, vulkan-sampler): zero regressions from this lane, and
+  two improved (vk-register-citations 2/2 -> 3/1, provenance-artifacts
+  2/6 -> 7/1 in per-file subtests). The one remaining citations failure
+  is the pre-existing coverage pin (uncheckable rows 109 vs ceiling
+  102 — already the HEAD state).
+- Register: 353 rows = 49 IMPLEMENTED / 71 REJECTED-LOUDLY / 233
+  NOT-A-GAP / 0 OPEN, with one new row for this grant. This lane also
+  re-pinned the register's rotted citations in this tree (the audit tool
+  reports 0 DRIFT / 0 MISSING over 326 cited rows; 43 rows moved from
+  DRIFT/MISSING to MATCH, including the transform-feedback row, whose
+  disposition text was corrected to the current code: the extension
+  string and transformFeedbackQueries are advertised for vkd3d's device
+  gate, all stream-out bits/limits stay off).
