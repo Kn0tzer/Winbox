@@ -59,9 +59,81 @@ export async function fetchGameArchive(game, onProgress = () => {}) {
     if (inFlight.get(key) === controller) inFlight.delete(key);
   }
 }
+// Stall watchdog for one request (same shape as the lazy-fetch fix in
+// source/io/fszipurl.cpp): an AbortController whose timer is a STALL
+// deadline, not a total deadline — progress() restarts the clock on every
+// chunk of arriving bytes, so a slow-but-progressing download is never
+// aborted, while a connection that goes silent for the whole window is
+// aborted and reported loudly instead of hanging the download forever.
+// The watchdog signal also fires when the parent (supersede) signal
+// aborts, so the existing cancellation behaviour is preserved.
+// BW64_FETCH_STALL_MS on the global object overrides the window
+// (unit-test seam).
+function stallWatchdog(parentSignal, label) {
+  const stallMs = Number(globalThis.BW64_FETCH_STALL_MS) > 0
+    ? Number(globalThis.BW64_FETCH_STALL_MS) : 60_000;
+  const controller = new AbortController();
+  let timer = null;
+  let stalled = false;
+  const onParentAbort = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      console.error(`games: fetch STALL ${label} (no progress for ${stallMs}ms)`);
+      controller.abort();
+    }, stallMs);
+  };
+  arm();
+  return {
+    signal: controller.signal,
+    get stalled() { return stalled; },
+    progress() { if (!stalled) arm(); },
+    dispose() {
+      if (timer) clearTimeout(timer);
+      if (parentSignal) parentSignal.removeEventListener('abort', onParentAbort);
+    },
+    throwIfStalled(title) {
+      if (stalled) throw new Error(`${title}: download stalled (no progress for ${stallMs}ms)`);
+    },
+  };
+}
+// Reads a response body to completion, restarting the watchdog's stall
+// clock on every chunk. Falls back to arrayBuffer() (deadline still
+// armed, no progress signal) when no readable stream is available.
+async function readBodyWithWatchdog(res, watchdog, onChunk) {
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const buffer = await res.arrayBuffer();
+    onChunk(buffer.byteLength);
+    return [new Uint8Array(buffer)];
+  }
+  const reader = res.body.getReader();
+  const parts = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    watchdog.progress();
+    parts.push(value);
+    onChunk(value.byteLength);
+  }
+  return parts;
+}
 async function stream(game, onProgress, signal) {
   const url = new URL(game.archive, location.href).href;
-  const probe = await fetch(url, { method: 'HEAD', signal });
+  const probeWatchdog = stallWatchdog(signal, url);
+  let probe;
+  try {
+    probe = await fetch(url, { method: 'HEAD', signal: probeWatchdog.signal });
+  } catch (e) {
+    probeWatchdog.throwIfStalled(game.title);
+    throw e;
+  } finally {
+    probeWatchdog.dispose();
+  }
   if (!probe.ok) throw new Error(`${game.title}: archive unavailable (HTTP ${probe.status})`);
   const total = contentLength(probe) || game.size || 0;
   const parts = [];
@@ -69,28 +141,41 @@ async function stream(game, onProgress, signal) {
   if (probe.headers.get('Accept-Ranges') === 'bytes' && total) {
     for (let start = 0; start < total; start += CHUNK) {
       const end = Math.min(start + CHUNK, total) - 1;
-      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
-      if (res.status !== 206) throw new Error('Archive host ignored the range request');
-      const buffer = await res.arrayBuffer();
-      if (buffer.byteLength !== end - start + 1) throw new Error('Short range response');
-      parts.push(buffer);
-      received += buffer.byteLength;
-      onProgress(received, total);
+      const watchdog = stallWatchdog(signal, `${url} bytes=${start}-${end}`);
+      try {
+        const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: watchdog.signal });
+        if (res.status !== 206) throw new Error('Archive host ignored the range request');
+        let chunkBytes = 0;
+        const chunkParts = await readBodyWithWatchdog(res, watchdog, (n) => { chunkBytes += n; });
+        if (chunkBytes !== end - start + 1) throw new Error('Short range response');
+        parts.push(...chunkParts);
+        received += chunkBytes;
+        onProgress(received, total);
+      } catch (e) {
+        watchdog.throwIfStalled(game.title);
+        throw e;
+      } finally {
+        watchdog.dispose();
+      }
     }
   } else {
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(`${game.title}: archive unavailable (HTTP ${res.status})`);
-    if (!res.body) { const blob = await res.blob(); onProgress(blob.size, blob.size); return blob; }
-    const reader = res.body.getReader();
-    let reported = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      parts.push(value);
-      received += value.byteLength;
-      if (received - reported >= 1024 ** 2) { reported = received; onProgress(received, total || received); }
+    const watchdog = stallWatchdog(signal, url);
+    try {
+      const res = await fetch(url, { signal: watchdog.signal });
+      if (!res.ok) throw new Error(`${game.title}: archive unavailable (HTTP ${res.status})`);
+      if (!res.body) { const blob = await res.blob(); onProgress(blob.size, blob.size); return blob; }
+      let reported = 0;
+      await readBodyWithWatchdog(res, watchdog, (n) => {
+        received += n;
+        if (received - reported >= 1024 ** 2) { reported = received; onProgress(received, total || received); }
+      }).then((streamed) => { parts.push(...streamed); });
+      onProgress(received, total || received);
+    } catch (e) {
+      watchdog.throwIfStalled(game.title);
+      throw e;
+    } finally {
+      watchdog.dispose();
     }
-    onProgress(received, total || received);
   }
   if (total && received !== total) throw new Error(`Truncated archive: ${received} of ${total} bytes`);
   return new Blob(parts, { type: 'application/zip' });

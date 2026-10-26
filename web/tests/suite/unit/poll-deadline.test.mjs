@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -12,7 +13,7 @@ test('real poll loop preserves deadlines across spurious wakes and consecutive s
     if (start < 0) throw new Error(`Missing function: ${needle}`);
     let end = src.indexOf('{', start), depth = 1;
     for (++end; depth && end < src.length; ++end) { if (src[end] === '{') ++depth; if (src[end] === '}') --depth; }
-    return src.slice(start, end);
+    return extractSourceRange(src, start, end);
   };
   // internal_poll is now a thin wrapper over internal_poll_impl, which carries
   // the deadline arithmetic; compile both so the real loop is exercised.

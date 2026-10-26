@@ -66,11 +66,16 @@ U32 KNativeInputSDL::screenHeight() {
 bool KNativeInputSDL::mouseMove(int x, int y, bool relative) {
     XServer* server = XServer::getServer(true);
 
-    x = xFromScreen(x);
-    y = yFromScreen(y);
+    if (relative) {
+        x = x * 100 / scaleX;
+        y = y * 100 / scaleY;
+    } else {
+        x = xFromScreen(x);
+        y = yFromScreen(y);
+    }
 
 #ifdef BOXEDWINE_RECORDER
-    if (Player::instance) {
+    if (Player::instance && !relative) {
         lastX = x;
         lastY = y;
     }
@@ -586,7 +591,9 @@ bool KNativeInputSDL::handlSdlEvent(SDL_Event* e) {
 #endif
     if (e->type == SDL_MOUSEMOTION) {
         BOXEDWINE_RECORDER_HANDLE_MOUSE_MOVE(e->motion.x, e->motion.y);
-        if (!mouseMove(e->motion.x, e->motion.y, false)) {
+        const bool relative = SDL_GetRelativeMouseMode() == SDL_TRUE;
+        if (!mouseMove(relative ? e->motion.xrel : e->motion.x,
+                       relative ? e->motion.yrel : e->motion.y, relative)) {
             onMouseMove(e->motion.x, e->motion.y, false);
         }
     } else if (e->type == SDL_MOUSEBUTTONDOWN) {    

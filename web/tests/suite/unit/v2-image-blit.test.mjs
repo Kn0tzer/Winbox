@@ -72,6 +72,7 @@ test('native 64-bit and 32-bit blit paths record image subresource, filter and o
     writeFileSync(source, `
 #include <cassert>
 #include <cstdint>
+#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { action; } } while (0) // bridge macro minus logging
 #include <cstring>
 #include <vector>
 using U32=uint32_t;using U64=uint64_t;const U32 VK64_MAX_CMDS=16;enum{CMD_BLIT_IMAGE};

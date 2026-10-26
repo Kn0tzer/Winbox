@@ -96,6 +96,12 @@ public:
 #ifdef BOXEDWINE_MULTI_THREADED
     static U32 cpuAffinityCountForApp;
 #endif
+    // The virtual machine exposes exactly one schedulable guest CPU (see
+    // CPU64::affinityMask). Every guest-visible topology surface (sched
+    // affinity, /proc/cpuinfo, /sys/devices/system/cpu, /proc/stat) must
+    // agree on this count; the host CPU count is never guest-visible.
+    static U32 guestCpuCount();
+    static BString guestCpuList();
     static U32 pollRate;
     static U32 skipFrameFPS;
     static BWriteFile logFile;
@@ -117,6 +123,7 @@ public:
     // helpers
     static void writeStat(KProcess* process, BString path, U32 buf, bool is64, U64 st_dev, U64 st_ino, U32 st_mode, U64 st_rdev, U64 st_size, U32 st_blksize, U64 st_blocks, U64 mtime, U32 linkCount);
     static KProcessPtr getProcess(U32 id);
+    static void getProcessesInGroup(U32 groupId, std::vector<KProcessPtr>& result);
     static void eraseFileCache(BString name);
     static std::shared_ptr<MappedFileCache> getFileCache(BString name);
     static void setFileCache(BString name, const std::shared_ptr<MappedFileCache>& fileCache);
@@ -143,6 +150,11 @@ public:
     static U32 shmdt(KThread* thread, U32 shmaddr);
     static U32 shmctl(KThread* thread, U32 shmid, U32 cmd, U32 buf);
     static U32 sysinfo(KThread* thread, U32 address);
+    // The single source for every guest-visible RAM figure (sysinfo on both
+    // ABIs and /proc/meminfo): the emulated machine total RAM and the part
+    // of it not currently committed by any live process.
+    static void guestRamInfo(U64& totalBytes, U64& freeBytes);
+    static U32 processCount();
     static U32 times(KThread* thread, U32 buf);
     static U32 tgkill(U32 threadGroupId, U32 threadId, U32 signal);
     static U32 ugetrlimit(KThread* thread, U32 resource, U32 rlim);

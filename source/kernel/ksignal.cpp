@@ -54,22 +54,25 @@ bool KSignal::isBlocking() {
 }
 
 void KSignal::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KSignal::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KSignal::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KSignal::getLock(KFileLock* lock) {
-    kdebug("KSignal::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32 KSignal::setLock(KFileLock* lock, bool wait) {
-    kdebug("KSignal::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KSignal::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KSignal::isOpen() {
@@ -105,6 +108,7 @@ U32 KSignal::writeNative(U8* buffer, U32 len) {
 }
 
 void writeSignal(U8* buffer, U32 signal, U32 signalingPid, U32 signalingUid, KSigAction* action) {
+    memset(buffer, 0, 128); // Linux signalfd_siginfo is exactly 128 bytes.
     U32* b = (U32*)buffer;
     b[0] = signal;
     b[1] = 0; // ssi_errno;    /* Error number (unused) */
@@ -138,8 +142,8 @@ void writeSignal(U8* buffer, U32 signal, U32 signalingPid, U32 signalingUid, KSi
 }
 
 U32 KSignal::readNative(U8* buffer, U32 len) {
-    if (len<128) {
-        return -K_EINVAL; // :TODO: couldn't not find documentation on what is returned
+    if (len < 128 || (len % 128) != 0) {
+        return -K_EINVAL;
     }
     KThread* thread = KThread::currentThread();
     while (true) {
@@ -148,10 +152,11 @@ U32 KSignal::readNative(U8* buffer, U32 len) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->pendingSignalsMutex);        
             if (thread->pendingSignals & this->mask) {
                 U64 todo = thread->pendingSignals & this->mask;
-                for (U32 i=0;i<32;i++) {
+                for (U32 i=0;i<64;i++) {
                     if ((todo & ((U64)1 << i))!=0) {
-                        thread->pendingSignals &= ~(1 << i);                
-                        writeSignal(buffer, i, this->signalingPid, this->signalingUid, (this->sigAction.sigInfo[0]==i)?&this->sigAction: nullptr);
+                        thread->pendingSignals &= ~((U64)1 << i);
+                        writeSignal(buffer, i + 1, this->signalingPid, this->signalingUid,
+                                    (this->sigAction.sigInfo[0] == i + 1) ? &this->sigAction : nullptr);
                         result+=128;
                         len-=128;
                         buffer+=128;
@@ -166,10 +171,11 @@ U32 KSignal::readNative(U8* buffer, U32 len) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->pendingSignalsMutex);        
             if (thread->process->pendingSignals & this->mask) {
                 U64 todo = thread->process->pendingSignals & this->mask;
-                for (U32 i=0;i<32;i++) {
+                for (U32 i=0;i<64;i++) {
                     if ((todo & ((U64)1 << i))!=0) {
-                        thread->process->pendingSignals &= ~(1 << i);                
-                        writeSignal(buffer, i, this->signalingPid, this->signalingUid, (this->sigAction.sigInfo[0]==i)?&this->sigAction: nullptr);
+                        thread->process->pendingSignals &= ~((U64)1 << i);
+                        writeSignal(buffer, i + 1, this->signalingPid, this->signalingUid,
+                                    (this->sigAction.sigInfo[0] == i + 1) ? &this->sigAction : nullptr);
                         result+=128;
                         len-=128;
                         buffer+=128;
@@ -201,7 +207,7 @@ U32 KSignal::readNative(U8* buffer, U32 len) {
         }
 #endif
     }
-    return 0;
+    return -K_EAGAIN;
 }
 
 U32 KSignal::stat(KProcess* process, U32 address, bool is64) {

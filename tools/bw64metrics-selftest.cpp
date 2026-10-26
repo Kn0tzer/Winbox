@@ -13,12 +13,20 @@
 // It exercises the real registry (not a copy): JIT publish, stage accounting,
 // present windows, JSON shape and the long-stall window reset. klog() is
 // captured instead of written to a log.
+//
+// Disabled mode (BW64_METRICS=0) is checked in fresh child processes, because the
+// gate is cached on first use. The children are this same binary started with
+// `--child enabled|disabled`; the enabled child is the control.
 #include "bw64metrics.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <spawn.h>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 static std::string g_lastLog;
 
@@ -35,7 +43,75 @@ static void expectContains(const std::string& hay, const char* needle, const cha
     if (!ok) failures++;
 }
 
+// One window of the same activity a live frame produces, then a flush attempt.
+static void driveWindow() {
+    Bw64VkFrame f;
+    memset(&f, 0, sizeof(f));
+    f.frameNo = 1;
+    f.wallMs = 16.8;
+    bw64_metrics_add_stage(BW64_STAGE_AUDIO, 0.5, 4096);
+    bw64_metrics_present_sdl();
+    bw64_metrics_vk_frame(&f);
+    usleep(600000);
+    bw64_metrics_add_stage(BW64_STAGE_AUDIO, 0.5, 4096);
+    bw64_metrics_present_sdl();
+    bw64_metrics_maybe_emit();
+}
+
+// Runs inside a fresh process. BW64_METRICS is read once and cached, so only a
+// process that starts with the variable set can observe the disabled state.
+static int childMain(const char* mode) {
+    const bool wantEnabled = std::strcmp(mode, "enabled") == 0;
+    expect(bw64_metrics_enabled() == (wantEnabled ? 1 : 0),
+           wantEnabled ? "enabled child: gate reads as enabled" : "disabled child: gate reads as disabled");
+    g_lastLog.clear();
+    driveWindow();
+    if (wantEnabled) {
+        expectContains(g_lastLog, "bw64: METRICS", "enabled child: the same activity emits a snapshot");
+    } else {
+        expect(g_lastLog.empty(), "disabled child: the same activity emits no snapshot");
+        // No snapshot is produced: the formatter returns 0 and leaves the buffer alone.
+        char json[256];
+        std::memset(json, 'x', sizeof(json));
+        int n = bw64_metrics_format_json(json, sizeof(json));
+        expect(n == 0 && json[0] == 'x', "disabled child: format_json returns 0 and writes nothing");
+    }
+    std::printf("%s\n", failures ? "CHILD FAILED" : "CHILD PASSED");
+    return failures ? 1 : 0;
+}
+
+// Spawns this binary as a fresh process with BW64_METRICS set to metricsValue
+// (nullptr = not set in the child's environment). Returns true only on exit 0.
+static bool runChild(const char* self, const char* mode, const char* metricsValue) {
+    std::vector<std::string> env;
+    for (char** e = environ; e && *e; ++e) {
+        if (std::strncmp(*e, "BW64_METRICS=", 13) != 0) env.push_back(*e);
+    }
+    if (metricsValue) env.push_back(std::string("BW64_METRICS=") + metricsValue);
+    std::vector<char*> envp;
+    for (std::string& s : env) envp.push_back(&s[0]);
+    envp.push_back(nullptr);
+    // /proc/self/exe: the harness is Linux-only, and a fresh exec is the only way
+    // to get a clean metrics gate (fork() would copy the parent's cached value).
+    char* childArgv[] = {const_cast<char*>(self), const_cast<char*>("--child"), const_cast<char*>(mode), nullptr};
+    std::fflush(stdout);
+    pid_t pid = 0;
+    if (posix_spawn(&pid, "/proc/self/exe", nullptr, nullptr, childArgv, envp.data()) != 0) return false;
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) return false;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 2 && std::strcmp(argv[1], "--child") == 0) return childMain(argv[2]);
+
+    // Disabled mode is a no-op (no log line, no snapshot). The gate is cached
+    // per process, so both halves run in fresh children, before this process
+    // starts its own window. The enabled child is the control: if it did not
+    // emit, the disabled "no output" check would pass for the wrong reason.
+    expect(runChild(argv[0], "enabled", "1"), "control: a fresh BW64_METRICS=1 process emits for the same activity");
+    expect(runChild(argv[0], "disabled", "0"), "fresh BW64_METRICS=0 process emits nothing and records nothing");
+
     const char* fixtureOut = argc > 1 ? argv[1] : nullptr;
     setenv("BW64_METRICS", "1", 1);
     char json[6144];
@@ -117,10 +193,6 @@ int main(int argc, char** argv) {
     expect(g_lastLog.find("\"audio\":{\"supported\":true,\"calls\":1,") != std::string::npos,
            "stale window was dropped, fresh window has calls=1");
 
-    // Disabled mode is a no-op (no log line, no snapshot).
-    setenv("BW64_METRICS", "0", 1);
-    // Enabled state is cached on first use; this build needs a new process to
-    // observe the env switch, so the assertion is limited to the cached path.
 
     // Emit one representative snapshot for the reader-side contract test. The
     // window is built from the same calls a live frame makes, so the fixture is

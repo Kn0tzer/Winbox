@@ -360,7 +360,12 @@ void BoxedContainer::getNewDesktopLinkApps(std::vector<BoxedApp>& apps) {
             Fs::remoteNameToLocal(localPath);            
             BString name = Fs::getFileNameFromPath(localPath);
 
-            // :TODO: parse link to get name
+            // The display name is the link file's own name without the .lnk
+            // extension (the name the user gave the shortcut in the Start
+            // Menu); the link target is resolved when the app is launched.
+            if (name.endsWith(".lnk", true)) {
+                name.remove((int)name.length() - 4);
+            }
             bool found = false;
             for (auto& a : this->apps) {
                 if (a->link==name) {

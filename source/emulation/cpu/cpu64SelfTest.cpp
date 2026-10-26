@@ -14,6 +14,7 @@
 #include "cpu64.h"
 #include "jit64.h"
 #include "kmemory64.h"
+#include "ksignal.h"
 #include "../../kernel/loader/loader64.h"
 
 #include <cstdio>
@@ -186,19 +187,26 @@ void runNullIndirectCallFault(TestResult& r) {
 }
 
 void runNonExecutableFetchFault(TestResult& r) {
+    constexpr U64 HANDLER = CODE_BASE + 0x1000;
     KMemory64 mem(nullptr);
     mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 3); // RW, deliberately not executable
+    mem.mmapAnonymousFixed(HANDLER, 0x1000, 7);
     mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
     mem.writeb(CODE_BASE, 0x90); // nop
+    loadCode(mem, HANDLER, {0x49, 0x89, 0xF7, 0xCC}); // save siginfo*, stop
 
     CPU64 cpu(&mem);
     cpu.rip = CODE_BASE;
     cpu.reg[X64_RSP].setU64(STACK_TOP - 16);
-    cpu.runBounded(1);
-    const bool ok = cpu.yield && cpu.rip == CODE_BASE &&
-                    cpu.instructionCount == 0;
+    cpu.sigActions[K_SIGSEGV].installed = true;
+    cpu.sigActions[K_SIGSEGV].handler = HANDLER;
+    cpu.runBounded(8);
+    const U64 sigInfo = cpu.reg[X64_R15].u64;
+    const bool ok = cpu.yield && sigInfo &&
+                    mem.readd(sigInfo + 8) == 2 /*SEGV_ACCERR*/ &&
+                    mem.readq(sigInfo + 16) == CODE_BASE;
     if (ok) {
-        printf("  PASS: instruction fetch from a non-executable page raises #PF\n");
+        printf("  PASS: instruction fetch fault reports SEGV_ACCERR and fault address\n");
         r.passed++;
     } else {
         printf("  FAIL: non-executable fetch guard (yield=%d RIP=0x%llx instructions=%llu)\n",
@@ -207,6 +215,197 @@ void runNonExecutableFetchFault(TestResult& r) {
         r.failed++;
     }
     fflush(stdout);
+}
+
+void runDataProtectionFaults(TestResult& r) {
+    constexpr U64 DATA = CODE_BASE + 0x2000;
+    constexpr U64 HANDLER = CODE_BASE + 0x100;
+    constexpr U64 SENTINEL = 0x1122334455667788ULL;
+    KMemory64 mem(nullptr);
+    mem.mmapAnonymousFixed(CODE_BASE, 0x1000, 7);
+    mem.mmapAnonymousFixed(STACK_TOP - 0x1000, 0x1000, 3);
+    mem.mmapAnonymousFixed(DATA, 0x1000, 3);
+    mem.writeq(DATA, SENTINEL);
+    // Handler saves siginfo* in R15 and traps to stop the interpreter.
+    loadCode(mem, HANDLER, {0x49, 0x89, 0xF7, 0xCC});
+
+    auto initHandler = [](CPU64& cpu) {
+        cpu.sigActions[K_SIGSEGV].installed = true;
+        cpu.sigActions[K_SIGSEGV].handler = HANDLER;
+    };
+
+    const S32 readDisp = (S32)(DATA - (CODE_BASE + 7));
+    std::vector<U8> readCode = {
+        0x48, 0x8B, 0x05,
+        (U8)readDisp, (U8)(readDisp >> 8), (U8)(readDisp >> 16), (U8)(readDisp >> 24),
+    };
+    loadCode(mem, CODE_BASE, readCode);
+    mem.mprotect(DATA, 0x1000, 0); // PROT_NONE
+    CPU64 reader(&mem);
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    initHandler(reader);
+    reader.runBounded(8);
+    const U64 readInfo = reader.reg[X64_R15].u64;
+    const bool readFault = reader.yield && readInfo &&
+        mem.readd(readInfo + 8) == 2 /*SEGV_ACCERR*/ &&
+        mem.readq(readInfo + 16) == DATA;
+
+    // Switching PROT_NONE back to RW lets the same cached instruction read
+    // the mapped contents. Switching back to PROT_NONE faults again.
+    mem.mprotect(DATA, 0x1000, 3);
+    reader.yield = false;
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    reader.runBounded(1);
+    const bool readRestored = reader.reg[X64_RAX].u64 == SENTINEL;
+    mem.mprotect(DATA, 0x1000, 0);
+    reader.yield = false;
+    reader.rip = CODE_BASE;
+    reader.reg[X64_RSP].setU64(STACK_TOP - 16);
+    reader.reg[X64_R15].setU64(0);
+    reader.runBounded(8);
+    const U64 secondReadInfo = reader.reg[X64_R15].u64;
+    const bool readRevoked = reader.yield && secondReadInfo &&
+        mem.readd(secondReadInfo + 8) == 2 && mem.readq(secondReadInfo + 16) == DATA;
+
+    // A store into read-only memory must take the same ACCERR path and leave
+    // the backing word unchanged.
+    mem.mprotect(DATA, 0x1000, 3);
+    const S32 writeDisp = (S32)(DATA - (CODE_BASE + 7));
+    loadCode(mem, CODE_BASE, {
+        0x48, 0x89, 0x05,
+        (U8)writeDisp, (U8)(writeDisp >> 8), (U8)(writeDisp >> 16), (U8)(writeDisp >> 24),
+    });
+    mem.writeq(DATA, SENTINEL);
+    mem.mprotect(DATA, 0x1000, 1); // read-only
+    CPU64 writer(&mem);
+    writer.rip = CODE_BASE;
+    writer.reg[X64_RSP].setU64(STACK_TOP - 16);
+    writer.reg[X64_RAX].setU64(0xAABBCCDDEEFF0011ULL);
+    initHandler(writer);
+    writer.runBounded(8);
+    const U64 writeInfo = writer.reg[X64_R15].u64;
+    const bool writeFault = writer.yield && writeInfo &&
+        mem.readd(writeInfo + 8) == 2 && mem.readq(writeInfo + 16) == DATA &&
+        mem.readq(DATA) == SENTINEL;
+
+    if (readFault && readRestored && readRevoked && writeFault) {
+        printf("  PASS: PROT_NONE/read-only access faults, siginfo, and mprotect transitions\n");
+        r.passed++;
+    } else {
+        printf("  FAIL: data protection faults (read=%d restored=%d revoked=%d write=%d)\n",
+               (int)readFault, (int)readRestored, (int)readRevoked, (int)writeFault);
+        r.failed++;
+    }
+    fflush(stdout);
+}
+
+std::vector<U8> withExit(std::vector<U8> code);
+
+void runMemorySyscallValidation(TestResult& r) {
+    auto call = [](U32 nr, U64 address, U64 length, U64 thirdArg) {
+        std::vector<U8> code = {0xB8, (U8)nr, (U8)(nr >> 8), (U8)(nr >> 16), (U8)(nr >> 24)};
+        auto imm64 = [&code](U8 rexOpcode, U64 value) {
+            code.push_back(0x48); code.push_back(rexOpcode);
+            for (U32 i = 0; i < 8; ++i) code.push_back((U8)(value >> (i * 8)));
+        };
+        imm64(0xBF, address); // mov rdi, address
+        imm64(0xBE, length);  // mov rsi, length
+        imm64(0xBA, thirdArg);// mov rdx, flags/advice
+        code.insert(code.end(), {0x0F, 0x05, 0x49, 0x89, 0xC7});
+        return withExit(code);
+    };
+    constexpr U64 STACK_PAGE = STACK_TOP - 0x1000;
+    runAndCheck(r, "msync validates mapped page and MS_SYNC", call(26, STACK_PAGE, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "msync rejects unsupported flags", call(26, STACK_PAGE, 0x1000, 8),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "msync rejects unmapped range", call(26, 0x70000000, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "mlock accepts mapped range", call(149, STACK_PAGE, 0x1000, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "mlock rejects unmapped range", call(149, 0x70000000, 0x1000, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "madvise accepts known advice and rejects unknown values", call(28, STACK_PAGE, 0x1000, 4),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "madvise rejects unknown advice", call(28, STACK_PAGE, 0x1000, 999),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "mincore reports mapped resident page", call(27, STACK_PAGE, 1, STACK_PAGE + 0x100),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0 && c.memory->readb(STACK_TOP - 0xF00) == 1;
+    }, [](CPU64& c) { c.memory->writeb(STACK_TOP - 0xF00, 0x5A); });
+    runAndCheck(r, "mincore rejects unmapped guest range", call(27, 0x70000000, 1, STACK_PAGE + 0x100),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_ENOMEM; });
+    runAndCheck(r, "mincore rejects unmapped output vector", call(27, STACK_PAGE, 1, 0x70000000),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
+    runAndCheck(r, "getrandom accepts GRND_INSECURE and fills requested bytes", call(318, STACK_PAGE + 0x200, 16, 4),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 16 &&
+            (c.memory->readq(STACK_TOP - 0xE00) || c.memory->readq(STACK_TOP - 0xDF8));
+    });
+    runAndCheck(r, "getrandom rejects unsupported flags", call(318, STACK_PAGE + 0x200, 8, 8),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "getrandom accepts zero length with a null pointer", call(318, 0, 0, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "getrandom returns EFAULT for unmapped output", call(318, 0x70000000, 8, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EFAULT; });
+    runAndCheck(r, "sched_setaffinity accepts online CPU 0", call(203, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; },
+                [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 1); });
+    runAndCheck(r, "sched_setaffinity rejects an empty online mask", call(203, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "sched_getaffinity returns the virtual CPU mask", call(204, 0, 8, STACK_PAGE + 0x300),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 8 && c.memory->readq(STACK_TOP - 0xD00) == 1;
+    }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, ~0ULL); });
+    runAndCheck(r, "set_mempolicy rejects an unavailable node mask", call(238, 2, STACK_PAGE + 0x300, 1),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; },
+                [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 0); });
+    auto appendImm = [](std::vector<U8>& code, U8 rex, U8 opcode, U64 value) {
+        code.push_back(rex); code.push_back(opcode);
+        for (U32 i = 0; i < 8; ++i) code.push_back((U8)(value >> (i * 8)));
+    };
+    std::vector<U8> numa = {0xB8, 237, 0, 0, 0}; // mbind
+    appendImm(numa, 0x48, 0xBF, STACK_PAGE);
+    appendImm(numa, 0x48, 0xBE, 0x1000);
+    appendImm(numa, 0x48, 0xBA, 2); // MPOL_BIND
+    appendImm(numa, 0x49, 0xBA, STACK_PAGE + 0x300);
+    appendImm(numa, 0x49, 0xB8, 1); // maxnode
+    appendImm(numa, 0x49, 0xB9, 0); // flags
+    numa.insert(numa.end(), {0x0F, 0x05});
+    numa.insert(numa.end(), {0xB8, 239, 0, 0, 0}); // get_mempolicy
+    appendImm(numa, 0x48, 0xBF, STACK_PAGE + 0x400);
+    appendImm(numa, 0x48, 0xBE, STACK_PAGE + 0x408);
+    appendImm(numa, 0x48, 0xBA, 1);
+    appendImm(numa, 0x49, 0xBA, 0);
+    appendImm(numa, 0x49, 0xB8, 0);
+    numa.insert(numa.end(), {0x0F, 0x05, 0x49, 0x89, 0xC7});
+    runAndCheck(r, "mbind and get_mempolicy record the supported node policy", withExit(numa),
+                [](CPU64& c) {
+        return c.reg[X64_R15].u64 == 0 && c.memory->readd(STACK_TOP - 0xC00) == 2 &&
+            c.memory->readq(STACK_TOP - 0xBF8) == 1;
+    }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, 1); });
+}
+
+void runPrctlSyscallValidation(TestResult& r) {
+    auto call = [](U32 option, U32 arg2) {
+        std::vector<U8> code = {
+            0xB8, 157, 0, 0, 0,                 // mov eax, __NR_prctl
+            0xBF, (U8)option, (U8)(option >> 8), (U8)(option >> 16), (U8)(option >> 24),
+            0xBE, (U8)arg2, (U8)(arg2 >> 8), (U8)(arg2 >> 16), (U8)(arg2 >> 24),
+            0x0F, 0x05, 0x49, 0x89, 0xC7,      // syscall; mov r15, rax
+        };
+        return withExit(code);
+    };
+    runAndCheck(r, "prctl PR_GET_DUMPABLE returns process state", call(3, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 1; });
+    runAndCheck(r, "prctl PR_CAPBSET_READ reports empty capability set", call(23, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "prctl rejects out-of-range capability", call(23, 41),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
+    runAndCheck(r, "prctl unknown option returns EINVAL", call(0x7fffffff, 0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
 }
 
 void runUnmappedSamePageFetchFault(TestResult& r) {
@@ -4882,10 +5081,56 @@ int runX64SelfTest() {
                 (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
             0x48, 0xC7, 0xC6, 0x03, 0x00, 0x00, 0x00,                     // mov rsi, 3 (REQUEUE)
             0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,                     // mov rdx, 0
+            0x41, 0xB8, (U8)(dst + 4), (U8)((dst + 4) >> 8),
+                (U8)((dst + 4) >> 16), (U8)((dst + 4) >> 24),            // mapped uaddr2 in R8D
             0x0F, 0x05,
         };
         runAndCheck(r, "futex FUTEX_REQUEUE → 0", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 0;
+        });
+    }
+
+    // CMP_REQUEUE validates the source value before touching waiter queues.
+    {
+        const U64 src = STACK_TOP - 0x780;
+        const U64 dst = STACK_TOP - 0x77C;
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0xCA, 0x00, 0x00, 0x00,
+            0x48, 0xBF, (U8)src, (U8)(src >> 8), (U8)(src >> 16), (U8)(src >> 24),
+                (U8)(src >> 32), (U8)(src >> 40), (U8)(src >> 48), (U8)(src >> 56),
+            0x48, 0xC7, 0xC6, 0x04, 0x00, 0x00, 0x00, // FUTEX_CMP_REQUEUE
+            0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // wake zero waiters
+            0x49, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // requeue zero waiters
+            0x49, 0xB8, (U8)dst, (U8)(dst >> 8), (U8)(dst >> 16), (U8)(dst >> 24),
+                (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
+            0x49, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // wrong expected source value
+            0x0F, 0x05,
+            0x49, 0x89, 0xC7,
+        };
+        runAndCheck(r, "futex CMP_REQUEUE mismatch returns EAGAIN", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == (U64)-11;
+        });
+    }
+
+    // WAKE_OP applies its atomic operation even when both wake counts are zero.
+    {
+        const U64 src = STACK_TOP - 0x760;
+        const U64 dst = STACK_TOP - 0x75C;
+        std::vector<U8> code = {
+            0x48, 0xC7, 0xC0, 0xCA, 0x00, 0x00, 0x00,
+            0x48, 0xBF, (U8)src, (U8)(src >> 8), (U8)(src >> 16), (U8)(src >> 24),
+                (U8)(src >> 32), (U8)(src >> 40), (U8)(src >> 48), (U8)(src >> 56),
+            0x48, 0xC7, 0xC6, 0x05, 0x00, 0x00, 0x00, // FUTEX_WAKE_OP
+            0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0xB8, (U8)dst, (U8)(dst >> 8), (U8)(dst >> 16), (U8)(dst >> 24),
+                (U8)(dst >> 32), (U8)(dst >> 40), (U8)(dst >> 48), (U8)(dst >> 56),
+            0x49, 0xC7, 0xC1, 0x00, 0x70, 0x00, 0x00, // SET 7 if old value == 0
+            0x0F, 0x05,
+            0x49, 0x89, 0xC7,
+        };
+        runAndCheck(r, "futex WAKE_OP applies SET operation", withExit(code), [dst](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0 && c.memory->readd(dst) == 7;
         });
     }
 
@@ -6003,7 +6248,7 @@ int runX64SelfTest() {
             0x48, 0x83, 0xC4, 0x80,                                     // add rsp, 128
         };
         runAndCheck(r, "rt_sigaction install + readback SIGUSR1 handler", withExit(code), [](CPU64& c) {
-            return c.reg[X64_R15].u64 == 0xCAFE1234DEADBEEFULL;
+            return c.reg[X64_RAX].u64 == 0xCAFE1234DEADBEEFULL;
         });
     }
 
@@ -8845,7 +9090,42 @@ int runX64SelfTest() {
     });
     runNullIndirectCallFault(r);
     runNonExecutableFetchFault(r);
+    runDataProtectionFaults(r);
+    runMemorySyscallValidation(r);
+    runPrctlSyscallValidation(r);
     runUnmappedSamePageFetchFault(r);
+    // io_uring and pidfd_getfd are deliberately rejected by the central
+    // once-per-number syscall logger. Keep syscall-layer errno coverage for
+    // every operation so they cannot drift into silent success.
+    for (U32 syscallNumber : {334u, 425u, 426u, 427u, 438u}) {
+        std::vector<U8> code = {
+            0xB8, (U8)syscallNumber, (U8)(syscallNumber >> 8),
+            (U8)(syscallNumber >> 16), (U8)(syscallNumber >> 24), // mov eax, nr
+            0x0F, 0x05,                                           // syscall
+            0x49, 0x89, 0xC7,                                     // mov r15, rax
+        };
+        runAndCheck(r, "unsupported io_uring/pidfd_getfd syscall returns ENOSYS",
+                    withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == (U64)-K_ENOSYS;
+        });
+    }
+    auto membarrierCode = [](U32 command) {
+        return withExit({
+            0xB8, 0x44, 0x01, 0x00, 0x00,             // mov eax, 324
+            0xBF, (U8)command, (U8)(command >> 8),
+            (U8)(command >> 16), (U8)(command >> 24), // mov edi, command
+            0x31, 0xF6,                               // xor esi, esi (flags)
+            0x31, 0xD2,                               // xor edx, edx (cpu id)
+            0x0F, 0x05,                               // syscall
+            0x49, 0x89, 0xC7                          // mov r15, rax
+        });
+    };
+    runAndCheck(r, "membarrier QUERY returns supported command mask", membarrierCode(0),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 511; });
+    runAndCheck(r, "membarrier GLOBAL executes successfully", membarrierCode(1),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == 0; });
+    runAndCheck(r, "membarrier rejects unknown command", membarrierCode(0x40000000),
+                [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
     runFaultAtRIP(r, "recover preserves #GP for INSD", {0x6D});
     runFaultAtRIP(r, "recover preserves #GP for operand-size-prefixed INSW", {0x66, 0x6D});
     runFaultAtRIP(r, "recover preserves #GP for HLT", {0xF4});

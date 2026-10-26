@@ -16,7 +16,13 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const abiSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge_abi.h'), 'utf8');
 const bridgeSrc = readFileSync(join(repoRoot, 'source/opengl/gl64bridge.cpp'), 'utf8');
+const glCommonSrc = readFileSync(join(repoRoot, 'source/opengl/glcommon.cpp'), 'utf8');
 const shimSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64.c'), 'utf8');
+const stubSrc = readFileSync(join(repoRoot, 'tools/rootfs64/libgl64/libgl64_stubs.h'), 'utf8');
+const esOpenGlSrc = readFileSync(join(repoRoot, 'source/opengl/es/esopengl.c'), 'utf8');
+const glMarshalSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshal.cpp'), 'utf8');
+const glMarshalSizeSrc = readFileSync(join(repoRoot, 'source/opengl/glMarshalSize.cpp'), 'utf8');
+const webGpuGlSrc = readFileSync(join(repoRoot, 'web/gl-webgpu.mjs'), 'utf8');
 
 function getAbiFunctions(src) {
   const ids = [];
@@ -62,6 +68,158 @@ test('GL ABI count matches bridge handler coverage', () => {
     `Bridge covers ${coverage}/${abiFns.length} ABI functions`);
 });
 
+test('fixed-function fog calls are exported by the 64-bit guest GL shim and reach WebGPU state', () => {
+  for (const name of ['glFogf', 'glFogi', 'glFogfv', 'glFogiv']) {
+    assert.match(shimSrc, new RegExp(`GL64_fn_${name}`), `${name} has a trap wrapper`);
+    assert.match(shimSrc, new RegExp(`E\\(${name}\\)`), `${name} is exported for proc lookup`);
+    assert.ok(handlers.has(`GL64_fn_${name}`), `${name} has a native bridge handler`);
+  }
+  assert.match(bridgeSrc, /\? "fogf" : "fogi"/);
+});
+
+test('query bookkeeping declarations are available in both native and WASM GL builds', () => {
+  const nativeGuard = bridgeSrc.indexOf('#ifndef __EMSCRIPTEN__');
+  const queryState = bridgeSrc.indexOf('struct GLQueryStatus');
+  assert.ok(queryState >= 0 && queryState < nativeGuard,
+    'query state used by shared GL dispatch must be declared before the native-only guard');
+  assert.match(bridgeSrc, /g_glQueryStatus\[id\] = GLQueryStatus\{\}/);
+  assert.match(bridgeSrc, /g_glQueryStatus\.find\(id\)/);
+});
+
+test('framebuffer generation writes guest-visible names', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glGenFramebuffers:\s*if \(g_glContext && args\.a\[1\]\) genObjects\(cpu, args, GenKind::Framebuffer\)/);
+  assert.match(bridgeSrc, /kind == GenKind::Texture \|\| kind == GenKind::Framebuffer \|\|\s*kind == GenKind::Renderbuffer[\s\S]{0,220}memcpyToGuest\(args\.a\[1\], ids\.data\(\), \(U64\)n \* 4\)/);
+});
+
+test('shader and program deletion follow OpenGL object lifetime semantics', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glDeleteShader:\s*if \(g_glContext\) GL_MT\(glDeleteShader\(\(GLuint\)ai\(args,0\)\)\)/);
+  assert.match(bridgeSrc, /case GL64_fn_glDeleteProgram:\s*if \(g_glContext\) GL_MT\(glDeleteProgram\(\(GLuint\)ai\(args,0\)\)\)/);
+});
+
+test('framebufferTexture host exceptions log once and latch GL_INVALID_OPERATION', () => {
+  const body = /case GL64_fn_glFramebufferTexture:([\s\S]*?)case GL64_fn_glFramebufferTextureLayer:/.exec(bridgeSrc)?.[1] || '';
+  assert.match(body, /catch \(e\)/);
+  assert.match(body, /__bw64glBridgeErrors\.has\('glFramebufferTexture'\)/);
+  assert.match(body, /gl64 glFramebufferTexture failed:/);
+  assert.match(body, /GLctx\._recordError\(0x0502\)/);
+  assert.doesNotMatch(body, /catch \(e\) \{\s*\}/);
+});
+
+test('invalid pixel formats return to GL validation instead of panicking', () => {
+  assert.match(glMarshalSrc, /glPixelMarshal: invalid format\/type combination/);
+  assert.match(glMarshalSrc, /invalidPixelMarshalWarning\.test_and_set\(\)/);
+  assert.doesNotMatch(glMarshalSrc, /kpanic_fmt\("getPixelsLen unsupported format\/type/);
+  assert.match(glMarshalSizeSrc, /glPixelMarshal: invalid pixel format/);
+  assert.match(glMarshalSizeSrc, /invalidPixelFormatWarning\.test_and_set\(\)/);
+  assert.doesNotMatch(glMarshalSizeSrc, /kpanic_fmt\("Opengl components_in_format/);
+});
+
+test('empty WebGPUGL methods stay in the audited no-op inventory', () => {
+  const emptyMethods = [...webGpuGlSrc.matchAll(/^  ([A-Za-z_$][\w$]*)\([^\n]*\) \{\s*\}/gm)]
+    .map((match) => match[1]).sort();
+  assert.deepEqual(emptyMethods, [
+    'shadeModel',
+  ].sort(), 'any new empty WebGPUGL method needs an explicit audit disposition');
+});
+
+test('native query bridge tracks completion and never reports fabricated nonzero samples', () => {
+  assert.match(bridgeSrc, /g_glActiveQueries\[target\]\s*=\s*id/);
+  assert.match(bridgeSrc, /query->second\.available\s*\?\s*1\s*:\s*0/);
+  assert.doesNotMatch(bridgeSrc, /GL_QUERY_RESULT\s*\*\/\)\s*v\s*=\s*1/);
+});
+
+test('native transform-feedback calls are forwarded to the loud WebGPUGL rejection', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*if \(g_glContext\) GL_MT\(glBeginTransformFeedback/);
+  assert.match(bridgeSrc, /case GL64_fn_glEndTransformFeedback:\s*if \(g_glContext\) GL_MT\(glEndTransformFeedback/);
+  assert.match(webGpuGlSrc, /beginTransformFeedback\(\) \{ this\._rejectUnsupported\('transform feedback', GL\.INVALID_OPERATION\); \}/);
+  assert.doesNotMatch(bridgeSrc, /case GL64_fn_glBeginTransformFeedback:\s*case GL64_fn_glEndTransformFeedback:/);
+});
+
+test('polygon mode reaches WebGPUGL conversion instead of being dropped by the bridge', () => {
+  assert.match(bridgeSrc, /case GL64_fn_glPolygonMode:\s*if \(g_glContext\) \{\s*if \(g_emWebGpu\) GL_MT\(webGpuFixedCall\("polygonMode", ai\(args,0\), ai\(args,1\)/);
+  assert.match(webGpuGlSrc, /polygonMode\(face, mode\) \{/);
+});
+
+test('RGBA-only ES visuals do not panic on color-index operations with no RGBA effect', () => {
+  assert.match(glCommonSrc, /case GLX_RENDER_TYPE:[\s\S]{0,220}GLX_RGBA_BIT/);
+  for (const name of ['es_glClearIndex', 'es_glIndexMask']) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.match(body, /\(void\)/, `${name} should be a documented RGBA no-op`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
+});
+
+test('ES compatibility stubs reject loudly and preserve sticky GL error semantics', () => {
+  const rejected = ['es_glAlphaFunc', 'es_glLogicOp', 'es_glPointSize', 'es_glPolygonStipple',
+    'es_glGetPolygonStipple', 'es_glClipPlane', 'es_glGetClipPlane', 'es_glDrawBuffer', 'es_glReadBuffer'];
+  assert.match(esOpenGlSrc, /static GLenum esShimError = GL_NO_ERROR/);
+  assert.match(esOpenGlSrc, /if \(esShimError == GL_NO_ERROR\) esShimError = error/);
+  assert.match(esOpenGlSrc, /OpenGL ES compatibility: %s is unsupported \(GL_INVALID_OPERATION\)/);
+  assert.match(esOpenGlSrc, /strcmp\(warnedFunctions\[i\], functionName\) == 0/);
+  assert.match(esOpenGlSrc, /GLenum es_glGetError\( void \)[\s\S]*?return glGetError\(\)/);
+  for (const name of rejected) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.ok(body.includes('esRejectCompatCall') || (name === 'es_glPointSize' && /es_glPointSize[\s\S]*?esRejectCompatCall/.test(esOpenGlSrc)), `${name} must report unsupported behavior`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
+  for (const name of ['es_glLogicOp', 'es_glPolygonStipple', 'es_glGetPolygonStipple', 'es_glClipPlane', 'es_glGetClipPlane'])
+    assert.match(esOpenGlSrc, new RegExp(`${name}[\\s\\S]{0,140}esRejectCompatCall`));
+  assert.match(esOpenGlSrc, /void es_glPolygonMode[\s\S]*?if \(mode != GL_FILL\) esRejectCompatCall/);
+  for (const name of ['es_glEdgeFlag', 'es_glEdgeFlagv']) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([^}]*)\\}`).exec(esOpenGlSrc)?.[1] || '';
+    assert.doesNotMatch(body, /kpanic|esRejectCompatCall/);
+  }
+});
+
+test('glshim TODO fields are dead scaffolding and do not gate active shim behavior', () => {
+  const shimSrc = readFileSync(join(repoRoot, 'source/opengl/es/glshim.c'), 'utf8');
+  assert.match(shimSrc, /\/\/ TODO: dynamic type support\?[\s\S]{0,150}\/\*[\s\S]*?\*\//);
+  assert.equal([...shimSrc.matchAll(/\bblock_t\b/g)].length, 3,
+    'block_t should remain declaration-only until an immediate-mode block path is enabled');
+  assert.equal([...shimSrc.matchAll(/\brect_arb\b/g)].length, 1,
+    'rect_arb is only a declaration, not active target selection');
+  assert.match(shimSrc, /void shim_glEnable\(GLenum cap\)[\s\S]*?case GL_TEXTURE_2D:/);
+  assert.match(shimSrc, /void shim_glDisable\(GLenum cap\)[\s\S]*?case GL_TEXTURE_2D:/);
+  assert.match(shimSrc, /void glLineStipple\(GLint factor, GLushort pattern\)/);
+});
+
+test('GL bridge host exceptions are rate-limited, logged by GL name, and become INVALID_OPERATION', () => {
+  assert.match(bridgeSrc, /__bw64glReportBridgeException = function \(name, error\)/);
+  assert.match(bridgeSrc, /console\.warn\('gl64 ' \+ name \+ ' failed:'/);
+  assert.match(bridgeSrc, /GLctx\._recordError\(0x0502\)/);
+  assert.match(bridgeSrc, /GL\.recordError\(0x0502\)/);
+  assert.doesNotMatch(bridgeSrc, /catch \(e\) \{\s*\}/);
+  const catchLines = bridgeSrc.split('\n');
+  for (let i = 0; i < catchLines.length; i++) {
+    if (!/catch \(e\)/.test(catchLines[i])) continue;
+    const context = catchLines.slice(i, i + 9).join('\n');
+    assert.ok(context.includes('__bw64glReportBridgeException') ||
+      (context.includes("has('glFramebufferTexture')") && context.includes('console.warn')),
+      `exception path lacks GL function logging: ${catchLines[i].trim()}`);
+  }
+});
+
+test('GL bridge unsupported dispatches report GL_INVALID_OPERATION instead of silently returning', () => {
+  assert.match(bridgeSrc, /void rejectBridgeEntry\(const char\* functionName\)[\s\S]*?recordBridgeError\(GL_INVALID_OPERATION\)/);
+  for (const name of ['glMapBufferRange direct bridge call', 'glDebugMessageCallback', 'glPointParameteri',
+    'glTexBuffer', 'glTextureBarrierNV', 'glFinalCombinerInputNV', 'glDrawArraysInstancedBaseInstance',
+    'glDrawRangeElementsBaseVertex', 'glTextureBarrier'])
+    assert.ok(bridgeSrc.includes(name), `${name} requires an explicit dispatch disposition`);
+  assert.match(bridgeSrc, /case GL64_fn_glVertexAttrib1d:[\s\S]*?glVertexAttrib1f\(index,v\[0\]\)/,
+    'double-valued generic attributes must convert to GLES float attributes');
+  assert.match(bridgeSrc, /unknown ABI function id %llu[\s\S]*?rejectBridgeEntry\(name\)/);
+});
+
+test('GLX pixmap/window attributes reject once and return None instead of panicking', () => {
+  for (const [name, warning] of [['gl_common_XCreatePixmap', 'glXCreatePixmap: unsupported attrib_list'], ['gl_common_XCreateWindow', 'glXCreateWindow: unsupported attrib_list']]) {
+    const body = new RegExp(`void ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(glCommonSrc)?.[1] || '';
+    assert.ok(body.includes(warning), `${name} must identify unsupported attributes`);
+    assert.match(body, /attribWarning\.test_and_set\(\)/, `${name} warning must be rate-limited`);
+    assert.match(body, /EAX\s*=\s*0;/, `${name} returns None on unsupported attributes`);
+    assert.doesNotMatch(body, /kpanic/);
+  }
+});
+
 test('core GL 2.1 immediate-mode functions are shim-registered', () => {
   // These are the functions the verified GL triangle uses
   const core = [
@@ -93,6 +251,14 @@ test('GL shim registration count is substantial', () => {
   // The shim should register hundreds of functions, not just a handful
   assert.ok(registered.size >= 100,
     `GL shim registers only ${registered.size} functions; expected 100+ for real GL apps`);
+});
+
+test('unknown GL procedure names never resolve to the silent no-op fallback', () => {
+  assert.doesNotMatch(shimSrc, /static\s+void\s+gl64_noop\s*\(/);
+  const lookup=shimSrc.match(/API GLproc glXGetProcAddressARB\([\s\S]*?\n\}/)?.[0]??'';
+  assert.match(lookup,/GL64_fn_traceProc/);
+  assert.match(lookup,/return 0;/);
+  assert.match(bridgeSrc,/gl64 PROC unsupported %s: glXGetProcAddressARB returned NULL/);
 });
 
 // Source coverage alone missed a shipped libGL whose client-array exports were
@@ -128,4 +294,58 @@ test('bundled 64-bit GL client-array entry points contain real trap wrappers', (
   for (const name of ['glEnableClientState', 'glDisableClientState', 'glVertexPointer', 'glColorPointer', 'glTexCoordPointer', 'glAlphaFunc', 'glTexEnvi', 'glLoadMatrixf', 'glLoadMatrixd', 'glMultMatrixd', 'glColor4ub', 'glActiveTextureARB']) {
     assert.ok(sizes.get(name) > 8, `${name} is missing or a no-op in the bundled guest binary; rebuild tools/rootfs64/libgl64/libGL.so.1`);
   }
+});
+
+
+test('guest GL buffer maps preserve read contents and mapped-range offsets without a fixed size cap', () => {
+  const mapRange = shimSrc.match(/API void\* glMapBufferRange\([\s\S]*?\n\}/)?.[0] ?? '';
+  const prepareMap = shimSrc.match(/static unsigned char\* gl64_prepare_map\([\s\S]*?\n\}/)?.[0] ?? '';
+  const flush = shimSrc.match(/API void glFlushMappedBufferRange\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(mapRange, /MAP_READ/);
+  assert.match(mapRange, /explicitFlush/)
+  assert.match(prepareMap, /malloc\(/);
+  assert.match(prepareMap, /glGetBufferSubData\(target,offset,length,\*storage\)/);
+  assert.doesNotMatch(shimSrc, /GL64_MAP_SCRATCH|8u?\s*\*\s*1024u?\s*\*\s*1024u?/);
+  assert.match(flush, /base\s*\+\s*offset/);
+  assert.match(flush, /\*storage\s*\+\s*offset/);
+  assert.match(flush, /explicitFlush/);
+  const unmap = shimSrc.match(/API GLboolean glUnmapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(unmap, /writable && !g_map(?:Elem|Array)\.explicitFlush/);
+  // A second map on an already-mapped slot must fail with NULL instead of
+  // silently overwriting the first map's recorded range (runtime lane's fix,
+  // ported in the libgl64 adjudication).
+  const mapWhole = shimSrc.match(/API void\* glMapBuffer\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(mapRange, /active\)+ return 0/, 'glMapBufferRange must reject a nested map');
+  assert.match(mapWhole, /active\)+ return 0/, 'glMapBuffer must reject a nested map');
+});
+
+test('no GL entry point is both stubbed in libgl64_stubs.h and implemented in libgl64.c', () => {
+  const stubbed = new Set([...stubSrc.matchAll(/GLSTUB\((gl\w+)\)/g)].map(m => m[1]));
+  const implemented = new Set([...shimSrc.matchAll(/\bAPI [\w\* ]+?\b(gl\w+)\s*\(/g)].map(m => m[1]));
+  const both = [...stubbed].filter(n => implemented.has(n));
+  assert.deepEqual(both, [],
+    `entry points defined twice (stub wins in the binary and silently swallows calls): ${both.join(', ')}`);
+});
+
+test('bundled 64-bit GL fog entry points contain real trap wrappers, not stubs', () => {
+  const sizes = elf64FunctionSizes(readFileSync(process.env.BW64_GL_SHIM_BINARY || join(repoRoot, 'tools/rootfs64/libgl64/libGL.so.1')));
+  for (const name of ['glFogf', 'glFogi', 'glFogfv', 'glFogiv']) {
+    assert.ok(sizes.get(name) > 8, `${name} is missing or a no-op stub in the bundled guest binary; rebuild tools/rootfs64/libgl64/libGL.so.1`);
+  }
+});
+
+test('marshal size helpers and texImageBytes log unknown values once instead of silently falling back', () => {
+  assert.match(glMarshalSizeSrc, /static void logUnknownMarshalSize\(const char\* what, U32 value\)/);
+  assert.match(glMarshalSizeSrc, /klog_fmt\("glMarshalSize: %s unknown value 0x%x; using fallback size"/);
+  for (const fn of ['glcommon_glLightv_size', 'glcommon_glLightModelv_size', 'glcommon_glMaterialv_size',
+    'floatPerTransformList', 'marshalUniformComponentCount']) {
+    const start = glMarshalSizeSrc.indexOf(fn);
+    assert.ok(start >= 0, `${fn} exists`);
+    const body = glMarshalSizeSrc.slice(start, glMarshalSizeSrc.indexOf('\n}\n', start));
+    const def = body.indexOf('default:');
+    assert.ok(def >= 0 && body.slice(def, def + 200).includes(`logUnknownMarshalSize("${fn}"`),
+      `${fn} default must log once via logUnknownMarshalSize`);
+  }
+  assert.match(bridgeSrc, /gl64 texImageBytes: unknown format 0x%x; assuming 4 components/);
+  assert.match(bridgeSrc, /gl64 texImageBytes: unknown type 0x%x; assuming 1 byte per component/);
 });

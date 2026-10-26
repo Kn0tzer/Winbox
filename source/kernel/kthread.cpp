@@ -17,6 +17,9 @@
  */
 
 #include "boxedwine.h"
+#include <atomic>
+#include <mutex>
+#include <unordered_set>
 
 #include "kscheduler.h"
 #include "ksignal.h"
@@ -75,7 +78,7 @@ void KThread::internalCleanup() {
         // on the joiner's futex when a thread exits. The address is a 64-bit
         // guest address into memory64.
         this->process->memory64->writed(this->clear_child_tid64, 0);
-        this->futex64(this->clear_child_tid64, 1 /*FUTEX_WAKE*/, 1, 0, 0);
+        this->futex64(this->clear_child_tid64, 1 /*FUTEX_WAKE*/, 1, 0, 0, 0);
     } else
 #endif
     if (!KSystem::shutingDown && this->clear_child_tid && this->process && memory && memory->canWrite(this->clear_child_tid, 4)) {
@@ -102,6 +105,11 @@ void KThread::internalCleanup() {
 void KThread::reset() {
     memory->threadCleanup(id);
     this->clearFutexes();
+    // execve discards every signal frame of the old image: the thread is
+    // not inside any handler in the new image, so the in-handler mask
+    // must not survive (sigMask, the blocked set, does survive exec).
+    this->inSignal = 0;
+    this->inSigMask = 0;
     this->cpu->reset();
     this->alternateStack = 0;
     this->alternateStackSize = 0;
@@ -276,6 +284,23 @@ U32 KThread::signal(U32 signal, bool wait) {
 #define FUTEX_PRIVATE_FLAG	128
 #define FUTEX_CLOCK_REALTIME	256
 #define FUTEX_CMD_MASK		~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME)
+#define FUTEX_WAITERS		0x80000000u
+#define FUTEX_TID_MASK		0x3fffffffu
+#ifndef K_EDEADLK
+#define K_EDEADLK 35
+#endif
+
+static S64 unsupportedFutexOperation64(U32 op, U32 cmd) {
+    static std::mutex mutex;
+    static std::unordered_set<U32> reported;
+    bool first;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        first = reported.insert(cmd).second;
+    }
+    if (first) klog_fmt("ksyscall64: unimplemented futex operation %u (op=0x%x); returned -ENOSYS", cmd, op);
+    return -K_ENOSYS;
+}
 
 struct futex {
 public:
@@ -289,6 +314,10 @@ public:
     U32 expireTimeInMillies = 0;
     bool wake = false;
     bool waiting = false;
+    bool piWaiter = false;
+    bool requeuePiWaiter = false;
+    bool requeuePiCanceled = false;
+    U64 requeuePiTarget = 0;
 
     BOXEDWINE_CONDITION cond;
 };
@@ -408,6 +437,10 @@ struct futex* allocFutex(KThread* thread, U64 address, U32 millies) {
             system_futex[i].wake = false;
             system_futex[i].mask = 0;
             system_futex[i].waiting = false;
+            system_futex[i].piWaiter = false;
+            system_futex[i].requeuePiWaiter = false;
+            system_futex[i].requeuePiCanceled = false;
+            system_futex[i].requeuePiTarget = 0;
             return &system_futex[i];
         }
     }
@@ -418,6 +451,10 @@ struct futex* allocFutex(KThread* thread, U64 address, U32 millies) {
 void freeFutex(struct futex* f) {
     f->thread = nullptr;
     f->address = 0;
+    f->piWaiter = false;
+    f->requeuePiWaiter = false;
+    f->requeuePiCanceled = false;
+    f->requeuePiTarget = 0;
 }
 
 void KThread::clearFutexes() {
@@ -521,8 +558,9 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
                 }
             }
             if (f->wake) {
+                const bool canceled = f->requeuePiCanceled;
                 freeFutex(f);
-                return 0;
+                return canceled ? -K_EAGAIN : 0;
             }
             if (f->expireTimeInMillies<0x7FFFFFFF) {
                 S32 diff = f->expireTimeInMillies - KSystem::getMilliesSinceStart();
@@ -566,7 +604,8 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
                 bool addressCheck = system_futex[i].address == ramAddress;
                 bool maskCheck = ((cmd != FUTEX_WAKE_BITSET) || (system_futex[i].mask & val3));
                 bool waiting = system_futex[i].waiting; // there is a small gap when waiting on a futex between creating the futex and getting the lock for this to be false
-                if (processCheck && addressCheck && !system_futex[i].wake && maskCheck) {
+                if (processCheck && addressCheck && !system_futex[i].wake &&
+                !system_futex[i].piWaiter && !system_futex[i].requeuePiWaiter && maskCheck) {
                     if (!waiting) {
                         continue;
                     }
@@ -602,24 +641,163 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
 //     K_FUTEX64_PARKED sentinel so the syscall layer rewinds RIP and the
 //     SYSCALL re-executes on the next slice (where it observes f->wake).
 //
-// Only WAIT/WAKE (+_BITSET, +_PRIVATE) are real. REQUEUE/CMP_REQUEUE/WAKE_OP
-// return 0 (no kernel migration); anything else -ENOSYS.
-S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
+// WAIT/WAKE, REQUEUE/CMP_REQUEUE, and WAKE_OP follow the Linux futex ABI.
+// Priority inheritance is handled as an owner-tid mutex (no scheduler priority
+// donation); the owner and errno rules are preserved for libc callers.
+S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3) {
     if (addr & 3) return -K_EINVAL;
     KMemory64* mem = process ? process->memory64 : nullptr;
     if (!mem) return -K_ENOSYS;
 
     U32 cmd = (op & FUTEX_CMD_MASK);
+    const bool isPrivate = (op & FUTEX_PRIVATE_FLAG) != 0;
+    if ((cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET) && val3 == 0) return -K_EINVAL;
+    if ((cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE || cmd == FUTEX_WAKE_OP ||
+         cmd == FUTEX_CMP_REQUEUE_PI) && (S32)arg4 < 0) return -K_EINVAL;
+    if ((cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE || cmd == FUTEX_CMP_REQUEUE_PI) &&
+        addr == addr2) return -K_EINVAL;
+    if ((op & FUTEX_CLOCK_REALTIME) && cmd != FUTEX_WAIT &&
+        cmd != FUTEX_WAIT_BITSET && cmd != FUTEX_WAIT_REQUEUE_PI)
+        return unsupportedFutexOperation64(op, cmd);
 
     // Stable host pointer for the futex word — the table key. A 4-byte word
     // never crosses a page boundary in practice; getRamPtr returns null only
     // then, in which case there is nothing sane to wait on.
     U64 ramAddress = (U64)mem->getRamPtr(addr, 4);
-    if (ramAddress == 0) {
-        return -K_EFAULT;
+    if (ramAddress == 0) return -K_EFAULT;
+    U32 val2 = (U32)arg4;
+    auto hostAddress = [&](U64 guestAddr) -> U64 {
+        if (guestAddr & 3) return 0;
+        return (U64)mem->getRamPtr(guestAddr, 4);
+    };
+    auto piLock = [&](bool tryOnly) -> S64 {
+        U32* word = (U32*)(uintptr_t)ramAddress;
+        std::atomic_ref<U32> atomicWord(*word);
+        const U32 tid = id & FUTEX_TID_MASK;
+        struct futex* existing = getFutex(this, ramAddress);
+        if (existing) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(existing->cond);
+            if (existing->piWaiter && existing->wake) {
+                freeFutex(existing);
+                return 0; // unlock_pi handed ownership directly to this waiter
+            }
+        }
+        for (;;) {
+            U32 owner = atomicWord.load(std::memory_order_seq_cst);
+            const U32 ownerTid = owner & FUTEX_TID_MASK;
+            if (ownerTid == tid) return -K_EDEADLK;
+            if (ownerTid == 0) {
+                U32 expected = owner;
+                if (atomicWord.compare_exchange_weak(expected, tid,
+                        std::memory_order_seq_cst, std::memory_order_seq_cst)) return 0;
+                continue;
+            }
+            if (tryOnly) return -K_EAGAIN;
+            if (process->getThreadCount() <= 1) return -K_EAGAIN;
+            U32 expiry = 0xffffffffu;
+            if (arg4) {
+                const U64 sec = mem->readq(arg4);
+                const U64 nsec = mem->readq(arg4 + 8);
+                const S64 now = (op & FUTEX_CLOCK_REALTIME)
+                    ? (S64)(KSystem::getSystemTimeAsMicroSeconds() / 1000)
+                    : (S64)KSystem::getMilliesSinceStart();
+                const S64 delta = (S64)(sec * 1000 + nsec / 1000000) - now;
+                expiry = KSystem::getMilliesSinceStart() + (U32)(delta > 0 ? delta : 0);
+            }
+            U32 expected = owner;
+            if (!atomicWord.compare_exchange_weak(expected, owner | FUTEX_WAITERS,
+                    std::memory_order_seq_cst, std::memory_order_seq_cst)) continue;
+            struct futex* waiter = getFutex(this, ramAddress);
+            if (!waiter) waiter = allocFutex(this, ramAddress, expiry);
+            waiter->piWaiter = true;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waiter->cond);
+            waiter->waiting = true;
+#ifdef BOXEDWINE_MULTI_THREADED
+            while (!waiter->wake && !terminating) {
+                if (waiter->expireTimeInMillies < 0x7fffffffu) {
+                    S32 remaining = waiter->expireTimeInMillies - KSystem::getMilliesSinceStart();
+                    if (remaining <= 0) {
+                        freeFutex(waiter);
+                        return -K_ETIMEDOUT;
+                    }
+                    waiter->cond->waitWithTimeout(boxedWineCriticalSection, (U32)remaining);
+                } else {
+                    waiter->cond->waitWithTimeout(boxedWineCriticalSection, 200);
+                }
+            }
+            if (terminating) {
+                freeFutex(waiter);
+                return -K_EINTR;
+            }
+            if (waiter->wake) {
+                freeFutex(waiter);
+                return 0;
+            }
+#else
+            waiter->cond->wait();
+            return K_FUTEX64_PARKED;
+#endif
+        }
+    };
+    auto wakeAt = [&](U64 key, U32 maximum) -> U32 {
+        U32 woke = 0;
+        for (int i = 0; i < MAX_FUTEXES && woke < maximum; i++) {
+            if (!system_futex[i].thread) continue;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(system_futex[i].cond);
+            if (system_futex[i].thread && (!isPrivate || system_futex[i].thread->process == process) &&
+                system_futex[i].address == key && !system_futex[i].wake &&
+                !system_futex[i].piWaiter) {
+                if (system_futex[i].requeuePiWaiter) system_futex[i].requeuePiCanceled = true;
+                system_futex[i].wake = true;
+                BOXEDWINE_CONDITION_SIGNAL(system_futex[i].cond);
+                woke++;
+            }
+        }
+        return woke;
+    };
+
+    if (cmd == FUTEX_LOCK_PI || cmd == FUTEX_TRYLOCK_PI) {
+        return piLock(cmd == FUTEX_TRYLOCK_PI);
+    } else if (cmd == FUTEX_UNLOCK_PI) {
+        U32* word = (U32*)(uintptr_t)ramAddress;
+        std::atomic_ref<U32> atomicWord(*word);
+        const U32 tid = id & FUTEX_TID_MASK;
+        std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+        U32 current = atomicWord.load(std::memory_order_seq_cst);
+        if ((current & FUTEX_TID_MASK) != tid) return -K_EPERM;
+        struct futex* next = nullptr;
+        bool otherWaiters = false;
+        for (int i = 0; i < MAX_FUTEXES; i++) {
+            if (!system_futex[i].thread || system_futex[i].thread->process != process ||
+                system_futex[i].address != ramAddress || !system_futex[i].piWaiter ||
+                system_futex[i].wake) continue;
+            if (!next || system_futex[i].thread->id < next->thread->id) next = &system_futex[i];
+        }
+        if (next) {
+            for (int i = 0; i < MAX_FUTEXES; i++) {
+                if (&system_futex[i] != next && system_futex[i].thread &&
+                    system_futex[i].thread->process == process &&
+                    system_futex[i].address == ramAddress && system_futex[i].piWaiter &&
+                    !system_futex[i].wake) { otherWaiters = true; break; }
+            }
+            const U32 newOwner = (next->thread->id & FUTEX_TID_MASK) |
+                                 (otherWaiters ? FUTEX_WAITERS : 0);
+            if (!atomicWord.compare_exchange_strong(current, newOwner,
+                    std::memory_order_seq_cst, std::memory_order_seq_cst)) return -K_EAGAIN;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(next->cond);
+            next->wake = true;
+            BOXEDWINE_CONDITION_SIGNAL(next->cond);
+            return 0;
+        }
+        if (!atomicWord.compare_exchange_strong(current, 0,
+                std::memory_order_seq_cst, std::memory_order_seq_cst)) return -K_EAGAIN;
+        return 0;
     }
 
-    if (cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) {
+    if (cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAIT_REQUEUE_PI) {
+        const U64 requeueTarget = cmd == FUTEX_WAIT_REQUEUE_PI ? hostAddress(addr2) : 0;
+        if (cmd == FUTEX_WAIT_REQUEUE_PI && !requeueTarget) return -K_EFAULT;
+        if (cmd == FUTEX_WAIT_REQUEUE_PI && addr == addr2) return -K_EINVAL;
         struct futex* f = getFutex(this, ramAddress);
         bool freshWait = false;
 
@@ -628,8 +806,9 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
         if (f) {
             BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(f->cond);
             if (f->wake) {
+                const bool canceled = f->requeuePiCanceled;
                 freeFutex(f);
-                return 0;
+                return canceled ? -K_EAGAIN : 0;
             }
             if (f->expireTimeInMillies < 0x7FFFFFFF) {
                 S32 diff = f->expireTimeInMillies - KSystem::getMilliesSinceStart();
@@ -654,13 +833,21 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
                 return -K_EWOULDBLOCK;
             }
             U32 expireTime = 0xFFFFFFFF;
-            if (timeoutAddr != 0) {
+            if (arg4 != 0) {
                 // struct timespec { i64 sec; i64 nsec; } — FUTEX_WAIT timeout
                 // is relative.
-                U64 seconds = mem->readq(timeoutAddr);
-                U64 nano = mem->readq(timeoutAddr + 8);
-                expireTime = (U32)(seconds * 1000 + nano / 1000000);
-                expireTime += KSystem::getMilliesSinceStart();
+                U64 seconds = mem->readq(arg4);
+                U64 nano = mem->readq(arg4 + 8);
+                S64 deadlineMs = (S64)(seconds * 1000 + nano / 1000000);
+                if (cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAIT_REQUEUE_PI) {
+                    const bool realtime = (op & FUTEX_CLOCK_REALTIME) || cmd == FUTEX_WAIT_REQUEUE_PI;
+                    const S64 nowMs = realtime
+                        ? (S64)(KSystem::getSystemTimeAsMicroSeconds() / 1000)
+                        : (S64)(KSystem::getMilliesSinceStart());
+                    deadlineMs -= nowMs;
+                    if (deadlineMs < 0) deadlineMs = 0;
+                }
+                expireTime = KSystem::getMilliesSinceStart() + (U32)deadlineMs;
             }
             // Wake-before-wait bridge for the no-word-change alert futex, made
             // atomic against a racing WAKE. gPendingWakeMutex is the bucket lock
@@ -683,6 +870,10 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
             }
             if (cmd == FUTEX_WAIT_BITSET) {
                 f->mask = val3;
+            } else if (cmd == FUTEX_WAIT_REQUEUE_PI) {
+                f->requeuePiWaiter = true;
+                f->requeuePiCanceled = false;
+                f->requeuePiTarget = requeueTarget;
             }
             freshWait = true;
         }
@@ -696,8 +887,9 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
             // Re-check under the lock — a WAKE could have landed between the
             // word compare and here.
             if (f->wake) {
+                const bool canceled = f->requeuePiCanceled;
                 freeFutex(f);
-                return 0;
+                return canceled ? -K_EAGAIN : 0;
             }
             // Re-read the futex WORD now that the slot is registered and its cond
             // is held. There is a race between the initial word compare (before
@@ -743,8 +935,9 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
                     }
                 }
                 if (f->wake) {
+                    const bool canceled = f->requeuePiCanceled;
                     freeFutex(f);
-                    return 0;
+                    return canceled ? -K_EAGAIN : 0;
                 }
                 if (f->expireTimeInMillies < 0x7FFFFFFF) {
                     S32 diff = f->expireTimeInMillies - KSystem::getMilliesSinceStart();
@@ -805,7 +998,7 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
             // 64-bit that's enforced naturally since the host pointer key is
             // process-unique, but check process id too for parity with the
             // 32-bit path (shared futexes would key on a global ram pointer).
-            bool processCheck = system_futex[i].thread->process->id == this->process->id;
+            bool processCheck = !isPrivate || system_futex[i].thread->process->id == this->process->id;
             bool addressCheck = system_futex[i].address == ramAddress;
             bool maskCheck = ((cmd != FUTEX_WAKE_BITSET) || (system_futex[i].mask & val3));
             if (processCheck && addressCheck && !system_futex[i].wake && maskCheck) {
@@ -836,10 +1029,135 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3) {
             recordPendingWakeLocked(this->process->id, ramAddress);
         }
         return count;
-    } else if (cmd == 3 /*REQUEUE*/ || cmd == 4 /*CMP_REQUEUE*/ || cmd == 5 /*WAKE_OP*/) {
-        return 0;
+    } else if (cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE) {
+        const U64 secondKey = hostAddress(addr2);
+        if (!secondKey) return -K_EFAULT;
+        if (cmd == FUTEX_CMP_REQUEUE) {
+            const U32 current = std::atomic_ref<U32>(*(U32*)(uintptr_t)ramAddress).load(std::memory_order_seq_cst);
+            if (current != val3) return -K_EAGAIN;
+        }
+        U32 woke = 0;
+        U32 moved = 0;
+        std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+        for (int i = 0; i < MAX_FUTEXES && (woke < value || moved < val2); i++) {
+            if (!system_futex[i].thread) continue;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(system_futex[i].cond);
+            struct futex& waiter = system_futex[i];
+            if (!waiter.thread || (isPrivate && waiter.thread->process != process) ||
+                waiter.address != ramAddress || waiter.wake) continue;
+            if (waiter.piWaiter || waiter.requeuePiWaiter) return -K_EINVAL;
+            if (woke < value) {
+                waiter.wake = true;
+                BOXEDWINE_CONDITION_SIGNAL(waiter.cond);
+                woke++;
+            } else if (moved < val2) {
+                waiter.address = secondKey;
+                moved++;
+            }
+        }
+        // Linux returns the total number of waiters woken plus requeued for
+        // both REQUEUE and CMP_REQUEUE.
+        return woke + moved;
+    } else if (cmd == FUTEX_CMP_REQUEUE_PI) {
+        const U64 secondKey = hostAddress(addr2);
+        if (!secondKey) return -K_EFAULT;
+        if (value != 1) return -K_EINVAL;
+        const U32 current = std::atomic_ref<U32>(*(U32*)(uintptr_t)ramAddress).load(std::memory_order_seq_cst);
+        if (current != val3) return -K_EAGAIN;
+        U32* targetWord = (U32*)(uintptr_t)secondKey;
+        std::atomic_ref<U32> target(*targetWord);
+        std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+        U32 owner = target.load(std::memory_order_seq_cst);
+        U32 woke = 0;
+        U32 moved = 0;
+        for (int i = 0; i < MAX_FUTEXES; i++) {
+            if (!system_futex[i].thread || (isPrivate && system_futex[i].thread->process != process)) continue;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(system_futex[i].cond);
+            if (system_futex[i].address == secondKey && !system_futex[i].wake &&
+                !system_futex[i].piWaiter) return -K_EINVAL;
+        }
+        for (int i = 0; i < MAX_FUTEXES; i++) {
+            if (!system_futex[i].thread || (isPrivate && system_futex[i].thread->process != process)) continue;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(system_futex[i].cond);
+            if (system_futex[i].address == ramAddress && !system_futex[i].wake &&
+                (!system_futex[i].requeuePiWaiter || system_futex[i].requeuePiTarget != secondKey))
+                return -K_EINVAL;
+        }
+        for (int i = 0; i < MAX_FUTEXES && moved < val2; i++) {
+            if (!system_futex[i].thread) continue;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(system_futex[i].cond);
+            struct futex& waiter = system_futex[i];
+            if (!waiter.thread || (isPrivate && waiter.thread->process != process) ||
+                waiter.address != ramAddress || waiter.wake || !waiter.requeuePiWaiter ||
+                waiter.requeuePiTarget != secondKey) continue;
+            waiter.address = secondKey;
+            waiter.requeuePiWaiter = false;
+            waiter.requeuePiCanceled = false;
+            waiter.piWaiter = true;
+            moved++;
+            if ((owner & FUTEX_TID_MASK) == 0 && woke == 0) {
+                U32 newOwner = (waiter.thread->id & FUTEX_TID_MASK) |
+                               (val2 > 1 ? FUTEX_WAITERS : 0);
+                if (target.compare_exchange_strong(owner, newOwner,
+                        std::memory_order_seq_cst, std::memory_order_seq_cst)) {
+                    owner = newOwner;
+                    waiter.wake = true;
+                    BOXEDWINE_CONDITION_SIGNAL(waiter.cond);
+                    woke++;
+                } else {
+                    owner = target.fetch_or(FUTEX_WAITERS, std::memory_order_seq_cst) | FUTEX_WAITERS;
+                }
+            } else {
+                owner = target.fetch_or(FUTEX_WAITERS, std::memory_order_seq_cst) | FUTEX_WAITERS;
+            }
+        }
+        return woke + moved;
+    } else if (cmd == FUTEX_WAKE_OP) {
+        const U64 secondKey = hostAddress(addr2);
+        if (!secondKey) return -K_EFAULT;
+        const U32 encoded = val3;
+        const U32 opCode = (encoded >> 28) & 0xf;
+        const U32 cmpCode = (encoded >> 24) & 0xf;
+        const bool shiftArg = (opCode & 8) != 0;
+        const U32 operation = opCode & 7;
+        auto signExtend12 = [](U32 v) -> S32 { return (S32)(v << 20) >> 20; };
+        S32 opArg = signExtend12((encoded >> 12) & 0xfff);
+        const S32 cmpArg = signExtend12(encoded & 0xfff);
+        if (shiftArg) {
+            if (opArg < 0 || opArg > 31) return -K_EINVAL;
+            opArg = 1 << opArg;
+        }
+        if (operation > 4 || cmpCode > 5) return -K_EINVAL;
+        U32* word = (U32*)(uintptr_t)secondKey;
+        std::atomic_ref<U32> atomicWord(*word);
+        U32 oldValue = atomicWord.load(std::memory_order_seq_cst);
+        U32 newValue;
+        do {
+            switch (operation) {
+                case 0: newValue = (U32)opArg; break; // SET
+                case 1: newValue = oldValue + (U32)opArg; break; // ADD
+                case 2: newValue = oldValue | (U32)opArg; break; // OR
+                case 3: newValue = oldValue & ~(U32)opArg; break; // ANDN
+                default: newValue = oldValue ^ (U32)opArg; break; // XOR
+            }
+        } while (!atomicWord.compare_exchange_weak(oldValue, newValue,
+                    std::memory_order_seq_cst, std::memory_order_seq_cst));
+        const S32 signedOld = (S32)oldValue;
+        bool compare = false;
+        switch (cmpCode) {
+            case 0: compare = signedOld == cmpArg; break;
+            case 1: compare = signedOld != cmpArg; break;
+            case 2: compare = signedOld < cmpArg; break;
+            case 3: compare = signedOld <= cmpArg; break;
+            case 4: compare = signedOld > cmpArg; break;
+            case 5: compare = signedOld >= cmpArg; break;
+        }
+        std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+        const U32 firstWoke = wakeAt(ramAddress, value);
+        const U32 secondWoke = compare ? wakeAt(secondKey, val2) : 0;
+        return (S64)firstWoke + secondWoke;
     }
-    return -K_ENOSYS;
+    return unsupportedFutexOperation64(op, cmd);
 }
 #endif
 

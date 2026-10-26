@@ -26,6 +26,9 @@
 #include <string.h>
 
 #include "../../io/fsvirtualopennode.h"
+#ifdef BOXEDWINE_GUEST_X64
+#include "kmemory64.h"
+#endif
 
 class EventData {
 public:
@@ -80,6 +83,13 @@ public:
 
     // From FsOpenNode
     U32 ioctl(KThread* thread, U32 request) override;
+#ifdef BOXEDWINE_GUEST_X64
+    U32 ioctl64(U32 request, U64 argAddr, KMemory64* mem) override;
+#endif
+    // The evdev ioctl cases are identical for both guest widths; only the
+    // memory accessor and the argument's address width differ.
+    template <typename M, typename A>
+    U32 ioctlForMemory(M* memory, U32 request, A buffer);
     U32 readNative(U8* buffer, U32 len) override;
     U32 writeNative(U8* buffer, U32 len) override;
     void waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) override;
@@ -155,17 +165,39 @@ FsOpenNode* openDevInputKeyboard(const std::shared_ptr<FsNode>& node, U32 flags,
 
 // :TODO: can this be blocking
 U32 DevInput::readNative(U8* buffer, U32 len) {
+    // struct input_event is 24 bytes for a 64-bit guest (two 64-bit time
+    // fields) and 16 bytes for a 32-bit guest. The read path runs on the
+    // reader's thread, so the reader's process width decides the record
+    // size; emitting 16-byte records to a 64-bit reader misaligns every
+    // record after the first.
+    KThread* reader = KThread::currentThread();
+    bool guest64 = reader && reader->process && reader->process->is64Bit;
     U32 result = 0;
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->bufferCond);
-    while (this->eventQueue.size() && result+16<=len) {
-        const EventData& e = this->eventQueue.front();
-        U32* b = (U32*)(buffer+result);
-        b[0] = (U32) (e.time / 1000000); // seconds
-        b[1] = (U32) (e.time % 1000000); // microseconds
-        b[2] = e.type | ((U32)e.code) << 16;
-        b[3] = e.value;
-        result+=16;
-        this->eventQueue.pop();
+    if (guest64) {
+        while (this->eventQueue.size() && result+24<=len) {
+            const EventData& e = this->eventQueue.front();
+            U64* t = (U64*)(buffer+result);
+            t[0] = e.time / 1000000; // seconds
+            t[1] = e.time % 1000000; // microseconds
+            U16* f = (U16*)(buffer+result+16);
+            f[0] = e.type;
+            f[1] = e.code;
+            *(S32*)(buffer+result+20) = e.value;
+            result+=24;
+            this->eventQueue.pop();
+        }
+    } else {
+        while (this->eventQueue.size() && result+16<=len) {
+            const EventData& e = this->eventQueue.front();
+            U32* b = (U32*)(buffer+result);
+            b[0] = (U32) (e.time / 1000000); // seconds
+            b[1] = (U32) (e.time % 1000000); // microseconds
+            b[2] = e.type | ((U32)e.code) << 16;
+            b[3] = e.value;
+            result+=16;
+            this->eventQueue.pop();
+        }
     }
     if (result == 0) {
         return -K_EWOULDBLOCK;
@@ -185,13 +217,31 @@ void DevInput::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
     }
 }
 
-static void writeBit(KMemory* memory, U32 address, U32 bit) {
+template <typename M, typename A>
+static void writeBit(M* memory, A address, U32 bit) {
     U32 b = bit/8;
     U32 p = bit % 8;
     U32 value = memory->readb(address+b);
     value|=(1<<p);
     memory->writeb(address+b, value);
 }
+
+static void inputMemset(KMemory* memory, U32 address, U32 len) {
+    memory->memset(address, 0, len);
+}
+#ifdef BOXEDWINE_GUEST_X64
+static void inputMemset(KMemory64* memory, U64 address, U32 len) {
+    memory->memsetGuest(address, 0, len);
+}
+#endif
+static void inputWrite(KMemory* memory, U32 address, const void* data, U32 len) {
+    memory->memcpy(address, (const U8*)data, len);
+}
+#ifdef BOXEDWINE_GUEST_X64
+static void inputWrite(KMemory64* memory, U64 address, const void* data, U32 len) {
+    memory->memcpyToGuest(address, data, len);
+}
+#endif
 
 //    struct input_absinfo {
 //        __s32 value;
@@ -201,24 +251,23 @@ static void writeBit(KMemory* memory, U32 address, U32 bit) {
 //        __s32 flat;
 //        __s32 resolution;
 //    };
-static void writeAbs(KMemory* memory, U32 address, U32 value, U32 min, U32 max) {
+template <typename M, typename A>
+static void writeAbs(M* memory, A address, U32 value, U32 min, U32 max, U32 resolution = 96) {
     memory->writed(address, value);
     memory->writed(address+4, min);
     memory->writed(address+8, max);
     memory->writed(address+12, 0);
     memory->writed(address+16, 0);
-    memory->writed(address+20, 96);
+    memory->writed(address+20, resolution);
 }
 
-U32 DevInput::ioctl(KThread* thread, U32 request) {
-    CPU* cpu = thread->cpu;
+template <typename M, typename A>
+U32 DevInput::ioctlForMemory(M* memory, U32 request, A buffer) {
     U32 cmd = request & 0xFFFF;
-    KMemory* memory = thread->memory;
 
     switch (cmd) {
         case 0x4501: { // EVIOCGVERSION
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             if (len<4)
                 kpanic_fmt("Bad length for EVIOCGVERSION: %d", len);
             memory->writed(buffer, this->version);
@@ -232,7 +281,6 @@ U32 DevInput::ioctl(KThread* thread, U32 request) {
 //                __u16 version;
 //                };
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             if (len!=8)
                 kpanic_fmt("Bad length for EVIOCGID: %d",len);
             memory->writew(buffer, this->bustype);
@@ -243,28 +291,24 @@ U32 DevInput::ioctl(KThread* thread, U32 request) {
         }
         case 0x4506: { // EVIOCGNAME
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             U32 todo = std::min((U32)name.length(), len);
-            memory->memcpy(buffer, this->name.c_str(), todo);
+            inputWrite(memory, buffer, this->name.c_str(), todo);
             return todo;
         }
        case 0x4507: { // EVIOCGPHYS
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             U32 todo = std::min((U32)name.length(), len);
-            memory->memcpy(buffer, this->name.c_str(), todo);
+            inputWrite(memory, buffer, this->name.c_str(), todo);
             return todo;
         }
         case 0x4508: { //  EVIOCGUNIQ
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             U32 todo = std::min((U32)name.length(), len);
-            memory->memcpy(buffer, this->name.c_str(), todo);
+            inputWrite(memory, buffer, this->name.c_str(), todo);
             return todo;
         }
         case 0x4509: { // EVIOCGPROP
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             if (len<4)
                 kpanic_fmt("Bad length for EVIOCGBIT: %d", len);
             memory->writed(buffer, this->prop);
@@ -272,25 +316,21 @@ U32 DevInput::ioctl(KThread* thread, U32 request) {
         }
         case 0x4518: { // EVIOCGKEY
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x4519: { // EVIOCGLED
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x451b: { // EVIOCGSW
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x4520: { // EVIOCGBIT
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
             if (len<4)
                 kpanic_fmt("Bad length for EVIOCGBIT: %d", len);
             memory->writed(buffer, this->mask);
@@ -298,26 +338,22 @@ U32 DevInput::ioctl(KThread* thread, U32 request) {
         }
         case 0x4524: { // EVIOCGBIT(EV_MSC)
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x4525: { // EVIOCGBIT(EV_SW) - Switches
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x4532: { // EVIOCGBIT(EV_SND) - Sound Effects
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x4535: { // EVIOCGBIT(EV_FF) - Force Feedback
             U32 len = (request & 0x1fff0000) >> 16;
-            U32 buffer = IOCTL_ARG1;
-            memory->memset(buffer, 0, len);
+            inputMemset(memory, buffer, len);
             return 0;
         }
         case 0x540B: // TCFLSH
@@ -326,7 +362,19 @@ U32 DevInput::ioctl(KThread* thread, U32 request) {
     return -1;
 }
 
+U32 DevInput::ioctl(KThread* thread, U32 request) {
+    CPU* cpu = thread->cpu;
+    return this->ioctlForMemory(thread->memory, request, (U32)IOCTL_ARG1);
+}
+
+#ifdef BOXEDWINE_GUEST_X64
+U32 DevInput::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
+    return this->ioctlForMemory(mem, request, argAddr);
+}
+#endif
+
 void DevInput::setAsync(bool isAsync) {
+    FsOpenNode::setAsync(isAsync);
     KProcessPtr process = KThread::currentThread()->process;
     if (isAsync) {
         if (this->asyncProcessId && this->asyncProcessId!=process->id) {
@@ -345,7 +393,7 @@ void DevInput::setAsync(bool isAsync) {
 }
 
 bool DevInput::isAsync() {
-    return this->asyncProcessId == KThread::currentThread()->process->id;
+    return FsOpenNode::isAsync() || this->asyncProcessId == KThread::currentThread()->process->id;
 }
 
 bool DevInput::isWriteReady() {
@@ -624,6 +672,108 @@ U32 DevInputKeyboard::ioctl(KThread* thread, U32 request) {
     return -1;
 }
 
+
+// The gamepad axis set winebus's evdev classification looks for: two
+// sticks, two triggers, one hat. Ranges follow the Linux gamepad
+// convention (signed sticks resting at 0, byte triggers, ternary hat).
+static const struct { U32 code; S32 min; S32 max; } kJoystickAxes[] = {
+    {K_ABS_X, -32768, 32767}, {K_ABS_Y, -32768, 32767}, {K_ABS_Z, 0, 255},
+    {K_ABS_RX, -32768, 32767}, {K_ABS_RY, -32768, 32767}, {K_ABS_RZ, 0, 255},
+    {K_ABS_HAT0X, -1, 1}, {K_ABS_HAT0Y, -1, 1},
+};
+
+static int joystickAxisIndex(U32 code) {
+    for (U32 i = 0; i < sizeof(kJoystickAxes) / sizeof(kJoystickAxes[0]); i++) {
+        if (kJoystickAxes[i].code == code) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+class DevInputJoystick : public DevInput {
+public:
+    DevInputJoystick(const std::shared_ptr<FsNode>& node, U32 flags);
+
+    // from FsOpenNode
+    U32 ioctl(KThread* thread, U32 request) override {
+        CPU* cpu = thread->cpu;
+        return this->joystickIoctl(thread->memory, request, (U32)IOCTL_ARG1);
+    }
+#ifdef BOXEDWINE_GUEST_X64
+    U32 ioctl64(U32 request, U64 argAddr, KMemory64* mem) override {
+        return this->joystickIoctl(mem, request, argAddr);
+    }
+#endif
+
+    template <typename M, typename A>
+    U32 joystickIoctl(M* memory, U32 request, A buffer);
+
+    S32 axisValues[8];
+    bool buttonStates[15]; // K_BTN_SOUTH..K_BTN_THUMBR
+};
+
+DevInputJoystick::DevInputJoystick(const std::shared_ptr<FsNode>& node, U32 flags) : DevInput(node, flags) {
+    this->bustype = 3; // BUS_USB
+    this->vendor = 0x045e;
+    this->product = 0x028e;
+    this->version = 0x0110;
+    this->name = B("BoxedWine gamepad");
+    this->mask = (1<<K_EV_SYN)|(1<<K_EV_KEY)|(1<<K_EV_ABS);
+    memset(this->axisValues, 0, sizeof(this->axisValues));
+    memset(this->buttonStates, 0, sizeof(this->buttonStates));
+}
+
+template <typename M, typename A>
+U32 DevInputJoystick::joystickIoctl(M* memory, U32 request, A buffer) {
+    U32 cmd = request & 0xFFFF;
+    U32 len = (request & 0x1fff0000) >> 16;
+    switch (cmd) {
+        case 0x4521: { // EVIOCGBIT(EV_KEY)
+            inputMemset(memory, buffer, len);
+            for (U32 code = K_BTN_SOUTH; code <= K_BTN_THUMBR; code++) {
+                if (code / 8 < len) {
+                    writeBit(memory, buffer, code);
+                }
+            }
+            return (K_BTN_THUMBR + 7) / 8;
+        }
+        case 0x4523: { // EVIOCGBIT(EV_ABS)
+            inputMemset(memory, buffer, len);
+            for (U32 i = 0; i < sizeof(kJoystickAxes) / sizeof(kJoystickAxes[0]); i++) {
+                if (kJoystickAxes[i].code / 8 < len) {
+                    writeBit(memory, buffer, kJoystickAxes[i].code);
+                }
+            }
+            return (K_ABS_HAT0Y + 7) / 8;
+        }
+        case 0x4518: { // EVIOCGKEY: the live button state, not the base
+                       // class's zero-filled answer
+            inputMemset(memory, buffer, len);
+            for (U32 code = K_BTN_SOUTH; code <= K_BTN_THUMBR; code++) {
+                if (this->buttonStates[code - K_BTN_SOUTH] && code / 8 < len) {
+                    writeBit(memory, buffer, code);
+                }
+            }
+            return 0;
+        }
+        default: {
+            if (cmd >= 0x4540 && cmd < 0x4560) { // EVIOCGABS(abs)
+                int index = joystickAxisIndex(cmd - 0x4540);
+                if (index >= 0) {
+                    if (len < 24) {
+                        kpanic("Bad length for EVIOCGABS (joystick)");
+                    }
+                    writeAbs(memory, buffer, (U32)this->axisValues[index],
+                             (U32)kJoystickAxes[index].min, (U32)kJoystickAxes[index].max, 0);
+                    return 0;
+                }
+            }
+            return DevInput::ioctlForMemory(memory, request, buffer);
+        }
+    }
+}
+
 void queueEvent(DevInput* queue, U32 type, U32 code, U32 value, U64 time) {
     EventData data;
 
@@ -699,12 +849,60 @@ void postSendEvent(DevInput* events, U64 time) {
     if (!events)
         return;
     queueEvent(events, K_EV_SYN, K_SYN_REPORT, 0, time);
-    if (events->asyncProcessId) {
+    if (!events->notifyAsyncReady(K_POLL_IN) && events->asyncProcessId) {
         KProcessPtr process = KSystem::getProcess(events->asyncProcessId);
         if (process) {
             process->signalIO(K_POLL_IN, 0, events->asyncProcessFd);		
         }
     }        
+}
+
+static DevInputJoystick* joystickEvents;
+
+FsOpenNode* openDevInputJoystick(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
+    joystickEvents = new DevInputJoystick(node, flags);
+    joystickEvents->clearOnExit = (DevInput**)&joystickEvents;
+    return joystickEvents;
+}
+
+void onGamepadButton(U32 code, bool down) {
+    if (!joystickEvents) {
+        return;
+    }
+    if (code < K_BTN_SOUTH || code > K_BTN_THUMBR) {
+        return;
+    }
+    U64 time = KSystem::getSystemTimeAsMicroSeconds();
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(joystickEvents->bufferCond);
+    joystickEvents->buttonStates[code - K_BTN_SOUTH] = down;
+    queueEvent(joystickEvents, K_EV_KEY, code, down ? 1 : 0, time);
+    postSendEvent(joystickEvents, time);
+    BOXEDWINE_CONDITION_SIGNAL_ALL(joystickEvents->bufferCond);
+}
+
+void onGamepadAxis(U32 axis, S32 value) {
+    if (!joystickEvents) {
+        return;
+    }
+    int index = joystickAxisIndex(axis);
+    if (index < 0) {
+        return;
+    }
+    if (value < kJoystickAxes[index].min) {
+        value = kJoystickAxes[index].min;
+    }
+    if (value > kJoystickAxes[index].max) {
+        value = kJoystickAxes[index].max;
+    }
+    U64 time = KSystem::getSystemTimeAsMicroSeconds();
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(joystickEvents->bufferCond);
+    if (joystickEvents->axisValues[index] == value) {
+        return;
+    }
+    joystickEvents->axisValues[index] = value;
+    queueEvent(joystickEvents, K_EV_ABS, axis, value, time);
+    postSendEvent(joystickEvents, time);
+    BOXEDWINE_CONDITION_SIGNAL_ALL(joystickEvents->bufferCond);
 }
 
 void onMouseButtonUp(U32 button) {

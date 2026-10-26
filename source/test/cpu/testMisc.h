@@ -44,5 +44,9 @@ void testStc_0x0f9();
 void testStc_0x2f9();
 void testBswap_0x3c8_0x3cf();
 void testRecoverUnknownInstruction();
+void testSgdtSidtStores();
+void testJitLockedOps();
+void testUd2DefaultDisposition();
+int bw64Ud2DflScenario();
 
 #endif

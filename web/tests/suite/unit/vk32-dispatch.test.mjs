@@ -8,7 +8,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,23 +35,51 @@ test('sample-count handling matches shipped DXVK (never test-compile offsetof)',
     'sample-count values must use real VK_SAMPLE_COUNT bits (DXVK divide-by-zero guard)');
 });
 
-test('PE shim pointer width is 64-bit for pointer args (c50f6fba truncation)', () => {
-  const shimCandidates = [
-    'tools/vkd3d/probe/vulkan-1.dll',
-    'tools/rootfs32/libvk32/libvk32.c',
-    'tools/rootfs64/libvk64/libvk64.c',
-  ];
-  let checked = false;
-  for (const c of shimCandidates) {
-    try {
-      const src = readFileSync(join(repoRoot, c), 'utf8');
-      if (src.includes('regionCount') || src.includes('VkSubmitInfo') || src.includes('g_procs')) checked = true;
-    } catch {}
-  }
-  assert.ok(bridge.includes('vk32abi::') || bridge.includes('uint32_t'),
-    'vk32 bridge must use 32-bit guest layouts (vk32abi:: / uint32_t dispatchables)');
-  assert.ok(checked || bridge.includes('VkSubmitInfo') || bridge.includes('regionCount') || true,
-    'shim pointer-width check placeholder (PE shim rebuilt c50f6fba)');
+// libvk32.c is built for i386 where `uintptr_t` is 32 bits. Every guest pointer
+// goes into a 64-bit trap slot through P(x); it must ZERO-extend (a pointer such
+// as 0xF0001234 sign-extended to 0xFFFFFFFFF0001234 is the c50f6fba truncation
+// family of bugs in reverse). Build the real shim with the trap replaced by a
+// recorder and run it as an i386 binary (static, freestanding: no libc needed).
+test('libvk32 P(x) zero-extends guest pointers into 64-bit trap slots, including VkSubmitInfo', (t) => {
+  const cc = process.env.VK32_CC || 'i686-linux-gnu-gcc';
+  const probe = spawnSync(cc, ['--version'], { encoding: 'utf8' });
+  if (probe.error) return t.skip(`${cc} not installed: cannot build the i386 shim`);
+  const src = readFileSync(join(repoRoot, 'tools/rootfs64/libvk32/libvk32.c'), 'utf8');
+  assert.match(src, /#define P\(x\) \(\(uint64_t\)\(uintptr_t\)\(x\)\)/, 'P(x) must cast through unsigned uintptr_t, never intptr_t/int64');
+  const start = src.indexOf('static inline uint64_t vk64_trap(');
+  assert.ok(start > 0);
+  let depth = 0, end = src.indexOf('{', start);
+  for (let i = end; i < src.length; i++) { if (src[i] === '{') depth++; else if (src[i] === '}' && --depth === 0) { end = i + 1; break; } }
+  const recorder = 'static VK64Args g_last; static uint64_t g_fn;\n' +
+    'static inline uint64_t vk64_trap(uint64_t fnId, VK64Args* args) { g_fn = fnId; if (args) g_last = *args; return 0; }';
+  const main = `
+static int g_rc;
+#define CHECK(n, c) do { if (!(c)) { g_rc = n; goto done; } } while (0)
+void _start(void) {
+    const uint32_t hi = 0xF0001234u, top = 0x80000000u;
+    vkQueueSubmit(1, 1, (const void*)(uintptr_t)hi, 7);
+    CHECK(1, g_fn == VK64_fn_vkQueueSubmit && g_last.a[2] == 0xF0001234ull);
+    vkQueueSubmit2(1, 1, (const void*)(uintptr_t)top, 7);
+    CHECK(2, g_fn == VK64_fn_vkQueueSubmit2 && g_last.a[2] == 0x80000000ull);
+    vkQueueSubmit2KHR(1, 1, (const void*)(uintptr_t)hi, 7);
+    CHECK(3, g_fn == VK64_fn_vkQueueSubmit2KHR && g_last.a[2] == 0xF0001234ull);
+    vkQueuePresentKHR(1, (const void*)(uintptr_t)hi);
+    CHECK(4, g_fn == VK64_fn_vkQueuePresentKHR && g_last.a[1] == 0xF0001234ull);
+done:
+    __asm__ volatile("int $0x80" :: "a"(1), "b"(g_rc));
+    for (;;) {}
+}
+`;
+  const dir = mkdtempSync(join(tmpdir(), 'vk32-p-'));
+  try {
+    writeFileSync(join(dir, 'shim32.c'), src.slice(0, start) + recorder + src.slice(end) + main);
+    const build = spawnSync(cc, ['-std=gnu11', '-O0', '-ffreestanding', '-nostdlib', '-static', '-w',
+      join(dir, 'shim32.c'), '-o', join(dir, 'shim32')], { encoding: 'utf8' });
+    assert.equal(build.status, 0, 'i386 shim harness must compile:\n' + build.stderr);
+    const run = spawnSync(join(dir, 'shim32'), { encoding: 'utf8' });
+    assert.equal(run.error, undefined, 'i386 harness must execute on this host: ' + run.error);
+    assert.equal(run.status, 0, `check ${run.status} failed: 1=vkQueueSubmit 2=vkQueueSubmit2 (sign bit) 3=vkQueueSubmit2KHR 4=vkQueuePresentKHR`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('copy/blit handlers have defensive guards (d1713623 length_error/huge allocs)', () => {

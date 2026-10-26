@@ -5,12 +5,14 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
+import { screenshotPixels } from './suite/lib/pixels.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
+import { writeVkCapture } from '../../tools/bench/vk-capture-artifact.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(repo);
-const demos = ['notepad', 'explorer', 'snake', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts'];
+const demos = ['notepad', 'explorer', 'snake', 'tetris', 'doom', 'celeste', 'chromium', 'portal', 'gangbeasts', 'quake3', 'mindustry', 'winmerge', 'alkhaser', 'godot-squash', 'unigine-tropics'];
 const demo = process.env.DEMO;
 if (!demos.includes(demo)) throw new Error(`DEMO is required and must be one of: ${demos.join(' ')}`);
 // JIT=1 selects CPU64; JIT32=1 additionally selects CPU32. JIT=0 disables both.
@@ -21,7 +23,7 @@ if (jit32 !== undefined && jit32 !== '0' && jit32 !== '1') throw new Error('JIT3
 const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/T/, 'T').slice(0, 15);
 const defaultOut = join('test-results/demo-matrix', `${demo}-jit${jit}-${stamp}`);
 const outDir = resolve(repo, process.env.OUT || defaultOut);
-const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium'].includes(demo);
+const longBoot = ['portal', 'celeste', 'gangbeasts', 'chromium', 'quake3', 'mindustry', 'alkhaser', 'godot-squash', 'unigine-tropics'].includes(demo);
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (longBoot ? 900 : 300));
 if (!Number.isFinite(mappedTimeout) || mappedTimeout <= 0) throw new Error('MAPPED_TIMEOUT_S must be a positive number');
 const threadDumpEnabled = process.env.BW_THREAD_DUMP === '1';
@@ -34,7 +36,10 @@ if (mappedOnly && process.env.AUDIO_AUTOPLAY_ONLY !== '1') {
   throw new Error('MAPPED_ONLY requires AUDIO_AUTOPLAY_ONLY=1');
 }
 const bootOffsets = mappedOnly ? [] : (longBoot ? [5, 30, 60, 120, 240, 360] : [5, 30, 60, 120]);
-const pixelMethod = 'in-page';
+const screenshotPixelMethod = 'chromium-screenshot-png-display';
+const blankScreenGraceMs = 15_000;
+const blankScreenSampleIntervalMs = 5_000;
+const blankScreenFailureSamples = 6;
 
 const metricsPath = join(outDir, 'metrics.jsonl');
 
@@ -61,6 +66,7 @@ let lastMetricsSnapshot = null;
 let lastJitStats = null;
 let inputIndex = 0;
 const consoleLines = [];
+const wasmMetricsLines = [];
 const pageErrors = [];
 const httpErrors = [];
 const screenshots = [];
@@ -87,6 +93,9 @@ try {
     ],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  if (process.env.BW_VK_CAPTURE_FRAME !== undefined) {
+    await page.addInitScript(frame => { globalThis.__bwVkCaptureFrame = frame; }, process.env.BW_VK_CAPTURE_FRAME);
+  }
   const runtimeParams = new URLSearchParams(process.env.BW_TEST_URL_PARAMS || '');
   if (jit32 !== undefined) runtimeParams.set('jit32', jit32);
   const extraUrlParams = [...runtimeParams];
@@ -205,7 +214,11 @@ try {
     const text = message.text();
     consoleLines.push(`[${elapsedSeconds().toFixed(1)}s] ${message.type()}: ${text}`);
     if (message.type() === 'error') consoleErrorCount++;
-    if (text.includes('bw64: METRICS ')) lastWasmMetricLine = text;
+    if (text.includes('bw64: METRICS ')) {
+      lastWasmMetricLine = text;
+      const snapshot = parseWasmMetricLine(text);
+      if (snapshot) wasmMetricsLines.push({ atSeconds: elapsedSeconds(), snapshot });
+    }
   });
   page.on('pageerror', error => {
     const line = `[${elapsedSeconds().toFixed(1)}s] pageerror: ${error.stack || error.message}`;
@@ -308,7 +321,8 @@ try {
     await writeFile(join(outDir, 'summary.json'), JSON.stringify({
       demo, jit: Number(jit), build, tClick, tMapped: null, clickToMappedSeconds: null,
       screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-      lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', pixelMethod, httpErrorCount: httpErrors.length,
+      framesPresented: framesPresentedTotal(), wasmMetricsLines, screenshotPixelMethod,
+      lastMetricsSnapshot, lastJitStats, stage: 'not-mapped', httpErrorCount: httpErrors.length,
       audioAfterNoInput, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
       threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
       threadDumpAttempts, threadDumpInvocations,
@@ -322,6 +336,7 @@ try {
   tMapped = elapsedSeconds();
   mappedAt = Date.now();
   startMetricsSampler();
+  const visiblePixels = await waitForVisibleScreenshotPixels();
   for (const seconds of bootOffsets) {
     const due = mappedAt + seconds * 1000;
     if (due > Date.now()) await page.waitForTimeout(due - Date.now());
@@ -401,8 +416,10 @@ try {
     const summary = {
       demo, jit: Number(jit), build, tClick, tMapped,
       clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
-      screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-      lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', pixelMethod, httpErrorCount: httpErrors.length,
+      screenshots, visiblePixels, screenshotPixelMethod,
+      framesPresented: framesPresentedTotal(), wasmMetricsLines,
+      pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
+      lastMetricsSnapshot, lastJitStats, stage: 'mapped-no-input', httpErrorCount: httpErrors.length,
       demoClickAtMs, audioStartBeforePlayerClick, audioAfterNoInput, observeMs,
       audioTimeline, audioMetricEvents: audioOutputMetrics.length, nonzeroOutputFrames, autoplayPassed,
       threadDumpEnabled, threadDumpLauncherPatched, threadDumpRuntimeUrl,
@@ -431,10 +448,12 @@ try {
   if (!overlayCleared) { process.exitCode = 1; console.error('FAIL: launcher still shows the first-frame overlay after the program mapped'); }
   const summary = {
     overlayCleared,
+    visiblePixels, screenshotPixelMethod,
+    framesPresented: framesPresentedTotal(), wasmMetricsLines,
     demo, jit: Number(jit), build, tClick, tMapped,
     clickToMappedSeconds: Number((tMapped - tClick).toFixed(3)),
     screenshots, pageErrorCount: pageErrors.length, consoleErrorCount: countConsoleErrors(),
-    lastMetricsSnapshot, lastJitStats, stage: 'mapped', pixelMethod, httpErrorCount: httpErrors.length,
+    lastMetricsSnapshot, lastJitStats, stage: 'mapped', httpErrorCount: httpErrors.length,
     gameplayStartedAtMs: gameplayStartedAt,
     demoClickAtMs,
     audioStartBeforePlayerClick,
@@ -442,13 +461,18 @@ try {
     threadDumpAttempts, threadDumpInvocations,
   };
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
-  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', overlayCleared, clickToMappedSeconds: summary.clickToMappedSeconds,
+  console.log(JSON.stringify({ demo, jit: Number(jit), stage: 'mapped', overlayCleared, visiblePixels,
+    framesPresented: summary.framesPresented, clickToMappedSeconds: summary.clickToMappedSeconds,
     finalScreenshot: screenshots.at(-1), pageErrors: summary.pageErrorCount, consoleErrors: summary.consoleErrorCount,
     outDir: relative(repo, outDir) }));
 } finally {
   clearInterval(threadDumpTimer);
   sampling = false;
   await samplerPromise?.catch(() => {});
+  if (page && process.env.BW_VK_CAPTURE_FRAME !== undefined) {
+    const capture = await page.evaluate(() => globalThis.bwVkCapture?.report || { status: 'no-capture', error: 'No selected Vulkan presentation reached the page tier' }).catch(error => ({ status: 'error', error: String(error) }));
+    await writeVkCapture(join(outDir, 'vk-capture'), capture).catch(error => { console.error('Capture export failed:', error); process.exitCode = 1; });
+  }
   await browser?.close().catch(() => {});
   if (startedAt) {
     await writeFile(join(outDir, 'console.txt'), consoleLines.join('\n') + (consoleLines.length ? '\n' : '')).catch(() => {});
@@ -486,43 +510,44 @@ async function takeScreenshot(name) {
 }
 
 async function measurePlayerPixels(currentPage) {
-  return currentPage.evaluate(() => {
-    const display = document.querySelector('#display');
-    const frame = display?.querySelector('iframe');
-    const canvas = document.querySelector('#vkCanvas') || document.querySelector('#gpuCanvas')
-      || frame?.contentDocument?.querySelector('#canvas');
-    const rect = display?.getBoundingClientRect();
-    const region = rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
-    if (!canvas || !canvas.width || !canvas.height) {
-      return { nonblankFraction: null, uniqueColors: null, pixelRegion: region, pixelSource: null };
-    }
-    try {
-      const copy = document.createElement('canvas');
-      copy.width = canvas.width;
-      copy.height = canvas.height;
-      const context = copy.getContext('2d', { willReadFrequently: true });
-      context.drawImage(canvas, 0, 0, copy.width, copy.height);
-      const rgba = context.getImageData(0, 0, copy.width, copy.height).data;
-      let nonblank = 0;
-      const colors = new Set();
-      for (let at = 0; at < rgba.length; at += 4) {
-        const r = rgba[at], g = rgba[at + 1], b = rgba[at + 2];
-        if (Math.max(r, g, b) > 16) nonblank++;
-        if (colors.size < 10000) colors.add((r << 16) | (g << 8) | b);
-      }
-      return {
-        nonblankFraction: nonblank / (copy.width * copy.height),
-        uniqueColors: Math.min(10000, colors.size),
-        pixelRegion: region,
-        pixelSource: canvas.id ? `#${canvas.id}` : 'canvas',
-        pixelWidth: copy.width,
-        pixelHeight: copy.height,
-      };
-    } catch (error) {
-      return { nonblankFraction: null, uniqueColors: null, pixelRegion: region,
-        pixelSource: canvas.id ? `#${canvas.id}` : 'canvas', pixelError: error.message };
-    }
-  });
+  const box = await currentPage.locator('#display').boundingBox();
+  if (!box) return { nonDarkPixelFraction: null, distinctColorCount: null, pixelError: '#display has no bounding box' };
+  const clip = {
+    x: Math.max(0, Math.floor(box.x)), y: Math.max(0, Math.floor(box.y)),
+    width: Math.max(1, Math.ceil(box.width)), height: Math.max(1, Math.ceil(box.height)),
+  };
+  try {
+    const metrics = screenshotPixels(await currentPage.screenshot({ type: 'png', clip }));
+    return { ...metrics, pixelMethod: screenshotPixelMethod, pixelRegion: clip };
+  } catch (error) {
+    return { nonDarkPixelFraction: null, distinctColorCount: null, pixelMethod: screenshotPixelMethod,
+      pixelRegion: clip, pixelError: error.message || String(error) };
+  }
+}
+
+async function waitForVisibleScreenshotPixels() {
+  await page.waitForTimeout(blankScreenGraceMs);
+  let consecutiveBlankSamples = 0;
+  let lastSample = null;
+  for (let sample = 1; sample <= blankScreenFailureSamples; sample++) {
+    lastSample = await measurePlayerPixels(page);
+    lastSample.sample = sample;
+    lastSample.atSeconds = elapsedSeconds();
+    screenshots.push({ name: `visible-pixels-${sample}.png`, ...lastSample });
+    const visible = Number(lastSample.nonDarkPixelFraction) >= 0.005
+      && Number(lastSample.distinctColorCount) >= 8;
+    if (visible) return { ...lastSample, visible: true, consecutiveBlankSamples: 0 };
+    consecutiveBlankSamples++;
+    if (sample < blankScreenFailureSamples) await page.waitForTimeout(blankScreenSampleIntervalMs);
+  }
+  const message = `FAIL: program mapped but display screenshot stayed blank for ${consecutiveBlankSamples} consecutive samples after ${blankScreenGraceMs / 1000}s grace (non-dark fraction ${lastSample?.nonDarkPixelFraction ?? 'unavailable'}, distinct colors ${lastSample?.distinctColorCount ?? 'unavailable'})`;
+  process.exitCode = 1;
+  console.error(message);
+  return { ...lastSample, visible: false, consecutiveBlankSamples, error: message };
+}
+
+function framesPresentedTotal() {
+  return wasmMetricsLines.reduce((total, row) => total + Number(row.snapshot?.present?.count || 0), 0);
 }
 
 function startMetricsSampler() {
@@ -667,6 +692,15 @@ export async function playInputScript(page, demo, { screenshot = null, center = 
       await page.waitForTimeout(1000);
       await inputScreenshot(`state-${i}`);
     }
+  } else if (demo === 'tetris') {
+    await inputAction('left', () => page.keyboard.press('ArrowLeft'));
+    await inputAction('right', () => page.keyboard.press('ArrowRight'));
+    await inputAction('rotate', () => page.keyboard.press('ArrowUp'));
+    await inputAction('drop', () => page.keyboard.press('Space'));
+    for (let i = 1; i <= 5; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
   } else if (demo === 'doom') {
     for (let i = 1; i <= 4; i++) await inputAction(`enter-${i}`, () => page.keyboard.press('Enter'));
     await page.waitForTimeout(5000);
@@ -702,6 +736,66 @@ export async function playInputScript(page, demo, { screenshot = null, center = 
     await page.waitForTimeout(8500);
     await inputAction('right', () => holdKey('ArrowRight', 1000));
     await inputAction('space', () => page.keyboard.press('Space'));
+  } else if (demo === 'quake3') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await inputAction('forward', () => holdKey('w', 2000));
+    await inputAction('mouse-right', () => page.mouse.move(x + 200, y, { steps: 10 }));
+    await inputAction('strafe-left', () => holdKey('a', 1000));
+  } else if (demo === 'mindustry') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(5000);
+    await inputAction('enter', () => page.keyboard.press('Enter'));
+    await inputAction('mouse-move', () => page.mouse.move(x + 150, y + 80, { steps: 10 }));
+    for (let i = 1; i <= 5; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'winmerge') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('compare-view');
+    await inputAction('down', () => page.keyboard.press('ArrowDown'));
+    await inputAction('open-diff', () => page.keyboard.press('Enter'));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('file-compare');
+    await inputAction('escape', () => page.keyboard.press('Escape'));
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'alkhaser') {
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(10000);
+      await inputScreenshot(`state-${i}`);
+    }
+    await inputAction('enter', () => page.keyboard.press('Enter'));
+  } else if (demo === 'godot-squash') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(3000);
+    await inputScreenshot('arena');
+    await inputAction('forward', () => holdKey('ArrowUp', 1000));
+    await inputAction('jump', () => page.keyboard.press('Space'));
+    await page.waitForTimeout(2000);
+    await inputScreenshot('jump');
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
+  } else if (demo === 'unigine-tropics') {
+    const [x, y] = await displayCenter();
+    await inputAction('click-center', () => page.mouse.click(x, y));
+    await page.waitForTimeout(5000);
+    await inputScreenshot('scene-1');
+    await page.waitForTimeout(5000);
+    await inputScreenshot('scene-2');
+    for (let i = 1; i <= 3; i++) {
+      await page.waitForTimeout(1000);
+      await inputScreenshot(`state-${i}`);
+    }
   }
 }
 

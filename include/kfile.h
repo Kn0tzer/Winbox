@@ -33,6 +33,13 @@ public:
     bool isBlocking() override;
     void setAsync(bool isAsync) override;
     bool isAsync() override;
+    void setAsyncOwner(S32 owner) override;
+    S32 getAsyncOwner() override;
+    void setAsyncOwnerEx(S32 type, S32 pid) override;
+    void getAsyncOwnerEx(S32* type, S32* pid) override;
+    void setAsyncSignal(U32 signo) override;
+    U32 getAsyncSignal() override;
+    bool notifyAsyncReady(U32 code) override;
     KFileLock* getLock(KFileLock* lock) override;
     U32  setLock(KFileLock* lock, bool wait) override;
     void unlockAll(U32 pid) override;

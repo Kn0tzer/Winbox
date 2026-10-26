@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 const root=resolve(fileURLToPath(new URL('../../../../',import.meta.url)));
 test('present delivers every queued submission in order with an explicit final boundary',()=>{
  const src=readFileSync(join(root,'source/vulkan/vk64bridge.cpp'),'utf8');
- let method=src.match(/void hopV2ToPage\(\) \{[\s\S]*?\n\}/)?.[0];assert.ok(method);
+ let method=src.match(/void hopV2ToPage\([^\n]*\) \{[\s\S]*?\n\}/)?.[0];assert.ok(method);
  method=method.replace(/MAIN_THREAD_EM_ASM\(\{[\s\S]*?\}, ptr, len, ([^;]+)\);/g,'fakeHop(ptr,len,$1);');
  const dir=mkdtempSync(join(tmpdir(),'vulkan-present-delivery-'));
  try{
@@ -18,6 +18,7 @@ test('present delivers every queued submission in order with an explicit final b
 #include <cstdint>
 #include <vector>
 #include <deque>
+#include <string>
 using U8=uint8_t;using U32=uint32_t;using U64=uint64_t;
 struct V2DoneFrame{std::vector<std::vector<U8>> chunks;};std::deque<V2DoneFrame> g_v2Pending;
 struct VkProfAcc{double accHop=0;U64 accHopChunks=0,accHopBytes=0;};
@@ -28,11 +29,11 @@ double vkProfNow(){return 0;}bool vkProfEnabled(){return false;}
 // bridge compiles.
 bool vkMetricsEnabled(){return false;}bool vkTimingEnabled(){return vkProfEnabled()||vkMetricsEnabled();}
 VkProfAcc& vkProfAcc(){static VkProfAcc a;return a;}
-struct Hop{U8 marker;U32 flags;};std::vector<Hop> hops;
-void fakeHop(const U8* p,U32,U32 flags){hops.push_back({*p,flags});}
+struct Hop{U8 marker;U32 flags;std::string present;};std::vector<Hop> hops;
+void fakeHop(const U8* p,U32,U32 flags,const char* present){hops.push_back({*p,flags,present ? present : ""});}
 ${method}
-int main(){g_v2Pending.push_back({{{11},{12}}});g_v2Pending.push_back({{{22,22,22}}});hopV2ToPage();
-assert(hops.size()==3);assert(hops[0].marker==11 && hops[1].marker==12 && hops[2].marker==22);assert(hops[0].flags==1 && hops[1].flags==1 && hops[2].flags==0);assert(g_v2Pending.empty());}
+int main(){g_v2Pending.push_back({{{11},{12}}});g_v2Pending.push_back({{{22,22,22}}});hopV2ToPage("selected-image-18");
+assert(hops.size()==3);assert(hops[0].marker==11 && hops[1].marker==12 && hops[2].marker==22);assert(hops[0].flags==1 && hops[1].flags==1 && hops[2].flags==0);assert(g_v2Pending.empty());for(const auto& h:hops)assert(h.present=="selected-image-18");}
 `);
   execFileSync('c++',['-std=c++17',join(dir,'check.cpp'),'-o',join(dir,'check')]);execFileSync(join(dir,'check'));
  }finally{rmSync(dir,{recursive:true,force:true});}

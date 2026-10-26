@@ -117,7 +117,7 @@ static void initDynamicOps() {
     dynamicOps[VERRR16] = 0;
     dynamicOps[VERWR16] = 0;
     dynamicOps[SGDT] = 0;
-    dynamicOps[SIDT] = &Jit::dynamic_sidt;
+    dynamicOps[SIDT] = 0; // no JIT codegen: interpreter fallback, like SGDT (the old dynamic_sidt stub emitted no code at all, silently dropping the store)
     dynamicOps[LGDT] = 0;
     dynamicOps[LIDT] = 0;
     dynamicOps[SMSWRreg] = 0;
@@ -825,7 +825,16 @@ void OPCALL firstDynamicOp(CPU* cpu, DecodedOp* op) {
         // JIT_RUN_COUNT), so a raised threshold never strands a block that is
         // still counting.
 #ifndef __TEST
-        bool shouldStartJit = op->runCount == wasmJit32HotThreshold() && op->inst != Done && !(op->flags & OP_FLAG_JIT);
+#ifdef BOXEDWINE_WASM_JIT
+        const U32 hotThreshold = wasmJit32HotThreshold();
+#else
+        // Configs without the WASM JIT runtime have no BW32_JIT_HOT latch
+        // (wasmJit32HotThreshold is declared and defined only under
+        // BOXEDWINE_WASM_JIT); their trigger is the compiled-in JIT_RUN_COUNT
+        // the latch itself defaults to when the variable is unset.
+        const U32 hotThreshold = JIT_RUN_COUNT;
+#endif
+        bool shouldStartJit = op->runCount == hotThreshold && op->inst != Done && !(op->flags & OP_FLAG_JIT);
 #else
         bool shouldStartJit = op->runCount == 0;
 #endif

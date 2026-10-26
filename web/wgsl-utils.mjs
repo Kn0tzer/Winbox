@@ -137,6 +137,25 @@ export function rewriteMultisampledTextures(wgsl) {
   return code;
 }
 
+/**
+ * The GPUTextureViewDimension a WGSL sampled-texture type requires: the single
+ * source for both the bind group layout entry and the view bound to it, since
+ * Dawn rejects any pipeline whose layout dimension differs from the shader's.
+ * Covers texture_{1d,2d,2d_array,3d,cube,cube_array}, their texture_depth_*
+ * and multisampled forms (multisampled textures are rewritten to 2d before
+ * the layout is built). Returns null for anything that is not a sampled
+ * texture, including texture_storage_*.
+ * @param {string} type
+ * @returns {'1d'|'2d'|'2d-array'|'3d'|'cube'|'cube-array'|null}
+ */
+export function wgslTextureViewDimension(type) {
+  const m = /^texture_(?:depth_)?(?:multisampled_)?(1d|2d|3d|cube)(_array)?\b/.exec(type);
+  if (!m) return null;
+  const base = m[1];
+  if (m[2]) return base === 'cube' ? 'cube-array' : base === '2d' ? '2d-array' : null;
+  return /** @type {any} */ (base);
+}
+
 export function scanWgslResources(wgsl) {
   /** @type {Array<{group:number, binding:number, addr:string, name:string, type:string, arrayCount:number, sourceBinding?:number}>} */
   const out = [];
@@ -256,4 +275,180 @@ function wgslTypeLayout(type, structs) {
     return { size, align: maxAlign };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// CLAMP_TO_BORDER emulation in the shader (docs/known-gaps/vulkan.md row
+// citing vk64bridge.cpp:472).
+// ---------------------------------------------------------------------------
+// WebGPU GPUSamplers have no border addressing and no border colour, so the
+// protocol decoder maps VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER to
+// clamp-to-edge (web/vk-protocol.mjs ADDR). The shader recovers Vulkan
+// border semantics for the sampled-image ops: on any axis whose address
+// mode is CLAMP_TO_BORDER, a coordinate outside [0, 1] selects the border
+// colour instead of the clamped edge texel. VkBorderColor is a closed enum
+// (custom colours need VK_EXT_custom_border_color, which the bridge does
+// not expose), so the colour is a compile-time constant baked into a
+// per-draw pipeline variant keyed on the bound samplers (vkwebgpu.mjs
+// getPipelineFor). Wrap shape, reusing the original call verbatim so every
+// overload (Bias/Grad/Level/offset, any element type) is preserved:
+//
+//   textureSample(t, s, uv)  ->  select(textureSample(t, s, uv), BORDER,
+//                                       (uv.x < 0.0 || uv.x > 1.0) || ...)
+//
+// Precision: exact for nearest filtering and everywhere outside the
+// half-texel band at an edge; inside that band a linear filter blends the
+// border colour with the edge texel in Vulkan, while the select picks one
+// side. textureGather/textureGatherCompare (four independent texels) and
+// cube/cube-array textures (direction vectors, not [0,1] coordinates) are
+// NOT wrapped and keep the clamp-to-edge approximation.
+// ---------------------------------------------------------------------------
+
+// VkBorderColor -> RGBA. The FLOAT_ and INT_ spellings carry the same
+// numeric values; the shader literal is typed from the sampled texture.
+export const VK_BORDER_COLOR_RGBA = [
+  [0, 0, 0, 0], // 0 FLOAT_TRANSPARENT_BLACK
+  [0, 0, 0, 0], // 1 INT_TRANSPARENT_BLACK
+  [0, 0, 0, 1], // 2 FLOAT_OPAQUE_BLACK
+  [0, 0, 0, 1], // 3 INT_OPAQUE_BLACK
+  [1, 1, 1, 1], // 4 FLOAT_OPAQUE_WHITE
+  [1, 1, 1, 1], // 5 INT_OPAQUE_WHITE
+];
+
+const VK_COMPARE_BORDER = [
+  () => 'false',                // 0 NEVER
+  (b, r) => `(${b} < ${r})`,    // 1 LESS
+  (b, r) => `(${b} == ${r})`,   // 2 EQUAL
+  (b, r) => `(${b} <= ${r})`,   // 3 LESS_OR_EQUAL
+  (b, r) => `(${b} > ${r})`,    // 4 GREATER
+  (b, r) => `(${b} != ${r})`,   // 5 NOT_EQUAL
+  (b, r) => `(${b} >= ${r})`,   // 6 GREATER_OR_EQUAL
+  () => 'true',                 // 7 ALWAYS
+];
+
+/**
+ * Build the border-emulation plan for one pipeline: a Map from WGSL sampler
+ * variable name to the border behaviour of the sampler bound to its
+ * descriptor. resolveSampler(decl) returns the decoded sampler record (the
+ * vk-protocol.mjs shape, with raw addrModeU/V/W and borderColor fields) or
+ * null. Samplers without a CLAMP_TO_BORDER axis never enter the plan.
+ * @param {Array<{group:number, binding:number, name:string, type:string, arrayCount:number}>} decls
+ * @param {(decl: object) => object|null} resolveSampler
+ */
+export function borderPlanForDecls(decls, resolveSampler) {
+  const plan = new Map();
+  for (const d of decls || []) {
+    if (d.type !== 'sampler' && d.type !== 'sampler_comparison') continue;
+    if (d.arrayCount > 1) continue; // calls index the array; left unwrapped
+    const s = resolveSampler(d);
+    if (!s) continue;
+    const axes = (s.addrModeU === 3 ? 1 : 0) | (s.addrModeV === 3 ? 2 : 0) | (s.addrModeW === 3 ? 4 : 0);
+    if (!axes) continue;
+    const colorIndex = VK_BORDER_COLOR_RGBA[s.borderColor] ? s.borderColor : 0;
+    plan.set(d.name, {
+      group: d.group, binding: d.binding, axes,
+      color: VK_BORDER_COLOR_RGBA[colorIndex], colorIndex,
+      comparison: d.type === 'sampler_comparison',
+      compareOp: s.compareOp ?? 7,
+    });
+  }
+  return plan;
+}
+
+/** Cache-key material for a border plan: descriptor identity + behaviour. */
+export function borderPlanSignature(plan) {
+  return [...plan.values()]
+    .map(p => 'g' + p.group + 'b' + p.binding + '=' + p.axes + ':' + p.colorIndex + (p.comparison ? ':c' + p.compareOp : ''))
+    .sort().join('|');
+}
+
+const BORDER_SAMPLE_FNS = ['textureSampleCompareLevel', 'textureSampleCompare', 'textureSampleGrad', 'textureSampleLevel', 'textureSampleBias', 'textureSample'];
+const BORDER_CALL_RE = new RegExp('\\b(' + BORDER_SAMPLE_FNS.join('|') + ')\\s*\\(', 'g');
+
+function borderWrapCall(fn, callText, args, entry, texType) {
+  const tm = /^texture_(depth_)?(1d|2d_array|2d|3d|cube_array|cube)(?:<(\w+)>)?/.exec(texType);
+  if (!tm) return null;
+  const dim = tm[2];
+  if (dim === 'cube' || dim === 'cube_array') return null; // direction vectors, not [0,1] coords
+  const comps = dim === '1d' ? 1 : dim === '3d' ? 3 : 2;
+  const coords = (args[2] || '').trim();
+  if (!coords) return null;
+  const terms = [];
+  for (let a = 0; a < comps; a++) {
+    if (!(entry.axes & (1 << a))) continue;
+    const c = comps === 1 ? `(${coords})` : `(${coords}).${'xyz'[a]}`;
+    terms.push(`(${c} < 0.0 || ${c} > 1.0)`);
+  }
+  if (!terms.length) return null; // border only on axes this texture lacks (e.g. W of a 2D texture)
+  const outside = terms.join(' || ');
+  const fmtF = v => (v ? '1.0' : '0.0');
+  let border;
+  if (entry.comparison && (fn === 'textureSampleCompare' || fn === 'textureSampleCompareLevel')) {
+    // The border texel of a comparison sampler is its border depth (the
+    // colour's red channel) run through the sampler's compare function.
+    const refIdx = dim.endsWith('_array') ? 4 : 3; // array index precedes depth_ref
+    const ref = (args[refIdx] || '').trim();
+    if (!ref) return null;
+    const cmp = (VK_COMPARE_BORDER[entry.compareOp] || VK_COMPARE_BORDER[7])(fmtF(entry.color[0]), `(${ref})`);
+    border = `select(0.0, 1.0, ${cmp})`;
+  } else if (tm[1]) {
+    border = fmtF(entry.color[0]); // depth textures sample to the depth scalar
+  } else {
+    const elem = tm[3] || 'f32';
+    const fmt = elem === 'f32' ? fmtF : (v => String(v));
+    border = `vec4<${elem}>(${entry.color.map(fmt).join(', ')})`;
+  }
+  return `select(${callText}, ${border}, ${outside})`;
+}
+
+/**
+ * Wrap every sampled-image call on a planned sampler variable with the
+ * border select described above. Calls on other samplers, gathers, loads
+ * and cube textures are left byte-identical, as is the whole input when the
+ * plan is empty. On unbalanced input the original text is returned.
+ * @param {string} wgsl
+ * @param {Map<string, object>} plan from borderPlanForDecls
+ */
+export function rewriteBorderSamplersWGSL(wgsl, plan) {
+  if (!plan || plan.size === 0) return wgsl;
+  const code = String(wgsl);
+  const texTypes = new Map();
+  for (const d of scanWgslResources(code))
+    if (d.type.startsWith('texture_') && !d.type.startsWith('texture_storage')) texTypes.set(d.name, d.type);
+  // Collect every candidate call span first: a call nested inside an
+  // unwrapped call stays eligible, one inside a wrapped call is consumed.
+  const sites = [];
+  BORDER_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = BORDER_CALL_RE.exec(code))) {
+    const openIdx = BORDER_CALL_RE.lastIndex - 1;
+    const args = [];
+    let depth = 1, start = openIdx + 1, i = start;
+    for (; i < code.length && depth; i++) {
+      const c = code[i];
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (!depth) args.push(code.slice(start, i)); }
+      else if (c === ',' && depth === 1) { args.push(code.slice(start, i)); start = i + 1; }
+      // A statement/block boundary before the close paren means the input
+      // is not a well-formed call: bail and leave the shader untouched.
+      else if (c === ';' || c === '{' || c === '}') return wgsl;
+    }
+    if (depth) return wgsl; // unbalanced: leave the shader untouched
+    sites.push({ start: m.index, end: i, fn: m[1], args });
+    BORDER_CALL_RE.lastIndex = openIdx + 1; // still visit nested calls
+  }
+  let out = '', last = 0, consumedUntil = -1, changed = false;
+  for (const site of sites) {
+    if (site.start < consumedUntil) continue;
+    if (site.args.length < 3) continue;
+    const entry = plan.get((site.args[1] || '').trim());
+    if (!entry) continue;
+    const texType = texTypes.get((site.args[0] || '').trim());
+    if (!texType) continue;
+    const wrapped = borderWrapCall(site.fn, code.slice(site.start, site.end), site.args, entry, texType);
+    if (!wrapped) continue;
+    out += code.slice(last, site.start) + wrapped;
+    last = site.end; consumedUntil = site.end; changed = true;
+  }
+  return changed ? out + code.slice(last) : wgsl;
 }

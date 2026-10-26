@@ -20,15 +20,24 @@ const bridge = readFileSync(join(repoRoot, 'source/vulkan/vk64bridge.cpp'), 'utf
 const page = readFileSync(join(repoRoot, 'web/vkwebgpu.mjs'), 'utf8');
 
 test('hot-path klog is rate-limited / null-skipped (f64bbe0c 7ms x 3831 guard)', () => {
-  const badStale = bridge.includes('bad/stale handle');
-  assert.ok(badStale, 'bad/stale handle logging exists (must stay rate-limited)');
-  assert.ok(bridge.includes('vkTrace') || bridge.includes('vkprof') || bridge.includes('rate') || bridge.includes('null') || true,
-    'hot-path logging must be gated (snprintf+mutex+flush ~7ms each is frame-time poison)');
+  const start = bridge.indexOf('template <class T> T* objOf(');
+  const end = bridge.indexOf('\nvoid dropObj', start);
+  assert.ok(start >= 0 && end > start, 'objOf template source slice must exist');
+  const objOf = bridge.slice(start, end);
+  assert.match(objOf, /if \(!o && id\)/);
+  assert.match(objOf, /static std::unordered_set<U64> logged/);
+  assert.match(objOf, /if \(logged\.insert\(id\)\.second\)\s*klog_fmt\("vk64: %s: bad\/stale handle/,
+    'stale descriptor logging must emit once per distinct handle');
 });
 
 test('BW64_VKPROF defers until after first present (2649px → 0 guard)', () => {
-  assert.ok(bridge.includes('bw64_vkprof_enable') && bridge.includes('vkQueuePresent') || bridge.includes('Present'),
-    'vkprof enable must defer until after first vkQueuePresentKHR (init-race blank guard)');
+  const gate = bridge.indexOf('static bool g_vkProfFirstFrameDone');
+  const present = bridge.indexOf('case VK64_fn_vkQueuePresentKHR:', gate);
+  const completed = bridge.indexOf('g_vkProfFirstFrameDone = true;', present);
+  assert.ok(gate >= 0 && present > gate && completed > present,
+    'first-frame flag must be set by the queue-present handler after presentation work');
+  assert.match(bridge.slice(gate, present), /if \(!g_vkProfFirstFrameDone\) return false;/,
+    'profiling must stay disabled before the first completed present');
 });
 
 test('vkProf does not read window.location on Worker (ReferenceError guard)', () => {
@@ -37,10 +46,10 @@ test('vkProf does not read window.location on Worker (ReferenceError guard)', ()
 });
 
 test('frametime harness exists and reports ms (not count)', () => {
-  const ft = (() => { try { return readFileSync(join(repoRoot, 'web/tests/frametime-harness.mjs'), 'utf8'); } catch { return ''; } })();
-  const ft2 = (() => { try { return readFileSync(join(repoRoot, 'web/tests/frametime-profile.mjs'), 'utf8'); } catch { return ''; } })();
-  assert.ok((ft + ft2).length > 500 || page.includes('takeLatest'),
-    'frametime harness must exist (measure ms/frame before/after on SAME build)');
+  const ft = readFileSync(join(repoRoot, 'web/tests/frametime-harness.mjs'), 'utf8');
+  assert.match(ft, /performance\.now\(\)/);
+  assert.match(ft, /mean|median|p95/i);
+  assert.match(ft, /frameMs|dt/);
 });
 
 test('ResizeObserver does not fire during render await gaps (in-flight destroy guard)', () => {

@@ -156,23 +156,26 @@ bool KUnixSocketObject::isBlocking() {
     return this->blocking;
 }
 
-void  KUnixSocketObject::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic(" UnixSocketObject::setAsync not implemented yet");
+void KUnixSocketObject::setAsync(bool isAsync) {
+    KObject::setAsync(isAsync);
 }
 
-bool  KUnixSocketObject::isAsync() {
-    return false;
+bool KUnixSocketObject::isAsync() {
+    return KObject::isAsync();
 }
 
 KFileLock*  KUnixSocketObject::getLock(KFileLock* lock) {
-    kdebug("UnixSocketObject::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32  KUnixSocketObject::setLock(KFileLock* lock, bool wait) {
-    kdebug(" UnixSocketObject::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KUnixSocketObject::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KUnixSocketObject::isOpen() {
@@ -244,10 +247,13 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
     }
     //printf("internal_write: %0.8X size=%d capacity=%d writeLen=%d", (int)&this->connection->recvBuffer, (int)this->connection->recvBuffer.size(), (int)this->connection->recvBuffer.capacity(), len);
 
-    memory->performOnMemory(buffer, len, true, [con](U8* ram, U32 len) {
-        con->recvBuffer.put(ram, len);
-        return true;
-        });
+    std::vector<U8> packet(len);
+    memory->memcpy(packet.data(), buffer, len);
+    const U32 kept = con->applySocketFilter(packet.data(), len);
+    if (kept) {
+        con->recvBuffer.put(packet.data(), kept);
+        con->notifyAsyncReady(K_POLL_IN);
+    }
     return len;
 }
 
@@ -358,11 +364,13 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
         return -K_EPIPE;
     }
 
+    const U32 kept = con->applySocketFilter(buffer, len);
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
-        con->recvBuffer.put(buffer, len);
+        if (kept) con->recvBuffer.put(buffer, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
+    if (kept) con->notifyAsyncReady(K_POLL_IN);
     con->onPeerWrote();
     return len;
 }
@@ -383,13 +391,15 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
     std::shared_ptr<KUnixSocketObject> con = s->connection.lock();
     if (s->outClosed || !con)
         return -K_EPIPE;
+    const U32 kept = con->applySocketFilter(value, (U32)len);
 
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
         //printf("SOCKET write len=%d bufferSize=%d pos=%d\n", len, s->connection->recvBufferLen, s->connection->recvBufferWritePos);
-        con->recvBuffer.put(value, len);
+        if (kept) con->recvBuffer.put(value, kept);
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
+    if (kept) con->notifyAsyncReady(K_POLL_IN);
     con->onPeerWrote();
     return len;
 }
@@ -581,11 +591,11 @@ U32 KUnixSocketObject::bind(KThread* thread, const KFileDescriptorPtr& fd, U32 a
         if (name.length() == 0) {
             return 0; // :TODO: why does XOrg need this
         }
-        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->currentDirectory, name, true);
+        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->fsContext->currentDirectory, name, true);
         if (node) {
             return -K_EADDRINUSE;
         }        
-        BString fullpath = Fs::getFullPath(thread->process->currentDirectory, name);
+        BString fullpath = Fs::getFullPath(thread->process->fsContext->currentDirectory, name);
         this->destAddress.family = family;
         strncpy(this->destAddress.data, fullpath.c_str(), sizeof(this->destAddress.data));
 		this->destAddress.data[sizeof(this->destAddress.data) - 1] = 0;
@@ -643,7 +653,7 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
                 this->destAddress.family = 0;
                 return -K_ECONNREFUSED;
             }
-            std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->currentDirectory, BString::copy(this->destAddress.data), true);
+            std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(thread->process->fsContext->currentDirectory, BString::copy(this->destAddress.data), true);
             std::shared_ptr<KObject> kobject;
             if (node) {
                 kobject = node->kobject.lock();
@@ -866,36 +876,129 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
     KMemory* memory = thread->memory;
 
     if (level == K_SOL_SOCKET) {
+        if (name == K_SO_DETACH_FILTER) {
+            if (this->socketFilter.empty()) return -K_EINVAL;
+            this->socketFilter.clear();
+            return 0;
+        }
+        if (name == K_SO_ATTACH_FILTER) {
+            if (len < 8) return -K_EINVAL;
+            if (!memory->canRead(value, 8)) return -K_EFAULT;
+            const U32 instructionCount = memory->readw(value);
+            const U32 instructionsAddress = memory->readd(value + 4);
+            if (!instructionCount || instructionCount > 4096 ||
+                instructionCount > (UINT32_MAX / sizeof(KClassicBpfInsn))) return -K_EINVAL;
+            const U32 bytes = instructionCount * sizeof(KClassicBpfInsn);
+            if (!memory->canRead(instructionsAddress, bytes)) return -K_EFAULT;
+            std::vector<KClassicBpfInsn> program(instructionCount);
+            for (U32 i = 0; i < instructionCount; ++i) {
+                const U32 at = instructionsAddress + i * sizeof(KClassicBpfInsn);
+                program[i].code = memory->readw(at);
+                program[i].jt = memory->readb(at + 2);
+                program[i].jf = memory->readb(at + 3);
+                program[i].k = memory->readd(at + 4);
+                const U16 code = program[i].code;
+                const U16 cls = code & 0x07;
+                const U16 mode = code & 0xe0;
+                const U16 size = code & 0x18;
+                bool valid = false;
+                if (cls == 0x00) valid =
+                    (mode == 0x00 && size == 0x00) ||
+                    ((mode == 0x20 || mode == 0x40) && (size == 0x00 || size == 0x08 || size == 0x10)) ||
+                    (mode == 0x60 && size == 0x00) || (mode == 0x80 && size == 0x00);
+                else if (cls == 0x01) valid =
+                    (mode == 0x00 && size == 0x00) || (mode == 0x60 && size == 0x00) ||
+                    (mode == 0x80 && size == 0x00) || (mode == 0xa0 && size == 0x10);
+                else if (cls == 0x02 || cls == 0x03) valid = code == cls && program[i].k < 16;
+                else if (cls == 0x04) {
+                    const U16 op = code & 0xf0;
+                    valid = op == 0x00 || op == 0x10 || op == 0x20 || op == 0x30 || op == 0x40 ||
+                            op == 0x50 || op == 0x60 || op == 0x70 || op == 0x80 || op == 0x90 || op == 0xa0;
+                    if (op == 0x80 && (code & 0x08)) valid = false;
+                    if ((op == 0x30 || op == 0x90) && !(code & 0x08) && !program[i].k) valid = false;
+                } else if (cls == 0x05) {
+                    const U16 op = code & 0xf0;
+                    if (op == 0x00) valid = code == 0x05 && !program[i].jt && !program[i].jf &&
+                                             i + 1 + program[i].k < instructionCount;
+                    else if (op == 0x10 || op == 0x20 || op == 0x30 || op == 0x40)
+                        valid = i + 1 + program[i].jt < instructionCount && i + 1 + program[i].jf < instructionCount;
+                } else if (cls == 0x06) valid = code == 0x06 || code == 0x16;
+                else if (cls == 0x07) valid = code == 0x07 || code == 0x87;
+                if (!valid) return -K_EINVAL;
+            }
+            if ((program.back().code & 0x07) != 0x06) return -K_EINVAL;
+            this->socketFilter.swap(program);
+            return 0;
+        }
+        if (name == K_SO_LINGER) {
+            if (len < 8) return -K_EINVAL;
+            const S32 enabled = (S32)memory->readd(value);
+            const S32 seconds = (S32)memory->readd(value + 4);
+            if ((enabled != 0 && enabled != 1) || seconds < 0) return -K_EINVAL;
+            this->lingerEnabled = (U32)enabled;
+            this->lingerSeconds = (U32)seconds;
+            return 0;
+        }
+        if (name == K_SO_RCVTIMEO || name == K_SO_SNDTIMEO) {
+            if (len < 8) return -K_EINVAL;
+            const U32 seconds = memory->readd(value);
+            const U32 microseconds = memory->readd(value + 4);
+            if (microseconds >= 1000000) return -K_EINVAL;
+            if (name == K_SO_RCVTIMEO) {
+                this->recvTimeoutSeconds = seconds;
+                this->recvTimeoutMicroseconds = microseconds;
+            } else {
+                this->sendTimeoutSeconds = seconds;
+                this->sendTimeoutMicroseconds = microseconds;
+            }
+            return 0;
+        }
+        if (len < 4) return -K_EINVAL;
+        const S32 optionValue = (S32)memory->readd(value);
         switch (name) {
             case K_SO_RCVBUFFORCE:
             case K_SO_RCVBUF:
-                if (len!=4)
-                    kpanic("KUnixSocketObject::setsockopt SO_RCVBUF expecting len of 4");
-                this->recvLen = memory->readd(value);
+                if (optionValue <= 0) return -K_EINVAL;
+                if (name == K_SO_RCVBUFFORCE && thread->process->userId != 0) return -K_EPERM;
+                this->recvLen = (U32)std::min<S64>((S64)optionValue * 2, 0x7fffffff);
                 break;
             case K_SO_SNDBUFFORCE:
             case K_SO_SNDBUF:
-                if (len != 4)
-                    kpanic("KUnixSocketObject::setsockopt SO_SNDBUF expecting len of 4");
-                this->sendLen = memory->readd(value);
+                if (optionValue <= 0) return -K_EINVAL;
+                if (name == K_SO_SNDBUFFORCE && thread->process->userId != 0) return -K_EPERM;
+                this->sendLen = (U32)std::min<S64>((S64)optionValue * 2, 0x7fffffff);
                 break;
+            case K_SO_PRIORITY:
+                if (optionValue < 0 || optionValue > 6) return -K_EPERM;
+                this->priority = (U32)optionValue;
+                break;
+            case K_SO_RCVLOWAT:
+                this->recvLowWater = (U32)std::max<S32>(1, optionValue);
+                break;
+            case K_SO_SNDLOWAT:
+                kwarn_fmt("ksocket: Unix SOL_SOCKET option %u is unsupported; returned ENOPROTOOPT", name);
+                return -K_ENOPROTOOPT;
+            case K_SO_DEBUG:
+            case K_SO_REUSEADDR:
+            case K_SO_DONTROUTE:
+            case K_SO_BROADCAST:
+            case K_SO_KEEPALIVE:
+            case K_SO_OOBINLINE:
+            case K_SO_NO_CHECK:
+            case K_SO_BSDCOMPAT:
+            case K_SO_REUSEPORT:
             case K_SO_PASSCRED:
-                break;
-            case K_SO_ATTACH_FILTER:
+            case K_SO_TIMESTAMP:
+                if (optionValue) this->socketOptionFlags |= 1ULL << name;
+                else this->socketOptionFlags &= ~(1ULL << name);
                 break;
             default:
-                if (bw64RecoverEnabled()) {
-                    bw64RecoverLogOnce("socket.unix.setsockopt", "unsupported Unix socket option; returned EINVAL");
-                    return -K_EINVAL;
-                }
-                kwarn_fmt("KUnixSocketObject::setsockopt name %d not implemented", name);
+                kwarn_fmt("ksocket: Unix SOL_SOCKET option %u is unsupported; returned ENOPROTOOPT", name);
+                return -K_ENOPROTOOPT;
         }
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("socket.unix.setsockopt.level", "unsupported Unix socket option level; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kwarn_fmt("KUnixSocketObject::setsockopt level %d not implemented", level);
+        kwarn_fmt("ksocket: Unix socket option level %u is unsupported; returned ENOPROTOOPT", level);
+        return -K_ENOPROTOOPT;
     }
     return 0;
 }
@@ -903,24 +1006,50 @@ U32 KUnixSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd,
 U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U32 level, U32 name, U32 value, U32 len_address) {
     KMemory* memory = thread->memory;
 
+    if (!len_address || !value) return -K_EFAULT;
     U32 len = memory->readd(len_address);
+    auto writeInt = [&](U32 v) -> U32 {
+        const U32 copied = std::min<U32>(len, 4);
+        for (U32 i = 0; i < copied; ++i) memory->writeb(value + i, (U8)(v >> (i * 8)));
+        memory->writed(len_address, 4);
+        return 0;
+    };
     if (level == K_SOL_SOCKET) {
+        auto writePair = [&](U32 first, U32 second) -> U32 {
+            const U32 copied = std::min<U32>(len, 8);
+            if (copied) memory->writed(value, first);
+            if (copied > 4) memory->writed(value + 4, second);
+            memory->writed(len_address, 8);
+            return 0;
+        };
+        if (name == K_SO_LINGER) return writePair(this->lingerEnabled, this->lingerSeconds);
+        if (name == K_SO_RCVTIMEO) return writePair(this->recvTimeoutSeconds, this->recvTimeoutMicroseconds);
+        if (name == K_SO_SNDTIMEO) return writePair(this->sendTimeoutSeconds, this->sendTimeoutMicroseconds);
         if (name == K_SO_RCVBUF) {
-            if (len!=4)
-                kpanic("KUnixSocketObject::getsockopt SO_RCVBUF expecting len of 4");
-            memory->writed(value, this->recvLen);
+            return writeInt(this->recvLen);
         } else if (name == K_SO_SNDBUF) {
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt SO_SNDBUF expecting len of 4");
-            memory->writed(value, this->sendLen);
+            return writeInt(this->sendLen);
         } else if (name == K_SO_ERROR) {
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt SO_ERROR expecting len of 4");
-            memory->writed(value, this->error);
+            U32 result = writeInt(this->error);
+            this->error = 0;
+            return result;
         } else if (name == K_SO_TYPE) { 
-            if (len != 4)
-                kpanic("KUnixSocketObject::getsockopt K_SO_TYPE expecting len of 4");
-            memory->writed(value, this->type);
+            return writeInt(this->type);
+        } else if (name == K_SO_PRIORITY) {
+            return writeInt(this->priority);
+        } else if (name == K_SO_RCVLOWAT) {
+            return writeInt(this->recvLowWater);
+        } else if (name == K_SO_DOMAIN) {
+            return writeInt(this->domain);
+        } else if (name == K_SO_PROTOCOL) {
+            return writeInt(this->protocol);
+        } else if (name == K_SO_ACCEPTCONN) {
+            return writeInt(this->listening ? 1 : 0);
+        } else if (name == K_SO_DEBUG || name == K_SO_REUSEADDR || name == K_SO_DONTROUTE ||
+                   name == K_SO_BROADCAST || name == K_SO_KEEPALIVE || name == K_SO_OOBINLINE ||
+                   name == K_SO_NO_CHECK || name == K_SO_BSDCOMPAT || name == K_SO_REUSEPORT ||
+                   name == K_SO_PASSCRED || name == K_SO_TIMESTAMP) {
+            return writeInt((this->socketOptionFlags & (1ULL << name)) ? 1 : 0);
         } else if (name == K_SO_PEERCRED) {
             if (this->domain!=K_AF_UNIX) {
                 return -K_EINVAL; // :TODO: is this right
@@ -929,20 +1058,19 @@ U32 KUnixSocketObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd,
             if (!con) {
                 return -K_EINVAL; // :TODO: is this right
             }
-            if (len != 12)
-                kpanic("KUnixSocketObject::getsockopt SO_PEERCRED expecting len of 12");
+            if (len < 12) return -K_EINVAL;
             memory->writed(value, con->pid);
             memory->writed(value + 4, thread->process->userId);
             memory->writed(value + 8, thread->process->groupId);
+            memory->writed(len_address, 12);
+            return 0;
         } else {
-            if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt", "unsupported Unix getsockopt option; returned EINVAL");
-            else kwarn_fmt("KUnixSocketObject::getsockopt name %d not implemented", name);
-            return -K_EINVAL;
+            kwarn_fmt("ksocket: Unix SOL_SOCKET getsockopt %u is unsupported; returned ENOPROTOOPT", name);
+            return -K_ENOPROTOOPT;
         }
     } else {
-        if (bw64RecoverEnabled()) bw64RecoverLogOnce("socket.unix.getsockopt.level", "unsupported Unix getsockopt level; returned EINVAL");
-        else kwarn_fmt("KUnixSocketObject::getsockopt level %d not implemented", level);
-        return -K_EINVAL;
+        kwarn_fmt("ksocket: Unix getsockopt level %u is unsupported; returned ENOPROTOOPT", level);
+        return -K_ENOPROTOOPT;
     }
     return 0;
 }
@@ -980,6 +1108,9 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     readMsgHdr(thread, address, &hdr);
 
     std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
+    msg->senderPid = thread->process->id;
+    msg->senderUid = thread->process->userId;
+    msg->senderGid = thread->process->groupId;
 
     if (hdr.msg_control) {
         CMsgHdr cmsg;			
@@ -1065,6 +1196,24 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             result++;
         }
     }
+    std::vector<U8> packet;
+    packet.reserve(result);
+    for (U32 pos = 0; pos + 4 <= msg->data.size();) {
+        const U32 segment = (U32)msg->data[pos] | ((U32)msg->data[pos + 1] << 8) |
+            ((U32)msg->data[pos + 2] << 16) | ((U32)msg->data[pos + 3] << 24);
+        pos += 4;
+        if (segment > msg->data.size() - pos) return -K_EINVAL;
+        packet.insert(packet.end(), msg->data.begin() + pos, msg->data.begin() + pos + segment);
+        pos += segment;
+    }
+    const U32 kept = con->applySocketFilter(packet.data(), (U32)packet.size());
+    if (!kept) return result; // Linux reports the submitted length for filtered packets.
+    msg->data.clear();
+    msg->data.push_back((U8)kept);
+    msg->data.push_back((U8)(kept >> 8));
+    msg->data.push_back((U8)(kept >> 16));
+    msg->data.push_back((U8)(kept >> 24));
+    msg->data.insert(msg->data.end(), packet.begin(), packet.begin() + kept);
     con->msgs.push(msg);
     BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
 
@@ -1072,6 +1221,7 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         klog_fmt("KUnixSocket::sendmsg datalen=%d to peer (isXWire=%d) via msgs queue",
                  (int)result, (int)(std::dynamic_pointer_cast<XWireServerSocket>(con) != nullptr));
     }
+    con->notifyAsyncReady(K_POLL_IN);
     return result;
 }
 
@@ -1129,9 +1279,21 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     this->msgs.pop();
 
     if (hdr.msg_control) {
+        U32 used = 0;
+        U32 msgFlags = 0;
+        if (this->socketOptionFlags & (1ULL << K_SO_PASSCRED)) {
+            if (hdr.msg_controllen >= 24) {
+                writeCMsgHdr(thread, hdr.msg_control, 24, K_SOL_SOCKET, K_SCM_CREDENTIALS);
+                memory->writed(hdr.msg_control + 12, msg->senderPid);
+                memory->writed(hdr.msg_control + 16, msg->senderUid);
+                memory->writed(hdr.msg_control + 20, msg->senderGid);
+                used = 24;
+            } else {
+                msgFlags |= K_MSG_CTRUNC;
+            }
+        }
         U32 i=0;
-
-        for (;i<hdr.msg_controllen/16 && i<msg->objects.size();i++) {
+        for (;used + 16 <= hdr.msg_controllen && i<msg->objects.size();i++) {
             KFileDescriptorPtr recvFd = thread->process->allocFileDescriptor(msg->objects[i].object, msg->objects[i].accessFlags, 0, -1, 0);
             // BW64_SOCKDTOR: witness the RECEIVER installing a passed fd. The
             // object is SHARED (same shared_ptr) with the sender's fd — this is
@@ -1144,10 +1306,16 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
                          (int)msg->objects[i].object->type,
                          msg->objects[i].object.use_count());
             }
-            writeCMsgHdr(thread, hdr.msg_control + i * 16, 16, K_SOL_SOCKET, K_SCM_RIGHTS);
-            memory->writed(hdr.msg_control + i * 16 + 12, recvFd->handle);
+            writeCMsgHdr(thread, hdr.msg_control + used, 16, K_SOL_SOCKET, K_SCM_RIGHTS);
+            memory->writed(hdr.msg_control + used + 12, recvFd->handle);
+            used += 16;
         }
-		memory->writed(address + 20, i * 16); // msg_controllen
+		if (i < msg->objects.size()) msgFlags |= K_MSG_CTRUNC;
+		memory->writed(address + 20, used); // msg_controllen
+		memory->writed(address + 24, msgFlags);
+    } else if (this->socketOptionFlags & (1ULL << K_SO_PASSCRED)) {
+        memory->writed(address + 20, 0);
+        memory->writed(address + 24, K_MSG_CTRUNC);
     }
     U32 pos = 0;
     for (U32 i=0;i<hdr.msg_iovlen;i++) {

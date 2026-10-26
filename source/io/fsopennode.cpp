@@ -17,6 +17,8 @@
  */
 
 #include "boxedwine.h"
+#include "ksignal.h"
+#include <atomic>
 
 FsOpenNode::FsOpenNode(std::shared_ptr<FsNode> node, U32 flags) : node(node), flags(flags), listNode(this) {
     node->addOpenNode(&this->listNode);
@@ -80,6 +82,16 @@ void FsOpenNode::loadDirEntries() {
     }
 }
 
+void FsOpenNode::applyAsyncFlag(bool isAsync) {
+    this->asyncEnabled = isAsync;
+    if (isAsync) {
+        static std::atomic<bool> sigioWarned{false};
+        if (!sigioWarned.exchange(true)) {
+            kwarn("FsOpenNode: O_ASYNC enabled on a file node; SIGIO delivery is unavailable, poll/epoll readiness is unaffected");
+        }
+    }
+}
+
 U32 FsOpenNode::getDirectoryEntryCount() {
     this->loadDirEntries();
     return (U32)this->dirEntries.size();
@@ -107,4 +119,64 @@ std::shared_ptr<FsNode> FsOpenNode::getDirectoryEntry(U32 index, BString& name) 
         }
     }
     return this->dirEntries[index];
+}
+
+// fcntl O_ASYNC state for file descriptions backed by an FsOpenNode;
+// see KObject::setAsync in kobject.cpp for the shared contract.
+void FsOpenNode::setAsync(bool isAsync) {
+    this->asyncEnabled = isAsync;
+}
+
+bool FsOpenNode::isAsync() {
+    return this->asyncEnabled;
+}
+
+void FsOpenNode::setAsyncOwner(S32 owner) {
+    this->asyncOwner = owner;
+    this->asyncOwnerType = owner < 0 ? 2 : 1; // F_OWNER_PGRP / F_OWNER_PID
+}
+
+S32 FsOpenNode::getAsyncOwner() {
+    return this->asyncOwner;
+}
+
+void FsOpenNode::setAsyncOwnerEx(S32 type, S32 pid) {
+    this->asyncOwnerType = (U32)type;
+    this->asyncOwner = type == 2 ? -pid : pid;
+}
+
+void FsOpenNode::getAsyncOwnerEx(S32* type, S32* pid) {
+    *type = (S32)this->asyncOwnerType;
+    *pid = this->asyncOwner < 0 ? -this->asyncOwner : this->asyncOwner;
+}
+
+void FsOpenNode::setAsyncSignal(U32 signo) {
+    this->asyncSignal = signo;
+}
+
+U32 FsOpenNode::getAsyncSignal() {
+    return this->asyncSignal;
+}
+
+bool FsOpenNode::notifyAsyncReady(U32 code) {
+    if (!this->asyncEnabled || this->asyncOwner == 0) {
+        return false;
+    }
+    U32 signo = this->asyncSignal ? this->asyncSignal : K_SIGIO;
+    bool delivered = false;
+    if (this->asyncOwner > 0) {
+        KProcessPtr process = KSystem::getProcess((U32)this->asyncOwner);
+        if (process) {
+            process->signalAsyncEvent(signo, code, nullptr, this);
+            delivered = true;
+        }
+    } else {
+        std::vector<KProcessPtr> processes;
+        KSystem::getProcessesInGroup((U32)(-this->asyncOwner), processes);
+        for (auto& process : processes) {
+            process->signalAsyncEvent(signo, code, nullptr, this);
+            delivered = true;
+        }
+    }
+    return delivered;
 }

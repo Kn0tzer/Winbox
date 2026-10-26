@@ -24,6 +24,12 @@ static int g_pass = 0, g_fail = 0;
     else { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } \
 } while (0)
 
+// Defined below (with the emission tests); testFallbackRules uses it
+// earlier in the file. The forward declaration was missing, so this
+// harness did not compile at all before K-M3 -- repaired here so the
+// phase-1 gate (scripts/build-jit-wasm.sh step 1) runs again.
+static bool decodeOne(const std::vector<U8>& b, Jit64Op& op);
+
 // Decode one stream and return the op (asserts decode succeeded).
 static Jit64Op dec(U64 base, std::vector<U8> b) {
     Jit64Op op;
@@ -1253,6 +1259,82 @@ static void testPublishedStats() {
     CHECK(std::strstr(buf, "\"blocksEntered\":10,") != nullptr, "retain counts on CPU exit");
 }
 
+// K-M3 fault gate pins: every emitted guest-memory access is followed by a
+// check of Jit64WasmState::faultPending (offset 172): when the host import
+// recorded a denied access there, the module stores the faulting op index
+// to execCount and branches to the epilogue, which publishes only the
+// completed ops. String-loop accesses exit with depth 3 (check-if, loop,
+// done-block, outer block); the epilogue conditional execCount store uses
+// a different byte shape and must not be counted as an access gate.
+static bool emitModule(std::vector<U8> b, std::vector<U8>& module) {
+    Jit64Op ops[24];
+    U32 n = jit64CompileStream(0x400000, b.data(), (U32)b.size(), ops, 24, true);
+    if (!n) return false;
+    U32 consumed = 0;
+    for (U32 i = 0; i < n; i++) consumed += ops[i].len;
+    if (consumed != b.size()) return false;
+    Jit64Block block;
+    block.ops.assign(ops, ops + n);
+    return jit64EmitWasm(block, module) && !module.empty();
+}
+
+static U32 countPattern(const std::vector<U8>& m, const std::vector<U8>& pat) {
+    U32 count = 0;
+    if (m.size() < pat.size()) return 0;
+    for (size_t i = 0; i + pat.size() <= m.size(); i++) {
+        bool eq = true;
+        for (size_t j = 0; j < pat.size(); j++) if (m[i + j] != pat[j]) { eq = false; break; }
+        if (eq) count++;
+    }
+    return count;
+}
+
+static void testWasmFaultGate() {
+    CHECK(offsetof(Jit64WasmState, faultPending) == 172, "faultPending offset");
+    Jit64WasmState st{};
+    U64 gpr[16] = {};
+    jit64WasmStateInit(st, gpr, 0, 0);
+    CHECK(st.faultPending == 0, "state init must clear faultPending");
+    // Full access-gate sequence: i32.load off=172; if; local.get 34 /
+    // local.set 18 (restore the op-start RFLAGS snapshot); local.get 0;
+    // local.get 33 (current op); i32.store off=164 (execCount); br depth.
+    const std::vector<U8> gate = {0x28, 0x02, 0xAC, 0x01, 0x04, 0x40, 0x20, 0x22,
+                                  0x21, 0x12, 0x20, 0x00, 0x20, 0x21, 0x36, 0x02,
+                                  0xA4, 0x01, 0x0C};
+    // String-loop gates skip the flags restore (their flags are partial
+    // progress) and exit with depth 3.
+    const std::vector<U8> gateStr = {0x28, 0x02, 0xAC, 0x01, 0x04, 0x40, 0x20, 0x00,
+                                     0x20, 0x21, 0x36, 0x02, 0xA4, 0x01, 0x0C, 0x03};
+    std::vector<U8> m;
+    CHECK(emitModule({0x48, 0x8B, 0x03}, m), "emit mov rax,[rbx]");
+    CHECK(countPattern(m, gate) == 1, "load gate count=%u", countPattern(m, gate));
+    CHECK(countPattern(m, gateStr) == 0, "plain load must not use the string gate");
+    CHECK(emitModule({0x48, 0x8B, 0x03, 0x48, 0x89, 0x0B, 0x48, 0x8B, 0x13}, m),
+          "emit 3-access block");
+    CHECK(countPattern(m, gate) == 3, "3-access gate count=%u", countPattern(m, gate));
+    CHECK(emitModule({0xF3, 0x48, 0xA5}, m), "emit rep movsq");
+    CHECK(countPattern(m, gate) == 0, "rep movsq must not use the restoring gate");
+    CHECK(countPattern(m, gateStr) == 2, "rep movsq string gates=%u", countPattern(m, gateStr));
+    // The by-CL memory shift is classifier-declined (interpreter-only), so
+    // no compiled stream reaches its emitter; hand-feed the decoded op.
+    // Its store sits inside the count!=0 guard, so the gate must branch
+    // with depth 2. (If the classifier ever enables the form, the Node
+    // harness gains the behavioural version of this pin.)
+    {
+        Jit64Op op;
+        const U8 bytes[] = {0x48, 0xD3, 0x23}; // shl qword [rbx], cl
+        CHECK(jit64DecodeOne(0x400000, bytes, sizeof(bytes), op), "decode shl [rbx],cl");
+        op.plan = JIT64_FAST; // bypass the classifier decline: emitter unit test
+        Jit64Block block;
+        block.ops.assign(&op, &op + 1);
+        std::vector<U8> mm;
+        CHECK(jit64EmitWasm(block, mm) && !mm.empty(), "hand-fed shl [rbx],cl must emit");
+        std::vector<U8> gateD2 = gate; gateD2.push_back(0x02);
+        CHECK(countPattern(mm, gate) == 2, "shl-cl-mem gates=%u", countPattern(mm, gate));
+        CHECK(countPattern(mm, gateD2) == 1, "shl-cl-mem depth-2 gates=%u", countPattern(mm, gateD2));
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--stats-json") == 0) {
         char buf[2048];
@@ -1275,6 +1357,7 @@ int main(int argc, char** argv) {
     testJitFlag();
     testWasmStateBridge();
     testWasmGlue();
+    testWasmFaultGate();
     testShiftEmission();
     testRotateEmission();
     testShiftCLEmission();

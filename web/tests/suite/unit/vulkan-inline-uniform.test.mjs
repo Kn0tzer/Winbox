@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
@@ -11,9 +12,9 @@ test('inline uniform updates own bytes and preserve partial updates after caller
  const binding=source.match(/struct Binding \{[\s\S]*?\};/)?.[0];
  const helper=source.match(/static void updateInlineUniform\([\s\S]*?\n\}/)?.[0];
  assert.ok(helper,'inline bytes must be copied during descriptor updates');
- assert.equal((source.match(/updateInlineUniform\(\*b,/g)||[]).length,4,'both ABI update and template paths must copy inline bytes');
- assert.equal((source.match(/te\.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK \? 1 : te\.count/g)||[]).length,2,'inline template count measures bytes, not descriptors');
- const emitter=source.slice(source.indexOf('} else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)'),source.indexOf('U64 activePipe = 0'));
+ assert.equal((source.match(/updateInlineUniform\(b,/g)||[]).length,1,'every update/template/push path copies inline bytes in applyDescWrite');
+ assert.ok(/r\.inlData = at; r\.inlSize = te\.count;/.test(source),'inline template count measures bytes, not descriptors');
+ const emitter=extractSourceRange(source, source.indexOf('} else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)'),source.indexOf('U64 activePipe = 0'));
  assert.ok(emitter.includes('p.bytes(b.inlineBytes)'));assert.ok(!emitter.includes('readGuestBytes'));
  const dir=mkdtempSync(join(tmpdir(),'vk-inline-'));
  try{

@@ -86,8 +86,16 @@ if [ ${#STAGE_DIRS[@]} -gt 0 ]; then DO_STAGE=1; fi
 [ -f "$SRC/libvk64.c" ]    || { echo "error: $SRC/libvk64.c missing" >&2; exit 1; }
 [ -f "$SRC/vkfixture.c" ]  || { echo "error: $SRC/vkfixture.c missing" >&2; exit 1; }
 
+# Staging rewrites the rootfs zips with zip/unzip; fail early and by name if
+# they are missing instead of dying after the build with exit 127.
+if [ "$DO_STAGE" = 1 ]; then
+    command -v zip >/dev/null || { echo "ERROR: zip not found (install zip)" >&2; exit 1; }
+    command -v unzip >/dev/null || { echo "ERROR: unzip not found (install unzip)" >&2; exit 1; }
+fi
+
 # --- SPIR-V refresh mode -----------------------------------------------------
 if [ -n "$REGEN_DIR" ]; then
+    command -v python3 >/dev/null || { echo "ERROR: python3 not found (install python3)" >&2; exit 1; }
     echo "=== regenerating vkfixture_spirv.h from $REGEN_DIR ==="
     python3 - "$REGEN_DIR" "$SRC/vkfixture_spirv.h" <<'PY'
 import glob, os, struct, sys
@@ -187,15 +195,24 @@ fi
 
 echo "=== result ==="
 ls -l "$SRC/libvulkan.so.1" "$SRC/vkfixture"
-echo "--- shim: soname + NEEDED (must be none) + export count ---"
-readelf -d "$SRC/libvulkan.so.1" | grep -i soname || true
-echo -n "DT_NEEDED entries: "; readelf -d "$SRC/libvulkan.so.1" | grep -c NEEDED || true
-echo -n "exported functions: "; readelf --dyn-syms -W "$SRC/libvulkan.so.1" | grep -c " FUNC " || true
-echo "--- load-time witness (fires the moment the guest dlopens the shim) ---"
-readelf -S "$SRC/libvulkan.so.1" | grep -A1 init_array || echo "(no .init_array — the witness will NOT fire)"
-echo "--- fixture: PT_INTERP + DT_NEEDED ---"
-readelf -l "$SRC/vkfixture" | grep -A1 "INTERP" | tail -1
-readelf -d "$SRC/vkfixture" | grep NEEDED
+# The readelf inspection below only REPORTS on the built artifacts; it is
+# informational, so where readelf (binutils) is absent skip it with a note
+# instead of dying under set -e after a successful build (previously the
+# unguarded fixture lines below killed the run — and any --stage with it —
+# on boxes without binutils).
+if command -v readelf >/dev/null 2>&1; then
+    echo "--- shim: soname + NEEDED (must be none) + export count ---"
+    readelf -d "$SRC/libvulkan.so.1" | grep -i soname || true
+    echo -n "DT_NEEDED entries: "; readelf -d "$SRC/libvulkan.so.1" | grep -c NEEDED || true
+    echo -n "exported functions: "; readelf --dyn-syms -W "$SRC/libvulkan.so.1" | grep -c " FUNC " || true
+    echo "--- load-time witness (fires the moment the guest dlopens the shim) ---"
+    readelf -S "$SRC/libvulkan.so.1" | grep -A1 init_array || echo "(no .init_array — the witness will NOT fire)"
+    echo "--- fixture: PT_INTERP + DT_NEEDED ---"
+    readelf -l "$SRC/vkfixture" | grep -A1 "INTERP" | tail -1
+    readelf -d "$SRC/vkfixture" | grep NEEDED
+else
+    echo "note: 'readelf' not found; skipping binary inspection" >&2
+fi
 
 # --- stage into the rootfs zips ---------------------------------------------
 if [ "$DO_STAGE" = 1 ]; then

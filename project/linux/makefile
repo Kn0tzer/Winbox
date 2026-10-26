@@ -1,6 +1,6 @@
 ifndef BUILD_DIR
 
-.PHONY: default all clean release test x64 x64-cache
+.PHONY: default all clean release test x64 x64-test x64-cache
 
 default all: release
 
@@ -27,6 +27,8 @@ test: export EXTRA_CPP_FLAGS := $(BOXED_FLAGS) -D__TEST
 # Browser graphics retain the WASM build and dedicated bridge harness checks.
 x64: export BUILD_DIR := Build/X64Headless
 x64: export EXTRA_CPP_FLAGS := -DASMJIT_STATIC -DBOXEDWINE_64 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_DISABLE_UI
+x64-test: export BUILD_DIR := Build/X64Test
+x64-test: export EXTRA_CPP_FLAGS := -DASMJIT_STATIC -DBOXEDWINE_64 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_DISABLE_UI -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -D__TEST
 x64-cache: export BUILD_DIR := Build/X64HeadlessCache
 x64-cache: export EXTRA_CPP_FLAGS := -DASMJIT_STATIC -DBOXEDWINE_64 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_MULTI_THREADED -DBOXEDWINE_DISABLE_UI -DBOXEDWINE_BLOCK_EXEC=1 -DBOXEDWINE_BLOCK_CACHE_INFRA=1
 
@@ -36,7 +38,7 @@ ifeq ($(filter -j% --jobs%,$(MAKEFLAGS)),)
 JOBS ?= 2
 MAKEFLAGS += -j$(JOBS)
 endif
-release test x64 x64-cache:
+release test x64 x64-test x64-cache:
 	@$(MAKE)
 
 clean:
@@ -94,6 +96,10 @@ TEST_SOURCES += $(MINIZIP_SOURCES)
 
 ifeq ($(BUILD_DIR), Build/Test)
 SRCS := $(TEST_SOURCES)
+else ifeq ($(BUILD_DIR), Build/X64Test)
+# x64 syscall fixtures need the full native interpreter/kernel source set.
+# The generic test bridge stub duplicates msgScratch, which syscall64.cpp owns.
+SRCS := $(filter-out $(PROJDIR)/source/test/cpu/test_bridge_stubs.cpp,$(TEST_SOURCES))
 else ifneq ($(filter Build/X64Headless Build/X64HeadlessCache,$(BUILD_DIR)),)
 SRCS := $(filter-out $(PROJDIR)/source/ui/% $(PROJDIR)/lib/asmjit/% $(PROJDIR)/lib/glew/% $(PROJDIR)/lib/imgui/% $(PROJDIR)/lib/pugixml/% $(PROJDIR)/lib/tiny-process/%,$(SOURCES))
 else
@@ -111,7 +117,7 @@ $(SOFT_OBJS): INCLUDES := -I../../lib/softfloat/source/include -I../../lib/softf
 
 SDL_CFLAGS = $(shell sdl2-config --cflags)
 SDL_LIBS = $(shell sdl2-config --libs)
-ifneq ($(filter Build/X64Headless Build/X64HeadlessCache,$(BUILD_DIR)),)
+ifneq ($(filter Build/X64Headless Build/X64HeadlessCache Build/X64Test,$(BUILD_DIR)),)
 GRAPHICS_CPP_FLAGS :=
 GRAPHICS_LD_FLAGS :=
 else
@@ -124,6 +130,14 @@ LDFLAGS = -L./linux_build/lib -lcurl -lssl -lcrypto -lpthread -lm -lz $(GRAPHICS
 
 #$(TEST_BUILD_DIR)/boxedwineTest: $(TEST_OBJS)
 #	$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
+
+# Compiler switches can change CPU/FPU layout without touching a header.
+# Never mix objects from different ABIs in one Build directory. Keep only the
+# current configuration stamp, so switching A -> B -> A also invalidates B.
+# Quote each value as shell data (CPPFLAGS contains quotes for GLH).
+native_config_quote = $(subst ','"'"',$(1))
+NATIVE_CONFIG_KEY := $(shell printf '%s\n' '$(call native_config_quote,$(CC))' '$(call native_config_quote,$(CXX))' '$(call native_config_quote,$(CPPFLAGS))' '$(call native_config_quote,$(CXXFLAGS))' '$(call native_config_quote,$(CFLAGS))' '$(call native_config_quote,$(ASFLAGS))' '$(call native_config_quote,$(LDFLAGS))' | sha256sum | cut -d' ' -f1)
+NATIVE_CONFIG_STAMP := $(BUILD_DIR)/.build-config-$(NATIVE_CONFIG_KEY)
 
 $(BUILD_DIR)/$(TARGET_EXEC): $(ALL)
 	@$(CC) $(ALL) -o $@ $(LDFLAGS)
@@ -147,6 +161,13 @@ $(BUILD_DIR)/%.cpp.o: %.cpp
 
 clean:
 	$(RM) -r $(BUILD_DIR)
+
+$(ALL): $(NATIVE_CONFIG_STAMP)
+
+$(NATIVE_CONFIG_STAMP):
+	@$(MKDIR_P) $(BUILD_DIR)
+	@$(RM) $(BUILD_DIR)/.build-config-*
+	@touch $@
 
 -include $(DEPS)
 

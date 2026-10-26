@@ -102,7 +102,8 @@ test('the runtime build flags the panel depends on are wired in this worktree', 
   assert.match(registry, /BOXEDWINE_VULKAN64/);
   assert.match(registry, /BOXEDWINE_OPENGL/);
   assert.match(registry, /BW64_METRICS_CPU64_SUPPORTED/);
-  assert.equal(/arch == BW64_METRICS_ARCH32/.test(header) || true, true);
+  assert.match(registry, /arch\s*==\s*BW64_METRICS_ARCH32/,
+    'the metrics implementation must retain a distinct 32-bit branch');
   // The published ABI the JIT lanes implement.
   assert.match(header, /BW64_METRICS_ARCH32 32/);
   assert.match(header, /BW64_METRICS_ARCH64 64/);

@@ -41,6 +41,16 @@ public:
 	virtual U32 getBufferCapacity() = 0;
 	virtual bool isBwPump() { return false; }
 
+	// Capture (kernel round 3B). The base implementations report capture as
+	// unsupported; KDspAudioSdl overrides them with a real SDL capture
+	// device. DevDsp turns "unsupported" into -ENOTSUP for the guest -
+	// never into fake data or a fake EOF.
+	virtual bool openCaptureAudio(U32 format, U32 freq, U32 channels) { return false; }
+	virtual void closeCaptureAudio() {}
+	virtual U32 getCapturedSize() { return 0; }
+	virtual U32 readCapturedAudio(U8* data, U32 len) { return 0; }
+	std::function<void()> captureDataCallback;
+
 	U32 id = 0;
 
 	static BOXEDWINE_MUTEX mutex;

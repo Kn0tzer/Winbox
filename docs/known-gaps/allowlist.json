@@ -1,0 +1,114 @@
+{
+  "entries": [
+    {
+      "file": "include/bw64metrics.h",
+      "count": 1,
+      "reason": "Field comment naming the 'unsupported-op' fallback counter; a metric, not a gap."
+    },
+    {
+      "file": "include/log.h",
+      "count": 3,
+      "reason": "Declarations of kpanic/internal_kpanic, the loud-abort primitive itself."
+    },
+    {
+      "file": "platform/sdl/knativeinputSDL.cpp",
+      "count": 1,
+      "reason": "Invariant: input events must be processed on the main thread; kpanic aborts loudly on a programming error."
+    },
+    {
+      "file": "source/emulation/softmmu/codePageData.cpp",
+      "count": 2,
+      "reason": "Invariant assertions on the decoded-op cache (kpanic 'oops' guards); aborts loudly, never silent."
+    },
+    {
+      "file": "source/emulation/softmmu/kmemory_soft.cpp",
+      "count": 3,
+      "reason": "Invariant assertions on page bounds and mapped-file state. The mmap offset guard at :157 relies on syscall64.cpp:1627 aligning the offset first; kernel lane to confirm (see coverage.md, NEEDS_OTHER_LANE)."
+    },
+    {
+      "file": "source/emulation/softmmu/soft_mmu.cpp",
+      "count": 1,
+      "reason": "Invariant assertion in MMU::setPermissions; aborts loudly."
+    },
+    {
+      "file": "source/emulation/softmmu/soft_ram.cpp",
+      "count": 1,
+      "reason": "Invariant: native RAM allocation must be page-aligned; aborts loudly."
+    },
+    {
+      "file": "source/io/fsfilenode.cpp",
+      "count": 1,
+      "reason": "errno translation table (host ENOSYS to guest K_ENOSYS); not a gap."
+    },
+    {
+      "file": "source/io/fsmemnode.cpp",
+      "count": 5,
+      "reason": "memfd nodes never enter the path namespace: there is no /proc/self/fd lookup in source/ (grep verified), and every setTimes caller resolves a path (kprocess.cpp:2825, 3161, 3200). The kpanics are unreachable from guest syscalls; a future /proc/self/fd implementation must replace them first."
+    },
+    {
+      "file": "source/sdl/main.cpp",
+      "count": 1,
+      "reason": "Comment text: 'server-1-XXX' is a wineserver socket-directory name pattern, not a placeholder."
+    },
+    {
+      "file": "source/ui/controls/ImGuiLayout.cpp",
+      "count": 1,
+      "reason": "Invariant in the UI layout engine (one variable-length control per row); UI-only, aborts loudly."
+    },
+    {
+      "file": "source/util/concurrentqueue.h",
+      "count": 1,
+      "reason": "Vendored upstream header (moodycamel ConcurrentQueue); the 'unsupported alignment' default template is upstream code."
+    },
+    {
+      "file": "source/util/karray.h",
+      "count": 3,
+      "reason": "Bounds invariants on KArray index access; aborts loudly on a caller bug."
+    },
+    {
+      "file": "source/util/klist.h",
+      "count": 2,
+      "reason": "Invariant: a node must not be inserted into a list twice; aborts loudly."
+    },
+    {
+      "file": "source/util/log.cpp",
+      "count": 7,
+      "reason": "The kpanic definitions, the 'unsupportedCases' counter of the recover metrics JSON, and its fetch_add; not gaps."
+    },
+    {
+      "file": "web/shader.mjs",
+      "count": 1,
+      "reason": "Comment naming the 'UnsupportedInstruction' constant in the shader pipeline; not a gap."
+    },
+    {
+      "file": "source/util/synchronization.cpp",
+      "count": 1,
+      "reason": "Invariant: signal must not target a thread that is not waiting; aborts loudly."
+    },
+    {
+      "file": "web/frame-metrics.mjs",
+      "count": 1,
+      "reason": "UI label 'Skipped / unsupported frames' that reports a counter; not a gap."
+    },
+    {
+      "file": "platform/sdl/knativescreenSDL.cpp",
+      "count": 2,
+      "reason": "Recorder/screenshot host tooling (BOXEDWINE_RECORDER): the kpanic is a bounds invariant in the recorder copy loop (aborts loudly on a programming error), and 8-bit screenshots klog a refusal and return false. Neither is guest-visible behaviour."
+    },
+    {
+      "file": "source/ui/data/appFile.cpp",
+      "count": 1,
+      "reason": "Host-UI runner invariant: runOnRestartUI must be unset when runApps picks the next runner; the kpanic aborts loudly on a UI programming error and is not guest-reachable."
+    },
+    {
+      "file": "web/naga-rt.mjs",
+      "count": 5,
+      "reason": "Shader-version classification and its documentation: liftForNaga returns reason 'unsupported-version' for GLSL versions outside the supported set; those sources reach ANGLE unchanged and are recorded as fallback observations, not failures (verified by web/tests/suite/unit/naga-angle-fallback.test.mjs). One hit is a comment quoting Naga's own probe-P4 error text."
+    },
+    {
+      "file": "include/kdspaudio.h",
+      "count": 2,
+      "reason": "Base KDspAudio capture virtuals are unsupported by design (kernel.md round-3B audio-capture row): the SDL backend overrides them with a real capture device, and DevDsp turns unsupported into -ENOTSUP, never fake data or fake EOF."
+    }
+  ]
+}

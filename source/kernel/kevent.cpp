@@ -28,22 +28,25 @@ bool KEvent::isBlocking() {
 }
 
 void KEvent::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KEvent::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KEvent::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KEvent::getLock(KFileLock* lock) {
-    kdebug("KEvent::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32 KEvent::setLock(KFileLock* lock, bool wait) {
-    kdebug("KEvent::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KEvent::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KEvent::isOpen() {
@@ -149,6 +152,8 @@ S64 KEvent::length() {
 }
 
 U32 syscall_eventfd2(KThread* thread, U32 initialValue, U32 flags) {
+    if (!thread || !thread->process) return (U32)-K_ESRCH;
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return (U32)-K_EINVAL;
     KFileDescriptorPtr fd;
 
     std::shared_ptr<KEvent> o = std::make_shared<KEvent>();
@@ -160,12 +165,6 @@ U32 syscall_eventfd2(KThread* thread, U32 initialValue, U32 flags) {
     }
     if (flags & K_O_NONBLOCK) {
         fd->accessFlags |= K_O_NONBLOCK;
-    }
-    U32 unusedFlags = flags;
-    unusedFlags &= ~K_O_NONBLOCK;
-    unusedFlags &= ~K_O_CLOEXEC;
-    if (unusedFlags) {
-        kwarn_fmt("syscall_eventfd2 unhandled flags=%X", unusedFlags);
     }
     o->blocking = (fd->accessFlags & K_O_NONBLOCK) == 0;
     return fd->handle;

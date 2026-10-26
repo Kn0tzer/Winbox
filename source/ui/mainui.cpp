@@ -377,10 +377,13 @@ bool uiLoop() {
         GlobalSettings::updateLastFrameDelayChange();
         ImGui_ImplSDL2_ProcessEvent(&event);
         if (event.type == SDL_QUIT) {
-            done = true;
-            if (currentView) {
-                // :TODO: should we stop the quit action if this save fails?
-                currentView->saveChanges();
+            // Yes: a failed save stops the quit (gotoView has always gated
+            // view switches on saveChanges the same way), so the user can fix
+            // the problem instead of silently losing the changes.
+            if (currentView && !currentView->saveChanges()) {
+                kwarn_fmt("uiLoop: quit cancelled because saving the current view failed");
+            } else {
+                done = true;
             }
         } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window)) {
             done = true;
@@ -661,7 +664,11 @@ bool uiShow(BString basePath) {
             } else if (GlobalSettings::getAvailableWineVersions().size()) {
                 askToDownloadDefaultWine();
             } else {
-                // :TODO:
+                // The file list download finished with nothing available and
+                // nothing is downloading: tell the user, like the WaitDlg
+                // path above does, instead of opening silently.
+                new OkDlg(Msg::GENERIC_DLG_ERROR_TITLE, getTranslation(Msg::ERROR_NO_FILE_LIST), []() {
+                    });
             }
             return false;
             });

@@ -57,6 +57,7 @@ private:
         U32 fd;
         U64 data;
         U32 events;
+        bool enabled = true;
     };
     BHashTable<U32, Data*> data;
 };

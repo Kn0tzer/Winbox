@@ -74,7 +74,11 @@ bool KNativeAudioSDL::midiOutIsOpen(U32 wDevID) {
 
 
 std::shared_ptr<KNativeAudio> KNativeAudio::createNativeAudio() {
-    // :TODO: maybe allow the user to choose in the future
+    // Exactly one backend is registered per platform in KNativeAudio::init()
+    // (SDL here, CoreAudio on macOS, the Windows driver under MSVC), so there
+    // is no device/backend choice to offer: the front of the list is the
+    // platform's only audio backend. The guest-visible device choice happens
+    // inside Wine against the single host device this backend exposes.
 	return KNativeAudio::availableAudio.front();
 }
 

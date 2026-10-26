@@ -23,6 +23,13 @@
 class KProcess;
 class KThread;
 class KMemory64;
+class CPU64;
+
+// Set only while CPU64 executes one interpreter instruction. Kernel copies
+// run with this context cleared so invalid syscall buffers remain EFAULT paths.
+void k64SetGuestAccessCPU(CPU64* cpu);
+CPU64* k64GuestAccessCPU();
+bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write);
 
 // Sparse 64-bit guest memory with lazy page backing, mmap reservations,
 // shared file mappings, pinned futex buffers and a per-thread data cache.
@@ -45,6 +52,15 @@ class KMemory64;
 // pinned page's buffer, or the held pointer would dangle. Outside the kmemory.h
 // numbering — a 64-bit-only internal bit.
 #define K64_PAGE_PINNED  0x40
+// mlock / madvise fork-advice state (kernel round 3A). LOCKED pages refuse
+// MADV_DONTNEED/MADV_REMOVE with EINVAL and count against RLIMIT_MEMLOCK
+// (KProcess::memLockedBytes is kept in sync by the lock helpers in
+// kmemory64.cpp, the only mutators of this bit). DONTFORK pages are not
+// inherited by fork; WIPEONFORK pages are inherited zeroed. Neither advice
+// bit, nor LOCKED, survives into a fork child.
+#define K64_PAGE_LOCKED     0x80
+#define K64_PAGE_DONTFORK   0x100
+#define K64_PAGE_WIPEONFORK 0x200
 
 // A guest page slot. `data` is allocated lazily: a freshly reserved page (mmap
 // of an address wine may never touch — its huge PROT_NONE reservations) carries
@@ -125,6 +141,14 @@ public:
     explicit KMemory64(KProcess* process);
     ~KMemory64();
 
+    // Address-space sharing references (kernel round 3C): a CLONE_VM or
+    // vfork child shares this object with its parent instead of owning a
+    // copy. The exec path deletes the object only when the last sharer
+    // releases its reference; process exit never deletes it.
+    std::atomic<U32> vmRefs{1};
+    void retainVmRef() { vmRefs.fetch_add(1); }
+    bool releaseVmRef() { return vmRefs.fetch_sub(1) == 1; }
+
     // mmap subset: anonymous + fixed only in v1. Returns the mapped guest
     // address, or (U64)-errno on failure. addr MUST be page-aligned and
     // non-zero (no address-picking in v1).
@@ -152,6 +176,10 @@ public:
     // page-aligned base. prot follows K_PROT_* (0x1/0x2/0x4).
     U64 mmapReserveAndMap(U64 length, U32 prot);
 
+    // Resize or move an anonymous mapped region using the Linux mremap flag
+    // subset. Returns the resulting guest address, or -errno.
+    U64 mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAddr);
+
     // Change page permissions on already-mapped pages. addr must be page-
     // aligned. prot bits follow K_PROT_READ/WRITE/EXEC (0x1/0x2/0x4) — same
     // convention as mmapAnonymousFixed. Pages within [addr, addr+len) that
@@ -174,6 +202,25 @@ public:
     // (virtual.c:1578 "assert(view->protect & VPROT_SYSTEM)"). addr must be
     // page-aligned; partial pages at the tail are unmapped whole. Returns 0.
     U64 munmap(U64 addr, U64 len);
+    // mlock accounting (kernel round 3A). lockRange/unlockRange are the
+    // only mutators of K64_PAGE_LOCKED; they validate the range, enforce
+    // RLIMIT_MEMLOCK against KProcess::memLockedBytes, and keep that
+    // counter in sync. lockAllCurrent is all-or-nothing over the limit.
+    S64 lockRange(U64 addr, U64 len);
+    S64 unlockRange(U64 addr, U64 len);
+    S64 lockAllCurrent();
+    void unlockAll();
+    bool rangeHasLocked(U64 addr, U64 len);
+    U64 countLockedInRange(U64 addr, U64 len);
+    // Sets LOCKED on mapped pages in the range (mlockall MCL_FUTURE path
+    // taken by fresh mappings); accounting follows the bits flipped.
+    void applyFutureLock(U64 addr, U64 len);
+    // madvise behaviours that need page-table state: MADV_REMOVE and the
+    // fork advice (DONTFORK/DOFORK/WIPEONFORK/KEEPONFORK), plus the
+    // locked-page rules for DONTNEED/DONTNEED_LOCKED. The syscall wrapper
+    // validates the advice value and range first.
+    S64 madvise(U64 addr, U64 len, U32 advice);
+
 
     // Permission query / page state.
     bool isPageMapped(U64 pageNum) const;
@@ -241,6 +288,13 @@ public:
     // every mapped page is committed, so this equals mappedPageCount(); afterward
     // it tracks only pages whose K64Page::data is non-null (i.e. actually touched).
     U64 committedPageCount() const;
+    // Pages that are both mapped and committed: the guest-visible RAM in
+    // use. munmap clears the mapped flag but deliberately retains buffers,
+    // so unlike committedPageCount() this recovers when a range is unmapped.
+    U64 mappedCommittedPageCount() const;
+    // Linux /proc/<pid>/maps (smaps=true adds Size/Rss) rendered from the
+    // live page table: contiguous runs of equal permission/shared flags.
+    BString generateMaps(bool smaps) const;
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
     // Registered code pages own stable, distinct generation slots. Data-page
@@ -390,11 +444,13 @@ bool bw64PageHoldsBlocks(U64 pageNum);
 
 inline __attribute__((always_inline)) U8 KMemory64::readb(U64 addr) {
     U8 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     return K64DTlb::tryRead<U8, false>(this, addr, value) ? value : readbSlow(addr);
 }
 inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
     U16 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
@@ -402,6 +458,7 @@ inline __attribute__((always_inline)) U16 KMemory64::readw(U64 addr) {
 }
 inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
     U32 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
@@ -409,27 +466,32 @@ inline __attribute__((always_inline)) U32 KMemory64::readd(U64 addr) {
 }
 inline __attribute__((always_inline)) U64 KMemory64::readq(U64 addr) {
     U64 value;
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), false)) return 0;
     if (g_k64JitVerifyOverlayActive && jitVerifyRead(addr, &value, sizeof(value))) return value;
     if (K64DTlb::tryRead(this, addr, value)) return value;
     memcpyFromGuest(&value, addr, sizeof(value));
     return value;
 }
 inline __attribute__((always_inline)) void KMemory64::writeb(U64 addr, U8 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     writebSlow(addr, value);
 }
 inline __attribute__((always_inline)) void KMemory64::writew(U64 addr, U16 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writed(U64 addr, U32 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));
 }
 inline __attribute__((always_inline)) void KMemory64::writeq(U64 addr, U64 value) {
+    if (!k64CheckGuestAccess(this, addr, sizeof(value), true)) return;
     if (g_k64JitVerifyOverlayActive && jitVerifyWrite(addr, &value, sizeof(value))) return;
     if (K64DTlb::tryWrite(this, addr, value)) return;
     memcpyToGuest(addr, &value, sizeof(value));

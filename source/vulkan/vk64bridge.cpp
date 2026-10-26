@@ -59,6 +59,8 @@ namespace vk32abi {
 #include "vk64bridge.h"
 #include "vk64bridge_abi.h"
 #include "vk_query_results.h"
+#include "vk_encode_profile.h"
+#include "vk_cb_lifecycle.h" // queue-submit fallback recording lifecycle
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kprocess.h"
@@ -269,6 +271,13 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdClearDepthStencilImage, "vkCmdClearDepthStencilImage") \
     X(VK64_fn_vkCmdWriteTimestamp, "vkCmdWriteTimestamp") \
     X(VK64_fn_vkCmdSetDepthBounds, "vkCmdSetDepthBounds") \
+    X(VK64_fn_vkResetDescriptorPool, "vkResetDescriptorPool") \
+    X(VK64_fn_vkFreeDescriptorSets, "vkFreeDescriptorSets") \
+    X(VK64_fn_vkCmdPushDescriptorSetKHR, "vkCmdPushDescriptorSetKHR") \
+    X(VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR, "vkCmdPushDescriptorSetWithTemplateKHR") \
+    X(VK64_fn_vkGetDeviceImageMemoryRequirements,   "vkGetDeviceImageMemoryRequirements") \
+    X(VK64_fn_vkCmdSetExtendedDynamicState, "vkCmdSetExtendedDynamicState") \
+    X(VK64_fn_vkGetDescriptorSetLayoutSupport, "vkGetDescriptorSetLayoutSupport") \
     X(VK64_fn_vkCmdCopyQueryPoolResults, "vkCmdCopyQueryPoolResults") \
     X(VK64_fn_vkCmdDraw,                            "vkCmdDraw")           \
     X(VK64_fn_vkCmdPipelineBarrier,                 "vkCmdPipelineBarrier")\
@@ -379,7 +388,215 @@ inline void writeGuestBytes(U64 va, const void* in, size_t count) {
     else if (g_mem) g_mem->memcpyToGuest(va, in, count);
 }
 
-static U64 g_bufDirtyTick = 1;      // buffer dirtiness generation counter
+static U64 g_bufDirtyTick = 1;      // dirtiness generation counter: buffer dirtyGen, image dirtyGen, memory writeEpoch
+
+// ---------------------------------------------------------------------------
+// "No silent drops": every guard that discards a guest command/struct/array goes
+// through VK64_DROP_IF, which logs the drop (first 4 hits per trap fn + source line, then powers of two) and keeps a running total (vk64BridgeDropCount()).
+// It is an if/else{} statement, NOT do{}while(0), on purpose: the action may be
+// continue/break, which inside do{}while(0) bind to the macro's own loop -- the
+// guard logged but never guarded (55 live sites; macro-class row, 2026-10-25).
+// The trailing else{} makes unbraced-if-arm use a compile error, not a re-bind.
+// ---------------------------------------------------------------------------
+static thread_local U64 g_dropFn = 0;
+static U64 g_dropTotal = 0;
+U64 vk64BridgeDropCount() { return g_dropTotal; }
+static void vk64DropLog(const char* cond, int line) {
+    static std::mutex lock;
+    static std::unordered_map<U64, U32> seen;
+    std::lock_guard<std::mutex> guard(lock);
+    ++g_dropTotal;
+    U32& n = seen[((U64)g_dropFn << 32) | (U32)line];
+    if (++n <= 4 || (n & (n - 1)) == 0)
+        klog_fmt("vk64: DROPPED guest command in %s (vk64bridge.cpp:%d, x%u, %llu drops total): guard `%s`",
+                 fnName(g_dropFn), line, n, (unsigned long long)g_dropTotal, cond);
+}
+#define VK64_DROP_IF(action, ...) if (__VA_ARGS__) { vk64DropLog(#__VA_ARGS__, __LINE__); action; } else {}
+
+// ---------------------------------------------------------------------------
+// "Rejected loudly". A guest asked for a Vulkan feature the WebGPU page tier
+// cannot execute (geometry/tessellation stages, sparse binding, transform
+// feedback, ...). The bridge answers with the correct VkResult where the entry
+// point has one, and ALWAYS calls vk64Unsupported() so the request is greppable:
+//     vk64: UNSUPPORTED <feature> (<detail>) in <fn> x<n> (<total> total)
+// The first 4 hits per feature are logged, then the 8th, 16th, 32nd, ... Counts
+// are queryable per feature (vk64BridgeUnsupportedCount) for tests and metrics.
+// docs/known-gaps/vulkan.md lists every feature name that can appear here.
+// ---------------------------------------------------------------------------
+static U64 g_unsupportedTotal = 0;
+static std::map<std::string, U32>& vk64UnsupportedCounts() {
+    static std::map<std::string, U32> counts;
+    return counts;
+}
+static std::mutex& vk64UnsupportedLock() { static std::mutex lock; return lock; }
+U64 vk64BridgeUnsupportedTotal() {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    return g_unsupportedTotal;
+}
+U32 vk64BridgeUnsupportedCount(const char* feature) {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    auto it = vk64UnsupportedCounts().find(feature);
+    return it == vk64UnsupportedCounts().end() ? 0 : it->second;
+}
+static void vk64Unsupported(const char* feature, const char* detail = "") {
+    std::lock_guard<std::mutex> guard(vk64UnsupportedLock());
+    ++g_unsupportedTotal;
+    U32& n = vk64UnsupportedCounts()[feature];
+    if (++n <= 4 || (n & (n - 1)) == 0)
+        klog_fmt("vk64: UNSUPPORTED %s (%s) in %s x%u (%llu total)", feature, detail,
+                 fnName(g_dropFn), n, (unsigned long long)g_unsupportedTotal);
+}
+
+// ---------------------------------------------------------------------------
+// SPIR-V audit. vkCreateShaderModule scans each module once for the capabilities
+// and resource shapes the WebGPU tier cannot honour, reports each one as
+// "vk64: UNSUPPORTED spirv-<what>", and returns VK_ERROR_FEATURE_NOT_PRESENT
+// before publishing an unusable module. Malformed modules return
+// VK_ERROR_INVALID_SHADER_NV. Capabilities the page tier verifiably translates
+// are not rejections (the nullptr cases in vk64SpirvCapabilityName), and two
+// capabilities DXVK declares unconditionally whose USED form the tier cannot
+// serve (33 CullDistance, 4427 DrawParameters) reject only when a matching
+// BuiltIn variable is present; their declared-but-unused form passes.
+// ---------------------------------------------------------------------------
+// Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
+//  - MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature (FALSE here),
+//    so a guest that uses it anyway is violating the spec: creation is rejected.
+//  - mipLodBias is governed by maxSamplerLodBias, advertised as 0 (fillLimits) because
+//    WebGPU has no sampler LOD bias: nonzero requests are out of contract, are logged,
+//    and take the spec clamp to +/-0. CLAMP_TO_BORDER is CORE with no feature bit/limit:
+//    created and reported loudly; the page tier emulates the border colour in shader.
+static bool vk64AuditSampler(U32 addrU, U32 addrV, U32 addrW, float mipLodBias, U32 borderColor) {
+    bool reject = false;
+    const U32 addressModes[] = {addrU, addrV, addrW};
+    for (U32 mode : addressModes) {
+        if (mode == 4) { // VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE
+            vk64Unsupported("mirror-clamp-to-edge", "sampler creation rejected; samplerMirrorClampToEdge is not advertised");
+            reject = true;
+        }
+        if (mode == 3) { // CLAMP_TO_BORDER
+            vk64Unsupported("sampler-border-colour", ("border colour emulated in shader by the page tier for sampled-image ops (gather/cube stay clamp-to-edge); borderColor=" + std::to_string(borderColor)).c_str());
+        }
+    }
+    if (mipLodBias != 0.0f) vk64Unsupported("sampler-mip-lod-bias", "outside advertised maxSamplerLodBias=0; effective bias is the spec clamp to 0");
+    return reject;
+}
+
+static const char* vk64SpirvCapabilityName(U32 cap) {
+    switch (cap) {
+        case 2: return "Geometry";            case 3: return "Tessellation";
+        case 9: return "Float16";             case 10: return "Float64";
+        case 11: return "Int64";              case 12: return "Int64Atomics";
+        case 22: return "Int16";              case 23: return "TessellationPointSize";
+        case 24: return "GeometryPointSize";  case 25: return "ImageGatherExtended";
+        case 27: return "StorageImageMultisample";
+        case 32: return nullptr;             // ClipDistance: shaderClipDistance advertised; naga translates it
+        case 33: return "CullDistance";       case 35: return "SampleRateShading";
+        case 39: return "Int8";               case 41: return "SparseResidency";
+        case 42: return "MinLod";             case 43: return nullptr; // Sampled1D: core; the page tier serves 1D textures
+        case 49: return "StorageImageExtendedFormats";
+        case 50: return nullptr;             case 51: return nullptr; // ImageQuery, DerivativeControl: core; naga translates both
+        case 52: return "InterpolationFunction";
+        case 57: return "MultiViewport";
+        case 4427: return "DrawParameters";   // named: the USED form rejects loudly; the unused form is exempted in the loop (spirvfix R5 strips it)
+        case 4433: return "StorageBuffer16BitAccess";
+        case 4434: return "UniformAndStorageBuffer16BitAccess";
+        case 4435: return "StoragePushConstant16";
+        case 4436: return "StorageInputOutput16";
+        case 4439: return "MultiView";
+        case 4441: return "VariablePointersStorageBuffer";
+        case 4442: return "VariablePointers";
+        case 4448: return "StorageBuffer8BitAccess";
+        case 4449: return "UniformAndStorageBuffer8BitAccess";
+        case 4450: return "StoragePushConstant8";
+        case 5345: return "ShaderViewportIndexLayerEXT";  case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
+        case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
+        // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
+        // per binding number, so runtime indexing into a resource array cannot be
+        // honoured; the loud half of the "exception" rows in vk-capabilities.json.
+        case 5302: return "RuntimeDescriptorArray";
+        case 5303: return "InputAttachmentArrayDynamicIndexing";
+        case 5304: return "UniformTexelBufferArrayDynamicIndexing";
+        case 5305: return "StorageTexelBufferArrayDynamicIndexing";
+        case 5306: return "UniformBufferArrayNonUniformIndexing";
+        case 5307: return "SampledImageArrayNonUniformIndexing";
+        case 5308: return "StorageBufferArrayNonUniformIndexing";
+        case 5309: return "StorageImageArrayNonUniformIndexing";
+        default: return nullptr;
+    }
+}
+static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
+    if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
+    const size_t nw = code.size() / 4;
+    std::vector<U32> w(nw);
+    memcpy(w.data(), code.data(), code.size());
+    if (w[0] != 0x07230203u) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
+    struct Ptr { U32 sc, pointee; };
+    std::unordered_map<U32, Ptr> ptrs;
+    std::unordered_map<U32, U32> arrays;             // array / runtime-array id -> element type
+    std::unordered_map<U32, U32> structMembers;      // struct id -> member count
+    std::unordered_map<U32, std::set<U32>> memberNonWritable;
+    std::set<U32> nonWritable, bufferBlock;
+    struct Var { U32 id, type, sc; };
+    std::vector<Var> vars;
+    bool storageImage = false, inputAttachment = false, compute = false, cullUsed = false, drawUsed = false;
+    bool unsupported = false;
+    std::set<U32> caps;
+    for (size_t i = 5; i < nw;) {
+        const U32 op = w[i] & 0xFFFF, len = w[i] >> 16;
+        if (!len || i + len > nw) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
+        switch (op) {
+            case 17: if (len >= 2) caps.insert(w[i + 1]); break;                       // OpCapability
+            case 15: if (len >= 2 && w[i + 1] == 5) compute = true; break;             // OpEntryPoint GLCompute
+            case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
+            case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
+            case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
+            case 25:
+                if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
+                if (len >= 9 && w[i + 7] == 2) storageImage = true;                   // OpTypeImage, Sampled==2
+                break;
+            case 59: if (len >= 4) vars.push_back({w[i + 2], w[i + 1], w[i + 3]}); break; // OpVariable
+            case 71: if (len >= 3) {                                                   // OpDecorate
+                if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
+                if (w[i + 2] == 3) bufferBlock.insert(w[i + 1]);
+                if (w[i + 2] == 11) { if (w[i + 3] == 4) cullUsed = true; if (w[i + 3] >= 4424 && w[i + 3] <= 4426) drawUsed = true; } // BuiltIn CullDistance / BaseVertex,BaseInstance,DrawIndex
+            } break;
+            case 72: if (len >= 4) { if (w[i + 3] == 24) memberNonWritable[w[i + 1]].insert(w[i + 2]); if (w[i + 3] == 11) { if (w[i + 4] == 4) cullUsed = true; if (w[i + 4] >= 4424 && w[i + 4] <= 4426) drawUsed = true; } } break; // OpMemberDecorate
+            default: break;
+        }
+        i += len;
+    }
+    for (U32 c : caps) {
+        if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
+        if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
+        const char* name = vk64SpirvCapabilityName(c);
+        if (name) {
+            vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
+            unsupported = true;
+        } else if (c != 0 && c != 1 && c != 5301 && c != 32 && c != 43 && c != 50 && c != 51 && c != 5379) { // Matrix, Shader, ShaderNonUniform, and the page-tier-translated caps (nullptr cases above) are harmless here.
+            vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
+            unsupported = true;
+        }
+    }
+    if (compute) { vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    if (storageImage) { vk64Unsupported("spirv-storage-image", "storage images are not implemented; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    if (inputAttachment) { vk64Unsupported("spirv-input-attachment", "input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    for (const Var& v : vars) {
+        auto pt = ptrs.find(v.type);
+        if (pt == ptrs.end()) continue;
+        U32 t = pt->second.pointee;
+        for (int d = 0; d < 4; d++) { auto a = arrays.find(t); if (a == arrays.end()) break; t = a->second; }
+        const bool ssbo = v.sc == 12 || (v.sc == 2 && bufferBlock.count(t));
+        if (!ssbo) continue;
+        if (nonWritable.count(v.id)) continue;
+        auto m = memberNonWritable.find(t);
+        auto n = structMembers.find(t);
+        if (m != memberNonWritable.end() && n != structMembers.end() && m->second.size() >= n->second) continue;
+        vk64Unsupported("spirv-storage-buffer-write", "shader may store to a storage buffer; the page tier has no GPU->guest readback");
+        unsupported = true;
+        break;
+    }
+    return unsupported ? VK_ERROR_FEATURE_NOT_PRESENT : VK_SUCCESS;
+}
 
 // ---------------------------------------------------------------------------
 // Guest memory helpers. EVERY guest pointer arrives here as a VA and is only
@@ -474,7 +691,7 @@ template <class T> T* objOf(U64 id, U32 kind, const char* who) {
 }
 void dropObj(U64 id) {
     auto it = g_objs.find(id);
-    if (it == g_objs.end()) return;
+    VK64_DROP_IF(return, it == g_objs.end());
     delete it->second;
     g_objs.erase(it);
 }
@@ -484,10 +701,18 @@ void dropObj(U64 id) {
 // recorded are the same fields P2 records — that is what lets submit rebuild a
 // complete frame manifest without the app re-stating anything).
 // ---------------------------------------------------------------------------
-const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 4, VK64_MAX_DRAWS = 64;
-const U32 VK64_MAX_CMDS = 4096;
-const U32 VK64_MAX_VERT_BINDINGS = 4, VK64_MAX_VERT_ATTRIBS = 16;
+const U32 VK64_MAX_SETS = 8, VK64_MAX_BINDINGS = 8, VK64_MAX_ATTACH = 8, VK64_MAX_DRAWS = 64;   // MAX_ATTACH matches the RP_BEGIN wire limit (web/vk-protocol.mjs)
+const U32 VK64_MAX_CMDS = 16384;   // recorded commands per command buffer; the page tier rejects an overflowed frame
+const U32 VK64_MAX_INDIRECT_DRAWS = 1024;
+const U32 VK64_MAX_VERT_BINDINGS = 16, VK64_MAX_VERT_ATTRIBS = 16;   // = advertised maxVertexInputBindings/Attributes
 const U32 VK64_MAX_PUSH_BYTES = 256;   // matches limits.maxPushConstantsSize
+// A fixed-size internal table cannot hold more entries than `cap`. Never truncate quietly: the first
+// overflow of each `feature` is reported (rate-limited, greppable) and the clamped count returned.
+static U32 vk64CapCount(const char* feature, U32 n, U32 cap) {
+    if (n <= cap) return n;
+    vk64Unsupported(feature, ("count " + std::to_string(n) + " exceeds the bridge limit " + std::to_string(cap) + "; extra entries are dropped").c_str());
+    return cap;
+}
 
 // dstArrayElement + count, so a descriptor ARRAY write is not silently collapsed
 // to its first element (audit §f: DXVK writes texture arrays for descriptor
@@ -519,11 +744,11 @@ struct Device   : Obj { U64 physDev = 0, queue = 0; };
 struct Queue    : Obj { U64 device = 0; };
 struct CmdPool  : Obj { U64 device = 0; U32 queueFamily = 0; };
 struct PipelineCache : Obj {};
-struct DescPool  : Obj {};
+struct DescPool  : Obj { U32 maxSets = 0, flags = 0; std::set<U64> sets; };
 struct Surface   : Obj {};
 struct Fence     : Obj { int signalled = 0; };
 struct Event     : Obj { int signalled = 0; };
-struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; };
+struct QueryPool : Obj { U32 type = 0, count = 0, flags = 0; std::vector<U64> results; std::vector<U8> available; };
 struct QueryPoolCreateInfo64Local {
     U32 sType, _pad0; U64 pNext; U32 flags, queryType, queryCount, pipelineStatistics;
 };
@@ -532,26 +757,52 @@ struct QueryPoolCreateInfo32Local {
 };
 static_assert(sizeof(QueryPoolCreateInfo64Local) == 32, "64-bit VkQueryPoolCreateInfo layout");
 static_assert(sizeof(QueryPoolCreateInfo32Local) == 24, "32-bit VkQueryPoolCreateInfo layout");
-// Timeline semaphores (audit P2-NOW item 3). DXVK puts a u64 wait/signal fence
-// on EVERY command-list flush, so the counter is not optional bookkeeping: it is
-// the only thing that makes vkQueueSubmit's VkTimelineSemaphoreSubmitInfo
-// meaningful. Under immediate execution the counter is HONEST — everything a
-// submit waits for has already run, and everything it signals is already done —
-// so signal is a monotone max and a wait either succeeds (value reached) or,
-// with timeout 0 against a value the queue has not reached, returns VK_TIMEOUT.
+// Binary semaphores track swapchain acquire/submit/present ordering. Timeline
+// semaphores keep an honest u64 counter: under immediate execution everything a
+// submit waits on has already run on the bridge side. The counter says "the
+// bridge processed the submit", NOT "WebGPU finished the frame" (there is no
+// GPU->CPU readback path that could observe the difference).
 struct Semaphore : Obj {
     int signalled = 0;          /* binary semaphores keep the old flag */
     int isTimeline = 0;
     U64  counter = 0;
 };
-struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; };
+struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; U64 writeEpoch = 0; };
 struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; U64 dirtyGen = 0; U64 devVa = 0; };
 struct Image  : Obj {
     U32 w = 0, h = 0, d = 0, layers = 0, mips = 0, format = 0, tiling = 0, usage = 0, samples = 0;
     U64 mem = 0, memOff = 0, pixBytes = 0;
+    U64 dirtyGen = 0;               // bumped on every bridge write into this image's memory
     int copied = 0;                 // a staging copyBufferToImage landed here
 };
-struct ImageView : Obj { U64 image = 0; U32 format = 0, aspect = 0; };
+struct ImageView : Obj {
+    U64 image = 0; U32 format = 0, aspect = 0;
+    // Subresource range and type as created; VK_REMAINING_* already resolved against the image.
+    U32 viewType = 1, baseMip = 0, levelCount = 1, baseLayer = 0, layerCount = 1;
+};
+// Fills the view's range/type and reports the parts the WebGPU replay cannot honour: a component
+// swizzle (WebGPU texture views cannot swizzle) and a render-target view of a non-zero mip/layer
+// (render-target textures are keyed per pass and carry one level and one layer).
+static void vk64InitImageView(ImageView* v, const Image* img, U32 viewType, const U32 swizzle[4],
+                              U32 baseMip, U32 levelCount, U32 baseLayer, U32 layerCount) {
+    v->viewType = viewType;
+    v->baseMip = baseMip;
+    v->levelCount = (levelCount == 0xFFFFFFFFu) ? (img->mips > baseMip ? img->mips - baseMip : 1) : levelCount;
+    v->baseLayer = baseLayer;
+    v->layerCount = (layerCount == 0xFFFFFFFFu) ? (img->layers > baseLayer ? img->layers - baseLayer : 1) : layerCount;
+    for (U32 c = 0; c < 4; c++) {
+        if (swizzle[c] != 0 && swizzle[c] != 3 + c) {
+            vk64Unsupported("image-view-swizzle", "non-identity VkComponentMapping is not applied; sampled channels are unswizzled");
+            break;
+        }
+    }
+}
+// Write-side dirtiness for the image emit fast path (see ImgHashEntry): every
+// bridge write into a DeviceMemory allocation bumps its writeEpoch. An image
+// whose own dirtyGen stood still is provably unchanged only if its
+// allocation's epoch also stood still -- a write addressed through a buffer
+// suballocating the same memory must not be invisible to the image's emit.
+inline void vk64TouchMem(DeviceMemory* m) { if (m) m->writeEpoch = g_bufDirtyTick++; }
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
 struct Sampler : Obj {
     U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
@@ -566,10 +817,182 @@ struct ShaderModule : Obj {
                                    // is a refcount drop (P1 section 1.2).
     int destroyed = 0;
 };
-struct DescSetLayout : Obj { U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
-struct DescSet : Obj { U64 layout = 0; U32 nbind = 0; Binding binds[VK64_MAX_BINDINGS]; };
+// Descriptor model. A layout keeps EVERY binding it declares (binding numbers
+// are sparse and unbounded: vkd3d-proton uses binding numbers in the thousands),
+// with the immutable samplers and the dynamic-offset base the binding owns. A
+// set keeps one Binding per written (binding, arrayElement), so descriptor arrays,
+// partial array writes, copies and template updates all land on the element they
+// name instead of collapsing onto element 0.
+struct LayoutBinding {
+    U32 type = 0, count = 0;
+    U32 dynBase = 0;                 // dynamic-offset index of element 0 (binding order)
+    std::vector<U64> immutable;      // VkSampler ids (SAMPLER / COMBINED_IMAGE_SAMPLER)
+};
+struct DescSetLayout : Obj { std::map<U32, LayoutBinding> binds; U32 dynCount = 0; };
+typedef std::pair<U32, U32> DescKey;     // (binding, arrayElement)
+struct DescSet : Obj { U64 layout = 0, pool = 0; std::map<DescKey, Binding> els; };
 struct TmplEntry { U32 binding = 0, arrayElement = 0, count = 0, type = 0; U64 offset = 0, stride = 0; };
-struct DescTemplate : Obj { U32 nentry = 0; TmplEntry entries[VK64_MAX_BINDINGS]; };
+struct DescTemplate : Obj { std::vector<TmplEntry> entries; };
+static bool descIsDynamic(U32 t) {
+    return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+}
+static U32 descBaseType(U32 t) {
+    return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ? (U32)VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+         : t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC ? (U32)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : t;
+}
+// Called once per layout binding in ascending binding order, after all
+// bindings are known: dynamic offsets are consumed in binding order, then array
+// element order (VkDescriptorSetLayout dynamic offset rule).
+static void finishDescLayout(DescSetLayout& l) {
+    U32 dyn = 0;
+    for (auto& kv : l.binds) {
+        kv.second.dynBase = dyn;
+        if (descIsDynamic(kv.second.type)) dyn += kv.second.count;
+    }
+    l.dynCount = dyn;
+}
+
+// ABI-neutral description of one descriptor write (VkWriteDescriptorSet or one
+// VkDescriptorUpdateTemplateEntry). Guest memory is read through `rdq`, which is
+// rd64 for the 64-bit shim and rd64_32 for the 32-bit one; the pointed-to
+// VkDescriptorImageInfo / VkDescriptorBufferInfo layouts (u64 handles) are the
+// same size and offsets in both ABIs.
+typedef U64 (*DescRdQ)(U64);
+struct DescWriteReq {
+    U32 binding = 0, elem = 0, count = 0, type = 0;
+    U64 pImage = 0, pBuffer = 0, pTexel = 0;   // base addresses of element 0
+    U64 stride = 0;                            // bytes between elements
+    U64 inlData = 0; U32 inlSize = 0;          // INLINE_UNIFORM_BLOCK payload
+};
+// Bytes between consecutive VkDescriptorImageInfo / VkDescriptorBufferInfo /
+// VkBufferView entries of a VkWriteDescriptorSet array. The 32-bit image info is
+// 20 bytes: i386 aligns u64 to 4, so imageLayout sits at 16 with no tail pad.
+static U64 descWriteStride(U32 type, bool guest32) {
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) return 8;
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+        descIsDynamic(type)) return 24;
+    return guest32 ? 20 : 24;
+}
+static const U32 VK64_MAX_DESC_ARRAY = 1u << 22;   // sanity cap for one write/copy
+static void applyDescWrite(DescSet& s, const DescWriteReq& w, DescRdQ rdq) {
+    if (w.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        Binding& b = s.els[DescKey(w.binding, 0)];
+        b.binding = w.binding; b.type = w.type;
+        updateInlineUniform(b, w.elem, w.inlData, w.inlSize);
+        return;
+    }
+    U32 n = w.count;
+    if (n > VK64_MAX_DESC_ARRAY) {
+        vk64Unsupported("descriptor-array-size", "descriptor write count exceeds 4M elements");
+        n = VK64_MAX_DESC_ARRAY;
+    }
+    for (U32 i = 0; i < n; i++) {
+        Binding& b = s.els[DescKey(w.binding, w.elem + i)];
+        b = Binding();
+        b.binding = w.binding; b.type = w.type; b.dstArrayElement = w.elem + i; b.count = 1;
+        const U64 at = (U64)i * w.stride;
+        switch (w.type) {
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+                if (!w.pBuffer) break;
+                b.obj = rdq(w.pBuffer + at); b.bufOff = rdq(w.pBuffer + at + 8); b.range = rdq(w.pBuffer + at + 16);
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+                // sampler-only: the VkSampler is the descriptor
+                if (w.pImage) b.obj = rdq(w.pImage + at);
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                // VkDescriptorImageInfo: sampler @0, imageView @8. obj = view, range = sampler
+                if (!w.pImage) break;
+                b.range = rdq(w.pImage + at); b.obj = rdq(w.pImage + at + 8);
+                if (w.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) b.range = 0;
+                if (w.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+                    vk64Unsupported("subpass-input-descriptor", "input attachments are not bound by the WebGPU replay tier");
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 5
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id
+                vk64Unsupported("texel-buffer-storage", "storage texel buffers are not supported: shader writes to a texture copy could never reach guest memory");
+                break;
+            default:
+                vk64Unsupported("descriptor-type", ("descriptor write type=" + std::to_string(w.type)).c_str());
+                break;
+        }
+    }
+}
+// vkUpdateDescriptorSets copy: elements move whole (including unwritten holes),
+// through a temporary so overlapping ranges within one set behave as a memmove.
+static void applyDescCopy(DescSet& src, U32 srcBinding, U32 srcElem, DescSet& dst, U32 dstBinding, U32 dstElem, U32 count) {
+    auto inl = src.els.find(DescKey(srcBinding, 0));
+    if (inl != src.els.end() && inl->second.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        // INLINE_UNIFORM_BLOCK: elements are bytes
+        std::vector<U8> bytes(count, 0);
+        for (U32 i = 0; i < count && srcElem + i < inl->second.inlineBytes.size(); i++)
+            bytes[i] = inl->second.inlineBytes[srcElem + i];
+        Binding& d = dst.els[DescKey(dstBinding, 0)];
+        d.binding = dstBinding; d.type = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+        if (d.inlineBytes.size() < (size_t)dstElem + count) d.inlineBytes.resize((size_t)dstElem + count);
+        std::copy(bytes.begin(), bytes.end(), d.inlineBytes.begin() + dstElem);
+        d.obj = 0; d.bufOff = 0; d.dstArrayElement = 0; d.count = (U32)d.inlineBytes.size(); d.range = d.inlineBytes.size();
+        return;
+    }
+    if (count > VK64_MAX_DESC_ARRAY) {
+        vk64Unsupported("descriptor-array-size", "descriptor copy count exceeds 4M elements");
+        count = VK64_MAX_DESC_ARRAY;
+    }
+    std::vector<std::pair<bool, Binding>> tmp(count);
+    for (U32 i = 0; i < count; i++) {
+        auto it = src.els.find(DescKey(srcBinding, srcElem + i));
+        if (it != src.els.end()) { tmp[i].first = true; tmp[i].second = it->second; }
+    }
+    for (U32 i = 0; i < count; i++) {
+        const DescKey k(dstBinding, dstElem + i);
+        if (!tmp[i].first) { dst.els.erase(k); continue; }
+        Binding& d = dst.els[k];
+        d = tmp[i].second;
+        d.binding = dstBinding; d.dstArrayElement = dstElem + i; d.count = 1;
+    }
+}
+// vkUpdateDescriptorSetWithTemplate / vkCmdPushDescriptorSetWithTemplate: every
+// template entry is one DescWriteReq whose data pointer is pData + entry.offset
+// and whose element stride is the entry's own stride (the app's struct layout).
+static void applyDescTemplate(DescSet& s, const DescTemplate& t, U64 data, DescRdQ rdq) {
+    for (const TmplEntry& te : t.entries) {
+        DescWriteReq r;
+        r.binding = te.binding; r.elem = te.arrayElement; r.count = te.count; r.type = te.type;
+        const U64 at = data + te.offset;
+        r.pImage = r.pBuffer = r.pTexel = at;
+        r.stride = te.stride;
+        r.inlData = at; r.inlSize = te.count;
+        applyDescWrite(s, r, rdq);
+    }
+}
+// Pool bookkeeping shared by both ABIs.
+static void freeDescSet(U64 setId) {
+    auto it = g_objs.find(setId);
+    if (it == g_objs.end() || it->second->kind != K_SET) return;
+    DescSet* s = (DescSet*)it->second;
+    auto pit = g_objs.find(s->pool);
+    if (pit != g_objs.end() && pit->second->kind == K_DESCPOOL) ((DescPool*)pit->second)->sets.erase(setId);
+    dropObj(setId);
+}
+static void resetDescPool(DescPool& p) {
+    std::set<U64> ids; ids.swap(p.sets);
+    for (U64 id : ids) { if (g_objs.count(id)) dropObj(id); }
+}
+static void destroyDescPool(U64 poolId) {
+    auto it = g_objs.find(poolId);
+    if (it == g_objs.end() || it->second->kind != K_DESCPOOL) return;
+    resetDescPool(*(DescPool*)it->second);
+    dropObj(poolId);
+}
 struct PipelineLayout : Obj { U32 nsets = 0; U64 sets[VK64_MAX_SETS]; };
 // The vertex input layout, recorded at pipeline creation (audit P2-NOW item 5).
 // This is the one dropped-at-creation field that is not merely informative: with
@@ -587,18 +1010,18 @@ struct Vk64SpecInfo { U32 mapEntryCount; U32 _pad; U64 pMapEntries; U64 dataSize
 static void captureStageSpec(U64 specVa, StageSpec& out) {
     if (!specVa) return;
     Vk64SpecInfo si = {};
-    if (!readStruct(specVa, si)) return;
-    if (!si.mapEntryCount || si.mapEntryCount > 16) return;
-    if (!si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256) return;
+    VK64_DROP_IF(return, !readStruct(specVa, si));
+    VK64_DROP_IF(return, !si.mapEntryCount || si.mapEntryCount > 16);
+    VK64_DROP_IF(return, !si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256);
     std::vector<Vk64SpecMapEntry> mes;
     readArray(si.pMapEntries, si.mapEntryCount, mes);
     std::vector<U8> data((size_t)si.dataSize);
     g_mem->memcpyFromGuest(data.data(), si.pData, (size_t)si.dataSize);
     for (auto& me : mes) {
-        if (out.n >= 16) break;
-        if (me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0) continue;
+        VK64_DROP_IF(break, out.n >= 16);
+        VK64_DROP_IF(continue, me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0);
         // size must be 1, 2, 4, or 8 for scalar spec constants
-        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
+        VK64_DROP_IF(continue, me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8);
         SpecEntry& e = out.entries[out.n++];
         e.constantID = me.constantID;
         e.size = (U32)me.size;
@@ -623,6 +1046,8 @@ struct Pipeline : Obj {
     U32 depthBiasEnable = 0, depthClampEnable = 0;
     bool depthBiasDynamic = false;
     bool cullDynamic = false, frontDynamic = false;   // VK_DYNAMIC_STATE_CULL_MODE / FRONT_FACE (DXVK declares both on every non-discard pipeline)
+    U32 dynMask = 0;                // bit n set = state n (vkCmdSetExtendedDynamicState 'which', plus 0 cull / 1 front) is dynamic
+    U32 rasterizerDiscard = 0;      // static rasterizerDiscardEnable (dynamic: bit 8 + CMD_RASTER_STATE)
     float depthBiasConstantFactor = 0.0f, depthBiasClamp = 0.0f, depthBiasSlopeFactor = 0.0f;
     U32 colorBlendCount = 0; ColorBlend colorBlend[VK64_MAX_ATTACH];
     float blendConstants[4] = {};
@@ -664,13 +1089,231 @@ static void captureStencil(Pipeline& pipe, const T& state) {
     pipe.stencil.front = face(state.front);
     pipe.stencil.back = face(state.back);
 }
+
+// vkCmdSetExtendedDynamicState 'which' ids (also the bit index in Pipeline::dynMask;
+// 0/1 are the older vkCmdSetCullMode / vkCmdSetFrontFace RASTER_STATE ids).
+enum { VK64_DYN_CULL = 0, VK64_DYN_FRONT = 1, VK64_DYN_TOPOLOGY = 2, VK64_DYN_DEPTH_TEST = 3,
+       VK64_DYN_DEPTH_WRITE = 4, VK64_DYN_DEPTH_OP = 5, VK64_DYN_STENCIL_TEST = 6,
+       VK64_DYN_DEPTH_BIAS_ENABLE = 7, VK64_DYN_RASTERIZER_DISCARD = 8, VK64_DYN_PRIMITIVE_RESTART = 9,
+       VK64_DYN_STENCIL_OP = 10, VK64_DYN_DEPTH_BOUNDS_TEST = 11 };
+// Everything vkCreateGraphicsPipelines does not model is reported here, once
+// per feature (rate-limited, greppable "vk64: UNSUPPORTED <feature>"). Stages
+// with no V2 representation cannot be approximated, so they fail the pipeline
+// with VK_ERROR_FEATURE_NOT_PRESENT. No unsupported state is approximated:
+// DXVK/vkd3d must choose a path compatible with the advertised feature bits.
+struct PipelineAudit {
+    U32 stageMask = 0;            // OR of VkShaderStageFlagBits
+    U32 topology = 0;
+    U32 polygonMode = 0;
+    U32 viewportCount = 0;
+    U32 sampleCount = 1;
+    bool logicOp = false, depthBounds = false, sampleShading = false, alphaToOne = false;
+    bool rasterizerDiscard = false;
+    U32 dynMask = 0;              // states supplied by commands, not by the create info
+    bool vertexDivisor = false;   // VkVertexInputBindingDivisorDescriptionEXT.divisor != 1
+    bool unsupportedVertexFormat = false;
+    bool unsupportedVertexBindingCount = false;
+    bool unsupportedBlendEnum = false;
+    bool mixedBlendConstants = false;
+    bool unsupportedStencilEnum = false;
+    bool incompatibleStencilFaces = false;
+};
+static const U32 kV2SupportedStageMask = 0x1u | 0x10u;     // VERTEX | FRAGMENT
+// Returns true when the pipeline must be rejected with VK_ERROR_FEATURE_NOT_PRESENT.
+static bool vk64AuditGraphicsPipeline(const PipelineAudit& a) {
+    bool reject = false;
+    const U32 extra = a.stageMask & ~kV2SupportedStageMask;
+    if (extra & 0x2u)  { vk64Unsupported("tessellation-control-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x4u)  { vk64Unsupported("tessellation-evaluation-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x8u)  { vk64Unsupported("geometry-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x40u) { vk64Unsupported("task-stage", "pipeline rejected"); reject = true; }
+    if (extra & 0x80u) { vk64Unsupported("mesh-stage", "pipeline rejected"); reject = true; }
+    if (extra & ~(0x2u | 0x4u | 0x8u | 0x40u | 0x80u)) { vk64Unsupported("unknown-graphics-stage", "pipeline rejected"); reject = true; }
+    if (a.dynMask & (1u << VK64_DYN_TOPOLOGY)) {}   // the static topology is ignored; vkCmdSetPrimitiveTopology validates its own value
+    else if (a.topology == 10) { vk64Unsupported("patch-list-topology", "pipeline rejected"); reject = true; }
+    else if (a.topology >= 6) { vk64Unsupported("adjacency-topology", "pipeline rejected"); reject = true; }
+    if (a.polygonMode != 0) { vk64Unsupported(a.polygonMode == 1 ? "polygon-mode-line" : "polygon-mode-point", "pipeline rejected"); reject = true; }
+    if (a.logicOp) { vk64Unsupported("logic-op", "pipeline rejected"); reject = true; }
+    if (a.depthBounds && !(a.dynMask & (1u << VK64_DYN_DEPTH_BOUNDS_TEST))) { vk64Unsupported("depth-bounds-test", "pipeline rejected"); reject = true; }
+    if (a.sampleShading) { vk64Unsupported("sample-shading", "pipeline rejected"); reject = true; }
+    if (a.alphaToOne) { vk64Unsupported("alpha-to-one", "pipeline rejected"); reject = true; }
+    if (a.viewportCount > 1) { vk64Unsupported("multi-viewport", "pipeline rejected"); reject = true; }
+    if (a.vertexDivisor) { vk64Unsupported("vertex-attribute-divisor", "pipeline rejected"); reject = true; }
+    if (a.unsupportedVertexFormat) { vk64Unsupported("vertex-format", "pipeline rejected"); reject = true; }
+    if (a.unsupportedVertexBindingCount) { vk64Unsupported("vertex-binding-limit", "pipeline exceeds the active WebGPU maxVertexBuffers limit"); reject = true; }
+    if (a.unsupportedBlendEnum) { vk64Unsupported("blend-enum", "blend factor or operation has no WebGPU mapping; pipeline rejected"); reject = true; }
+    if (a.mixedBlendConstants) { vk64Unsupported("mixed-blend-constants", "WebGPU cannot use separate Vulkan constant-color and constant-alpha values in one pipeline; pipeline rejected"); reject = true; }
+    if (a.unsupportedStencilEnum) { vk64Unsupported("stencil-enum", "stencil operation or compare op has no WebGPU mapping; pipeline rejected"); reject = true; }
+    if (a.incompatibleStencilFaces) { vk64Unsupported("stencil-face-state", "active front/back stencil masks or references differ; pipeline rejected"); reject = true; }
+    if (a.sampleCount != 1 && a.sampleCount != 4) { vk64Unsupported("sample-count", "pipeline rejected"); reject = true; }
+    return reject;
+}
+static void vk64AuditBlend(const Pipeline& p, PipelineAudit& a) {
+    bool colorConstant = false, alphaConstant = false;
+    for (U32 i = 0; i < p.colorBlendCount; ++i) {
+        const ColorBlend& b = p.colorBlend[i];
+        if (!b.enable) continue;
+        if (b.colorOp > 4 || b.alphaOp > 4 ||
+            (b.colorOp < 3 && (b.srcColor > 14 || b.dstColor > 14)) ||
+            (b.alphaOp < 3 && (b.srcAlpha > 14 || b.dstAlpha > 14)))
+            a.unsupportedBlendEnum = true;
+        if (b.colorOp < 3) {
+            colorConstant |= b.srcColor == 10 || b.srcColor == 11 || b.dstColor == 10 || b.dstColor == 11;
+            alphaConstant |= b.srcColor == 12 || b.srcColor == 13 || b.dstColor == 12 || b.dstColor == 13;
+        }
+        if (b.alphaOp < 3) {
+            colorConstant |= b.srcAlpha == 10 || b.srcAlpha == 11 || b.dstAlpha == 10 || b.dstAlpha == 11;
+            alphaConstant |= b.srcAlpha == 12 || b.srcAlpha == 13 || b.dstAlpha == 12 || b.dstAlpha == 13;
+        }
+    }
+    a.mixedBlendConstants = colorConstant && alphaConstant;
+}
+static void vk64AuditStencil(const Pipeline& p, PipelineAudit& a) {
+    if (!p.stencil.enabled) return;
+    const StencilFace& f = p.stencil.front;
+    const StencilFace& b = p.stencil.back;
+    auto valid = [](const StencilFace& s) {
+        return s.failOp <= 7 && s.passOp <= 7 && s.depthFailOp <= 7 && s.compareOp <= 7;
+    };
+    if (!valid(f) || !valid(b)) a.unsupportedStencilEnum = true;
+    const bool bothActive = p.cullDynamic || (p.cull != 1 && p.cull != 2);
+    if (!bothActive) return;
+    if (!(p.stencil.dynamicMask & 1u) && f.compareMask != b.compareMask) a.incompatibleStencilFaces = true;
+    if (!(p.stencil.dynamicMask & 2u) && f.writeMask != b.writeMask) a.incompatibleStencilFaces = true;
+    if (!(p.stencil.dynamicMask & 4u) && f.reference != b.reference) a.incompatibleStencilFaces = true;
+}
+// Applies VkPipelineDynamicStateCreateInfo to the pipeline. Returns false (after a
+// greppable "UNSUPPORTED dynamic-state-<n>") for a state with no representation in
+// V2: the caller fails the pipeline with VK_ERROR_FEATURE_NOT_PRESENT instead of
+// replaying it with the wrong static value.
+static bool vk64ApplyDynamicStates(Pipeline& p, const std::vector<U32>& states) {
+    bool ok = true;
+    for (const U32 value : states) {
+        switch (value) {
+        case 0: case 1: case 2: break;                 // viewport, scissor, line width (wideLines off: always 1.0)
+        case 3: p.depthBiasDynamic = true; break;
+        case 4: p.blendConstantsDynamic = true; break;
+        case 5: break;                                 // depth bounds: depthBoundsTestEnable cannot be turned on (vkCmdSetExtendedDynamicState rejects it)
+        case 6: case 7: case 8: p.stencil.dynamicMask |= 1u << (value - 6); break;
+        case 1000267000u: p.cullDynamic = true;  p.dynMask |= 1u << VK64_DYN_CULL; break;
+        case 1000267001u: p.frontDynamic = true; p.dynMask |= 1u << VK64_DYN_FRONT; break;
+        case 1000267002u: p.dynMask |= 1u << VK64_DYN_TOPOLOGY; break;
+        case 1000267003u: case 1000267004u: break;      // viewport/scissor with count: count is 1 (multi-viewport is rejected)
+        case 1000267005u: p.dynamicVertexStride = true; break;
+        case 1000267006u: p.dynMask |= 1u << VK64_DYN_DEPTH_TEST; break;
+        case 1000267007u: p.dynMask |= 1u << VK64_DYN_DEPTH_WRITE; break;
+        case 1000267008u: p.dynMask |= 1u << VK64_DYN_DEPTH_OP; break;
+        case 1000267009u: p.dynMask |= 1u << VK64_DYN_DEPTH_BOUNDS_TEST; break;
+        case 1000267010u: p.dynMask |= 1u << VK64_DYN_STENCIL_TEST; break;
+        case 1000267011u: p.dynMask |= 1u << VK64_DYN_STENCIL_OP; break;
+        case 1000377000u: break;                        // patch control points: no tessellation stage exists
+        case 1000377001u: p.dynMask |= 1u << VK64_DYN_RASTERIZER_DISCARD; break;
+        case 1000377002u: p.dynMask |= 1u << VK64_DYN_DEPTH_BIAS_ENABLE; break;
+        case 1000377003u: break;                        // logic op: logicOp feature is off, no vkCmdSetLogicOp entry exists
+        case 1000377004u: p.dynMask |= 1u << VK64_DYN_PRIMITIVE_RESTART; break;
+        default: {
+            char name[40]; snprintf(name, sizeof(name), "dynamic-state-%u", value);
+            vk64Unsupported(name, "pipeline rejected (no V2 representation)");
+            ok = false;
+        }
+        }
+    }
+    return ok;
+}
+// Validates one vkCmdSet* extended-dynamic-state command. Values the replay cannot honour
+// are reported and dropped (never forwarded as a different state).
+static bool vk64ExtendedDynamicStateOk(U32 which, U32 value) {
+    switch (which) {
+    case VK64_DYN_TOPOLOGY:
+        if (value >= 6) { vk64Unsupported(value == 10 ? "patch-list-topology" : "adjacency-topology", "vkCmdSetPrimitiveTopology ignored"); return false; }
+        return true;
+    case VK64_DYN_DEPTH_TEST: case VK64_DYN_DEPTH_WRITE: case VK64_DYN_STENCIL_TEST:
+    case VK64_DYN_DEPTH_BIAS_ENABLE: case VK64_DYN_RASTERIZER_DISCARD: case VK64_DYN_PRIMITIVE_RESTART:
+    case VK64_DYN_DEPTH_OP: case VK64_DYN_STENCIL_OP:
+        return true;
+    case VK64_DYN_DEPTH_BOUNDS_TEST:
+        if (value) { vk64Unsupported("depth-bounds-test", "vkCmdSetDepthBoundsTestEnable(TRUE) ignored; depthBounds feature is off"); return false; }
+        return true;
+    default:
+        vk64Unsupported("dynamic-state-command", "unknown vkCmdSetExtendedDynamicState id ignored");
+        return false;
+    }
+}
+// Which render-pass attachments one subpass draws to. A pass created by vkCmdBeginRendering (or by an
+// older caller without subpass data) has nsub == 0 and uses every framebuffer attachment in order.
+const U32 VK64_MAX_SUBPASSES = 8;
+struct SubpassMap {
+    U32 nColor = 0, color[VK64_MAX_ATTACH], resolve[VK64_MAX_ATTACH], depth = VK_ATTACHMENT_UNUSED;
+    SubpassMap() { for (U32 i = 0; i < VK64_MAX_ATTACH; ++i) color[i] = resolve[i] = VK_ATTACHMENT_UNUSED; }
+};
 struct RenderPass : Obj {
     U32 natt = 0, formats[VK64_MAX_ATTACH] = {0}, loadOps[VK64_MAX_ATTACH] = {0},
         storeOps[VK64_MAX_ATTACH] = {0}, depthFmt = 0;
     U32 stencilLoadOps[VK64_MAX_ATTACH] = {0}, stencilStoreOps[VK64_MAX_ATTACH] = {0};
     U32 samples[VK64_MAX_ATTACH] = {0};   // v2: per-attachment MSAA sample count
+    U32 nsub = 0;
+    SubpassMap sub[VK64_MAX_SUBPASSES];
 };
+// One subpass as read from either guest ABI and either create call (v1 or RenderPass2).
+struct SubpassIn {
+    U32 bindPoint = 0, viewMask = 0, nInput = 0, depth = VK_ATTACHMENT_UNUSED;
+    std::vector<U32> color, resolve;
+    bool depthStencilResolve = false;
+};
+static void vk64SetupSubpasses(RenderPass* rp, const std::vector<SubpassIn>& subs) {
+    rp->nsub = vk64CapCount("renderpass-subpasses", (U32)subs.size(), VK64_MAX_SUBPASSES);
+    auto valid = [&](U32 index, const char* what) {
+        if (index == VK_ATTACHMENT_UNUSED) return false;
+        if (index < rp->natt) return true;
+        vk64Unsupported("renderpass-attachment-ref", (std::string(what) + " names attachment " + std::to_string(index) + " of " + std::to_string(rp->natt) + "; treated as unused").c_str());
+        return false;
+    };
+    for (U32 si = 0; si < rp->nsub; ++si) {
+        const SubpassIn& in = subs[si];
+        SubpassMap& m = rp->sub[si];
+        if (in.bindPoint != 0) vk64Unsupported("compute-subpass", "only graphics subpasses are replayed");
+        if (in.nInput) vk64Unsupported("subpass-input-attachment", "input attachments are not readable by later subpasses");
+        if (in.viewMask) vk64Unsupported("multiview-render-pass", "view masks are ignored; the subpass renders once");
+        if (in.depthStencilResolve) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve attachments are not resolved");
+        m.nColor = vk64CapCount("subpass-color-attachments", (U32)in.color.size(), VK64_MAX_ATTACH);
+        for (U32 c = 0; c < m.nColor; ++c) {
+            m.color[c] = valid(in.color[c], "colour reference") ? in.color[c] : VK_ATTACHMENT_UNUSED;
+            if (c < in.resolve.size()) m.resolve[c] = valid(in.resolve[c], "resolve reference") ? in.resolve[c] : VK_ATTACHMENT_UNUSED;
+        }
+        if (valid(in.depth, "depth/stencil reference")) { m.depth = in.depth; rp->depthFmt = rp->formats[in.depth]; }
+    }
+}
 struct Framebuffer : Obj { U64 rp = 0; U32 natt = 0; U64 views[VK64_MAX_ATTACH] = {0}; U32 w = 0, h = 0; };
+// Dynamic rendering is one implicit subpass. Colour resolve targets become extra framebuffer slots that
+// are not pass attachments; the emitter copies the colour attachment into them when the pass ends.
+static U32 vk64DynamicResolveSlot(RenderPass* rp, Framebuffer* fb, U64 resolveView, U32 resolveMode, const ImageView* resolveInfo) {
+    if (!resolveMode || !resolveView) return VK_ATTACHMENT_UNUSED;
+    if (resolveMode != 2)   // anything but AVERAGE: the replay resolves by averaging
+        vk64Unsupported("resolve-mode", "only the AVERAGE colour resolve mode is performed; SAMPLE_ZERO/MIN/MAX are approximated by it");
+    if (!resolveInfo || fb->natt >= VK64_MAX_ATTACH) {
+        vk64Unsupported("rendering-attachments", "no framebuffer slot left for a resolve target; the resolve is skipped");
+        return VK_ATTACHMENT_UNUSED;
+    }
+    U32 slot = fb->natt++;
+    fb->views[slot] = resolveView;
+    rp->formats[slot] = resolveInfo->format; rp->samples[slot] = 1;
+    return slot;
+}
+static void vk64DynamicAudit(U32 viewMask, U32 offsetX, U32 offsetY, U32 layers) {
+    if (viewMask) vk64Unsupported("multiview-render-pass", "vkCmdBeginRendering viewMask is ignored; rendering happens once");
+    if (offsetX || offsetY) vk64Unsupported("render-area-offset", "a non-zero renderArea offset is ignored; the pass covers the whole target");
+    if (layers > 1 && !viewMask) vk64Unsupported("layered-rendering", "layerCount > 1 renders to layer 0 only");
+}
+// Render-target textures in the replay carry one mip level and one layer, so an attachment view of
+// anything else cannot be honoured; say so instead of silently rendering to level 0 layer 0.
+static void vk64AuditAttachmentView(const ImageView* v) {
+    if (v && (v->baseMip || v->baseLayer))
+        vk64Unsupported("render-target-subresource", "rendering to a non-zero mip level or array layer renders to mip 0 layer 0 instead");
+}
+static void vk64AuditFramebufferViews(const Framebuffer* fb) {
+    if (!fb) return;
+    for (U32 i = 0; i < fb->natt; i++) vk64AuditAttachmentView(objOf<ImageView>(fb->views[i], K_IMAGEVIEW, "vkCmdBeginRenderPass"));
+}
 struct Swapchain : Obj { U32 w = 0, h = 0, format = 0, nimg = 0, cur = 0; U64 imgs[8] = {0}; };
 
 // --- command recording (P1's P1_Cmd / P1_CbState, with the copy record moved
@@ -682,7 +1325,7 @@ enum CmdKind : U32 {
     CMD_SCISSOR, CMD_DRAW, CMD_DRAW_INDEXED, CMD_BARRIER, CMD_COPY_B2I, CMD_PUSH_CONST,
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
     CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
-    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE
+    CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY, CMD_NEXT_SUBPASS
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -718,12 +1361,14 @@ struct Cmd {
     float f[8] = {0};
     double clearDepth = 1.0;
     U32 clearStencil = 0;
+    std::vector<float> attClear;              // CMD_BEGIN_RP: 4 floats per attachment (colour clears)
     std::vector<ClearAttachmentArg> clearAttachments;
     std::vector<ClearRectArg> clearRects;
     std::vector<ClearRangeArg> clearRanges;   // CMD_CLEAR_DS_IMAGE: a = image, f[0] = depth, clearStencil
     U32 vbCount = 0;
     U64 vbBuffers[VK64_MAX_VERT_BINDINGS] = {0}, vbOffsets[VK64_MAX_VERT_BINDINGS] = {0};
     U64 sets[VK64_MAX_SETS] = {0};
+    std::vector<std::vector<U32>> dyn;      // CMD_BIND_SETS: dynamic offsets for sets first..first+count-1
     U32 vbStrides[VK64_MAX_VERT_BINDINGS] = {0};
     bool vbHasStride[VK64_MAX_VERT_BINDINGS] = {false};
     Copy  copy;
@@ -750,14 +1395,39 @@ struct Cmd {
     U32 capCount = 0;
     std::vector<float> capPos, capCol;
 };
+// Integer colour formats clear with the raw uint/int bits; the protocol carries floats, which
+// are exact up to 2^24 (the replay passes them straight to WebGPU's numeric clearValue).
+static bool vk64IsIntColorFormat(U32 f) {
+    switch (f) {
+        case 13: case 14: case 20: case 21: case 41: case 42: case 74: case 75: case 81: case 82:
+        case 95: case 96: case 98: case 99: case 101: case 102: case 107: case 108: return true;
+        default: return false;
+    }
+}
+static bool vk64IsSintColorFormat(U32 f) {
+    switch (f) { case 14: case 21: case 42: case 75: case 82: case 96: case 99: case 102: case 108: return true; default: return false; }
+}
+// Stores the colour clear for attachment `index` (per-attachment, so multiple render targets keep
+// their own values) and mirrors attachment 0 into Cmd::f for older decoders.
+static void vk64SetAttachmentClear(Cmd& command, U32 index, U32 format, const U32 raw[4]) {
+    if (command.attClear.size() < (size_t)(index + 1) * 4) command.attClear.resize((size_t)(index + 1) * 4, 0.0f);
+    for (U32 k = 0; k < 4; ++k) {
+        float v;
+        if (vk64IsSintColorFormat(format)) v = (float)(int32_t)raw[k];
+        else if (vk64IsIntColorFormat(format)) v = (float)raw[k];
+        else memcpy(&v, &raw[k], 4);
+        command.attClear[(size_t)index * 4 + k] = v;
+        if (index == 0) command.f[k] = v;
+    }
+}
 template <class T>
 static void captureRenderPassClears(Cmd& command, const RenderPass* pass, const std::vector<T>& values) {
-    if (!pass) return;
+    VK64_DROP_IF(return, !pass);
     for (U32 i = 0; i < std::min<U32>(pass->natt, (U32)values.size()); ++i) {
         if (pass->formats[i] >= 124 && pass->formats[i] <= 130) {
             command.clearDepth = values[i].depthStencil.depth;
             command.clearStencil = values[i].depthStencil.stencil;
-        } else if (i == 0) memcpy(command.f, values[i].color.float32, 16);
+        } else vk64SetAttachmentClear(command, i, pass->formats[i], reinterpret_cast<const U32*>(values[i].color.float32));
     }
 }
 struct CmdBuf : Obj {
@@ -765,6 +1435,7 @@ struct CmdBuf : Obj {
     std::vector<Cmd> cmds;
     U64  pipe = 0;
     U64  sets[VK64_MAX_SETS] = {0};
+    U64  pushSets[VK64_MAX_SETS] = {0};   // synthetic DescSets built by vkCmdPushDescriptorSet*
     float vp[6] = {0}, sci[4] = {0};
     bool haveVp = false, haveSci = false;
     // v2: vertex/index buffer tables (DXVK draws indexed almost exclusively).
@@ -777,6 +1448,10 @@ struct CmdBuf : Obj {
     U32  nvb = 0;
     U64  ib = 0, ibOff = 0;
     U32  ibType = 0;   // 0 = uint16, 1 = uint32
+    // Recording lifecycle for the queue-submit fallback (vk_cb_lifecycle.h):
+    // the fallback may only pick this buffer up once it has ended and until
+    // it is next submitted.
+    vkcb::CbLifecycle lifecycle;
 };
 CmdBuf* cbOf(U64 id, const char* who) { return objOf<CmdBuf>(id, K_CMDBUF, who); }
 void resetCmdBuf(CmdBuf* cb) {
@@ -786,6 +1461,7 @@ void resetCmdBuf(CmdBuf* cb) {
     cb->pipe = 0;
     cb->haveVp = cb->haveSci = false;
     memset(cb->sets, 0, sizeof(cb->sets));
+    memset(cb->pushSets, 0, sizeof(cb->pushSets));
     memset(cb->vp, 0, sizeof(cb->vp));
     memset(cb->sci, 0, sizeof(cb->sci));
     memset(cb->vbs, 0, sizeof(cb->vbs));
@@ -794,15 +1470,81 @@ void resetCmdBuf(CmdBuf* cb) {
     memset(cb->vbHasStride, 0, sizeof(cb->vbHasStride));
     cb->nvb = 0;
     cb->ib = 0; cb->ibOff = 0; cb->ibType = 0;
+    cb->lifecycle.onReset();
 }
 
 // The frame serializer is defined above the switch; forward declaration so
 // pushCmd can flag overflow.
 bool g_frameOverflow = false;
+// The recorded frame cannot be replayed faithfully: flag it (the page rejects the whole frame, loudly)
+// and report which limit was hit.
+static void vk64FrameOverflow(const char* what) {
+    g_frameOverflow = true;
+    vk64Unsupported("frame-overflow", what);
+}
 void pushCmd(CmdBuf* st, const Cmd& c) {
-    if (!st) return;
-    if (st->cmds.size() >= VK64_MAX_CMDS) { g_frameOverflow = true; return; }
+    VK64_DROP_IF(return, !st);
+    if (st->cmds.size() >= VK64_MAX_CMDS) { vk64FrameOverflow("command buffer holds more than VK64_MAX_CMDS commands"); return; }
     st->cmds.push_back(c);
+}
+// vkCmdBindDescriptorSets and push descriptors both end here. `dynFlat` is the
+// guest's pDynamicOffsets array: it is consumed set by set, each set taking as
+// many offsets as its layout has dynamic descriptors.
+static void recordBindSets(CmdBuf* cb, U32 first, std::vector<U64> ids, const std::vector<U32>& dynFlat) {
+    VK64_DROP_IF(return, first >= VK64_MAX_SETS);
+    if (first + ids.size() > VK64_MAX_SETS) {
+        vk64Unsupported("descriptor-set-slots", "vkCmdBindDescriptorSets range exceeds maxBoundDescriptorSets; extra sets are dropped");
+        ids.resize(VK64_MAX_SETS - first);
+    }
+    Cmd c;
+    c.kind = CMD_BIND_SETS;
+    c.dyn.resize(ids.size());
+    size_t di = 0;
+    for (size_t i = 0; i < ids.size(); i++) {
+        cb->sets[first + i] = ids[i];
+        DescSet* s = ids[i] ? objOf<DescSet>(ids[i], K_SET, "vkCmdBindDescriptorSets") : nullptr;
+        DescSetLayout* l = s && s->layout ? objOf<DescSetLayout>(s->layout, K_SETLAYOUT, "vkCmdBindDescriptorSets") : nullptr;
+        for (U32 k = 0; l && k < l->dynCount && di < dynFlat.size(); k++) c.dyn[i].push_back(dynFlat[di++]);
+    }
+    memcpy(c.sets, cb->sets, sizeof(c.sets));
+    c.a = first;
+    c.b = (U64)ids.size();
+    pushCmd(cb, c);
+}
+static void applyWrite64(DescSet& s, const VkWriteDescriptorSet& w) {
+    DescWriteReq r;
+    r.binding = w.dstBinding; r.elem = w.dstArrayElement; r.count = w.descriptorCount; r.type = w.descriptorType;
+    r.pImage = w.pImageInfo; r.pBuffer = w.pBufferInfo; r.pTexel = w.pTexelBufferView;
+    r.stride = descWriteStride(w.descriptorType, false);
+    if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        // The caller's inline data must be consumed before this update returns.
+        for (U64 cur = w.pNext; cur && g_mem;) {
+            if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                VkWriteDescriptorSetInlineUniformBlock ib = {};
+                g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
+                r.inlData = ib.pData; r.inlSize = ib.dataSize;
+                break;
+            }
+            cur = g_mem->readq(cur + 8);
+        }
+    }
+    applyDescWrite(s, r, rd64);
+}
+// vkCmdPushDescriptorSet*: the pushed descriptors live in a synthetic set owned by
+// the command buffer. Descriptors pushed earlier at the same set index carry over
+// (a partial push leaves the other bindings as they were), so the new set starts
+// as a copy of the previous push set.
+static DescSet* newPushSet(CmdBuf* cb, U64 pipelineLayout, U32 set, U64& idOut, const char* who) {
+    idOut = 0;
+    PipelineLayout* pl = objOf<PipelineLayout>(pipelineLayout, K_PIPELAYOUT, who);
+    VK64_DROP_IF(return nullptr, !pl || set >= pl->nsets || set >= VK64_MAX_SETS);
+    DescSet* prev = cb->pushSets[set] ? objOf<DescSet>(cb->pushSets[set], K_SET, who) : nullptr;
+    DescSet* s = createObj<DescSet>(K_SET, idOut);
+    s->layout = pl->sets[set];
+    if (prev) s->els = prev->els;
+    cb->dynamicObjects.push_back(idOut);
+    cb->pushSets[set] = idOut;
+    return s;
 }
 
 // GPU render targets have no current pixels in guest backing memory. Preserve
@@ -810,7 +1552,7 @@ void pushCmd(CmdBuf* st, const Cmd& c) {
 void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
                      int32_t sx, int32_t sy, int32_t sz, int32_t dx, int32_t dy, int32_t dz,
                      U32 w, U32 h, U32 d, U32 layers) {
-    if (!cb || !w || !h || !d || sx < 0 || sy < 0 || sz < 0 || dx < 0 || dy < 0 || dz < 0) return;
+    VK64_DROP_IF(return, !cb || !w || !h || !d || sx < 0 || sy < 0 || sz < 0 || dx < 0 || dy < 0 || dz < 0);
     for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
         Cmd c; c.kind = CMD_COPY_IMAGE;
         c.imageCopy = { src, dst, srcMip, srcLayer + layer, dstMip, dstLayer + layer,
@@ -820,7 +1562,7 @@ void recordImageCopy(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32
 }
 void recordImageBlit(CmdBuf* cb, U64 src, U64 dst, U32 srcMip, U32 srcLayer, U32 dstMip, U32 dstLayer,
                      U32 filter, const int32_t srcOffsets[2][3], const int32_t dstOffsets[2][3], U32 layers) {
-    if (!cb || !srcOffsets || !dstOffsets) return;
+    VK64_DROP_IF(return, !cb || !srcOffsets || !dstOffsets);
     for (U32 layer = 0; layer < layers && layer < VK64_MAX_CMDS; ++layer) {
         Cmd c; c.kind = CMD_BLIT_IMAGE;
         c.imageBlit.src = src; c.imageBlit.dst = dst;
@@ -841,18 +1583,28 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT:
         case VK_FORMAT_R8_SINT: case VK_FORMAT_S8_UINT: return 1;
         case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SFLOAT:
-        case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
-        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_D16_UNORM: return 2;
-        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        case VK_FORMAT_D16_UNORM: return 2;
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SFLOAT:
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
         case VK_FORMAT_D24_UNORM_S8_UINT: case VK_FORMAT_D32_SFLOAT:
         case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 4;
-        case VK_FORMAT_R16G16_SFLOAT: return 4;
         case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
         case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_D32_SFLOAT_S8_UINT: return 8;   // 4 depth + 1 stencil, padded as hosts store it
         case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
-        default: return 4;
+        default:
+            // Every format v2FormatIsSupportedImage() accepts is listed above (guarded by the native
+            // test); anything else reaching here is a new format added without a size.
+            vk64Unsupported("format-bpp", "no byte size for format; assuming 4 bytes per texel");
+            return 4;
     }
 }
 struct FormatBlock { U32 w, h, bytes; };
@@ -873,6 +1625,30 @@ U64 imageLayerBytes(const Image& im) {
     return bytes;
 }
 U64 imageDataBytes(const Image& im) { return imageLayerBytes(im) * std::max(1U, im.layers); }
+// Fills a guest VkMemoryRequirements2 (64-bit layout) and every chained
+// VkMemoryDedicatedRequirements so allocator decisions never read stale bytes.
+void writeRequirements64(U64 out, U64 size) {
+    VkMemoryRequirements2 out2 = {};
+    g_mem->memcpyFromGuest(&out2, out, sizeof(out2));
+    out2.memoryRequirements.size = (size + 255) & ~(U64)255;
+    out2.memoryRequirements.alignment = 256;
+    out2.memoryRequirements.memoryTypeBits = 0xF;
+    g_mem->memcpyToGuest(out, &out2, sizeof(out2));
+    for (U64 pn = out2.pNext, n = 0; pn && n < 64; ++n) {
+        U32 st = 0;
+        g_mem->memcpyFromGuest(&st, pn, sizeof(st));
+        if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+            VkMemoryDedicatedRequirements dr = {};
+            g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
+            dr.prefersDedicatedAllocation = 0;
+            dr.requiresDedicatedAllocation = 0;
+            g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
+        }
+        U64 nxt = 0;
+        g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
+        pn = nxt;
+    }
+}
 U64 imageSubresourceOffset(const Image& im, U32 mip, U32 layer) {
     U64 off = (U64)layer * imageLayerBytes(im);
     for (U32 m = 0; m < mip; ++m) off += imageMipBytes(im, m);
@@ -1009,11 +1785,6 @@ void emitFrameNow() {
 // Source and destination are BOTH guest ranges, so this is one
 // memcpyFromGuest/memcpyToGuest per row.
 // ---------------------------------------------------------------------------
-static U64 queryHostNanoseconds() {
-    return (U64)std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& encoded) {
     for (U32 i = 0; i < encoded.countWritten; ++i) {
         const U64 offset = (U64)i * encoded.strideBytes;
@@ -1024,11 +1795,15 @@ static void writeEncodedQueryResults(U64 dst, const vkquery::EncodedResults& enc
 static VkResult writeQueryResults(QueryPool* pool, U32 first, U32 count,
                                   U64 dataSize, U64 dst, U64 stride, U32 flags) {
     if (!pool || !dst || (!g_mem && !g_mem32)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (first <= pool->count && count <= pool->count - first && !(flags & vkquery::VKQUERY_PARTIAL)) {
+        for (U32 i = 0; i < count; ++i)
+            if (first + i >= pool->available.size() || !pool->available[first + i]) return VK_NOT_READY;
+    }
     constexpr U64 kMaxQueryResultBytes = 1ULL << 20;
     const U64 writeSize = std::min<U64>(dataSize, kMaxQueryResultBytes);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, first, count, pool->count, (size_t)writeSize, stride, flags,
-        1.0, queryHostNanoseconds());
+        pool->results, pool->available);
     if (!encoded.valid) return VK_ERROR_INITIALIZATION_FAILED;
     writeEncodedQueryResults(dst, encoded);
     return encoded.complete && writeSize == dataSize ? VK_SUCCESS : VK_INCOMPLETE;
@@ -1048,17 +1823,27 @@ static void execCopyQueryResults(const Cmd& command) {
         buffer = objOf<Buffer>(copy.dstBuffer, K_BUFFER, "vkCmdCopyQueryPoolResults");
         if (buffer) memory = objOf<DeviceMemory>(buffer->mem, K_MEMORY, "vkCmdCopyQueryPoolResults");
     }
-    if (!pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size) return;
+    VK64_DROP_IF(return, !pool || !buffer || !memory || !memory->va || copy.dstOffset > buffer->size);
     const U64 memoryOffset = buffer->memOff + copy.dstOffset;
-    if (memoryOffset > memory->size) return;
+    VK64_DROP_IF(return, memoryOffset > memory->size);
     const U64 available = std::min<U64>(buffer->size - copy.dstOffset, memory->size - memoryOffset);
     const U64 size = std::min<U64>(available, 1ULL << 20);
     vkquery::EncodedResults encoded = vkquery::encodeResults(
         pool->type, copy.firstQuery, copy.queryCount, pool->count, (size_t)size,
-        copy.stride, copy.flags, 1.0, queryHostNanoseconds());
-    if (!encoded.valid) return;
+        copy.stride, copy.flags, pool->results, pool->available);
+    VK64_DROP_IF(return, !encoded.valid);
     writeEncodedQueryResults(memory->va + memoryOffset, encoded);
     buffer->dirtyGen = g_bufDirtyTick++;
+    vk64TouchMem(memory);
+}
+
+static void execQueryCommand(const Cmd& command) {
+    if (command.kind == CMD_RESET_QUERY) {
+        QueryPool* pool = objOf<QueryPool>(command.a, K_QUERYPOOL, "vkCmdResetQueryPool");
+        VK64_DROP_IF(return, !pool || command.b > pool->count);
+        const U32 count = std::min<U64>(command.c, pool->count - command.b);
+        for (U32 i = 0; i < count; ++i) { pool->results[command.b + i] = 0; pool->available[command.b + i] = 0; }
+    }
 }
 
 // vkCmdUpdateBuffer execution: the transfer write lands in guest memory at
@@ -1068,13 +1853,14 @@ void execUpdateBuf(const Cmd& k) {
     Buffer* b = objOf<Buffer>(k.updBuf, K_BUFFER, "vkCmdUpdateBuffer");
     if (!b || !b->mem || k.updBytes.empty()) return;
     DeviceMemory* m = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkCmdUpdateBuffer");
-    if (!m || !m->va) return;
+    VK64_DROP_IF(return, !m || !m->va);
     U64 off = b->memOff + k.updOff;
     U64 n = (U64)k.updBytes.size();
-    if (off >= m->size) return;
+    VK64_DROP_IF(return, off >= m->size);
     if (off + n > m->size) n = m->size - off;
     writeGuestBytes(m->va + off, k.updBytes.data(), n);
     b->dirtyGen = g_bufDirtyTick++;
+    vk64TouchMem(m);
 }
 // Build-9 diagnostic: every early return of execCopy used to be silent, so a
 // texture upload that never landed (all-zero sampled textures on the page) left
@@ -1108,6 +1894,11 @@ void execCopy(const Copy& r) {
     const U64 dstRow = (U64)((mipW + block.w - 1) / block.w) * block.bytes;
     const U64 dstSlice = dstRow * ((mipH + block.h - 1) / block.h);
     if (srcRow < rowBytes || r.baseLayer + r.layerCount > std::max(1U, dst->layers)) { execCopyFail("row/layer mismatch", r); return; }
+    // The loops below write dst image memory (and a bounds failure mid-copy
+    // still leaves earlier rows written), so mark the image and its
+    // allocation dirty up front: no emit may skip over a partial write.
+    dst->dirtyGen = g_bufDirtyTick++;
+    vk64TouchMem(dmem);
     std::vector<U8> tmp((size_t)rowBytes);
     for (U32 layer = 0; layer < r.layerCount; ++layer) {
         for (U32 z = 0; z < r.depth; ++z) {
@@ -1561,13 +2352,15 @@ std::vector<U8> synthReplayFs() {
     return s.bytes();
 }
 
-void fillImageFormatProps(VkImageFormatProperties* p) {
-    p->maxExtent = VkExtent3D{16384, 16384, 2048};
+static bool v2FormatIsSupportedImage(U32 format);
+static VkSampleCountFlags v2FormatSampleCounts(U32 format);
+// imageType: VK_IMAGE_TYPE_1D/2D/3D. WebGPU can only multisample 2D textures.
+void fillImageFormatProps(VkImageFormatProperties* p, U32 format, U32 imageType = VK_IMAGE_TYPE_2D) {
+    p->maxExtent = VkExtent3D{8192, 8192, 2048};
     p->maxMipLevels = 14;
-    p->maxArrayLayers = 2048;
-    p->sampleCounts = (VkSampleCountFlags)(VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
-                                           VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT);
-    p->maxResourceSize = 2ull * 1024 * 1024 * 1024;
+    p->maxArrayLayers = 256;
+    p->sampleCounts = imageType == VK_IMAGE_TYPE_2D ? v2FormatSampleCounts(format) : (v2FormatSampleCounts(format) ? VK_SAMPLE_COUNT_1_BIT : 0);
+    p->maxResourceSize = 256ull * 1024 * 1024;
 }
 
 // Submit-time frame reconstruction (P1's vkQueueSubmit body, file I/O replaced
@@ -1576,10 +2369,11 @@ void fillImageFormatProps(VkImageFormatProperties* p) {
 void resolveFrame(CmdBuf* st, U64* uboOut, U64* uboSize, U64* viewOut, U64* sampOut) {
     *uboOut = 0; *uboSize = 0; *viewOut = 0; *sampOut = 0;
     DescSet* s0 = st->sets[0] ? objOf<DescSet>(st->sets[0], K_SET, "resolveFrame") : nullptr;
-    if (!s0) return;
-    for (U32 i = 0; i < s0->nbind; i++) {
-        if (s0->binds[i].binding == 0 && s0->binds[i].obj) { *uboOut = s0->binds[i].obj; *uboSize = s0->binds[i].range; }
-        if (s0->binds[i].binding == 1 && s0->binds[i].obj) { *viewOut = s0->binds[i].obj; *sampOut = s0->binds[i].range; }
+    VK64_DROP_IF(return, !s0);
+    for (const auto& kv : s0->els) {
+        const Binding& b = kv.second;
+        if (b.binding == 0 && b.obj) { *uboOut = b.obj; *uboSize = b.range; }
+        if (b.binding == 1 && b.obj) { *viewOut = b.obj; *sampOut = b.range; }
     }
 }
 
@@ -1632,6 +2426,8 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                             for (float f : k.capCol) allCapCol.push_back(f);
                         }
                         draws.push_back({(U32)k.a, vtxOff});
+                    } else {
+                        vk64Unsupported("v1-draw-cap", "BW64_VKSCHEMA v1 debug emitter keeps at most 64 draws per submit; extra draws are not serialised (the V2 path has no such cap)");
                     }
                     break;
                 case CMD_DRAW_INDEXED:
@@ -1646,6 +2442,8 @@ void serializeSubmit(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                             for (float f : k.capCol) allCapCol.push_back(f);
                         }
                         draws.push_back({(U32)k.a, vtxOff});
+                    } else {
+                        vk64Unsupported("v1-draw-cap", "BW64_VKSCHEMA v1 debug emitter keeps at most 64 draws per submit; extra draws are not serialised (the V2 path has no such cap)");
                     }
                     break;
                 default: break;
@@ -1847,7 +2645,7 @@ enum V2Rec : U32 {
     V2_INLINE_BYTES = 0x12, V2_READBACK = 0x13, V2_IMAGE_COPY = 0x14,
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
-    V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B,
+    V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B, V2_BUFFER_VIEW = 0x1C,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -1993,7 +2791,7 @@ void v2QueueFrame(V2FrameAsm& fa) {
 //   hop       MAIN_THREAD_EM_ASM chunk hops: chunks / bytes (inside present;
 //             a readback hop inside submit is also counted here but its wall
 //             stays inside submit)
-//   guest     wall - submit - trapOther - present  (pure CPU64 interpreter)
+//   guest     wall - submit - trapOther - present  (unattributed residual, including non-Vulkan work and profiler logging)
 // One klog line per presented frame. All state is touched only under g_vkMutex
 // (already held by vk64Bridge), so no extra locking. Behavior unchanged when
 // BW64_VKPROF is unset: a few emscripten_get_now() calls per trap.
@@ -2068,7 +2866,25 @@ inline bool vkMetricsEnabled() {
 }
 // True when either consumer needs the per-trap/per-stage timers accumulated.
 inline bool vkTimingEnabled() { return vkProfEnabled() || vkMetricsEnabled(); }
+struct VkEncodeClock { static double now() { return vkProfNow(); } };
+using VkEncodeProfile = vkencode::Profile<VkEncodeClock>;
+using VkEncodeScope = VkEncodeProfile::Scope;
+static bool vkEncodeDetailEnabled() {
+    if (!vkProfEnabled()) return false;
+    static int enabled = -1;
+    if (enabled < 0) {
+#ifdef __EMSCRIPTEN__
+        enabled = MAIN_THREAD_EM_ASM_INT({
+            return new URLSearchParams(window.location.search).get('vkprofdetail') === '1' ? 1 : 0;
+        });
+#else
+        enabled = std::getenv("BW64_VKPROF_DETAIL") ? 1 : 0;
+#endif
+    }
+    return enabled != 0;
+}
 struct VkProfAcc {
+    VkEncodeProfile encode;
     bool haveFrame = false;
     U64 frameNo = 0;
     double lastPresentT = 0;
@@ -2083,6 +2899,7 @@ struct VkProfAcc {
 };
 inline VkProfAcc& vkProfAcc() { static VkProfAcc a; return a; }
 inline void vkProfReset(VkProfAcc& a) {
+    a.encode.reset();
     a.accSubmit = a.accBufData = a.accImgData = a.accTrapOther = a.accHop = 0;
     a.accSer2 = a.accQueue = 0;
     a.accTrapCalls = a.accHopChunks = a.accHopBytes = 0;
@@ -2108,7 +2925,13 @@ struct VkProfTrapTimer {
         if (fn < 256) { a.trapWall[fn] += dt; a.trapCnt[fn]++; }
     }
 };
-void hopV2ToPage() {
+static void appendPresentCaptureInfo(std::string& json, U64 scId, U32 index, Swapchain* sc) {
+    if (json.back() != '[') json += ',';
+    json += "{\"swapchain\":\"" + std::to_string(scId) + "\",\"index\":" + std::to_string(index);
+    json += ",\"image\":\"" + std::to_string(sc && index < sc->nimg ? sc->imgs[index] : 0) + "\"";
+    json += ",\"w\":" + std::to_string(sc ? sc->w : 0) + ",\"h\":" + std::to_string(sc ? sc->h : 0) + "}";
+}
+void hopV2ToPage(const std::string& presentInfo = std::string()) {
 #ifdef __EMSCRIPTEN__
     double vkprofHopT0 = vkProfNow(); U64 vkprofHopChunks = 0, vkprofHopBytes = 0;
     // A present depends on all preceding submissions: scene rendering,
@@ -2130,10 +2953,10 @@ void hopV2ToPage() {
                             // wasm memory growth detaches every live view.
                             // Use HEAPU8 directly (Module.HEAPU8 may not be in scope).
                             const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
-                            window.bwVkChunk(bytes, $2);
+                            window.bwVkChunk(bytes, $2, $3 ? JSON.parse(UTF8ToString($3 >>> 0)) : null);
                         } catch (e) { console.warn('vk64: bwVkChunk failed', e); }
                     }
-                }, ptr, len, moreSubmissions);
+                }, ptr, len, moreSubmissions, presentInfo.empty() ? nullptr : presentInfo.c_str());
             }
         }
     }
@@ -2155,12 +2978,29 @@ static U64 fnv1a64(const U8* data, size_t len) {
     return h;
 }
 
-// Cross-frame texture content hashes: VkImage id -> FNV-1a 64-bit of the last
-// emitted pixel bytes. Image ids are monotonic (g_nextId, never recycled), so
-// entries stay valid; vkDestroyImage erases them. When the hash is unchanged,
+// Cross-frame texture content state: VkImage id -> the hash of the last
+// emitted pixel bytes plus the dirtiness snapshot that proves them current.
+// Image ids are monotonic (g_nextId, never recycled), so entries stay valid;
+// vkDestroyImage erases them (both ABIs). When the hash is unchanged,
 // emitImageData sends a pixel-less record (view->image link + hash only),
-// saving wasm->JS bridge bandwidth for static textures.
-static std::unordered_map<U64, U64> g_imageContentHash;
+// saving wasm->JS bridge bandwidth for static textures. The generation skip
+// in emitImageDataInner goes further: when the image's dirtyGen and its
+// allocation's writeEpoch both match the snapshot (and the memory was never
+// mapped, and the binding is unchanged), the pixel bytes are provably the
+// same bytes that produced the stored hash, so the read + FNV-1a pass is
+// skipped outright. Every bridge write into image memory bumps the image's
+// dirtyGen and its allocation's epoch (vk64TouchMem); every other write into
+// an allocation bumps that allocation's epoch. The periodic full resend
+// (V2_BUF_RESEND_PERIOD) bounds any residual desync, exactly as for buffers.
+struct ImgHashEntry {
+    U64 hash = 0;      // FNV-1a of the pixel bytes read at the last full emit
+    U64 imgGen = 0;    // Image::dirtyGen at that emit
+    U64 memEpoch = 0;  // DeviceMemory::writeEpoch at that emit
+    U64 mem = 0;       // binding snapshot: memory id, offset, byte count
+    U64 memOff = 0;
+    U64 pixBytes = 0;
+};
+static std::unordered_map<U64, ImgHashEntry> g_imageContentHash;
 // Cross-frame buffer content hashes: (bufId,memOff,len) -> FNV-1a 64-bit.
 // Same dedup as images: when the hash is unchanged, emitBufferData sends a
 // byte-less record (ids + hash only), saving bridge bandwidth for static
@@ -2184,8 +3024,8 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 
 // Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
 // lists include Vulkan formats that the page converts to core WebGPU formats.
-// BC formats are advertised because textureCompressionBC is enabled below;
-// the page maps them only when its adapter exposes texture-compression-bc.
+// BC format support and the Vulkan textureCompressionBC feature bit are gated
+// by the active WebGPU device's optional texture-compression-bc feature.
 static const U32 kV2SupportedTextureFormats[] = {
     2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
     91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
@@ -2218,46 +3058,147 @@ static bool v2FormatIsBlendable(U32 format) {
 static bool v2FormatIsDepthStencil(U32 format) {
     return v2FormatIn(format, kV2DepthStencilFormats);
 }
+static bool v2FormatIsSupportedVertex(U32 format) {
+    return v2FormatIn(format, kV2SupportedVertexFormats);
+}
+static bool v2FormatIsBC(U32 format) { return format >= 131 && format <= 146; }
+static bool v2WebGpuBcSupported() {
+#ifdef __EMSCRIPTEN__
+    // The page tier publishes this after requesting the WebGPU device. If the
+    // renderer has not initialized yet, report no BC support; advertising a
+    // format before the replay device can consume it is worse than a fallback.
+    return MAIN_THREAD_EM_ASM_INT({ return globalThis.bwVkTextureCompressionBC === true ? 1 : 0; }) != 0;
+#else
+    return false;
+#endif
+}
+static bool v2WebGpuDepth32FloatStencil8Supported() {
+#ifdef __EMSCRIPTEN__
+    return MAIN_THREAD_EM_ASM_INT({ return globalThis.bwVkDepth32FloatStencil8 === true ? 1 : 0; }) != 0;
+#else
+    return false;
+#endif
+}
+static U32 v2WebGpuMaxVertexBuffers() {
+#ifdef __EMSCRIPTEN__
+    const U32 count = (U32)MAIN_THREAD_EM_ASM_INT({ return Number(globalThis.bwVkMaxVertexBuffers) || 8; });
+    return std::min<U32>(count, VK64_MAX_VERT_BINDINGS);
+#else
+    return 8;
+#endif
+}
+static bool v2FormatIsSupportedImage(U32 format) {
+    return v2FormatIsBC(format) ? v2WebGpuBcSupported() : v2FormatIn(format, kV2SupportedTextureFormats);
+}
+static bool v2FormatTransferDstSupported(U32 format) {
+    return (format != 129 && format != 130) || v2WebGpuDepth32FloatStencil8Supported();
+}
+static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
+    if (!v2FormatIsSupportedImage(format)) return 0;
+    VkSampleCountFlags samples = VK_SAMPLE_COUNT_1_BIT;
+    if (!v2FormatIsBC(format) && (v2FormatIsColorAttachment(format) || v2FormatIsDepthStencil(format)))
+        samples |= VK_SAMPLE_COUNT_4_BIT;
+    return samples;
+}
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
-    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
-    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (!v2FormatIsSupportedImage(format)) return 0;
+    VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if (v2FormatTransferDstSupported(format))
+        flags |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
     return flags;
 }
-// Texel-buffer views (D3D11 buffer SRV/UAV: DXVK maps raw and structured buffers to
-// R32_UINT and typed ones to the DXGI format's Vulkan twin). DXVK refuses to create the
-// view ("Cannot create shader resource/unordered access view") unless the view format
-// advertises UNIFORM_/STORAGE_TEXEL_BUFFER, so an unadvertised format reads as zeros in
-// every Unity compute/instancing buffer. The page tier consumes these as storage buffers
-// (see docs/vulkan-protocol.md, "Texel buffers").
-static const U32 kV2TexelBufferFormats[] = {
-    9, 13, 14,                  // R8 UNORM/UINT/SINT
-    16, 20, 21,                 // R8G8 UNORM/UINT/SINT
-    37, 41, 42, 44,             // R8G8B8A8 UNORM/UINT/SINT, B8G8R8A8 UNORM
-    64, 74, 75, 76,             // A2B10G10R10 UNORM, R16 UINT/SINT/SFLOAT
-    77, 81, 82, 83,             // R16G16 UNORM/UINT/SINT/SFLOAT
-    91, 95, 96, 97,             // R16G16B16A16 UNORM/UINT/SINT/SFLOAT
-    98, 99, 100,                // R32 UINT/SINT/SFLOAT
-    101, 102, 103,              // R32G32 UINT/SINT/SFLOAT
-    107, 108, 109,              // R32G32B32A32 UINT/SINT/SFLOAT
-    122,                        // B10G11R11 UFLOAT
-};
+// UNIFORM texel buffer views: WebGPU has no texel buffers, so the page tier
+// materialises the view as a 2D texture (spirvfix R12 rewrites the shader's
+// texel fetch to a wrapped textureLoad). A format is servable exactly when
+// the page can build that texture with identical texel semantics -- this list
+// mirrors V2_TEXEL_FORMAT in web/vk-protocol.mjs and is pinned against it by
+// vk-texel-format-mirror.test.mjs. SRGB formats are excluded (textureLoad
+// would sRGB-decode; texelFetch must not), block-compressed and depth/stencil
+// formats have no per-texel texture equivalent, and 3-component formats have
+// no WebGPU texture format at all. Storage texel buffers stay unsupported:
+// shader writes to a texture copy could never reach guest memory.
+static bool v2TexelBufferServable(U32 format) {
+    switch (format) {
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
+        case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        case VK_FORMAT_B5G6R5_UNORM_PACK16:
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT:
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R8G8_SNORM:
+        case VK_FORMAT_R8G8_UINT:
+        case VK_FORMAT_R8G8_SINT:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16G16_UNORM:
+        case VK_FORMAT_R16G16_UINT:
+        case VK_FORMAT_R16G16_SINT:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_UINT:
+        case VK_FORMAT_R16G16B16A16_SINT:
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+        return true;
+    }
+    return false;
+}
+// Validate a texel buffer view against its buffer and floor offset/range to
+// texel multiples and the buffer end (loudly -- VUID violations are undefined
+// behaviour for the guest, never a silent reshape). VK_WHOLE_SIZE expands to
+// the buffer remainder, per spec.
+static VkResult vk64BufferViewRange(U64 bufSize, U32 format, U64 offset, U64 range, U64& effOffset, U64& effRange) {
+    if (!v2TexelBufferServable(format)) {
+        vk64Unsupported("texel-buffer-view-format", ("format " + std::to_string(format) + " has no WebGPU texture equivalent for texel-buffer emulation").c_str());
+        return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    }
+    const U32 bpp = fmt_bpp(format);
+    effRange = range == VK_WHOLE_SIZE ? (offset < bufSize ? bufSize - offset : 0) : range;
+    if (offset >= bufSize) effRange = 0;
+    else if (effRange > bufSize - offset) effRange = bufSize - offset;
+    effOffset = offset;
+    if (bpp && ((offset % bpp) || (effRange % bpp))) {
+        vk64Unsupported("texel-buffer-view-range", "texel buffer view offset/range floored to the texel size and buffer end");
+        effOffset = offset - (offset % bpp);
+        effRange -= effRange % bpp;
+    }
+    return VK_SUCCESS;
+}
 static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
-    VkFormatFeatureFlags flags = v2FormatIn(format, kV2SupportedVertexFormats) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
-    if (v2FormatIn(format, kV2TexelBufferFormats))
-        flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
-    if (format == 98 || format == 99)   // R32 UINT/SINT: the only atomic-capable texel formats in D3D11
-        flags |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
+    VkFormatFeatureFlags flags = v2FormatIsSupportedVertex(format) ? VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT : 0;
+    if (v2TexelBufferServable(format)) flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
-    if (!v2FormatIn(format, kV2SupportedTextureFormats)) return 0;
+    if (!v2FormatIsSupportedImage(format)) return 0;
     // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
-    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    VkFormatFeatureFlags2 flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if (v2FormatTransferDstSupported(format))
+        flags |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -2267,8 +3208,8 @@ static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
     return (VkFormatFeatureFlags2)v2FormatBufferFeatureFlags(format);   // the low 32 bits share their values
 }
 // Byte size of one vertex of a VkFormat the v2 emitter may see. Only the
-// formats DXVK/D3D9 and the probes produce are listed; an unknown format falls
-// back to 16 (conservative: keeps the clamp above the real value).
+// formats in kV2SupportedVertexFormats are listed; any other format is rejected at
+// pipeline creation, and reaching the fallback is loud ("vertex-format-size").
 U32 v2VertexFormatBytes(U32 fmt) {
     switch (fmt) {
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: return 4;
@@ -2296,7 +3237,10 @@ U32 v2VertexFormatBytes(U32 fmt) {
         case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_SRGB:
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return 4;
         case VK_FORMAT_R8_UNORM: return 1;
-        default: return 16;
+        default:
+            // kV2SupportedVertexFormats is fully covered above (native test); pipeline creation rejects the rest.
+            vk64Unsupported("vertex-format-size", "no byte size for vertex format; assuming 16 bytes");
+            return 16;
     }
 }
 
@@ -2330,8 +3274,12 @@ static bool waitForReadbackFlag(U32 flagPtr, int timeoutMs) {
 static void hopV2LastToPage() {
 #ifdef __EMSCRIPTEN__
     if (g_v2Pending.empty()) return;
-    MAIN_THREAD_EM_ASM({ try { globalThis.bwVkHeapBuffer = HEAPU8.buffer; } catch (e) {} });
-    const auto& f = g_v2Pending.back();
+    MAIN_THREAD_EM_ASM({ globalThis.bwVkHeapBuffer = HEAPU8.buffer; });
+    // Drain every queued frame in submission order, not only the last: a
+    // synchronous readback (vkMapMemory on a readback buffer) depends on all
+    // preceding submissions having reached the page, and dropping the prefix
+    // silently discarded rendering work the guest already submitted.
+    for (const auto& f : g_v2Pending) {
     for (const auto& chunk : f.chunks) {
         const U8* ptr = chunk.data();
         U32 len = (U32)chunk.size();
@@ -2339,10 +3287,19 @@ static void hopV2LastToPage() {
             if (globalThis.window && window.bwVkChunk) {
                 try {
                     const bytes = new Uint8Array(HEAPU8.buffer, $0 >>> 0, $1 >>> 0).slice();
-                    window.bwVkChunk(bytes, $2);
-                } catch (e) {}
+                    window.bwVkChunk(bytes, $2, { readback: true });
+                } catch (e) {
+                    globalThis.__bwVkChunkErrors = (globalThis.__bwVkChunkErrors || 0) + 1;
+                    const n = globalThis.__bwVkChunkErrors;
+                    if (n <= 4 || (n & (n - 1)) === 0) console.warn('vk64: UNSUPPORTED v2-chunk-handler-threw x' + n + ': ' + (e && e.message || e));
+                }
+            } else {
+                globalThis.__bwVkChunkNoPage = (globalThis.__bwVkChunkNoPage || 0) + 1;
+                const n = globalThis.__bwVkChunkNoPage;
+                if (n <= 4 || (n & (n - 1)) === 0) console.warn('vk64: UNSUPPORTED v2-no-page-consumer x' + n + ' (frame chunk dropped: window.bwVkChunk is not installed)');
             }
         }, ptr, len, (U32)0);
+    }
     }
     g_v2Pending.clear();
 #else
@@ -2351,17 +3308,18 @@ static void hopV2LastToPage() {
 }
 
 static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackSetup, vkEncodeDetailEnabled());
     g_readbackPending.clear();
     for (const auto& fr : frames) {
         CmdBuf* cb = fr.first;
-        if (!cb) continue;
+        VK64_DROP_IF(continue, !cb);
         for (const Cmd& k : cb->cmds) {
             if (k.kind != CMD_COPY_I2B) continue;
             const CopyI2B& rb = k.copyI2B;
-            if (!rb.w || !rb.h || rb.w > 4096 || rb.h > 4096) continue;
+            VK64_DROP_IF(continue, !rb.w || !rb.h || rb.w > 4096 || rb.h > 4096);
             size_t pxBytes = (size_t)rb.w * rb.h * 4;
             U8* heap = (U8*)malloc(pxBytes + 4);
-            if (!heap) continue;
+            VK64_DROP_IF(continue, !heap);
             memset(heap, 0, pxBytes + 4);
             ReadbackPending pend;
             pend.srcImage = rb.srcImage; pend.dstBuffer = rb.dstBuffer;
@@ -2375,21 +3333,24 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 }
 
 static void completeReadbacks() {
+    VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackWait, vkEncodeDetailEnabled());
     if (g_readbackPending.empty()) return;
     hopV2LastToPage();
     for (auto& pend : g_readbackPending) {
-        if (!waitForReadbackFlag(pend.flagPtr, 10000)) continue;
+        VK64_DROP_IF(continue, !waitForReadbackFlag(pend.flagPtr, 10000));
         Buffer* buf = objOf<Buffer>(pend.dstBuffer, K_BUFFER, "readback");
-        if (!buf || !buf->mem) continue;
+        VK64_DROP_IF(continue, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "readback");
-        if (!mem || !mem->va) continue;
+        VK64_DROP_IF(continue, !mem || !mem->va);
         size_t pxBytes = (size_t)pend.w * pend.h * 4;
         U64 dstVa = mem->va + buf->memOff + pend.dstBufOff;
         if (buf->memOff + pend.dstBufOff + pxBytes > mem->size) {
-            if (buf->memOff + pend.dstBufOff >= mem->size) continue;
+            VK64_DROP_IF(continue, buf->memOff + pend.dstBufOff >= mem->size);
             pxBytes = (size_t)(mem->size - buf->memOff - pend.dstBufOff);
         }
         writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr, pxBytes);
+        buf->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(mem);
     }
     for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
     g_readbackPending.clear();
@@ -2397,9 +3358,11 @@ static void completeReadbacks() {
 
 
 void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
+    const bool detailed = vkEncodeDetailEnabled();
+    VkEncodeScope encodeScope(vkProfAcc().encode, vkencode::Serialize, detailed);
     double vkprofSer2T0 = vkProfNow(); // BW64_VKPROF (additive)
     // BW64_VKPROF accumulators (additive): time/bytes inside the two hot emit lambdas.
-    double vkprofBufT = 0, vkprofImgT = 0;
+    double vkprofBufT = 0, vkprofImgT = 0, vkprofQueueT = 0;
     U64 vkprofBufHashed = 0, vkprofBufSent = 0, vkprofImgHashed = 0, vkprofImgSent = 0;
     U64 vkprofBufCalls = 0, vkprofImgCalls = 0;
     for (const auto& fr : frames) {
@@ -2407,7 +3370,18 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         U64 fbId = 0;
         for (const Cmd& k : st->cmds) if (k.kind == CMD_BEGIN_RP) { fbId = k.b; break; }
         Framebuffer* fb = objOf<Framebuffer>(fbId, K_FRAMEBUFFER, "vkQueueSubmit");
-        if (!fb) { klog_fmt("vk64: submit(v2): frame %u has no framebuffer, skipped", g_frameNo); continue; }
+        if (!fb) {
+            // No render pass: a pure transfer/compute command buffer (vkd3d-proton
+            // copy queues, mip generation, depth clears). The decoder replays
+            // these in an implicit pass, so they are sent as a 1x1 frame.
+            // Command buffers with nothing the page can execute are legitimately
+            // empty (barriers only) and stay skipped.
+            bool relevant = false;
+            for (const Cmd& k : st->cmds)
+                if (k.kind == CMD_COPY_IMAGE || k.kind == CMD_BLIT_IMAGE || k.kind == CMD_CLEAR_DS_IMAGE ||
+                    k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH) { relevant = true; break; }
+            if (!relevant) continue;
+        }
         // A render-pass load clear changes its attachment without a draw.
         // Preserve it for later submissions that sample the cleared image.
         g_v2SubmitFrames++;
@@ -2419,8 +3393,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
 
         auto emit = [&](U32 type, auto&& fill) {
             ChunkWriter p;
-            fill(p);
-            fa.emitRec(type, p.b, g_v2ChunkSeq);
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::RecordFill, detailed); fill(p); }
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::RecordAppend, detailed); fa.emitRec(type, p.b, g_v2ChunkSeq); }
         };
 
         // Per-frame dedup: a set bound twice or a buffer referenced by ten
@@ -2429,6 +3403,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         std::set<std::tuple<U64,U64,U64>> bufDone;
 
         auto emitShader = [&](ShaderModule* sm, U32 stage) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Shader, detailed);
             if (!sm || !sm->hash || !shaderDone.insert(sm->hash).second) return;
             emit(V2_SHADER, [&](ChunkWriter& p) {
                 p.u8(stage); p.u8(0); p.u16(0);
@@ -2439,7 +3414,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (!bufId || !len) return;
             if (!bufDone.insert(std::make_tuple(bufId, memOff, len)).second) return;
             Buffer* b = objOf<Buffer>(bufId, K_BUFFER, "vkQueueSubmit");
-            if (!b || !b->mem) return;
+            VK64_DROP_IF(return, !b || !b->mem);
             auto key = std::make_tuple(bufId, memOff, len);
             auto it = g_bufferContentHash.find(key);
             // Huge buffers: vkd3d-proton backs small resources with heap-sized
@@ -2490,42 +3465,82 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         };
         // BW64_VKPROF wrapper: wall time per emitBufferData call (additive).
         auto emitBufferData = [&](U64 bufId, U64 memOff, U64 len, U64 replayId = 0) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Buffer, detailed);
             double t0 = vkProfNow();
             ++vkprofBufCalls;
             emitBufferDataInner(bufId, memOff, len, replayId ? replayId : bufId);
             vkprofBufT += vkProfNow() - t0;
         };
         auto emitSampler = [&](U64 id) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Sampler, detailed);
             if (!id || !samplerDone.insert(id).second) return;
             Sampler* s = objOf<Sampler>(id, K_SAMPLER, "vkQueueSubmit");
-            if (!s) return;
+            VK64_DROP_IF(return, !s);
             emit(V2_SAMPLER, [&](ChunkWriter& p) {
                 writeSamplerRecordPayload(p, id, *s);
             });
         };
         auto emitImageDataInner = [&](U64 viewId) {
+            VkEncodeScope viewPhase(vkProfAcc().encode, vkencode::ImageView, detailed);
             ImageView* view = objOf<ImageView>(viewId, K_IMAGEVIEW, "vkQueueSubmit");
-            if (!view || !view->image) return;
+            VK64_DROP_IF(return, !view || !view->image);
+            viewPhase.stop();
             // Descriptor bindings name views. Deduplicating by image drops
             // the view->image link for every other view of the same image.
-            if (!imageDone.insert(viewId).second) return;
+            { VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageDedup, detailed);
+              if (!imageDone.insert(viewId).second) return; }
+            VkEncodeScope imagePhase(vkProfAcc().encode, vkencode::ImageLookup, detailed);
             Image* tex = objOf<Image>(view->image, K_IMAGE, "vkQueueSubmit");
-            if (!tex) return;
+            VK64_DROP_IF(return, !tex);
+            imagePhase.stop();
+            DeviceMemory* imem = tex->mem ? objOf<DeviceMemory>(tex->mem, K_MEMORY, "vkQueueSubmit") : nullptr;
+            // Same cadence as the buffer fast path: the first submitted
+            // frames always send full bytes, and every V2_BUF_RESEND_PERIOD-th
+            // submit resends, so a dropped or rejected chunk heals.
+            const bool forceFull =
+                (g_v2SubmitFrames <= 3 || (g_v2SubmitFrames % V2_BUF_RESEND_PERIOD) == 0);
             std::vector<U8> bytes;
-            if (tex->mem && tex->pixBytes) bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
-            // Cross-frame dedup: resend pixel bytes only when content changed.
             U64 hash = 0;
             bool sendPixels = true;
-            if (!bytes.empty()) {
-                hash = fnv1a64(bytes.data(), bytes.size());
+            // Generation skip: writes into the image bump Image::dirtyGen and
+            // every write into the backing allocation bumps its writeEpoch,
+            // so matching generations + an unchanged binding + never-mapped
+            // memory prove the bytes behind the stored hash are still the
+            // image's bytes. Skip the readGuestRange + fnv1a64 entirely; the
+            // record still goes out (the page keys its texture cache by hash).
+            bool genSkip = false;
+            if (!forceFull && tex->mem && tex->pixBytes && tex->dirtyGen != 0 &&
+                imem && !imem->wasMapped) {
                 auto it = g_imageContentHash.find(view->image);
-                if (it != g_imageContentHash.end() && it->second == hash &&
-                    g_v2SubmitFrames > 3 && (g_v2SubmitFrames % V2_BUF_RESEND_PERIOD) != 0) {
+                if (it != g_imageContentHash.end() && it->second.imgGen == tex->dirtyGen &&
+                    it->second.memEpoch == imem->writeEpoch && it->second.mem == tex->mem &&
+                    it->second.memOff == tex->memOff && it->second.pixBytes == tex->pixBytes) {
+                    hash = it->second.hash;
                     sendPixels = false;
-                } else {
-                    g_imageContentHash[view->image] = hash;
+                    genSkip = true;
                 }
             }
+            if (!genSkip) {
+                if (tex->mem && tex->pixBytes) {
+                    VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageRead, detailed);
+                    bytes = readGuestRange(tex->mem, tex->memOff, tex->pixBytes);
+                }
+                // Cross-frame dedup: resend pixel bytes only when content changed.
+                if (!bytes.empty()) {
+                    VkEncodeScope phase(vkProfAcc().encode, vkencode::ImageHash, detailed);
+                    hash = fnv1a64(bytes.data(), bytes.size());
+                    auto it = g_imageContentHash.find(view->image);
+                    if (it != g_imageContentHash.end() && it->second.hash == hash && !forceFull) {
+                        sendPixels = false;
+                    }
+                    // Refresh the snapshot unconditionally: after a
+                    // same-content rewrite the generations moved even though
+                    // the hash did not, and the skip keys on the generations.
+                    g_imageContentHash[view->image] = {hash, tex->dirtyGen,
+                        imem ? imem->writeEpoch : 0, tex->mem, tex->memOff, tex->pixBytes};
+                }
+            }
+            VkEncodeScope imageRecord(vkProfAcc().encode, vkencode::ImageRecord, detailed);
             emit(V2_IMAGE_DATA, [&](ChunkWriter& p) {
                 // viewId first: the page's DESC_SET bindings name image VIEWS,
                 // while pixel content is deduped per image, so the record carries
@@ -2539,59 +3554,147 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(std::max(1U, tex->d));
                 p.u32(std::max(1U, tex->layers));
                 p.u32(std::max(1U, tex->mips));
+                // View range tail (append-only; absent in older producers).
+                p.u32(view->baseMip); p.u32(view->levelCount); p.u32(view->baseLayer); p.u32(view->layerCount); p.u32(view->viewType);
             });
             if (vkTimingEnabled()) { vkprofImgHashed += bytes.size(); if (sendPixels) vkprofImgSent += bytes.size(); }
         };
         // BW64_VKPROF wrapper: wall time per emitImageData call (additive).
         auto emitImageData = [&](U64 viewId) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Image, detailed);
             double t0 = vkProfNow();
             ++vkprofImgCalls;
             emitImageDataInner(viewId);
             vkprofImgT += vkProfNow() - t0;
         };
-        auto emitDescSet = [&](U32 setIndex, U64 setId) {
+        auto emitDescSet = [&](U32 setIndex, U64 setId, const std::vector<U32>* dyn) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Descriptors, detailed);
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
-            if (!s) return;
+            VK64_DROP_IF(return, !s);
+            DescSetLayout* lay = s->layout ? objOf<DescSetLayout>(s->layout, K_SETLAYOUT, "vkQueueSubmit") : nullptr;
+            // Effective elements: everything written, plus immutable samplers
+            // (they ARE the descriptor even if the app never wrote the binding,
+            // and they override whatever sampler a combined write named).
+            std::map<DescKey, Binding> eff = s->els;
+            if (lay) {
+                for (const auto& lb : lay->binds) {
+                    if (lb.second.immutable.empty()) continue;
+                    for (U32 e = 0; e < lb.second.immutable.size(); e++) {
+                        auto it = eff.find(DescKey(lb.first, e));
+                        if (lb.second.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+                            Binding& b = eff[DescKey(lb.first, e)];
+                            b.binding = lb.first; b.type = VK_DESCRIPTOR_TYPE_SAMPLER; b.dstArrayElement = e; b.count = 1;
+                            b.obj = lb.second.immutable[e];
+                        } else if (it != eff.end() && lb.second.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                            it->second.range = lb.second.immutable[e];
+                        }
+                    }
+                }
+            }
+            if (eff.size() > 0xFFFFu) {
+                vk64Unsupported("descriptor-set-size", "more than 65535 written descriptors in one set; extra elements dropped");
+            }
+            // Absolute buffer range of one element, dynamic offset included.
+            auto bufRange = [&](const Binding& b, U32 dynOff, U64& absOff, U64& len, Buffer*& buf) {
+                buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
+                absOff = 0; len = 0;
+                if (!buf) return;
+                const U64 off = b.bufOff + dynOff;
+                absOff = buf->memOff + off;
+                len = (b.range == 0 || b.range == ~0ULL) ? (off < buf->size ? buf->size - off : 0) : b.range;
+            };
+            auto dynOffFor = [&](const Binding& b) -> U32 {
+                if (!descIsDynamic(b.type) || !lay) return 0;
+                auto lb = lay->binds.find(b.binding);
+                if (lb == lay->binds.end()) return 0;
+                const U32 idx = lb->second.dynBase + b.dstArrayElement;
+                if (!dyn || idx >= dyn->size()) {
+                    vk64Unsupported("dynamic-offset-missing", "vkCmdBindDescriptorSets supplied fewer dynamic offsets than the layout has dynamic descriptors");
+                    return 0;
+                }
+                return (*dyn)[idx];
+            };
+            for (const auto& kv : eff) {
+                const Binding& b = kv.second;
+                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) continue;
+                BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                if (!bv || !vbuf) {
+                    // b.obj == 0 is a guest VK_NULL_HANDLE view under the
+                    // advertised VK_EXT_robustness2 nullDescriptor feature:
+                    // a legal null descriptor (DXVK writes one for every
+                    // shader texel slot the app never bound), which the
+                    // page tier serves as zero reads -- not a lost view,
+                    // and the DESC_SET binding below still goes out with
+                    // kind 5 / id 0. Only a nonzero id can be stale, and
+                    // it stays loud.
+                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
+                    continue;
+                }
+                emit(V2_BUFFER_VIEW, [&](ChunkWriter& p) {
+                    p.u64(b.obj); p.u64(bv->buffer); p.u32(bv->format); p.u32(0);
+                    p.u64(vbuf->memOff + bv->offset); p.u64(bv->range);
+                });
+            }
+            U32 nWire = (U32)std::min<size_t>(eff.size(), 0xFFFFu);
             emit(V2_DESC_SET, [&](ChunkWriter& p) {
-                p.u8(setIndex); p.u8(s->nbind); p.u16(0); p.u64(s->layout);
-                for (U32 i = 0; i < s->nbind; i++) {
-                    const Binding& b = s->binds[i];
+                p.u8(setIndex); p.u8(0); p.u16(nWire); p.u64(s->layout);
+                U32 written = 0;
+                for (const auto& kv : eff) {
+                    if (written++ >= nWire) break;
+                    const Binding& b = kv.second;
                     U32 kind = 0;
                     switch (b.type) {
                         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: kind = 1; break;
+                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+                        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: kind = 1; break;
                         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
                         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
                         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: kind = 2; break;
                         case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
-                        default: break;
+                        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: kind = 5; break;
+                        default:
+                            vk64Unsupported("descriptor-wire-kind",
+                                ("unsupported descriptor type=" + std::to_string(b.type) + " has no V2 binding kind").c_str());
+                            break;
                     }
                     // Absolute byte offset of this binding's range, matching
                     // V2_BUFFER_DATA's memOff. One VkBuffer may back several
                     // uniform bindings at different offsets (DXVK sub-allocates
                     // D3D9 constants); the page keys captures by (id, offset).
-                    U64 absOff = 0;
-                    if (kind == 1) {
-                        Buffer* bbuf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
-                        if (bbuf) absOff = bbuf->memOff + b.bufOff;
+                    U64 absOff = 0, len = b.range; Buffer* buf = nullptr;
+                    if (kind == 1) bufRange(b, dynOffFor(b), absOff, len, buf);
+                    else if (kind == 5) {
+                        BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                        Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                        if (bv && vbuf) { absOff = vbuf->memOff + bv->offset; len = bv->range; }
+                        else len = 0;
                     }
-                    p.u32(b.binding); p.u32(b.type); p.u32(b.dstArrayElement); p.u32(b.count);
+                    p.u32(b.binding); p.u32(descBaseType(b.type)); p.u32(b.dstArrayElement); p.u32(b.count);
                     p.u8(kind); p.u8(0); p.u16(0);
-                    p.u64(b.obj); p.u64(b.range); p.u64(absOff);
+                    p.u64(b.obj); p.u64(len); p.u64(absOff);
                 }
             });
-            for (U32 i = 0; i < s->nbind; i++) {
-                const Binding& b = s->binds[i];
-                if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkQueueSubmit");
-                    if (buf) emitBufferData(b.obj, buf->memOff + b.bufOff, b.range ? b.range : buf->size);
+            U32 emitted = 0;
+            for (const auto& kv : eff) {
+                if (emitted++ >= nWire) break;
+                const Binding& b = kv.second;
+                if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+                    descIsDynamic(b.type)) {
+                    U64 absOff, len; Buffer* buf;
+                    bufRange(b, dynOffFor(b), absOff, len, buf);
+                    if (buf) emitBufferData(b.obj, absOff, len);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    emitImageData(b.obj);    // b.obj = image view id (see vkUpdateDescriptorSets)
+                    emitImageData(b.obj);    // b.obj = image view id (see applyDescWrite)
                     emitSampler(b.range);    // b.range = sampler id
+                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+                    BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
+                    Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
+                    if (bv && vbuf) emitBufferData(bv->buffer, vbuf->memOff + bv->offset, bv->range);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                     emitSampler(b.obj);
                 } else if (b.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
@@ -2609,8 +3712,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         U32 vertexStrides[VK64_MAX_VERT_BINDINGS] = {0};
         bool vertexHasStride[VK64_MAX_VERT_BINDINGS] = {false};
         auto emitPipeline = [&](U64 pipeId) {
+            VkEncodeScope phase(vkProfAcc().encode, vkencode::Pipeline, detailed);
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
-            if (!pipe) return;
+            VK64_DROP_IF(return, !pipe);
             ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
             ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
             // Schema v2 replays the guest pipeline. The legacy procedural
@@ -2684,41 +3788,102 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 p.u32(pipe->primitiveRestartEnable);
                 p.u32(0x31545352u); // RST1: which rasterizer state is dynamic (cull mode, front face)
                 p.u32(pipe->cullDynamic ? 1 : 0); p.u32(pipe->frontDynamic ? 1 : 0);
+                p.u32(0x314e5944u); // DYN1: which extended state is dynamic (Pipeline::dynMask) + static rasterizerDiscardEnable
+                p.u32(pipe->dynMask); p.u32(pipe->rasterizerDiscard);
             });
         };
-        auto emitRpBegin = [&](const Cmd& k) {
+        // Render pass replay. A WebGPU pass has one attachment set, so each subpass becomes its own
+        // RP_BEGIN/RP_END pair; later subpasses load what earlier ones stored. Attachments that only
+        // appear as resolve targets are not attachments of the pass: the colour attachment's resolve
+        // is copied into them (IMAGE_COPY) when its subpass ends.
+        Framebuffer* activeFb = nullptr;
+        RenderPass* activeRp = nullptr;
+        const Cmd* activeBegin = nullptr;
+        U32 activeSub = 0;
+        auto subpassAttachments = [&](const RenderPass* rrp, U32 sub) {
+            std::vector<U32> idx;
+            if (!rrp->nsub) { for (U32 i = 0; i < rrp->natt; ++i) idx.push_back(i); return idx; }
+            const SubpassMap& m = rrp->sub[std::min(sub, rrp->nsub - 1)];
+            for (U32 c = 0; c < m.nColor; ++c) {
+                if (m.color[c] == VK_ATTACHMENT_UNUSED) { vk64Unsupported("subpass-unused-color-slot", "a colour slot without an attachment is skipped, shifting later colour slots"); continue; }
+                idx.push_back(m.color[c]);
+            }
+            if (m.depth != VK_ATTACHMENT_UNUSED) idx.push_back(m.depth);
+            return idx;
+        };
+        auto usesAttachment = [&](const RenderPass* rrp, U32 sub, U32 a) {
+            if (!rrp->nsub) return true;
+            const SubpassMap& m = rrp->sub[sub];
+            if (m.depth == a) return true;
+            for (U32 c = 0; c < m.nColor; ++c) if (m.color[c] == a) return true;
+            return false;
+        };
+        auto emitRpBegin = [&](const Cmd& k, U32 sub) {
             Framebuffer* rfb = objOf<Framebuffer>(k.b, K_FRAMEBUFFER, "vkQueueSubmit");
             RenderPass* rrp = rfb ? objOf<RenderPass>(rfb->rp, K_RENDERPASS, "vkQueueSubmit") : nullptr;
-            if (!rfb || !rrp) return;
+            VK64_DROP_IF(return, !rfb || !rrp);
+            activeFb = rfb; activeRp = rrp; activeBegin = &k; activeSub = sub;
+            const std::vector<U32> idx = subpassAttachments(rrp, sub);
+            const U32 nsub = rrp->nsub ? rrp->nsub : 1;
+            // Load/store ops apply on the first/last subpass that touches the attachment.
+            auto firstUse = [&](U32 a) { for (U32 s2 = 0; s2 < sub; ++s2) if (usesAttachment(rrp, s2, a)) return false; return true; };
+            auto lastUse = [&](U32 a) { for (U32 s2 = sub + 1; s2 < nsub; ++s2) if (usesAttachment(rrp, s2, a)) return false; return true; };
             emit(V2_RP_BEGIN, [&](ChunkWriter& p) {
-                p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32(rfb->natt);
-                for (U32 i = 0; i < rfb->natt; i++) {
-                    ImageView* v = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u32(rrp->formats[i]); p.u32(rrp->loadOps[i]); p.u32(rrp->storeOps[i]);
-                    p.u32(rrp->samples[i] ? rrp->samples[i] : 1);
+                p.u64(k.a); p.u64(k.b); p.u32(rfb->w); p.u32(rfb->h); p.u32((U32)idx.size());
+                for (U32 a : idx) {
+                    ImageView* v = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(rrp->formats[a]); p.u32(firstUse(a) ? rrp->loadOps[a] : 0); p.u32(lastUse(a) ? rrp->storeOps[a] : 0);
+                    p.u32(rrp->samples[a] ? rrp->samples[a] : 1);
                     p.u32(v && (v->aspect & 0x6u) ? 1 : 0);
                 }
-                p.f32(k.f[0]); p.f32(k.f[1]); p.f32(k.f[2]); p.f32(k.f[3]);
+                auto clearOf = [&](U32 a, U32 c4) { return a * 4 + c4 < k.attClear.size() ? k.attClear[a * 4 + c4] : 0.0f; };
+                U32 firstColor = idx.empty() ? 0 : idx[0];
+                for (U32 c4 = 0; c4 < 4; ++c4) p.f32(idx.empty() ? k.f[c4] : clearOf(firstColor, c4));
                 p.f32((float)k.clearDepth); p.u32(k.clearStencil);
                 // Optional attachment identity tail, paired with the updated
                 // decoder. Image identity links render and sampled view aliases.
-                for (U32 i = 0; i < rfb->natt; ++i) {
-                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u64(rfb->views[i]); p.u64(view ? view->image : 0);
+                for (U32 a : idx) {
+                    auto* view = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u64(rfb->views[a]); p.u64(view ? view->image : 0);
                 }
-                p.u32(0x31505453u); p.u32(rfb->natt); // STP1
-                for (U32 i = 0; i < rfb->natt; ++i) {
-                    auto* view = objOf<ImageView>(rfb->views[i], K_IMAGEVIEW, "vkQueueSubmit");
-                    p.u32(rrp->stencilLoadOps[i]); p.u32(rrp->stencilStoreOps[i]); p.u32(view ? view->aspect : 0);
+                p.u32(0x31505453u); p.u32((U32)idx.size()); // STP1
+                for (U32 a : idx) {
+                    auto* view = objOf<ImageView>(rfb->views[a], K_IMAGEVIEW, "vkQueueSubmit");
+                    p.u32(firstUse(a) ? rrp->stencilLoadOps[a] : 0); p.u32(lastUse(a) ? rrp->stencilStoreOps[a] : 0); p.u32(view ? view->aspect : 0);
                 }
+                // CLR1: per-attachment colour clear values (multiple render targets).
+                p.u32(0x31524c43u); p.u32((U32)idx.size());
+                for (U32 a : idx)
+                    for (U32 c4 = 0; c4 < 4; ++c4) p.f32(clearOf(a, c4));
             });
+        };
+        // Ends the open subpass: RP_END, then the colour resolves it owns as image copies.
+        auto emitRpEnd = [&]() {
+            emit(V2_RP_END, [](ChunkWriter&) {});
+            if (!activeFb || !activeRp || !activeRp->nsub) return;
+            const SubpassMap& m = activeRp->sub[std::min(activeSub, activeRp->nsub - 1)];
+            for (U32 c = 0; c < m.nColor; ++c) {
+                if (m.color[c] == VK_ATTACHMENT_UNUSED || m.resolve[c] == VK_ATTACHMENT_UNUSED) continue;
+                auto* sv = objOf<ImageView>(activeFb->views[m.color[c]], K_IMAGEVIEW, "vkQueueSubmit");
+                auto* dv = objOf<ImageView>(activeFb->views[m.resolve[c]], K_IMAGEVIEW, "vkQueueSubmit");
+                auto* si = sv ? objOf<Image>(sv->image, K_IMAGE, "vkQueueSubmit") : nullptr;
+                auto* di = dv ? objOf<Image>(dv->image, K_IMAGE, "vkQueueSubmit") : nullptr;
+                VK64_DROP_IF(continue, !si || !di);
+                const U32 w = std::min({activeFb->w, si->w, di->w}), h = std::min({activeFb->h, si->h, di->h});
+                emit(V2_IMAGE_COPY, [&](ChunkWriter& p) {
+                    p.u64(sv->image); p.u64(dv->image);
+                    p.u32(0); p.u32(0); p.u32(0); p.u32(0);
+                    for (U32 i = 0; i < 6; ++i) p.u32(0);
+                    p.u32(w); p.u32(h); p.u32(1);
+                });
+            }
         };
 
         // FRAME_BEGIN. The overflow flag is consumed here, like v1.
         bool ovf = g_frameOverflow;
         g_frameOverflow = false;
         emit(V2_FRAME_BEGIN, [&](ChunkWriter& p) {
-            p.u32(g_frameNo); p.u32(fb->w); p.u32(fb->h); p.u32(ovf ? 1 : 0);
+            p.u32(g_frameNo); p.u32(fb ? fb->w : 1); p.u32(fb ? fb->h : 1); p.u32(ovf ? 1 : 0);
         });
 
         U32 nDraw = 0, nPush = 0;
@@ -2774,7 +3939,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     if (pipe) {
                         for (U32 i = 0; i < pipe->nva && i < VK64_MAX_VERT_ATTRIBS; i++) {
                             U32 slot = pipe->vaBinding[i];
-                            if (slot >= VK64_MAX_VERT_BINDINGS) continue;
+                            VK64_DROP_IF(continue, slot >= VK64_MAX_VERT_BINDINGS);
                             U32 stride = pipe->dynamicVertexStride && curHasStride[slot] && curStride[slot]
                                 ? curStride[slot] : pipe->vbStride[slot];
                             if (!stride) continue;
@@ -2789,19 +3954,23 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
         }
         for (const Cmd& k : st->cmds) {
             switch (k.kind) {
-                case CMD_BEGIN_RP: emitRpBegin(k); break;
-                case CMD_END_RP:   emit(V2_RP_END, [](ChunkWriter&) {}); break;
+                case CMD_BEGIN_RP: emitRpBegin(k, 0); break;
+                case CMD_NEXT_SUBPASS:
+                    if (activeBegin && activeRp && activeSub + 1 < std::max(1U, activeRp->nsub)) { emitRpEnd(); emitRpBegin(*activeBegin, activeSub + 1); }
+                    else vk64Unsupported("next-subpass-overflow", "vkCmdNextSubpass past the last subpass of the render pass");
+                    break;
+                case CMD_END_RP:   emitRpEnd(); activeFb = nullptr; activeRp = nullptr; activeBegin = nullptr; break;
                 case CMD_BIND_PIPE: activePipe = k.a; emitPipeline(k.a); break;
                 case CMD_BIND_SETS: {
                     U32 first = (U32)k.a, count = (U32)k.b;
-                    if (first >= VK64_MAX_SETS) break;
+                    VK64_DROP_IF(break, first >= VK64_MAX_SETS);
                     if (first + count > VK64_MAX_SETS) count = VK64_MAX_SETS - first;
                     emit(V2_BIND_SETS, [&](ChunkWriter& p) {
                         p.u8(first); p.u8(count); p.u16(0);
                         for (U32 i = 0; i < count; i++) p.u64(k.sets[first + i]);
                     });
                     for (U32 i = 0; i < count; i++)
-                        if (k.sets[first + i]) emitDescSet(first + i, k.sets[first + i]);
+                        if (k.sets[first + i]) emitDescSet(first + i, k.sets[first + i], i < k.dyn.size() ? &k.dyn[i] : nullptr);
                     break;
                 }
                 case CMD_STENCIL_STATE:
@@ -2881,7 +4050,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     memcpy(vertexHasStride, k.vbHasStride, sizeof(vertexHasStride));
                     for (U32 i = 0; i < k.vbCount; i++) {
                         Buffer* vb = objOf<Buffer>(k.vbBuffers[i], K_BUFFER, "vkQueueSubmit");
-                        if (!vb || k.vbOffsets[i] >= vb->size) continue;
+                        VK64_DROP_IF(continue, !vb || k.vbOffsets[i] >= vb->size);
                         // Clamp to what the frame's draws touch when the pre-pass
                         // resolved it: DXVK binds whole 16MB staging heaps whose
                         // live vertex data is a small prefix.
@@ -2958,20 +4127,36 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 }
-                default: break;
+                // Executed eagerly at record/submit time (see the CMD_* handlers
+                // for copies, updates, query results and timestamps, or no-ops
+                // in snapshot replay (BARRIER): nothing to put on the wire.
+                case CMD_BARRIER:
+                case CMD_COPY_B2I:
+                case CMD_UPDATE_BUF:
+                case CMD_COPY_QUERY_RESULTS:
+                case CMD_RESET_QUERY:
+                    break;
+                case CMD_DISPATCH:
+                    // The V2 protocol is render-only: no compute pipeline or
+                    // dispatch record exists. Never silently drop it.
+                    vk64Unsupported("compute-dispatch", "vkCmdDispatch* has no V2 record; results are not produced");
+                    break;
+                default:
+                    vk64Unsupported("unknown-cmd-kind", "submit emit loop met a command kind with no V2 record");
+                    break;
             }
         }
 
         emit(V2_FRAME_END, [&](ChunkWriter& p) { p.u32(g_frameNo); });
         double vkprofQueueT0 = vkProfNow(); // BW64_VKPROF (additive)
-        v2QueueFrame(fa);
+        { VkEncodeScope phase(vkProfAcc().encode, vkencode::Queue, detailed); v2QueueFrame(fa); }
 
         const V2DoneFrame& qd = g_v2Pending.back();
         size_t totalBytes = 0;
         for (const auto& c : qd.chunks) totalBytes += c.size();
         if (vkFrameLog())
             klog_fmt("vk64: FRAME %u built (v2): %ux%u draws=%u pushes=%u chunks=%u bytes=%zu",
-                     g_frameNo, fb->w, fb->h, (unsigned)nDraw, (unsigned)nPush,
+                     g_frameNo, fb ? fb->w : 1, fb ? fb->h : 1, (unsigned)nDraw, (unsigned)nPush,
                      (unsigned)qd.chunks.size(), totalBytes);
         if (vkDumpV2()) {
             std::string dump = "vk64: FRAME " + std::to_string(g_frameNo) + " v2 records:";
@@ -2983,16 +4168,17 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 if (hist[t]) { dump += " "; dump += names[t]; dump += "=" + std::to_string(hist[t]); }
             klog_fmt("%s", dump.c_str());
         }
-        if (vkTimingEnabled()) {
-            VkProfAcc& pa = vkProfAcc();
-            pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
-            pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
-            pa.accImgHashed += vkprofImgHashed; pa.accImgSent += vkprofImgSent;
-            pa.accBufCalls += vkprofBufCalls; pa.accImgCalls += vkprofImgCalls;
-            pa.accQueue += vkProfNow() - vkprofQueueT0;
-            pa.accSer2 += vkProfNow() - vkprofSer2T0;
-        }
+        if (vkTimingEnabled()) vkprofQueueT += vkProfNow() - vkprofQueueT0;
         g_frameNo++;
+    }
+    if (vkTimingEnabled()) {
+        VkProfAcc& pa = vkProfAcc();
+        pa.accBufData += vkprofBufT; pa.accImgData += vkprofImgT;
+        pa.accBufHashed += vkprofBufHashed; pa.accBufSent += vkprofBufSent;
+        pa.accImgHashed += vkprofImgHashed; pa.accImgSent += vkprofImgSent;
+        pa.accBufCalls += vkprofBufCalls; pa.accImgCalls += vkprofImgCalls;
+        pa.accQueue += vkprofQueueT;
+        pa.accSer2 += vkProfNow() - vkprofSer2T0;
     }
 }
 
@@ -3010,7 +4196,9 @@ void fillLimits(Limits& L) {
     L.maxStorageBufferRange = 1 << 30; L.maxPushConstantsSize = 256;
     L.maxMemoryAllocationCount = 4096; L.maxSamplerAllocationCount = 4000;
     L.bufferImageGranularity = 1; L.sparseAddressSpaceSize = 0;
-    L.maxBoundDescriptorSets = 8; L.maxPerStageDescriptorSamplers = 16;
+    // WebGPU reserves one of its four bind groups for the push-constant UBO;
+    // Vulkan sets 0..2 are the largest contiguous guest set range we can map.
+    L.maxBoundDescriptorSets = 3; L.maxPerStageDescriptorSamplers = 16;
     L.maxPerStageDescriptorUniformBuffers = 16; L.maxPerStageDescriptorStorageBuffers = 4;
     L.maxPerStageDescriptorSampledImages = 16; L.maxPerStageDescriptorStorageImages = 4;
     L.maxPerStageDescriptorInputAttachments = 4;
@@ -3019,7 +4207,15 @@ void fillLimits(Limits& L) {
     L.maxDescriptorSetStorageBuffers = 4; L.maxDescriptorSetStorageBuffersDynamic = 4;
     L.maxDescriptorSetSampledImages = 16; L.maxDescriptorSetStorageImages = 4;
     L.maxDescriptorSetInputAttachments = 4;
-    L.maxVertexInputAttributes = 16; L.maxVertexInputBindings = 16;
+    L.maxVertexInputAttributes = 16;
+#ifdef __EMSCRIPTEN__
+    {
+        const U32 maxVertexBuffers = (U32)MAIN_THREAD_EM_ASM_INT({ return Number(globalThis.bwVkMaxVertexBuffers) || 8; });
+        L.maxVertexInputBindings = maxVertexBuffers > 16 ? 16 : maxVertexBuffers;
+    }
+#else
+    L.maxVertexInputBindings = 8;
+#endif
     L.maxVertexInputAttributeOffset = 2047; L.maxVertexInputBindingStride = 2048;
     L.maxVertexOutputComponents = 64; L.maxTessellationGenerationLevel = 64;
     L.maxTessellationPatchSize = 32;
@@ -3030,8 +4226,8 @@ void fillLimits(Limits& L) {
     L.maxComputeWorkGroupInvocations = 128;
     L.maxComputeWorkGroupSize[0] = 128; L.maxComputeWorkGroupSize[1] = 128; L.maxComputeWorkGroupSize[2] = 64;
     L.subPixelPrecisionBits = 8; L.subTexelPrecisionBits = 8; L.mipmapPrecisionBits = 8;
-    L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = 0xFFFFFFFFu;
-    L.maxSamplerLodBias = 2.0f; L.maxSamplerAnisotropy = 16.0f;
+    L.maxDrawIndexedIndexValue = 0xFFFFFFFFu; L.maxDrawIndirectCount = VK64_MAX_INDIRECT_DRAWS;
+    L.maxSamplerLodBias = 0.0f; /* WebGPU has no sampler LOD bias; advertise only what is honoured */ L.maxSamplerAnisotropy = 16.0f;
     // G2: DXVK D3D9 DecodeMultiSampleType derives sampleCount from
     // framebuffer{Color,Depth}SampleCounts; zero here zeroes the backbuffer
     // sampleCount and fails CheckImageSupport. Advertise at least 1x.
@@ -3076,81 +4272,44 @@ void fillProperties(VkPhysicalDeviceProperties* p) {
 
 const char* const g_inst_exts[] = {
     "VK_KHR_surface", "VK_KHR_win32_surface", "VK_KHR_xcb_surface",
-    "VK_KHR_xlib_surface", "VK_EXT_headless_surface", "VK_EXT_debug_utils",
+    "VK_KHR_xlib_surface", "VK_EXT_headless_surface",
 };
 
-// The DXVK-required DEVICE extension set. Advertising an extension is pure
-// reporting here: vkCreateDevice stays lenient about names it does not know, so
-// this changes only what DXVK's isSuitable()/createDevice() decides to enable —
-// but that is the whole init wall (audit P2-NOW item 1): with only
-// VK_KHR_swapchain present, DXVK skips the adapter with "Device does not
-// support required feature" and never reaches a triangle.
-//
-// Every name here is either behaviour-free for us (load_store_op_none,
-// depth_clip_enable, maintenance5/6 — the recorder already treats load/store and
-// cull conservatively) or has its behaviour implemented alongside (robustness2
-// nullDescriptor -> a Binding may legitimately stay unbound; transform_feedback
-// -> the Xfb query/write calls fall into the benign tail). VK_KHR_maintenance6 is
-// present for DXVK >= 2.7.1 / master; a 2.4.x pin simply never asks for it.
+// Only extensions whose exposed behavior works end-to-end are enumerated.
 const char* const g_dev_exts[] = {
     "VK_KHR_swapchain",
-    "VK_KHR_maintenance5",
-    "VK_KHR_maintenance6",
     "VK_KHR_load_store_op_none",
     "VK_EXT_robustness2",           // HARD requirement (nullDescriptor + robustBufferAccess2)
-    "VK_EXT_transform_feedback",    // D3D10/11 stream output
     "VK_EXT_depth_clip_enable",
-    // D3D12 (vkd3d-proton) device-creation gates. CAVEAT: advertised so
-    // vkd3d_init_device_caps passes; the clear/triangle probes never exercise
-    // real divisor/push-descriptor behavior. Actual usage needs page-side
-    // replay support -- follow-up, not built here.
-    "VK_EXT_vertex_attribute_divisor",
-    "VK_KHR_push_descriptor",
 };
 
-// Core bits BOTH Features handlers set. DXVK derives D3D11 feature level from
-// these fields, so a FALSE here caps Unity's D3D11 device at 10_1. The indirect
-// draw path is recorded as direct draws by the bridge; tessellation stages are
-// still not represented in the page manifest.
+// Core bits reported to guests. Unsupported paths remain FALSE.
 void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     memset(f, 0, sizeof(*f));
+    // Every TRUE below is listed as implemented in vk-capabilities.json; the
+    // unit test checks assignments and manifest entries stay in sync.
     f->robustBufferAccess = VK_TRUE;
     f->fullDrawIndexUint32 = VK_TRUE;
     f->imageCubeArray = VK_TRUE;        /* D3D11 cube arrays */
     f->independentBlend = VK_TRUE;      /* D3D11 independent blend targets */
-    f->shaderInt64 = VK_TRUE;           /* wiki: 64-bit int types required */
-    f->shaderFloat64 = VK_TRUE;         /* d3d11 double-precision shaders exist */
-    f->shaderStorageImageExtendedFormats = VK_TRUE;
-    f->shaderStorageImageReadWithoutFormat = VK_TRUE;
-    f->shaderStorageImageWriteWithoutFormat = VK_TRUE;
     f->shaderClipDistance = VK_TRUE;
     f->samplerAnisotropy = VK_TRUE;
-    /* D3D11 baseline: DXVK D3D11Device::GetDeviceFeatures hard-requires the
-     * below for feature level 10_1, and checkFeatureSupport gates ALL of
-     * D3D11 device creation on them. WebGPU cannot implement several (no
-     * geometry stage, no wireframe fill, single viewport, no dual-source
-     * blend, no sample-rate shading), so they are advertised for device
-     * creation. This is safe for FL 9_3 targets: 9_x has no geometry /
-     * tessellation stages and real 9_3 apps do not use wireframe,
-     * multi-viewport, or dual-src blending. If a future app creates a
-     * geometry shader, pipeline creation fails loudly at the page tier
-     * (no WGSL target stage) instead of silently misrendering. */
-    f->geometryShader = VK_TRUE;        /* advertised; no WGSL target stage */
-    f->tessellationShader = VK_TRUE;    /* needed for D3D11 feature level 11_0 */
+    /* NOT advertised (nothing in the page tier implements them, and DXVK /
+     * vkd3d degrade gracefully): shaderInt64, shaderFloat64,
+     * shaderStorageImageExtendedFormats, shaderStorageImage{Read,Write}WithoutFormat
+     * (storage images are bound blank), sparse*, wideLines, largePoints,
+     * alphaToOne, depthBounds, logicOp, pipelineStatisticsQuery. */
+    /* Only end-to-end implemented features are reported true. Unsupported
+     * features remain false so DXVK/vkd3d cannot select an invalid path. */
+    /* geometryShader/tessellationShader are false (WebGPU has neither stage), so
+     * DXVK caps D3D11 at the feature levels that need neither. FL 9_3 targets
+     * (D3D9 via d3d9.dll, Portal; tri11 9_3) have no geometry/tessellation
+     * stages and are the safe path; FL 10_0+ device creation falls back to it. */
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
     f->depthClamp = VK_TRUE;            /* page requests depth-clip-control when available */
-    f->dualSrcBlend = VK_TRUE;          /* advertised; rare in practice */
-    f->fillModeNonSolid = VK_TRUE;      /* advertised; wireframe not implemented */
-    f->multiViewport = VK_TRUE;         /* advertised; WebGPU supports 1 viewport */
-    f->occlusionQueryPrecise = VK_TRUE;
-    f->sampleRateShading = VK_TRUE;     /* advertised; rare in practice */
-    f->shaderCullDistance = VK_TRUE;    /* advertised; rare in practice */
-    f->shaderImageGatherExtended = VK_TRUE;
-    f->textureCompressionBC = VK_TRUE;  /* needs browser texture-compression-bc */
-    f->fragmentStoresAndAtomics = VK_TRUE;
-    f->vertexPipelineStoresAndAtomics = VK_TRUE;
+    f->textureCompressionBC = v2WebGpuBcSupported() ? VK_TRUE : VK_FALSE;
 }
 
 // ---------------------------------------------------------------------------
@@ -3176,25 +4335,23 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     do {                                                                       \
         if ((addr) && g_mem) {                                                 \
             T f_ = {};                                                         \
-            g_mem->memcpyFromGuest(&f_, (addr), sizeof(f_));                   \
+            /* Feature getters write output fields; never echo guest input bits. */ \
+            g_mem->memcpyFromGuest(&f_, (addr), 16);                           \
             fn(f_);                                                            \
             g_mem->memcpyToGuest((addr), &f_, sizeof(f_));                     \
         }                                                                      \
     } while (0)
-inline void fillRobustness2(VkPhysicalDeviceRobustness2FeaturesEXT& f) {
+// Every TRUE bit has an `implemented` row in source/vulkan/vk-capabilities.json.
+template <class T> inline void fillRobustness2(T& f) {
     f.robustBufferAccess2 = VK_TRUE;
     f.robustImageAccess2 = VK_TRUE;
     f.nullDescriptor = VK_TRUE;
 }
-inline void fillMaintenance5(VkPhysicalDeviceMaintenance5Features& f) {
-        f.maintenance5 = VK_TRUE;
+template <class T> inline void fillMaintenance5(T& f) {
 }
-inline void fillMaintenance6(VkPhysicalDeviceMaintenance6Features& f) {
-        f.maintenance6 = VK_TRUE;
+template <class T> inline void fillMaintenance6(T& f) {
 }
-inline void fillTransformFeedback(VkPhysicalDeviceTransformFeedbackFeaturesEXT& f) {
-    f.transformFeedback = VK_TRUE;
-    f.geometryStreams = VK_TRUE;
+template <class T> inline void fillTransformFeedback(T& f) {
 }
 // vk64_guest.h (the trimmed Vulkan header this TU builds against) does not
 // define VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT or
@@ -3256,99 +4413,50 @@ static_assert(sizeof(Vk64VertexAttributeDivisorFeaturesEXT) == 24,
               "divisor features mirror layout");
 static_assert(sizeof(Vk64Vulkan13Properties) == 216,
               "1.3 properties mirror layout");
+struct Vk32VertexAttributeDivisorFeaturesEXT {
+    VkStructureType sType;
+    U32             pNext;
+    VkBool32        vertexAttributeInstanceRateDivisor;
+    VkBool32        vertexAttributeInstanceRateZeroDivisor;
+};
+static_assert(sizeof(Vk32VertexAttributeDivisorFeaturesEXT) == 16, "32-bit divisor features mirror layout");
 // vkd3d-proton device-creation gate (device.c:2495): requires BOTH divisor
-// features. Same advertisement-only caveat as g_dev_exts above.
-inline void fillVertexAttributeDivisor(Vk64VertexAttributeDivisorFeaturesEXT& f) {
-    f.vertexAttributeInstanceRateDivisor = VK_TRUE;
-    f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
+// features. Exception: a pipeline with a divisor other than 1 is reported by
+// vk64AuditGraphicsPipeline ("vertex-attribute-divisor") and reject the pipeline.
+template <class T> inline void fillVertexAttributeDivisor(T& f) {
 }
-inline void fillDescriptorIndexing(VkPhysicalDeviceDescriptorIndexingFeatures& f) {
-    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderInputAttachmentArrayNonUniformIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_TRUE;
-    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    f.descriptorBindingPartiallyBound = VK_TRUE;
-    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
-    f.runtimeDescriptorArray = VK_TRUE;
+// Exception group: descriptor-indexing bits are vkd3d-proton hard gates
+// (state.c:8352). Descriptor sets are read at submit time so update-after-bind
+// and partially-bound are real; runtime arrays / non-uniform indexing of image
+// arrays need shader-side binding arrays the WebGPU tier lacks, so a shader
+// that uses them fails at pipeline creation in the page tier (noteUnsupported).
+template <class T> inline void fillDescriptorIndexing(T& f) {
 }
-inline void fillFloat16Int8(VkPhysicalDeviceShaderFloat16Int8Features& f) {
-        f.shaderFloat16 = VK_TRUE;
-    f.shaderInt8 = VK_TRUE;
+// shaderFloat16 / shaderInt8 / 16-bit and 8-bit storage / scalar block layout
+// are NOT advertised: WGSL has no 8-bit types and the f16 extension is not
+// wired through the shader translator. DXVK and vkd3d fall back to 32-bit.
+template <class T> inline void fillFloat16Int8(T&) {}
+template <class T> inline void fillStorage16(T&) {}
+template <class T> inline void fillStorage8(T&) {}
+template <class T> inline void fillScalarBlockLayout(T&) {}
+template <class T> inline void fillDepthClipEnable(T& f) {
+    f.depthClipEnable = VK_TRUE;        // page requests depth-clip-control when the browser has it
 }
-inline void fillStorage16(VkPhysicalDevice16BitStorageFeatures& f) {
-    f.storageBuffer16BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
-    f.storagePushConstant16 = VK_TRUE;
-    f.storageInputOutput16 = VK_TRUE;
-}
-inline void fillStorage8(VkPhysicalDevice8BitStorageFeatures& f) {
-    f.storageBuffer8BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer8BitAccess = VK_TRUE;
-    f.storagePushConstant8 = VK_TRUE;
-}
-inline void fillScalarBlockLayout(VkPhysicalDeviceScalarBlockLayoutFeatures& f) {
-        f.scalarBlockLayout = VK_TRUE;
-}
-inline void fillDepthClipEnable(VkPhysicalDeviceDepthClipEnableFeaturesEXT& f) {
-        f.depthClipEnable = VK_TRUE;
-}
-inline void fillVulkan12Features(VkPhysicalDeviceVulkan12Features& f) {
+template <class T> inline void fillVulkan12Features(T& f) {
     // timelineSemaphore is emulated honestly under immediate execution (u64
     // counter per semaphore; a wait for a value the queue already ran past
     // returns SUCCESS, and a wait for a FUTURE value with timeout 0 returns
-    // VK_TIMEOUT). bufferDeviceAddress stays FALSE until the P3 BDA audit proves
-    // DXVK never consumes it: the benign tail returns an error CODE, and if DXVK
-    // treated that as an address it would be catastrophic, not cosmetic.
+    // VK_TIMEOUT). bufferDeviceAddress stays FALSE: nothing hands out addresses.
     f.timelineSemaphore = VK_TRUE;
     f.bufferDeviceAddress = VK_FALSE;
-    f.descriptorIndexing = VK_TRUE;
-    f.shaderInputAttachmentArrayDynamicIndexing = VK_TRUE;
-    f.shaderUniformTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderStorageTexelBufferArrayDynamicIndexing = VK_TRUE;
-    f.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-    f.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingPartiallyBound = VK_TRUE;
-    f.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    f.runtimeDescriptorArray = VK_TRUE;
-    f.samplerMirrorClampToEdge = VK_TRUE;   // vkd3d-proton hard gate (device.c:2636)
-    // vkd3d-proton bindless hard gate (state.c:8352). Same advertisement-only
-    // caveat as the divisor/push_descriptor entries: the clear/triangle probes
-    // never exercise real bindless heaps; page-side support is follow-up.
-    f.shaderStorageTexelBufferArrayNonUniformIndexing = VK_TRUE;
-    f.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-    f.descriptorBindingVariableDescriptorCount = VK_TRUE;
 }
-inline void fillVulkan11Features(VkPhysicalDeviceVulkan11Features& f) {
-    f.storageBuffer16BitAccess = VK_TRUE;
-    f.uniformAndStorageBuffer16BitAccess = VK_TRUE;
-    f.storagePushConstant16 = VK_TRUE;
-    f.multiview = VK_TRUE;
-    f.multiviewGeometryShader = VK_FALSE;
-    f.multiviewTessellationShader = VK_FALSE;
-    f.variablePointers = VK_TRUE;
-    f.variablePointersStorageBuffer = VK_TRUE;
-    f.shaderDrawParameters = VK_TRUE;       // vkd3d-proton hard gate (device.c:2658)
-    f.protectedMemory = VK_FALSE;
+template <class T> inline void fillVulkan11Features(T& f) {
+    // multiview, variablePointers*, 16-bit storage: not advertised (see above).
+    f.shaderDrawParameters = VK_TRUE;       // exception: vkd3d-proton hard gate (device.c:2658)
 }
-inline void fillVulkan13Features(VkPhysicalDeviceVulkan13Features& f) {
+template <class T> inline void fillVulkan13Features(T& f) {
     // DXVK D3D11 baseline hard-requires shaderDemoteToHelperInvocation
-    // (d3d11_device.cpp GetDeviceFeatures). Advertised; demote-vs-kill
-    // nuances are not observable at FL 9_3.
+    // (d3d11_device.cpp GetDeviceFeatures). Exception: demote-vs-kill nuances.
     f.shaderDemoteToHelperInvocation = VK_TRUE;
 }
 
@@ -3385,12 +4493,11 @@ void walkFeatures2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
                 SET_FEATURES(cur, fillVulkan13Features, VkPhysicalDeviceVulkan13Features); break;
             default:
-                if (cur && g_mem) {
-                    static const U8 zeros[512] = {};
-                    g_mem->memcpyToGuest(cur + 16, zeros, sizeof(zeros));
-                    klog_fmt("vk64: Features2 pNext sType=%u not modeled, zeroed (extension disabled)",
-                             (unsigned)sType);
-                }
+                // Unknown sType: the struct's size is unknown, so it is left exactly
+                // as the guest set it (the Vulkan contract is that the app zeroes
+                // feature structs; blindly zeroing 512 bytes here used to clobber the
+                // NEXT chained struct). Counted so a missing model is visible.
+                vk64Unsupported("features2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is").c_str());
                 break;
         }
         cur = g_mem->readq(cur + 8);      /* pNext is at offset 8 in every struct */
@@ -3476,15 +4583,17 @@ void walkProperties2(U64 pNextAddr) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
                 VkPhysicalDeviceTransformFeedbackPropertiesEXT p = {};
                 g_mem->memcpyFromGuest(&p, cur, sizeof(p));
-                p.maxTransformFeedbackStreams = 4;
-                p.maxTransformFeedbackBuffers = 4;
-                p.maxTransformFeedbackBufferSize = 1ull << 27;
-                p.maxTransformFeedbackStreamDataSize = 4096;
-                p.maxTransformFeedbackBufferDataSize = 4096;
-                p.maxTransformFeedbackBufferDataStride = 256;
-                p.transformFeedbackQueries = VK_TRUE;
-                p.transformFeedbackStreamsLinesTriangles = VK_TRUE;
-                p.transformFeedbackDraw = VK_TRUE;
+                // VK_EXT_transform_feedback is not advertised and transformFeedback is FALSE, so every
+                // limit is reported as zero rather than as capabilities no command can use.
+                p.maxTransformFeedbackStreams = 0;
+                p.maxTransformFeedbackBuffers = 0;
+                p.maxTransformFeedbackBufferSize = 0;
+                p.maxTransformFeedbackStreamDataSize = 0;
+                p.maxTransformFeedbackBufferDataSize = 0;
+                p.maxTransformFeedbackBufferDataStride = 0;
+                p.transformFeedbackQueries = VK_FALSE;
+                p.transformFeedbackStreamsLinesTriangles = VK_FALSE;
+                p.transformFeedbackDraw = VK_FALSE;
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -3558,8 +4667,7 @@ void walkProperties2(U64 pNextAddr) {
                 break;
             }
             default:
-                klog_fmt("vk64: Properties2 pNext sType=%u not modeled, left as the guest set it",
-                         (unsigned)sType);
+                vk64Unsupported("properties2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is").c_str());
                 break;
         }
         cur = g_mem->readq(cur + 8);
@@ -3593,18 +4701,76 @@ U64 createSurface() {
     return id;
 }
 
-
+// The unimplemented-entry-point log: once per name (a guest that polls an absent
+// function every frame must not flood the log). vk64Unsupported() still counts
+// every call. Callers hold g_vkMutex.
+static void logAskedFor(const char* abi, const std::string& name) {
+    static std::set<std::string> seen;
+    if (!seen.insert(std::string(abi) + ":" + name).second) return;
+    klog_fmt("%s: asked-for (unimplemented): %s", abi, name.c_str());
+}
 
 } // namespace
 
 // ---------------------------------------------------------------------------
 // Entry point from ksyscall64.
 // ---------------------------------------------------------------------------
+// --- render pass subpass parsing (64-bit guest) ---
+struct RpAttachmentDesc2_64 { U32 sType; U64 pNext; U32 flags, format, samples, loadOp, storeOp, stencilLoadOp, stencilStoreOp, initialLayout, finalLayout; };
+struct RpAttachmentRef2_64 { U32 sType; U64 pNext; U32 attachment, layout, aspectMask; };
+struct RpSubpassDesc2_64 { U32 sType; U64 pNext; U32 flags, pipelineBindPoint, viewMask, inputAttachmentCount; U64 pInputAttachments;
+    U32 colorAttachmentCount; U64 pColorAttachments, pResolveAttachments, pDepthStencilAttachment; U32 preserveAttachmentCount; U64 pPreserveAttachments; };
+static const U32 VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID = 1000199000;
+static bool vk64HasDepthStencilResolve(U64 pNext) {
+    for (U32 hop = 0; pNext && hop < 16; ++hop) {
+        U32 sType = 0; U64 next = 0;
+        g_mem->memcpyFromGuest(&sType, pNext, 4);
+        if (sType == VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID) return true;
+        g_mem->memcpyFromGuest(&next, pNext + 8, 8);
+        pNext = next;
+    }
+    return false;
+}
+static void vk64ParseSubpasses(RenderPass* rp, U64 pSubpasses, U32 count, bool v2) {
+    count = vk64CapCount("renderpass-subpasses", count, VK64_MAX_SUBPASSES);
+    std::vector<SubpassIn> subs(count);
+    auto refs = [&](U64 address, U32 n, std::vector<U32>& out) {
+        n = vk64CapCount("subpass-color-attachments", n, VK64_MAX_ATTACH);
+        out.clear();
+        if (!address) return;
+        if (v2) { std::vector<RpAttachmentRef2_64> r; readArray(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+        else { std::vector<VkAttachmentReference> r; readArray(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+    };
+    auto oneRef = [&](U64 address) -> U32 {
+        if (!address) return VK_ATTACHMENT_UNUSED;
+        if (v2) { RpAttachmentRef2_64 r = {}; return readStruct(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED; }
+        VkAttachmentReference r = {}; return readStruct(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED;
+    };
+    for (U32 i = 0; i < count; ++i) {
+        U32 nColor, nInput, bindPoint, viewMask = 0; U64 pColor, pResolve, pDepth, pNext = 0;
+        if (v2) {
+            RpSubpassDesc2_64 d = {}; if (!readStruct(pSubpasses + (U64)i * sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint; viewMask = d.viewMask;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment; pNext = d.pNext;
+        } else {
+            VkSubpassDescription d = {}; if (!readStruct(pSubpasses + (U64)i * sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment;
+        }
+        subs[i].bindPoint = bindPoint; subs[i].viewMask = viewMask; subs[i].nInput = nInput;
+        refs(pColor, nColor, subs[i].color);
+        refs(pResolve, nColor, subs[i].resolve);
+        subs[i].depth = oneRef(pDepth);
+        subs[i].depthStencilResolve = v2 && pNext && vk64HasDepthStencilResolve(pNext);
+    }
+    vk64SetupSubpasses(rp, subs);
+}
 U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
     // NB: constructed AFTER the lock so the destructor (which touches the
     // profiler accumulators) also runs under g_vkMutex. BW64_VKPROF, no-op when unset.
     VkProfTrapTimer vkprofTrap(fnId);
+    g_dropFn = fnId;
     g_mem32 = nullptr;
     g_mem = cpu ? cpu->memory : nullptr;
 
@@ -3620,7 +4786,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // actually asks for.
         VK64Args a0 = {};
         if (argsAddr && g_mem) g_mem->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
-        klog_fmt("vk64: asked-for (unimplemented): %s", guestStr(a0.a[0]).c_str());
+        logAskedFor("vk64", guestStr(a0.a[0]));
+        vk64Unsupported(("fn:" + guestStr(a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
     if (fnId == VK64_fn_traceProc) {
@@ -3764,7 +4931,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VkQueueFamilyProperties q = {};
         q.queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
         q.queueCount = 1;
-        q.timestampValidBits = 64;
+        q.timestampValidBits = 0;
         q.minImageTransferGranularity = VkExtent3D{1, 1, 1};
         if (v2) {
             VkQueueFamilyProperties2 q2 = {};
@@ -3790,10 +4957,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties2: {
         // (physDev, format, out VkFormatProperties2) + FormatProperties3 pNext.
-        if (!args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !args.a[2]);
         const U32 format = (U32)args.a[1];
         VkFormatProperties2 p2 = {};
-        if (!readStruct(args.a[2], p2)) return 0;
+        VK64_DROP_IF(return 0, !readStruct(args.a[2], p2));
         const VkFormatFeatureFlags img = v2FormatFeatureFlags(format);
         p2.formatProperties.linearTilingFeatures = img;
         p2.formatProperties.optimalTilingFeatures = img;
@@ -3816,8 +4983,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties: {
         // (physDev, format, type, tiling, usage, flags, out VkImageFormatProperties)
         if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 format = (U32)args.a[1];
+        if (!v2FormatIsSupportedImage(format)) {
+            vk64Unsupported("image-format", "format properties queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         VkImageFormatProperties pr = {};
-        fillImageFormatProps(&pr);
+        fillImageFormatProps(&pr, format, (U32)args.a[2]);
         writeStruct(args.a[6], pr);
         return VK_SUCCESS;
     }
@@ -3828,7 +5000,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         g_mem->memcpyFromGuest(&p2, args.a[2], sizeof(p2));
         VkPhysicalDeviceImageFormatInfo2 info = {};
         g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
-        fillImageFormatProps(&p2.imageFormatProperties);
+        if (!v2FormatIsSupportedImage(info.format)) {
+            vk64Unsupported("image-format", "image format properties2 queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        fillImageFormatProps(&p2.imageFormatProperties, info.format, info.type);
         g_mem->memcpyToGuest(args.a[2], &p2, sizeof(p2));
         return VK_SUCCESS;
     }
@@ -3910,30 +5086,23 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // bridge (e.g., via winevulkan paths that bypass our vkCreateBuffer).
         // Return sensible defaults rather than failing, so the allocator
         // can proceed. The size is advisory; DXVK validates it.
-        U64 bufSize = (b && b->size) ? b->size : 65536;
-        VkMemoryRequirements2 out2 = {};
-        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
-        out2.memoryRequirements.size = (bufSize + 255) & ~(U64)255;
-        out2.memoryRequirements.alignment = 256;
-        out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
-        // Fill chained VkMemoryDedicatedRequirements in place.
-        U64 pn = out2.pNext;
-        while (pn) {
-            U32 st = 0;
-            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
-            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
-                VkMemoryDedicatedRequirements dr = {};
-                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
-                dr.prefersDedicatedAllocation = 0;
-                dr.requiresDedicatedAllocation = 0;
-                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
-                break;
-            }
-            U64 nxt = 0;
-            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
-            pn = nxt;
-        }
+        writeRequirements64(args.a[2], (b && b->size) ? b->size : 65536);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceImageMemoryRequirements: {
+        // (dev, VkDeviceImageMemoryRequirements*, VkMemoryRequirements2*) - core 1.3.
+        // sType@0 pNext@8 pCreateInfo@16; no image object exists, so size it from the create info.
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        VkImageCreateInfo ci = {};
+        const U64 pCreateInfo = rd64(args.a[1] + 16);
+        if (!pCreateInfo) return VK_ERROR_INITIALIZATION_FAILED;
+        g_mem->memcpyFromGuest(&ci, pCreateInfo, sizeof(ci));
+        Image tmp;
+        tmp.w = ci.extent.width; tmp.h = ci.extent.height; tmp.d = ci.extent.depth;
+        tmp.layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        tmp.mips = ci.mipLevels ? ci.mipLevels : 1;
+        tmp.format = ci.format;
+        writeRequirements64(args.a[2], imageDataBytes(tmp));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
@@ -3949,28 +5118,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyFromGuest(&ci, devInfo.pCreateInfo, sizeof(ci));
             createInfoSize = ci.size;
         }
-        VkMemoryRequirements2 out2 = {};
-        g_mem->memcpyFromGuest(&out2, args.a[2], sizeof(out2));
-        out2.memoryRequirements.size = createInfoSize ? ((createInfoSize + 255) & ~(U64)255) : 256;
-        out2.memoryRequirements.alignment = 256;
-        out2.memoryRequirements.memoryTypeBits = 0xF;
-        g_mem->memcpyToGuest(args.a[2], &out2, sizeof(out2));
-        U64 pn = out2.pNext;
-        while (pn) {
-            U32 st = 0;
-            g_mem->memcpyFromGuest(&st, pn, sizeof(st));
-            if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
-                VkMemoryDedicatedRequirements dr = {};
-                g_mem->memcpyFromGuest(&dr, pn, sizeof(dr));
-                dr.prefersDedicatedAllocation = 0;
-                dr.requiresDedicatedAllocation = 0;
-                g_mem->memcpyToGuest(pn, &dr, sizeof(dr));
-                break;
-            }
-            U64 nxt = 0;
-            g_mem->memcpyFromGuest(&nxt, pn + 8, sizeof(nxt));
-            pn = nxt;
-        }
+        writeRequirements64(args.a[2], createInfoSize ? createInfoSize : 256);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetImageMemoryRequirements: {
@@ -4131,21 +5279,33 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo64Local ci = {};
         if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 id = 0;
-        QueryPool* pool = createObj<QueryPool>(K_QUERYPOOL, id);
-        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
-        wr64(args.a[3], id);
-        return VK_SUCCESS;
+        const char* feature = ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query"
+            : ci.queryType == vkquery::VKQUERY_TIMESTAMP ? "timestamp-query" : "pipeline-statistics-query";
+        vk64Unsupported(feature, "query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+        wr64(args.a[3], 0);
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkDestroyQueryPool:          dropObj(args.a[1]); return 0;
-    case VK64_fn_vkResetQueryPool:
-    case VK64_fn_vkCmdResetQueryPool:
-    case VK64_fn_vkCmdBeginQuery:
-    case VK64_fn_vkCmdEndQuery:
+    case VK64_fn_vkResetQueryPool: {
+        QueryPool* pool = objOf<QueryPool>(args.a[1], K_QUERYPOOL, "vkResetQueryPool");
+        if (!pool || args.a[2] > pool->count || args.a[3] > pool->count - args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n = (U32)args.a[3];
+        for (U32 i=0;i<n;i++) { pool->results[args.a[2]+i]=0; pool->available[args.a[2]+i]=0; }
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdResetQueryPool: {
+        CmdBuf* cb=cbOf(args.a[0],"vkCmdResetQueryPool"); QueryPool* pool=objOf<QueryPool>(args.a[1],K_QUERYPOOL,"vkCmdResetQueryPool");
+        VK64_DROP_IF(return 0,!cb||!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2]);
+        Cmd c;c.kind=CMD_RESET_QUERY;c.a=args.a[1];c.b=args.a[2];c.c=args.a[3];pushCmd(cb,c);return 0;
+    }
+    case VK64_fn_vkCmdBeginQuery:
+    case VK64_fn_vkCmdEndQuery: {
+        vk64Unsupported("occlusion-query", "occlusion queries are not implemented; device feature bit is false");
+        return 0;
+    }
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyQueryPoolResults");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
         c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
                         (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
@@ -4181,7 +5341,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkFreeCommandBuffers: {
         U32 n = (U32)args.a[2];
         CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkFreeCommandBuffers");
-        if (!pool || pool->device != args.a[0]) return 0;
+        VK64_DROP_IF(return 0, !pool || pool->device != args.a[0]);
         for (U32 i = 0; i < n; i++) {
             U64 id = rd64(args.a[3] + (U64)i * 8);
             CmdBuf* cb = cbOf(id, "vkFreeCommandBuffers");
@@ -4311,10 +5471,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // per buffer. 256MB stride guarantees VA ranges never overlap, so
         // vkd3d's va_map range lookups (va + offset) stay unambiguous.
         struct { U64 sType; U64 pNext; U64 buffer; } info = {};
-        if (!args.a[1] || !g_mem) return 0;
+        VK64_DROP_IF(return 0, !args.a[1] || !g_mem);
         g_mem->memcpyFromGuest(&info, args.a[1], sizeof(info));
         Buffer* b = objOf<Buffer>(info.buffer, K_BUFFER, "vkGetBufferDeviceAddress");
-        if (!b) return 0;
+        VK64_DROP_IF(return 0, !b);
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
@@ -4324,6 +5484,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCreateImage: {
         VkImageCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIsSupportedImage(ci.format)) {
+            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
+            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
+            ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
+            vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         U64 id = 0;
         Image* im = createObj<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
@@ -4344,25 +5520,36 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         v->image = ci.image;
         v->format = ci.format ? ci.format : src->format;
         v->aspect = ci.subresourceRange.aspectMask;
+        {
+            const U32 sw[4] = {ci.components.r, ci.components.g, ci.components.b, ci.components.a};
+            vk64InitImageView(v, src, ci.viewType, sw, ci.subresourceRange.baseMipLevel, ci.subresourceRange.levelCount,
+                              ci.subresourceRange.baseArrayLayer, ci.subresourceRange.layerCount);
+        }
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateBufferView: {
         VkBufferViewCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
-        // Buffer may be from outside our bridge; don't fail if unknown.
+        Buffer* buf = objOf<Buffer>(ci.buffer, K_BUFFER, "vkCreateBufferView");
+        if (!buf) { wr64(args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        U64 effOffset = 0, effRange = 0;
+        VkResult res = vk64BufferViewRange(buf->size, ci.format, ci.offset, ci.range, effOffset, effRange);
+        if (res != VK_SUCCESS) { wr64(args.a[3], 0); return res; }
         U64 id = 0;
         BufferView* v = createObj<BufferView>(K_BUFFERVIEW, id);
-        v->buffer = ci.buffer;
-        v->format = ci.format;
-        v->offset = ci.offset;
-        v->range = ci.range;
+        if (!v) { wr64(args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        v->buffer = ci.buffer; v->format = ci.format; v->offset = effOffset; v->range = effRange;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSampler: {
         VkSamplerCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor)) {
+            wr64(args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Sampler* s = createObj<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
@@ -4378,7 +5565,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         RenderPass* rp = createObj<RenderPass>(K_RENDERPASS, id);
-        rp->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<VkAttachmentDescription> atts;
         readArray(ci.pAttachments, rp->natt, atts);
         for (U32 i = 0; i < atts.size(); i++) {
@@ -4389,17 +5576,42 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
-        if (atts.size() > 1) rp->depthFmt = atts[1].format;
+        vk64ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, false);
+        wr64(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass2: {
+        VkRenderPassCreateInfo2 ci = {};
+        if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj<RenderPass>(K_RENDERPASS, id);
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
+        std::vector<RpAttachmentDesc2_64> atts;
+        readArray(ci.pAttachments, rp->natt, atts);
+        for (U32 i = 0; i < atts.size(); i++) {
+            rp->formats[i] = atts[i].format;
+            rp->loadOps[i] = atts[i].loadOp;
+            rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
+            rp->samples[i] = atts[i].samples;
+        }
+        vk64ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, true);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateFramebuffer: {
         VkFramebufferCreateInfo ci = {};
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.layers > 1) {
+            vk64Unsupported("layered-framebuffer", "WebGPU replay supports one render-target layer; framebuffer rejected");
+            wr64(args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Framebuffer* fb = createObj<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;
-        fb->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        fb->natt = vk64CapCount("framebuffer-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<VkImageView> views;
         readArray(ci.pAttachments, fb->natt, views);
         for (U32 i = 0; i < views.size(); i++) fb->views[i] = views[i];
@@ -4414,6 +5626,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         std::vector<VkGraphicsPipelineCreateInfo> cis;
         readArray(args.a[3], n, cis);
+        VkResult result = VK_SUCCESS;
         for (U32 i = 0; i < n; i++) {
             const VkGraphicsPipelineCreateInfo& ci = cis[i];
             U64 id = 0;
@@ -4445,10 +5658,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // vertex layout to build and nothing rasterizes.
             VkPipelineVertexInputStateCreateInfo vi = {};
             if (readStruct(ci.pVertexInputState, vi)) {
-                p->nvb = vi.vertexBindingDescriptionCount > VK64_MAX_VERT_BINDINGS
-                             ? VK64_MAX_VERT_BINDINGS : vi.vertexBindingDescriptionCount;
-                p->nva = vi.vertexAttributeDescriptionCount > VK64_MAX_VERT_ATTRIBS
-                             ? VK64_MAX_VERT_ATTRIBS : vi.vertexAttributeDescriptionCount;
+                p->nvb = vk64CapCount("vertex-bindings", vi.vertexBindingDescriptionCount, VK64_MAX_VERT_BINDINGS);
+                p->nva = vk64CapCount("vertex-attributes", vi.vertexAttributeDescriptionCount, VK64_MAX_VERT_ATTRIBS);
                 std::vector<VkVertexInputBindingDescription> vbs;
                 readArray(vi.pVertexBindingDescriptions, p->nvb, vbs);
                 for (U32 b = 0; b < vbs.size(); b++) {
@@ -4465,25 +5676,58 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 }
             }
             VkPipelineDynamicStateCreateInfo dynamic = {};
+            bool dynamicRejected = false;
             if (readStruct(ci.pDynamicState, dynamic)) {
                 std::vector<VkDynamicState> states;
                 readArray(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states) {
-                    const U32 value = (U32)state;
-                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
-                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
-                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
-                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
-                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
-                    if (value == 4) p->blendConstantsDynamic = true;
-                }
+                std::vector<U32> dynValues;
+                for (auto state : states) dynValues.push_back((U32)state);
+                if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<VkPipelineColorBlendAttachmentState> blends;
-            readArray(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            readArray(cbs.pAttachments, vk64CapCount("blend-attachments", cbs.attachmentCount, VK64_MAX_ATTACH), blends);
             captureColorBlend(*p, blends);
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<VkPipelineShaderStageCreateInfo> stages;
             readArray(ci.pStages, ci.stageCount, stages);
+            {
+                PipelineAudit audit;
+                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                audit.topology = ia.topology;
+                audit.polygonMode = rs.polygonMode;
+                audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.dynMask = p->dynMask;
+                audit.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers();
+                p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
+                audit.logicOp = cbs.logicOpEnable;
+                audit.depthBounds = ds.depthBoundsTestEnable;
+                vk64AuditBlend(*p, audit);
+                vk64AuditStencil(*p, audit);
+                for (U32 a = 0; a < p->nva; ++a)
+                    if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
+                if (readStruct(ci.pVertexInputState, vi))
+                    for (U64 cur = vi.pNext; cur && g_mem; cur = g_mem->readq(cur + 8)) {
+                        if (g_mem->readd(cur) != 1000190001u) continue;   // VkPipelineVertexInputDivisorStateCreateInfoEXT
+                        const U32 cnt = std::min<U32>(g_mem->readd(cur + 16), 64);
+                        const U64 arr = g_mem->readq(cur + 24);
+                        for (U32 k = 0; k < cnt && arr; k++)
+                            if (g_mem->readd(arr + (U64)k * 8 + 4) != 1) audit.vertexDivisor = true;
+                    }
+                VkPipelineViewportStateCreateInfo vp = {};
+                if (readStruct(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
+                VkPipelineMultisampleStateCreateInfo ms = {};
+                if (readStruct(ci.pMultisampleState, ms)) {
+                    audit.sampleCount = (U32)ms.rasterizationSamples;
+                    audit.sampleShading = ms.sampleShadingEnable;
+                    audit.alphaToOne = ms.alphaToOneEnable;
+                }
+                if (vk64AuditGraphicsPipeline(audit) || dynamicRejected) {
+                    dropObj(id);
+                    wr64(args.a[5] + (U64)i * 8, 0);
+                    result = VK_ERROR_FEATURE_NOT_PRESENT;
+                    continue;
+                }
+            }
             for (const VkPipelineShaderStageCreateInfo& st : stages) {
                 if (st.stage == VK_SHADER_STAGE_VERTEX_BIT) {
                     p->vs = st.module;
@@ -4498,27 +5742,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->rp = ci.renderPass;
             wr64(args.a[5] + (U64)i * 8, id);
         }
-        return VK_SUCCESS;
+        return result;
     }
     case VK64_fn_vkCreateComputePipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
-        // vkd3d-proton builds internal compute pipelines (clear-UAV ops) during
-        // device creation; without this the benign stub returns -2 and
-        // D3D12CreateDevice fails E_OUTOFMEMORY. Capture is minimal: the
-        // compute shader module + layout, enough for the page tier to key on.
+        // Compute shader modules are refused at vkCreateShaderModule (spirv-compute-entry) because the
+        // V2 protocol has no dispatch record and the WGSL translator has no compute path, so a compute
+        // pipeline can never be valid. Say so now instead of handing out a pipeline whose dispatches
+        // vanish at submit: null handles, VK_ERROR_FEATURE_NOT_PRESENT (shared with graphics rejection).
         U32 n = (U32)args.a[2];
         if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
             return VK_ERROR_INITIALIZATION_FAILED;
-        for (U32 i = 0; i < n; i++) {
-            VkComputePipelineCreateInfo ci = {};
-            g_mem->memcpyFromGuest(&ci, args.a[3] + (U64)i * sizeof(ci), sizeof(ci));
-            U64 id = 0;
-            Pipeline* pl = createObj<Pipeline>(K_PIPELINE, id);
-            pl->cs = ci.stage.module;
-            pl->layout = ci.layout;
-            wr64(args.a[5] + (U64)i * 8, id);
-        }
-        return VK_SUCCESS;
+        for (U32 i = 0; i < n; i++) wr64(args.a[5] + (U64)i * 8, 0);
+        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkCreatePipelineLayout: {
         VkPipelineLayoutCreateInfo ci = {};
@@ -4527,6 +5764,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             klog_fmt("vk64: vkCreatePipelineLayout FAILED: readOk=%d outNull=%d",
                      (int)(readStruct(args.a[1], ci)), (int)(!args.a[3]));
             return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (ci.setLayoutCount > 3) {
+            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         U64 id = 0;
         PipelineLayout* l = createObj<PipelineLayout>(K_PIPELAYOUT, id);
@@ -4541,21 +5782,28 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!readStruct(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         DescSetLayout* l = createObj<DescSetLayout>(K_SETLAYOUT, id);
-        l->nbind = ci.bindingCount > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : ci.bindingCount;
         std::vector<VkDescriptorSetLayoutBinding> binds;
-        readArray(ci.pBindings, l->nbind, binds);
-        for (U32 i = 0; i < binds.size(); i++) {
-            l->binds[i].binding = binds[i].binding;
-            l->binds[i].type = binds[i].descriptorType;
+        readArray(ci.pBindings, ci.bindingCount, binds);
+        for (const auto& b : binds) {
+            LayoutBinding& lb = l->binds[b.binding];
+            lb.type = b.descriptorType; lb.count = b.descriptorCount;
+            if (b.pImmutableSamplers && (b.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+                                         b.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                const U32 n = std::min<U32>(b.descriptorCount, VK64_MAX_DESC_ARRAY);
+                for (U32 i = 0; i < n; i++) lb.immutable.push_back(rd64(b.pImmutableSamplers + (U64)i * 8));
+            }
         }
+        finishDescLayout(*l);
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorPool: {
-        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+        VkDescriptorPoolCreateInfo ci = {};
+        if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3] || !readStruct(args.a[1], ci))
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj<DescPool>(K_DESCPOOL, id);
+        DescPool* pool = createObj<DescPool>(K_DESCPOOL, id);
+        pool->maxSets = ci.maxSets; pool->flags = ci.flags;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -4572,6 +5820,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         m->code.resize((size_t)ci.codeSize);
         g_mem->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
         m->hash = blob_hash(m->code.data(), m->code.size());
+        VkResult auditResult = vk64AuditSpirv(m->code);
+        if (auditResult != VK_SUCCESS) {
+            dropObj(id);
+            wr64(args.a[3], 0);
+            return auditResult;
+        }
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateShaderModule %llu bytes (hash %016llx)",
                  (unsigned long long)ci.codeSize, (unsigned long long)m->hash);
@@ -4630,21 +5884,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (device, pWaitInfo*, timeout)
         VkSemaphoreWaitInfo wi = {};
         if (!readStruct(args.a[1], wi)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (wi.semaphoreCount && (!wi.pSemaphores || !wi.pValues)) return VK_ERROR_INITIALIZATION_FAILED;
+        bool any = false, all = true;
         for (U32 i = 0; i < wi.semaphoreCount; i++) {
             U64 semId = rd64(wi.pSemaphores + (U64)i * 8);
             U64 want  = rd64(wi.pValues + (U64)i * 8);
             Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkWaitSemaphores");
             if (!s) return VK_ERROR_INITIALIZATION_FAILED;
-            if (s->counter < want) {
-                // A value the queue has not reached yet. timeout == 0 means
-                // "don't block", and the spec answer there is VK_TIMEOUT, not a
-                // lie; any other timeout blocks, and since execution is immediate
-                // the value is as good as reached — bump it forward, monotonically.
-                if (!args.a[2]) return VK_TIMEOUT;
-                s->counter = want;
-            }
+            const bool reached = s->counter >= want;
+            any |= reached; all &= reached;
         }
-        return VK_SUCCESS;
+        return ((wi.flags & VK_SEMAPHORE_WAIT_ANY_BIT) ? any : all) ? VK_SUCCESS : VK_TIMEOUT;
     }
     case VK64_fn_vkSignalSemaphore: {
         // (device, pSignalInfo*)
@@ -4695,12 +5945,32 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkAllocateDescriptorSets: {
         VkDescriptorSetAllocateInfo ai = {};
         if (!readStruct(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        DescPool* pool = objOf<DescPool>(ai.descriptorPool, K_DESCPOOL, "vkAllocateDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.descriptorSetCount; i++) wr64(args.a[2] + (U64)i * 8, 0);
+        if (pool->maxSets && pool->sets.size() + ai.descriptorSetCount > pool->maxSets) return VK_ERROR_OUT_OF_POOL_MEMORY;
         for (U32 i = 0; i < ai.descriptorSetCount; i++) {
             U64 id = 0;
             DescSet* s = createObj<DescSet>(K_SET, id);
             s->layout = rd64(ai.pSetLayouts + (U64)i * 8);
+            s->pool = ai.descriptorPool;
+            pool->sets.insert(id);
             wr64(args.a[2] + (U64)i * 8, id);
         }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkResetDescriptorPool: {
+        // (device, pool, flags)
+        DescPool* pool = objOf<DescPool>(args.a[1], K_DESCPOOL, "vkResetDescriptorPool");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        resetDescPool(*pool);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkFreeDescriptorSets: {
+        // (device, pool, count, pSets*)
+        DescPool* pool = objOf<DescPool>(args.a[1], K_DESCPOOL, "vkFreeDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < (U32)args.a[2]; i++) freeDescSet(rd64(args.a[3] + (U64)i * 8));
         return VK_SUCCESS;
     }
     // VkBindBufferMemoryInfo / VkBindImageMemoryInfo share this x86-64 layout.
@@ -4768,71 +6038,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkUpdateDescriptorSets: {
         // (device, nWrite, pWrites*, nCopy, pCopies*)
-        U32 nw = (U32)args.a[1];
+        U32 nw = (U32)args.a[1], nc = (U32)args.a[3];
         std::vector<VkWriteDescriptorSet> writes;
         readArray(args.a[2], nw, writes);
-        for (U32 i = 0; i < nw; i++) {
+        for (U32 i = 0; i < nw && i < writes.size(); i++) {
             const VkWriteDescriptorSet& w = writes[i];
             DescSet* s = objOf<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
-            Binding* b = nullptr;
-            for (U32 k = 0; k < s->nbind; k++)
-                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
-            if (!b) {
-                if (s->nbind >= VK64_MAX_BINDINGS) continue;
-                b = &s->binds[s->nbind++];
-                b->binding = w.dstBinding;
-            }
-            // Fidelity: the write's own descriptorType (not the set layout's) and
-            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
-            // partial-overlap ranges (dstArrayElement/count), and collapsing those
-            // to "element 0 of binding N" makes the recorded set a different set
-            // from the one the app declared. The element payloads stay in the flat
-            // Binding table for now (schema v2 is P3); index and count are honest
-            // today so that table can grow without re-reading the guest.
-            b->type = w.descriptorType;
-            b->dstArrayElement = w.dstArrayElement;
-            b->count = w.descriptorCount ? w.descriptorCount : 1;
-            if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                VkDescriptorBufferInfo bi = {};
-                readStruct(w.pBufferInfo, bi);
-                b->obj = bi.buffer;
-                b->range = bi.range;
-                b->bufOff = bi.offset;
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                // The caller's inline data must be consumed before this update returns.
-                for (U64 cur = w.pNext; cur && g_mem;) {
-                    if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
-                        VkWriteDescriptorSetInlineUniformBlock ib = {};
-                        g_mem->memcpyFromGuest(&ib, cur, sizeof(ib));
-                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
-                        break;
-                    }
-                    cur = g_mem->readq(cur + 8);
-                }
-            } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                       w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
-                       w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                // image-only / sampler-only: keep the one handle each names, so a
-                // storage image is not misreported as a sampled image
-                VkDescriptorImageInfo ii = {};
-                readStruct(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else {
-                // combined image sampler (and texel buffers, which share the
-                // VkDescriptorBufferInfo shape)
-                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
-                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
-                // always read VkDescriptorImageInfo.
-                {
-                    VkDescriptorImageInfo ii = {};
-                    readStruct(w.pImageInfo, ii);
-                    b->obj = ii.imageView;
-                    b->range = ii.sampler;
-                }
-            }
+            VK64_DROP_IF(continue, !s);
+            applyWrite64(*s, w);
+        }
+        std::vector<VkCopyDescriptorSet> copies;
+        readArray(args.a[4], nc, copies);
+        for (const VkCopyDescriptorSet& c : copies) {
+            DescSet* src = objOf<DescSet>(c.srcSet, K_SET, "vkUpdateDescriptorSets");
+            DescSet* dst = objOf<DescSet>(c.dstSet, K_SET, "vkUpdateDescriptorSets");
+            VK64_DROP_IF(continue, !src || !dst);
+            applyDescCopy(*src, c.srcBinding, c.srcArrayElement, *dst, c.dstBinding, c.dstArrayElement, c.descriptorCount);
         }
         return VK_SUCCESS;
     }
@@ -4846,15 +6067,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         std::vector<VkDescriptorUpdateTemplateEntry> entries;
         readArray(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            if (t->nentry >= VK64_MAX_BINDINGS) break;
-            TmplEntry& te = t->entries[t->nentry++];
+            TmplEntry te;
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
             te.count = e.descriptorCount; te.type = e.descriptorType;
             te.offset = e.offset; te.stride = e.stride;
+            t->entries.push_back(te);
         }
         wr64(args.a[3], id);
         klog_fmt("vk64: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
-                 (unsigned long long)id, (unsigned)t->nentry);
+                 (unsigned long long)id, (unsigned)t->entries.size());
         return VK_SUCCESS;
     }
     case VK64_fn_vkDestroyDescriptorUpdateTemplate: {
@@ -4867,54 +6088,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DescSet* s = objOf<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
         DescTemplate* t = objOf<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
         if (!s || !t || !args.a[3]) return VK_SUCCESS;
-        U64 dataBase = args.a[3];
-        for (U32 ei = 0; ei < t->nentry; ei++) {
-            const TmplEntry& te = t->entries[ei];
-            // Inline descriptorCount is a byte count; stride is ignored.
-            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
-            for (U32 i = 0; i < elements; i++) {
-                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
-                U32 binding = te.binding;
-                U32 elem = te.arrayElement + i;
-                if (binding >= VK64_MAX_BINDINGS) continue;
-                Binding* b = nullptr;
-                for (U32 k = 0; k < s->nbind; k++)
-                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
-                if (!b) {
-                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
-                    b = &s->binds[s->nbind++];
-                    b->binding = binding;
-                }
-                b->type = te.type;
-                b->dstArrayElement = elem;
-                b->count = 1;
-                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    U64 buf = rd64(dAddr); U64 off = rd64(dAddr + 8); U64 range = rd64(dAddr + 16);
-                    b->obj = buf; b->range = range; b->bufOff = off;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-                    U64 view = rd64(dAddr + 8);
-                    b->obj = view; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    // VkDescriptorImageInfo: sampler @0, imageView @8.
-                    // (2026-10-09: D3D9 textured draw was black — template path
-                    // dropped the image view, so no IMAGE_DATA was emitted.)
-                    U64 samp = rd64(dAddr);
-                    U64 view = rd64(dAddr + 8);
-                    b->obj = view; b->range = samp;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    U64 samp = rd64(dAddr);
-                    b->obj = samp; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    U64 bv = rd64(dAddr);
-                    b->obj = bv; b->range = 0;
-                }
-            }
-        }
+        applyDescTemplate(*s, *t, args.a[3], rd64);
         return VK_SUCCESS;
     }
     case VK64_fn_vkMapMemory: {
@@ -4975,7 +6149,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkDestroyCommandPool: {
         if (!args.a[1]) return 0;
         CmdPool* pool = objOf<CmdPool>(args.a[1], K_CMDPOOL, "vkDestroyCommandPool");
-        if (!pool || pool->device != args.a[0]) return 0;
+        VK64_DROP_IF(return 0, !pool || pool->device != args.a[0]);
         // Collect first: dropObj erases the shared object map.
         std::vector<U64> children;
         for (const auto& kv : g_objs)
@@ -4994,7 +6168,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkDestroyPipeline:        dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyPipelineLayout:  dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyDescriptorSetLayout: dropObj(args.a[1]); return 0;
-    case VK64_fn_vkDestroyDescriptorPool:  dropObj(args.a[1]); return 0;
+    case VK64_fn_vkDestroyDescriptorPool:  destroyDescPool(args.a[1]); return 0;
     case VK64_fn_vkDestroyPipelineCache:   dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroyFence:           dropObj(args.a[1]); return 0;
     case VK64_fn_vkDestroySemaphore:       dropObj(args.a[1]); return 0;
@@ -5031,10 +6205,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkBeginCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
         resetCmdBuf(cb);
+        cb->lifecycle.onBegin();
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = cbOf(args.a[0], "vkEndCommandBuffer");
+        if (cb) cb->lifecycle.onEnd();
         if (vkTrace()) klog_fmt("vk64: vkEndCommandBuffer ncmd=%u", cb ? (unsigned)cb->cmds.size() : 0);
         return VK_SUCCESS;
     }
@@ -5052,8 +6228,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdNextSubpass: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdNextSubpass");
+        VK64_DROP_IF(return 0, !cb);
+        Cmd c;
+        c.kind = CMD_NEXT_SUBPASS;
         pushCmd(cb, c);
         return 0;
     }
@@ -5071,14 +6256,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         klog_fmt("vk64: BEGIN_RP2_CALLED cb=0x%llx", (unsigned long long)args.a[0]);
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRenderPass2");
         VkRenderPassBeginInfo bi = {};
-        if (!cb || !readStruct(args.a[1], bi)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct(args.a[1], bi));
         Cmd c;
         c.kind = CMD_BEGIN_RP;
         c.a = bi.renderPass;
         c.b = bi.framebuffer;
         std::vector<VkClearValue> clears;
-        readArray(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
         pushCmd(cb, c);
         return 0;
     }
@@ -5086,7 +6272,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdEndRenderPass2KHR: {
         // (cmdBuf, pSubpassEndInfo*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRenderPass2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_END_RP;
         pushCmd(cb, c);
@@ -5098,7 +6284,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // are no-ops (we execute synchronously), but we record the call so the
         // command buffer is not empty and DXVK's state tracking works.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPipelineBarrier2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BARRIER;
         pushCmd(cb, c);
@@ -5109,7 +6295,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, pPushConstantsInfo*) — VkPushConstantsInfo has layout,
         // stageFlags, offset, size, pValues. We extract and record like v1.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants2");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         // VkPushConstantsInfo: sType(0), pNext(8), layout(16), stageFlags(24),
         // offset(28), size(32), pValues(40)
         U64 layout = rd64(args.a[1] + 16);
@@ -5132,7 +6318,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, buffer, offset, size, indexType) — v2 adds size param.
         // For our purposes, size is informational; we bind like v1.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer2");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1];
         cb->ibOff = args.a[2];
         // args.a[3] is size (ignored), args.a[4] is indexType
@@ -5149,19 +6335,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBeginRenderingKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBeginRendering");
         VkRenderingInfo ri = {};
-        if (!cb || !readStruct(args.a[1], ri)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct(args.a[1], ri));
         U64 rpId = 0, fbId = 0;
         auto* rp = createObj<RenderPass>(K_RENDERPASS, rpId);
         auto* fb = createObj<Framebuffer>(K_FRAMEBUFFER, fbId);
         cb->dynamicObjects.push_back(rpId);
         cb->dynamicObjects.push_back(fbId);
         fb->rp = rpId; fb->w = ri.renderAreaWidth; fb->h = ri.renderAreaHeight;
+        rp->nsub = 1;
+        vk64DynamicAudit(ri.viewMask, ri.renderAreaOffsetX, ri.renderAreaOffsetY, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             VkRenderingAttachmentInfo att = {};
-            if (!address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att)) return;
+            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att));
             auto* view = objOf<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
-            if (!view) return;
+            VK64_DROP_IF(return, !view);
+            vk64AuditAttachmentView(view);
             auto* image = objOf<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;
@@ -5171,9 +6360,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (depth) {
                 float value; memcpy(&value, att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
-            } else if (i == 0) memcpy(c.f, att.clearValue, 16);
+            } else vk64SetAttachmentClear(c, i, rp->formats[i], att.clearValue);
+            SubpassMap& sm = rp->sub[0];
+            if (depth) {
+                sm.depth = i;
+                if (att.resolveMode) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve in dynamic rendering is not performed");
+            } else if (sm.nColor < VK64_MAX_ATTACH) {
+                U32 slot = vk64DynamicResolveSlot(rp, fb, att.resolveImageView, att.resolveMode, objOf<ImageView>(att.resolveImageView, K_IMAGEVIEW, "vkCmdBeginRendering"));
+                sm.color[sm.nColor] = i; sm.resolve[sm.nColor++] = slot;
+            }
         };
-        U32 colors = std::min(ri.colorAttachmentCount, (U32)VK64_MAX_ATTACH);
+        U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
             attachment(ri.pColorAttachments + (U64)i * sizeof(VkRenderingAttachmentInfo), false);
         attachment(ri.pDepthAttachment, true);
@@ -5195,7 +6392,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdEndRenderingKHR: {
         // (cmdBuf)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdEndRendering");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_END_RP;
         pushCmd(cb, c);
@@ -5204,7 +6401,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindPipeline: {
         // (cmdBuf, bindPoint, pipeline)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindPipeline");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BIND_PIPE;
         c.a = args.a[2];
@@ -5215,27 +6412,23 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindDescriptorSets: {
         // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindDescriptorSets");
-        if (!cb) return 0;
-        U32 firstSet = (U32)args.a[3];
-        U32 setCount = (U32)args.a[4];
-        if (setCount > VK64_MAX_SETS) setCount = VK64_MAX_SETS;
-        for (U32 i = 0; i < setCount; i++) {
-            U64 set = rd64(args.a[5] + (U64)i * 8);
-            if (firstSet + i < VK64_MAX_SETS) cb->sets[firstSet + i] = set;
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+            return 0;
         }
-        Cmd c;
-        c.kind = CMD_BIND_SETS;
-        memcpy(c.sets, cb->sets, sizeof(c.sets));
-        c.a = firstSet;
-        c.b = setCount;
-        pushCmd(cb, c);
+        std::vector<U64> ids;
+        for (U32 i = 0; i < (U32)args.a[4] && i < VK64_MAX_SETS && args.a[5]; i++) ids.push_back(rd64(args.a[5] + (U64)i * 8));
+        std::vector<U32> dyn;
+        readArray(args.a[7], (U32)args.a[6], dyn);
+        recordBindSets(cb, (U32)args.a[3], ids, dyn);
         return 0;
     }
     case VK64_fn_vkCmdSetStencilCompareMask:
     case VK64_fn_vkCmdSetStencilWriteMask:
     case VK64_fn_vkCmdSetStencilReference: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_STENCIL_STATE;
         c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
         c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
@@ -5243,31 +6436,85 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdSetBlendConstants: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem->memcpyFromGuest(c.f, args.a[1], 16);
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetExtendedDynamicState: {
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdSetExtendedDynamicState");
+        VK64_DROP_IF(return 0, !cb);
+        if (!vk64ExtendedDynamicStateOk((U32)args.a[1], (U32)args.a[2])) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE; c.a = (U32)args.a[1]; c.b = (U32)args.a[2];
         pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = cbOf(args.a[0], "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_RASTER_STATE;
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
     }
-    // Timestamp query results are synthesized from the host clock at read time and
-    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
-    // accepted without a record.
-    case VK64_fn_vkCmdWriteTimestamp:
-    case VK64_fn_vkCmdSetDepthBounds:
+    case VK64_fn_vkCmdWriteTimestamp: {
+        vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
         return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetKHR: {
+        // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !s);
+        std::vector<VkWriteDescriptorSet> writes;
+        readArray(args.a[5], (U32)args.a[4], writes);
+        for (const VkWriteDescriptorSet& w : writes) applyWrite64(*s, w);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR: {
+        // (cmdBuf, template, layout, set, pData*)
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdPushDescriptorSetWithTemplate");
+        DescTemplate* t = objOf<DescTemplate>(args.a[1], K_TEMPLATE, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !cb || !t || !args.a[4]);
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !s);
+        applyDescTemplate(*s, *t, args.a[4], rd64);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkGetDescriptorSetLayoutSupport: {
+        // (device, pCreateInfo*, pSupport*): every layout this bridge can record is
+        // supported (bindings are an unbounded map; arrays are sparse). A variable
+        // descriptor count query gets the same 4M cap the writes use.
+        for (U64 cur = args.a[2]; cur && g_mem;) {
+            const U32 st = g_mem->readd(cur);
+            if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT) wr32(cur + 16, 1);
+            else if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT)
+                wr32(cur + 16, VK64_MAX_DESC_ARRAY);
+            cur = g_mem->readq(cur + 8);
+        }
+        return 0;
+    }
+    case VK64_fn_vkCmdSetDepthBounds: {
+        // depthBounds is not a feature we advertise: the only valid range is [0,1], which is a no-op.
+        const U32 loBits = (U32)args.a[1], hiBits = (U32)args.a[2];
+        float lo, hi; memcpy(&lo, &loBits, 4); memcpy(&hi, &hiBits, 4);
+        if (lo != 0.0f || hi != 1.0f) vk64Unsupported("depth-bounds-range", "vkCmdSetDepthBounds outside [0,1] ignored; depthBounds feature is off");
+        return 0;
+    }
     case VK64_fn_vkCmdClearDepthStencilImage: {
         // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*): replayed on the
         // page as a render-pass clear of the matching GPU texture subresources.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearDepthStencilImage");
-        if (!cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage")) return 0;
-        if (args.a[4] > 64) { g_frameOverflow = true; return 0; }
+        VK64_DROP_IF(return 0, !cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
+        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem->memcpyFromGuest(&value, args.a[3], sizeof(value));
         Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
@@ -5278,7 +6525,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdSetDepthBias");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DEPTH_BIAS;
         for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
@@ -5316,7 +6563,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDraw: {
         // (cmdBuf, vertexCount, instanceCount, firstVertex, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDraw");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW;
         c.a = args.a[1];   // vertexCount
@@ -5331,10 +6578,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindVertexBuffers2: {
         // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindVertexBuffers");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
-        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
-        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        if (!args.a[3] || !args.a[4] || !count) return 0;
+        if (first >= VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers firstBinding is beyond the bridge limit; buffers are dropped"); return 0; }
+        if (first + count > VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers range exceeds the bridge limit; extra buffers are dropped"); count = VK64_MAX_VERT_BINDINGS - first; }
         for (U32 i = 0; i < count; i++) {
             cb->vbs[first + i] = rd64(args.a[3] + (U64)i * 8);
             cb->vbOff[first + i] = rd64(args.a[4] + (U64)i * 8);
@@ -5359,7 +6607,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdBindIndexBuffer: {
         // (cmdBuf, buffer, offset, indexType)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindIndexBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1]; cb->ibOff = args.a[2]; cb->ibType = (U32)args.a[3];
         Cmd c;
         c.kind = CMD_BIND_IB;
@@ -5370,7 +6618,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
@@ -5391,7 +6639,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
          * with the byte OFFSET kept, because a push is an overlay into a
          * push-constant range rather than a replacement of it. */
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPushConstants");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 off = (U32)args.a[3], size = (U32)args.a[4];
         if (!args.a[5] || !size) return 0;
         if (size > VK64_MAX_PUSH_BYTES) {
@@ -5417,7 +6665,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
          * memory at record time and written back at submit (transfer
          * semantics), before serialization reads the buffer. */
         CmdBuf* cb = cbOf(args.a[0], "vkCmdUpdateBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 size = args.a[3];
         if (!args.a[4] || !size) return 0;
         if (size > 65536) {
@@ -5449,10 +6697,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage");
         U32 nreg = (U32)args.a[4];
         // Defensive: garbage regionCount would cause over-allocation in readArray.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c;
             c.kind = CMD_COPY_B2I;
@@ -5480,7 +6728,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[4];
         std::vector<VkBufferImageCopy> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c; c.kind = CMD_COPY_I2B;
             c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
@@ -5508,10 +6756,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer2");
         U32 nreg = (U32)args.a[4];
         // Defensive: garbage regionCount would cause std::length_error in readArray.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[5], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c; c.kind = CMD_COPY_I2B;
             c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
@@ -5535,16 +6783,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         readArray(args.a[4], nreg, regs);
         Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
         Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         bool anyCopy = false;
         for (const auto& r : regs) {
             U64 sOff = smem->va + src->memOff + r.srcOffset;
             U64 dOff = dmem->va + dst->memOff + r.dstOffset;
             U64 n = r.size;
-            if (r.srcOffset >= smem->size || r.dstOffset >= dmem->size) continue;
+            VK64_DROP_IF(continue, r.srcOffset >= smem->size || r.dstOffset >= dmem->size);
             if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
             if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
             if (!n) continue;
@@ -5553,7 +6801,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
             anyCopy = true;
         }
-        if (anyCopy) dst->dirtyGen = g_bufDirtyTick++;
+        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem); }
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer2:
@@ -5568,15 +6816,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Defensive: a garbage regionCount (e.g. 1447756043 observed from
         // mismatched shim args) would cause std::length_error in readArray.
         // No legitimate call needs more than 1024 regions.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferCopy2L> regs;
         readArray(args.a[4], nreg, regs);
         Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer2");
         Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer2");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
+        bool anyCopy = false;
         for (const auto& r : regs) {
             // Validate the bind-relative offset (including the buffer's bind
             // offset) BEFORE computing absolute addresses. The old check
@@ -5586,8 +6835,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             // The wraparound checks also guard U64 addition overflow.
             U64 sRel = src->memOff + r.srcOffset;
             U64 dRel = dst->memOff + r.dstOffset;
-            if (sRel < src->memOff || sRel >= smem->size) continue;
-            if (dRel < dst->memOff || dRel >= dmem->size) continue;
+            VK64_DROP_IF(continue, sRel < src->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dst->memOff || dRel >= dmem->size);
             U64 sOff = smem->va + sRel;
             U64 dOff = dmem->va + dRel;
             U64 n = r.size;
@@ -5600,7 +6849,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             std::vector<U8> tmp((size_t)n);
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
+            anyCopy = true;
         }
+        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem); }
         return 0;
     }
 
@@ -5613,13 +6864,13 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, dstBuffer, dstOffset, size, data)
         // Fill buffer range with 32-bit pattern repeated.
         Buffer* dst = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
-        if (!dst || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !dst || !dst->mem);
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U64 offset = dst->memOff + args.a[2];
         U64 size = args.a[3];
         U32 data = (U32)args.a[4];
-        if (offset >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, offset >= dmem->size);
         if (offset + size > dmem->size) size = dmem->size - offset;
         if (!size) return 0;
         U64 va = dmem->va + offset;
@@ -5632,21 +6883,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyToGuest(va + i, &data, size - i);
         }
         dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdClearColorImage: {
         // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*)
         // Fill image with color. pColor is VkClearColorValue (16 bytes).
         Image* img = objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
-        if (!img || !img->mem) return 0;
+        VK64_DROP_IF(return 0, !img || !img->mem);
         DeviceMemory* dmem = objOf<DeviceMemory>(img->mem, K_MEMORY, "vkCmdClearColorImage");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U8 color[16] = {0};
         if (args.a[3]) g_mem->memcpyFromGuest(color, args.a[3], 16);
         // Calculate image size; fall back to full memory if unknown
         U64 imgSize = img->pixBytes * (U64)img->w * (U64)img->h;
         if (!imgSize) imgSize = dmem->size - img->memOff;
-        if (!imgSize) return 0;
+        VK64_DROP_IF(return 0, !imgSize);
         U64 va = dmem->va + img->memOff;
         if (va + imgSize > dmem->va + dmem->size) {
             imgSize = dmem->va + dmem->size - va;
@@ -5664,13 +6916,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             done += n;
         }
         img->copied = 1;
+        img->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearAttachments");
-        if (!cb) return 0;
-        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray(args.a[4], (U32)args.a[3], c.clearRects);
@@ -5689,10 +6943,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdCopyImage");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageCopyL> regs;
         readArray(args.a[6], nreg, regs);
@@ -5711,14 +6965,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -5729,6 +6983,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         dst->copied = 1;
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdCopyImage2:
@@ -5745,10 +7001,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[3];
         std::vector<VkImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
@@ -5765,14 +7021,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -5783,6 +7039,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         dst->copied = 1;
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdCopyBufferToImage2:
@@ -5800,10 +7058,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U32 nreg = (U32)args.a[3];
         // Defensive: garbage regionCount (PE shim arg shift) would cause
         // massive over-allocation in readArray and millions of no-op copies.
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
         readArray(args.a[4], nreg, regs);
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         // Record as CMD_COPY_B2I like the v1 version; page handles the copy
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c;
@@ -5839,9 +7097,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdBlitImage");
-        if (!src || !dst) return 0;
+        VK64_DROP_IF(return 0, !src || !dst);
         U32 nreg = (U32)args.a[5];
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkImageBlitL> regs;
         readArray(args.a[6], nreg, regs);
         for (const auto& r : regs) {
@@ -5851,10 +7109,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[7],
                 srcOffsets, dstOffsets, r.srcLayerCount);
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         // U32 filter = (U32)args.a[7]; // 0=NEAREST, 1=LINEAR (currently unused, NEAREST assumed)
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
@@ -5865,25 +7123,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t srcH = r.srcY1 - r.srcY0;
             int32_t dstW = r.dstX1 - r.dstX0;
             int32_t dstH = r.dstY1 - r.dstY0;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             // Nearest-neighbor scaled copy
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcY0 + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstX0 + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
                     U64 sEndB = smem->va + smem->size;
                     U64 dEndB = dmem->va + dmem->size;
-                    if (sOff >= sEndB || dOff >= dEndB) continue;
-                    if (sOff + pxBytes > sEndB) continue;
-                    if (dOff + pxBytes > dEndB) continue;
+                    VK64_DROP_IF(continue, sOff >= sEndB || dOff >= dEndB);
+                    VK64_DROP_IF(continue, sOff + pxBytes > sEndB);
+                    VK64_DROP_IF(continue, dOff + pxBytes > dEndB);
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -5891,6 +7149,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         dst->copied = 1;
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdBlitImage2:
@@ -5908,9 +7168,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
         Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
-        if (!src || !dst) return 0;
+        VK64_DROP_IF(return 0, !src || !dst);
         U32 nreg = (U32)args.a[3];
-        if (nreg > 1024) return 0;
+        VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkImageBlit2L> regs;
         readArray(args.a[4], nreg, regs);
         for (const auto& r : regs) {
@@ -5920,10 +7180,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[5],
                 srcOffsets, dstOffsets, r.srcLayerCount);
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
@@ -5933,24 +7193,24 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t srcH = r.srcY1 - r.srcY0;
             int32_t dstW = r.dstX1 - r.dstX0;
             int32_t dstH = r.dstY1 - r.dstY0;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcY0 + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstX0 + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes;
                     U64 dOff = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes;
                     U64 sEndB = smem->va + smem->size;
                     U64 dEndB = dmem->va + dmem->size;
-                    if (sOff >= sEndB || dOff >= dEndB) continue;
-                    if (sOff + pxBytes > sEndB) continue;
-                    if (dOff + pxBytes > dEndB) continue;
+                    VK64_DROP_IF(continue, sOff >= sEndB || dOff >= dEndB);
+                    VK64_DROP_IF(continue, sOff + pxBytes > sEndB);
+                    VK64_DROP_IF(continue, dOff + pxBytes > dEndB);
                     U8 pixel[16];
                     g_mem->memcpyFromGuest(pixel, sOff, pxBytes);
                     g_mem->memcpyToGuest(dOff, pixel, pxBytes);
@@ -5958,6 +7218,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         dst->copied = 1;
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdResolveImage:
@@ -5974,10 +7236,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         };
         Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdResolveImage");
         Image* dst = objOf<Image>(args.a[3], K_IMAGE, "vkCmdResolveImage");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[5];
         std::vector<VkImageResolveL> regs;
         readArray(args.a[6], nreg, regs);
@@ -5994,14 +7256,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             for (U32 y = 0; y < copyH; y++) {
                 U32 sy = (U32)r.srcY + y;
                 U32 dy = (U32)r.dstY + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 sOff = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX * pxBytes;
                 U64 dOff = dmem->va + dst->memOff + (U64)dy * dstRowPitch + (U64)r.dstX * pxBytes;
                 U64 sEnd = smem->va + smem->size;
                 U64 dEnd = dmem->va + dmem->size;
                 // If start is already out of bounds, skip: prevents U64
                 // underflow in the clamp below (sEnd - sOff wraps if sOff>=sEnd).
-                if (sOff >= sEnd || dOff >= dEnd) continue;
+                VK64_DROP_IF(continue, sOff >= sEnd || dOff >= dEnd);
                 U64 n = (U64)copyW * pxBytes;
                 if (sOff + n > sEnd) n = sEnd - sOff;
                 if (dOff + n > dEnd) n = dEnd - dOff;
@@ -6012,6 +7274,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
         }
         dst->copied = 1;
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdDrawIndirect: {
@@ -6019,17 +7283,19 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Read VkDrawIndirectCommand structs and emit direct CMD_DRAW for each.
         struct VkDrawIndirectCommandL { U32 vertexCount; U32 instanceCount; U32 firstVertex; U32 firstInstance; };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
         if (!stride) stride = sizeof(VkDrawIndirectCommandL);
-        // Cap drawCount to prevent runaway from garbage data
-        if (drawCount > 1024) drawCount = 1024;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -6050,16 +7316,19 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U32 indexCount; U32 instanceCount; U32 firstIndex; int32_t vertexOffset; U32 firstInstance;
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexedIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 drawCount = (U32)args.a[3];
         U32 stride = (U32)args.a[4];
         if (!stride) stride = sizeof(VkDrawIndexedIndirectCommandL);
-        if (drawCount > 1024) drawCount = 1024;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndexedIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -6079,19 +7348,22 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndirectCountKHR: {
         // (cmdBuf, buffer, offset, countBuffer, countOffset, maxDrawCount, stride)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndirectCount");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirectCount");
         Buffer* countBuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDrawIndirectCount");
-        if (!buf || !buf->mem || !countBuf || !countBuf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem || !countBuf || !countBuf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirectCount");
         DeviceMemory* countMem = objOf<DeviceMemory>(countBuf->mem, K_MEMORY, "vkCmdDrawIndirectCount");
-        if (!mem || !mem->va || !countMem || !countMem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va || !countMem || !countMem->va);
         // Read actual draw count from count buffer
         U32 actualCount = 0;
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
         U32 maxDraws = (U32)args.a[5];
         if (actualCount > maxDraws) actualCount = maxDraws;
-        if (actualCount > 1024) actualCount = 1024;
+        if (actualCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("actualCount > maxDrawIndirectCount", __LINE__);
+            actualCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         struct VkDrawIndirectCommandL { U32 vertexCount; U32 instanceCount; U32 firstVertex; U32 firstInstance; };
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 stride = (U32)args.a[6];
@@ -6113,18 +7385,21 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDrawIndexedIndirectCount: {
         // (cmdBuf, buffer, offset, countBuffer, countOffset, maxDrawCount, stride)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexedIndirectCount");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirectCount");
         Buffer* countBuf = objOf<Buffer>(args.a[3], K_BUFFER, "vkCmdDrawIndexedIndirectCount");
-        if (!buf || !buf->mem || !countBuf || !countBuf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem || !countBuf || !countBuf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirectCount");
         DeviceMemory* countMem = objOf<DeviceMemory>(countBuf->mem, K_MEMORY, "vkCmdDrawIndexedIndirectCount");
-        if (!mem || !mem->va || !countMem || !countMem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va || !countMem || !countMem->va);
         U32 actualCount = 0;
         g_mem->memcpyFromGuest(&actualCount, countMem->va + countBuf->memOff + args.a[4], 4);
         U32 maxDraws = (U32)args.a[5];
         if (actualCount > maxDraws) actualCount = maxDraws;
-        if (actualCount > 1024) actualCount = 1024;
+        if (actualCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("actualCount > maxDrawIndirectCount", __LINE__);
+            actualCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         struct VkDrawIndexedIndirectCommandL {
             U32 indexCount; U32 instanceCount; U32 firstIndex; int32_t vertexOffset; U32 firstInstance;
         };
@@ -6150,13 +7425,14 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, commandBufferCount, pCommandBuffers*)
         // Merge secondary command buffer commands into primary.
         CmdBuf* primary = cbOf(args.a[0], "vkCmdExecuteCommands");
-        if (!primary) return 0;
+        VK64_DROP_IF(return 0, !primary);
         U32 count = (U32)args.a[1];
-        if (!count || count > 16) return 0;
+        if (!count) return 0;
+        VK64_DROP_IF(return 0, !args.a[2]);
         for (U32 i = 0; i < count; i++) {
             U64 secId = rd64(args.a[2] + (U64)i * 8);
             CmdBuf* sec = cbOf(secId, "vkCmdExecuteCommands");
-            if (!sec) continue;
+            VK64_DROP_IF(continue, !sec);
             // Copy all commands from secondary into primary
             for (const auto& c : sec->cmds) {
                 pushCmd(primary, c);
@@ -6173,6 +7449,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 primary->ibType = sec->ibType;
             }
             if (sec->pipe) primary->pipe = sec->pipe;
+            // The secondary's commands now travel with the primary; the
+            // queue-submit fallback must not pick it up standalone.
+            sec->lifecycle.onSubmitted();
         }
         return 0;
     }
@@ -6180,7 +7459,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, groupCountX, groupCountY, groupCountZ)
         // Compute dispatch. Record for page-side handling.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatch");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[1];
@@ -6192,7 +7471,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdDispatchBase: {
         // (cmdBuf, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatchBase");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[4];
@@ -6206,11 +7485,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, buffer, offset)
         // Read VkDispatchIndirectCommand {x, y, z} from buffer.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatchIndirect");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Buffer* buf = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
-        if (!buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
-        if (!mem || !mem->va) return 0;
+        VK64_DROP_IF(return 0, !mem || !mem->va);
         U32 xyz[3] = {0, 0, 0};
         g_mem->memcpyFromGuest(xyz, mem->va + buf->memOff + args.a[2], 12);
         Cmd c;
@@ -6227,45 +7506,50 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkQueueSubmit: {
         // (queue, nSubmits, pSubmits*)
         double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
+        VkEncodeScope submitProfile(vkProfAcc().encode, vkencode::Submit, vkEncodeDetailEnabled());
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo> sis;
         readArray(args.a[2], n, sis);
         std::vector<std::pair<CmdBuf*, U64>> frames;
         for (U32 i = 0; i < n; i++) {
-            // VkTimelineSemaphoreSubmitInfo in pNext: the per-batch wait/signal
-            // VALUES that make a u64 semaphore mean anything. DXVK writes one of
-            // these on every flush (its tracking fence), so ignoring the chain
-            // means the counter never moves and every later wait reads stale.
+            std::vector<U64> waitIds, signalIds;
+            readArray(sis[i].pWaitSemaphores, sis[i].waitSemaphoreCount, waitIds);
+            readArray(sis[i].pSignalSemaphores, sis[i].signalSemaphoreCount, signalIds);
+            for (U64 semId : waitIds) {
+                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                if (!sem->signalled) {
+                    vk64Unsupported("binary-semaphore-wait", "wait was not signalled before the synchronous submit; VK_ERROR_UNKNOWN");
+                    return VK_ERROR_UNKNOWN;
+                }
+                sem->signalled = 0;
+            }
             for (U64 cur = sis[i].pNext; cur && g_mem;) {
                 if (g_mem->readd(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                    VkTimelineSemaphoreSubmitInfo ti = {};
-                    g_mem->memcpyFromGuest(&ti, cur, sizeof(ti));
-                    for (U32 w = 0; w < ti.waitSemaphoreValueCount; w++) {
-                        U64 semId = rd64(sis[i].pWaitSemaphores + (U64)w * 8);
-                        U64 want  = rd64(ti.pWaitSemaphoreValues + (U64)w * 8);
-                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
-                        if (s && s->counter < want) s->counter = want;
-                    }
-                    for (U32 sg = 0; sg < ti.signalSemaphoreValueCount; sg++) {
-                        U64 semId = rd64(sis[i].pSignalSemaphores + (U64)sg * 8);
-                        U64 val   = rd64(ti.pSignalSemaphoreValues + (U64)sg * 8);
-                        Semaphore* s = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
-                        if (s && val > s->counter) s->counter = val;
-                    }
-                    break;
+                    vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+                    return VK_ERROR_FEATURE_NOT_PRESENT;
                 }
                 cur = g_mem->readq(cur + 8);
             }
             for (U32 c = 0; c < sis[i].commandBufferCount; c++) {
                 U64 cbId = rd64(sis[i].pCommandBuffers + (U64)c * 8);
                 CmdBuf* cb = cbOf(cbId, "vkQueueSubmit");
-                if (!cb) continue;
+                VK64_DROP_IF(continue, !cb);
                 // Eager copy execution, against the guest memory both sides of
                 // the copy live in (P1 ran these first at submit too).
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, cbId});
+            }
+            for (U64 semId : signalIds) {
+                Semaphore* sem = objOf<Semaphore>(semId, K_SEMAPHORE, "vkQueueSubmit");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                sem->signalled = 1;
             }
         }
         if (vkTrace()) klog_fmt("vk64: vkQueueSubmit(%u batches, %u command buffers)", (unsigned)n, (unsigned)frames.size());
@@ -6273,13 +7557,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
         // Fallback: DXVK sometimes records draws to CBs that are never
         // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
-        // Scan all CmdBufs for non-empty ones and include them.
+        // Scan all CmdBufs for eligible ones and include them. Eligibility
+        // is lifecycle-gated (vk_cb_lifecycle.h): only a buffer that reached
+        // vkEndCommandBuffer and has not been submitted since may be picked
+        // up. A buffer still being recorded on a DXVK worker thread has a
+        // command vector that mutates under the scan -- the ungated scan read
+        // garbage command counts and trapped the worker (2026-10-25).
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
+                // Explicit guard -- NOT VK64_DROP_IF(continue, ...): that
+                // macro wraps its action in do{}while(0), and a continue
+                // inside binds to the do-while, not this loop, so the scan
+                // fell through and read CmdBuf fields in EVERY live object
+                // (images/buffers read as command vectors -- the garbage
+                // command counts behind the 2026-10-25 trap). Same explicit
+                // form as the pool-reset loops. Only genuine CmdBufs may be
+                // examined, and of those only lifecycle-eligible ones pass.
                 if (!o || o->kind != K_CMDBUF) continue;
                 CmdBuf* cb = (CmdBuf*)o;
-                if (!cb->cmds.empty()) {
+                if (cb->lifecycle.fallbackEligible(!cb->cmds.empty())) {
                     frames.push_back({cb, kv.first});
                     hasWork = true;
                     if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
@@ -6294,6 +7591,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        // Every buffer in this batch (explicit or fallback-picked) has now
+        // been submitted: consume its fallback eligibility so a later empty
+        // submit cannot replay it.
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit"); if (f) f->signalled = 1; }
         if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
@@ -6302,6 +7603,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkQueueSubmit2KHR: {
         // (queue, nSubmits, pSubmitInfo2*, fence) — Vulkan 1.3 path DXVK uses.
         double vkprofSubmitT0 = vkProfNow(); // BW64_VKPROF (additive)
+        VkEncodeScope submitProfile(vkProfAcc().encode, vkencode::Submit, vkEncodeDetailEnabled());
         // VkSubmitInfo2 carries semaphore values inline (no timeline pNext).
         U32 n = (U32)args.a[1];
         std::vector<VkSubmitInfo2> sis;
@@ -6312,21 +7614,36 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             readArray(sis[i].pWaitSemaphoreInfos, sis[i].waitSemaphoreInfoCount, waits);
             readArray(sis[i].pSignalSemaphoreInfos, sis[i].signalSemaphoreInfoCount, signals);
             for (auto& w : waits) {
-                Semaphore* s = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                if (s && s->counter < w.value) s->counter = w.value;
+                Semaphore* sem = objOf<Semaphore>((U64)w.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                if (w.value || !sem->signalled) {
+                    vk64Unsupported(w.value ? "timeline-semaphore" : "binary-semaphore-wait",
+                                    "submit2 wait cannot be completed by the synchronous bridge; VK_ERROR_UNKNOWN");
+                    return w.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                }
+                sem->signalled = 0;
             }
             for (auto& sg : signals) {
                 Semaphore* s = objOf<Semaphore>((U64)sg.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                if (s && sg.value > s->counter) s->counter = sg.value;
+                if (!s) return VK_ERROR_INITIALIZATION_FAILED;
+                if (sg.value) {
+                    vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported; VK_ERROR_FEATURE_NOT_PRESENT");
+                    return VK_ERROR_FEATURE_NOT_PRESENT;
+                }
+                s->signalled = 1;
             }
             std::vector<VkCommandBufferSubmitInfo> cbis;
             readArray(sis[i].pCommandBufferInfos, sis[i].commandBufferInfoCount, cbis);
             for (auto& cbi : cbis) {
                 CmdBuf* cb = cbOf((U64)cbi.commandBuffer, "vkQueueSubmit2");
-                if (!cb) continue;
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                VK64_DROP_IF(continue, !cb);
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, (U64)cbi.commandBuffer});
             }
         }
@@ -6338,13 +7655,26 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (auto& fr : frames) if (fr.first && !fr.first->cmds.empty()) { hasWork = true; break; }
         // Fallback: DXVK sometimes records draws to CBs that are never
         // submitted (e.g., 70 draws to 3 CBs, but submits reference empty CBs).
-        // Scan all CmdBufs for non-empty ones and include them.
+        // Scan all CmdBufs for eligible ones and include them. Eligibility
+        // is lifecycle-gated (vk_cb_lifecycle.h): only a buffer that reached
+        // vkEndCommandBuffer and has not been submitted since may be picked
+        // up. A buffer still being recorded on a DXVK worker thread has a
+        // command vector that mutates under the scan -- the ungated scan read
+        // garbage command counts and trapped the worker (2026-10-25).
         if (!hasWork) {
             for (auto& kv : g_objs) {
                 Obj* o = kv.second;
+                // Explicit guard -- NOT VK64_DROP_IF(continue, ...): that
+                // macro wraps its action in do{}while(0), and a continue
+                // inside binds to the do-while, not this loop, so the scan
+                // fell through and read CmdBuf fields in EVERY live object
+                // (images/buffers read as command vectors -- the garbage
+                // command counts behind the 2026-10-25 trap). Same explicit
+                // form as the pool-reset loops. Only genuine CmdBufs may be
+                // examined, and of those only lifecycle-eligible ones pass.
                 if (!o || o->kind != K_CMDBUF) continue;
                 CmdBuf* cb = (CmdBuf*)o;
-                if (!cb->cmds.empty()) {
+                if (cb->lifecycle.fallbackEligible(!cb->cmds.empty())) {
                     frames.push_back({cb, kv.first});
                     hasWork = true;
                     if (vkTrace()) klog_fmt("vk64: vkQueueSubmit2 fallback: found non-empty CB 0x%llx (%u cmds)",
@@ -6359,6 +7689,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        // Every buffer in this batch (explicit or fallback-picked) has now
+        // been submitted: consume its fallback eligibility so a later empty
+        // submit cannot replay it.
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) { Fence* f = objOf<Fence>(args.a[3], K_FENCE, "vkQueueSubmit2"); if (f) f->signalled = 1; }
         if (vkTimingEnabled()) vkProfAcc().accSubmit += vkProfNow() - vkprofSubmitT0;
         return VK_SUCCESS;
@@ -6368,9 +7702,20 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         double vkprofPresentT0 = vkProfNow(); // BW64_VKPROF (additive)
         VkPresentInfoKHR pi = {};
         if (!readStruct(args.a[1], pi)) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < pi.waitSemaphoreCount; ++i) {
+            Semaphore* sem = objOf<Semaphore>(rd64(pi.pWaitSemaphores + (U64)i * 8), K_SEMAPHORE, "vkQueuePresentKHR");
+            if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+            if (!sem->signalled) {
+                vk64Unsupported("binary-semaphore-present-wait", "present wait was not signalled; VK_ERROR_UNKNOWN");
+                return VK_ERROR_UNKNOWN;
+            }
+            sem->signalled = 0;
+        }
+        std::string presentInfo = "{\"swapchains\":[";
         for (U32 i = 0; i < pi.swapchainCount; i++) {
             U64 scId = rd64(pi.pSwapchains + (U64)i * 8);
             Swapchain* sc = objOf<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            appendPresentCaptureInfo(presentInfo, scId, rd32(pi.pImageIndices + (U64)i * 4), sc);
             klog_fmt("vk64: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u -> presents frame %u",
                      (unsigned long long)scId, (unsigned)rd32(pi.pImageIndices + (U64)i * 4),
                      sc ? sc->w : 0, sc ? sc->h : 0, g_frameNo ? g_frameNo - 1 : 0);
@@ -6385,7 +7730,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // a string. v2: every queued frame's chunks, one MAIN_THREAD_EM_ASM per
         // chunk; the producer ring already dropped the oldest frames past its
         // cap, so this never carries a backlog.
-        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        if (vkSchemaV2()) hopV2ToPage(presentInfo + "],\"lastSubmission\":" + std::to_string(g_frameNo ? g_frameNo - 1 : 0) + "}"); else emitFrameNow();
         // ---- BW64_VKPROF / BW64_METRICS frame boundary (additive) ----
         // VKPROF keeps its one-line-per-frame klog (opt-in); the live metrics
         // path consumes the same numbers and is on by default. Both are gated
@@ -6421,7 +7766,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     TE top[3] = {};
                     for (U64 i = 0; i < 256; i++) {
                         double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
-                        if (w <= 0) continue;
+                        VK64_DROP_IF(continue, w <= 0);
                         for (int k = 0; k < 3; k++) if (w > top[k].w) {
                             for (int m = 2; m > k; m--) top[m] = top[m-1];
                             top[k] = {i, w, c};
@@ -6444,6 +7789,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                          (unsigned long long)pa.accHopChunks, (unsigned long long)pa.accHopBytes, guest,
                          (unsigned long long)pa.accBufCalls, (unsigned long long)pa.accImgCalls,
                          pa.accSer2, pa.accQueue, topT);
+                if (vkEncodeDetailEnabled()) {
+                    std::string detail = "{\"rootMs\":" + std::to_string(pa.encode.rootMs) + ",\"stages\":{";
+                    for (unsigned i = 0; i < vkencode::Count; ++i) {
+                        char entry[192];
+                        snprintf(entry, sizeof(entry), "%s\"%s\":{\"exclusiveMs\":%.3f,\"inclusiveMs\":%.3f,\"calls\":%llu}",
+                            i ? "," : "", vkencode::names[i], pa.encode.exclusive[i], pa.encode.inclusive[i],
+                            (unsigned long long)pa.encode.calls[i]);
+                        detail += entry;
+                    }
+                    detail += "}}";
+                    klog_fmt("vk64: VKPROF2 frame=%llu %s", (unsigned long long)pa.frameNo, detail.c_str());
+                }
                 if (ripSamplerProfileEnabled() && cpu && cpu->thread && cpu->thread->process)
                     ripSamplerProfDumpReset((int)cpu->thread->process->id);
                 }
@@ -6466,6 +7823,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // what keeps an un-ported entry point harmless here too.
         klog_fmt("vk64: unimplemented fnId=%llu (%s) -> benign error",
                  (unsigned long long)fnId, fnName(fnId));
+        vk64Unsupported((std::string("fn:") + fnName(fnId)).c_str(), "no handler; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
 }
@@ -6509,6 +7867,25 @@ inline void wr64_32(U32 a, U64 v) {
     if (!a || !g_mem32) return;
     g_mem32->writed(a, (U32)v);
     g_mem32->writed(a + 4, (U32)(v >> 32));
+}
+static U64 rdq32(U64 a) { return rd64_32((U32)a); }
+static void applyWrite32(DescSet& s, const vk32abi::VkWriteDescriptorSet& w) {
+    DescWriteReq r;
+    r.binding = w.dstBinding; r.elem = w.dstArrayElement; r.count = w.descriptorCount; r.type = (U32)w.descriptorType;
+    r.pImage = w.pImageInfo; r.pBuffer = w.pBufferInfo; r.pTexel = w.pTexelBufferView;
+    r.stride = descWriteStride((U32)w.descriptorType, true);
+    if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        for (U64 cur = w.pNext; cur && g_mem32;) {
+            if (g_mem32->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
+                vk32abi::VkWriteDescriptorSetInlineUniformBlock ib = {};
+                g_mem32->memcpyFromGuest(&ib, cur, sizeof(ib));
+                r.inlData = ib.pData; r.inlSize = ib.dataSize;
+                break;
+            }
+            cur = g_mem32->readd((U32)cur + 4);
+        }
+    }
+    applyDescWrite(s, r, rdq32);
 }
 inline std::string guestStr32(U32 addr, size_t maxLen = 512) {
     std::string s;
@@ -6557,18 +7934,19 @@ inline void vk32_writeLimits(U32 lim) {
 // These mirror the 64-bit walkers with 32-bit offsets.
 // ---------------------------------------------------------------------------
 namespace {
-// Fill every VkBool32 payload dword of a 32-bit feature struct with VK_TRUE.
-// hostSize = sizeof(host struct); guestSize = sizeof(win32 guest struct).
-// Dwords written are clamped to the guest size: for structs where the host
-// (8-aligned uint64_t pNext) has trailing padding the win32 guest lacks,
-// (hostSize-16)/4 would write past the end of the guest struct.
-inline void vk32_fillFeatures32(U32 addr, size_t hostSize, size_t guestSize) {
-    if (!addr || !g_mem32 || hostSize < 16 || guestSize < 8) return;
-    U32 hostN = (U32)((hostSize - 16) / 4);
-    U32 guestN = (U32)((guestSize - 8) / 4);
-    U32 n = hostN < guestN ? hostN : guestN;
-    for (U32 i = 0; i < n; i++) wr32_32(addr + 8 + i * 4, (U32)VK_TRUE);
-}
+// One arm of the 32-bit Features2 walk: same shape as SET_FEATURES, over the
+// vk32abi (4-byte pNext) struct and the SAME shared fill function, so the 32-bit
+// and 64-bit guests are answered identically.
+#define SET_FEATURES32(addr, fn, T)                                           \
+    do {                                                                       \
+        if ((addr) && g_mem32) {                                               \
+            T f_ = {};                                                         \
+            /* Keep sType/pNext only; all returned feature bits start false. */ \
+            g_mem32->memcpyFromGuest(&f_, (addr), 8);                          \
+            fn(f_);                                                            \
+            writeStruct32((addr), f_);                                         \
+        }                                                                      \
+    } while (0)
 // 32-bit field writers: hostOff = offsetof(host struct, field); valid for
 // fields before any uint64_t that carries host 8-alignment padding.
 inline void vk32_w32f(U32 base, size_t hostOff, U32 v) {
@@ -6583,35 +7961,36 @@ void vk32_walkFeatures2(U32 pNextAddr) {
         U32 sType = rd32_32(cur);
         switch (sType) {
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceRobustness2FeaturesEXT), 20); break;
+                SET_FEATURES32(cur, fillRobustness2, vk32abi::VkPhysicalDeviceRobustness2FeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance5Features), 12); break;
+                SET_FEATURES32(cur, fillMaintenance5, vk32abi::VkPhysicalDeviceMaintenance5Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceMaintenance6Features), 12); break;
+                SET_FEATURES32(cur, fillMaintenance6, vk32abi::VkPhysicalDeviceMaintenance6Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT), sizeof(VkPhysicalDeviceTransformFeedbackFeaturesEXT) - 8); break;
+                SET_FEATURES32(cur, fillTransformFeedback, vk32abi::VkPhysicalDeviceTransformFeedbackFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(Vk64VertexAttributeDivisorFeaturesEXT), sizeof(Vk64VertexAttributeDivisorFeaturesEXT) - 8); break;
+                SET_FEATURES32(cur, fillVertexAttributeDivisor, Vk32VertexAttributeDivisorFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDescriptorIndexingFeatures), sizeof(VkPhysicalDeviceDescriptorIndexingFeatures) - 8); break;
+                SET_FEATURES32(cur, fillDescriptorIndexing, vk32abi::VkPhysicalDeviceDescriptorIndexingFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceShaderFloat16Int8Features), sizeof(VkPhysicalDeviceShaderFloat16Int8Features) - 8); break;
+                SET_FEATURES32(cur, fillFloat16Int8, vk32abi::VkPhysicalDeviceShaderFloat16Int8Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice16BitStorageFeatures), sizeof(VkPhysicalDevice16BitStorageFeatures) - 8); break;
+                SET_FEATURES32(cur, fillStorage16, vk32abi::VkPhysicalDevice16BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDevice8BitStorageFeatures), 20); break;
+                SET_FEATURES32(cur, fillStorage8, vk32abi::VkPhysicalDevice8BitStorageFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceScalarBlockLayoutFeatures), 12); break;
+                SET_FEATURES32(cur, fillScalarBlockLayout, vk32abi::VkPhysicalDeviceScalarBlockLayoutFeatures); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceDepthClipEnableFeaturesEXT), 12); break;
+                SET_FEATURES32(cur, fillDepthClipEnable, vk32abi::VkPhysicalDeviceDepthClipEnableFeaturesEXT); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan12Features), 196); break;
+                SET_FEATURES32(cur, fillVulkan12Features, vk32abi::VkPhysicalDeviceVulkan12Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan11Features), sizeof(VkPhysicalDeviceVulkan11Features) - 8); break;
+                SET_FEATURES32(cur, fillVulkan11Features, vk32abi::VkPhysicalDeviceVulkan11Features); break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
-                vk32_fillFeatures32(cur, sizeof(VkPhysicalDeviceVulkan13Features), 68); break;
+                SET_FEATURES32(cur, fillVulkan13Features, vk32abi::VkPhysicalDeviceVulkan13Features); break;
             default:
-                break; // unknown: leave as the guest set it
+                vk64Unsupported("features2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is (32-bit)").c_str());
+                break;
         }
         cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
     }
@@ -6682,7 +8061,8 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 break;
             }
             default:
-                break; // unknown: leave as the guest set it
+                vk64Unsupported("properties2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is (32-bit)").c_str());
+                break;
         }
         cur = rd32_32(cur + 4); // pNext at +4 in 32-bit layout
     }
@@ -6713,16 +8093,66 @@ static void captureStageSpec32(U32 va, StageSpec& out) {
     std::vector<U8> data(si.dataSize);
     g_mem32->memcpyFromGuest(data.data(), si.pData, si.dataSize);
     for (const auto& me : entries) {
-        if (out.n >= 16) break;
-        if (me.offset > si.dataSize || me.size > si.dataSize - me.offset) continue;
-        if (me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8) continue;
+        VK64_DROP_IF(break, out.n >= 16);
+        VK64_DROP_IF(continue, me.offset > si.dataSize || me.size > si.dataSize - me.offset);
+        VK64_DROP_IF(continue, me.size != 1 && me.size != 2 && me.size != 4 && me.size != 8);
         auto& e = out.entries[out.n++]; e.constantID = me.constantID; e.size = me.size;
         memcpy(e.value, data.data() + me.offset, me.size);
     }
 }
 
+// --- render pass subpass parsing (32-bit guest) ---
+struct RpAttachmentDesc2_32 { U32 sType, pNext, flags, format, samples, loadOp, storeOp, stencilLoadOp, stencilStoreOp, initialLayout, finalLayout; };
+struct RpAttachmentRef2_32 { U32 sType, pNext, attachment, layout, aspectMask; };
+struct RpSubpassDesc2_32 { U32 sType, pNext, flags, pipelineBindPoint, viewMask, inputAttachmentCount, pInputAttachments,
+    colorAttachmentCount, pColorAttachments, pResolveAttachments, pDepthStencilAttachment, preserveAttachmentCount, pPreserveAttachments; };
+static bool vk32HasDepthStencilResolve(U32 pNext) {
+    for (U32 hop = 0; pNext && hop < 16; ++hop) {
+        U32 sType = 0, next = 0;
+        g_mem32->memcpyFromGuest(&sType, pNext, 4);
+        if (sType == VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_ID) return true;
+        g_mem32->memcpyFromGuest(&next, pNext + 4, 4);
+        pNext = next;
+    }
+    return false;
+}
+static void vk32ParseSubpasses(RenderPass* rp, U32 pSubpasses, U32 count, bool v2) {
+    count = vk64CapCount("renderpass-subpasses", count, VK64_MAX_SUBPASSES);
+    std::vector<SubpassIn> subs(count);
+    auto refs = [&](U32 address, U32 n, std::vector<U32>& out) {
+        n = vk64CapCount("subpass-color-attachments", n, VK64_MAX_ATTACH);
+        out.clear();
+        if (!address) return;
+        if (v2) { std::vector<RpAttachmentRef2_32> r; readArray32(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+        else { std::vector<vk32abi::VkAttachmentReference> r; readArray32(address, n, r); for (const auto& x : r) out.push_back(x.attachment); }
+    };
+    auto oneRef = [&](U32 address) -> U32 {
+        if (!address) return VK_ATTACHMENT_UNUSED;
+        if (v2) { RpAttachmentRef2_32 r = {}; return readStruct32(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED; }
+        vk32abi::VkAttachmentReference r = {}; return readStruct32(address, r) ? r.attachment : VK_ATTACHMENT_UNUSED;
+    };
+    for (U32 i = 0; i < count; ++i) {
+        U32 nColor, nInput, bindPoint, viewMask = 0, pColor, pResolve, pDepth, pNext = 0;
+        if (v2) {
+            RpSubpassDesc2_32 d = {}; if (!readStruct32(pSubpasses + i * (U32)sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint; viewMask = d.viewMask;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment; pNext = d.pNext;
+        } else {
+            vk32abi::VkSubpassDescription d = {}; if (!readStruct32(pSubpasses + i * (U32)sizeof(d), d)) continue;
+            nColor = d.colorAttachmentCount; nInput = d.inputAttachmentCount; bindPoint = d.pipelineBindPoint;
+            pColor = d.pColorAttachments; pResolve = d.pResolveAttachments; pDepth = d.pDepthStencilAttachment;
+        }
+        subs[i].bindPoint = bindPoint; subs[i].viewMask = viewMask; subs[i].nInput = nInput;
+        refs(pColor, nColor, subs[i].color);
+        refs(pResolve, nColor, subs[i].resolve);
+        subs[i].depth = oneRef(pDepth);
+        subs[i].depthStencilResolve = v2 && pNext && vk32HasDepthStencilResolve(pNext);
+    }
+    vk64SetupSubpasses(rp, subs);
+}
 U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);    g_mem = nullptr;
+    g_dropFn = fnId;
     g_mem32 = cpu ? cpu->memory : nullptr;
     g_thread32 = cpu ? cpu->thread : nullptr;
 
@@ -6733,7 +8163,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     if (fnId == VK64_fn_unimplemented) {
         VK32Args a0 = {};
         if (argsAddr && g_mem32) g_mem32->memcpyFromGuest(&a0, argsAddr, sizeof(a0));
-        klog_fmt("vk32: asked-for (unimplemented): %s", guestStr32((U32)a0.a[0]).c_str());
+        logAskedFor("vk32", guestStr32((U32)a0.a[0]));
+        vk64Unsupported(("fn32:" + guestStr32((U32)a0.a[0])).c_str(), "entry point not implemented; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
     if (fnId == VK64_fn_traceProc) {
@@ -6806,7 +8237,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceProperties: {
         PhysDev* pd = objOf32<PhysDev>(args.a[0], K_PHYSDEV, "vkGetPhysicalDeviceProperties");
-        if (!pd || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !pd || !args.a[1]);
         U32 dst = (U32)args.a[1];
         wr32_32(dst + 0, g_icd_api_version);
         wr32_32(dst + 4, 1);
@@ -6820,14 +8251,16 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceFeatures: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
-        for (U32 i = 0; i < 220; i += 4) wr32_32(dst + i, 0);
-        wr32_32(dst + 0, 1);
+        VkPhysicalDeviceFeatures f = {};
+        fillCoreFeatures(&f);       // same answer as the 64-bit guest (all-VkBool32 struct, identical layout)
+        static_assert(sizeof(f) == 220, "VkPhysicalDeviceFeatures is 55 VkBool32");
+        g_mem32->memcpyToGuest(dst, &f, sizeof(f));
         return 0;
     }
     case VK64_fn_vkGetPhysicalDeviceMemoryProperties: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
         wr32_32(dst + 0, 1);
         wr32_32(dst + 4 + 0, 0x0007);
@@ -6864,8 +8297,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[1];
         U32 feat = dst + 8;
-        for (U32 i = 0; i < 220; i += 4) wr32_32(feat + i, 0);
-        wr32_32(feat + 0, 1); // robustBufferAccess
+        VkPhysicalDeviceFeatures f = {};
+        fillCoreFeatures(&f);
+        g_mem32->memcpyToGuest(feat, &f, sizeof(f));
         vk32_walkFeatures2(rd32_32(dst + 4));
         return VK_SUCCESS;
     }
@@ -6923,6 +8357,55 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkGetPhysicalDeviceSurfaceSupportKHR:
         wr32_32((U32)args.a[3], 1); // VK_TRUE
         return VK_SUCCESS;
+    case VK64_fn_vkGetPhysicalDeviceXlibPresentationSupportKHR:
+    case VK64_fn_vkGetPhysicalDeviceWin32PresentationSupportKHR:
+        // Same answer as the 64-bit bridge: every frame presents through the
+        // canvas, so there is no non-presentable device behind this shim.
+        return VK_TRUE;
+    case VK64_fn_vkGetPastPresentationTimingGOOGLE:
+        if (args.a[2]) wr32_32((U32)args.a[2], 0);   /* no timestamps */
+        return VK_SUCCESS;
+    case VK64_fn_vkGetImageSubresourceLayout: {
+        // Reports the GUEST address, as the 64-bit bridge does, so the guest
+        // addresses the mapped range directly.
+        Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkGetImageSubresourceLayout");
+        if (!im || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        DeviceMemory* m = im->mem ? objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkGetImageSubresourceLayout") : nullptr;
+        U32 bpp = fmt_bpp(im->format);
+        vk32abi::VkSubresourceLayout l = {};
+        l.offset = m ? (m->va + im->memOff) : 0;
+        l.size = (U64)im->w * im->h * bpp;
+        l.rowPitch = (U64)im->w * bpp;
+        l.arrayPitch = l.size;
+        l.depthPitch = l.size;
+        writeStruct32((U32)args.a[3], l);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkDestroyEvent:
+    case VK64_fn_vkDestroyQueryPool:
+        dropObj(args.a[1]);
+        return 0;
+    case VK64_fn_vkCreatePipelineCache: {
+        if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreatePipelineCache") || !args.a[3])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        createObj32<PipelineCache>(K_PIPECACHE, id);
+        wr64_32((U32)args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdClearDepthStencilImage: {
+        // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearDepthStencilImage");
+        VK64_DROP_IF(return 0, !cb || !objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
+        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
+        struct { float depth; U32 stencil; } value = {1.0f, 0};
+        if (args.a[3]) g_mem32->memcpyFromGuest(&value, (U32)args.a[3], sizeof(value));
+        Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
+        c.f[0] = value.depth; c.clearStencil = value.stencil;
+        readArray32((U32)args.a[5], (U32)args.a[4], c.clearRanges);
+        if (!c.clearRanges.empty()) pushCmd(cb, c);
+        return 0;
+    }
     case VK64_fn_vkGetPhysicalDeviceFormatProperties: {
         // 32-bit VkFormatProperties: 3x u32 (linear@0, optimal@4, buffer@8).
         if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
@@ -6938,12 +8421,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // 32-bit VkImageFormatProperties: maxExtent@0(12), maxMipLevels@12,
         // maxArrayLayers@16, sampleCounts@20, maxResourceSize@24(8).
         if (!args.a[6]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 format = (U32)args.a[1];
+        if (!v2FormatIsSupportedImage(format)) {
+            vk64Unsupported("image-format", "format properties queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        VkImageFormatProperties props = {};
+        fillImageFormatProps(&props, format, (U32)args.a[2]);
         U32 dst = (U32)args.a[6];
-        wr32_32(dst + 0, 16384); wr32_32(dst + 4, 16384); wr32_32(dst + 8, 2048);
-        wr32_32(dst + 12, 14);
-        wr32_32(dst + 16, 2048);
-        wr32_32(dst + 20, 0x0F);
-        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024);
+        wr32_32(dst + 0, props.maxExtent.width); wr32_32(dst + 4, props.maxExtent.height); wr32_32(dst + 8, props.maxExtent.depth);
+        wr32_32(dst + 12, props.maxMipLevels);
+        wr32_32(dst + 16, props.maxArrayLayers);
+        wr32_32(dst + 20, props.sampleCounts);
+        wr64_32(dst + 24, props.maxResourceSize);
         return VK_SUCCESS;
     }
 
@@ -6972,15 +8462,22 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetPhysicalDeviceImageFormatProperties2: {
         // 32-bit VkImageFormatProperties2: sType@0, pNext@4, imageFormatProperties@8.
-        if (!args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        vk32abi::VkPhysicalDeviceImageFormatInfo2 info = {};
+        if (!readStruct32((U32)args.a[1], info) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIsSupportedImage(info.format)) {
+            vk64Unsupported("image-format", "image format properties2 queried for unsupported image format");
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        VkImageFormatProperties props = {};
+        fillImageFormatProps(&props, info.format, info.type);
         U32 dst = (U32)args.a[2] + 8;
-        wr32_32(dst + 0, 16384); // maxExtent.width
-        wr32_32(dst + 4, 16384); // maxExtent.height
-        wr32_32(dst + 8, 2048);  // maxExtent.depth
-        wr32_32(dst + 12, 14);   // maxMipLevels
-        wr32_32(dst + 16, 2048); // maxArrayLayers
-        wr32_32(dst + 20, 0x0F); // sampleCounts (1|2|4|8)
-        wr64_32(dst + 24, 2ull * 1024 * 1024 * 1024); // maxResourceSize
+        wr32_32(dst + 0, props.maxExtent.width);
+        wr32_32(dst + 4, props.maxExtent.height);
+        wr32_32(dst + 8, props.maxExtent.depth);
+        wr32_32(dst + 12, props.maxMipLevels);
+        wr32_32(dst + 16, props.maxArrayLayers);
+        wr32_32(dst + 20, props.sampleCounts);
+        wr64_32(dst + 24, props.maxResourceSize);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetDeviceBufferMemoryRequirements: {
@@ -6992,6 +8489,20 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (pCreateInfo) createSize = rd64_32(pCreateInfo + 12); // VkBufferCreateInfo.size@12 (i386 guest, u64 4-aligned)
         U64 size = createSize ? ((createSize + 255) & ~(U64)255) : 256;
         vk32_writeRequirements((U32)args.a[2], size);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkGetDeviceImageMemoryRequirements: {
+        // 32-bit: VkDeviceImageMemoryRequirements (sType@0,pNext@4,pCreateInfo@8,planeAspect@12).
+        if (!args.a[1] || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        U32 pCreateInfo = rd32_32((U32)args.a[1] + 8);
+        vk32abi::VkImageCreateInfo ci = {};
+        if (!pCreateInfo || !readStruct32(pCreateInfo, ci)) return VK_ERROR_INITIALIZATION_FAILED;
+        Image tmp;
+        tmp.w = ci.extent.width; tmp.h = ci.extent.height; tmp.d = ci.extent.depth;
+        tmp.layers = ci.arrayLayers ? ci.arrayLayers : 1;
+        tmp.mips = ci.mipLevels ? ci.mipLevels : 1;
+        tmp.format = ci.format;
+        vk32_writeRequirements((U32)args.a[2], imageDataBytes(tmp));
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetPhysicalDeviceQueueFamilyProperties: {
@@ -7010,13 +8521,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetDeviceQueue: {
         Device* dev = objOf32<Device>(args.a[0], K_DEVICE, "vkGetDeviceQueue");
-        if (!dev || !args.a[3]) return 0;
+        VK64_DROP_IF(return 0, !dev || !args.a[3]);
         wr32_32((U32)args.a[3], (U32)dev->queue);
         return 0;
     }
     case VK64_fn_vkGetBufferMemoryRequirements: {
         Buffer* b = objOf32<Buffer>(args.a[1], K_BUFFER, "vkGetBufferMemoryRequirements");
-        if (!b || !args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !b || !args.a[2]);
         U32 dst = (U32)args.a[2];
         wr64_32(dst + 0, b->size);
         wr64_32(dst + 8, 256);
@@ -7025,7 +8536,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkGetImageMemoryRequirements: {
         Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkGetImageMemoryRequirements");
-        if (!im || !args.a[2]) return 0;
+        VK64_DROP_IF(return 0, !im || !args.a[2]);
         U32 dst = (U32)args.a[2];
         wr64_32(dst + 0, imageDataBytes(*im));
         wr64_32(dst + 8, 256);
@@ -7119,20 +8630,32 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo32Local ci = {};
         if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
-        U64 id = 0;
-        QueryPool* pool = createObj32<QueryPool>(K_QUERYPOOL, id);
-        pool->type = ci.queryType; pool->count = ci.queryCount; pool->flags = ci.flags;
-        wr64_32((U32)args.a[3], id);
+        const char* feature = ci.queryType == vkquery::VKQUERY_OCCLUSION ? "occlusion-query"
+            : ci.queryType == vkquery::VKQUERY_TIMESTAMP ? "timestamp-query" : "pipeline-statistics-query";
+        vk64Unsupported(feature, "query results are not integrated with WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT");
+        wr64_32((U32)args.a[3], 0);
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+    case VK64_fn_vkResetQueryPool: {
+        auto* pool=objOf32<QueryPool>(args.a[1],K_QUERYPOOL,"vkResetQueryPool");
+        if(!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2])return VK_ERROR_INITIALIZATION_FAILED;
+        U32 n=(U32)args.a[3];
+        for(U32 i=0;i<n;i++){pool->results[args.a[2]+i]=0;pool->available[args.a[2]+i]=0;}
         return VK_SUCCESS;
     }
-    case VK64_fn_vkResetQueryPool:
-    case VK64_fn_vkCmdResetQueryPool:
+    case VK64_fn_vkCmdResetQueryPool: {
+        auto* cb=objOf32<CmdBuf>(args.a[0],K_CMDBUF,"vkCmdResetQueryPool");auto* pool=objOf32<QueryPool>(args.a[1],K_QUERYPOOL,"vkCmdResetQueryPool");
+        VK64_DROP_IF(return 0,!cb||!pool||args.a[2]>pool->count||args.a[3]>pool->count-args.a[2]);
+        Cmd c;c.kind=CMD_RESET_QUERY;c.a=args.a[1];c.b=args.a[2];c.c=args.a[3];pushCmd(cb,c);return 0;
+    }
     case VK64_fn_vkCmdBeginQuery:
-    case VK64_fn_vkCmdEndQuery:
-        return VK_SUCCESS;
+    case VK64_fn_vkCmdEndQuery: {
+        vk64Unsupported("occlusion-query", "occlusion queries are not implemented; device feature bit is false");
+        return 0;
+    }
     case VK64_fn_vkCmdCopyQueryPoolResults: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyQueryPoolResults");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_QUERY_RESULTS;
         c.queryCopy = { args.a[1], args.a[4], args.a[5], args.a[6],
                         (U32)args.a[2], (U32)args.a[3], (U32)args.a[7] };
@@ -7255,6 +8778,22 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateImage: {
         vk32abi::VkImageCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!v2FormatIsSupportedImage(ci.format)) {
+            vk64Unsupported("image-format", "format is not supported by the WebGPU replay tier");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if ((ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) && !v2FormatTransferDstSupported(ci.format)) {
+            vk64Unsupported("depth-stencil-transfer-dst", "D24S8/D32S8 uploads need WebGPU depth32float-stencil8; image rejected");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
+        if (!v2FormatSampleCounts(ci.format) || !(v2FormatSampleCounts(ci.format) & (U32)ci.samples) ||
+            ((U32)ci.samples > 1 && (U32)ci.imageType != (U32)VK_IMAGE_TYPE_2D)) {
+            vk64Unsupported("image-sample-count", "sample count is not supported for this image format");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        }
         U64 id = 0;
         Image* im = createObj32<Image>(K_IMAGE, id);
         im->w = ci.extent.width; im->h = ci.extent.height; im->d = ci.extent.depth;
@@ -7279,12 +8818,21 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         v->image = ci.image;
         v->format = ci.format;
         v->aspect = ci.subresourceRange.aspectMask;
+        {
+            const U32 sw[4] = {ci.components.r, ci.components.g, ci.components.b, ci.components.a};
+            vk64InitImageView(v, src, ci.viewType, sw, ci.subresourceRange.baseMipLevel, ci.subresourceRange.levelCount,
+                              ci.subresourceRange.baseArrayLayer, ci.subresourceRange.layerCount);
+        }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSampler: {
         vk32abi::VkSamplerCreateInfo ci = {};
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (vk64AuditSampler(ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.mipLodBias, ci.borderColor)) {
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Sampler* s = createObj32<Sampler>(K_SAMPLER, id);
         s->mag = ci.magFilter; s->min = ci.minFilter; s->mipmap = ci.mipmapMode;
@@ -7298,12 +8846,19 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCreateShaderModule: {
         vk32abi::VkShaderModuleCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!ci.codeSize || !ci.pCode) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         ShaderModule* m = createObj32<ShaderModule>(K_SHADER, id);
         if (ci.codeSize && ci.pCode) {
             m->code.resize(ci.codeSize);
             g_mem32->memcpyFromGuest(m->code.data(), ci.pCode, ci.codeSize);
             m->hash = blob_hash(m->code.data(), m->code.size());
+            VkResult auditResult = vk64AuditSpirv(m->code);
+            if (auditResult != VK_SUCCESS) {
+                dropObj(id);
+                wr64_32((U32)args.a[3], 0);
+                return auditResult;
+            }
         }
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
@@ -7315,6 +8870,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         std::vector<vk32abi::VkGraphicsPipelineCreateInfo> cis;
         readArray32(args.a[3], n, cis);
+        VkResult result = VK_SUCCESS;
         for (U32 i = 0; i < n; i++) {
             const vk32abi::VkGraphicsPipelineCreateInfo& ci = cis[i];
             U64 id = 0;
@@ -7346,10 +8902,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             // vertex layout to build and nothing rasterizes.
             vk32abi::VkPipelineVertexInputStateCreateInfo vi = {};
             if (readStruct32(ci.pVertexInputState, vi)) {
-                p->nvb = vi.vertexBindingDescriptionCount > VK64_MAX_VERT_BINDINGS
-                             ? VK64_MAX_VERT_BINDINGS : vi.vertexBindingDescriptionCount;
-                p->nva = vi.vertexAttributeDescriptionCount > VK64_MAX_VERT_ATTRIBS
-                             ? VK64_MAX_VERT_ATTRIBS : vi.vertexAttributeDescriptionCount;
+                p->nvb = vk64CapCount("vertex-bindings", vi.vertexBindingDescriptionCount, VK64_MAX_VERT_BINDINGS);
+                p->nva = vk64CapCount("vertex-attributes", vi.vertexAttributeDescriptionCount, VK64_MAX_VERT_ATTRIBS);
                 std::vector<vk32abi::VkVertexInputBindingDescription> vbs;
                 readArray32(vi.pVertexBindingDescriptions, p->nvb, vbs);
                 for (U32 b = 0; b < vbs.size(); b++) {
@@ -7366,25 +8920,61 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 }
             }
             vk32abi::VkPipelineDynamicStateCreateInfo dynamic = {};
+            bool dynamicRejected = false;
             if (readStruct32(ci.pDynamicState, dynamic)) {
                 std::vector<vk32abi::VkDynamicState> states;
                 readArray32(dynamic.pDynamicStates, dynamic.dynamicStateCount, states);
-                for (auto state : states) {
-                    const U32 value = (U32)state;
-                    if (value == (U32)VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) p->dynamicVertexStride = true;
-                    if (value == (U32)VK_DYNAMIC_STATE_DEPTH_BIAS) p->depthBiasDynamic = true;
-                    if (value == 1000267000u) p->cullDynamic = true;    // VK_DYNAMIC_STATE_CULL_MODE(_EXT)
-                    if (value == 1000267001u) p->frontDynamic = true;   // VK_DYNAMIC_STATE_FRONT_FACE(_EXT)
-                    if (value >= 6 && value <= 8) p->stencil.dynamicMask |= 1u << (value - 6);
-                    if (value == 4) p->blendConstantsDynamic = true;
-                }
+                std::vector<U32> dynValues;
+                for (auto state : states) dynValues.push_back((U32)state);
+                if (!vk64ApplyDynamicStates(*p, dynValues)) dynamicRejected = true;
             }
             std::vector<vk32abi::VkPipelineColorBlendAttachmentState> blends;
-            readArray32(cbs.pAttachments, std::min<U32>(cbs.attachmentCount, VK64_MAX_ATTACH), blends);
+            readArray32(cbs.pAttachments, vk64CapCount("blend-attachments", cbs.attachmentCount, VK64_MAX_ATTACH), blends);
             captureColorBlend(*p, blends);
             memcpy(p->blendConstants, cbs.blendConstants, sizeof(p->blendConstants));
             std::vector<vk32abi::VkPipelineShaderStageCreateInfo> stages;
             readArray32(ci.pStages, ci.stageCount, stages);
+            {
+                PipelineAudit audit;
+                for (const auto& st : stages) audit.stageMask |= (U32)st.stage;
+                audit.topology = ia.topology;
+                audit.polygonMode = rs.polygonMode;
+                audit.rasterizerDiscard = rs.rasterizerDiscardEnable;
+                audit.dynMask = p->dynMask;
+                audit.unsupportedVertexBindingCount = p->nvb > v2WebGpuMaxVertexBuffers();
+                p->rasterizerDiscard = rs.rasterizerDiscardEnable ? 1 : 0;
+                audit.logicOp = cbs.logicOpEnable;
+                audit.depthBounds = ds.depthBoundsTestEnable;
+                vk64AuditBlend(*p, audit);
+                vk64AuditStencil(*p, audit);
+                for (U32 a = 0; a < p->nva; ++a)
+                    if (!v2FormatIsSupportedVertex(p->vaFormat[a])) audit.unsupportedVertexFormat = true;
+                {
+                    vk32abi::VkPipelineVertexInputStateCreateInfo vi32 = {};
+                    if (readStruct32(ci.pVertexInputState, vi32))
+                        for (U32 cur = vi32.pNext; cur && g_mem32; cur = rd32_32(cur + 4)) {
+                            if (rd32_32(cur) != 1000190001u) continue;
+                            const U32 cnt = std::min<U32>(rd32_32(cur + 8), 64);
+                            const U32 arr = rd32_32(cur + 12);
+                            for (U32 k = 0; k < cnt && arr; k++)
+                                if (rd32_32(arr + k * 8 + 4) != 1) audit.vertexDivisor = true;
+                        }
+                }
+                vk32abi::VkPipelineViewportStateCreateInfo vp = {};
+                if (readStruct32(ci.pViewportState, vp)) audit.viewportCount = vp.viewportCount;
+                vk32abi::VkPipelineMultisampleStateCreateInfo ms = {};
+                if (readStruct32(ci.pMultisampleState, ms)) {
+                    audit.sampleCount = (U32)ms.rasterizationSamples;
+                    audit.sampleShading = ms.sampleShadingEnable;
+                    audit.alphaToOne = ms.alphaToOneEnable;
+                }
+                if (vk64AuditGraphicsPipeline(audit) || dynamicRejected) {
+                    dropObj(id);
+                    wr64_32(args.a[5] + (U64)i * 8, 0);
+                    result = VK_ERROR_FEATURE_NOT_PRESENT;
+                    continue;
+                }
+            }
             for (const vk32abi::VkPipelineShaderStageCreateInfo& st : stages) {
                 if ((U32)st.stage == (U32)VK_SHADER_STAGE_VERTEX_BIT) {
                     p->vs = st.module;
@@ -7399,11 +8989,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             p->rp = ci.renderPass;
             wr64_32(args.a[5] + (U64)i * 8, id);
         }
-        return VK_SUCCESS;
+        return result;
     }
     case VK64_fn_vkCreatePipelineLayout: {
         vk32abi::VkPipelineLayoutCreateInfo ci = {};
         if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.setLayoutCount > 3) {
+            vk64Unsupported("descriptor-set-count", "WebGPU replay supports three guest sets because group 3 is reserved for push constants");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         PipelineLayout* pl = createObj32<PipelineLayout>(K_PIPELAYOUT, id);
         pl->nsets = ci.setLayoutCount;
@@ -7417,7 +9011,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         RenderPass* rp = createObj32<RenderPass>(K_RENDERPASS, id);
-        rp->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<vk32abi::VkAttachmentDescription> atts;
         readArray32(ci.pAttachments, rp->natt, atts);
         for (U32 i = 0; i < atts.size(); i++) {
@@ -7428,17 +9022,42 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
             rp->samples[i] = atts[i].samples;
         }
-        if (atts.size() > 1) rp->depthFmt = atts[1].format;
+        vk32ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, false);
+        wr64_32(args.a[3], id);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkCreateRenderPass2: {
+        vk32abi::VkRenderPassCreateInfo2 ci = {};
+        if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        U64 id = 0;
+        RenderPass* rp = createObj32<RenderPass>(K_RENDERPASS, id);
+        rp->natt = vk64CapCount("renderpass-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
+        std::vector<RpAttachmentDesc2_32> atts;
+        readArray32(ci.pAttachments, rp->natt, atts);
+        for (U32 i = 0; i < atts.size(); i++) {
+            rp->formats[i] = atts[i].format;
+            rp->loadOps[i] = atts[i].loadOp;
+            rp->storeOps[i] = atts[i].storeOp;
+            rp->stencilLoadOps[i] = atts[i].stencilLoadOp;
+            rp->stencilStoreOps[i] = atts[i].stencilStoreOp;
+            rp->samples[i] = atts[i].samples;
+        }
+        vk32ParseSubpasses(rp, ci.pSubpasses, ci.subpassCount, true);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateFramebuffer: {
         vk32abi::VkFramebufferCreateInfo ci = {};
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        if (ci.layers > 1) {
+            vk64Unsupported("layered-framebuffer", "WebGPU replay supports one render-target layer; framebuffer rejected");
+            wr64_32((U32)args.a[3], 0);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
         U64 id = 0;
         Framebuffer* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, id);
         fb->rp = ci.renderPass;
-        fb->natt = ci.attachmentCount > VK64_MAX_ATTACH ? VK64_MAX_ATTACH : ci.attachmentCount;
+        fb->natt = vk64CapCount("framebuffer-attachments", ci.attachmentCount, VK64_MAX_ATTACH);
         std::vector<vk32abi::VkImageView> views;
         readArray32(ci.pAttachments, fb->natt, views);
         for (U32 i = 0; i < views.size(); i++) fb->views[i] = views[i];
@@ -7457,11 +9076,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateSemaphore: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        vk32abi::VkSemaphoreCreateInfo ci = {};
+        if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreateSemaphore") ||
+            !readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         auto* semaphore = createObj32<Semaphore>(K_SEMAPHORE, id);
-        vk32abi::VkSemaphoreCreateInfo ci = {};
-        readStruct32(args.a[1], ci);
         for (U32 cur = ci.pNext, n = 0; cur && n < 64; ++n) {
             if (rd32_32(cur) == VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO) {
                 vk32abi::VkSemaphoreTypeCreateInfo ti = {};
@@ -7491,6 +9110,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkWaitSemaphores: {
         vk32abi::VkSemaphoreWaitInfo wi = {};
         if (!readStruct32(args.a[1], wi)) return VK_ERROR_INITIALIZATION_FAILED;
+        if (wi.semaphoreCount && (!wi.pSemaphores || !wi.pValues)) return VK_ERROR_INITIALIZATION_FAILED;
         bool any = false, all = true;
         for (U32 i = 0; i < wi.semaphoreCount; ++i) {
             auto* s = objOf32<Semaphore>(rd64_32(wi.pSemaphores + i * 8), K_SEMAPHORE, "vkWaitSemaphores");
@@ -7604,7 +9224,6 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkDestroySwapchainKHR:
     case VK64_fn_vkDestroyCommandPool:
     case VK64_fn_vkDestroyBuffer:
-    case VK64_fn_vkDestroyImage:
     case VK64_fn_vkDestroyImageView:
     case VK64_fn_vkDestroySampler:
     case VK64_fn_vkDestroyRenderPass:
@@ -7612,7 +9231,6 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkDestroyPipeline:
     case VK64_fn_vkDestroyPipelineLayout:
     case VK64_fn_vkDestroyDescriptorSetLayout:
-    case VK64_fn_vkDestroyDescriptorPool:
     case VK64_fn_vkDestroyPipelineCache:
     case VK64_fn_vkDestroyFence:
     case VK64_fn_vkDestroySemaphore:
@@ -7620,6 +9238,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         dropObj(args.a[1] & 0xFFFFFFFFULL);
         return 0;
 
+    case VK64_fn_vkDestroyImage:
+        g_imageContentHash.erase(args.a[1] & 0xFFFFFFFFULL);
+        dropObj(args.a[1] & 0xFFFFFFFFULL);
+        return 0;
+
+    case VK64_fn_vkDestroyDescriptorPool:
+        destroyDescPool(args.a[1] & 0xFFFFFFFFULL);
+        return 0;
     case VK64_fn_vkDestroyShaderModule: {
         auto* module = objOf32<ShaderModule>(args.a[1], K_SHADER, "vkDestroyShaderModule");
         if (module) module->destroyed = 1;
@@ -7631,11 +9257,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkBeginCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
         resetCmdBuf(cb);
+        cb->lifecycle.onBegin();
         return VK_SUCCESS;
     }
     case VK64_fn_vkEndCommandBuffer: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkEndCommandBuffer");
         if (!cb) return VK_ERROR_INITIALIZATION_FAILED;
+        cb->lifecycle.onEnd();
         return VK_SUCCESS;
     }
     case VK64_fn_vkCmdBeginRenderPass2:
@@ -7654,8 +9282,16 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // pClearValues is a guest VA: colour first, then depth/stencil (P1 read
         // index 0 as colour and index 1 as depth).
         std::vector<vk32abi::VkClearValue> clears;
-        readArray32(bi.pClearValues, std::min<U32>(bi.clearValueCount, VK64_MAX_ATTACH), clears);
+        readArray32(bi.pClearValues, vk64CapCount("clear-values", bi.clearValueCount, VK64_MAX_ATTACH), clears);
         captureRenderPassClears(c, objOf32<RenderPass>(bi.renderPass, K_RENDERPASS, "vkCmdBeginRenderPass"), clears);
+        vk64AuditFramebufferViews(objOf32<Framebuffer>(bi.framebuffer, K_FRAMEBUFFER, "vkCmdBeginRenderPass"));
+        pushCmd(cb, c);
+        return 0;
+    }
+    case VK64_fn_vkCmdNextSubpass: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdNextSubpass");
+        VK64_DROP_IF(return 0, !cb);
+        Cmd c; c.kind = CMD_NEXT_SUBPASS;
         pushCmd(cb, c);
         return 0;
     }
@@ -7665,7 +9301,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdEndRendering:
     case VK64_fn_vkCmdEndRenderingKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdEndRenderPass");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_END_RP;
         pushCmd(cb, c);
         return 0;
@@ -7673,7 +9309,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindPipeline: {
         // (cmdBuf, bindPoint, pipeline)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindPipeline");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_BIND_PIPE;
         c.a = args.a[2];
@@ -7682,21 +9318,25 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdBindDescriptorSets: {
+        // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindDescriptorSets");
-        if (!cb) return 0;
-        U32 first = (U32)args.a[3], count = (U32)args.a[4];
-        for (U32 i = 0; i < count && first + i < VK64_MAX_SETS && args.a[5]; i++)
-            cb->sets[first + i] = rd64_32((U32)args.a[5] + i * 8);
-        Cmd c; c.kind = CMD_BIND_SETS;
-        memcpy(c.sets, cb->sets, sizeof(c.sets)); c.a = args.a[3]; c.b = args.a[4];
-        pushCmd(cb, c);
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        std::vector<U64> ids;
+        for (U32 i = 0; i < (U32)args.a[4] && i < VK64_MAX_SETS && args.a[5]; i++) ids.push_back(rd64_32((U32)args.a[5] + i * 8));
+        std::vector<U32> dyn;
+        readArray32(args.a[7], (U32)args.a[6], dyn);
+        recordBindSets(cb, (U32)args.a[3], ids, dyn);
         return 0;
     }
     case VK64_fn_vkCmdSetStencilCompareMask:
     case VK64_fn_vkCmdSetStencilWriteMask:
     case VK64_fn_vkCmdSetStencilReference: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_STENCIL_STATE;
         c.a = fnId == VK64_fn_vkCmdSetStencilCompareMask ? 0 : fnId == VK64_fn_vkCmdSetStencilWriteMask ? 1 : 2;
         c.b = (U32)args.a[1]; c.c = (U32)args.a[2];
@@ -7704,28 +9344,40 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdSetBlendConstants: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb || !args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !cb || !args.a[1]);
         Cmd c; c.kind = CMD_BLEND_CONSTANTS;
         g_mem32->memcpyFromGuest(c.f, (U32)args.a[1], 16);
+        pushCmd(cb, c); return 0;
+    }
+    case VK64_fn_vkCmdSetExtendedDynamicState: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetExtendedDynamicState");
+        VK64_DROP_IF(return 0, !cb);
+        if (!vk64ExtendedDynamicStateOk((U32)args.a[1], (U32)args.a[2])) return 0;
+        Cmd c; c.kind = CMD_RASTER_STATE; c.a = (U32)args.a[1]; c.b = (U32)args.a[2];
         pushCmd(cb, c); return 0;
     }
     case VK64_fn_vkCmdSetCullMode:
     case VK64_fn_vkCmdSetFrontFace: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "dynamic raster state");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_RASTER_STATE;
         c.a = fnId == VK64_fn_vkCmdSetCullMode ? 0 : 1; c.b = (U32)args.a[1];
         pushCmd(cb, c); return 0;
     }
-    // Timestamp query results are synthesized from the host clock at read time and
-    // WebGPU has no depth-bounds test (the feature is not advertised), so both are
-    // accepted without a record.
-    case VK64_fn_vkCmdWriteTimestamp:
-    case VK64_fn_vkCmdSetDepthBounds:
+    case VK64_fn_vkCmdWriteTimestamp: {
+        vk64Unsupported("timestamp-query", "timestamp queries are not integrated with WebGPU replay; device queue timestampValidBits is zero");
         return 0;
+    }
+    case VK64_fn_vkCmdSetDepthBounds: {
+        // depthBounds is not a feature we advertise: the only valid range is [0,1], which is a no-op.
+        const U32 loBits = (U32)args.a[1], hiBits = (U32)args.a[2];
+        float lo, hi; memcpy(&lo, &loBits, 4); memcpy(&hi, &hiBits, 4);
+        if (lo != 0.0f || hi != 1.0f) vk64Unsupported("depth-bounds-range", "vkCmdSetDepthBounds outside [0,1] ignored; depthBounds feature is off");
+        return 0;
+    }
     case VK64_fn_vkCmdSetDepthBias: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdSetDepthBias");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DEPTH_BIAS;
         for (U32 i = 0; i < 3; ++i) { U32 bits = (U32)args.a[i + 1]; memcpy(&c.f[i], &bits, sizeof(bits)); }
         pushCmd(cb, c); return 0;
@@ -7762,7 +9414,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdDraw: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DRAW;
         c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3]; c.d = args.a[4];
         if (!vkSchemaV2()) captureDraw(cb, c);
@@ -7772,7 +9424,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndexed: {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexed");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
@@ -7789,10 +9441,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindVertexBuffers2: {
         // (cmdBuf, firstBinding, bindingCount, pBuffers*, pOffsets*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindVertexBuffers");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 first = (U32)args.a[1], count = (U32)args.a[2];
-        if (!args.a[3] || !args.a[4] || !count || first >= VK64_MAX_VERT_BINDINGS) return 0;
-        if (first + count > VK64_MAX_VERT_BINDINGS) count = VK64_MAX_VERT_BINDINGS - first;
+        if (!args.a[3] || !args.a[4] || !count) return 0;
+        if (first >= VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers firstBinding is beyond the bridge limit; buffers are dropped"); return 0; }
+        if (first + count > VK64_MAX_VERT_BINDINGS) { vk64Unsupported("vertex-bindings", "vkCmdBindVertexBuffers range exceeds the bridge limit; extra buffers are dropped"); count = VK64_MAX_VERT_BINDINGS - first; }
         for (U32 i = 0; i < count; i++) {
             cb->vbs[first + i] = rd64_32(args.a[3] + (U64)i * 8);
             cb->vbOff[first + i] = rd64_32(args.a[4] + (U64)i * 8);
@@ -7818,7 +9471,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBindIndexBuffer2:
     case VK64_fn_vkCmdBindIndexBuffer2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindIndexBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         cb->ib = args.a[1]; cb->ibOff = args.a[2];
         cb->ibType = (U32)args.a[fnId == VK64_fn_vkCmdBindIndexBuffer ? 3 : 4];
         Cmd c; c.kind = CMD_BIND_IB; c.a = cb->ib; c.b = cb->ibOff; c.c = cb->ibType;
@@ -7829,7 +9482,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdPipelineBarrier2:
     case VK64_fn_vkCmdPipelineBarrier2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPipelineBarrier");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_BARRIER;
         pushCmd(cb, c);
         return 0;
@@ -7838,7 +9491,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdPushConstants2:
     case VK64_fn_vkCmdPushConstants2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushConstants");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_PUSH_CONST;
         if (fnId == VK64_fn_vkCmdPushConstants) {
             c.pcOffset = (U32)args.a[3];
@@ -7853,13 +9506,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     // ---- 23 game-breaking functions ----
     case VK64_fn_vkCmdFillBuffer: {
         Buffer* dst = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdFillBuffer");
-        if (!dst || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !dst || !dst->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdFillBuffer");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U64 offset = dst->memOff + args.a[2];
         U64 size = args.a[3];
         U32 data = (U32)args.a[4];
-        if (offset >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, offset >= dmem->size);
         if (offset + size > dmem->size) size = dmem->size - offset;
         if (!size) return 0;
         U32 va = (U32)(dmem->va + offset);
@@ -7867,30 +9520,33 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             g_mem32->memcpyToGuest(va + (U32)i, &data, 4);
         if (size % 4) g_mem32->memcpyToGuest(va + (U32)(size & ~3ULL), &data, (U32)(size % 4));
         dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdClearColorImage: {
         Image* im = objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
-        if (!im || !im->mem) return 0;
+        VK64_DROP_IF(return 0, !im || !im->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(im->mem, K_MEMORY, "vkCmdClearColorImage");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         vk32abi::VkClearColorValue col = {};
         readStruct32((U32)args.a[3], col);
         U32 pxBytes = fmt_bpp(im->format);
         U32 pixel; memcpy(&pixel, col.float32, 4);
         U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
-        if (im->memOff >= dmem->size) return 0;
+        VK64_DROP_IF(return 0, im->memOff >= dmem->size);
         total = std::min(total, dmem->size - im->memOff);
         U32 va = (U32)(dmem->va + im->memOff);
         for (U64 off = 0; off < total; off += 4)
             g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
+        im->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
-        if (!cb) return 0;
-        if (args.a[1] > 8 || args.a[3] > 4096) { g_frameOverflow = true; return 0; }
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray32(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray32(args.a[4], (U32)args.a[3], c.clearRects);
@@ -7900,10 +9556,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyBuffer: {
         Buffer* src = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
         Buffer* dst = objOf32<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[3];
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && args.a[4]; i++) {
@@ -7920,11 +9576,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer2:
     case VK64_fn_vkCmdCopyBuffer2KHR: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 info = (U32)args.a[1];
         U64 src = rd64_32(info + 8);
         U64 dst = rd64_32(info + 16);
@@ -7932,10 +9589,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 pReg = rd32_32(info + 28);
         Buffer* srcB = objOf32<Buffer>(src, K_BUFFER, "vkCmdCopyBuffer2");
         Buffer* dstB = objOf32<Buffer>(dst, K_BUFFER, "vkCmdCopyBuffer2");
-        if (!srcB || !dstB || !srcB->mem || !dstB->mem) return 0;
+        VK64_DROP_IF(return 0, !srcB || !dstB || !srcB->mem || !dstB->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(srcB->mem, K_MEMORY, "vkCmdCopyBuffer2");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
             U32 r = pReg + i * 32;
@@ -7952,6 +9609,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dstB->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdCopyImage:
@@ -7967,10 +9625,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U8 tmp[65536];
         for (U32 i = 0; i < nreg && pReg; i++) {
@@ -7986,7 +9644,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             U32 srcRow = src->w * pxBytes, dstRow = dst->w * pxBytes;
             for (U32 y = 0; y < h; y++) {
                 U32 sy = (U32)r.srcOffset.y + y, dy = (U32)r.dstOffset.y + y;
-                if (sy >= src->h || dy >= dst->h) continue;
+                VK64_DROP_IF(continue, sy >= src->h || dy >= dst->h);
                 U64 srcVa = smem->va + src->memOff + (U64)sy * srcRow + (U64)(U32)r.srcOffset.x * pxBytes;
                 U64 dstVa = dmem->va + dst->memOff + (U64)dy * dstRow + (U64)(U32)r.dstOffset.x * pxBytes;
                 U32 rowBytes = w * pxBytes, done = 0;
@@ -7998,23 +9656,25 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 }
             }
         }
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdCopyBufferToImage:
     case VK64_fn_vkCmdCopyBufferToImage2:
     case VK64_fn_vkCmdCopyBufferToImage2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyBufferToImage");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 src = args.a[1], dst = args.a[2];
         U32 count = args.a[4], regions = args.a[5];
         const bool copy2 = fnId != VK64_fn_vkCmdCopyBufferToImage;
         if (copy2) {
             vk32abi::VkCopyBufferToImageInfo2 info = {};
-            if (!readStruct32(args.a[1], info)) return 0;
+            VK64_DROP_IF(return 0, !readStruct32(args.a[1], info));
             src = info.srcBuffer; dst = info.dstImage;
             count = info.regionCount; regions = info.pRegions;
         }
-        if (count > 1024 || !regions) return 0;
+        VK64_DROP_IF(return 0, count > 1024 || !regions);
         auto record = [&](const auto& r) {
             Cmd c; c.kind = CMD_COPY_B2I; c.a = src; c.b = dst;
             c.copy.srcBuffer = src; c.copy.dstImage = dst;
@@ -8042,7 +9702,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyImageToBuffer2:
     case VK64_fn_vkCmdCopyImageToBuffer2KHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyImageToBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_COPY_I2B;
         c.a = args.a[1]; c.b = args.a[3];
         pushCmd(cb, c);
@@ -8061,15 +9721,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             dst = objOf32<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
             nreg = (U32)args.a[3]; pReg = (U32)args.a[4];
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U32 srcRowPitch = src->w * pxBytes, dstRowPitch = dst->w * pxBytes;
         for (U32 i = 0; i < nreg && pReg; i++) {
             vk32abi::VkImageBlit r = {};
-            readStruct32(pReg + i * (U32)sizeof(r), r);
+            // VkImageBlit2 carries an 8-byte sType+pNext header on i386.
+            const U32 header = fnId == VK64_fn_vkCmdBlitImage ? 0 : 8;
+            readStruct32(pReg + i * ((U32)sizeof(r) + header) + header, r);
             const int32_t srcOffsets[2][3] = {
                 {r.srcOffsets[0].x, r.srcOffsets[0].y, r.srcOffsets[0].z},
                 {r.srcOffsets[1].x, r.srcOffsets[1].y, r.srcOffsets[1].z},
@@ -8088,23 +9750,25 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             int32_t srcH = r.srcOffsets[1].y - r.srcOffsets[0].y;
             int32_t dstW = r.dstOffsets[1].x - r.dstOffsets[0].x;
             int32_t dstH = r.dstOffsets[1].y - r.dstOffsets[0].y;
-            if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) continue;
+            VK64_DROP_IF(continue, srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0);
             for (int32_t dy = 0; dy < dstH; dy++) {
                 int32_t sy = r.srcOffsets[0].y + (dy * srcH) / dstH;
-                if (sy < 0 || (U32)sy >= src->h) continue;
+                VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstOffsets[0].y + dy);
-                if (dyAbs >= dst->h) continue;
+                VK64_DROP_IF(continue, dyAbs >= dst->h);
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcOffsets[0].x + (dx * srcW) / dstW;
-                    if (sx < 0 || (U32)sx >= src->w) continue;
+                    VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
                     U32 dxAbs = (U32)(r.dstOffsets[0].x + dx);
-                    if (dxAbs >= dst->w) continue;
+                    VK64_DROP_IF(continue, dxAbs >= dst->w);
                     U32 spx = 0;
                     g_mem32->memcpyFromGuest(&spx, (U32)(smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)sx * pxBytes), pxBytes);
                     g_mem32->memcpyToGuest((U32)(dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)dxAbs * pxBytes), &spx, pxBytes);
                 }
             }
         }
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdResolveImage:
@@ -8119,10 +9783,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 r.srcOffset.x, r.srcOffset.y, r.srcOffset.z, r.dstOffset.x, r.dstOffset.y, r.dstOffset.z,
                 r.extent.width, r.extent.height, r.extent.depth, std::min(r.srcSubresource.layerCount, r.dstSubresource.layerCount));
         }
-        if (!src || !dst || !src->mem || !dst->mem) return 0;
+        VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf32<DeviceMemory>(src->mem, K_MEMORY, "vkCmdResolveImage");
         DeviceMemory* dmem = objOf32<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdResolveImage");
-        if (!smem || !dmem || !smem->va || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 pxBytes = fmt_bpp(src->format);
         U64 total = (U64)src->w * src->h * pxBytes;
         U64 sva = smem->va + src->memOff, dva = dmem->va + dst->memOff;
@@ -8133,15 +9797,21 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             g_mem32->memcpyToGuest((U32)dva, tmp, chunk);
             sva += chunk; dva += chunk; total -= chunk;
         }
+        dst->dirtyGen = g_bufDirtyTick++;
+        vk64TouchMem(dmem);
         return 0;
     }
     case VK64_fn_vkCmdDrawIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndirect");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndirect");
-        if (!cb || !buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !buf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndirect");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = 16;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
@@ -8157,10 +9827,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDrawIndexedIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDrawIndexedIndirect");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDrawIndexedIndirect");
-        if (!cb || !buf || !buf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !buf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDrawIndexedIndirect");
-        if (!dmem || !dmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U32 drawCount = (U32)args.a[3], stride = (U32)args.a[4];
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = 20;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
@@ -8181,13 +9855,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDraw*IndirectCount");
         Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDraw*IndirectCount");
         Buffer* cbuf = objOf32<Buffer>(args.a[3], K_BUFFER, "vkCmdDraw*IndirectCount");
-        if (!cb || !buf || !cbuf || !buf->mem || !cbuf->mem) return 0;
+        VK64_DROP_IF(return 0, !cb || !buf || !cbuf || !buf->mem || !cbuf->mem);
         DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
         DeviceMemory* cmem = objOf32<DeviceMemory>(cbuf->mem, K_MEMORY, "vkCmdDraw*IndirectCount");
-        if (!dmem || !cmem || !dmem->va || !cmem->va) return 0;
+        VK64_DROP_IF(return 0, !dmem || !cmem || !dmem->va || !cmem->va);
         U32 drawCount = rd32_32((U32)(cmem->va + cbuf->memOff + args.a[4]));
         U32 maxDraws = (U32)args.a[5], stride = (U32)args.a[6];
         if (drawCount > maxDraws) drawCount = maxDraws;
+        if (drawCount > VK64_MAX_INDIRECT_DRAWS) {
+            vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
+            drawCount = VK64_MAX_INDIRECT_DRAWS;
+        }
         if (!stride) stride = indexed ? 20 : 16;
         U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
         for (U32 i = 0; i < drawCount; i++) {
@@ -8212,12 +9890,24 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdExecuteCommands: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdExecuteCommands");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U32 n = (U32)args.a[1];
-        for (U32 i = 0; i < n && args.a[2]; i++) {
+        if (n && !args.a[2]) { vk64DropLog("n && !pCommandBuffers", __LINE__); return 0; }
+        for (U32 i = 0; i < n; i++) {
             CmdBuf* secondary = objOf32<CmdBuf>(rd32_32((U32)args.a[2] + i * 4), K_CMDBUF, "vkCmdExecuteCommands");
-            if (!secondary) continue;
+            VK64_DROP_IF(continue, !secondary);
             for (const auto& c : secondary->cmds) pushCmd(cb, c);
+            if (secondary->nvb > cb->nvb) {
+                cb->nvb = secondary->nvb;
+                memcpy(cb->vbs, secondary->vbs, sizeof(cb->vbs));
+                memcpy(cb->vbOff, secondary->vbOff, sizeof(cb->vbOff));
+            }
+            if (secondary->ib) {
+                cb->ib = secondary->ib; cb->ibOff = secondary->ibOff; cb->ibType = secondary->ibType;
+            }
+            if (secondary->pipe) cb->pipe = secondary->pipe;
+            // Travels with the primary now; not fallback-eligible standalone.
+            secondary->lifecycle.onSubmitted();
         }
         return 0;
     }
@@ -8225,7 +9915,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdDispatchBase:
     case VK64_fn_vkCmdDispatchIndirect: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdDispatch");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         Cmd c; c.kind = CMD_DISPATCH;
         if (fnId == VK64_fn_vkCmdDispatch) {
             c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3];
@@ -8253,7 +9943,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
          * memory at record time and written back at submit (transfer
          * semantics), before serialization reads the buffer. */
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdUpdateBuffer");
-        if (!cb) return 0;
+        VK64_DROP_IF(return 0, !cb);
         U64 size = args.a[3];
         if (!args.a[4] || !size) return 0;
         if (size > 65536) {
@@ -8276,19 +9966,22 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdBeginRenderingKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBeginRendering");
         vk32abi::VkRenderingInfo ri = {};
-        if (!cb || !readStruct32(args.a[1], ri)) return 0;
+        VK64_DROP_IF(return 0, !cb || !readStruct32(args.a[1], ri));
         U64 rpId = 0, fbId = 0;
         auto* rp = createObj32<RenderPass>(K_RENDERPASS, rpId);
         auto* fb = createObj32<Framebuffer>(K_FRAMEBUFFER, fbId);
         cb->dynamicObjects.push_back(rpId);
         cb->dynamicObjects.push_back(fbId);
         fb->rp = rpId; fb->w = ri.renderArea.extent.width; fb->h = ri.renderArea.extent.height;
+        rp->nsub = 1;
+        vk64DynamicAudit(ri.viewMask, ri.renderArea.offset.x, ri.renderArea.offset.y, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
             vk32abi::VkRenderingAttachmentInfo att = {};
-            if (!address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att)) return;
+            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att));
             auto* view = objOf32<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
-            if (!view) return;
+            VK64_DROP_IF(return, !view);
+            vk64AuditAttachmentView(view);
             auto* image = objOf32<Image>(view->image, K_IMAGE, "vkCmdBeginRendering");
             U32 i = fb->natt++;
             fb->views[i] = att.imageView;
@@ -8298,9 +9991,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             if (depth) {
                 float value; memcpy(&value, &att.clearValue, 4); c.clearDepth = value;
                 rp->depthFmt = rp->formats[i];
-            } else if (i == 0) memcpy(c.f, &att.clearValue, 16);
+            } else vk64SetAttachmentClear(c, i, rp->formats[i], reinterpret_cast<const U32*>(&att.clearValue));
+            SubpassMap& sm = rp->sub[0];
+            if (depth) {
+                sm.depth = i;
+                if (att.resolveMode) vk64Unsupported("depth-stencil-resolve", "depth/stencil resolve in dynamic rendering is not performed");
+            } else if (sm.nColor < VK64_MAX_ATTACH) {
+                U32 slot = vk64DynamicResolveSlot(rp, fb, att.resolveImageView, att.resolveMode, objOf32<ImageView>(att.resolveImageView, K_IMAGEVIEW, "vkCmdBeginRendering"));
+                sm.color[sm.nColor] = i; sm.resolve[sm.nColor++] = slot;
+            }
         };
-        U32 colors = std::min(ri.colorAttachmentCount, (U32)VK64_MAX_ATTACH);
+        U32 colors = vk64CapCount("rendering-attachments", ri.colorAttachmentCount, VK64_MAX_ATTACH);
         for (U32 i = 0; i < colors && ri.pColorAttachments; ++i)
             attachment(ri.pColorAttachments + (U64)i * sizeof(vk32abi::VkRenderingAttachmentInfo), false);
         attachment(ri.pDepthAttachment, true);
@@ -8334,26 +10035,53 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 vk32abi::VkSubmitInfo2 si = {};
                 readStruct32(args.a[2] + (U64)s * sizeof(si), si);
                 cmdCount = si.commandBufferInfoCount; pCmd = si.pCommandBufferInfos;
+                for (U32 i = 0; i < si.waitSemaphoreInfoCount; ++i) {
+                    vk32abi::VkSemaphoreSubmitInfo wait = {};
+                    readStruct32(si.pWaitSemaphoreInfos + (U64)i * sizeof(wait), wait);
+                    auto* sem = objOf32<Semaphore>(wait.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (wait.value || !sem->signalled) {
+                        vk64Unsupported(wait.value ? "timeline-semaphore" : "binary-semaphore-wait",
+                                        "submit2 wait cannot be completed by the synchronous bridge");
+                        return wait.value ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
+                }
                 for (U32 i = 0; i < si.signalSemaphoreInfoCount; ++i) {
                     vk32abi::VkSemaphoreSubmitInfo signal = {};
                     readStruct32(si.pSignalSemaphoreInfos + (U64)i * sizeof(signal), signal);
                     auto* sem = objOf32<Semaphore>(signal.semaphore, K_SEMAPHORE, "vkQueueSubmit2");
-                    if (sem) sem->counter = std::max<U64>(sem->counter, signal.value);
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (signal.value) {
+                        vk64Unsupported("timeline-semaphore", "submit2 timeline signal is not supported");
+                        return VK_ERROR_FEATURE_NOT_PRESENT;
+                    }
+                    sem->signalled = 1;
                 }
             } else {
                 vk32abi::VkSubmitInfo si = {};
                 readStruct32(args.a[2] + (U64)s * sizeof(si), si);
                 cmdCount = si.commandBufferCount; pCmd = si.pCommandBuffers;
+                for (U32 i = 0; i < si.waitSemaphoreCount; ++i) {
+                    auto* sem = objOf32<Semaphore>(rd64_32(si.pWaitSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    if (!sem->signalled) {
+                        vk64Unsupported("binary-semaphore-wait", "wait was not signalled before synchronous submit");
+                        return VK_ERROR_UNKNOWN;
+                    }
+                    sem->signalled = 0;
+                }
                 for (U32 cur = si.pNext, n = 0; cur && n < 64; ++n) {
                     if (rd32_32(cur) == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
-                        vk32abi::VkTimelineSemaphoreSubmitInfo ti = {};
-                        readStruct32(cur, ti);
-                        for (U32 i = 0; i < std::min(ti.signalSemaphoreValueCount, si.signalSemaphoreCount); ++i) {
-                            auto* sem = objOf32<Semaphore>(rd64_32(si.pSignalSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
-                            if (sem) sem->counter = std::max(sem->counter, rd64_32(ti.pSignalSemaphoreValues + i * 8));
-                        }
+                        vk64Unsupported("timeline-semaphore", "timeline submit is not connected to WebGPU replay");
+                        return VK_ERROR_FEATURE_NOT_PRESENT;
                     }
                     cur = rd32_32(cur + 4);
+                }
+                for (U32 i = 0; i < si.signalSemaphoreCount; ++i) {
+                    auto* sem = objOf32<Semaphore>(rd64_32(si.pSignalSemaphores + i * 8), K_SEMAPHORE, "vkQueueSubmit");
+                    if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+                    sem->signalled = 1;
                 }
             }
             for (U32 i = 0; i < cmdCount && pCmd; i++) {
@@ -8364,10 +10092,14 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     cbId = ci.commandBuffer;
                 } else cbId = rd32_32(pCmd + i * 4);
                 CmdBuf* cb = objOf32<CmdBuf>(cbId, K_CMDBUF, "vkQueueSubmit");
-                if (!cb) continue;
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
-                for (const Cmd& k : cb->cmds) if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                VK64_DROP_IF(continue, !cb);
+                VkEncodeScope transfer(vkProfAcc().encode, vkencode::Transfer, vkEncodeDetailEnabled());
+                for (const Cmd& k : cb->cmds) {
+                    if (k.kind == CMD_COPY_B2I) execCopy(k.copy);
+                    else if (k.kind == CMD_UPDATE_BUF) execUpdateBuf(k);
+                    else if (k.kind == CMD_RESET_QUERY) execQueryCommand(k);
+                    else if (k.kind == CMD_COPY_QUERY_RESULTS) execCopyQueryResults(k);
+                }
                 frames.push_back({cb, cbId});
             }
         }
@@ -8380,6 +10112,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 if (needRb) completeReadbacks();
             } else serializeSubmit(frames);
         }
+        for (auto& fr : frames) if (fr.first) fr.first->lifecycle.onSubmitted();
         if (args.a[3]) {
             Fence* f = objOf32<Fence>(args.a[3], K_FENCE, "vkQueueSubmit");
             if (f) f->signalled = 1;
@@ -8392,20 +10125,33 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // VkPresentInfoKHR 32-bit: 32 bytes. swapchainCount at +16,
         // pSwapchains at +20, pImageIndices at +24, pResults at +28.
         U32 pi = (U32)args.a[1];
+        U32 waitCount = rd32_32(pi + 8);
+        U32 waitSemaphores = rd32_32(pi + 12);
         U32 scCount = rd32_32(pi + 16);
         U32 pSc = rd32_32(pi + 20);
         U32 pIdx = rd32_32(pi + 24);
         U32 pRes = rd32_32(pi + 28);
+        for (U32 i = 0; i < waitCount; ++i) {
+            auto* sem = objOf32<Semaphore>(rd64_32(waitSemaphores + i * 8), K_SEMAPHORE, "vkQueuePresentKHR");
+            if (!sem) return VK_ERROR_INITIALIZATION_FAILED;
+            if (!sem->signalled) {
+                vk64Unsupported("binary-semaphore-present-wait", "present wait was not signalled; VK_ERROR_UNKNOWN");
+                return VK_ERROR_UNKNOWN;
+            }
+            sem->signalled = 0;
+        }
+        std::string presentInfo = "{\"swapchains\":[";
         for (U32 i = 0; i < scCount && pSc; i++) {
             U64 scId = rd64_32(pSc + i * 8);
             Swapchain* sc = objOf32<Swapchain>(scId, K_SWAPCHAIN, "vkQueuePresentKHR");
+            appendPresentCaptureInfo(presentInfo, scId, pIdx ? rd32_32(pIdx + i * 4) : 0, sc);
             klog_fmt("vk32: vkQueuePresentKHR swapchain=0x%llx image=%u %ux%u",
                      (unsigned long long)scId,
                      pIdx ? rd32_32(pIdx + i * 4) : 0,
                      sc ? sc->w : 0, sc ? sc->h : 0);
             if (pRes) wr32_32(pRes + i * 4, VK_SUCCESS);
         }
-        if (vkSchemaV2()) hopV2ToPage(); else emitFrameNow();
+        if (vkSchemaV2()) hopV2ToPage(presentInfo + "],\"lastSubmission\":" + std::to_string(g_frameNo ? g_frameNo - 1 : 0) + "}"); else emitFrameNow();
         // Live metrics for the 32-bit guest Vulkan path: present count and the
         // present-to-present wall ONLY. vk32Bridge has no per-trap timers, so
         // submit/trap/hop/guest stay unavailable (never zero) and the panel
@@ -8479,102 +10225,77 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!readStruct32(args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
         DescSetLayout* l = createObj32<DescSetLayout>(K_SETLAYOUT, id);
-        l->nbind = ci.bindingCount > VK64_MAX_BINDINGS ? VK64_MAX_BINDINGS : ci.bindingCount;
         std::vector<vk32abi::VkDescriptorSetLayoutBinding> binds;
-        readArray32(ci.pBindings, l->nbind, binds);
-        for (U32 i = 0; i < binds.size(); i++) {
-            l->binds[i].binding = binds[i].binding;
-            l->binds[i].type = binds[i].descriptorType;
+        readArray32(ci.pBindings, ci.bindingCount, binds);
+        for (const auto& b : binds) {
+            LayoutBinding& lb = l->binds[b.binding];
+            lb.type = (U32)b.descriptorType; lb.count = b.descriptorCount;
+            if (b.pImmutableSamplers && ((U32)b.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLER ||
+                                         (U32)b.descriptorType == (U32)VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+                const U32 n = std::min<U32>(b.descriptorCount, VK64_MAX_DESC_ARRAY);
+                for (U32 i = 0; i < n; i++) lb.immutable.push_back(rd64_32(b.pImmutableSamplers + i * 8));
+            }
         }
+        finishDescLayout(*l);
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateDescriptorPool: {
-        if (!objOf32<Device>((U32)args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3])
+        vk32abi::VkDescriptorPoolCreateInfo ci = {};
+        if (!objOf32<Device>((U32)args.a[0], K_DEVICE, "vkCreateDescriptorPool") || !args.a[3] || !readStruct32(args.a[1], ci))
             return VK_ERROR_INITIALIZATION_FAILED;
         U64 id = 0;
-        createObj32<DescPool>(K_DESCPOOL, id);
+        DescPool* pool = createObj32<DescPool>(K_DESCPOOL, id);
+        pool->maxSets = ci.maxSets; pool->flags = ci.flags;
         wr64_32((U32)args.a[3], id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkAllocateDescriptorSets: {
         vk32abi::VkDescriptorSetAllocateInfo ai = {};
         if (!readStruct32(args.a[1], ai) || !args.a[2]) return VK_ERROR_INITIALIZATION_FAILED;
+        DescPool* pool = objOf32<DescPool>(ai.descriptorPool, K_DESCPOOL, "vkAllocateDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < ai.descriptorSetCount; i++) wr64_32(args.a[2] + (U64)i * 8, 0);
+        if (pool->maxSets && pool->sets.size() + ai.descriptorSetCount > pool->maxSets) return VK_ERROR_OUT_OF_POOL_MEMORY;
         for (U32 i = 0; i < ai.descriptorSetCount; i++) {
             U64 id = 0;
             DescSet* s = createObj32<DescSet>(K_SET, id);
             s->layout = rd64_32(ai.pSetLayouts + (U64)i * 8);
+            s->pool = ai.descriptorPool;
+            pool->sets.insert(id);
             wr64_32(args.a[2] + (U64)i * 8, id);
         }
         return VK_SUCCESS;
     }
+    case VK64_fn_vkResetDescriptorPool: {
+        DescPool* pool = objOf32<DescPool>(args.a[1], K_DESCPOOL, "vkResetDescriptorPool");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        resetDescPool(*pool);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkFreeDescriptorSets: {
+        DescPool* pool = objOf32<DescPool>(args.a[1], K_DESCPOOL, "vkFreeDescriptorSets");
+        if (!pool) return VK_ERROR_INITIALIZATION_FAILED;
+        for (U32 i = 0; i < (U32)args.a[2]; i++) freeDescSet(rd64_32((U32)args.a[3] + i * 8));
+        return VK_SUCCESS;
+    }
     case VK64_fn_vkUpdateDescriptorSets: {
         // (device, nWrite, pWrites*, nCopy, pCopies*)
-        U32 nw = (U32)args.a[1];
+        U32 nw = (U32)args.a[1], nc = (U32)args.a[3];
         std::vector<vk32abi::VkWriteDescriptorSet> writes;
         readArray32(args.a[2], nw, writes);
-        for (U32 i = 0; i < nw; i++) {
-            const vk32abi::VkWriteDescriptorSet& w = writes[i];
+        for (const auto& w : writes) {
             DescSet* s = objOf32<DescSet>(w.dstSet, K_SET, "vkUpdateDescriptorSets");
-            if (!s || w.dstBinding >= VK64_MAX_BINDINGS) continue;
-            Binding* b = nullptr;
-            for (U32 k = 0; k < s->nbind; k++)
-                if (s->binds[k].binding == w.dstBinding) { b = &s->binds[k]; break; }
-            if (!b) {
-                if (s->nbind >= VK64_MAX_BINDINGS) continue;
-                b = &s->binds[s->nbind++];
-                b->binding = w.dstBinding;
-            }
-            // Fidelity: the write's own descriptorType (not the set layout's) and
-            // its ARRAY GEOMETRY. A DXVK caller writes descriptor arrays and
-            // partial-overlap ranges (dstArrayElement/count), and collapsing those
-            // to "element 0 of binding N" makes the recorded set a different set
-            // from the one the app declared. The element payloads stay in the flat
-            // Binding table for now (schema v2 is P3); index and count are honest
-            // today so that table can grow without re-reading the guest.
-            b->type = w.descriptorType;
-            b->dstArrayElement = w.dstArrayElement;
-            b->count = w.descriptorCount ? w.descriptorCount : 1;
-            if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                vk32abi::VkDescriptorBufferInfo bi = {};
-                readStruct32(w.pBufferInfo, bi);
-                b->obj = bi.buffer;
-                b->range = bi.range;
-                b->bufOff = bi.offset;
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                // The caller's inline data must be consumed before this update returns.
-                for (U64 cur = w.pNext; cur && g_mem32;) {
-                    if (g_mem32->readd(cur) == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK) {
-                        vk32abi::VkWriteDescriptorSetInlineUniformBlock ib = {};
-                        g_mem32->memcpyFromGuest(&ib, cur, sizeof(ib));
-                        updateInlineUniform(*b, w.dstArrayElement, ib.pData, ib.dataSize);
-                        break;
-                    }
-                    cur = g_mem32->readd((U32)cur + 4);
-                }
-            } else if ((U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
-                       (U32)w.descriptorType == (U32)VK_DESCRIPTOR_TYPE_SAMPLER) {
-                // image-only / sampler-only: keep the one handle each names, so a
-                // storage image is not misreported as a sampled image
-                vk32abi::VkDescriptorImageInfo ii = {};
-                readStruct32(w.pImageInfo, ii);
-                b->obj = ii.imageView;
-                b->range = ii.sampler;
-            } else {
-                // combined image sampler (and texel buffers, which share the
-                // vk32abi::VkDescriptorBufferInfo shape)
-                // FIX (2026-10-09): For COMBINED_IMAGE_SAMPLER, w.pBufferInfo is
-                // non-null garbage (same as w.pImageInfo). Trust descriptorType,
-                // always read vk32abi::VkDescriptorImageInfo.
-                {
-                    vk32abi::VkDescriptorImageInfo ii = {};
-                    readStruct32(w.pImageInfo, ii);
-                    b->obj = ii.imageView;
-                    b->range = ii.sampler;
-                }
-            }
+            VK64_DROP_IF(continue, !s);
+            applyWrite32(*s, w);
+        }
+        std::vector<vk32abi::VkCopyDescriptorSet> copies;
+        readArray32(args.a[4], nc, copies);
+        for (const auto& c : copies) {
+            DescSet* src = objOf32<DescSet>(c.srcSet, K_SET, "vkUpdateDescriptorSets");
+            DescSet* dst = objOf32<DescSet>(c.dstSet, K_SET, "vkUpdateDescriptorSets");
+            VK64_DROP_IF(continue, !src || !dst);
+            applyDescCopy(*src, c.srcBinding, c.srcArrayElement, *dst, c.dstBinding, c.dstArrayElement, c.descriptorCount);
         }
         return VK_SUCCESS;
     }
@@ -8588,15 +10309,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         std::vector<vk32abi::VkDescriptorUpdateTemplateEntry> entries;
         readArray32(ci.pDescriptorUpdateEntries, ci.descriptorUpdateEntryCount, entries);
         for (auto& e : entries) {
-            if (t->nentry >= VK64_MAX_BINDINGS) break;
-            TmplEntry& te = t->entries[t->nentry++];
+            TmplEntry te;
             te.binding = e.dstBinding; te.arrayElement = e.dstArrayElement;
-            te.count = e.descriptorCount; te.type = e.descriptorType;
+            te.count = e.descriptorCount; te.type = (U32)e.descriptorType;
             te.offset = e.offset; te.stride = e.stride;
+            t->entries.push_back(te);
         }
         wr64_32(args.a[3], id);
         klog_fmt("vk32: vkCreateDescriptorUpdateTemplate -> 0x%llx (%u entries)",
-                 (unsigned long long)id, (unsigned)t->nentry);
+                 (unsigned long long)id, (unsigned)t->entries.size());
         return VK_SUCCESS;
     }
     case VK64_fn_vkUpdateDescriptorSetWithTemplate: {
@@ -8604,55 +10325,47 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         DescSet* s = objOf32<DescSet>(args.a[1], K_SET, "vkUpdateDescriptorSetWithTemplate");
         DescTemplate* t = objOf32<DescTemplate>(args.a[2], K_TEMPLATE, "vkUpdateDescriptorSetWithTemplate");
         if (!s || !t || !args.a[3]) return VK_SUCCESS;
-        U64 dataBase = args.a[3];
-        for (U32 ei = 0; ei < t->nentry; ei++) {
-            const TmplEntry& te = t->entries[ei];
-            // Inline descriptorCount is a byte count; stride is ignored.
-            const U32 elements = te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK ? 1 : te.count;
-            for (U32 i = 0; i < elements; i++) {
-                U64 dAddr = dataBase + te.offset + (U64)i * te.stride;
-                U32 binding = te.binding;
-                U32 elem = te.arrayElement + i;
-                if (binding >= VK64_MAX_BINDINGS) continue;
-                Binding* b = nullptr;
-                for (U32 k = 0; k < s->nbind; k++)
-                    if (s->binds[k].binding == binding) { b = &s->binds[k]; break; }
-                if (!b) {
-                    if (s->nbind >= VK64_MAX_BINDINGS) continue;
-                    b = &s->binds[s->nbind++];
-                    b->binding = binding;
-                }
-                b->type = te.type;
-                b->dstArrayElement = elem;
-                b->count = 1;
-                if (te.type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-                    updateInlineUniform(*b, te.arrayElement, dAddr, te.count);
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-                    te.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-                    U64 buf = rd64_32(dAddr); U64 off = rd64_32(dAddr + 8); U64 range = rd64_32(dAddr + 16);
-                    b->obj = buf; b->range = range; b->bufOff = off;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-                    U64 view = rd64_32(dAddr + 8);
-                    b->obj = view; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                    // vk32abi::VkDescriptorImageInfo: sampler @0, imageView @8.
-                    // (2026-10-09: D3D9 textured draw was black — template path
-                    // dropped the image view, so no IMAGE_DATA was emitted.)
-                    U64 samp = rd64_32(dAddr);
-                    U64 view = rd64_32(dAddr + 8);
-                    b->obj = view; b->range = samp;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    U64 samp = rd64_32(dAddr);
-                    b->obj = samp; b->range = 0;
-                } else if (te.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                           te.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                    U64 bv = rd64_32(dAddr);
-                    b->obj = bv; b->range = 0;
-                }
-            }
-        }
+        applyDescTemplate(*s, *t, args.a[3], rdq32);
         return VK_SUCCESS;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetKHR: {
+        // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !cb);
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+            return 0;
+        }
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSet");
+        VK64_DROP_IF(return 0, !s);
+        std::vector<vk32abi::VkWriteDescriptorSet> writes;
+        readArray32(args.a[5], (U32)args.a[4], writes);
+        for (const auto& w : writes) applyWrite32(*s, w);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkCmdPushDescriptorSetWithTemplateKHR: {
+        // (cmdBuf, template, layout, set, pData*)
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushDescriptorSetWithTemplate");
+        DescTemplate* t = objOf32<DescTemplate>(args.a[1], K_TEMPLATE, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !cb || !t || !args.a[4]);
+        U64 id = 0;
+        DescSet* s = newPushSet(cb, args.a[2], (U32)args.a[3], id, "vkCmdPushDescriptorSetWithTemplate");
+        VK64_DROP_IF(return 0, !s);
+        applyDescTemplate(*s, *t, args.a[4], rdq32);
+        recordBindSets(cb, (U32)args.a[3], {id}, {});
+        return 0;
+    }
+    case VK64_fn_vkGetDescriptorSetLayoutSupport: {
+        for (U32 cur = (U32)args.a[2]; cur && g_mem32;) {
+            const U32 st = g_mem32->readd(cur);
+            if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT) wr32_32(cur + 8, 1);
+            else if (st == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT)
+                wr32_32(cur + 8, VK64_MAX_DESC_ARRAY);
+            cur = g_mem32->readd(cur + 4);
+        }
+        return 0;
     }
     case VK64_fn_vkBindBufferMemory2:
     case VK64_fn_vkBindBufferMemory2KHR: {
@@ -8683,35 +10396,48 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[4]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 count = (U32)args.a[2];
         U32 outAddr = (U32)args.a[4];
-        for (U32 i = 0; i < count; i++) {
-            U64 id = 0;
-            createObj32<Pipeline>(K_PIPELINE, id);
-            wr64_32(outAddr + i * 8, id);
-        }
-        return VK_SUCCESS;
+        for (U32 i = 0; i < count; i++) wr64_32(outAddr + i * 8, 0);
+        vk64Unsupported("compute-pipeline", "compute pipelines are not supported (no V2 dispatch record); VK_ERROR_FEATURE_NOT_PRESENT");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
     case VK64_fn_vkCreateBufferView: {
-        if (!args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        vk32abi::VkBufferViewCreateInfo ci = {};
+        if (!readStruct32((U32)args.a[1], ci) || !args.a[3]) return VK_ERROR_INITIALIZATION_FAILED;
+        Buffer* buf = objOf32<Buffer>((U32)ci.buffer, K_BUFFER, "vkCreateBufferView");
+        if (!buf) { wr64_32((U32)args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        U64 effOffset = 0, effRange = 0;
+        VkResult res = vk64BufferViewRange(buf->size, ci.format, ci.offset, ci.range, effOffset, effRange);
+        if (res != VK_SUCCESS) { wr64_32((U32)args.a[3], 0); return res; }
         U64 id = 0;
-        createObj32<BufferView>(K_BUFFERVIEW, id);
-        wr64_32((U32)args.a[3], id);
+        BufferView* v = createObj32<BufferView>(K_BUFFERVIEW, id);
+        if (!v) { wr64_32((U32)args.a[3], 0); return VK_ERROR_INITIALIZATION_FAILED; }
+        v->buffer = (U64)(U32)ci.buffer; v->format = ci.format; v->offset = effOffset; v->range = effRange;
+        wr64_32((U32)args.a[3], (U32)id);
         return VK_SUCCESS;
     }
     case VK64_fn_vkGetBufferDeviceAddress: {
-        if (!args.a[1]) return 0;
+        VK64_DROP_IF(return 0, !args.a[1]);
         U32 infoAddr = (U32)args.a[1];
         U32 bufHandle = (U32)rd64_32(infoAddr + 8);
         Buffer* b = objOf32<Buffer>(bufHandle, K_BUFFER, "vkGetBufferDeviceAddress");
-        if (!b) return 0;
+        VK64_DROP_IF(return 0, !b);
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
+        }
+        // The i386 trap returns only EAX, which would truncate the 64-bit address
+        // to its low half (0 for the first buffer). The shim passes a u64 out slot
+        // in arg 2 and reads the full address from there.
+        if (args.a[2]) {
+            U64 va = b->devVa;
+            g_mem32->memcpyToGuest((U32)args.a[2], &va, 8);
         }
         return b->devVa;
     }
 
     default:
         klog_fmt("vk32: unimplemented fn id %u (%s)", fnId, fnName(fnId));
+        vk64Unsupported((std::string("fn32:") + fnName(fnId)).c_str(), "no handler; returned VK_ERROR_FEATURE_NOT_PRESENT");
         return (U64)(int64_t)VK_ERROR_FEATURE_NOT_PRESENT;
     }
 }

@@ -108,6 +108,7 @@ public:
     U32 ensureLoopbackBound();
     U32 sendLoopbackBytes(KThread* thread, const U8* bytes, U32 length, U32 flags,
                           const struct sockaddr_in* destination, bool hasDestination);
+    void serveLoopbackDnsQuery(const U8* query, U32 length, U32 destinationAddress);
     U32 sendLoopbackTo(KThread* thread, U32 message, U32 length, U32 flags,
                        U32 destinationAddress, U32 destinationLength);
     U32 recvLoopbackFrom(KThread* thread, U32 buffer, U32 length, U32 flags,

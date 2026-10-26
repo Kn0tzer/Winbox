@@ -32,7 +32,10 @@
 struct XWireInputEvent {
     // Names are prefixed to avoid colliding with X11/X.h macros (KeyPress,
     // ButtonPress, ... are #defined to ints there).
-    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion, EvMotionRel } type;
+    enum Type { EvKeyDown, EvKeyUp, EvButtonDown, EvButtonUp, EvMotion, EvMotionRel, EvText } type;
+    // EvText: one committed-text character (IME composition result).
+    // detail = Unicode code point; the wire connection translates it into a
+    // KeyPress/KeyRelease pair (see xwireInjectText / deliverInputEvents).
     int x = 0, y = 0;          // pointer position in window coords (EvMotion),
                                // or relative delta dx/dy (EvMotionRel)
     uint32_t detail = 0;       // keycode (key events) or button number (button events)
@@ -124,6 +127,18 @@ uint32_t sdlScancodeToX11(int scancode);
 // (-novideo) browser operation where Emscripten SDL never sees DOM keys.
 // Exposed to JS as bw64_xwire_key. Defined in xwirepresentSDL.cpp.
 void xwireInjectKey(uint32_t sdlScancode, int down);
+
+// Inject a committed text string (UTF-8, e.g. a finished browser IME
+// composition) into the XWire input queue as one EvText event per Unicode
+// code point. The wire connection turns each into a KeyPress/KeyRelease
+// pair: characters on the static US keymap use their keycode (with Shift
+// state when needed); any other character is delivered through a scratch
+// keycode whose keysym is dynamically rebound to the character's Unicode
+// keysym, preceded by a MappingNotify so clients refresh their cached
+// keymap before the press lands (the technique xdotool uses against real
+// X servers). Exposed to JS as bw64_inject_text. Defined in
+// xwirepresentSDL.cpp. No-op when no sink is installed.
+void xwireInjectText(const char* utf8);
 
 // Direct mouse injection, bypassing SDL event capture. For headless browser
 // operation where Emscripten SDL never sees DOM mouse events.

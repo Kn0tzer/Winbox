@@ -186,6 +186,9 @@ void XServer::initAtoms() {
 	}
 	setAtom(B("_NET_WM_STATE"), _NET_WM_STATE);
 	setAtom(B("_NET_WM_STATE_FULLSCREEN"), _NET_WM_STATE_FULLSCREEN);
+	setAtom(B("_NET_WM_STATE_ABOVE"), _NET_WM_STATE_ABOVE);
+	setAtom(B("_NET_ACTIVE_WINDOW"), _NET_ACTIVE_WINDOW);
+	setAtom(B("_NET_SUPPORTED"), _NET_SUPPORTED);
 	setAtom(B("_NET_WM_WINDOW_TYPE"), _NET_WM_WINDOW_TYPE);
 	setAtom(B("_NET_WM_WINDOW_TYPE_NORMAL"), _NET_WM_WINDOW_TYPE_NORMAL);
 	setAtom(B("_NET_WM_WINDOW_TYPE_DIALOG"), _NET_WM_WINDOW_TYPE_DIALOG);
@@ -278,6 +281,9 @@ const XWindowPtr& XServer::getRoot() {
 		U32 rect[] = { 0, 0, (U32)screen->screenWidth(), (U32)screen->screenHeight() };
 		U32 atom = server->internAtom(B("_GTK_WORKAREAS_D0"), false);
 		root->setProperty(atom, XA_CARDINAL, 32, sizeof(U32) * 4, (U8*)&rect, false);
+		const U32 supported[] = {_NET_WM_STATE, _NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE,
+			_NET_ACTIVE_WINDOW, _NET_WM_NAME, _NET_WM_ICON};
+		root->setProperty(_NET_SUPPORTED, XA_ATOM, 32, sizeof(supported), (const U8*)supported, false);
 		root->isMapped = true; // so that grab works
 		root->colorMap = getDefaultColorMap();
 		root->attributes.colormap = root->colorMap->id;
@@ -464,8 +470,18 @@ XCursorPtr XServer::getCursor(U32 id) {
 
 void XServer::updateCursor(const XWindowPtr& wnd) {
 	if (pointerWindow == wnd) {
-		KNativeSystem::getScreen()->setCursor(wnd->getCursor());
+		KNativeSystem::getScreen()->setCursor(activeCursor(wnd));
 	}
+}
+
+XCursorPtr XServer::activeCursor(const XWindowPtr& wnd) {
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(grabbedMutex);
+		if (isGrabbed && grabbedCursor) {
+			return grabbedCursor;
+		}
+	}
+	return wnd->getCursor();
 }
 
 XGCPtr XServer::createGC(XDrawablePtr drawable) {
@@ -485,8 +501,27 @@ void XServer::removeGC(U32 gc) {
 	gcs.remove(gc);
 }
 
-void XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
+U32 XServer::getAllEventMask(U32 wndId) {
 	std::vector<U32> ids;
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
+		for (auto& display : displays) ids.push_back(display.key);
+	}
+	U32 result = 0;
+	for (U32 id : ids) {
+		DisplayDataPtr data;
+		{
+			BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
+			data = displays.get(id);
+		}
+		if (data) result |= data->getEventMask(wndId);
+	}
+	return result;
+}
+
+bool XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
+	std::vector<U32> ids;
+	bool matched = false;
 
 	{
 		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(displayMutex);
@@ -504,10 +539,12 @@ void XServer::iterateEventMask(U32 wndId, U32 mask, std::function<void(const Dis
 		if (data) {
 			// don't hold displayMutext when calling this, since the callback will likely lock events
 			if (data->getEventMask(wndId) & mask) {
+				matched = true;
 				callback(data);
 			}
 		}
 	}
+	return matched;
 }
 
 void XServer::iterateInput2Mask(U32 wndId, U32 mask, std::function<void(const DisplayDataPtr& display)> callback) {
@@ -670,6 +707,59 @@ void XServer::changeScreen(U32 width, U32 height) {
 	U32 rect[] = { 0, 0, width, height };
 	U32 atom = server->internAtom(B("_GTK_WORKAREAS_D0"), false);
 	root->setProperty(atom, XA_CARDINAL, 32, sizeof(U32) * 4, (U8*)&rect, false);
+
+	const U32 eventTime = KSystem::getMilliesSinceStart();
+	for (auto& entry : displays) {
+		DisplayDataPtr display = entry.value;
+		XrrData* randr = display->xrrData;
+		if (!randr || !randr->eventMask) continue;
+		U32 sizeIndex = 0;
+		KProcessPtr process = display->process.lock();
+		if (process && process->memory && randr->sizesAddress) {
+			for (U32 i = 0; i < randr->sizesCount; i++) {
+				if (process->memory->readd(randr->sizesAddress + i * sizeof(XRRScreenSize)) == width &&
+					process->memory->readd(randr->sizesAddress + i * sizeof(XRRScreenSize) + 4) == height) {
+					sizeIndex = i;
+					break;
+				}
+			}
+		}
+		auto makeEvent = [&](U32 type, U32 subtype) {
+			XEvent event{};
+			U32* words = (U32*)&event;
+			words[0] = type;
+			words[1] = display->getNextEventSerial();
+			words[2] = False;
+			words[3] = display->displayAddress;
+			words[4] = randr->eventWindow;
+			words[5] = subtype;
+			return event;
+		};
+		if (randr->eventMask & RRScreenChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRScreenChangeNotify, 0);
+			U32* words = (U32*)&event;
+			words[5] = root->id;
+			words[6] = eventTime; words[7] = eventTime; words[8] = sizeIndex;
+			words[9] = 0; words[10] = RR_Rotate_0;
+			words[11] = width; words[12] = height;
+			words[13] = (U32)(width * 0.2646); words[14] = (U32)(height * 0.2646);
+			display->putEvent(event);
+		}
+		if (randr->eventMask & RRCrtcChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRNotify, RRNotify_CrtcChange);
+			U32* words = (U32*)&event;
+			words[6] = 1; words[7] = sizeIndex + 1; words[8] = RR_Rotate_0;
+			words[9] = 0; words[10] = 0; words[11] = width; words[12] = height;
+			display->putEvent(event);
+		}
+		if (randr->eventMask & RROutputChangeNotifyMask) {
+			XEvent event = makeEvent(XRAND_Base + RRNotify, RRNotify_OutputChange);
+			U32* words = (U32*)&event;
+			words[6] = 1; words[7] = 1; words[8] = sizeIndex + 1;
+			words[9] = RR_Rotate_0; words[10] = 0; words[11] = 0;
+			display->putEvent(event);
+		}
+	}
 }
 
 void XServer::processExit(U32 pid) {
@@ -920,7 +1010,20 @@ int XServer::unmapWindow(const DisplayDataPtr& data, const XWindowPtr& window) {
 	return result;
 }
 
-void XServer::mouseMove(S32 x, S32 y, bool relative) {	
+struct X11RelativeMotion {
+	S32 x;
+	S32 y;
+	S32 centerX;
+	S32 centerY;
+	bool shouldWarp;
+};
+
+static X11RelativeMotion x11RelativeMotion(S32 x, S32 y, bool relative, S32 centerX, S32 centerY) {
+	if (relative) return {x, y, centerX, centerY, false};
+	return {x - centerX, y - centerY, centerX, centerY, true};
+}
+
+void XServer::mouseMove(S32 x, S32 y, bool relative) {
 	if (isGrabbed) {
 		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(grabbedMutex);
 		XWindowPtr grabbed = getWindow(grabbedId);
@@ -929,12 +1032,10 @@ void XServer::mouseMove(S32 x, S32 y, bool relative) {
 		if (grabbed && grabbedDisplay) {
 			if ((grabbedDisplay->getInput2Mask(root->id) & XI_RawMotionMask) && KSystem::forceRelativeMouse) {
 				KNativeInputPtr input = KNativeSystem::getCurrentInput();
-				S32 midX = input->screenWidth() / 2;
-				S32 midY = input->screenHeight() / 2;
-				x = x - midX;
-				y = y - midY;
-				KNativeSystem::warpMouse(midX, midY);
-				// :TODO: I'm not really sure how realitive mouse is supposed to work, it was just trial and error with vkQuake
+				const X11RelativeMotion motion = x11RelativeMotion(x, y, relative, (S32)input->screenWidth() / 2, (S32)input->screenHeight() / 2);
+				x = motion.x;
+				y = motion.y;
+				if (motion.shouldWarp) KNativeSystem::warpMouse(motion.centerX, motion.centerY);
 				grabbed->input2Notify(grabbedDisplay, x, y, XI_RawMotion);
 				return;
 			}
@@ -1013,11 +1114,10 @@ void XServer::key(U32 key, bool pressed) {
 	}
 }
 
-U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, U32 mask, U32 time) {
+U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbed, XWindowPtr confined, XCursorPtr cursor, U32 mask, U32 time) {
 	if (!time) {
 		time = KSystem::getMilliesSinceStart();
 	}
-	bool updateCursor = false;
 	{
 		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(grabbedMutex);
 
@@ -1028,6 +1128,7 @@ U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbe
 		this->grabbedMask = mask;
 		this->grabbedTime = time;
 		this->grabbedDisplayId = display->displayId;
+		this->grabbedCursor = cursor;
 		this->isGrabbed = true;
 
 		if (pointerWindow->id != grabbed->id) {
@@ -1036,20 +1137,19 @@ U32 XServer::grabPointer(const DisplayDataPtr& display, const XWindowPtr& grabbe
 			KNativeSystem::getCurrentInput()->getMousePos(&x, &y);
 			pointerMoved(pointerWindow, grabbed, x, y, NotifyGrab);
 			pointerWindow = grabbed;
-			updateCursor = true;
 		}
 	}
-	if (updateCursor) {
-		// don't call this with grabbedMutex locked
-		KNativeSystem::getScreen()->setCursor(pointerWindow->getCursor());
-	}
+	// the grab's cursor applies even when the pointer was already on the grab window
+	// don't call this with grabbedMutex locked
+	KNativeSystem::getScreen()->setCursor(activeCursor(pointerWindow));
 	return GrabSuccess;
 }
 
 // https://www.x.org/releases/X11R7.6/doc/xproto/x11protocol.html#requests:UngrabPointer
 U32 XServer::ungrabPointer(U32 time) {
 	if (!grabbedId) {
-		return GrabSuccess; // :TODO: couldn't find this use case in the x11 spec
+		// X11: UngrabPointer with no active pointer grab has no effect
+		return GrabSuccess;
 	}
 	XWindowPtr prev = getWindow(grabbedId);
 	{
@@ -1057,6 +1157,7 @@ U32 XServer::ungrabPointer(U32 time) {
 		this->grabbedId = 0;
 		this->grabbedDisplayId = 0;
 		this->grabbedConfinedId = 0;
+		this->grabbedCursor = nullptr;
 		this->isGrabbed = false;
 	}
 	S32 x = 0;
@@ -1081,6 +1182,19 @@ U32 XServer::createColorMap(const Visual* visual, int alloc) {
 XColorMapPtr XServer::getColorMap(U32 id) {
 	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(colorMapMutex);
 	return colorMaps.get(id);
+}
+
+bool XServer::freeColorMap(U32 id) {
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(colorMapMutex);
+	if (defaultColorMap && id == defaultColorMap->id) {
+		// The default colormap outlives every client; freeing it is a no-op.
+		return true;
+	}
+	if (!colorMaps.get(id)) {
+		return false;
+	}
+	colorMaps.remove(id);
+	return true;
 }
 
 void XServer::initVisuals() {	

@@ -19,6 +19,8 @@
 #ifndef __KMEMORY_H__
 #define __KMEMORY_H__
 
+#include <unordered_map>
+
 #ifdef BOXEDWINE_JIT
 class DynamicMemory;
 #endif
@@ -35,6 +37,11 @@ class DynamicMemory;
 #define PAGE_SHARED 0x08
 #define PAGE_FUTEX 0x10
 #define PAGE_MAPPED 0x20
+// Per-page state held in the KMemory::pageState side table (round 3A):
+// mlock accounting and madvise fork advice, mirroring the K64_PAGE_* bits.
+#define K_PAGE_STATE_LOCKED     0x01
+#define K_PAGE_STATE_DONTFORK   0x02
+#define K_PAGE_STATE_WIPEONFORK 0x04
 #define PAGE_PERMISSION_MASK 0x07
 
 #define GET_PAGE_PERMISSIONS(flags) (flags & PAGE_PERMISSION_MASK)
@@ -79,9 +86,22 @@ public:
     void cleanup(); // called when the process is done but the last thread might still need to return
 
     U32 mlock(U32 addr, U32 len);
+    U32 munlock(U32 addr, U32 len);
+    U32 mlockAll();
+    U32 munlockAll();
+    // madvise behaviours needing page state (kernel round 3A): MADV_REMOVE,
+    // the fork advice, and the locked-page rules for DONTNEED/DONTNEED_LOCKED.
+    // The syscall wrapper validates the advice value first.
+    S32 madvise(U32 address, U32 len, S32 advice);
+    // Side-table page state (the MMU flags field has no spare bits).
+    U32 getPageState(U32 page);
+    void setPageStateBits(U32 page, U32 bits);
+    void clearPageStateBits(U32 page, U32 bits);
     U32 mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fildes, U64 off, bool remap = false);
     U32 mprotect(KThread* thread, U32 address, U32 len, U32 prot);
-    U32 mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U32 flags);
+    U32 mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U32 flags, U32 newaddress = 0);
+    U32 allocatedPageCount();
+    BString generateMaps(bool smaps);
     U32 unmap(U32 address, U32 len);
 
     U32 mapPages(KThread* thread, U32 startPage, const std::vector<RamPage>& pages, U32 permissions);
@@ -180,6 +200,7 @@ private:
 
     KMemoryData* data;    
     KProcess* process;
+    std::unordered_map<U32, U32> pageState;
 
     class LockedMemory {
     public:

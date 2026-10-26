@@ -23,6 +23,7 @@
 #include "bufferaccess.h"
 #include "kstat.h"
 #include "kscheduler.h"
+#include "kmemory64.h"
 #include "../emulation/softmmu/soft_ram.h"
 #include "../emulation/cpu/normal/normalCPU.h"
 #include "knativesystem.h"
@@ -58,6 +59,18 @@ BString KSystem::title;
 #ifdef BOXEDWINE_MULTI_THREADED
 U32 KSystem::cpuAffinityCountForApp = 0;
 #endif
+
+U32 KSystem::guestCpuCount() {
+    return 1;
+}
+
+BString KSystem::guestCpuList() {
+    U32 count = guestCpuCount();
+    if (count <= 1) {
+        return B("0");
+    }
+    return B("0-") + BString::valueOf(count - 1);
+}
 U32 KSystem::pollRate = DEFAULT_POLL_RATE;
 BWriteFile KSystem::logFile;
 std::function<void(BString line)> KSystem::watchTTY;
@@ -213,6 +226,16 @@ void KSystem::destroy() {
 #endif
 }
 
+
+void KSystem::getProcessesInGroup(U32 groupId, std::vector<KProcessPtr>& result) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
+    for (auto& process : KSystem::processes) {
+        if (process.value && process.value->groupId == groupId) {
+            result.push_back(process.value);
+        }
+    }
+}
+
 U32 KSystem::getProcessCount() {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
     return (U32)KSystem::processes.size();
@@ -243,7 +266,7 @@ U32 KSystem::uname(KThread* thread, U32 address) {
     memory->strcpy(address + 65, name); // nodename
     memory->strcpy(address + 130, "5.15.10-20-generic"); // release
 #ifdef BOXEDWINE_MULTI_THREADED
-    if (Platform::getCpuCount() > 1 && KSystem::cpuAffinityCountForApp != 1) {
+    if (KSystem::guestCpuCount() > 1) {
         memory->strcpy(address + 105, "SMP Boxedwine"); // version
     } else {
         memory->strcpy(address + 105, "Boxedwine"); // version
@@ -282,6 +305,10 @@ U32 KSystem::ugetrlimit(KThread * thread, U32 resource, U32 rlim) {
         case 7: // RLIMIT_NOFILE
             memory->writed(rlim, MAX_NUMBER_OF_FILES);
             memory->writed(rlim + 4, MAX_NUMBER_OF_FILES);
+            break;
+        case 8: // RLIMIT_MEMLOCK (kernel round 3A: tracked per process)
+            memory->writed(rlim, (U32)thread->process->rlimMemlockCur);
+            memory->writed(rlim + 4, (U32)thread->process->rlimMemlockMax);
             break;
         case 9: // RLIMIT_AS
             memory->writed(rlim, MAX_ADDRESS_SPACE);
@@ -403,15 +430,41 @@ U32 KSystem::tgkill(U32 threadGroupId, U32 threadId, U32 signal) {
 };
 */
 
+U32 KSystem::processCount() {
+    return (U32)KSystem::processes.size();
+}
+
+void KSystem::guestRamInfo(U64& totalBytes, U64& freeBytes) {
+    // The emulated machine RAM size: 1 GiB. Guest address spaces are sparse
+    // and demand-paged, so this figure defines the machine rather than a
+    // host allocation cap; it is the value the earlier hardcoded sysinfo
+    // and /proc/meminfo faces carried (chosen so the JVM and Wine size
+    // their heaps sanely), now kept in exactly one place. Free RAM is what
+    // live processes have not committed, summed over both memory managers.
+    totalBytes = 1024ULL * 1024 * 1024;
+    U64 committed = 0;
+    for (auto& entry : KSystem::processes) {
+        const KProcessPtr& process = entry.value;
+        if (!process) continue;
+#ifdef BOXEDWINE_GUEST_X64
+        if (process->memory64) committed += process->memory64->mappedCommittedPageCount() * K64_PAGE_SIZE;
+#endif
+        if (process->memory) committed += (U64)process->memory->allocatedPageCount() * K_PAGE_SIZE;
+    }
+    freeBytes = committed >= totalBytes ? 0 : totalBytes - committed;
+}
+
 U32 KSystem::sysinfo(KThread* thread, U32 address) {
     KMemory* memory = thread->memory;
+    U64 totalBytes = 0, freeBytes = 0;
+    KSystem::guestRamInfo(totalBytes, freeBytes);
 
     memory->writed(address, KSystem::getMilliesSinceStart()/1000); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
-    memory->writed(address, 262144); address+=4; // 1 GB
-    memory->writed(address, 196608); address+=4;
+    memory->writed(address, (U32)(totalBytes / K_PAGE_SIZE)); address+=4; // totalram in mem_unit pages
+    memory->writed(address, (U32)(freeBytes / K_PAGE_SIZE)); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
@@ -996,6 +1049,20 @@ U32 KSystem::prlimit64(KThread* thread, U32 pid, U32 resource, U32 newlimit, U32
                 klog_fmt("prlimit64 RLIMIT_NOFILE set=%d ignored", (U32)memory->readq(newlimit));
             }
 #endif
+            break;
+        case 8: // RLIMIT_MEMLOCK (kernel round 3A: tracked per process)
+            if (newlimit != 0) {
+                const U64 newCur = memory->readq(newlimit);
+                const U64 newMax = memory->readq(newlimit + 8);
+                if (newCur > newMax) return -K_EINVAL;
+                if (newMax > thread->process->rlimMemlockMax) return -K_EPERM;
+                thread->process->rlimMemlockCur = newCur;
+                thread->process->rlimMemlockMax = newMax;
+            }
+            if (oldlimit != 0) {
+                memory->writeq(oldlimit, thread->process->rlimMemlockCur);
+                memory->writeq(oldlimit + 8, thread->process->rlimMemlockMax);
+            }
             break;
         case 9: // RLIMIT_AS
             if (oldlimit!=0) {

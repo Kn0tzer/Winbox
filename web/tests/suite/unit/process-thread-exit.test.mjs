@@ -1,16 +1,20 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('concurrent final thread exits release process memory exactly once', () => {
-  const source = readFileSync('source/kernel/kprocess.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
   const start = source.indexOf('void KProcess::deleteThread(KThread* thread)');
   const end = source.indexOf('\nvoid KProcess::setupCommandlineNode()', start);
   assert.ok(start >= 0 && end > start);
-  const platform = readFileSync('source/emulation/cpu/normal/normalPlatformMultiThreaded.cpp', 'utf8');
+  const platform = readFileSync(join(repoRoot, 'source/emulation/cpu/normal/normalPlatformMultiThreaded.cpp'), 'utf8');
   const exitStart = platform.indexOf('        ripSamplerReleaseSlot(ripSlot);');
   const exitEnd = platform.indexOf('        return;', exitStart);
   assert.ok(exitStart >= 0 && exitEnd > exitStart);
@@ -88,15 +92,15 @@ void KThread::cleanup() {
   // models the blocking wakeups and filesystem work in real thread cleanup.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
-${source.slice(start, end)}
-${source.slice(ordinaryStart, ordinaryEnd)}
+${extractSourceRange(source, start, end)}
+${extractSourceRange(source, ordinaryStart, ordinaryEnd)}
 void KProcess::exitGroupCleanup(KThread* thread) {
-${source.slice(groupCleanup, groupEnd)}
+${extractSourceRange(source, groupCleanup, groupEnd)}
 }
 struct CPU { KThread* thread; };
 void finishThread(CPU* cpu, KProcessPtr process) {
   int ripSlot = 0;
-${platform.slice(exitStart, exitEnd)}
+${extractSourceRange(platform, exitStart, exitEnd)}
 }
 int main() {
   auto process = std::make_shared<KProcess>();

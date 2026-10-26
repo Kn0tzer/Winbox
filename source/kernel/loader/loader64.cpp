@@ -879,15 +879,24 @@ bool ElfLoader64::loadProgram(KThread* thread, FsOpenNode* openNode, U64* rip) {
     // Milestone A3 wires up cross-library symbol resolution.
     applyRelativeRelocations(mem, r.dynamic, reloc, "exe");
 
-    // PT_GNU_RELRO: now that relocations have written through .got/.got.plt,
-    // mark the region read-only (matches what ld.so does at runtime). The
-    // region is page-rounded outward — RELRO p_vaddr is page-aligned per the
-    // spec but p_memsz is not always page-aligned, so we round up.
+    // PT_GNU_RELRO: deliberately NOT applied here. On Linux the kernel
+    // never applies RELRO — the region keeps its PT_LOAD protection until
+    // the guest dynamic loader, having finished its own relocation pass,
+    // mprotects it read-only itself (_dl_protect_relro). The guest ld.so
+    // still has relocation bookkeeping to write into this region when it
+    // starts (its writes into the main executable's PT_DYNAMIC / GOT are
+    // how this regression was caught: with guest page-permission
+    // enforcement live, pre-applying RELRO turned ld.so's first such
+    // write — right at boot, RIP inside ld.so, target in wine64's
+    // PT_DYNAMIC page — into a SIGSEGV and no x64 guest ever started).
+    // The emulator's own pre-applied RELATIVE relocations do not change
+    // this: they are idempotent, and ld.so replays its full pass anyway.
+    // The guest's own mprotect syscall lands the read-only end state at
+    // exactly the moment Linux guests expect it.
     if (r.relro.present && r.relro.memsz) {
         U64 relroAddr = (r.relro.vaddr + reloc) & ~K64_PAGE_MASK;
         U64 relroEnd  = (r.relro.vaddr + reloc + r.relro.memsz + K64_PAGE_MASK) & ~K64_PAGE_MASK;
-        mem->mprotect(relroAddr, relroEnd - relroAddr, 0x1 /* PROT_READ */);
-        klog_fmt("loadProgram64: PT_GNU_RELRO 0x%llx..0x%llx -> RO",
+        klog_fmt("loadProgram64: PT_GNU_RELRO 0x%llx..0x%llx recorded (guest loader applies it)",
                  (unsigned long long)relroAddr,
                  (unsigned long long)relroEnd);
     }

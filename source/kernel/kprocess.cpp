@@ -17,8 +17,10 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 
 #include "kscheduler.h"
+#include "kpidfd.h"
 #include "loader.h"
 #include "kstat.h"
 #include "bufferaccess.h"
@@ -36,6 +38,7 @@
 #endif
 
 #include <stdlib.h>
+#include <unordered_set>
 #include <string.h>
 #include <stdio.h>
 #include <time.h> 
@@ -94,6 +97,9 @@ KProcessPtr KProcess::create() {
                     rssPages = p->memory64->committedPageCount();
                 }
 #endif
+                if (!rssPages && p->memory) {
+                    rssPages = p->memory->allocatedPageCount();
+                }
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                          "%u (%s) S 1 %u %u 0 -1 4194304 0 0 0 0 %llu %llu 0 0 20 0 %u 0 %llu %llu %llu "
@@ -117,6 +123,9 @@ KProcessPtr KProcess::create() {
                     rssKb = p->memory64->committedPageCount() * 4;
                 }
 #endif
+                if (!rssKb && p->memory) {
+                    rssKb = (U64)p->memory->allocatedPageCount() * 4;
+                }
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                          "Name:\t%s\nUmask:\t0022\nState:\tS (sleeping)\nPid:\t%u\nPPid:\t1\n"
@@ -128,6 +137,26 @@ KProcessPtr KProcess::create() {
                          (U32)p->threads.size());
                 return new BufferAccess(node, flags, BString::copy(buf));
             }, K__S_IREAD, k_mdev(0, 0), process->processNode);
+        // /proc/<pid>/maps + smaps, rendered from the live page tables at
+        // open time (Wine's ntdll and diagnostic tools enumerate these).
+        for (int smaps = 0; smaps < 2; smaps++) {
+            Fs::addVirtualFile(process->processNode->path + (smaps ? "/smaps" : "/maps"),
+                [weak_process, smaps](const std::shared_ptr<FsNode>& node, U32 flags, U32 data) -> FsOpenNode* {
+                    KProcessPtr p = weak_process.lock();
+                    if (!p) {
+                        return new BufferAccess(node, flags, B(""));
+                    }
+#ifdef BOXEDWINE_GUEST_X64
+                    if (p->memory64) {
+                        return new BufferAccess(node, flags, p->memory64->generateMaps(smaps != 0));
+                    }
+#endif
+                    if (p->memory) {
+                        return new BufferAccess(node, flags, p->memory->generateMaps(smaps != 0));
+                    }
+                    return new BufferAccess(node, flags, B(""));
+                }, K__S_IREAD, k_mdev(0, 0), process->processNode);
+        }
         process->fdNode = Fs::addFileNode(process->processNode->path + "/fd", B(""), B(""), true, process->processNode);
         process->taskNode = Fs::addFileNode(process->processNode->path + B("/task"), B(""), B(""), true, process->processNode);
     }
@@ -172,7 +201,12 @@ KProcess::KProcess(U32 id) : id(id), exitOrExecCond(std::make_shared<BoxedWineCo
 }
 
 void KProcess::onExec(KThread* thread) {
-    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds; // make a copy since we can't remove from it while iterating
+    // Exec unshares the descriptor and handler tables (Linux): the CLOEXEC
+    // pass and the handler reset below must only affect this process, not
+    // the siblings still sharing them. The fs context is NOT unshared.
+    this->fds.unshareIfShared();
+    this->sigActions.unshareIfShared();
+    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds.snapshotTable(); // make a copy since we can't remove from it while iterating
     for( const auto& n : fdsToClose ) {
         KFileDescriptorPtr fd = n.value;
         if (fd->descriptorFlags) {
@@ -253,12 +287,17 @@ KProcess::~KProcess() {
 }
 
 void KProcess::cleanupProcess() {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     removeTimer(&this->timer);
 
-    BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds; // make a copy since we can't remove from it while iterating
-    for( const auto& n : fdsToClose ) {
-        clearFdHandle(n.value->handle);
+    // A CLONE_FILES-shared table outlives this process: closing its
+    // descriptors here would close them for the surviving sharers too.
+    // Linux drops a shared table only when its last user exits.
+    if (!this->fds.isShared()) {
+        BHashTable<U32, KFileDescriptorPtr> fdsToClose = this->fds.snapshotTable(); // make a copy since we can't remove from it while iterating
+        for( const auto& n : fdsToClose ) {
+            clearFdHandle(n.value->handle);
+        }
     }
     this->attachedShm.clear();
     this->privateShm.clear();
@@ -375,6 +414,9 @@ void KProcess::deleteThread(KThread* thread) {
 }
 
 void KProcess::setupCommandlineNode() {
+    if (!this->processNode) {
+        return;
+    }
     // Capture THIS process: the old static open fn returned the CURRENT
     // thread's command line, so any process reading another pid's
     // /proc/<pid>/cmdline (taskmgr's command-line column, ps-alikes) saw its
@@ -391,42 +433,75 @@ BString KProcess::getAbsoluteExePath() {
     BString path = Fs::getNodeFromLocalPath(B(""), this->exe, true)->path;
     return Fs::getParentPath(path);
 }
-void KProcess::clone(const KProcessPtr& from) {
+void KProcess::clone(const KProcessPtr& from, U32 shareFlags) {
     this->parentId = from->id;;
     this->groupId = from->groupId;
     this->userId = from->userId;
     this->effectiveUserId = from->effectiveUserId;
     this->effectiveGroupId = from->effectiveGroupId;
-    this->currentDirectory = from->currentDirectory;
-    this->brkEnd = from->brkEnd;
-    struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
-    std::vector<ForkFd> snapshot;
-    {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex);
-        for (auto& n : from->fds)
-            snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
+    if (shareFlags & KPROCESS_CLONE_SHARE_FS) {
+        // CLONE_FS: one fs context (cwd + umask) for both processes.
+        this->fsContext = from->fsContext;
+    } else {
+        this->fsContext->currentDirectory = from->fsContext->currentDirectory;
+        this->fsContext->umaskValue = from->fsContext->umaskValue;
     }
-    // Release the parent's lock before allocating child descriptors and VFS
-    // links. Sibling threads can change the parent table during fork.
-    for (const auto& entry : snapshot) {
-        KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
-        this->fds.set(entry.handle, fd);
-        KObject* kobject = fd->kobject.get();
-        Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
-            return kobject->selfFd();
-            });
+    this->brkEnd = from->brkEnd;
+    // mlock state (kernel round 3A): RLIMIT_MEMLOCK is inherited; the
+    // locked total and MCL_FUTURE are not (the child starts unlocked).
+    this->rlimMemlockCur = from->rlimMemlockCur;
+    this->rlimMemlockMax = from->rlimMemlockMax;
+    this->memLockedBytes = 0;
+    this->memLockAllFuture = false;
+    if (shareFlags & KPROCESS_CLONE_SHARE_FILES) {
+        // CLONE_FILES: adopt the parent's descriptor table itself, so a
+        // descriptor either process opens or closes is visible to both.
+        // The child's /proc/<pid>/fd links mirror the shared table.
+        this->fds.shareFrom(from->fds);
+        if (fdNode) {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex());
+            for (auto& n : this->fds) {
+                KObject* kobject = n.value->kobject.get();
+                Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(n.key), k_mdev(0, 0), fdNode, false, [kobject] {
+                    return kobject->selfFd();
+                    });
+            }
+        }
+    } else {
+        struct ForkFd { U32 handle, accessFlags, descriptorFlags; std::shared_ptr<KObject> object; };
+        std::vector<ForkFd> snapshot;
+        {
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->fdsMutex());
+            for (auto& n : from->fds)
+                snapshot.push_back({n.key, n.value->accessFlags, n.value->descriptorFlags, n.value->kobject});
+        }
+        // Release the parent's lock before allocating child descriptors and VFS
+        // links. Sibling threads can change the parent table during fork.
+        for (const auto& entry : snapshot) {
+            KFileDescriptorPtr fd = this->allocFileDescriptor(entry.object, entry.accessFlags, entry.descriptorFlags, entry.handle, 0);
+            this->fds.set(entry.handle, fd);
+            KObject* kobject = fd->kobject.get();
+            Fs::addDynamicLinkFile(fdNode->path + "/" + BString::valueOf(entry.handle), k_mdev(0, 0), fdNode, false, [kobject] {
+                return kobject->selfFd();
+                });
+        }
     }
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(from->mappedFilesMutex);
         this->mappedFiles = from->mappedFiles;
     }
-    std::copy(from->sigActions, from->sigActions+MAX_SIG_ACTIONS, this->sigActions);
+    if (shareFlags & KPROCESS_CLONE_SHARE_SIGHAND) {
+        // CLONE_SIGHAND: one handler table for both processes.
+        this->sigActions.shareFrom(from->sigActions);
+    } else {
+        std::copy(from->sigActions.begin(), from->sigActions.end(), this->sigActions.begin());
+    }
     this->path = from->path;
     this->commandLine = from->commandLine;
     this->exe = from->exe;
     this->name = from->name;
     this->setupCommandlineNode();
-    this->umaskValue = from->umaskValue;
+    // umask: shared or copied with the fs context above.
 
     this->privateShm = from->privateShm;
 
@@ -587,7 +662,7 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     U32 i=after;
 
     for (;i< MAX_NUMBER_OF_FILES;i++) {
@@ -600,7 +675,7 @@ U32 KProcess::getNextFileDescriptorHandle(int after) {
 }
 
 KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {    
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
 
     if (handle<0) {
         handle = this->getNextFileDescriptorHandle(afterHandle);
@@ -608,9 +683,11 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
     KFileDescriptorPtr result = std::make_shared<KFileDescriptor>(shared_from_this(), kobject, accessFlags, descriptorFlags, handle);
     
     this->fds.set(handle, result);
-    Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
-        return kobject->selfFd();
-    });
+    if (fdNode) {
+        Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
+            return kobject->selfFd();
+        });
+    }
     return result;
 }
 
@@ -789,7 +866,7 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
             setupThreadStack(thread, thread->cpu, this->name, args, env);
         }
 
-        this->currentDirectory = currentDirectory;
+        this->fsContext->currentDirectory = currentDirectory;
 
         if (openNode) {
             openNode->close();
@@ -822,7 +899,7 @@ U32 KProcess::exit(KThread* thread, U32 code) {
 }
 
 KFileDescriptorPtr KProcess::getFileDescriptor(FD handle) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     return this->fds[handle];
 }
 
@@ -831,9 +908,11 @@ KFileDescriptor* KProcess::getFileDescriptor_nolock(FD handle) {
 }
 
 void KProcess::clearFdHandle(FD handle) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     this->fds.remove(handle);
-    fdNode->removeChildByName(BString::valueOf(handle));
+    if (fdNode) {
+        fdNode->removeChildByName(BString::valueOf(handle));
+    }
 }
 
 bool KProcess::isStopped() {
@@ -949,7 +1028,7 @@ U32 KProcess::alarm(U32 seconds) {
 }
 
 std::shared_ptr<FsNode> KProcess::findInPath(BString path) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
 
     if (!node && !path.startsWith('/')) {
         for( const auto& n : this->path ) {
@@ -993,7 +1072,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     if (!node) {
         return -K_ENOENT;
     }
-    openNode = ElfLoader::inspectNode(this->currentDirectory, node, loader, interpreter, interpreterArgs);
+    openNode = ElfLoader::inspectNode(this->fsContext->currentDirectory, node, loader, interpreter, interpreterArgs);
     if (!openNode) {
         return -K_ENOEXEC;
     }
@@ -1009,11 +1088,11 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     } else {        
         if (path != "/proc/self/exe" && path != "/proc/" + BString::valueOf(id) + "/exe") {
             // :TODO: why does this need to be changed, seems like a bug
-            args[0] = BString(Fs::getFullPath(currentDirectory, path)); // if path is a link, we should use the link not the actual path
+            args[0] = BString(Fs::getFullPath(this->fsContext->currentDirectory, path)); // if path is a link, we should use the link not the actual path
             this->exe = path;
         } else {
             // :TODO: why does this need to be changed, seems like a bug
-            args[0] = BString(Fs::getFullPath(currentDirectory, this->exe));
+            args[0] = BString(Fs::getFullPath(this->fsContext->currentDirectory, this->exe));
         }
     }
     if (loader.length()) {
@@ -1042,6 +1121,11 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     this->heap.freeAll(this->memory);
     this->memory->execvReset(cloneVM);
     cloneVM = false;
+    // mlock state (kernel round 3A): exec drops all locks and MCL_FUTURE.
+    // The 32-bit side already zeroed its counter in execvReset; the 64-bit
+    // page bits die with the replaced memory64 just below.
+    this->memLockedBytes = 0;
+    this->memLockAllFuture = false;
 
 #ifdef BOXEDWINE_GUEST_X64
     // execvReset() just wiped this process's 32-bit KMemory, which holds the
@@ -1070,7 +1154,11 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     // iteration, so it picks up the re-seeded state on the next run() entry.
     if (this->is64Bit) {
         KMemory64* freshMem = new KMemory64(this);
-        delete this->memory64;
+        // A vfork/CLONE_VM child shares the parent address space: drop
+        // our reference; the object is deleted only when the last sharer
+        // releases it, so a sibling still running in it is never stranded.
+        if (this->memory64->releaseVmRef()) delete this->memory64;
+        this->memory64Shared = false;
         this->memory64 = freshMem;
         if (this->cpu64) {
             this->cpu64->memory = freshMem;
@@ -1090,6 +1178,7 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
             this->cpu64->mmapNext = 0;
             this->cpu64->sigMask = 0;
             this->cpu64->futexWaiters.clear();
+            this->cpu64->sigActions.unshareIfShared(); // exec unshares handlers (Linux)
             for (int i = 0; i < 65; i++) this->cpu64->sigActions[i] = CPU64::SigAction{};
         }
         // loadProgram64 keys "is this 64-bit?" off the ELF, not this flag, and
@@ -1124,9 +1213,10 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     delete openNode;
 
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->exitOrExecCond);
+    this->vforkReleased = true;
     BOXEDWINE_CONDITION_SIGNAL_ALL(this->exitOrExecCond);
 
-    //klog("%d/%d exec %s (cwd=%s)", KThread::currentThread()->id, this->id, this->commandLine.c_str(), this->currentDirectory.c_str());
+    //klog("%d/%d exec %s (cwd=%s)", KThread::currentThread()->id, this->id, this->commandLine.c_str(), this->fsContext->currentDirectory.c_str());
 
     thread->cpu->restart();
     
@@ -1185,6 +1275,40 @@ void KProcess::signalCHLD(U32 code, U32 childPid, U32 sendingUID, S32 exitCode) 
     signalProcess(K_SIGCHLD);
 }
 
+
+// SIGIO-style delivery for fcntl O_ASYNC owners (kernel round 3B). The
+// descriptor number is not carried by most readiness sources, so it is
+// resolved here by scanning this process's descriptor table for the object
+// (or the KFile whose open node) that became ready. siginfo layout matches
+// signalIO: [0]=signo, [2]=si_code (POLL_IN/POLL_OUT), [4]=si_fd.
+void KProcess::signalAsyncEvent(U32 signo, U32 code, const KObject* objectKey, const FsOpenNode* nodeKey) {
+    if (signo == 0) {
+        return;
+    }
+    if (signo < MAX_SIG_ACTIONS) {
+        S32 fd = 0;
+        for (auto& entry : this->fds) {
+            KFileDescriptorPtr descriptor = entry.value;
+            if (!descriptor || !descriptor->kobject) {
+                continue;
+            }
+            bool match = objectKey && descriptor->kobject.get() == objectKey;
+            if (!match && nodeKey && descriptor->kobject->type == KTYPE_FILE) {
+                std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(descriptor->kobject);
+                match = file && file->openFile == nodeKey;
+            }
+            if (match) {
+                fd = (S32)descriptor->handle;
+                break;
+            }
+        }
+        this->sigActions[signo].sigInfo[0] = signo;
+        this->sigActions[signo].sigInfo[2] = code;
+        this->sigActions[signo].sigInfo[4] = (U32)fd;
+    }
+    this->signalProcess(signo);
+}
+
 void KProcess::signalALRM() {
     memset(this->sigActions[K_SIGALRM].sigInfo, 0, sizeof(this->sigActions[K_SIGALRM].sigInfo));
     this->sigActions[K_SIGALRM].sigInfo[0] = K_SIGALRM;
@@ -1204,7 +1328,7 @@ U32 KProcess::dup(U32 fildes) {
 }
 
 U32 KProcess::rmdir(BString path) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
 
     if (!node)
         return -K_ENOENT;
@@ -1230,11 +1354,11 @@ static BString rewriteServerDirPath(const BString& path, bool is64Bit) {
 
 U32 KProcess::mkdir(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);   
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);   
     if (node) {
         return -K_EEXIST;
     }
-    BString fullpath = Fs::getFullPath(this->currentDirectory, path);
+    BString fullpath = Fs::getFullPath(this->fsContext->currentDirectory, path);
     BString parentPath = Fs::getParentPath(fullpath);
     node = Fs::getNodeFromLocalPath(B(""), parentPath, false); 
     if (!node) {
@@ -1244,11 +1368,17 @@ U32 KProcess::mkdir(BString path) {
 }
 
 U32 KProcess::rename(BString from, BString to) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, from, false);    
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);    
     if (!node)
         return -K_ENOENT;
-    BString fullPath = Fs::getFullPath(this->currentDirectory, to);
-    return node->rename(fullPath);
+    BString fullPath = Fs::getFullPath(this->fsContext->currentDirectory, to);
+    U32 result = node->rename(fullPath);
+    if (result == 0) {
+        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(from), false);
+        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
+        KInotify::notifyRenamed(fromParent.get(), Fs::getFileNameFromPath(from), toParent.get(), Fs::getFileNameFromPath(to), node.get());
+    }
+    return result;
 }
 
 U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
@@ -1260,11 +1390,18 @@ U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, from, false);    
     if (!node)
         return -K_ENOENT;
+    BString fromDirectory = currentDirectory;
     result = this->getCurrentDirectoryFromDirFD(newdirfd, currentDirectory);
     if (result)
         return result;
     BString fullPath = Fs::getFullPath(currentDirectory, to);
-    return node->rename(fullPath);
+    result = node->rename(fullPath);
+    if (result == 0) {
+        std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(fromDirectory, Fs::getParentPath(from), false);
+        std::shared_ptr<FsNode> toParent = Fs::getNodeFromLocalPath(currentDirectory, Fs::getParentPath(to), false);
+        KInotify::notifyRenamed(fromParent.get(), Fs::getFileNameFromPath(from), toParent.get(), Fs::getFileNameFromPath(to), node.get());
+    }
+    return result;
 }
 
 static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
@@ -1291,7 +1428,7 @@ static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
 
 U32 KProcess::access(BString path, U32 mode) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     return internalAccess(node, mode); 
 }
 
@@ -1315,7 +1452,7 @@ U32 KProcess::lseek(FD fildes, S32 offset, U32 whence) {
 }
 
 U32 KProcess::chmod(BString path, U32 mode) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
     return 0;
@@ -1323,7 +1460,7 @@ U32 KProcess::chmod(BString path, U32 mode) {
 
 U32 KProcess::chdir(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
     if (!node->isDirectory())
@@ -1331,16 +1468,16 @@ U32 KProcess::chdir(BString path) {
     // Use the resolved node path, not the unresolved input path, so that
     // symlinks (e.g. dosdevices/z:) don't leak into the cwd and corrupt
     // Wine's Unix->NT path conversion.
-    this->currentDirectory = node->path;
-    if (this->currentDirectory.endsWith('/')) {
-        this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
+    this->fsContext->currentDirectory = node->path;
+    if (this->fsContext->currentDirectory.endsWith('/')) {
+        this->fsContext->currentDirectory = this->fsContext->currentDirectory.substr(0, this->fsContext->currentDirectory.length()-1);
     }
     return 0;
 }
 
 U32 KProcess::unlinkFile(BString path) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
     }
@@ -1352,8 +1489,8 @@ U32 KProcess::unlinkFile(BString path) {
 }
 
 U32 KProcess::link(BString from, BString to) {
-    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->currentDirectory, from, false);
-    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->currentDirectory, to, false);
+    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
+    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
 
     if (!fromNode) {
         return -K_ENOENT;
@@ -1370,7 +1507,7 @@ U32 KProcess::link(BString from, BString to) {
     if (!fromOpenNode)
         return -K_EIO;
 
-    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->currentDirectory, Fs::getParentPath(to), false);
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
     if (!toParentNode)
         return -K_ENOENT;
 
@@ -1409,7 +1546,7 @@ U32 KProcess::open(BString path, U32 flags) {
     path = rewriteServerDirPath(path, this->is64Bit);
     KFileDescriptorPtr fd;
         
-    U32 result = this->openFile(this->currentDirectory, path, flags, fd);
+    U32 result = this->openFile(this->fsContext->currentDirectory, path, flags, fd);
     if (result || !fd) {
         return result;
     }
@@ -1431,7 +1568,7 @@ U32 KProcess::read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen)
 }
 
 U32 KProcess::sendFile(U32 outFd, U32 inFd, U32 offset, U32 count) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     KFileDescriptorPtr fdOut = getFileDescriptor(outFd);
     KFileDescriptorPtr fdIn = getFileDescriptor(inFd);
 
@@ -1527,8 +1664,8 @@ U32 KProcess::ioctl(KThread* thread, FD fildes, U32 request) {
 }
 
 U32 KProcess::umask(U32 umask) {	
-    U32 old = this->umaskValue;
-    this->umaskValue = umask;
+    U32 old = this->fsContext->umaskValue;
+    this->fsContext->umaskValue = umask;
     return old;
 }
 
@@ -1636,7 +1773,7 @@ U32 KProcess::symlinkat(BString target, FD dirfd, BString linkpath) {
 }
 
 U32 KProcess::symlink(BString target, BString linkpath) {
-    return symlinkInDirectory(this->currentDirectory, target, linkpath);
+    return symlinkInDirectory(this->fsContext->currentDirectory, target, linkpath);
 }
 
 U32 KProcess::readlinkInDirectory(BString currentDirectory, BString path, U32 buffer, U32 bufSize) {
@@ -1660,7 +1797,7 @@ U32 KProcess::readlinkat(FD dirfd, BString path, U32 buf, U32 bufsiz) {
 }
 
 U32 KProcess::readlink(BString path, U32 buffer, U32 bufSize) {
-    return readlinkInDirectory(this->currentDirectory, path, buffer, bufSize);
+    return readlinkInDirectory(this->fsContext->currentDirectory, path, buffer, bufSize);
 }
 
 U32 KProcess::ftruncate64(FD fildes, U64 length) {
@@ -1680,6 +1817,13 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
     if (!fd->canWrite()) {
         return -K_EINVAL;
     }
+    if (length > 0x7fffffffffffffffULL) return -K_EINVAL;
+    if (openNode->node->type == FsNode::Type::Memory) {
+        FsMemOpenNode* memNode = (FsMemOpenNode*)openNode;
+        const S64 newLength = (S64)length;
+        if ((newLength < openNode->length() && memNode->hasSeal(K_F_SEAL_SHRINK)) ||
+            (newLength > openNode->length() && memNode->hasSeal(K_F_SEAL_GROW))) return -K_EPERM;
+    }
     if (!openNode->setLength(length)) {
         return -K_EIO;
     }
@@ -1690,7 +1834,7 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
 #define FS_FREE_SIZE 96636764160l
 
 U32 KProcess::statfs(BString path, U32 address) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
     }
@@ -1709,7 +1853,7 @@ U32 KProcess::statfs(BString path, U32 address) {
 }
 
 U32 KProcess::statfs64(BString path, U32 address) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
     }
@@ -1747,42 +1891,100 @@ U32 KProcess::fstatfs64(FD fildes, U32 address) {
     return 0;
 }
 
-U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
+// ITIMER_REAL is the only itimer this kernel can serve: it runs on the
+// wall/emulator clock like the rest of the timer wheel. ITIMER_VIRTUAL and
+// ITIMER_PROF measure process CPU time, which has no honest meaning across
+// the emulator's host threads, so they are rejected with -EINVAL (logged
+// once) instead of the kpanic this used to hit.
+static S32 itimerCheckWhich(U32 which) {
+    if (which == 0) { // ITIMER_REAL
+        return 0;
+    }
+    if (which == 1 || which == 2) { // ITIMER_VIRTUAL / ITIMER_PROF
+        bw64RecoverLogOnce("syscall.setitimer.which", "unsupported setitimer timer kind; returned EINVAL");
+    }
+    return -K_EINVAL;
+}
 
-    if (which != 0) { // ITIMER_REAL
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.setitimer.which", "unsupported setitimer timer kind; returned EINVAL");
-            return -K_EINVAL;
+S32 KProcess::setitimerValues(U32 which, bool apply, U32 valueMs, U32 intervalMs,
+                              U32* oldRemainingMs, U32* oldIntervalMs) {
+    S32 check = itimerCheckWhich(which);
+    if (check) {
+        return check;
+    }
+    if (oldRemainingMs || oldIntervalMs) {
+        // An armed timer whose deadline passed but whose callback has not
+        // run yet reports 0 remaining, not a wrapped ~49-day value.
+        U32 remaining = 0;
+        if (this->timer.millies) {
+            U32 now = KSystem::getMilliesSinceStart();
+            remaining = this->timer.millies > now ? this->timer.millies - now : 0;
         }
-        kpanic_fmt("setitimer which=%d not supported", which);
+        if (oldRemainingMs) {
+            *oldRemainingMs = remaining;
+        }
+        if (oldIntervalMs) {
+            *oldIntervalMs = this->timer.resetMillies;
+        }
     }
-    if (oldValue) {
-        U32 remaining = this->timer.millies ? this->timer.millies - KSystem::getMilliesSinceStart() : 0;
-
-        memory->writed(oldValue, this->timer.resetMillies / 1000);
-        memory->writed(oldValue + 4, (this->timer.resetMillies % 1000) * 1000);
-        memory->writed(oldValue + 8, remaining / 1000);
-        memory->writed(oldValue + 12, (remaining % 1000) * 1000);
-    }
-    if (newValue) {
-        U32 millies = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
-        U32 resetMillies = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
-
-        if (millies == 0) {
-            if (this->timer.millies!=0) {
+    if (apply) {
+        if (valueMs == 0) {
+            if (this->timer.millies != 0) {
                 removeTimer(&this->timer);
                 this->timer.millies = 0;
             }
+            this->timer.resetMillies = 0;
         } else {
-            this->timer.resetMillies = resetMillies;			
-            if (this->timer.millies!=0) {
-                this->timer.millies = millies + KSystem::getMilliesSinceStart();
-            } else {
-                this->timer.millies = millies + KSystem::getMilliesSinceStart();
+            this->timer.resetMillies = intervalMs;
+            bool wasArmed = this->timer.millies != 0;
+            this->timer.millies = valueMs + KSystem::getMilliesSinceStart();
+            if (!wasArmed) {
                 addTimer(&this->timer);
             }
         }
-    }	
+    }
+    return 0;
+}
+
+U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
+    U32 oldRemainingMs = 0;
+    U32 oldIntervalMs = 0;
+    bool apply = newValue != 0;
+    U32 valueMs = 0;
+    U32 intervalMs = 0;
+    if (apply) {
+        valueMs = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
+        intervalMs = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
+    }
+    S32 result = this->setitimerValues(which, apply, valueMs, intervalMs,
+                                       oldValue ? &oldRemainingMs : nullptr,
+                                       oldValue ? &oldIntervalMs : nullptr);
+    if (result) {
+        return (U32)result;
+    }
+    if (oldValue) {
+        memory->writed(oldValue, oldIntervalMs / 1000);
+        memory->writed(oldValue + 4, (oldIntervalMs % 1000) * 1000);
+        memory->writed(oldValue + 8, oldRemainingMs / 1000);
+        memory->writed(oldValue + 12, (oldRemainingMs % 1000) * 1000);
+    }
+    return 0;
+}
+
+U32 KProcess::getitimer(U32 which, U32 oldValue) {
+    if (!oldValue) {
+        return -K_EFAULT;
+    }
+    U32 oldRemainingMs = 0;
+    U32 oldIntervalMs = 0;
+    S32 result = this->setitimerValues(which, false, 0, 0, &oldRemainingMs, &oldIntervalMs);
+    if (result) {
+        return (U32)result;
+    }
+    memory->writed(oldValue, oldIntervalMs / 1000);
+    memory->writed(oldValue + 4, (oldIntervalMs % 1000) * 1000);
+    memory->writed(oldValue + 8, oldRemainingMs / 1000);
+    memory->writed(oldValue + 12, (oldRemainingMs % 1000) * 1000);
     return 0;
 }
 
@@ -1803,6 +2005,8 @@ U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
 #define K_CLONE_DETACHED          0x00400000      /* Unused, ignored */
 #define K_CLONE_UNTRACED          0x00800000      /* set if the tracing process can't force K_CLONE_PTRACE on this clone */
 #define K_CLONE_CHILD_SETTID      0x01000000      /* set the TID in the child */
+#define K_CLONE_NEWCGROUP         0x02000000      /* New cgroup namespace */
+#define K_CLONE_NS_MASK   (K_CLONE_NEWNS|K_CLONE_NEWUTS|K_CLONE_NEWIPC|K_CLONE_NEWUSER|K_CLONE_NEWPID|K_CLONE_NEWNET|K_CLONE_NEWCGROUP)
 /* 0x02000000 was previously the unused K_CLONE_STOPPED (Start in stopped state)
 and is now available for re-use. */
 #define K_CLONE_NEWUTS            0x04000000      /* New utsname group? */
@@ -1871,26 +2075,113 @@ struct clone_args {
     __aligned_u64 cgroup;
 };
 */
-// :TODO: leaving in for now, but currently clone3 syscall returns ENOSYS and glibc will fall back to the normal clone, 
-// I'm not sure why this doesn't work, seems like eip might be in a different place
+// CLONE_PIDFD as a file-scope constexpr, not a #define: clone364
+// declares a same-named function-local constexpr, which a macro would
+// break (a local may legally shadow this one).
+static constexpr U32 K_CLONE_PIDFD = 0x00001000;
+
+// 32-bit clone3 (kernel round 3C): validated like the 64-bit path
+// (clone364) instead of the base implementation, which ignored size,
+// dropped exit_signal and CLONE_CLEAR_SIGHAND by truncating the 64-bit
+// flags word to U32, and silently accepted set_tid/cgroup requests.
 U32 KProcess::clone3(KThread* thread, U32 args, U32 size) {
+    constexpr U32 CLONE_ARGS_V0_SIZE = 64;
+    constexpr U32 CLONE_ARGS_CURRENT_SIZE = 88;
+    if (size < CLONE_ARGS_V0_SIZE) {
+        return (U32)-K_EINVAL;
+    }
+    if (size > K_PAGE_SIZE) {
+        return (U32)-K_E2BIG;
+    }
+    // Versioned by size: a larger structure is only accepted when the
+    // extension bytes beyond the known layout are zero.
+    for (U32 offset = CLONE_ARGS_CURRENT_SIZE; offset < size; offset++) {
+        if (memory->readb(args + offset) != 0) {
+            return (U32)-K_E2BIG;
+        }
+    }
     U64 flags = memory->readq(args);
-    //U64 pidfd = memory->readq(args+8);
+    U64 pidfdAddr = memory->readq(args + 8);
     U64 child_tid = memory->readq(args + 16);
     U64 parent_tid = memory->readq(args + 24);
-    //U64 exit_signal = memory->readq(args + 32);
+    U64 exit_signal = memory->readq(args + 32);
     U64 stack = memory->readq(args + 40);
     U64 stack_size = memory->readq(args + 48);
     U64 tls = memory->readq(args + 56);
-    //U64 set_tid = memory->readq(args + 64);
-    //U64 set_tid_size = memory->readq(args + 72);
-    //U64 cgroup = memory->readq(args + 80);
-    return clone(thread, (U32)flags, (U32)(stack + stack_size), (U32)parent_tid, (U32)tls, (U32)child_tid);
+    U64 set_tid = memory->readq(args + 64);
+    U64 set_tid_size = memory->readq(args + 72);
+    U64 cgroup = memory->readq(args + 80);
+
+    if (exit_signal > 64) {
+        return (U32)-K_EINVAL;
+    }
+    if (flags & ~0x3FFFFFFFFULL) { // bits above CLONE_INTO_CGROUP are unknown
+        return (U32)-K_EINVAL;
+    }
+    // CLONE_INTO_CGROUP (bit 33) is unambiguous in clone3's 64-bit flags
+    // word: cgroups are not implemented, so refuse EBADF like clone364.
+    // A nonzero cgroup field without the flag is EINVAL.
+    if (flags & (1ULL << 33)) {
+        static bool warnedCgroup = false;
+        if (!warnedCgroup) {
+            warnedCgroup = true;
+            klog("clone3: CLONE_INTO_CGROUP unsupported; returned -EBADF");
+        }
+        return (U32)-K_EBADF;
+    }
+    if (cgroup != 0) {
+        return (U32)-K_EINVAL;
+    }
+    if (set_tid_size != 0) {
+        if (set_tid_size > 32) {
+            return (U32)-K_EINVAL;
+        }
+        if (!set_tid) {
+            return (U32)-K_EFAULT;
+        }
+        // set_tid (choosing the child's pid) stays REJECTED-LOUDLY,
+        // matching clone364: pids are assigned by the emulator.
+        static bool warnedSetTid = false;
+        if (!warnedSetTid) {
+            warnedSetTid = true;
+            klog("clone3: set_tid unsupported; returned -EPERM");
+        }
+        return (U32)-K_EPERM;
+    }
+    if ((flags & K_CLONE_PIDFD) && !pidfdAddr) {
+        return (U32)-K_EFAULT;
+    }
+    if ((flags & K_CLONE_PIDFD) && (flags & K_CLONE_THREAD)) {
+        return (U32)-K_EINVAL; // matches clone364
+    }
+    // The exit signal travels in clone()'s CSIGNAL byte; bit 32
+    // (CLONE_CLEAR_SIGHAND) is handed down explicitly. CLONE_PIDFD is
+    // stripped: clone() would alias it onto parent_tid, but clone3 has
+    // its own pidfd out-slot, written below. Namespace flags, the
+    // thread requirements and the remaining low-word dispositions are
+    // all enforced by clone() itself.
+    const bool clearSighand = (flags & (1ULL << 32)) != 0;
+    U32 result = clone(thread, (U32)((flags & ~0x1000ULL) | (exit_signal & CSIGNAL)), (U32)(stack + stack_size), (U32)parent_tid, (U32)tls, (U32)child_tid, clearSighand);
+    if ((S32)result > 0 && (flags & K_CLONE_PIDFD)) {
+        // clone3's pidfd has its own out-slot (clone_args.pidfd), unlike
+        // legacy clone where it aliases parent_tid.
+        U32 pidfd = createPidFdForProcess(thread, result);
+        if ((S32)pidfd < 0) {
+            return pidfd;
+        }
+        memory->writed((U32)pidfdAddr, pidfd);
+    }
+    return result;
 }
 
-U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid) {    
+U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid, bool clearSighand) {    
+    // The exit signal rides in the low byte (CSIGNAL). It is part of the
+    // child contract, not a creation flag: capture it before masking.
+    // The base code masked first and never stored it, so every child of a
+    // legacy clone reported the SIGCHLD default to its parent.
+    const U32 exitSignal = flags & CSIGNAL;
     flags &= ~CSIGNAL;
-    
+
     if (!(flags & K_CLONE_THREAD)) { // new thread group (process)
         bool vFork = false;
         if (flags & K_CLONE_VFORK) {
@@ -1902,9 +2193,42 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             flags &=~K_CLONE_VM;
             vm = true;
         }
-        // Wine uses CLONE_FS|CLONE_FILES|CLONE_SIGHAND for new_process; allow them.
-        if (flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)) {
-            kpanic_fmt("KProcess::clone - unhandled flag 0x%X", (U32)(flags & ~(K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND)));
+        // Flag dispositions (kernel round 3C). Every bit of the flags word
+        // is accounted for: implemented, accepted because it has no
+        // observable effect in this emulator, or refused loudly with the
+        // errno Linux uses. The base code kpanic'd on anything outside a
+        // small allowlist, letting a guest take the whole emulator down
+        // with one clone call.
+        if (flags & K_CLONE_NS_MASK) {
+            // Namespace creation is not implemented (EINVAL, once-logged
+            // per fresh flag bit, mirroring clone64).
+            static U32 warnedNsFlags = 0;
+            const U32 fresh = (flags & K_CLONE_NS_MASK) & ~warnedNsFlags;
+            if (fresh) {
+                warnedNsFlags |= flags & K_CLONE_NS_MASK;
+                klog_fmt("clone: namespace flags 0x%X unsupported; returned -EINVAL", fresh);
+            }
+            return (U32)-K_EINVAL;
+        }
+        if ((flags & K_CLONE_SIGHAND) && !vm) {
+            // Linux requires CLONE_VM with CLONE_SIGHAND.
+            return (U32)-K_EINVAL;
+        }
+        if ((flags & K_CLONE_PIDFD) && !ptid) {
+            // Legacy clone returns the pidfd through the parent_tid slot.
+            return (U32)-K_EFAULT;
+        }
+        // CLONE_PTRACE / CLONE_UNTRACED / CLONE_DETACHED are accepted:
+        // ptrace is not implemented and there is no detached state to
+        // model, so they have no observable effect. CLONE_SYSVSEM and
+        // CLONE_IO name subsystems whose syscalls are ENOSYS here, so
+        // there is no shared undo/io state to model either.
+        constexpr U32 PROCESS_KNOWN_FLAGS = K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_PARENT_SETTID|
+            K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND|K_CLONE_PARENT|K_CLONE_PIDFD|K_CLONE_SETTLS|
+            K_CLONE_PTRACE|K_CLONE_UNTRACED|K_CLONE_DETACHED|K_CLONE_SYSVSEM|K_CLONE_IO;
+        if (flags & ~PROCESS_KNOWN_FLAGS) {
+            kwarn_fmt("clone: unhandled flag bits 0x%X; returned -EINVAL", (U32)(flags & ~PROCESS_KNOWN_FLAGS));
+            return (U32)-K_EINVAL;
         }
         KProcessPtr newProcess = KProcess::create();
         newProcess->memory = KMemory::create(newProcess.get());
@@ -1914,8 +2238,30 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
 
         newProcess->parentId = this->id;        
         newProcess->cloneVM = vm;
-        newProcess->clone(shared_from_this());
+        newProcess->clone(shared_from_this(), flags & (K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND));
+        newProcess->childExitSignal64 = exitSignal;
+        if (flags & K_CLONE_PARENT) {
+            // CLONE_PARENT: the child is our sibling, not our child.
+            newProcess->parentId = this->parentId;
+        }
+        if (clearSighand) {
+            // CLONE_CLEAR_SIGHAND (clone3 only): all dispositions reset.
+            // Runs after the CLONE_SIGHAND adoption inside clone(from),
+            // so a combined SIGHAND|CLEAR_SIGHAND flushes the shared
+            // table, matching the kernel's copy-then-clear order.
+            for (auto& action : newProcess->sigActions) action.reset();
+        }
         newThread->clone(thread);
+        if ((flags & K_CLONE_SETTLS) && tls) {
+            // Mirror the thread path's TLS install for process clones.
+            struct user_desc desc;
+            memory->memcpy(&desc, tls, sizeof(struct user_desc));
+            if (desc.base_addr != 0 && desc.entry_number != 0) {
+                struct user_desc* ldt = newThread->getLDT(desc.entry_number);
+                *ldt = desc;
+                newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            }
+        }
 
         // will only create them if they are missing
         //newProcess->initStdio();
@@ -1939,6 +2285,16 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             // space.
             if (ptid) {                
                 memory->writed(ptid, newThread->id);
+            }
+        }
+        if (flags & K_CLONE_PIDFD) {
+            U32 pidfd = createPidFdForProcess(thread, newProcess->id);
+            if ((S32)pidfd < 0) {
+                // The child already exists; the only failures are ESRCH
+                // (impossible here) or EMFILE in the caller's table.
+                kwarn_fmt("clone: CLONE_PIDFD allocation failed (%d) for child %u", (S32)pidfd, newProcess->id);
+            } else {
+                memory->writed(ptid, pidfd);
             }
         }
         if (child_stack!=0) {
@@ -1975,41 +2331,96 @@ U32 KProcess::clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 t
             scheduleThread(newThread);
         }
         return newProcess->id;
-    } else if ((flags & 0xFFFFFF00) == (K_CLONE_THREAD | K_CLONE_VM | K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND | K_CLONE_SETTLS | K_CLONE_PARENT_SETTID | K_CLONE_CHILD_CLEARTID | K_CLONE_SYSVSEM)) {
+    } else { // CLONE_THREAD: a new thread in this process
+        // Dispositions (kernel round 3C): the base code required one exact
+        // flag mask and kpanic'd on any deviation — including
+        // CLONE_CHILD_SETTID, which glibc can legitimately present.
+        // Linux requires CLONE_VM|CLONE_SIGHAND with CLONE_THREAD and
+        // forbids CLONE_PARENT / CLONE_PIDFD / CLONE_VFORK there.
+        if ((flags & (K_CLONE_VM | K_CLONE_SIGHAND)) != (K_CLONE_VM | K_CLONE_SIGHAND) ||
+            (flags & (K_CLONE_PARENT | K_CLONE_PIDFD | K_CLONE_VFORK))) {
+            return (U32)-K_EINVAL;
+        }
+        if (flags & K_CLONE_NS_MASK) {
+            static U32 warnedNsFlags = 0;
+            const U32 fresh = (flags & K_CLONE_NS_MASK) & ~warnedNsFlags;
+            if (fresh) {
+                warnedNsFlags |= flags & K_CLONE_NS_MASK;
+                klog_fmt("clone: namespace flags 0x%X unsupported; returned -EINVAL", fresh);
+            }
+            return (U32)-K_EINVAL;
+        }
+        constexpr U32 THREAD_KNOWN_FLAGS = K_CLONE_THREAD|K_CLONE_VM|K_CLONE_FS|K_CLONE_FILES|K_CLONE_SIGHAND|
+            K_CLONE_SETTLS|K_CLONE_PARENT_SETTID|K_CLONE_CHILD_SETTID|K_CLONE_CHILD_CLEARTID|K_CLONE_SYSVSEM|
+            K_CLONE_PTRACE|K_CLONE_UNTRACED|K_CLONE_DETACHED|K_CLONE_IO;
+        if (flags & ~THREAD_KNOWN_FLAGS) {
+            kwarn_fmt("clone: unhandled thread flag bits 0x%X; returned -EINVAL", (U32)(flags & ~THREAD_KNOWN_FLAGS));
+            return (U32)-K_EINVAL;
+        }
         KThread* newThread = this->createThread();
         newThread->clone(thread); // inherit parent CPU (EIP at int 0x80, regs, segs, FPU) - MUST come before TLS setup
-        struct user_desc desc;
-
-        memory->memcpy(&desc, tls, sizeof(struct user_desc));
+        if ((flags & K_CLONE_SETTLS) && tls) {
+            struct user_desc desc;
+            memory->memcpy(&desc, tls, sizeof(struct user_desc));
 #ifdef BW64_INST_TRACE
-        klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
+            klog_fmt("INSTTRACE CLONE_TLS tid=%u tls_ptr=%08X base=%08X entry=%u", newThread->id, tls, desc.base_addr, desc.entry_number);
 #endif
-
-        if (desc.base_addr!=0 && desc.entry_number!=0) {
-            struct user_desc* ldt = newThread->getLDT(desc.entry_number);
-            *ldt = desc;
-            newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            if (desc.base_addr!=0 && desc.entry_number!=0) {
+                struct user_desc* ldt = newThread->getLDT(desc.entry_number);
+                *ldt = desc;
+                newThread->cpu->setSegment(GS, desc.entry_number << 3);
+            }
         }
-        newThread->clear_child_tid = ctid;
-        memory->writed(ptid, newThread->id);
-        newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        if (flags & K_CLONE_CHILD_CLEARTID) {
+            newThread->clear_child_tid = ctid;
+        }
+        if ((flags & K_CLONE_PARENT_SETTID) && ptid) {
+            memory->writed(ptid, newThread->id);
+        }
+        if (child_stack != 0) {
+            newThread->cpu->reg[4].u32 = child_stack; // ESP = new thread stack
+        }
         newThread->cpu->eip.u32 += 2; // step over clone call in the new thread
         newThread->cpu->reg[0].u32 = 0; // child returns 0 from clone
-        //klog("starting %d/%d", newThread->process->id, newThread->id);
+        if ((flags & K_CLONE_CHILD_SETTID) && ctid) {
+            // The address space is shared (CLONE_VM), so this store lands
+            // in the child's memory too, before the thread can run.
+            memory->writed(ctid, newThread->id);
+        }
         scheduleThread(newThread);
         return newThread->id;
-    } else {
-        kpanic_fmt("sys_clone does not implement flags: %X", flags);
-        return 0;
     }
 }
 
 #ifdef BOXEDWINE_GUEST_X64
-U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid) {
+U32 createPidFdForClone64(KThread* thread, U32 processId);
+
+U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid, U64 exitSignal) {
     // pthread_create issues clone with the thread-group flag set. We only
     // support the thread case (shared VM/FS/files/sighand); a real fork() in
     // 64-bit is a separate, larger effort. Anything else: log + ENOSYS so
     // glibc surfaces a clean failure instead of us kpanic'ing.
+    // Namespace creation is rejected loudly (kernel round 3A): the emulator
+    // has exactly one namespace of each kind, so CLONE_NEW* can never be
+    // honoured. Warn once per flag bit, then EINVAL like an unprivileged
+    // caller without CAP_SYS_ADMIN in the namespace.
+    constexpr U64 K_CLONE_NEWCGROUP_BIT = 0x2000000ULL;
+    constexpr U64 K_CLONE_PIDFD_BIT = 0x1000ULL;
+    constexpr U64 NS_FLAGS = K_CLONE_NEWNS | K_CLONE_NEWUTS | K_CLONE_NEWIPC |
+        K_CLONE_NEWUSER | K_CLONE_NEWPID | K_CLONE_NEWNET | K_CLONE_NEWCGROUP_BIT;
+    if (flags & NS_FLAGS) {
+        static U64 warnedNsFlags = 0;
+        const U64 fresh = (flags & NS_FLAGS) & ~warnedNsFlags;
+        if (fresh) {
+            warnedNsFlags |= flags & NS_FLAGS;
+            klog_fmt("clone64: namespace flags 0x%llx unsupported; returned -EINVAL",
+                     (unsigned long long)fresh);
+        }
+        return (U32)-K_EINVAL;
+    }
+    if ((flags & K_CLONE_PIDFD_BIT) && (flags & K_CLONE_THREAD)) {
+        return (U32)-K_EINVAL;
+    }
     const U64 THREAD_FLAGS = K_CLONE_VM | K_CLONE_THREAD | K_CLONE_SIGHAND;
     if ((flags & THREAD_FLAGS) != THREAD_FLAGS) {
         // Non-thread clone == real fork(2). wine forks to spawn wineserver (and
@@ -2017,7 +2428,7 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
         // fork: a new KProcess with its own memory64 (a deep copy of ours) and a
         // child CPU64 that returns 0. child_stack==0 here (fork keeps the same
         // stack pointer), unlike thread-clone, so don't require it.
-        return this->forkProcess64(thread, flags, ctid, ptid);
+        return this->forkProcess64(thread, flags, ctid, ptid, exitSignal, child_stack);
     }
     if (child_stack == 0) {
         return (U32)-K_EINVAL;
@@ -2028,6 +2439,10 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
     CPU64* parentCpu = thread->cpu64 ? thread->cpu64 : this->cpu64;
     CPU64* childCpu = new CPU64(this->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    // Linux sas_ss_reset (kernel/fork.c): a CLONE_VM child that is not a
+    // vfork starts with NO alternate signal stack; a thread never
+    // inherits its creator's sigaltstack.
+    childCpu->sigAltStack = {};
     childCpu->thread = newThread;
     newThread->cpu64 = childCpu;
 
@@ -2069,25 +2484,123 @@ U32 KProcess::clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64
     return newThread->id;
 }
 
-U32 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
+U64 KProcess::clone364(KThread* thread, U64 argsAddr, U64 size) {
     // Read the clone_args struct from guest memory64 (see the struct comment
     // above). Modern glibc (2.34+) issues clone3 first and only falls back to
     // clone on ENOSYS — that fallback path is fragile in our interpreter, so
     // implement clone3 directly and route to clone64.
-    if (!this->memory64 || size < 8 * 8) {
-        return (U32)-K_EINVAL;
+    constexpr U64 CLONE_ARGS_V0_SIZE = 64;
+    constexpr U64 CLONE_ARGS_CURRENT_SIZE = 88;
+    if (!this->memory64 || size < CLONE_ARGS_V0_SIZE) {
+        return (U64)-K_EINVAL;
     }
-    U64 flags       = this->memory64->readq(argsAddr);
-    U64 child_tid   = this->memory64->readq(argsAddr + 16);
-    U64 parent_tid  = this->memory64->readq(argsAddr + 24);
-    U64 stack       = this->memory64->readq(argsAddr + 40);
-    U64 stack_size  = this->memory64->readq(argsAddr + 48);
-    U64 tls         = this->memory64->readq(argsAddr + 56);
+    if (size > K_PAGE_SIZE) return (U64)-K_E2BIG;
+    if (argsAddr > ~0ULL - size) return (U64)-K_EFAULT;
+    const U64 firstPage = argsAddr >> K64_PAGE_SHIFT;
+    const U64 lastPage = (argsAddr + size - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = firstPage;; ++page) {
+        const U32 pageFlags = this->memory64->getPageFlags(page);
+        if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_READ)) return (U64)-K_EFAULT;
+        if (page == lastPage) break;
+    }
+    // clone_args is versioned by size. Newer kernels accept a larger structure
+    // only when unknown extension bytes are zero, so callers can probe safely.
+    for (U64 offset = CLONE_ARGS_CURRENT_SIZE; offset < size; ++offset) {
+        if (this->memory64->readb(argsAddr + offset) != 0) return (U64)-K_E2BIG;
+    }
+    U64 args[CLONE_ARGS_CURRENT_SIZE / sizeof(U64)] = {};
+    const U64 copiedSize = size < sizeof(args) ? size : sizeof(args);
+    this->memory64->memcpyFromGuest(args, argsAddr, copiedSize);
+    U64 flags       = args[0];
+    U64 pidfdAddr   = args[1];
+    U64 child_tid   = args[2];
+    U64 parent_tid  = args[3];
+    U64 exit_signal = args[4];
+    U64 stack       = args[5];
+    U64 stack_size  = args[6];
+    U64 tls         = args[7];
+    constexpr U64 K_CLONE_PIDFD = 0x00001000;
+    if ((flags & K_CLONE_PIDFD) && (flags & K_CLONE_THREAD)) return (U64)-K_EINVAL;
+    if (flags & K_CLONE_PIDFD) {
+        if (!pidfdAddr || pidfdAddr > ~0ULL - 3) return (U64)-K_EFAULT;
+        const U64 first = pidfdAddr >> K64_PAGE_SHIFT;
+        const U64 last = (pidfdAddr + 3) >> K64_PAGE_SHIFT;
+        for (U64 page = first;; ++page) {
+            const U32 pageFlags = this->memory64->getPageFlags(page);
+            if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_WRITE)) return (U64)-K_EFAULT;
+            if (page == last) break;
+        }
+    }
+    // clone3 carries the exit signal in its own field; the low CSIGNAL bits
+    // are invalid in flags (unlike legacy clone(2)).
+    if ((flags & 0xff) || exit_signal > 64 ||
+        ((stack == 0) != (stack_size == 0)) || stack > ~0ULL - stack_size) {
+        return (U64)-K_EINVAL;
+    }
     // clone3 passes the stack base + size; the child's RSP is the top.
-    return clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid);
+    // Round 3A validation, per clone3(2): unknown flag bits, the flag
+    // combinations clone3 forbids, set_tid and CLONE_INTO_CGROUP. Known
+    // flag bits are CSIGNAL (rejected above), bits 0x100..0x80000000,
+    // CLONE_CLEAR_SIGHAND (bit 32) and CLONE_INTO_CGROUP (bit 33).
+    if (flags & ~0x3FFFFFFF00ULL) return (U64)-K_EINVAL;
+    constexpr U64 NS_FLAGS3 = 0x20000ULL | 0x4000000ULL | 0x8000000ULL | 0x10000000ULL |
+        0x20000000ULL | 0x40000000ULL | 0x2000000ULL;
+    if (flags & NS_FLAGS3) {
+        static U64 warnedNs3 = 0;
+        const U64 fresh = (flags & NS_FLAGS3) & ~warnedNs3;
+        if (fresh) {
+            warnedNs3 |= flags & NS_FLAGS3;
+            klog_fmt("clone3: namespace flags 0x%llx unsupported; returned -EINVAL",
+                     (unsigned long long)fresh);
+        }
+        return (U64)-K_EINVAL;
+    }
+    constexpr U64 F_THREAD = 0x10000ULL, F_VM = 0x100ULL, F_SIGHAND = 0x800ULL;
+    if ((flags & F_THREAD) && ((flags & (F_VM | F_SIGHAND)) != (F_VM | F_SIGHAND))) return (U64)-K_EINVAL;
+    if ((flags & F_SIGHAND) && !(flags & F_VM)) return (U64)-K_EINVAL;
+    // set_tid: choosing the child tid requires CAP_SYS_ADMIN in the pid
+    // namespace; guests run as unprivileged uid 1000, so a well-formed
+    // request is EPERM (logged once), malformed ones EINVAL/EFAULT.
+    const U64 setTidAddr = args[8];
+    const U64 setTidSize = args[9];
+    if (setTidSize > 32) return (U64)-K_EINVAL;
+    if (setTidSize > 0) {
+        if (!setTidAddr) return (U64)-K_EFAULT;
+        const U64 first = setTidAddr >> K64_PAGE_SHIFT;
+        const U64 last = (setTidAddr + setTidSize * 4 - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = first;; ++page) {
+            const U32 pageFlags = this->memory64->getPageFlags(page);
+            if (!(pageFlags & K64_PAGE_MAPPED) || !(pageFlags & K64_PAGE_READ)) return (U64)-K_EFAULT;
+            if (page == last) break;
+        }
+        static bool warnedSetTid = false;
+        if (!warnedSetTid) {
+            warnedSetTid = true;
+            klog("clone3: set_tid unsupported for unprivileged guests; returned -EPERM");
+        }
+        return (U64)-K_EPERM;
+    }
+    // cgroup: a nonzero fd is only meaningful with CLONE_INTO_CGROUP, and
+    // there is no cgroupfs here to validate it against.
+    if (args[10] != 0) {
+        if (!(flags & 0x200000000ULL)) return (U64)-K_EINVAL;
+        static bool warnedCgroup = false;
+        if (!warnedCgroup) {
+            warnedCgroup = true;
+            klog("clone3: CLONE_INTO_CGROUP unsupported (no cgroupfs); returned -EBADF");
+        }
+        return (U64)-K_EBADF;
+    }
+    U64 result = clone64(thread, flags, stack + stack_size, parent_tid, tls, child_tid, exit_signal);
+    if ((S32)result < 0) return (U64)(S64)(S32)result;
+    if (!(flags & K_CLONE_PIDFD)) return result;
+    U32 pidfd = createPidFdForClone64(thread, (U32)result);
+    if ((S32)pidfd < 0) return (U64)(S64)(S32)pidfd;
+    this->memory64->writed(pidfdAddr, pidfd);
+    return result;
 }
 
-U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
+U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal, U64 childStack) {
     if (!this->memory64) {
         return (U32)-K_ENOSYS;
     }
@@ -2098,9 +2611,14 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     // bits (memory64 deep-copy, is64Bit, brk/phdr, CPU64) by hand.
     KProcessPtr newProcess = KProcess::create();
     newProcess->memory = KMemory::create(newProcess.get());  // unused 32-bit side
-    newProcess->clone(shared_from_this());                   // FDs, cwd, exe, sig...
+    newProcess->clone(shared_from_this(), (U32)(flags & (K_CLONE_FS | K_CLONE_FILES | K_CLONE_SIGHAND))); // FDs, cwd, exe, sig (shared when the clone flags ask for it)
+    if (flags & K_CLONE_PARENT) {
+        // CLONE_PARENT: the child is a sibling, reparented to our parent.
+        newProcess->parentId = this->parentId;
+    }
 
     newProcess->is64Bit = true;
+    newProcess->childExitSignal64 = (U32)exitSignal;
     newProcess->brkEnd64 = this->brkEnd64;
     newProcess->entry64 = this->entry64;
     newProcess->phdr64 = this->phdr64;
@@ -2109,9 +2627,28 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     newProcess->startupArgs64 = this->startupArgs64;
     newProcess->startupEnv64 = this->startupEnv64;
 
-    // Deep-copy the parent address space into the child's own KMemory64.
-    newProcess->memory64 = new KMemory64(newProcess.get());
-    newProcess->memory64->cloneFrom(this->memory64);
+    // Address space: shared for vfork, a deep copy otherwise.
+    if (flags & K_CLONE_VFORK) {
+        // vfork: the child runs in the SAME address space until it execs or
+        // exits (the parent is suspended below until then). Exec releases
+        // the child's reference (the object is deleted only when the last
+        // sharer releases it, see the is64Bit branch of execve) and exit
+        // just releases the reference: nothing deletes memory64 at exit.
+        this->memory64->retainVmRef();
+        newProcess->memory64 = this->memory64;
+        newProcess->memory64Shared = true;
+    } else if (flags & K_CLONE_VM) {
+        // CLONE_VM without vfork (kernel round 3C): the child shares the
+        // address space for real, like vfork, but the parent is NOT
+        // suspended and keeps running concurrently with the child. The
+        // exec/exit reference rules are the same as vfork's.
+        this->memory64->retainVmRef();
+        newProcess->memory64 = this->memory64;
+        newProcess->memory64Shared = true;
+    } else {
+        newProcess->memory64 = new KMemory64(newProcess.get());
+        newProcess->memory64->cloneFrom(this->memory64);
+    }
 
     // The child's main thread + its CPU64 (own register file, shared with no
     // one), seeded from the parent's registers. fork returns 0 in the child;
@@ -2120,6 +2657,31 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     KThread* newThread = newProcess->createThread();
     CPU64* childCpu = new CPU64(newProcess->memory64);
     childCpu->cloneRegistersFrom(parentCpu);
+    if (flags & K_CLONE_SIGHAND) {
+        // Signal delivery consults the CPU64 table, so a CLONE_SIGHAND
+        // child shares it too (the KProcess table was shared inside
+        // KProcess::clone above). This runs before the CLEAR_SIGHAND
+        // reset below, so a combined CLONE_SIGHAND|CLONE_CLEAR_SIGHAND
+        // flushes the shared table, matching the kernel's order.
+        childCpu->sigActions.shareFrom(parentCpu->sigActions);
+    }
+    if (flags & 0x100000000ULL) { // CLONE_CLEAR_SIGHAND
+        // All dispositions reset to SIG_DFL: both the process table and the
+        // CPU64 table (the one signal delivery consults).
+        for (auto& action : newProcess->sigActions) action.reset();
+        for (auto& action : childCpu->sigActions) action = CPU64::SigAction();
+    }
+    if (childStack) {
+        // clone/clone3 with an explicit stack: the child starts there
+        // (clone3 already converted base+size to the top).
+        childCpu->reg[X64_RSP].setU64(childStack);
+    }
+    if ((flags & K_CLONE_VM) && !(flags & K_CLONE_VFORK)) {
+        // sas_ss_reset (kernel/fork.c): CLONE_VM children that are not
+        // vfork start with no alternate signal stack. Plain fork and
+        // vfork (no CLONE_VM, or CLONE_VM|CLONE_VFORK) inherit it.
+        childCpu->sigAltStack = {};
+    }
     childCpu->thread = newThread;
     childCpu->memory = newProcess->memory64;
     childCpu->reg[X64_RAX].setU64(0);   // child sees fork() == 0
@@ -2138,6 +2700,15 @@ U32 KProcess::forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid) {
     }
 
     scheduleThread(newThread);
+    if (flags & K_CLONE_VFORK) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(newProcess->exitOrExecCond);
+        while (!newProcess->vforkReleased) {
+            BOXEDWINE_CONDITION_WAIT(newProcess->exitOrExecCond);
+        }
+#ifdef BOXEDWINE_MULTI_THREADED
+        if (thread->terminating) return (U32)-K_EINTR;
+#endif
+    }
     return newProcess->id;   // parent sees the child pid
 }
 #endif
@@ -2153,10 +2724,12 @@ void KProcess::killAllThreads(KThread* exceptThisThread) {
 
 U32 KProcess::exitgroup(KThread* thread, U32 code) {
     KProcessPtr parent = KSystem::getProcess(this->parentId);
-    if (parent && parent->sigActions[K_SIGCHLD].handlerAndSigAction!=K_SIG_DFL) {
-        if (parent->sigActions[K_SIGCHLD].handlerAndSigAction!=K_SIG_IGN) {
-            parent->signalCHLD(K_CLD_EXITED, this->id, this->userId, code);
-        }
+    if (parent && this->childExitSignal64 == K_SIGCHLD &&
+        parent->sigActions[K_SIGCHLD].handlerAndSigAction != K_SIG_DFL &&
+        parent->sigActions[K_SIGCHLD].handlerAndSigAction != K_SIG_IGN) {
+        parent->signalCHLD(K_CLD_EXITED, this->id, this->userId, code);
+    } else if (parent && this->childExitSignal64 != 0 && this->childExitSignal64 != K_SIGCHLD) {
+        parent->signal(this->childExitSignal64);
     }
 
     killAllThreads(thread);
@@ -2180,12 +2753,24 @@ U32 KProcess::exitgroup(KThread* thread, U32 code) {
             // make sure the shared memory is unhooked from parent
             this->memory->execvReset(cloneVM);
         }
+#ifdef BOXEDWINE_GUEST_X64
+        if (this->is64Bit && this->memory64 && this->memory64Shared) {
+            // Drop this process's reference to the shared 64-bit address
+            // space. The space is never deleted at exit (the last exec
+            // that releases it frees it, or it leaks with the emulator as
+            // before); unhooking here keeps a surviving sharer's execve
+            // from releasing our reference a second time.
+            this->memory64->releaseVmRef();
+            this->memory64Shared = false;
+        }
+#endif
         this->cleanupProcess(); // release RAM, sockets, etc now, before waitpid
     }
     this->exitCode = code;
 
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->exitOrExecCond);
+        this->vforkReleased = true;
         BOXEDWINE_CONDITION_SIGNAL_ALL(this->exitOrExecCond);
     }
     if (KSystem::getProcessCount()==1) {        
@@ -2218,9 +2803,9 @@ U32 KProcess::fchdir(FD fildes) {
     }
     // Use the resolved node path, not the unresolved openedPath, so that
     // symlinks don't leak into the cwd (see chdir fix above).
-    this->currentDirectory = p->openFile->node->path;
-    if (this->currentDirectory.endsWith("/")) {
-        this->currentDirectory = this->currentDirectory.substr(0, this->currentDirectory.length()-1);
+    this->fsContext->currentDirectory = p->openFile->node->path;
+    if (this->fsContext->currentDirectory.endsWith("/")) {
+        this->fsContext->currentDirectory = this->fsContext->currentDirectory.substr(0, this->fsContext->currentDirectory.length()-1);
     }
     return 0;
 }
@@ -2326,14 +2911,24 @@ U32 KProcess::getdents(FD fildes, U32 dirp, U32 count, bool is64) {
 }
 
 U32 KProcess::msync(KThread* thread, U32 addr, U32 len, U32 flags) {
+    const U64 end = (U64)addr + len;
+    if (!len || end > 0x100000000ULL) return -K_EINVAL;
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
     for (auto& n : this->mappedFiles) {
         std::shared_ptr<MappedFile> m = n.value;
-        if (m->address<=addr && addr+len<m->address+m->len) {
+        const U64 mappingEnd = (U64)m->address + m->len;
+        if (m->address <= addr && end <= mappingEnd) {
             return m->file->pwrite(thread, addr, addr - m->address + m->offset, len);
         }
     }
-    return -K_ENOMEM;
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (U32)((end - 1) >> K_PAGE_SHIFT);
+    for (U32 page = firstPage;; ++page) {
+        if (!this->memory->isPageMapped(page)) return -K_ENOMEM;
+        if (page == lastPage) break;
+    }
+    // Anonymous and already-backed shared mappings have no host page cache to flush.
+    return 0;
 }
 
 // Wine server protocol REQ id for create_event (from Wine 8.0 server/protocol.def)
@@ -2451,6 +3046,8 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
+    constexpr U32 supportedFlags = 1u /*MFD_CLOEXEC*/ | 2u /*MFD_ALLOW_SEALING*/;
+    if (flags & ~supportedFlags) return (U32)-K_EINVAL;
     // Each memfd needs its own inode identity: the 64-bit MAP_SHARED page
     // registry is keyed by (inode, file page), so a constant id would alias
     // unrelated memfds (e.g. wine's server sections vs libpulse's shm pool)
@@ -2474,20 +3071,209 @@ U32 KProcess::memfd_create(BString name, U32 flags) {
     return this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0)->handle;
 }
 
-U32 KProcess::prctl(U32 option, U32 arg2) {
-    if (option == 15) { // PR_SET_NAME
-        this->name = memory->readString(arg2);
-        return 0;
-    } else if (option == 38) { // PR_SET_NO_NEW_PRIVS
-        return 0;
-    } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.prctl.option", "unsupported prctl option; returned EINVAL");
-        } else {
-            kwarn_fmt("prctl not implemented for option: %d", option);
-        }
+// Rate-limited "valid Linux request that this emulator cannot model" logger.
+// Every rejected prctl option goes through this so the register's rule holds:
+// no silent drops, and the warning names the exact option once per process.
+static void prctlRejectLog(U32 option, const char* feature) {
+    static std::mutex m;
+    static std::unordered_set<U32> seen;
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        log = seen.insert(option).second;
     }
-    return -K_EINVAL;
+    if (log) {
+        klog_fmt("kprctl: option %u (%s) is not supported on this virtual x86 kernel; returned -EINVAL",
+                 option, feature);
+    }
+}
+
+// 32-bit prctl. Mirrors sys_prctl64; pointer arguments are 32-bit guest
+// addresses. Options that need per-CPU or capability hardware this kernel does
+// not expose return the error Linux documents for an unsupported operation on
+// this architecture (EINVAL) or for a missing capability (EPERM/ENOSYS) and are
+// logged once through prctlRejectLog.
+U32 KProcess::prctl(U32 option, U32 arg2, U32 arg3, U32 arg4, U32 arg5) {
+    (void)arg4; (void)arg5;
+    switch (option) {
+        case 1: // PR_SET_PDEATHSIG
+            if (arg2 > 64 || arg2 == 9 || arg2 == 19) return -K_EINVAL;
+            this->parentDeathSignal = arg2;
+            return 0;
+        case 2: // PR_GET_PDEATHSIG
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->parentDeathSignal);
+            return 0;
+        case 3: return this->dumpable;
+        case 4:
+            if (arg2 > 1) return -K_EINVAL;
+            this->dumpable = arg2;
+            return 0;
+        case 5: // PR_GET_UNALIGN
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->unalignValue);
+            return 0;
+        case 6:
+            if (arg2 & ~3u) return -K_EINVAL;
+            this->unalignValue = arg2;
+            return 0;
+        case 7: return this->keepCaps;
+        case 8:
+            if (arg2 > 1) return -K_EINVAL;
+            this->keepCaps = arg2;
+            return 0;
+        case 9:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->fpEmu);
+            return 0;
+        case 10:
+            if (arg2 > 3) return -K_EINVAL;
+            this->fpEmu = arg2;
+            return 0;
+        case 11:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->fpExc);
+            return 0;
+        case 12:
+            if (arg2 > 0x7) return -K_EINVAL;
+            this->fpExc = arg2;
+            return 0;
+        case 13: return 0; // PR_GET_TIMING: PR_TIMING_STATISTICAL
+        case 14: return arg2 == 0 ? 0 : -K_EINVAL;
+        case 15: // PR_SET_NAME
+            this->name = memory->readString(arg2);
+            return 0;
+        case 16: { // PR_GET_NAME
+            if (!arg2) return -K_EFAULT;
+            char buf[16] = {};
+            size_t n = std::min<size_t>(this->name.length(), 15);
+            if (n) memcpy(buf, this->name.c_str(), n);
+            memory->memcpyToGuest(arg2, buf, sizeof(buf));
+            return 0;
+        }
+        case 19: // PR_GET_ENDIAN
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->endian);
+            return 0;
+        case 20:
+            if (arg2 != 1) return -K_EINVAL;
+            this->endian = 1;
+            return 0;
+        case 21: return 0; // PR_GET_SECCOMP: disabled
+        case 22: prctlRejectLog(option, "PR_SET_SECCOMP filter"); return -K_EINVAL;
+        case 23: return arg2 <= 40 ? 0 : -K_EINVAL; // PR_CAPBSET_READ
+        case 24: return arg2 <= 40 ? -K_EPERM : -K_EINVAL; // PR_CAPBSET_DROP needs CAP_SETPCAP
+        case 25:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->tscEnabled);
+            return 0;
+        case 26:
+            if (arg2 == 1) { this->tscEnabled = 1; return 0; }
+            prctlRejectLog(option, "PR_SET_TSC SIGSEGV enforcement");
+            return -K_EINVAL;
+        case 27: return (S32)this->secureBits;
+        case 28:
+            if (arg2 & ~0x3fu) return -K_EINVAL;
+            if (arg2 == this->secureBits) return 0;
+            return -K_EPERM;
+        case 29:
+            this->timerSlackNs = arg2 ? arg2 : 50000;
+            return 0;
+        case 30: return (S32)this->timerSlackNs;
+        case 31: this->perfEventsEnabled = 0; return 0;
+        case 32: this->perfEventsEnabled = 1; return 0;
+        case 33: // PR_MCE_KILL: arg2 = policy, arg3 = signal
+            if (arg2 == 0) { this->mceKillPolicy = 0; this->mceKillSignal = 0; return 0; }
+            if (arg2 == 1) {
+                if (arg3 > 64 || arg3 == 9 || arg3 == 19) return -K_EINVAL;
+                this->mceKillPolicy = 1;
+                this->mceKillSignal = arg3;
+                return 0;
+            }
+            return -K_EINVAL;
+        case 34: return this->mceKillPolicy;
+        case 35: prctlRejectLog(option, "PR_SET_MM address map rewrite"); return -K_EPERM;
+        case 36:
+            if (arg2 > 1) return -K_EINVAL;
+            this->childSubreaper = arg2;
+            return 0;
+        case 37:
+            if (!arg2) return -K_EFAULT;
+            memory->writed(arg2, this->childSubreaper);
+            return 0;
+        case 38:
+            if (arg2 != 1) return -K_EINVAL;
+            this->noNewPrivs = 1;
+            return 0;
+        case 39: return this->noNewPrivs;
+        case 40: { // PR_GET_TID_ADDRESS
+            if (!arg2) return -K_EFAULT;
+            KThread* t = KThread::currentThread();
+            U32 value = (t && t->process.get() == this) ? t->clear_child_tid : 0;
+            memory->writed(arg2, value);
+            return 0;
+        }
+        case 41:
+            if (arg2 > 1) return -K_EINVAL;
+            this->thpDisable = arg2;
+            return 0;
+        case 42: return this->thpDisable;
+        case 43: case 44: prctlRejectLog(option, "MPX management"); return -K_EINVAL;
+        case 45: return arg2 == 0 ? 0 : -K_EINVAL; // PR_SET_FP_MODE: only FP_MODE_NONE
+        case 46: return this->fpMode;
+        case 47: { // PR_CAP_AMBIENT: arg2 = subcommand, arg3 = capability
+            if (arg2 == 0) return 0;       // GET -> empty ambient set
+            if (arg2 == 4) return 0;       // CLEAR_ALL
+            if (arg3 > 40) return -K_EINVAL;
+            if (arg2 == 1) return 0;       // IS_SET -> never set
+            if (arg2 == 2) return -K_EPERM; // RAISE needs CAP_SETPCAP
+            if (arg2 == 3) return 0;       // LOWER of a non-set cap
+            return -K_EINVAL;
+        }
+        case 50: case 51: prctlRejectLog(option, "SVE vector length"); return -K_EINVAL;
+        case 52: { // PR_GET_SPECULATION_CTRL: arg2 = which
+            if (arg2 > 2) return -K_EINVAL;
+            return (S32)this->speculationCtrl[arg2];
+        }
+        case 53: { // PR_SET_SPECULATION_CTRL: arg2 = which, arg3 = control
+            if (arg2 > 2) return -K_EINVAL;
+            const U32 allowed = (1u << 0) | (1u << 2) | (1u << 3);
+            if (arg3 & ~allowed) return -K_EINVAL;
+            this->speculationCtrl[arg2] = arg3;
+            return 0;
+        }
+        case 54: prctlRejectLog(option, "PAC key reset"); return -K_EINVAL;
+        case 55: case 56: prctlRejectLog(option, "tagged address control"); return -K_EINVAL;
+        case 57: return this->ioFlusher;
+        case 58:
+            if (arg2 > 1) return -K_EINVAL;
+            if (arg2 == 1) return -K_EPERM;
+            this->ioFlusher = 0;
+            return 0;
+        case 59: prctlRejectLog(option, "syscall user dispatch"); return -K_EINVAL;
+        case 60: case 61: prctlRejectLog(option, "PAC enabled keys"); return -K_EINVAL;
+        case 62: prctlRejectLog(option, "PR_SCHED_CORE"); return -K_EINVAL;
+        case 63: case 64: prctlRejectLog(option, "SME vector length"); return -K_EINVAL;
+        case 65: // PR_SET_MDWE
+            if (arg2 & ~3u) return -K_EINVAL;
+            if ((arg2 & 1) && (this->mdweFlags & 1)) return -K_EPERM;
+            this->mdweFlags = arg2;
+            return 0;
+        case 66: return this->mdweFlags;
+        case 67: // PR_SET_MEMORY_MERGE
+            if (arg2 > 1) return -K_EINVAL;
+            if (arg2) prctlRejectLog(option, "KSM memory merging");
+            return arg2 ? -K_EINVAL : 0;
+        case 68: return 0; // PR_GET_MEMORY_MERGE
+        case 69: case 70: prctlRejectLog(option, "RISC-V vector control"); return -K_EINVAL;
+        case 0x59616d61: // PR_SET_PTRACER
+            this->ptracerPid = arg2;
+            return 0;
+        case 0x53564d41: prctlRejectLog(option, "PR_SET_VMA anon name"); return -K_EPERM;
+        default:
+            prctlRejectLog(option, "unknown prctl option");
+            return -K_EINVAL;
+    }
 }
 
 U32 KProcess::sigaction(U32 sig, U32 act, U32 oact, U32 sigsetSize) {
@@ -2558,20 +3344,20 @@ U32 KProcess::getcwd(U32 buffer, U32 size) {
     if (!this->memory->canWrite(buffer, size)) {
         return -K_EFAULT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(B(""), this->currentDirectory, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(B(""), this->fsContext->currentDirectory, true);
     if (!node || !node->isDirectory()) {
         return -K_ENOENT;
     }
-    if ((U32)this->currentDirectory.length()+1>size)
+    if ((U32)this->fsContext->currentDirectory.length()+1>size)
         return -K_ERANGE;
-    memory->strcpy(buffer, this->currentDirectory.c_str());
-    return (U32)this->currentDirectory.length()+1;
+    memory->strcpy(buffer, this->fsContext->currentDirectory.c_str());
+    return (U32)this->fsContext->currentDirectory.length()+1;
 }
 
 U32 KProcess::stat64(BString path, U32 buffer) {
     path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true, &isLink);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, &isLink);
     if (!node) {
         return -K_ENOENT;
     }
@@ -2582,7 +3368,7 @@ U32 KProcess::stat64(BString path, U32 buffer) {
 
 U32 KProcess::lstat64(BString path, U32 buffer) {
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, false);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
         return -K_ENOENT;
     }
@@ -2634,10 +3420,27 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
     }    
     switch (cmd) {
         case K_F_SETOWN:
-            if (this->id != arg) {
-                kdebug("F_SETOWN not implemented: %d",fildes);
-            }
+            fd->kobject->setAsyncOwner((S32)arg);
             return 0;
+        case K_F_GETOWN:
+            return (U32)fd->kobject->getAsyncOwner();
+        case K_F_SETOWN_EX: {
+            S32 type = (S32)memory->readd(arg);
+            S32 pid = (S32)memory->readd(arg + 4);
+            if (type < 0 || type > 2 || pid <= 0) {
+                return -K_EINVAL;
+            }
+            fd->kobject->setAsyncOwnerEx(type, pid);
+            return 0;
+        }
+        case K_F_GETOWN_EX: {
+            S32 type = 0;
+            S32 pid = 0;
+            fd->kobject->getAsyncOwnerEx(&type, &pid);
+            memory->writed(arg, (U32)type);
+            memory->writed(arg + 4, (U32)pid);
+            return 0;
+        }
         case K_F_DUPFD: {
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);        
             return result->handle;
@@ -2697,15 +3500,16 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
                 return -K_EBADF;
             }
         case K_F_SETSIG: {
-            if (arg != K_SIGIO) {
-                if (bw64RecoverEnabled()) {
-                    bw64RecoverLogOnce("syscall.fcntl.setsig", "unsupported fcntl F_SETSIG value; returned EINVAL");
-                    return -K_EINVAL;
-                }
-                kpanic("fcntl F_SETSIG not implemented");
+            // Any signal 0..64 is storable now (0 resets to SIGIO at
+            // delivery time). This used to kpanic for arg != SIGIO.
+            if (arg > 64) {
+                return -K_EINVAL;
             }
+            fd->kobject->setAsyncSignal(arg);
             return 0;
         }
+        case K_F_GETSIG:
+            return fd->kobject->getAsyncSignal();
         case K_F_ADD_SEALS: {
             if (fd->kobject->type==KTYPE_FILE) {
                 std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(fd->kobject);
@@ -2804,7 +3608,7 @@ U32 KProcess::epollwait(KThread* thread, FD epfd, U32 events, U32 maxevents, U32
 }
 
 U32 KProcess::utimes(BString path, U32 times) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
 
     if (!node) {
         return -K_ENOENT;
@@ -2829,7 +3633,7 @@ U32 KProcess::utimes(BString path, U32 times) {
 U32 KProcess::getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory) {
     U32 result = 0;
     if (dirfd==-100) { // AT_FDCWD
-        currentDirectory = this->currentDirectory;
+        currentDirectory = this->fsContext->currentDirectory;
     } else {
         KFileDescriptorPtr fd = this->getFileDescriptor(dirfd);
         if (!fd) {
@@ -3200,8 +4004,47 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
     return node->setTimes(lastAccessTime, lastAccessTimeNano, lastModifiedTime, lastModifiedTimeNano);
 }
 
+U32 KProcess::inotify_init1(U32 flags) {
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
+    std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
+    KInotify::registerInstance(o);
+    KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (flags & K_O_CLOEXEC) {
+        fd->descriptorFlags |= FD_CLOEXEC;
+    }
+    if (flags & K_O_NONBLOCK) {
+        fd->accessFlags |= K_O_NONBLOCK;
+    }
+    return fd->handle;
+}
+
+U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
+    KFileDescriptorPtr descriptor = this->getFileDescriptor(fd);
+    if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+        return -K_EBADF;
+    }
+    path = rewriteServerDirPath(path, this->is64Bit);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    if (!node) {
+        return -K_ENOENT;
+    }
+    std::shared_ptr<KInotify> inotify = std::dynamic_pointer_cast<KInotify>(descriptor->kobject);
+    return (U32)inotify->addWatch(node, mask);
+}
+
+U32 KProcess::inotify_rm_watch(S32 fd, S32 wd) {
+    KFileDescriptorPtr descriptor = this->getFileDescriptor(fd);
+    if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+        return -K_EBADF;
+    }
+    std::shared_ptr<KInotify> inotify = std::dynamic_pointer_cast<KInotify>(descriptor->kobject);
+    return (U32)inotify->removeWatch((U32)wd);
+}
+
 U32 KProcess::timerfd_create(U32 clockid, U32 flags) {
-    std::shared_ptr<KTimer> o = std::make_shared<KTimer>();
+    if (clockid != 0 && clockid != 1) return -K_EINVAL; // REALTIME / MONOTONIC
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
+    std::shared_ptr<KTimer> o = std::make_shared<KTimer>(clockid);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
 
     if (flags & K_O_CLOEXEC) {
@@ -3219,7 +4062,7 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
     if (!fd) {
         return -K_EBADF;
     }
-    if (fd->kobject->type != KTYPE_SIGNAL) {
+    if (fd->kobject->type != KTYPE_TIMER) {
         return -K_EINVAL;
     }
     if (!newValue) {
@@ -3237,7 +4080,7 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
             memory->writed(oldValue + 8, 0);
             memory->writed(oldValue + 12, 0);
         } else {
-            U64 currentTime = KSystem::getSystemTimeAsMicroSeconds();
+            U64 currentTime = timer->getClockNowMicroseconds();
             S64 diff = (S64)microNextTimer - (S64)currentTime;
             if (diff < 0) {
                 memory->writed(oldValue + 8, 0);
@@ -3250,9 +4093,14 @@ U32 KProcess::timerfd_settime(U32 fildes, U32 flags, U32 newValue, U32 oldValue)
     }
     U64 interval = memory->readd(newValue) * 1000000 + memory->readd(newValue+4) / 1000;
     U64 next = memory->readd(newValue+8) * 1000000 + memory->readd(newValue + 12) / 1000;
-    // TFD_TIMER_ABSTIME
-    if ((flags & 1) == 0) {
-        next += KSystem::getSystemTimeAsMicroSeconds();
+    // TFD_TIMER_ABSTIME: a relative value is measured in the timer's own
+    // clock domain. This used to add the wall-clock time unconditionally,
+    // so a relative CLOCK_MONOTONIC timerfd got a deadline ~1.7e15 us in
+    // the future and never expired. A zero value disarms in both modes
+    // (the x64 marshalling already guards this; the 32-bit path did not,
+    // which turned a disarm into an immediate expiry).
+    if ((flags & 1) == 0 && next != 0) {
+        next += timer->getClockNowMicroseconds();
     }
     timer->setTimes(interval, next);
     return 0;
@@ -3263,7 +4111,7 @@ U32 KProcess::timerfd_gettime(U32 fildes, U32 value) {
     if (!fd) {
         return -K_EBADF;
     }
-    if (fd->kobject->type != KTYPE_SIGNAL) {
+    if (fd->kobject->type != KTYPE_TIMER) {
         return -K_EINVAL;
     }
     if (!value) {
@@ -3280,7 +4128,7 @@ U32 KProcess::timerfd_gettime(U32 fildes, U32 value) {
         memory->writed(value + 8, 0);
         memory->writed(value + 12, 0);
     } else {
-        U64 currentTime = KSystem::getSystemTimeAsMicroSeconds();
+        U64 currentTime = timer->getClockNowMicroseconds();
         S64 diff = (S64)microNextTimer - (S64)currentTime;
         if (diff < 0) {
             memory->writed(value + 8, 0);
@@ -3492,7 +4340,7 @@ void KProcess::signalFd(KThread* thread, U32 signal) {
     if (!signal) {
         return;
 	}
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex);
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     for (auto& n : this->fds) {
         KFileDescriptorPtr fd = n.value;
         if (fd->kobject->type == KTYPE_SIGNAL) {

@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -28,7 +29,7 @@ test('a loading-screen label remains owned while a guest advances the boot stage
 #include <future>
 #include <cstring>
 #include <deque>
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 void kpanic(const char*) { std::abort(); }
 std::promise<void> captured, writerScheduled;
 auto writerGate = writerScheduled.get_future();

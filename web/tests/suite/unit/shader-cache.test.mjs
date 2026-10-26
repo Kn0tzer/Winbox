@@ -78,3 +78,61 @@ test('idle warm rebuilds shader modules through the supplied device', async () =
   assert.equal(modules, 1);
   assert.equal(compilations, 1);
 });
+
+test('cache remove deletes the record and unlists it from manifests', async () => {
+  const cache = createPersistentShaderCache({ indexedDB: fakeIndexedDB(), now: () => 20 });
+  assert.equal(await cache.put('gone:shader', '@vertex fn main() {}'), true);
+  assert.equal(await cache.record('app-x', 'gone:shader'), true);
+  assert.equal(await cache.remove('gone:shader'), true);
+  assert.equal(await cache.get('gone:shader'), null);
+  assert.deepEqual((await cache.getManifest('app-x')).shaders, []);
+  assert.equal(cache.stats.evictions, 1);
+});
+
+test('warm isolates a poisoned cache record, evicts it, and warms the rest', async () => {
+  globalThis.indexedDB = fakeIndexedDB();
+  const entries = [
+    ['warm:good-a', '@vertex fn main() { /* good-a */ }'],
+    ['warm:poison-throw', '@vertex fn main() { /* POISON-THROW */ }'],
+    ['warm:poison-error', '@vertex fn main() { /* POISON-ERROR */ }'],
+    ['warm:good-b', '@vertex fn main() { /* good-b */ }'],
+  ];
+  for (const [key, wgsl] of entries) {
+    assert.equal(await persistentShaderCache.put(key, wgsl), true);
+    assert.equal(await persistentShaderCache.record('poison-app', key), true);
+  }
+  const attempts = new Map();
+  const device = {
+    createShaderModule({ code }) {
+      const marker = /POISON-[A-Z]+|good-[ab]/.exec(code)?.[0] || code;
+      attempts.set(marker, (attempts.get(marker) || 0) + 1);
+      if (code.includes('POISON-THROW')) throw new Error('device rejected the module');
+      return {
+        async getCompilationInfo() {
+          if (code.includes('POISON-ERROR')) return { messages: [{ type: 'error', message: 'invalid WGSL' }] };
+          return { messages: [] };
+        },
+      };
+    },
+  };
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  let result;
+  try {
+    result = await warmPersistentShaders('poison-app', device);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(result, { warmed: 2, failed: 2 });
+  assert.equal(warnings.filter(line => line.includes('shader warm: evicting cached shader')).length, 2);
+  // the poisoned records are gone, so the next launch does not retry them
+  assert.equal(await persistentShaderCache.get('warm:poison-throw'), null);
+  assert.equal(await persistentShaderCache.get('warm:poison-error'), null);
+  assert.notEqual(await persistentShaderCache.get('warm:good-a'), null);
+  assert.deepEqual((await persistentShaderCache.getManifest('poison-app')).shaders, ['warm:good-a', 'warm:good-b']);
+  const second = await warmPersistentShaders('poison-app', device);
+  assert.deepEqual(second, { warmed: 2, failed: 0 });
+  assert.equal(attempts.get('POISON-THROW'), 1);
+  assert.equal(attempts.get('POISON-ERROR'), 1);
+});

@@ -51,6 +51,19 @@ export function runtimeParameters(program, { installation = 'demo', archive, arc
   const args = program.args || [];
   if (!Array.isArray(args) || args.length > 32 || args.some(a => typeof a !== 'string' || a.length > 4096 || /[\x00-\x1f]/.test(a))) throw Error('Program arguments must be a JSON array of strings.');
   const query = new URLSearchParams({ installation, arch: program.arch, session: '0', gpu: (graphics || program.graphics) === 'webgpu' ? '1' : '0', gltrace: '0', winedbg: '-all' });
+  // Optional per-program guest environment (a demo entry's `env` map).
+  // Serialized as one JSON `env` parameter; wine64-launcher.js applies it in
+  // prefixEnv(). This is the generic channel for steering knobs that only
+  // exist as environment variables: DXVK_CONFIG, FNA3D_FORCE_DRIVER, SDL
+  // hints, JVM properties. Names with dedicated URL parameters (dlloverrides,
+  // winedbg, ldpath) or owned by the launcher itself are refused, so an entry
+  // can never silently fight the launcher's own plumbing.
+  const env = program.env || {};
+  if (typeof env !== 'object' || Array.isArray(env)) throw Error('Program env must be an object mapping names to values.');
+  const reservedEnv = new Set(['HOME', 'WINEPREFIX', 'WINESERVER', 'WINEDLLPATH', 'WINEDEBUG', 'WINEDLLOVERRIDES', 'LD_LIBRARY_PATH', 'WINE_D3D_CONFIG', 'WINELOADERNOEXEC', 'XDG_RUNTIME_DIR', 'TMPDIR', 'WINEDATADIR']);
+  const envEntries = Object.entries(env);
+  if (envEntries.length > 32 || envEntries.some(([name, value]) => !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) || reservedEnv.has(name) || typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f]/.test(value))) throw Error('Program env entries must be NAME=value strings with non-reserved names.');
+  if (envEntries.length) query.set('env', JSON.stringify(env));
   // The shared runtime installs DXVK in Wine's architecture-specific DLL path.
   // Derive this from the stored engine too, so existing saved games get it.
   if (program.engine === 'source') query.set('dlloverrides', 'd3d9=n');

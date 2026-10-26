@@ -43,6 +43,7 @@ struct KEPollWaiter {
 std::mutex g_epollDataMutex;
 std::mutex g_epollWaitersMutex;
 std::unordered_map<const KEPoll*, std::vector<std::shared_ptr<KEPollWaiter>>> g_epollWaiters;
+std::unordered_map<const KEPoll*, std::unordered_map<FD, bool>> g_epollEdgeReady;
 
 std::shared_ptr<KEPollWaiter> registerEpollWaiter(const KEPoll* epoll, KThread* thread) {
     std::shared_ptr<KEPollWaiter> waiter = std::make_shared<KEPollWaiter>(thread);
@@ -89,6 +90,7 @@ KEPoll::KEPoll() : KObject(KTYPE_EPOLL) {
 
 KEPoll::~KEPoll() {
     std::lock_guard<std::mutex> lock(g_epollDataMutex);
+    g_epollEdgeReady.erase(this);
      for( const auto& n : this->data ) {
          delete n.value;
     }
@@ -104,27 +106,31 @@ bool KEPoll::isBlocking() {
 }
 
 void KEPoll::setAsync(bool isAsync) {
-    if (isAsync)
-        kpanic("KEPoll::setAsync not implemented yet");
+    KObject::setAsync(isAsync);
 }
 
 bool KEPoll::isAsync() {
-    return false;
+    return KObject::isAsync();
 }
 
 KFileLock* KEPoll::getLock(KFileLock* lock) {
-    kdebug("KEPoll::getLock not implemented yet");
+    // No locks are ever held on this object (supportsLocks()==false),
+    // so F_GETLK semantics are: no conflicting lock exists.
     return nullptr;
 }
 
 U32 KEPoll::setLock(KFileLock* lock, bool wait) {
-    kdebug("KEPoll::setLock not implemented yet");
-    return -1;
+    // Non-lockable object: fcntl lock commands are gated by
+    // supportsLocks()==false in KProcess::fcntl and never reach this,
+    // but a direct caller must get a real errno, not a bare -1.
+    kwarn_fmt("kobject: KEPoll::setLock on a non-lockable object; returned ENOTSUP");
+    return -K_ENOTSUP;
 }
 
 bool KEPoll::isOpen() {
-    kdebug("KEPoll::isOpen not implemented yet");
-    return false;
+    // The object is referenced by an open file descriptor for its whole
+    // lifetime; reporting false made poll() put POLLHUP on live epoll fds.
+    return true;
 }
 
 void KEPoll::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
@@ -206,6 +212,22 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
     {
         std::lock_guard<std::mutex> lock(g_epollDataMutex);
         Data* existing = this->data[fd];
+        U32 requestedEvents = 0;
+        U64 requestedData = 0;
+        if (op != K_EPOLL_CTL_DEL) {
+            requestedEvents = memory->readd(address);
+            requestedData = memory->readq(address + 4);
+            constexpr U32 EPOLLIN = 0x001, EPOLLPRI = 0x002, EPOLLOUT = 0x004;
+            constexpr U32 EPOLLRDHUP = 0x2000, EPOLLWAKEUP = 0x20000000;
+            constexpr U32 EPOLLEXCLUSIVE = 0x10000000, EPOLLET = 0x80000000;
+            constexpr U32 EPOLLONESHOT = 0x40000000;
+            constexpr U32 allowed = EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLRDHUP |
+                EPOLLWAKEUP | EPOLLEXCLUSIVE | EPOLLET | EPOLLONESHOT;
+            if (requestedEvents & ~allowed) return -K_EINVAL;
+            if ((requestedEvents & EPOLLEXCLUSIVE) &&
+                (op != K_EPOLL_CTL_ADD || !(requestedEvents & (EPOLLIN | EPOLLOUT)) ||
+                 (requestedEvents & (EPOLLONESHOT | EPOLLWAKEUP)))) return -K_EINVAL;
+        }
 
         switch (op) {
             case K_EPOLL_CTL_ADD:
@@ -214,21 +236,25 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
                 }
                 existing = new Data();
                 existing->fd = fd;
-                existing->events = memory->readd(address);
-                existing->data = memory->readq(address + 4);
+                existing->events = requestedEvents;
+                existing->data = requestedData;
                 this->data.set(fd, existing);
+                if (requestedEvents & 0x80000000u) g_epollEdgeReady[this][fd] = false;
                 break;
             case K_EPOLL_CTL_DEL:
                 if (!existing)
                     return -K_ENOENT;
                 this->data.remove(fd);
                 delete existing;
+                g_epollEdgeReady[this].erase(fd);
                 break;
             case K_EPOLL_CTL_MOD:
                 if (!existing)
                     return -K_ENOENT;
-                existing->events = memory->readd(address);
-                existing->data = memory->readq(address + 4);
+                existing->events = requestedEvents;
+                existing->data = requestedData;
+                existing->enabled = true; // EPOLL_CTL_MOD rearms EPOLLONESHOT
+                g_epollEdgeReady[this][fd] = false;
                 break;
             default:
                 return -K_EINVAL;
@@ -249,6 +275,7 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
             std::lock_guard<std::mutex> lock(g_epollDataMutex);
             for (const auto& n : this->data) {
                 Data* next = n.value;
+                if (!next->enabled) continue;
                 KPollData pollData = {};
                 pollData.events = next->events;
                 pollData.fd = next->fd;
@@ -274,6 +301,22 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
         break;
     }
     if (result >= 0) {
+        // EPOLLET reports only a not-ready -> ready transition. Keep this
+        // state beside the registrations because Data's public layout is
+        // shared by the 32-bit and 64-bit kernel APIs.
+        {
+            std::lock_guard<std::mutex> lock(g_epollDataMutex);
+            for (KPollData& data : thread->pollData) {
+                Data* registration = this->data[(U32)data.fd];
+                if (!registration || !(registration->events & 0x80000000u)) continue;
+                bool& wasReady = g_epollEdgeReady[this][(FD)data.fd];
+                if (data.revents) {
+                    if (wasReady) data.revents = 0;
+                } else {
+                    wasReady = false;
+                }
+            }
+        }
         result = 0;
         for (KPollData& data : thread->pollData) {
             if (data.revents!=0) {
@@ -303,6 +346,15 @@ U32 KEPoll::wait(KThread* thread, U32 events, U32 maxevents, U32 timeout) {
                 }
                 memory->writed(events + result * 12, data.revents);
                 memory->writeq(events + result * 12 + 4, data.data);
+                {
+                    std::lock_guard<std::mutex> lock(g_epollDataMutex);
+                    Data* registration = this->data[data.fd];
+                    if (registration) {
+                        if (registration->events & 0x40000000u) registration->enabled = false;
+                        if (registration->events & 0x80000000u)
+                            g_epollEdgeReady[this][(FD)data.fd] = true;
+                    }
+                }
                 result++;
                 if (result>=(S32)maxevents) {
                     kwarn("possible starvation in epoll, more events are ready than can be received.");

@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('x64 nanosleep validates timespecs and passes relative duration to the guest thread', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_nanosleep64(');
   const end = source.indexOf('// clock_gettime(clk, struct timespec*)', start);
   assert.ok(start >= 0 && end > start, 'nanosleep64 helper should be present');
@@ -23,7 +27,7 @@ struct Memory {std::unordered_map<U64,U64> q;U64 readq(U64 a){return q[a];}void 
 struct KThread {U64 slept=0;U32 nanoSleep(U64 n){slept=n;return 0;}};
 struct CPU64 {Memory* memory;KThread* thread;};
 struct KSystem {static U64 getSystemTimeAsMicroSeconds(){return 10'000'000;}static U32 getMilliesSinceStart(){return 20000;}};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){Memory m;KThread t;CPU64 c{&m,&t};
  m.q[16]=2;m.q[24]=500000000;assert(sys_nanosleep64(&c,16,0,0,0)==0&&t.slept==2500000000ULL);
  m.q[16]=1;m.q[24]=1000000000;assert((S64)sys_nanosleep64(&c,16,0,0,0)==-K_EINVAL);
@@ -43,7 +47,7 @@ int main(){Memory m;KThread t;CPU64 c{&m,&t};
 });
 
 test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_getcpu64(');
   const end = source.indexOf('// clock_gettime(clk, struct timespec*)', start);
   assert.ok(start >= 0 && end > start, 'getcpu64 helper should be present');
@@ -57,7 +61,7 @@ test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using U8=uint8_t;constexpr U32 K_EFAULT=14;
 struct Memory {U32 cpu=99,node=99;void writed(U64 a,U32 v){if(a==4)cpu=v;else if(a==8)node=v;}};
 struct CPU64 {Memory* memory;};
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cpu==0&&m.node==0);assert(sys_getcpu64(&c,4,0,0)==0&&m.cpu==0);assert(sys_getcpu64(&c,0,0,0)==0);}
 `);
     const build = spawnSync('c++', ['-std=c++20', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { encoding: 'utf8' });
@@ -70,7 +74,7 @@ int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cp
 });
 
 test('x64 eventfd2 routes supported flags to the shared eventfd implementation', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   assert.match(source, /#define X64_SYS_eventfd2\s+290/);
   assert.match(source, /case X64_SYS_eventfd2:[\s\S]{0,300}syscall_eventfd2\(cpu->thread, \(U32\)a1, \(U32\)a2\)/);
   assert.match(source, /case X64_SYS_sync_file_range:\s*\/\/ Our VFS writes are effectively synchronous/);

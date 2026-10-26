@@ -57,12 +57,22 @@ public:
     CPU64AtomicLock(KMemory64* memory, U64 effAddr, U32 width, std::defer_lock_t)
         : memory(memory), effAddr(effAddr), width(width),
           alignedLock(cpu64AtomicLockFor(effAddr), std::defer_lock),
+          nextPageLock(cpu64AtomicLockFor(effAddr + K64_PAGE_SIZE), std::defer_lock),
           splitLock(g_splitLockMutex, std::defer_lock) {}
 
     void lock() {
         U8* hostAddress = memory->getRamPtr(effAddr, width);
         if (!hostAddress || (reinterpret_cast<uintptr_t>(hostAddress) & (width - 1))) {
+            // Split path. Also take the page shard of every page this
+            // operand touches, in split-then-shard order: an overlapping
+            // ALIGNED locked op takes only its page shard, so without
+            // this the two classes shared no lock and one RMW could
+            // silently overwrite the other (lock-class divergence).
             splitLock.lock();
+            alignedLock.lock();
+            if ((effAddr & K64_PAGE_MASK) + width > K64_PAGE_SIZE) {
+                nextPageLock.lock();
+            }
         } else {
             alignedLock.lock();
         }
@@ -73,6 +83,7 @@ private:
     U64 effAddr;
     U32 width;
     std::unique_lock<std::recursive_mutex> alignedLock;
+    std::unique_lock<std::recursive_mutex> nextPageLock;
     std::unique_lock<std::mutex> splitLock;
 };
 
@@ -291,6 +302,9 @@ void CPU64::cloneRegistersFrom(const CPU64* from) {
     rflags = from->rflags;
     fsbase = from->fsbase;
     gsbase = from->gsbase;
+    affinityMask = from->affinityMask;
+    numaPolicyMode = from->numaPolicyMode;
+    numaNodeMask = from->numaNodeMask;
     mxcsr = from->mxcsr;
     for (int i = 0; i < 16; i++) {
         xmm[i] = from->xmm[i];
@@ -386,6 +400,71 @@ __attribute__((always_inline)) inline U8 CPU64::fetchByte(U64 addr) {
 
 U32 CPU64::fetchDword(U64 addr) {
     return memory ? memory->readd(addr) : 0;
+}
+
+void CPU64::recordGuestMemoryFault(U64 address, bool write, bool mapped) {
+    if (!memoryFaultPending) {
+        memoryFaultPending = true;
+        memoryFaultAddress = address;
+        memoryFaultRip = currentInstructionRip;
+        // x86 page-fault error: P=present/protection, W/R=write, U/S=user.
+        memoryFaultError = (mapped ? 1u : 0u) | (write ? 2u : 0u) | 4u;
+    }
+    yield = true;
+}
+
+bool CPU64::deliverGuestMemoryFault() {
+    if (!memoryFaultPending) return false;
+    const U64 address = memoryFaultAddress;
+    const U64 faultRip = memoryFaultRip;
+    const U32 error = memoryFaultError;
+    memoryFaultPending = false;
+    // K-M3: a REP string op that stopped mid-instruction has architectural
+    // partial progress in the live registers (RCX/RSI/RDI, and for
+    // CMPS/SCAS the flags of the last completed element). That progress is
+    // part of the fault frame, not an effect to undo: capture it before
+    // the checkpoint restore below and write it back after.
+    const bool partial = faultPartialProgress;
+    faultPartialProgress = false;
+    const U64 partialRcx = reg[X64_RCX].u64;
+    const U64 partialRsi = reg[X64_RSI].u64;
+    const U64 partialRdi = reg[X64_RDI].u64;
+    const U32 partialFlags = rflags;
+    memoryFaultAddress = memoryFaultRip = 0;
+    memoryFaultError = 0;
+
+    // Memory helpers may have advanced RIP and partially completed an
+    // instruction: they keep running on placeholder values after the
+    // denied access is recorded. Undo those architectural effects so the
+    // signal frame (and the restart after sigreturn) sees the exact
+    // pre-instruction state, as hardware #PF delivery guarantees.
+    if (faultCheckpointValid) {
+        for (int i = 0; i < X64_REG_COUNT; i++) reg[i] = faultCheckpointRegs[i];
+        rflags = faultCheckpointFlags;
+        fsbase = faultCheckpointFsBase;
+        gsbase = faultCheckpointGsBase;
+        if (faultCheckpointFpValid) {
+            for (int i = 0; i < 16; i++) xmm[i] = faultCheckpointXmm[i];
+            fpu = faultCheckpointFpu;
+            mxcsr = faultCheckpointMxcsr;
+        }
+        faultCheckpointValid = false;
+        faultCheckpointFpValid = false;
+    }
+    rip = faultRip;
+    if (partial) {
+        reg[X64_RCX].setU64(partialRcx);
+        reg[X64_RSI].setU64(partialRsi);
+        reg[X64_RDI].setU64(partialRdi);
+        rflags = partialFlags;
+    }
+    yield = false;
+    const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
+    if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error))
+        return true;
+    if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
+    yield = true;
+    return false;
 }
 
 bool CPU64::validateInstructionFetch() {
@@ -974,8 +1053,86 @@ static void refWatchInit() {
         g_refObjAddr = 0x400000000ULL + 0x30170ULL; // PIE base + release_object
 }
 
+
+// FXSAVE/FXRSTOR image transfer, shared by the 0F AE handlers in step()
+// and the signal-frame code in syscall64.cpp (which snapshots the same
+// state addressed by uc_mcontext.fpregs at delivery and restores it at
+// rt_sigreturn). The layout is the legacy 64-bit 512-byte format;
+// FIP/FDP are written as zero because this interpreter does not track
+// those pointers.
+void CPU64::writeFxsaveImage(U64 guestAddr) {
+    memory->writew(guestAddr + 0, (U16)fpu.cw);
+    memory->writew(guestAddr + 2, (U16)fpu.SW());
+    U8 abridgedTag = 0;
+    for (U32 i = 0; i < 8; i++) {
+        if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
+            abridgedTag |= (U8)(1U << i);
+    }
+    memory->writeb(guestAddr + 4, abridgedTag);
+    memory->writeb(guestAddr + 5, 0);
+    memory->writew(guestAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
+    memory->writeq(guestAddr + 8, 0);  // FIP: not tracked
+    memory->writeq(guestAddr + 16, 0); // FDP: not tracked
+    memory->writed(guestAddr + 24, mxcsr);
+    memory->writed(guestAddr + 28, 0xFFFF);
+    for (int i = 0; i < 8; i++) {
+        U64 low, high;
+        fpu.ST80(fpu.STV(i), &low, &high);
+        U64 slot = guestAddr + 32 + i * 16;
+        memory->writeq(slot, low);
+        memory->writew(slot + 8, (U16)high);
+        memory->writew(slot + 10, 0);
+        memory->writed(slot + 12, 0);
+    }
+    for (int i = 0; i < 16; i++) {
+        memory->writeq(guestAddr + 160 + i * 16,     xmm[i].lo);
+        memory->writeq(guestAddr + 160 + i * 16 + 8, xmm[i].hi);
+    }
+    for (U64 offset = 416; offset < 512; offset += 8)
+        memory->writeq(guestAddr + offset, 0);
+}
+
+bool CPU64::readFxrstorImage(U64 guestAddr) {
+    U32 savedMxcsr = memory->readd(guestAddr + 24);
+    if (savedMxcsr & 0xFFFF0000) return false;
+    fpu.SetCW(memory->readw(guestAddr + 0));
+    fpu.SetSW(memory->readw(guestAddr + 2));
+    fpu.SetTagFromAbridged(memory->readb(guestAddr + 4));
+    fpu.isMMXInUse = false;
+    fpu.envData[0] = 0;
+    fpu.envData[1] = memory->readw(guestAddr + 6) & 0x7FF;
+    fpu.envData[2] = 0;
+    fpu.envData[3] = 0;
+    for (int i = 0; i < 8; i++) {
+        U64 slot = guestAddr + 32 + i * 16;
+        fpu.LD80(fpu.STV(i), memory->readq(slot),
+                 (S16)memory->readw(slot + 8));
+    }
+    mxcsr = savedMxcsr;
+    for (int i = 0; i < 16; i++) {
+        xmm[i].lo = memory->readq(guestAddr + 160 + i * 16);
+        xmm[i].hi = memory->readq(guestAddr + 160 + i * 16 + 8);
+    }
+    return true;
+}
+
 U32 CPU64::step(bool trackJitBlockBoundary) {
     U64 ipStart = rip;
+    currentInstructionRip = ipStart;
+    // Precise-fault checkpoint (K-M3): with the guest-access context armed
+    // for this CPU, a denied access during this instruction must leave no
+    // architectural trace. Snapshot the integer state now; the FP/SSE
+    // state follows once the opcode is decoded (only 0F/x87 instructions
+    // can write it). deliverGuestMemoryFault() performs the restore.
+    faultCheckpointValid = false;
+    faultCheckpointFpValid = false;
+    if (!memoryFaultPending && k64GuestAccessCPU() == this) {
+        for (int i = 0; i < X64_REG_COUNT; i++) faultCheckpointRegs[i] = reg[i];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointValid = true;
+    }
     if (ipStart != recoverLastRip) {
         recoverLastRip = ipStart;
         recoverFaultsAtRip = 0;
@@ -1062,6 +1219,12 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     U32 opSize = rexW ? 8u : (p.osize16 ? 2u : 4u);
 
     U8 op = fetchByte(rip + opOff);
+    if (faultCheckpointValid && (op == 0x0F || (op >= 0xD8 && op <= 0xDF))) {
+        for (int i = 0; i < 16; i++) faultCheckpointXmm[i] = xmm[i];
+        faultCheckpointFpu = fpu;
+        faultCheckpointMxcsr = mxcsr;
+        faultCheckpointFpValid = true;
+    }
 
     // Fast JIT dispatch needs another probe after control flow, where execution
     // reaches a new basic-block entry. Ordinary fallthrough instructions stay
@@ -1877,7 +2040,9 @@ dsp_23:
         reg[X64_R11].setU64((U64)rflags);
         rip = nextRip;
         syscallRip = syscallStartRip;
+        k64SetGuestAccessCPU(nullptr); // syscall buffer access is kernel-mediated
         ksyscall64(this);
+        k64SetGuestAccessCPU(this);
         // Single-threaded cooperative park: a futex WAIT that had to block set
         // reExecuteSyscall and parked this thread. Rewind RIP to the SYSCALL so
         // it re-runs when the thread is rescheduled (RAX was not written). yield
@@ -3075,6 +3240,18 @@ dsp_43:
                 case 4: memory->writed(dst, (U32)val); break;
                 case 8: memory->writeq(dst, val); break;
             }
+            // K-M3: a denied access during this element ends the
+            // instruction here. The element did not complete, so the
+            // pointers stay and RCX keeps the uncompleted count (the
+            // local count was already decremented for this element):
+            // hardware partial progress, preserved across delivery by
+            // faultPartialProgress. rip is not advanced; delivery
+            // overwrites it with the faulting instruction's RIP.
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
+            }
             if (!isStos) reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
             reg[X64_RDI].setU64(reg[X64_RDI].u64 + (U64)step);
         }
@@ -3122,6 +3299,15 @@ dsp_44:
                 case 2: rhs = memory->readw(dst); break;
                 case 4: rhs = memory->readd(dst); break;
                 default: rhs = memory->readq(dst); break;
+            }
+            // K-M3: a denied read ends the instruction BEFORE the flags
+            // update: the frame carries the last completed element's
+            // flags and pointers (hardware partial progress, preserved
+            // across delivery by faultPartialProgress).
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
             }
             U64 diff = lhs - rhs;
             flagsSub(rflags, lhs, rhs, diff, size);
@@ -6723,62 +6909,17 @@ dsp_55:
         U32 used = opOff + 2 + m.length;
         if (aeMod != 3 && aeReg == 0) {
             // FXSAVE m512byte legacy 64-bit layout.
-            memory->writew(m.effAddr + 0, (U16)fpu.cw);
-            memory->writew(m.effAddr + 2, (U16)fpu.SW());
-            U8 abridgedTag = 0;
-            for (U32 i = 0; i < 8; i++) {
-                if (fpu.isMMXInUse || fpu.tags[i] != TAG_Empty)
-                    abridgedTag |= (U8)(1U << i);
-            }
-            memory->writeb(m.effAddr + 4, abridgedTag);
-            memory->writeb(m.effAddr + 5, 0);
-            memory->writew(m.effAddr + 6, (U16)(fpu.envData[1] & 0x7FF));
-            memory->writeq(m.effAddr + 8, 0);  // FIP: not tracked
-            memory->writeq(m.effAddr + 16, 0); // FDP: not tracked
-            memory->writed(m.effAddr + 24, mxcsr);
-            memory->writed(m.effAddr + 28, 0xFFFF);
-            for (int i = 0; i < 8; i++) {
-                U64 low, high;
-                fpu.ST80(fpu.STV(i), &low, &high);
-                U64 slot = m.effAddr + 32 + i * 16;
-                memory->writeq(slot, low);
-                memory->writew(slot + 8, (U16)high);
-                memory->writew(slot + 10, 0);
-                memory->writed(slot + 12, 0);
-            }
-            for (int i = 0; i < 16; i++) {
-                memory->writeq(m.effAddr + 160 + i * 16,     xmm[i].lo);
-                memory->writeq(m.effAddr + 160 + i * 16 + 8, xmm[i].hi);
-            }
-            for (U64 offset = 416; offset < 512; offset += 8)
-                memory->writeq(m.effAddr + offset, 0);
+            writeFxsaveImage(m.effAddr);
         } else if (aeMod != 3 && aeReg == 1) {
             // FXRSTOR m512byte restores MXCSR, x87 stack/control state and
-            // all 16 XMM registers from the legacy 64-bit layout.
-            U32 savedMxcsr = memory->readd(m.effAddr + 24);
-            if (savedMxcsr & 0xFFFF0000) {
+            // all 16 XMM registers from the legacy 64-bit layout. A saved
+            // MXCSR with reserved bits set raises #GP before any state is
+            // touched (readFxrstorImage validates first).
+            if (!readFxrstorImage(m.effAddr)) {
                 if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
                 if (thread) thread->process->signalProcess(K_SIGSEGV);
                 yield = true;
                 return 0;
-            }
-            fpu.SetCW(memory->readw(m.effAddr + 0));
-            fpu.SetSW(memory->readw(m.effAddr + 2));
-            fpu.SetTagFromAbridged(memory->readb(m.effAddr + 4));
-            fpu.isMMXInUse = false;
-            fpu.envData[0] = 0;
-            fpu.envData[1] = memory->readw(m.effAddr + 6) & 0x7FF;
-            fpu.envData[2] = 0;
-            fpu.envData[3] = 0;
-            for (int i = 0; i < 8; i++) {
-                U64 slot = m.effAddr + 32 + i * 16;
-                fpu.LD80(fpu.STV(i), memory->readq(slot),
-                         (S16)memory->readw(slot + 8));
-            }
-            mxcsr = savedMxcsr;
-            for (int i = 0; i < 16; i++) {
-                xmm[i].lo = memory->readq(m.effAddr + 160 + i * 16);
-                xmm[i].hi = memory->readq(m.effAddr + 160 + i * 16 + 8);
             }
         } else if (aeMod != 3 && aeReg == 2) {
             U32 loadedMxcsr = memory->readd(m.effAddr);
@@ -7788,8 +7929,21 @@ void CPU64::run() {
             }
         }
 #endif
+        // A block attempt may have recorded a precise fault (its recipes
+        // run under the guest-access context inside execBlock): deliver it
+        // before interpreting anything else.
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         const U64 stepRip = rip;
+        k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);
+        k64SetGuestAccessCPU(nullptr);
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         if (n == 0) break;
         if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
             recordControlBranch(stepRip, rip);
@@ -8050,9 +8204,32 @@ bool CPU64::buildBlock(U64 startRip, BBlock& b) {
 }
 
 U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
+    // K-M3: block recipes access guest memory through the same helpers as
+    // step(); arm the guest-access context so a denied access records a
+    // precise fault instead of silently touching a protected page (the run
+    // loops only arm it around step()).
+    CPU64* prevAccessCpu = k64GuestAccessCPU();
+    k64SetGuestAccessCPU(this);
+    if (memoryFaultPending) {
+        // A fault is already awaiting delivery; let the run loop deliver
+        // it rather than executing recipes on placeholder values.
+        k64SetGuestAccessCPU(prevAccessCpu);
+        return 0;
+    }
     U32 executed = 0;
     for (U16 i = 0; i < b.n && executed < maxInsn; i++) {
         const BRec& rec = b.recs[i];
+        // Per-recipe precise-fault checkpoint (K-M3): recipes never write
+        // FP/SSE state (the block builder declines those opcodes), so the
+        // integer checkpoint suffices. deliverGuestMemoryFault() restores
+        // it if this recipe's access is denied.
+        currentInstructionRip = rip;
+        for (int ri = 0; ri < X64_REG_COUNT; ri++) faultCheckpointRegs[ri] = reg[ri];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointValid = true;
+        faultCheckpointFpValid = false;
         bool rexPresent = rec.rexPresent != 0;
         U32 size = rec.size;
         switch (rec.kind) {
@@ -8164,15 +8341,21 @@ U32 CPU64::execBlock(const BBlock& b, U64 maxInsn) {
             rip += rec.len;
             if (evalCC(rec.sub)) rip += (U64)(S64)rec.jccDelta;
             executed++;
+            k64SetGuestAccessCPU(prevAccessCpu);
             return executed;
         }
         }
+        // A denied access during this recipe recorded a fault: stop here.
+        // The recipe is not counted; deliverGuestMemoryFault() restores the
+        // per-recipe checkpoint, undoing its partial effects.
+        if (memoryFaultPending) break;
         executed++;
         // A guest store can rewrite a later instruction in this block. Stop
         // at the next RIP so the runner decodes the updated bytes immediately.
         if (KMemory64::blockSlotGen(b.slot0) != b.gen0 ||
             KMemory64::blockSlotGen(b.slot1) != b.gen1) break;
     }
+    k64SetGuestAccessCPU(prevAccessCpu);
     return executed;
 }
 
@@ -8222,8 +8405,11 @@ U32 CPU64::tryJitStep(U64 maxInsn) {
 }
 
 #ifdef BOXEDWINE_BLOCK_CACHE_INFRA
-U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
+U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn, bool speculative) {
     if (block.wasmIndex < 0 || block.ops.empty()) return 0;
+    // A fault recorded before entry must be delivered by the caller first;
+    // running the module now would execute past it. Mirrors execBlock.
+    if (!speculative && memoryFaultPending) return 0;
     const U64 LIMIT = JIT64_WASM_UNBOUNDED;
     const U64 limit = maxInsn < LIMIT ? maxInsn : LIMIT;
     U64 gpr[16];
@@ -8232,9 +8418,25 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
     jit64WasmStateInit(st, gpr, rip, rflags);
     st.limit = (U32)limit;
     jit64WasmStateSetGens(st, m_jit->genBaseAddr, block.gen0, block.gen1);
-    jit64WasmSetActiveMem(memory);
+    // K-M3: arm the guest-access context for the whole call, exactly as
+    // the run loops arm it around step(). The module's imports then run
+    // the same gated KMemory64 accessors the interpreter uses, and the
+    // module stops at the faulting op (see emitFaultCheck). Speculative
+    // verification runs stay unarmed by design: they compare raw outputs
+    // against an unarmed interpreter clone, and a block that touches a
+    // denied page faults precisely on its first real execution instead.
+    CPU64* prevAccessCpu = nullptr;
+    if (!speculative) {
+        prevAccessCpu = k64GuestAccessCPU();
+        k64SetGuestAccessCPU(this);
+        currentInstructionRip = block.startRip;
+        jit64WasmSetActive(memory, this, &st);
+    } else {
+        jit64WasmSetActive(memory, nullptr, nullptr);
+    }
     jit64WasmCall(block.wasmIndex, &st);
-    jit64WasmSetActiveMem(nullptr);
+    jit64WasmSetActive(nullptr, nullptr, nullptr);
+    if (!speculative) k64SetGuestAccessCPU(prevAccessCpu);
     // From here on the guest state HAS advanced whatever execCount says, so
     // never report 0 (that would make the caller re-run the block on the
     // interpreter). The emitted code zeroes execCount on entry.
@@ -8257,6 +8459,23 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn) {
     m_jit->blocksExecuted++;
     m_jit->insnsFast += executed;
     m_jit->cache.recordExec(block.startRip);
+    if (st.faultPending && memoryFaultPending) {
+        // The module stopped at the faulting op and published only the
+        // completed ops (string ops keep architectural partial progress).
+        // The recorded fault still names the block's first instruction
+        // and delivery would restore a stale checkpoint: replace both
+        // with the committed state, so the frame is the exact
+        // pre-instruction state of the faulting op -- the interpreter's
+        // semantics. The run loops deliver the fault from here.
+        memoryFaultRip = st.rip;
+        for (int i = 0; i < X64_REG_COUNT; i++) faultCheckpointRegs[i] = reg[i];
+        faultCheckpointFlags = rflags;
+        faultCheckpointFsBase = fsbase;
+        faultCheckpointGsBase = gsbase;
+        faultCheckpointFpValid = false;
+        faultCheckpointValid = true;
+        return 0;
+    }
     if (executed < decoded) {
         if ((U64)executed == limit) m_jit->wasmLimitExits++;
         else m_jit->wasmEarlyExits++; // a code page was written: stop at that RIP
@@ -8317,7 +8536,7 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
     K64JitVerifyMemory jitMemory;
     jitMemory.initialBytes = std::move(interpMemory.initialBytes);
     memory->beginJitVerifyOverlay(jitMemory);
-    U32 jitDone = execWasmBlock(block, maxInsn);
+    U32 jitDone = execWasmBlock(block, maxInsn, true);
     memory->endJitVerifyOverlay();
     if (jitMemory.wroteRegisteredCodePage)
         return reject("JIT wrote compiled code page", interpDone, jitDone);
@@ -8506,7 +8725,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     return block->verifyRemaining ? verifyWasmBlock(*block, maxInsn) : execWasmBlock(*block, maxInsn);
 }
 #else // !BOXEDWINE_BLOCK_CACHE_INFRA
-U32 CPU64::execWasmBlock(const Jit64Block&, U64) { return 0; }
+U32 CPU64::execWasmBlock(const Jit64Block&, U64, bool) { return 0; }
 U32 CPU64::tryWasmExec(U64) { return 0; }
 #endif
 
@@ -8686,8 +8905,21 @@ U64 CPU64::runBounded(U64 maxInsn) {
             }
         }
 #endif
+        // A block attempt may have recorded a precise fault (its recipes
+        // run under the guest-access context inside execBlock): deliver it
+        // before interpreting anything else.
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         const U64 stepRip = rip;
+        k64SetGuestAccessCPU(this);
         U32 n = step(jitReady && fastJitDispatch);
+        k64SetGuestAccessCPU(nullptr);
+        if (memoryFaultPending) {
+            if (deliverGuestMemoryFault()) continue;
+            break;
+        }
         if (n == 0) break;
         if (controlTrace && !(jitReady && fastJitDispatch) && rip != stepRip + n)
             recordControlBranch(stepRip, rip);

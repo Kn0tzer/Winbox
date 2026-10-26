@@ -138,6 +138,17 @@ public:
                                     // window has presented yet (Vulkan/GL apps
                                     // never PutImage, so presentWindow stays 0).
     uint32_t pointerGrabClient = 0, pointerGrabWindow = 0, pointerConfineWindow = 0; // guarded by regMutex
+    uint32_t pointerGrabEventMask = 0, pointerGrabCursor = 0;
+    bool pointerGrabOwnerEvents = false;
+    uint8_t pointerGrabPointerMode = 0, pointerGrabKeyboardMode = 0;
+    bool pointerFrozen = false;
+    void clearPointerGrab() {
+        pointerGrabClient = pointerGrabWindow = pointerConfineWindow = 0;
+        pointerGrabEventMask = pointerGrabCursor = 0;
+        pointerGrabOwnerEvents = false;
+        pointerGrabPointerMode = pointerGrabKeyboardMode = 0;
+        pointerFrozen = false;
+    }
     // Persistent-session app switch: when set, the next real (non-override-
     // redirect) window OWNED BY A CONNECTION OPENED AFTER THE ARM (ownerClientBase
     // >= adoptArmClientBase) is forcibly adopted as the base presentWindow,

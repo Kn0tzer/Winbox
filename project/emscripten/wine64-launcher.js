@@ -133,7 +133,28 @@
             }
             var inflight = pending.get(key);
             if (inflight) return inflight;
-            var job = nativeFetch(url, { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" })
+            // Stall backstop: a nativeFetch whose body stalls never settles,
+            // which would wedge this pending entry (and every later fetch of
+            // the same block that joins it) forever. The watchdog aborts the
+            // underlying fetch after the deadline, rejecting the job so
+            // pending clears and callers surface an error. 120 s is
+            // deliberately 2x the fszipurl EM_JS stall window (60 s, see
+            // source/io/fszipurl.cpp): the guest-side fetch normally reports
+            // the stall first, and this layer only fires for jobs nobody is
+            // watching (prefetches) or if the guest side somehow cannot.
+            // BW64_PREFETCH_STALL_MS on the global object overrides the
+            // deadline (unit-test seam).
+            var stallMs = Number(globalThis.BW64_PREFETCH_STALL_MS) > 0
+                ? Number(globalThis.BW64_PREFETCH_STALL_MS) : 120000;
+            var ctrl = (typeof AbortController === "function") ? new AbortController() : null;
+            var init = { headers: { Range: "bytes=" + start + "-" + end }, cache: "no-store" };
+            if (ctrl) init.signal = ctrl.signal;
+            var timer = setTimeout(function () {
+                console.error("bw64-prefetch: fetch STALL url=" + url + " off=" + start +
+                              " len=" + (end - start + 1) + " stallMs=" + stallMs);
+                if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+            }, stallMs);
+            var job = nativeFetch(url, init)
                 .then(function (response) {
                     if (response.status !== 206) throw new Error("range " + response.status);
                     var contentRange = response.headers.get("Content-Range") || "";
@@ -142,10 +163,12 @@
                     return response.arrayBuffer();
                 })
                 .then(function (buffer) {
+                    clearTimeout(timer);
                     pending.delete(key);
                     put(key, buffer);
                     return buffer;
                 }, function (error) {
+                    clearTimeout(timer);
                     pending.delete(key);
                     throw error;
                 });
@@ -312,6 +335,29 @@
         if (overrides) e.push("WINEDLLOVERRIDES=" + overrides);
         var libraryPath = param("ldpath");
         if (libraryPath) e.push("LD_LIBRARY_PATH=" + libraryPath);
+        // Per-program guest environment (?env=<JSON object>, emitted by
+        // launch.mjs runtimeParameters from a demo entry's `env` map): the
+        // generic channel for steering knobs that only exist as env vars
+        // (DXVK_CONFIG / DXVK_HUD, FNA3D_FORCE_DRIVER, SDL hints, JVM
+        // properties). Re-validated here because URL parameters can be
+        // hand-written: names must be identifier-shaped, values control-free,
+        // and the launcher's own variables (set above, or via the dedicated
+        // winedbg / dlloverrides / ldpath parameters) cannot be overridden.
+        var envParam = param("env");
+        if (envParam) {
+            try {
+                var extraEnv = JSON.parse(envParam);
+                var reservedEnv = { HOME: 1, WINEPREFIX: 1, WINESERVER: 1, WINEDLLPATH: 1, WINEDEBUG: 1, WINEDLLOVERRIDES: 1, LD_LIBRARY_PATH: 1, WINE_D3D_CONFIG: 1, WINELOADERNOEXEC: 1, XDG_RUNTIME_DIR: 1, TMPDIR: 1, WINEDATADIR: 1 };
+                for (var envKey of Object.keys(extraEnv)) {
+                    var envValue = extraEnv[envKey];
+                    if (/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(envKey) && !reservedEnv[envKey] &&
+                        typeof envValue === "string" && envValue.length <= 4096 && !/[\x00-\x1f]/.test(envValue))
+                        e.push(envKey + "=" + envValue);
+                }
+            } catch (err) {
+                console.warn("bw64: ignoring invalid env parameter: " + err.message);
+            }
+        }
         if (param("monodebug") === "1") {
             e.push("MONO_LOG_LEVEL=debug", "MONO_LOG_MASK=" + (param("monomask") || "asm"));
         }
@@ -372,6 +418,11 @@
             // quit when the app exits) by spawning `wineserver64 -p` right after
             // boot to pin the running server persistent (see maybeStartSessionApp),
             // and switch apps via bw64_spawn with no reload.
+            // This direct wine64 <program> command also avoids an explicit
+            // wineboot --init for the already initialized prefix. Wine still
+            // starts its required service stack on the first server instance;
+            // wineboot -u means update, not skip, and a bare persistent server
+            // leaves GUI apps without those services.
             prefixEnv().forEach(function (kv) { args.push("-env", kv); });
             wineProgArgv(PROG).forEach(function (tok) { args.push(tok); });
         } else if (USE_PREFIX) {
@@ -1060,6 +1111,18 @@
                     ENV["BW64_RIPSAMPLE"] = "1";
                     ENV["BW64_RIPSAMPLE_HB"] = "1";
                 }
+                // ?guestdiag=N takes a periodic thread snapshot plus interval
+                // RIP/module and top-syscall summaries. Disabled unless the
+                // interval is explicitly supplied (1..300 seconds).
+                var guestDiagSeconds = Number(param("guestdiag"));
+                if (Number.isInteger(guestDiagSeconds) && guestDiagSeconds >= 1 && guestDiagSeconds <= 300) {
+                    ENV["BW_THREAD_DUMP"] = "1";
+                    ENV["BW64_MEMSTATS"] = "1";
+                    ENV["BW64_MEMSTATS_INTERVAL_MS"] = String(guestDiagSeconds * 1000);
+                    ENV["BW64_RIPSAMPLE"] = "1";
+                    ENV["BW64_RIPSAMPLE_HB"] = "1";
+                    ENV["BW_GUEST_PROFILE"] = "1";
+                }
                 if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
                 if (param("pathcachestats") === "1") ENV["BW64_PATHCACHE_STATS"] = "1";
                 if (param("nopathcache") === "1") ENV["BW64_NOPATHCACHE"] = "1";
@@ -1207,6 +1270,24 @@
                     if (MC && typeof MC.ccall === "function") {
                         try { MC.ccall("bw64_set_control_trace", null, ["number"], [1]); }
                         catch (e) { console.warn("bw64_set_control_trace failed: " + e); }
+                    }
+                }
+                var guestDiagSeconds = Number(param("guestdiag"));
+                if (Number.isInteger(guestDiagSeconds) && guestDiagSeconds >= 1 && guestDiagSeconds <= 300) {
+                    var guestDiagModule = liveModule || window.Module;
+                    if (guestDiagModule && typeof guestDiagModule.ccall === "function") {
+                        var guestDiagDump = function () {
+                            try {
+                                guestDiagModule.ccall("bw64_dump_guest_threads", null, [], []);
+                                var profile = guestDiagModule.ccall("bw64_guest_profile_json", "string", [], []);
+                                console.log("BW_GUEST_PROFILE_INTERVAL " + profile);
+                                guestDiagModule.ccall("bw64_guest_profile_reset", null, [], []);
+                            } catch (e) {
+                                console.warn("guestdiag snapshot failed: " + e);
+                            }
+                        };
+                        window.setInterval(guestDiagDump, guestDiagSeconds * 1000);
+                        console.log("guestdiag enabled interval=" + guestDiagSeconds + "s");
                     }
                 }
                 // BW64_VKPROF (?vkprof=1): the vk64 bridge runs on a Web Worker
@@ -1716,6 +1797,67 @@
         })();
     }
 
+    // --- IME composition text channel ---------------------------------------
+    // A <canvas> is not text-editable, so a browser IME has nothing to
+    // compose into: composition events never fire for it, and SDL/Emscripten
+    // has no channel that turns a finished composition into guest key or
+    // text events (the guest input path consumes key events only). The
+    // symptom was that CJK / IME input simply vanished. This installs a
+    // nearly invisible textarea as the page's composition target: a pointer
+    // press on the canvas focuses it, the browser runs its native
+    // composition UI inside it, and each finished composition is forwarded
+    // to the guest as committed text via bw64_inject_text (WASM export ->
+    // XWire EvText -> X KeyPress/KeyRelease; see xwireInjectText in
+    // xwirepresentSDL.cpp). Plain typing is NOT intercepted: key events
+    // from the textarea bubble to the same window-level SDL listeners that
+    // see them today, and the textarea's own content is discarded, never
+    // forwarded (forwarding it would double-deliver whatever the SDL key
+    // path already typed). Disable with ?ime=0 in the page URL.
+    var bw64ImeCaptureInstalled = false;
+    function bw64InstallImeCapture() {
+        if (bw64ImeCaptureInstalled) return;
+        bw64ImeCaptureInstalled = true;
+        if (typeof param === "function" && param("ime") === "0") return;
+        var canvas = document.getElementById("canvas");
+        if (!canvas || typeof document.createElement !== "function") return;
+        var ta = document.createElement("textarea");
+        ta.id = "bw64-ime-input";
+        ta.setAttribute("rows", "1");
+        ta.setAttribute("autocomplete", "off");
+        ta.setAttribute("autocapitalize", "off");
+        ta.setAttribute("spellcheck", "false");
+        ta.setAttribute("aria-hidden", "true");
+        ta.tabIndex = -1;
+        ta.style.position = "absolute";
+        ta.style.left = "0";
+        ta.style.top = "0";
+        ta.style.width = "16px";
+        ta.style.height = "16px";
+        ta.style.opacity = "0.01";
+        ta.style.pointerEvents = "none";
+        ta.style.border = "0";
+        ta.style.padding = "0";
+        ta.style.margin = "0";
+        ta.style.overflow = "hidden";
+        ta.style.resize = "none";
+        ta.style.zIndex = "5";
+        var composing = false;
+        ta.addEventListener("compositionstart", function () { composing = true; });
+        ta.addEventListener("compositionend", function (ev) {
+            composing = false;
+            var text = (ev && typeof ev.data === "string" && ev.data) ? ev.data : ta.value;
+            ta.value = "";
+            if (text) { try { callExport("bw64_inject_text", ["string"], [text]); } catch (e) {} }
+        });
+        ta.addEventListener("input", function () {
+            if (!composing) ta.value = "";
+        });
+        canvas.addEventListener("pointerdown", function () {
+            try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} }
+        });
+        (canvas.parentNode || document.body).appendChild(ta);
+    }
+
     // --- first boot from the page load --------------------------------------
     setStatusText("Loading wine64 (WASM)...");
     window.onerror = function (msg, file, line, col, error) {
@@ -1734,5 +1876,6 @@
     });
     window.bwRuntime = { fs: getFS, ready: sessionReady, call: callExport };
     if (window.setActiveApp) try { window.setActiveApp(PROG || "--version"); } catch (e) {}
+    bw64InstallImeCapture();
     bootWine();
 })();

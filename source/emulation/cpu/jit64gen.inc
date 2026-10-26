@@ -1138,7 +1138,7 @@ U32 emitShiftCLMemGen(Bytes& body, const Jit64Op& op) {
     i64Const(body, 0);
     body.push_back(0x52); // i64.ne -> i32 (count != 0)
     body.push_back(0x04); body.push_back(0x40); // if
-    emitMemWrite(body, L_T1, L_R, op.size);
+    emitMemWrite(body, L_T1, L_R, op.size, 2); // K-M3: inside this if
     body.push_back(0x0B); // end
     return 0xFF;
 }
@@ -1332,7 +1332,7 @@ U32 emitRotateCLMemGen(Bytes& body, const Jit64Op& op) {
     i64Const(body, 0);
     body.push_back(0x52); // i64.ne -> count != 0
     body.push_back(0x04); body.push_back(0x40); // if
-    emitMemWrite(body, L_T1, L_R, op.size);
+    emitMemWrite(body, L_T1, L_R, op.size, 2); // K-M3: inside this if
     body.push_back(0x0B); // end
     return 0xFF;
 }
@@ -1858,6 +1858,19 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
     body.push_back(0x7D); // i64.sub
     local(body, 0x21, L_CNT);
 
+    // K-M3: publish the architectural count for THIS element before its
+    // accesses. If an access faults, the module exits to the epilogue at
+    // once, so the RCX local must already hold the count of uncompleted
+    // elements (L_CNT was pre-decremented: remaining = L_CNT + 1) with
+    // RSI/RDI still at the last completed element -- the hardware partial
+    // progress. Normal completion overwrites this after the loop.
+    if (op.rep != 0) {
+        local(body, 0x20, L_CNT);
+        i64Const(body, 1);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, RCX);
+    }
+
     if (isMovsStos) {
         // dst = RDI (& 0xFFFFFFFF under 0x67) -> L_A.
         local(body, 0x20, RDI);
@@ -1878,7 +1891,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_A);
-            emitMemRead(body, L_A, size); // -> L_R
+            emitMemRead(body, L_A, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, RDI);
             if (op.asize32) {
                 i64Const(body, 0xFFFFFFFFULL);
@@ -1886,7 +1899,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
             }
             local(body, 0x21, L_A);
         }
-        emitMemWrite(body, L_A, L_R, size);
+        emitMemWrite(body, L_A, L_R, size, 3, false); // K-M3: in-loop; flags are progress
         if (!isStos) {
             local(body, 0x20, RSI);
             local(body, 0x20, L_STEP);
@@ -1911,7 +1924,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_P); // temp addr (L_P is emitFlags scratch)
-            emitMemRead(body, L_P, size); // -> L_R
+            emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, L_R);
             local(body, 0x21, L_A);
         }
@@ -1922,7 +1935,7 @@ U32 emitStringGen(Bytes& body, const Jit64Op& op) {
             body.push_back(0x83);
         }
         local(body, 0x21, L_P); // temp addr
-        emitMemRead(body, L_P, size); // -> L_R
+        emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
         local(body, 0x20, L_R);
         local(body, 0x21, L_B);
         // L_R = (L_A - L_B) & mask; flags through the SUB path.
@@ -1992,14 +2005,16 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
     if (op.kind == J64_PUSH) {
         if (op.sub == 0) {
             // PUSH reg: snapshot the source first (PUSH RSP pushes
-            // the OLD rsp), then RSP -= 8, then [RSP] = value.
+            // the OLD rsp), write [RSP-8], then commit RSP -= 8.
             local(body, 0x20, op.regField + 1);
             local(body, 0x21, L_A);
             local(body, 0x20, L_RSP);
             i64Const(body, 8);
             body.push_back(0x7D); // i64.sub
+            local(body, 0x21, L_T1);
+            emitMemWrite(body, L_T1, L_A, 8);
+            local(body, 0x20, L_T1);
             local(body, 0x21, L_RSP);
-            emitMemWrite(body, L_RSP, L_A, 8);
         } else if (op.sub == 1) {
             // PUSH imm: the interpreter writes [RSP-8] BEFORE
             // updating RSP (dsp_22).
@@ -2014,7 +2029,7 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
             local(body, 0x21, L_RSP);
         } else {
             // PUSH r/m: read the operand first (register, or
-            // [decode-time EA]), then RSP -= 8, then [RSP] = value.
+            // [decode-time EA]), write [RSP-8], then commit RSP -= 8.
             if (op.isMem) {
                 emitEA(body, op); // L_T1 = effective address
                 emitMemRead(body, L_T1, 8); // L_R = [EA]
@@ -2026,8 +2041,10 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
             local(body, 0x20, L_RSP);
             i64Const(body, 8);
             body.push_back(0x7D); // i64.sub
+            local(body, 0x21, L_T1);
+            emitMemWrite(body, L_T1, L_A, 8);
+            local(body, 0x20, L_T1);
             local(body, 0x21, L_RSP);
-            emitMemWrite(body, L_RSP, L_A, 8);
         }
     } else {
         // POP. The r/m EA (if any) is decode-time, from
@@ -2035,19 +2052,23 @@ U32 emitStackGen(Bytes& body, const Jit64Op& op) {
         // update so RSP-relative EAs see the old RSP.
         if (op.sub == 1 && op.isMem) emitEA(body, op); // L_T1 = EA
         emitMemRead(body, L_RSP, 8); // L_R = [RSP]
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_A);
+        if (op.sub == 1 && op.isMem) {
+            // POP r/m (memory): [EA] = v BEFORE committing RSP += 8,
+            // so a faulting store leaves RSP untouched (K-M3).
+            emitMemWrite(body, L_T1, L_A, 8);
+        }
         local(body, 0x20, L_RSP);
         i64Const(body, 8);
         body.push_back(0x7C); // i64.add
         local(body, 0x21, L_RSP);
-        local(body, 0x20, L_R);
-        local(body, 0x21, L_A);
         if (op.sub == 0) {
             // POP reg: reg = v (POP RSP overwrites the +8).
             local(body, 0x20, L_A);
             local(body, 0x21, op.regField + 1);
         } else if (op.isMem) {
-            // POP r/m (memory): [EA] = v.
-            emitMemWrite(body, L_T1, L_A, 8);
+            // POP r/m (memory): store already emitted above.
         } else {
             // POP r/m (register-direct): reg = v.
             local(body, 0x20, L_A);

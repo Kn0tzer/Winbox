@@ -17,6 +17,7 @@
  */
 
 #ifdef BOXEDWINE_ES
+#include <string.h>
 #include "SDL_opengles2.h"
 #define GLclampd double
 #define GLdouble double
@@ -28,8 +29,28 @@
 
 struct DisplayList* activeList;
 
+// Compatibility entry points below have no equivalent in the GLES backend.
+// Keep the first GL error sticky until glGetError, as required by OpenGL.
+static GLenum esShimError = GL_NO_ERROR;
+static void esSetError(GLenum error) {
+    if (esShimError == GL_NO_ERROR) esShimError = error;
+}
+static void esRejectCompatCall(const char* functionName) {
+    static const char* warnedFunctions[16];
+    static unsigned warnedCount;
+    unsigned i;
+    esSetError(GL_INVALID_OPERATION);
+    for (i = 0; i < warnedCount; ++i) {
+        if (strcmp(warnedFunctions[i], functionName) == 0) return;
+    }
+    if (warnedCount < sizeof(warnedFunctions) / sizeof(warnedFunctions[0]))
+        warnedFunctions[warnedCount++] = functionName;
+    klog_fmt("OpenGL ES compatibility: %s is unsupported (GL_INVALID_OPERATION)", functionName);
+}
+
 void es_glClearIndex( GLfloat c ) {
-    kpanic("glClearIndex not implemeented");
+    // The ES bridge always creates an RGBA visual; color-index state has no target.
+    (void)c;
 }
 
 #define COMPILE_OR_RUN_1(func, arg1, arg1Type)	\
@@ -83,7 +104,8 @@ void es_glClear( GLbitfield mask ) {
 }
 
 void es_glIndexMask( GLuint mask ) {
-    kpanic("glIndexMask not implemented");
+    // glX visuals exposed by glcommon are RGBA, where the index mask has no effect.
+    (void)mask;
 }
 
 void es_glColorMask( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha ) {
@@ -91,7 +113,8 @@ void es_glColorMask( GLboolean red, GLboolean green, GLboolean blue, GLboolean a
 }
 
 void es_glAlphaFunc( GLenum func, GLclampf ref ) {
-    kpanic("glAlphaFunc not implemented");
+    (void)func; (void)ref;
+    esRejectCompatCall("glAlphaFunc");
 }
 
 void es_glBlendFunc( GLenum sfactor, GLenum dfactor ) {
@@ -99,7 +122,8 @@ void es_glBlendFunc( GLenum sfactor, GLenum dfactor ) {
 }
 
 void es_glLogicOp( GLenum opcode ) {
-    kpanic("glLogicOp not implemented");
+    (void)opcode;
+    esRejectCompatCall("glLogicOp");
 }
 
 void es_glCullFace( GLenum mode ) {
@@ -111,7 +135,11 @@ void es_glFrontFace( GLenum mode ) {
 }
 
 void es_glPointSize( GLfloat size ) {
-    kpanic("glPointSize not implemented");
+    if (size <= 0.0f) {
+        esSetError(GL_INVALID_VALUE);
+        return;
+    }
+    esRejectCompatCall("glPointSize");
 }
 
 void es_glLineWidth( GLfloat width ) {
@@ -123,7 +151,15 @@ void es_glLineStipple( GLint factor, GLushort pattern ) {
 }
 
 void es_glPolygonMode( GLenum face, GLenum mode ) {
-    kpanic("glPolygonMode not implemented");
+    if (face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) {
+        esSetError(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode != GL_POINT && mode != GL_LINE && mode != GL_FILL) {
+        esSetError(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode != GL_FILL) esRejectCompatCall("glPolygonMode(GL_LINE/GL_POINT)");
 }
 
 void es_glPolygonOffset( GLfloat factor, GLfloat units ) {
@@ -131,19 +167,22 @@ void es_glPolygonOffset( GLfloat factor, GLfloat units ) {
 }
 
 void es_glPolygonStipple( const GLubyte *mask ) {
-    kpanic("glPolygonStipple not implemented");
+    (void)mask;
+    esRejectCompatCall("glPolygonStipple");
 }
 
 void es_glGetPolygonStipple( GLubyte *mask ) {
-    kpanic("glGetPolygonStipple not implemented");
+    (void)mask;
+    esRejectCompatCall("glGetPolygonStipple");
 }
 
 void es_glEdgeFlag( GLboolean flag ) {
-    kpanic("glEdgeFlag not implemented");
+    (void)flag;
+    // GLES has no polygon-mode wireframe path, so edge flags cannot affect fill rendering.
 }
 
 void es_glEdgeFlagv( const GLboolean *flag ) {
-    kpanic("glEdgeFlagv not implemented");
+    (void)flag;
 }
 
 void es_glScissor( GLint x, GLint y, GLsizei width, GLsizei height) {
@@ -151,19 +190,25 @@ void es_glScissor( GLint x, GLint y, GLsizei width, GLsizei height) {
 }
 
 void es_glClipPlane( GLenum plane, const GLdouble *equation ) {
-    kpanic("glClipPlane not implemented");
+    (void)plane; (void)equation;
+    esRejectCompatCall("glClipPlane");
 }
 
 void es_glGetClipPlane( GLenum plane, GLdouble *equation ) {
-    kpanic("glGetClipPlane not implemented");
+    (void)plane; (void)equation;
+    esRejectCompatCall("glGetClipPlane");
 }
 
 void es_glDrawBuffer( GLenum mode ) {
-    kpanic("glDrawBuffer not implemented");
+    if (mode == GL_BACK || mode == GL_FRONT) return;
+    if (mode == GL_NONE) { esRejectCompatCall("glDrawBuffer(GL_NONE)"); return; }
+    esSetError(GL_INVALID_ENUM);
 }
 
 void es_glReadBuffer( GLenum mode ) {
-    kpanic("glReadBuffer not implemented");
+    if (mode == GL_BACK || mode == GL_FRONT) return;
+    if (mode == GL_NONE) { esRejectCompatCall("glReadBuffer(GL_NONE)"); return; }
+    esSetError(GL_INVALID_ENUM);
 }
 
 void es_glEnable( GLenum cap ) {
@@ -213,7 +258,12 @@ GLint es_glRenderMode( GLenum mode ) {
 }
 
 GLenum es_glGetError( void ) {
-    return 0;
+    GLenum error = esShimError;
+    if (error != GL_NO_ERROR) {
+        esShimError = GL_NO_ERROR;
+        return error;
+    }
+    return glGetError();
 }
 
 const GLubyte* es_glGetString( GLenum name ) {

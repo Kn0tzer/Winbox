@@ -346,13 +346,12 @@ export const EMITTERS = [
     flags: {
       writes: [],
       preserves: "all RFLAGS bits - PUSH/POP never touch flags",
-      note: "fault ordering mirrors cpu64.cpp exactly. PUSH reg: RSP-=8 " +
-            "then write [RSP]. PUSH imm: write [RSP-8] then RSP-=8. " +
-            "PUSH r/m: read r/m, RSP-=8, write [RSP]. POP reg: read " +
-            "[RSP], RSP+=8, write reg. POP r/m: read [RSP], RSP+=8, " +
-            "write r/m. (Reads return 0 and writes commit on unmapped " +
-            "pages, so the ORDER of RSP update vs memory access is the " +
-            "observable contract.)",
+      note: "fault-order contract (K-M3): no RSP update is published " +
+            "before the access that can fault (a denied access exits " +
+            "the module; the interpreter reaches the same state via " +
+            "checkpoint restore). All PUSH forms: write [RSP-8], then " +
+            "RSP-=8. POP reg: read [RSP], RSP+=8, write reg. POP r/m: " +
+            "read [RSP], write [EA] (decode-time EA), then RSP+=8.",
     },
   },
   {

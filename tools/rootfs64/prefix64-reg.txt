@@ -1,0 +1,59 @@
+; prefix64-reg.txt — registry state a real wineboot writes into system.reg
+; but the pre-booted 64-bit browser prefix was missing entirely:
+;   * HKLM\Software\Microsoft\Windows NT\CurrentVersion — the values below
+;     are the wineboot-generated ones (verbatim from the 32-bit prefix's
+;     system.reg, which a real Wine 10 wineboot produced; the same values
+;     wine.inf [Version] installs: ProductName "Microsoft Windows 7",
+;     CurrentBuild 7601, CSDVersion "Service Pack 1"). Installers, DRM and
+;     engine config tools read these directly; RtlGetVersion alone is not
+;     enough because it falls back to compiled-in defaults.
+;   * HKLM\Software\Microsoft\.NETFramework policy keys — identical to
+;     tools/prefix-mono-reg.txt (wine-mono 7.4.0), which until now was only
+;     merged into the 32-bit prefix (tools/build-prefix32.sh).
+; build-prefix64.sh appends each section here that system.reg lacks
+; (idempotent), and prepare_prefixes.validate_prefix_zip requires the
+; CurrentVersion section.
+;
+[Software\\Microsoft\\Windows NT\\CurrentVersion] 1791272932
+#time=1dd556721abc4d2
+"CSDVersion"="Service Pack 1"
+"CurrentBuild"="7601"
+"CurrentBuildNumber"="7601"
+"CurrentMajorVersionNumber"=dword:00000006
+"CurrentMinorVersionNumber"=dword:00000001
+"CurrentType"="Uniprocessor Free"
+"CurrentVersion"="6.1"
+"DigitalProductId"=hex:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+"InstallDate"=dword:4be5019a
+"ProductId"="12345-oem-0000001-54321"
+"ProductName"="Microsoft Windows 7"
+"RegisteredOrganization"=""
+"RegisteredOwner"=""
+"SystemRoot"="C:\\windows"
+
+[Software\\Microsoft\\.NETFramework] 1791854119
+#time=1dd5ab05043a83e
+"InstallRoot"="C:\\windows\\Microsoft.NET\\Framework\\"
+
+[Software\\Microsoft\\.NETFramework\\policy\\v1.0] 1791854119
+#time=1dd5ab05043aa14
+
+[Software\\Microsoft\\.NETFramework\\policy\\v1.1] 1791854119
+#time=1dd5ab05043dea8
+
+[Software\\Microsoft\\.NETFramework\\policy\\v2.0] 1791854119
+#time=1dd5ab050442034
+"50727"="50727-50727"
+
+[Software\\Microsoft\\.NETFramework\\policy\\v3.0] 1791854119
+#time=1dd5ab05044523e
+
+[Software\\Microsoft\\.NETFramework\\policy\\v4.0] 1791854119
+#time=1dd5ab05044980c
+"30319"="30319-30319"

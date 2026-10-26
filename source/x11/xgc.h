@@ -160,6 +160,7 @@ public:
 
 	const U32 id;
 	std::vector<XRectangle> clip_rects;
+	std::vector<U8> dash_list;
 
 	void updateValues(U32 mask, XGCValues* values);
 	XGCValues values;

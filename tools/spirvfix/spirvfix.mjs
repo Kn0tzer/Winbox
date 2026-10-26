@@ -70,6 +70,8 @@ const Op = {
   Variable: 59, Load: 61, Store: 62, AccessChain: 65,
   Decorate: 71, MemberDecorate: 72, GroupDecorate: 74,
   SampledImage: 86,
+  Capability: 17, ImageFetch: 95, Image: 100, Bitcast: 124, UDiv: 134, UMod: 137,
+  CompositeConstruct: 80, FunctionParameter: 55,
   ImageSampleImplicitLod: 87, ImageSampleExplicitLod: 88,
   ImageSampleDrefImplicitLod: 89, ImageSampleDrefExplicitLod: 90,
   ImageSampleProjImplicitLod: 91, ImageSampleProjExplicitLod: 92,
@@ -1456,6 +1458,261 @@ function fragmentLayerToZero(mod, log) {
   return true;
 }
 
+
+// --- R12: texel-buffer images -> wrapped 2D sampled images -------------------
+// WebGPU has no texel buffers and naga rejects Dim=Buffer images outright
+// (UnsupportedCapability(SampledBuffer)) — which is what kills DXVK's HUD
+// data view (a uniform texel buffer, R8_UINT x 16384) during Portal device
+// creation. A UNIFORM texel buffer (OpTypeImage Dim=Buffer, Sampled=1) is
+// emulated as a 2D sampled texture of row width TEXEL_WRAP_WIDTH (8192, the
+// guaranteed WebGPU 2D dimension): the page tier materialises each buffer
+// view as a 2D texture whose texel (i mod W, i div W) is element i, and this
+// rewrite makes the shader speak that language:
+//   * Dim Buffer -> 2D on the image type; OpCapability SampledBuffer dropped.
+//   * Each UniformConstant sampled-image variable over a converted type is
+//     split the way R1 splits combined samplers (image var keeps set/binding,
+//     sampler var takes the next free binding with the bw_combined name);
+//     OpImageFetch never samples, so that sampler is inert. Runs before R1,
+//     so R1 never sees these variables.
+//   * Every OpImageFetch on a converted image gets its scalar coordinate
+//     widened just before it: bitcast to uint, x = c mod W, y = c div W.
+//     Unsigned arithmetic sends negative (out-of-range) coordinates far
+//     outside the texture, where textureLoad returns zero — the robust
+//     buffer access behaviour the bridge advertises.
+// The rewrite refuses (returns false, module untouched) when a value derived
+// from a converted image feeds any other image op: OpImageQuerySize would
+// need the view's true element count, which a wrapped texture cannot
+// express. Storage texel buffers (Sampled=2) are not converted: shader
+// writes to a texture copy could never reach guest memory, so those modules
+// keep failing loudly at naga, as today.
+const TEXEL_WRAP_WIDTH = 8192;
+export function texelBuffersTo2D(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const convTy = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeImage && ins.words[2] === 5 && ins.words[6] === 1) convTy.add(ins.resultId);
+  if (!convTy.size) return false;
+  const convSampledTy = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeSampledImage && convTy.has(ins.words[1])) convSampledTy.add(ins.resultId);
+  if (!convSampledTy.size) return false;
+  const vars = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== SC.UniformConstant) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (ptr && ptr.op === Op.TypePointer && convSampledTy.has(ptr.words[2]))
+      vars.push({ varIns: ins, sampledTy: ptr.words[2], imageTy: byId.get(ptr.words[2]).words[1] });
+  }
+  if (!vars.length) return false;
+  const varIds = new Set(vars.map(v => v.varIns.resultId));
+
+  // --- analysis (no mutation yet): trace converted values, vet consumers ---
+  const tracedSampled = new Set(), tracedImage = new Set(), fetches = [];
+  for (const ins of mod.insns) {
+    if ((ins.op === Op.Load || ins.op === Op.FunctionParameter) && convSampledTy.has(ins.resultType)) {
+      if (ins.op === Op.Load && !varIds.has(ins.words[2]) && vars.length > 1) {
+        log.push('spirvfix R12: sampled-image load from an unknown source; conversion refused');
+        return false;
+      }
+      tracedSampled.add(ins.resultId);
+    }
+  }
+  const refuse = why => { log.push('spirvfix R12: ' + why + '; conversion refused'); return false; };
+  for (const ins of mod.insns) {
+    const w = ins.words;
+    if (ins.op === Op.SampledImage) {
+      if (tracedSampled.has(w[2])) tracedSampled.add(ins.resultId);
+      else if (tracedImage.has(w[2]) || tracedSampled.has(w[3])) return refuse('OpSampledImage over a converted value');
+    } else if (ins.op === Op.Image) {
+      if (tracedSampled.has(w[2])) tracedImage.add(ins.resultId);
+    } else if (ins.op === Op.CopyObject) {
+      if (tracedSampled.has(w[2])) tracedSampled.add(ins.resultId);
+      else if (tracedImage.has(w[2])) tracedImage.add(ins.resultId);
+    } else if (ins.op === Op.ImageFetch) {
+      if (tracedImage.has(w[2]) || tracedSampled.has(w[2])) fetches.push(ins);
+    } else {
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      for (let k = start; k < w.length; k++)
+        if (tracedSampled.has(w[k]) || tracedImage.has(w[k]))
+          return refuse('converted image value feeds opcode ' + ins.op);
+    }
+  }
+  for (const f of fetches) {
+    const def = byId.get(f.words[3]);
+    const t = def && byId.get(def.resultType);
+    if (!t || t.op !== Op.TypeInt || t.words[1] !== 32)
+      return refuse('OpImageFetch coordinate is not a 32-bit integer scalar');
+    if (f.words.length > 4) {
+      // Image operands present: only Lod/ConstOffset/Offset/ConstOffsets/
+      // MinLod are expressible around the Lod word this rule may add.
+      const mask = f.words[4];
+      if (mask & ~0x172) return refuse('OpImageFetch carries image operands the conversion cannot extend');
+    }
+  }
+
+  // --- mutate: Dim flip (Buffer=5 -> 2D=1) + capability drop -----------------
+  for (const ins of mod.insns) if (convTy.has(ins.resultId)) ins.words[2] = 1;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 46));
+
+  // --- split variables (mirrors R1, restricted to converted pairs) ----------
+  const decos = mod.insns.filter(i => i.op === Op.Decorate);
+  const setOf = id => decos.find(d => d.words[0] === id && d.words[1] === Dec.DescriptorSet)?.words[2] ?? 0;
+  const bindOf = id => decos.find(d => d.words[0] === id && d.words[1] === Dec.Binding)?.words[2] ?? 0;
+  const maxBind = new Map();
+  for (const d of decos) {
+    if (d.words[1] !== Dec.Binding) continue;
+    const s = setOf(d.words[0]);
+    maxBind.set(s, Math.max(maxBind.get(s) ?? -1, d.words[2]));
+  }
+  const newId = makeIdSource(mod);
+  const findType = (op, eq) => mod.insns.find(i => i.op === op && eq(i))?.resultId ?? null;
+  let samplerTy = findType(Op.TypeSampler, () => true);
+  const addType = [], addAnnot = [];
+  if (samplerTy == null) {
+    samplerTy = newId();
+    addType.push({ op: Op.TypeSampler, words: [samplerTy], resultType: null, resultId: samplerTy });
+  }
+  const ptrFor = elem => {
+    const hit = findType(Op.TypePointer, i => i.words[1] === SC.UniformConstant && i.words[2] === elem)
+      ?? addType.find(i => i.op === Op.TypePointer && i.words[1] === SC.UniformConstant && i.words[2] === elem)?.resultId ?? null;
+    if (hit != null) return hit;
+    const id = newId();
+    addType.push({ op: Op.TypePointer, words: [id, SC.UniformConstant, elem], resultType: null, resultId: id });
+    return id;
+  };
+  const pairs = new Map();
+  const dropIdx = new Set();
+  for (const c of vars) {
+    const varId = c.varIns.resultId;
+    const set = setOf(varId), imgBind = bindOf(varId);
+    const sampBind = (maxBind.get(set) ?? imgBind) + 1;
+    maxBind.set(set, sampBind);
+    const imgVar = newId(), sampVar = newId();
+    addType.push({ op: Op.Variable, words: [ptrFor(c.imageTy), imgVar, SC.UniformConstant], resultType: ptrFor(c.imageTy), resultId: imgVar });
+    addType.push({ op: Op.Variable, words: [ptrFor(samplerTy), sampVar, SC.UniformConstant], resultType: ptrFor(samplerTy), resultId: sampVar });
+    addAnnot.push({ op: Op.Decorate, words: [imgVar, Dec.DescriptorSet, set], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [imgVar, Dec.Binding, imgBind], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [sampVar, Dec.DescriptorSet, set], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [sampVar, Dec.Binding, sampBind], resultType: null, resultId: null });
+    pairs.set(varId, { imageVar: imgVar, samplerVar: sampVar, sampledTy: c.sampledTy, imageTy: c.imageTy });
+    mod.insns.forEach((ins, i) => {
+      if (ins.op === Op.Variable && ins.resultId === varId) dropIdx.add(i);
+      if ((ins.op === Op.Decorate || ins.op === Op.Name) && ins.words[0] === varId) dropIdx.add(i);
+    });
+    const nm = decodeStr(mod.insns.find(i => i.op === Op.Name && i.words[0] === varId) ?? { words: [] });
+    if (nm) addType.push({ op: Op.Name, words: [imgVar, ...strWords(nm)], resultType: null, resultId: null });
+    addType.push({ op: Op.Name, words: [sampVar, ...strWords(`bw_combined_g${set}_b${imgBind}_v${varId}`)], resultType: null, resultId: null });
+    log.push(`spirvfix R12: texel-buffer uniform %${varId} -> 2D image %${imgVar} (set ${set}, binding ${imgBind}) + inert sampler %${sampVar} (binding ${sampBind})`);
+  }
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.EntryPoint) continue;
+    let start = 2;
+    while (start < ins.words.length) {
+      const word = ins.words[start++];
+      if ([0, 8, 16, 24].some(shift => ((word >>> shift) & 255) === 0)) break;
+    }
+    ins.words = ins.words.slice(0, start).concat(ins.words.slice(start).flatMap(id => {
+      const pair = pairs.get(id);
+      return pair ? [pair.imageVar, pair.samplerVar] : [id];
+    }));
+  }
+  // Conversion types/constants (uint, uvec2, wrap width) join addType.
+  let uintTy = findType(Op.TypeInt, i => i.words[1] === 32 && i.words[2] === 0);
+  if (uintTy == null) {
+    uintTy = newId();
+    addType.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy });
+  }
+  let uvec2Ty = findType(Op.TypeVector, i => i.words[1] === uintTy && i.words[2] === 2)
+    ?? addType.find(i => i.op === Op.TypeVector && i.words[1] === uintTy)?.resultId ?? null;
+  if (uvec2Ty == null) {
+    uvec2Ty = newId();
+    addType.push({ op: Op.TypeVector, words: [uvec2Ty, uintTy, 2], resultType: null, resultId: uvec2Ty });
+  }
+  let wConst = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === TEXEL_WRAP_WIDTH)?.resultId ?? null;
+  if (wConst == null) {
+    wConst = newId();
+    addType.push({ op: Op.Constant, words: [uintTy, wConst, TEXEL_WRAP_WIDTH], resultType: uintTy, resultId: wConst });
+  }
+  // A converted fetch needs an explicit Lod image operand (naga's frontend
+  // requires it for non-Buffer dimensions; glslang omits it for buffers).
+  let sintTy = findType(Op.TypeInt, i => i.words[1] === 32 && i.words[2] === 1);
+  if (sintTy == null) {
+    sintTy = newId();
+    addType.push({ op: Op.TypeInt, words: [sintTy, 32, 1], resultType: null, resultId: sintTy });
+  }
+  let lodZero = mod.insns.find(i => i.op === Op.Constant && i.resultType === sintTy && i.words[2] === 0)?.resultId ?? null;
+  if (lodZero == null) {
+    lodZero = newId();
+    addType.push({ op: Op.Constant, words: [sintTy, lodZero, 0], resultType: sintTy, resultId: lodZero });
+  }
+  const kept = mod.insns.filter((_, i) => !dropIdx.has(i));
+  const aPos = (() => { const s = sections({ insns: kept }); return s.lastAnnot + 1; })();
+  kept.splice(Math.max(aPos, 0), 0, ...addAnnot);
+  const tPos = (() => { const s = sections({ insns: kept }); return s.firstFunc < 0 ? kept.length : s.firstFunc; })();
+  kept.splice(tPos, 0, ...addType.filter(i => i.op !== Op.Name));
+  const dPos = (() => { const s = sections({ insns: kept }); return s.lastDebug + 1; })();
+  kept.splice(Math.max(dPos, 0), 0, ...addType.filter(i => i.op === Op.Name));
+  mod.insns = kept;
+  byId.clear();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+
+  // --- replace loads with couples (mirrors R1) -------------------------------
+  const loads = mod.insns.filter(ins => ins.op === Op.Load && inFunction(mod, ins) && convSampledTy.has(ins.resultType));
+  const firstPair = pairs.values().next().value;
+  const imgLoadOf = new Map();   // couple result id -> image load id
+  let nLoads = 0;
+  for (const load of loads) {
+    const pair = pairs.get(load.words[2]) ?? firstPair;
+    if (!pair) continue;
+    const imgLoad = newId(), sampLoad = newId();
+    const idx = mod.insns.indexOf(load);
+    if (idx < 0) continue;
+    mod.insns.splice(idx, 1,
+      { op: Op.Load, words: [pair.imageTy, imgLoad, pair.imageVar], resultType: pair.imageTy, resultId: imgLoad },
+      { op: Op.Load, words: [samplerTy, sampLoad, pair.samplerVar], resultType: samplerTy, resultId: sampLoad },
+      { op: Op.SampledImage, words: [load.resultType, load.resultId, imgLoad, sampLoad], resultType: load.resultType, resultId: load.resultId });
+    imgLoadOf.set(load.resultId, imgLoad);
+    nLoads++;
+  }
+
+  // --- widen fetch coordinates ------------------------------------------------
+  const tracedS = new Set(), tracedI = new Set();
+  for (const [coupleId, imgLoad] of imgLoadOf) { tracedS.add(coupleId); tracedI.add(imgLoad); }
+  let nFetch = 0;
+  for (let idx = 0; idx < mod.insns.length; idx++) {
+    const ins = mod.insns[idx];
+    if (ins.op === Op.SampledImage && tracedI.has(ins.words[2])) tracedS.add(ins.resultId);
+    else if (ins.op === Op.Image && tracedS.has(ins.words[2])) tracedI.add(ins.resultId);
+    else if (ins.op === Op.CopyObject) {
+      if (tracedS.has(ins.words[2])) tracedS.add(ins.resultId);
+      else if (tracedI.has(ins.words[2])) tracedI.add(ins.resultId);
+    } else if (ins.op === Op.ImageFetch && (tracedI.has(ins.words[2]) || tracedS.has(ins.words[2]))) {
+      const coordId = ins.words[3];
+      const def = byId.get(coordId) ?? mod.insns.find(i => i.resultId === coordId);
+      const t = def && byId.get(def.resultType);
+      const seq = [];
+      let u = coordId;
+      if (t && t.words[2] === 1) {   // signed -> bitcast to uint
+        u = newId();
+        seq.push({ op: Op.Bitcast, words: [uintTy, u, coordId], resultType: uintTy, resultId: u });
+      }
+      const x = newId(), y = newId(), vec = newId();
+      seq.push({ op: Op.UMod, words: [uintTy, x, u, wConst], resultType: uintTy, resultId: x });
+      seq.push({ op: Op.UDiv, words: [uintTy, y, u, wConst], resultType: uintTy, resultId: y });
+      seq.push({ op: Op.CompositeConstruct, words: [uvec2Ty, vec, x, y], resultType: uvec2Ty, resultId: vec });
+      mod.insns.splice(idx, 0, ...seq);
+      ins.words[3] = vec;
+      if (ins.words.length === 4) ins.words.push(2, lodZero);
+      else if (!(ins.words[4] & 2)) { ins.words[4] |= 2; ins.words.splice(5, 0, lodZero); }
+      idx += seq.length;
+      nFetch++;
+    }
+  }
+  log.push(`spirvfix R12: rewrote ${nLoads} texel-buffer load(s), widened ${nFetch} fetch coordinate(s) to the ${TEXEL_WRAP_WIDTH}-wide 2D wrap`);
+  return true;
+}
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
 export function applySpirvFix(bytes, { specOverrides } = {}) {
@@ -1466,6 +1723,11 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
     mod = parseSpirv(u8);
   } catch (e) {
     return { bytes: u8, applied, log: ['parse failed: ' + (e.message || e)] };
+  }
+  try {
+    if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
+  } catch (e) {
+    log.push('R12 failed: ' + (e.message || e));
   }
   try {
     if (splitCombinedSamplers(mod, log)) applied.push('split-combined-sampler');
@@ -1535,4 +1797,4 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero'];

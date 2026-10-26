@@ -415,6 +415,13 @@ void OPCALL normal_intO(CPU* cpu, DecodedOp* op) {
 
 void OPCALL onTestEnd(CPU* cpu, DecodedOp* op) {
     cpu->nextOp = op;
+    // The test program is over, so any signal frames it was inside are
+    // gone with it (a handler that traps out through TestEnd never runs
+    // its sigreturn). Leaving inSignal/inSigMask set would make later
+    // signal delivery on this thread consult a dead program's handler
+    // mask instead of the thread's real blocked mask.
+    cpu->thread->inSignal = 0;
+    cpu->thread->inSigMask = 0;
 }
 
 // Dispatch the next decoded op by switching on its instruction ID. Using a
@@ -845,7 +852,9 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 case VERRR16: case VERWR16: case SGDT: case SIDT: case LGDT: case LIDT:
                 case SMSWRreg: case SMSW: case LMSWRreg: case LMSW: case INVLPG:
                     nextOp->flags |= OP_FLAG_NO_JIT;
+#ifdef BOXEDWINE_WASM_JIT
                     nextOp->runCount = (U8)wasmJit32DecidedRunCount();
+#endif
                     break;
                 default:
                     break;
@@ -854,7 +863,9 @@ DecodedOp* NormalCPU::getOp(U32 startIp, U32 jumpTargetFlags) {
                 if (memory->isAddressDynamic(address, nextOp->len)) {
                     nextOp->flags |= OP_FLAG_NO_JIT;
 #ifdef BOXEDWINE_JIT
+#ifdef BOXEDWINE_WASM_JIT
                     nextOp->runCount = (U8)wasmJit32DecidedRunCount();
+#endif
 #endif
                 }
                 address += nextOp->len;

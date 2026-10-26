@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 #include "fsmemopennode.h"
 
 FsMemOpenNode::FsMemOpenNode(U32 flags, std::shared_ptr<FsNode> node) : FsOpenNode(node, flags), seals(0), pos(0), isClosed(false) {
@@ -32,8 +33,11 @@ S64 FsMemOpenNode::length() {
 }
 
 bool FsMemOpenNode::setLength(S64 length) {
+    if (length < 0 || (length < (S64)this->buffer.size() && this->hasSeal(K_F_SEAL_SHRINK)) ||
+        (length > (S64)this->buffer.size() && this->hasSeal(K_F_SEAL_GROW))) return false;
     this->lastModifiedTime = KSystem::getSystemTimeAsMicroSeconds() / 1000l;
     this->buffer.resize((U32)length, 0);
+    KInotify::notifyAttrib(this->node.get());
     return true;
 }
 
@@ -59,16 +63,20 @@ U32 FsMemOpenNode::ioctl(KThread* thread, U32 request) {
 }
 
 void FsMemOpenNode::setAsync(bool isAsync) {
-    if (isAsync)
-        kdebug("FsMemOpenNode::setAsync not implemented");
+    this->applyAsyncFlag(isAsync);
 }
 
 bool FsMemOpenNode::isAsync() {
-    return false;
+    return this->asyncEnabled;
 }
 
 void FsMemOpenNode::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
-    kdebug("FsMemOpenNode::::waitForEvents not implemented");
+    // Readiness for fs nodes is static (driven by the open mode), so mirror
+    // DevDsp::waitForEvents: if the requested readiness already holds, wake
+    // the poller instead of leaving it to time out.
+    if (((events & K_POLLIN) && this->isReadReady()) || ((events & K_POLLOUT) && this->isWriteReady())) {
+        BOXEDWINE_CONDITION_SIGNAL_ALL(parentCondition);
+    }
 }
 
 bool FsMemOpenNode::isWriteReady() {
@@ -93,6 +101,7 @@ U32 FsMemOpenNode::readNative(U8* buffer, U32 len) {
 }
 
 U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
+    if (this->hasSeal(K_F_SEAL_WRIT) || this->hasSeal(K_F_SEAL_FUTURE_WRITE)) return (U32)-K_EPERM;
     if (len==0)
         return 0;
     U32 remaining = len;
@@ -111,10 +120,14 @@ U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
         std::copy(buffer, buffer+remaining, std::back_inserter(this->buffer));
         this->pos = (S64)this->buffer.size();
     }
+    KInotify::notifyModified(this->node.get());
     return len;
 }
 
 void FsMemOpenNode::close() {
+    if (!this->isClosed) {
+        KInotify::notifyClosed(this->node.get(), (this->flags & K_O_ACCMODE) != K_O_RDONLY);
+    }
     this->isClosed = true;
 }
 
@@ -127,8 +140,12 @@ bool FsMemOpenNode::isOpen() {
 }
 
 U32 FsMemOpenNode::addSeals(U32 seals) {
+    constexpr U32 validSeals = K_F_SEAL_SEAL | K_F_SEAL_SHRINK | K_F_SEAL_GROW |
+                               K_F_SEAL_WRIT | K_F_SEAL_FUTURE_WRITE;
+    if (seals & ~validSeals) return (U32)-K_EINVAL;
     if (this->seals & K_F_SEAL_SEAL) {
-        return -K_EPERM;
+        return (U32)-K_EPERM;
     }
+    this->seals |= seals;
     return 0;
 }

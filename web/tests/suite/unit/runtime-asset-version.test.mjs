@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 import { runInNewContext } from 'node:vm';
 
-const source = readFileSync('project/emscripten/wine64-launcher.js', 'utf8');
+const source = readFileSync(join(repoRoot, 'project/emscripten/wine64-launcher.js'), 'utf8');
 const start = source.indexOf('function runtimeAssetUrl(');
 const end = source.indexOf('function bootWine(', start);
 assert.ok(start >= 0 && end > start);

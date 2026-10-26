@@ -6722,6 +6722,14 @@ DecodedOp* decodeBlock(DecodeBlockCallback* callback, U32 eip, bool isBig, U32& 
         op->lastInst = op->inst;
 #endif
         if (op->inst == Invalid) {
+            // An Invalid op terminates the block, but it must still carry
+            // the number of bytes its decode consumed: block walkers
+            // (calculateLongestBlock, the JIT compiler) advance by op->len,
+            // and a zero length makes them revisit this same op at this
+            // same address (the ARMv8 JIT bound its label twice and
+            // panicked with LabelAlreadyBound). The interpreter never
+            // noticed because normal_invalid recomputes the length itself.
+            op->len = d.opLen ? d.opLen : 1;
 #if defined _DEBUG
             op->originalOp = d.inst;
 #endif

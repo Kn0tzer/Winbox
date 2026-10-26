@@ -15,19 +15,74 @@
 #include "cpu64.h"
 #include "kmemory64.h"
 #include "kevent.h"
+#include "kpidfd.h"
+#include "krandom.h"
 #include "ksocket.h"
+#include "kfile.h"
 #include <thread>   // std::this_thread::yield() for sched_yield
 #include <mutex>    // std::recursive_mutex for BW64_SERIAL_TEARDOWN
 #include <unordered_map>
+#include <unordered_set>
+#include <array>
 #include "kunixsocket.h"
 #include "kepoll.h"
 #include "kpoll.h"
+#include "ksignal.h"
+#include "kstat.h"
 #include "ripSampler.h"
 #include "guestprofiler.h"
 #include "bw64metrics.h"   // live frame-stage metrics (BW64_METRICS, default on)
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
+
+namespace {
+std::mutex g_queuedSiginfoMutex;
+std::unordered_map<U64, std::array<U8, 128>> g_queuedSiginfo;
+
+U64 queuedSiginfoKey(U32 tid, U32 signal) {
+    return ((U64)tid << 6) | signal;
+}
+
+void eraseQueuedSiginfo(U32 tid, U32 signal) {
+    std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+    g_queuedSiginfo.erase(queuedSiginfoKey(tid, signal));
+}
+
+bool copyQueuedSiginfo(U32 tid, U32 signal, U8 info[128]) {
+    std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+    auto it = g_queuedSiginfo.find(queuedSiginfoKey(tid, signal));
+    if (it == g_queuedSiginfo.end()) return false;
+    std::memcpy(info, it->second.data(), 128);
+    return true;
+}
+
+S32 queueSiginfo64(KThread* target, U32 signal, const U8 info[128]) {
+    if (!target || !target->cpu64 || signal < 1 || signal > 64 || signal == 9 || signal == 19)
+        return -K_EINVAL;
+    {
+        std::lock_guard<std::mutex> lock(g_queuedSiginfoMutex);
+        std::array<U8, 128>& stored = g_queuedSiginfo[queuedSiginfoKey(target->id, signal)];
+        std::memcpy(stored.data(), info, stored.size());
+    }
+    // Queue on the x64 path. The generic KThread::signal helper otherwise
+    // builds a legacy CPU32 frame when the target is the current host thread.
+    const U64 bit = 1ULL << (signal - 1);
+    const U64 savedMask = target->sigMask;
+    target->sigMask |= bit;
+    const U32 result = target->signal(signal, false);
+    target->sigMask = savedMask;
+    if ((S32)result < 0) eraseQueuedSiginfo(target->id, signal);
+    return (S32)result;
+}
+}
+
+U32 createPidFdForClone64(KThread* thread, U32 processId) {
+    // KPidFd + the factory live in kpidfd.h since round 3C (the 32-bit
+    // clone paths create pidfds too).
+    return createPidFdForProcess(thread, processId);
+}
+
 #ifdef BOXEDWINE_OPENGL
 #include "../opengl/gl64bridge.h"
 #include "../opengl/gl64bridge_abi.h"
@@ -157,8 +212,14 @@
 #define X64_SYS_getcpu            309
 #define X64_SYS_process_vm_readv  310
 #define X64_SYS_process_vm_writev 311
+#define X64_SYS_pidfd_send_signal 424
+#define X64_SYS_pidfd_open        434
 #define X64_SYS_membarrier        324
 #define X64_SYS_timerfd_create    283
+#define X64_SYS_inotify_init      253
+#define X64_SYS_inotify_add_watch 254
+#define X64_SYS_inotify_rm_watch  255
+#define X64_SYS_inotify_init1     294
 #define X64_SYS_timerfd_settime   286
 #define X64_SYS_timerfd_gettime   287
 #define X64_SYS_sched_yield       24
@@ -193,6 +254,7 @@
 #define X64_SYS_clone             56
 #define X64_SYS_fork              57
 #define X64_SYS_vfork             58
+#define X64_CLONE_VFORK            0x00004000ULL
 #define X64_SYS_execve            59
 #define X64_SYS_wait4             61
 #define X64_SYS_pause             34
@@ -627,6 +689,10 @@ static U64 sys_brk64(CPU64* cpu, U64 newBrk) {
     U64 alignedOld = (oldBrk + 0xFFF) & ~0xFFFULL;
     U64 alignedNew = (newBrk + 0xFFF) & ~0xFFFULL;
     if (alignedNew > alignedOld) {
+        if (hasProcess && cpu->thread->process->memLockAllFuture &&
+            cpu->thread->process->memLockedBytes + (alignedNew - alignedOld) > cpu->thread->process->rlimMemlockCur) {
+            return oldBrk; // growing the heap would exceed RLIMIT_MEMLOCK
+        }
         U64 ret = cpu->memory->mmapAnonymousFixed(alignedOld, alignedNew - alignedOld, 0x3); // PROT_READ|WRITE
         if ((S64)ret < 0) {
             return oldBrk;
@@ -641,7 +707,30 @@ static U64 sys_brk64(CPU64* cpu, U64 newBrk) {
 static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                            U64 flags, U64 fd, U64 offset);
 
+static bool sys_mdweBlocks64(CPU64* cpu, U64 prot) {
+    if (!cpu->thread || !cpu->thread->process) return false;
+    const U32 flags = cpu->thread->process->mdweFlags;
+    if (!(flags & 1 /*PR_MDWE_REFUSE_EXEC_GAIN*/)) return false;
+    if (!(prot & 0x4 /*PROT_EXEC*/)) return false;
+    return (prot & 0x2 /*PROT_WRITE*/) != 0;
+}
+
+// mlockall(MCL_FUTURE) gate for fresh mappings (kernel round 3A): when the
+// process locked future mappings, a new mapping counts against
+// RLIMIT_MEMLOCK before it is created; KMemory64::applyFutureLock sets
+// the bits once the mapping exists.
+static bool sys_memlockFutureOk64(CPU64* cpu, U64 addr, U64 length, bool fixed) {
+    KProcess* process = cpu->thread ? cpu->thread->process.get() : nullptr;
+    if (!process || !process->memLockAllFuture || !cpu->memory) return true;
+    const U64 pageCount = (length + K64_PAGE_MASK) >> K64_PAGE_SHIFT;
+    U64 alreadyLocked = 0;
+    if (fixed && addr) alreadyLocked = cpu->memory->countLockedInRange(addr & ~K64_PAGE_MASK, length);
+    return process->memLockedBytes + (pageCount - alreadyLocked) * K64_PAGE_SIZE <= process->rlimMemlockCur;
+}
+
 static U64 sys_mmap64(CPU64* cpu, U64 addr, U64 length, U64 prot, U64 flags, U64 fd, U64 offset) {
+    if (sys_mdweBlocks64(cpu, prot)) return (U64)-K_EACCES;
+    if (!sys_memlockFutureOk64(cpu, addr, length, (flags & K_MAP_FIXED) != 0)) return (U64)-K_ENOMEM;
     if (!(flags & K_MAP_ANONYMOUS)) {
         return sys_mmap64_file(cpu, addr, length, prot, flags, fd, offset);
     }
@@ -920,24 +1009,322 @@ static U64 sys_uname64(CPU64* cpu, U64 bufAddr) {
     return 0;
 }
 
-// getrandom — fill buffer with pseudo-random bytes. Good enough for ld.so's
-// stack canary; not cryptographically strong, but glibc only needs entropy.
-static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 /*flags*/) {
-    if (!bufAddr || buflen == 0) return 0;
-    if (buflen > 256) buflen = 256;
-    U8 tmp[256];
-    static U64 seed = 0x9E3779B97F4A7C15ULL;
-    for (U64 i = 0; i < buflen; i++) {
-        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-        tmp[i] = (U8)(seed >> 33);
+// getrandom — fill buffer from the platform's nondeterministic random source.
+static bool sys_rangeMapped64(CPU64* cpu, U64 addr, U64 length);
+static bool sys_rangeHasPermission64(KMemory64* memory, U64 addr, U64 length, U32 permission);
+static U64 sys_getrandom64(CPU64* cpu, U64 bufAddr, U64 buflen, U64 flags) {
+    constexpr U32 GRND_NONBLOCK = 1;
+    constexpr U32 GRND_RANDOM = 2;
+    constexpr U32 GRND_INSECURE = 4;
+    constexpr U64 MAX_GETRANDOM = 32ULL * 1024 * 1024;
+    if (flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) return (U64)-K_EINVAL;
+    if (buflen == 0) return 0;
+    if (buflen > MAX_GETRANDOM) return (U64)-K_EINVAL;
+    if (!sys_rangeHasPermission64(cpu->memory, bufAddr, buflen, K64_PAGE_WRITE)) return (U64)-K_EFAULT;
+    U8 tmp[4096];
+    U64 offset = 0;
+    while (offset < buflen) {
+        const U64 count = std::min<U64>(sizeof(tmp), buflen - offset);
+        if (!kernelGetRandomBytes(tmp, (size_t)count)) {
+            return offset ? offset : (U64)-K_EIO;
+        }
+        cpu->memory->memcpyToGuest(bufAddr + offset, tmp, count);
+        offset += count;
     }
-    cpu->memory->memcpyToGuest(bufAddr, tmp, buflen);
     return buflen;
 }
 
-// prlimit64(pid, resource, new_limit*, old_limit*) — for v1 we always pretend
-// "no limit" by writing RLIM64_INFINITY to old_limit if requested.
-static U64 sys_prlimit64_64(CPU64* cpu, U64 /*pid*/, U64 /*res*/, U64 newLim, U64 oldLim) {
+static void prctl64RejectLog(U64 option, const char* feature) {
+    static std::mutex m;
+    static std::unordered_set<U64> seen;
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        log = seen.insert(option).second;
+    }
+    if (log) {
+        klog_fmt("ksyscall64: prctl option %llu (%s) is not supported on this virtual x86 kernel; returned -EINVAL",
+                 (unsigned long long)option, feature);
+    }
+}
+
+static U64 sys_prctl64(CPU64* cpu, U64 option, U64 arg2, U64 arg3, U64 /*arg4*/, U64 /*arg5*/) {
+    KProcessPtr process = cpu->thread ? cpu->thread->process : KProcessPtr();
+    auto readInt = [&](U64 addr, U32* out) -> bool {
+        if (!addr || !sys_rangeMapped64(cpu, addr, 4)) return false;
+        *out = cpu->memory->readd(addr);
+        return true;
+    };
+    switch (option) {
+        case 1: // PR_SET_PDEATHSIG
+            if (arg2 > 64 || arg2 == 9 /*SIGKILL*/ || arg2 == 19 /*SIGSTOP*/) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->parentDeathSignal = (U32)arg2;
+            return 0;
+        case 2: // PR_GET_PDEATHSIG
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->parentDeathSignal);
+            return 0;
+        case 3: // PR_GET_DUMPABLE
+            return process ? process->dumpable : 1;
+        case 4: // PR_SET_DUMPABLE
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->dumpable = (U32)arg2;
+            return 0;
+        case 5: // PR_GET_UNALIGN
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->unalignValue);
+            return 0;
+        case 6: // PR_SET_UNALIGN
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 & ~3ULL) return (U64)-K_EINVAL;
+            process->unalignValue = (U32)arg2;
+            return 0;
+        case 7: return process ? process->keepCaps : 0;
+        case 8:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->keepCaps = (U32)arg2;
+            return 0;
+        case 9:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->fpEmu);
+            return 0;
+        case 10:
+            if (arg2 > 3) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->fpEmu = (U32)arg2;
+            return 0;
+        case 11:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->fpExc);
+            return 0;
+        case 12:
+            if (arg2 > 7) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->fpExc = (U32)arg2;
+            return 0;
+        case 13: return 0; // PR_GET_TIMING: PR_TIMING_STATISTICAL
+        case 14: return arg2 == 0 ? 0 : (U64)-K_EINVAL;
+        case 15: // PR_SET_NAME
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 16)) return (U64)-K_EFAULT;
+            {
+                char name[17] = {};
+                cpu->memory->memcpyFromGuest(name, arg2, 16);
+                name[16] = 0;
+                cpu->thread->name = BString::copy(name);
+            }
+            return 0;
+        case 16: // PR_GET_NAME
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 16)) return (U64)-K_EFAULT;
+            {
+                char name[16] = {};
+                const size_t count = std::min<size_t>(cpu->thread->name.length(), sizeof(name) - 1);
+                if (count) std::memcpy(name, cpu->thread->name.c_str(), count);
+                cpu->memory->memcpyToGuest(arg2, name, sizeof(name));
+            }
+            return 0;
+        case 19: // PR_GET_ENDIAN
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->endian);
+            return 0;
+        case 20:
+            if (arg2 != 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->endian = 1;
+            return 0;
+        case 21: return 0; // PR_GET_SECCOMP: disabled
+        case 22: prctl64RejectLog(option, "PR_SET_SECCOMP filter"); return (U64)-K_EINVAL;
+        case 23: return arg2 <= 40 ? 0 : (U64)-K_EINVAL; // PR_CAPBSET_READ
+        case 24: return arg2 <= 40 ? (U64)-K_EPERM : (U64)-K_EINVAL; // PR_CAPBSET_DROP needs CAP_SETPCAP
+        case 25:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->tscEnabled);
+            return 0;
+        case 26:
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 1) { process->tscEnabled = 1; return 0; }
+            prctl64RejectLog(option, "PR_SET_TSC SIGSEGV enforcement");
+            return (U64)-K_EINVAL;
+        case 27: return process ? process->secureBits : 0;
+        case 28:
+            if (arg2 & ~0x3fULL) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == process->secureBits) return 0;
+            return (U64)-K_EPERM;
+        case 29: // PR_SET_TIMERSLACK
+            if (!process) return (U64)-K_ESRCH;
+            process->timerSlackNs = arg2 ? arg2 : 50000;
+            return 0;
+        case 30: return process ? process->timerSlackNs : 50000;
+        case 31: if (process) process->perfEventsEnabled = 0; return 0;
+        case 32: if (process) process->perfEventsEnabled = 1; return 0;
+        case 33: // PR_MCE_KILL: arg2 = policy, arg3 = signal
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 0) { process->mceKillPolicy = 0; process->mceKillSignal = 0; return 0; }
+            if (arg2 == 1) {
+                if (arg3 > 64 || arg3 == 9 || arg3 == 19) return (U64)-K_EINVAL;
+                process->mceKillPolicy = 1;
+                process->mceKillSignal = (U32)arg3;
+                return 0;
+            }
+            return (U64)-K_EINVAL;
+        case 34: return process ? process->mceKillPolicy : 0;
+        case 35: prctl64RejectLog(option, "PR_SET_MM address map rewrite"); return (U64)-K_EPERM;
+        case 36:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->childSubreaper = (U32)arg2;
+            return 0;
+        case 37:
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 4)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            cpu->memory->writed(arg2, process->childSubreaper);
+            return 0;
+        case 38:
+            if (arg2 != 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->noNewPrivs = 1;
+            return 0;
+        case 39: return process ? process->noNewPrivs : 0;
+        case 40: // PR_GET_TID_ADDRESS
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 8)) return (U64)-K_EFAULT;
+            if (!cpu->thread) return (U64)-K_ESRCH;
+            cpu->memory->writeq(arg2, cpu->thread->clear_child_tid64);
+            return 0;
+        case 41:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (!process) return (U64)-K_ESRCH;
+            process->thpDisable = (U32)arg2;
+            return 0;
+        case 42: return process ? process->thpDisable : 0;
+        case 43: case 44: prctl64RejectLog(option, "MPX management"); return (U64)-K_EINVAL;
+        case 45: return arg2 == 0 ? 0 : (U64)-K_EINVAL; // PR_SET_FP_MODE: only FP_MODE_NONE
+        case 46: return process ? process->fpMode : 0;
+        case 47: { // PR_CAP_AMBIENT: arg2 = subcommand, arg3 = capability
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 == 0) return 0;
+            if (arg2 == 4) return 0;
+            if (arg3 > 40) return (U64)-K_EINVAL;
+            if (arg2 == 1) return 0;
+            if (arg2 == 2) return (U64)-K_EPERM;
+            if (arg2 == 3) return 0;
+            return (U64)-K_EINVAL;
+        }
+        case 50: case 51: prctl64RejectLog(option, "SVE vector length"); return (U64)-K_EINVAL;
+        case 52: { // PR_GET_SPECULATION_CTRL: arg2 = which
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 > 2) return (U64)-K_EINVAL;
+            return process->speculationCtrl[arg2];
+        }
+        case 53: { // PR_SET_SPECULATION_CTRL: arg2 = which, arg3 = control
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 > 2) return (U64)-K_EINVAL;
+            const U64 allowed = (1ULL << 0) | (1ULL << 2) | (1ULL << 3);
+            if (arg3 & ~allowed) return (U64)-K_EINVAL;
+            process->speculationCtrl[arg2] = (U32)arg3;
+            return 0;
+        }
+        case 54: prctl64RejectLog(option, "PAC key reset"); return (U64)-K_EINVAL;
+        case 55: case 56: prctl64RejectLog(option, "tagged address control"); return (U64)-K_EINVAL;
+        case 57: return process ? process->ioFlusher : 0;
+        case 58:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (arg2 == 1) return (U64)-K_EPERM;
+            if (process) process->ioFlusher = 0;
+            return 0;
+        case 59: prctl64RejectLog(option, "syscall user dispatch"); return (U64)-K_EINVAL;
+        case 60: case 61: prctl64RejectLog(option, "PAC enabled keys"); return (U64)-K_EINVAL;
+        case 62: prctl64RejectLog(option, "PR_SCHED_CORE"); return (U64)-K_EINVAL;
+        case 63: case 64: prctl64RejectLog(option, "SME vector length"); return (U64)-K_EINVAL;
+        case 65: // PR_SET_MDWE: arg2 = flags
+            if (!process) return (U64)-K_ESRCH;
+            if (arg2 & ~3ULL) return (U64)-K_EINVAL;
+            if ((arg2 & 1) && (process->mdweFlags & 1)) return (U64)-K_EPERM;
+            process->mdweFlags = (U32)arg2;
+            return 0;
+        case 66: return process ? process->mdweFlags : 0;
+        case 67:
+            if (arg2 > 1) return (U64)-K_EINVAL;
+            if (arg2) { prctl64RejectLog(option, "KSM memory merging"); return (U64)-K_EINVAL; }
+            return 0;
+        case 68: return 0;
+        case 69: case 70: prctl64RejectLog(option, "RISC-V vector control"); return (U64)-K_EINVAL;
+        case 0x59616d61ULL: // PR_SET_PTRACER
+            if (!process) return (U64)-K_ESRCH;
+            process->ptracerPid = arg2;
+            return 0;
+        case 0x53564d41ULL: prctl64RejectLog(option, "PR_SET_VMA anon name"); return (U64)-K_EPERM;
+        case 0x41555856ULL: { // PR_GET_AUXV
+            if (!arg2 || !sys_rangeMapped64(cpu, arg2, 8)) return (U64)-K_EFAULT;
+            if (!process) return (U64)-K_ESRCH;
+            const U64 pairs[][2] = {
+                { 3 /*AT_PHDR*/, process->phdr64 },
+                { 4 /*AT_PHENT*/, process->phentsize64 },
+                { 5 /*AT_PHNUM*/, process->phnum64 },
+                { 6 /*AT_PAGESZ*/, 4096 },
+                { 9 /*AT_ENTRY*/, process->entry64 },
+                { 11 /*AT_UID*/, 1000 },
+                { 12 /*AT_EUID*/, 1000 },
+                { 13 /*AT_GID*/, 1000 },
+                { 14 /*AT_EGID*/, 1000 },
+                { 23 /*AT_SECURE*/, 0 },
+                { 16 /*AT_HWCAP*/, 0 },
+                { 26 /*AT_HWCAP2*/, 0 },
+                { 17 /*AT_CLKTCK*/, 100 },
+                { 0 /*AT_NULL*/, 0 },
+            };
+            const U64 total = sizeof(pairs);
+            const U64 copy = std::min<U64>(arg3, total);
+            for (U64 i = 0; i < copy / 16; ++i) {
+                cpu->memory->writeq(arg2 + i * 16, pairs[i][0]);
+                cpu->memory->writeq(arg2 + i * 16 + 8, pairs[i][1]);
+            }
+            return copy;
+        }
+        default:
+            prctl64RejectLog(option, "unknown prctl option");
+            return (U64)-K_EINVAL;
+    }
+}
+
+// prlimit64(pid, resource, new_limit*, old_limit*). RLIMIT_MEMLOCK is
+// tracked per process (kernel round 3A); every other resource reports
+// RLIM64_INFINITY in old_limit and ignores new_limit, as before.
+static U64 sys_prlimit64_64(CPU64* cpu, U64 pid, U64 res, U64 newLim, U64 oldLim) {
+    if (res == 8) { // RLIMIT_MEMLOCK
+        KProcessPtr targetPtr;
+        KProcess* target = nullptr;
+        if (pid) {
+            targetPtr = KSystem::getProcess((U32)pid);
+            target = targetPtr.get();
+        } else if (cpu->thread) {
+            target = cpu->thread->process.get();
+        }
+        if (!target) return (U64)-K_ESRCH;
+        if (oldLim) {
+            cpu->memory->writeq(oldLim, target->rlimMemlockCur);
+            cpu->memory->writeq(oldLim + 8, target->rlimMemlockMax);
+        }
+        if (newLim) {
+            const U64 newCur = cpu->memory->readq(newLim);
+            const U64 newMax = cpu->memory->readq(newLim + 8);
+            if (newCur > newMax) return (U64)-K_EINVAL;
+            if (newMax > target->rlimMemlockMax) return (U64)-K_EPERM;
+            target->rlimMemlockCur = newCur;
+            target->rlimMemlockMax = newMax;
+        }
+        return 0;
+    }
     if (oldLim) {
         // struct rlimit64 { __u64 rlim_cur; __u64 rlim_max; }
         cpu->memory->writeq(oldLim, ~0ULL);
@@ -1101,6 +1488,33 @@ static U64 sys_read64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     return (U64)got;
 }
 
+static bool sys_rangeHasPermission64(KMemory64* memory, U64 addr, U64 length, U32 permission);
+
+static U64 sys_signalfd64(CPU64* cpu, S32 fdNumber, U64 maskAddress, U64 maskSize, U32 flags) {
+    if (!cpu || !cpu->thread || !cpu->thread->process) return (U64)-K_EBADF;
+    if (maskSize != 8) return (U64)-K_EINVAL;
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return (U64)-K_EINVAL;
+    if (!sys_rangeHasPermission64(cpu->memory, maskAddress, 8, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    KProcessPtr process = cpu->thread->process;
+    KFileDescriptorPtr descriptor;
+    if (fdNumber >= 0) {
+        descriptor = process->getFileDescriptor((FD)fdNumber);
+        if (!descriptor) return (U64)-K_EBADF;
+        if (descriptor->kobject->type != KTYPE_SIGNAL) return (U64)-K_EINVAL;
+    } else {
+        auto signal = std::make_shared<KSignal>();
+        descriptor = process->allocFileDescriptor(signal, K_O_RDONLY, 0, -1, 0);
+    }
+    if (flags & K_O_CLOEXEC) descriptor->descriptorFlags |= FD_CLOEXEC;
+    else if (fdNumber >= 0) descriptor->descriptorFlags &= ~FD_CLOEXEC;
+    if (flags & K_O_NONBLOCK) descriptor->accessFlags |= K_O_NONBLOCK;
+    else descriptor->accessFlags &= ~K_O_NONBLOCK;
+    std::shared_ptr<KSignal> signal = std::dynamic_pointer_cast<KSignal>(descriptor->kobject);
+    signal->mask = cpu->memory->readq(maskAddress) & ~((1ULL << (K_SIGKILL - 1)) | (1ULL << (K_SIGSTOP - 1)));
+    signal->blocking = (descriptor->accessFlags & K_O_NONBLOCK) == 0;
+    return descriptor->handle;
+}
+
 // openat(dirfd, path, flags, mode). For dirfd we honour AT_FDCWD (-100) and
 // any "absolute" path. Relative paths against a real dirfd aren't supported
 // yet — ld-linux always passes AT_FDCWD or absolute, so this covers the
@@ -1141,17 +1555,17 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
         return (U64)-2;
     }
     KFileDescriptorPtr result;
-    U32 rc = process->openFile(process->currentDirectory, BString::copy(path),
+    U32 rc = process->openFile(process->fsContext->currentDirectory, BString::copy(path),
                                (U32)flags, result);
     if ((S32)rc < 0) {
         if (getenv("BW64_DLLTRACE") && (strstr(path, ".dll") || strstr(path, ".exe") ||
                                         strstr(path, "x86_64-windows") || strstr(path, "kernel32"))) {
             klog_fmt("DLLTRACE pid=%d FAIL open('%s') rc=%d cwd='%s'",
-                     (int)process->id, path, (int)(S32)rc, process->currentDirectory.c_str());
+                     (int)process->id, path, (int)(S32)rc, process->fsContext->currentDirectory.c_str());
         } else if (getenv("BW64_SCDUMP")) {
-            BString full = Fs::getFullPath(process->currentDirectory, BString::copy(path));
+            BString full = Fs::getFullPath(process->fsContext->currentDirectory, BString::copy(path));
             klog_fmt("sys_openat64: open('%s') -> %d  [cwd='%s' full='%s' flags=0x%llx]",
-                     path, (int)(S32)rc, process->currentDirectory.c_str(), full.c_str(),
+                     path, (int)(S32)rc, process->fsContext->currentDirectory.c_str(), full.c_str(),
                      (unsigned long long)flags);
         } else if (strstr(path, ".exe")) {
             // Program-spawn failures stay visible by default (rare, and probes
@@ -1452,6 +1866,104 @@ static void writeStatBuf64(KMemory64* mem, U64 addr, U64 size, U32 mode,
 // Forward decl — sys_newfstatat64 may delegate to sys_fstat64 for AT_EMPTY_PATH.
 static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf);
 
+// x86-64 statx layout (256 bytes). The VFS currently exposes inode, mode,
+// ownership, link count, size, block count and mtime. Keep stx_mask limited to
+// those fields plus the stable virtual mount ID; zeroed fields stay unclaimed.
+static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask, U64 statbuf) {
+    constexpr U64 AT_SYMLINK_NOFOLLOW = 0x100;
+    constexpr U64 AT_NO_AUTOMOUNT = 0x800;
+    constexpr U64 AT_EMPTY_PATH = 0x1000;
+    constexpr U64 AT_STATX_SYNC_TYPE = 0x6000;
+    constexpr U32 STATX_TYPE = 0x0001;
+    constexpr U32 STATX_MODE = 0x0002;
+    constexpr U32 STATX_NLINK = 0x0004;
+    constexpr U32 STATX_UID = 0x0008;
+    constexpr U32 STATX_GID = 0x0010;
+    constexpr U32 STATX_INO = 0x0100;
+    constexpr U32 STATX_SIZE = 0x0200;
+    constexpr U32 STATX_BLOCKS = 0x0400;
+    constexpr U32 STATX_MTIME = 0x0040;
+    constexpr U32 STATX_MNT_ID = 0x1000;
+    constexpr U32 STATX_BASIC_STATS = 0x07ff;
+    constexpr U32 SUPPORTED = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID | STATX_GID |
+                              STATX_INO | STATX_SIZE | STATX_BLOCKS | STATX_MTIME | STATX_MNT_ID;
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ESRCH;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)) return (U64)-K_EINVAL;
+    if (!sys_rangeHasPermission64(cpu->memory, statbuf, 256, K64_PAGE_WRITE)) return (U64)-K_EFAULT;
+
+    KProcessPtr process = cpu->thread->process;
+    std::shared_ptr<FsNode> node;
+    bool emptyPath = false;
+    if (flags & AT_EMPTY_PATH) {
+        if (!pathAddr) emptyPath = true;
+        else {
+            if (!sys_rangeHasPermission64(cpu->memory, pathAddr, 1, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            emptyPath = cpu->memory->readb(pathAddr) == 0;
+        }
+    }
+    if (emptyPath) {
+        if ((S32)dirfd == -100) {
+            node = Fs::getNodeFromLocalPath(process->fsContext->currentDirectory, process->fsContext->currentDirectory, true);
+        } else {
+            KFileDescriptorPtr descriptor = process->getFileDescriptor((FD)dirfd);
+            if (!descriptor) return (U64)-K_EBADF;
+            std::shared_ptr<KFile> file = descriptor->kobject ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+            node = file && file->openFile ? file->openFile->node : nullptr;
+        }
+        if (!node) return (U64)-K_ENOENT;
+    } else {
+        if (!pathAddr) return (U64)-K_EFAULT;
+        char path[4096] = {};
+        size_t pathLength = 0;
+        for (; pathLength < sizeof(path); ++pathLength) {
+            if (!sys_rangeHasPermission64(cpu->memory, pathAddr + pathLength, 1, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            path[pathLength] = (char)cpu->memory->readb(pathAddr + pathLength);
+            if (!path[pathLength]) break;
+        }
+        if (pathLength == sizeof(path)) return (U64)-K_ENAMETOOLONG;
+        BString base = process->fsContext->currentDirectory;
+        if ((S32)dirfd != -100 && path[0] != '/') {
+            KFileDescriptorPtr directory = process->getFileDescriptor((FD)dirfd);
+            std::shared_ptr<KFile> directoryFile = directory && directory->kobject
+                ? std::dynamic_pointer_cast<KFile>(directory->kobject) : nullptr;
+            if (!directory) return (U64)-K_EBADF;
+            if (!directoryFile || !directoryFile->openFile || !directoryFile->openFile->node ||
+                !directoryFile->openFile->node->isDirectory()) return (U64)-K_ENOTDIR;
+            base = directoryFile->openFile->node->path;
+        }
+        bool isLink = false;
+        node = Fs::getNodeFromLocalPath(base, BString::copy(path), !(flags & AT_SYMLINK_NOFOLLOW), &isLink);
+        if (!node) return (U64)-K_ENOENT;
+        if (node->isLink() || isLink) flags |= AT_SYMLINK_NOFOLLOW;
+    }
+
+    if (!mask) mask = STATX_BASIC_STATS;
+    U32 returnedMask = (U32)mask & SUPPORTED;
+    U32 mode = node->getMode();
+    if (node->isLink()) mode |= K__S_IFLNK;
+    U64 size = node->length();
+    U64 modified = node->lastModified();
+    U64 seconds = modified / 1000;
+    U32 nanos = (U32)(modified % 1000) * 1000000;
+    U8 zero[256] = {};
+    cpu->memory->memcpyToGuest(statbuf, zero, sizeof(zero));
+    cpu->memory->writed(statbuf + 0, returnedMask);
+    cpu->memory->writed(statbuf + 4, 4096);
+    cpu->memory->writed(statbuf + 16, node->getHardLinkCount());
+    cpu->memory->writed(statbuf + 20, process->userId);
+    cpu->memory->writed(statbuf + 24, process->groupId);
+    cpu->memory->writew(statbuf + 28, (U16)mode);
+    cpu->memory->writeq(statbuf + 32, node->id);
+    cpu->memory->writeq(statbuf + 40, size);
+    cpu->memory->writeq(statbuf + 48, (size + 511) / 512);
+    cpu->memory->writeq(statbuf + 112, seconds);
+    cpu->memory->writed(statbuf + 120, nanos);
+    cpu->memory->writed(statbuf + 128, node->rdev);
+    cpu->memory->writed(statbuf + 136, 1); // single virtual filesystem device
+    cpu->memory->writeq(statbuf + 144, 1); // stable virtual mount ID
+    return 0;
+}
+
 // Path-based stat shared by stat/lstat/newfstatat. followSymlink controls
 // the lstat vs stat distinction (Fs::getNodeFromLocalPath's third arg).
 static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSymlink) {
@@ -1461,10 +1973,10 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
     BString bpath = BString::copy(path);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
-        cpu->thread->process->currentDirectory, bpath, followSymlink);
+        cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink);
     if (getenv("BW64_SYSTRACE")) {
         klog_fmt("sys_stat_path64: '%s' (cwd='%s') -> %s", path,
-                 cpu->thread->process->currentDirectory.c_str(),
+                 cpu->thread->process->fsContext->currentDirectory.c_str(),
                  node ? "OK" : "ENOENT");
     }
     if (!node) return (U64)-2; // -ENOENT
@@ -1875,7 +2387,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
         resolved = proc->exe;
     } else {
         std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-            proc->currentDirectory, BString::copy(path), false);
+            proc->fsContext->currentDirectory, BString::copy(path), false);
         if (!n || !n->isLink()) return (U64)-22; // -EINVAL on non-symlink
         resolved = n->link;
     }
@@ -1915,7 +2427,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
 //   Anything else: -ENOSYS so glibc takes the user-space fallback.
 //
 // uaddr==0 → -EFAULT for all ops (matches kernel).
-static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, U32 val3) {
+static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, U64 uaddr2, U32 val3) {
     if (uaddr == 0) return (U64)-K_EFAULT;
     if (uaddr & 3) return (U64)-K_EINVAL;
 
@@ -1923,7 +2435,7 @@ static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, 
     // process (the only way multiple threads exist), delegate to the shared
     // futex table so WAIT actually blocks and WAKE actually wakes siblings.
     if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
-        S64 r = cpu->thread->futex64(uaddr, op, val, timeoutAddr, val3);
+        S64 r = cpu->thread->futex64(uaddr, op, val, timeoutAddr, uaddr2, val3);
         if (r == K_FUTEX64_PARKED) {
             // Single-threaded cooperative park: don't write RAX, rewind the
             // SYSCALL on yield so it re-runs after we're woken.
@@ -1958,11 +2470,89 @@ static U64 sys_futex64(CPU64* cpu, U64 uaddr, U32 op, U32 val, U64 timeoutAddr, 
             return (U64)-K_EAGAIN;
         }
         case X64_FUTEX_REQUEUE:
-        case X64_FUTEX_CMP_REQUEUE:
-        case X64_FUTEX_WAKE_OP:
-            return 0;
-        default:
+        case X64_FUTEX_CMP_REQUEUE: {
+            if (!cpu->memory) return (U64)-K_EFAULT;
+            if (!uaddr2) return (U64)-K_EFAULT;
+            if (uaddr2 & 3) return (U64)-K_EINVAL;
+            if ((S32)timeoutAddr < 0) return (U64)-K_EINVAL;
+            if (baseOp == X64_FUTEX_CMP_REQUEUE && cpu->memory->readd(uaddr) != val3)
+                return (U64)-K_EAGAIN;
+            auto source = cpu->futexWaiters.find(uaddr);
+            if (source == cpu->futexWaiters.end()) return 0;
+            const U32 woken = source->second < val ? source->second : val;
+            const U32 remaining = source->second - woken;
+            const U32 moved = remaining < (U32)timeoutAddr ? remaining : (U32)timeoutAddr;
+            source->second -= woken + moved;
+            if (!source->second) cpu->futexWaiters.erase(source);
+            if (moved) cpu->futexWaiters[uaddr2] += moved;
+            return baseOp == X64_FUTEX_REQUEUE ? woken : woken + moved;
+        }
+        case X64_FUTEX_WAKE_OP: {
+            if (!cpu->memory) return (U64)-K_EFAULT;
+            if (!uaddr2) return (U64)-K_EFAULT;
+            if (uaddr2 & 3) return (U64)-K_EINVAL;
+            const U32 encoded = val3;
+            const U32 opCode = (encoded >> 28) & 0xf;
+            const U32 cmpCode = (encoded >> 24) & 0xf;
+            const bool shiftArg = (opCode & 8) != 0;
+            const U32 operation = opCode & 7;
+            auto signExtend12 = [](U32 value) -> S32 { return (S32)(value << 20) >> 20; };
+            S32 opArg = signExtend12((encoded >> 12) & 0xfff);
+            const S32 cmpArg = signExtend12(encoded & 0xfff);
+            if (shiftArg) {
+                if (opArg < 0 || opArg > 31) return (U64)-K_EINVAL;
+                opArg = 1 << opArg;
+            }
+            if (operation > 4 || cmpCode > 5) return (U64)-K_EINVAL;
+            const U32 oldValue = cpu->memory->readd(uaddr2);
+            U32 newValue = oldValue;
+            switch (operation) {
+                case 0: newValue = (U32)opArg; break; // SET
+                case 1: newValue += (U32)opArg; break; // ADD
+                case 2: newValue |= (U32)opArg; break; // OR
+                case 3: newValue &= ~(U32)opArg; break; // ANDN
+                case 4: newValue ^= (U32)opArg; break; // XOR
+            }
+            cpu->memory->writed(uaddr2, newValue);
+            const S32 signedOld = (S32)oldValue;
+            bool compare = false;
+            switch (cmpCode) {
+                case 0: compare = signedOld == cmpArg; break;
+                case 1: compare = signedOld != cmpArg; break;
+                case 2: compare = signedOld < cmpArg; break;
+                case 3: compare = signedOld <= cmpArg; break;
+                case 4: compare = signedOld > cmpArg; break;
+                case 5: compare = signedOld >= cmpArg; break;
+            }
+            auto wake = [&](U64 address, U32 maximum) -> U32 {
+                auto it = cpu->futexWaiters.find(address);
+                if (it == cpu->futexWaiters.end()) return 0;
+                const U32 count = it->second < maximum ? it->second : maximum;
+                it->second -= count;
+                if (!it->second) cpu->futexWaiters.erase(it);
+                return count;
+            };
+            const U32 first = wake(uaddr, val);
+            const U32 second = compare ? wake(uaddr2, (U32)timeoutAddr) : 0;
+            return first + second;
+        }
+        case 6: // FUTEX_LOCK_PI
+        case 7: // FUTEX_UNLOCK_PI
+        case 8: // FUTEX_TRYLOCK_PI
+        case 11: // FUTEX_WAIT_REQUEUE_PI
+        case 12: // FUTEX_CMP_REQUEUE_PI
+        default: {
+            static std::mutex reportMutex;
+            static std::unordered_set<U32> reportedOps;
+            const U32 cmd = op & ~(X64_FUTEX_PRIVATE_FLAG | X64_FUTEX_CLOCK_REALTIME);
+            bool first;
+            {
+                std::lock_guard<std::mutex> lock(reportMutex);
+                first = reportedOps.insert(cmd).second;
+            }
+            if (first) klog_fmt("ksyscall64: unsupported threadless futex operation %u (op=0x%x); returned -ENOSYS", cmd, op);
             return (U64)-K_ENOSYS;
+        }
     }
 }
 
@@ -2086,24 +2676,49 @@ static U64 sys_rt_sigprocmask64(CPU64* cpu, U64 how, U64 setPtr, U64 oldSetPtr,
 //   - If ss != NULL with SS_DISABLE(2): clear the registration.
 //   - If ss != NULL otherwise: ss_flags must be 0 (or SS_AUTODISARM=0x80000000)
 //     and ss_size must be >= MINSIGSTKSZ (~2048). Reject otherwise.
-//   - Cannot change altstack while currently executing on it (SS_ONSTACK
-//     flag set). We don't track that yet, so the check is skipped.
+//   - Cannot change or disable the altstack while currently executing
+//     on it: EPERM (the reported SS_ONSTACK state is derived from the
+//     current stack pointer, never stored).
 #define X64_SS_ONSTACK     1
 #define X64_SS_DISABLE     2
 #define X64_SS_AUTODISARM  0x80000000u
 #define X64_MINSIGSTKSZ    2048
+
+// Linux reports the altstack flags derived from the CURRENT stack
+// pointer (sas_ss_flags in kernel/signal.c): SS_DISABLE when no stack
+// is registered, SS_ONSTACK while the current SP is on the stack, and
+// the stored SS_AUTODISARM bit otherwise/also. The stored flags alone
+// never contain SS_ONSTACK.
+static U32 sigAltStackReportedFlags(CPU64* cpu) {
+    const auto& alt = cpu->sigAltStack;
+    if (!alt.ssSp) return X64_SS_DISABLE;
+    U32 flags = alt.ssFlags & X64_SS_AUTODISARM;
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    if (rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize) flags |= X64_SS_ONSTACK;
+    return flags;
+}
+
+static bool sigAltStackOnStack(CPU64* cpu) {
+    const auto& alt = cpu->sigAltStack;
+    if (!alt.ssSp) return false;
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    return rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize;
+}
 
 static U64 sys_sigaltstack64(CPU64* cpu, U64 ssPtr, U64 oldSsPtr) {
     if (!cpu->memory) return (U64)-K_EFAULT;
 
     if (oldSsPtr) {
         cpu->memory->writeq(oldSsPtr + 0,  cpu->sigAltStack.ssSp);
-        cpu->memory->writed(oldSsPtr + 8,  cpu->sigAltStack.ssFlags);
+        cpu->memory->writed(oldSsPtr + 8,  sigAltStackReportedFlags(cpu));
         cpu->memory->writed(oldSsPtr + 12, 0);
         cpu->memory->writeq(oldSsPtr + 16, cpu->sigAltStack.ssSize);
     }
 
     if (ssPtr) {
+        // The stack cannot be changed or disabled while the thread is
+        // executing on it.
+        if (sigAltStackOnStack(cpu)) return (U64)-K_EPERM;
         U64 sp    = cpu->memory->readq(ssPtr + 0);
         U32 flags = cpu->memory->readd(ssPtr + 8);
         U64 size  = cpu->memory->readq(ssPtr + 16);
@@ -2134,26 +2749,26 @@ static U64 sys_sigaltstack64(CPU64* cpu, U64 ssPtr, U64 oldSsPtr) {
 // We write 8 bytes (one U64 with bit 0 set) and return 8. Userspace then
 // counts the bits to get nproc, which is exactly what we want it to see.
 static U64 sys_sched_getaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 maskPtr) {
-    (void)pid; // ignore — we model one process
-    if (cpusetsize == 0 || (cpusetsize & 7)) return (U64)-K_EINVAL;
+    if (pid && cpu->thread && cpu->thread->id != pid) return (U64)-K_ESRCH;
+    if (cpusetsize < 8) return (U64)-K_EINVAL;
     if (!maskPtr) return (U64)-K_EFAULT;
     if (!cpu->memory) return (U64)-K_EFAULT;
-
-    // Write 1 in the low qword (CPU 0 is in our affinity set), zero the rest
-    // up to cpusetsize. Userspace inspects only the bytes the kernel wrote
-    // (which is our return value), so 8 bytes is enough.
-    cpu->memory->writeq(maskPtr, 1);
-    for (U64 off = 8; off < cpusetsize && off < 1024; off += 8) {
-        cpu->memory->writeq(maskPtr + off, 0);
-    }
+    if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
+    // Linux writes the kernel cpumask width and returns that byte count even
+    // when userspace supplied a larger cpu_set_t.
+    cpu->memory->writeq(maskPtr, cpu->affinityMask);
     return 8;
 }
 
-// sched_setaffinity(2): silently accept any mask — we don't actually move
-// the thread anywhere, but reject obviously bogus calls.
 static U64 sys_sched_setaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 maskPtr) {
-    (void)cpu; (void)pid; (void)maskPtr;
-    if (cpusetsize == 0 || (cpusetsize & 7)) return (U64)-K_EINVAL;
+    if (pid && cpu->thread && cpu->thread->id != pid) return (U64)-K_ESRCH;
+    if (cpusetsize < 8 || cpusetsize > 1024) return (U64)-K_EINVAL;
+    if (!maskPtr || !cpu->memory) return (U64)-K_EFAULT;
+    if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
+    // Only virtual CPU 0 is online. Linux drops offline CPUs from the
+    // requested mask, but rejects a request that has no online CPU selected.
+    if ((cpu->memory->readq(maskPtr) & 1) == 0) return (U64)-K_EINVAL;
+    cpu->affinityMask = 1;
     return 0;
 }
 
@@ -2204,40 +2819,21 @@ static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
 // rt_sigreturn(15) reverses it: read the saved cpu state out of the frame
 // at the current RSP and restore.
 //
-// We use the Linux-glibc layout so any handler compiled for x86-64 Linux
-// can read it directly. Field offsets and sizes:
-//
-//   off  +0   rt_sigframe header                       (8 bytes pretty + pad)
-//             — actually just the saved restorer addr (8 bytes), kernel
-//               relies on the handler to RET into it; we always set RIP
-//               from the saved RIP in mcontext on sigreturn so the header
-//               is informational only.
-//   off  +8   siginfo_t (128 bytes)
-//   off +136  ucontext_t
-//      +0     uc_flags          (8)
-//      +8     uc_link           (8)
-//      +16    uc_stack          (24: ss_sp, ss_flags+pad, ss_size)
-//      +40    uc_mcontext.gregs[23]  — see gregs index table below
-//                                       (23 * 8 = 184 bytes)
-//      +224   uc_mcontext.fpregs (8 — pointer; we set 0 → no FPU restore)
-//      +232   uc_mcontext.__reserved[8]  (64 bytes — zeroed)
-//      +296   uc_sigmask        (8 — single qword, rest of 128-byte sigset
-//                                    region is zero-padded)
-//      +424   __fpregs_mem      (we don't write this for now)
-//
-// Total frame size we allocate on the stack: 16-aligned, round up to 1024.
-// (Linux's actual frame is ~600 bytes with fpregs_mem; we shrink because
-// we never populate fpregs.)
-//
-// gregs[] index, matching <sys/ucontext.h> REG_* enum:
-//   0:R8   1:R9   2:R10  3:R11  4:R12  5:R13  6:R14  7:R15
-//   8:RDI  9:RSI 10:RBP 11:RBX 12:RDX 13:RAX 14:RCX 15:RSP
-//  16:RIP 17:EFL 18:CSGSFS 19:ERR 20:TRAPNO 21:OLDMASK 22:CR2
-#define X64_SIGFRAME_SIZE          1024
-#define X64_UCONTEXT_OFF_IN_FRAME  136   // after siginfo
-#define X64_MCONTEXT_OFF_IN_UCTX    40
+// Linux x86-64 rt_sigframe: restorer at +0, kernel ucontext at +8
+// (304 bytes including the 8-byte kernel sigset), then siginfo at +312.
+// fpregs is a POINTER at ucontext+224, not an inline-state ABI promise.
+// Place the 512-byte legacy FXSAVE image after siginfo at +440. With
+// handler RSP == frameBase == 8 mod 16, the image is 16-byte aligned.
+// Glibc's larger ucontext_t includes private padding/FP storage; the kernel
+// does not allocate that struct verbatim. No XSAVE features are advertised.
+// Reserve extra trailing padding; every signal-visible object is above RSP.
+#define X64_SIGFRAME_SIZE          1152
+#define X64_UCONTEXT_OFF_IN_FRAME     8
+#define X64_SIGINFO_OFF_IN_FRAME    312
+#define X64_FPREGS_OFF_IN_FRAME     440
+#define X64_MCONTEXT_OFF_IN_UCTX     40
 #define X64_GREGS_OFF_IN_UCTX       X64_MCONTEXT_OFF_IN_UCTX
-#define X64_SIGMASK_OFF_IN_UCTX    296
+#define X64_SIGMASK_OFF_IN_UCTX     296
 
 // Indices into mcontext.gregs[23].
 enum X64Greg {
@@ -2263,7 +2859,10 @@ static U64 buildSignalFrame(CPU64* cpu, U64 framePtr) {
     U64 gregsPtr  = mctxPtr; // gregs starts at mcontext
     // uc_stack: copy the registered altstack so the handler can re-arm if needed.
     cpu->memory->writeq(uctxPtr + 16, cpu->sigAltStack.ssSp);
-    cpu->memory->writed(uctxPtr + 24, cpu->sigAltStack.ssFlags);
+    // Linux save_altstack reports sas_ss_flags(interrupted SP): SS_DISABLE
+    // when disabled, SS_ONSTACK when the interrupted SP is on the armed
+    // stack, plus the registration's AUTODISARM bit.
+    cpu->memory->writed(uctxPtr + 24, sigAltStackReportedFlags(cpu));
     cpu->memory->writeq(uctxPtr + 32, cpu->sigAltStack.ssSize);
     // gregs[]
     cpu->memory->writeq(gregsPtr + 8 * X64_GREG_R8,  cpu->reg[X64_R8].u64);
@@ -2292,26 +2891,40 @@ static U64 buildSignalFrame(CPU64* cpu, U64 framePtr) {
     // delivery overwrites these afterwards via the fault-info it has.
     // OLDMASK = caller's sigmask before this delivery (we set it to current)
     cpu->memory->writeq(gregsPtr + 8 * X64_GREG_OLDMASK, cpu->sigMask);
-    // fpregs pointer = 0 (we don't snapshot XMM/x87 here yet — the next
-    // increment after delivery wiring lands)
-    cpu->memory->writeq(mctxPtr + 184, 0);
+    // Snapshot x87/SSE state and publish its aligned address (K-M4). Handlers
+    // (JVM null-check/safepoint stubs, glibc context manipulation) read
+    // and modify this state; rt_sigreturn restores it from the frame.
+    cpu->writeFxsaveImage(framePtr + X64_FPREGS_OFF_IN_FRAME);
+    cpu->memory->writeq(mctxPtr + 184, framePtr + X64_FPREGS_OFF_IN_FRAME);
     // uc_sigmask
     cpu->memory->writeq(uctxPtr + X64_SIGMASK_OFF_IN_UCTX, cpu->sigMask);
+    // SS_AUTODISARM: the registration disarms while the handler runs, so
+    // a nested delivery cannot reuse it; the uc_stack written above is
+    // what rt_sigreturn restores from.
+    if (cpu->sigAltStack.ssFlags & X64_SS_AUTODISARM) {
+        cpu->sigAltStack.ssSp = 0;
+        cpu->sigAltStack.ssFlags = X64_SS_DISABLE;
+        cpu->sigAltStack.ssSize = 0;
+    }
     return uctxPtr;
 }
 
-// Restore cpu state from a signal frame whose ucontext_t lives at the
-// current RSP. The kernel's invariant after rt_sigreturn is that RSP
-// points one byte *past* the saved-rsp slot (i.e. the frame has been
-// popped); we read everything we need, then write cpu->rip and cpu->reg
-// values en masse. mcontext lives at RSP + (X64_MCONTEXT_OFF_IN_UCTX).
-//
-// Returns 0 on success, negative errno otherwise. The kernel actually
-// returns the saved RAX as the syscall result so the user code sees the
-// pre-signal RAX restored; we mirror that by writing RAX last and
-// signalling "skip the normal RAX-as-return-value path" via a special
-// sentinel (the caller checks cpu->yield).
-static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
+// The restorer sees RSP == &ucontext after RET pops its address. Validate
+// the entire readable context and FP image before changing live registers.
+// Return the saved RAX separately for the syscall dispatcher to publish.
+static bool restoreSignalFrame(CPU64* cpu, U64 uctxPtr, U64& savedRax) {
+    if (!sys_rangeHasPermission64(cpu->memory, uctxPtr, 304, K64_PAGE_READ)) return false;
+    const U64 fpregsPtr = cpu->memory->readq(uctxPtr + 224);
+    if (fpregsPtr) {
+        if ((fpregsPtr & 15) ||
+            !sys_rangeHasPermission64(cpu->memory, fpregsPtr, 512, K64_PAGE_READ) ||
+            !cpu->readFxrstorImage(fpregsPtr)) return false;
+    } else {
+        // Linux fpu__restore_sig(NULL) initializes the user FP state.
+        cpu->fpu.FINIT();
+        cpu->mxcsr = 0x1f80;
+        for (auto& x : cpu->xmm) x = {};
+    }
     U64 mctxPtr   = uctxPtr + X64_MCONTEXT_OFF_IN_UCTX;
     U64 gregsPtr  = mctxPtr;
     cpu->reg[X64_R8].u64  = cpu->memory->readq(gregsPtr + 8 * X64_GREG_R8);
@@ -2335,13 +2948,50 @@ static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
     // RAX is restored last — the kernel returns RAX as the syscall return
     // value so the user-visible RAX is the *pre-signal* value, not whatever
     // rt_sigreturn would compute.
-    U64 savedRax = cpu->memory->readq(gregsPtr + 8 * X64_GREG_RAX);
-    return savedRax;
+    savedRax = cpu->memory->readq(gregsPtr + 8 * X64_GREG_RAX);
+    // Linux restore_altstack: the frame's saved uc_stack becomes the live
+    // registration again. This re-arms an SS_AUTODISARM stack that
+    // delivery disarmed and discards any sigaltstack change the handler
+    // made while running.
+    const U64 savedSsSp = cpu->memory->readq(uctxPtr + 16);
+    const U32 savedSsFlags = cpu->memory->readd(uctxPtr + 24);
+    const U64 savedSsSize = cpu->memory->readq(uctxPtr + 32);
+    if ((savedSsFlags & X64_SS_DISABLE) || savedSsSp == 0) {
+        cpu->sigAltStack.ssSp = 0;
+        cpu->sigAltStack.ssFlags = X64_SS_DISABLE;
+        cpu->sigAltStack.ssSize = 0;
+    } else {
+        cpu->sigAltStack.ssSp = savedSsSp;
+        cpu->sigAltStack.ssFlags = savedSsFlags & X64_SS_AUTODISARM;
+        cpu->sigAltStack.ssSize = savedSsSize;
+    }
+    return true;
 }
 
 // SA_ONSTACK = 0x08000000 in glibc's <bits/sigaction.h>. When set, the
 // handler runs on the registered sigaltstack instead of the user stack.
 #define X64_SA_ONSTACK   0x08000000
+
+// An already active alternate stack grows down from its CURRENT RSP.
+// Resetting it to ss_sp+ss_size on nested delivery overwrites the outer frame.
+static U64 signalFrameBase64(CPU64* cpu, U64 flags) {
+    const U64 rsp = cpu->reg[X64_RSP].u64;
+    const auto& alt = cpu->sigAltStack;
+    const bool onAlt = rsp >= alt.ssSp && rsp - alt.ssSp < alt.ssSize;
+    U64 baseSp = rsp - 128; // SysV red zone, including nested altstack delivery
+    if ((flags & X64_SA_ONSTACK) && alt.ssSp && !(alt.ssFlags & 2) && !onAlt)
+        baseSp = alt.ssSp + alt.ssSize;
+    return ((baseSp - X64_SIGFRAME_SIZE) & ~15ULL) - 8;
+}
+
+static void enterSignalHandler64(CPU64* cpu) {
+    // Linux handle_signal clears DF/RF/TF and initializes FP state for the
+    // handler; the interrupted values already live in the saved context.
+    cpu->rflags &= ~(X64_DF | 0x10000u | 0x100u);
+    cpu->fpu.FINIT();
+    cpu->mxcsr = 0x1f80;
+    for (auto& x : cpu->xmm) x = {};
+}
 
 // Synchronously deliver `sig` to `cpu` (the same thread). Models the
 // kernel's "queue a signal that's pending immediately" path for the
@@ -2354,10 +3004,10 @@ static U64 restoreSignalFrame(CPU64* cpu, U64 uctxPtr) {
 // Mechanics:
 //   1. Pick the frame stack: altstack if SA_ONSTACK set and altstack is
 //      live, otherwise current RSP minus a redzone (128 bytes per SysV).
-//   2. Round down to 16-byte alignment, subtract frame size.
+//   2. Reserve the frame and align handler entry RSP to 8 mod 16.
 //   3. Build the ucontext_t at frame_base via buildSignalFrame.
 //   4. Set cpu->reg[X64_RSP] = frame_base, RIP = handler, RDI = sig,
-//      RSI = 0 (no siginfo), RDX = &uctx, R10 = 0, R8/R9 = 0.
+//      RSI = &siginfo for SA_SIGINFO, RDX = &uctx.
 //   5. Mask the signal in cpu->sigMask for the duration of handler
 //      execution (kernel adds sig to mask unless SA_NODEFER set).
 //   6. The handler ends with `ret`-to-restorer or `syscall(rt_sigreturn)`,
@@ -2372,18 +3022,25 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
     if (!sa.installed) return false;
     if (sa.handler == 0 /*SIG_DFL*/ || sa.handler == 1 /*SIG_IGN*/) return false;
 
-    // Pick stack: SA_ONSTACK requires a non-DISABLED altstack.
-    U64 baseSp;
-    if ((sa.flags & X64_SA_ONSTACK) && cpu->sigAltStack.ssSp != 0 &&
-        (cpu->sigAltStack.ssFlags & 2 /*SS_DISABLE*/) == 0) {
-        baseSp = cpu->sigAltStack.ssSp + cpu->sigAltStack.ssSize;
-    } else {
-        baseSp = cpu->reg[X64_RSP].u64 - 128; // red zone
-    }
-    // 16-align then reserve the frame.
-    U64 frameBase = (baseSp - X64_SIGFRAME_SIZE) & ~(U64)15;
+    U64 frameBase = signalFrameBase64(cpu, sa.flags);
 
     U64 uctxPtr = buildSignalFrame(cpu, frameBase);
+
+    // Linux x86-64 places a 128-byte siginfo_t at the start of the signal
+    // frame and passes its address in RSI for SA_SIGINFO handlers.
+    U8 sigInfo[128] = {};
+    if (!cpu->thread || !copyQueuedSiginfo(cpu->thread->id, sig, sigInfo)) {
+        sigInfo[0] = (U8)sig;
+        const S32 code = K_SI_USER;
+        std::memcpy(sigInfo + 8, &code, sizeof(code));
+        if (cpu->thread && cpu->thread->process) {
+            const U32 pid = cpu->thread->process->id;
+            const U32 uid = cpu->thread->process->userId;
+            std::memcpy(sigInfo + 16, &pid, sizeof(pid));
+            std::memcpy(sigInfo + 20, &uid, sizeof(uid));
+        }
+    }
+    cpu->memory->memcpyToGuest(frameBase + X64_SIGINFO_OFF_IN_FRAME, sigInfo, sizeof(sigInfo));
 
     // x86-64 signal-frame ABI: the kernel pushes the restorer address *below*
     // the ucontext so the handler's terminating `ret` pops it and jumps to
@@ -2403,9 +3060,10 @@ static bool deliverSignalSync(CPU64* cpu, U32 sig) {
     // and leaves RSP = uctxPtr, which is what rt_sigreturn expects.
     cpu->reg[X64_RSP].setU64(retSlot);
     cpu->reg[X64_RDI].setU64(sig);      // arg1: signal number
-    cpu->reg[X64_RSI].setU64(0);        // arg2: siginfo (we don't synth one)
+    cpu->reg[X64_RSI].setU64((sa.flags & 0x4 /*SA_SIGINFO*/) ? frameBase + X64_SIGINFO_OFF_IN_FRAME : 0);
     cpu->reg[X64_RDX].setU64(uctxPtr);  // arg3: ucontext pointer
     cpu->rip = sa.handler;
+    enterSignalHandler64(cpu);
 
     return true;
 }
@@ -2435,6 +3093,7 @@ bool CPU64::deliverPendingSignals() {
         if (deliverSignalSync(this, sig)) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
             this->thread->pendingSignals &= ~bit;
+            eraseQueuedSiginfo(this->thread->id, sig);
             return true;
         }
     }
@@ -2473,6 +3132,7 @@ bool CPU64::interruptSyscallWithSignal(bool allowRestart) {
         if (deliverSignalSync(this, sig)) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->thread->pendingSignalsMutex);
             this->thread->pendingSignals &= ~bit;
+            eraseQueuedSiginfo(this->thread->id, sig);
             return true;
         }
         this->rip = savedRip;
@@ -2496,14 +3156,7 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     if (!sa.installed) return false;
     if (sa.handler == 0 /*SIG_DFL*/ || sa.handler == 1 /*SIG_IGN*/) return false;
 
-    U64 baseSp;
-    if ((sa.flags & X64_SA_ONSTACK) && this->sigAltStack.ssSp != 0 &&
-        (this->sigAltStack.ssFlags & 2 /*SS_DISABLE*/) == 0) {
-        baseSp = this->sigAltStack.ssSp + this->sigAltStack.ssSize;
-    } else {
-        baseSp = this->reg[X64_RSP].u64 - 128; // red zone
-    }
-    U64 frameBase = (baseSp - X64_SIGFRAME_SIZE) & ~(U64)15;
+    U64 frameBase = signalFrameBase64(this, sa.flags);
 
     U64 uctxPtr = buildSignalFrame(this, frameBase);
 
@@ -2513,11 +3166,11 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     this->memory->writeq(gregsPtr + 8 * X64_GREG_ERR, errorCode);
     this->memory->writeq(gregsPtr + 8 * X64_GREG_CR2, faultAddr);
 
-    // Synthesize a siginfo_t at the start of the frame (the siginfo region sits
-    // before the ucontext at X64_UCONTEXT_OFF_IN_FRAME). Layout (x86-64):
+    // Synthesize siginfo_t above the saved ucontext, outside the handler
+    // stack. Layout (x86-64):
     //   int si_signo @0; int si_errno @4; int si_code @8; then the union,
     //   where the SIGFPE/SIGSEGV variant places void* si_addr @16.
-    U64 siPtr = frameBase;
+    U64 siPtr = frameBase + X64_SIGINFO_OFF_IN_FRAME;
     this->memory->writed(siPtr + 0, sig);
     this->memory->writed(siPtr + 4, 0);
     this->memory->writed(siPtr + 8, (U32)siCode);
@@ -2536,6 +3189,7 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     this->reg[X64_RSI].setU64(siPtr);      // arg2: siginfo*
     this->reg[X64_RDX].setU64(uctxPtr);    // arg3: ucontext*
     this->rip = sa.handler;
+    enterSignalHandler64(this);
     return true;
 }
 
@@ -2852,32 +3506,63 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     // Translate any received SCM_RIGHTS fds (32-bit object wrote 16-byte cmsg
     // records, fd at +12) into the 64-bit cmsg the guest provided.
     U32 ctllen32 = m32->readd(base + MSG_SCRATCH_HDR + 20);
-    if (control && ctllen >= 16 && ctllen32 >= 16) {
-        U32 nfds = ctllen32 / 16;
-        // NEVER write past the guest's control buffer (ctllen): a 64-bit cmsg
-        // for nfds is 16 (cmsghdr) + nfds*4 bytes. Cap nfds so it fits — an
-        // overflow here scribbles past wine/wineserver's heap-allocated control
-        // buffer and corrupts its malloc arena ("unsorted double linked list").
-        U32 maxFds = (ctllen >= 16) ? (U32)((ctllen - 16) / 4) : 0;
-        if (nfds > maxFds) nfds = maxFds;
-        U64 cmsgLen = 16 + (U64)nfds * 4; // 64-bit cmsghdr header is 16 bytes
-        cpu->memory->writeq(control + 0, cmsgLen);
-        cpu->memory->writed(control + 8, K_SOL_SOCKET);
-        cpu->memory->writed(control + 12, K_SCM_RIGHTS);
-        for (U32 i = 0; i < nfds; i++) {
-            U32 fdv = m32->readd(cmArea + 16 * i + 12);
-            cpu->memory->writed(control + 16 + 4 * i, fdv);
-            if (wsReadEnabled()) {
-                // 'F' witness: which fd was just handed to the guest via
-                // SCM_RIGHTS. The same delivered fd value reappearing (e1) flags
-                // a double-delivered wineserver object handle.
-                crashRingRecordRead('F', (U32)thread->process->id, (U32)fd, nullptr, 0, nfds, fdv);
+    U32 inOffset = 0;
+    U64 outOffset = 0;
+    bool controlTruncated = false;
+    while (control && inOffset + 12 <= ctllen32) {
+        const U32 cmsgLen32 = m32->readd(cmArea + inOffset);
+        const U32 level = m32->readd(cmArea + inOffset + 4);
+        const U32 type = m32->readd(cmArea + inOffset + 8);
+        if (cmsgLen32 < 12 || cmsgLen32 > ctllen32 - inOffset) break;
+        if (level == K_SOL_SOCKET && type == K_SCM_CREDENTIALS && cmsgLen32 >= 24) {
+            // x86-64 cmsghdr is 16 bytes and ucred is 12 bytes; CMSG_SPACE is 32.
+            if (outOffset + 32 > ctllen) {
+                controlTruncated = true;
+                break;
             }
+            cpu->memory->writeq(control + outOffset, 28);
+            cpu->memory->writed(control + outOffset + 8, level);
+            cpu->memory->writed(control + outOffset + 12, type);
+            for (U32 i = 0; i < 3; ++i)
+                cpu->memory->writed(control + outOffset + 16 + i * 4, m32->readd(cmArea + inOffset + 12 + i * 4));
+            outOffset += 32;
+            inOffset += (cmsgLen32 + 3) & ~3u;
+        } else if (level == K_SOL_SOCKET && type == K_SCM_RIGHTS && cmsgLen32 >= 16) {
+            U32 rightsCount = 0;
+            U32 scanOffset = inOffset;
+            while (scanOffset + 16 <= ctllen32 && m32->readd(cmArea + scanOffset + 4) == K_SOL_SOCKET &&
+                   m32->readd(cmArea + scanOffset + 8) == K_SCM_RIGHTS && m32->readd(cmArea + scanOffset) == 16) {
+                ++rightsCount;
+                scanOffset += 16;
+            }
+            // Keep the aligned cmsghdr plus payload wholly inside the guest's
+            // control buffer; a truncated descriptor list is reported via
+            // MSG_CTRUNC rather than writing the final padding past the end.
+            const U64 maxRights = ctllen >= outOffset + 16 ? (ctllen - outOffset - 16) / 8 : 0;
+            const U32 copiedRights = (U32)std::min<U64>(rightsCount, maxRights);
+            if (copiedRights < rightsCount) controlTruncated = true;
+            if (!copiedRights) break;
+            const U64 cmsgLen64 = 16 + (U64)copiedRights * 4;
+            cpu->memory->writeq(control + outOffset, cmsgLen64);
+            cpu->memory->writed(control + outOffset + 8, level);
+            cpu->memory->writed(control + outOffset + 12, type);
+            for (U32 i = 0; i < copiedRights; ++i) {
+                U32 fdv = m32->readd(cmArea + inOffset + 12 + i * 16);
+                cpu->memory->writed(control + outOffset + 16 + i * 4, fdv);
+                if (wsReadEnabled())
+                    crashRingRecordRead('F', (U32)thread->process->id, (U32)fd, nullptr, 0, copiedRights, fdv);
+            }
+            outOffset += (cmsgLen64 + 7) & ~7ULL;
+            inOffset += rightsCount * 16;
+        } else {
+            inOffset += (cmsgLen32 + 3) & ~3u;
         }
-        cpu->memory->writeq(msg64 + 40, cmsgLen); // msg_controllen
-    } else {
-        cpu->memory->writeq(msg64 + 40, 0);
     }
+    if (control && (m32->readd(base + MSG_SCRATCH_HDR + 24) & K_MSG_CTRUNC)) controlTruncated = true;
+    U64 outFlags = m32->readd(base + MSG_SCRATCH_HDR + 24);
+    if (controlTruncated) outFlags |= K_MSG_CTRUNC;
+    cpu->memory->writed(msg64 + 48, (U32)outFlags);
+    cpu->memory->writeq(msg64 + 40, outOffset);
     return (U64)(S64)(S32)rc;
 }
 
@@ -2906,12 +3591,276 @@ static U64 sys_mincore64(CPU64* cpu, U64 addr, U64 length, U64 vec) {
     return 0;
 }
 
-// Map an x86-64 Linux syscall number to a human-readable name. Used only by
-// the unimplemented-syscall log path — when running real glibc binaries, the
-// first thing you want to see is "which syscall is missing", not "#291".
-// Covers both syscalls we already handle (useful for trace) and the obvious
-// gaps that are most likely to surface during early Wine/glibc bring-up.
-// Returns "?" for unknown numbers; the caller still logs the raw #N.
+static bool sys_rangeMapped64(CPU64* cpu, U64 addr, U64 length) {
+    if (!cpu || !cpu->memory || !length || addr > ~0ULL - (length - 1)) return false;
+    const U64 first = addr >> K64_PAGE_SHIFT;
+    const U64 last = (addr + length - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = first;; ++page) {
+        if (!cpu->memory->isPageMapped(page)) return false;
+        if (page == last) break;
+    }
+    return true;
+}
+
+static bool sys_rangeHasPermission64(KMemory64* memory, U64 addr, U64 length, U32 permission) {
+    if (!memory || !length || addr > ~0ULL - (length - 1)) return false;
+    const U64 first = addr >> K64_PAGE_SHIFT;
+    const U64 last = (addr + length - 1) >> K64_PAGE_SHIFT;
+    for (U64 page = first;; ++page) {
+        const U32 flags = memory->getPageFlags(page);
+        if (!(flags & K64_PAGE_MAPPED) || !(flags & permission)) return false;
+        if (page == last) break;
+    }
+    return true;
+}
+
+static U64 sys_processVm64(CPU64* cpu, U64 pid, U64 localIov, U64 localCount,
+                           U64 remoteIov, U64 remoteCount, U64 flags, bool writeRemote) {
+    constexpr U64 MAX_IOV = 1024;
+    if (!cpu || !cpu->thread || !cpu->thread->process) return (U64)-K_ESRCH;
+    if (flags || localCount > MAX_IOV || remoteCount > MAX_IOV) return (U64)-K_EINVAL;
+    if (!localCount || !remoteCount) return 0;
+    if (pid > UINT32_MAX) return (U64)-K_ESRCH;
+    if (!sys_rangeHasPermission64(cpu->memory, localIov, localCount * 16, K64_PAGE_READ) ||
+        !sys_rangeHasPermission64(cpu->memory, remoteIov, remoteCount * 16, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    KProcessPtr remoteProcess = pid == cpu->thread->process->id
+        ? cpu->thread->process : KSystem::getProcess((U32)pid);
+    if (!remoteProcess) return (U64)-K_ESRCH;
+    // The emulator has no independent UID/effective-UID credential set or
+    // ptrace attach state. Match Linux's common same-user process-tree case:
+    // permit self and descendants with the same guest uid when dumpable.
+    if (remoteProcess.get() != cpu->thread->process.get()) {
+        if (remoteProcess->userId != cpu->thread->process->userId || !remoteProcess->dumpable)
+            return (U64)-K_EPERM;
+        U32 ancestor = remoteProcess->parentId;
+        bool descendant = false;
+        while (ancestor) {
+            if (ancestor == cpu->thread->process->id) { descendant = true; break; }
+            KProcessPtr parent = KSystem::getProcess(ancestor);
+            if (!parent || parent->parentId == ancestor) break;
+            ancestor = parent->parentId;
+        }
+        if (!descendant) return (U64)-K_EPERM;
+    }
+    KMemory64* remoteMemory = remoteProcess->memory64;
+    if (!remoteMemory) return (U64)-K_EFAULT;
+
+    struct GuestIov { U64 base; U64 length; };
+    std::vector<GuestIov> local((size_t)localCount), remote((size_t)remoteCount);
+    U64 total = 0;
+    for (U64 i = 0; i < localCount; ++i) {
+        local[i] = {cpu->memory->readq(localIov + i * 16), cpu->memory->readq(localIov + i * 16 + 8)};
+        if (local[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
+        total += local[i].length;
+    }
+    total = 0;
+    for (U64 i = 0; i < remoteCount; ++i) {
+        remote[i] = {cpu->memory->readq(remoteIov + i * 16), cpu->memory->readq(remoteIov + i * 16 + 8)};
+        if (remote[i].length > (U64)INT64_MAX - total) return (U64)-K_EINVAL;
+        total += remote[i].length;
+    }
+
+    U64 copied = 0;
+    U64 li = 0, ri = 0, lo = 0, ro = 0;
+    U8 buffer[4096];
+    while (li < localCount && ri < remoteCount) {
+        const U64 count = std::min<U64>({sizeof(buffer), local[li].length - lo, remote[ri].length - ro});
+        if (count) {
+            const U64 localAddress = local[li].base + lo;
+            const U64 remoteAddress = remote[ri].base + ro;
+            const U32 localAccess = writeRemote ? K64_PAGE_READ : K64_PAGE_WRITE;
+            const U32 remoteAccess = writeRemote ? K64_PAGE_WRITE : K64_PAGE_READ;
+            if (!sys_rangeHasPermission64(cpu->memory, localAddress, count, localAccess) ||
+                !sys_rangeHasPermission64(remoteMemory, remoteAddress, count, remoteAccess))
+                return copied ? copied : (U64)-K_EFAULT;
+            if (writeRemote) {
+                cpu->memory->memcpyFromGuest(buffer, localAddress, count);
+                remoteMemory->memcpyToGuest(remoteAddress, buffer, count);
+            } else {
+                remoteMemory->memcpyFromGuest(buffer, remoteAddress, count);
+                cpu->memory->memcpyToGuest(localAddress, buffer, count);
+            }
+            copied += count;
+            lo += count;
+            ro += count;
+        }
+        if (lo == local[li].length) { ++li; lo = 0; }
+        if (ro == remote[ri].length) { ++ri; ro = 0; }
+    }
+    return copied;
+}
+
+static U64 sys_madvise64(CPU64* cpu, U64 addr, U64 length, U64 advice) {
+    // Linux advice values are hints. The emulator does not have a host paging
+    // policy to tune, but validates the mapped range and accepts the stable
+    // advice values so runtimes can make their normal allocation decisions.
+    switch (advice) {
+        case 0: case 1: case 2: case 3: case 4: case 8: case 9:
+        case 10: case 11: case 12: case 13: case 14: case 15: case 16:
+        case 17: case 18: case 19: case 20: case 21: case 22: case 23: case 24:
+        case 25: case 100: case 101: case 102: case 103:
+            break;
+        default:
+            return (U64)-K_EINVAL;
+    }
+    if (advice == 100 || advice == 101) { // page poisoning requires host privileges and page-state support.
+        static std::atomic<U32> warned{0};
+        const U32 bit = 1u << (advice - 100);
+        if (!(warned.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+            klog_fmt("ksyscall64: madvise advice %llu (page poison/offline) unsupported; returned -EPERM",
+                     (unsigned long long)advice);
+        }
+        return (U64)-K_EPERM;
+    }
+    if (!length || addr > ~0ULL - (length - 1)) return (U64)-K_EINVAL;
+    if (!sys_rangeMapped64(cpu, addr, length)) return (U64)-K_ENOMEM;
+    if (advice == 4) { // MADV_DONTNEED: private anonymous pages read as zero again.
+        // Linux makes DONTNEED on locked (mlock) pages EINVAL; guests use
+        // MADV_DONTNEED_LOCKED for the discarding-and-unlocking variant.
+        if (cpu->memory->rangeHasLocked(addr, length)) return (U64)-K_EINVAL;
+        const U64 firstPage = addr >> K64_PAGE_SHIFT;
+        const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = firstPage;; ++page) {
+            const U32 flags = cpu->memory->getPageFlags(page);
+            if (!(flags & K64_PAGE_SHARED) && cpu->memory->getCommittedPagePtr(page)) {
+                cpu->memory->memsetGuest(page << K64_PAGE_SHIFT, 0, K64_PAGE_SIZE);
+            }
+            if (page == lastPage) break;
+        }
+    } else if (advice == 24 || advice == 9 || advice == 10 || advice == 11 ||
+               advice == 18 || advice == 19) {
+        // DONTNEED_LOCKED / REMOVE / fork advice: real state, in KMemory64.
+        const S64 result = cpu->memory->madvise(addr, length, (U32)advice);
+        if (result < 0) return (U64)result;
+    } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_READ / POPULATE_WRITE
+        const U64 firstPage = addr >> K64_PAGE_SHIFT;
+        const U64 lastPage = (addr + length - 1) >> K64_PAGE_SHIFT;
+        for (U64 page = firstPage;; ++page) {
+            cpu->memory->getRamPtr(page << K64_PAGE_SHIFT, 1);
+            if (page == lastPage) break;
+        }
+    }
+    return 0;
+}
+
+static bool sys_numaModeValid(U64 mode) {
+    return mode <= 4; // DEFAULT, PREFERRED, BIND, INTERLEAVE, LOCAL
+}
+
+static U64 sys_numaReadMask64(CPU64* cpu, U64 mode, U64 maskPtr, U64 maxnode, U64& mask) {
+    mask = 1; // only node 0 is present
+    if (!sys_numaModeValid(mode)) return (U64)-K_EINVAL;
+    if (!maxnode) return (U64)-K_EINVAL;
+    if (!maskPtr) {
+        if (mode == 0 || mode == 1 || mode == 4) return 0;
+        return (U64)-K_EFAULT;
+    }
+    const U64 bytes = std::min<U64>(((maxnode + 63) / 64) * 8, 512);
+    if (!bytes || !sys_rangeMapped64(cpu, maskPtr, bytes)) return (U64)-K_EFAULT;
+    const U64 requested = cpu->memory->readq(maskPtr);
+    if (!(requested & 1) && mode != 0 && mode != 4) return (U64)-K_EINVAL;
+    return 0;
+}
+
+static U64 sys_setMempolicy64(CPU64* cpu, U64 mode, U64 maskPtr, U64 maxnode) {
+    U64 mask = 1;
+    U64 rc = sys_numaReadMask64(cpu, mode, maskPtr, maxnode, mask);
+    if (rc) return rc;
+    cpu->numaPolicyMode = (U32)mode;
+    cpu->numaNodeMask = mask;
+    return 0;
+}
+
+static U64 sys_mbind64(CPU64* cpu, U64 addr, U64 length, U64 mode,
+                       U64 maskPtr, U64 maxnode, U64 flags) {
+    constexpr U64 MPOL_MF_MOVE = 1, MPOL_MF_MOVE_ALL = 2, MPOL_MF_STRICT = 4;
+    if ((addr & K64_PAGE_MASK) || !length || (flags & ~(MPOL_MF_MOVE | MPOL_MF_MOVE_ALL | MPOL_MF_STRICT)))
+        return (U64)-K_EINVAL;
+    if (!sys_rangeMapped64(cpu, addr, length)) return (U64)-K_ENOMEM;
+    U64 mask = 1;
+    U64 rc = sys_numaReadMask64(cpu, mode, maskPtr, maxnode, mask);
+    if (rc) return rc;
+    // All mappings share the single node 0 policy in this virtual machine.
+    cpu->numaPolicyMode = (U32)mode;
+    cpu->numaNodeMask = mask;
+    return 0;
+}
+
+static U64 sys_getMempolicy64(CPU64* cpu, U64 modePtr, U64 maskPtr,
+                              U64 maxnode, U64 addr, U64 flags) {
+    constexpr U64 MPOL_F_NODE = 1, MPOL_F_ADDR = 2, MPOL_F_MEMS_ALLOWED = 4;
+    if (flags & ~(MPOL_F_NODE | MPOL_F_ADDR | MPOL_F_MEMS_ALLOWED)) return (U64)-K_EINVAL;
+    if ((flags & MPOL_F_ADDR) && (!addr || !sys_rangeMapped64(cpu, addr, 1))) return (U64)-K_EFAULT;
+    if (!modePtr && !maskPtr) return (U64)-K_EFAULT;
+    if (modePtr) {
+        if (!sys_rangeMapped64(cpu, modePtr, 4)) return (U64)-K_EFAULT;
+        cpu->memory->writed(modePtr, (flags & MPOL_F_NODE) ? 0 : cpu->numaPolicyMode);
+    }
+    if (maskPtr && !(flags & MPOL_F_NODE)) {
+        if (!maxnode || maxnode > 4096) return (U64)-K_EINVAL;
+        const U64 bytes = (maxnode + 7) / 8;
+        if (!sys_rangeMapped64(cpu, maskPtr, bytes)) return (U64)-K_EFAULT;
+        cpu->memory->memsetGuest(maskPtr, 0, bytes);
+        if (cpu->numaNodeMask) cpu->memory->writeb(maskPtr, 1);
+    }
+    return 0;
+}
+
+static U64 sys_copyFileRange64(CPU64* cpu, U64 fdIn, U64 offInPtr, U64 fdOut,
+                               U64 offOutPtr, U64 length, U64 flags) {
+    if (!cpu || !cpu->memory || !cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    if (flags != 0) return (U64)-K_EINVAL;
+    if (length == 0) return 0;
+    KProcessPtr process = cpu->thread->process;
+    KFileDescriptorPtr inFd = process->getFileDescriptor((FD)fdIn);
+    KFileDescriptorPtr outFd = process->getFileDescriptor((FD)fdOut);
+    if (!inFd || !outFd) return (U64)-K_EBADF;
+    if (!inFd->canRead() || !outFd->canWrite()) return (U64)-K_EBADF;
+    std::shared_ptr<KFile> input = std::dynamic_pointer_cast<KFile>(inFd->kobject);
+    std::shared_ptr<KFile> output = std::dynamic_pointer_cast<KFile>(outFd->kobject);
+    if (!input || !output) return (U64)-K_EINVAL;
+    const std::shared_ptr<FsNode> inputNode = input->openFile ? input->openFile->node : nullptr;
+    const std::shared_ptr<FsNode> outputNode = output->openFile ? output->openFile->node : nullptr;
+    if (!inputNode || !outputNode ||
+        (inputNode->getMode() & 0xF000) != K__S_IFREG ||
+        (outputNode->getMode() & 0xF000) != K__S_IFREG) return (U64)-K_EINVAL;
+    // The current VFS exposes independent backing stores by node type (host
+    // files, zip entries, virtual filesystems, and memfd memory files). Linux
+    // cannot perform copy_file_range across filesystem boundaries.
+    if (inputNode->type != outputNode->type) return (U64)-K_EXDEV;
+    if ((offInPtr && !sys_rangeMapped64(cpu, offInPtr, 8)) ||
+        (offOutPtr && !sys_rangeMapped64(cpu, offOutPtr, 8))) return (U64)-K_EFAULT;
+    S64 inOffset = offInPtr ? (S64)cpu->memory->readq(offInPtr) : input->getPos();
+    S64 outOffset = offOutPtr ? (S64)cpu->memory->readq(offOutPtr) : output->getPos();
+    if (inOffset < 0 || outOffset < 0) return (U64)-K_EINVAL;
+
+    U64 copied = 0;
+    auto finish = [&](U64 error) {
+        if (offInPtr) cpu->memory->writeq(offInPtr, (U64)inOffset);
+        if (offOutPtr) cpu->memory->writeq(offOutPtr, (U64)outOffset);
+        return copied ? copied : error;
+    };
+    U8 buffer[65536];
+    while (copied < length) {
+        const U32 want = (U32)std::min<U64>(sizeof(buffer), length - copied);
+        U32 n = offInPtr ? input->preadNative(buffer, inOffset, want)
+                         : input->readNative(buffer, want);
+        if ((S32)n < 0) return finish((U64)(S64)(S32)n);
+        if (!n) break;
+        U32 written = offOutPtr ? output->pwriteNative(buffer, outOffset, n)
+                                : output->writeNative(buffer, n);
+        if ((S32)written < 0) return finish((U64)(S64)(S32)written);
+        copied += written;
+        inOffset += written;
+        outOffset += written;
+        if (written < n) break;
+    }
+    return finish(0);
+}
+
+// Linux v6.12 arch/x86/entry/syscalls/syscall_64.tbl (common + 64 ABI).
+// Keep the ABI names here complete through syscall 450 so every unknown
+// dispatch logs the meaningful Linux name, including newly encountered gaps.
 static const char* x64SyscallName(U64 nr) {
 #ifdef BOXEDWINE_OPENGL
     if (nr == GL64_SYSCALL_NR) return "gl64_trap";
@@ -2943,27 +3892,21 @@ static const char* x64SyscallName(U64 nr) {
         case 23: return "select";
         case 24: return "sched_yield";
         case 25: return "mremap";
+        case 26: return "msync";
         case 27: return "mincore";
         case 28: return "madvise";
-        case X64_SYS_mbind: return "mbind";
-        case X64_SYS_get_mempolicy: return "get_mempolicy";
-        case 221: return "fadvise64";
-        case X64_SYS_sync_file_range: return "sync_file_range";
-        case X64_SYS_timerfd_create: return "timerfd_create";
-        case X64_SYS_timerfd_settime: return "timerfd_settime";
-        case X64_SYS_timerfd_gettime: return "timerfd_gettime";
-        case 280: return "utimensat";
-        case 309: return "getcpu";
-        case X64_SYS_process_vm_readv: return "process_vm_readv";
-        case X64_SYS_process_vm_writev: return "process_vm_writev";
-        case X64_SYS_membarrier: return "membarrier";
+        case 29: return "shmget";
+        case 30: return "shmat";
+        case 31: return "shmctl";
         case 32: return "dup";
         case 33: return "dup2";
         case 34: return "pause";
         case 35: return "nanosleep";
         case 36: return "getitimer";
+        case 37: return "alarm";
         case 38: return "setitimer";
         case 39: return "getpid";
+        case 40: return "sendfile";
         case 41: return "socket";
         case 42: return "connect";
         case 43: return "accept";
@@ -2971,7 +3914,14 @@ static const char* x64SyscallName(U64 nr) {
         case 45: return "recvfrom";
         case 46: return "sendmsg";
         case 47: return "recvmsg";
+        case 48: return "shutdown";
+        case 49: return "bind";
+        case 50: return "listen";
+        case 51: return "getsockname";
+        case 52: return "getpeername";
         case 53: return "socketpair";
+        case 54: return "setsockopt";
+        case 55: return "getsockopt";
         case 56: return "clone";
         case 57: return "fork";
         case 58: return "vfork";
@@ -2980,78 +3930,325 @@ static const char* x64SyscallName(U64 nr) {
         case 61: return "wait4";
         case 62: return "kill";
         case 63: return "uname";
+        case 64: return "semget";
+        case 65: return "semop";
+        case 66: return "semctl";
+        case 67: return "shmdt";
+        case 68: return "msgget";
+        case 69: return "msgsnd";
+        case 70: return "msgrcv";
+        case 71: return "msgctl";
         case 72: return "fcntl";
+        case 73: return "flock";
+        case 74: return "fsync";
+        case 75: return "fdatasync";
+        case 76: return "truncate";
+        case 77: return "ftruncate";
+        case 78: return "getdents";
         case 79: return "getcwd";
         case 80: return "chdir";
+        case 81: return "fchdir";
         case 82: return "rename";
+        case 83: return "mkdir";
+        case 84: return "rmdir";
+        case 85: return "creat";
         case 86: return "link";
+        case 87: return "unlink";
         case 88: return "symlink";
         case 89: return "readlink";
         case 90: return "chmod";
         case 91: return "fchmod";
+        case 92: return "chown";
+        case 93: return "fchown";
+        case 94: return "lchown";
+        case 95: return "umask";
         case 96: return "gettimeofday";
+        case 97: return "getrlimit";
         case 98: return "getrusage";
         case 99: return "sysinfo";
         case 100: return "times";
-        case X64_SYS_ptrace: return "ptrace";
+        case 101: return "ptrace";
         case 102: return "getuid";
+        case 103: return "syslog";
+        case 104: return "getgid";
         case 105: return "setuid";
         case 106: return "setgid";
-        case 201: return "time";
-        case 264: return "renameat";
-        case 316: return "renameat2";
-        case 104: return "getgid";
         case 107: return "geteuid";
         case 108: return "getegid";
+        case 109: return "setpgid";
         case 110: return "getppid";
         case 111: return "getpgrp";
+        case 112: return "setsid";
+        case 113: return "setreuid";
+        case 114: return "setregid";
+        case 115: return "getgroups";
+        case 116: return "setgroups";
         case 117: return "setresuid";
         case 118: return "getresuid";
         case 119: return "setresgid";
         case 120: return "getresgid";
         case 121: return "getpgid";
+        case 122: return "setfsuid";
+        case 123: return "setfsgid";
         case 124: return "getsid";
+        case 125: return "capget";
+        case 126: return "capset";
         case 127: return "rt_sigpending";
         case 128: return "rt_sigtimedwait";
         case 129: return "rt_sigqueueinfo";
         case 130: return "rt_sigsuspend";
         case 131: return "sigaltstack";
-        case 29:  return "shmget";
-        case 30:  return "shmat";
-        case 31:  return "shmctl";
-        case 67:  return "shmdt";
+        case 132: return "utime";
+        case 133: return "mknod";
+        case 134: return "uselib";
+        case 135: return "personality";
+        case 136: return "ustat";
         case 137: return "statfs";
         case 138: return "fstatfs";
+        case 139: return "sysfs";
+        case 140: return "getpriority";
+        case 141: return "setpriority";
+        case 142: return "sched_setparam";
+        case 143: return "sched_getparam";
+        case 144: return "sched_setscheduler";
+        case 145: return "sched_getscheduler";
+        case 146: return "sched_get_priority_max";
+        case 147: return "sched_get_priority_min";
+        case 148: return "sched_rr_get_interval";
+        case 149: return "mlock";
+        case 150: return "munlock";
+        case 151: return "mlockall";
+        case 152: return "munlockall";
+        case 153: return "vhangup";
+        case 154: return "modify_ldt";
+        case 155: return "pivot_root";
+        case 156: return "_sysctl";
         case 157: return "prctl";
         case 158: return "arch_prctl";
+        case 159: return "adjtimex";
+        case 160: return "setrlimit";
+        case 161: return "chroot";
+        case 162: return "sync";
+        case 163: return "acct";
+        case 164: return "settimeofday";
+        case 165: return "mount";
+        case 166: return "umount2";
+        case 167: return "swapon";
+        case 168: return "swapoff";
+        case 169: return "reboot";
+        case 170: return "sethostname";
+        case 171: return "setdomainname";
+        case 172: return "iopl";
+        case 173: return "ioperm";
+        case 174: return "create_module";
+        case 175: return "init_module";
+        case 176: return "delete_module";
+        case 177: return "get_kernel_syms";
+        case 178: return "query_module";
+        case 179: return "quotactl";
+        case 180: return "nfsservctl";
+        case 181: return "getpmsg";
+        case 182: return "putpmsg";
+        case 183: return "afs_syscall";
+        case 184: return "tuxcall";
+        case 185: return "security";
         case 186: return "gettid";
+        case 187: return "readahead";
+        case 188: return "setxattr";
+        case 189: return "lsetxattr";
+        case 190: return "fsetxattr";
+        case 191: return "getxattr";
+        case 192: return "lgetxattr";
+        case 193: return "fgetxattr";
+        case 194: return "listxattr";
+        case 195: return "llistxattr";
+        case 196: return "flistxattr";
+        case 197: return "removexattr";
+        case 198: return "lremovexattr";
+        case 199: return "fremovexattr";
+        case 200: return "tkill";
+        case 201: return "time";
         case 202: return "futex";
         case 203: return "sched_setaffinity";
         case 204: return "sched_getaffinity";
+        case 205: return "set_thread_area";
+        case 206: return "io_setup";
+        case 207: return "io_destroy";
+        case 208: return "io_getevents";
+        case 209: return "io_submit";
+        case 210: return "io_cancel";
+        case 211: return "get_thread_area";
+        case 212: return "lookup_dcookie";
+        case 213: return "epoll_create";
+        case 214: return "epoll_ctl_old";
+        case 215: return "epoll_wait_old";
+        case 216: return "remap_file_pages";
         case 217: return "getdents64";
         case 218: return "set_tid_address";
+        case 219: return "restart_syscall";
+        case 220: return "semtimedop";
+        case 221: return "fadvise64";
+        case 222: return "timer_create";
+        case 223: return "timer_settime";
+        case 224: return "timer_gettime";
+        case 225: return "timer_getoverrun";
+        case 226: return "timer_delete";
+        case 227: return "clock_settime";
         case 228: return "clock_gettime";
         case 229: return "clock_getres";
         case 230: return "clock_nanosleep";
         case 231: return "exit_group";
         case 232: return "epoll_wait";
         case 233: return "epoll_ctl";
-        case 200: return "tkill";
         case 234: return "tgkill";
+        case 235: return "utimes";
+        case 236: return "vserver";
+        case 237: return "mbind";
+        case 238: return "set_mempolicy";
+        case 239: return "get_mempolicy";
+        case 240: return "mq_open";
+        case 241: return "mq_unlink";
+        case 242: return "mq_timedsend";
+        case 243: return "mq_timedreceive";
+        case 244: return "mq_notify";
+        case 245: return "mq_getsetattr";
+        case 246: return "kexec_load";
+        case 247: return "waitid";
+        case 248: return "add_key";
+        case 249: return "request_key";
+        case 250: return "keyctl";
+        case 251: return "ioprio_set";
+        case 252: return "ioprio_get";
+        case 253: return "inotify_init";
+        case 254: return "inotify_add_watch";
+        case 255: return "inotify_rm_watch";
+        case 256: return "migrate_pages";
         case 257: return "openat";
+        case 258: return "mkdirat";
+        case 259: return "mknodat";
+        case 260: return "fchownat";
+        case 261: return "futimesat";
         case 262: return "newfstatat";
+        case 263: return "unlinkat";
+        case 264: return "renameat";
+        case 265: return "linkat";
+        case 266: return "symlinkat";
+        case 267: return "readlinkat";
+        case 268: return "fchmodat";
+        case 269: return "faccessat";
         case 270: return "pselect6";
+        case 271: return "ppoll";
+        case 272: return "unshare";
         case 273: return "set_robust_list";
+        case 274: return "get_robust_list";
+        case 275: return "splice";
+        case 276: return "tee";
+        case 277: return "sync_file_range";
+        case 278: return "vmsplice";
+        case 279: return "move_pages";
+        case 280: return "utimensat";
+        case 281: return "epoll_pwait";
+        case 282: return "signalfd";
+        case 283: return "timerfd_create";
+        case 284: return "eventfd";
+        case 285: return "fallocate";
+        case 286: return "timerfd_settime";
+        case 287: return "timerfd_gettime";
+        case 288: return "accept4";
+        case 289: return "signalfd4";
         case 290: return "eventfd2";
         case 291: return "epoll_create1";
+        case 292: return "dup3";
         case 293: return "pipe2";
+        case 294: return "inotify_init1";
+        case 295: return "preadv";
+        case 296: return "pwritev";
+        case 297: return "rt_tgsigqueueinfo";
+        case 298: return "perf_event_open";
+        case 299: return "recvmmsg";
+        case 300: return "fanotify_init";
+        case 301: return "fanotify_mark";
         case 302: return "prlimit64";
+        case 303: return "name_to_handle_at";
+        case 304: return "open_by_handle_at";
+        case 305: return "clock_adjtime";
+        case 306: return "syncfs";
+        case 307: return "sendmmsg";
+        case 308: return "setns";
+        case 309: return "getcpu";
+        case 310: return "process_vm_readv";
+        case 311: return "process_vm_writev";
+        case 312: return "kcmp";
+        case 313: return "finit_module";
+        case 314: return "sched_setattr";
+        case 315: return "sched_getattr";
+        case 316: return "renameat2";
+        case 317: return "seccomp";
         case 318: return "getrandom";
         case 319: return "memfd_create";
+        case 320: return "kexec_file_load";
+        case 321: return "bpf";
+        case 322: return "execveat";
+        case 323: return "userfaultfd";
+        case 324: return "membarrier";
+        case 325: return "mlock2";
+        case 326: return "copy_file_range";
+        case 327: return "preadv2";
+        case 328: return "pwritev2";
+        case 329: return "pkey_mprotect";
+        case 330: return "pkey_alloc";
+        case 331: return "pkey_free";
+        case 332: return "statx";
+        case 333: return "io_pgetevents";
         case 334: return "rseq";
+        case 335: return "uretprobe";
+        case 424: return "pidfd_send_signal";
+        case 425: return "io_uring_setup";
+        case 426: return "io_uring_enter";
+        case 427: return "io_uring_register";
+        case 428: return "open_tree";
+        case 429: return "move_mount";
+        case 430: return "fsopen";
+        case 431: return "fsconfig";
+        case 432: return "fsmount";
+        case 433: return "fspick";
+        case 434: return "pidfd_open";
         case 435: return "clone3";
-        default:  return "?";
+        case 436: return "close_range";
+        case 437: return "openat2";
+        case 438: return "pidfd_getfd";
+        case 439: return "faccessat2";
+        case 440: return "process_madvise";
+        case 441: return "epoll_pwait2";
+        case 442: return "mount_setattr";
+        case 443: return "quotactl_fd";
+        case 444: return "landlock_create_ruleset";
+        case 445: return "landlock_add_rule";
+        case 446: return "landlock_restrict_self";
+        case 447: return "memfd_secret";
+        case 448: return "process_mrelease";
+        case 449: return "futex_waitv";
+        case 450: return "set_mempolicy_home_node";
+        default: return "unknown";
     }
+}
+
+// Every x86-64 syscall number without an implementation flows through here.
+// Report once per ABI number (rather than once per process) so unsupported
+// features remain visible without flooding logs in multi-threaded guests.
+static U64 unimplementedSyscall64(U64 nr) {
+    static std::mutex logMutex;
+    static std::unordered_set<U32> reportedNumbers;
+    bool firstReport;
+    {
+        std::lock_guard<std::mutex> lock(logMutex);
+        firstReport = reportedNumbers.insert((U32)nr).second;
+    }
+    if (firstReport) {
+        klog_fmt("ksyscall64: unimplemented syscall #%llu (%s)",
+                 (unsigned long long)nr, x64SyscallName(nr));
+    }
+    return (U64)-K_ENOSYS;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -3334,17 +4531,36 @@ void ksyscall64(CPU64* cpu) {
             // busy-poll storm shows one pid spinning the SAME syscall thousands of
             // times between ticks while no real progress is logged. pids stay
             // small during boot; cap the table and fold the rest into slot 0.
-            static std::atomic<U32> sysCount[256];
-            static std::atomic<U32> lastNr[256];
+            // Exact per-PID syscall histogram for opt-in interval reports.
+            // Linux x86-64 syscall IDs occupy 0..511 here; retain the private
+            // GL/Vulkan trap IDs separately and fold any other high ID to 512.
+            static std::atomic<U32> syscallCounts[256][515];
             int mypid = (int)cpu->thread->process->id;
             U32 slot = (mypid >= 0 && mypid < 256) ? (U32)mypid : 0;
-            sysCount[slot].fetch_add(1, std::memory_order_relaxed);
-            lastNr[slot].store((U32)nr, std::memory_order_relaxed);
+            U32 syscallBucket = nr < 512 ? (U32)nr : 512;
+#ifdef BOXEDWINE_OPENGL
+            if (nr == GL64_SYSCALL_NR) syscallBucket = 513;
+#endif
+#ifdef BOXEDWINE_VULKAN64
+            if (nr == VK64_SYSCALL_NR) syscallBucket = 514;
+#endif
+            syscallCounts[slot][syscallBucket].fetch_add(1, std::memory_order_relaxed);
+
+            static const U32 memStatsIntervalMs = []() {
+                const char* value = getenv("BW64_MEMSTATS_INTERVAL_MS");
+                if (!value || !value[0]) return 2000U;
+                char* end = nullptr;
+                unsigned long parsed = strtoul(value, &end, 10);
+                return end != value && *end == '\0' && parsed >= 1000 && parsed <= 300000
+                    ? (U32)parsed : 2000U;
+            }();
 
             static std::atomic<U64> lastUs{0};
             U64 nowUs = KSystem::getSystemTimeAsMicroSeconds();
             U64 prev = lastUs.load(std::memory_order_relaxed);
-            if (nowUs - prev >= 2000000ULL &&
+            if (prev == 0) {
+                lastUs.compare_exchange_strong(prev, nowUs, std::memory_order_relaxed);
+            } else if (nowUs - prev >= (U64)memStatsIntervalMs * 1000ULL &&
                 lastUs.compare_exchange_strong(prev, nowUs, std::memory_order_relaxed)) {
                 KMemory64* mem = cpu->memory;
                 U64 mapped = mem->mappedPageCount();
@@ -3352,18 +4568,49 @@ void ksyscall64(CPU64* cpu) {
                 U64 rss = KSystem::getHostResidentBytes();
                 // Find the busiest pid this interval (the livelock suspect) and
                 // reset all counters for the next window.
-                U32 topPid = 0, topCount = 0, topNr = 0;
+                U32 topPid = 0, topCount = 0;
+                auto syscallNameForBucket = [](U32 syscallNr) {
+                    if (syscallNr == 512) return "other";
+                    if (syscallNr == 513) return "gl64_trap";
+                    if (syscallNr == 514) return "vk64_trap";
+                    return x64SyscallName(syscallNr);
+                };
                 for (U32 i = 0; i < 256; i++) {
-                    U32 c = sysCount[i].exchange(0, std::memory_order_relaxed);
-                    if (c > topCount) { topCount = c; topPid = i; topNr = lastNr[i].load(std::memory_order_relaxed); }
+                    U32 topNr[3] = {}, topCalls[3] = {};
+                    U32 pidCalls = 0;
+                    for (U32 syscallNr = 0; syscallNr < 515; syscallNr++) {
+                        U32 calls = syscallCounts[i][syscallNr].exchange(0, std::memory_order_relaxed);
+                        pidCalls += calls;
+                        if (calls > topCalls[0]) {
+                            topCalls[2] = topCalls[1]; topNr[2] = topNr[1];
+                            topCalls[1] = topCalls[0]; topNr[1] = topNr[0];
+                            topCalls[0] = calls; topNr[0] = syscallNr;
+                        } else if (calls > topCalls[1]) {
+                            topCalls[2] = topCalls[1]; topNr[2] = topNr[1];
+                            topCalls[1] = calls; topNr[1] = syscallNr;
+                        } else if (calls > topCalls[2]) {
+                            topCalls[2] = calls; topNr[2] = syscallNr;
+                        }
+                    }
+                    if (pidCalls > topCount) { topCount = pidCalls; topPid = i; }
+                    if (pidCalls) {
+                        const char* name0 = syscallNameForBucket(topNr[0]);
+                        const char* name1 = topCalls[1] ? syscallNameForBucket(topNr[1]) : "-";
+                        const char* name2 = topCalls[2] ? syscallNameForBucket(topNr[2]) : "-";
+                        klog_fmt("MEMSTATS_SYSCALLS pid=%u calls=%u intervalMs=%u top1=%s(#%u):%u top2=%s(#%u):%u top3=%s(#%u):%u",
+                                 i, pidCalls, memStatsIntervalMs,
+                                 name0, topNr[0], topCalls[0],
+                                 name1, topNr[1], topCalls[1],
+                                 name2, topNr[2], topCalls[2]);
+                    }
                 }
                 klog_fmt("MEMSTATS pid=%d pages=%llu committedKB=%llu rssKB=%llu "
-                         "busiest=pid%u/%usc/last=%s",
+                         "busiest=pid%u/%usc intervalMs=%u",
                          (int)cpu->thread->process->id,
                          (unsigned long long)mapped,
                          (unsigned long long)(committed * 4),
                          (unsigned long long)(rss / 1024),
-                         topPid, topCount, x64SyscallName(topNr));
+                         topPid, topCount, memStatsIntervalMs);
             }
         }
     }
@@ -3390,15 +4637,61 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_writev64(cpu, a1, a2, a3);
             break;
         case X64_SYS_prctl:
-            // prctl(option, ...). We don't model process control state
-            // (thread name, dumpable flag, seccomp, etc.). Return success for
-            // the common set-style options glibc/busybox issue at startup
-            // (PR_SET_NAME=15, PR_SET_DUMPABLE=4, PR_SET_PDEATHSIG=1,
-            // PR_SET_VMA=0x53564d41) so callers don't treat it as fatal;
-            // PR_CAPBSET_READ(23)/PR_GET_*(even) return 0. A blanket 0 is the
-            // pragmatic choice for a single-process interpreter.
-            ret = 0;
+            ret = sys_prctl64(cpu, a1, a2, a3, a4, a5);
             break;
+        case X64_SYS_process_vm_readv:
+            ret = sys_processVm64(cpu, a1, a2, a3, a4, a5, a6, false);
+            break;
+        case X64_SYS_process_vm_writev:
+            ret = sys_processVm64(cpu, a1, a2, a3, a4, a5, a6, true);
+            break;
+        case X64_SYS_pidfd_send_signal: {
+            constexpr U32 PIDFD_SIGNAL_INFO_SIZE = 128;
+            if (a4 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (a2 > 64) { ret = (U64)-K_EINVAL; break; }
+            if (a3 && !sys_rangeHasPermission64(cpu->memory, a3, PIDFD_SIGNAL_INFO_SIZE, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+                break;
+            }
+            KFileDescriptorPtr descriptor = cpu->thread && cpu->thread->process
+                ? cpu->thread->process->getFileDescriptor((FD)(S32)a1) : KFileDescriptorPtr();
+            std::shared_ptr<KPidFd> pidfd = descriptor ? std::dynamic_pointer_cast<KPidFd>(descriptor->kobject) : nullptr;
+            KProcessPtr target = pidfd ? pidfd->process() : KProcessPtr();
+            if (!pidfd) { ret = (U64)-K_EBADF; break; }
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            if (a3 && a2 == 0) { ret = (U64)-K_EINVAL; break; }
+            if (a3) {
+                if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+                U8 info[PIDFD_SIGNAL_INFO_SIZE] = {};
+                cpu->memory->memcpyFromGuest(info, a3, sizeof(info));
+                S32 infoSignal = 0, infoCode = 0;
+                std::memcpy(&infoSignal, info, sizeof(infoSignal));
+                std::memcpy(&infoCode, info + 8, sizeof(infoCode));
+                if (infoSignal != (S32)a2) { ret = (U64)-K_EINVAL; break; }
+                if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
+                KThread* targetThread = target->getThread();
+                if (!targetThread) { ret = (U64)-K_ESRCH; break; }
+                ret = (U64)(S64)queueSiginfo64(targetThread, (U32)a2, info);
+            } else if (a2 == 0) {
+                ret = 0;
+            } else {
+                ret = (U64)(S64)(S32)target->signal((U32)a2);
+            }
+            break;
+        }
+        case X64_SYS_pidfd_open: {
+            constexpr U64 O_CLOEXEC = 0x80000;
+            if (a2 & ~O_CLOEXEC) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread || !cpu->thread->process || a1 > UINT32_MAX) { ret = (U64)-K_ESRCH; break; }
+            const U32 pid = a1 ? (U32)a1 : cpu->thread->process->id;
+            KProcessPtr target = pid == cpu->thread->process->id ? cpu->thread->process : KSystem::getProcess(pid);
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
+            const U32 descriptorFlags = (a2 & O_CLOEXEC) ? FD_CLOEXEC : 0;
+            KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(object, K_O_RDWR, descriptorFlags, -1, 0);
+            ret = result ? result->handle : (U64)-K_EMFILE;
+            break;
+        }
         case X64_SYS_arch_prctl:
             ret = sys_arch_prctl64(cpu, a1, a2);
             break;
@@ -3423,6 +4716,7 @@ void ksyscall64(CPU64* cpu) {
             // as -errno -> "cannot apply additional memory protection after
             // relocation" -> exit 127.)
             {
+                if (sys_mdweBlocks64(cpu, a3)) { ret = (U64)-K_EACCES; break; }
                 U64 r = cpu->memory->mprotect(a1, a2, a3);
                 ret = ((S64)r < 0) ? r : 0;
             }
@@ -3479,15 +4773,33 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         case X64_SYS_set_robust_list:
-        case X64_SYS_madvise:
         case X64_SYS_fadvise64:
-            // ld-linux makes these calls before main; safe to no-op.
             // fadvise64(fd, offset, len, advice): a pure readahead hint
             // (fontconfig POSIX_FADV_WILLNEED/RANDOM on its cache mmaps).
             // The interpreter has no page cache to advise, so ignoring it is
             // correct — the data is still read on demand.
             ret = 0;
             break;
+        case X64_SYS_madvise:
+            ret = sys_madvise64(cpu, a1, a2, a3);
+            break;
+        case 26: { // msync(addr, length, flags)
+            constexpr U32 MS_ASYNC = 1;
+            constexpr U32 MS_INVALIDATE = 2;
+            constexpr U32 MS_SYNC = 4;
+            if ((a1 & K64_PAGE_MASK) || !a2 || (a3 & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC)) ||
+                ((a3 & MS_ASYNC) && (a3 & MS_SYNC)) || !(a3 & (MS_ASYNC | MS_SYNC))) {
+                ret = (U64)-K_EINVAL;
+            } else if (!sys_rangeMapped64(cpu, a1, a2)) {
+                ret = (U64)-K_ENOMEM;
+            } else {
+                // Guest shared writes are already committed to the in-memory
+                // backing store; the validated sync operation has no host
+                // page cache to flush.
+                ret = 0;
+            }
+            break;
+        }
         case X64_SYS_ioctl: {
             // ioctl(fd, request, arg). The old blanket no-op (return 0) made
             // wine believe a device-type probe on a regular file SUCCEEDED, so
@@ -3544,11 +4856,7 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_mremap:
-            // mremap(old, oldlen, newlen, flags, newaddr). v1: return old
-            // address — glibc malloc only resizes when MREMAP_MAYMOVE is set
-            // and tolerates a noop if no growth happens. This is wrong but
-            // surfaces obvious failures at the malloc level, not later.
-            ret = a1;
+            ret = cpu->memory->mremap(a1, a2, a3, a4, a5);
             break;
         case X64_SYS_dup:
             if (cpu->thread && cpu->thread->process) {
@@ -3573,7 +4881,7 @@ void ksyscall64(CPU64* cpu) {
             if (!a1 || a2 == 0) { ret = (U64)-K_EFAULT; break; }
             // No-process standalone runner: default cwd to "/".
             BString cwd = (cpu->thread && cpu->thread->process)
-                              ? cpu->thread->process->currentDirectory : B("/");
+                              ? cpu->thread->process->fsContext->currentDirectory : B("/");
             if (!cwd.length()) cwd = B("/");
             U64 need = (U64)cwd.length() + 1;
             if (need > a2) { ret = (U64)-34; /* -ERANGE */ break; }
@@ -3605,6 +4913,27 @@ void ksyscall64(CPU64* cpu) {
             U32 cmd = (U32)a2;
             bool isLock = (cmd == K_F_GETLK || cmd == K_F_SETLK || cmd == K_F_SETLKW ||
                            cmd == K_F_GETLK64 || cmd == K_F_SETLK64 || cmd == K_F_SETLKW64);
+            if (cmd == K_F_SETOWN_EX || cmd == K_F_GETOWN_EX) {
+                // struct f_owner_ex {int type; int pid} lives in 64-bit guest
+                // memory; handle it here like the flock bounce below.
+                KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+                if (!fd || !fd->kobject) { ret = (U64)-K_EBADF; break; }
+                if (cmd == K_F_SETOWN_EX) {
+                    S32 type = (S32)cpu->memory->readd(a3);
+                    S32 pid = (S32)cpu->memory->readd(a3 + 4);
+                    if (type < 0 || type > 2 || pid <= 0) { ret = (U64)-K_EINVAL; break; }
+                    fd->kobject->setAsyncOwnerEx(type, pid);
+                    ret = 0;
+                } else {
+                    S32 type = 0;
+                    S32 pid = 0;
+                    fd->kobject->getAsyncOwnerEx(&type, &pid);
+                    cpu->memory->writed(a3, (U32)type);
+                    cpu->memory->writed(a3 + 4, (U32)pid);
+                    ret = 0;
+                }
+                break;
+            }
             if (!isLock) {
                 ret = (U64)(S64)(S32)cpu->thread->process->fcntrl(
                     cpu->thread, (FD)(S32)a1, cmd, (U32)a3);
@@ -3728,7 +5057,16 @@ void ksyscall64(CPU64* cpu) {
             // restores the pre-signal RAX, *not* a sigreturn status).
             if (!cpu->memory) { ret = (U64)-K_EFAULT; break; }
             U64 uctxPtr = cpu->reg[X64_RSP].u64;
-            ret = restoreSignalFrame(cpu, uctxPtr);
+            if (!restoreSignalFrame(cpu, uctxPtr, ret)) {
+                // Linux badframe forces SIGSEGV; never resume with stale FP
+                // state or partially restored general registers.
+                ret = 0;
+                if (!cpu->raiseSyncFault(K_SIGSEGV, 13, 128 /*SI_KERNEL*/, 0)) {
+                    if (cpu->thread && cpu->thread->process)
+                        cpu->thread->process->signalProcess(K_SIGSEGV);
+                    cpu->yield = true;
+                }
+            }
             // restoreSignalFrame wrote rip/rsp/gprs (all except RAX) directly.
             // The dispatcher writes `ret` (savedRax) into RAX after the break,
             // completing the restore. The cpu->rip we just wrote is final —
@@ -3759,6 +5097,9 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_newfstatat:
             ret = sys_newfstatat64(cpu, a1, a2, a3, a4);
+            break;
+        case 332: // statx(dirfd, path, flags, mask, statxbuf)
+            ret = sys_statx64(cpu, a1, a2, a3, a4, a5);
             break;
         case X64_SYS_statfs:
             // a1 = path (ignored — same lie for every fs), a2 = struct statfs*
@@ -3825,7 +5166,7 @@ void ksyscall64(CPU64* cpu) {
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-                cpu->thread->process->currentDirectory, BString::copy(path), true);
+                cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
             ret = n ? 0 : (U64)-2;
             break;
         }
@@ -3840,7 +5181,7 @@ void ksyscall64(CPU64* cpu) {
             U64 pathArg = (nr == X64_SYS_mkdir) ? a1 : a2;
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
-            BString full = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString full = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                            BString::copy(path));
             ret = (U64)(S64)(S32)cpu->thread->process->mkdir(full);
             if (getenv("BW64_SYSTRACE")) {
@@ -3861,14 +5202,14 @@ void ksyscall64(CPU64* cpu) {
             cpu->memory->memcpyFromGuest(target, a1, sizeof(target) - 1);
             U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
             cpu->memory->memcpyFromGuest(linkpath, linkArg, sizeof(linkpath) - 1);
-            BString fullLink = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullLink = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                                BString::copy(linkpath));
             ret = (U64)(S64)(S32)cpu->thread->process->symlink(
                 BString::copy(target), fullLink);
             if (getenv("BW64_SCDUMP")) {
                 klog_fmt("sys_symlink64: target='%s' link='%s' (cwd='%s') -> %d",
                          target, fullLink.c_str(),
-                         cpu->thread->process->currentDirectory.c_str(), (int)(S32)ret);
+                         cpu->thread->process->fsContext->currentDirectory.c_str(), (int)(S32)ret);
             }
             break;
         }
@@ -3889,9 +5230,9 @@ void ksyscall64(CPU64* cpu) {
             char newp[1024] = {0};
             cpu->memory->memcpyFromGuest(oldp, oldArg, sizeof(oldp) - 1);
             cpu->memory->memcpyFromGuest(newp, newArg, sizeof(newp) - 1);
-            BString fullOld = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullOld = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(oldp));
-            BString fullNew = Fs::getFullPath(cpu->thread->process->currentDirectory,
+            BString fullNew = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(newp));
             ret = (U64)(S64)(S32)cpu->thread->process->link(fullOld, fullNew);
             if (getenv("BW64_SCDUMP")) {
@@ -4091,7 +5432,31 @@ void ksyscall64(CPU64* cpu) {
             // small pointer-free buffer — bounce it into 32-bit scratch.
             if (!cpu->thread) { ret = (U64)-K_ENOSYS; break; }
             U32 optlen = (U32)a5;
-            U32 v32 = (a4 && optlen) ? bounceSockaddrTo32(cpu, a4, optlen, nullptr) : 0;
+            U32 v32 = 0;
+            if ((U32)a2 == K_SOL_SOCKET && (U32)a3 == K_SO_ATTACH_FILTER) {
+                if (!a4) { ret = (U64)-K_EFAULT; break; }
+                if (optlen < 16) { ret = (U64)-K_EINVAL; break; }
+                const U32 instructionCount = cpu->memory->readw(a4);
+                const U64 instructions64 = cpu->memory->readq(a4 + 8);
+                if (!instructionCount || instructionCount > 4096) { ret = (U64)-K_EINVAL; break; }
+                const U64 instructionBytes = (U64)instructionCount * 8;
+                if (!sys_rangeHasPermission64(cpu->memory, instructions64, instructionBytes, K64_PAGE_READ)) {
+                    ret = (U64)-K_EFAULT;
+                    break;
+                }
+                const U32 scratch = msgScratch(cpu->thread);
+                if (!scratch || 1024u + instructionBytes > MSG_SCRATCH_BYTES) { ret = (U64)-K_EFAULT; break; }
+                const U32 instructions32 = scratch + 1024;
+                v32 = scratch + 128;
+                cpu->thread->memory->writew(v32, (U16)instructionCount);
+                cpu->thread->memory->writed(v32 + 4, instructions32);
+                std::vector<U8> program((size_t)instructionBytes);
+                cpu->memory->memcpyFromGuest(program.data(), instructions64, instructionBytes);
+                cpu->thread->memory->memcpy(instructions32, program.data(), (U32)instructionBytes);
+                optlen = 8;
+            } else {
+                v32 = (a4 && optlen) ? bounceSockaddrTo32(cpu, a4, optlen, nullptr) : 0;
+            }
             ret = (U64)(S64)(S32)ksetsockopt(cpu->thread, (U32)a1, (U32)a2, (U32)a3, v32, optlen);
             break;
         }
@@ -4213,7 +5578,7 @@ void ksyscall64(CPU64* cpu) {
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->unlinkFile(
-                BString(Fs::getFullPath(cpu->thread->process->currentDirectory,
+                BString(Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                         BString::copy(path))));
             break;
         }
@@ -4259,21 +5624,112 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
             break;
         }
+        case X64_SYS_inotify_init:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_init1(0);
+            break;
+        case X64_SYS_inotify_init1:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_init1((U32)a1);
+            break;
+        case X64_SYS_inotify_add_watch: {
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            char path[1024] = {0};
+            if (a2) cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_add_watch((S32)a1, BString::copy(path), (U32)a3);
+            break;
+        }
+        case X64_SYS_inotify_rm_watch:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->inotify_rm_watch((S32)a1, (S32)a2);
+            break;
+        case X64_SYS_timerfd_create:
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->timerfd_create((U32)a1, (U32)a2);
+            break;
+        case X64_SYS_timerfd_settime:
+        case X64_SYS_timerfd_gettime: {
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            KProcessPtr process = cpu->thread->process;
+            KFileDescriptorPtr fd = process->getFileDescriptor((FD)a1);
+            if (!fd) { ret = (U64)-K_EBADF; break; }
+            std::shared_ptr<KTimer> timer = std::dynamic_pointer_cast<KTimer>(fd->kobject);
+            if (!timer) { ret = (U64)-K_EINVAL; break; }
+            if (nr == X64_SYS_timerfd_gettime) {
+                if (!a2) { ret = (U64)-K_EFAULT; break; }
+                const U64 interval = timer->getMicroInterval();
+                const U64 next = timer->getMicroNextTimer();
+                const U64 now = timer->getClockNowMicroseconds();
+                const U64 remaining = next > now ? next - now : 0;
+                cpu->memory->writeq(a2, interval / 1000000);
+                cpu->memory->writeq(a2 + 8, (interval % 1000000) * 1000);
+                cpu->memory->writeq(a2 + 16, remaining / 1000000);
+                cpu->memory->writeq(a2 + 24, (remaining % 1000000) * 1000);
+                ret = 0;
+                break;
+            }
+            constexpr U32 TFD_TIMER_ABSTIME = 1;
+            if ((a2 & ~TFD_TIMER_ABSTIME) != 0) { ret = (U64)-K_EINVAL; break; }
+            if (!a3) { ret = (U64)-K_EFAULT; break; }
+            const S64 intervalSec = (S64)cpu->memory->readq(a3);
+            const S64 intervalNsec = (S64)cpu->memory->readq(a3 + 8);
+            const S64 valueSec = (S64)cpu->memory->readq(a3 + 16);
+            const S64 valueNsec = (S64)cpu->memory->readq(a3 + 24);
+            if (intervalSec < 0 || valueSec < 0 || intervalNsec < 0 || intervalNsec >= 1000000000 ||
+                valueNsec < 0 || valueNsec >= 1000000000 ||
+                (U64)intervalSec > UINT64_MAX / 1000000 || (U64)valueSec > UINT64_MAX / 1000000) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            if (a4) {
+                const U64 interval = timer->getMicroInterval();
+                const U64 next = timer->getMicroNextTimer();
+                const U64 now = timer->getClockNowMicroseconds();
+                const U64 remaining = next > now ? next - now : 0;
+                cpu->memory->writeq(a4, interval / 1000000);
+                cpu->memory->writeq(a4 + 8, (interval % 1000000) * 1000);
+                cpu->memory->writeq(a4 + 16, remaining / 1000000);
+                cpu->memory->writeq(a4 + 24, (remaining % 1000000) * 1000);
+            }
+            const U64 interval = (U64)intervalSec * 1000000 + (U64)intervalNsec / 1000;
+            U64 next = (U64)valueSec * 1000000 + (U64)valueNsec / 1000;
+            if (next && !(a2 & TFD_TIMER_ABSTIME)) next += timer->getClockNowMicroseconds();
+            timer->setTimes(interval, next);
+            ret = 0;
+            break;
+        }
         case X64_SYS_prlimit64:
             ret = sys_prlimit64_64(cpu, a1, a2, a3, a4);
             break;
         case X64_SYS_getrlimit:
             // getrlimit(resource, struct rlimit* {unsigned long cur,max}).
-            // wine's unix ntdll queries RLIMIT_STACK/NOFILE/AS during thread
-            // setup. Pretend "no limit" (RLIM_INFINITY) like prlimit64 does.
+            // RLIMIT_MEMLOCK (8) is tracked per process (kernel round 3A);
+            // every other resource still reports RLIM_INFINITY, matching
+            // what the ntdll queries in wine (STACK/NOFILE/AS) expect.
             if (a2) {
-                cpu->memory->writeq(a2, ~0ULL);
-                cpu->memory->writeq(a2 + 8, ~0ULL);
+                U64 cur = ~0ULL, max = ~0ULL;
+                if (a1 == 8 && cpu->thread && cpu->thread->process) {
+                    cur = cpu->thread->process->rlimMemlockCur;
+                    max = cpu->thread->process->rlimMemlockMax;
+                }
+                cpu->memory->writeq(a2, cur);
+                cpu->memory->writeq(a2 + 8, max);
             }
             ret = 0;
             break;
         case X64_SYS_setrlimit:
-            ret = 0; // accept and ignore — we don't enforce limits
+            // Only RLIMIT_MEMLOCK (8) is stored (kernel round 3A); other
+            // resources keep the historical accept-and-ignore behaviour.
+            if (a1 == 8 && a2 && cpu->thread && cpu->thread->process) {
+                KProcess* process = cpu->thread->process.get();
+                const U64 newCur = cpu->memory->readq(a2);
+                const U64 newMax = cpu->memory->readq(a2 + 8);
+                if (newCur > newMax) { ret = (U64)-K_EINVAL; break; }
+                if (newMax > process->rlimMemlockMax) { ret = (U64)-K_EPERM; break; }
+                process->rlimMemlockCur = newCur;
+                process->rlimMemlockMax = newMax;
+            }
+            ret = 0;
             break;
         case X64_SYS_sched_getscheduler:
             ret = 0; // SCHED_OTHER
@@ -4286,13 +5742,56 @@ void ksyscall64(CPU64* cpu) {
             if (a2) cpu->memory->writed(a2, 0);
             ret = 0;
             break;
-        case X64_SYS_mlockall:
-        case X64_SYS_munlockall:
-        case X64_SYS_mlock:
-        case X64_SYS_munlock:
-            // We never page guest memory out, so locking is a no-op success.
+        case X64_SYS_mlockall: {
+            constexpr U32 MCL_CURRENT = 1, MCL_FUTURE = 2, MCL_ONFAULT = 4;
+            if ((a1 & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
+                ((a1 & MCL_ONFAULT) && !(a1 & (MCL_CURRENT | MCL_FUTURE)))) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            // Pages are always resident here, so MCL_ONFAULT accounting
+            // matches an immediate lock (kernel round 3A).
+            if ((a1 & MCL_CURRENT) && cpu->memory) {
+                const S64 lockResult = cpu->memory->lockAllCurrent();
+                if (lockResult < 0) { ret = (U64)lockResult; break; }
+            }
+            if ((a1 & MCL_FUTURE) && cpu->thread && cpu->thread->process) {
+                cpu->thread->process->memLockAllFuture = true;
+            }
             ret = 0;
             break;
+        }
+        case X64_SYS_munlockall:
+            if (cpu->memory) cpu->memory->unlockAll();
+            if (cpu->thread && cpu->thread->process) cpu->thread->process->memLockAllFuture = false;
+            ret = 0;
+            break;
+        case X64_SYS_mlock:
+        case X64_SYS_munlock: {
+            if (!a2 || a1 > ~0ULL - a2 || a1 + a2 > ~0ULL - K64_PAGE_MASK) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            const U64 start = a1 & ~K64_PAGE_MASK;
+            const U64 end = (a1 + a2 + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+            ret = (nr == X64_SYS_mlock) ? (U64)cpu->memory->lockRange(start, end - start)
+                                        : (U64)cpu->memory->unlockRange(start, end - start);
+            break;
+        }
+        case 325: { // __NR_mlock2: flags must be 0 or MLOCK_ONFAULT (1)
+            if (a3 & ~1ULL) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            if (!a2 || a1 > ~0ULL - a2 || a1 + a2 > ~0ULL - K64_PAGE_MASK) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            const U64 start = a1 & ~K64_PAGE_MASK;
+            const U64 end = (a1 + a2 + K64_PAGE_MASK) & ~K64_PAGE_MASK;
+            ret = (U64)cpu->memory->lockRange(start, end - start);
+            break;
+        }
         case X64_SYS_clock_gettime:
             ret = sys_clock_gettime64(cpu, a1, a2);
             break;
@@ -4344,7 +5843,7 @@ void ksyscall64(CPU64* cpu) {
             ret = cpu->thread ? cpu->thread->id : 1;
             break;
         case X64_SYS_futex:
-            ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, (U32)a6);
+            ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, a5, (U32)a6);
             break;
         case X64_SYS_poll:
         case X64_SYS_ppoll: {
@@ -4565,10 +6064,38 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_rt_sigpending64(cpu, a1, a2);
             break;
         case X64_SYS_rt_sigqueueinfo:
-            // rt_sigqueueinfo(tgid, sig, info) — like kill but with siginfo.
-            // We don't deliver, so report success the same way kill does.
-            ret = 0;
+        case 297: { // rt_tgsigqueueinfo(tgid, tid, sig, info)
+            const bool threadDirected = nr == 297;
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ESRCH; break; }
+            const U64 tgid = a1;
+            const U64 tid = threadDirected ? a2 : 0;
+            const U64 sig = threadDirected ? a3 : a2;
+            const U64 infoAddress = threadDirected ? a4 : a3;
+            if (tgid > UINT32_MAX || sig < 1 || sig > 64 ||
+                (threadDirected && tid > UINT32_MAX) || !infoAddress) {
+                ret = (U64)-K_EINVAL;
+                break;
+            }
+            KProcessPtr target = tgid == cpu->thread->process->id
+                ? cpu->thread->process : KSystem::getProcess((U32)tgid);
+            if (!target) { ret = (U64)-K_ESRCH; break; }
+            if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+            KThread* targetThread = threadDirected ? target->getThreadById((U32)tid) : target->getThread();
+            if (!targetThread) { ret = (U64)-K_ESRCH; break; }
+            if (!sys_rangeHasPermission64(cpu->memory, infoAddress, 128, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+                break;
+            }
+            U8 info[128] = {};
+            cpu->memory->memcpyFromGuest(info, infoAddress, sizeof(info));
+            S32 infoSignal = 0, infoCode = 0;
+            std::memcpy(&infoSignal, info, sizeof(infoSignal));
+            std::memcpy(&infoCode, info + 8, sizeof(infoCode));
+            if (infoSignal != (S32)sig) { ret = (U64)-K_EINVAL; break; }
+            if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
+            ret = (U64)(S64)queueSiginfo64(targetThread, (U32)sig, info);
             break;
+        }
         case X64_SYS_pause:
             // pause() blocks till any signal; we never deliver, so the
             // glibc-compatible answer is -EINTR (caller's loop retries).
@@ -4593,11 +6120,45 @@ void ksyscall64(CPU64* cpu) {
             // child_tid=r10, tls=r8). Create a real thread sharing this
             // process + memory64. Falls back to -ENOSYS for non-thread clones.
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
-                ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4);
+                constexpr U64 CLONE_PIDFD_BIT = 0x1000ULL;
+                constexpr U64 CLONE_THREAD_BIT = 0x10000ULL;
+                if ((a1 & CLONE_PIDFD_BIT) && (a1 & CLONE_THREAD_BIT)) {
+                    ret = (U64)-K_EINVAL;
+                    break;
+                }
+                if (a1 & CLONE_PIDFD_BIT) {
+                    // Legacy clone reports the pidfd through the parent_tid
+                    // pointer (a3); validate it before creating the child.
+                    KMemory64* mem = cpu->thread->process->memory64;
+                    if (!a3 || a3 > ~0ULL - 3) { ret = (U64)-K_EFAULT; break; }
+                    const U32 pf = mem->getPageFlags(a3 >> K64_PAGE_SHIFT);
+                    const U32 pl = mem->getPageFlags((a3 + 3) >> K64_PAGE_SHIFT);
+                    if (!(pf & K64_PAGE_MAPPED) || !(pf & K64_PAGE_WRITE) ||
+                        !(pl & K64_PAGE_MAPPED) || !(pl & K64_PAGE_WRITE)) {
+                        ret = (U64)-K_EFAULT;
+                        break;
+                    }
+                }
+                ret = cpu->thread->process->clone64(cpu->thread, a1, a2, a3, a5, a4, a1 & 0xff);
+                if ((a1 & CLONE_PIDFD_BIT) && (S64)ret > 0) {
+                    const U32 pidfd = createPidFdForClone64(cpu->thread, (U32)ret);
+                    if ((S32)pidfd < 0) { ret = (U64)(S64)(S32)pidfd; break; }
+                    cpu->thread->process->memory64->writed(a3, pidfd);
+                }
             } else {
-                klog_fmt("ksyscall64: clone(flags=0x%llx) with no process/memory64",
-                         (unsigned long long)a1);
-                ret = (U64)-K_ENOSYS;
+                ret = unimplementedSyscall64(nr);
+            }
+            break;
+        case X64_SYS_fork:
+        case X64_SYS_vfork:
+            // Both syscalls currently get a private process snapshot. vfork
+            // suspends the parent through child exec/exit; sharing the original
+            // address space until that point remains tracked in the gap register.
+            if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
+                const U64 cloneFlags = nr == X64_SYS_vfork ? X64_CLONE_VFORK : 0;
+                ret = cpu->thread->process->forkProcess64(cpu->thread, cloneFlags, 0, 0, K_SIGCHLD, 0);
+            } else {
+                ret = unimplementedSyscall64(nr);
             }
             break;
         case X64_SYS_execve:
@@ -4607,19 +6168,58 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_execve64(cpu, a1, a2, a3);
             break;
         case X64_SYS_getitimer:
-        case X64_SYS_setitimer:
-            // Interval timers are rarely used by modern glibc (timer_create
-            // is preferred); explicit ENOSYS keeps callers honest.
-            ret = (U64)-K_ENOSYS;
+        case X64_SYS_setitimer: {
+            // Shared value core with the 32-bit ABI (KProcess::setitimerValues);
+            // ITIMER_VIRTUAL/ITIMER_PROF get -EINVAL there, not ENOSYS.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            KProcessPtr process = cpu->thread->process;
+            const U32 which = (U32)a1;
+            const U64 oldAddress = (nr == X64_SYS_setitimer) ? a3 : a2;
+            if (nr == X64_SYS_getitimer && !oldAddress) { ret = (U64)-K_EFAULT; break; }
+            bool apply = false;
+            U32 valueMs = 0;
+            U32 intervalMs = 0;
+            if (nr == X64_SYS_setitimer && a2) {
+                U64 intervalSec = cpu->memory->readq(a2);
+                U64 intervalUsec = cpu->memory->readq(a2 + 8);
+                U64 valueSec = cpu->memory->readq(a2 + 16);
+                U64 valueUsec = cpu->memory->readq(a2 + 24);
+                if (intervalUsec >= 1000000 || valueUsec >= 1000000) { ret = (U64)-K_EINVAL; break; }
+                U64 vms = valueSec > 0xffffffffULL / 1000 ? 0xffffffffULL : valueSec * 1000 + valueUsec / 1000;
+                U64 ims = intervalSec > 0xffffffffULL / 1000 ? 0xffffffffULL : intervalSec * 1000 + intervalUsec / 1000;
+                valueMs = (U32)vms;
+                intervalMs = (U32)ims;
+                apply = true;
+            }
+            U32 oldRemainingMs = 0;
+            U32 oldIntervalMs = 0;
+            S32 result = process->setitimerValues(which, apply, valueMs, intervalMs,
+                                                  oldAddress ? &oldRemainingMs : nullptr,
+                                                  oldAddress ? &oldIntervalMs : nullptr);
+            if (result) { ret = (U64)(S64)result; break; }
+            if (oldAddress) {
+                cpu->memory->writeq(oldAddress, oldIntervalMs / 1000);
+                cpu->memory->writeq(oldAddress + 8, (oldIntervalMs % 1000) * 1000);
+                cpu->memory->writeq(oldAddress + 16, oldRemainingMs / 1000);
+                cpu->memory->writeq(oldAddress + 24, (oldRemainingMs % 1000) * 1000);
+            }
+            ret = 0;
             break;
+        }
         case X64_SYS_clone3:
             // glibc 2.34+ prefers clone3. Implement it directly (its ENOSYS
             // fallback to clone is fragile in our interpreter).
             if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
                 ret = cpu->thread->process->clone364(cpu->thread, a1, a2);
             } else {
-                ret = (U64)-K_ENOSYS;
+                ret = unimplementedSyscall64(nr);
             }
+            break;
+        case 282: // signalfd(fd, sigmask, sigsetsize)
+            ret = sys_signalfd64(cpu, (S32)a1, a2, a3, 0);
+            break;
+        case 289: // signalfd4(fd, sigmask, sigsetsize, flags)
+            ret = sys_signalfd64(cpu, (S32)a1, a2, a3, (U32)a4);
             break;
         case X64_SYS_eventfd2:
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
@@ -4721,6 +6321,33 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)rc;
             break;
         }
+        case 441: { // epoll_pwait2(epfd, events, maxevents, timeout*, sigmask*, sigsetsize)
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
+            if (!a2 || !a3 || a3 > 64) { ret = (U64)-K_EINVAL; break; }
+            U32 timeoutMs = 0xffffffffu;
+            if (a4) {
+                const S64 sec = (S64)cpu->memory->readq(a4);
+                const S64 nsec = (S64)cpu->memory->readq(a4 + 8);
+                if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }
+                const U64 totalMs = (U64)sec * 1000 + ((U64)nsec + 999999) / 1000000;
+                timeoutMs = (U32)std::min<U64>(totalMs, 0xfffffffeu);
+            }
+            if (a5 && a6 != 8) { ret = (U64)-K_EINVAL; break; }
+            const U64 oldMask = cpu->thread->sigMask;
+            if (a5) cpu->thread->sigMask = cpu->memory->readq(a5);
+            const U32 maxevents = (U32)a3;
+            U32 ev32 = bounceSockaddrTo32(cpu, 0, maxevents * 12, nullptr);
+            if (!ev32) { cpu->thread->sigMask = oldMask; ret = (U64)-K_EFAULT; break; }
+            U32 rc = cpu->thread->process->epollwait(cpu->thread, (FD)a1, ev32, maxevents, timeoutMs);
+            cpu->thread->sigMask = oldMask;
+            if ((S32)rc > 0) {
+                U8 tmp[64 * 12];
+                cpu->thread->memory->memcpy(tmp, ev32, rc * 12);
+                cpu->memory->memcpyToGuest(a2, tmp, rc * 12);
+            }
+            ret = (U64)(S64)(S32)rc;
+            break;
+        }
         case X64_SYS_getdents64:
             ret = sys_getdents64_real(cpu, a1, a2, a3);
             break;
@@ -4736,9 +6363,7 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_readv64(cpu, a1, a2, a3);
             break;
         case X64_SYS_select:
-            // select(nfds, readfds, writefds, exceptfds, timeout). Without
-            // real fd polling we cannot honor it; ENOSYS surfaces cleanly.
-            ret = (U64)-K_ENOSYS;
+            ret = unimplementedSyscall64(nr);
             break;
         case X64_SYS_chmod:
         case X64_SYS_fchmod:
@@ -4784,9 +6409,11 @@ void ksyscall64(CPU64* cpu) {
                 auto* memory = cpu->memory;
                 memory->memsetGuest(a1, 0, 112);
                 memory->writeq(a1, KSystem::getMilliesSinceStart() / 1000);      // uptime
-                memory->writeq(a1 + 32, 1024ULL * 1024 * 1024);                  // totalram
-                memory->writeq(a1 + 40, 768ULL * 1024 * 1024);                   // freeram
-                memory->writew(a1 + 80, 1);                                      // procs
+                U64 totalBytes = 0, freeBytes = 0;
+                KSystem::guestRamInfo(totalBytes, freeBytes);
+                memory->writeq(a1 + 32, totalBytes);                             // totalram
+                memory->writeq(a1 + 40, freeBytes);                              // freeram
+                memory->writew(a1 + 80, (U16)KSystem::processCount());         // procs
                 memory->writed(a1 + 104, 1);                                     // mem_unit
             }
             ret = 0;
@@ -4814,11 +6441,69 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_clock_nanosleep:
             ret = sys_nanosleep64(cpu, a3, true, a1, a2);
             break;
+        case X64_SYS_membarrier: {
+            // Linux 6.x command bits. The single-process virtual CPU makes
+            // the expedited operation a sequentially consistent host fence.
+            constexpr U32 QUERY = 0;
+            constexpr U32 GLOBAL = 1;
+            constexpr U32 GLOBAL_EXPEDITED = 2;
+            constexpr U32 REGISTER_GLOBAL_EXPEDITED = 4;
+            constexpr U32 PRIVATE_EXPEDITED = 8;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED = 16;
+            constexpr U32 PRIVATE_EXPEDITED_SYNC_CORE = 32;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED_SYNC_CORE = 64;
+            constexpr U32 PRIVATE_EXPEDITED_RSEQ = 128;
+            constexpr U32 REGISTER_PRIVATE_EXPEDITED_RSEQ = 256;
+            constexpr U32 SUPPORTED = QUERY | GLOBAL | GLOBAL_EXPEDITED |
+                REGISTER_GLOBAL_EXPEDITED | PRIVATE_EXPEDITED |
+                REGISTER_PRIVATE_EXPEDITED | PRIVATE_EXPEDITED_SYNC_CORE |
+                REGISTER_PRIVATE_EXPEDITED_SYNC_CORE | PRIVATE_EXPEDITED_RSEQ |
+                REGISTER_PRIVATE_EXPEDITED_RSEQ;
+            const U32 command = (U32)a1;
+            const U32 flags = (U32)a2;
+            if (flags != 0 || a3 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (command == QUERY) { ret = SUPPORTED; break; }
+            if (command & ~SUPPORTED) { ret = (U64)-K_EINVAL; break; }
+            if (command == REGISTER_GLOBAL_EXPEDITED) { ret = 0; break; }
+            if (command == REGISTER_PRIVATE_EXPEDITED ||
+                command == REGISTER_PRIVATE_EXPEDITED_SYNC_CORE ||
+                command == REGISTER_PRIVATE_EXPEDITED_RSEQ) {
+                if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+                cpu->thread->process->membarrierRegistrations |= command;
+                ret = 0;
+                break;
+            }
+            if (command == PRIVATE_EXPEDITED ||
+                command == PRIVATE_EXPEDITED_SYNC_CORE ||
+                command == PRIVATE_EXPEDITED_RSEQ) {
+                if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+                const U32 registration = command == PRIVATE_EXPEDITED ? REGISTER_PRIVATE_EXPEDITED :
+                    command == PRIVATE_EXPEDITED_SYNC_CORE ? REGISTER_PRIVATE_EXPEDITED_SYNC_CORE :
+                    REGISTER_PRIVATE_EXPEDITED_RSEQ;
+                if (!(cpu->thread->process->membarrierRegistrations & registration)) {
+                    ret = (U64)-K_EPERM;
+                    break;
+                }
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            ret = 0;
+            break;
+        }
+        case 237: // mbind(addr, len, mode, nodemask, maxnode, flags)
+            ret = sys_mbind64(cpu, a1, a2, a3, a4, a5, a6);
+            break;
+        case 238: // set_mempolicy(mode, nodemask, maxnode)
+            ret = sys_setMempolicy64(cpu, a1, a2, a3);
+            break;
+        case 239: // get_mempolicy(mode*, nodemask*, maxnode, addr, flags)
+            ret = sys_getMempolicy64(cpu, a1, a2, a3, a4, a5);
+            break;
+        case 326: // copy_file_range(fd_in, off_in, fd_out, off_out, len, flags)
+            ret = sys_copyFileRange64(cpu, a1, a2, a3, a4, a5, a6);
+            break;
         case X64_SYS_rseq:
-            // restartable-sequences registration. glibc 2.35+ calls this on
-            // every thread start. Pretend it's not supported so glibc falls
-            // back to plain mutexes.
-            ret = (U64)-K_ENOSYS;
+            // No rseq implementation: report through the common ENOSYS path.
+            ret = unimplementedSyscall64(nr);
             break;
         case X64_SYS_ptrace:
             ret = (U64)-K_EPERM;
@@ -4831,7 +6516,6 @@ void ksyscall64(CPU64* cpu) {
             break;
         case 74:  // fsync(fd)
         case 75:  // fdatasync(fd)
-        case 26:  // msync(addr,len,flags)
         case X64_SYS_sync_file_range:
             // Our VFS writes are effectively synchronous (no host page cache to
             // flush for the guest's purposes), so a flush is a successful no-op.
@@ -4841,54 +6525,7 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         default:
-            {
-                static std::mutex unimplementedLogMutex;
-                static std::unordered_map<U64, U32> unimplementedLogCounts;
-                const U32 pid = cpu->thread && cpu->thread->process
-                    ? cpu->thread->process->id : 0;
-                const U64 key = ((U64)pid << 32) | (U32)nr;
-                U32 reportCount;
-                {
-                    std::lock_guard<std::mutex> lock(unimplementedLogMutex);
-                    reportCount = ++unimplementedLogCounts[key];
-                }
-                if (reportCount <= 5) {
-                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) at RIP=0x%llx — RDI=0x%llx RSI=0x%llx RDX=0x%llx R10=0x%llx R8=0x%llx R9=0x%llx",
-                             (unsigned long long)nr,
-                             x64SyscallName(nr),
-                             (unsigned long long)cpu->rip,
-                             (unsigned long long)a1,
-                             (unsigned long long)a2,
-                             (unsigned long long)a3,
-                             (unsigned long long)a4,
-                             (unsigned long long)a5,
-                             (unsigned long long)a6);
-                } else if (reportCount == 6) {
-                    klog_fmt("ksyscall64: unimplemented syscall #%llu (%s) (further reports suppressed)",
-                             (unsigned long long)nr, x64SyscallName(nr));
-                }
-            }
-            // TEMP DIAGNOSTIC: dump the bytes around the syscall RIP and the
-            // full register set so we can tell a real Linux syscall from a
-            // wine __wine_unix_call / NT thunk landing here. syscallRip points
-            // at the 0F 05 instruction.
-            if (getenv("BW64_SCDUMP")) {
-                U64 r = cpu->syscallRip;
-                U8 b[16];
-                for (int i = 0; i < 16; i++) b[i] = cpu->memory->readb(r - 6 + i);
-                klog_fmt("  SCDUMP bytes@RIP-6: %02x %02x %02x %02x %02x %02x [%02x %02x] %02x %02x %02x %02x %02x %02x %02x %02x",
-                         b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
-                klog_fmt("  SCDUMP RAX=%llx RBX=%llx RCX=%llx RBP=%llx RSP=%llx R12=%llx fsbase=%llx gsbase=%llx",
-                         (unsigned long long)cpu->reg[X64_RAX].u64,
-                         (unsigned long long)cpu->reg[X64_RBX].u64,
-                         (unsigned long long)cpu->reg[X64_RCX].u64,
-                         (unsigned long long)cpu->reg[X64_RBP].u64,
-                         (unsigned long long)cpu->reg[X64_RSP].u64,
-                         (unsigned long long)cpu->reg[X64_R12].u64,
-                         (unsigned long long)cpu->fsbase,
-                         (unsigned long long)cpu->gsbase);
-            }
-            ret = (U64)-K_ENOSYS;
+            ret = unimplementedSyscall64(nr);
             break;
     }
 

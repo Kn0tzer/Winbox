@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('concurrent O_CREAT opens publish one shared inode', () => {
-  const source = readFileSync('source/kernel/kprocess.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
   const start = source.indexOf('U32 KProcess::openFileDescriptor(');
   const end = source.indexOf('U32 KProcess::openFile(', start);
   assert.ok(start >= 0 && end > start);
@@ -75,7 +79,7 @@ struct KProcess{
  KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<KObject> o,U32,U32,S32,U32){return std::make_shared<Descriptor>(Descriptor{o});}
  U32 openFileDescriptor(BString,BString,U32,U32,S32,U32,KFileDescriptorPtr&);
 };
-${source.slice(start,end)}
+${extractSourceRange(source, start,end)}
 int main(){
  KProcess first{1},second{2};KFileDescriptorPtr a,b;
  std::thread one([&]{assert(first.openFileDescriptor("/tmp","lock",K_O_CREAT|K_O_RDWR,0,-1,0,a)==0);});

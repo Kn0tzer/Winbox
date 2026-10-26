@@ -57,14 +57,133 @@
 #include "mmu/testBrk.h"
 
 void testWaitPid();
+void testSyscall64DispatchGuard();
+void testGuestCpuTopology();
+void testKObjectLockStubs();
+void testProcMaps64();
+void testAtomicStress64();
+void testFutex64DispatchGuard();
+#ifndef BOXEDWINE_GUEST_X64
+void testMadvise32Syscall();
+void testClone32Sharing();
+void testClone32Flags();
+void testClone3Abi32();
+void testGetrandom32Syscall();
+void testMlock32Syscalls();
+void testSchedAffinity32Syscalls();
+void testMremap32Syscall();
+void testMadvise32ForkInheritance();
+void testMremap32SharedFile();
+void testProcMaps32();
+#endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
 void testGl64ClientArrayIndexRange();
+void testTimerfdCore();
+void testUnixSocketOptions();
+void testEpollOneShotAndFlags();
+void testMemfdSeals();
+void testEventfdFlags();
+void testDevInputJoystick();
+void testTimerfdProcessAbiProbes();
+void testSetitimerProbes();
+void testAsyncSigio();
+void testDnsLoopbackService();
+void testDevDspCapture();
+void testInotifyEventsProcessApi();
+#ifdef BOXEDWINE_GUEST_X64
+void testTimerfd64Syscalls();
+void testCopyFileRange64Syscall();
+void testProcessVm64Syscalls();
+void testEpollPwait2Syscall();
+void testMadvise64Effects();
+void testPidfd64Syscalls();
+void testInotify64Syscalls();
+void testSetitimer64Syscalls();
+void testInotifyEvents();
+void testSignalfd64Syscalls();
+void testFutex64Operations();
+void testPrctl64Options();
+void testOpcodeFault64Delivery();
+void testCpu64AvxCpuidMask();
+void testForkVfork64();
+void testGetrandom64Syscalls();
+void testStatx64Syscall();
+void testClone3Abi64();
+void testCloneSharing64();
+void testSignalFp64Roundtrip();
+void testSignal64NestedAltstack();
+void testSignal64BadFpFrame();
+void testSignal64AsyncFp();
+void testMemoryFault64Registers();
+void testMemoryFault64JitPoll();
+void testMemoryFault64RepPartial();
+void testSigaltstack64Semantics();
+void testSigaltstack64Autodisarm();
+void testClone64AltstackReset();
+void testMremap64Syscall();
+void testSysinfo64Consistency();
+void testMadvise64Syscalls();
+void testMlock64Syscalls();
+#endif
 
 namespace {
 
 int totalFails = 0;
 
+#ifdef BOXEDWINE_GUEST_X64
+const TestEntry TEST_ENTRIES[] = {
+    {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testGuestCpuTopology, "Test guest CPU topology consistency"},
+    {testProcMaps64, "Test x64 /proc maps generation"},
+    {testAtomicStress64, "Test x64 concurrent LOCK atomicity stress (K-M1)"},
+    {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
+    {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
+    {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
+    {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
+    {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdSeals, "Test memfd seal enforcement"},
+    {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
+    {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
+    {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
+    {testMadvise64Effects, "Test x64 madvise side effects"},
+    {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
+    {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
+    {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
+    {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
+    {testSetitimerProbes, "Test setitimer expiration probes"},
+    {testSetitimer64Syscalls, "Test x64 setitimer and getitimer syscalls"},
+    {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
+    {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
+    {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
+    {testInotifyEvents, "Test inotify event delivery end to end"},
+    {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
+    {testPrctl64Options, "Test x64 prctl option surface"},
+    {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
+    {testCpu64AvxCpuidMask, "Test x64 AVX CPUID bits stay consistently hidden"},
+    {testGetrandom64Syscalls, "Test x64 getrandom entropy and validation"},
+    {testStatx64Syscall, "Test x64 statx ABI and metadata"},
+    {testClone3Abi64, "Test x64 clone3 argument ABI validation"},
+    {testCloneSharing64, "Test x64 clone sharing flags (CLONE_FS/FILES/SIGHAND/VM)"},
+    {testMremap64Syscall, "Test x64 mremap fixed and DONTUNMAP semantics"},
+    {testForkVfork64, "Test x64 fork and vfork create real processes"},
+    {testSysinfo64Consistency, "Test x64 sysinfo and meminfo consistency"},
+    {testMadvise64Syscalls, "Test x64 madvise remove and fork advice"},
+    {testMlock64Syscalls, "Test x64 mlock accounting and RLIMIT_MEMLOCK"},
+    {testSignalFp64Roundtrip, "Test x64 signal FP/SSE snapshot and edited return (K-M4)"},
+    {testSignal64NestedAltstack, "Test x64 nested altstack signal frames"},
+    {testSignal64BadFpFrame, "Test x64 invalid signal FP frame faults"},
+    {testSignal64AsyncFp, "Test x64 async signal FP snapshot and null restore"},
+    {testMemoryFault64Registers, "Test x64 data faults preserve interrupted state (K-M3)"},
+    {testMemoryFault64JitPoll, "Test x64 cached block safepoint poll faults (K-M3)"},
+    {testMemoryFault64RepPartial, "Test x64 REP string faults keep partial progress (K-M3)"},
+    {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
+    {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
+    {testClone64AltstackReset, "Test x64 clone sigaltstack reset for CLONE_VM children"},
+};
+#else
 const TestEntry TEST_ENTRIES[] = {
     {testCpuSystemInstructions, "CPU32 system instruction fault and store behavior"},
     {testCpuCpuidAndCpuInfo, "CPU32 CPUID and proc cpuinfo architecture"},
@@ -675,6 +794,39 @@ const TestEntry TEST_ENTRIES[] = {
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
+    {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
+    {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
+    {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
+    {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
+    {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
+    {testMadvise32ForkInheritance, "Test 32-bit fork madvise inheritance"},
+    {testClone32Sharing, "Test 32-bit clone sharing flags (CLONE_FS/FILES/SIGHAND/VM)"},
+    {testClone32Flags, "Test 32-bit clone flag dispositions"},
+    {testClone3Abi32, "Test 32-bit clone3 ABI validation"},
+    {testMremap32SharedFile, "Test 32-bit mremap shared file identity"},
+    {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
+    {testGuestCpuTopology, "Test guest CPU topology consistency"},
+    {testKObjectLockStubs, "Test KObject lock stub dispositions"},
+    {testProcMaps32, "Test 32-bit /proc maps generation"},
+    {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
+    {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
+    {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
+    {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdSeals, "Test memfd seal enforcement"},
+    {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
+    {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
+    {testSetitimerProbes, "Test setitimer expiration probes"},
+    {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
+    {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
+    {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
+    {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
+#ifdef BOXEDWINE_GUEST_X64
+    {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
+    {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
+    {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
+#endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
     {testInetStreamLoopback, "Test AF_INET TCP loopback socket"},
     {testGl64ClientArrayIndexRange, "Test GL64 client-array index range"},
@@ -685,9 +837,13 @@ const TestEntry TEST_ENTRIES[] = {
     {testSse3DuplicateMoves, "Test SSE3 duplicate moves"},
     {testSse3Haddpd, "Test SSE3 HADDPD"},
     {testSse3MonitorMwaitNoop, "Test SSE3 MONITOR and MWAIT no-op"},
-    // Last: known to abort with asmjit LabelAlreadyBound (exit 134) so it must not hide other tests.
+    // Full JIT path restored: the LabelAlreadyBound panic was a decoder bug (Invalid ops kept len 0), fixed in decoder.cpp.
     {testRecoverUnknownInstruction, "CPU32 unknown opcode recovery and UD2 fault"},
+    {testSgdtSidtStores, "CPU32 SGDT/SIDT store values on all engines"},
+    {testJitLockedOps, "CPU32 LOCK ops through JIT-compiled blocks"},
+    {testUd2DefaultDisposition, "CPU32 UD2 with SIG_DFL in a subprocess"},
 };
+#endif
 
 } // namespace
 
@@ -740,6 +896,14 @@ int runTestTests(size_t startEntry = 0, size_t requestedCount = 0, U32 workerCou
 }
 
 int runTestTestsFromArgs(int argc, char** argv) {
+    if (getenv("BW64_UD2_DFL_CHILD")) {
+        // Fresh-process child for the UD2 SIG_DFL test: same KSystem init
+        // as the suite, then only the scenario (see testMisc.cpp).
+        KSystem::startMicroCounter();
+        KSystem::init();
+        KSystem::videoOption = VIDEO_NO_WINDOW;
+        return bw64Ud2DflScenario();
+    }
     size_t startEntry = argc > 1 ? (size_t)strtoul(argv[1], nullptr, 0) : 0;
     size_t requestedCount = argc > 2 ? (size_t)strtoul(argv[2], nullptr, 0) : 0;
     U32 workerCount = argc > 3 ? (U32)strtoul(argv[3], nullptr, 0) : 0;

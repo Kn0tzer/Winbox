@@ -1,5 +1,86 @@
 // Vulkan v2 wire parsing, frame assembly, and format conversion.
 import { bwLog } from './vk-log.mjs';
+
+// Vulkan 1.3 / EXT_extended_dynamic_state{,2} state is part of the V2
+// protocol contract. Keep it here so the browser export has one copied module
+// for wire decoding and replay-state interpretation.
+//
+// The bridge records every vkCmdSet{PrimitiveTopology,DepthTestEnable,DepthWriteEnable,
+// DepthCompareOp,StencilTestEnable,StencilOp,DepthBiasEnable,RasterizerDiscardEnable,
+// PrimitiveRestartEnable,DepthBoundsTestEnable} as a RASTER_STATE record (which, value);
+// the pipeline's DYN1 tail says which of those states the pipeline takes from commands.
+// applyDynamicState() overlays the recorded values on the static pipeline at draw time.
+// A state the pipeline did not declare dynamic keeps its static value (Vulkan: the
+// command only applies when the pipeline lists the state in pDynamicStates).
+
+export const DYN_ID = Object.freeze({
+  cull: 0, front: 1, topology: 2, depthTest: 3, depthWrite: 4, depthOp: 5,
+  stencilTest: 6, depthBiasEnable: 7, rasterizerDiscard: 8, primitiveRestart: 9,
+  stencilOp: 10, depthBoundsTest: 11,
+});
+const DYN_NAME = Object.freeze(Object.fromEntries(Object.entries(DYN_ID).map(([k, v]) => [v, k])));
+export const DYN_MASK_LIMIT = 1 << 12;
+
+const isBool = v => v === 0 || v === 1;
+// Decodes a RASTER_STATE record. Returns {which, value}; throws on an id/value the
+// bridge could never have produced (a corrupt or hostile frame).
+export function decodeDynState(which, value) {
+  const name = DYN_NAME[which];
+  if (name === undefined) throw new Error('vk64: v2 invalid raster state');
+  switch (name) {
+    case 'cull': case 'front':
+      if (value > 3) throw new Error('vk64: v2 invalid raster state');
+      return { which: name, value };
+    case 'topology':
+      if (value > 5) throw new Error('vk64: v2 invalid dynamic topology');
+      return { which: name, value };
+    case 'depthOp':
+      if (value > 7) throw new Error('vk64: v2 invalid dynamic depth op');
+      return { which: name, value };
+    case 'stencilOp': {
+      const op = {
+        faceMask: value & 3, failOp: (value >>> 4) & 7, passOp: (value >>> 8) & 7,
+        depthFailOp: (value >>> 12) & 7, compareOp: (value >>> 16) & 7,
+      };
+      if (value >>> 19 || !op.faceMask) throw new Error('vk64: v2 invalid dynamic stencil op');
+      return { which: name, value: op };
+    }
+    default:
+      if (!isBool(value)) throw new Error('vk64: v2 invalid dynamic ' + name);
+      return { which: name, value };
+  }
+}
+
+const DEFAULT_FACE = Object.freeze({ failOp: 0, passOp: 0, depthFailOp: 0, compareOp: 7, compareMask: 255, writeMask: 255, reference: 0 });
+
+// dyn: Map/object name -> last recorded value. Returns the pipeline to draw with
+// (the input object when nothing is overridden).
+export function applyDynamicState(pipe, dyn) {
+  const mask = pipe.dynMask | 0;
+  const has = id => (mask & (1 << id)) !== 0 && dyn[DYN_NAME[id]] !== undefined;
+  let out = pipe, copied = false;
+  const set = patch => { out = copied ? Object.assign(out, patch) : { ...out, ...patch }; copied = true; };
+  if (has(DYN_ID.topology)) set({ topology: dyn.topology });
+  if (has(DYN_ID.depthTest)) set({ depthTest: dyn.depthTest });
+  if (has(DYN_ID.depthWrite)) set({ depthWrite: dyn.depthWrite });
+  if (has(DYN_ID.depthOp)) set({ depthOp: dyn.depthOp });
+  if (has(DYN_ID.depthBiasEnable)) set({ depthBiasEnable: dyn.depthBiasEnable });
+  if (has(DYN_ID.primitiveRestart)) set({ primitiveRestartEnable: !!dyn.primitiveRestart });
+  if (has(DYN_ID.rasterizerDiscard)) set({ rasterizerDiscard: dyn.rasterizerDiscard });
+  if (has(DYN_ID.stencilTest) || has(DYN_ID.stencilOp)) {
+    const base = out.stencil || { enabled: 0, dynamicMask: 0, front: { ...DEFAULT_FACE }, back: { ...DEFAULT_FACE } };
+    const stencil = { ...base, front: { ...base.front }, back: { ...base.back } };
+    if (has(DYN_ID.stencilTest)) stencil.enabled = dyn.stencilTest;
+    if (has(DYN_ID.stencilOp)) {
+      const o = dyn.stencilOp;
+      for (const [bit, face] of [[1, stencil.front], [2, stencil.back]])
+        if (o.faceMask & bit) { face.failOp = o.failOp; face.passOp = o.passOp; face.depthFailOp = o.depthFailOp; face.compareOp = o.compareOp; }
+    }
+    set({ stencil });
+  }
+  return out;
+}
+
 export const MAX_DIMENSION = 8192;
 export const MAX_DRAWS = 4096;
 
@@ -61,7 +142,7 @@ export const V2_REC = Object.freeze({
   VIEWPORT: 0x0D, SCISSOR: 0x0E, VERTEX_BIND: 0x0F, INDEX_BIND: 0x10,
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
-  IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B,
+  IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B, BUFFER_VIEW: 0x1C,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -117,7 +198,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.IMAGE_CLEAR_DS)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_VIEW)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -167,6 +248,40 @@ export class V2FrameAssembler {
 // push() drops the oldest past the cap; takeLatest() returns the newest and
 // drops everything older (latest-frame-wins); clear() drains (resize hook).
 // ---------------------------------------------------------------------------
+/** True when any pass of a decoded frame renders to a colour attachment. */
+export function v2HasColourPass(frame) {
+  return frame.passes.some(p => p.attachments.some(a => !a.isDepth));
+}
+/**
+ * Which submission of a present batch presents: the last one that renders to a
+ * colour attachment. Trailing copy/blit/clear-only submissions still execute
+ * but cannot present (they have no colour target and would resize the canvas
+ * to their 1x1 placeholder frame).
+ */
+export function v2PresentIndex(submissions) {
+  let at = submissions.length - 1;
+  while (at > 0 && !v2HasColourPass(submissions[at])) at--;
+  return at;
+}
+/** Index of the submission that rendered into the swapchain image the guest
+ * actually presented (guestPresent metadata from vkQueuePresentKHR carries
+ * the VkImage id), or -1 when no submission in this batch drew to that
+ * image. Callers fall back to v2PresentIndex when this returns -1 or no
+ * present metadata exists. */
+export function v2PresentIndexForImage(submissions, imageId) {
+  if (imageId == null) return -1;
+  const want = String(imageId);
+  for (let i = submissions.length - 1; i >= 0; i--) {
+    const s = submissions[i];
+    if (!s || !s.passes) continue;
+    for (const p of s.passes) {
+      if (!p || !p.attachments) continue;
+      for (const a of p.attachments) if (a && !a.isDepth && String(a.imageId) === want) return i;
+    }
+  }
+  return -1;
+}
+
 export class V2PresentAssembler {
   constructor() { this.pending = []; }
   push(frame, flags = 0) {
@@ -236,8 +351,59 @@ const V2_TEX_FORMAT = {
   137: 'bc3-rgba-unorm', 138: 'bc3-rgba-unorm-srgb',
   139: 'bc4-r-unorm', 140: 'bc4-r-snorm', 141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
-  124: 'depth16unorm', 125: 'depth24plus', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
+  124: 'depth16unorm', 125: 'depth32float', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
 };
+// UNIFORM texel buffer views the page tier can materialise as a 2D texture
+// (spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div V2_TEXEL_WRAP)).
+// Mirrors v2TexelBufferServable() in vk64bridge.cpp exactly — pinned by
+// vk-texel-format-mirror.test.mjs. SRGB formats are excluded (textureLoad
+// would sRGB-decode; texelFetch must not), block-compressed and depth/stencil
+// formats have no per-texel texture equivalent, 3-component formats have no
+// WebGPU texture format at all.
+export const V2_TEXEL_FORMAT = {
+  2: 'rgba8unorm', // VK_FORMAT_R4G4B4A4_UNORM_PACK16
+  3: 'rgba8unorm', // VK_FORMAT_B4G4R4A4_UNORM_PACK16
+  5: 'rgba8unorm', // VK_FORMAT_B5G6R5_UNORM_PACK16
+  7: 'rgba8unorm', // VK_FORMAT_B5G5R5A1_UNORM_PACK16
+  8: 'rgba8unorm', // VK_FORMAT_A1R5G5B5_UNORM_PACK16
+  9: 'r8unorm', // VK_FORMAT_R8_UNORM
+  10: 'r8snorm', // VK_FORMAT_R8_SNORM
+  13: 'r8uint', // VK_FORMAT_R8_UINT
+  14: 'r8sint', // VK_FORMAT_R8_SINT
+  16: 'rg8unorm', // VK_FORMAT_R8G8_UNORM
+  17: 'rg8snorm', // VK_FORMAT_R8G8_SNORM
+  20: 'rg8uint', // VK_FORMAT_R8G8_UINT
+  21: 'rg8sint', // VK_FORMAT_R8G8_SINT
+  37: 'rgba8unorm', // VK_FORMAT_R8G8B8A8_UNORM
+  38: 'rgba8snorm', // VK_FORMAT_R8G8B8A8_SNORM
+  41: 'rgba8uint', // VK_FORMAT_R8G8B8A8_UINT
+  42: 'rgba8sint', // VK_FORMAT_R8G8B8A8_SINT
+  44: 'bgra8unorm', // VK_FORMAT_B8G8R8A8_UNORM
+  64: 'rgb10a2unorm', // VK_FORMAT_A2B10G10R10_UNORM_PACK32
+  68: 'rgb10a2uint', // VK_FORMAT_A2B10G10R10_UINT_PACK32
+  70: 'r16unorm', // VK_FORMAT_R16_UNORM
+  74: 'r16uint', // VK_FORMAT_R16_UINT
+  75: 'r16sint', // VK_FORMAT_R16_SINT
+  76: 'r16float', // VK_FORMAT_R16_SFLOAT
+  77: 'rg16unorm', // VK_FORMAT_R16G16_UNORM
+  81: 'rg16uint', // VK_FORMAT_R16G16_UINT
+  82: 'rg16sint', // VK_FORMAT_R16G16_SINT
+  83: 'rg16float', // VK_FORMAT_R16G16_SFLOAT
+  95: 'rgba16uint', // VK_FORMAT_R16G16B16A16_UINT
+  96: 'rgba16sint', // VK_FORMAT_R16G16B16A16_SINT
+  97: 'rgba16float', // VK_FORMAT_R16G16B16A16_SFLOAT
+  98: 'r32uint', // VK_FORMAT_R32_UINT
+  99: 'r32sint', // VK_FORMAT_R32_SINT
+  100: 'r32float', // VK_FORMAT_R32_SFLOAT
+  101: 'rg32uint', // VK_FORMAT_R32G32_UINT
+  102: 'rg32sint', // VK_FORMAT_R32G32_SINT
+  103: 'rg32float', // VK_FORMAT_R32G32_SFLOAT
+  107: 'rgba32uint', // VK_FORMAT_R32G32B32A32_UINT
+  108: 'rgba32sint', // VK_FORMAT_R32G32B32A32_SINT
+  109: 'rgba32float', // VK_FORMAT_R32G32B32A32_SFLOAT
+  122: 'rg11b10ufloat', // VK_FORMAT_B10G11R11_UFLOAT_PACK32
+};
+export const V2_TEXEL_WRAP = 8192;
 const V2_NORM16_FORMATS = new Set([70, 77]);
 const V2_PACKED_RGBA8_FORMATS = new Set([2, 3, 5, 7, 8]);
 const V2_UNKNOWN_FORMATS_REPORTED = new Set();
@@ -271,7 +437,7 @@ export function v2TextureFormat(vkFormat, counters, features) {
   if (V2_NORM16_FORMATS.has(vkFormat)) {
     const norm16 = hasTextureFeature(features, 'texture-formats-tier1') || hasTextureFeature(features, 'norm16');
     f = vkFormat === 70 ? (norm16 ? 'r16unorm' : 'r16float') : (norm16 ? 'rg16unorm' : 'rg16float');
-  } else if (vkFormat === 130 && hasTextureFeature(features, 'depth32float-stencil8')) {
+  } else if ((vkFormat === 129 || vkFormat === 130) && hasTextureFeature(features, 'depth32float-stencil8')) {
     f = 'depth32float-stencil8';
   }
   if (!f) {
@@ -282,6 +448,16 @@ export function v2TextureFormat(vkFormat, counters, features) {
     }
     return null;
   }
+  return f;
+}
+/** GPU texture format for a UNIFORM texel buffer view of vkFormat, or null
+ * when the format is not servable as a texel texture. Norm16 formats resolve
+ * through v2TextureFormat (tier1 direct, else the half-float fallback whose
+ * bytes v2TexturePixels converts). */
+export function v2TexelTextureFormat(vkFormat, features) {
+  const f = V2_TEXEL_FORMAT[vkFormat];
+  if (!f) return null;
+  if (V2_NORM16_FORMATS.has(vkFormat)) return v2TextureFormat(vkFormat, null, features);
   return f;
 }
 function scalePacked(value, bits) { return Math.round(value * 255 / (2 ** bits - 1)); }
@@ -327,8 +503,12 @@ const V2_TEXTURE_UPLOAD_BPP = Object.freeze({
   bgra8unorm:4, 'bgra8unorm-srgb':4, 'rgb10a2unorm':4,
   r16unorm:2, r16float:2, rg16unorm:4, rg16float:4, rgba16float:8,
   rg32float:8, rgba32float:16, r32float:4, r32uint:4, r32sint:4,
+  r16uint:2, r16sint:2, rg16uint:4, rg16sint:4, rgba16uint:8, rgba16sint:8,
+  'rgb10a2uint':4, rg32uint:8, rg32sint:8, rgba32uint:16, rgba32sint:16,
   depth16unorm:2, depth24plus:4, depth32float:4, 'depth24plus-stencil8':4, 'depth32float-stencil8':8,
 });
+/** Bytes per texel of a GPU texture format in V2_TEXTURE_UPLOAD_BPP, or 0. */
+export function v2TextureUploadBpp(format) { return V2_TEXTURE_UPLOAD_BPP[format] || 0; }
 /** Return byte offsets and writeTexture extents for the bridge's layer-major mip-chain image layout. */
 export function v2TextureMipUploadPlan(img, format, dimension = '2d') {
   const w = Math.max(1, img.w || 1), h = dimension === '1d' ? 1 : Math.max(1, img.h || 1);
@@ -386,7 +566,16 @@ export function v2DepthStencilUploads(vkFormat, bytes, features) {
     const bytesPerTexel = vkFormat === 124 ? 2 : 4;
     return { uploads: [{ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel, pixels: new Uint8Array(bytes.subarray(0, texels * bytesPerTexel)) }], skippedDepth: false };
   }
-  if (vkFormat === 125) return { uploads: [], skippedDepth: texels > 0 };
+  if (vkFormat === 125) {
+    const source = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const pixels = new Uint8Array(texels * 4);
+    const output = new DataView(pixels.buffer);
+    for (let texel = 0; texel < texels; texel++) {
+      const normalized = (source.getUint32(texel * 4, true) & 0x00ffffff) / 0x00ffffff;
+      output.setFloat32(texel * 4, normalized, true);
+    }
+    return { uploads: [{ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel: 4, pixels }], skippedDepth: false };
+  }
   if (vkFormat === 129 || vkFormat === 130) {
     const sourceStride = vkFormat === 129 ? 4 : 8;
     const stencil = new Uint8Array(texels);
@@ -394,10 +583,18 @@ export function v2DepthStencilUploads(vkFormat, bytes, features) {
     for (let texel = 0; texel < texels; texel++) stencil[texel] = source.getUint8(texel * sourceStride + (vkFormat === 129 ? 3 : 4));
     const uploads = [{ aspect: /** @type {GPUTextureAspect} */ ('stencil-only'), bytesPerTexel: 1, pixels: stencil }];
     const supportsDepth32Stencil8 = hasTextureFeature(features, 'depth32float-stencil8');
-    if (vkFormat === 130 && supportsDepth32Stencil8) {
+    if ((vkFormat === 129 || vkFormat === 130) && supportsDepth32Stencil8) {
       const depth = new Uint8Array(texels * 4);
-      for (let texel = 0; texel < texels; texel++)
-        depth.set(bytes.subarray(texel * sourceStride, texel * sourceStride + 4), texel * 4);
+      if (vkFormat === 129) {
+        const output = new DataView(depth.buffer);
+        for (let texel = 0; texel < texels; texel++) {
+          const packed = source.getUint32(texel * sourceStride, true) & 0x00ffffff;
+          output.setFloat32(texel * 4, packed / 0x00ffffff, true);
+        }
+      } else {
+        for (let texel = 0; texel < texels; texel++)
+          depth.set(bytes.subarray(texel * sourceStride, texel * sourceStride + 4), texel * 4);
+      }
       uploads.unshift({ aspect: /** @type {GPUTextureAspect} */ ('depth-only'), bytesPerTexel: 4, pixels: depth });
       return { uploads, skippedDepth: false };
     }
@@ -461,14 +658,18 @@ export const V2_SCALED_VERTEX = {
   89: { components: 3, bits: 16, signed: true, output: 'sint32' }, // R16G16B16_SINT
   90: { components: 3, bits: 16, signed: true, half: true }, // R16G16B16_SFLOAT
 };
-export function repackScaledVb(bytes, inputStride, outputStride, attributes) {
-  const count = Math.floor(bytes.length / inputStride);
+export function repackScaledVb(bytes, inputStride, outputStride, attributes, rawAttributes = [], repeatCount = 1) {
+  const sourceExtent = Math.max(inputStride, ...rawAttributes.map(a => a.srcOffset + a.size),
+    ...attributes.map(a => a.srcOffset + a.components * a.bits / 8));
+  const count = inputStride ? Math.max(0, Math.floor((bytes.length - sourceExtent) / inputStride) + 1) : Math.max(1, repeatCount);
   const out = new Uint8Array(count * outputStride);
   const src = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const dst = new DataView(out.buffer);
   for (let vertex = 0; vertex < count; vertex++) {
     const from = vertex * inputStride, to = vertex * outputStride;
     out.set(bytes.subarray(from, from + inputStride), to);
+    for (const a of rawAttributes)
+      out.set(bytes.subarray(from + a.srcOffset, from + a.srcOffset + a.size), to + a.dstOffset);
     for (const a of attributes) for (let component = 0; component < a.components; component++) {
       const offset = from + a.srcOffset + component * a.bits / 8;
       const value = a.half
@@ -544,7 +745,7 @@ export function decodeV2Frame(records, counters = {}) {
   const frame = {
     frameNo, width, height, passes: [],
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
-    images: new Map(), views: new Map(), viewFormats: new Map(), samplers: new Map(),
+    images: new Map(), views: new Map(), bufferViews: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
   };
   const implicitPass = () => ({
@@ -584,6 +785,11 @@ export function decodeV2Frame(records, counters = {}) {
             attachment.stencilLoadOp = r.u32(); attachment.stencilStoreOp = r.u32(); attachment.aspectMask = r.u32();
           }
         }
+        // CLR1 tail: per-attachment colour clear values (multiple render targets).
+        if (r.left) {
+          if (r.u32() !== 0x31524c43 || r.u32() !== natt) throw new Error('vk64: v2 RP_BEGIN invalid clear tail');
+          for (const attachment of attachments) attachment.clearColor = [r.f32(), r.f32(), r.f32(), r.f32()];
+        }
         r.done('RP_BEGIN');
         pass = { rpId, fbId, w, h, attachments, clearColor, clearDepth, clearStencil, ops: [] };
         frame.passes.push(pass);
@@ -602,7 +808,7 @@ export function decodeV2Frame(records, counters = {}) {
       case V2_REC.PIPELINE: {
         const pipeId = v2Hex64(r.u64());
         const vsHash = v2Hex64(r.u64()), fsHash = v2Hex64(r.u64());
-        const topology = r.u32(), cull = r.u32(), front = r.u32();
+        let topology = r.u32(); const cull = r.u32(), front = r.u32();
         const depthTest = r.u32(), depthWrite = r.u32(), depthOp = r.u32(), blend = r.u32();
         const nVb = r.u32(), nVa = r.u32();
         if (nVb > 4 || nVa > 16) throw new Error('vk64: v2 PIPELINE vertex layout out of range');
@@ -630,7 +836,7 @@ export function decodeV2Frame(records, counters = {}) {
           fsSpec = readSpec();
         }
         let colorBlend, blendConstants, stencil, blendConstantsDynamic, depthBias;
-        let primitiveRestartEnable = false, cullDynamic = false, frontDynamic = false;
+        let primitiveRestartEnable = false, cullDynamic = false, frontDynamic = false, dynMask = 0, rasterizerDiscard = 0;
         while (r.left) {
           const tag = r.u32();
           if (tag === 0x314e5453) {
@@ -663,6 +869,12 @@ export function decodeV2Frame(records, counters = {}) {
             cullDynamic = !!cd; frontDynamic = !!fd;
             continue;
           }
+          if (tag === 0x314e5944) {
+            const mask = r.u32(), discard = r.u32();
+            if (mask >= DYN_MASK_LIMIT || discard > 1) throw new Error('vk64: v2 PIPELINE invalid extended dynamic state');
+            dynMask = mask; rasterizerDiscard = discard;
+            continue;
+          }
           if (tag !== 0x31444e42) throw new Error('vk64: v2 PIPELINE unknown extension tail');
           const count = r.u32();
           if (count > 4) throw new Error('vk64: v2 PIPELINE blend count out of range');
@@ -674,7 +886,13 @@ export function decodeV2Frame(records, counters = {}) {
           blendConstants = [r.f32(), r.f32(), r.f32(), r.f32()];
         }
         r.done('PIPELINE');
-        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
+        // A topology WebGPU cannot draw is never replayed as triangle-list: the bridge rejects
+        // such pipelines. A dynamic-topology pipeline may carry any static value (ignored).
+        if (!(topology in V2_TOPOLOGY)) {
+          if (!(dynMask & (1 << DYN_ID.topology))) throw new Error('vk64: v2 PIPELINE unsupported topology ' + topology);
+          topology = 3;
+        }
+        const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(dynMask ? { dynMask } : {}), ...(rasterizerDiscard ? { rasterizerDiscard: 1 } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
@@ -689,9 +907,12 @@ export function decodeV2Frame(records, counters = {}) {
         break;
       }
       case V2_REC.DESC_SET: {
-        const setIndex = r.u8(), nBind = r.u8(); r.skip(2);
+        // setIndex u8, reserved u8, nBind u16: one wire entry per written
+        // (binding, arrayElement); descriptor arrays and >8-binding layouts are
+        // legal (DXVK/vkd3d use both).
+        const setIndex = r.u8(); r.skip(1); const nBind = r.u16();
         const layoutId = v2Hex64(r.u64());
-        if (setIndex >= V2_MAX_SETS || nBind > 8) throw new Error('vk64: v2 DESC_SET out of range');
+        if (setIndex >= V2_MAX_SETS) throw new Error('vk64: v2 DESC_SET out of range');
         const bindings = [];
         for (let k = 0; k < nBind; k++) {
           bindings.push({
@@ -737,14 +958,26 @@ export function decodeV2Frame(records, counters = {}) {
         const d = r.left ? r.u32() : 1, layers = r.left ? r.u32() : 1, mips = r.left ? r.u32() : 1;
         if (d < 1 || d > MAX_DIMENSION || layers < 1 || layers > MAX_DIMENSION || mips < 1 || mips > 32)
           throw new Error('vk64: v2 IMAGE_DATA depth/layers/mips out of range');
+        // Optional view-range tail: the subresource range and type the view was created with.
+        const viewRange = r.left >= 20 ? { baseMip: r.u32(), levelCount: r.u32(), baseLayer: r.u32(), layerCount: r.u32(), viewType: r.left ? r.u32() : 1 } : null;
         r.done('IMAGE_DATA');
         frame.views.set(viewId, imageId);
+        if (viewRange) frame.viewRanges.set(viewId, viewRange);
         frame.viewFormats.set(viewId, format);
         // Pixel-less record (pixLen 0): wasm-side dedup, content unchanged
         // since the last full record. The view->image link is still recorded;
         // the texture resolves from the persistent cache via the content hash.
         if (!frame.images.has(imageId))
           frame.images.set(imageId, { w, h, d, layers, mips, format, hash, pixels: pixLen ? pixels.slice() : null });
+        break;
+      }
+      case V2_REC.BUFFER_VIEW: {
+        const viewId = v2Hex64(r.u64());
+        const bufferId = v2Hex64(r.u64());
+        const format = r.u32(); r.u32();
+        const absOff = r.u64().toString();
+        const len = r.u64().toString(); r.done('BUFFER_VIEW');
+        frame.bufferViews.set(viewId, { bufferId, format, absOff, len });
         break;
       }
       case V2_REC.SAMPLER: {
@@ -764,6 +997,10 @@ export function decodeV2Frame(records, counters = {}) {
         frame.samplers.set(id, {
           mag: FILTER[mag] || 'nearest', min: FILTER[min] || 'nearest', mipmap: FILTER[mipmap] || 'nearest',
           addrU: ADDR[addrU] || 'clamp-to-edge', addrV: ADDR[addrV] || 'clamp-to-edge', addrW: ADDR[addrW] || 'clamp-to-edge',
+          // Raw VkSamplerAddressMode values, retained because ADDR collapses
+          // CLAMP_TO_BORDER (3) into clamp-to-edge: the page tier emulates
+          // border sampling in the shader and needs the unmapped modes.
+          addrModeU: addrU, addrModeV: addrV, addrModeW: addrW,
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
           anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
         });
@@ -835,8 +1072,7 @@ export function decodeV2Frame(records, counters = {}) {
       }
       case V2_REC.RASTER_STATE: {
         const which = r.u32(), value = r.u32(); r.done('RASTER_STATE');
-        if (which > 1 || value > 3) throw new Error('vk64: v2 invalid raster state');
-        needPass().ops.push({ op: 'rasterState', which: which ? 'front' : 'cull', value }); break;
+        needPass().ops.push({ op: 'rasterState', ...decodeDynState(which, value) }); break;
       }
       case V2_REC.IMAGE_CLEAR_DS: {
         const image = v2Hex64(r.u64()), depth = r.f32(), stencil = r.u32(), count = r.u32();

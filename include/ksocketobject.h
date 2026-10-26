@@ -23,6 +23,7 @@ class KFileDescriptor;
 
 class KSocketObject : public KObject {
 public:
+    struct KClassicBpfInsn { U16 code; U8 jt; U8 jf; U32 k; };
     class KSockAddress {
     public:
         KSockAddress() = default;
@@ -57,6 +58,16 @@ public:
     KSockAddress destAddress;
     U32 recvLen = 1048576;
     U32 sendLen = 1048576;
+    U32 priority = 0;
+    U64 socketOptionFlags = 0; // stored integer boolean SOL_SOCKET options
+    std::vector<KClassicBpfInsn> socketFilter;
+    U32 recvLowWater = 1;
+    U32 lingerEnabled = 0;
+    U32 lingerSeconds = 0;
+    U32 recvTimeoutSeconds = 0;
+    U32 recvTimeoutMicroseconds = 0;
+    U32 sendTimeoutSeconds = 0;
+    U32 sendTimeoutMicroseconds = 0;
 
     bool inClosed = false;
     bool outClosed = false;
@@ -85,6 +96,7 @@ protected:
     void readMsgHdr(KThread* thread, U32 address, MsgHdr* hdr);
     void readCMsgHdr(KThread* thread, U32 address, CMsgHdr* hdr);
     void writeCMsgHdr(KThread* thread, U32 address, U32 len, U32 level, U32 type);
+    U32 applySocketFilter(const U8* packet, U32 length) const;
 };
 
 #endif

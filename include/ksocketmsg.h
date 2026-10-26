@@ -32,6 +32,9 @@ class KSocketMsg {
 public:
     std::vector<KSocketMsgObject> objects;
     std::vector<U8> data;
+    U32 senderPid = 0;
+    U32 senderUid = 0;
+    U32 senderGid = 0;
 };
 
 #endif

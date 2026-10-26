@@ -25,6 +25,7 @@
 #include <vector>
 #include <mutex>
 #include <array>
+#include <deque>
 #include <string>
 #include <utility>
 
@@ -147,6 +148,13 @@ public:
     // main-thread pump (XWireServer::pumpInput) and flushes immediately.
     void sendSelectionClear(uint32_t ownerWindow, const std::string& selectionName);
 
+    // Emit MappingNotify for the IME scratch keycode if its keysym binding
+    // changed since this connection last announced it (see
+    // bindImeScratchKeysym in xwireconnection.cpp). Called from
+    // deliverInputEvents, which every input pump and guest request runs.
+    // No-op when unchanged.
+    void sendPendingImeMappingNotify();
+
 private:
     // ---- wire helpers ----
     void writeToClient(const void* data, uint32_t len);
@@ -252,6 +260,10 @@ private:
     // motion during a drag and the press/release sequence report the correct
     // logical button state, like the 32-bit XServer path.
     uint32_t buttonState = 0;
+    // IME keymap generation this connection has already announced via
+    // MappingNotify (see sendPendingImeMappingNotify).
+    uint64_t imeKeymapGenerationSent = 0;
+    std::deque<XWireInputEvent> frozenPointerEvents;
 
     // Virtual absolute pointer position for relative-motion (EvMotionRel)
     // accumulation. Initialized lazily from the sink's last pointer pos.

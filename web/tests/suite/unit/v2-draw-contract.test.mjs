@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 
 test('v2 preserves indexed and nonindexed draw arguments even when legacy capture exists', () => {
   const source = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
-  const submit = source.slice(source.indexOf('void serializeSubmitV2('));
+  const submit = extractSourceRange(source, source.indexOf('void serializeSubmitV2('));
   const first = submit.indexOf('                case CMD_DRAW:');
   const tail = submit.slice(first);
   const end = tail.indexOf('                case ', tail.indexOf('                case CMD_DRAW_INDEXED:') + 1);

@@ -78,6 +78,8 @@
 #define K_IPPROTO_TCP 6
 
 #define K_SCM_RIGHTS  1
+#define K_SCM_CREDENTIALS 2
+#define K_MSG_CTRUNC  0x0008
 
 #define K_IP_TOS      1
 #define K_IP_TTL      2

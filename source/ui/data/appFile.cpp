@@ -57,7 +57,11 @@ void AppFile::buildIconTexture() {
 }
 
 void AppFile::runOptions(BoxedContainer* container, BoxedApp* app, const std::vector<BString>& options, std::list< std::function<bool() > >& runner, std::list<AppDownloadTask>& downloads) {
-    // :TODO: find dependencies, if there are some then delay the other changes
+    // No dependency pass is needed here: every option in the list is applied
+    // in this single pass, before any runner or download executes, and the
+    // container options are final-state setters. Their relative order cannot
+    // change the configuration the app launches with, so there is nothing to
+    // delay.
     bool hasContainerOption = false;
     BString containerDir = container->getDir();
 

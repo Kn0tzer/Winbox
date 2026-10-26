@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('PE Vulkan resolver exposes final dispatch entries and ICD loader exports', () => {
   const dir=mkdtempSync(join(tmpdir(),'bw64-vkpe-resolve-'));
   try {
-    execFileSync('python3',['tools/vkd3d/probe/gen_vk64pe.py'],{stdio:'pipe'});
+    execFileSync('python3',[join(repoRoot,'tools/vkd3d/probe/gen_vk64pe.py')],{stdio:'pipe'});
     let source=readFileSync('/tmp/vk64pe.c','utf8');
     // The private syscall is the host boundary. Keep the generated resolver
     // and its full export table; calls return dispatch IDs in this native test.

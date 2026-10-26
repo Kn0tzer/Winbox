@@ -118,6 +118,9 @@
 #define UTF8_STRING 110
 #define TARGETS 111
 #define EXPORT_CLIPBOARD 112
+#define _NET_WM_STATE_ABOVE 113
+#define _NET_ACTIVE_WINDOW 114
+#define _NET_SUPPORTED 115
 
 /* Byte order  used in imageByteOrder and bitmapBitOrder */
 

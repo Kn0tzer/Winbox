@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -21,7 +22,7 @@ test('shared mapping replacement retains in-flight private backing pointers', ()
 using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
 #define K64_PAGE_SIZE 4096
 void bssBufDiagLog(const char*, const void*, const void*) {}
-${header.slice(start, end)}
+${extractSourceRange(header, start, end)}
 int main() {
     U8 shared[K64_PAGE_SIZE] = {};
     K64Page page;
@@ -50,12 +51,12 @@ test('a pointer captured before remap cannot be cached with the newer generation
   const classStart = header.indexOf('class KMemory64 {');
   const entryStart = header.indexOf('namespace K64DTlb {', classStart);
   const lookupStart = header.indexOf('inline __attribute__((always_inline)) Entry* lookup', entryStart);
-  const entryDecl = header.slice(entryStart, lookupStart);
+  const entryDecl = extractSourceRange(header, entryStart, lookupStart);
   const lookupEnd = header.indexOf('\n}', lookupStart) + 2;
-  const lookup = header.slice(lookupStart, lookupEnd);
+  const lookup = extractSourceRange(header, lookupStart, lookupEnd);
   const insertStart = source.indexOf('inline void k64DTlbInsert(');
   const insertEnd = source.indexOf('\ninline void k64DTlbInvalidateAll()', insertStart);
-  const insert = source.slice(insertStart, insertEnd);
+  const insert = extractSourceRange(source, insertStart, insertEnd);
   const dir = mkdtempSync(join(tmpdir(), 'bw64-cache-generation-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `

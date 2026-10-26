@@ -140,6 +140,12 @@ bool downloadFile(BString url, BString filePath, std::function<void(U64 bytesCom
 
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 
+        /* a transfer that moves less than 1 byte/s for 120s is stuck, not
+           slow: abort it so a dead socket cannot hang a download (or a
+           cancel request) forever */
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 120L);
+
         FILE* file = fopen(filePath.c_str(), "wb");
         if (file) {
 

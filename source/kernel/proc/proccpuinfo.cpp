@@ -30,12 +30,7 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 	bool is64Bit = thread && thread->process && thread->process->is64Bit;
 	BString& result = is64Bit ? result64 : result32;
 	if (result.length() == 0) {
-		U32 count = Platform::getCpuCount();
-#ifdef BOXEDWINE_MULTI_THREADED
-		if (KSystem::cpuAffinityCountForApp != 0 && KSystem::cpuAffinityCountForApp < count) {
-			count = KSystem::cpuAffinityCountForApp;
-		}
-#endif
+		U32 count = KSystem::guestCpuCount();
 		for (U32 i = 0; i < count; i++) {
 			result += "processor	: "; result += i; result += "\n";
 			result += "vendor_id	: GenuineIntel\n";
@@ -57,8 +52,8 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "siblings	: 1\n";
 			result += "core id		: 0\n";
 			result += "cpu cores	: 1\n";
-			result += "apicid		: 6\n";
-			result += "initial apicid	: 6\n";
+			result += "apicid		: "; result += i; result += "\n";
+			result += "initial apicid	: "; result += i; result += "\n";
 			result += "fdiv_bug	: no\n";
 			result += "f00f_bug	: no\n";
 			result += "coma_bug	: no\n";

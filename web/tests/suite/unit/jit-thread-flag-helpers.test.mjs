@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -11,7 +12,7 @@ test('threads entering an already compiled block receive the process flag helper
     if (start < 0) throw new Error(`Missing method: ${signature}`);
     const end = source.indexOf(nextSignature, start + signature.length);
     if (end < 0) throw new Error(`Missing next method: ${nextSignature}`);
-    return source.slice(start, end);
+    return extractSourceRange(source, start, end);
   };
   const dir = mkdtempSync(join(tmpdir(), 'bw64-jit-thread-helpers-'));
   try {

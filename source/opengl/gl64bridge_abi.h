@@ -495,6 +495,12 @@ enum {
     GL64_fn_glMultiTexCoord2fARB = 884, // (texture, s:float, t:float)
     GL64_fn_glClientActiveTextureARB,   // (texture)
 
+    // Fixed-function fog state is lowered into the WebGPU fixed-function shader.
+    GL64_fn_glFogf = 886,               // (pname, param:float)
+    GL64_fn_glFogi,                     // (pname, param)
+    GL64_fn_glFogfv,                    // (pname, params*)
+    GL64_fn_glFogiv,                    // (pname, params*)
+
     GL64_fn__MAX
 };
 

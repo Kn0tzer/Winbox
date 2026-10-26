@@ -103,9 +103,9 @@ public:
     // table as the 32-bit futex(), keyed on the stable host pointer that
     // KMemory64::getRamPtr returns for the guest futex word. Only WAIT/WAKE
     // (+ _BITSET, + _PRIVATE) are real; other ops return -ENOSYS so glibc
-    // takes its user-space fallback. timeoutAddr (when non-zero) points at a
+    // takes its user-space fallback. arg4 (when non-zero) points at a
     // guest `struct timespec` for the relative WAIT timeout.
-    S64 futex64(U64 addr, U32 op, U32 value, U64 timeoutAddr, U32 val3);
+    S64 futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3);
 #endif
     U32 modify_ldt(U32 func, U32 ptr, U32 count);
     U32 signalstack(U32 ss, U32 oss);

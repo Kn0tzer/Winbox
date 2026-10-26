@@ -12,6 +12,7 @@ bool fsZipUrlIsSpec(BString path) {
 #include <emscripten.h>
 #include <cstdlib>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <list>
 #include <map>
@@ -57,12 +58,79 @@ EMSCRIPTEN_KEEPALIVE void bw64FetchDone(double ctxAddr, double jobAddr, int resu
 }
 }
 
+// Stall timeout for the fetch below (Celeste hang, runtime.md lazy-fetch
+// row): a fetch whose body stalls used to never settle, so bw64FetchDone
+// was never called and the guest pthread blocked in
+// emscripten_proxy_sync_with_ctx hung forever, silently. The watchdog is a
+// STALL deadline, not a total deadline: it starts at issuance and resets
+// whenever progress arrives (response headers, then every streamed chunk),
+// so a slow-but-progressing fetch is never aborted. 60000 ms of total
+// silence is the trip point — healthy same-origin range fetches of one
+// 2MB block settle in well under a second, and any link still delivering
+// bytes resets the clock; only a dead connection (or a wedged server)
+// produces a full minute of silence. Where the launcher's prefetch wrapper
+// buffers the body before this promise resolves, no progress is visible
+// here and the window acts as a per-block deadline instead; the wrapper
+// carries its own 120 s backstop watchdog (wine64-launcher.js) so its
+// pending map cannot wedge either. On a stall the watchdog logs once
+// (greppable: url + offset + bytes so far), aborts the fetch, and settles
+// the job itself with BW64_FETCH_STALLED (-2, mirrored in C++ below) via
+// the settled-guarded settle(), so the C++ side wakes and fetchRaw's retry
+// path takes over — never a silent hang. BW64_FETCH_STALL_MS on the global
+// object overrides the window (unit-test seam).
 EM_JS(void, bw64StartFetch, (double ctxAddr, double jobAddr, const char* url, double start, double endIncl, double dstAddr, int want), {
     var u = UTF8ToString(url);
     var range = 'bytes=' + start + '-' + endIncl;
-    fetch(u, { headers: { 'Range': range }, cache: 'no-store' }).then(function (r) {
+    var stallMs = (typeof globalThis !== 'undefined' && Number(globalThis.BW64_FETCH_STALL_MS) > 0)
+        ? Number(globalThis.BW64_FETCH_STALL_MS) : 60000;
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var settled = false;
+    var received = 0;
+    var timer = null;
+    function settle(result) {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) { clearTimeout(timer); timer = null; }
+        _bw64FetchDone(ctxAddr, jobAddr, result);
+    }
+    function arm() {
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(function () {
+            console.error('fszipurl: fetch STALL url=' + u + ' off=' + start +
+                          ' len=' + (endIncl - start + 1) + ' bytesSoFar=' + received +
+                          ' stallMs=' + stallMs);
+            if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+            settle(-2); // BW64_FETCH_STALLED
+        }, stallMs);
+    }
+    arm();
+    var init = { headers: { 'Range': range }, cache: 'no-store' };
+    if (ctrl) init.signal = ctrl.signal;
+    fetch(u, init).then(function (r) {
         if (r.status != 206 && !(r.status == 200 && start == 0)) {
             throw { bwStatus: r.status };
+        }
+        arm(); // headers arrived: that is progress, restart the stall clock
+        if (r.body && typeof r.body.getReader === 'function') {
+            var reader = r.body.getReader();
+            var chunks = [];
+            var total = 0;
+            var pump = function () {
+                return reader.read().then(function (step) {
+                    if (step.done) {
+                        var all = new Uint8Array(total);
+                        var at = 0;
+                        for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], at); at += chunks[i].length; }
+                        return all.buffer;
+                    }
+                    chunks.push(step.value);
+                    total += step.value.length;
+                    received += step.value.length;
+                    arm(); // bytes arrived: restart the stall clock
+                    return pump();
+                });
+            };
+            return pump();
         }
         return r.arrayBuffer();
     }).then(function (ab) {
@@ -70,10 +138,11 @@ EM_JS(void, bw64StartFetch, (double ctxAddr, double jobAddr, const char* url, do
         var n = src.length < want ? src.length : want;
         if (typeof growMemViews === 'function') growMemViews();
         HEAPU8.set(src.subarray(0, n), Number(dstAddr));
-        _bw64FetchDone(ctxAddr, jobAddr, n);
+        settle(n);
     }).catch(function (e) {
+        if (settled) return; // stall path already settled the job
         var code = (e && e.bwStatus) ? -e.bwStatus : -1;
-        _bw64FetchDone(ctxAddr, jobAddr, code);
+        settle(code);
     });
 });
 
@@ -102,6 +171,22 @@ static int bw64SyncFetchRange(const char* url, double start, double endIncl, U8*
 }
 
 namespace {
+
+// Result code settled by the bw64StartFetch stall watchdog when a fetch
+// makes no progress for the whole stall window (see the EM_JS comment).
+// Distinct from -1 (generic failure) and -<status> so fetchRaw can log a
+// stall as a stall and retry it like other transient failures.
+constexpr int BW64_FETCH_STALLED = -2;
+
+// Defence-in-depth deadline for threads waiting on fetchCv for a block
+// another thread is fetching. The fetcher is now stall-bounded end to end:
+// each bw64SyncFetchRange settles within the JS stall window (60 s of
+// silence) and fetchRaw retries a chunk at most 3 times, so a live
+// fetcher holds inFlight for at most ~3 minutes per block. 240 s gives
+// margin over that worst case; a waiter still blocked past it means the
+// fetcher thread is dead, and the read fails loudly instead of hanging
+// the guest silently.
+constexpr std::chrono::seconds FETCH_WAIT_DEADLINE{240};
 
 constexpr U64 BLOCK_SIZE = 2 * 1024 * 1024;
 
@@ -153,13 +238,35 @@ struct RangedFile {
             if (!p) return false;
             U64 inPart = off - p->start;
             U64 chunk = std::min(len, p->size - inPart);
-            int got = bw64SyncFetchRange(p->url.c_str(), (double)inPart,
+            // Bounded retry: a stall-aborted or transiently failed chunk is
+            // re-fetched (each attempt is itself stall-bounded in JS), so a
+            // single dead connection cannot fail the whole block read.
+            // Permanent statuses are not retried — they fail fast below and
+            // latch permanentError as before.
+            int got = -1;
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                got = bw64SyncFetchRange(p->url.c_str(), (double)inPart,
                                          (double)(inPart + chunk - 1),
                                          dst, (int)chunk);
+                if (got == (int)chunk) break;
+                if (got == -404 || got == -403) break;
+                if (attempt < 3) {
+                    klog_fmt("fszipurl: range fetch retry %d/3 url=%s off=%llu len=%llu -> %d",
+                             attempt + 1, p->url.c_str(),
+                             (unsigned long long)inPart,
+                             (unsigned long long)chunk, got);
+                }
+            }
             if (got != (int)chunk) {
-                klog_fmt("fszipurl: range fetch FAILED url=%s off=%llu len=%llu -> %d",
-                         p->url.c_str(), (unsigned long long)inPart,
-                         (unsigned long long)chunk, got);
+                if (got == BW64_FETCH_STALLED) {
+                    klog_fmt("fszipurl: range fetch STALLED url=%s off=%llu len=%llu (no progress before the stall deadline, retries exhausted)",
+                             p->url.c_str(), (unsigned long long)inPart,
+                             (unsigned long long)chunk);
+                } else {
+                    klog_fmt("fszipurl: range fetch FAILED url=%s off=%llu len=%llu -> %d",
+                             p->url.c_str(), (unsigned long long)inPart,
+                             (unsigned long long)chunk, got);
+                }
                 if (got == -404 || got == -403) { permanentError.store(true, std::memory_order_relaxed); }
                 return false;
             }
@@ -185,6 +292,7 @@ struct RangedFile {
     // memcpy from the returned pointer (eviction also requires m).
     const U8* getBlock(U64 idx, std::unique_lock<std::mutex>& lk) {
         if (permanentError.load(std::memory_order_relaxed)) return nullptr;
+        const auto waitDeadline = std::chrono::steady_clock::now() + FETCH_WAIT_DEADLINE;
         for (;;) {
             auto it = blocks.find(idx);
             if (it != blocks.end()) {
@@ -196,10 +304,21 @@ struct RangedFile {
                 break; // miss and nobody fetching: we become the fetcher
             // Another thread is fetching this block; wait for it to finish,
             // then re-check the cache (or become the fetcher if it failed).
-            fetchCv.wait(lk, [&] {
-                return blocks.find(idx) != blocks.end() ||
-                       inFlight.find(idx) == inFlight.end();
-            });
+            // The wait is deadline-bounded (FETCH_WAIT_DEADLINE): the
+            // fetcher's fetches settle within the JS stall window plus
+            // bounded retries, so still waiting past the deadline means
+            // the fetcher thread died. Fail this read loudly instead of
+            // hanging forever. inFlight is left untouched — it is owned by
+            // the fetcher — so no duplicate fetch is started and a later
+            // read re-enters this wait (or becomes fetcher once the entry
+            // is cleared).
+            if (fetchCv.wait_until(lk, waitDeadline) == std::cv_status::timeout &&
+                blocks.find(idx) == blocks.end() &&
+                inFlight.find(idx) != inFlight.end()) {
+                klog_fmt("fszipurl: STALL waiting for in-flight block %llu (fetcher made no completion past the wait deadline); failing this read",
+                         (unsigned long long)idx);
+                return nullptr;
+            }
         }
         U64 off = idx * BLOCK_SIZE;
         if (off >= total) {

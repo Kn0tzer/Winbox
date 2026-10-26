@@ -1349,19 +1349,21 @@ function genLea(e) {
 
 // "stack" template: PUSH/POP (emitStackGen).
 // Always 64-bit. RSP is GPR local 5 (X64_RSP == 4; GPR local index = reg+1).
-// The order of the RSP update vs the memory access mirrors cpu64.cpp exactly
-// (reads return 0 and writes commit on unmapped pages, so the ORDER is the
-// observable contract):
-//   PUSH reg (sub 0): push64: value = old reg contents (PUSH RSP pushes the
-//                     old RSP), RSP -= 8, [RSP] = value.
-//   PUSH imm (sub 1): dsp_22: [RSP-8] = imm FIRST, then RSP -= 8.
-//   PUSH r/m (sub 2): v = loadRM(m, 8); push64(v): read r/m (register or
-//                     [decode-time EA]), RSP -= 8, [RSP] = v.
+// Fault-order contract (K-M3): no architectural effect is published
+// before the memory access that can fault, because a denied access
+// exits the module at once (the interpreter reaches the same state
+// through its checkpoint restore). Every PUSH form writes [RSP-8]
+// BEFORE committing RSP -= 8, and POP r/m stores to the destination
+// BEFORE committing RSP += 8 (its EA is decode-time, from
+// pre-instruction registers):
+//   PUSH reg (sub 0): value = old reg contents (PUSH RSP pushes the
+//                     old RSP); [RSP-8] = value; RSP -= 8.
+//   PUSH imm (sub 1): [RSP-8] = imm; RSP -= 8 (as dsp_22 already did).
+//   PUSH r/m (sub 2): v = loadRM(m, 8) (register or [decode-time EA]);
+//                     [RSP-8] = v; RSP -= 8.
 //   POP reg  (sub 0): v = readq(RSP); RSP += 8; reg = v. (POP RSP: the
 //                     popped value overwrites the incremented RSP.)
-//   POP r/m  (sub 1): v = pop64(); storeRM(m, 8, v): the EA is decode-time
-//                     (pre-instruction registers), so emitEA runs BEFORE the
-//                     RSP update; then v = [RSP], RSP += 8, r/m = v.
+//   POP r/m  (sub 1): emitEA first; v = [RSP]; [EA] = v; RSP += 8.
 // No flags are touched. Returns 0xFF: RSP is updated inline in its local
 // and the epilogue store-back publishes it.
 function genStack(e) {
@@ -1371,14 +1373,16 @@ function genStack(e) {
   L.push(`    if (op.kind == J64_PUSH) {`);
   L.push(`        if (op.sub == 0) {`);
   L.push(`            // PUSH reg: snapshot the source first (PUSH RSP pushes`);
-  L.push(`            // the OLD rsp), then RSP -= 8, then [RSP] = value.`);
+  L.push(`            // the OLD rsp), write [RSP-8], then commit RSP -= 8.`);
   L.push(`            local(body, 0x20, op.regField + 1);`);
   L.push(`            local(body, 0x21, L_A);`);
   L.push(`            local(body, 0x20, L_RSP);`);
   L.push(`            i64Const(body, 8);`);
   L.push(`            body.push_back(0x7D); // i64.sub`);
+  L.push(`            local(body, 0x21, L_T1);`);
+  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`            local(body, 0x20, L_T1);`);
   L.push(`            local(body, 0x21, L_RSP);`);
-  L.push(`            emitMemWrite(body, L_RSP, L_A, 8);`);
   L.push(`        } else if (op.sub == 1) {`);
   L.push(`            // PUSH imm: the interpreter writes [RSP-8] BEFORE`);
   L.push(`            // updating RSP (dsp_22).`);
@@ -1393,7 +1397,7 @@ function genStack(e) {
   L.push(`            local(body, 0x21, L_RSP);`);
   L.push(`        } else {`);
   L.push(`            // PUSH r/m: read the operand first (register, or`);
-  L.push(`            // [decode-time EA]), then RSP -= 8, then [RSP] = value.`);
+  L.push(`            // [decode-time EA]), write [RSP-8], then commit RSP -= 8.`);
   L.push(`            if (op.isMem) {`);
   L.push(`                emitEA(body, op); // L_T1 = effective address`);
   L.push(`                emitMemRead(body, L_T1, 8); // L_R = [EA]`);
@@ -1405,8 +1409,10 @@ function genStack(e) {
   L.push(`            local(body, 0x20, L_RSP);`);
   L.push(`            i64Const(body, 8);`);
   L.push(`            body.push_back(0x7D); // i64.sub`);
+  L.push(`            local(body, 0x21, L_T1);`);
+  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`            local(body, 0x20, L_T1);`);
   L.push(`            local(body, 0x21, L_RSP);`);
-  L.push(`            emitMemWrite(body, L_RSP, L_A, 8);`);
   L.push(`        }`);
   L.push(`    } else {`);
   L.push(`        // POP. The r/m EA (if any) is decode-time, from`);
@@ -1414,19 +1420,23 @@ function genStack(e) {
   L.push(`        // update so RSP-relative EAs see the old RSP.`);
   L.push(`        if (op.sub == 1 && op.isMem) emitEA(body, op); // L_T1 = EA`);
   L.push(`        emitMemRead(body, L_RSP, 8); // L_R = [RSP]`);
+  L.push(`        local(body, 0x20, L_R);`);
+  L.push(`        local(body, 0x21, L_A);`);
+  L.push(`        if (op.sub == 1 && op.isMem) {`);
+  L.push(`            // POP r/m (memory): [EA] = v BEFORE committing RSP += 8,`);
+  L.push(`            // so a faulting store leaves RSP untouched (K-M3).`);
+  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`        }`);
   L.push(`        local(body, 0x20, L_RSP);`);
   L.push(`        i64Const(body, 8);`);
   L.push(`        body.push_back(0x7C); // i64.add`);
   L.push(`        local(body, 0x21, L_RSP);`);
-  L.push(`        local(body, 0x20, L_R);`);
-  L.push(`        local(body, 0x21, L_A);`);
   L.push(`        if (op.sub == 0) {`);
   L.push(`            // POP reg: reg = v (POP RSP overwrites the +8).`);
   L.push(`            local(body, 0x20, L_A);`);
   L.push(`            local(body, 0x21, op.regField + 1);`);
   L.push(`        } else if (op.isMem) {`);
-  L.push(`            // POP r/m (memory): [EA] = v.`);
-  L.push(`            emitMemWrite(body, L_T1, L_A, 8);`);
+  L.push(`            // POP r/m (memory): store already emitted above.`);
   L.push(`        } else {`);
   L.push(`            // POP r/m (register-direct): reg = v.`);
   L.push(`            local(body, 0x20, L_A);`);
@@ -1905,6 +1915,19 @@ function genString(e) {
     body.push_back(0x7D); // i64.sub
     local(body, 0x21, L_CNT);
 
+    // K-M3: publish the architectural count for THIS element before its
+    // accesses. If an access faults, the module exits to the epilogue at
+    // once, so the RCX local must already hold the count of uncompleted
+    // elements (L_CNT was pre-decremented: remaining = L_CNT + 1) with
+    // RSI/RDI still at the last completed element -- the hardware partial
+    // progress. Normal completion overwrites this after the loop.
+    if (op.rep != 0) {
+        local(body, 0x20, L_CNT);
+        i64Const(body, 1);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, RCX);
+    }
+
     if (isMovsStos) {
         // dst = RDI (& 0xFFFFFFFF under 0x67) -> L_A.
         local(body, 0x20, RDI);
@@ -1925,7 +1948,7 @@ function genString(e) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_A);
-            emitMemRead(body, L_A, size); // -> L_R
+            emitMemRead(body, L_A, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, RDI);
             if (op.asize32) {
                 i64Const(body, 0xFFFFFFFFULL);
@@ -1933,7 +1956,7 @@ function genString(e) {
             }
             local(body, 0x21, L_A);
         }
-        emitMemWrite(body, L_A, L_R, size);
+        emitMemWrite(body, L_A, L_R, size, 3, false); // K-M3: in-loop; flags are progress
         if (!isStos) {
             local(body, 0x20, RSI);
             local(body, 0x20, L_STEP);
@@ -1958,7 +1981,7 @@ function genString(e) {
                 body.push_back(0x83);
             }
             local(body, 0x21, L_P); // temp addr (L_P is emitFlags scratch)
-            emitMemRead(body, L_P, size); // -> L_R
+            emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
             local(body, 0x20, L_R);
             local(body, 0x21, L_A);
         }
@@ -1969,7 +1992,7 @@ function genString(e) {
             body.push_back(0x83);
         }
         local(body, 0x21, L_P); // temp addr
-        emitMemRead(body, L_P, size); // -> L_R
+        emitMemRead(body, L_P, size, 3, false); // -> L_R (K-M3: in-loop; flags are progress)
         local(body, 0x20, L_R);
         local(body, 0x21, L_B);
         // L_R = (L_A - L_B) & mask; flags through the SUB path.
@@ -2471,7 +2494,7 @@ function genShiftCLMem(e) {
     i64Const(body, 0);
     body.push_back(0x52); // i64.ne -> i32 (count != 0)
     body.push_back(0x04); body.push_back(0x40); // if
-    emitMemWrite(body, L_T1, L_R, op.size);
+    emitMemWrite(body, L_T1, L_R, op.size, 2); // K-M3: inside this if
     body.push_back(0x0B); // end
     return 0xFF;
 }`;
@@ -2880,7 +2903,7 @@ function genRotateCLMem(e) {
     i64Const(body, 0);
     body.push_back(0x52); // i64.ne -> count != 0
     body.push_back(0x04); body.push_back(0x40); // if
-    emitMemWrite(body, L_T1, L_R, op.size);
+    emitMemWrite(body, L_T1, L_R, op.size, 2); // K-M3: inside this if
     body.push_back(0x0B); // end
     return 0xFF;
 }`;

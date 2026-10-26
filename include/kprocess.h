@@ -64,6 +64,7 @@ public:
     }
 };
 
+class FsOpenNode;
 #define MAX_SIG_ACTIONS 64
 
 #define K_PROT_NONE  0x0
@@ -90,6 +91,81 @@ public:
 #define K_MAP_BOXEDWINE 0x80000000
 
 #define K_MADV_DONTNEED 4
+
+
+// ---- clone(2) sharing state (kernel round 3C) ----
+// Linux CLONE_FS / CLONE_FILES / CLONE_SIGHAND make a process clone SHARE
+// the parent's fs context (cwd + umask), descriptor table and
+// signal-handler table instead of copying them: a mutation through one
+// process is visible through the other. Each piece of state lives in a
+// small wrapper around a shared_ptr so that KProcess::clone can either
+// adopt the parent's table (share) or snapshot it (copy), while every
+// existing use site keeps its current syntax. Exec follows Linux: a
+// successful execve unshares the descriptor table and the handler table
+// (private copies before CLOEXEC descriptors are closed and handlers are
+// reset) but does NOT unshare the fs context.
+
+// Bits for the shareFlags argument of KProcess::clone (clone(2) values).
+constexpr U32 KPROCESS_CLONE_SHARE_FS      = 0x200;
+constexpr U32 KPROCESS_CLONE_SHARE_FILES   = 0x400;
+constexpr U32 KPROCESS_CLONE_SHARE_SIGHAND = 0x800;
+
+struct KFsContext {
+    BString currentDirectory;
+    U32 umaskValue = 0;
+};
+
+class KFdTable {
+    struct Table {
+        BHashTable<U32, KFileDescriptorPtr> fds;
+        BOXEDWINE_MUTEX mutex;
+    };
+    std::shared_ptr<Table> table = std::make_shared<Table>();
+public:
+    KFileDescriptorPtr operator[](U32 handle) const { return table->fds[handle]; }
+    void set(U32 handle, const KFileDescriptorPtr& fd) { table->fds.set(handle, fd); }
+    void remove(U32 handle) { table->fds.remove(handle); }
+    void clear() { table->fds.clear(); }
+    bool contains(U32 handle) const { return table->fds.contains(handle); }
+    auto begin() { return table->fds.begin(); }
+    auto end() { return table->fds.end(); }
+    auto begin() const { return table->fds.begin(); }
+    auto end() const { return table->fds.end(); }
+    // Point-in-time copy of the underlying table (cleanup paths iterate
+    // the copy while mutating the live table).
+    BHashTable<U32, KFileDescriptorPtr> snapshotTable() const { return table->fds; }
+    BOXEDWINE_MUTEX& mutex() const { return table->mutex; }
+    void shareFrom(const KFdTable& other) { table = other.table; }
+    bool isShared() const { return table.use_count() > 1; }
+    void unshareIfShared() {
+        if (!isShared()) return;
+        auto fresh = std::make_shared<Table>();
+        fresh->fds = table->fds;
+        table = fresh;
+    }
+};
+
+class KSigActionTable {
+    struct Table {
+        KSigAction entries[MAX_SIG_ACTIONS];
+    };
+    std::shared_ptr<Table> table = std::make_shared<Table>();
+public:
+    KSigAction& operator[](U32 signo) { return table->entries[signo]; }
+    const KSigAction& operator[](U32 signo) const { return table->entries[signo]; }
+    KSigAction* begin() { return table->entries; }
+    KSigAction* end() { return table->entries + MAX_SIG_ACTIONS; }
+    const KSigAction* begin() const { return table->entries; }
+    const KSigAction* end() const { return table->entries + MAX_SIG_ACTIONS; }
+    void shareFrom(const KSigActionTable& other) { table = other.table; }
+    bool isShared() const { return table.use_count() > 1; }
+    void unshareIfShared() {
+        if (!isShared()) return;
+        auto fresh = std::make_shared<Table>();
+        for (int i = 0; i < MAX_SIG_ACTIONS; i++) fresh->entries[i] = table->entries[i];
+        table = fresh;
+    }
+};
 
 class KProcessTimer : public KTimerCallback {
 public:
@@ -131,7 +207,7 @@ public:
 	void deleteThread(KThread* thread);
     void killAllThreads(KThread* exceptThisOne = nullptr);
     BString getAbsoluteExePath();
-    void clone(const KProcessPtr& from);
+    void clone(const KProcessPtr& from, U32 shareFlags = 0);
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);
     void free(U32 address);
@@ -153,6 +229,7 @@ public:
     KThread* startProcess(BString currentDirectory, const std::vector<BString>& args, const std::vector<BString>& envValues, int userId, int groupId, int effectiveUserId, int effectiveGroupId);
     void signalProcess(U32 signal);
     void signalIO(U32 code, S32 band, FD fd);
+    void signalAsyncEvent(U32 signo, U32 code, const KObject* objectKey, const FsOpenNode* nodeKey);
     void signalCHLD(U32 code, U32 childPid, U32 sendingUID, S32 exitCode);
     void signalALRM();
     void printStack();
@@ -170,7 +247,7 @@ public:
     U32 chdir(BString path);
     U32 chmod(BString path, U32 mode);
     U32 clone3(KThread* thread, U32 args, U32 size);
-    U32 clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid);
+    U32 clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid, bool clearSighand = false);
 #ifdef BOXEDWINE_GUEST_X64
     // 64-bit pthread clone. Mirrors the 32-bit thread branch of clone(): makes
     // a new KThread sharing this process + memory64, allocates a CPU64 for it,
@@ -178,15 +255,15 @@ public:
     // RSP=child_stack, fsbase=tls, RIP=parent's next insn), honors
     // PARENT/CHILD_SETTID + CHILD_CLEARTID, and schedules it. Returns the new
     // thread id, or (U32)-errno.
-    U32 clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid);
+    U32 clone64(KThread* thread, U64 flags, U64 child_stack, U64 ptid, U64 tls, U64 ctid, U64 exitSignal);
     // 64-bit clone3: reads the clone_args struct at argsAddr and routes to
     // clone64. glibc 2.34+ prefers clone3, so implementing it avoids the
     // fragile clone3->clone ENOSYS fallback path.
-    U32 clone364(KThread* thread, U64 argsAddr, U64 size);
+    U64 clone364(KThread* thread, U64 argsAddr, U64 size);
     // Real fork(2) for 64-bit (non-thread clone64): new KProcess with its own
     // deep-copied memory64 and a child CPU64 that returns 0. Returns the child
     // pid to the parent.
-    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid);
+    U32 forkProcess64(KThread* thread, U64 flags, U64 ctid, U64 ptid, U64 exitSignal, U64 childStack);
 #endif
     U32 close(FD fildes);
     U32 dup(U32 fildes);    
@@ -219,7 +296,7 @@ public:
     U32 msync(KThread* thread, U32 addr, U32 len, U32 flags);
     U32 open(BString path, U32 flags);
     U32 openat(FD dirfd, BString path, U32 flags);
-    U32 prctl(U32 option, U32 arg2);
+    U32 prctl(U32 option, U32 arg2, U32 arg3 = 0, U32 arg4 = 0, U32 arg5 = 0);
     U32 pread64(KThread* thread, FD fildes, U32 address, U32 len, U64 offset);
     U32 pwrite64(KThread* thread, FD fildes, U32 address, U32 len, U64 offset);
     U32 read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
@@ -230,6 +307,9 @@ public:
     U32 rmdir(BString path);        
     U32 set_thread_area(KThread* thread, U32 info);
     U32 setitimer(U32 which, U32 newValue, U32 oldValue);
+    U32 getitimer(U32 which, U32 oldValue);
+    S32 setitimerValues(U32 which, bool apply, U32 valueMs, U32 intervalMs,
+                        U32* oldRemainingMs, U32* oldIntervalMs);
     U32 shmdt(U32 shmaddr);
     U32 sigaction(U32 sig, U32 act, U32 oact, U32 sigsetSize);    
     U32 stat64(BString path, U32 buffer);
@@ -248,6 +328,9 @@ public:
     U32 sendFile(U32 outFd, U32 inFd, U32 offset, U32 count);
     U32 memfd_create(BString name, U32 flags);
     U32 timerfd_create(U32 clockid, U32 flags);
+    U32 inotify_init1(U32 flags);
+    U32 inotify_add_watch(S32 fd, BString path, U32 mask);
+    U32 inotify_rm_watch(S32 fd, S32 wd);
     U32 timerfd_settime(U32 fd, U32 flags, U32 newValue, U32 oldValue);
     U32 timerfd_gettime(U32 fd, U32 value);
 
@@ -269,13 +352,21 @@ public:
     BOXEDWINE_MUTEX pendingSignalsMutex;
     U32 signaled = 0;
     U32 exitCode = 0;
-    U32 umaskValue = 0;
     bool terminated = false;
+    bool vforkReleased = false;
+    // mlock bookkeeping (kernel round 3A): bytes this process currently has
+    // locked, whether new mappings lock automatically (mlockall MCL_FUTURE),
+    // and RLIMIT_MEMLOCK. The rlimits are inherited by fork and kept across
+    // exec; the locked total and the future flag are reset by both.
+    U64 memLockedBytes = 0;
+    bool memLockAllFuture = false;
+    U64 rlimMemlockCur = ~0ULL; // RLIM_INFINITY until a guest lowers it
+    U64 rlimMemlockMax = ~0ULL;
     KMemory* memory = nullptr;
 
-    BString currentDirectory;
+    std::shared_ptr<KFsContext> fsContext = std::make_shared<KFsContext>();
     U32 brkEnd = 0;    
-    KSigAction sigActions[MAX_SIG_ACTIONS];
+    KSigActionTable sigActions;
     KProcessTimer timer;
     BString commandLine;
     BString exe;
@@ -305,6 +396,10 @@ public:
     // KMemory above stays the working path for ELF32 guests; KMemory64 is
     // a strictly parallel subsystem in v1, not a replacement.
     class KMemory64* memory64 = nullptr;
+    // True while this process is a vfork child still sharing the parent
+    // memory64 (until exec/exit). The exec path must not delete a shared
+    // memory64; it drops the reference and installs a fresh one instead.
+    bool memory64Shared = false;
     // 64-bit CPU. Set up by ElfLoader64::loadProgram once segments are
     // mapped and the stack is built. v1 has no 64-bit KThread equivalent;
     // the test harness drives this CPU's run() loop directly. A KThread64
@@ -365,13 +460,13 @@ public:
 #ifdef BOXEDWINE_MULTI_THREADED    
     BOXEDWINE_MUTEX normalBlockMutex;
 #endif
-    BOXEDWINE_MUTEX fdsMutex;
+    BOXEDWINE_MUTEX& fdsMutex() const { return fds.mutex(); }
 
     // x11 stuff
     BOXEDWINE_MUTEX keySymToNameMutex;
     BHashTable<U32, U32> keySymToName;
 private:
-    BHashTable<U32, KFileDescriptorPtr> fds;    
+    KFdTable fds;
 
     user_desc ldt[LDT_ENTRIES];
     BOXEDWINE_MUTEX ldtMutex;
@@ -424,6 +519,33 @@ public:
     std::shared_ptr<FsNode> processNode; // in /proc/<pid>
     std::shared_ptr<FsNode> taskNode; // in /proc/<pid>/task
     std::shared_ptr<FsNode> fdNode; // in /proc/<pid>/fd
+    U32 membarrierRegistrations = 0; // per-process MEMBARRIER_CMD_REGISTER_* mask
+    U32 childExitSignal64 = 17; // Linux SIGCHLD default for fork-like children
+    U32 dumpable = 1;
+    U32 noNewPrivs = 0;
+    U32 childSubreaper = 0;
+    U32 thpDisable = 0;
+    U32 parentDeathSignal = 0;
+    U64 timerSlackNs = 50000;
+    // Modelled prctl(2) state. The guest kernel ABI exposes these knobs even
+    // when the emulator has no host page pool to apply them to; keeping the
+    // state makes GET/SET round-trip exactly like Linux (see sys_prctl64).
+    U32 unalignValue = 0;
+    U32 keepCaps = 0;
+    U32 fpEmu = 0;
+    U32 fpExc = 0;
+    U32 endian = 1;              // PR_ENDIAN_LITTLE
+    U32 tscEnabled = 1;
+    U32 secureBits = 0;
+    U32 mceKillPolicy = 0;
+    U32 mceKillSignal = 0;
+    U32 perfEventsEnabled = 0;
+    U32 fpMode = 0;
+    U32 mdweFlags = 0;
+    U32 ioFlusher = 0;
+    U64 ptracerPid = 0;
+    U32 speculationCtrl[3] = { 0, 0, 0 };
+    std::vector<BString> environment;
 };
 
 #endif

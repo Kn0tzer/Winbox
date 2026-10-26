@@ -60,6 +60,34 @@ public:
     U32   rflags = 0x202; // IF | reserved bit 1
     U64   fsbase = 0;     // x86-64: set via arch_prctl(ARCH_SET_FS)
     U64   gsbase = 0;
+    U64   affinityMask = 1; // the virtual machine exposes one schedulable CPU
+    U32   numaPolicyMode = 0; // the virtual machine exposes one NUMA node (0)
+    U64   numaNodeMask = 1;
+    U64   currentInstructionRip = 0;
+    bool  memoryFaultPending = false;
+    // K-M3: set by the REP string handlers when they stop mid-instruction
+    // on a denied access: the live RCX/RSI/RDI (and CMPS/SCAS flags) are
+    // architectural partial progress that deliverGuestMemoryFault must
+    // preserve across the checkpoint restore.
+    bool  faultPartialProgress = false;
+    U64   memoryFaultAddress = 0;
+    U64   memoryFaultRip = 0;
+    U32   memoryFaultError = 0;
+
+    // KMemory64 calls this only during an interpreted guest instruction. The
+    // run loop delivers the saved #PF after the instruction helper returns.
+    void recordGuestMemoryFault(U64 address, bool write, bool mapped);
+    bool deliverGuestMemoryFault();
+
+    // Serialize/deserialize the full legacy x87/SSE state as a 512-byte
+    // FXSAVE image at a guest address. Shared by the 0F AE FXSAVE/FXRSTOR
+    // instruction handlers and the signal-frame builder/restorer (signal
+    // frames expose the saved image through uc_mcontext.fpregs).
+    // readFxrstorImage validates the saved MXCSR before mutating any
+    // state and returns false (nothing restored) when its reserved bits
+    // are set.
+    void writeFxsaveImage(U64 guestAddr);
+    bool readFxrstorImage(U64 guestAddr);
 
     // XMM register state. 16 × 128-bit slots, accessed as two U64 halves.
     // SSE2 is the minimum baseline for x86-64; glibc memcpy/memset, the
@@ -77,6 +105,24 @@ public:
     // on FPU take a 32-bit CPU* that we can't satisfy.
     FPU fpu;
 
+    // Precise-fault checkpoint (K-M3). While the guest-access context is
+    // armed, step() snapshots the architectural state the current
+    // instruction may mutate; deliverGuestMemoryFault() restores it before
+    // the signal frame is built, so a denied access leaves the interrupted
+    // state exactly as hardware would (the faulting instruction has no
+    // architectural effects and restarts cleanly after sigreturn). The
+    // FP/SSE half is only snapshotted for instructions that can write it
+    // (0F-prefixed or x87 opcodes).
+    Reg64 faultCheckpointRegs[X64_REG_COUNT] = {};
+    U32   faultCheckpointFlags = 0;
+    U64   faultCheckpointFsBase = 0;
+    U64   faultCheckpointGsBase = 0;
+    Xmm   faultCheckpointXmm[16] = {};
+    FPU   faultCheckpointFpu;
+    U32   faultCheckpointMxcsr = 0;
+    bool  faultCheckpointValid = false;
+    bool  faultCheckpointFpValid = false;
+
     // Signal handler table. Mirrors the x86-64 `struct kernel_sigaction`
     // round-tripped through rt_sigaction(2): handler, flags, restorer,
     // sa_mask (64-bit). Indexed by signal number 1..64; slot 0 unused.
@@ -89,7 +135,29 @@ public:
         U64 mask = 0;
         bool installed = false;
     };
-    SigAction sigActions[65] = {};
+    // The handler table is held through a shared wrapper so a
+    // CLONE_SIGHAND process clone can share it with its parent (kernel
+    // round 3C); element syntax is unchanged for every use site.
+    class SigActionTable {
+        struct Table {
+            SigAction entries[65];
+        };
+        std::shared_ptr<Table> table = std::make_shared<Table>();
+    public:
+        SigAction& operator[](U32 signo) { return table->entries[signo]; }
+        const SigAction& operator[](U32 signo) const { return table->entries[signo]; }
+        SigAction* begin() { return table->entries; }
+        SigAction* end() { return table->entries + 65; }
+        void shareFrom(const SigActionTable& other) { table = other.table; }
+        bool isShared() const { return table.use_count() > 1; }
+        void unshareIfShared() {
+            if (!isShared()) return;
+            auto fresh = std::make_shared<Table>();
+            for (int i = 0; i < 65; i++) fresh->entries[i] = table->entries[i];
+            table = fresh;
+        }
+    };
+    SigActionTable sigActions;
 
     // Signal blocking mask, round-tripped through rt_sigprocmask(2). Bit N
     // (1..64) corresponds to signal N+1. v1 stores only — no enforcement
@@ -266,7 +334,9 @@ private:
 
     // Call one cached emitted module and commit its guest state. Returns the
     // instructions the emitted code reports having retired (0 = did not run).
-    U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn);
+    // speculative: a verification comparison run -- unarmed, no fault
+    // path (the block faults precisely on its first real execution).
+    U32 execWasmBlock(const struct Jit64Block& block, U64 maxInsn, bool speculative = false);
     U32 verifyWasmBlock(struct Jit64Block& block, U64 maxInsn);
     // Validate the JIT decode plan against the interpreter's BBlock builder
     // (BW64_JIT_VERIFY=1). Returns false when the two decoders disagree, which

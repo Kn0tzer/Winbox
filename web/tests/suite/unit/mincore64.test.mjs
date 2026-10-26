@@ -1,14 +1,18 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('x64 mincore reports committed pages and validates both ranges before writing', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_mincore64(');
-  const end = source.indexOf('// Map an x86-64 Linux syscall number', start);
+  const end = source.indexOf('\nstatic ', start + 1);
   assert.ok(start >= 0 && end > start, 'mincore64 helper should be present');
   assert.match(source, /#define X64_SYS_mincore\s+27/);
   assert.match(source, /case X64_SYS_mincore:\s*ret = sys_mincore64/);
@@ -31,7 +35,7 @@ struct Memory {
  void writeb(U64 a,U8 v){assert(a<sizeof(out));out[a]=v;}
 };
 struct CPU64{Memory* memory;};
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 int main(){Memory m;CPU64 c{&m};
  m.mapped[4]=m.mapped[5]=m.mapped[0]=true;m.committed[4]=true;
  assert(sys_mincore64(&c,0x4000,4097,0)==0);assert(m.out[0]==1&&m.out[1]==0);

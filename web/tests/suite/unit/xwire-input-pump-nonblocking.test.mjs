@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, mkdtempSync, writeFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+
 test('main-thread input pump defers busy guest connections and flushes under one lock', () => {
-  const header = readFileSync('source/x11wire/xwireconnection.h', 'utf8');
+  const header = readFileSync(join(repoRoot, 'source/x11wire/xwireconnection.h'), 'utf8');
   const start = header.indexOf('void pumpInputAndFlush()');
   assert.ok(start >= 0);
   let end = header.indexOf('{', start), depth = 1;
@@ -14,7 +18,7 @@ test('main-thread input pump defers busy guest connections and flushes under one
     if (header[end] === '{') depth++;
     if (header[end] === '}') depth--;
   }
-  const method = header.slice(start, end);
+  const method = extractSourceRange(header, start, end);
   const dir = mkdtempSync(join(tmpdir(), 'bw-input-pump-'));
   try {
     writeFileSync(join(dir, 'test.cpp'), `

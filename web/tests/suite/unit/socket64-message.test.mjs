@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('x64 socket messages retain addresses and flags and bound truncated packet copies', () => {
-  const source = readFileSync('source/kernel/syscall64.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_sendmsg64(');
   const end = source.indexOf('// mincore(addr', start);
   const dir = mkdtempSync(join(tmpdir(), 'bw-socket64-msg-'));
@@ -21,7 +25,7 @@ test('x64 socket messages retain addresses and flags and bound truncated packet 
 #include <atomic>
 #include <algorithm>
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using S32=int32_t;using U8=uint8_t;
-constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1;
+constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1,K_SCM_CREDENTIALS=2,K_MSG_CTRUNC=8;
 #define klog_fmt(...)
 #define MSG_SCRATCH_BYTES (64*1024)
 #define MSG_SCRATCH_HDR 0
@@ -52,7 +56,7 @@ U32 bounceSockaddrTo32(CPU64* c,U64 src,U32 len,U32*){assert(len<=256);if(src)c-
 U32 sentName=0,sentNameLength=0;
 U32 ksendmsg(KThread* t,U32,U32 h,U32){sentName=t->memory->readd(h);sentNameLength=t->memory->readd(h+4);return 4;}
 U32 krecvmsg(KThread* t,U32,U32 h,U32){auto m=t->memory;auto name=m->readd(h);if(name)m->writed(name,0x12340002);m->writed(h+4,16);m->writed(h+20,0);m->writed(h+24,0x20);m->writed(4096+512,0x64636261);return 65507;}
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
 int main(){auto guest=std::make_unique<Memory>();auto scratch=std::make_unique<Memory>();KThread t{scratch.get()};CPU64 c{&t,guest.get()};
  // A maximum UDP packet can exceed the adapter's scratch capacity when
  // MSG_TRUNC requests its full length. Copy only bytes actually received.

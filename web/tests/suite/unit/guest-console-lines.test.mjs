@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -14,7 +15,7 @@ test('partial guest result lines stay intact when native diagnostics arrive betw
     if (source[end] === '{') depth++;
     if (source[end] === '}') depth--;
   }
-  const implementation = source.slice(start, end);
+  const implementation = extractSourceRange(source, start, end);
   const include = new URL('../../../../include/guestloglines.h', import.meta.url).pathname;
   const dir = mkdtempSync(join(tmpdir(), 'bw-console-lines-'));
   try {

@@ -49,6 +49,7 @@ public:
 	}
 
 	virtual ~KDspAudioSdl() {
+		this->closeCaptureAudio();
 		if (this->cvtBuf) {
 			SDL_free(this->cvtBuf);
 		}
@@ -77,6 +78,12 @@ public:
 		return false;
 #endif
 	}
+
+	bool openCaptureAudio(U32 format, U32 freq, U32 channels) override;
+	void closeCaptureAudio() override;
+	U32 getCapturedSize() override;
+	U32 readCapturedAudio(U8* data, U32 len) override;
+	void onCaptureData(U8* data, U32 len);
 
 	U32 bytesPerSampleWant() {
 		return SDL_AUDIO_BITSIZE(this->want.format) / 8;
@@ -157,6 +164,13 @@ public:
 	bool bwPump = false; // KDspAudioSdl-owned Web Audio bridge active
 #endif
 	std::deque<U8> audioBuffer; // only used when KSystem::soundEnabled is false
+	SDL_AudioSpec captureWant = { 0 };
+	SDL_AudioSpec captureGot = { 0 };
+	SDL_AudioStream* captureStream = nullptr;
+	SDL_AudioDeviceID captureDeviceId = 0;
+	std::deque<U8> captureBuffer;
+	BOXEDWINE_MUTEX captureMutex;
+	bool captureOpen = false;
 	SDL_AudioDeviceID deviceId = 0;
 	U32 realQueuedWant = 0;
 	U32 lastRealQueuedTime = 0;
@@ -738,4 +752,107 @@ void KDspAudio::shutdown() {
 		}
 	}
 	pendingCloses.clear();
+}
+
+static void bwDspCaptureCallback(void* userdata, U8* stream, int len) {
+	((KDspAudioSdl*)userdata)->onCaptureData(stream, (U32)len);
+}
+
+bool KDspAudioSdl::openCaptureAudio(U32 format, U32 freq, U32 channels) {
+	if (!KSystem::soundEnabled) {
+		return false;
+	}
+	this->closeCaptureAudio();
+	this->captureWant.format = getSdlFormat(format);
+	this->captureWant.freq = freq;
+	this->captureWant.channels = channels;
+	this->captureWant.samples = 4096;
+	this->captureWant.callback = bwDspCaptureCallback;
+	this->captureWant.userdata = this;
+	SDL_AudioSpec requested = this->captureWant;
+	SDL_AudioDeviceID newId = SDL_OpenAudioDevice(nullptr, 1, &requested, &this->captureGot, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	if (newId == 0) {
+		klog_fmt("Failed to open audio capture device: %s", SDL_GetError());
+		return false;
+	}
+	this->captureDeviceId = newId;
+	if (this->captureWant.freq != this->captureGot.freq || this->captureWant.channels != this->captureGot.channels || this->captureWant.format != this->captureGot.format) {
+		this->captureStream = SDL_NewAudioStream(this->captureGot.format, this->captureGot.channels, this->captureGot.freq, this->captureWant.format, this->captureWant.channels, this->captureWant.freq);
+		if (!this->captureStream) {
+			SDL_CloseAudioDevice(this->captureDeviceId);
+			this->captureDeviceId = 0;
+			klog_fmt("Failed to create audio capture stream: %s", SDL_GetError());
+			return false;
+		}
+	}
+	this->captureOpen = true;
+	SDL_PauseAudioDevice(this->captureDeviceId, 0);
+	return true;
+}
+
+void KDspAudioSdl::closeCaptureAudio() {
+	if (this->captureDeviceId) {
+		SDL_PauseAudioDevice(this->captureDeviceId, 1);
+		SDL_CloseAudioDevice(this->captureDeviceId);
+		this->captureDeviceId = 0;
+	}
+	if (this->captureStream) {
+		SDL_FreeAudioStream(this->captureStream);
+		this->captureStream = nullptr;
+	}
+	{
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->captureMutex);
+		this->captureBuffer.clear();
+	}
+	this->captureOpen = false;
+}
+
+U32 KDspAudioSdl::getCapturedSize() {
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->captureMutex);
+	return (U32)this->captureBuffer.size();
+}
+
+U32 KDspAudioSdl::readCapturedAudio(U8* data, U32 len) {
+	BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->captureMutex);
+	U32 count = std::min(len, (U32)this->captureBuffer.size());
+	for (U32 i = 0; i < count; i++) {
+		data[i] = this->captureBuffer.front();
+		this->captureBuffer.pop_front();
+	}
+	return count;
+}
+
+void KDspAudioSdl::onCaptureData(U8* data, U32 len) {
+	// Runs on SDL's audio thread; data is in captureGot format.
+	const U8* out = data;
+	U32 outLen = len;
+	std::vector<U8> converted;
+	if (this->captureStream) {
+		outLen = 0;
+		if (SDL_AudioStreamPut(this->captureStream, data, (int)len) == 0) {
+			int available = SDL_AudioStreamAvailable(this->captureStream);
+			if (available > 0) {
+				converted.resize(available);
+				int got = SDL_AudioStreamGet(this->captureStream, converted.data(), available);
+				if (got > 0) {
+					out = converted.data();
+					outLen = (U32)got;
+				}
+			}
+		}
+	}
+	if (outLen) {
+		BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->captureMutex);
+		// Bound the backlog to ~2 seconds: a guest that stops reading
+		// must not grow this without limit (drop the oldest audio).
+		U32 bytesPerSecond = this->captureWant.freq * this->captureWant.channels * (SDL_AUDIO_BITSIZE(this->captureWant.format) / 8);
+		U32 cap = bytesPerSecond * 2;
+		while (cap && this->captureBuffer.size() + outLen > cap && !this->captureBuffer.empty()) {
+			this->captureBuffer.pop_front();
+		}
+		this->captureBuffer.insert(this->captureBuffer.end(), out, out + outLen);
+	}
+	if (this->captureDataCallback) {
+		this->captureDataCallback();
+	}
 }

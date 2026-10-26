@@ -131,6 +131,13 @@ static void platformThread(CPU* cpu) {
         }
 #ifdef __TEST
         if (cpu->nextOp->inst == TestEnd) {
+            // The guest thread's program ended: unregister it from the
+            // process's live-thread table before leaving. Without this,
+            // the KThread stays in the table forever and
+            // terminateOtherThread (killAllThreads/exitgroup) waits
+            // indefinitely for its removal.
+            ripSamplerReleaseSlot(ripSlot32);
+            process->removeThread(cpu->thread);
             return;
         }
         continue;

@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { blendFactor, convertIndices, packUniforms, stateKey, uniformLayout } from '../../../gl-webgpu-utils.mjs';
-import { WebGPUGL } from '../../../gl-webgpu.mjs';
+import { WebGPUGL, rewriteGlslForWebGPU, applyNoperspectiveInterpolation, patchTextureGatherWGSL } from '../../../gl-webgpu.mjs';
 import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs';
+import * as naga from '../../../vendor/naga/node.js';
 
 test('uniform layout and packing honor std140 vector, matrix, and array strides', () => {
   const layout = uniformLayout([
@@ -25,6 +26,117 @@ test('uniform layout and packing honor std140 vector, matrix, and array strides'
   assert.equal(view.getFloat32(32, true), 4);
   assert.equal(view.getFloat32(64, true), 0.125);
   assert.equal(view.getFloat32(80, true), 0.875);
+});
+
+test('validateProgram exposes linked validation status through getProgramParameter', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const program = { linked: true };
+    gl.validateProgram(program);
+    assert.equal(gl.getProgramParameter(program, 0x8b83), true);
+    program.linked = false;
+    gl.validateProgram(program);
+    assert.equal(gl.getProgramParameter(program, 0x8b83), false);
+  } finally { gpu.restore(); }
+});
+
+test('GL query objects return zero results and become available only after end', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const query = gl.createQuery();
+    gl.beginQuery(0x8c2f, query);
+    assert.equal(gl.getQuery(0x8c2f, 0x8865), query);
+    assert.equal(gl.getQueryParameter(query, 0x8867), false);
+    gl.endQuery(0x8c2f);
+    assert.equal(gl.getQueryParameter(query, 0x8867), true);
+    assert.equal(gl.getQueryParameter(query, 0x8866), 0);
+    assert.equal(gl.getQuery(0x8c2f, 0x8865), null);
+
+    const primitives = gl.createQuery();
+    gl.beginQuery(0x8c87, primitives);
+    assert.equal(gl.getQueryParameter(primitives, 0x8867), false);
+    gl.endQuery(0x8c87);
+    assert.equal(gl.getQueryParameter(primitives, 0x8867), true);
+    assert.equal(gl.getQueryParameter(primitives, 0x8866), 0);
+
+    const timestamp = gl.createQuery();
+    gl.queryCounter(timestamp, 0x8e28);
+    assert.equal(gl.getQueryParameter(timestamp, 0x8867), true);
+    assert.equal(gl.getQueryParameter(timestamp, 0x8866), 0);
+    gl.deleteQuery(timestamp);
+    assert.equal(gl.isQuery(timestamp), false);
+  } finally { gpu.restore(); }
+});
+
+test('transform feedback operations reject once with INVALID_OPERATION', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.beginTransformFeedback(0x0004);
+    assert.equal(gl.getError(), 0x0502);
+    gl.endTransformFeedback();
+    assert.equal(gl.getError(), 0x0502);
+    assert.equal(logs.filter(line => line.includes('transform feedback')).length, 1);
+  } finally { gpu.restore(); }
+});
+
+test('glClipControl changes upper-left origin and zero-to-one depth rewriting', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.clipControl(0x8ca2, 0x935f);
+    assert.deepEqual(gl.getClipControl(), [0x8ca2, 0x935f]);
+    assert.equal(gl.getParameter(0x935c), 0x8ca2);
+    assert.equal(gl.getParameter(0x935d), 0x935f);
+    const rewritten = rewriteGlslForWebGPU('#version 300 es\nvoid main(){ gl_Position=vec4(0.0); }', 'vertex', new Map(), new Map(), gl.getClipControl());
+    assert.match(rewritten.code, /gl_Position\.y = -gl_Position\.y;/);
+    assert.doesNotMatch(rewritten.code, /gl_Position\.z = \(gl_Position\.z/);
+    const fixed = gl._fixedFunctionProgram([], false, false, 0x0207, []).stages.vertex.wgsl;
+    assert.match(fixed, /vec4<f32>\(clip\.x, -clip\.y, clip\.z, clip\.w\)/, 'fixed-function shaders use the same clip control state');
+    gl.clipControl(0xdead, 0x935f);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
+test('blitFramebuffer scales and flips color rectangles on CPU and GPU paths', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const bufferWrites = [];
+    gpu.device.queue.writeBuffer = (buffer, offset, data) => bufferWrites.push(new Float32Array(data));
+    const createPipeline = gpu.device.createRenderPipeline.bind(gpu.device);
+    gpu.device.createRenderPipeline = descriptor => {
+      const pipeline = createPipeline(descriptor);
+      pipeline.getBindGroupLayout = () => ({ entries: [{ binding: 0, buffer: {} }, { binding: 1, texture: { viewDimension: '2d' } }, { binding: 2, sampler: {} }] });
+      return pipeline;
+    };
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const source = gl.createTexture(), destination = gl.createTexture();
+    gl.bindTexture(0x0de1, source);
+    gl.texImage2D(0x0de1, 0, 0x1908, 2, 1, 0, 0x1908, 0x1401, new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]));
+    gl.bindTexture(0x0de1, destination);
+    gl.texImage2D(0x0de1, 0, 0x1908, 4, 1, 0, 0x1908, 0x1401, new Uint8Array(16));
+    await gl._ops;
+    const read = gl.createFramebuffer(), draw = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, read); gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, source, 0);
+    gl.bindFramebuffer(0x8d40, draw); gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, destination, 0);
+    gl.bindFramebuffer(0x8ca8, read); gl.bindFramebuffer(0x8ca9, draw);
+    gl.blitFramebuffer(2, 0, 0, 1, 0, 0, 4, 1, 0x4000, 0x2600);
+    assert.deepEqual([...destination.pixels], [0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255, 255, 0, 0, 255]);
+    await gl._ops;
+    assert.deepEqual([...bufferWrites.at(-1)], [1, 0, -1, 1]);
+    assert.deepEqual(gpu.viewports.at(-1), [0, 0, 4, 1, 0, 1]);
+    assert.equal(gl.getError(), 0);
+    gl.blitFramebuffer(0, 0, 1, 1, 0, 0, 1, 1, 0x0100, 0x2600);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('blitFramebuffer depth/stencil resolve') && line.includes('resolveTarget')));
+  } finally { gpu.restore(); }
 });
 
 test('uint8 indices widen for WebGPU and wider index types preserve values', () => {
@@ -77,4 +189,763 @@ test('GL depthRange is stored and applied to WebGPU draw viewports', async () =>
   } finally {
     gpu.restore();
   }
+});
+
+test('stencil state configures the default attachment, render pipeline, and clear operation', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    assert.equal(gl.getContextAttributes().stencil, true);
+    assert.equal(gl._depthTexture.format, 'depth24plus-stencil8');
+    gl.stencilFunc(0x0202, 7, 0x0f);
+    gl.stencilOp(0x1e00, 0x1e01, 0x8507);
+    gl.stencilMask(0xff);
+    gl.enable(0x0b90);
+    gl.clearStencil(19);
+    gl.clear(0x0400);
+    await gl._ops;
+    assert.ok(gpu.passes.length, `clear pass should be submitted: ${logs.join('; ')}`);
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilLoadOp, 'clear');
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilClearValue, 19);
+
+    gl._currentProgram = {
+      id: 1, linkPromise: Promise.resolve(true), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(),
+      stages: {
+        vertex: { wgsl: '@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }', layout: { fields: [] }, samplers: [] },
+        fragment: { wgsl: '@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }', layout: { fields: [] }, samplers: [] },
+      },
+    };
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    const stencil = gpu.pipelines.at(-1).depthStencil;
+    assert.equal(stencil.format, 'depth24plus-stencil8');
+    assert.deepEqual(stencil.stencilFront, { compare: 'equal', failOp: 'keep', depthFailOp: 'replace', passOp: 'increment-wrap' });
+    assert.equal(stencil.stencilReadMask, 0x0f);
+    assert.equal(stencil.stencilWriteMask, 0xff);
+    assert.equal(gpu.stencilReferences.at(-1), 7);
+
+    gl.stencilMaskSeparate(0x0404, 1);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('separate front/back stencil write masks')));
+    gl.stencilFuncSeparate(0x0404, 0x0202, 7, 1);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('separate front/back stencil read masks')));
+    gl.stencilMask(0x0f);
+    gl.clear(0x0400);
+    await gl._ops;
+    assert.equal(gpu.passes.at(-1).depthStencilAttachment.stencilLoadOp, 'load', 'masked stencil clear uses a draw pass to preserve untouched bits');
+    assert.equal(gpu.pipelines.at(-1).depthStencil.stencilWriteMask, 0x0f);
+    assert.equal(gpu.stencilReferences.at(-1), 19);
+    gl.stencilFunc(0xdead, 0, 0xff);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
+test('polygon offset is passed to WebGPU only when POLYGON_OFFSET_FILL is enabled', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.polygonOffset(1.5, 4);
+    gl._currentProgram = {
+      id: 1, linkPromise: Promise.resolve(true), attributeLocations: new Map(), attributeInfo: [], uniformInfo: [], uniformValues: new Map(),
+      stages: {
+        vertex: { wgsl: '@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }', layout: { fields: [] }, samplers: [] },
+        fragment: { wgsl: '@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }', layout: { fields: [] }, samplers: [] },
+      },
+    };
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    assert.equal('depthBias' in gpu.pipelines.at(-1).primitive, false);
+    gl.enable(0x8037);
+    await gl._draw(gl._drawSnapshot(), 0x0004, 0, 3, null, 1);
+    assert.equal(gpu.pipelines.at(-1).primitive.depthBias, 4);
+    assert.equal(gpu.pipelines.at(-1).primitive.depthBiasSlopeScale, 1.5);
+    gl.polygonOffset(Infinity, 0);
+    assert.equal(gl.getError(), 0x0501);
+  } finally { gpu.restore(); }
+});
+
+test('polygon line mode expands triangles to edges and line width rejects non-unit values loudly', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.polygonMode(0x0408, 0x1b01);
+    const expanded = gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([2, 4, 6]));
+    assert.equal(expanded.topology, 'line-list');
+    assert.deepEqual([...expanded.indices], [2, 4, 4, 6, 6, 2]);
+    gl.polygonMode(0x0408, 0x1b02);
+    assert.equal(gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([0, 1, 2])).topology, 'triangle-list');
+    gl.polygonMode(0x0408, 0x1b00);
+    assert.equal(gl._rewriteTopology(0x0004, 0, 3, Uint32Array.from([0, 1, 2])).topology, 'point-list');
+    gl.polygonMode(0x0408, 0x1b02);
+    gl.lineWidth(1);
+    gl.lineWidth(2);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('line width other than 1')));
+    gl.pointSize(1);
+    gl.pointSize(2);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('point size other than 1')));
+    gl.enable(0x8861);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('point sprites')));
+    gl.polygonMode(0x0404, 0x1b01);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('polygon mode for a single face')));
+  } finally { gpu.restore(); }
+});
+
+test('non-default sample coverage masks reject loudly while invalid coverage reports INVALID_VALUE', async () => {
+  const gpu=createValidationDevice(),logs=[];
+  try {
+    const gl=new WebGPUGL(gpu.canvas,{log:message=>logs.push(message)});await gl.ready;
+    gl.sampleCoverage(1,false);assert.equal(gl.getError(),0);
+    gl.sampleCoverage(0.5,false);assert.equal(gl.getError(),0x0502);
+    assert.ok(logs.some(line=>line.includes('sample coverage mask')));
+    gl.sampleCoverage(-0.1,false);assert.equal(gl.getError(),0x0501);
+  } finally {gpu.restore();}
+});
+
+test('draw and read buffer selection is honored and GL errors latch until read', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    assert.equal(gl.getParameter(0x8824), 1, 'the WebGPU backend exposes one supported draw buffer');
+    gl.drawBuffers([0x0405]);
+    assert.equal(gl.getParameter(0x8825), 0x0405);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    assert.equal(gl.getParameter(0x8825), 0x8ce0, 'framebuffers default to COLOR_ATTACHMENT0');
+    gl.drawBuffers([0]);
+    gl.bindFramebuffer(0x8d40, 0);
+    assert.equal(gl.getParameter(0x8825), 0x0405, 'default framebuffer selection is independent');
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    assert.equal(gl.getParameter(0x8825), 0, 'draw buffer selection is retained by its framebuffer');
+    gl.bindFramebuffer(0x8d40, 0);
+    gl.drawBuffers([0xdead]);
+    assert.equal(gl.getError(), 0x0500, 'unknown draw buffer enum raises INVALID_ENUM');
+    assert.equal(gl.getError(), 0, 'reading the GL error clears the latched error');
+    gl.drawBuffers([]);
+    assert.equal(gl.getParameter(0x8825), 0, 'an empty draw-buffer list disables color output');
+    gl.drawBuffers([0x0405]);
+    gl.drawBuffers([0x8ce0, 0x8ce1]);
+    assert.equal(gl.getError(), 0x0502, 'MRT exceeds this backend’s reported draw buffer limit');
+    assert.ok(logs.some(line => line.includes('multiple draw buffers (MRT)')));
+
+    const pixel = new Uint8Array([9, 8, 7, 6]);
+    gl.readBuffer(0);
+    gl.readPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel);
+    assert.deepEqual([...pixel], [9, 8, 7, 6], 'NONE leaves the destination untouched');
+    gl.readBuffer(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
+test('common invalid GL enums and values latch spec errors without mutating buffers', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.enable(0xdead);
+    gl.drawArrays(0xdead, 0, 3);
+    assert.equal(gl.getError(), 0x0500, 'only the first error remains pending');
+    assert.equal(gl.getError(), 0, 'getError consumes the pending error');
+    gl.viewport(0, 0, -1, 4);
+    assert.equal(gl.getError(), 0x0501);
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(0x8892, buffer);
+    gl.bufferData(0x8892, 4);
+    gl.bufferSubData(0x8892, 2, new Uint8Array([1, 2, 3]));
+    assert.equal(gl.getError(), 0x0501, 'out-of-bounds subdata is invalid');
+    assert.equal(buffer.data.length, 4, 'invalid subdata cannot grow the GL buffer');
+    gl.bufferSubData(0x8892, 1, new Uint8Array([7, 8]));
+    assert.deepEqual([...buffer.data], [0, 7, 8, 0]);
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual(logs, [], 'core GL validation errors are queried, not logged as unsupported features');
+    gl.bindBuffer(0xdead, null);
+    assert.equal(gl.getError(), 0x0500, 'unknown buffer targets raise INVALID_ENUM');
+  } finally { gpu.restore(); }
+});
+
+test('blend/depth/cull enums fail synchronously with INVALID_ENUM before async pipeline setup', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    gl.blendEquation(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.blendFunc(0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.depthFunc(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.cullFace(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.frontFace(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+  } finally { gpu.restore(); }
+});
+
+test('uniform buffers bind base and ranges and GLSL blocks lower with std140 layout', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: () => {} });
+    await gl.ready;
+    const pendingLink = gl.createProgram();
+    const pendingVertex = gl.createShader(0x8b31), pendingFragment = gl.createShader(0x8b30);
+    gl.shaderSource(pendingVertex, `#version 300 es\nlayout(std140, binding = 3) uniform Camera { mat4 view; } camera; void main(){ gl_Position = camera.view * vec4(0.0); }`);
+    gl.shaderSource(pendingFragment, `#version 300 es\nout vec4 color; void main(){ color = vec4(1.0); }`);
+    gl.compileShader(pendingVertex); gl.compileShader(pendingFragment); gl.attachShader(pendingLink, pendingVertex); gl.attachShader(pendingLink, pendingFragment);
+    gl.linkProgram(pendingLink);
+    assert.equal(gl.getUniformBlockIndex(pendingLink, 'Camera'), 0, 'block index is available synchronously after link');
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(0x8a11, buffer);
+    gl.bufferData(0x8a11, new Uint8Array(128), 0x88e8);
+    gl.bindBufferRange(0x8a11, 3, buffer, 16, 112);
+    assert.equal(gl.getError(), 0);
+    assert.deepEqual(gl._uniformBufferBindings.get(3), { buffer, offset: 16, size: 112, base: false });
+    assert.equal(gl.getIndexedParameter(0x8a11, 3), buffer);
+    assert.equal(gl.getParameter(0x8a28), buffer);
+    assert.equal(gl.getParameter(0x8a2f), 24);
+    gl.bindBufferBase(0x8a11, 2, buffer);
+    assert.deepEqual(gl._uniformBufferBindings.get(2), { buffer, offset: 0, size: 128, base: true });
+
+    const lowered = rewriteGlslForWebGPU(`#version 300 es
+layout(std140, binding = 3) uniform Camera { mat4 view; vec3 eye; float exposure; } camera;
+void main(){ gl_Position = camera.view * vec4(camera.eye * camera.exposure, 1.0); }`, 'vertex');
+    assert.equal(lowered.uniformBlocks[0].name, 'Camera');
+    assert.equal(lowered.uniformBlocks[0].binding, 3);
+    assert.deepEqual(lowered.uniformBlocks[0].layout.fields.map(field => field.offset), [0, 64, 76]);
+    assert.match(lowered.code, /bw_globals\.view/);
+    assert.match(lowered.code, /bw_globals\.eye/);
+    const program = { uniformBlocks: [{ ...lowered.uniformBlocks[0], index: 0, activeUniformIndices: [0, 1, 2], stages: new Set(['vertex']) }], uniformBlockBindings: new Map([[0, 3]]), stages: { vertex: { layout: lowered.layout, samplers: [] }, fragment: { layout: { fields: [], size: 0 }, samplers: [] } } };
+    const bytes = new Uint8Array(128);
+    const source = new DataView(bytes.buffer);
+    source.setFloat32(16, 2, true); source.setFloat32(80, 5, true); source.setFloat32(84, 7, true); source.setFloat32(92, 3, true);
+    gl.bufferSubData(0x8a11, 0, bytes);
+    const writes = [];
+    gl._device.queue.writeBuffer = (...args) => writes.push(args);
+    const state = { uniformValues: new Map(), textureUnits: [], uniformBlockBindings: program.uniformBlockBindings, uniformBufferBindings: gl._uniformBufferBindings };
+    const bindGroup = await gl._uniformBindGroup(program, { getBindGroupLayout: () => ({ entries: [{ binding: 0, buffer: {} }] }) }, state);
+    assert.ok(bindGroup);
+    const uploaded = new DataView(writes[0][2].buffer, writes[0][2].byteOffset, writes[0][2].byteLength);
+    assert.equal(uploaded.getFloat32(0, true), 2);
+    assert.equal(uploaded.getFloat32(64, true), 5);
+    assert.equal(uploaded.getFloat32(68, true), 7);
+    assert.equal(uploaded.getFloat32(76, true), 3);
+    assert.equal(gl.getUniformBlockIndex(program, 'Camera'), 0);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a40), 80);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a42), 3);
+    assert.deepEqual(gl.getActiveUniformBlockParameter(program, 0, 0x8a43), [0, 1, 2]);
+    gl.uniformBlockBinding(program, 0, 5);
+    assert.equal(gl.getActiveUniformBlockParameter(program, 0, 0x8a3f), 5);
+    assert.equal(gl.getActiveUniformBlockName(program, 0), 'Camera');
+    assert.equal(gl.getError(), 0);
+  } finally { gpu.restore(); }
+});
+
+test('table-driven GLES validation reports the error for each touched entry point', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const texture = gl.createTexture();
+    const buffer = gl.createBuffer();
+    const renderbuffer = gl.createRenderbuffer();
+    const invalidCalls = [
+      ['viewport rejects fractional dimensions', () => gl.viewport(0, 0, 1.5, 4), 0x0501],
+      ['scissor rejects fractional coordinates', () => gl.scissor(0.5, 0, 4, 4), 0x0501],
+      ['drawArrays rejects removed desktop QUADS mode', () => gl.drawArrays(0x0007, 0, 3), 0x0500],
+      ['drawArrays rejects fractional vertex counts', () => gl.drawArrays(0x0004, 0, 1.5), 0x0501],
+      ['drawElements rejects invalid index types', () => gl.drawElements(0x0004, 3, 0x1406, 0), 0x0500],
+      ['drawElements rejects misaligned index offsets', () => gl.drawElements(0x0004, 3, 0x1403, 1), 0x0501],
+      ['drawArraysInstanced validates its mode', () => gl.drawArraysInstanced(0x0007, 0, 3, 1), 0x0500],
+      ['drawArraysInstanced validates instance count', () => gl.drawArraysInstanced(0x0004, 0, 3, -1), 0x0501],
+      ['drawElementsInstanced validates index type', () => gl.drawElementsInstanced(0x0004, 3, 0x1406, 0, 1), 0x0500],
+      ['pixelStorei rejects unknown pnames', () => gl.pixelStorei(0xdead, 0), 0x0500],
+      ['pixelStorei rejects invalid alignments', () => gl.pixelStorei(0x0cf5, 3), 0x0501],
+      ['bindBuffer rejects an ungenerated object', () => gl.bindBuffer(0x8892, {}), 0x0502],
+      ['bindTexture rejects an ungenerated object', () => gl.bindTexture(0x0de1, {}), 0x0502],
+      ['bindBuffer accepts a generated object', () => gl.bindBuffer(0x8892, buffer), 0],
+      ['bindTexture accepts a generated object', () => gl.bindTexture(0x0de1, texture), 0],
+      ['beginQuery rejects an ungenerated query name', () => gl.beginQuery(0x8914, {}), 0x0502],
+      ['getQueryParameter rejects an ungenerated query name', () => gl.getQueryParameter({}, 0x8867), 0x0502],
+      ['texImage2D rejects mismatched RGBA8 and RGB transfers', () => { gl.bindTexture(0x0de1, texture); gl.texImage2D(0x0de1, 0, 0x8058, 1, 1, 0, 0x1907, 0x1401, new Uint8Array(3)); }, 0x0502],
+      ['texImage3D rejects mismatched RGBA8 and RGB transfers', () => { const layered = gl.createTexture(); gl.bindTexture(0x806f, layered); gl.texImage3D(0x806f, 0, 0x8058, 1, 1, 1, 0, 0x1907, 0x1401, new Uint8Array(3)); }, 0x0502],
+      ['readPixels rejects fractional coordinates', () => gl.readPixels(0.5, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4)), 0x0501],
+      ['readPixels rejects unknown formats as INVALID_ENUM', () => gl.readPixels(0, 0, 1, 1, 0xdead, 0x1401, new Uint8Array(4)), 0x0500],
+      ['framebufferTexture2D rejects attachment to the default framebuffer', () => gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0), 0x0502],
+      ['framebufferRenderbuffer rejects attachment to the default framebuffer', () => gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer), 0x0502],
+    ];
+    for (const [name, call, expected] of invalidCalls) {
+      call();
+      assert.equal(gl.getError(), expected, name);
+    }
+    gl.pixelStorei(0x9240, 1);
+    gl.pixelStorei(0x9241, 1);
+    assert.equal(gl.getError(), 0, 'WebGL unpack flags are accepted');
+    assert.equal(gl._unpack.flipY, true);
+    assert.equal(gl._unpack.premultiplyAlpha, true);
+  } finally { gpu.restore(); }
+});
+
+test('valid but unsupported GL buffer targets still reject loudly', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.bindBuffer(0x8f36, gl.createBuffer());
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('buffer target 0x8f36')));
+  } finally { gpu.restore(); }
+});
+
+test('invalid framebuffer and renderbuffer targets raise INVALID_ENUM without changing bindings', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0xdead, framebuffer);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl.getParameter(0x8ca6), 0, 'invalid framebuffer target must preserve both bindings');
+    gl.bindRenderbuffer(0xdead, gl.createRenderbuffer());
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(gl.getParameter(0x8ca7), null, 'invalid renderbuffer target must preserve the binding');
+  } finally { gpu.restore(); }
+});
+
+test('getError retains each distinct pending GL error until individually read', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.enable(0xdead);
+    gl.viewport(0, 0, -1, 1);
+    const seen = [gl.getError(), gl.getError()].sort((a, b) => a - b);
+    assert.deepEqual(seen, [0x0500, 0x0501]);
+    assert.equal(gl.getError(), 0);
+  } finally { gpu.restore(); }
+});
+
+test('framebuffer attachment APIs reject invalid targets and attachment enums', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array([1, 2, 3, 4]));
+    gl.framebufferTexture2D(0xdead, 0x8ce0, 0x0de1, texture, 0);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    gl.framebufferTexture2D(0x8d40, 0xdead, 0x0de1, texture, 0);
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    gl.framebufferRenderbuffer(0xdead, 0x8ce0, 0x8d41, gl.createRenderbuffer());
+    assert.equal(gl.getError(), 0x0500);
+    assert.equal(framebuffer.attachments.size, 0);
+    await gl._ops;
+  } finally { gpu.restore(); }
+});
+
+test('renderbuffer storage validates target, binding, dimensions, and formats', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.renderbufferStorage(0x8d41, 0x8058, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'storage without a bound renderbuffer is INVALID_OPERATION');
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorage(0x8d41, 0x8058, 4, 3);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d42), 4);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d43), 3);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d44), 0x8058);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 8);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d54), 0);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d55), 0);
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8cab), 0);
+    gl.renderbufferStorage(0xdead, 0x8058, 4, 4);
+    assert.equal(gl.getError(), 0x0500);
+    gl.renderbufferStorage(0x8d41, 0x8058, -1, 4);
+    assert.equal(gl.getError(), 0x0501);
+    gl.renderbufferStorage(0x8d41, 0xdead, 4, 4);
+    assert.equal(gl.getError(), 0x0500);
+    gl.renderbufferStorage(0x8d41, 0x881a, 4, 4);
+    assert.equal(gl.getError(), 0, 'RGBA16F is backed by a renderable rgba16float texture');
+    assert.ok(gl.getSupportedExtensions().includes('EXT_color_buffer_float'));
+    assert.ok(gl.getExtension('EXT_color_buffer_float'));
+    assert.equal(renderbuffer.format, 'rgba16float');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 16);
+    gl.renderbufferStorage(0x8d41, 0x8814, 4, 4);
+    assert.equal(gl.getError(), 0, 'RGBA32F uses WebGPU rgba32float color attachments');
+    assert.equal(renderbuffer.format, 'rgba32float');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 32);
+    gl.renderbufferStorage(0x8d41, 0x81a6, 4, 4);
+    assert.equal(gl.getError(), 0, 'DEPTH_COMPONENT24 maps to depth24plus');
+    assert.equal(renderbuffer.format, 'depth24plus');
+    gl.renderbufferStorage(0x8d41, 0x8cac, 4, 4);
+    assert.equal(gl.getError(), 0, 'DEPTH_COMPONENT32F maps to depth32float');
+    assert.equal(renderbuffer.format, 'depth32float');
+    gl.renderbufferStorage(0x8d41, 0x8814, 4, 4);
+    gl.renderbufferStorage(0x8d41, 0x8d7c, 4, 4);
+    assert.equal(gl.getError(), 0, 'RGBA8UI uses a WebGPU integer attachment format');
+    assert.equal(renderbuffer.format, 'rgba8uint');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8d50), 8);
+    gl.renderbufferStorage(0x8d41, 0x8d82, 4, 4);
+    assert.equal(gl.getError(), 0x0502, 'valid RGBA32I remains explicitly rejected until wide integer targets are implemented');
+    assert.ok(logs.some(line => line.includes('renderbuffer internal format 0x8d82')));
+    await gl._ops;
+    assert.equal(renderbuffer.gpu.format, 'rgba8uint');
+    assert.equal(renderbuffer.width, 4, 'invalid storage requests preserve the prior allocation');
+  } finally { gpu.restore(); }
+});
+
+test('framebuffer and renderbuffer queries report invalid targets, pnames, and missing attachments', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    assert.equal(gl.checkFramebufferStatus(0xdead), 0);
+    assert.equal(gl.getError(), 0x0500);
+    gl.getRenderbufferParameter(0x8d41, 0x8d42);
+    assert.equal(gl.getError(), 0x0502, 'query without bound renderbuffer is INVALID_OPERATION');
+    gl.bindRenderbuffer(0x8d41, gl.createRenderbuffer());
+    gl.getRenderbufferParameter(0x8d41, 0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd0);
+    assert.equal(gl.getError(), 0x0502, 'querying a missing attachment is INVALID_OPERATION');
+  } finally { gpu.restore(); }
+});
+
+test('framebuffer completeness rejects undefined mip levels and color/depth attachment mismatches', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    const framebuffer = gl.createFramebuffer(), color = gl.createTexture(), depth = gl.createRenderbuffer();
+    gl.bindTexture(0x0de1, color);
+    gl.texImage2D(0x0de1, 0, 0x8058, 4, 4, 0, 0x1908, 0x1401, new Uint8Array(64));
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 2);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd6, 'undefined attached mip level is incomplete');
+    gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 0);
+    gl.bindRenderbuffer(0x8d41, depth);
+    gl.renderbufferStorage(0x8d41, 0x81a6, 4, 4);
+    gl.framebufferRenderbuffer(0x8d40, 0x8d00, 0x8d41, depth);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd5);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, depth);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd6, 'depth format cannot occupy a color attachment');
+  } finally { gpu.restore(); }
+});
+
+test('RGBA8 multisample renderbuffers allocate four samples and resolve on framebuffer writes', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorageMultisample(0x8d41, 4, 0x8058, 8, 8);
+    await gl._ops;
+    assert.equal(renderbuffer.gpu.sampleCount, 4);
+    assert.equal(renderbuffer.resolveTexture.format, 'rgba8unorm');
+    assert.equal(gl.getRenderbufferParameter(0x8d41, 0x8cab), 4);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer);
+    assert.equal(gl.checkFramebufferStatus(0x8d40), 0x8cd5);
+    gl.clearColor(0.25, 0.5, 0.75, 1);
+    gl.clear(0x4000);
+    await gl._ops;
+    const color = gpu.passes.at(-1).colorAttachments[0];
+    assert.ok(color.resolveTarget, 'the multisample color pass resolves into a single-sample texture');
+    await gl._pipelineFor({ id: -1, stages: { vertex: { wgsl: '' }, fragment: { wgsl: '' } } }, {
+      enabled: new Set(), blend: {}, depthFunc: 0x0201, depthMask: true, colorMask: [true, true, true, true],
+      stencilFront: gl._stencilFront, stencilBack: gl._stencilBack, polygonOffset: [0, 0], cullFace: 0x0405, frontFace: 0x0901,
+    }, { layouts: [] }, 'triangle-list', 'rgba8unorm', null, 4);
+    assert.equal(gpu.pipelines.at(-1).multisample.count, 4, 'the pipeline uses the attachment sample count');
+    gl.renderbufferStorageMultisample(0x8d41, 8, 0x8058, 8, 8);
+    assert.equal(gl.getError(), 0x0502);
+    assert.equal(logs.filter(line => line.includes('renderbuffer sample count 8')).length, 1);
+  } finally { gpu.restore(); }
+});
+
+test('RGBA8UI renderbuffers select integer attachment pipelines without blending', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(0x8d41, renderbuffer);
+    gl.renderbufferStorage(0x8d41, 0x8d7c, 2, 2);
+    await gl._ops;
+    assert.equal(renderbuffer.gpu.format, 'rgba8uint');
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(0x8d40, framebuffer);
+    gl.framebufferRenderbuffer(0x8d40, 0x8ce0, 0x8d41, renderbuffer);
+    assert.equal(gl._targetFor(framebuffer).format, 'rgba8uint');
+    const state = {
+      enabled: new Set([0x0be2]), blend: gl._blend, depthFunc: 0x0201, depthMask: true,
+      colorMask: [true, true, true, true], stencilFront: gl._stencilFront, stencilBack: gl._stencilBack,
+      polygonOffset: [0, 0], cullFace: 0x0405, frontFace: 0x0901,
+    };
+    await gl._pipelineFor({ id: -2, stages: { vertex: { wgsl: '' }, fragment: { wgsl: '' } } }, state,
+      { layouts: [] }, 'triangle-list', 'rgba8uint', null, 1);
+    assert.equal(gpu.pipelines.at(-1).fragment.targets[0].format, 'rgba8uint');
+    assert.equal('blend' in gpu.pipelines.at(-1).fragment.targets[0], false);
+    await gl._blitColorFormats(gl._targetFor(framebuffer), gl._targetFor(0), 0, 0, 2, 2, 0, 0, 2, 2, 0x2600);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('integer framebuffer blit')));
+  } finally { gpu.restore(); }
+});
+
+test('fixed-function GL_COMBINE defaults to modulating the previous color by each texture', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.texEnvi(0x2300, 0x2200, 0x8570);
+    assert.equal(gl.getError(), 0);
+    const program = gl._fixedFunctionProgram([0, 1], true, false, 0x0207, gl._fixedFunction.texEnv);
+    assert.match(program.stages.fragment.wgsl, /color\.rgb \* texel0\.rgb/);
+    assert.match(program.stages.fragment.wgsl, /color\.a \* texel0\.a/);
+    assert.match(program.stages.fragment.wgsl, /color = color \* texel1/);
+  } finally { gpu.restore(); }
+});
+
+test('desktop GLSL core versions 330 through 460 normalize into the WebGPU frontend dialect', () => {
+  for (const version of [330, 400, 410, 420, 430, 440, 450, 460]) {
+    const rewritten = rewriteGlslForWebGPU(`#version ${version} core\nvoid main() { gl_Position = vec4(0.0); }`, 'vertex');
+    assert.match(rewritten.code, /^#version 450\n/);
+  }
+});
+
+test('texture environment COMBINE accepts operation, source, operand, and scale state', async () => {
+  const gpu = createValidationDevice();
+  try {
+    const gl = new WebGPUGL(gpu.canvas);
+    await gl.ready;
+    gl.texEnvi(0x2300,0x2200,0x8570);
+    gl.texEnvi(0x2300,0x8571,0x86ae);
+    gl.texEnvi(0x2300,0x8572,0x8575);
+    gl.texEnvi(0x2300,0x8580,0x8577);
+    gl.texEnvi(0x2300,0x8581,0x1702);
+    gl.texEnvi(0x2300,0x8590,0x0301);
+    gl.texEnvi(0x2300,0x8591,0x0300);
+    gl.texEnvi(0x2300,0x8573,2);
+    gl.texEnvfv(0x2300,0x2201,[0.25,0.5,0.75,1]);
+    assert.equal(gl.getError(),0);
+    assert.deepEqual(gl._fixedFunction.texEnvCombine[0],{rgb:0x86ae,alpha:0x8575,rgbScale:2,alphaScale:1,
+      srcRgb:[0x8577,0x1702,0x8576],srcAlpha:[0x8578,0x1702,0x8576],opRgb:[0x0301,0x0300,0x0300],opAlpha:[0x0302,0x0302,0x0302]});
+    const program=gl._fixedFunctionProgram([0],true,false,0x0207,gl._fixedFunction.texEnv,gl._fixedFunction.texEnvCombine,gl._fixedFunction.texEnvColor);
+    assert.match(program.stages.fragment.wgsl,/dot\(/);
+    assert.match(program.stages.fragment.wgsl,/fragmentGlobals\.u_texEnvColor/);
+    gl.texEnvi(0x2300, 0xdead, 0x2100);
+    assert.equal(gl.getError(), 0x0500, 'unknown pname remains INVALID_ENUM');
+  } finally { gpu.restore(); }
+});
+
+test('state and texture entry points report invalid enums, values, and operations', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    gl.getParameter(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.pixelStorei(0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.pixelStorei(0x0d05, 3);
+    assert.equal(gl.getError(), 0x0501);
+    gl.matrixMode(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.popMatrix();
+    assert.equal(gl.getError(), 0x0502, 'matrix stack underflow is INVALID_OPERATION');
+    gl.isEnabled(0xdead);
+    assert.equal(gl.getError(), 0x0500);
+    gl.bindTexture(0xdead, gl.createTexture());
+    assert.equal(gl.getError(), 0x0500);
+    const cube = gl.createTexture();
+    gl.bindTexture(0x8513, cube);
+    assert.equal(gl.getError(), 0, 'cube-map binding is supported');
+    assert.equal(gl.getParameter(0x8514), cube.handle);
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0502, 'allocating storage without a bound texture is invalid');
+    const texture = gl.createTexture();
+    gl.bindTexture(0x0de1, texture);
+    gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0);
+    gl.texParameteri(0x0de1, 0xdead, 1);
+    assert.equal(gl.getError(), 0x0500);
+    gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1401, new Uint8Array(4));
+    assert.equal(gl.getError(), 0x0501, 'texture subimage bounds are validated');
+  } finally { gpu.restore(); }
+});
+
+test('2D and layered texture transfers reject unknown pixel types and formats before storage changes', async () => {
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    const texture=gl.createTexture();gl.bindTexture(0x0de1,texture);
+    gl.texImage2D(0x0de1,0,0x8058,1,1,0,0x1908,0xdead,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);assert.equal(texture.width,0);
+    gl.texImage2D(0x0de1,0,0x8058,1,1,0,0x1908,0x1401,new Uint8Array(4));
+    gl.texSubImage2D(0x0de1,0,0,0,1,1,0xdead,0x1401,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);
+    const volume=gl.createTexture();gl.bindTexture(0x806f,volume);
+    gl.texImage3D(0x806f,0,0x8058,1,1,1,0,0x1908,0xdead,new Uint8Array(4));
+    assert.equal(gl.getError(),0x0500);assert.equal(volume.width,0);
+  } finally {gpu.restore();}
+});
+
+
+test('GLSL switch, bitwise operators, texture operations, derivatives, discard and fragment builtins translate with Naga', () => {
+  const source=`#version 300 es
+uniform sampler2D image;
+in vec2 uv;
+out vec4 color;
+void main(){
+  int mode=3; int bits=0;
+  switch(mode){case 1: bits=1; break; case 3: bits=(7 & 3) << 1; break; default: bits=0;}
+  vec4 ordinary=texture(image,uv);
+  vec4 lod=textureLod(image,uv,0.0);
+  vec4 grad=textureGrad(image,uv,dFdx(uv),dFdy(uv));
+  vec4 offset=textureOffset(image,uv,ivec2(1));
+  vec4 gathered=textureGather(image,uv,2);
+  vec4 gatheredOffset=textureGatherOffset(image,uv,ivec2(1),1);
+  vec4 fetched=texelFetch(image,ivec2(0),0);
+  float derivative=fwidth(uv.x);
+  color=ordinary+lod+grad+offset+gathered+gatheredOffset+fetched+vec4(float(bits)+derivative+gl_FragCoord.x+gl_PointCoord.x);
+  if(gl_FrontFacing && bits==0) discard;
+}`;
+  const prepared=rewriteGlslForWebGPU(source,'fragment');
+  const wgsl=patchTextureGatherWGSL(naga.translate({from:'glsl',to:'wgsl',source:prepared.code,parse:{stage:'fragment'}}),prepared.gathers);
+  assert.match(String(wgsl),/textureSampleLevel|textureSample/);
+  assert.match(String(wgsl),/textureGather\(2,/);
+  assert.match(String(wgsl),/textureGather\(1,[^\n]*vec2\(1i\)/);
+  assert.match(prepared.code,/vec2\(0\.5, 0\.5\)\.x/);
+  assert.match(String(wgsl),/discard/);
+});
+
+test('explicit GLSL lowering rejection paths retain feature-specific diagnostics', () => {
+  const rejectedShaders = [
+    ['uniform block member declaration', '#version 300 es\nlayout(std140) uniform Camera { vec4 eye; int ; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block declaration: Camera/],
+    ['uniform block layout', '#version 300 es\nlayout(shared) uniform Camera { vec4 eye; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block layout for Camera; expected std140/],
+    ['matrix interface without entry point', '#version 300 es\nout mat4 transform;', /matrix stage interface requires void main\(\)/],
+    ['unterminated matrix interface entry point', '#version 300 es\nout mat4 transform;\nvoid main(){gl_Position=vec4(0.0);', /matrix stage interface has an unterminated main\(\)/],
+  ];
+  for (const [name, source, message] of rejectedShaders)
+    assert.throws(() => rewriteGlslForWebGPU(source, 'vertex'), message, name);
+});
+
+test('remaining dynamic point-size and sampler-array GLSL paths reject with named warnings', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const link = async (vertexSource, fragmentSource) => {
+      const program = gl.createProgram();
+      const vertex = gl.createShader(0x8b31), fragment = gl.createShader(0x8b30);
+      gl.shaderSource(vertex, vertexSource); gl.shaderSource(fragment, fragmentSource);
+      gl.compileShader(vertex); gl.compileShader(fragment);
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      return [program, await program.linkPromise];
+    };
+    const basicFragment = '#version 300 es\nout vec4 color; void main(){color=vec4(1.0);}';
+    const [pointProgram, pointLinked] = await link(
+      '#version 300 es\nvoid main(){gl_Position=vec4(0.0);gl_PointSize=gl_Position.x+2.0;}', basicFragment,
+    );
+    assert.equal(pointLinked, false);
+    assert.match(pointProgram.infoLog, /unsupported GLSL gl_PointSize: dynamic point sizes/);
+    assert.equal(gl.getError(), 0x0502);
+    const [samplerProgram, samplerLinked] = await link(
+      '#version 300 es\nvoid main(){gl_Position=vec4(0.0);}',
+      '#version 300 es\nuniform sampler2D images[2]; out vec4 color; void main(){color=texture(images[1],vec2(0.5));}',
+    );
+    assert.equal(samplerLinked, false);
+    assert.match(samplerProgram.infoLog, /unsupported GLSL sampler array 'images'/);
+    assert.equal(gl.getError(), 0x0502);
+    assert.ok(logs.some(line => line.includes('GLSL gl_PointSize dynamic values')));
+    assert.ok(logs.some(line => line.includes("GLSL sampler array 'images'")));
+  } finally { gpu.restore(); }
+});
+
+test('uniform arrays of structs flatten to fields and preserve element locations', async () => {
+  const source=`#version 300 es
+struct Light { vec4 color; float intensity; };
+uniform Light lights[2];
+out vec4 color;
+void main(){color=lights[1].color*lights[0].intensity;}`;
+  const prepared=rewriteGlslForWebGPU(source,'fragment');
+  assert.match(prepared.code,/vec4 lights_color\[2\]/);
+  assert.match(prepared.code,/bw_globals\.lights_color\[1\]/);
+  assert.doesNotThrow(()=>naga.translate({from:'glsl',to:'wgsl',source:prepared.code,parse:{stage:'fragment'}}));
+
+  const gpu=createValidationDevice();
+  try {
+    const gl=new WebGPUGL(gpu.canvas);await gl.ready;
+    const program=gl.createProgram(),vertex=gl.createShader(0x8b31),fragment=gl.createShader(0x8b30);
+    gl.shaderSource(vertex,'#version 300 es\nin vec4 position; void main(){gl_Position=position;}');
+    gl.shaderSource(fragment,source);gl.compileShader(vertex);gl.compileShader(fragment);gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);await program.linkPromise;
+    assert.equal(program.linked,true);
+    assert.ok(program.uniformLocations.has('lights[1].color'),[...program.uniformLocations.keys()].join(','));
+    const location=gl.getUniformLocation(program,'lights[1].color');assert.ok(location);gl.useProgram(program);gl.uniform4fv(location,[0.2,0.4,0.6,0.8]);
+    assert.ok(program.uniformValues.get('lights_color'));
+    assert.deepEqual([...gl.getUniform(program,location)],Array.from(new Float32Array([0.2,0.4,0.6,0.8])));
+    assert.equal(gl.getActiveUniform(program,0).name,'lights[0].color');
+  } finally {gpu.restore();}
+});
+
+test('GLSL flat/noperspective varying arrays and uniform arrays translate with Naga', () => {
+  const vertex=`#version 300 es
+in vec4 position;\nflat out vec4 flags[2];\nnoperspective out vec2 screenUv;
+uniform vec4 weights[2];
+void main(){ flags[0]=weights[0]; flags[1]=weights[1]; screenUv=position.xy; gl_Position=position; }`;
+  const fragment=`#version 300 es
+flat in vec4 flags[2];\nnoperspective in vec2 screenUv;\nout vec4 color;
+void main(){color=flags[0]+flags[1]+vec4(screenUv,0.0,0.0);}`;
+  const locations=new Map();
+  const vs=rewriteGlslForWebGPU(vertex,'vertex',new Map(),locations).code;
+  const fs=rewriteGlslForWebGPU(fragment,'fragment',new Map(),locations).code;
+  const vertexWgsl=String(naga.translate({from:'glsl',to:'wgsl',source:vs,parse:{stage:'vertex'}}));
+  const fragmentWgsl=String(naga.translate({from:'glsl',to:'wgsl',source:fs,parse:{stage:'fragment'}}));
+  assert.match(applyNoperspectiveInterpolation(vertexWgsl,rewriteGlslForWebGPU(vertex,'vertex',new Map(),new Map()).noperspectiveLocations),/@location\(2\) @interpolate\(linear\) screenUv/);
+  assert.ok(fragmentWgsl.includes('screenUv'));
+});
+
+test('lowering and lift failures surface as link failures with info logs, never as thrown exceptions', async () => {
+  const gpu = createValidationDevice(), logs = [];
+  try {
+    const gl = new WebGPUGL(gpu.canvas, { log: message => logs.push(message) });
+    await gl.ready;
+    const basicFragment = '#version 300 es\nout vec4 color; void main(){color=vec4(1.0);}';
+    const cases = [
+      ['uniform block member declaration', '#version 300 es\nlayout(std140) uniform Camera { vec4 eye; int ; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block declaration: Camera/],
+      ['uniform block layout', '#version 300 es\nlayout(shared) uniform Camera { vec4 eye; } camera; void main(){gl_Position=vec4(0.0);}', /Unsupported uniform block layout for Camera; expected std140/],
+      ['matrix interface without entry point', '#version 300 es\nout mat4 transform;', /matrix stage interface requires void main\(\)/],
+      ['unterminated matrix interface entry point', '#version 300 es\nout mat4 transform;\nvoid main(){gl_Position=vec4(0.0);', /matrix stage interface has an unterminated main\(\)/],
+      ['empty vertex source fails the Naga lift', '', /GLSL lift failed \(empty-source\)/],
+    ];
+    for (const [name, vertexSource, message] of cases) {
+      const program = gl.createProgram();
+      const vertex = gl.createShader(0x8b31), fragment = gl.createShader(0x8b30);
+      gl.shaderSource(vertex, vertexSource); gl.shaderSource(fragment, basicFragment);
+      gl.compileShader(vertex); gl.compileShader(fragment);
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment);
+      gl.linkProgram(program); // must not throw, even for synchronous lowering failures
+      assert.equal(await program.linkPromise, false, name);
+      assert.equal(gl.getProgramParameter(program, 0x8b82), false, `${name}: LINK_STATUS is false`);
+      assert.match(program.infoLog, message, `${name}: info log carries the diagnostic`);
+      assert.equal(gl.getError(), 0, `${name}: a plain translation failure is a link failure, not a GL error`);
+    }
+  } finally { gpu.restore(); }
 });

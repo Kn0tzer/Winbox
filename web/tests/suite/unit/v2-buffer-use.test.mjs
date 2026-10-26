@@ -1,3 +1,4 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
@@ -10,12 +11,13 @@ test('geometry upload bounds use the index buffer bound at each draw before late
  const src=readFileSync(join(root,'source/vulkan/vk64bridge.cpp'),'utf8');
  const start=src.indexOf('U64 v2MaxVbUse[VK64_MAX_VERT_BINDINGS]');
  const end=src.indexOf('        for (const Cmd& k : st->cmds)',start);
- assert.ok(start>0&&end>start);const block=src.slice(start,end);
+ assert.ok(start>0&&end>start);const block=extractSourceRange(src, start,end);
  const dir=mkdtempSync(join(tmpdir(),'v2-buffer-use-'));
  try{
   writeFileSync(join(dir,'check.cpp'),`
 #include <cassert>
 #include <cstdint>
+#define VK64_DROP_IF(action, ...) do { if (__VA_ARGS__) { action; } } while (0) // bridge macro minus logging
 #include <vector>
 #include <algorithm>
 #include <cstring>

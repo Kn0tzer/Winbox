@@ -165,10 +165,15 @@ public:
 	void iterateMappedChildrenBackToFront(std::function<bool(const XWindowPtr& child)> callback, bool includeTransients = false);
 	void iterateAllMappedDescendants(std::function<void(const XWindowPtr& child)> callback);
 	VisualPtr getVisual() {return visual;}
+	const XSetWindowAttributes& getAttributes() const { return attributes; }
 
 	void setTextProperty(KThread* thread, XTextProperty* name, Atom property, bool trace = false);
 	int configure(U32 mask, XWindowChanges* changes);
 	int moveResize(S32 x, S32 y, U32 width, U32 height);
+	// position is relative to the parent, as XGetGeometry reports it
+	void getPlacement(S32& x, S32& y, U32& borderWidth) { x = left; y = top; borderWidth = border_width; }
+	// XClearArea: a zero width or height runs to the edge of the window; exposures sends Expose for the cleared area
+	int clearArea(KThread* thread, S32 x, S32 y, U32 width, U32 height, bool exposures);
 
 	XPropertyPtr getProperty(U32 atom);
 	void setProperty(U32 atom, U32 type, U32 format, U32 length, const U8* value, bool trace = false);
@@ -193,6 +198,8 @@ public:
 	void input2Notify(const DisplayDataPtr& data, S32 x, S32 y, U32 type);
 
 	XWindowPtr getParent() {return parent;}
+	// every child, mapped or not, in stacking order with the bottom-most first, as XQueryTree reports them
+	std::vector<XWindowPtr> getChildrenBottomToTop();
 	bool mapped() {return this->isMapped;}
 	bool isThisAndAncestorsMapped();
 	XWindowPtr getTopMappedChild();
@@ -225,6 +232,7 @@ private:
 	S32 top;	
 	U32 border_width;
 	XSetWindowAttributes attributes;
+	bool hasBackgroundPixel = false; // CWBackPixel was given; a window with no pixel background keeps its contents on ClearArea
 	bool isMapped = false;	
 	bool isFullScreen = false;
 	std::weak_ptr<XWindow> transientCached;
@@ -238,6 +246,7 @@ private:
 	std::vector<XWindowPtr> zchildren;
 	std::vector<XWindowPtr> transientChildren;
 
+	void sendExpose(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count);
 	void exposeNofity(const DisplayDataPtr& data, S32 x, S32 y, S32 width, S32 height, S32 count);
 	void configureNotify();
 	void focusNotify(const DisplayDataPtr& data, bool isIn, S32 mode, S32 detail);

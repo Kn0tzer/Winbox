@@ -47,8 +47,8 @@ std::shared_ptr<FsNode> createSysDevices(const std::shared_ptr<FsNode> sysNode) 
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/driver_override"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("(null)"));
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/enable"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("1"));
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/irq"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("17"));
-	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/local_cpulist"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("0-")+BString::valueOf(Platform::getCpuCount()-1));
-	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/local_cpus"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("f"));
+	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/local_cpulist"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, KSystem::guestCpuList());
+	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/local_cpus"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("1"));
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/modalias"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("pci:v00001000d00000030sv000015ADsd00001976bc01sc00i00"));
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/msi_bus"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("1"));
 	Fs::addVirtualFile(B("/sys/devices/pci0000:00/0000:00:10.0/msi_bus"), K__S_IREAD, k_mdev(0, 0), pciSub1Node, B("1"));

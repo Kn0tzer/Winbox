@@ -11,6 +11,7 @@
 
 #ifdef __TEST
 
+#include "../../io/fsfilenode.h"
 #include "knetlink.h"
 #include "knativesocket.h"
 #include "ksocket.h"
@@ -145,6 +146,14 @@ void testInetDatagramLoopback() {
     loopbackSender->loopbackDatagram = true;
     wildcardReceiver->setBlocking(false);
     loopbackSender->setBlocking(false);
+    // The CPU test fixture does not initialize /proc/<pid>/fd, which normal
+    // KProcess descriptor allocation publishes into. Provide a minimal node
+    // so this loopback test exercises the socket path instead of dereferencing
+    // an absent procfs fixture.
+    if (!context.process->fdNode) {
+        context.process->fdNode = std::make_shared<FsFileNode>(
+            0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
     KFileDescriptorPtr wildcardFd = context.process->allocFileDescriptor(wildcardReceiver, K_O_RDWR, 0, -1, 0);
     KFileDescriptorPtr senderFd = context.process->allocFileDescriptor(loopbackSender, K_O_RDWR, 0, -1, 0);
 

@@ -3897,3 +3897,220 @@ test('shared-memory import descriptor links only a shared host memory', async ()
     /shared|memory/i,
     'a plain memory import must not match a shared memory');
 });
+
+// ---- K-M3: emitted-path guest-access fault gate ----
+// The host imports below model jit64wasm_runtime.cpp exactly: a denied
+// access returns 0 (read) or drops the store (write), records the fault on
+// the active CPU, and sets Jit64WasmState::faultPending (offset 172). The
+// emitted module must then stop at the faulting op: execCount counts only
+// completed ops, RIP is the faulting op start, the faulting op leaves no
+// register/flag trace, no later import call happens, and string ops keep
+// architectural partial progress (completed elements only). On the base
+// emitter there is no gate: every test here runs the block to completion
+// on placeholder values instead.
+const FAULT_OFF = 172;
+
+async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denied, rip = 0x1000n, ptr = 512 }) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  initState(view, ptr, regs, rip, rflags);
+  view.setUint32(ptr + FAULT_OFF, 0, true);
+  let calls = 0;
+  const u32 = n => Number(BigInt.asUintN(32, BigInt(n)));
+  const env = { env: {
+    memory,
+    memRead: (addrLo, addrHi, size, retPtr) => {
+      calls++;
+      const addr = (BigInt(u32(addrHi)) << 32n) | BigInt(u32(addrLo));
+      if (denied(addr, false)) {
+        view.setUint32(ptr + FAULT_OFF, 1, true);
+        view.setBigUint64(retPtr, 0n, true);
+        return;
+      }
+      view.setBigUint64(retPtr, guestMem.read(addr, size), true);
+    },
+    memWrite: (addrLo, addrHi, size, valLo, valHi) => {
+      calls++;
+      const addr = (BigInt(u32(addrHi)) << 32n) | BigInt(u32(addrLo));
+      if (denied(addr, true)) {
+        view.setUint32(ptr + FAULT_OFF, 1, true);
+        return;
+      }
+      const val = (BigInt(u32(valHi)) << 32n) | BigInt(u32(valLo));
+      guestMem.write(addr, size, val);
+    },
+  } };
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), env);
+  instance.exports.execute(ptr);
+  return { ...readState(view, ptr), guestMem, calls, fault: view.getUint32(ptr + FAULT_OFF, true) };
+}
+
+function qwords(base, vals) {
+  const m = new Map();
+  vals.forEach((v, i) => {
+    for (let b = 0; b < 8; b++) m.set(base + BigInt(i * 8 + b), Number((v >> BigInt(8 * b)) & 0xFFn));
+  });
+  return m;
+}
+
+test('K-M3: denied load stops the block at the faulting op', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  let reads = 0;
+  const out = await runFault(
+    [0x48, 0x8B, 0x03, 0x48, 0x8B, 0x0B, 0x48, 0x8B, 0x13], // mov rax,[rbx]; mov rcx,[rbx]; mov rdx,[rbx]
+    { regs, memInit: qwords(A, [0x1111222233334444n]),
+      denied: (addr, write) => !write && ++reads === 2 });
+  assert.equal(out.fault, 1, 'host must record the fault flag');
+  assert.equal(out.calls, 2, 'no import call may follow the faulting one');
+  assert.equal(out.execCount, 1, 'only the first op completed');
+  assert.equal(out.ripOut, 0x1000n + 3n, 'RIP is the faulting op start');
+  assert.equal(out.regs[0], 0x1111222233334444n, 'completed load published');
+  assert.equal(out.regs[1], 0xFEDCBA9876543200n + 1n, 'faulting load left RCX untouched');
+  assert.equal(out.regs[2], 0xFEDCBA9876543200n + 2n, 'later op never ran (RDX)');
+});
+
+test('K-M3: denied store leaves no trace and stops the block', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A;
+  regs[0] = 0xDEADBEEFn;
+  const out = await runFault(
+    [0x48, 0x89, 0x03, 0x48, 0x8B, 0x0B], // mov [rbx],rax; mov rcx,[rbx]
+    { regs, denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'the load after the faulting store never happens');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.regs[1], 0xFEDCBA9876543200n + 1n, 'RCX untouched');
+  assert.equal(out.guestMem.bytes.size, 0, 'denied store was dropped by the host');
+});
+
+test('K-M3: PUSH to a denied page keeps RSP unchanged', async () => {
+  const S = 0x3000n;
+  const regs = baseRegs();
+  regs[4] = S; // RSP
+  regs[0] = 0x42n;
+  const out = await runFault([0x50], // push rax
+    { regs, denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.execCount, 0);
+  assert.equal(out.regs[4], S, 'faulting PUSH must not publish the decremented RSP');
+});
+
+test('K-M3: POP r/m with a denied store keeps RSP unchanged', async () => {
+  const S = 0x3000n, B = 0x4000n;
+  const regs = baseRegs();
+  regs[4] = S; // RSP
+  regs[3] = B; // RBX
+  const out = await runFault([0x8F, 0x03], // pop qword [rbx]
+    { regs, memInit: qwords(S, [0x99n]), denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.execCount, 0);
+  assert.equal(out.regs[4], S, 'faulting POP store must not publish the incremented RSP');
+  assert.equal(out.guestMem.bytes.has(B), false, 'denied store dropped');
+});
+
+test('K-M3: REP MOVSQ write fault keeps completed-element progress', async () => {
+  const SRC = 0x5000n, DST = 0x6000n;
+  const regs = baseRegs();
+  regs[6] = SRC; regs[7] = DST; regs[1] = 4n;
+  const vals = [0xA0n, 0xA1n, 0xA2n, 0xA3n];
+  const out = await runFault([0xF3, 0x48, 0xA5], // rep movsq
+    { regs, memInit: qwords(SRC, vals),
+      denied: (addr, write) => write && addr >= DST + 16n });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 6, 'two full elements, then read + denied write');
+  assert.equal(out.execCount, 0, 'the string op is op 0 and did not complete');
+  assert.equal(out.ripOut, 0x1000n, 'RIP is the string op start');
+  assert.equal(out.regs[1], 2n, 'RCX counts the uncompleted elements');
+  assert.equal(out.regs[6], SRC + 16n, 'RSI advanced by completed elements');
+  assert.equal(out.regs[7], DST + 16n, 'RDI advanced by completed elements');
+  assert.equal(out.guestMem.read(DST, 8), 0xA0n);
+  assert.equal(out.guestMem.read(DST + 8n, 8), 0xA1n);
+  assert.equal(out.guestMem.bytes.has(DST + 16n), false, 'faulting element not written');
+});
+
+test('K-M3: REP MOVSQ read fault on element 1 makes no progress', async () => {
+  const SRC = 0x5000n, DST = 0x6000n;
+  const regs = baseRegs();
+  regs[6] = SRC; regs[7] = DST; regs[1] = 4n;
+  const out = await runFault([0xF3, 0x48, 0xA5],
+    { regs, memInit: qwords(SRC, [1n, 2n, 3n, 4n]),
+      denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'only the faulting read happened');
+  assert.equal(out.regs[1], 4n, 'RCX unchanged');
+  assert.equal(out.regs[6], SRC);
+  assert.equal(out.regs[7], DST);
+  assert.equal(out.guestMem.bytes.has(DST), false, 'no element written');
+});
+
+test('K-M3: REP CMPSQ fault on the second read keeps first-element flags', async () => {
+  const SRC = 0x5000n, DST = 0x6000n;
+  const regs = baseRegs();
+  regs[6] = SRC; regs[7] = DST; regs[1] = 3n;
+  const init = new Map([...qwords(SRC, [5n, 7n, 9n]), ...qwords(DST, [5n, 8n, 9n])]);
+  const out = await runFault([0xF3, 0x48, 0xA7], // repe cmpsq
+    { regs, memInit: init, denied: (addr, write) => !write && addr === DST + 8n });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 4, 'element 1 compared; element 2 faults on its second read');
+  assert.equal(out.regs[1], 2n, 'RCX counts uncompleted elements');
+  assert.equal(out.regs[6], SRC + 8n);
+  assert.equal(out.regs[7], DST + 8n);
+  assert.ok(out.rflags & 0x40, 'flags are from the last completed (equal) comparison: ZF=1');
+});
+
+test('K-M3: RMW store fault restores the op-start flags', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  regs[0] = 1n; // RAX: adding it to all-ones memory would set CF/ZF
+  const out = await runFault([0x48, 0x01, 0x03], // add [rbx], rax
+    { regs, rflags: 0x202, memInit: qwords(A, [0xFFFFFFFFFFFFFFFFn]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.rflags, 0x202, 'faulting RMW must not publish its result flags');
+  assert.equal(out.guestMem.read(A, 8), 0xFFFFFFFFFFFFFFFFn, 'memory unchanged');
+});
+
+test('K-M3: shift store fault restores the op-start flags', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  // D1/C1 immediate shifts are the reachable shift-memory forms (the
+  // by-CL memory forms are classifier-declined, interpreter-only).
+  const out = await runFault([0x48, 0xC1, 0x23, 0x03], // shl qword [rbx], 3
+    { regs, rflags: 0x202, memInit: qwords(A, [0x8000000000000000n]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.rflags, 0x202, 'faulting shift must not publish its result flags');
+  assert.equal(out.guestMem.read(A, 8), 0x8000000000000000n, 'memory unchanged');
+});
+
+test('K-M3: BTS store fault restores CF', async () => {
+  const A = 0x2000n;
+  const regs = baseRegs();
+  regs[3] = A; // RBX
+  regs[0] = 0n; // RAX: bit index 0; the stored bit is 0, so BTS would clear CF
+  const out = await runFault([0x48, 0x0F, 0xAB, 0x03], // bts [rbx], rax
+    { regs, rflags: 0x203, memInit: qwords(A, [0n]),
+      denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'read happened, store was denied');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.rflags, 0x203, 'faulting BTS must not publish the tested bit into CF');
+  assert.equal(out.guestMem.read(A, 8), 0n, 'memory unchanged');
+});

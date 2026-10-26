@@ -26,8 +26,8 @@
 #include "../opengl/gl64bridge.h"
 #include "../vulkan/vk64bridge.h"
 #include "kevent.h"
+#include "krandom.h"
 
-#include <random>
 #include <thread>
 
 U64 sysCallTime;
@@ -419,12 +419,20 @@ static U32 syscall_setsid(CPU* cpu, U32 eipCount) {
     return result;
 }
 
-static U32 syscall_setrlimit(CPU* cpu, U32 eipCount) {	
-#ifdef _DEBUG
-    klog("setrlimit not implemented");
-#endif
+static U32 syscall_setrlimit(CPU* cpu, U32 eipCount) {
     U32 result = 0;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "setrlimit: result=%d(0x%X) IGNORED\n", result, result);
+    if (ARG1 == 8 && ARG2) { // RLIMIT_MEMLOCK (kernel round 3A)
+        KProcess* process = cpu->thread->process.get();
+        const U32 newCur = cpu->memory->readd(ARG2);
+        const U32 newMax = cpu->memory->readd(ARG2 + 4);
+        if (newCur > newMax) result = -K_EINVAL;
+        else if ((U64)newMax > process->rlimMemlockMax) result = -K_EPERM;
+        else {
+            process->rlimMemlockCur = newCur;
+            process->rlimMemlockMax = newMax;
+        }
+    }
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "setrlimit: result=%d(0x%X)\n", result, result);
     return result;
 }
 
@@ -615,6 +623,12 @@ static U32 syscall_setitimer(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_SIGNAL, cpu, "setitimer :which=%d newValue=%d(%d.%.06d) oldValue=%d", ARG1, ARG2, (ARG2?cpu->memory->readd(ARG2+8):0), (ARG2? cpu->memory->readd(ARG2+12):0), ARG3);
     U32 result = cpu->thread->process->setitimer(ARG1, ARG2, ARG3);
     SYS_LOG(SYSCALL_SIGNAL, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_getitimer(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->getitimer(ARG1, ARG2);
+    SYS_LOG(SYSCALL_SIGNAL, cpu, "getitimer: which=%d oldValue=%d result=%d(0x%X)\n", ARG1, ARG2, result, result);
     return result;
 }
 
@@ -822,7 +836,15 @@ static U32 syscall_flock(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_msync(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_MEMORY, cpu, "msync addr=%X length=%d flags=%X", ARG1, ARG2, ARG3);
-    U32 result = cpu->thread->process->msync(cpu->thread, ARG1, ARG2, ARG3);
+    constexpr U32 MS_ASYNC = 1, MS_INVALIDATE = 2, MS_SYNC = 4;
+    U32 flags = ARG3;
+    U32 result;
+    if ((ARG1 & K_PAGE_MASK) || !ARG2 || (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC)) ||
+        ((flags & MS_ASYNC) && (flags & MS_SYNC)) || !(flags & (MS_ASYNC | MS_SYNC))) {
+        result = -K_EINVAL;
+    } else {
+        result = cpu->thread->process->msync(cpu->thread, ARG1, ARG2, flags);
+    }
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -845,6 +867,38 @@ static U32 syscall_mlock(CPU* cpu, U32 eipCount) {
     U32 result = cpu->memory->mlock(ARG1, ARG2);
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
+}
+
+static U32 syscall_munlock(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "munlock: address=0x%X len=%d", ARG1, ARG2);
+    U32 result = cpu->memory->munlock(ARG1, ARG2);
+    SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_mlockall(CPU* cpu, U32 eipCount) {
+    constexpr U32 MCL_CURRENT = 1, MCL_FUTURE = 2, MCL_ONFAULT = 4;
+    U32 flags = ARG1;
+    if ((flags & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)) ||
+        ((flags & MCL_ONFAULT) && !(flags & (MCL_CURRENT | MCL_FUTURE)))) {
+        return -K_EINVAL;
+    }
+    // Guest pages remain resident in this emulator, so no host pinning is
+    // needed; the bookkeeping is the contract (kernel round 3A): locked
+    // pages are recorded against RLIMIT_MEMLOCK and MCL_FUTURE is stored
+    // on the process for KMemory::mmap to honour.
+    if (flags & MCL_CURRENT) {
+        U32 result = cpu->memory->mlockAll();
+        if ((S32)result < 0) return result;
+    }
+    if (flags & MCL_FUTURE) cpu->thread->process->memLockAllFuture = true;
+    return 0;
+}
+
+static U32 syscall_munlockall(CPU* cpu, U32 eipCount) {
+    cpu->memory->munlockAll();
+    cpu->thread->process->memLockAllFuture = false;
+    return 0;
 }
 
 static U32 syscall_sched_getparam(CPU* cpu, U32 eipCount) {    
@@ -901,8 +955,8 @@ static U32 syscall_nanosleep(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_mremap(CPU* cpu, U32 eipCount) {
-    SYS_LOG1(SYSCALL_MEMORY, cpu, "mremap: oldaddress=%x oldsize=%d newsize=%d flags=%X", ARG1, ARG2, ARG3, ARG4);
-    U32 result = cpu->memory->mremap(cpu->thread, ARG1, ARG2, ARG3, ARG4);
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "mremap: oldaddress=%x oldsize=%d newsize=%d flags=%X newaddress=%X", ARG1, ARG2, ARG3, ARG4, ARG5);
+    U32 result = cpu->memory->mremap(cpu->thread, ARG1, ARG2, ARG3, ARG4, ARG5);
     SYS_LOG(SYSCALL_MEMORY, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -925,7 +979,7 @@ static U32 syscall_poll(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_prctl(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_PROCESS, cpu, "prctl: options=%d", ARG1);
-    U32 result = cpu->thread->process->prctl(ARG1, ARG2);
+    U32 result = cpu->thread->process->prctl(ARG1, ARG2, ARG3, ARG4, ARG5);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -969,7 +1023,7 @@ static U32 syscall_pwrite64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getcwd(CPU* cpu, U32 eipCount) {
-    SYS_LOG1(SYSCALL_PROCESS, cpu, "getcwd: buf=%X size=%d (%s)", ARG1, ARG2, cpu->thread->process->currentDirectory.c_str());
+    SYS_LOG1(SYSCALL_PROCESS, cpu, "getcwd: buf=%X size=%d (%s)", ARG1, ARG2, cpu->thread->process->fsContext->currentDirectory.c_str());
     U32 result = cpu->thread->process->getcwd(ARG1, ARG2);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -1177,13 +1231,45 @@ static U32 syscall_mincore(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_madvise(CPU* cpu, U32 eipCount) {    
-    if (bw64RecoverEnabled() && ARG3 > 16) {
-        bw64RecoverLogOnce("syscall.madvise.unknown", "unsupported madvise advice; returned EINVAL");
-        return -K_EINVAL;
+    const U32 addr = ARG1;
+    const U32 length = ARG2;
+    const U32 advice = ARG3;
+    switch (advice) {
+        case 0: case 1: case 2: case 3: case 4: case 8: case 9: case 10: case 11:
+        case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19:
+        case 20: case 21: case 22: case 23: case 24: case 25: case 100: case 101: case 102: case 103:
+            break;
+        default:
+            return -K_EINVAL;
     }
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_MEMORY, cpu, "madvise: address=%X len=%d advise=%d result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    if (advice == 100 || advice == 101) {
+        static std::atomic<U32> warned{0};
+        const U32 bit = 1u << (advice - 100);
+        if (!(warned.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+            kwarn_fmt("madvise advice %u (page poison/offline) unsupported; returned EPERM", advice);
+        }
+        return -K_EPERM;
+    }
+    if (!length || (addr & K_PAGE_MASK) || (U64)addr + length > 0x100000000ULL) return -K_EINVAL;
+    const U32 firstPage = addr >> K_PAGE_SHIFT;
+    const U32 lastPage = (addr + length - 1) >> K_PAGE_SHIFT;
+    for (U32 page = firstPage;; ++page) {
+        if (!cpu->memory->isPageMapped(page)) return -K_ENOMEM;
+        if (page == lastPage) break;
+    }
+    if (advice == 4 || advice == 24 || advice == 9 || advice == 10 || advice == 11 ||
+        advice == 18 || advice == 19) {
+        // DONTNEED[_LOCKED] / REMOVE / fork advice: real state, in KMemory.
+        const S32 result = cpu->memory->madvise(addr, length, advice);
+        if (result < 0) return (U32)result;
+    } else if (advice == 3 || advice == 22 || advice == 23) { // WILLNEED / POPULATE_*.
+        for (U32 page = firstPage;; ++page) {
+            cpu->memory->getRamPtr(page << K_PAGE_SHIFT, 1, false, true);
+            if (page == lastPage) break;
+        }
+    }
+    SYS_LOG1(SYSCALL_MEMORY, cpu, "madvise: address=%X len=%d advise=%d result=0\n", addr, length, advice);
+    return 0;
 }
 
 static U32 syscall_getdents64(CPU* cpu, U32 eipCount) {
@@ -1232,7 +1318,7 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->currentDirectory, path, true);
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true);
         if (!file) {
             result = -K_ENOENT;
         } else {
@@ -1256,7 +1342,7 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
     BString name = cpu->memory->readString(ARG2);
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->currentDirectory, path, false);
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false);
         if (!file) {
             result = -K_ENOENT;
         } else {
@@ -1370,22 +1456,27 @@ static U32 syscall_futex_time64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {    
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=d cpu_set_t=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    U32 pid = ARG1, size = ARG2, mask = ARG3;
+    if (!cpu->thread || !cpu->thread->process) return -K_ESRCH;
+    if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
+    if (size < 4 || size > 1024) return -K_EINVAL;
+    if (!mask || !cpu->memory->canRead(mask, 4)) return -K_EFAULT;
+    // One virtual CPU is online. Offline bits are ignored like the kernel does;
+    // at least one online CPU must remain selected.
+    if (!(cpu->memory->readd(mask) & 1)) return -K_EINVAL;
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=%u mask=%X result=0\n", pid, size, mask);
+    return 0;
 }
 
 static U32 syscall_sched_getaffinity(CPU* cpu, U32 eipCount) {    
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("syscall.sched_getaffinity", "sched_getaffinity is unsupported; returned ENOSYS");
-        return -K_ENOSYS;
-    }
-#ifdef _DEBUG
-     kwarn("__NR_sched_getaffinity not implemented");
-#endif
-    U32 result = -K_EPERM;
-    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%d mask=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, ARG3, result, result);
-    return result;
+    U32 pid = ARG1, size = ARG2, mask = ARG3;
+    if (!cpu->thread || !cpu->thread->process) return -K_ESRCH;
+    if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
+    if (size < 4 || size > 1024) return -K_EINVAL;
+    if (!mask || !cpu->memory->canWrite(mask, 4)) return -K_EFAULT;
+    cpu->memory->writed(mask, 1);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%u mask=%X result=4\n", pid, size, mask);
+    return 4;
 }
 
 static U32 syscall_set_thread_area(CPU* cpu, U32 eipCount) {
@@ -1495,9 +1586,28 @@ static U32 syscall_fadvise64(CPU* cpu, U32 eipCount) {
     return result;
 }
 
-static U32 syscall_inotify_init(CPU* cpu, U32 eipCount) {    
-    U32 result = -K_ENOSYS;
-    SYS_LOG1(SYSCALL_FILE, cpu, "inotify_init: result=%d(0x%X) IGNORED\n", result, result);
+static U32 syscall_inotify_init(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->inotify_init1(0);
+    SYS_LOG1(SYSCALL_FILE, cpu, "inotify_init: result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_inotify_init1(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->inotify_init1(ARG1);
+    SYS_LOG1(SYSCALL_FILE, cpu, "inotify_init1: flags=%X result=%d(0x%X)\n", ARG1, result, result);
+    return result;
+}
+
+static U32 syscall_inotify_add_watch(CPU* cpu, U32 eipCount) {
+    BString path = cpu->memory->readString(ARG2);
+    U32 result = cpu->thread->process->inotify_add_watch((S32)ARG1, path, ARG3);
+    SYS_LOG1(SYSCALL_FILE, cpu, "inotify_add_watch: fd=%d path=%s mask=%X result=%d(0x%X)\n", ARG1, path.c_str(), ARG3, result, result);
+    return result;
+}
+
+static U32 syscall_inotify_rm_watch(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->inotify_rm_watch((S32)ARG1, (S32)ARG2);
+    SYS_LOG1(SYSCALL_FILE, cpu, "inotify_rm_watch: fd=%d wd=%d result=%d(0x%X)\n", ARG1, ARG2, result, result);
     return result;
 }
 
@@ -1709,18 +1819,29 @@ static U32 syscall_renameat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getrandom(CPU* cpu, U32 eipCount) {
-    static std::mt19937 gen{ std::random_device{}() };
-    static std::uniform_int_distribution<size_t> dist{ 0, 255 };
-
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getrandom buf=%X buflen=%d flags=%X", ARG1, ARG2, ARG3);
-    if (bw64RecoverEnabled() && (ARG3 & ~7u)) {
-        bw64RecoverLogOnce("syscall.getrandom.flags", "unsupported getrandom flags; returned EINVAL");
+    constexpr U32 GRND_NONBLOCK = 1;
+    constexpr U32 GRND_RANDOM = 2;
+    constexpr U32 GRND_INSECURE = 4;
+    constexpr U32 MAX_GETRANDOM = 32u * 1024 * 1024;
+    if (ARG3 & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) {
         return -K_EINVAL;
     }
     U32 buf = ARG1;
     U32 count = ARG2;
-    for (U32 i=0;i<count;i++) {
-        cpu->memory->writeb(buf+i, (U8)dist(gen));
+    if (count == 0) return 0;
+    if (count > MAX_GETRANDOM) return -K_EINVAL;
+    if (!cpu->memory->canWrite(buf, count)) return -K_EFAULT;
+
+    U8 bytes[4096];
+    U32 offset = 0;
+    while (offset < count) {
+        U32 chunk = std::min<U32>(sizeof(bytes), count - offset);
+        if (!kernelGetRandomBytes(bytes, chunk)) {
+            return offset ? offset : -K_EIO;
+        }
+        cpu->memory->memcpy(buf + offset, bytes, chunk);
+        offset += chunk;
     }
     SYS_LOG(SYSCALL_SYSTEM, cpu, " result=%d\n", count);
     return count;
@@ -2082,7 +2203,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_socketcall, // 102 __NR_socketcall
     nullptr,                  // 103
     syscall_setitimer,  // 104 __NR_setitimer 
-    nullptr,                  // 105
+    syscall_getitimer,  // 105 __NR_getitimer
     nullptr,                  // 106
     nullptr,                  // 107
     nullptr,                  // 108
@@ -2128,9 +2249,9 @@ static const SyscallFunc syscallFunc[] = {
     syscall_fdatasync,  // 148 __NR_fdatasync
     nullptr,                  // 149
     syscall_mlock,      // 150 __NR_mlock
-    nullptr,                  // 151
-    nullptr,                  // 152
-    nullptr,                  // 153
+    syscall_munlock,    // 151 __NR_munlock
+    syscall_mlockall,   // 152 __NR_mlockall
+    syscall_munlockall, // 153 __NR_munlockall
     nullptr,                  // 154
     syscall_sched_getparam, // 155 __NR_sched_getparam
     nullptr,                  // 156
@@ -2269,8 +2390,8 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 289
     nullptr,                  // 290
     syscall_inotify_init,// 291 __NR_inotify_init
-    nullptr,                  // 292 __NR_inotify_add_watch
-    nullptr,                  // 293 __NR_inotify_rm_watch
+    syscall_inotify_add_watch,// 292 __NR_inotify_add_watch
+    syscall_inotify_rm_watch, // 293 __NR_inotify_rm_watch
     nullptr,                  // 294
     syscall_openat,     // 295 __NR_openat
     syscall_mkdirat,    // 296 __NR_mkdirat
@@ -2309,7 +2430,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_epoll_create1, // 329 __NR_epoll_create1
     nullptr,                  // 330
     syscall_pipe2,      // 331 __NR_pipe2
-    nullptr,                  // 332
+    syscall_inotify_init1,    // 332 __NR_inotify_init1
     nullptr,                  // 333
     nullptr,                  // 334
     nullptr,                  // 335

@@ -1,12 +1,16 @@
+import { extractSourceRange } from '../lib/source-slice.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 test('exec waits for sibling execution and teardown before resetting either address space', () => {
-  const source = readFileSync('source/kernel/kprocess.cpp', 'utf8');
+  const source = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
   const start = source.indexOf('    // reset memory must come after we grab the args and env');
   const end = source.indexOf('    // not sure why x64', start);
   assert.ok(start >= 0 && end > start);
@@ -34,6 +38,7 @@ struct Heap { void freeAll(Memory*) { requireQuiescent(); } };
 struct KMemory64 {
   explicit KMemory64(void*) { requireQuiescent(); }
   ~KMemory64() { requireQuiescent(); }
+  bool releaseVmRef() { return true; }
 };
 struct Reg { void setU64(int) {} };
 constexpr int X64_REG_COUNT = 16;
@@ -43,7 +48,12 @@ struct CPU64 {
   int rflags=0, fsbase=0, gsbase=0, mmapNext=0, sigMask=0;
   std::vector<int> futexWaiters;
   struct SigAction {};
-  SigAction sigActions[65];
+  struct SigActionTable {
+    SigAction entries[65];
+    SigAction& operator[](int i) { return entries[i]; }
+    void unshareIfShared() {}
+  };
+  SigActionTable sigActions;
   void invalidateFetchCache() {}
 };
 void bw64InvalidateScratchForThread(unsigned) {}
@@ -55,6 +65,9 @@ struct KProcess {
   KMemory64* memory64 = nullptr;
   CPU64* cpu64 = nullptr;
   bool cloneVM = false, is64Bit = false;
+  unsigned long long memLockedBytes = 0;
+  bool memLockAllFuture = false;
+  bool memory64Shared = false;
   struct Entry { unsigned key; };
   std::vector<Entry> threads{{1},{2}};
   std::vector<int> startupArgs64, startupEnv64;
@@ -65,7 +78,7 @@ struct KProcess {
   void onExec(KThread* t) { killAllThreads(t); }
   void replaceImage(KThread* thread) {
     std::vector<int> args, envs;
-${source.slice(start, end)}
+${extractSourceRange(source, start, end)}
   }
 };
 int main() {

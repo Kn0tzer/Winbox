@@ -55,6 +55,13 @@ public:
 
     KMemory* memory;
 
+    // Sharing references (kernel round 3C): KMemory::clone for
+    // CLONE_VM/vfork points a second KMemory at this same data object;
+    // it is deleted only when the last wrapper releases it.
+    std::atomic<U32> shareRefs{1};
+    void retainShareRef() { shareRefs.fetch_add(1); }
+    bool releaseShareRef() { return shareRefs.fetch_sub(1) == 1; }
+
     MMU mmu[K_NUMBER_OF_PAGES];
 #ifdef BOXEDWINE_MEM_CACHE
 #ifndef BOXEDWINE_HOST_EXCEPTIONS

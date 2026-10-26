@@ -1,8 +1,9 @@
 #!/bin/bash
-# build-prefix64.sh — (re)assemble the PRE-BOOTED wine prefix overlay that the
+# build-prefix64.sh — (re)assemble the initialized wine prefix overlay that the
 # browser launcher mounts as a third zip (see project/emscripten/wine64-launcher.js,
-# ?p=<prog>). The launcher runs a program with HOME=/home/username /
-# WINEPREFIX=/home/username/.wine against this prefix so wine SKIPS wineboot.
+# ?p=<prog>). This script preserves preinitialized state in its base archive;
+# `WINBOX_PREFIX64_BOOT_STATE` can merge a captured native wineboot result, and
+# `WINBOX_PREFIX64_FORCE_BOOT=1` requests a fresh native init explicitly.
 #
 # Why this script exists: the original prefix64.zip was staged ad-hoc and was
 # missing the C:\users\username user-profile directory tree. wine's registry
@@ -18,18 +19,33 @@
 # empty profile dirs under there; `zip` stores empty directories fine and the
 # kernel overlays a writable native root on top so Save can actually write.
 #
-# Idempotent: takes the existing dist/prefix64.zip as the base, adds the profile
-# tree, and rewrites the zip in place. Output lands in tools/rootfs64/dist/
-# (gitignored — build artifact). Re-copy to project/emscripten/Build/Wasm64Mt/
-# afterward to deploy (this script does that if the Build dir exists).
+# Idempotent: takes WINBOX_PREFIX64_BASE_ZIP when supplied, otherwise starts
+# from web/runtime/prefix64.zip, adds the profile tree, and writes
+# tools/rootfs64/dist/prefix64.zip (gitignored build artifact). It copies the
+# result to project/emscripten/Build/Wasm64Mt/ when that local Build directory
+# exists.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DIST="$HERE/dist"
 ZIP="$DIST/prefix64.zip"
+ROOT="$(cd "$HERE/../.." && pwd)"
+RUNTIME="$ROOT/web/runtime"
+PREFIX_HELPER="$HERE/prepare_prefixes.py"
 DEPLOY="$HERE/../../project/emscripten/Build/Wasm64Mt/prefix64.zip"
+RUNTIME_INPUT="$RUNTIME"
+if [ -d "$ROOT/dist/runtime" ]; then RUNTIME_INPUT="$ROOT/dist/runtime"; fi
 
-[ -f "$ZIP" ] || { echo "ERROR: $ZIP not found (build the base prefix first)" >&2; exit 1; }
+mkdir -p "$DIST"
+BASE_ZIP="${WINBOX_PREFIX64_BASE_ZIP:-$RUNTIME/prefix64.zip}"
+[ -f "$BASE_ZIP" ] || { echo "ERROR: base prefix not found at $BASE_ZIP" >&2; exit 1; }
+
+# Fail early and by name if a required tool is missing, instead of dying
+# mid-run with exit 127 on a minimal box. (zip in particular is only
+# reached at the very end, after all the unpack/stage work below.)
+command -v unzip >/dev/null || { echo "ERROR: unzip not found (install unzip)" >&2; exit 1; }
+command -v zip >/dev/null || { echo "ERROR: zip not found (install zip)" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "ERROR: python3 not found (install python3)" >&2; exit 1; }
 
 # drive_c is rooted under the .wine prefix dir inside the zip.
 PREFIX_IN_ZIP="home/username/.wine"
@@ -71,7 +87,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 echo "=== unpacking base prefix64.zip ==="
-unzip -q "$ZIP" -d "$STAGE"
+unzip -q "$BASE_ZIP" -d "$STAGE"
 
 echo "=== materializing C:\\users profile tree under $DRIVE_C ==="
 for d in "${PROFILE_DIRS[@]}"; do
@@ -152,7 +168,6 @@ find "$STAGE/$DRIVE_C/users" -type d -empty -exec touch '{}/.keep' \;
 # HKCU\Software\Wine\Direct3D). Belt-and-suspenders vs the GL-extension fence gate
 # (we also don't advertise GL_ARB_sync/NV_fence/APPLE_fence).
 USER_REG="$STAGE/$PREFIX_IN_ZIP/user.reg"
-python3 "$HERE/set-prefix-audio.py" "$USER_REG"
 if [ -f "$USER_REG" ] && ! grep -q '^\[Software\\\\Wine\\\\Direct3D\]' "$USER_REG"; then
   echo "=== injecting [Software\\Wine\\Direct3D] csmt=0 into user.reg ==="
   cat >> "$USER_REG" <<'REGEOF'
@@ -165,13 +180,86 @@ else
   echo "=== user.reg already has [Software\\Wine\\Direct3D] (or no user.reg) — skipping csmt inject ==="
 fi
 
+# === Version emulation + .NET policy state ==================================
+# A real wineboot writes the Windows NT CurrentVersion section (wine.inf
+# [Version]) and wine-mono writes the .NETFramework policy keys; the
+# pre-booted base prefix64 has NEITHER (the 32-bit builder merges its
+# fragment, this one never did), so installers/DRM/engines reading
+# ProductName/CurrentBuild directly got nothing on the 64-bit prefix.
+# Append every prefix64-reg.txt section system.reg still lacks (idempotent;
+# logic + unit test live in prepare_prefixes.merge_registry_fragment).
+SYSTEM_REG="$STAGE/$PREFIX_IN_ZIP/system.reg"
+if [ -f "$SYSTEM_REG" ] && [ -f "$HERE/prefix64-reg.txt" ]; then
+  echo "=== merging prefix64-reg.txt sections missing from system.reg ==="
+  python3 - "$SYSTEM_REG" "$HERE/prefix64-reg.txt" "$HERE" <<'PYEOF2'
+import sys
+sys.path.insert(0, sys.argv[3])
+import prepare_prefixes
+reg_path, frag_path = sys.argv[1], sys.argv[2]
+merged, added = prepare_prefixes.merge_registry_fragment(
+    open(reg_path, encoding='utf-8', errors='replace').read(),
+    open(frag_path, encoding='utf-8', errors='replace').read())
+open(reg_path, 'w', encoding='utf-8').write(merged)
+print('  + merged sections:', ', '.join(added) if added else '(none missing)')
+PYEOF2
+fi
+
 echo "=== rezipping prefix64.zip ==="
 rm -f "$ZIP"
 ( cd "$STAGE" && zip -qry9 "$ZIP" . )
+
+# A real wineboot pass can install wine.inf's profile, services, PnP, INF and
+# WinSxS state. The 32-bit prefix is produced by tools/build-prefix32.sh. For
+# 64-bit builds, preserve a captured native init state when explicitly supplied;
+# a fresh native pass is opt-in because the current headless services run is not
+# reliable enough to force into every browser prefix build.
+if [ -n "${WINBOX_PREFIX64_BOOT_STATE:-}" ]; then
+  python3 "$PREFIX_HELPER" prepare \
+    --base "$ZIP" \
+    --boot-state "$WINBOX_PREFIX64_BOOT_STATE" \
+    --output "$ZIP"
+elif [ "${WINBOX_PREFIX64_FORCE_BOOT:-0}" = "1" ]; then
+  BOXEDWINE="${BW64_NATIVE_BOXEDWINE:-$ROOT/project/linux/Build/X64Headless/boxedwine}"
+  python3 "$PREFIX_HELPER" native-boot \
+    --base "$ZIP" \
+    --output "$ZIP" \
+    --boxedwine "$BOXEDWINE" \
+    --glibc-zip "${BW64_GLIBC64_ZIP:-$RUNTIME_INPUT/glibc-rootfs64.zip}" \
+    --wine-zip "${BW64_WINE64_ZIP:-$RUNTIME_INPUT/wine64.zip}" \
+    --work-dir "${WINBOX_PREFIX64_WORK:-/tmp/winbox-finish/r2/work-wake/native-prefix64}" \
+    --timeout-seconds "${WINBOX_PREFIX64_TIMEOUT_S:-420}"
+elif python3 "$PREFIX_HELPER" check-one --archive "$ZIP" --arch win64; then
+  echo "=== base prefix already contains completed wineboot state ==="
+else
+  echo "ERROR: prefix lacks required hives, links, or update marker; supply WINBOX_PREFIX64_BOOT_STATE or set WINBOX_PREFIX64_FORCE_BOOT=1" >&2
+  exit 1
+fi
+
+# Wine's first boot adds winemenubuilder.exe to RunServices for host Start Menu
+# integration. The browser prefix has no host menu, and that extra startup
+# process races cold application initialization; retain all actual Wine services.
+python3 "$PREFIX_HELPER" sanitize --archive "$ZIP"
+
+# The 32-bit builder runs native wineboot twice. Preserve any existing audio
+# setting in its archive; do not add one here because an explicit ALSA override
+# increased click-to-mapped time in the browser measurements.
+PREFIX32_ZIP="${WINBOX_PREFIX32_ZIP:-$RUNTIME/prefix32.zip}"
+if [ -z "${WINBOX_PREFIX32_ZIP:-}" ] && [ -f "$ROOT/dist/runtime/prefix32.zip" ]; then
+  PREFIX32_ZIP="$ROOT/dist/runtime/prefix32.zip"
+fi
+python3 "$PREFIX_HELPER" check \
+  --prefix32 "$PREFIX32_ZIP" \
+  --prefix64 "$ZIP" \
+  --wine32 "${BW64_WINE32_ZIP:-$RUNTIME_INPUT/wine32.zip}" \
+  --wine64 "${BW64_WINE64_ZIP:-$RUNTIME_INPUT/wine64.zip}"
+
 echo "--- new prefix64.zip ---"
 ls -lh "$ZIP"
 echo "--- profile tree in zip ---"
-unzip -l "$ZIP" | grep -i 'users/' | head -40
+# Informational listing only; || true because head closing the pipe early
+# would otherwise SIGPIPE grep and kill the run under pipefail (exit 141)
+# after the zip was already rebuilt.
+unzip -l "$ZIP" | grep -i 'users/' | head -40 || true
 
 if [ ! -e "$DEPLOY" ] && [ ! -L "$DEPLOY" ]; then
   if [ -d "$(dirname "$DEPLOY")" ]; then

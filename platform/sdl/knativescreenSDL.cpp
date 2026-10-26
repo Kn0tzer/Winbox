@@ -593,10 +593,119 @@ void KNativeScreenSDL::buildCursor(KThread* thread, const std::shared_ptr<XCurso
     cursors.set(cursor->id, sdlCursor);
 }
 
+
+// Animated cursors (XcursorImagesLoadCursor with more than one frame): SDL
+// has no animated cursor object, so the frames are built as separate SDL
+// cursors and an SDL timer cycles them while the cursor is current. The
+// SetCursor call itself is dispatched to the main thread, like setCursor's.
+namespace {
+struct CursorAnimation {
+    SDL_TimerID timer = 0;
+    size_t frame = 0;
+    std::vector<SDL_Cursor*> frames;
+    std::vector<U32> delays;
+};
+CursorAnimation cursorAnimation;
+BOXEDWINE_MUTEX cursorAnimationMutex;
+} // namespace
+
+// The frame shown after `frame`, wrapping back to the first frame.
+static size_t cursorAnimNextFrame(size_t frame, size_t frameCount) {
+    return frameCount ? (frame + 1) % frameCount : 0;
+}
+
+// A guest delay of 0 asks for the fastest cycle; clamp it so the timer does
+// not spin. Larger delays are used as supplied.
+static U32 cursorAnimDelayMs(U32 delay) {
+    return delay < 10 ? 10 : delay;
+}
+
+static Uint32 cursorAnimTimerCb(Uint32 interval, void* param) {
+    SDL_Cursor* next = nullptr;
+    U32 delay = 0;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cursorAnimationMutex);
+        if (cursorAnimation.frames.empty()) {
+            return 0;
+        }
+        cursorAnimation.frame = cursorAnimNextFrame(cursorAnimation.frame, cursorAnimation.frames.size());
+        next = cursorAnimation.frames[cursorAnimation.frame];
+        delay = cursorAnimDelayMs(cursorAnimation.delays[cursorAnimation.frame]);
+    }
+    DISPATCH_MAIN_THREAD_BLOCK_BEGIN
+        if (next) {
+            SDL_ShowCursor(1);
+            SDL_SetCursor(next);
+        }
+    DISPATCH_MAIN_THREAD_BLOCK_END
+    return delay;
+}
+
+static void stopCursorAnimation() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cursorAnimationMutex);
+    if (cursorAnimation.timer) {
+        SDL_RemoveTimer(cursorAnimation.timer);
+        cursorAnimation.timer = 0;
+    }
+    for (SDL_Cursor* frame : cursorAnimation.frames) {
+        SDL_FreeCursor(frame);
+    }
+    cursorAnimation.frames.clear();
+    cursorAnimation.delays.clear();
+    cursorAnimation.frame = 0;
+}
+
+static void startCursorAnimation(const std::shared_ptr<XCursor>& cursor) {
+    stopCursorAnimation();
+    std::vector<SDL_Cursor*> frames;
+    std::vector<U32> delays;
+    for (const XCursorAnimFrame& frame : cursor->animFrames) {
+        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)frame.pixels.data(), (int)frame.width, (int)frame.height, 32, (int)frame.width * 4, 0xff0000, 0xff00, 0xff, 0xff000000);
+        SDL_Cursor* sdlCursor = surface ? SDL_CreateColorCursor(surface, (int)frame.xhot, (int)frame.yhot) : nullptr;
+        if (surface) {
+            SDL_FreeSurface(surface);
+        }
+        if (!sdlCursor) {
+            for (SDL_Cursor* built : frames) {
+                SDL_FreeCursor(built);
+            }
+            return;
+        }
+        frames.push_back(sdlCursor);
+        delays.push_back(frame.delay);
+    }
+    if (frames.size() < 2) {
+        for (SDL_Cursor* built : frames) {
+            SDL_FreeCursor(built);
+        }
+        return;
+    }
+    SDL_Cursor* first = frames.front();
+    DISPATCH_MAIN_THREAD_BLOCK_BEGIN
+        if (first) {
+            SDL_ShowCursor(1);
+            SDL_SetCursor(first);
+        }
+    DISPATCH_MAIN_THREAD_BLOCK_END
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cursorAnimationMutex);
+    cursorAnimation.frames = frames;
+    cursorAnimation.delays = delays;
+    cursorAnimation.frame = 0;
+    if (!SDL_WasInit(SDL_INIT_TIMER)) {
+        SDL_InitSubSystem(SDL_INIT_TIMER);
+    }
+    cursorAnimation.timer = SDL_AddTimer(cursorAnimDelayMs(delays.front()), cursorAnimTimerCb, nullptr);
+}
+
 void KNativeScreenSDL::setCursor(const std::shared_ptr<XCursor>& cursor) {
     if (KSystem::videoOption == VIDEO_NO_WINDOW) {
         return;
     }
+    if (cursor->animFrames.size() > 1) {
+        startCursorAnimation(cursor);
+        return;
+    }
+    stopCursorAnimation();
     SDL_Cursor* sdlCursor;
 
     {
@@ -612,8 +721,8 @@ void KNativeScreenSDL::setCursor(const std::shared_ptr<XCursor>& cursor) {
                 sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
             }
             break;
-        case 22: // XC_center_ptr
-            // :TODO:
+        case 22: // XC_center_ptr: an upright arrow; SDL has no centred-arrow
+            // system cursor, so the plain arrow is the closest available shape
             sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
             break;
         case 52: // XC_fleur
@@ -622,8 +731,8 @@ void KNativeScreenSDL::setCursor(const std::shared_ptr<XCursor>& cursor) {
         case 60: // XC_hand2
             sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
             break;
-        case 64: // XC_icon
-            // :TODO:
+        case 64: // XC_icon: a boxed glyph SDL has no system cursor for; the
+            // wait cursor is the closest available busy-style shape
             sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_WAIT);
             break;
         case 68: // XC_left_ptr
@@ -657,8 +766,8 @@ void KNativeScreenSDL::setCursor(const std::shared_ptr<XCursor>& cursor) {
         case 1000: // left_ptr_watch
             sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_WAITARROW);
             break;
-        case 92: // XC_question_arrow
-            // :TODO:
+        case 92: // XC_question_arrow: an arrow with a question mark; SDL has
+            // no such system cursor, so the plain arrow is the closest shape
             sdlCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
             break;
         default:
@@ -695,6 +804,10 @@ static SDL_SystemCursor x11ShapeToSdlSystemCursor(int shape) {
         case 136: return SDL_SYSTEM_CURSOR_SIZEALL;    // XC_top_right_corner
         case 150: return SDL_SYSTEM_CURSOR_WAITARROW;  // XC_watch
         case 152: return SDL_SYSTEM_CURSOR_IBEAM;      // XC_xterm (text)
+        case 22:  return SDL_SYSTEM_CURSOR_ARROW;      // XC_center_ptr (no centred-arrow system cursor)
+        case 64:  return SDL_SYSTEM_CURSOR_WAIT;       // XC_icon (no boxed-glyph system cursor)
+        case 92:  return SDL_SYSTEM_CURSOR_ARROW;      // XC_question_arrow (no such system cursor)
+        case 1000: return SDL_SYSTEM_CURSOR_WAITARROW; // left_ptr_watch
         default:  return SDL_SYSTEM_CURSOR_ARROW;
     }
 }
@@ -703,6 +816,7 @@ void KNativeScreenSDL::setCursorByX11Shape(int shape) {
     if (KSystem::videoOption == VIDEO_NO_WINDOW) {
         return;
     }
+    stopCursorAnimation();
     SDL_SystemCursor sc = x11ShapeToSdlSystemCursor(shape);
     // Cache one SDL cursor per system-cursor enum (keyed by 0x40000000|sc so it
     // never collides with the XCursor-id keyed entries in `cursors`).

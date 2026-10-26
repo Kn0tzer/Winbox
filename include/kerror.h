@@ -25,6 +25,7 @@
 #define K_EINTR          4
 #define K_EIO            5
 #define K_ENXIO          6
+#define K_E2BIG          7
 #define K_ENOEXEC        8
 #define K_EBADF          9
 #define K_ECHILD         10
