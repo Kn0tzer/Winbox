@@ -104,6 +104,11 @@
       "file": "web/naga-rt.mjs",
       "count": 5,
       "reason": "Shader-version classification and its documentation: liftForNaga returns reason 'unsupported-version' for GLSL versions outside the supported set; those sources reach ANGLE unchanged and are recorded as fallback observations, not failures (verified by web/tests/suite/unit/naga-angle-fallback.test.mjs). One hit is a comment quoting Naga's own probe-P4 error text."
+    },
+    {
+      "file": "include/kdspaudio.h",
+      "count": 2,
+      "reason": "Base KDspAudio capture virtuals are unsupported by design (kernel.md round-3B audio-capture row): the SDL backend overrides them with a real capture device, and DevDsp turns unsupported into -ENOTSUP, never fake data or fake EOF."
     }
   ]
 }
