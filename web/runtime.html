@@ -222,26 +222,6 @@ window.bwRuntimeError = text => send('error', text);
 // Every launch gets the same installed libraries. The guest's normal loaders
 // request Mono/graphics files lazily, regardless of demo, upload or EXE name.
 window.bwDependencySpec = await loadDependencies(new URL('dependencies.json?v=__RUNTIME_VERSION__', location.href));
-// Publish the WebGPU adapter's capability flags BEFORE the guest boots.
-// The Vulkan bridge reads these globals when the guest queries physical-
-// device features (vk64bridge.cpp: v2WebGpuBcSupported and siblings) —
-// which happens at guest device creation, before the first frame exists
-// and therefore before the renderer tier (which also publishes them, from
-// its device) has been constructed. Without this, the bridge reports
-// textureCompressionBC as unsupported at device-creation time and DXVK
-// refuses every D3D11/D3D10 device (maximum supported feature level 0).
-// The values are the adapter's truth: the renderer later requests its
-// device with exactly the adapter-supported subset of these features.
-window.bwAdapterFlagsReady = (async () => {
-  try {
-    if (!navigator.gpu) return;
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) return;
-    window.bwVkTextureCompressionBC = adapter.features?.has('texture-compression-bc') === true;
-    window.bwVkDepth32FloatStencil8 = adapter.features?.has('depth32float-stencil8') === true;
-    window.bwVkMaxVertexBuffers = Math.min(16, adapter.limits?.maxVertexBuffers || 8);
-  } catch (e) { /* flags stay unset; the bridge keeps its no-support fallback */ }
-})();
 window.bwGpuFrame = recoverBridgeCall('runtime.gpu-frame', json => send('gpu', JSON.parse(json)), undefined);
 // vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
 // manifest per present into window.bwVkFrame, which becomes a 'vk' message to
