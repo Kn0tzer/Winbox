@@ -23,12 +23,19 @@ function body(source, header) {
 
 test('unsupported and unknown SPIR-V capabilities reject before publishing a shader module', () => {
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
-  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image', 'spirv-input-attachment', 'spirv-storage-buffer-write']) {
+  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image-write', 'spirv-input-attachment', 'spirv-storage-buffer-write']) {
     assert.ok(audit.includes(token), `${token} must be logged`);
   }
   assert.match(audit, /vk64Unsupported\(\("spirv-capability:"/);
   assert.match(audit, /VK_ERROR_INVALID_SHADER_NV/);
   assert.match(audit, /w\[i \+ 3\] == 6\) inputAttachment = true/);
+  // Typed-UAV reads (Typed-UAV-Load lane): storage-image modules pass the
+  // audit when they only READ; the write form keeps a named rejection, and
+  // capabilities 55/56 are used-conditionally exempt exactly like 33/4427.
+  assert.match(audit, /\(c == 55 \|\| c == 56\) && !storageImageWrite\) continue/);
+  assert.match(audit, /if \(storageImageWrite\) \{ vk64Unsupported\("spirv-storage-image-write"/);
+  assert.match(bridge, /case 55: return "StorageImageReadWithoutFormat"/);
+  assert.match(bridge, /case 56: return "StorageImageWriteWithoutFormat"/);
   assert.match(audit, /input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT/);
   assert.match(audit, /return unsupported \? VK_ERROR_FEATURE_NOT_PRESENT : VK_SUCCESS/);
   const handlers = [...bridge.matchAll(/case VK64_fn_vkCreateShaderModule: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);
@@ -74,9 +81,9 @@ test('page-tier-translated capabilities are whitelisted in the audit', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   const exempt = [...audit.matchAll(/c != (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
-    'the audit loop exemption set is exactly {Matrix, Shader, Geometry, ShaderNonUniform, ClipDistance, Sampled1D, SampleRateShading, ImageQuery, DerivativeControl, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT}');
-  for (const cap of [2, 32, 35, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5345, 5379]) {
+  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 68, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
+    'the audit loop exemption set is exactly {Matrix, Shader, Geometry, ShaderNonUniform, ClipDistance, Sampled1D, SampleRateShading, ImageQuery, DerivativeControl, ShaderLayer, ShaderViewportIndex, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT} (union of the integ and vkd3d sets; 5254 ShaderViewportIndexLayerEXT stays a named rejection and is absent by design)');
+  for (const cap of [2, 32, 35, 43, 50, 51, 68, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379]) {
     assert.ok(table.includes(`case ${cap}: return nullptr;`),
       `cap ${cap} must be a nullptr (non-rejecting) case in vk64SpirvCapabilityName`);
   }

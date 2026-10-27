@@ -87,7 +87,7 @@ export const MAX_DRAWS = 4096;
 // Vulkan enums, mapped once (the numeric tables are P1's, host/p1render.mjs).
 export const FILTER = { 0: 'nearest', 1: 'linear' };
 // WebGPU has no border addressing or mirror-clamp mode; both use clamp-to-edge.
-export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'clamp-to-edge' };
+export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'mirror-repeat' };
 // ===========================================================================
 // Schema v2 — binary framed records (docs/vulkan-protocol.md §2-3). The v1 JSON
 // manifest (parseManifest/createVkRenderer in vkwebgpu.mjs) is vkcube-shaped: one frame
@@ -344,6 +344,9 @@ const V2_TEX_FORMAT = {
   70: 'r16float', 76: 'r16float', 77: 'rg16float', 83: 'rg16float',
   91: 'rgba16float', 97: 'rgba16float',
   9: 'r8unorm', 16: 'rg8unorm', 41: 'rgba8uint', 64: 'rgb10a2unorm', 122: 'rg11b10ufloat',
+  10: 'r8snorm', 13: 'r8uint', 14: 'r8sint', 17: 'rg8snorm', 20: 'rg8uint', 21: 'rg8sint', 42: 'rgba8sint',
+  74: 'r16uint', 75: 'r16sint', 81: 'rg16uint', 82: 'rg16sint', 95: 'rgba16uint', 96: 'rgba16sint',
+  101: 'rg32uint', 102: 'rg32sint', 107: 'rgba32uint', 108: 'rgba32sint',
   98: 'r32uint', 99: 'r32sint', 100: 'r32float', 103: 'rg32float', 109: 'rgba32float',
   131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
   133: 'bc1-rgba-unorm', 134: 'bc1-rgba-unorm-srgb',
@@ -352,6 +355,52 @@ const V2_TEX_FORMAT = {
   139: 'bc4-r-unorm', 140: 'bc4-r-snorm', 141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
   124: 'depth16unorm', 125: 'depth32float', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
+};
+
+// Typed STORAGE-IMAGE reads (UAV loads): VkFormat -> { spv: SPIR-V
+// ImageFormat value, kind: component kind, wgsl: WebGPU storage texture
+// format }. A format is listed exactly when all three agree: the bridge
+// grants it STORAGE_IMAGE + STORAGE_READ_WITHOUT_FORMAT (v2StorageLoadServable
+// in vk64bridge.cpp -- the two lists are pinned equal by
+// vk-storage-format-mirror.test.mjs), spirvfix R14 can inject `spv` into a
+// shader's Unknown-format storage type, and WebGPU serves `wgsl` as a core
+// storage texture format. Storage WRITES are not served: nothing here
+// implies a write path (writing shader modules reject in the bridge audit).
+// R16_UNORM/R16G16_UNORM are absent on purpose (norm16 textures are
+// materialised as rgba16float by v2TexturePixels, so an r16unorm storage
+// view would read converted bytes), as is B8G8R8A8 (no SPIR-V storage
+// format exists for it).
+export const V2_STORAGE_FORMAT = {
+  9: { spv: 15, kind: 'f', wgsl: 'r8unorm' },        // R8_UNORM -> R8
+  10: { spv: 20, kind: 'f', wgsl: 'r8snorm' },       // R8_SNORM -> R8Snorm
+  13: { spv: 39, kind: 'u', wgsl: 'r8uint' },        // R8_UINT -> R8ui
+  14: { spv: 29, kind: 'i', wgsl: 'r8sint' },        // R8_SINT -> R8i
+  16: { spv: 13, kind: 'f', wgsl: 'rg8unorm' },      // R8G8_UNORM -> Rg8
+  17: { spv: 18, kind: 'f', wgsl: 'rg8snorm' },      // R8G8_SNORM -> Rg8Snorm
+  20: { spv: 37, kind: 'u', wgsl: 'rg8uint' },       // R8G8_UINT -> Rg8ui
+  21: { spv: 27, kind: 'i', wgsl: 'rg8sint' },       // R8G8_SINT -> Rg8i
+  37: { spv: 4, kind: 'f', wgsl: 'rgba8unorm' },     // R8G8B8A8_UNORM -> Rgba8
+  38: { spv: 5, kind: 'f', wgsl: 'rgba8snorm' },     // R8G8B8A8_SNORM -> Rgba8Snorm
+  41: { spv: 32, kind: 'u', wgsl: 'rgba8uint' },     // R8G8B8A8_UINT -> Rgba8ui
+  42: { spv: 23, kind: 'i', wgsl: 'rgba8sint' },     // R8G8B8A8_SINT -> Rgba8i
+  74: { spv: 38, kind: 'u', wgsl: 'r16uint' },       // R16_UINT -> R16ui
+  75: { spv: 28, kind: 'i', wgsl: 'r16sint' },       // R16_SINT -> R16i
+  76: { spv: 9, kind: 'f', wgsl: 'r16float' },       // R16_SFLOAT -> R16f
+  81: { spv: 36, kind: 'u', wgsl: 'rg16uint' },      // R16G16_UINT -> Rg16ui
+  82: { spv: 26, kind: 'i', wgsl: 'rg16sint' },      // R16G16_SINT -> Rg16i
+  83: { spv: 7, kind: 'f', wgsl: 'rg16float' },      // R16G16_SFLOAT -> Rg16f
+  95: { spv: 31, kind: 'u', wgsl: 'rgba16uint' },    // R16G16B16A16_UINT -> Rgba16ui
+  96: { spv: 22, kind: 'i', wgsl: 'rgba16sint' },    // R16G16B16A16_SINT -> Rgba16i
+  97: { spv: 2, kind: 'f', wgsl: 'rgba16float' },    // R16G16B16A16_SFLOAT -> Rgba16f
+  98: { spv: 33, kind: 'u', wgsl: 'r32uint' },       // R32_UINT -> R32ui
+  99: { spv: 24, kind: 'i', wgsl: 'r32sint' },       // R32_SINT -> R32i
+  100: { spv: 3, kind: 'f', wgsl: 'r32float' },      // R32_SFLOAT -> R32f
+  101: { spv: 35, kind: 'u', wgsl: 'rg32uint' },     // R32G32_UINT -> Rg32ui
+  102: { spv: 25, kind: 'i', wgsl: 'rg32sint' },     // R32G32_SINT -> Rg32i
+  103: { spv: 6, kind: 'f', wgsl: 'rg32float' },     // R32G32_SFLOAT -> Rg32f
+  107: { spv: 30, kind: 'u', wgsl: 'rgba32uint' },   // R32G32B32A32_UINT -> Rgba32ui
+  108: { spv: 21, kind: 'i', wgsl: 'rgba32sint' },   // R32G32B32A32_SINT -> Rgba32i
+  109: { spv: 1, kind: 'f', wgsl: 'rgba32float' },   // R32G32B32A32_SFLOAT -> Rgba32f
 };
 // UNIFORM texel buffer views the page tier can materialise as a 2D texture
 // (spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div V2_TEXEL_WRAP)).

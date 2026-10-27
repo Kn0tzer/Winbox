@@ -8,7 +8,13 @@ wine 8.0 `x86_64-windows` module set, but real games need them:
 
 * `d3d12core.dll` — Wine only added this module after Debian's 8.0 package
   was cut. Games and engines that `LoadLibrary("d3d12core.dll")` fail to find
-  it on the 64-bit prefix.
+  it on the 64-bit prefix. **Superseded 2026-10-26:** the shipped
+  wine64.zip now takes `d3d12core.dll` from the vkd3d-proton build
+  (paired with proton's `d3d12.dll`, staged by
+  `tools/rootfs64/stage-vkd3d-payloads.sh`), because Wine's own d3d12core
+  has no DXIL frontend and cannot serve D3D12 applications. The file
+  below is retained for provenance but is no longer staged, and the
+  completeness checker no longer pins it in the shipped zip.
 * `msmpeg2vdec.dll` — Media Foundation's H.264 / MPEG-2 video decoder. It is
   the decoder DirectShow / Media Foundation resolves for virtually every
   modern WMV / H.264 in-game cutscene. Without it, cutscene playback fails

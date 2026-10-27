@@ -60,7 +60,10 @@ test('chunk-handler and readback failures keep rate-limited diagnostics', () => 
 test('pipeline construction failures are permanent, counted and unthrottled', () => {
   const fn = body(replay, 'async function getPipelineFor');
   assert.match(replay, /const pipelineFailures = new Map\(\);/);
-  assert.match(fn, /if \(pipelineFailures\.has\(key\)\) return \{ skip: pipelineFailures\.get\(key\) \};/);
+  // The early return keys on effKey -- the variant key (border / typed-UAV
+  // storage signature), identical to the base key when no variant applies --
+  // so a failure recorded for one variant can never be served to another.
+  assert.match(fn, /if \(pipelineFailures\.has\(effKey\)\) return \{ skip: pipelineFailures\.get\(effKey\) \};/);
   assert.match(fn, /pipelineFailures\.set\(effKey, reason\);/);
   assert.match(fn, /console\.error\('vkwebgpu: PIPELINE-FAILED pipeId='/);
   assert.match(replay, /pipelineFailures: pipelineFailures\.size,/);

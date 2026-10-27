@@ -38,6 +38,7 @@ done
 
 IMAGE="boxedwine64/wine64-debian:bookworm"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
 DIST="$HERE/dist"
 mkdir -p "$DIST"
 
@@ -86,9 +87,18 @@ if [ ! -f "$VK_PREBUILT" ]; then
         exit 1
     fi
 fi
-for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
+for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
     if [ ! -f "$WINEHQ64/$dll" ]; then
         echo "ERROR: $WINEHQ64/$dll missing — run the refresh recipe in $WINEHQ64/README.md; refusing to build." >&2
+        exit 1
+    fi
+done
+VKSHIM_PREBUILT="$REPO/tools/vkd3d/probe/bw64vulkan.dll"
+D3D12_PREBUILT="$REPO/tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"
+D3D12CORE_PREBUILT="$REPO/tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"
+for f in "$VKSHIM_PREBUILT" "$D3D12_PREBUILT" "$D3D12CORE_PREBUILT"; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: vkd3d payload $f missing - build vkd3d-proton (tools/vkd3d/BUILD.md) and the PE shim (tools/vkd3d/probe/VULKAN1_DLL_README.md) first; refusing to build a wine64.zip without the D3D12 payload." >&2
         exit 1
     fi
 done
@@ -292,14 +302,17 @@ else
     fi
 fi
 
-# Backport three builtin-Wine DLLs that exist in the 32-bit WineHQ-10.0 tree
-# but not in Debian's 8.0 amd64 tree. d3d12core.dll (post-8.0 module) and
-# msmpeg2vdec.dll (Media Foundation H.264/MPEG-2 decoder — the decoder behind
-# virtually every WMV/H.264 game cutscene). Both import only against module
+# Backport two builtin-Wine DLLs that exist in the 32-bit WineHQ-10.0 tree
+# but not in Debian's 8.0 amd64 tree: msmpeg2vdec.dll (Media Foundation
+# H.264/MPEG-2 decoder - the decoder behind virtually every WMV/H.264 game
+# cutscene) and msvcp140_codecvt_ids.dll. Both import only against module
 # sets that wine64 8.0 already ships (msmpeg2vdec needs mfplat's
 # MFTRegister/MFTUnregister, verified present). See winehq10-x86_64/README.md
-# for the pinned source and hashes.
-for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
+# for the pinned source and hashes. (d3d12core.dll used to be the third
+# backport; it is now staged from the vkd3d-proton build by the payload
+# block below - Wine's own d3d12core has no DXIL frontend and cannot
+# serve D3D12 apps.)
+for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
     if [ -f "$WINEHQ64/$dll" ]; then
         cp "$WINEHQ64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
@@ -314,6 +327,51 @@ for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
+
+# Stage the D3D12 payload at system placement in the wine tree (the
+# prefix's system32 is a .link into this tree, so this is where every
+# guest resolves these names):
+#   bw64vulkan.dll <- the bw64 PE shim (tools/vkd3d/probe/bw64vulkan.dll),
+#     under its OWN name. The vendored vkd3d-proton's loader tries
+#     "bw64vulkan.dll" FIRST (Boxedwine64 patch, tools/vkd3d/src/libs/
+#     d3d12core/main.c) precisely to bypass Wine's winevulkan extension
+#     filtering: Wine 8.0's winevulkan conversion tables predate
+#     VK_KHR_maintenance5/6 (its Vulkan 1.3.239 registry knows only
+#     maintenance1/2), and vkd3d-proton requires maintenance5/6 at
+#     device creation. The shim forwards PE Vulkan calls straight to
+#     the host vk64bridge with pointers uninterpreted, so vkd3d sees
+#     the bridge's real caps. ELF clients use libvulkan.so.1 below.
+#   vulkan-1.dll + winevulkan.dll <- the SAME shim bytes, under both
+#     other names a PE client can load it by. System-placement surface
+#     closure (2026-10-27, surface lane; campaign report 4.19): Wine's
+#     builtin dxgi.dll creates D3D12 swapchain surfaces through a
+#     factory that LoadLibrary's "winevulkan.dll" BY NAME (proven by a
+#     WINEDEBUG=+module loader trace of the failing probe: load_dll
+#     "winevulkan.dll", and vulkan-1.dll is never loaded in the D3D12
+#     flow), while native Vulkan apps and DXVK's dxgi load
+#     "vulkan-1.dll". winevulkan treats a VkInstance as a pointer to
+#     its own wrapper struct, but vkd3d's instance (created through
+#     bw64vulkan.dll above) is a bridge handle (an opaque id, not a
+#     pointer), so dxgi's vkCreateWin32SurfaceKHR faulted inside
+#     winevulkan (loader_thunks.c:3097 assert) and every
+#     system-placement D3D12 swapchain aborted before any surface
+#     existed. Resolving all three PE Vulkan names to the shim puts
+#     every PE Vulkan client in one handle domain (the bridge) -- the
+#     configuration the unstaged first-light probe already proved
+#     (it stages the shim under these names in the app dir). No
+#     shipped Wine PE statically imports either name (import scan,
+#     2026-10-27); consumption is dynamic only.
+#   d3d12.dll + d3d12core.dll <- the vkd3d-proton build, replacing
+#     Wine's pair so D3D12 apps are served at system placement with
+#     WINEDLLOVERRIDES=d3d12=n;d3d12core=n, no app-dir copies.
+# The merge-script equivalent for this ARM64 host (where the container
+# staging crashes) is tools/rootfs64/stage-vkd3d-payloads.sh.
+echo "--- staging vkd3d payload (bw64vulkan.dll + vulkan-1.dll + winevulkan.dll shim + d3d12 pair) ---"
+cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/bw64vulkan.dll"
+cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll"
+cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winevulkan.dll"
+cp "$D3D12_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll"
+cp "$D3D12CORE_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll"
 
 # Stage our guest Vulkan shim (tools/rootfs64/libvk64/libvk64.c -> libvulkan.so.1).
 # Same shape as the libGL.so.1 staging above, for the same reason: with no Vulkan
