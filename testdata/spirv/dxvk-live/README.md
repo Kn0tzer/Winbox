@@ -24,3 +24,27 @@ ShaderViewportIndexLayerEXT (that capability is 5254) and 4465
 DenormFlushToZero was missing from the whitelist. See
 docs/known-gaps/vulkan.md (capability-audit rows) and
 web/tests/suite/unit/vk-spirv-rejections.test.mjs.
+
+Six DXVK meta-shader modules were added 2026-10-26, extracted byte-exact
+from the vendored DXVK 2.4.1 build headers
+(`tools/dxvk/build.w64/src/dxvk/libdxvk.a.p/*.h`, the C arrays DXVK embeds
+for its meta copy/blit/resolve pipelines). They are the modules whose
+creation killed Gang Beasts in its first scene: every meta fragment shader
+declares `OpCapability Geometry` because it reads gl_Layer (with a
+fragment-only entry point), and the bridge's SPIR-V audit rejected them at
+vkCreateShaderModule, which is fatal inside DXVK's meta constructors.
+
+| Module | Bytes | sha256 (first 16) | Capabilities |
+| --- | ---: | --- | --- |
+| dxvk-meta-copy-color-1d.frag.spv | 1312 | d861d5f6b28c9eed | Shader, Geometry, Sampled1D |
+| dxvk-meta-copy-color-2d.frag.spv | 1368 | 294bea717e3f3c90 | Shader, Geometry |
+| dxvk-meta-copy-color-ms.frag.spv | 1460 | 0ac127412724dbd0 | Shader, Geometry, SampleRateShading |
+| dxvk-meta-blit-2d.frag.spv | 1324 | 8fe7fd55faf7c309 | Shader, Geometry |
+| dxvk-meta-resolve-f.frag.spv | 1752 | b5066e5cf03aacfe | Shader, Geometry |
+| dxvk-fullscreen.vert.spv | 1420 | 3dd33e5b7a3eb9b6 | Shader |
+
+All six convert through spirvfix (incl. R11 fragment-layer-to-zero) + naga;
+`vk-spirv-rejections.test.mjs` and `spirvfix-r10-r11.test.mjs` pin both the
+audit acceptance and the conversion. The companion geometry module
+(`dxvk_fullscreen_geom`) lives in `../geometry/` — it can never convert
+(WebGPU has no geometry stage) and is a bridge-disposition fixture instead.

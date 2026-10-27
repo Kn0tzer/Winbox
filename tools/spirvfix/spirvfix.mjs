@@ -100,6 +100,11 @@ HAS_TYPE_ID.add(5381); // OpIsHelperInvocationEXT: result type + result id
 // opcodes with a result-id but no result-type (labels; untyped type decls)
 const HAS_ID_ONLY = new Set([19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
   31, 32, 33, 45, 248]);
+// Opcodes that can consume a pointer-typed operand: stores and copies
+// through it, access chains based on it, calls taking it as an argument,
+// pointer copies/casts, and select/phi nodes over pointer values. R11 uses
+// this to detect a BuiltIn pointer escaping its loads.
+const POINTER_USE_OPS = new Set([57, 60, 62, 63, 64, 65, 66, 67, 68, 70, 83, 121, 122, 169, 245]);
 const Dec = { SpecId: 1, Binding: 33, DescriptorSet: 34 };
 const SC = { UniformConstant: 0, Function: 7 };
 
@@ -1423,8 +1428,15 @@ function fragmentLayerToZero(mod, log) {
     }
     for (const ins of mod.insns) {
       if (ins === v || ins.op === Op.Decorate || ins.op === Op.Name || ins.op === Op.EntryPoint) continue;
-      if (ins.op === Op.Load && ins.words[2] === id) loads.push(ins);
-      else if (ins.words.includes(id) && ins.op !== Op.Variable) {
+      if (ins.op === Op.Load && ins.words[2] === id) { loads.push(ins); continue; }
+      // The pointer may only be consumed by loads. Scan only the opcodes
+      // that can consume a pointer-typed operand: a raw words.includes(id)
+      // over every instruction false-positives on literal operands that
+      // numerically equal the id (DXVK copy_color_2d has its Layer variable
+      // at id 32 and an OpTypeInt of width 32). In a valid module no other
+      // opcode can reference an Input pointer id -- any other use would be
+      // a type error the translator rejects anyway.
+      if (POINTER_USE_OPS.has(ins.op) && ins.words.includes(id)) {
         log.push(`spirvfix: left Layer builtin %${id} unchanged (pointer used outside OpLoad)`);
         return false;
       }
@@ -1458,8 +1470,14 @@ function fragmentLayerToZero(mod, log) {
     }
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
   }
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
-  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  // The zero constants go at the END of the global section (just before the
+  // first function). Splicing before the first OpVariable can place an
+  // OpConstant ahead of the OpTypeInt it references in glslang layouts that
+  // interleave pointer/image types and variables before the scalar types
+  // (DXVK copy_color_1d declares %int after the image variables), which
+  // validators reject: the constant's type id is not yet defined there.
+  const firstFunc = sections(mod).firstFunc;
+  mod.insns.splice(firstFunc < 0 ? mod.insns.length : firstFunc, 0, ...constants);
   log.push(`spirvfix: replaced ${loads.length} fragment Layer load(s) with zero`);
   return true;
 }
