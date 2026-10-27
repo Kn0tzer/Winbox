@@ -462,6 +462,19 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // injects the bound view format; naga cannot consume Unknown formats or
 // the capability itself). It passes when the module does not WRITE a storage
 // image; writers reject below as "spirv-storage-image-write".
+// PhysicalStorageBufferAddresses (5346/5347) is the same shape, one lane
+// later (Route 0, descriptor-addressing research 2026-10-27): vkd3d-proton
+// switches dxil-spirv into the physical addressing model module-wide
+// whenever the shader interface carries ANY raw-VA binding or root
+// descriptor, so the capability is emitted even for modules that contain
+// zero pointer dereferences (census of the real uav12 modules: no
+// OpConvertUToPtr/OpConvertPtrToU, no PhysicalStorageBuffer pointer
+// types). spirvfix R8 strips exactly that declared-but-unused case in the
+// page tier. The audit therefore skips 5346/5347 iff its used-test -- byte
+// for byte R8's: an op 120/121, or an OpTypePointer whose storage class
+// is 5349 (PhysicalStorageBuffer) -- finds no use. Modules that DO
+// dereference physical pointers fall through to the existing
+// "spirv-capability-unknown:5347" rejection, loudly.
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE: samplerMirrorClampToEdge is advertised (a
@@ -551,6 +564,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::vector<Var> vars;
     bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
     bool storageImageWrite = false, imageWriteOpcode = false;
+    bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349
     std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
     std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
     std::unordered_map<U32, Var*> varById;
@@ -566,13 +580,14 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
                      else if (len >= 2 && w[i + 1] <= 4) graphicsEntry = true; break; // OpEntryPoint Vertex/Tessellation/Geometry/Fragment
             case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
             case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
-            case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
+            case 32: if (len >= 4) { ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; if (w[i + 2] == 5349) physicalBufferUsed = true; } break; // OpTypePointer (storage class 5349 = PhysicalStorageBuffer)
             case 25:
                 if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
                 if (len >= 9 && w[i + 7] == 2) { storageImage = true; storageImageTypes.insert(w[i + 1]); } // OpTypeImage, Sampled==2
                 break;
             case 61: if (len >= 4) loadPtr[w[i + 2]] = w[i + 3]; break;              // OpLoad: result -> pointer
             case 99: imageWriteOpcode = true; break;                                 // OpImageWrite (valid only on storage images)
+            case 120: case 121: physicalBufferUsed = true; break;                    // OpConvertUToPtr / OpConvertPtrToU: a physical pointer is materialized
             case 60: if (len >= 4) {                                                 // OpImageTexelPointer: candidate write (stores/atomics go through texel pointers); typed after the scan when varById exists
                 U32 img = w[i + 3];
                 auto lp = loadPtr.find(img); if (lp != loadPtr.end()) img = lp->second;
@@ -613,6 +628,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
         if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
+        if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue; // PhysicalStorageBufferAddresses declared but unused (vkd3d module-wide header artifact): spirvfix R8 strips exactly this case in the tier. The used form falls through to spirv-capability-unknown:<n> below.
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");

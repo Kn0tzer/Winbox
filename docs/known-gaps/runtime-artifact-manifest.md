@@ -16,7 +16,7 @@ from the artifacts, so the register rows citing it stay honest.
 | p32 | `web/runtime/prefix32.zip` | 5914534 | `ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `5f77055dddcb8a5e398f19bd2ed795f24380cab3afb00aeffc64c3f9c3b2bc67` | 154 |
-| support | `dist/runtime/support-108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe.zip` | 517854544 | `108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe` | 3543 |
+| support | `dist/runtime/support-c58f20bb880ad8e749c1d63771a4626e28b5980649085d98ae6b1b8ef4003571.zip` | 517854506 | `c58f20bb880ad8e749c1d63771a4626e28b5980649085d98ae6b1b8ef4003571` | 3543 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,

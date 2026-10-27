@@ -1227,7 +1227,7 @@ function stripUnusedPhysicalStorageBuffer(mod, log) {
   if (!hasCap) return false;
   const usesPsb = mod.insns.some(i =>
     i.op === 120 || i.op === 121 || // OpConvertUToPtr / OpConvertPtrToU
-    (i.op === Op.TypePointer && i.words[0] === 5349)); // PhysicalStorageBuffer storage class
+    (i.op === Op.TypePointer && i.words[1] === 5349)); // PhysicalStorageBuffer storage class (operands: [resultId, storageClass, pointee])
   if (usesPsb) {
     log.push('spirvfix: PhysicalStorageBufferAddresses is actually used; not stripping');
     return false;

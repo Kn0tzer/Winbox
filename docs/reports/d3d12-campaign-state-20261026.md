@@ -940,3 +940,126 @@ audit 0 DRIFT / 0 MISSING over 327 cited rows, checked coverage
 back at the HEAD baseline (the citations suite test fails only its
 pre-existing coverage-ceiling subtest, byte-identical message to
 pristine HEAD).
+
+## 4.19 Route 0: the cap-5347 wall was a header artifact — declared-but-unused PhysicalStorageBufferAddresses now passes the audit; execution stops at the descriptor-array wall (2026-10-27)
+
+Route 0 from the BDA research report
+(`docs/reports/d3d12-descriptor-addressing-research-20261027.md`) is
+landed. The bridge's SPIR-V audit (`vk64AuditSpirv`) now dispositions
+capabilities 5346/5347 (PhysicalStorageBufferAddresses) by use,
+following the 33/4427 precedent in the same loop: when the module
+contains no OpConvertUToPtr / OpConvertPtrToU (ops 120/121) and no
+OpTypePointer with storage class 5349 (PhysicalStorageBuffer), the
+two capabilities are skipped instead of rejected, so spirvfix R8 —
+which already strips exactly that form — can run. A module with real
+pointer use still rejects at creation under the same named token,
+`spirv-capability-unknown:5347` (5346/5347 remain absent from the
+name table and from the unknown-branch exemption list; the skip is a
+separate use-conditional exemption in the capability loop).
+
+Exactness audit against R8 (the brief's hard requirement — the audit
+must accept precisely the modules R8 can strip): the audit's
+predicate is {no op 120} ∧ {no op 121} ∧ {no OpTypePointer with
+words[2] == 5349 in raw-word layout}. R8's predicate in parsed form
+is {no op 120/121} ∧ {no OpTypePointer with storage class 5349}.
+Auditing R8's implementation line by line found a LATENT DEFECT:
+R8's pointer arm tested `i.words[0] === 5349` — the OpTypePointer
+RESULT ID — instead of `i.words[1]`, the storage-class operand
+(every other TypePointer consumer in spirvfix.mjs uses words[1] /
+words[2] correctly). R8's own test fixture encoded the same wrong
+operand order ([5349, 10, 11] as [storageClass, id, pointee]), so
+the defect was invisible to its test. Consequences of the old code:
+a module whose physical pointer type had an id other than 5349
+would have its capability stripped while the physical pointer type
+remained (naga would then fail at translation — loud, but a
+different failure than designed), and a module with an innocent type
+whose id happened to be 5349 would be refused the strip. Both are
+now fixed: `tools/spirvfix/spirvfix.mjs` tests words[1], the
+fixture's operand order is corrected, and the audit implements the
+corrected, semantic predicate — audit and R8 accept exactly the same
+modules. Guards: `spirvfix-r8.test.mjs` gains an operand-index pin
+(a pointer type whose RESULT ID is 5349 is not physical use), and
+`vk-spirv-rejections.test.mjs` gains (a) source pins for both halves
+of the predicate, the exemption line, and the R8 mirror; (b) a census
+test on the reproduced real module
+(`testdata/spirv/d3d12-ps-uav-5347-unused.spv`, copied from the
+research census — declares 5346/5347, zero pointer ops; after R8 the
+capabilities are gone and the memory model is Logical); (c) a
+sabotage pair whose pointer-only and convert-only sub-cases each
+block the strip alone. Sabotage evidence: deleting the bridge
+exemption, inverting its condition, deleting the op-120/121 scan, or
+moving the audit's storage-class read to the result-id word each
+turn the guard red (1 failing test each); reverting R8 to words[0]
+turns 3 tests red across the two files. Note the census fixture also
+declares RuntimeDescriptorArray (5302) and DenormFlushToZero (4465),
+which naga rejects for unrelated reasons (a standalone dxil-spirv
+reproduction delta) — the guards assert the census and the R8 strip,
+not end-to-end translation of that file.
+
+Guest proof (rebuilt dist, "Browser export verified"; BUILD_INFO
+git_sha 1d40f018c + this lane's uncommitted-at-build-time changes,
+support archive c58f20bb880a; probe exes staged with
+tools/vkd3d/stage-vkd3d.sh). uav12
+(`test-results/dxvk-uav-route0/console.log`), BEFORE → AFTER against
+the section 4.17 run in wt-vkd3d: TypedUAVLoadAdditionalFormats =
+TRUE (unchanged), sweep 18/18 UAV_TYPED_LOAD=YES (unchanged),
+`spirv-capability-unknown:5347` lines 4 → 0. The execution landing
+point, verbatim: the four graphics EXEC cases still fail
+CreateGraphicsPipelineState with hr=0x80004005, but the rejection
+behind it is now `vk64: UNSUPPORTED spirv-capability:
+RuntimeDescriptorArray` (x4 in vkCreateShaderModule) — the modules
+pass 5347 and stop at capability 5302, the runtime-descriptor-array
+wall the research report explicitly scoped OUT of Routes 0+A
+(browser WebGPU has no binding arrays of any kind). The two uint
+EXEC cases are unchanged (hr=0x80070057, vkd3d-side E_INVALIDARG
+before shader compilation). SUMMARY stays flag=TRUE sweep=ALL18
+exec=FAILED, RESULT 1 — Route 0 removes the header-artifact wall; it
+does not, and by design cannot, serve descriptor arrays. First
+light: tri12 on the same dist passes, RESULT 0 (run
+test-results/dxvk-tri12-route0/). Three earlier uav12 attempts on
+this dist failed for infrastructure reasons only and are preserved
+(dxvk-uav-route0-timeout1 / -explorerfail: guest Wine explorer
+failed to start under box saturation, the documented wedge class;
+dxvk-uav-route0-nostage: probe exe not yet staged into the prefix,
+c0000135 — staging is a post-export step this fresh worktree had
+never had run). JS suite (this tree,
+BW_TEST_DIST=/home/ubuntu/wt-vkd3d-bda/dist, runner.mjs --unit):
+288 passed / 7 failed — the baseline failure set at c52f39d4e
+(287/8, verified from two independent logs) minus
+provenance-artifacts, which passes here; zero new failures. The
+vk-register-citations failure is byte-identical in kind to
+pristine HEAD (only its pre-existing coverage-ceiling subtest).
+
+Tree-preparation notes for this worktree (it had never been built
+in): deps installed from the local pnpm store; DXVK w32+w64 built
+in-tree per tools/dxvk/BUILD.md with the sibling tree's exact meson
+options; the GStreamer payloads were copied from the sibling tree
+and verified against their pinned sha256 closure
+(prepare-gstreamer.py --check: "staged and verified"); the runtime
+manifest was regenerated (one line: the support archive's hash,
+from the locally built DXVK DLLs, same 3543 entries).
+
+### Register
+
+docs/known-gaps/vulkan.md: counts unchanged, 354 rows = 51
+IMPLEMENTED / 71 REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN (recount
+mechanical; no rows added — the Route 0 carve-out extends the
+existing capability-audit row, the catch-all row's carve-out list,
+and the Typed-UAV row's outcome sentence, which now records the
+section 4.19 landing point). The bridge insertions drifted 49
+citations; all re-pinned (tool fix pass + git-diff line mapping for
+multi-citation rows): citation audit 0 DRIFT / 0 MISSING over 327
+cited rows, UNCHECKABLE 110 as at HEAD.
+
+### What this lane did not do
+
+Route A / spirvfix R15 (root-descriptor rewrite) is the follow-on
+lane's work, as are the VKD3D_SHADER_DUMP_PATH captures. tri12draw
+was not run: the winevulkan-path swapchain regression from section
+4.17 item 8 belongs to the bisect lane in wt-vkd3d; nothing in this
+lane's change touches that path (the audit change only widens which
+modules reach the tier, and tri12's direct path verifies clean).
+The RuntimeDescriptorArray wall this run exposed as the next stop
+is a separate scope (no binding arrays exist in browser WebGPU);
+serving it needs bindless emulation work beyond Routes 0+A as
+researched.
