@@ -52,47 +52,108 @@ if [[ "$mode" == --check ]]; then
     if pid_alive "$lock_pid"; then log "BUILD IN PROGRESS (pid=$lock_pid owner=$lock_owner)"; exit 10; fi
     log "STALE BUILD LOCK (pid=$lock_pid dead)"; exit 11
 fi
-started_wait=$SECONDS
-while ! mkdir "$LOCKDIR" 2>/dev/null; do
-    # A live owner remains authoritative regardless of lock age. Missing info
-    # can be the mkdir-to-write interval of a new owner: fail closed and wait.
-    if read_owner && ! pid_alive "$lock_pid"; then
-        if [[ "$lock_raw" == "$(cat "$INFO_FILE" 2>/dev/null)" ]]; then
-            rm -f "$INFO_FILE"
-            rmdir "$LOCKDIR" 2>/dev/null || die "stale lock contains unexpected files: $LOCKDIR"
-            continue
+# --- Build lock + probe drain ----------------------------------------------
+# Ordering (changed 2026-10-27): a build no longer holds the build lock
+# while it waits for probes to drain. The loop below interleaves the two
+# waits. While probes are busy it drains WITHOUT the lock (publishing
+# build-pending so new probes hold back); it attempts the lock only once
+# probes look clear, then re-scans under the lock before any write phase:
+# a probe may have slipped in during lock acquisition, and if so the lock
+# is released and the drain resumes. Lock contention keeps the historical
+# semantics: a live owner is authoritative, and the build dies with
+# "build lock busy or invalid" once BW64_BUILD_WAIT_SECONDS has elapsed,
+# whether it is draining or waiting. The drain budget is
+# BW64_BUILD_WAIT_MIN minutes of probe-busy waiting in total across all
+# rounds; if it runs out (or a probe slips in three times) the build
+# falls back to the historical behaviour: drain the remainder under the
+# lock, then validate (dying on a live probe) exactly as before.
+# Invariants are unchanged: at most one build runs the write phases
+# (bootstrap/compile/export), and a build enters them only after a probe
+# scan under the lock shows no live probe.
+acquire_lock() {
+    local started_wait=$SECONDS
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do
+        # A live owner remains authoritative regardless of lock age. Missing info
+        # can be the mkdir-to-write interval of a new owner: fail closed and wait.
+        if read_owner && ! pid_alive "$lock_pid"; then
+            if [[ "$lock_raw" == "$(cat "$INFO_FILE" 2>/dev/null)" ]]; then
+                rm -f "$INFO_FILE"
+                rmdir "$LOCKDIR" 2>/dev/null || die "stale lock contains unexpected files: $LOCKDIR"
+                continue
+            fi
         fi
-    fi
-    if (( SECONDS - started_wait >= WAIT_SECONDS )); then die "build lock busy or invalid: $LOCKDIR"; fi
-    sleep 1
-done
-printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+        if (( SECONDS - started_wait >= WAIT_SECONDS )); then die "build lock busy or invalid: $LOCKDIR"; fi
+        sleep 1
+    done
+    printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+    log "lock acquired (pid=$$)"
+}
 cleanup() {
     if read_owner && [[ "$lock_pid" == "$$" ]]; then
         rm -f "$INFO_FILE"
         rmdir "$LOCKDIR" 2>/dev/null || true
     fi
+    # build-pending is claimed by builds that do not hold the lock yet, so
+    # remove it only when it names us. (probe-slots.mjs also treats a dead
+    # pid in build-pending as no build pending and unlinks it itself.)
+    local bp
+    bp=$(cat "$PROBE_SLOT_DIR/build-pending" 2>/dev/null) || bp=""
+    if [[ "$bp" == "$$" ]]; then rm -f "$PROBE_SLOT_DIR/build-pending"; fi
+    return 0
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-log "lock acquired (pid=$$)"
-# Probe slots contain exactly one PID, never a concatenation of arbitrary digits.
-if [[ "${BW64_BUILD_FORCE:-0}" != 1 ]]; then
-    # Hold new probes back (probe-slots.mjs honours build-pending) and wait up to BW64_BUILD_WAIT_MIN for running probes to finish.
-    mkdir -p "$PROBE_SLOT_DIR"; echo "$$" > "$PROBE_SLOT_DIR/build-pending"
-    trap 'rm -f "$PROBE_SLOT_DIR/build-pending"; cleanup' EXIT
-    wait_deadline=$((SECONDS + ${BW64_BUILD_WAIT_MIN:-60} * 60))
-    while :; do
-        busy=0
-        for slot in "$PROBE_SLOT_DIR"/slot-* "$PROBE_SLOT_DIR"/light-* /tmp/bw64-probe.lock; do
-            [[ -e "$slot" ]] || continue
-            pid=$(cat "$slot" 2>/dev/null) || continue
-            [[ "$pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$pid" && busy=1
-        done
-        [[ $busy == 0 || $SECONDS -ge $wait_deadline ]] && break
-        sleep 15
+release_lock() { cleanup; }
+claim_build_pending() {
+    # Publish our pid so new probes hold back while we drain. If another
+    # live build already claims the file, probes are held back either way.
+    mkdir -p "$PROBE_SLOT_DIR"
+    local bp
+    bp=$(cat "$PROBE_SLOT_DIR/build-pending" 2>/dev/null) || bp=""
+    if [[ "$bp" == "$$" ]]; then return 0; fi
+    if [[ "$bp" =~ ^[1-9][0-9]*$ ]] && pid_alive "$bp"; then return 0; fi
+    echo "$$" > "$PROBE_SLOT_DIR/build-pending"
+}
+probes_busy() {
+    # Probe slots contain exactly one PID, never a concatenation of arbitrary digits.
+    local slot pid
+    for slot in "$PROBE_SLOT_DIR"/slot-* "$PROBE_SLOT_DIR"/light-* /tmp/bw64-probe.lock; do
+        [[ -e "$slot" ]] || continue
+        pid=$(cat "$slot" 2>/dev/null) || continue
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && pid_alive "$pid" && return 0
     done
+    return 1
+}
+lock_contended() {
+    # True while another build owns the lock: a live owner, or an owner
+    # still in its mkdir-to-write interval (fail closed, as the old spin).
+    [[ -d "$LOCKDIR" ]] || return 1
+    if read_owner; then pid_alive "$lock_pid"; else return 0; fi
+}
+try_acquire_lock() {
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+        log "lock acquired (pid=$$)"
+        return 0
+    fi
+    # Reclaim a validated stale lock and retry once, as the historical
+    # spin did; a live or still-initializing owner stays authoritative.
+    if read_owner && ! pid_alive "$lock_pid"; then
+        if [[ "$lock_raw" == "$(cat "$INFO_FILE" 2>/dev/null)" ]]; then
+            rm -f "$INFO_FILE"
+            rmdir "$LOCKDIR" 2>/dev/null || die "stale lock contains unexpected files: $LOCKDIR"
+            if mkdir "$LOCKDIR" 2>/dev/null; then
+                printf '%s|%s|%s\n' "$$" "$(date +%s)" "$OWNER" > "$INFO_FILE"
+                log "lock acquired (pid=$$)"
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+validate_probe_slots() {
+    local slot pid
     for slot in "$PROBE_SLOT_DIR"/slot-* /tmp/bw64-probe.lock; do
         [[ -e "$slot" ]] || continue
         pid=$(cat "$slot" 2>/dev/null) || die "cannot read probe slot: $slot"
@@ -100,6 +161,58 @@ if [[ "${BW64_BUILD_FORCE:-0}" != 1 ]]; then
         [[ ${#pid} -le 10 && "$pid" -le 2147483647 ]] || die "invalid probe slot PID: $slot"
         if pid_alive "$pid"; then die "probe activity detected ($slot held by live pid $pid)"; fi
         rm -f "$slot"
+    done
+}
+if [[ "${BW64_BUILD_FORCE:-0}" == 1 ]]; then
+    acquire_lock
+else
+    drain_budget=$(( ${BW64_BUILD_WAIT_MIN:-60} * 60 ))
+    lock_deadline=$(( SECONDS + WAIT_SECONDS ))
+    slipped=0
+    drain_logged=0
+    while :; do
+        claim_build_pending
+        if probes_busy && (( drain_budget > 0 )); then
+            # Drain WITHOUT the build lock. A contended lock still fails
+            # on schedule even while we are only draining.
+            if lock_contended && (( SECONDS >= lock_deadline )); then
+                die "build lock busy or invalid: $LOCKDIR"
+            fi
+            if (( drain_logged == 0 )); then
+                log 'waiting for probes to drain (build lock not held)'
+                drain_logged=1
+            fi
+            sleep 15
+            drain_budget=$(( drain_budget - 15 ))
+            (( drain_budget < 0 )) && drain_budget=0
+            continue
+        fi
+        if try_acquire_lock; then
+            # Historical state at this point: sole lock holder,
+            # build-pending names us. Re-scan before any write phase.
+            echo "$$" > "$PROBE_SLOT_DIR/build-pending"
+            if ! probes_busy; then
+                validate_probe_slots
+                break
+            fi
+            slipped=$(( slipped + 1 ))
+            if (( drain_budget <= 0 || slipped >= 3 )); then
+                # Historical fallback, still under the lock: wait out
+                # whatever budget remains, then validate exactly as
+                # the original did.
+                while probes_busy && (( drain_budget > 0 )); do
+                    sleep 15
+                    drain_budget=$(( drain_budget - 15 ))
+                done
+                validate_probe_slots
+                break
+            fi
+            log 'probe activity slipped in during lock acquisition; releasing lock to drain again'
+            release_lock
+            continue
+        fi
+        if (( SECONDS >= lock_deadline )); then die "build lock busy or invalid: $LOCKDIR"; fi
+        sleep 1
     done
 fi
 python3 "$REPO/tools/browser/bootstrap.py"
