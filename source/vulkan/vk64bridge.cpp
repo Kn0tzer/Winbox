@@ -7206,6 +7206,28 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
                 VK64_DROP_IF(continue, dyAbs >= dst->h);
+                // Fast path: 1:1 horizontal scale makes this row one contiguous
+                // run (sx = srcX0 + dx for every pixel). Copy it in chunks
+                // instead of two guest-memory calls per pixel; the bytes moved
+                // are identical to the per-pixel loop below. Rows whose run
+                // would cross an image or allocation edge keep the loop.
+                if (srcW == dstW && r.srcX0 >= 0 && r.dstX0 >= 0 &&
+                    r.srcX0 + srcW <= (int32_t)src->w && r.dstX0 + dstW <= (int32_t)dst->w) {
+                    U64 sRow = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX0 * pxBytes;
+                    U64 dRow = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)r.dstX0 * pxBytes;
+                    U32 rowBytes = (U32)dstW * pxBytes;
+                    if (sRow + rowBytes <= smem->va + smem->size && dRow + rowBytes <= dmem->va + dmem->size) {
+                        U8 tmp[65536];
+                        U32 left = rowBytes;
+                        while (left > 0) {
+                            U32 chunk = left > sizeof(tmp) ? sizeof(tmp) : left;
+                            g_mem->memcpyFromGuest(tmp, sRow, chunk);
+                            g_mem->memcpyToGuest(dRow, tmp, chunk);
+                            sRow += chunk; dRow += chunk; left -= chunk;
+                        }
+                        continue;
+                    }
+                }
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
                     VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
@@ -7275,6 +7297,28 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                 VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstY0 + dy);
                 VK64_DROP_IF(continue, dyAbs >= dst->h);
+                // Fast path: 1:1 horizontal scale makes this row one contiguous
+                // run (sx = srcX0 + dx for every pixel). Copy it in chunks
+                // instead of two guest-memory calls per pixel; the bytes moved
+                // are identical to the per-pixel loop below. Rows whose run
+                // would cross an image or allocation edge keep the loop.
+                if (srcW == dstW && r.srcX0 >= 0 && r.dstX0 >= 0 &&
+                    r.srcX0 + srcW <= (int32_t)src->w && r.dstX0 + dstW <= (int32_t)dst->w) {
+                    U64 sRow = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcX0 * pxBytes;
+                    U64 dRow = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)r.dstX0 * pxBytes;
+                    U32 rowBytes = (U32)dstW * pxBytes;
+                    if (sRow + rowBytes <= smem->va + smem->size && dRow + rowBytes <= dmem->va + dmem->size) {
+                        U8 tmp[65536];
+                        U32 left = rowBytes;
+                        while (left > 0) {
+                            U32 chunk = left > sizeof(tmp) ? sizeof(tmp) : left;
+                            g_mem->memcpyFromGuest(tmp, sRow, chunk);
+                            g_mem->memcpyToGuest(dRow, tmp, chunk);
+                            sRow += chunk; dRow += chunk; left -= chunk;
+                        }
+                        continue;
+                    }
+                }
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcX0 + (dx * srcW) / dstW;
                     VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
@@ -9879,6 +9923,26 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 VK64_DROP_IF(continue, sy < 0 || (U32)sy >= src->h);
                 U32 dyAbs = (U32)(r.dstOffsets[0].y + dy);
                 VK64_DROP_IF(continue, dyAbs >= dst->h);
+                // Fast path: 1:1 horizontal scale makes this row one contiguous
+                // run (sx = srcOffsets[0].x + dx for every pixel). Copy it in
+                // chunks instead of two guest-memory calls per pixel; the bytes
+                // moved are identical to the per-pixel loop below. Rows whose
+                // run would cross an image edge keep the loop.
+                if (srcW == dstW && r.srcOffsets[0].x >= 0 && r.dstOffsets[0].x >= 0 &&
+                    r.srcOffsets[0].x + srcW <= (int32_t)src->w && r.dstOffsets[0].x + dstW <= (int32_t)dst->w) {
+                    U64 sRow = smem->va + src->memOff + (U64)sy * srcRowPitch + (U64)r.srcOffsets[0].x * pxBytes;
+                    U64 dRow = dmem->va + dst->memOff + (U64)dyAbs * dstRowPitch + (U64)r.dstOffsets[0].x * pxBytes;
+                    U32 rowBytes = (U32)dstW * pxBytes;
+                    U8 tmp[65536];
+                    U32 left = rowBytes;
+                    while (left > 0) {
+                        U32 chunk = left > sizeof(tmp) ? sizeof(tmp) : left;
+                        g_mem32->memcpyFromGuest(tmp, (U32)sRow, chunk);
+                        g_mem32->memcpyToGuest((U32)dRow, tmp, chunk);
+                        sRow += chunk; dRow += chunk; left -= chunk;
+                    }
+                    continue;
+                }
                 for (int32_t dx = 0; dx < dstW; dx++) {
                     int32_t sx = r.srcOffsets[0].x + (dx * srcW) / dstW;
                     VK64_DROP_IF(continue, sx < 0 || (U32)sx >= src->w);
