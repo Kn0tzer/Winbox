@@ -5,8 +5,8 @@
  "archive": {
   "name": "browser-runtime-20261026.tar",
   "url": "https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261026/browser-runtime-20261026.tar",
-  "bytes": 512153600,
-  "sha256": "78f3d7f27f56b135c8955e821fe9479f7a290c44e89d5d89f346783158e976fd"
+  "bytes": 511948800,
+  "sha256": "13ee689e20d8d319ae963f9b6311a5592cf53c5efbede8e433c2167872af3379"
  },
  "files": [
   {
@@ -16,8 +16,8 @@
   },
   {
    "path": "web/runtime/wine64.zip",
-   "bytes": 211965507,
-   "sha256": "c07415af69c77f276a72cb3667b54d4b6b6719d82ab8bce97b66a6d4e95d569b"
+   "bytes": 211760592,
+   "sha256": "2128ce79fea1a7ae129dc56897d248f907624b8446b809d434c5c661f90c8de5"
   },
   {
    "path": "web/runtime/prefix64.zip",
