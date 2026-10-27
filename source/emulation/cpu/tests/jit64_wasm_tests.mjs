@@ -2534,10 +2534,13 @@ test('GRP3 MUL: unsigned RDX:RAX product, CF/OF=(hi!=0)', async () => {
   await checkGrp3(encGrp3({ sub: 4, size: 4, eaKind: 'base', base: 1 }), { regs: regs7, memInit });
 });
 
-test('GRP3 whole-block fallback rejects DIV/IDIV and /1', () => {
-  assert.equal(emit([0xF7, 0xF0]).result.status, 2); // DIV r/m32
-  assert.equal(emit([0xF7, 0xF8]).result.status, 2); // IDIV r/m32
-  assert.equal(emit([0xF6, 0xF0]).result.status, 2); // DIV r/m8
+test('GRP3 whole-block fallback rejects /1 (DIV/IDIV emit since the guard-bail fast path)', () => {
+  // DIV/IDIV used to be rejected here; they now emit (the execution
+  // semantics, including the interpreter bail, are pinned by the DIV/IDIV
+  // execution tests below).
+  assert.equal(emit([0xF7, 0xF0]).result.status, 0); // DIV r/m32
+  assert.equal(emit([0xF7, 0xF8]).result.status, 0); // IDIV r/m32
+  assert.equal(emit([0xF6, 0xF0]).result.status, 0); // DIV r/m8
   assert.equal(emit([0xF7, 0xC8]).result.status, 2); // /1 invalid
   assert.equal(emit([0xF0, 0xF7, 0xD0]).result.status, 2); // LOCK NOT
 });
@@ -2579,6 +2582,160 @@ test('fuzz F6/F7 group 3 vs reference (600 cases)', async () => {
       await checkGrp3(enc, { regs, rflags, memInit });
     } catch (e) {
       e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
+// --- F6/F7 group 3 /6 /7 DIV/IDIV execution tests ---
+// Reference model mirrors the interpreter (cpu64.cpp F6/F7 dsp): the only
+// fault is divide-by-zero; the 8-bit form divides AX in 16 bits and
+// truncates the stored quotient/remainder bytes; wider forms divide the
+// DX:AX / EDX:EAX / RDX:RAX pair in a wider intermediate. The emitted
+// code computes only the width-exact cases and bails to the interpreter
+// BEFORE the op otherwise (divisor 0; a high dividend half that is not
+// the zero/sign extension of the low half; INT64_MIN / -1), so a bail
+// must show execCount at the op's index, RIP at the op, and untouched
+// registers and flags.
+const DIV_RIP = 0x12345678ABCDEFF0n;
+function refDiv({ signed, size, rax, rdx, divisor }) {
+  const bits = size * 8;
+  const m = (1n << BigInt(bits)) - 1n;
+  const d = divisor & m;
+  if (d === 0n) return { bail: true };
+  if (size === 1) {
+    const num = rax & 0xFFFFn;
+    let q, r;
+    if (signed) {
+      const sn = BigInt.asIntN(16, num), sd = BigInt.asIntN(8, d);
+      q = sn / sd; r = sn % sd;
+    } else { q = num / d; r = num % d; }
+    const ax = (BigInt.asUintN(8, r) << 8n) | BigInt.asUintN(8, q);
+    return { bail: false, rax: (rax & ~0xFFFFn) | ax, rdx };
+  }
+  const lo = rax & m, hi = rdx & m;
+  let num;
+  if (signed) {
+    const ext = (lo & (1n << BigInt(bits - 1))) !== 0n ? m : 0n;
+    if (hi !== ext) return { bail: true };
+    num = BigInt.asIntN(bits, lo);
+    if (size === 8 && num === -(1n << 63n) && BigInt.asIntN(64, d) === -1n)
+      return { bail: true };
+  } else {
+    if (hi !== 0n) return { bail: true };
+    num = lo;
+  }
+  const dv = signed ? BigInt.asIntN(bits, d) : d;
+  const q = num / dv, r = num % dv;
+  if (size === 2) {
+    return { bail: false,
+      rax: (rax & ~0xFFFFn) | BigInt.asUintN(16, q),
+      rdx: (rdx & ~0xFFFFn) | BigInt.asUintN(16, r) };
+  }
+  // 32-bit results zero-extend; 64-bit results are the full registers.
+  return { bail: false, rax: BigInt.asUintN(bits, q), rdx: BigInt.asUintN(bits, r) };
+}
+function encDiv(size, signed) {
+  const modrmByte = modrm(signed ? 7 : 6, 3); // divisor in RBX
+  if (size === 1) return [0xF6, modrmByte];
+  if (size === 2) return [0x66, 0xF7, modrmByte];
+  if (size === 4) return [0xF7, modrmByte];
+  return [0x48, 0xF7, modrmByte];
+}
+async function checkDiv(code, args, flags = 0x8D7) {
+  const regs = baseRegs();
+  regs[0] = args.rax; regs[2] = args.rdx; regs[3] = args.divisor;
+  const ref = refDiv(args);
+  const out = await runAlu(code, regs, flags);
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+  assert.equal(out.rflags, flags, 'DIV/IDIV leave flags untouched');
+  if (ref.bail) {
+    assert.equal(out.execCount, 0, 'bail happens before the op');
+    assert.equal(out.ripOut, DIV_RIP, 'RIP stays at the op on bail');
+    assert.deepEqual(out.regs, regs, 'bail leaves registers untouched');
+  } else {
+    assert.equal(out.execCount, 1, 'one op executed');
+    assert.equal(out.ripOut, (DIV_RIP + BigInt(code.length)) & mask64, 'RIP advances');
+    const expected = [...regs];
+    expected[0] = ref.rax; expected[2] = ref.rdx;
+    assert.deepEqual(out.regs, expected, 'RAX/RDX results');
+  }
+}
+
+test('DIV r32: quotient/remainder, results zero-extend', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 0xDEADBEEF00000064n, rdx: 0n, divisor: 7n });
+});
+test('DIV r32: nonzero EDX bails to the interpreter', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 100n, rdx: 1n, divisor: 7n });
+});
+test('DIV r32: divide by zero bails', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 100n, rdx: 0n, divisor: 0n });
+});
+test('IDIV r64: negative dividend via CQO form', async () => {
+  await checkDiv(encDiv(8, true),
+    { signed: true, size: 8, rax: BigInt.asUintN(64, -100n), rdx: mask64, divisor: 7n });
+});
+test('IDIV r64: INT64_MIN / -1 bails (interpreter truncates)', async () => {
+  await checkDiv(encDiv(8, true),
+    { signed: true, size: 8, rax: 0x8000000000000000n, rdx: mask64, divisor: mask64 });
+});
+test('DIV r64: wide dividend, zero high half', async () => {
+  await checkDiv(encDiv(8, false),
+    { signed: false, size: 8, rax: 1n << 40n, rdx: 0n, divisor: 1000n });
+});
+test('DIV r8: AX divided, quotient/remainder bytes packed, upper RAX kept', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(1, false),
+    { signed: false, size: 1, rax: regs[0], rdx: regs[2], divisor: regs[3] });
+});
+test('IDIV r8: negative AX, negative remainder', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(1, true),
+    { signed: true, size: 1, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: regs[2], divisor: 7n });
+});
+test('DIV r16 / IDIV r16: CWD form and bad-high-half bail', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(2, false),
+    { signed: false, size: 2, rax: (regs[0] & ~0xFFFFn) | 1000n, rdx: regs[2] & ~0xFFFFn, divisor: 7n });
+  await checkDiv(encDiv(2, true),
+    { signed: true, size: 2, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: (regs[2] & ~0xFFFFn) | 0xFFFFn, divisor: 7n });
+  await checkDiv(encDiv(2, true),
+    { signed: true, size: 2, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: (regs[2] & ~0xFFFFn) | 5n, divisor: 7n });
+});
+test('DIV bail mid-block: earlier ops stand, RIP/execCount at the DIV', async () => {
+  const regs = baseRegs();
+  regs[0] = 100n; regs[2] = 9n; regs[3] = 7n; // EDX=9 -> the DIV bails
+  const code = [0x83, 0xC0, 0x01, 0xF7, 0xF3]; // add eax,1 ; div ebx
+  const out = await runAlu(code, regs, 0x202);
+  assert.equal(out.execCount, 1, 'only the ADD executed');
+  assert.equal(out.ripOut, DIV_RIP + 3n, 'RIP at the DIV');
+  assert.equal(out.regs[0], 101n, 'ADD result stands (zero-extended)');
+  assert.equal(out.regs[2], 9n, 'RDX untouched');
+});
+test('DIV/IDIV differential fuzz (register forms)', async () => {
+  const rng = mulberry32(0xD17D);
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+  for (let i = 0; i < 160; i++) {
+    const size = pick([1, 2, 4, 8]);
+    const signed = rng() < 0.5;
+    const bits = size * 8;
+    const m = (1n << BigInt(bits)) - 1n;
+    const lo = BigInt(Math.floor(rng() * 0x100000000)) & m;
+    // Bias the high half toward the extension shapes real code produces.
+    const hiShape = rng();
+    const hi = hiShape < 0.4 ? 0n : hiShape < 0.7 ? m
+      : BigInt(Math.floor(rng() * 0x100000000)) & m;
+    const divisor = rng() < 0.12 ? 0n : BigInt(Math.floor(rng() * 0x100000000)) & m;
+    const rax = (0xA5A5A5A5A5A5A5A5n & ~m) | lo;
+    const rdx = (0x3C3C3C3C3C3C3C3Cn & ~m) | hi;
+    try {
+      await checkDiv(encDiv(size, signed), { signed, size, rax, rdx, divisor },
+        pick([0x202, 0x8D7, 0x0]));
+    } catch (e) {
+      e.message = `fuzzDiv i=${i} size=${size} signed=${signed} rax=${rax.toString(16)} rdx=${rdx.toString(16)} divisor=${divisor.toString(16)}: ${e.message}`;
       throw e;
     }
   }

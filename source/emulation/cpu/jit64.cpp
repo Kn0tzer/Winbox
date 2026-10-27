@@ -73,7 +73,7 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "01 ADD r/m,r",      0x01, 0x00, J64_ALU_RM_R },    // 20 (1.2%)
     { "63 MOVSXD",         0x63, 0x00, J64_MOVX },        // 21 (1.3% doom.exe; sub 4)
     { "88 MOV r/m8,r8",    0x88, 0x00, J64_MOV_RM_R },    // 22 (0.83% doom.exe; 8A same row)
-    { "F7 GRP3",           0xF7, 0x00, J64_GRP3 },        // 23 (0.32% F7 + 0.22% F6 doom.exe; /0 TEST /2 NOT /3 NEG /4 MUL; DIV/IDIV stay interpreted)
+    { "F7 GRP3",           0xF7, 0x00, J64_GRP3 },        // 23 (0.32% F7 + 0.22% F6 doom.exe; /0 TEST /2 NOT /3 NEG /4 MUL; /6 DIV /7 IDIV jitted with a pre-divide guard bail to the interpreter for #DE and non-plain 128/64 dividends)
     { "98 CBW/CWDE/CDQE",  0x98, 0x00, J64_CBW },         // 24 (0.31% doom.exe)
     { "D1 SHIFT/ROT r/m,1", 0xD1, 0x00, J64_SHIFT_IMM },    // 25 (0.25% doom.exe; D0 8-bit + C1-mem also newly jitted)
     { "D3 SHIFT/ROT r/m,CL", 0xD3, 0x00, J64_SHIFT_CL },   // 29 (0.035% doom.exe; D2 8-bit form also jitted)
@@ -630,12 +630,14 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
     }
     // F6/F7 group 3. /5 (IMUL r/m, one-operand) keeps the proven
     // J64_IMUL_1OP path. /0 TEST r/m,imm, /2 NOT, /3 NEG, /4 MUL r/m
-    // (unsigned) decode as J64_GRP3 with sub = the ModRM reg field.
-    // /1 is an invalid encoding; /6 /7 DIV/IDIV stay unknown (fallback):
-    // their #DE path delivers a host SIGFPE with exact register state
-    // and may redirect RIP to a handler, which the straight-line wasm
-    // block model cannot represent (no mid-block bail; tryWasmExec does
-    // not catch traps). The interpreter implements them exactly.
+    // (unsigned) and /6 DIV, /7 IDIV decode as J64_GRP3 with sub = the
+    // ModRM reg field. /1 is an invalid encoding. DIV/IDIV are emitted
+    // with a pre-divide guard: any case the interpreter would treat
+    // specially (divisor zero -> #DE with exact state and a possibly
+    // RIP-redirecting handler, or a 128/64 form whose high dividend half
+    // is not the plain extension the fast path divides) bails out of the
+    // block BEFORE the op with the exact RIP and executed count, so the
+    // interpreter re-executes the divide itself; see emitDivGen.
     // F6 is the 8-bit form (0x66 ignored, like the interpreter);
     // F7 uses the operand size.
     if (op == 0xF6 || op == 0xF7) {
@@ -650,7 +652,7 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             out.regField = rf; out.rmIndex = ri; out.isMem = hm;
             return true;
         }
-        if (sub != 0 && sub != 2 && sub != 3 && sub != 4) return false;
+        if (sub != 0 && sub != 2 && sub != 3 && sub != 4 && sub != 6 && sub != 7) return false;
         U8 grpsize = (op == 0xF6) ? 1 : size;
         out.kind = J64_GRP3;
         out.sub = sub;
@@ -920,13 +922,16 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     case J64_GRP3:
-        // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL. The decoder
-        // only produces these four sub-ops (/1 invalid, /5 is
-        // J64_IMUL_1OP, /6 /7 DIV/IDIV never decode here); re-check
-        // defensively. F6 is always 8-bit (0x66 ignored, matching the
-        // interpreter); F7 takes 2/4/8.
+        // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL, /6 DIV,
+        // /7 IDIV. The decoder only produces these sub-ops (/1 invalid,
+        // /5 is J64_IMUL_1OP); re-check defensively. F6 is always
+        // 8-bit (0x66 ignored, matching the interpreter); F7 takes
+        // 2/4/8. DIV/IDIV are fast via emitDivGen's pre-divide guard
+        // bail (divisor zero and non-plain high dividend halves return
+        // to the interpreter before the op executes).
         if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
-        if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return;
+        if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4 &&
+            op.sub != 6 && op.sub != 7) return;
         op.plan = JIT64_FAST;
         return;
     case J64_CMOV:
@@ -1373,8 +1378,9 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_GRP3:
             // NOT/NEG r/m (sub 2/3) store to guest memory via the
-            // imported helper; TEST (sub 0) and MUL (sub 4) never do
-            // (MUL writes RAX/RDX, which are wasm locals).
+            // imported helper; TEST (sub 0), MUL (sub 4) and DIV/IDIV
+            // (sub 6/7) never do (they write RAX/RDX, wasm locals, or
+            // only read the r/m operand).
             if (op.isMem && (op.sub == 2 || op.sub == 3)) return true;
             break;
         case J64_PUSH:

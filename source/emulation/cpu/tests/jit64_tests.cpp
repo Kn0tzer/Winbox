@@ -938,11 +938,29 @@ static void testGrp3Emission() {
           "f6 mul al decode");
     // /5 keeps the proven IMUL path.
     CHECK(decodeOne({0xF7, 0xE8}, op) && op.kind == J64_IMUL_1OP, "f7 /5 kind=%d", op.kind);
-    // /1 invalid; /6 /7 DIV/IDIV stay unknown (interpreter-only).
+    // /1 invalid; /6 /7 DIV/IDIV decode as J64_GRP3 (guard-bail fast path).
     CHECK(!decodeOne({0xF7, 0xC8}, op), "f7 /1 decoded");
-    CHECK(!decodeOne({0xF7, 0xF0}, op), "f7 div decoded");
-    CHECK(!decodeOne({0xF7, 0xF8}, op), "f7 idiv decoded");
-    CHECK(!decodeOne({0xF6, 0xF0}, op), "f6 div decoded");
+    CHECK(decodeOne({0xF7, 0xF0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 6 && op.size == 4 && op.len == 2 &&
+          !op.isMem, "f7 div eax decode");
+    CHECK(decodeOne({0xF7, 0xF8}, op) &&
+          op.kind == J64_GRP3 && op.sub == 7 && op.size == 4 && op.len == 2,
+          "f7 idiv eax decode");
+    CHECK(decodeOne({0xF6, 0xF0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 6 && op.size == 1 && op.len == 2,
+          "f6 div al decode");
+    CHECK(decodeOne({0xF6, 0xFE}, op) &&
+          op.kind == J64_GRP3 && op.sub == 7 && op.size == 1 && op.len == 2,
+          "f6 idiv al decode");
+    CHECK(decodeOne({0x48, 0xF7, 0xF0}, op) &&
+          op.kind == J64_GRP3 && op.sub == 6 && op.size == 8 && op.len == 3,
+          "rex.w div rax decode");
+    CHECK(decodeOne({0x66, 0xF7, 0xF8}, op) &&
+          op.kind == J64_GRP3 && op.sub == 7 && op.size == 2 && op.len == 3,
+          "66 f7 idiv ax decode");
+    CHECK(decodeOne({0xF7, 0x30}, op) &&
+          op.kind == J64_GRP3 && op.sub == 6 && op.size == 4 && op.len == 2 &&
+          op.isMem, "f7 div [rax] decode");
     // TEST RIP-relative: the EA target includes the immediate length
     // (the interpreter adds immLen to effAddr for RIP-rel TEST).
     CHECK(decodeOne({0xF7, 0x05, 0x10, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12}, op) &&
@@ -958,6 +976,12 @@ static void testGrp3Emission() {
     CHECK(ng.plan == JIT64_FAST, "neg plan fallback");
     Jit64Op mu = dec(0x400000, {0x48, 0xF7, 0xE3});
     CHECK(mu.plan == JIT64_FAST, "mul plan fallback");
+    Jit64Op dv = dec(0x400000, {0xF7, 0xF3});
+    CHECK(dv.plan == JIT64_FAST, "div plan fallback");
+    Jit64Op id = dec(0x400000, {0x48, 0xF7, 0xFB});
+    CHECK(id.plan == JIT64_FAST, "idiv plan fallback");
+    Jit64Op d8 = dec(0x400000, {0xF6, 0xF6});
+    CHECK(d8.plan == JIT64_FAST, "div8 plan fallback");
     // Emission accept/reject.
     CHECK(emitOk({0xF7, 0xC0, 0x78, 0x56, 0x34, 0x12}), "test eax,imm32 rejected");
     CHECK(emitOk({0xF6, 0xC0, 0x7F}), "test al,imm8 rejected");
@@ -967,8 +991,14 @@ static void testGrp3Emission() {
     CHECK(emitOk({0x48, 0xF7, 0xE3}), "mul rbx rejected");
     CHECK(emitOk({0xF6, 0xE0}), "mul al rejected");
     CHECK(emitOk({0xF7, 0x05, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}), "test [rip] rejected");
-    CHECK(!emitOk({0xF7, 0xF3}), "div accepted");
-    CHECK(!emitOk({0xF7, 0xFB}), "idiv accepted");
+    CHECK(emitOk({0xF7, 0xF3}), "div ebx rejected");
+    CHECK(emitOk({0xF7, 0xFB}), "idiv ebx rejected");
+    CHECK(emitOk({0x48, 0xF7, 0xF0}), "div rax rejected");
+    CHECK(emitOk({0xF6, 0xF0}), "div al rejected");
+    CHECK(emitOk({0x66, 0xF7, 0xF8}), "idiv ax rejected");
+    CHECK(emitOk({0xF7, 0x30}), "div [rax] rejected");
+    // DIV mixed with ALU in one block: accepted (guard bail is mid-block).
+    CHECK(emitOk({0xF7, 0xF3, 0x48, 0x01, 0xC8}), "div+add block rejected");
     CHECK(!emitOk({0xF7, 0xC8}), "/1 accepted");
     CHECK(!emitOk({0xF0, 0xF7, 0xD0}), "lock not accepted");
     // GRP3 mixed with ALU in one block: accepted.

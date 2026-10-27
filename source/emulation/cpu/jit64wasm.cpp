@@ -649,7 +649,7 @@ bool jit64OpWritesMemory(const Jit64Op& op) {
         return op.isMem;
     case J64_ALU_RM_R:   // CMP (/7) writes no memory
         return op.isMem && op.sub != 7;
-    case J64_GRP3:       // TEST (/0), MUL (/4) write no memory
+    case J64_GRP3:       // TEST (/0), MUL (/4), DIV/IDIV (/6 /7) write no memory
         return op.isMem && (op.sub == 2 || op.sub == 3);
     case J64_SETCC:
         return op.isMem;
@@ -775,6 +775,188 @@ void emitLimitCheck(Bytes& body, U32 index) {
     body.push_back(0x0C); // br 1: leave the outer block, run the epilogue
     uleb(body, 1);
     body.push_back(0x0B); // end if
+}
+
+// DIV / IDIV (F6/F7 group 3, /6 unsigned and /7 signed). Mirrors the
+// interpreter (cpu64.cpp dsp for F6/F7) exactly:
+//   - the only fault it delivers is divide-by-zero (#DE at the DIV's
+//     RIP, possibly redirected by a guest handler);
+//   - wider-than-width intermediates silently truncate oversized
+//     quotients (e.g. the 16-bit form divides AX in 16 bits and stores
+//     the low quotient byte).
+// The emitted code computes only the cases that are exact in width-local
+// arithmetic and bails to the interpreter for the rest, BEFORE the op
+// executes: L_RIP already names this op (the per-op emitRipAfter
+// invariant) and execCount = index, the emitLimitCheck convention, so
+// the interpreter re-executes the divide with bit-exact state. Bail
+// cases: divisor == 0 (all sizes); for 16/32/64-bit forms, a high
+// dividend half that is not the zero (DIV) or sign (IDIV) extension of
+// the low half -- after CDQ/CQO or a zeroed high half, the form real
+// code uses, the fast path always applies; plus the single 64-bit
+// IDIV overflow (INT64_MIN / -1) that wasm div_s would trap on but the
+// interpreter's __int128 math truncates. The 8-bit form needs no high
+// bail: its 16-bit intermediate is computed and truncated exactly like
+// the interpreter's. Flags are never touched, matching the interpreter
+// (DIV/IDIV leave them unchanged here), and only RAX/RDX are written.
+void emitDivGen(Bytes& body, const Jit64Op& op, U32 index) {
+    const bool isSigned = op.sub == 7;
+    const U64 mask = widthMask(op.size);
+    // Consumes an i32 condition from the stack: on true, store the
+    // executed count (this op not included) and leave the outer block.
+    auto bailIf = [&]() {
+        body.push_back(0x04); // if (void)
+        uleb(body, 0x40);
+        local(body, 0x20, 0);
+        i32Const(body, index);
+        memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, execCount));
+        body.push_back(0x0C); // br 1: leave the outer block, run the epilogue
+        uleb(body, 1);
+        body.push_back(0x0B); // end if
+    };
+    // L_A = width-masked divisor (the same operand load emitGrp3Gen does;
+    // a faulting memory read behaves exactly like the other GRP3 forms).
+    if (op.isMem) {
+        emitEA(body, op);                 // L_T1 = effective address
+        emitMemRead(body, L_T1, op.size); // -> L_R (zero-extended)
+        local(body, 0x20, L_R);
+        i64Const(body, mask);
+        body.push_back(0x83); // i64.and
+        local(body, 0x21, L_A);
+    } else {
+        emitReadOperand(body, op, op.rmIndex, L_A);
+    }
+    // Divide by zero -> #DE in the interpreter at this RIP.
+    local(body, 0x20, L_A);
+    i64Const(body, 0);
+    body.push_back(0x51); // i64.eq
+    bailIf();
+
+    if (op.size == 1) {
+        // Dividend is AX; divide in 16 bits and truncate on store,
+        // exactly like the interpreter.
+        local(body, 0x20, 0 + 1); // RAX
+        i64Const(body, 0xFFFFULL);
+        body.push_back(0x83);
+        local(body, 0x21, L_B); // L_B = AX
+        if (isSigned) {
+            local(body, 0x20, L_B);
+            emitSext(body, 2); // (S16)AX
+            local(body, 0x21, L_B);
+            local(body, 0x20, L_A);
+            emitSext(body, 1); // (S8)divisor
+            local(body, 0x21, L_A);
+        }
+        local(body, 0x20, L_B);
+        local(body, 0x20, L_A);
+        body.push_back(isSigned ? 0x7F : 0x80); // div_s / div_u
+        local(body, 0x21, L_R);                 // quotient
+        local(body, 0x20, L_B);
+        local(body, 0x20, L_A);
+        body.push_back(isSigned ? 0x81 : 0x82); // rem_s / rem_u
+        i64Const(body, 0xFFULL);
+        body.push_back(0x83);
+        i64Const(body, 8);
+        body.push_back(0x86); // remainder << 8
+        local(body, 0x20, L_R);
+        i64Const(body, 0xFFULL);
+        body.push_back(0x83);
+        body.push_back(0x84); // | quotient byte
+        local(body, 0x21, L_R);
+        emitWriteWord(body, 0, L_R); // AX = rem:quot, upper RAX preserved
+        return;
+    }
+
+    if (op.size == 2 || op.size == 4) {
+        const U64 m = mask; // 0xFFFF or 0xFFFFFFFF
+        // L_T2 = high dividend half (DX / EDX), L_B = low half (AX / EAX).
+        local(body, 0x20, 2 + 1); // RDX
+        i64Const(body, m);
+        body.push_back(0x83);
+        local(body, 0x21, L_T2);
+        local(body, 0x20, 0 + 1); // RAX
+        i64Const(body, m);
+        body.push_back(0x83);
+        local(body, 0x21, L_B);
+        // Bail unless the high half is the plain extension of the low.
+        local(body, 0x20, L_T2);
+        if (isSigned) {
+            local(body, 0x20, L_B);
+            emitSext(body, (U8)op.size); // sign-extended low half
+            i64Const(body, op.size * 8);
+            body.push_back(0x87); // shr_s: all-ones or zero
+            i64Const(body, m);
+            body.push_back(0x83);
+        } else {
+            i64Const(body, 0);
+        }
+        body.push_back(0x52); // i64.ne
+        bailIf();
+        if (isSigned) {
+            local(body, 0x20, L_B);
+            emitSext(body, (U8)op.size);
+            local(body, 0x21, L_B);
+            local(body, 0x20, L_A);
+            emitSext(body, (U8)op.size);
+            local(body, 0x21, L_A);
+        }
+        local(body, 0x20, L_B);
+        local(body, 0x20, L_A);
+        body.push_back(isSigned ? 0x7F : 0x80);
+        local(body, 0x21, L_R); // quotient
+        local(body, 0x20, L_B);
+        local(body, 0x20, L_A);
+        body.push_back(isSigned ? 0x81 : 0x82);
+        local(body, 0x21, L_T2); // remainder
+        if (op.size == 2) {
+            emitWriteWord(body, 0, L_R);  // AX = quotient
+            emitWriteWord(body, 2, L_T2); // DX = remainder
+        } else {
+            // 32-bit results zero-extend into RAX/RDX (interpreter setU64).
+            local(body, 0x20, L_R);
+            i64Const(body, m);
+            body.push_back(0x83);
+            local(body, 0x21, 0 + 1); // RAX
+            local(body, 0x20, L_T2);
+            i64Const(body, m);
+            body.push_back(0x83);
+            local(body, 0x21, 2 + 1); // RDX
+        }
+        return;
+    }
+
+    // op.size == 8: bail unless RDX is 0 (DIV) or the sign extension of
+    // RAX (IDIV); the remaining divide is exact in i64.
+    local(body, 0x20, 2 + 1); // RDX
+    if (isSigned) {
+        local(body, 0x20, 0 + 1); // RAX
+        i64Const(body, 63);
+        body.push_back(0x87); // shr_s -> 0 or -1 (the sign, replicated)
+    } else {
+        i64Const(body, 0);
+    }
+    body.push_back(0x52); // i64.ne
+    bailIf();
+    if (isSigned) {
+        // INT64_MIN / -1: wasm div_s traps; the interpreter truncates.
+        local(body, 0x20, 0 + 1);
+        i64Const(body, 0x8000000000000000ULL);
+        body.push_back(0x51); // i64.eq
+        local(body, 0x20, L_A);
+        i64Const(body, 0xFFFFFFFFFFFFFFFFULL);
+        body.push_back(0x51); // i64.eq
+        body.push_back(0x71); // i32.and
+        bailIf();
+    }
+    local(body, 0x20, 0 + 1);
+    local(body, 0x20, L_A);
+    body.push_back(isSigned ? 0x7F : 0x80);
+    local(body, 0x21, L_R); // quotient
+    local(body, 0x20, 0 + 1);
+    local(body, 0x20, L_A);
+    body.push_back(isSigned ? 0x81 : 0x82);
+    local(body, 0x21, 2 + 1); // RDX = remainder
+    local(body, 0x20, L_R);
+    local(body, 0x21, 0 + 1); // RAX = quotient
 }
 
 // Emit one block terminator. `afterOff` is the instruction's end offset (the
@@ -1058,10 +1240,11 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             if (op.regField >= 16 || op.rmIndex >= 16) return false;
             break;
         case J64_GRP3:
-            // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL. The
-            // decoder only produces these four sub-ops; re-check
-            // defensively. rmIndex is 0xFF for memory forms.
-            if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4) return false;
+            // F6/F7 group 3: /0 TEST, /2 NOT, /3 NEG, /4 MUL, /6 DIV,
+            // /7 IDIV. The decoder only produces these sub-ops;
+            // re-check defensively. rmIndex is 0xFF for memory forms.
+            if (op.sub != 0 && op.sub != 2 && op.sub != 3 && op.sub != 4 &&
+                op.sub != 6 && op.sub != 7) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_CBW:
@@ -1322,9 +1505,16 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             break;
         }
         case J64_GRP3: {
-            // F6/F7 group 3: emitGrp3Gen returns 0xFF when it published
+            // F6/F7 group 3: DIV/IDIV (/6 /7) go to the hand-written
+            // emitDivGen (their guard bail needs the op index, which the
+            // generated emitter signature does not carry). Everything
+            // else: emitGrp3Gen returns 0xFF when it published
             // everything inline (TEST, MUL, memory forms, 8/16-bit
             // writebacks), else the destination GPR for L_R.
+            if (op.sub == 6 || op.sub == 7) {
+                emitDivGen(body, op, index);
+                break;
+            }
             U32 written = emitGrp3Gen(body, op);
             if (written != 0xFF) {
                 local(body, 0x20, L_R);

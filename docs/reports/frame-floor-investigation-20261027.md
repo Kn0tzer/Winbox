@@ -182,3 +182,210 @@ landed** rather than guessing.
   snippets were run from `/tmp/ff_analyze*.py` (not committed).
 - Captures: `test-results/framefloor/{doom-before,doom-ddraw3,
   portal-before2,snake-matrix-diag}/` in this worktree.
+
+---
+
+## Continuation — 2026-10-27 (frame-floor lane, second session)
+
+### Verdict up front
+
+The wineserver-timeout suspect is **acquitted by direct measurement**,
+and the floor's mechanism is convicted elsewhere: Doom's frame time is
+its own per-frame instruction cost at the throughput the x64 JIT
+actually delivers. The dominant fixable cause found: **any basic block
+containing a DIV or IDIV was rejected by the JIT wholesale and
+interpreted forever** — in the one healthy baseline run, ~49% of all
+block entries system-wide (43.6M of 88.6M) fell back to the
+interpreter. DIV/IDIV now have a JIT fast path whose bail cases
+re-enter the interpreter with bit-exact state. In a DIV-dense guest
+micro-probe the fix is worth **11.5×** (28,564 ms → 2,473 ms guest
+time) with bit-identical results across a 200K-iteration divide
+battery spanning all widths and signs. A before/after
+Doom histogram could **not** be collected on the day: after the
+baseline run, every windowed guest boot — on the shipped build as
+control, identically — failed to map within timeout under all-day box
+load 8–17 (see Rig health). The Doom claim is therefore mechanism +
+census + micro-probe proof, not a measured Doom fps change.
+
+### 1. Audit of the suspect (fc6818ec1, kepoll/KThread::pollCond)
+
+- `fc6818ec1` is semantically sound: the poll deadline is preserved
+  across spurious wakeups via `condStartWaitTime`; no path re-arms or
+  extends a guest timeout toward 500 ms.
+- Timeout primitives are exact: `wait_for` maps 1:1, the futex path
+  uses true deadlines, epoll passes the guest timeout through.
+- One deliberate 200 ms chunking exists (x64 signal re-checks in the
+  wait loop). It can only *shorten* individual waits and re-check; it
+  cannot stretch a 35 ms request to ~500 ms.
+- Wart (opposite sign, not the floor): `condStartWaitTime` is shared
+  between `internal_poll_impl` and `KThread::sleep` and is not reset
+  on the `-K_CONTINUE` path → early returns / busy-spin. This may
+  explain the wineserver's frequent `running` samples in thread dumps.
+  Not changed: no measurement ties it to a user-visible defect.
+
+### 2. The wait family, measured in-guest (clockprobe.exe)
+
+A purpose-built guest micro-probe (windowed process, guest QPC
+deltas): QPF = 10,000,000 (exact); Sleep(1) → 1–5 ms; Sleep(10) →
+10–13 ms; Sleep(35) → 35–38 ms; MsgWaitForMultipleObjects(35) →
+35–41 ms; MsgWait(100) → 101–103 ms. A 200M-iteration spin took QPC
+69,873 ms vs host 70,082 ms — **no clock dilation**; execution is
+simply slow. Every wait Doom's loop can block on is granted at the
+requested granularity. (Guest console printfs block the caller
+50–250 ms each — a proxy-cost curiosity on a path Doom does not use.)
+
+### 3. Elimination rounds
+
+- **Audio**: a full `-nosound` Doom run still quantizes frame bursts
+  at the same ~650 ms (loaded) intervals and 1×/2×/3× multiples. The
+  WINMM wait seen in dumps is the game pacing itself, not the cause.
+- **Loop scaffolding**: guest benches of Doom's exact loop shape —
+  message pump + Sleep(1) — run at 32.3 fps guest time; pump-only
+  35.1; pump + Sleep(1) + StretchDIBits(640×400) 31.4; pump + DIB
+  34.8. Everything around the game code sustains the 35-tic cap.
+- Thread dumps in steady state agree: Doom's main thread cycles
+  pump ↔ WINMM wait ↔ running with `doom.exe` frames on its stack;
+  the wineserver when blocked waits `epoll_wait` with a 16 ms timeout
+  (never ~500 ms). (Dumps remain usable only as short bursts: every
+  THREAD_DUMPS run eventually froze the guest — the dump ccall runs
+  on the runtime main thread and deadlocks against a guest thread
+  holding a lock across a proxied call. Reported as a rig defect.)
+
+### 4. Throughput evidence (doom-stats2, shipped build c01fdb666)
+
+- METRICS windows during steady play: `instructionsRetired` grows
+  only ~1.75–1.95M per 500 ms window (~3.4–3.7M inst/s system-wide).
+- JIT counters (cumulative): blocksEntered 88.6M, fallbacks 43.6M
+  (**49%**), blocksEmitted 6,540, ~4.0 instructions per block entry.
+- Reject census (`rejectTop`, distinct blocks by first failing op):
+  FF 363, 8B 162, 89 131, then an SSE cluster (0F 6F 87, 0F 10 54,
+  0F EF 54, 0F 28 51, 0F 11 46, 0F 6E 40, 0F 29 20 ≈ 352), 0F 05
+  (SYSCALL) 47, F7 15. Counts are per distinct block, not
+  entry-weighted; the fallback ratio is the entry-weighted figure.
+
+### 5. Mechanism (code)
+
+`CPU64::tryWasmExec` rejects a whole block (≤24 ops) if **one** op's
+plan is not JIT64_FAST, negative-cached by page generation; rejected
+RIPs are interpreted forever (`insnsFallback` counts those entries).
+DIV/IDIV (F6/F7 group 3, /6 and /7) never decoded at all — the
+decoder's stated reason was that #DE delivery "cannot be represented"
+in the straight-line wasm block model. That claim is wrong in this
+codebase: the emitter already bails mid-block with exact state —
+`emitRipAfter` keeps L_RIP at the next op after every instruction,
+and `emitStoreGenCheck`/`emitLimitCheck` store a partial `execCount`
+and branch to the epilogue. The kCovered table in `jit64.cpp`
+recorded Doom's measured instruction mix all along (F7 0.32% +
+F6 0.22% of instructions; "/6 DIV /7 IDIV stay interpreted") — each
+such instruction poisoned its entire block (~24 ops) back to the
+interpreter.
+
+Interpreter semantics pinned from `cpu64.cpp` (the JIT mirrors them
+exactly): the **only** fault is divisor == 0 (#DE at the DIV's RIP);
+quotient overflow is **not** checked for sizes 2/4/8 — results are
+computed in wider C types and truncated (size-1 IDIV also truncates);
+flags are never written.
+
+### 6. The fix (this lane's commit)
+
+- `jit64.cpp`: decoder and classifier admit F6/F7 /6 /7 as
+  J64_GRP3/JIT64_FAST; kCovered and store-classification comments
+  updated (DIV/IDIV write no memory — the existing predicates were
+  already correct for them).
+- `jit64wasm.cpp`: the emission validator admits /6 /7; the GRP3
+  emit case routes them to a new hand-written `emitDivGen` (the
+  generated table emitter has no op-index parameter, which the bail
+  needs). Guards, evaluated before any state changes: divisor == 0
+  bails (all sizes); for 16/32/64-bit forms, a high dividend half
+  that is not the zero (DIV) or sign (IDIV) extension of the low
+  half bails — the shape real code produces via CWD/CDQ/CQO or a
+  zeroed high half always takes the fast path; 64-bit
+  INT64_MIN / −1 bails (wasm `div_s` would trap; the interpreter's
+  `__int128` math truncates). The 8-bit form needs no high-half
+  bail: its 16-bit intermediate is computed and truncated exactly
+  like the interpreter's. A bail stores `execCount = <op index>`
+  and branches to the epilogue with L_RIP already at the DIV — the
+  `emitLimitCheck` convention — so the interpreter re-executes the
+  divide with bit-exact state, including exact #DE delivery.
+
+### 7. Verification
+
+- Native JIT unit gate (`jit64_tests`): **650 passed, 0 failed**.
+  Sabotage check: reverting the decoder gate turns exactly the 20
+  new DIV checks red (630 passed / 20 failed) — the guard bites.
+- Emitted-module execution gate (`jit64_wasm_tests.mjs`, full
+  file): **280 passed, 0 failed**, including a new DIV/IDIV section:
+  targeted cases per width/sign, divide-by-zero and bad-high-half
+  bails, a mid-block bail (earlier ops stand, RIP/execCount at the
+  DIV), and a 160-case differential fuzz against a JS reference
+  model that mirrors the interpreter. The byte-identical generated-
+  emitter gate passes (compared=0, skipped=31304, failures=0) and
+  the table generator reports in sync. The fuzz caught one real
+  bug during development: the 64-bit sign guard used
+  `shl 63`/`shr_s 63` (keeps only bit 0, so the expected high half
+  was always 0); corrected to a lone `shr_s 63`.
+- Native suite: `make -C project/linux test -j2` exits 0; the
+  `__TEST` binary reported **641 tests OK, 0 FAIL** before ending
+  inside its final crash-path test without printing a summary (the
+  suite's designed crash test produces the trailing fault output).
+- In-guest differential (`tools/guest-fixtures/divprobe.c`, new):
+  checksum over a 200K-iteration battery (all widths, signed and
+  unsigned, register forms) is **identical** with the JIT on the fixed build
+  and with the interpreter: 16129164002239702816. The DIV-dense
+  timing loop: **2,473 ms (JIT, fixed build) vs 28,564 ms
+  (interpreter)** guest QPC — 11.5×, sink value identical.
+- Portal smoke on the fixed build (ff-dist5 = this lane's dist):
+  mapped at 152.6 s, **pageErrors 0**, 60 presents and 98 rendered
+  frames in the record window, 0 pipeline failures (absolute fps
+  is load-dominated — load 13.7 at end — and is not claimed).
+- JS unit suite (`web/tests/suite/runner.mjs --unit`): **297
+  passed, 0 failed**. This branch's suite has 297 tests; the
+  integ-config baseline quoted for the merge tree is 299/0 — the
+  delta is branch state, and there are no failures on either.
+- Build: `BW64_BUILD_TARGET=wasm64-mt-jit tools/bw64-build.sh` →
+  "Browser export verified" (wasm sha256 0263df64…). Note the
+  branch's older build script does not fail loudly when
+  `tools/browser/build.mjs` fails (it printed BUILD COMPLETE over a
+  staging error twice); the verify-dist line is the only
+  trustworthy signal. First build attempt also used the default
+  non-JIT target and produced an interpreter-only runtime
+  (`engine:"interp"` in the stats JSON is the tell).
+
+### 8. Not collected, and what remains for the next lane
+
+- **Doom before/after present-interval histograms and Snake fps on
+  the fixed build**: not collected. After doom-stats2, windowed
+  boots failed to map all afternoon on both builds (fixed:
+  doom-after1/2/3; shipped control: doom-control3 — LAUNCH FAILED,
+  302 console lines, same shape). Snake via demo-matrix hit the
+  same wall (jit0 and jit1 attempts, not-mapped). One attempt at a
+  time in a quiet window, first and alone, is the known-good
+  recipe; re-run `ff-stats-probe` (Doom) when the box is quiet to
+  get the after histogram and the post-fix census — F7 should be
+  gone from `rejectTop` and the fallback share should drop.
+- Residual reject leaders for follow-up, in census order: FF
+  group-5 blocks (363 — attribution is per first-op vs failing-op,
+  unverified; needs per-RIP reject logging to convict), the SSE
+  cluster (~352 distinct blocks across MOVDQA/MOVUPS/PXOR/MOVAPS/
+  MOVD forms), 0F 05 SYSCALL stubs (47; interpreter-only by
+  design, cheap per entry but hot on wineserver paths), and x87
+  (interpreter-only by design).
+- The `condStartWaitTime` sharing wart (§1) and the boot-wedge
+  family (§3) remain open, both unrelated to this fix.
+- No known-gaps register row applied: JIT opcode coverage is
+  tracked in-code by the kCovered table in `jit64.cpp`, which this
+  fix updates in place.
+
+### Files (continuation)
+
+- Fix: `source/emulation/cpu/jit64.cpp`,
+  `source/emulation/cpu/jit64wasm.cpp`; guards:
+  `source/emulation/cpu/tests/jit64_tests.cpp`,
+  `source/emulation/cpu/tests/jit64_wasm_tests.mjs`.
+- Micro-probe: `tools/guest-fixtures/divprobe.c` (companion to
+  jitbench64.c; build with `x86_64-w64-mingw32-gcc -O2`).
+- Captures: `test-results/framefloor/{doom-stats2,doom-control3,
+  div-on2,div-off2,portal-after1}/` in this worktree. Session
+  scratch (ff-* probe variants, scratch dists) was removed; the
+  worktree `dist/` is this lane's own build (it was a symlink to
+  the integ dist at handoff — restored after verification).
