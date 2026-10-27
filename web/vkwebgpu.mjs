@@ -201,7 +201,7 @@ export function v2TextureSampleType(textureType, elementType) {
   if (textureType.startsWith('texture_depth')) return 'depth';
   return elementType === 'i32' ? 'sint' : elementType === 'u32' ? 'uint' : 'float';
 }
-export function v2SamplerDescriptor(s) {
+export function v2SamplerDescriptor(s, comparison) {
   const filtersLinear = s.mag === 'linear' && s.min === 'linear' && s.mipmap === 'linear';
   const lodMinClamp = Math.max(0, Number.isFinite(s.minLod) ? s.minLod : 0);
   const lodMaxClamp = Math.max(lodMinClamp, Number.isFinite(s.maxLod) ? s.maxLod : 32);
@@ -211,7 +211,21 @@ export function v2SamplerDescriptor(s) {
     lodMinClamp, lodMaxClamp,
     maxAnisotropy: s.anisotropyEnable && filtersLinear ? Math.max(1, Math.min(16, Math.round(s.maxAnisotropy) || 1)) : 1,
   };
-  if (s.compareEnable) descriptor.compare = DEPTH_OP[s.compareOp] || 'always';
+  // The comparison-ness of a GPUSampler is a property of the SHADER SLOT
+  // it is bound into, not of the guest sampler record alone. DXVK encodes
+  // D3D11 comparison differently from WebGPU: compareEnable follows only
+  // the sampler state comparison-FILTER bit, while compareOp always
+  // carries the D3D11 ComparisonFunc, and the Dref sampling instructions
+  // the guest shader executes key off ComparisonFunc whether or not the
+  // filter bit is set. Vulkan tolerates a Dref op with a compareEnable=0
+  // sampler; WebGPU hard-rejects a non-comparison GPUSampler in a
+  // sampler_comparison slot (and the mirror image). So when the caller
+  // states the slot kind, materialize accordingly: comparison slots always
+  // get a compare function (the record ComparisonFunc, 'always' when the
+  // record carries no usable op), filtering slots never get one. Default
+  // (no slot stated) keeps the record-faithful behavior.
+  const wantCompare = comparison === undefined ? !!s.compareEnable : !!comparison;
+  if (wantCompare) descriptor.compare = DEPTH_OP[s.compareOp] || 'always';
   // WebGPU has no mipLodBias field, so this Vulkan value is retained in the record and ignored here.
   // WebGPU has no borderColor field; CLAMP_TO_BORDER was mapped to clamp-to-edge by the decoder.
   return descriptor;
@@ -1599,13 +1613,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return b;
   }
 
-  function gpuSamplerFor(sampHex, s) {
+  function gpuSamplerFor(sampHex, s, comparison = !!s.compareEnable) {
     // Persistent cache: samplers are defined by parameters, never change.
-    let sm = persistSampCache.get(sampHex);
+    // One guest sampler record can legitimately materialize as TWO
+    // GPUSamplers (comparison and filtering variants - see
+    // v2SamplerDescriptor); the cache key carries the variant so the two
+    // never alias.
+    const key = sampHex + (comparison ? ':cmp' : ':flt');
+    let sm = persistSampCache.get(key);
     if (sm) { persistStats.sampHits++; return sm; }
-    sm = device.createSampler(v2SamplerDescriptor(s));
-    persistSampCache.set(sampHex, sm);
-    F.sampCache.set(sampHex, sm);
+    sm = device.createSampler(v2SamplerDescriptor(s, comparison));
+    persistSampCache.set(key, sm);
+    F.sampCache.set(key, sm);
     return sm;
   }
 
@@ -2041,7 +2060,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       } else if (t === 'sampler' || t === 'sampler_comparison') {
         const sHex = samplerIdForDecl(sets, group, d);
         const has = sHex && F.samplers.get(sHex);
-        parts.push('s' + d.binding + ':' + (has ? sHex : 'default'));
+        parts.push('s' + d.binding + ':' + (has ? sHex + (t === 'sampler_comparison' ? ':c' : ':f') : 'default'));
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
         const isStorage = d.addr.startsWith('storage');
         const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
@@ -2157,7 +2176,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       } else if (t === 'sampler' || t === 'sampler_comparison') {
         const sHex = samplerIdForDecl(sets, group, d);
         const s = sHex && F.samplers.get(sHex);
-        entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s) : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
+        entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s, t === 'sampler_comparison') : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
         const isStorage = d.addr.startsWith('storage');
         const mk = k => {

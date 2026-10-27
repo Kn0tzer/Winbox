@@ -63,14 +63,20 @@ test('destroyed shader modules remain available through live Vulkan pipelines', 
 // The capability whitelist: capabilities the page tier verifiably translates
 // must NOT route to vk64Unsupported. Each whitelisted cap is pinned twice —
 // its nullptr case in vk64SpirvCapabilityName and its exemption in the audit
-// loop — so removing either half turns this test red.
+// loop — so removing either half turns this test red. Caps 2 (Geometry)
+// and 35 (SampleRateShading) joined on 2026-10-26: 35 is translation-
+// served (naga translates the SampleId read), and 2 is governed by the
+// geometry-stage disposition — meta fragment modules are translation-
+// served via spirvfix R11 (conversion cases below), true geometry
+// stages are recorded and their draws governed at submit; see
+// vk-gs-passthrough.test.mjs for those pins.
 test('page-tier-translated capabilities are whitelisted in the audit', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   const exempt = [...audit.matchAll(/c != (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-  assert.deepEqual(exempt, [0, 1, 32, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
-    'the audit loop exemption set is exactly {Matrix, Shader, ShaderNonUniform, ClipDistance, Sampled1D, ImageQuery, DerivativeControl, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT}');
-  for (const cap of [32, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5345, 5379]) {
+  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
+    'the audit loop exemption set is exactly {Matrix, Shader, Geometry, ShaderNonUniform, ClipDistance, Sampled1D, SampleRateShading, ImageQuery, DerivativeControl, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT}');
+  for (const cap of [2, 32, 35, 43, 50, 51, 4464, 4465, 4466, 4467, 4468, 5345, 5379]) {
     assert.ok(table.includes(`case ${cap}: return nullptr;`),
       `cap ${cap} must be a nullptr (non-rejecting) case in vk64SpirvCapabilityName`);
   }
@@ -108,6 +114,12 @@ test('whitelisted-capability modules convert through spirvfix + naga', () => {
     'testdata/spirv/p9-cull-unused.vert.spv',   // cap 33 declared, unused
     'testdata/spirv/p10-drawparams-unused.vert.spv', // cap 4427 declared, unused
     'testdata/spirv/dxvk-live/tropics-dxbc.vert.spv', // caps 4465 + 5345 (DXBC vertex shader, real capture)
+    'testdata/spirv/dxvk-live/dxvk-meta-copy-color-1d.frag.spv', // caps 2, 43 (DXVK meta copy, build-header extraction)
+    'testdata/spirv/dxvk-live/dxvk-meta-copy-color-2d.frag.spv', // cap 2
+    'testdata/spirv/dxvk-live/dxvk-meta-copy-color-ms.frag.spv', // caps 2, 35
+    'testdata/spirv/dxvk-live/dxvk-meta-blit-2d.frag.spv',       // cap 2
+    'testdata/spirv/dxvk-live/dxvk-meta-resolve-f.frag.spv',     // cap 2
+    'testdata/spirv/dxvk-live/dxvk-fullscreen.vert.spv',         // vertex stage of the same meta pipelines
   ];
   for (const rel of cases) {
     const bytes = new Uint8Array(readFileSync(new URL(`../../../../${rel}`, import.meta.url)));

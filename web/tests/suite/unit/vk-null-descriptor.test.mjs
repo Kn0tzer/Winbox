@@ -136,6 +136,6 @@ test('null buffer descriptors reach the zero-buffer serve; null image views reac
 });
 
 test('null sampler-only binding takes the deliberate default-sampler substitution', () => {
-  assert.match(entries, /resource: s \? gpuSamplerFor\(sHex, s\) : device\.createSampler\(/,
+  assert.match(entries, /resource: s \? gpuSamplerFor\(sHex, s, t === 'sampler_comparison'\) : device\.createSampler\(/,
     'a missing/null sampler binding substitutes the default sampler (DXVK never emits a null sampler: it substitutes a dummy handle)');
 });
