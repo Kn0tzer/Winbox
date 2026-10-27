@@ -23,12 +23,19 @@ function body(source, header) {
 
 test('unsupported and unknown SPIR-V capabilities reject before publishing a shader module', () => {
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
-  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image', 'spirv-input-attachment', 'spirv-storage-buffer-write']) {
+  for (const token of ['spirv-malformed', 'spirv-capability:', 'spirv-capability-unknown:', 'spirv-compute-entry', 'spirv-storage-image-write', 'spirv-input-attachment', 'spirv-storage-buffer-write']) {
     assert.ok(audit.includes(token), `${token} must be logged`);
   }
   assert.match(audit, /vk64Unsupported\(\("spirv-capability:"/);
   assert.match(audit, /VK_ERROR_INVALID_SHADER_NV/);
   assert.match(audit, /w\[i \+ 3\] == 6\) inputAttachment = true/);
+  // Typed-UAV reads (Typed-UAV-Load lane): storage-image modules pass the
+  // audit when they only READ; the write form keeps a named rejection, and
+  // capabilities 55/56 are used-conditionally exempt exactly like 33/4427.
+  assert.match(audit, /\(c == 55 \|\| c == 56\) && !storageImageWrite\) continue/);
+  assert.match(audit, /if \(storageImageWrite\) \{ vk64Unsupported\("spirv-storage-image-write"/);
+  assert.match(bridge, /case 55: return "StorageImageReadWithoutFormat"/);
+  assert.match(bridge, /case 56: return "StorageImageWriteWithoutFormat"/);
   assert.match(audit, /input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT/);
   assert.match(audit, /return unsupported \? VK_ERROR_FEATURE_NOT_PRESENT : VK_SUCCESS/);
   const handlers = [...bridge.matchAll(/case VK64_fn_vkCreateShaderModule: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);

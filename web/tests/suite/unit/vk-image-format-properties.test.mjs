@@ -30,9 +30,16 @@ test('image properties advertise only supported formats and valid sample counts'
   for (const flags of [features, features2])
     assert.doesNotMatch(flags, /VK_FORMAT_FEATURE_(?:BLIT_SRC|BLIT_DST|SAMPLED_IMAGE_FILTER_LINEAR)_BIT/,
       'blit and linear-filter blit paths must remain unadvertised until replay supports them');
-  for (const flags of [features, features2])
-    assert.doesNotMatch(flags, /VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT/,
-      'storage-image descriptors must not be used while storage-image format features are absent');
+  // Typed-UAV reads (typed-uav lane, 2026-10-26): STORAGE_IMAGE is granted
+  // for exactly the v2StorageLoadServable formats in both walkers, and
+  // flags2 additionally carries the read-without-format bit -- together
+  // these are what vkd3d turns into D3D12 UAV_TYPED_LOAD. The grant must
+  // stay conditioned on the servable predicate: an unconditional grant
+  // would advertise typed UAV loads the page tier cannot bind.
+  assert.match(features, /if \(v2StorageLoadServable\(format\)\) flags \|= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT/,
+    'legacy walker grants STORAGE_IMAGE for the servable set');
+  assert.match(features2, /if \(v2StorageLoadServable\(format\)\)\s+flags \|= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT \| kV2StorageReadWithoutFormatBit/,
+    'flags2 walker grants STORAGE_IMAGE + READ_WITHOUT_FORMAT for the servable set');
 
   const props = body(bridge, 'void fillImageFormatProps(');
   assert.match(props, /VkExtent3D\{8192, 8192, 2048\}/);

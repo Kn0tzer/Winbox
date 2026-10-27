@@ -2018,7 +2018,132 @@ export function uniformBlocksToStorage(mod, log) {
   return true;
 }
 
-export function applySpirvFix(bytes, { specOverrides } = {}) {
+
+// R14 "storage-image-format": vkd3d typed-UAV codegen (enabled by the
+// bridge's STORAGE_READ_WITHOUT_FORMAT format bits) emits storage images
+// with Image Format Unknown plus OpCapability StorageImageReadWithoutFormat
+// (55). Naga rejects BOTH the capability ("UnsupportedCapability") and an
+// Unknown storage format ("InvalidStorageImageWithoutFormat") -- the format
+// is a property of the bound VIEW, which the shader cannot know. The page
+// tier therefore passes the formats of the views actually bound for this
+// draw in options.storageFormats, a "set:binding=spvFormat;..." signature,
+// and this rule writes the format into the OpTypeImage before translation.
+// The component kind of the injected format must match the image type's
+// sampled scalar kind (f/i/u); any mismatch or unbound variable leaves the
+// type Unknown and naga fails loudly -- a wrong guess would silently read
+// reinterpreted texels. When no Unknown storage format remains, the 55/56
+// capability declarations are stripped (naga cannot consume them either).
+// Byte-identical passthrough when the option is absent or nothing applies.
+const SPV_FORMAT_KIND = {
+  // SPIR-V ImageFormat values (spirv-as/dis + vendored naga agree; verified
+  // empirically per format name -- do not "fix" these from memory).
+  1: 'f', 2: 'f', 3: 'f', 4: 'f', 5: 'f', 6: 'f', 7: 'f', 9: 'f', 10: 'f', 12: 'f',
+  13: 'f', 14: 'f', 15: 'f', 16: 'f', 17: 'f', 18: 'f', 19: 'f', 20: 'f',
+  21: 'i', 22: 'i', 23: 'i', 24: 'i', 25: 'i', 26: 'i', 27: 'i', 28: 'i', 29: 'i', 41: 'i',
+  30: 'u', 31: 'u', 32: 'u', 33: 'u', 35: 'u', 36: 'u', 37: 'u', 38: 'u', 39: 'u', 40: 'u',
+};
+
+function scalarKindOf(byId, typeId) {
+  const t = byId.get(typeId);
+  if (!t) return null;
+  if (t.op === 21) return t.words[2] ? 'i' : 'u';        // OpTypeInt: width, signedness
+  if (t.op === 22) return 'f';                            // OpTypeFloat
+  if (t.op === 23) return scalarKindOf(byId, t.words[1]); // OpTypeVector: component type
+  return null;
+}
+
+function storageDecorations(mod) {
+  const decorations = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Decorate) continue;
+    const d = decorations.get(ins.words[0]) || {};
+    if (ins.words[1] === 34) d.set = ins.words[2];      // DescriptorSet
+    if (ins.words[1] === 33) d.binding = ins.words[2];  // Binding
+    decorations.set(ins.words[0], d);
+  }
+  return decorations;
+}
+
+// Reflect the storage-image variables of a module: one entry per OpVariable
+// whose type chain ends at an OpTypeImage with Sampled==2 (a storage image).
+// Used by the page tier to build the options.storageFormats signature from
+// the views bound for a draw. Returns null when the module does not parse.
+export function storageImageVars(bytes) {
+  let mod;
+  try { mod = parseSpirv(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)); } catch { return null; }
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const decorations = storageDecorations(mod);
+  const out = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const img = byId.get(ptr.words[2]);
+    if (!img || img.op !== Op.TypeImage || img.words[6] !== 2) continue;
+    const d = decorations.get(ins.resultId) || {};
+    out.push({ set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId });
+  }
+  return out;
+}
+
+function injectStorageImageFormats(mod, log, signature) {
+  if (!signature) return false;
+  const wanted = new Map();
+  for (const part of String(signature).split(';')) {
+    const m = /^(\d+):(\d+)=(\d+)$/.exec(part.trim());
+    if (m) wanted.set(m[1] + ':' + m[2], Number(m[3]));
+  }
+  if (!wanted.size) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const decorations = storageDecorations(mod);
+  const types = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.TypeImage || ins.words[6] !== 2) continue;
+    types.set(ins.resultId, { ins, vars: [] });
+  }
+  if (!types.size) return false;
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const t = types.get(ptr.words[2]);
+    if (!t) continue;
+    const d = decorations.get(ins.resultId) || {};
+    t.vars.push({ set: d.set ?? 0, binding: d.binding ?? 0 });
+  }
+  let changed = false;
+  for (const t of types.values()) {
+    if (t.ins.words[7] !== 0) continue; // already concrete
+    let fmt = null, ok = t.vars.length > 0;
+    for (const v of t.vars) {
+      const f = wanted.get(v.set + ':' + v.binding);
+      if (f == null || (fmt != null && f !== fmt)) { ok = false; break; }
+      fmt = f;
+    }
+    if (!ok || fmt == null) continue; // unresolved: stays Unknown, naga fails loudly
+    const kind = SPV_FORMAT_KIND[fmt];
+    const skind = scalarKindOf(byId, t.ins.words[1]);
+    if (!kind || kind !== skind) {
+      log.push(`spirvfix: left storage image type %${t.ins.resultId} Unknown (injected format kind ${kind} != sampled scalar kind ${skind})`);
+      continue;
+    }
+    t.ins.words[7] = fmt;
+    changed = true;
+    log.push(`spirvfix: injected storage image format ${fmt} into type %${t.ins.resultId} from the bound view`);
+  }
+  const anyUnknown = [...types.values()].some(t => t.ins.words[7] === 0);
+  if (!anyUnknown) {
+    const before = mod.insns.length;
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 55 || i.words[0] === 56)));
+    if (mod.insns.length !== before) {
+      changed = true;
+      log.push('spirvfix: stripped StorageImage{Read,Write}WithoutFormat capabilities (all storage formats concrete)');
+    }
+  }
+  return changed;
+}
+
+export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
   let mod;
@@ -2095,6 +2220,9 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   try {
     if (uniformBlocksToStorage(mod, log)) applied.push('uniform-block-to-storage');
   } catch (e) { log.push('R13 failed: ' + (e.message || e)); }
+  try {
+    if (injectStorageImageFormats(mod, log, storageFormats)) applied.push('storage-image-format');
+  } catch (e) { log.push('R14 failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -2103,4 +2231,4 @@ export function applySpirvFix(bytes, { specOverrides } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format'];

@@ -15,7 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applySpirvFix, parseSpirv, serializeSpirv, REWRITES } from '../../../../tools/spirvfix/spirvfix.mjs';
+import { applySpirvFix, parseSpirv, serializeSpirv, REWRITES, storageImageVars } from '../../../../tools/spirvfix/spirvfix.mjs';
 
 function buildModule(insns, bound = 100) {
   const header = { magic: 0x07230203, version: 0x00010600, generator: 0, bound, schema: 0 };
@@ -43,6 +43,7 @@ test('REWRITES exports every rule', () => {
     'flat-integer-varyings',
     'fragment-layer-to-zero',
     'uniform-block-to-storage',
+    'storage-image-format',
   ]);
 });
 
@@ -123,4 +124,58 @@ test('EDGE: serialize round-trip preserves instruction count', () => {
   const bytes = serializeSpirv(mod);
   const out = parseSpirv(bytes);
   assert.equal(out.insns.length, mod.insns.length, 'round-trip must preserve instructions');
+});
+
+// ---- R14: storage-image-format ----
+const storageModule = (extraVars = []) => buildModule([
+  cap(1), cap(55), cap(56),
+  { op: 22, words: [10, 32] },                    // OpTypeFloat %10
+  { op: 25, words: [11, 10, 1, 0, 0, 0, 2, 0] }, // OpTypeImage %11: 2D, Sampled==2 (storage), Format Unknown
+  { op: 32, words: [12, 0, 11] },                // OpTypePointer UniformConstant -> %11
+  { op: 59, words: [12, 13, 0] },                // OpVariable %13
+  decorate(13, 34, 0), decorate(13, 33, 2),      // set 0, binding 2
+  ...extraVars,
+]);
+const imageTypeOf = (bytes) => parseSpirv(bytes).insns.find(i => i.op === 25);
+const hasCap = (bytes, c) => parseSpirv(bytes).insns.some(i => i.op === 17 && i.words[0] === c);
+
+test('R14 BASIC: injects the bound view format and strips caps 55/56', () => {
+  const r = applySpirvFix(serializeSpirv(storageModule()), { storageFormats: '0:2=4' }); // 4 = Rgba8
+  assert.ok(r.applied.includes('storage-image-format'), 'R14 must fire');
+  assert.equal(imageTypeOf(r.bytes).words[7], 4, 'format word injected');
+  assert.ok(!hasCap(r.bytes, 55) && !hasCap(r.bytes, 56), 'without-format capabilities stripped');
+});
+
+test('R14 NEGATIVE: no signature leaves the module untouched', () => {
+  const r = applySpirvFix(serializeSpirv(storageModule()));
+  assert.ok(!r.applied.includes('storage-image-format'));
+  assert.equal(imageTypeOf(r.bytes).words[7], 0, 'format stays Unknown');
+  assert.ok(hasCap(r.bytes, 55), 'capability stays (naga fails loudly downstream)');
+});
+
+test('R14 NEGATIVE: component-kind mismatch is refused', () => {
+  const r = applySpirvFix(serializeSpirv(storageModule()), { storageFormats: '0:2=33' }); // 33 = R32ui into a float image
+  assert.ok(!r.applied.includes('storage-image-format'));
+  assert.equal(imageTypeOf(r.bytes).words[7], 0);
+});
+
+test('R14 NEGATIVE: unbound binding is refused', () => {
+  const r = applySpirvFix(serializeSpirv(storageModule()), { storageFormats: '0:3=4' });
+  assert.ok(!r.applied.includes('storage-image-format'));
+  assert.equal(imageTypeOf(r.bytes).words[7], 0);
+});
+
+test('R14 NEGATIVE: variables of one type disagreeing on format are refused', () => {
+  const mod = storageModule([
+    { op: 59, words: [12, 14, 0] },               // second OpVariable %14 of the same image type
+    decorate(14, 34, 0), decorate(14, 33, 3),     // set 0, binding 3
+  ]);
+  const r = applySpirvFix(serializeSpirv(mod), { storageFormats: '0:2=4;0:3=15' }); // Rgba8 vs R8: conflict
+  assert.ok(!r.applied.includes('storage-image-format'));
+  assert.equal(imageTypeOf(r.bytes).words[7], 0);
+});
+
+test('R14 reflection: storageImageVars reports set/binding/format/kind', () => {
+  const vars = storageImageVars(serializeSpirv(storageModule()));
+  assert.deepEqual(vars, [{ set: 0, binding: 2, dim: 1, format: 0, kind: 'f', typeId: 11 }]);
 });

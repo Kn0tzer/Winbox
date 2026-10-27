@@ -448,7 +448,10 @@ unimplemented (vkd3d tolerates the refusal today), and one
 1. Descriptor-addressing research lane: determine whether vkd3d can be
    steered to its descriptor-indexing interface by feature/extension
    advertisement alone; in parallel, design the tier's binding-array
-   expansion for heap-indexed shader accesses.
+   expansion for heap-indexed shader accesses. Section 4.17 PROVES
+   this item gates even the simplest typed-UAV execution (vkd3d emits
+   cap 5347 for every descriptor-using shader; no config opt-out), not
+   just full games - it is the D3D12 campaign's critical path.
 2. V2 compute record + tier compute dispatch (unlocks D3D12 compute,
    UAV clears, execute-indirect).
 3. DONE (lane 2, section 4.15): godot-squash `--rendering-driver d3d12`
@@ -473,9 +476,20 @@ unimplemented (vkd3d tolerates the refusal today), and one
    shader-model sweep and stops at the next capability check, Typed
    UAV Load Additional Formats (a D3D12_OPTIONS format question —
    follow-on lane); shader compilation (DXIL) and descriptor
-   addressing (cap 5347, item 1) still wait behind it.
+   addressing (cap 5347, item 1) still wait behind it. FOLLOW-ON DONE
+   (section 4.17): Typed UAV Load Additional Formats is now granted
+   (guest A/B: flag FALSE -> TRUE, servable sweep 15/18 -> 18/18);
+   actual typed-UAV execution is blocked by item 1's cap-5347 wall,
+   proven at the vendored-source level.
 6. Present-less chunk drain so offscreen probes (tri12) verify pixels,
    not just API success.
+8. OPEN (found by the 4.17 lane): bisect the guest-winevulkan-path
+   regression on the 4.17 dist - tri12draw dies on a winevulkan
+   loader_thunks assert during swapchain init and Godot's DXGI factory
+   creation fails through DXVK (VK_KHR_surface reported unsupported),
+   while the direct-ICD probes (tri12, uav12) work on the same dist
+   and the guest archives are byte-identical to the reference tar.
+   Clean HEAD-code dist vs 4.17 dist A/B is the first step; see 4.17.
 
 ## 4.14 Real program: godot-squash --rendering-driver d3d12 (2026-10-26, post-commit runs)
 
@@ -788,3 +802,141 @@ shader MODEL — SM 6.0 translation for shaders that do not use native
   disposition text was corrected to the current code: the extension
   string and transformFeedbackQueries are advertised for vkd3d's device
   gate, all stream-out bits/limits stay off).
+
+
+## 4.17 Typed-UAV-Load lane: Typed UAV Load Additional Formats granted; execution proven blocked by the cap-5347 descriptor wall; a winevulkan-path regression found (2026-10-27)
+
+The follow-on lane from 4.16 item 7, verified end to end on lane-vkd3d
+(dist built 2026-10-26T23:34:45Z, wasm sha 0461611f4486167b...; JS unit
+suite 287 passed / 8 failed, the same 8 pre-existing failures as the
+c3dc7f43a baseline - zero new).
+
+### The capability and the grant
+
+Godot's stop was D3D12_OPTIONS TypedUAVLoadAdditionalFormats. vkd3d
+derives it per format: for each of its 18 additional formats
+(d3d12_device_determine_additional_typed_uav_support) the format's
+VkFormatProperties2 feature flags (carried in the flags2 chain word)
+must include VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT plus
+VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT (bit 0x80000000) -
+the latter is what says a shader may load the UAV without declaring
+the format (DXIL typed loads). The bridge advertised storage-image for
+only part of the set and READ_WITHOUT_FORMAT for none, so the answer
+was FALSE with 15 of 18 formats unservable.
+
+The grant, all layers traced and each one load-bearing:
+
+- Bridge (source/vulkan/vk64bridge.cpp): a 30-format servable set
+  (every format the page tier's texture-format tables can bind as a
+  storage texture, incl. 17 integer formats added to those tables)
+  receives STORAGE_IMAGE + STORAGE_READ_WITHOUT_FORMAT in the
+  optimal/linear/buffer arms of BOTH format-properties walkers (64-bit
+  and 32-bit property paths);
+  fillCoreFeatures.shaderStorageImageReadWithoutFormat = VK_TRUE
+  (line 4420). WRITE without format stays FALSE - the tier cannot
+  serve storage writes (no GPU->guest readback), and the audit still
+  rejects any module that writes a storage image, now under its own
+  token spirv-storage-image-write (vk64bridge.cpp:626); read-only
+  storage modules pass the audit, and capabilities 55/56
+  (StorageImageRead/WriteWithoutFormat declarations) are exempt when
+  the module does not write.
+- spirvfix R14 (storage-image-format): a DXIL typed-load module
+  declares its storage image type with ImageFormat Unknown; R14
+  injects the bound view's concrete format from the module's binding
+  map, fail-closed and kind-checked (a non-2D view or an unsampled
+  kind rejects rather than guessing).
+- Page tier (web/vkwebgpu.mjs, web/vk-protocol.mjs): the create-view
+  record now carries the image's storage format (V2_STORAGE_FORMAT,
+  vk-protocol.mjs:373); storage bindings create real texture views
+  with STORAGE_BINDING usage instead of falling back to sampled
+  views, so a typed-load bind is servable at draw time, not just
+  advertised at query time.
+
+### Guest A/B (probe tools/vkd3d/probe/uav12.c, new)
+
+BEFORE (runs dxvk-uav-before{,2,3,4}, HEAD code):
+TypedUAVLoadAdditionalFormats = FALSE; 15 of 18 sweep formats
+UAV_TYPED_LOAD=NO; all pipeline creations fail; RESULT 1.
+AFTER (run dxvk-uav-after, dist above): flag = TRUE; all 18 sweep
+formats UAV_TYPED_LOAD=YES (Support2 bit 0x40 on every case). The 18,
+as Vulkan formats: 100, 98, 99, 109, 107, 108, 97, 95, 96, 37, 41,
+42, 76, 74, 75, 9, 13, 14 - pinned by unit test
+vk-storage-format-mirror.test.mjs (D3D12 additional set == bridge
+servable set).
+
+### Execution: two gates, the second is the campaign's wall
+
+Phase 3 of the probe executes typed loads for 6 format classes
+(R8G8B8A8_UNORM, R32G32B32A32_FLOAT, R16G16B16A16_FLOAT, R16_FLOAT,
+R32_UINT, R8_UINT) with per-texel readback checks. RESULT is still 1:
+execution does not complete. Two distinct gates were isolated:
+
+1. Probe-side (FIXED): vkd3d-proton silently rejects (E_INVALIDARG,
+   no warning even at VKD3D_DEBUG=warn) any graphics PSO whose vertex
+   shader's input signature declares only SV_VertexID. Wine's
+   in-guest D3DCompile is exonerated (the blobs parse as well-formed
+   DXBC). The probe now uses a pass-through VS with declared
+   POSITION/COLOR inputs, a real vertex buffer, and a matching input
+   layout; with that, all six cases advance to gate 2.
+2. The wall: a graphics PSO whose root signature carries a UAV
+   descriptor table fails creation with E_FAIL, and the console shows
+   exactly one bridge rejection per case immediately before it:
+   spirv-capability-unknown:5347 (VK_ERROR_FEATURE_NOT_PRESENT) in
+   vkCreateShaderModule. Vendored-source mechanism:
+   vkd3d_bindless_state_get_bindless_flags
+   (tools/vkd3d/src/libs/vkd3d/state.c) sets
+   VKD3D_RAW_VA_ROOT_DESCRIPTOR_SRV_UAV unconditionally - EVERY
+   descriptor-using D3D12 shader is compiled to SPIR-V declaring
+   capability 5347 (PhysicalStorageBufferAddresses) - and
+   config_flag_decl.h offers no opt-out flag. The bridge's rejection
+   is honest (bufferDeviceAddress is VK_FALSE; WebGPU has no
+   equivalent). Shaders under an empty root signature (tri12draw's)
+   never declare it, which is why first light worked while no
+   descriptor-carrying PSO ever has in this stack. Conclusion: item 1
+   of section 6 (descriptor addressing) gates even the simplest
+   typed-UAV load, not just real games; the flag grant above is real
+   and necessary, and execution waits on that research.
+
+### Godot and first light: a regression on this dist, not isolated
+
+demo-matrix godot-squash JIT=0 on this dist (run
+godot-squash-jit0-20261027T014448): the console contains ZERO
+occurrences of the Typed UAV Load Additional Formats stop - that gate
+is passed. But driver init stopped EARLIER than the HEAD-era runs:
+the DXGI factory creation goes through the prefix's DXVK dxgi.dll,
+whose Vulkan instance creation reports "Required Vulkan extension
+VK_KHR_surface not supported", and Godot returns ERR_CANT_CREATE at
+_create_dxgi_factory. The HEAD-era runs reached vkd3d device
+creation on the same guest archives: wine64.zip on this dist is
+entry-for-entry identical to the reference runtime tar (1257
+entries; bw64vulkan.dll, the vkd3d pair, winevulkan.dll, vulkan-1.dll
+all same sizes), prefix64.zip differs only by the staged probe exes,
+and the bridge's static instance-extension list still advertises
+VK_KHR_surface. The same dist also regresses first light: tri12draw
+now dies during dxgi_vk_swap_chain_init on a winevulkan assertion
+(loader_thunks.c:3097, !status) after back-buffer creation, where
+HEAD-era runs presented the 208,556 px triangle. Both failing paths
+traverse the guest winevulkan thunk layer; the direct-ICD probes
+(tri12, uav12) are unaffected on the same dist. Cause NOT isolated -
+it sits in this lane's runtime-code delta or its interaction with
+the thunk path. First light is therefore UNVERIFIED (regressed) on
+this dist, and a clean-dist A/B bisect is the campaign's top
+follow-up (section 6, item 8). This lane's commit proceeds on its own
+evidence: the capability grant is guest-verified by uav12, the unit
+suite shows zero new failures, and the register (below) records the
+execution block honestly.
+
+### Register
+
+docs/known-gaps/vulkan.md: 354 rows = 51 IMPLEMENTED / 71
+REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN. The storage-image module
+row is narrowed to writers (REJECTED-LOUDLY, spirv-storage-image-
+write); the two storage-image binding rows are re-dispositioned to
+the implemented read serve; one new row records this grant and its
+execution block. The implementation's insertions had drifted 68
+citations; all re-pinned mechanically (git-diff line mapping,
+exact-site duplicates re-pinned with their primaries): citation
+audit 0 DRIFT / 0 MISSING over 327 cited rows, checked coverage
+back at the HEAD baseline (the citations suite test fails only its
+pre-existing coverage-ceiling subtest, byte-identical message to
+pristine HEAD).

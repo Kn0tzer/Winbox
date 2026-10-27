@@ -4,6 +4,7 @@ import {
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
   V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, v2PresentIndexForImage, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE, v2Hex64,
   applyDynamicState, decodeV2Frame, parseV2Chunk, repackScaledVb,
+  V2_STORAGE_FORMAT,
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2TexelTextureFormat, V2_TEXEL_WRAP, v2TextureUploadBpp, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
@@ -67,6 +68,7 @@ import {
 // Exposed for the page tier (window.bwVkFrame is wired in web/runtime.html, the
 // 'vk' message branch in web/app.mjs): installVkPageTier() and createVkRenderer().
 import { toWGSL, warmPersistentShaders } from './shader.mjs';
+import { storageImageVars } from './spirvfix.mjs';
 import { persistentShaderCache } from './shader-cache.mjs';
 
 export const MAX_MANIFEST_BYTES = 8 * 1024 * 1024; // a frame's JSON + inline payloads
@@ -396,7 +398,7 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog, device
       // Specialization values are part of the cache key: the same SPIR-V
       // module with different spec constants produces different WGSL.
       const specKey = (options.specOverrides || []).map(e => e.constantID + ':' + Array.from(e.value).join(',')).join(';');
-      const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown') + ':spec:' + specKey;
+      const key = stage + ':' + mod.hash + ':' + mod.size + ':topology:' + (options.rasterTopology ?? 'unknown') + ':spec:' + specKey + ':storage:' + (options.storageFormats || '');
       if (wgsl.has(key)) { stats.hits++; return wgsl.get(key); }
       if (persistentEnabled) {
         const cached = await persistentShaderCache.get('spirv:' + key);
@@ -601,7 +603,7 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   if (!adapter) throw new Error('No WebGPU adapter');
   // The adapter's own feature set (not the v2 renderer's preference list) decides
   // whether genuine GPU timing is possible on this legacy path.
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
@@ -1136,8 +1138,8 @@ const V2_STENCIL_OPS = /** @type {Record<number,GPUStencilOperation>} */ ({0:'ke
 // included because the bridge enables textureCompressionBC; v2TextureFormat
 // still rejects it when the WebGPU adapter lacks texture-compression-bc.
 export const V2_SUPPORTED_TEXTURE_FORMATS = Object.freeze([
-  2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
-  91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+  2, 3, 5, 7, 8, 9, 10, 13, 14, 16, 17, 20, 21, 37, 38, 41, 42, 43, 44, 50, 64, 70, 74, 75, 76, 77, 81, 82, 83,
+  91, 95, 96, 97, 98, 99, 100, 101, 102, 103, 107, 108, 109, 122, 124, 125, 126, 129, 130,
   131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146,
 ]);
 export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
@@ -1241,7 +1243,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   if (!navigator.gpu) throw new Error('WebGPU is unavailable');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   // The bridge advertises Vulkan limits independently of the adapter (see
   // fillLimits in vk64bridge.cpp), so ask for everything this adapter has
@@ -1490,6 +1492,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const slices = dimension === '3d' ? d : layers;
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
     if (V2_COLOR_ATTACHMENT_FORMATS.includes(img.format)) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
+    if (V2_STORAGE_FORMAT[img.format]) usage |= GPUTextureUsage.STORAGE_BINDING; // typed UAV reads bind this texture as a storage texture
     const t = device.createTexture({
       size: [w, h, slices], format: fmt, dimension: textureDimension, mipLevelCount: mips, usage,
     });
@@ -1647,6 +1650,24 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return entry.tex;
   };
 
+  // Zero-filled stand-in for a VK_NULL_HANDLE storage image view: under the
+  // bridge-advertised nullDescriptor feature, typed reads from a null UAV are
+  // defined to return zero. The format follows the shader declaration so the
+  // sample type matches the bind-group layout entry. Persistent like
+  // blankTex: cached bind groups retain the view between frames.
+  const zeroStorageTexture = t => {
+    const fmt = /texture_storage_\w+<\s*([\w-]+)/.exec(t)?.[1] || 'rgba8unorm';
+    const key = '\0zero-storage-' + fmt;
+    let entry = persistTexCache.get(key);
+    if (!entry) {
+      const bpp = v2TextureUploadBpp(fmt) || 4;
+      const tex = device.createTexture({ size: [1, 1, 1], dimension: '2d', format: /** @type {GPUTextureFormat} */ (fmt), usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture: tex }, new Uint8Array(bpp), { bytesPerRow: bpp, rowsPerImage: 1 }, [1, 1, 1]);
+      entry = { tex }; persistTexCache.set(key, entry);
+    }
+    return entry.tex;
+  };
+
   /** @returns {GPUBindGroupLayoutEntry | null} */
   function layoutEntryFor(decl) {
     const vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
@@ -1666,7 +1687,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       return { binding: decl.binding, visibility: vis, buffer: { type: ro ? 'read-only-storage' : 'storage' } };
     }
     const sm = /texture_storage_\w+<\s*([\w-]+)\s*,\s*(\w+)/.exec(t);
-    if (sm) return { binding: decl.binding, visibility: vis, storageTexture: { access: sm[2].includes('write') ? 'write-only' : 'read-only', format: /** @type {GPUTextureFormat} */ (sm[1]), viewDimension: '2d' } };
+    if (sm) return { binding: decl.binding, visibility: vis, storageTexture: { access: sm[2] === 'read_write' ? 'read-write' : sm[2].includes('write') ? 'write-only' : 'read-only', format: /** @type {GPUTextureFormat} */ (sm[1]), viewDimension: '2d' } };
     return null;
   }
 
@@ -1684,10 +1705,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // with the border select; it is keyed on the resolved plan further down.
     // With no border sampler bound anywhere, the base path is unchanged.
     const borderPre = sets ? frameHasBorderSampler(sets) : false;
+    // Typed-UAV variant: a shader with storage-image variables translates
+    // differently per bound UAV format (spirvfix R14 injects the view's
+    // format), so -- like the border variant below -- the pipeline is keyed
+    // on the resolved formats and never shared across different ones.
+    const vsmPre = F.shaders.get(pipe.vsHash), fsmPre = F.shaders.get(pipe.fsHash);
+    const vsStorageSig = sets && vsmPre ? storageSignatureFor(vsmPre.code, sets) : '';
+    const fsStorageSig = sets && fsmPre ? storageSignatureFor(fsmPre.code, sets) : '';
     let effKey = key;
+    if (vsStorageSig || fsStorageSig) effKey = key + ':storage:vs[' + vsStorageSig + ']fs[' + fsStorageSig + ']';
     if (!borderPre) {
-      if (pipelines.has(key)) return pipelines.get(key);
-      if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+      if (pipelines.has(effKey)) return pipelines.get(effKey);
+      if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
     }
     // Fail closed and loud. WebGPU pipeline construction is asynchronous page
     // work that only starts after vkCreateGraphicsPipelines has already
@@ -1705,9 +1734,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     };
     const vsm = F.shaders.get(pipe.vsHash), fsm = F.shaders.get(pipe.fsHash);
     if (!vsm || !fsm) { noteUnsupported('missing-shader', 'pipeline shader module was not captured'); return fail('missing-shader'); }
-    let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.vsSpec });
+    let vsWgsl = await shaders.get('vertex', { hash: pipe.vsHash, size: vsm.code.length, code: vsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.vsSpec, ...(vsStorageSig ? { storageFormats: vsStorageSig } : {}) });
     if (unnegated) vsWgsl = stripNagaYNegation(vsWgsl);
-    let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec });
+    let fsWgsl = await shaders.get('fragment', { hash: pipe.fsHash, size: fsm.code.length, code: fsm.code }, { rasterTopology: pipe.topology, specOverrides: pipe.fsSpec, ...(fsStorageSig ? { storageFormats: fsStorageSig } : {}) });
     fsWgsl = rewriteResolvedDxvkPresent(pipe.fsHash, fsWgsl);
     fsWgsl = rewriteMultisampledTextures(fsWgsl);
     if (!passHasDepth) fsWgsl = stripNagaFragmentDepth(fsWgsl);
@@ -1749,15 +1778,15 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         return sHex ? F.samplers.get(sHex) || null : null;
       });
       if (plan.size) {
-        effKey = key + '|border:' + borderPlanSignature(plan);
+        effKey = effKey + '|border:' + borderPlanSignature(plan);
         if (pipelines.has(effKey)) return pipelines.get(effKey);
         if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
         vsR = { ...vsR, code: rewriteBorderSamplersWGSL(vsR.code, plan) };
         fsR = { ...fsR, code: rewriteBorderSamplersWGSL(fsR.code, plan) };
       } else {
         // A border sampler is bound, but this shader does not sample with it.
-        if (pipelines.has(key)) return pipelines.get(key);
-        if (pipelineFailures.has(key)) return { skip: pipelineFailures.get(key) };
+        if (pipelines.has(effKey)) return pipelines.get(effKey);
+        if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
       }
     }
     const byGroup = new Map();
@@ -1930,6 +1959,29 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return !!b && b.kind === 2 && b.type === 1 && b.range === '0000000000000000';
   }
 
+  // Typed-UAV (storage image) support: vkd3d's typed-UAV codegen declares
+  // storage images with an Unknown SPIR-V format -- the format is a property
+  // of the bound VIEW, not the shader. Resolve each storage variable's format
+  // from the descriptor bound for this draw and hand spirvfix R14 a
+  // "set:binding=spvFormat" signature to inject at translation time.
+  // Variables that cannot be resolved are omitted from the signature, which
+  // leaves their type Unknown and fails translation loudly (never a guess).
+  function storageSignatureFor(code, sets) {
+    const vars = storageImageVars(code);
+    if (!vars || !vars.length) return '';
+    const parts = [];
+    for (const v of vars) {
+      if (v.format !== 0) { parts.push(v.set + ':' + v.binding + '=' + v.format); continue; }
+      const set = sets?.get(v.set);
+      const b = set ? bindingForElement(set.bindings || [], v.binding, 0) : null;
+      const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
+      const img = imgHex && imageForView(b?.obj, imgHex);
+      const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
+      if (entry) parts.push(v.set + ':' + v.binding + '=' + entry.spv);
+    }
+    return parts.join(';');
+  }
+
   function samplerIdForDecl(sets, group, d) {
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
@@ -2076,7 +2128,16 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           parts.push('b' + d.binding + ':' + k + ':' + bufferKey(bufHex, bytes, usage, 0, preHash));
         }
       } else if (t.startsWith('texture_storage')) {
-        parts.push('x' + d.binding);
+        const n = Math.max(1, d.arrayCount || 1);
+        const dimension = wgslTextureViewDimension(t) || '2d';
+        const cube = dimension === 'cube' || dimension === 'cube-array';
+        for (let k = 0; k < n; k++) {
+          const b = bindingForElement(bindings, d.binding, k);
+          if (b && b.kind === 2 && b.obj === '0000000000000000') { parts.push('x' + d.binding + ':' + k + ':null'); continue; }
+          const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
+          const img = imgHex && imageForView(b?.obj, imgHex);
+          parts.push('x' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, cube, dimension).ck + viewRangeKey(sampledViewRange(b?.obj)) : 'blank'));
+        }
       }
     }
     return parts.join('|');
@@ -2214,8 +2275,27 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           entries.push({ binding: d.binding, resource: mk(0) });
         }
       } else if (t.startsWith('texture_storage')) {
-        noteUnsupported('storage-texture-binding-blank', d.type); // DXVK's D3D9 path rarely writes storage images
-        entries.push({ binding: d.binding, resource: blankTex().createView() });
+        const dimension = wgslTextureViewDimension(t) || '2d';
+        const cube = dimension === 'cube' || dimension === 'cube-array';
+        const views = [];
+        for (let k = 0; k < d.arrayCount; k++) {
+          const b = bindingForElement(bindings, d.binding, k);
+          // A zero view id is a guest VK_NULL_HANDLE UAV: under the
+          // bridge-advertised nullDescriptor feature, typed reads from it
+          // are defined to return zero -- serve a zero texture of the
+          // declared format. A NONZERO view that cannot be resolved is a
+          // genuinely lost binding and drops loudly below.
+          if (b && b.kind === 2 && b.obj === '0000000000000000') { views.push(zeroStorageTexture(t).createView()); continue; }
+          const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
+          const img = imgHex && imageForView(b?.obj, imgHex);
+          if (!img) { noteDrop('bind-group-storage-view-unresolved', b?.obj); return null; }
+          if (!V2_STORAGE_FORMAT[img.format]) { noteDrop('bind-group-storage-format-unserved', img.format); return null; }
+          const texture = gpuTextureFor(imgHex, img, cube, dimension);
+          if (!texture) { noteDrop('bind-group-storage-texture-unavailable', imgHex); return null; }
+          const viewRange = sampledViewRange(b?.obj);
+          views.push(texture.createView({ dimension, ...viewRangeDescriptor(viewRange, texture, dimension) }));
+        }
+        entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       }
     }
     return entries;

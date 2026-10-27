@@ -457,6 +457,11 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // capabilities DXVK declares unconditionally whose USED form the tier cannot
 // serve (33 CullDistance, 4427 DrawParameters) reject only when a matching
 // BuiltIn variable is present; their declared-but-unused form passes.
+// StorageImageReadWithoutFormat (55) is the mirror image: vkd3d typed-UAV
+// codegen declares it for READ access, which the tier serves (spirvfix R14
+// injects the bound view format; naga cannot consume Unknown formats or
+// the capability itself). It passes when the module does not WRITE a storage
+// image; writers reject below as "spirv-storage-image-write".
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE: samplerMirrorClampToEdge is advertised (a
@@ -498,6 +503,8 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 49: return "StorageImageExtendedFormats";
         case 50: return nullptr;             case 51: return nullptr; // ImageQuery, DerivativeControl: core; naga translates both
         case 52: return "InterpolationFunction";
+        case 55: return "StorageImageReadWithoutFormat";  // named: passes in the loop when the module does not write a storage image (spirvfix R14 injects the bound view format); the write form rejects
+        case 56: return "StorageImageWriteWithoutFormat"; // named: same used-conditioned pass as 55
         case 57: return "MultiViewport";
         case 4427: return "DrawParameters";   // named: the USED form rejects loudly; the unused form is exempted in the loop (spirvfix R5 strips it)
         case 4433: return "StorageBuffer16BitAccess";
@@ -543,6 +550,11 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     struct Var { U32 id, type, sc; };
     std::vector<Var> vars;
     bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
+    bool storageImageWrite = false, imageWriteOpcode = false;
+    std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
+    std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
+    std::unordered_map<U32, Var*> varById;
+    std::vector<U32> texelPtrImages;                 // OpImageTexelPointer image operands (load-resolved), typed after the scan
     bool unsupported = false;
     std::set<U32> caps;
     for (size_t i = 5; i < nw;) {
@@ -557,8 +569,15 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
             case 25:
                 if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
-                if (len >= 9 && w[i + 7] == 2) storageImage = true;                   // OpTypeImage, Sampled==2
+                if (len >= 9 && w[i + 7] == 2) { storageImage = true; storageImageTypes.insert(w[i + 1]); } // OpTypeImage, Sampled==2
                 break;
+            case 61: if (len >= 4) loadPtr[w[i + 2]] = w[i + 3]; break;              // OpLoad: result -> pointer
+            case 99: imageWriteOpcode = true; break;                                 // OpImageWrite (valid only on storage images)
+            case 60: if (len >= 4) {                                                 // OpImageTexelPointer: candidate write (stores/atomics go through texel pointers); typed after the scan when varById exists
+                U32 img = w[i + 3];
+                auto lp = loadPtr.find(img); if (lp != loadPtr.end()) img = lp->second;
+                texelPtrImages.push_back(img);
+            } break;
             case 59: if (len >= 4) vars.push_back({w[i + 2], w[i + 1], w[i + 3]}); break; // OpVariable
             case 71: if (len >= 3) {                                                   // OpDecorate
                 if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
@@ -570,6 +589,12 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         }
         i += len;
     }
+    for (Var& v : vars) varById[v.id] = &v;
+    for (U32 img : texelPtrImages) { // a texel pointer into a storage image is write-capable
+        auto vb = varById.find(img);
+        if (vb != varById.end()) { auto pt = ptrs.find(vb->second->type); if (pt != ptrs.end() && storageImageTypes.count(pt->second.pointee)) storageImageWrite = true; }
+    }
+    if (imageWriteOpcode && storageImage) storageImageWrite = true; // OpImageWrite cannot target a sampled image (spec), so its presence beside a storage image type is a write
     if (compute && !graphicsEntry) {
         // Compute-only module: the V2 protocol is render-only, so this
         // module is never translated by the page tier. It is accepted so
@@ -587,6 +612,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     for (U32 c : caps) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
+        if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
@@ -597,7 +623,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         }
     }
     if (compute) { vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
-    if (storageImage) { vk64Unsupported("spirv-storage-image", "storage images are not implemented; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    if (storageImageWrite) { vk64Unsupported("spirv-storage-image-write", "shader writes a storage image (OpImageWrite / storage texel pointer); the page tier binds storage textures for typed reads only; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     if (inputAttachment) { vk64Unsupported("spirv-input-attachment", "input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     for (const Var& v : vars) {
         auto pt = ptrs.find(v.type);
@@ -3047,8 +3073,8 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
 // BC format support and the Vulkan textureCompressionBC feature bit are gated
 // by the active WebGPU device's optional texture-compression-bc feature.
 static const U32 kV2SupportedTextureFormats[] = {
-    2, 3, 5, 7, 8, 9, 16, 37, 38, 41, 43, 44, 50, 64, 70, 76, 77, 83,
-    91, 97, 98, 99, 100, 103, 109, 122, 124, 125, 126, 129, 130,
+    2, 3, 5, 7, 8, 9, 10, 13, 14, 16, 17, 20, 21, 37, 38, 41, 42, 43, 44, 50, 64, 70, 74, 75, 76, 77, 81, 82, 83,
+    91, 95, 96, 97, 98, 99, 100, 101, 102, 103, 107, 108, 109, 122, 124, 125, 126, 129, 130,
     131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146
 };
 static const U32 kV2SupportedVertexFormats[] = {
@@ -3120,6 +3146,37 @@ static VkSampleCountFlags v2FormatSampleCounts(U32 format) {
         samples |= VK_SAMPLE_COUNT_4_BIT;
     return samples;
 }
+// Formats whose typed STORAGE-IMAGE READS the page tier serves end to end:
+// the bridge grants STORAGE_IMAGE (+ STORAGE_READ_WITHOUT_FORMAT in flags2,
+// which is what vkd3d turns into D3D12 UAV_TYPED_LOAD and hence the Godot
+// TypedUAVLoadAdditionalFormats check), spirvfix R14 injects the bound view
+// format into Unknown-format modules, and the page tier binds the real view
+// as a WebGPU storage texture. The set is exactly the VkFormats with a core
+// WGSL storage texture format of the same component kind -- pinned against
+// web/vk-protocol.mjs V2_STORAGE_FORMAT by vk-storage-format-mirror.test.
+// Deliberately absent: R16_UNORM / R16G16_UNORM (the tier materialises norm16
+// textures as rgba16float, so an r16unorm storage view would read converted
+// bytes) and B8G8R8A8 (no SPIR-V storage format). Storage WRITES stay
+// unserved: no STORAGE_WRITE_WITHOUT_FORMAT bit is granted and writing
+// modules reject at audit (spirv-storage-image-write).
+static bool v2StorageLoadServable(U32 format) {
+    switch (format) {
+        case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT:
+        case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM:
+        case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT:
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_R32G32B32A32_SFLOAT:
+            return true;
+    }
+    return false;
+}
 static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
     VkFormatFeatureFlags flags = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
@@ -3128,6 +3185,7 @@ static VkFormatFeatureFlags v2FormatFeatureFlags(U32 format) {
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (v2StorageLoadServable(format)) flags |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT; // typed UAV reads (see v2StorageLoadServable); the without-format half exists only in flags2
     return flags;
 }
 // UNIFORM texel buffer views: WebGPU has no texel buffers, so the page tier
@@ -3213,6 +3271,12 @@ static VkFormatFeatureFlags v2FormatBufferFeatureFlags(U32 format) {
     if (v2TexelBufferServable(format)) flags |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
     return flags;
 }
+// VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT (0x80000000, flags2
+// bit 31) has no legacy VkFormatFeatureFlagBits alias -- the without-format
+// bits exist only in the flags2 enum, which the generated guest headers
+// (vk64_guest.h / vk32_guest.h) do not carry -- so the value is spelled
+// here, taken from source/vulkan/vk/vulkan_core.h.
+static const VkFormatFeatureFlags2 kV2StorageReadWithoutFormatBit = (VkFormatFeatureFlags2)0x80000000ULL;
 static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     if (!v2FormatIsSupportedImage(format)) return 0;
     // These legacy aliases use the same bit values as VkFormatFeatureFlags2.
@@ -3222,6 +3286,8 @@ static VkFormatFeatureFlags2 v2FormatFeatureFlags2(U32 format) {
     if (v2FormatIsColorAttachment(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if (v2FormatIsBlendable(format)) flags |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
     if (v2FormatIsDepthStencil(format)) flags |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (v2StorageLoadServable(format))
+        flags |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | kV2StorageReadWithoutFormatBit; // vkd3d: STORAGE_IMAGE + READ_WITHOUT_FORMAT -> D3D12 UAV_TYPED_LOAD (TypedUAVLoadAdditionalFormats). STORAGE_IMAGE has the same bit value (0x2) in both enums.
     return flags;
 }
 static VkFormatFeatureFlags2 v2FormatBufferFeatureFlags2(U32 format) {
@@ -4327,8 +4393,8 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
     f->samplerAnisotropy = VK_TRUE;
     /* NOT advertised (nothing in the page tier implements them, and DXVK /
      * vkd3d degrade gracefully): shaderInt64, shaderFloat64,
-     * shaderStorageImageExtendedFormats, shaderStorageImage{Read,Write}WithoutFormat
-     * (storage images are bound blank), sparse*, wideLines, largePoints,
+     * shaderStorageImageExtendedFormats, shaderStorageImageWriteWithoutFormat
+     * (storage-image writes reject at module audit), sparse*, wideLines, largePoints,
      * alphaToOne, depthBounds, logicOp, pipelineStatisticsQuery. */
     /* Only end-to-end implemented features are reported true. Unsupported
      * features remain false so DXVK/vkd3d cannot select an invalid path. */
@@ -4351,6 +4417,7 @@ void fillCoreFeatures(VkPhysicalDeviceFeatures* f) {
      * SM 6.0 DXIL/DXBC translation for shaders that do not use native
      * 16-bit integer ops, which the tier serves end to end. */
     f->shaderInt16 = VK_TRUE;
+    f->shaderStorageImageReadWithoutFormat = VK_TRUE; /* typed storage-image reads served end to end for the v2StorageLoadServable formats (per-format bits in the format-properties walkers; spirvfix R14 format injection; page tier binds real views). The WRITE form stays FALSE below and writing modules reject at audit. */
     f->multiDrawIndirect = VK_TRUE;     /* vk64bridge expands draws into CMD_DRAW */
     f->drawIndirectFirstInstance = VK_TRUE; /* preserved in each expanded draw */
     f->depthBiasClamp = VK_TRUE;        /* replayed with WebGPU depthBiasClamp */
