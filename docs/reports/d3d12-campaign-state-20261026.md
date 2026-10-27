@@ -483,7 +483,7 @@ unimplemented (vkd3d tolerates the refusal today), and one
    proven at the vendored-source level.
 6. Present-less chunk drain so offscreen probes (tri12) verify pixels,
    not just API success.
-8. OPEN (found by the 4.17 lane): bisect the guest-winevulkan-path
+8. RESOLVED (see 4.18): bisect the guest-winevulkan-path
    regression on the 4.17 dist - tri12draw dies on a winevulkan
    loader_thunks assert during swapchain init and Godot's DXGI factory
    creation fails through DXVK (VK_KHR_surface reported unsupported),
@@ -940,3 +940,78 @@ audit 0 DRIFT / 0 MISSING over 327 cited rows, checked coverage
 back at the HEAD baseline (the citations suite test fails only its
 pre-existing coverage-ceiling subtest, byte-identical message to
 pristine HEAD).
+
+## 4.18 Winevulkan-path bisect: both 4.17 symptoms acquit the change set - one pre-existing system-placement gap, one intermittent guest driver-init flake (2026-10-27)
+
+Method: clean-dist A/B. Parent c3dc7f43a built fresh in this tree
+(its WASM is bit-identical to the SM6-era build, sha 2c19eb44, the
+same hash the HEAD-era Godot runs record); the c52f39d4e dist was
+rebuilt the same way. Page-tier subsets were swapped with
+--export-only rebuilds (all four page files; then vkwebgpu+spirvfix
+vs vk-protocol splits). Godot verdicts are per-run guest-console
+evidence (init_vulkan error count / vkd3d_create_vk_device count /
+bridge trap count) under WINEDEBUG=+vulkan (one run also +loaddll).
+
+Finding 1 - the tri12draw system-placement assert PRE-DATES the
+change set; it is not a regression. Disassembly of the dist's own
+guest winevulkan.dll places the loader_thunks.c:3097 assert site
+inside vkCreateWin32SurfaceKHR (unix call 0x130): the unix side
+returns a failing NTSTATUS before any bridge trap fires. The parent
+dist fails d3d12-system.mjs tri12draw with the identical assert
+(test-results/dxvk-bisect-system-parent3), and the c52 dist fails it
+too (dxvk-draw-final{,2}, dxvk-bisect-system-cur). The HEAD-era
+first-light evidence was always the UNSTAGED probe, which uploads
+bw64vulkan.dll as vulkan-1.dll and bypasses winevulkan entirely;
+the only system-placement runs at HEAD were tri12.exe, which is
+clear-only and never creates a surface or swapchain. The 4.17 lane's
+new prefix staging of tri12draw.exe was the first exercise of the
+system-placement swapchain path - it uncovered a gap it did not
+cause. On the unstaged path the c52 dist still presents the pinned
+first light exactly: 208,556 px, center [127,64,64]
+(test-results/dxvk-bisect-unstaged-cur). NEW FOLLOW-UP (not a
+regression): the system-placement vkCreateWin32SurfaceKHR unix call
+fails deterministically in the probe session; demo-path games create
+DXVK swapchains through the same guest call successfully in the
+launcher context, so the defect may be specific to the probe
+session's window setup. Root cause not isolated in this lane.
+
+Finding 2 - the Godot DXGI/init_vulkan failure is INTERMITTENT and
+acquits the change set. Run table (demo-matrix, godot-squash, JIT=0):
+c52f39d4e dist: FAIL, FAIL, PASS. Parent c3dc7f43a dist: PASS
+(stops at the Typed-UAV line, the 4.16-era wall). c52 WASM + parent
+page tier: PASS. c52 WASM + parent vkwebgpu/spirvfix + c52
+vk-protocol: FAIL, then PASS on the identical dist. In passing runs
+on the c52 dist Godot clears DXGI factory creation and D3D12 device
+creation (vkd3d_create_vk_device x14), passes the SM 6.0 sweep and
+the Typed-UAV gate, and stops at the cap-5347 wall in
+vkCreateShaderModule (test-results/demo-matrix/godot-bisect-c52again:
+829 bridge traps, stage mapped) - exactly the section 6 item 1 wall.
+In failing runs the guest prints err:vulkan:init_vulkan "Failed to
+load Wine graphics driver supporting Vulkan", the Godot process
+never connects to the X server (2 XWire accepts in the run vs 5 in
+passing runs) and never issues a bridge trap; the bridge's instance
+and physical-device answers are fully static, so neither the page
+tier nor the bridge can gate them. Failing runs cluster on slow
+guest boots under heavy multi-lane box load (the guest reached its
+Vulkan stage at 285-570 s vs 136-215 s in passing runs). No file in
+c3dc7f43a -> c52f39d4e is convicted. Section 4.17's regression
+framing is corrected: first light was UNVERIFIED on that dist (now
+verified, above), and the Godot stop was a flake sighting, not a
+delta effect. The Typed-UAV grant stands as committed: on the final
+rebuilt c52 dist, uav12 reports TypedUAVLoadAdditionalFormats =
+TRUE with the sweep 18/18 YES (test-results/dxvk-bisect-uav-final),
+and the JS suite is 288 passed / 7 failed against the 287/8
+baseline in this tree's config - the same pre-existing failure set,
+zero new (packaging-prefix, v2-draw-contract,
+vk-image-dirty-generation, vk-register-citations,
+vk-sampler-rejection, vk32-properties, vulkan-sampler).
+
+Remaining suspect for the flake: guest winex11.drv unix-side init
+(driver registration / libvulkan dlopen) racing session startup
+under load. It matches the BDA lane's system-probe desktop timeout
+(their dxvk-uav-route0-explorerfail run). Next evidence would be
+emulator-loader instrumentation on the winex11.drv.so init path
+plus repetition statistics on a quiet box. It is not a blocker for
+the D3D12 stack and no register disposition changes.
+
+Section 6 item 8: CLOSED by this section (no code change).
