@@ -479,7 +479,7 @@ extern "C" int runX64RunElf(const char* path) {
                    (unsigned long long)jit->wasmEarlyExits,
                    (unsigned long long)jit->wasmLimitExits,
                    (unsigned long long)jit->emitTimeUs);
-            char stats[768];
+            char stats[8192];
             if (jit64StatsJson(jit, stats, sizeof(stats))) printf("BW64JITSTATS: %s\n", stats);
         }
     }

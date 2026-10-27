@@ -114,6 +114,21 @@ enum Jit64Kind : U8 {
                         // sub = 0(BT)/1(BTS)/2(BTR)/3(BTC). Bit = reg & (width-1).
                         // CF = selected bit. BTS/BTR/BTC modify the bit.
                         // Only CF touched. 0x66 selects 16-bit; REX.W 64-bit.
+    J64_SSE_MOV128 = 33,// 16-byte XMM move: sub = the 0F opcode byte
+                        // (0x10/0x11 MOVUPS, 0x28/0x29 MOVAPS, 0x6F MOVDQA/
+                        // MOVDQU load, 0x7F store). Even sub-opcodes load
+                        // xmm[regField] from r/m; odd ones store. size = 16.
+                        // The interpreter serves every form as the same
+                        // two-qword copy with NO alignment fault, and the
+                        // emitter mirrors that exactly. No flags touched.
+    J64_SSE_PXOR = 34,  // 66 0F EF PXOR xmm, xmm/m128: 128-bit XOR into
+                        // xmm[regField]; source in rmIndex (reg) or EA (mem).
+                        // size = 16. No flags touched.
+    J64_SSE_MOVD = 35,  // 66 0F 6E MOVD/MOVQ xmm, r/m (sub = 0: load low
+                        // qword/dword, zero the high qword) and 66 0F 7E
+                        // MOVD/MOVQ r/m, xmm (sub = 1: store the low
+                        // dword/qword; a register dest zero-extends on the
+                        // 32-bit form). size = 4 or 8 (REX.W). No flags.
     J64_UNKNOWN = 255
 };
 
@@ -144,7 +159,13 @@ struct Jit64Op {
     bool isMem = false; // ModRM names memory (vs register-direct)
     U64 imm = 0;        // finalized immediate (sign/mask applied at decode)
     S64 delta = 0;      // branch displacement (CALL/JMP/JCC)
-    U8 rep = 0;         // REP prefix: 0, 0xF2 or 0xF3 (J64_STRING only)
+    U8 rep = 0;         // REP prefix: 0, 0xF2 or 0xF3 (J64_STRING only;
+                        // also recorded for the SSE kinds, whose prefix
+                        // predicates the classifier re-checks from it)
+    bool osize66 = false; // a 0x66 prefix was present (SSE kinds: selects
+                        // the packed-integer forms MOVDQA/PXOR/MOVD; the
+                        // decoder's `size` cannot carry this once REX.W
+                        // makes the operand 64-bit)
     bool asize32 = false; // 0x67 address-size prefix (J64_STRING only)
     bool rexPresent = false; // any REX prefix byte (8-bit high-byte vs SPL/... rule)
     Jit64MemEA ea;        // effective address (valid only when isMem)
@@ -280,10 +301,17 @@ public:
     static constexpr U32 SLOTS = 8192;
     // True if `rip` is known-unemittable at generation `gen0`.
     bool rejected(U64 rip, U32 gen0) const;
+    // As rejected(), plus the rejecting opcode recorded by the add() below:
+    // opcodeKey is the one-byte opcode, or 0x100|op2 for the 0F map, or
+    // 0xFFFF when the rejection was not an opcode reject (emission or
+    // verification failure). failRip is the guest RIP of the rejecting
+    // instruction (the per-RIP reject attribution the census needs).
+    bool rejectedInfo(U64 rip, U32 gen0, U16& opcodeKey, U64& failRip) const;
     void add(U64 rip, U32 gen0);
+    void add(U64 rip, U32 gen0, U16 opcodeKey, U64 failRip);
     void clear();
 private:
-    struct Slot { U64 rip = 0; U32 gen0 = 0; };
+    struct Slot { U64 rip = 0; U32 gen0 = 0; U16 opcodeKey = 0xFFFF; U64 failRip = 0; };
     Slot m_slots[SLOTS];
     static U32 slotFor(U64 rip) { return (U32)((rip ^ (rip >> 7)) & (SLOTS - 1)); }
 };
@@ -364,6 +392,34 @@ struct Jit64State {
     U64 verifyRejected = 0; // compiled blocks rejected after a differential check
     std::atomic<U64> rejectOpcode[256]{}; // rejected one-byte opcode counts
     std::atomic<U64> reject0FOpcode[256]{}; // rejected 0F xx opcode counts
+    // Entry-weighted twins of the two arrays above: rejectOpcode counts a
+    // rejecting opcode once per block-compile attempt (roughly once per
+    // distinct block start), while these count EVERY block entry that fell
+    // back because of the opcode -- the compile-path reject plus every
+    // negative-cache hit attributed through Jit64NegativeCache::rejectedInfo.
+    // The gap between the two is the hotness of the rejected blocks.
+    std::atomic<U64> rejectEntryOpcode[256]{};
+    std::atomic<U64> rejectEntry0FOpcode[256]{};
+    // Per-RIP reject sites: the evidence table behind the entry counters.
+    // Deduped by failRip; bounded (later distinct sites are dropped, the
+    // opcode counters above still count them).
+    struct RejectSite {
+        U64 blockRip = 0;   // start RIP of the rejected block
+        U64 failRip = 0;    // RIP of the rejecting instruction
+        U64 entries = 0;    // block entries attributed to this site
+        U16 opcodeKey = 0xFFFF; // opcode byte, or 0x100|op2 for the 0F map
+        U8 byteCount = 0;   // valid bytes in `bytes` (0 on negative-cache hits)
+        U8 bytes[8]{};      // the rejecting instruction's first bytes
+    };
+    static constexpr U32 REJECT_SITE_SLOTS = 128;
+    RejectSite rejectSites[REJECT_SITE_SLOTS];
+    U32 rejectSiteCount = 0;
+    // Record `entries` more fallback block entries against the site at
+    // failRip (created on first sight). `bytes`/`byteCount` may be null/0
+    // (negative-cache hits carry no snapshot); an existing site keeps the
+    // bytes from its first compile-path record.
+    void recordRejectSite(U64 blockRip, U64 failRip, U16 opcodeKey,
+                          const U8* bytes, U32 byteCount, U64 entries);
     U32 wasmOwner = 0;      // worker/table id that owns wasmIndex values
     bool wasmOwnerSet = false;
     U32 genBaseAddr = 0;    // KMemory64::blockGenTableAddr() (wasm32 offset)

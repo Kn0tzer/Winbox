@@ -18,13 +18,14 @@ const mask64 = (1n << 64n) - 1n;
 const STATE = {
   rip: 128, rflags: 136, entered: 140, scratch: 144,
   genBase: 152, gen0: 156, gen1: 160, execCount: 164, limit: 168,
+  xmm: 176, // 16 registers as lo/hi u64 pairs, appended at struct end
 };
 
 // Stage the struct exactly like CPU64::execWasmBlock does: GPRs, RIP, RFLAGS,
 // the block's entry generations, the instruction budget and a zeroed
 // emitted-code entry counter.
 function initState(view, ptr, regs, rip, rflags, opts = {}) {
-  const { genBase = 0, gen0 = 0, gen1 = 0, limit = 0xFFFFFFFF, entered = 0, genTable = null } = opts;
+  const { genBase = 0, gen0 = 0, gen1 = 0, limit = 0xFFFFFFFF, entered = 0, genTable = null, xmm = null } = opts;
   regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
   view.setBigUint64(ptr + STATE.rip, rip, true);
   view.setUint32(ptr + STATE.rflags, rflags >>> 0, true);
@@ -35,6 +36,9 @@ function initState(view, ptr, regs, rip, rflags, opts = {}) {
   view.setUint32(ptr + STATE.gen1, gen1, true);
   view.setUint32(ptr + STATE.execCount, 0, true);
   view.setUint32(ptr + STATE.limit, limit, true);
+  // XMM staging (flat array of 32 u64: register r lo at 2r, hi at 2r+1);
+  // defaults to all-zero so non-SSE tests stay deterministic.
+  for (let i = 0; i < 32; i++) view.setBigUint64(ptr + STATE.xmm + i * 8, xmm ? (xmm[i] ?? 0n) : 0n, true);
   // Optional host-side page-generation table (the emitted module reads it at
   // genBase + slot*4; KMemory64::blockSlot hashes pages to those slots).
   if (genTable) for (const [slot, value] of genTable) view.setUint32(genBase + slot * 4, value >>> 0, true);
@@ -54,6 +58,7 @@ function readState(view, ptr) {
     // cache can produce them).
     entered: view.getUint32(ptr + STATE.entered, true),
     execCount: view.getUint32(ptr + STATE.execCount, true),
+    xmm: Array.from({ length: 32 }, (_, i) => view.getBigUint64(ptr + STATE.xmm + i * 8, true)),
   };
 }
 
@@ -130,8 +135,10 @@ test('C7 imm32 sign-extends for a 64-bit register destination', () => check(
 test('C7 imm32 zero-extends for a 32-bit register destination', () => check(
   [0x41, 0xC7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF], regs => { regs[8] = 0xFFFFFF80n; }));
 test('RIP advancement wraps modulo 64 bits', () => check(movabs(0, 1n), regs => { regs[0] = 1n; }, mask64 - 3n));
+// The bound is sizeof(Jit64WasmState) = 432 since the XMM staging area was
+// appended (176..431); the prologue reads the XMM pairs on every block.
 test('state at the end of imported memory stays in bounds', () => check(
-  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 172));
+  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 432));
 test('unaligned state pointer executes correctly', () => check(
   movabs(0, 9n), regs => { regs[0] = 9n; }, 0n, 513));
 test('out-of-bounds state traps before modifying any guest state', async () => {
@@ -3790,6 +3797,285 @@ test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
 }, 180000);
 
 // ---------------------------------------------------------------------------
+// SSE set: 16-byte XMM moves (MOVUPS/MOVUPD/MOVAPS/MOVAPD/MOVDQA/MOVDQU),
+// PXOR and MOVD/MOVQ (J64_SSE_MOV128 / J64_SSE_PXOR / J64_SSE_MOVD).
+//
+// Semantics transcribed from the interpreter's blocks in cpu64.cpp: every
+// 16-byte move is two independent qword accesses with NO alignment check
+// (MOVAPS/MOVDQA do not fault on misalignment there), PXOR is a plain
+// 128-bit XOR, a MOVD load zero-extends a 32-bit source and always zeroes
+// the high qword, and a 32-bit MOVD store to a register zero-extends the
+// destination. None of them touches RFLAGS. The model below applies the
+// same rules; the differential fuzz drives random op streams through
+// both the wasm module and the model.
+// ---------------------------------------------------------------------------
+
+const SSE_RIP = 0x12345678ABCDEFF0n;
+const SBX = 0x2000n; // scratch base held in RBX for SSE tests
+
+async function runSse(code, { regs, rflags = 0x202, memInit = new Map(), xmm = null, ptr = 512 } = {}) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  initState(view, ptr, regs, SSE_RIP, rflags, { xmm });
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
+  instance.exports.execute(ptr);
+  return { ...readState(view, ptr), guestMem };
+}
+
+// Flat 32-entry xmm init from { regIndex: [lo, hi] }.
+function xmmInit(pairs) {
+  const a = new Array(32).fill(0n);
+  for (const [r, [lo, hi]] of Object.entries(pairs)) { a[2 * Number(r)] = lo; a[2 * Number(r) + 1] = hi; }
+  return a;
+}
+const xmmReg = (out, r) => [out.xmm[2 * r], out.xmm[2 * r + 1]];
+const zeroRegs = () => new Array(16).fill(0n);
+
+test('SSE movdqa register form copies 128 bits and preserves flags', async () => {
+  const regs = zeroRegs();
+  const out = await runSse([0x66, 0x0F, 0x6F, 0xDD], { // movdqa xmm3, xmm5
+    regs, rflags: 0x8D5,
+    xmm: xmmInit({ 5: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+  });
+  assert.deepEqual(xmmReg(out, 3), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+  assert.deepEqual(xmmReg(out, 5), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+  assert.equal(out.rflags, 0x8D5, 'SSE moves must not touch RFLAGS');
+  expectEmitted(out, 1);
+});
+
+test('SSE 16-byte memory loads: movdqa aligned, movdqu unaligned', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 32 }, (_, i) => 0xA0 + i);
+  const out = await runSse([
+    0x66, 0x0F, 0x6F, 0x13,       // movdqa xmm2, [rbx]
+    0xF3, 0x0F, 0x6F, 0x63, 0x03, // movdqu xmm4, [rbx+3]
+  ], { regs, memInit: memBytes(SBX, bytes) });
+  const q = (arr, off) => arr.slice(off, off + 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 2), [q(bytes, 0), q(bytes, 8)]);
+  assert.deepEqual(xmmReg(out, 4), [q(bytes, 3), q(bytes, 11)]);
+  expectEmitted(out, 2);
+});
+
+test('SSE movups load, movaps store, movupd reload round-trip', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 16 }, (_, i) => i * 7 + 1);
+  const out = await runSse([
+    0x0F, 0x10, 0x03,             // movups xmm0, [rbx]
+    0x0F, 0x29, 0x43, 0x10,       // movaps [rbx+16], xmm0
+    0x66, 0x0F, 0x10, 0x4B, 0x10, // movupd xmm1, [rbx+16]
+  ], { regs, memInit: memBytes(SBX, bytes) });
+  const lo = bytes.slice(0, 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  const hi = bytes.slice(8, 16).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 1), [lo, hi]);
+  assert.equal(out.guestMem.read(SBX + 16n, 8), lo);
+  assert.equal(out.guestMem.read(SBX + 24n, 8), hi);
+  expectEmitted(out, 3);
+});
+
+test('SSE pxor: self-xor zeroes, memory form XORs both qwords', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const memInit = memBytes(SBX, [...little(0xFF00FF00FF00FF00n, 8), ...little(0x0F0F0F0F0F0F0F0Fn, 8)]);
+  const out = await runSse([
+    0x66, 0x0F, 0xEF, 0xD2, // pxor xmm2, xmm2
+    0x66, 0x0F, 0xEF, 0x23, // pxor xmm4, [rbx]
+  ], { regs, memInit, xmm: xmmInit({ 2: [9n, 9n], 4: [0xFF00FF00FF00FF00n, 0xF0F0F0F0F0F0F0F0n] }) });
+  assert.deepEqual(xmmReg(out, 2), [0n, 0n]);
+  assert.deepEqual(xmmReg(out, 4), [0n, 0xFFFFFFFFFFFFFFFFn]);
+  expectEmitted(out, 2);
+});
+
+test('SSE movd/movq GPR transfers zero-extend and clear the high qword', async () => {
+  const regs = zeroRegs();
+  regs[0] = 0xDEADBEEFCAFEBABEn; regs[3] = SBX; regs[1] = 0xFFFFFFFFFFFFFFFFn;
+  const out = await runSse([
+    0x66, 0x0F, 0x6E, 0xE8,       // movd xmm5, eax
+    0x66, 0x48, 0x0F, 0x6E, 0xF3, // movq xmm6, rbx
+    0x66, 0x0F, 0x7E, 0xE9,       // movd ecx, xmm5
+    0x66, 0x48, 0x0F, 0x7E, 0xF2, // movq rdx, xmm6
+  ], { regs, xmm: xmmInit({ 5: [0xAAAAAAAAAAAAAAAAn, 0xBBBBBBBBBBBBBBBBn] }) });
+  assert.deepEqual(xmmReg(out, 5), [0xCAFEBABEn, 0n], 'movd load zeroes high qword');
+  assert.deepEqual(xmmReg(out, 6), [SBX, 0n]);
+  assert.equal(out.regs[1], 0xCAFEBABEn, 'movd store zero-extends the GPR');
+  assert.equal(out.regs[2], SBX);
+  assert.equal(out.regs[0], 0xDEADBEEFCAFEBABEn, 'source GPR untouched');
+  expectEmitted(out, 4);
+});
+
+test('SSE movd memory forms: dword load, qword store', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0x66, 0x0F, 0x6E, 0x0B,       // movd xmm1, [rbx]
+    0x66, 0x48, 0x0F, 0x7E, 0x4B, 0x08, // movq [rbx+8], xmm1
+  ], { regs, memInit: memBytes(SBX, [0xDD, 0xCC, 0xBB, 0xAA]),
+       xmm: xmmInit({ 1: [0x1111111111111111n, 0x2222222222222222n] }) });
+  assert.deepEqual(xmmReg(out, 1), [0xAABBCCDDn, 0n]);
+  assert.equal(out.guestMem.read(SBX + 8n, 8), 0xAABBCCDDn);
+  expectEmitted(out, 2);
+});
+
+test('SSE REX-extended XMM registers (xmm8..xmm15)', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 16 }, (_, i) => 0x50 + i);
+  const out = await runSse([
+    0x45, 0x0F, 0x28, 0xC1,       // movaps xmm8, xmm9
+    0x66, 0x44, 0x0F, 0x6F, 0x13, // movdqa xmm10, [rbx]
+  ], { regs, memInit: memBytes(SBX, bytes),
+       xmm: xmmInit({ 9: [0x1111111111111111n, 0x2222222222222222n] }) });
+  assert.deepEqual(xmmReg(out, 8), [0x1111111111111111n, 0x2222222222222222n]);
+  const lo = bytes.slice(0, 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  const hi = bytes.slice(8, 16).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 10), [lo, hi]);
+  expectEmitted(out, 2);
+});
+
+// Differential fuzz: random SSE op streams through the emitted module and
+// a JS model of the interpreter's SSE blocks.
+test('SSE differential fuzz vs interpreter model', async () => {
+  const next = mulberry32(0x55EE12);
+  const ru64 = () => (BigInt(Math.floor(next() * 0x100000000)) << 32n) | BigInt(Math.floor(next() * 0x100000000));
+  const pick = n => Math.floor(next() * n);
+  const MOVES = [
+    { pre: [], op2: 0x10, op2s: 0x11 }, { pre: [0x66], op2: 0x10, op2s: 0x11 },
+    { pre: [], op2: 0x28, op2s: 0x29 }, { pre: [0x66], op2: 0x28, op2s: 0x29 },
+    { pre: [0x66], op2: 0x6F, op2s: 0x7F }, { pre: [0xF3], op2: 0x6F, op2s: 0x7F },
+  ];
+  function enc({ pre, op2, reg, rmReg = null, disp = null, rexW = false }) {
+    const bytes = [...pre];
+    const rexBits = (rexW ? 8 : 0) | (reg >= 8 ? 4 : 0) | (rmReg !== null && rmReg >= 8 ? 1 : 0);
+    if (rexBits) bytes.push(0x40 | rexBits);
+    bytes.push(0x0F, op2);
+    if (disp === null) bytes.push(0xC0 | ((reg & 7) << 3) | (rmReg & 7));
+    else if (disp === 0) bytes.push(((reg & 7) << 3) | 3);
+    else bytes.push(0x40 | ((reg & 7) << 3) | 3, disp);
+    return bytes;
+  }
+  for (let iter = 0; iter < 500; iter++) {
+    const regs0 = Array.from({ length: 16 }, () => ru64());
+    regs0[3] = SBX;
+    const xmm0 = Array.from({ length: 32 }, () => ru64());
+    const mem = makeGuestMem();
+    for (let i = 0; i < 96; i++) mem.bytes.set(SBX + BigInt(i), pick(256));
+    const memInit = new Map(mem.bytes);
+    const regs = [...regs0], xmm = [...xmm0];
+    const rflags = pick(0x10000);
+    const code = [];
+    const nOps = 1 + pick(4);
+    for (let k = 0; k < nOps; k++) {
+      const fam = pick(6);
+      const useMem = next() < 0.45;
+      const disp = useMem ? [0, 3, 8, 16, 24, 40][pick(6)] : null;
+      // RBX may be rewritten by MOVD stores; guest EAs wrap at 2^64.
+      const addr = () => (regs[3] + BigInt(disp ?? 0)) & mask64;
+      const addr8 = () => (addr() + 8n) & mask64;
+      if (fam === 0 || fam === 1 || fam === 5) { // 16-byte move (fam 1 = store)
+        const mv = MOVES[pick(MOVES.length)];
+        const store = fam === 1;
+        const xr = pick(16), other = pick(16);
+        code.push(...enc({ pre: mv.pre, op2: store ? mv.op2s : mv.op2,
+                           reg: xr, rmReg: useMem ? null : other, disp }));
+        if (!store) {
+          const v = useMem ? [mem.read(addr(), 8), mem.read(addr8(), 8)]
+                           : [xmm[2 * other], xmm[2 * other + 1]];
+          xmm[2 * xr] = v[0]; xmm[2 * xr + 1] = v[1];
+        } else if (useMem) {
+          mem.write(addr(), 8, xmm[2 * xr]); mem.write(addr8(), 8, xmm[2 * xr + 1]);
+        } else {
+          xmm[2 * other] = xmm[2 * xr]; xmm[2 * other + 1] = xmm[2 * xr + 1];
+        }
+      } else if (fam === 2) { // PXOR
+        const dst = pick(16), src = pick(16);
+        code.push(...enc({ pre: [0x66], op2: 0xEF, reg: dst, rmReg: useMem ? null : src, disp }));
+        const s = useMem ? [mem.read(addr(), 8), mem.read(addr8(), 8)]
+                         : [xmm[2 * src], xmm[2 * src + 1]];
+        xmm[2 * dst] ^= s[0]; xmm[2 * dst + 1] ^= s[1];
+      } else { // MOVD/MOVQ load (fam 3) / store (fam 4)
+        const store = fam === 4;
+        const size8 = next() < 0.5;
+        const xr = pick(16), gr = pick(16);
+        code.push(...enc({ pre: [0x66], op2: store ? 0x7E : 0x6E, reg: xr,
+                           rmReg: useMem ? null : gr, disp, rexW: size8 }));
+        if (!store) {
+          const v = useMem ? mem.read(addr(), size8 ? 8 : 4)
+                           : (size8 ? regs[gr] : regs[gr] & 0xFFFFFFFFn);
+          xmm[2 * xr] = v; xmm[2 * xr + 1] = 0n;
+        } else if (useMem) {
+          mem.write(addr(), size8 ? 8 : 4, xmm[2 * xr]);
+        } else {
+          regs[gr] = size8 ? xmm[2 * xr] : xmm[2 * xr] & 0xFFFFFFFFn;
+        }
+      }
+    }
+    const out = await runSse(code, { regs: regs0, rflags, memInit, xmm: xmm0 });
+    assert.deepEqual(out.regs, regs, `iter ${iter} GPRs`);
+    assert.deepEqual(out.xmm, xmm, `iter ${iter} XMM`);
+    assert.equal(out.rflags, rflags >>> 0, `iter ${iter} RFLAGS`);
+    assert.equal(out.execCount, nOps, `iter ${iter} execCount`);
+    assert.equal(out.ripOut, (SSE_RIP + BigInt(code.length)) & mask64, `iter ${iter} RIP`);
+    const refKeys = [...mem.bytes.keys()].map(String).sort();
+    const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+    assert.deepEqual(outKeys, refKeys, `iter ${iter} written addresses`);
+    for (const key of refKeys)
+      assert.equal(out.guestMem.bytes.get(BigInt(key)), mem.bytes.get(BigInt(key)), `iter ${iter} mem[${key}]`);
+  }
+}, 240000);
+
+test('SSE fault: movdqa load with second qword denied leaves the xmm untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0x6F, 0x0B], { // movdqa xmm1, [rbx]
+    regs, xmm: xmmInit({ 1: [0x1111111111111111n, 0x2222222222222222n] }),
+    denied: a => a >= 0x3008n,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 1), [0x1111111111111111n, 0x2222222222222222n]);
+  assert.equal(r.rflags, 0x202, 'fault gate restores entry flags');
+});
+
+test('SSE fault: movdqa store publishes the first qword before the second faults', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0x7F, 0x13], { // movdqa [rbx], xmm2
+    regs, xmm: xmmInit({ 2: [0xAAAAAAAAAAAAAAAAn, 0xBBBBBBBBBBBBBBBBn] }),
+    denied: (a, w) => w && a >= 0x3008n,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.equal(r.guestMem.read(0x3000n, 8), 0xAAAAAAAAAAAAAAAAn, 'first qword landed');
+  assert.equal(r.guestMem.bytes.has(0x3008n), false, 'second qword never written');
+});
+
+test('SSE fault: pxor memory source denied leaves the destination untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0xEF, 0x1B], { // pxor xmm3, [rbx]
+    regs, xmm: xmmInit({ 3: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 3), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+});
+
+test('SSE fault: earlier ops commit, the faulting op does not', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([
+    0x66, 0x0F, 0x6F, 0xCA, // movdqa xmm1, xmm2
+    0x0F, 0x10, 0x1B,       // movups xmm3, [rbx]
+  ], {
+    regs, xmm: xmmInit({ 2: [0x1111111111111111n, 0x2222222222222222n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 1, 'only the completed op is credited');
+  assert.deepEqual(xmmReg(r, 1), [0x1111111111111111n, 0x2222222222222222n]);
+  assert.deepEqual(xmmReg(r, 3), [0n, 0n]);
+  assert.equal(r.ripOut, 0x1004n, 'fault RIP is the faulting instruction');
+});
+
+// ---------------------------------------------------------------------------
 // Control flow, bounded execution and inline invalidation.
 //
 // The JIT decoder ends a block AFTER its terminator (Jcc/JMP/CALL/RET), so the
@@ -4067,7 +4353,7 @@ test('shared-memory import descriptor links only a shared host memory', async ()
 // on placeholder values instead.
 const FAULT_OFF = 172;
 
-async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denied, rip = 0x1000n, ptr = 512 }) {
+async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denied, rip = 0x1000n, ptr = 512, xmm = null }) {
   const { result, path } = emit(code);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
@@ -4075,7 +4361,7 @@ async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denie
   const guestMem = makeGuestMem();
   for (const [k, v] of memInit) guestMem.bytes.set(k, v);
   const view = new DataView(memory.buffer);
-  initState(view, ptr, regs, rip, rflags);
+  initState(view, ptr, regs, rip, rflags, { xmm });
   view.setUint32(ptr + FAULT_OFF, 0, true);
   let calls = 0;
   const u32 = n => Number(BigInt.asUintN(32, BigInt(n)));

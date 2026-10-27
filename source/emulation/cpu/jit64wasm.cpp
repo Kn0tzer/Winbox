@@ -101,11 +101,16 @@ constexpr U32 L_OPIDX = 33;
 // the equivalent restore). String ops opt out: their in-loop flags ARE
 // the architectural partial progress.
 constexpr U32 L_FLAGS0 = 34;
-// Locals declaration for the emitted module: 6 groups, in order
+// Locals declaration for the emitted module: 7 groups, in order
 // [17 x i64 = GPRs + RIP][1 x i32 = RFLAGS][9 x i64 = scratch]
-// [3 x i32 = page-gen locals][1 x i64 = entry RIP][1 x i32 = limit].
-constexpr U8 LOCALS[] = {6, 17, 0x7E, 1, 0x7F, 9, 0x7E, 3, 0x7F, 1, 0x7E, 3, 0x7F};
+// [3 x i32 = page-gen locals][1 x i64 = entry RIP][3 x i32 = limit/op-index/
+// flags snapshot][32 x i64 = XMM registers as lo/hi qword pairs].
+constexpr U8 LOCALS[] = {7, 17, 0x7E, 1, 0x7F, 9, 0x7E, 3, 0x7F, 1, 0x7E, 3, 0x7F, 32, 0x7E};
 constexpr U32 LOCALS_BYTES = (U32)sizeof(LOCALS);
+// XMM locals: register r's lo qword at L_XMM + 2*r, hi at L_XMM + 2*r + 1.
+// Staged from Jit64WasmState::xmm by the prologue and published back by the
+// epilogue, exactly like the GPR locals 1..16.
+constexpr U32 L_XMM = 35;
 // Guest GPR indices the emitter addresses directly (x86-64 encoding order).
 constexpr U32 R_AX = 0, R_CX = 1, R_DX = 2, R_BP = 5, R_SP = 4;
 // GPR local index of RSP (cpu64.h X64_RSP == 4; the generated stack/string
@@ -559,6 +564,14 @@ void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32&
     rflags = state.rflags;
 }
 
+void jit64WasmStateInitXmm(Jit64WasmState& state, const U64 xmm[32]) {
+    for (U32 i = 0; i < 32; i++) state.xmm[i] = xmm[i];
+}
+
+void jit64WasmStateReadXmm(const Jit64WasmState& state, U64 xmm[32]) {
+    for (U32 i = 0; i < 32; i++) xmm[i] = state.xmm[i];
+}
+
 void jit64WasmStateSetGens(Jit64WasmState& state, U32 genBase, U32 gen0, U32 gen1) {
     state.genBase = genBase;
     state.gen0 = gen0;
@@ -657,6 +670,10 @@ bool jit64OpWritesMemory(const Jit64Op& op) {
         return op.isMem && op.sub != 0;
     case J64_STRING:     // MOVS/STOS store; CMPS/SCAS do not
         return op.sub == 0 || op.sub == 1;
+    case J64_SSE_MOV128: // store forms are exactly sub 0x11/0x29/0x7F
+        return op.isMem && (op.sub == 0x11 || op.sub == 0x29 || op.sub == 0x7F);
+    case J64_SSE_MOVD:   // sub 1 = the MOVD/MOVQ store form
+        return op.isMem && op.sub == 1;
     case J64_PUSH:
     case J64_CALL_REL:   // pushes the return address
         return true;
@@ -959,6 +976,131 @@ void emitDivGen(Bytes& body, const Jit64Op& op, U32 index) {
     local(body, 0x21, 0 + 1); // RAX = quotient
 }
 
+// ---- SSE set (J64_SSE_MOV128 / J64_SSE_PXOR / J64_SSE_MOVD) ----
+// XMM values live in wasm locals (L_XMM + 2*r = lo qword, +1 = hi), staged
+// from Jit64WasmState::xmm by the prologue and published by the epilogue.
+// None of these instructions touch RFLAGS in the interpreter, and none do
+// here. The interpreter performs every 16-byte move as two independent
+// qword accesses with NO alignment check (its isMove128 block), so the
+// emitters do the same through the imported helpers.
+
+// Read the 128-bit r/m source of a move/PXOR into L_A (lo) / L_B (hi).
+// For a memory source both qword reads complete (each passing the K-M3
+// fault gate) before the caller publishes anything, so a denied second
+// qword leaves the destination register untouched — the interpreter's
+// checkpoint semantics for a faulting load.
+void emitSseRead128(Bytes& body, const Jit64Op& op) {
+    if (!op.isMem) {
+        local(body, 0x20, L_XMM + 2 * op.rmIndex);
+        local(body, 0x21, L_A);
+        local(body, 0x20, L_XMM + 2 * op.rmIndex + 1);
+        local(body, 0x21, L_B);
+        return;
+    }
+    emitEA(body, op);                 // L_T1 = effective address
+    emitMemRead(body, L_T1, 8);       // -> L_R
+    local(body, 0x20, L_R);
+    local(body, 0x21, L_A);
+    local(body, 0x20, L_T1);
+    i64Const(body, 8);
+    body.push_back(0x7C);             // i64.add
+    local(body, 0x21, L_T1);
+    emitMemRead(body, L_T1, 8);       // -> L_R
+    local(body, 0x20, L_R);
+    local(body, 0x21, L_B);
+}
+
+// MOVUPS/MOVUPD/MOVAPS/MOVAPD/MOVDQA/MOVDQU (sub = opcode byte; loads
+// 0x10/0x28/0x6F read r/m into xmm[regField], stores 0x11/0x29/0x7F
+// write xmm[regField] to r/m).
+void emitSseMov128(Bytes& body, const Jit64Op& op) {
+    const bool isStore = op.sub == 0x11 || op.sub == 0x29 || op.sub == 0x7F;
+    if (!isStore) {
+        if (!op.isMem) {
+            local(body, 0x20, L_XMM + 2 * op.rmIndex);
+            local(body, 0x21, L_XMM + 2 * op.regField);
+            local(body, 0x20, L_XMM + 2 * op.rmIndex + 1);
+            local(body, 0x21, L_XMM + 2 * op.regField + 1);
+            return;
+        }
+        emitSseRead128(body, op);
+        local(body, 0x20, L_A);
+        local(body, 0x21, L_XMM + 2 * op.regField);
+        local(body, 0x20, L_B);
+        local(body, 0x21, L_XMM + 2 * op.regField + 1);
+        return;
+    }
+    if (!op.isMem) {
+        local(body, 0x20, L_XMM + 2 * op.regField);
+        local(body, 0x21, L_XMM + 2 * op.rmIndex);
+        local(body, 0x20, L_XMM + 2 * op.regField + 1);
+        local(body, 0x21, L_XMM + 2 * op.rmIndex + 1);
+        return;
+    }
+    // Memory store: two qword writes. If the second is denied, the first
+    // has already landed in guest memory — exactly the interpreter's
+    // behavior (its two writeq calls are not transactional either).
+    emitEA(body, op);                 // L_T1 = effective address
+    emitMemWrite(body, L_T1, L_XMM + 2 * op.regField, 8);
+    local(body, 0x20, L_T1);
+    i64Const(body, 8);
+    body.push_back(0x7C);             // i64.add
+    local(body, 0x21, L_T1);
+    emitMemWrite(body, L_T1, L_XMM + 2 * op.regField + 1, 8);
+}
+
+// PXOR xmm[regField], xmm/m128 (66 0F EF): full 128-bit XOR. The source is
+// staged through L_A/L_B first, so the regField == rmIndex zeroing idiom
+// (PXOR xmm, xmm) reads the pre-op value, like the interpreter.
+void emitSsePxor(Bytes& body, const Jit64Op& op) {
+    emitSseRead128(body, op);
+    local(body, 0x20, L_XMM + 2 * op.regField);
+    local(body, 0x20, L_A);
+    body.push_back(0x85);             // i64.xor
+    local(body, 0x21, L_XMM + 2 * op.regField);
+    local(body, 0x20, L_XMM + 2 * op.regField + 1);
+    local(body, 0x20, L_B);
+    body.push_back(0x85);             // i64.xor
+    local(body, 0x21, L_XMM + 2 * op.regField + 1);
+}
+
+// MOVD/MOVQ between a GPR/memory operand and xmm[regField] (66 0F 6E load,
+// sub 0; 66 0F 7E store, sub 1). Mirrors the interpreter's block: a load
+// zero-extends the 32-bit form and always zeroes the high qword; a store
+// writes only the low dword/qword, and a 32-bit register destination
+// zero-extends (its storeRM setU32), which publishing the width-masked
+// value into the GPR local reproduces.
+void emitSseMovd(Bytes& body, const Jit64Op& op) {
+    if (op.sub == 0) {
+        if (op.isMem) {
+            emitEA(body, op);
+            emitMemRead(body, L_T1, op.size); // -> L_R (helper zero-extends)
+            local(body, 0x20, L_R);
+            local(body, 0x21, L_XMM + 2 * op.regField);
+        } else {
+            emitReadOperand(body, op, op.rmIndex, L_R); // width-masked read
+            local(body, 0x20, L_R);
+            local(body, 0x21, L_XMM + 2 * op.regField);
+        }
+        i64Const(body, 0);
+        local(body, 0x21, L_XMM + 2 * op.regField + 1); // high qword zeroed
+        return;
+    }
+    local(body, 0x20, L_XMM + 2 * op.regField);
+    if (op.size == 4) {
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83);             // i64.and
+    }
+    local(body, 0x21, L_R);
+    if (op.isMem) {
+        emitEA(body, op);
+        emitMemWrite(body, L_T1, L_R, op.size);
+    } else {
+        local(body, 0x20, L_R);
+        local(body, 0x21, op.rmIndex + 1);
+    }
+}
+
 // Emit one block terminator. `afterOff` is the instruction's end offset (the
 // RIP of the next guest instruction). Jcc/JMP/CALL/RET own the guest RIP here
 // (the caller must NOT also emit emitRipAfter for them); NOP/LEAVE do not, so
@@ -1111,6 +1253,15 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // the classifier leaves it fast, matching pre-C6 behavior).
             widthOk = (op.size == 1 || op.size == 4 || op.size == 8);
             break;
+        case J64_SSE_MOV128:
+        case J64_SSE_PXOR:
+            // 16-byte XMM operands; the decoder records size 16.
+            widthOk = (op.size == 16);
+            break;
+        case J64_SSE_MOVD:
+            // MOVD (32-bit) / MOVQ (64-bit) GPR<->XMM forms only.
+            widthOk = (op.size == 4 || op.size == 8);
+            break;
         default:
             widthOk = (op.size == 4 || op.size == 8);
             break;
@@ -1148,7 +1299,12 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             bool memMovImm = op.kind == J64_MOV_RM_IMM && op.size == 1;
             bool memSetcc = op.kind == J64_SETCC;
             bool memBt = op.kind == J64_BT;
-            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt) || !widthOk) return false;
+            // SSE forms access memory only through the same imported
+            // helpers (two qword accesses for the 128-bit forms), so their
+            // fault placement matches the interpreter's readq/writeq pairs.
+            bool memSse = op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR ||
+                          op.kind == J64_SSE_MOVD;
+            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt && !memSse) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -1285,6 +1441,27 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             if (op.regField >= 16) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
             break;
+        case J64_SSE_MOV128:
+            // sub is the 0F opcode byte (stores: 0x11/0x29/0x7F); both
+            // register fields name XMM registers 0..15 (REX-extended at
+            // decode). rmIndex is 0xFF for memory forms.
+            if (op.sub != 0x10 && op.sub != 0x11 && op.sub != 0x28 && op.sub != 0x29 &&
+                op.sub != 0x6F && op.sub != 0x7F) return false;
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_SSE_PXOR:
+            // regField = destination XMM; source in rmIndex or EA.
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_SSE_MOVD:
+            // sub 0 = load (6E), 1 = store (7E). regField = XMM register;
+            // rmIndex = GPR (register form) or 0xFF (memory form).
+            if (op.sub > 1) return false;
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
         case J64_STRING:
             break; // validated above
         case J64_NOP:
@@ -1331,7 +1508,8 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
     // GPRs, 17 the i64 guest RIP, 18 the i32 RFLAGS, 19..27 i64 scratch,
     // 31 the i64 entry RIP, 32 the i32 instruction
     // limit, 33 the i32 current-op index and 34 the i32 RFLAGS snapshot
-    // (both for the K-M3 fault gate). Guest values are never wasm host addresses.
+    // (both for the K-M3 fault gate), 35..66 the i64 XMM lo/hi pairs.
+    // Guest values are never wasm host addresses.
     Bytes body(LOCALS, LOCALS + LOCALS_BYTES);
     // Emitted-code bookkeeping: the module itself zeroes execCount and bumps
     // blocksEntered. The host only reads them back, so a non-zero
@@ -1349,6 +1527,12 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
         local(body, 0x20, 0);
         memoryOp(body, 0x29, 3, reg * 8); // i64.load
         local(body, 0x21, reg + 1);
+    }
+    // XMM staging: 16 registers as lo/hi qword pairs into locals 35..66.
+    for (U32 reg = 0; reg < 32; reg++) {
+        local(body, 0x20, 0);
+        memoryOp(body, 0x29, 3, (U32)offsetof(Jit64WasmState, xmm) + reg * 8); // i64.load
+        local(body, 0x21, L_XMM + reg);
     }
     local(body, 0x20, 0);
     memoryOp(body, 0x29, 3, (U32)offsetof(Jit64WasmState, rip));
@@ -1577,6 +1761,20 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             emitStringGen(body, op);
             break;
         }
+        case J64_SSE_MOV128:
+            // 16-byte XMM move: publishes the destination XMM local (load)
+            // or guest memory (store) inline; no L_R publish.
+            emitSseMov128(body, op);
+            break;
+        case J64_SSE_PXOR:
+            // PXOR: XORs the destination XMM local inline.
+            emitSsePxor(body, op);
+            break;
+        case J64_SSE_MOVD:
+            // MOVD/MOVQ: publishes the XMM local (load) or the GPR local /
+            // guest memory (store) inline.
+            emitSseMovd(body, op);
+            break;
         case J64_PUSH:
         case J64_POP: {
             // Stack ops update RSP in its local inline (fault ordering
@@ -1640,6 +1838,12 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
     local(body, 0x20, 0);
     local(body, 0x20, L_RFLAGS);
     memoryOp(body, 0x36, 2, (U32)offsetof(Jit64WasmState, rflags)); // i32.store
+    // XMM store-back (locals 35..66), mirroring the prologue staging.
+    for (U32 reg = 0; reg < 32; reg++) {
+        local(body, 0x20, 0);
+        local(body, 0x20, L_XMM + reg);
+        memoryOp(body, 0x37, 3, (U32)offsetof(Jit64WasmState, xmm) + reg * 8); // i64.store
+    }
     body.push_back(0x0B); // end execute
 
     Bytes module = {0, 0x61, 0x73, 0x6D, 1, 0, 0, 0};

@@ -82,6 +82,16 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "C6 MOV r/m8,imm8",    0xC6, 0x00, J64_MOV_RM_IMM },  // 28 (0.11% doom.exe; high-byte reg declined)
     { "0F90 SETcc",          0x0F, 0x90, J64_SETCC },       // 29 (0.25% doom.exe; whole 0F90..9F family; sub = cc; high-byte reg declined)
     { "0FA3 BT",             0x0F, 0xA3, J64_BT },          // 30 (0.02% doom.exe; 0FA3/AB/B3/BB BT/BTS/BTR/BTC; sub = op)
+    // SSE round (frame-floor census follow-up): the reject census's SSE
+    // cluster (~352 distinct blocks) — 16-byte XMM moves, PXOR, MOVD/MOVQ.
+    // Rows name each family's load opcode; the store twin (0F11/0F29/
+    // 660F7F) shares the row's kind. Shares are the census block counts,
+    // not instruction frequencies.
+    { "0F10 MOVUPS",         0x0F, 0x10, J64_SSE_MOV128 },  // 31 (census 0F10: 54 blocks + 0F11: 46; 66 MOVUPD forms included)
+    { "0F28 MOVAPS",         0x0F, 0x28, J64_SSE_MOV128 },  // 32 (census 0F28: 51 blocks + 0F29: 20; 66 MOVAPD forms included)
+    { "660F6F MOVDQA",       0x0F, 0x6F, J64_SSE_MOV128 },  // 33 (census 0F6F: 87 blocks; F3 MOVDQU forms included)
+    { "660FEF PXOR",         0x0F, 0xEF, J64_SSE_PXOR },    // 34 (census 0FEF: 54 blocks)
+    { "660F6E MOVD",         0x0F, 0x6E, J64_SSE_MOVD },    // 35 (census 0F6E: 40 blocks; 660F7E store form included)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -354,6 +364,50 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             if (!ml) return false;
             out.kind = J64_NOP;
             out.len = (U8)(opOff + 2 + ml);
+            return true;
+        }
+        if (op2 == 0x10 || op2 == 0x11 || op2 == 0x28 || op2 == 0x29 ||
+            op2 == 0x6F || op2 == 0x7F || op2 == 0xEF || op2 == 0x6E || op2 == 0x7E) {
+            // SSE integer/move set (frame-floor census cluster). The prefix
+            // predicate mirrors the interpreter's dispatch in cpu64.cpp
+            // (the isMove128 / PXOR / MOVD blocks) exactly; encodings
+            // outside it stay undecoded, so the stream truncates and the
+            // interpreter runs them:
+            //   0F 10/11     MOVUPS/MOVUPD load/store: rep == 0 (66 allowed;
+            //                F2/F3 forms are MOVSD/MOVSS scalar ops)
+            //   0F 28/29     MOVAPS/MOVAPD load/store: rep == 0 (66 allowed)
+            //   66 0F 6F/7F  MOVDQA load/store: 66 with rep == 0
+            //   F3 0F 6F/7F  MOVDQU load/store: F3 without 66
+            //   66 0F EF     PXOR
+            //   66 0F 6E     MOVD/MOVQ xmm, r/m (REX.W selects 64-bit)
+            //   66 0F 7E     MOVD/MOVQ r/m, xmm
+            // Excluded by the predicate: the legacy MMX forms (no 66 and
+            // no F3: 0F 6E/6F/7E/7F read/write the x87 register stack, not
+            // XMM), F3 0F 7E MOVQ xmm,m64, and every LOCK-prefixed form.
+            const bool isMove = op2 == 0x10 || op2 == 0x11 || op2 == 0x28 ||
+                                op2 == 0x29 || op2 == 0x6F || op2 == 0x7F;
+            bool ok;
+            if (op2 == 0x6F || op2 == 0x7F)
+                ok = (p.osize16 && p.rep == 0) || (!p.osize16 && p.rep == 0xF3);
+            else if (op2 == 0xEF || op2 == 0x6E || op2 == 0x7E)
+                ok = p.osize16 && p.rep == 0;
+            else
+                ok = p.rep == 0;
+            if (!ok || p.lock) return false;
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = isMove ? J64_SSE_MOV128 : (op2 == 0xEF ? J64_SSE_PXOR : J64_SSE_MOVD);
+            // MOV128: sub is the opcode byte; the store forms are
+            // exactly 0x11/0x29/0x7F (0x6F is odd but is the MOVDQA load).
+            // MOVD: sub 0 = load (6E), 1 = store (7E). PXOR: sub 0.
+            out.sub = isMove ? op2 : (op2 == 0x7E ? 1 : 0);
+            out.size = (isMove || op2 == 0xEF) ? 16 : (rexW ? 8 : 4);
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            out.rep = p.rep;
+            out.osize66 = p.osize16;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
             return true;
         }
         return false;
@@ -845,6 +899,39 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     }
+    if (op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR || op.kind == J64_SSE_MOVD) {
+        // SSE set. The decoder enforced the interpreter's prefix predicate
+        // and excluded LOCK at decode (the folded hasLockOrRep argument
+        // cannot carry that distinction, and MOVDQU's legitimate F3 makes
+        // the generic REP guard below unusable) — so this case runs before
+        // the generic guards and re-checks everything from the recorded
+        // fields, the same arrangement as J64_STRING above. FS/GS memory
+        // operands stay interpreter-only: the segment bases live on the
+        // CPU object, not in Jit64WasmState.
+        if (op.isMem && op.ea.seg != 0) return;
+        switch (op.kind) {
+        case J64_SSE_MOV128:
+            if (op.size != 16) return;
+            if (op.sub != 0x10 && op.sub != 0x11 && op.sub != 0x28 && op.sub != 0x29 &&
+                op.sub != 0x6F && op.sub != 0x7F) return;
+            if (op.sub == 0x6F || op.sub == 0x7F) {
+                // MOVDQA (66, no REP) or MOVDQU (F3, no 66).
+                if (!((op.osize66 && op.rep == 0) || (!op.osize66 && op.rep == 0xF3))) return;
+            } else if (op.rep != 0) return; // MOVUPS/MOVAPS families
+            break;
+        case J64_SSE_PXOR:
+            if (op.size != 16 || !op.osize66 || op.rep != 0) return;
+            break;
+        case J64_SSE_MOVD:
+            if ((op.size != 4 && op.size != 8) || op.sub > 1) return;
+            if (!op.osize66 || op.rep != 0) return;
+            break;
+        default:
+            return;
+        }
+        op.plan = JIT64_FAST;
+        return;
+    }
     // FS/GS-segment memory operands stay interpreter-only: the segment
     // bases live on the CPU object, not in Jit64WasmState. (String ops
     // ignore seg like the interpreter, and are exempt above.)
@@ -1187,11 +1274,56 @@ bool Jit64NegativeCache::rejected(U64 rip, U32 gen0) const {
     return s.rip == rip && s.gen0 == gen0;
 }
 
+bool Jit64NegativeCache::rejectedInfo(U64 rip, U32 gen0, U16& opcodeKey, U64& failRip) const {
+    if (rip == 0) return false;
+    const Slot& s = m_slots[slotFor(rip)];
+    if (s.rip != rip || s.gen0 != gen0) return false;
+    opcodeKey = s.opcodeKey;
+    failRip = s.failRip;
+    return true;
+}
+
 void Jit64NegativeCache::add(U64 rip, U32 gen0) {
+    add(rip, gen0, 0xFFFF, 0);
+}
+
+void Jit64NegativeCache::add(U64 rip, U32 gen0, U16 opcodeKey, U64 failRip) {
     if (rip == 0) return;
     Slot& s = m_slots[slotFor(rip)];
     s.rip = rip;
     s.gen0 = gen0;
+    s.opcodeKey = opcodeKey;
+    s.failRip = failRip;
+}
+
+void Jit64State::recordRejectSite(U64 blockRip, U64 failRip, U16 opcodeKey,
+                                  const U8* bytes, U32 byteCount, U64 entries) {
+    for (U32 i = 0; i < rejectSiteCount; i++) {
+        RejectSite& s = rejectSites[i];
+        if (s.failRip == failRip) {
+            s.entries += entries;
+            // A compile-path record (bytes present) after negative-cache
+            // hits fills in the byte evidence the hits could not carry.
+            if (s.byteCount == 0 && bytes && byteCount) {
+                s.blockRip = blockRip;
+                s.opcodeKey = opcodeKey;
+                s.byteCount = (U8)(byteCount > 8 ? 8 : byteCount);
+                for (U32 b = 0; b < s.byteCount; b++) s.bytes[b] = bytes[b];
+            }
+            return;
+        }
+    }
+    if (rejectSiteCount >= REJECT_SITE_SLOTS) return; // opcode counters still count it
+    RejectSite& s = rejectSites[rejectSiteCount++];
+    s.blockRip = blockRip;
+    s.failRip = failRip;
+    s.entries = entries;
+    s.opcodeKey = opcodeKey;
+    s.byteCount = 0;
+    if (bytes && byteCount) {
+        s.byteCount = (U8)(byteCount > 8 ? 8 : byteCount);
+        for (U32 b = 0; b < s.byteCount; b++) s.bytes[b] = bytes[b];
+    }
 }
 
 void Jit64NegativeCache::clear() {
@@ -1248,6 +1380,33 @@ std::vector<std::pair<Jit64State*, PublishedStats>> g_jitStates;
 PublishedStats g_retiredStats;
 U64 g_retiredRejectOpcode[256]{};
 U64 g_retiredReject0FOpcode[256]{};
+U64 g_retiredRejectEntryOpcode[256]{};
+U64 g_retiredRejectEntry0FOpcode[256]{};
+std::vector<Jit64State::RejectSite> g_retiredRejectSites;
+// Merge one state's (or the retired set's) reject sites into `dst`, summing
+// entries per failRip. Bounded like the per-state table; overflow sites are
+// dropped here too (their entries remain in the opcode counters).
+void mergeRejectSites(std::vector<Jit64State::RejectSite>& dst,
+                      const Jit64State::RejectSite* sites, U32 count) {
+    for (U32 i = 0; i < count; i++) {
+        const Jit64State::RejectSite& in = sites[i];
+        bool merged = false;
+        for (auto& s : dst) {
+            if (s.failRip == in.failRip) {
+                s.entries += in.entries;
+                if (s.byteCount == 0 && in.byteCount) {
+                    s.blockRip = in.blockRip;
+                    s.opcodeKey = in.opcodeKey;
+                    s.byteCount = in.byteCount;
+                    for (U32 b = 0; b < in.byteCount; b++) s.bytes[b] = in.bytes[b];
+                }
+                merged = true;
+                break;
+            }
+        }
+        if (!merged && dst.size() < Jit64State::REJECT_SITE_SLOTS) dst.push_back(in);
+    }
+}
 }
 
 void jit64RegisterState(Jit64State* state) {
@@ -1276,7 +1435,10 @@ static void jit64UnregisterState(Jit64State* state) {
             for (U32 i = 0; i < 256; ++i) {
                 g_retiredRejectOpcode[i] += state->rejectOpcode[i].load(std::memory_order_relaxed);
                 g_retiredReject0FOpcode[i] += state->reject0FOpcode[i].load(std::memory_order_relaxed);
+                g_retiredRejectEntryOpcode[i] += state->rejectEntryOpcode[i].load(std::memory_order_relaxed);
+                g_retiredRejectEntry0FOpcode[i] += state->rejectEntry0FOpcode[i].load(std::memory_order_relaxed);
             }
+            mergeRejectSites(g_retiredRejectSites, state->rejectSites, state->rejectSiteCount);
             g_jitStates.erase(it);
             return;
         }
@@ -1316,19 +1478,30 @@ U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     PublishedStats sum;
     U64 rejectOpcode[256]{};
     U64 reject0FOpcode[256]{};
+    U64 rejectEntryOpcode[256]{};
+    U64 rejectEntry0FOpcode[256]{};
+    std::vector<Jit64State::RejectSite> rejectSites;
     {
         std::lock_guard<std::mutex> lock(g_jitStatesMutex);
         sum = g_retiredStats;
         for (U32 i = 0; i < 256; ++i) {
             rejectOpcode[i] = g_retiredRejectOpcode[i];
             reject0FOpcode[i] = g_retiredReject0FOpcode[i];
+            rejectEntryOpcode[i] = g_retiredRejectEntryOpcode[i];
+            rejectEntry0FOpcode[i] = g_retiredRejectEntry0FOpcode[i];
         }
+        rejectSites = g_retiredRejectSites;
         for (const auto& entry : g_jitStates) {
             addStats(sum, entry.second);
             for (U32 i = 0; i < 256; ++i) {
                 rejectOpcode[i] += entry.first->rejectOpcode[i].load(std::memory_order_relaxed);
                 reject0FOpcode[i] += entry.first->reject0FOpcode[i].load(std::memory_order_relaxed);
+                rejectEntryOpcode[i] += entry.first->rejectEntryOpcode[i].load(std::memory_order_relaxed);
+                rejectEntry0FOpcode[i] += entry.first->rejectEntry0FOpcode[i].load(std::memory_order_relaxed);
             }
+            // Diagnostics only: read under the registry mutex; the owning
+            // CPU may be mid-update, so a site row can be one entry stale.
+            mergeRejectSites(rejectSites, entry.first->rejectSites, entry.first->rejectSiteCount);
         }
     }
     static thread_local Jit64State totals;
@@ -1351,6 +1524,13 @@ U32 jit64GlobalStatsJson(char* buf, U32 bufSize) {
     for (U32 i = 0; i < 256; ++i) {
         totals.rejectOpcode[i].store(rejectOpcode[i], std::memory_order_relaxed);
         totals.reject0FOpcode[i].store(reject0FOpcode[i], std::memory_order_relaxed);
+        totals.rejectEntryOpcode[i].store(rejectEntryOpcode[i], std::memory_order_relaxed);
+        totals.rejectEntry0FOpcode[i].store(rejectEntry0FOpcode[i], std::memory_order_relaxed);
+    }
+    totals.rejectSiteCount = 0;
+    for (const auto& site : rejectSites) {
+        if (totals.rejectSiteCount >= Jit64State::REJECT_SITE_SLOTS) break;
+        totals.rejectSites[totals.rejectSiteCount++] = site;
     }
     return jit64StatsJson(&totals, buf, bufSize);
 }
@@ -1375,6 +1555,13 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_STRING:
             if (op.sub == 0 || op.sub == 1) return true; // MOVS/STOS store
+            break;
+        case J64_SSE_MOV128:
+            // The store forms are exactly sub 0x11/0x29/0x7F.
+            if (op.isMem && (op.sub == 0x11 || op.sub == 0x29 || op.sub == 0x7F)) return true;
+            break;
+        case J64_SSE_MOVD:
+            if (op.isMem && op.sub == 1) return true; // MOVD/MOVQ store form
             break;
         case J64_GRP3:
             // NOT/NEG r/m (sub 2/3) store to guest memory via the
@@ -1592,6 +1779,61 @@ U32 jit64StatsJson(const Jit64State* state, char* buf, U32 bufSize) {
             std::snprintf(opcode, sizeof(opcode), "%02X", (unsigned)rejected[i].opcode);
         j.add("%s{\"op\":\"%s\",\"count\":%llu}", i ? "," : "", opcode,
               (unsigned long long)rejected[i].count);
+    }
+    j.add("],");
+    // Entry-weighted reject census: every fallback block entry attributed
+    // to its rejecting opcode (compile-path rejects + negative-cache hits),
+    // plus the hottest per-RIP sites behind those numbers.
+    std::vector<RejectCount> rejectedEntries;
+    rejectedEntries.reserve(512);
+    if (s) {
+        for (U32 i = 0; i < 256; ++i) {
+            U64 count = s->rejectEntryOpcode[i].load(std::memory_order_relaxed);
+            if (count) rejectedEntries.push_back({count, (U16)i});
+            count = s->rejectEntry0FOpcode[i].load(std::memory_order_relaxed);
+            if (count) rejectedEntries.push_back({count, (U16)(0x100 + i)});
+        }
+    }
+    std::sort(rejectedEntries.begin(), rejectedEntries.end(), [](const RejectCount& a, const RejectCount& b) {
+        if (a.count != b.count) return a.count > b.count;
+        return a.opcode < b.opcode;
+    });
+    j.add("\"rejectEntryTop\":[");
+    for (size_t i = 0; i < rejectedEntries.size() && i < 20; ++i) {
+        char opcode[6];
+        if (rejectedEntries[i].opcode >= 0x100)
+            std::snprintf(opcode, sizeof(opcode), "0F %02X", (unsigned)(U8)(rejectedEntries[i].opcode - 0x100));
+        else
+            std::snprintf(opcode, sizeof(opcode), "%02X", (unsigned)rejectedEntries[i].opcode);
+        j.add("%s{\"op\":\"%s\",\"count\":%llu}", i ? "," : "", opcode,
+              (unsigned long long)rejectedEntries[i].count);
+    }
+    j.add("],\"rejectSites\":[");
+    if (s) {
+        std::vector<const Jit64State::RejectSite*> sites;
+        for (U32 i = 0; i < s->rejectSiteCount; ++i) sites.push_back(&s->rejectSites[i]);
+        std::sort(sites.begin(), sites.end(), [](const Jit64State::RejectSite* a, const Jit64State::RejectSite* b) {
+            if (a->entries != b->entries) return a->entries > b->entries;
+            return a->failRip < b->failRip;
+        });
+        for (size_t i = 0; i < sites.size() && i < 12; ++i) {
+            const Jit64State::RejectSite& site = *sites[i];
+            char opcode[6];
+            if (site.opcodeKey >= 0x100 && site.opcodeKey != 0xFFFF)
+                std::snprintf(opcode, sizeof(opcode), "0F %02X", (unsigned)(U8)site.opcodeKey);
+            else if (site.opcodeKey == 0xFFFF)
+                std::snprintf(opcode, sizeof(opcode), "??");
+            else
+                std::snprintf(opcode, sizeof(opcode), "%02X", (unsigned)site.opcodeKey);
+            char bytesHex[17];
+            bytesHex[0] = 0;
+            for (U32 b = 0; b < site.byteCount; ++b)
+                std::snprintf(bytesHex + b * 2, 3, "%02x", (unsigned)site.bytes[b]);
+            j.add("%s{\"block\":\"0x%llx\",\"rip\":\"0x%llx\",\"op\":\"%s\",\"bytes\":\"%s\",\"count\":%llu}",
+                  i ? "," : "", (unsigned long long)site.blockRip,
+                  (unsigned long long)site.failRip, opcode, bytesHex,
+                  (unsigned long long)site.entries);
+        }
     }
     j.add("]},");
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_WASM_JIT)
