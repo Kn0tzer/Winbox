@@ -143,6 +143,7 @@ export const V2_REC = Object.freeze({
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
   IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B, BUFFER_VIEW: 0x1C,
+  ROOT_DESCS: 0x1D,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -198,7 +199,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_VIEW)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.ROOT_DESCS)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -1053,6 +1054,25 @@ export function decodeV2Frame(records, counters = {}) {
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
           anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
         });
+        break;
+      }
+      case V2_REC.ROOT_DESCS: {
+        // Root-descriptor resolutions for the next draw(s): one entry per
+        // root slot of the bound pipeline, keyed by push byte offset. A
+        // zero-length entry is an unresolved/null root descriptor (the
+        // tier binds zero-filled storage; D3D12 reads return 0).
+        const count = r.u32();
+        if (count > 64) throw new Error('vk64: v2 ROOT_DESCS count out of range');
+        const entries = new Map();
+        for (let i = 0; i < count; i++) {
+          const pushOff = r.u32();
+          const obj = v2Hex64(r.u64());
+          const absOff = r.u64().toString();
+          const len = r.u64().toString();
+          entries.set(pushOff, { obj, absOff, len });
+        }
+        r.done('ROOT_DESCS');
+        needPass().ops.push({ op: 'rootDescs', entries });
         break;
       }
       case V2_REC.PUSH: {

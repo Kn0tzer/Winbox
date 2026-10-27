@@ -177,6 +177,16 @@ export function scanWgslResources(wgsl) {
     const source = /^bw_combined_g(\d+)_b(\d+)_v\d+(?:_\d*)?$/.exec(decl.name);
     if (source && +source[1] === decl.group && /^sampler(?:_comparison)?$/.test(decl.type))
       decl.sourceBinding = +source[2];
+    // spirvfix R15 metadata in generated names: a specialized descriptor
+    // array clone carries its single index signature (resolve the element
+    // at bind time from the draw's push block, or a constant), and a
+    // re-rooted root descriptor carries its push byte offset (resolve the
+    // buffer at bind time from the draw's ROOT_DESCS record).
+    const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))$/.exec(decl.name);
+    if (arr && +arr[1] === decl.group && +arr[2] === decl.binding)
+      decl.arrSig = arr[3] !== undefined ? { kind: 'push', pushOff: +arr[3], add: +arr[4] } : { kind: 'const', value: +arr[5] };
+    const root = /^bw_root_p(\d+)$/.exec(decl.name);
+    if (root) decl.rootOff = +root[1];
   }
   return out;
 }
@@ -217,7 +227,7 @@ export function wgslUniformSizes(wgsl) {
     structs.set(m[1], fields);
   }
   const out = new Map();
-  const declRe = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<uniform>\s*\w+\s*:\s*([^;]+);/g;
+  const declRe = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<(?:uniform|storage(?:\s*,\s*(?:read|read_write))?)>\s*\w+\s*:\s*([^;]+);/g;
   while ((m = declRe.exec(wgsl))) {
     const t = wgslTypeLayout(m[3].trim(), structs);
     if (t) out.set(m[1] + ":" + m[2], t.size);

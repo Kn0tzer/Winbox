@@ -183,7 +183,7 @@ vkGetDeviceBufferMemoryRequirements 116 3
 vkGetDeviceGroupPeerMemoryFeatures 1 1
 vkGetDeviceGroupPresentCapabilitiesKHR 1 1
 vkGetDeviceGroupSurfacePresentModesKHR 1 1
-vkGetDeviceImageMemoryRequirements 1 1
+vkGetDeviceImageMemoryRequirements 917 3
 vkGetDeviceImageSparseMemoryRequirements 1 1
 vkGetDeviceImageSubresourceLayout 1 1
 vkGetDeviceMemoryCommitment 1 1

@@ -2078,7 +2078,12 @@ export function storageImageVars(bytes) {
     if (ins.op !== Op.Variable) continue;
     const ptr = byId.get(ins.words[0]);
     if (!ptr || ptr.op !== Op.TypePointer) continue;
-    const img = byId.get(ptr.words[2]);
+    let pointee = byId.get(ptr.words[2]);
+    // A runtime-array-wrapped storage image (a descriptor heap before the
+    // R15a specialization runs -- the tier builds this signature from the
+    // ORIGINAL module bytes) counts at its own set/binding.
+    if (pointee && pointee.op === Op.TypeRuntimeArray) pointee = byId.get(pointee.words[1]);
+    const img = pointee;
     if (!img || img.op !== Op.TypeImage || img.words[6] !== 2) continue;
     const d = decorations.get(ins.resultId) || {};
     out.push({ set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId });
@@ -2106,7 +2111,10 @@ function injectStorageImageFormats(mod, log, signature) {
     if (ins.op !== Op.Variable) continue;
     const ptr = byId.get(ins.words[0]);
     if (!ptr || ptr.op !== Op.TypePointer) continue;
-    const t = types.get(ptr.words[2]);
+    let pointeeId = ptr.words[2];
+    const pointee = byId.get(pointeeId);
+    if (pointee && pointee.op === Op.TypeRuntimeArray) pointeeId = pointee.words[1];
+    const t = types.get(pointeeId);
     if (!t) continue;
     const d = decorations.get(ins.resultId) || {};
     t.vars.push({ set: d.set ?? 0, binding: d.binding ?? 0 });
@@ -2141,6 +2149,731 @@ function injectStorageImageFormats(mod, log, signature) {
     }
   }
   return changed;
+}
+
+// --- R15: descriptor addressing (Route A) ------------------------------------
+// Two rewrites serving the addressing forms the bridge audit mirror
+// (vk64AuditSpirv in vk64bridge.cpp) admits under the SAME classifiers
+// (campaign report section 4.20; research report section 4). Both fail
+// closed: a module is rewritten only when EVERY addressing use in it
+// classifies into the servable subset; otherwise it is left byte-identical
+// and the audit's named capability rejection stands.
+//
+// R15a "descriptor-array-specialize": a descriptor variable whose pointee
+// is OpTypeRuntimeArray of a descriptor element type (image / sampler /
+// sampled image), where every access chain carries exactly ONE index and
+// all index expressions share ONE signature -- {const v} or
+// {push@byteOff + add} (a load of the merged push-constant block, possibly
+// plus a constant) -- is replaced by ONE scalar clone variable at the same
+// set/binding. The clone's OpName encodes the signature
+// (bw_arr_g<set>_b<binding>_p<pushOff>_a<add> or ..._c<value>) and the
+// page tier resolves the element at bind time from the draw's push block
+// (the bw_combined_* precedent: resolution metadata travels in the name;
+// the bind-group fingerprint covers the resolved entry). Two distinct
+// signatures on one array would need two resources at one binding in a
+// single draw -- unservable, left unchanged. The array variable must be
+// NonWritable-decorated: image stores through an array element are not
+// served (same wall as spirv-storage-image-write).
+//
+// R15b "root-descriptor-bda": a physical-storage-buffer pointer
+// materialized from the push block -- OpConvertUToPtr, or OpBitcast of a
+// push-loaded 64-bit value (the form Wine's DXBC compiler + dxbc-spirv
+// emit for root descriptors; census of the captured root12 modules,
+// section 4.20) -- whose address traces to exactly ONE root slot (push
+// byte offset, zero addend) and which is only ever READ through access
+// chains rooted at the materialization, is re-rooted at a synthesized
+// read-only StorageBuffer variable named bw_root_p<pushByteOff> in the
+// module's heap-array set (else set 0) at binding 4096 + pushByteOff/8.
+// The bridge resolves the slot's VA at draw time and streams the target
+// range in a V2 ROOT_DESCS record; the tier binds it like any other
+// buffer entry. WRITES through a root pointer (OpStore / atomic RMW) are
+// NOT served: the page tier has no GPU->guest buffer writeback (the same
+// wall as spirv-storage-buffer-write), so a module with a writable root
+// pointer keeps the loud capability rejection. Pointer escapes (call
+// arguments, stores of the pointer itself, OpConvertPtrToU, phi/select,
+// OpPtrAccessChain) fail closed the same way, as do pointees whose
+// decorated layout is not byte-exact in WGSL storage layout (the R13
+// measure rules, storage space, plus a runtime-array tail member).
+const R15_OP = { Extension: 10, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, ConvertPtrToU: 117, ConvertUToPtr: 120, Bitcast: 124, IAdd: 128, ISub: 129, AtomicLoad: 227 };
+const R15_PSB = 5349;          // PhysicalStorageBuffer storage class
+const R15_PSB_MODEL = 5348;    // PhysicalStorageBuffer64 addressing model
+const R15_STORAGE_BUFFER = 12; // StorageBuffer storage class
+
+// Scalar integer constant extraction over the shared constValue (which
+// returns {type, elems} objects): a Number, or null.
+function r15ConstInt(ctx, id) {
+  const v = constValue(ctx.byId, id);
+  if (!v || v.elems.length !== 1) return null;
+  const e = v.elems[0];
+  if (e.kind !== 'sint' && e.kind !== 'uint') return null;
+  const n = typeof e.value === 'bigint' ? Number(e.value) : e.value;
+  return typeof n === 'number' && Number.isSafeInteger(n) ? n : null;
+}
+
+function r15Context(mod) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const memberDeco = new Map();
+  const typeDeco = new Map();
+  const varDeco = new Map();
+  const structKind = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Decorate) {
+      const [target, deco, val] = ins.words;
+      if (deco === 6) { const d = typeDeco.get(target) || {}; d.arrayStride = val; typeDeco.set(target, d); }
+      else {
+        if (deco === 2) structKind.set(target, 'block');
+        else if (deco === 3) structKind.set(target, 'bufferblock');
+        const d = varDeco.get(target) || { decos: [] };
+        if (deco === 34) d.set = val; else if (deco === 33) d.binding = val;
+        else if (deco === 24) d.nonWritable = true;
+        d.decos.push(ins); varDeco.set(target, d);
+      }
+    } else if (ins.op === Op.MemberDecorate) {
+      const [st, idx, deco, val] = ins.words;
+      const key = st + ':' + idx;
+      const d = memberDeco.get(key) || {};
+      if (deco === 35) d.offset = val; else if (deco === 7) d.matrixStride = val;
+      else if (deco === 4) d.rowMajor = true; else if (deco === 5) d.rowMajor = false;
+      memberDeco.set(key, d);
+    }
+  }
+  let pushVarId = null, pushStructId = null, multiPush = false;
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== 9) continue;
+    if (pushVarId != null) { multiPush = true; break; }
+    pushVarId = ins.resultId;
+    const ptr = byId.get(ins.words[0]);
+    pushStructId = ptr && ptr.op === Op.TypePointer ? ptr.words[2] : null;
+  }
+  if (multiPush) { pushVarId = null; pushStructId = null; }
+  let firstFunc = mod.insns.findIndex(i => i.op === Op.Function);
+  if (firstFunc < 0) firstFunc = mod.insns.length;
+  return { mod, byId, memberDeco, typeDeco, varDeco, structKind, pushVarId, pushStructId, firstFunc };
+}
+
+// Byte offset + result pointee type of a pointer value that chains back to
+// the push-constant variable, or null. Indices must be constants; struct
+// members resolve through Offset decorations, vectors through their scalar
+// size, arrays through ArrayStride. Anything else is unmodelled.
+function r15ChainOffset(ctx, ptrId) {
+  const ins = ctx.byId.get(ptrId);
+  if (!ins) return null;
+  if (ins.op === Op.Variable) {
+    if (ptrId !== ctx.pushVarId || ctx.pushStructId == null) return null;
+    return { off: 0, typeId: ctx.pushStructId };
+  }
+  if (ins.op !== Op.AccessChain && ins.op !== Op.InBoundsAccessChain) return null;
+  const base = r15ChainOffset(ctx, ins.words[2]);
+  if (!base || base.typeId == null) return null;
+  let off = base.off, cur = base.typeId;
+  for (let k = 3; k < ins.words.length; k++) {
+    const idx = r15ConstInt(ctx, ins.words[k]);
+    if (idx == null || idx < 0) return null;
+    const t = ctx.byId.get(cur);
+    if (!t) return null;
+    if (t.op === Op.TypeStruct) {
+      if (idx + 1 >= t.words.length) return null;
+      const md = ctx.memberDeco.get(cur + ':' + idx);
+      if (!md || md.offset == null) return null;
+      off += md.offset; cur = t.words[idx + 1];
+    } else if (t.op === Op.TypeVector) {
+      const comp = ctx.byId.get(t.words[1]);
+      if (!comp || (comp.op !== Op.TypeInt && comp.op !== Op.TypeFloat)) return null;
+      off += idx * (comp.words[1] / 8); cur = t.words[1];
+    } else if (t.op === Op.TypeArray) {
+      const d = ctx.typeDeco.get(cur);
+      if (!d || d.arrayStride == null) return null;
+      off += idx * d.arrayStride; cur = t.words[1];
+    } else return null;
+  }
+  return { off, typeId: cur };
+}
+
+// Classify an integer value expression: {kind:'push', byteOff, add} for a
+// load of the push block (through chains / copies / bitcasts / constant
+// adds and subs), {kind:'const', value} for a pure constant, else null.
+function r15ClassifyExpr(ctx, id, depth = 0) {
+  if (depth > 8) return null;
+  const ins = ctx.byId.get(id);
+  if (!ins) return null;
+  const cv = r15ConstInt(ctx, id);
+  if (cv != null) return { kind: 'const', value: cv };
+  switch (ins.op) {
+    case Op.Load: {
+      const r = r15ChainOffset(ctx, ins.words[2]);
+      if (!r) return null;
+      const lt = ctx.byId.get(ins.resultType);
+      if (!lt) return null;
+      let ok = lt.op === Op.TypeInt;
+      if (!ok && lt.op === Op.TypeVector) {
+        const c = ctx.byId.get(lt.words[1]);
+        ok = !!c && c.op === Op.TypeInt && c.words[1] === 32 && lt.words[2] === 2;
+      }
+      return ok ? { kind: 'push', byteOff: r.off, add: 0 } : null;
+    }
+    case Op.CopyObject:
+      return r15ClassifyExpr(ctx, ins.words[2], depth + 1);
+    case R15_OP.Bitcast:
+      return r15ClassifyExpr(ctx, ins.words[2], depth + 1);
+    case R15_OP.IAdd: case R15_OP.ISub: {
+      const a = r15ClassifyExpr(ctx, ins.words[2], depth + 1);
+      const b = r15ClassifyExpr(ctx, ins.words[3], depth + 1);
+      if (ins.op === R15_OP.IAdd) {
+        if (a && a.kind === 'push' && b && b.kind === 'const') return { kind: 'push', byteOff: a.byteOff, add: a.add + b.value };
+        if (a && a.kind === 'const' && b && b.kind === 'push') return { kind: 'push', byteOff: b.byteOff, add: b.add + a.value };
+        if (a && a.kind === 'const' && b && b.kind === 'const') return { kind: 'const', value: a.value + b.value };
+      } else {
+        if (a && a.kind === 'push' && b && b.kind === 'const') return { kind: 'push', byteOff: a.byteOff, add: a.add - b.value };
+        if (a && a.kind === 'const' && b && b.kind === 'const') return { kind: 'const', value: a.value - b.value };
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+// Classify every use of a pointer value: reads (Load / AtomicLoad through
+// it or through chains/copies rooted at it), writes (Store / atomic RMW),
+// escapes (anything not positively classified). Also collects the cone of
+// access-chain instructions rooted at the pointer.
+function r15PointerUses(ctx, rootId) {
+  const out = { reads: 0, writes: 0, escapes: [], cone: [] };
+  const seen = new Set();
+  const visit = (pid, depth) => {
+    if (depth > 16 || seen.has(pid)) return;
+    seen.add(pid);
+    for (let ii = ctx.firstFunc; ii < ctx.mod.insns.length; ii++) {
+      const ins = ctx.mod.insns[ii];
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      let hit = -1;
+      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === pid) { hit = k; break; }
+      if (hit < 0) continue;
+      if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+        out.cone.push(ins); visit(ins.resultId, depth + 1); continue;
+      }
+      if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1); continue; }
+      if (ins.op === Op.Load && hit === start) { out.reads++; continue; }
+      if (ins.op === Op.Store) {
+        if (hit === start) out.writes++; else out.escapes.push('pointer stored as a value');
+        continue;
+      }
+      if (ins.op >= 227 && ins.op <= 245 && hit === start) {
+        if (ins.op === R15_OP.AtomicLoad) out.reads++; else out.writes++;
+        continue;
+      }
+      out.escapes.push('op' + ins.op);
+    }
+  };
+  visit(rootId, 0);
+  return out;
+}
+
+// WGSL storage-layout measure (the R13 rules for the storage space, plus a
+// runtime-array tail). Returns {size, align, ok, runtime?} or null when the
+// shape is unmodelled. ok: every decorated stride/offset equals the value
+// WGSL storage layout computes, so naga's re-layout is a byte-exact no-op.
+function r15StorageMeasure(ctx, typeId, mDeco, depth = 0) {
+  if (depth > 12) return null;
+  const t = ctx.byId.get(typeId);
+  if (!t) return null;
+  const roundUp = (a, v) => (v + a - 1) & ~(a - 1);
+  switch (t.op) {
+    case Op.TypeInt: case Op.TypeFloat: {
+      const size = t.words[1] / 8;
+      return { size, align: size, ok: true };
+    }
+    case Op.TypeVector: {
+      const comp = r15StorageMeasure(ctx, t.words[1], null, depth + 1);
+      if (!comp || comp.runtime) return null;
+      const n = t.words[2];
+      return { size: comp.size * n, align: comp.size * (n === 2 ? 2 : 4), ok: comp.ok };
+    }
+    case Op.TypeMatrix: {
+      if (!mDeco || mDeco.matrixStride == null) return null;
+      const col = ctx.byId.get(t.words[1]);
+      if (!col || col.op !== Op.TypeVector) return null;
+      const comp = r15StorageMeasure(ctx, col.words[1], null, depth + 1);
+      if (!comp) return null;
+      const rows = col.words[2], cols = t.words[2];
+      const vecSize = mDeco.rowMajor ? comp.size * cols : comp.size * rows;
+      const vecAlign = comp.size * ((mDeco.rowMajor ? cols : rows) === 2 ? 2 : 4);
+      const vecCount = mDeco.rowMajor ? rows : cols;
+      const stride = roundUp(vecAlign, vecSize);
+      return { size: stride * vecCount, align: vecAlign, ok: mDeco.matrixStride === stride };
+    }
+    case Op.TypeArray: {
+      const len = r15ConstInt(ctx, t.words[2]);
+      const d = ctx.typeDeco.get(typeId);
+      if (len == null || !d || d.arrayStride == null) return null;
+      const elem = r15StorageMeasure(ctx, t.words[1], mDeco, depth + 1);
+      if (!elem || elem.runtime) return null;
+      const stride = roundUp(elem.align, elem.size);
+      return { size: stride * len, align: elem.align, ok: elem.ok && d.arrayStride === stride };
+    }
+    case Op.TypeRuntimeArray: {
+      const d = ctx.typeDeco.get(typeId);
+      if (!d || d.arrayStride == null) return null;
+      const elem = r15StorageMeasure(ctx, t.words[1], mDeco, depth + 1);
+      if (!elem || elem.runtime) return null;
+      const stride = roundUp(elem.align, elem.size);
+      return { size: 0, align: elem.align, ok: elem.ok && d.arrayStride === stride, runtime: true };
+    }
+    case Op.TypeStruct: {
+      let end = 0, align = 0, ok = true;
+      for (let i = 1; i < t.words.length; i++) {
+        const md = ctx.memberDeco.get(typeId + ':' + (i - 1));
+        if (!md || md.offset == null) return null;
+        const m = r15StorageMeasure(ctx, t.words[i], md, depth + 1);
+        if (!m) return null;
+        if (m.runtime && i !== t.words.length - 1) return null;
+        const off = roundUp(m.align, end);
+        if (md.offset !== off || !m.ok) ok = false;
+        end = off + (m.runtime ? 0 : m.size);
+        align = Math.max(align, m.align);
+      }
+      return { size: roundUp(align, end), align, ok };
+    }
+    default:
+      return null;
+  }
+}
+
+// --- R15 analysis (shared by the rewrites, the census tool and the tests;
+// the bridge audit in vk64bridge.cpp mirrors these classifiers) -----------
+
+// Runtime-descriptor-array variables and their access signatures.
+export function analyzeDescriptorArrays(mod) {
+  const ctx = r15Context(mod);
+  const arrays = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const ptr = ctx.byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const pointee = ctx.byId.get(ptr.words[2]);
+    if (!pointee || pointee.op !== Op.TypeRuntimeArray) continue;
+    const elem = ctx.byId.get(pointee.words[1]);
+    if (!elem) continue;
+    const elemKind = elem.op === R15_OP.TypeImage ? 'image'
+      : elem.op === R15_OP.TypeSampler ? 'sampler'
+      : elem.op === R15_OP.TypeSampledImage ? 'sampled-image' : null;
+    const d = ctx.varDeco.get(ins.resultId) || {};
+    const rec = {
+      varId: ins.resultId, varIns: ins, set: d.set ?? 0, binding: d.binding ?? 0,
+      elemTypeId: pointee.words[1], elemKind, sc: ptr.words[1],
+      signatures: [], servable: false, reason: null,
+    };
+    if (!elemKind) { rec.reason = 'array element is not a descriptor type'; arrays.push(rec); continue; }
+    // Writability only exists for storage images (Sampled==2); sampled
+    // images and samplers cannot be stored through at all. A writable
+    // storage-image array lacks the NonWritable decoration -> rejected.
+    if (elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable) { rec.reason = 'storage-image array is writable (writes not served)'; arrays.push(rec); continue; }
+    const sigKeys = new Map();
+    let bad = null;
+    for (let ii = ctx.firstFunc; ii < mod.insns.length && !bad; ii++) {
+      const u = mod.insns[ii];
+      const start = u.resultType != null ? 2 : u.resultId != null ? 1 : 0;
+      let hit = -1;
+      for (let k = start; k < u.words.length; k++) if (u.words[k] === ins.resultId) { hit = k; break; }
+      if (hit < 0) continue;
+      if ((u.op === Op.AccessChain || u.op === Op.InBoundsAccessChain) && hit === start) {
+        if (u.words.length !== start + 2) { bad = 'multi-index array access'; break; }
+        const sig = r15ClassifyExpr(ctx, u.words[start + 1]);
+        if (!sig) { bad = 'unclassifiable array index expression'; break; }
+        const key = sig.kind === 'const' ? 'c' + sig.value : 'p' + sig.byteOff + 'a' + sig.add;
+        sigKeys.set(key, sig);
+        const cu = r15PointerUses(ctx, u.resultId);
+        if (cu.writes > 0) { bad = 'store through an array element'; break; }
+        if (cu.escapes.length) { bad = 'array element pointer escape (' + cu.escapes[0] + ')'; break; }
+        rec.signatures.push({ sig, chainId: u.resultId });
+      } else {
+        bad = 'array variable use op' + u.op;
+      }
+    }
+    if (bad) rec.reason = bad;
+    else if (!rec.signatures.length) rec.reason = 'no accesses';
+    else if (sigKeys.size !== 1) rec.reason = sigKeys.size + ' distinct index signatures';
+    else rec.servable = true;
+    arrays.push(rec);
+  }
+  return { ctx, arrays };
+}
+
+// Physical-storage-buffer pointer materializations, grouped into root
+// slots by push byte offset, with a per-slot servability verdict.
+export function analyzeRootDescriptors(mod) {
+  const ctx = r15Context(mod);
+  const mats = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== R15_OP.ConvertUToPtr && ins.op !== R15_OP.Bitcast) continue;
+    const rt = ctx.byId.get(ins.resultType);
+    if (!rt || rt.op !== Op.TypePointer || rt.words[1] !== R15_PSB) continue;
+    const provenance = r15ClassifyExpr(ctx, ins.words[2]);
+    const uses = r15PointerUses(ctx, ins.resultId);
+    mats.push({
+      ins, matId: ins.resultId, ptrTypeId: ins.resultType, pointeeId: rt.words[2],
+      form: ins.op === R15_OP.Bitcast ? 'bitcast' : 'convert', provenance, uses,
+    });
+  }
+  const out = { ctx, mats, slots: [], moduleServable: false, rejectReason: null, flipStructs: [] };
+  if (!mats.length) return out;
+  const bySlot = new Map();
+  for (const m of mats) {
+    if (!m.provenance || m.provenance.kind !== 'push') {
+      out.rejectReason = 'pointer %' + m.matId + ' address does not trace to a single push-block load';
+      return out;
+    }
+    if (m.provenance.add !== 0) {
+      out.rejectReason = 'pointer %' + m.matId + ' carries a nonzero address addend (' + m.provenance.add + ')';
+      return out;
+    }
+    if (m.provenance.byteOff % 8 !== 0) {
+      out.rejectReason = 'root slot push offset ' + m.provenance.byteOff + ' is not 8-byte aligned';
+      return out;
+    }
+    const key = m.provenance.byteOff;
+    if (!bySlot.has(key)) bySlot.set(key, { byteOff: key, mats: [], writable: false, escapes: [], pointees: new Set(), coneTypes: new Set() });
+    const s = bySlot.get(key);
+    s.mats.push(m);
+    if (m.uses.writes > 0) s.writable = true;
+    s.escapes.push(...m.uses.escapes);
+    s.pointees.add(m.pointeeId);
+    for (const c of m.uses.cone) s.coneTypes.add(c.resultType);
+  }
+  out.slots = [...bySlot.values()].sort((a, b) => a.byteOff - b.byteOff);
+  // Every PhysicalStorageBuffer pointer type in the module must belong to
+  // a servable cone (or be entirely unreferenced, in which case the
+  // rewrite deletes it): after the rewrite no PSB type may remain live.
+  const matTypes = new Set(mats.map(m => m.ptrTypeId));
+  const coneTypes = new Set();
+  for (const s of out.slots) for (const t of s.coneTypes) coneTypes.add(t);
+  const referenced = new Set();
+  for (const ins of mod.insns) for (const w of ins.words) referenced.add(w);
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.TypePointer || ins.words[1] !== R15_PSB) continue;
+    const tid = ins.resultId;
+    if (matTypes.has(tid) || coneTypes.has(tid)) continue;
+    if (referenced.has(tid) && ins.resultId != null) {
+      // referenced by something outside the analyzed cones (its own
+      // declaration does not count: resultId is not an operand word)
+      let external = false;
+      for (const u of mod.insns) {
+        if (u === ins) continue;
+        if (u.words.includes(tid)) { external = true; break; }
+      }
+      if (external) {
+        out.rejectReason = 'PhysicalStorageBuffer pointer type %' + tid + ' is used outside a root-descriptor cone';
+        return out;
+      }
+    }
+  }
+  const flip = new Set();
+  for (const s of out.slots) {
+    if (s.writable) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through its pointer (no GPU->guest buffer writeback)'; return out; }
+    if (s.escapes.length) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointer escapes (' + s.escapes[0] + ')'; return out; }
+    if (s.pointees.size !== 1) { out.rejectReason = 'root slot push@' + s.byteOff + ' has ' + s.pointees.size + ' distinct pointee types'; return out; }
+    const pointeeId = [...s.pointees][0];
+    s.pointeeId = pointeeId;
+    const measure = r15StorageMeasure(ctx, pointeeId, null);
+    if (!measure || !measure.ok) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointee layout is not byte-exact in WGSL storage layout'; return out; }
+    const pt = ctx.byId.get(pointeeId);
+    if (pt && pt.op === Op.TypeStruct) {
+      const kind = ctx.structKind.get(pointeeId);
+      if (kind !== 'block' && kind !== 'bufferblock') { out.rejectReason = 'root pointee struct %' + pointeeId + ' is neither Block nor BufferBlock'; return out; }
+      // The Block -> BufferBlock flip is only sound when no other pointer
+      // type or variable reaches the struct in a different storage class.
+      for (const u of mod.insns) {
+        if (u.op === Op.TypePointer && u.words[2] === pointeeId && u.words[1] !== R15_PSB) {
+          out.rejectReason = 'root pointee struct %' + pointeeId + ' is shared with a non-PSB pointer type';
+          return out;
+        }
+      }
+      if (kind === 'block') flip.add(pointeeId);
+    }
+  }
+  // The synthesized bindings must not collide with a module-owned
+  // binding in the chosen set (the rewrite picks the heap set exactly
+  // this way; mirrored in the bridge audit).
+  {
+    const heapSets = new Set();
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Variable) continue;
+      const ptr = ctx.byId.get(ins.words[0]);
+      if (!ptr || ptr.op !== Op.TypePointer) continue;
+      const pointee = ctx.byId.get(ptr.words[2]);
+      if (pointee && pointee.op === Op.TypeRuntimeArray) {
+        const d = ctx.varDeco.get(ins.resultId) || {};
+        heapSets.add(d.set ?? 0);
+      }
+    }
+    const heapSet = heapSets.size === 1 ? [...heapSets][0] : 0;
+    const occupied = new Set();
+    for (const [id, d] of ctx.varDeco) {
+      if (typeof d.set === 'number' && typeof d.binding === 'number') occupied.add(d.set + ':' + d.binding);
+    }
+    for (const sl of out.slots) {
+      const binding = 4096 + sl.byteOff / 8;
+      if (occupied.has(heapSet + ':' + binding)) {
+        out.rejectReason = 'synthesized root binding ' + binding + ' in set ' + heapSet + ' collides with a module-owned binding';
+        return out;
+      }
+    }
+  }
+  out.flipStructs = [...flip];
+  out.moduleServable = true;
+  return out;
+}
+
+// --- R15 rewrites -------------------------------------------------------------
+
+function r15EntryPointTail(ins) {
+  // Index of the first interface id word in an OpEntryPoint instruction
+  // (after execution model, entry id, and the NUL-terminated name).
+  let k = 2;
+  while (k < ins.words.length) {
+    const w = ins.words[k++];
+    if ((w & 0xff) === 0 || ((w >>> 8) & 0xff) === 0 || ((w >>> 16) & 0xff) === 0 || ((w >>> 24) & 0xff) === 0) break;
+  }
+  return k;
+}
+
+function r15SpliceAdditions(mod, addAnnot, addTypes, addNames) {
+  if (addAnnot.length) {
+    const s = sections(mod);
+    mod.insns.splice(Math.max(s.lastAnnot + 1, 0), 0, ...addAnnot);
+  }
+  if (addTypes.length) {
+    const s = sections(mod);
+    mod.insns.splice(s.firstFunc < 0 ? mod.insns.length : s.firstFunc, 0, ...addTypes);
+  }
+  if (addNames.length) {
+    const s = sections(mod);
+    mod.insns.splice(Math.max(s.lastDebug + 1, 0), 0, ...addNames);
+  }
+}
+
+// Strip the Aligned operand from a Load/Store memory-operand list (the
+// re-rooted storage binding carries the alignment contract through the
+// audited layout; the operand would otherwise promise an alignment the
+// VA's offset inside its buffer does not guarantee).
+function r15StripAligned(ins, memIdx) {
+  if (ins.words.length <= memIdx) return;
+  let mask = ins.words[memIdx];
+  if (!(mask & 2)) return;
+  const kept = [];
+  let src = memIdx + 1;
+  const bits = [[1, 0], [2, 1], [4, 0], [8, 1], [16, 1], [32, 0]];
+  for (const [bit, nops] of bits) {
+    if (!(mask & bit)) continue;
+    if (bit !== 2) { kept.push(...ins.words.slice(src, src + nops)); }
+    src += nops;
+  }
+  mask &= ~2;
+  if (mask === 0) ins.words.length = memIdx;
+  else { ins.words[memIdx] = mask; ins.words.splice(memIdx + 1, ins.words.length - (memIdx + 1), ...kept); }
+}
+
+export function specializeDescriptorArrays(mod, log) {
+  const { ctx, arrays } = analyzeDescriptorArrays(mod);
+  const targets = arrays.filter(a => a.servable);
+  for (const a of arrays) {
+    if (!a.servable && a.signatures.length) log.push('spirvfix: left descriptor array %' + a.varId + ' unchanged (' + a.reason + ')');
+  }
+  if (!targets.length) return false;
+  const nextId = makeIdSource(mod);
+  const addTypes = [], addAnnot = [], addNames = [];
+  const drop = new Set();
+  for (const a of targets) {
+    const sig = a.signatures[0].sig;
+    let clonePtrId = null;
+    for (const ins of mod.insns) {
+      if (ins.op === Op.TypePointer && ins.words[1] === a.sc && ins.words[2] === a.elemTypeId) { clonePtrId = ins.resultId; break; }
+    }
+    if (clonePtrId == null) {
+      clonePtrId = nextId();
+      addTypes.push({ op: Op.TypePointer, words: [clonePtrId, a.sc, a.elemTypeId], resultType: null, resultId: clonePtrId });
+    }
+    const cloneId = nextId();
+    addTypes.push({ op: Op.Variable, words: [clonePtrId, cloneId, a.sc], resultType: clonePtrId, resultId: cloneId });
+    const suffix = sig.kind === 'const' ? '_c' + sig.value : '_p' + sig.byteOff + '_a' + sig.add;
+    addNames.push({ op: Op.Name, words: [cloneId, ...strWords('bw_arr_g' + a.set + '_b' + a.binding + suffix)], resultType: null, resultId: null });
+    for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) {
+      addAnnot.push({ op: Op.Decorate, words: [cloneId, ...dins.words.slice(1)], resultType: null, resultId: null });
+    }
+    for (const s of a.signatures) {
+      const chain = ctx.byId.get(s.chainId);
+      chain.op = Op.CopyObject;
+      chain.words = [chain.resultType, chain.resultId, cloneId];
+    }
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      const tail = r15EntryPointTail(ins);
+      let found = false;
+      for (let k = tail; k < ins.words.length; k++) if (ins.words[k] === a.varId) { ins.words[k] = cloneId; found = true; }
+      if (!found) ins.words.push(cloneId);
+    }
+    drop.add(a.varIns);
+    for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) drop.add(dins);
+    log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')');
+  }
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
+  // Orphan sweep: delete array / runtime-array / pointer TYPE declarations
+  // the specialization left unreferenced (references from decorations and
+  // names do not count; their decorations die with them). If no runtime
+  // array type survives, the RuntimeDescriptorArray capability goes too --
+  // the audit mirror admits cap 5302 under exactly this condition.
+  let swept = true;
+  while (swept) {
+    swept = false;
+    const live = new Set();
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
+      // Header/directive instructions carry enums, strings, or variable
+      // ids -- never type ids -- so their words are not references (a
+      // capability NUMBER equal to a type id must not keep the type
+      // alive; mirrored in the bridge audit's skip5302 simulation).
+      if (ins.op === Op.SourceContinued || ins.op === Op.Source || ins.op === Op.SourceExtension ||
+          ins.op === Op.String || ins.op === Op.Extension || ins.op === Op.MemoryModel ||
+          ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
+      // resultType (words[0]) is a use; the resultId word is a definition.
+      if (ins.resultType != null) live.add(ins.words[0]);
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+    }
+    const dead = new Set();
+    for (const ins of mod.insns) {
+      if ((ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray || ins.op === Op.TypePointer) && ins.resultId != null && !live.has(ins.resultId)) dead.add(ins.resultId);
+    }
+    if (dead.size) {
+      mod.insns = mod.insns.filter(i => {
+        if (i.resultId != null && dead.has(i.resultId) && (i.op === Op.TypeArray || i.op === Op.TypeRuntimeArray || i.op === Op.TypePointer)) return false;
+        if ((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && dead.has(i.words[0])) return false;
+        return true;
+      });
+      swept = true;
+    }
+  }
+  if (!mod.insns.some(i => i.op === Op.TypeRuntimeArray)) {
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 5302));
+  }
+  return true;
+}
+
+export function rewriteRootDescriptors(mod, log) {
+  const analysis = analyzeRootDescriptors(mod);
+  const { ctx } = analysis;
+  if (!analysis.mats.length) return false;
+  if (!analysis.moduleServable) {
+    log.push('spirvfix: left root-descriptor module unchanged (' + analysis.rejectReason + ')');
+    return false;
+  }
+  // Binding set: the module's heap-array set when all its runtime-array
+  // variables share one set, else set 0.
+  const heapSets = new Set();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const ptr = ctx.byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const pointee = ctx.byId.get(ptr.words[2]);
+    if (pointee && pointee.op === Op.TypeRuntimeArray) {
+      const d = ctx.varDeco.get(ins.resultId) || {};
+      heapSets.add(d.set ?? 0);
+    }
+  }
+  const heapSet = heapSets.size === 1 ? [...heapSets][0] : 0;
+  const nextId = makeIdSource(mod);
+  const addTypes = [], addAnnot = [], addNames = [];
+  const twinOf = new Map();
+  const twinPointer = (ptrTypeId) => {
+    if (twinOf.has(ptrTypeId)) return twinOf.get(ptrTypeId);
+    const src = ctx.byId.get(ptrTypeId);
+    const id = nextId();
+    addTypes.push({ op: Op.TypePointer, words: [id, R15_STORAGE_BUFFER, src.words[2]], resultType: null, resultId: id });
+    twinOf.set(ptrTypeId, id);
+    return id;
+  };
+  const baseOf = new Map(); // old pointer value id -> new base value id
+  const newVars = [];
+  for (const slot of analysis.slots) {
+    const binding = 4096 + slot.byteOff / 8;
+    const varId = nextId();
+    const ptrId = twinPointer(slot.mats[0].ptrTypeId);
+    addTypes.push({ op: Op.Variable, words: [ptrId, varId, R15_STORAGE_BUFFER], resultType: ptrId, resultId: varId });
+    addNames.push({ op: Op.Name, words: [varId, ...strWords('bw_root_p' + slot.byteOff)], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [varId, 34, heapSet], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [varId, 33, binding], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.Decorate, words: [varId, 24], resultType: null, resultId: null });
+    for (const m of slot.mats) baseOf.set(m.matId, varId);
+    slot.newVarId = varId;
+    newVars.push(varId);
+    log.push('spirvfix: re-rooted root descriptor push@' + slot.byteOff + ' at set ' + heapSet + ' binding ' + binding + ' (bw_root_p' + slot.byteOff + ')');
+  }
+  // Block -> BufferBlock on the pointee structs, pre-SPIR-V 1.3 only:
+  // from 1.3 on, a StorageBuffer variable's struct keeps Block (BufferBlock
+  // is rejected by spirv-val for 1.4+ modules), mirroring R13's rule.
+  for (const structId of mod.header.version < 0x00010300 ? analysis.flipStructs : []) {
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Decorate && ins.words[0] === structId && ins.words[1] === 2) ins.words[1] = 3;
+    }
+  }
+  // Re-root chains and direct loads. Instructions are in SSA order, so a
+  // single pass rewrites bases before their consumers.
+  const rewritten = new Set(baseOf.keys());
+  for (const ins of mod.insns) {
+    if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && rewritten.has(ins.words[2])) {
+      ins.resultType = twinPointer(ins.resultType);
+      ins.words[0] = ins.resultType;
+      ins.words[2] = baseOf.get(ins.words[2]);
+      baseOf.set(ins.resultId, ins.resultId);
+      rewritten.add(ins.resultId);
+    } else if (ins.op === Op.CopyObject && rewritten.has(ins.words[2])) {
+      ins.resultType = twinPointer(ins.resultType);
+      ins.words[0] = ins.resultType;
+      ins.words[2] = baseOf.get(ins.words[2]);
+      baseOf.set(ins.resultId, ins.resultId);
+      rewritten.add(ins.resultId);
+    } else if (ins.op === Op.Load && rewritten.has(ins.words[2])) {
+      ins.words[2] = baseOf.get(ins.words[2]);
+      r15StripAligned(ins, 3);
+    }
+  }
+  // Delete the materializations, then sweep the address-provenance cone
+  // (loads / chains / arithmetic that fed only deleted materializations).
+  const drop = new Set(analysis.mats.map(m => m.ins));
+  const sweepOps = new Set([Op.Load, Op.AccessChain, Op.InBoundsAccessChain, Op.CopyObject, R15_OP.IAdd, R15_OP.ISub, R15_OP.Bitcast]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const live = new Set();
+    for (const ins of mod.insns) {
+      if (drop.has(ins)) continue;
+      if (ins.resultType != null) live.add(ins.words[0]);
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+    }
+    for (const ins of mod.insns) {
+      if (drop.has(ins) || !sweepOps.has(ins.op) || ins.resultId == null) continue;
+      if (!live.has(ins.resultId)) { drop.add(ins); grew = true; }
+    }
+  }
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  // No PhysicalStorageBuffer type may survive (analysis proved every one
+  // was a cone type, a materialization type, or unreferenced).
+  mod.insns = mod.insns.filter(i => !(i.op === Op.TypePointer && i.words[1] === R15_PSB));
+  // Strip the capabilities, the extension, and the addressing model.
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 5346 || i.words[0] === 5347)));
+  mod.insns = mod.insns.filter(i => !(i.op === R15_OP.Extension && decodeStr(i) === 'SPV_KHR_physical_storage_buffer'));
+  for (const ins of mod.insns) {
+    if (ins.op === Op.MemoryModel && ins.words[0] === R15_PSB_MODEL) ins.words[0] = 0;
+  }
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.EntryPoint) continue;
+    for (const v of newVars) ins.words.push(v);
+  }
+  r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
+  return true;
 }
 
 export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
@@ -2218,6 +2951,12 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     if (fragmentLayerToZero(mod, log)) applied.push('fragment-layer-to-zero');
   } catch (e) { log.push('R11 failed: ' + (e.message || e)); }
   try {
+    if (specializeDescriptorArrays(mod, log)) applied.push('descriptor-array-specialize');
+  } catch (e) { log.push('R15a failed: ' + (e.message || e)); }
+  try {
+    if (rewriteRootDescriptors(mod, log)) applied.push('root-descriptor-bda');
+  } catch (e) { log.push('R15b failed: ' + (e.message || e)); }
+  try {
     if (uniformBlocksToStorage(mod, log)) applied.push('uniform-block-to-storage');
   } catch (e) { log.push('R13 failed: ' + (e.message || e)); }
   try {
@@ -2231,4 +2970,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-signed-zero-inf-nan-preserve', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda'];

@@ -44,6 +44,8 @@ test('REWRITES exports every rule', () => {
     'fragment-layer-to-zero',
     'uniform-block-to-storage',
     'storage-image-format',
+    'descriptor-array-specialize',
+    'root-descriptor-bda',
   ]);
 });
 
