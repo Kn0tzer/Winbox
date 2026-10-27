@@ -1788,7 +1788,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const uniformSizes = wgslUniformSizes(vsR.code);
     for (const [binding, size] of wgslUniformSizes(fsR.code))
       uniformSizes.set(binding, Math.max(size, uniformSizes.get(binding) || 0));
-    for (const d of decls) if (d.addr === "uniform") {
+    for (const d of decls) if (d.addr === "uniform" || d.addr.startsWith("storage")) {
       const s = uniformSizes.get(d.group + ":" + d.binding);
       if (s) d.minSize = s;
     }
@@ -2007,10 +2007,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return parts.join(';');
   }
 
-  function samplerIdForDecl(sets, group, d) {
+  function samplerIdForDecl(sets, group, d, st) {
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
-    const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, 0);
+    const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, declElement(st, d, 0));
     if (b && b.kind === 3) return b.obj;
     if (b && b.kind === 2) return b.range;
     return null;
@@ -2030,6 +2030,23 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       }
     }
     return false;
+  }
+
+  // R15 bind-time resolution. A bw_arr_* decl (spirvfix-specialized
+  // descriptor array) carries ONE index signature: the element is a
+  // constant, or a u32 read from the draw's merged push block plus an
+  // addend. A bw_root_* decl (re-rooted root descriptor) binds the
+  // ROOT_DESCS resolution for its push offset instead of a DESC_SET entry;
+  // an unresolved or zero-length resolution yields null, which the buffer
+  // branch serves as zero-filled storage (D3D12 null-descriptor reads).
+  function declElement(st, d, k) {
+    if (!d.arrSig) return k;
+    if (d.arrSig.kind === 'const') return d.arrSig.value;
+    const pb = st && st.pushBlock;
+    if (!pb || d.arrSig.pushOff + 4 > pb.length) return 0xFFFFFFFF;
+    const o = d.arrSig.pushOff;
+    const word = (pb[o] | (pb[o + 1] << 8) | (pb[o + 2] << 16) | (pb[o + 3] << 24)) >>> 0;
+    return (word + d.arrSig.add) >>> 0;
   }
 
   function bindingForElement(bindings, bindingNum, el) {
@@ -2082,10 +2099,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // GPU resources would change; may (conservatively) differ for identical
   // content, which only costs a cache miss. Mirrors bindGroupEntries'
   // resolution logic without creating any GPU objects.
-  function bindGroupFingerprint(prec, sets, inlineMap, group) {
+  function bindGroupFingerprint(prec, sets, inlineMap, group, st) {
     const parts = [];
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
+    const bindFor = (d, k) => {
+      if (d.rootOff != null) { const r = st.rootDescs.get(d.rootOff); return r && r.len !== '0' ? { kind: 1, obj: r.obj, bufOff: r.absOff } : null; }
+      return bindingForElement(bindings, d.binding, declElement(st, d, k));
+    };
     for (const d of prec.decls) {
       if (d.group !== group) continue;
       const t = d.type;
@@ -2095,7 +2116,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const dimension = wgslTextureViewDimension(t) || '2d';
         const cube = dimension === 'cube' || dimension === 'cube-array';
         for (let k = 0; k < n; k++) {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           if (b && b.kind === 5) { parts.push('v' + d.binding + ':' + k + ':' + texelTextureKey(b.obj)); continue; }
           if (nullSamplerCombined(b)) { parts.push('t' + d.binding + ':' + k + ':nullsamp'); continue; }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
@@ -2110,7 +2131,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const sHex = samplerIdForDecl(sets, group, d);
+        const sHex = samplerIdForDecl(sets, group, d, st);
         const has = sHex && F.samplers.get(sHex);
         parts.push('s' + d.binding + ':' + (has ? sHex + (t === 'sampler_comparison' ? ':c' : ':f') : 'default'));
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
@@ -2118,7 +2139,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
         const n = Math.max(1, d.arrayCount || 1);
         for (let k = 0; k < n; k++) {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           let bytes = null, bufHex = null, preHash = null;
           if (b && b.kind === 1) {
             bufHex = b.obj;
@@ -2157,7 +2178,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const dimension = wgslTextureViewDimension(t) || '2d';
         const cube = dimension === 'cube' || dimension === 'cube-array';
         for (let k = 0; k < n; k++) {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           if (b && b.kind === 2 && b.obj === '0000000000000000') { parts.push('x' + d.binding + ':' + k + ':null'); continue; }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           const img = imgHex && imageForView(b?.obj, imgHex);
@@ -2168,10 +2189,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return parts.join('|');
   }
 
-  function bindGroupEntries(prec, sets, inlineMap, group) {
+  function bindGroupEntries(prec, sets, inlineMap, group, st) {
     const entries = [];
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
+    const bindFor = (d, k) => {
+      if (d.rootOff != null) { const r = st.rootDescs.get(d.rootOff); return r && r.len !== '0' ? { kind: 1, obj: r.obj, bufOff: r.absOff } : null; }
+      return bindingForElement(bindings, d.binding, declElement(st, d, k));
+    };
     for (const d of prec.decls) {
       if (d.group !== group) continue;
       const t = d.type;
@@ -2179,7 +2204,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
         const views = [];
         for (let k = 0; k < d.arrayCount; k++) {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           if (b && b.kind === 5) {
             // A zero view id is a guest VK_NULL_HANDLE texel buffer view,
             // not a lost view: the bridge advertises nullDescriptor and
@@ -2235,13 +2260,13 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const sHex = samplerIdForDecl(sets, group, d);
+        const sHex = samplerIdForDecl(sets, group, d, st);
         const s = sHex && F.samplers.get(sHex);
         entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s, t === 'sampler_comparison') : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
         const isStorage = d.addr.startsWith('storage');
         const mk = k => {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           let bytes = null, bufHex = null, preHash = null;
           if (b && b.kind === 1) {
             bufHex = b.obj;
@@ -2304,7 +2329,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const cube = dimension === 'cube' || dimension === 'cube-array';
         const views = [];
         for (let k = 0; k < d.arrayCount; k++) {
-          const b = bindingForElement(bindings, d.binding, k);
+          const b = bindFor(d, k);
           // A zero view id is a guest VK_NULL_HANDLE UAV: under the
           // bridge-advertised nullDescriptor feature, typed reads from it
           // are defined to return zero -- serve a zero texture of the
@@ -2412,6 +2437,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const st = {
       pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
+      rootDescs: new Map(), // push byte offset -> {obj, absOff, len} (V2 ROOT_DESCS)
       vbinds: [], ibind: null, viewport: null, scissor: null,
       pipeBad: false, badPipes: new Map(), dynamicStencil:[[undefined,undefined],[undefined,undefined],[undefined,undefined]], blendConstants:[0,0,0,0], depthBias:null, cull:undefined, front:undefined, dyn:{},
     };
@@ -2664,6 +2690,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           case 'descSet': st.sets.set(op.setIndex, { bindings: op.bindings }); bump(op.setIndex); break;
           case 'inline': st.inlineMap.set(op.setIndex + ':' + op.binding, op.bytes); bump(op.setIndex); break;
           case 'push': st.pushBlock.set(op.bytes, op.offset); st.pushDirty = true; break;
+          case 'rootDescs': st.rootDescs = op.entries; break;
           case 'viewport': st.viewport = op.v; break;
           case 'scissor': st.scissor = op.s; break;
           case 'vbind': st.vbinds = op.binds; break;
@@ -2725,12 +2752,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               // Persistent bind-group cache: the fingerprint captures
               // descriptor content, so identical sets reuse the bind group
               // across frames instead of re-creating it per draw.
-              const fp = bindGroupFingerprint(st.pipeRec, st.sets, st.inlineMap, g);
+              const fp = bindGroupFingerprint(st.pipeRec, st.sets, st.inlineMap, g, st);
               const ck = 'g|' + st.pipeRec.key + '|' + g + '|' + fp;
               let bg = persistGroupCache.get(ck);
               if (!bg) {
                 persistStats.groupMiss++;
-                const entries = bindGroupEntries(st.pipeRec, st.sets, st.inlineMap, g);
+                const entries = bindGroupEntries(st.pipeRec, st.sets, st.inlineMap, g, st);
                 if (!entries) { invalidBindGroup = true; break; }
                 bg = device.createBindGroup({ layout: st.pipeRec.layouts[g], entries });
                 persistGroupCache.set(ck, bg);

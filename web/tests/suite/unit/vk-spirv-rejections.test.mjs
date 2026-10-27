@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { rewritePushConstantsWGSL } from '../../../vkwebgpu.mjs';
-import { applySpirvFix } from '../../../../tools/spirvfix/spirvfix.mjs';
+import { applySpirvFix, parseSpirv, serializeSpirv } from '../../../../tools/spirvfix/spirvfix.mjs';
 import * as naga from '../../../vendor/naga/node.js';
 
 const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
@@ -29,6 +29,15 @@ test('unsupported and unknown SPIR-V capabilities reject before publishing a sha
   assert.match(audit, /vk64Unsupported\(\("spirv-capability:"/);
   assert.match(audit, /VK_ERROR_INVALID_SHADER_NV/);
   assert.match(audit, /w\[i \+ 3\] == 6\) inputAttachment = true/);
+  // Compute-entry settlement (D3D12 stack merge): the vkd3d disposition is
+  // adopted -- compute-ONLY modules are ACCEPTED at creation (the audit
+  // returns VK_SUCCESS so vkd3d-proton device creation succeeds; it builds
+  // internal compute pipelines during device creation and treats refusal as
+  // device-fatal), and dispatches are loud-dropped at submit as
+  // 'compute-dispatch'. Mixed compute+graphics modules still reject here.
+  assert.match(audit, /if \(compute && !graphicsEntry\)/);
+  assert.match(audit, /compute-only shader module accepted for pipeline creation/);
+  assert.match(audit, /if \(compute\) \{ vk64Unsupported\("spirv-compute-entry"/);
   // Typed-UAV reads (Typed-UAV-Load lane): storage-image modules pass the
   // audit when they only READ; the write form keeps a named rejection, and
   // capabilities 55/56 are used-conditionally exempt exactly like 33/4427.
@@ -173,4 +182,89 @@ test('used CullDistance / DrawParameters shapes remain untranslatable', () => {
     () => naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(draw).bytes }),
     undefined,
     'a module that loads the draw builtins must still fail translation (spirvfix R5 replace emits invalid SPIR-V for this layout)');
+});
+
+// Route 0 (descriptor-addressing research, 2026-10-27): vkd3d-proton switches
+// dxil-spirv into the physical addressing model module-wide whenever the
+// shader interface carries ANY raw-VA binding or root descriptor, so cap
+// 5347 (PhysicalStorageBufferAddresses) is declared even by modules with
+// zero pointer dereferences -- that header artifact blocked every
+// descriptor-using D3D12 PSO (uav12 EXEC, campaign report 4.17). The audit
+// now exempts 5346/5347 only in the declared-but-unused form, mirroring
+// spirvfix R8's used-test byte for byte: an OpConvertUToPtr/OpConvertPtrToU
+// (ops 120/121) or an OpTypePointer with storage class 5349. The used form
+// keeps rejecting under the existing spirv-capability-unknown:<n> token.
+test('PhysicalStorageBufferAddresses (5346/5347) reject only when actually used', () => {
+  const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
+  const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
+  assert.ok(audit.includes('bool physicalBufferUsed = false;'), 'audit must track physical-pointer use');
+  assert.match(audit, /case 120: case 121: physicalBufferUsed = true;/, 'OpConvertUToPtr/OpConvertPtrToU mark physical use');
+  assert.match(audit, /w\[i \+ 2\] == 5349\) physicalBufferUsed = true/, 'OpTypePointer storage class 5349 marks physical use');
+  assert.ok(audit.includes('if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue;'),
+    'declared-but-unused 5346/5347 are exempted, parallel to 33/4427/55/56');
+  assert.ok(!table.includes('case 5346:') && !table.includes('case 5347:'),
+    'used 5346/5347 have no name-table case, so they keep rejecting as spirv-capability-unknown:<n>');
+  // Exactness mirror: the tier's R8 applies the same used-test with the same
+  // operand index (an OpTypePointer's storage class is operand words[1]).
+  const fix = readFileSync(new URL('../../../../tools/spirvfix/spirvfix.mjs', import.meta.url), 'utf8');
+  assert.match(fix, /i\.op === 120 \|\| i\.op === 121/, 'R8 convert-op half of the used-test');
+  assert.match(fix, /i\.op === Op\.TypePointer && i\.words\[1\] === 5349/, 'R8 pointer-type half of the used-test');
+});
+
+// The reproduced real vkd3d module from the descriptor-addressing census
+// (tools/vkd3d/bda-research/ps_uav_bindless.spv, dxil-spirv on the guest's
+// own ps_uav DXBC): 5347 declared, zero pointer ops. The audit's census
+// predicates must all read "unused" on it, and the tier's R8 must strip it.
+test('real vkd3d UAV module declares 5347 unused: census + R8 strip (Route 0)', () => {
+  const bytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-5347-unused.spv', import.meta.url)));
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+  const caps = new Set();
+  let converts = 0, physPtrTypes = 0;
+  for (let i = 5; i < words.length;) {
+    const op = words[i] & 0xffff, len = words[i] >> 16;
+    assert.ok(len > 0, 'well-formed instruction stream');
+    if (op === 17) caps.add(words[i + 1]);
+    if (op === 120 || op === 121) converts++;
+    if (op === 32 && words[i + 2] === 5349) physPtrTypes++;
+    i += len;
+  }
+  assert.ok(caps.has(5347), 'the reproduced module declares PhysicalStorageBufferAddresses');
+  assert.equal(converts, 0, 'census: no OpConvertUToPtr/OpConvertPtrToU');
+  assert.equal(physPtrTypes, 0, 'census: no PhysicalStorageBuffer pointer types');
+  const out = applySpirvFix(bytes);
+  assert.ok(out.applied.includes('strip-unused-physical-storage-buffer'), 'R8 strips the admitted module');
+  const mod = parseSpirv(out.bytes);
+  assert.ok(!mod.insns.some((i) => i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347)),
+    'capability removed by R8');
+  const mm = mod.insns.find((i) => i.op === 14);
+  assert.equal(mm.words[0], 0, 'addressing model rewritten to Logical by R8');
+});
+
+// Sabotage pair for the two tests above: a module that DOES materialize a
+// physical pointer (convert op + PhysicalStorageBuffer pointer type) must
+// not be stripped by R8 -- and, by the source pins, keeps rejecting in the
+// audit as spirv-capability-unknown:5347.
+test('used physical pointers are left alone by R8 (sabotage pair for Route 0)', () => {
+  const mod = { header: { magic: 0x07230203, version: 0x00010600, generator: 0, bound: 100, schema: 0 }, insns: [
+    { op: 17, words: [1] },
+    { op: 17, words: [5347] },
+    { op: 14, words: [5348, 1] },
+    { op: 15, words: [0, 1, 0x6e69616d, 0] },
+    { op: 32, words: [10, 5349, 11] },   // OpTypePointer %10 PhysicalStorageBuffer %11
+    { op: 120, words: [11, 12, 13] },    // OpConvertUToPtr
+  ] };
+  const result = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!result.applied.includes('strip-unused-physical-storage-buffer'),
+    'R8 must not strip a module that uses physical pointers');
+  // Each half of the used-test alone must also block the strip:
+  // pointer-type-only (no convert op) and convert-only (no pointer type).
+  const ptrOnly = { header: mod.header, insns: mod.insns.filter((i) => i.op !== 120) };
+  assert.ok(!applySpirvFix(serializeSpirv(ptrOnly)).applied.includes('strip-unused-physical-storage-buffer'),
+    'R8 must not strip on a PhysicalStorageBuffer pointer type alone');
+  const convOnly = { header: mod.header, insns: mod.insns.filter((i) => i.op !== 32) };
+  assert.ok(!applySpirvFix(serializeSpirv(convOnly)).applied.includes('strip-unused-physical-storage-buffer'),
+    'R8 must not strip on an OpConvertUToPtr alone');
+  const outMod = parseSpirv(result.bytes);
+  assert.ok(outMod.insns.some((i) => i.op === 17 && i.words[0] === 5347),
+    'capability preserved for the used form');
 });

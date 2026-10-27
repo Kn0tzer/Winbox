@@ -1047,9 +1047,434 @@ One un-reproduced observation, recorded for honesty: the first post-staging tri1
 
 REGISTER: docs/known-gaps/vulkan.md gains one real-workload row (IMPLEMENTED) for the loader-domain collision at the DXGI surface boundary. Counts 354 -> 355 rows (52 IMPLEMENTED / 71 REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN).
 
-NUMBERING NOTE: this tree's report continues at 4.19; the wt-vkd3d-bda tree used 4.19/4.20 for the Route 0 / Route A line — renumber at merge.
 
-## 4.20 Module-layout audit lane: the §4.16 silent-misconversion hazard closed — array-hidden and padded layouts now reject loudly as `spirv-block-layout` (2026-10-27)
+## 4.20 Route 0: the cap-5347 wall was a header artifact — declared-but-unused PhysicalStorageBufferAddresses now passes the audit; execution stops at the descriptor-array wall (2026-10-27)
+
+Route 0 from the BDA research report
+(`docs/reports/d3d12-descriptor-addressing-research-20261027.md`) is
+landed. The bridge's SPIR-V audit (`vk64AuditSpirv`) now dispositions
+capabilities 5346/5347 (PhysicalStorageBufferAddresses) by use,
+following the 33/4427 precedent in the same loop: when the module
+contains no OpConvertUToPtr / OpConvertPtrToU (ops 120/121) and no
+OpTypePointer with storage class 5349 (PhysicalStorageBuffer), the
+two capabilities are skipped instead of rejected, so spirvfix R8 —
+which already strips exactly that form — can run. A module with real
+pointer use still rejects at creation under the same named token,
+`spirv-capability-unknown:5347` (5346/5347 remain absent from the
+name table and from the unknown-branch exemption list; the skip is a
+separate use-conditional exemption in the capability loop).
+
+Exactness audit against R8 (the brief's hard requirement — the audit
+must accept precisely the modules R8 can strip): the audit's
+predicate is {no op 120} ∧ {no op 121} ∧ {no OpTypePointer with
+words[2] == 5349 in raw-word layout}. R8's predicate in parsed form
+is {no op 120/121} ∧ {no OpTypePointer with storage class 5349}.
+Auditing R8's implementation line by line found a LATENT DEFECT:
+R8's pointer arm tested `i.words[0] === 5349` — the OpTypePointer
+RESULT ID — instead of `i.words[1]`, the storage-class operand
+(every other TypePointer consumer in spirvfix.mjs uses words[1] /
+words[2] correctly). R8's own test fixture encoded the same wrong
+operand order ([5349, 10, 11] as [storageClass, id, pointee]), so
+the defect was invisible to its test. Consequences of the old code:
+a module whose physical pointer type had an id other than 5349
+would have its capability stripped while the physical pointer type
+remained (naga would then fail at translation — loud, but a
+different failure than designed), and a module with an innocent type
+whose id happened to be 5349 would be refused the strip. Both are
+now fixed: `tools/spirvfix/spirvfix.mjs` tests words[1], the
+fixture's operand order is corrected, and the audit implements the
+corrected, semantic predicate — audit and R8 accept exactly the same
+modules. Guards: `spirvfix-r8.test.mjs` gains an operand-index pin
+(a pointer type whose RESULT ID is 5349 is not physical use), and
+`vk-spirv-rejections.test.mjs` gains (a) source pins for both halves
+of the predicate, the exemption line, and the R8 mirror; (b) a census
+test on the reproduced real module
+(`testdata/spirv/d3d12-ps-uav-5347-unused.spv`, copied from the
+research census — declares 5346/5347, zero pointer ops; after R8 the
+capabilities are gone and the memory model is Logical); (c) a
+sabotage pair whose pointer-only and convert-only sub-cases each
+block the strip alone. Sabotage evidence: deleting the bridge
+exemption, inverting its condition, deleting the op-120/121 scan, or
+moving the audit's storage-class read to the result-id word each
+turn the guard red (1 failing test each); reverting R8 to words[0]
+turns 3 tests red across the two files. Note the census fixture also
+declares RuntimeDescriptorArray (5302) and DenormFlushToZero (4465),
+which naga rejects for unrelated reasons (a standalone dxil-spirv
+reproduction delta) — the guards assert the census and the R8 strip,
+not end-to-end translation of that file.
+
+Guest proof (rebuilt dist, "Browser export verified"; BUILD_INFO
+git_sha 1d40f018c + this lane's uncommitted-at-build-time changes,
+support archive c58f20bb880a; probe exes staged with
+tools/vkd3d/stage-vkd3d.sh). uav12
+(`test-results/dxvk-uav-route0/console.log`), BEFORE → AFTER against
+the section 4.17 run in wt-vkd3d: TypedUAVLoadAdditionalFormats =
+TRUE (unchanged), sweep 18/18 UAV_TYPED_LOAD=YES (unchanged),
+`spirv-capability-unknown:5347` lines 4 → 0. The execution landing
+point, verbatim: the four graphics EXEC cases still fail
+CreateGraphicsPipelineState with hr=0x80004005, but the rejection
+behind it is now `vk64: UNSUPPORTED spirv-capability:
+RuntimeDescriptorArray` (x4 in vkCreateShaderModule) — the modules
+pass 5347 and stop at capability 5302, the runtime-descriptor-array
+wall the research report explicitly scoped OUT of Routes 0+A
+(browser WebGPU has no binding arrays of any kind). The two uint
+EXEC cases are unchanged (hr=0x80070057, vkd3d-side E_INVALIDARG
+before shader compilation). SUMMARY stays flag=TRUE sweep=ALL18
+exec=FAILED, RESULT 1 — Route 0 removes the header-artifact wall; it
+does not, and by design cannot, serve descriptor arrays. First
+light: tri12 on the same dist passes, RESULT 0 (run
+test-results/dxvk-tri12-route0/). Three earlier uav12 attempts on
+this dist failed for infrastructure reasons only and are preserved
+(dxvk-uav-route0-timeout1 / -explorerfail: guest Wine explorer
+failed to start under box saturation, the documented wedge class;
+dxvk-uav-route0-nostage: probe exe not yet staged into the prefix,
+c0000135 — staging is a post-export step this fresh worktree had
+never had run). JS suite (this tree,
+BW_TEST_DIST=/home/ubuntu/wt-vkd3d-bda/dist, runner.mjs --unit):
+288 passed / 7 failed — the baseline failure set at c52f39d4e
+(287/8, verified from two independent logs) minus
+provenance-artifacts, which passes here; zero new failures. The
+vk-register-citations failure is byte-identical in kind to
+pristine HEAD (only its pre-existing coverage-ceiling subtest).
+
+Tree-preparation notes for this worktree (it had never been built
+in): deps installed from the local pnpm store; DXVK w32+w64 built
+in-tree per tools/dxvk/BUILD.md with the sibling tree's exact meson
+options; the GStreamer payloads were copied from the sibling tree
+and verified against their pinned sha256 closure
+(prepare-gstreamer.py --check: "staged and verified"); the runtime
+manifest was regenerated (one line: the support archive's hash,
+from the locally built DXVK DLLs, same 3543 entries).
+
+### Register
+
+docs/known-gaps/vulkan.md: counts unchanged, 354 rows = 51
+IMPLEMENTED / 71 REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN (recount
+mechanical; no rows added — the Route 0 carve-out extends the
+existing capability-audit row, the catch-all row's carve-out list,
+and the Typed-UAV row's outcome sentence, which now records the
+section 4.20 landing point). The bridge insertions drifted 49
+citations; all re-pinned (tool fix pass + git-diff line mapping for
+multi-citation rows): citation audit 0 DRIFT / 0 MISSING over 327
+cited rows, UNCHECKABLE 110 as at HEAD.
+
+### What this lane did not do
+
+Route A / spirvfix R15 (root-descriptor rewrite) is the follow-on
+lane's work, as are the VKD3D_SHADER_DUMP_PATH captures. tri12draw
+was not run: the winevulkan-path swapchain regression from section
+4.17 item 8 belongs to the bisect lane in wt-vkd3d; nothing in this
+lane's change touches that path (the audit change only widens which
+modules reach the tier, and tri12's direct path verifies clean).
+The RuntimeDescriptorArray wall this run exposed as the next stop
+is a separate scope (no binding arrays exist in browser WebGPU);
+serving it needs bindless emulation work beyond Routes 0+A as
+researched.
+
+## 4.21 Route A: descriptor addressing served for the provable subset — runtime-array specialization (R15a) and read-only root descriptors (R15b) (2026-10-27)
+
+Route A continuation lane (wt-vkd3d-bda, branch lane-vkd3d-bda, on top of
+88bed0bcf / section 4.20). The research design (descriptor-addressing
+research report section 4) is finalized here against REAL guest-module
+captures, then implemented CBV-first. Two of the research assumptions did
+not survive contact with the captures; both corrections are recorded
+below because they change the mechanism, not just the constants.
+
+### Captures (rig web/tests/d3d12-dump.mjs, fixed by the prior lane)
+
+- uav12 on this tree reproduces the section 4.20 landing point exactly:
+  Typed-UAV flag TRUE, sweep 18/18, exec fails with exactly 4x
+  "UNSUPPORTED spirv-capability:RuntimeDescriptorArray" at
+  vkCreateShaderModule. Dumps extracted this time (run
+  test-results/dxvk-uav-r15b/): 1 root signature + 4 DXBC/SPV pairs
+  (1 VS + 3 PS; the 6 EXEC cases share modules by shader source).
+  Case attribution, read off the guest log: the 4 float-format cases
+  (R8G8B8A8_UNORM, R32G32B32A32_FLOAT, R16G16B16A16_FLOAT, R16_FLOAT)
+  reach the bridge and take the 4x 5302 rejections. The 2 uint cases
+  (R32_UINT, R8_UINT) fail GUEST-side with E_INVALIDARG at
+  CreateGraphicsPipelineState before any vkCreateShaderModule -- a
+  vkd3d/guest-side wall independent of Route A; they remain blocked
+  after this lane and are reported per-case in the verification table.
+- root12 (new micro-probe tools/vkd3d/probe/root12.c: separate root CBV /
+  root SRV / root UAV cases, readback-verified): the CBV case compiles
+  and fails at PSO creation with exactly 1x
+  spirv-capability-unknown:5347 (run test-results/dxvk-root-r15b/;
+  module 39f7fd6a1a8077f3.spv). The SRV and UAV cases cannot be compiled
+  in-guest at all: Wine 10's builtin d3dcompiler_47 HLSL front end
+  rejects EVERY buffer-object declaration form. Proven by a dedicated
+  syntax probe (hlslprobe, 7 candidates, one boot): ByteAddressBuffer
+  and RWByteAddressBuffer are lexed as unknown NEW_IDENTIFIER;
+  Buffer<T> hits a keyword with no grammar production at ps_5_0 AND
+  ps_5_1; StructuredBuffer / RWStructuredBuffer are unknown identifiers.
+  Texture objects compile fine (that is how uav12 builds), buffer
+  objects do not exist in this compiler. A genuine Microsoft
+  d3dcompiler_47.dll exists on the box only as a 32-bit build (Chromium
+  109 portable, inside chromium.zip; a 64-bit guest gets LoadLibrary
+  err=126) and no dxc exists anywhere on the box, so guest-side SRV/UAV
+  root captures are blocked on tooling, not on the design. The R15b
+  code path is kind-agnostic (only the pointee shape and the writable
+  verdict differ); SRV guest-verification stays queued behind a working
+  in-guest HLSL buffer compiler or Godot's own DXIL modules (below).
+
+### Census verdicts (census.mjs, extended this lane with the shipped R15 classifiers)
+
+uav12 PS modules (all three; entry PS, set 5 = the UAV heap): a runtime
+array of 2D storage images (Unknown format, NonWritable) at set 5 /
+binding 0; exactly ONE OpAccessChain access each; the index is a load of
+push-constant byte offset 0, addend 0. NOTE: the push offset is 0, not
+the offset 12 / addend 1 the standalone reproduction (and the earlier
+census) showed -- vkd3d's push layout for THIS root signature puts the
+heap index word first. Caps declared: 1, 55 (read-without-format), 4466,
+5302, 5345, 5347 (declared-unused). No 5306-5309, no NonUniform
+decorations. The VS module is shared with root12 and carries no arrays
+and no pointers.
+
+root12 CBV PS (39f7fd6a1a8077f3.spv) -- the root-descriptor shape DIFFERS
+from the research section 4.1 assumption in the load-bearing detail:
+there is NO OpConvertUToPtr. The VA is loaded from the push block as a
+vec2<u32> (push struct { vec2<u32> }, chain + load) and materialized by
+OpBitcast (op 124) into ptr<PhysicalStorageBuffer, struct>. Derefs are
+OpInBoundsAccessChain with constant member/element indices rooted at
+the bitcast result, then OpLoad with an Aligned 16 operand; one fresh
+bitcast per load site (2 materializations, same slot). Pointee:
+struct { array<vec4<f32>, 4096> } decorated Block, member Offset 0 --
+the fixed 4096-element array is dxbc-spirv's unknown-size CBV
+convention. No pointer escapes, no stores, no calls. Caps 1/4466/5345/
+5347. The R15b classifier therefore treats BOTH materialization forms
+as roots: OpConvertUToPtr (the DXIL/dxil-spirv form SM6 games take)
+and OpBitcast-to-PSB-pointer of a push-traced integer value. (Grammar
+note for the mirror: OpConvertPtrToU is op 117, OpPtrCastToGeneric is
+121; the inherited Route 0 used-test names the pair 120/121 -- harmless
+there because it only widens a skip, but R15's classifier uses the
+grammar-correct numbers.)
+
+### Godot reachability (this tree, demo-matrix, test-results/godot-r15/)
+
+Godot IS reachable -- the section 4.17 winevulkan-path failure did not
+reproduce (the bisect lane's verdict, section 4.18, acquits the
+Typed-UAV change set: that failure was an intermittent load flake in
+guest X-server connection, and the system-placement surface assert is
+pre-existing). On this tree Godot creates its DXGI factory and D3D12
+device, passes the SM 6.0 sweep and the Typed-UAV gate, and its early
+graphics shader modules are ACCEPTED by the bridge (zero 5347 and zero
+5302 rejections in a 2,402-line console). It stops during
+RenderingDevice setup, before any present, at: CreateQueryHeap failed
+0x80004005 x2; 7x spirv-compute-entry rejections (the V2 compute
+execution wall, separate scope); 18x texel-buffer-storage; image-format
+rejections; and one module each rejected for capability 46 and
+capability 64. No VKD3D_SHADER_DUMP_PATH census of Godot modules was
+taken (the demo-matrix path has no dump hook); what its heap/root
+modules look like stays unknown until it passes the compute/query
+walls -- Route A's classifiers will meet them at the audit either way,
+serving or rejecting by the same rules as the fixtures below.
+
+### The design as implemented
+
+R15a descriptor-array-specialize (spirvfix): an array variable is
+servable iff its pointee is a runtime array of a descriptor element
+type (image/sampler/sampled image), every body use is a single-index
+access chain, all index expressions classify to ONE signature
+({const v} or {push@byteOff + add} through loads of the push block,
+copies, bitcasts, constant adds/subs), the element pointers never
+escape and are never stored through, and -- for storage images -- the
+variable is NonWritable. The rewrite deletes the array variable and
+installs ONE scalar clone at the same set/binding named
+bw_arr_g<set>_b<binding>_p<pushOff>_a<add> (or _c<value>); each access
+chain becomes an OpCopyObject of the clone. The tier resolves the
+element at bind time from the draw's merged push block and binds
+bindingForElement(set, binding, element); the resolved entry feeds the
+bind-group fingerprint, so a changed index re-keys the group. If no
+runtime array survives, cap 5302 is stripped. R15a runs BEFORE R14 in
+applySpirvFix; storageImageVars also unwraps one array level so the
+tier's format signature (computed from the original bytes) names the
+array's set/binding and R14 can inject the bound view's format into the
+clone's image type.
+
+R15b root-descriptor-bda (spirvfix): a module is servable iff EVERY
+physical-storage-buffer pointer materialization (OpConvertUToPtr, or
+OpBitcast whose result type is a PSB pointer) traces through
+r15ClassifyExpr to a push-block load at an 8-aligned byte offset with
+zero addend; no materialization's pointer cone contains a store or an
+atomic RMW (read-only scope, below); no pointer escapes its cone
+(calls, stores of the pointer, OpConvertPtrToU, phi/select,
+OpPtrAccessChain, bitcast reinterprets); each slot (grouped by push
+byte offset) has ONE pointee type whose decorated layout is byte-exact
+in WGSL storage layout (the R13 measure rules plus a runtime-array tail
+member); and every PSB pointer type in the module belongs to a servable
+cone or is unreferenced. The rewrite synthesizes one read-only
+StorageBuffer variable per slot, named bw_root_p<pushByteOff>, in the
+module's heap-array set (when all its runtime-array variables share one
+set) else set 0, at binding 4096 + pushByteOff/8; re-roots every cone
+chain at it with StorageBuffer pointer-type twins; strips the Aligned
+operand from re-rooted loads (the audited layout carries the contract;
+a VA's offset inside its buffer does not guarantee the operand's
+alignment); flips pointee structs Block -> BufferBlock pre-SPIR-V 1.3
+only; deletes the materializations and their now-dead provenance cone;
+and strips caps 5346/5347, the SPV_KHR_physical_storage_buffer
+extension, and the PhysicalStorageBuffer64 addressing model. Root slots
+are keyed by PUSH BYTE OFFSET, not root-parameter index: vkd3d's push
+layout interleaves root constants, table words and root descriptors in
+root-signature order, so offset is the only key every layer can compute
+independently (spirvfix from the module, the bridge from its own census
+of the same module, the tier from the name).
+
+Read-only scope (deliberate): the page tier has no GPU->guest BUFFER
+writeback -- image readbacks exist (V2 READBACK records), buffer
+writebacks do not; that is the same wall the audit already names
+spirv-storage-buffer-write. A root UAV store served without writeback
+would silently lose the guest's data, so writable root pointers keep
+the loud 5347 rejection until a buffer-writeback path exists. Root CBV
+and root SRV (both read-only) are the served kinds.
+
+Bridge mirror (vk64bridge.cpp): vk64AuditSpirv implements the same two
+classifiers over the raw words. Cap 5302 is skipped when every runtime
+array in the module is R15a-servable; caps 5346/5347 are skipped when
+Route 0's unused-test passes (unchanged) OR every materialization is
+R15b-servable; the trailing writable-storage checks are unchanged
+(root modules carry no storage variables, so they never trip them).
+Anything else keeps the existing named rejections. At pipeline
+creation the bridge censuses the pipeline's modules into a root-slot
+table (push byte offsets); the serializer tracks the merged push block
+across the command stream and, before any draw/dispatch whose pipeline
+has root slots, resolves each slot's u64 VA -- VA 0 or an unregistered
+VA emits a zero-length resolution (tier binds its zero buffer; D3D12
+null-descriptor semantics: reads return 0) -- otherwise VA -> (buffer,
+offset) via the devVa registry (g_nextDevVa, 256 MiB stride) and emits
+a V2 ROOT_DESCS record (new append-only type 0x1D: count, then per slot
+{pushOff u32, buffer-object id u64, absolute memory offset u64, length
+u64}) plus BUFFER_DATA for the range (the same deduped content path as
+descriptor buffer bindings).
+
+Tier (web/vkwebgpu.mjs + web/vk-protocol.mjs + web/wgsl-utils.mjs):
+ROOT_DESCS decodes into the per-draw state (st.rootDescs, keyed by push
+offset). scanWgslResources parses bw_arr_* names into a per-decl array
+signature and bw_root_* names into a root push offset. At bind time a
+bw_arr decl resolves its element from st.pushBlock and uses that
+element's DESC_SET entry; a bw_root decl binds the ROOT_DESCS
+resolution for its offset through the normal kind-1 buffer path
+(content-addressed GPU buffer, padded to the declaration's minimum
+binding size -- the CBV pointee's fixed 4096-element array makes the
+minimum 64 KiB; bytes past the guest's bound range read as zero, which
+matches D3D12's out-of-range robustness for a slot the app sized).
+
+Fail-closed list (both implementations, cross-checked by the guard
+fixtures): index/address expression containing a load that is not a
+push-block chain load; dynamic index from buffer contents, a phi, or a
+call result; two distinct signatures on one array variable; a writable
+storage-image array; a root pointer that is stored through, atomically
+RMW'd, passed to a call, stored as a value, converted back to an
+integer, selected/phi'd, or advanced with OpPtrAccessChain; an address
+addend other than a folded constant (and nonzero addends are rejected
+for root slots in this lane); a base that is not a single root source;
+a pointee layout failing the storage measure (including bool members,
+mis-strided matrices, scalar-packed arrays); a pointee struct shared
+with a non-PSB pointer type; a PSB pointer type used outside a root
+cone; more root slots than the synthesized binding space admits
+(collision with a module-owned binding at 4096 + pushByteOff/8 in the
+chosen set rejects).
+
+### Implementation and verification (2026-10-27, route-a lane)
+
+Implemented as designed above: spirvfix R15a/R15b (tools/spirvfix/
+spirvfix.mjs) with the exported analyzers shared by the rewrites, the
+census, and the guards; the bridge mirror classifiers (namespace r15 in
+source/vulkan/vk64bridge.cpp) wired into the capability audit, the
+graphics-pipeline root-slot census, the devVa registry, and the
+serializer's ROOT_DESCS emission; the V2 record (web/vk-protocol.mjs);
+the tier resolution (web/vkwebgpu.mjs, web/wgsl-utils.mjs). Three
+defects were found and fixed en route, each pinned by a guard or a
+fixture: (1) the bridge mirror's decoration parse required an operand
+word, so operand-less decorations (Block, BufferBlock, NonWritable)
+were silently dropped -- the mirror rejected every real module while
+the JS analyzer accepted it; caught by running the mirror classifiers
+standalone against the captured fixtures. (2) Both orphan sweeps
+counted header/directive words as references, so a capability NUMBER
+equal to a type id (Int64 = 11 = the array type id in
+d3d12-ps-uav-heap-array-int64.spv) kept the dead runtime-array type
+alive forever; both sweeps now skip header/directive instructions
+identically. (3) The synthesized-binding collision check this section
+specified was missing from both classifiers; it is now implemented in
+both and guard-tested. A fourth, older defect fell out of the uav12
+verification: the PE Vulkan shim's export table
+(tools/vkd3d/probe/exports.txt) routed vkGetDeviceImageMemoryRequirements
+to the unimplemented stub even though both bridge ABIs implement it
+(fn 917); the entry now carries the real id and the shim DLLs were
+rebuilt from the corrected table (the bridge's answers were already
+correct -- only the guest-side table was stale). The guest runs below
+used the rebuilt DLL swapped into the dist's wine64.zip. The fix was
+then restaged properly, following the pipeline's own re-pin
+discipline: the payload pin in
+tools/rootfs64/check_runtime_completeness.py now carries the rebuilt
+DLL's hash, the new bytes were merged into both shipped wine64.zip
+copies, docs/known-gaps/runtime-artifact-manifest.md was regenerated,
+tools/browser/runtime-assets.json was re-pinned to the merged archive,
+and the local runtime-assets tar in the backups tree was regenerated
+to match (the pre-R15 tar is kept beside it as .pre-r15). A final
+rebuild (same wasm stamp 33f47805) verifies the whole chain at
+export: the completeness checker reports 0 failures.
+
+Guards: web/tests/suite/unit/spirvfix-r15.test.mjs (14 tests) covers
+both real-fixture positives, the tier/protocol contracts, the bridge
+mirror source pins, and fail-closed mutations of the REAL modules (a
+store through the root pointer, a pointer-to-integer escape, a
+re-rooted provenance chain, a second array index signature, a
+module-owned binding colliding with the synthesized slot). Sabotage:
+breaking the provenance classifier, the signature-count check, or the
+bridge's audit skip lines turns the guard red (9 tests); restoring
+returns it green. The REWRITES coverage pin and the reviewed
+silent-failure baseline were updated for the new code (four new
+unlogged switch defaults, all in the pure mirror classifiers; the
+audit logs each rejection once at the capability site).
+
+Guest verification on the rebuilt dist (build stamp 33f47805,
+test-results/dxvk-uav-r15f/, dxvk-uav-r15h/, dxvk-root-r15g/,
+dxvk-tri12-r15f/):
+- uav12: flag=TRUE, sweep=ALL18 (held). RuntimeDescriptorArray
+  rejections 4 -> 0; the four float EXEC cases now pass
+  CreateGraphicsPipelineState (previously FAIL hr=0x80004005) and
+  texture creation (16 vkCreateImage, all vr=0), then stop inside
+  vkd3d's committed-resource creation before any command list is
+  submitted (no bridge rejection is logged; the guest prints no
+  per-case line for these exits). The two uint EXEC cases are
+  unchanged: guest-side E_INVALIDARG at CreateGraphicsPipelineState.
+  SUMMARY exec=FAILED, RESULT 1 -- the exec wall moved from shader
+  creation to resource creation; the remaining stop is the general
+  D3D12 execution-completion work, not descriptor addressing.
+- root12: CASE cbv PSO OK -- the root-CBV pipeline state creates for
+  the first time (previously rejected at the bridge,
+  spirv-capability-unknown:5347; this run has zero spirv-capability
+  lines). The case then stops at CreateCommittedResource (render
+  target readback) hr=0x8007000E -- the same committed-resource wall
+  as uav12. The srv and uav cases remain blocked at D3DCompile by
+  Wine 10's builtin HLSL compiler (the hlslprobe evidence above);
+  their shader shapes follow the identical R15b path and remain a
+  follow-up for a guest-side DXIL capture (e.g. Godot's).
+- tri12 first light: RESULT 0, rig verdict passed -- no regression.
+- Godot (godot-squash) on this tree: reachable as in the design
+  section (device + SM 6.0 + Typed-UAV gates pass, early modules
+  accepted, zero 5346/5347/5302 rejections); it stops at its
+  pre-existing compute/query-heap walls, unchanged by this lane.
+
+JS suite (this tree, final dist): 289 passed / 7 failed of 296 files
+(baseline at 88bed0bcf: 288/7 of 295; the added file is the R15
+guard, which passes). The seven failures are the baseline set: five
+source-level baseline failures (v2-draw-contract,
+vk-image-dirty-generation, vk-sampler-rejection, vk32-properties,
+vulkan-sampler -- each reproduced identically on pristine 88bed0bcf
+sources), vk-register-citations failing only its pre-existing
+coverage-ceiling subtest, and packaging-prefix failing only its
+shipped-archive ELF subtest (a property of the pinned runtime asset,
+identical from the pristine tree). The dist-state failures seen
+mid-lane (provenance-artifacts, runtime-completeness) pass on the
+final dist after the re-pin chain above. Zero new failures.
+Register: docs/known-gaps/vulkan.md stays 354 rows = 51 IMPLEMENTED /
+71 REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN (no verdicts changed; the
+5302 and 5346/5347 rows gained the dated Route A carve-outs above).
+Citations re-pinned mechanically for every line this lane's insertions
+shifted (audit: 0 DRIFT / 0 MISSING; the one citation pointing into
+the rewritten bindGroupEntries call sites was re-pinned by call-site
+ordinal).
+## 4.22 Module-layout audit lane: the §4.16 silent-misconversion hazard closed — array-hidden and padded layouts now reject loudly as `spirv-block-layout` (2026-10-27)
 
 §4.16 named the hazard and deferred the fix: "a mat3 block at
 MatrixStride 12 is CONVERTED SILENTLY WRONG by naga today (columns read
@@ -1162,7 +1587,4 @@ pristine tree already — rows added by the Typed-UAV and surface lanes
 after the re-pin baseline; that test fails identically before and after
 this lane's change and wants a re-pin decision at merge.
 
-NUMBERING NOTE: this tree's §4.20 is the layout audit; the wt-vkd3d-bda
-tree used §4.20 for Route A (its §4.19 is Route 0, colliding with this
-tree's §4.19 surface fix) — renumber at merge, as already noted at the
-end of §4.19.
+MERGED NUMBERING (D3D12 stack merge, 2026-10-27): the two lane trees collided on section 4.19/4.20 -- the vkd3d tree used 4.19 for the system-placement surface fix and 4.20 for the module-layout audit, while the vkd3d-bda tree used 4.19 for Route 0 and 4.20 for Route A. This merged report renumbers to one sequence: 4.18 bisect, 4.19 surface fix, 4.20 Route 0, 4.21 Route A, 4.22 layout audit. References inside each section were updated to the merged numbers (the vkd3d tree's layout-audit references now read 4.22; the bda tree's Route 0 / Route A references now read 4.20 / 4.21). SETTLEMENTS RECORDED BY THIS MERGE: (a) the SPIR-V capability exemption union is {4464-4468, 5345, 68, 69} with 5254 kept as a named rejection, and the audit's used-conditioned carve-outs for 5302 (mirror classifier: every runtime array specialized away) and 5346/5347 (mirror classifier: module provably servable) from Route 0/Route A; (b) the vkd3d tree ADOPTS the GB lane's geometry-shader passthrough serve (integ's position: modules pass, GS pipelines created and recorded, served at submit only on a structural layer-passthrough proof plus a strip-equivalent fragment stage, all other GS draws loud-dropped and counted); (c) compute-entry decision: the vkd3d disposition is adopted -- compute-only modules are accepted at creation so vkd3d-proton device creation succeeds (it creates internal compute pipelines during device creation and treats refusal as device-fatal), and dispatches are loud-dropped at submit as `compute-dispatch`; mixed compute+graphics modules still reject, and the cap/storage/SSBO checks still apply to graphics modules. The integ blanket-compute-rejection guards were updated to assert this behavior, not deleted.

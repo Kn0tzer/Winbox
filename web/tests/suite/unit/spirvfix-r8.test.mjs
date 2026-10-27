@@ -74,7 +74,7 @@ test('R8: module actually using physical pointers is left alone', () => {
     ext('SPV_KHR_physical_storage_buffer'),
     memModel(5348, 1),
     entryPoint(0, 1),
-    { op: 32, words: [5349, 10, 11] },             // OpTypePointer PhysicalStorageBuffer %float
+    { op: 32, words: [10, 5349, 11] },             // OpTypePointer %10 PhysicalStorageBuffer %float(11) -- operands [resultId, storageClass, pointee]
     { op: 120, words: [11, 12, 13] },              // OpConvertUToPtr
   ]);
   const result = applySpirvFix(serializeSpirv(mod));
@@ -97,5 +97,26 @@ test('R8: module without the capability passes through untouched', () => {
   assert.ok(
     !result.applied.includes('strip-unused-physical-storage-buffer'),
     'R8 should not fire without the capability'
+  );
+});
+
+test('R8: a pointer type whose RESULT ID is 5349 is not physical use (operand-index pin)', () => {
+  // OpTypePointer operands are [resultId, storageClass, pointeeType]. The
+  // used-test must read the storage class (words[1]); reading words[0]
+  // (the result id) would refuse to strip this module and would miss a
+  // real PhysicalStorageBuffer type with any other id. Route 0's bridge
+  // audit mirrors this test exactly (vk64AuditSpirv).
+  const mod = buildModule([
+    cap(1),
+    cap(5347),
+    ext('SPV_KHR_physical_storage_buffer'),
+    memModel(5348, 1),
+    entryPoint(0, 1),
+    { op: 32, words: [5349, 0, 11] },              // OpTypePointer %5349 UniformConstant %11 -- NOT a physical pointer
+  ]);
+  const result = applySpirvFix(serializeSpirv(mod));
+  assert.ok(
+    result.applied.includes('strip-unused-physical-storage-buffer'),
+    'R8 must strip when the only 5349 is a pointer result id, not a storage class'
   );
 });

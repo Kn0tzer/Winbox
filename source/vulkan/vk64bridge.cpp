@@ -463,6 +463,19 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // injects the bound view format; naga cannot consume Unknown formats or
 // the capability itself). It passes when the module does not WRITE a storage
 // image; writers reject below as "spirv-storage-image-write".
+// PhysicalStorageBufferAddresses (5346/5347) is the same shape, one lane
+// later (Route 0, descriptor-addressing research 2026-10-27): vkd3d-proton
+// switches dxil-spirv into the physical addressing model module-wide
+// whenever the shader interface carries ANY raw-VA binding or root
+// descriptor, so the capability is emitted even for modules that contain
+// zero pointer dereferences (census of the real uav12 modules: no
+// OpConvertUToPtr/OpConvertPtrToU, no PhysicalStorageBuffer pointer
+// types). spirvfix R8 strips exactly that declared-but-unused case in the
+// page tier. The audit therefore skips 5346/5347 iff its used-test -- byte
+// for byte R8's: an op 120/121, or an OpTypePointer whose storage class
+// is 5349 (PhysicalStorageBuffer) -- finds no use. Modules that DO
+// dereference physical pointers fall through to the existing
+// "spirv-capability-unknown:5347" rejection, loudly.
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE: samplerMirrorClampToEdge is advertised (a
@@ -554,6 +567,471 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         default: return nullptr;
     }
 }
+
+// ---------------------------------------------------------------------------
+// R15 classifiers: the bridge-side mirror of spirvfix's
+// analyzeRootDescriptors / analyzeDescriptorArrays (campaign section
+// 4.20). vk64AuditSpirv admits caps 5346/5347 and 5302 exactly when these
+// classifiers prove the module servable by the R15 rewrites -- the same
+// predicates and the same fail-closed list, cross-checked against the
+// same captured-module fixtures by the test-suite guards. Operand-word
+// layouts below include the result type/id words, exactly as in spirvfix.
+// ---------------------------------------------------------------------------
+namespace r15 {
+typedef long long I64;
+typedef int I32;
+
+struct Insn {
+    U32 op = 0;
+    const U32* w = nullptr; // operand words (result type/id words included)
+    U32 n = 0;              // operand word count
+    U32 resultType = 0, resultId = 0;
+    U32 fv = 0;             // first value-operand index in w[]
+};
+
+inline bool hasTypeId(U32 op) {
+    switch (op) {
+        case 12: case 41: case 42: case 43: case 44: case 46: case 48: case 49:
+        case 50: case 51: case 52: case 54: case 55: case 57: case 59: case 60:
+        case 61: case 65: case 66: case 67: case 68: case 69: case 70: case 77:
+        case 78: case 79: case 80: case 81: case 82: case 83: case 84: case 86:
+        case 5381: return true;
+        default: break;
+    }
+    if (op >= 87 && op <= 251) {
+        switch (op) {
+            case 99: case 218: case 219: case 220: case 221: case 224: case 225:
+            case 228: case 246: case 247: case 248: case 249: case 250: case 251:
+            case 252: case 253: case 255: case 256: case 257: case 258: return false;
+            default: return true;
+        }
+    }
+    return false;
+}
+inline bool hasIdOnly(U32 op) { return (op >= 19 && op <= 33) || op == 45 || op == 248; }
+inline U64 mkey(U32 s, U32 m) { return (((U64)s) << 32) | m; }
+
+struct Module {
+    std::vector<Insn> insns;
+    std::unordered_map<U32, size_t> byId;
+    std::unordered_map<U64, U32> memberOffset, memberMatrixStride;
+    std::unordered_map<U64, bool> memberRowMajor;
+    std::unordered_map<U32, U32> arrayStride, structKind;
+    std::unordered_map<U32, U32> varSet, varBinding;
+    std::unordered_set<U32> varNonWritable;
+    U32 pushVar = 0, pushStruct = 0;
+    bool pushAmbiguous = false;
+    size_t firstFunc = 0;
+    bool parsed = false;
+};
+
+inline bool parse(const std::vector<U32>& w, Module& m) {
+    if (w.size() < 5 || w[0] != 0x07230203u) return false;
+    for (size_t i = 5; i < w.size();) {
+        U32 op = w[i] & 0xFFFF, len = w[i] >> 16;
+        if (!len || i + len > w.size()) return false;
+        Insn in; in.op = op; in.w = &w[i + 1]; in.n = len - 1;
+        if (hasTypeId(op) && in.n >= 2) { in.resultType = in.w[0]; in.resultId = in.w[1]; in.fv = 2; }
+        else if (hasIdOnly(op) && in.n >= 1) { in.resultId = in.w[0]; in.fv = 1; }
+        m.insns.push_back(in);
+        i += len;
+    }
+    bool seenFunc = false;
+    for (size_t i = 0; i < m.insns.size(); i++) {
+        const Insn& in = m.insns[i];
+        if (in.resultId) m.byId[in.resultId] = i;
+        if (in.op == 54 && !seenFunc) { m.firstFunc = i; seenFunc = true; }
+        if (in.op == 71 && in.n >= 2) {
+            // Operand-less decorations (Block=2, BufferBlock=3,
+            // NonWritable=24) have n == 2; the value defaults to 0.
+            U32 t = in.w[0], d = in.w[1], v = in.n >= 3 ? in.w[2] : 0;
+            if (d == 6) m.arrayStride[t] = v;
+            else if (d == 2 || d == 3) m.structKind[t] = d;
+            else if (d == 34) m.varSet[t] = v;
+            else if (d == 33) m.varBinding[t] = v;
+            else if (d == 24) m.varNonWritable.insert(t);
+        } else if (in.op == 72 && in.n >= 3) {
+            // RowMajor(4)/ColMajor(5) member decorations carry no value.
+            U64 k = mkey(in.w[0], in.w[1]); U32 d = in.w[2], v = in.n >= 4 ? in.w[3] : 0;
+            if (d == 35) m.memberOffset[k] = v;
+            else if (d == 7) m.memberMatrixStride[k] = v;
+            else if (d == 4) m.memberRowMajor[k] = true;
+            else if (d == 5) m.memberRowMajor[k] = false;
+        }
+    }
+    if (!seenFunc) m.firstFunc = m.insns.size();
+    for (const Insn& in : m.insns) {
+        if (in.op != 59 || in.n < 3 || in.w[2] != 9) continue;
+        if (m.pushVar) { m.pushAmbiguous = true; break; }
+        m.pushVar = in.resultId;
+        auto pt = m.byId.find(in.resultType);
+        if (pt != m.byId.end() && m.insns[pt->second].op == 32 && m.insns[pt->second].n >= 3)
+            m.pushStruct = m.insns[pt->second].w[2];
+    }
+    if (m.pushAmbiguous) { m.pushVar = 0; m.pushStruct = 0; }
+    m.parsed = true;
+    return true;
+}
+
+inline bool constInt(const Module& m, U32 id, I64& out) {
+    auto it = m.byId.find(id); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    if (in.op != 43 && in.op != 50) return false; // OpConstant / OpSpecConstant
+    if (in.n < 3) return false;
+    auto tt = m.byId.find(in.resultType); if (tt == m.byId.end()) return false;
+    const Insn& t = m.insns[tt->second];
+    if (t.op != 21 || t.n < 3) return false; // OpTypeInt: [id, width, signedness]
+    U32 width = t.w[1]; bool sgn = t.w[2] != 0;
+    if (width <= 32) {
+        U32 v = in.w[2];
+        out = sgn ? (I64)(I32)v : (I64)v;
+    } else if (width == 64) {
+        U64 v = (U64)in.w[2] | ((U64)(in.n > 3 ? in.w[3] : 0) << 32);
+        if (!sgn && v > 0x7FFFFFFFFFFFFFFFULL) return false;
+        out = (I64)v;
+    } else return false;
+    // spirvfix extracts constants through JS numbers: anything past the
+    // exactly-representable integer range is unclassifiable there too.
+    if (out > 9007199254740991LL || out < -9007199254740991LL) return false;
+    return true;
+}
+
+struct ChainRes { I64 off; U32 typeId; };
+inline bool chainOffset(const Module& m, U32 ptrId, ChainRes& r, int depth) {
+    if (depth > 16) return false;
+    auto it = m.byId.find(ptrId); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    if (in.op == 59) {
+        if (ptrId != m.pushVar || !m.pushStruct) return false;
+        r = {0, m.pushStruct}; return true;
+    }
+    if (in.op != 65 && in.op != 66) return false;
+    ChainRes base;
+    if (!chainOffset(m, in.w[2], base, depth + 1) || !base.typeId) return false;
+    I64 off = base.off; U32 cur = base.typeId;
+    for (U32 k = 3; k < in.n; k++) {
+        I64 idx; if (!constInt(m, in.w[k], idx) || idx < 0) return false;
+        auto tt = m.byId.find(cur); if (tt == m.byId.end()) return false;
+        const Insn& t = m.insns[tt->second];
+        if (t.op == 30) { // OpTypeStruct: members at w[1..]
+            if (idx + 1 >= (I64)t.n) return false;
+            auto mo = m.memberOffset.find(mkey(cur, (U32)idx));
+            if (mo == m.memberOffset.end()) return false;
+            off += mo->second; cur = t.w[idx + 1];
+        } else if (t.op == 23) { // OpTypeVector
+            auto ct = m.byId.find(t.w[1]); if (ct == m.byId.end()) return false;
+            const Insn& c = m.insns[ct->second];
+            if (c.op != 21 && c.op != 22) return false;
+            off += idx * (c.w[1] / 8); cur = t.w[1];
+        } else if (t.op == 28) { // OpTypeArray
+            auto as = m.arrayStride.find(cur); if (as == m.arrayStride.end()) return false;
+            off += idx * (I64)as->second; cur = t.w[1];
+        } else return false;
+    }
+    r = {off, cur}; return true;
+}
+
+struct Expr { bool isConst = false, isPush = false; I64 value = 0, byteOff = 0, add = 0; };
+inline bool classifyExpr(const Module& m, U32 id, Expr& e, int depth) {
+    if (depth > 8) return false;
+    auto it = m.byId.find(id); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    I64 cv;
+    if (constInt(m, id, cv)) { e = Expr{}; e.isConst = true; e.value = cv; return true; }
+    switch (in.op) {
+        case 61: { // OpLoad of the push block
+            ChainRes r; if (!chainOffset(m, in.w[2], r, 0)) return false;
+            auto lt = m.byId.find(in.resultType); if (lt == m.byId.end()) return false;
+            const Insn& t = m.insns[lt->second];
+            bool ok = t.op == 21;
+            if (!ok && t.op == 23 && t.n >= 3) {
+                auto ct = m.byId.find(t.w[1]);
+                if (ct != m.byId.end()) { const Insn& c = m.insns[ct->second]; ok = c.op == 21 && c.w[1] == 32 && t.w[2] == 2; }
+            }
+            if (!ok) return false;
+            e = Expr{}; e.isPush = true; e.byteOff = r.off; return true;
+        }
+        case 83: return classifyExpr(m, in.w[2], e, depth + 1);  // OpCopyObject
+        case 124: return classifyExpr(m, in.w[2], e, depth + 1); // OpBitcast
+        case 128: case 129: { // OpIAdd / OpISub
+            Expr a, b;
+            if (!classifyExpr(m, in.w[2], a, depth + 1) || !classifyExpr(m, in.w[3], b, depth + 1)) return false;
+            if (in.op == 128) {
+                if (a.isPush && b.isConst) { e = Expr{}; e.isPush = true; e.byteOff = a.byteOff; e.add = a.add + b.value; return true; }
+                if (a.isConst && b.isPush) { e = Expr{}; e.isPush = true; e.byteOff = b.byteOff; e.add = b.add + a.value; return true; }
+                if (a.isConst && b.isConst) { e = Expr{}; e.isConst = true; e.value = a.value + b.value; return true; }
+            } else {
+                if (a.isPush && b.isConst) { e = Expr{}; e.isPush = true; e.byteOff = a.byteOff; e.add = a.add - b.value; return true; }
+                if (a.isConst && b.isConst) { e = Expr{}; e.isConst = true; e.value = a.value - b.value; return true; }
+            }
+            return false;
+        }
+        default: return false;
+    }
+}
+
+struct Uses { int reads = 0, writes = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
+inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
+    std::unordered_set<U32> seen;
+    std::vector<std::pair<U32, int>> stack;
+    stack.push_back({rootId, 0});
+    while (!stack.empty()) {
+        auto [pid, depth] = stack.back(); stack.pop_back();
+        if (depth > 16 || seen.count(pid)) continue;
+        seen.insert(pid);
+        for (size_t ii = m.firstFunc; ii < m.insns.size(); ii++) {
+            const Insn& in = m.insns[ii];
+            int hit = -1;
+            for (U32 k = in.fv; k < in.n; k++) if (in.w[k] == pid) { hit = (int)k; break; }
+            if (hit < 0) continue;
+            if ((in.op == 65 || in.op == 66) && hit == (int)in.fv) { out.coneTypes.push_back(in.resultType); stack.push_back({in.resultId, depth + 1}); continue; }
+            if (in.op == 83 && hit == (int)in.fv) { stack.push_back({in.resultId, depth + 1}); continue; }
+            if (in.op == 61 && hit == (int)in.fv) { out.reads++; continue; }
+            if (in.op == 62) {
+                if (hit == (int)in.fv) out.writes++; else out.escapes.push_back("pointer stored as a value");
+                continue;
+            }
+            if (in.op >= 227 && in.op <= 245 && hit == (int)in.fv) {
+                if (in.op == 227) out.reads++; else out.writes++;
+                continue;
+            }
+            out.escapes.push_back("op" + std::to_string(in.op));
+        }
+    }
+}
+
+struct MDeco { bool present = false, matrixStrideSet = false; U32 matrixStride = 0; bool rowMajor = false; };
+struct Measure { I64 size = 0, align = 0; bool ok = false, runtime = false; };
+inline bool measure(const Module& m, U32 typeId, const MDeco* md, Measure& out, int depth) {
+    if (depth > 12) return false;
+    auto it = m.byId.find(typeId); if (it == m.byId.end()) return false;
+    const Insn& t = m.insns[it->second];
+    auto roundUp = [](I64 a, I64 v) { return (v + a - 1) & ~(a - 1); };
+    switch (t.op) {
+        case 21: case 22: { I64 sz = t.w[1] / 8; out = {sz, sz, true, false}; return true; }
+        case 23: { // OpTypeVector
+            Measure c; if (!measure(m, t.w[1], nullptr, c, depth + 1) || c.runtime) return false;
+            I64 n = t.w[2];
+            out = {c.size * n, c.size * (n == 2 ? 2 : 4), c.ok, false}; return true;
+        }
+        case 24: { // OpTypeMatrix
+            if (!md || !md->present || !md->matrixStrideSet) return false;
+            auto ct = m.byId.find(t.w[1]); if (ct == m.byId.end()) return false;
+            const Insn& col = m.insns[ct->second];
+            if (col.op != 23) return false;
+            Measure c; if (!measure(m, col.w[1], nullptr, c, depth + 1)) return false;
+            I64 rows = col.w[2], cols = t.w[2];
+            I64 vecSize = md->rowMajor ? c.size * cols : c.size * rows;
+            I64 vecAlign = c.size * ((md->rowMajor ? cols : rows) == 2 ? 2 : 4);
+            I64 vecCount = md->rowMajor ? rows : cols;
+            I64 stride = roundUp(vecAlign, vecSize);
+            out = {stride * vecCount, vecAlign, md->matrixStride == (U32)stride, false}; return true;
+        }
+        case 28: { // OpTypeArray
+            I64 len; if (!constInt(m, t.w[2], len)) return false;
+            auto as = m.arrayStride.find(typeId); if (as == m.arrayStride.end()) return false;
+            Measure e; if (!measure(m, t.w[1], md, e, depth + 1) || e.runtime) return false;
+            I64 stride = roundUp(e.align, e.size);
+            out = {stride * len, e.align, e.ok && as->second == (U32)stride, false}; return true;
+        }
+        case 29: { // OpTypeRuntimeArray
+            auto as = m.arrayStride.find(typeId); if (as == m.arrayStride.end()) return false;
+            Measure e; if (!measure(m, t.w[1], md, e, depth + 1) || e.runtime) return false;
+            I64 stride = roundUp(e.align, e.size);
+            out = {0, e.align, e.ok && as->second == (U32)stride, true}; return true;
+        }
+        case 30: { // OpTypeStruct
+            I64 end = 0, align = 0; bool ok = true;
+            for (U32 i = 1; i < t.n; i++) {
+                U64 k = mkey(typeId, i - 1);
+                auto mo = m.memberOffset.find(k); if (mo == m.memberOffset.end()) return false;
+                MDeco mmd; mmd.present = true;
+                auto ms = m.memberMatrixStride.find(k);
+                mmd.matrixStrideSet = ms != m.memberMatrixStride.end();
+                mmd.matrixStride = mmd.matrixStrideSet ? ms->second : 0;
+                auto rm = m.memberRowMajor.find(k); mmd.rowMajor = rm != m.memberRowMajor.end() ? rm->second : false;
+                Measure mm; if (!measure(m, t.w[i], &mmd, mm, depth + 1)) return false;
+                if (mm.runtime && i != t.n - 1) return false;
+                I64 off = roundUp(mm.align, end);
+                if ((I64)mo->second != off || !mm.ok) ok = false;
+                end = off + (mm.runtime ? 0 : mm.size);
+                align = std::max(align, mm.align);
+            }
+            out = {roundUp(align, end), align, ok, false}; return true;
+        }
+        default: return false;
+    }
+}
+
+struct RootVerdict { bool hasMats = false, servable = false; std::vector<U32> slots; };
+inline RootVerdict analyzeRoot(const Module& m) {
+    RootVerdict out;
+    struct Mat { U32 matId, ptrTypeId, pointeeId; Expr prov; bool provOk; Uses uses; };
+    std::vector<Mat> mats;
+    for (const Insn& in : m.insns) {
+        if (in.op != 120 && in.op != 124) continue; // OpConvertUToPtr / OpBitcast
+        auto rt = m.byId.find(in.resultType); if (rt == m.byId.end()) continue;
+        const Insn& t = m.insns[rt->second];
+        if (t.op != 32 || t.n < 3 || t.w[1] != 5349) continue;
+        Mat mt; mt.matId = in.resultId; mt.ptrTypeId = in.resultType; mt.pointeeId = t.w[2];
+        mt.provOk = classifyExpr(m, in.w[2], mt.prov, 0);
+        pointerUses(m, in.resultId, mt.uses);
+        mats.push_back(std::move(mt));
+    }
+    if (mats.empty()) return out;
+    out.hasMats = true;
+    std::map<I64, std::vector<const Mat*>> bySlot;
+    for (const Mat& mt : mats) {
+        if (!mt.provOk || !mt.prov.isPush) return out;
+        if (mt.prov.add != 0) return out;
+        if (mt.prov.byteOff < 0 || mt.prov.byteOff % 8 != 0) return out;
+        bySlot[mt.prov.byteOff].push_back(&mt);
+    }
+    // Every PhysicalStorageBuffer pointer type must belong to a root cone
+    // or be entirely unreferenced (spirvfix deletes those); an externally
+    // referenced one keeps the module unservable.
+    std::unordered_set<U32> matTypes, coneTypes;
+    for (const Mat& mt : mats) { matTypes.insert(mt.ptrTypeId); for (U32 ct : mt.uses.coneTypes) coneTypes.insert(ct); }
+    for (const Insn& in : m.insns) {
+        if (in.op != 32 || in.n < 3 || in.w[1] != 5349) continue;
+        U32 tid = in.resultId;
+        if (!tid || matTypes.count(tid) || coneTypes.count(tid)) continue;
+        bool external = false;
+        for (const Insn& u : m.insns) {
+            if (&u == &in) continue;
+            for (U32 k = 0; k < u.n; k++) if (u.w[k] == tid) { external = true; break; }
+            if (external) break;
+        }
+        if (external) return out;
+    }
+    for (auto& kv : bySlot) {
+        std::unordered_set<U32> pointees;
+        for (const Mat* mt : kv.second) {
+            if (mt->uses.writes > 0) return out;
+            if (!mt->uses.escapes.empty()) return out;
+            pointees.insert(mt->pointeeId);
+        }
+        if (pointees.size() != 1) return out;
+        U32 pointeeId = *pointees.begin();
+        Measure ms; if (!measure(m, pointeeId, nullptr, ms, 0) || !ms.ok) return out;
+        auto pt = m.byId.find(pointeeId);
+        if (pt != m.byId.end() && m.insns[pt->second].op == 30) {
+            auto kind = m.structKind.find(pointeeId);
+            if (kind == m.structKind.end() || (kind->second != 2 && kind->second != 3)) return out;
+            for (const Insn& u : m.insns)
+                if (u.op == 32 && u.n >= 3 && u.w[2] == pointeeId && u.w[1] != 5349) return out;
+        }
+        out.slots.push_back((U32)kv.first);
+    }
+    {
+        // The synthesized bindings must not collide with a module-owned
+        // binding in the chosen set (mirrors spirvfix's analyze step).
+        std::set<U32> heapSets;
+        for (const Insn& ins : m.insns) {
+            if (ins.op != 59) continue;
+            auto pit = m.byId.find(ins.resultType); if (pit == m.byId.end()) continue;
+            const Insn& ptr = m.insns[pit->second];
+            if (ptr.op != 32 || ptr.n < 3) continue;
+            auto qit = m.byId.find(ptr.w[2]); if (qit == m.byId.end()) continue;
+            if (m.insns[qit->second].op == 48) {
+                auto dit = m.varSet.find(ins.resultId);
+                heapSets.insert(dit != m.varSet.end() ? dit->second : 0);
+            }
+        }
+        U32 heapSet = heapSets.size() == 1 ? *heapSets.begin() : 0;
+        std::set<U64> occupied;
+        for (const auto& kv : m.varBinding) {
+            auto sit = m.varSet.find(kv.first);
+            if (sit != m.varSet.end()) occupied.insert(mkey(sit->second, kv.second));
+        }
+        for (U32 byteOff : out.slots) {
+            U32 binding = 4096 + byteOff / 8;
+            if (occupied.count(mkey(heapSet, binding))) return out;
+        }
+    }
+    out.servable = true;
+    return out;
+}
+
+struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; };
+inline ArrayVerdict analyzeArrays(const Module& m) {
+    ArrayVerdict out;
+    struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; };
+    std::vector<Arr> arrs;
+    for (const Insn& in : m.insns) {
+        if (in.op != 59) continue;
+        auto pt = m.byId.find(in.resultType); if (pt == m.byId.end()) continue;
+        const Insn& p = m.insns[pt->second];
+        if (p.op != 32 || p.n < 3) continue;
+        auto rt = m.byId.find(p.w[2]); if (rt == m.byId.end()) continue;
+        const Insn& ra = m.insns[rt->second];
+        if (ra.op != 29 || ra.n < 2) continue; // OpTypeRuntimeArray
+        auto et = m.byId.find(ra.w[1]); if (et == m.byId.end()) continue;
+        const Insn& e = m.insns[et->second];
+        if (e.op != 25 && e.op != 26 && e.op != 27) continue; // image / sampler / sampled image
+        Arr a; a.varInsn = &in; a.pointeeRA = p.w[2]; a.servable = false;
+        out.hasDescriptorArrays = true;
+        bool writableBad = e.op == 25 && e.n >= 8 && e.w[6] == 2 && !m.varNonWritable.count(in.resultId);
+        if (!writableBad) {
+            std::set<std::string> sigs; bool bad = false; int nAcc = 0;
+            for (size_t ii = m.firstFunc; ii < m.insns.size() && !bad; ii++) {
+                const Insn& u = m.insns[ii];
+                int hit = -1;
+                for (U32 k = u.fv; k < u.n; k++) if (u.w[k] == in.resultId) { hit = (int)k; break; }
+                if (hit < 0) continue;
+                if ((u.op == 65 || u.op == 66) && hit == (int)u.fv) {
+                    if (u.n != u.fv + 2) { bad = true; break; }
+                    Expr ex; if (!classifyExpr(m, u.w[u.fv + 1], ex, 0)) { bad = true; break; }
+                    sigs.insert(ex.isConst ? ("c" + std::to_string(ex.value))
+                                           : ("p" + std::to_string(ex.byteOff) + "a" + std::to_string(ex.add)));
+                    nAcc++;
+                    Uses cu; pointerUses(m, u.resultId, cu);
+                    if (cu.writes > 0 || !cu.escapes.empty()) { bad = true; break; }
+                } else bad = true;
+            }
+            if (!bad && nAcc > 0 && sigs.size() == 1) a.servable = true;
+        }
+        arrs.push_back(a);
+    }
+    if (!out.hasDescriptorArrays) return out;
+    out.servable = true;
+    for (const Arr& a : arrs) if (!a.servable) out.servable = false;
+    if (!out.servable) return out;
+    // Mirror of the spirvfix orphan sweep: with the servable array
+    // variables removed, a runtime-array type survives only if some live
+    // instruction still references it (decoration/name references and the
+    // resultId word do not count; the resultType word does).
+    std::unordered_set<const Insn*> removed, dead;
+    for (const Arr& a : arrs) removed.insert(a.varInsn);
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        std::unordered_set<U32> live;
+        for (const Insn& in : m.insns) {
+            if (removed.count(&in) || dead.count(&in)) continue;
+            if (in.op == 71 || in.op == 72 || in.op == 5 || in.op == 6) continue;
+            // Header/directive instructions (source, extension, memory
+            // model, entry point, execution mode, capability) carry
+            // enums/strings/variable ids, never type ids: not references
+            // (mirrors the spirvfix orphan sweep).
+            if (in.op == 2 || in.op == 3 || in.op == 4 || in.op == 7 || in.op == 10 ||
+                in.op == 14 || in.op == 15 || in.op == 16 || in.op == 17) continue;
+            if (in.resultType) live.insert(in.w[0]);
+            for (U32 k = in.fv; k < in.n; k++) live.insert(in.w[k]);
+        }
+        for (const Insn& in : m.insns) {
+            if (removed.count(&in) || dead.count(&in)) continue;
+            if ((in.op == 28 || in.op == 29 || in.op == 32) && in.resultId && !live.count(in.resultId)) { dead.insert(&in); grew = true; }
+        }
+    }
+    out.skip5302 = true;
+    for (const Insn& in : m.insns)
+        if (in.op == 29 && !dead.count(&in)) { out.skip5302 = false; break; }
+    return out;
+}
+
+} // namespace r15
+
 static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
     const size_t nw = code.size() / 4;
@@ -570,6 +1048,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::vector<Var> vars;
     bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
     bool storageImageWrite = false, imageWriteOpcode = false;
+    bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349
     std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
     std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
     std::unordered_map<U32, Var*> varById;
@@ -585,13 +1064,14 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
                      else if (len >= 2 && w[i + 1] <= 4) graphicsEntry = true; break; // OpEntryPoint Vertex/Tessellation/Geometry/Fragment
             case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
             case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
-            case 32: if (len >= 4) ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; break;       // OpTypePointer
+            case 32: if (len >= 4) { ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; if (w[i + 2] == 5349) physicalBufferUsed = true; } break; // OpTypePointer (storage class 5349 = PhysicalStorageBuffer)
             case 25:
                 if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
                 if (len >= 9 && w[i + 7] == 2) { storageImage = true; storageImageTypes.insert(w[i + 1]); } // OpTypeImage, Sampled==2
                 break;
             case 61: if (len >= 4) loadPtr[w[i + 2]] = w[i + 3]; break;              // OpLoad: result -> pointer
             case 99: imageWriteOpcode = true; break;                                 // OpImageWrite (valid only on storage images)
+            case 120: case 121: physicalBufferUsed = true; break;                    // OpConvertUToPtr / OpConvertPtrToU: a physical pointer is materialized
             case 60: if (len >= 4) {                                                 // OpImageTexelPointer: candidate write (stores/atomics go through texel pointers); typed after the scan when varById exists
                 U32 img = w[i + 3];
                 auto lp = loadPtr.find(img); if (lp != loadPtr.end()) img = lp->second;
@@ -628,10 +1108,20 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         vk64Unsupported("spirv-compute-entry", "compute-only shader module accepted for pipeline creation; dispatch results are not produced (no V2 compute record)");
         return VK_SUCCESS;
     }
+    // R15 (Route A, section 4.21): admit the descriptor-addressing
+    // capabilities exactly for the modules the mirror classifiers prove
+    // servable by the spirvfix R15 rewrites -- no wider, no narrower.
+    r15::Module r15m;
+    r15::RootVerdict r15Root;
+    r15::ArrayVerdict r15Arr;
+    if (r15::parse(w, r15m)) { r15Root = r15::analyzeRoot(r15m); r15Arr = r15::analyzeArrays(r15m); }
     for (U32 c : caps) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
         if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
+        if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue; // PhysicalStorageBufferAddresses declared but unused (vkd3d module-wide header artifact): spirvfix R8 strips exactly this case in the tier. The used form falls through to spirv-capability-unknown:<n> below.
+        if ((c == 5346 || c == 5347) && r15Root.servable) continue; // R15b: every physical pointer in the module is a read-only root descriptor spirvfix re-roots at a synthesized binding; the bridge resolves its VA per draw (ROOT_DESCS).
+        if (c == 5302 && r15Arr.skip5302) continue; // R15a: every runtime array in the module is specialized away by spirvfix (single provable index signature each) and the capability declaration is stripped with them.
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
@@ -724,6 +1214,7 @@ const U64 OBJ_MAGIC = 0x564B4F42ull;   // 'VKOB'
 std::unordered_map<U64, Obj*> g_objs;
 U64 g_nextId = 0x564B0100;
 U64 g_nextDevVa = 0x4000000000ULL; // VA space for vkGetBufferDeviceAddress (256MB stride)
+std::map<U64, U64> g_devVaRegistry; // R15: devVa base -> buffer object id, for root-descriptor VA resolution at submit
 
 template <class T> T* createObj(U32 kind, U64& idOut) {
     T* o = new T();
@@ -1180,6 +1671,7 @@ struct Pipeline : Obj {
                                    // no geometry stage); draws governed at submit.
     bool gsServe = false;           // gs is the layer-passthrough shape AND strip-
                                    // equivalent to fs: draws served by omission.
+    std::vector<U32> rootSlots; // R15: root-descriptor push byte offsets across the stage modules (census at creation)
 };
 template <class T>
 static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
@@ -2805,6 +3297,7 @@ enum V2Rec : U32 {
     V2_STENCIL_STATE = 0x15, V2_BLEND_CONSTANTS = 0x16, V2_CLEAR_ATTACHMENTS = 0x17,
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
     V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B, V2_BUFFER_VIEW = 0x1C,
+    V2_ROOT_DESCS = 0x1D,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -3801,6 +4294,42 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             emitImageDataInner(viewId);
             vkprofImgT += vkProfNow() - t0;
         };
+        // R15: before a draw under a pipeline with root-descriptor slots,
+        // resolve each slot's VA from the merged push block and stream the
+        // target ranges (plus their bytes) to the tier. Unresolved slots
+        // (VA 0, unknown VA, dead buffer) go out as zero-length entries:
+        // the tier binds zero-filled storage for them.
+        U8 mergedPush[256] = {}; // R15: the serializer's own merged push block, for root-slot VA reads at draws
+        auto emitRootDescs = [&](Pipeline* ap) {
+            if (!ap || ap->rootSlots.empty()) return;
+            struct Res { U32 off; U64 obj, absOff, len; };
+            std::vector<Res> res;
+            for (U32 off : ap->rootSlots) {
+                Res r{off, 0, 0, 0};
+                if (off + 8 <= 256) {
+                    U64 va; memcpy(&va, mergedPush + off, 8);
+                    if (va && !g_devVaRegistry.empty()) {
+                        auto it = g_devVaRegistry.upper_bound(va);
+                        if (it != g_devVaRegistry.begin()) {
+                            --it;
+                            Buffer* buf = objOf<Buffer>(it->second, K_BUFFER, "vkQueueSubmit");
+                            if (buf && buf->mem && va >= it->first && va - it->first < buf->size) {
+                                U64 boff = va - it->first;
+                                r.obj = it->second;
+                                r.absOff = buf->memOff + boff;
+                                r.len = buf->size - boff;
+                            }
+                        }
+                    }
+                }
+                res.push_back(r);
+            }
+            emit(V2_ROOT_DESCS, [&](ChunkWriter& p) {
+                p.u32((U32)res.size());
+                for (const Res& r : res) { p.u32(r.off); p.u64(r.obj); p.u64(r.absOff); p.u64(r.len); }
+            });
+            for (const Res& r : res) if (r.obj && r.len) emitBufferData(r.obj, r.absOff, r.len);
+        };
         auto emitDescSet = [&](U32 setIndex, U64 setId, const std::vector<U32>* dyn) {
             VkEncodeScope phase(vkProfAcc().encode, vkencode::Descriptors, detailed);
             DescSet* s = objOf<DescSet>(setId, K_SET, "vkQueueSubmit");
@@ -4272,6 +4801,10 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         p.u32(k.pcOffset); p.u32(k.pcSize); p.u32(k.pcStageFlags);
                         p.bytes(k.pcBytes, k.pcSize);
                     });
+                    if (k.pcOffset < 256) {
+                        U32 avail = 256 - k.pcOffset;
+                        memcpy(mergedPush + k.pcOffset, k.pcBytes, std::min<U32>(k.pcSize, avail));
+                    }
                     break;
                 case CMD_BIND_VB: {
                     emit(V2_VERTEX_BIND, [&](ChunkWriter& p) {
@@ -4316,6 +4849,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)");
                         break;
                     }
+                    emitRootDescs(gsPipe);
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c); p.u32((U32)k.d);
@@ -4330,6 +4864,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         vk64Unsupported("geometry-stage-draw", "draw under a geometry-stage pipeline not produced (WebGPU has no geometry stage)");
                         break;
                     }
+                    emitRootDescs(gsPipe);
                     nDraw++;
                     emit(V2_DRAW, [&](ChunkWriter& p) {
                         p.u32(0); p.u32((U32)k.b); p.u32(0); p.u32((U32)k.d);
@@ -5897,6 +6432,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
+            g_devVaRegistry[b->devVa] = info.buffer;
         }
         return b->devVa;
     }
@@ -6184,6 +6720,21 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             }
             p->layout = ci.layout;
             p->rp = ci.renderPass;
+            {   // R15 census: union of root-descriptor slots over the stage modules.
+                std::set<U32> slots;
+                for (const VkPipelineShaderStageCreateInfo& st : stages) {
+                    ShaderModule* sm = st.module ? objOf<ShaderModule>(st.module, K_SHADER, "vkCreateGraphicsPipelines") : nullptr;
+                    if (!sm || sm->code.size() < 20 || (sm->code.size() & 3)) continue;
+                    std::vector<U32> words(sm->code.size() / 4);
+                    memcpy(words.data(), sm->code.data(), sm->code.size());
+                    r15::Module rm;
+                    if (r15::parse(words, rm)) {
+                        r15::RootVerdict rv = r15::analyzeRoot(rm);
+                        if (rv.servable) slots.insert(rv.slots.begin(), rv.slots.end());
+                    }
+                }
+                p->rootSlots.assign(slots.begin(), slots.end());
+            }
             wr64(args.a[5] + (U64)i * 8, id);
         }
         return result;
@@ -11191,6 +11742,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!b->devVa) {
             b->devVa = g_nextDevVa;
             g_nextDevVa += 0x10000000ULL;
+            g_devVaRegistry[b->devVa] = (U64)bufHandle;
         }
         // The i386 trap returns only EAX, which would truncate the 64-bit address
         // to its low half (0 for the first buffer). The shim passes a u64 out slot

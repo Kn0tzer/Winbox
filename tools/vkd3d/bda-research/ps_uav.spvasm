@@ -1,0 +1,69 @@
+; SPIR-V
+; Version: 1.6
+; Generator: Unknown(30017); 21022
+; Bound: 43
+; Schema: 0
+               OpCapability Shader
+               OpCapability DenormFlushToZero
+               OpCapability SignedZeroInfNanPreserve
+               OpCapability VulkanMemoryModel
+               OpExtension "SPV_KHR_float_controls"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint Fragment %main "main" %8 %SV_Position %SV_Target
+               OpExecutionMode %main OriginUpperLeft
+               OpExecutionMode %main DenormFlushToZero 32
+               OpExecutionMode %main SignedZeroInfNanPreserve 32
+               OpName %main "main"
+               OpName %SV_Position "SV_Position"
+               OpName %SV_Target "SV_Target"
+               OpDecorate %8 DescriptorSet 0
+               OpDecorate %8 Binding 1
+               OpDecorate %8 NonWritable
+               OpDecorate %SV_Position BuiltIn FragCoord
+               OpDecorate %SV_Target Location 0
+       %void = OpTypeVoid
+          %2 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+          %6 = OpTypeImage %float 2D 0 0 0 2 R32f
+%_ptr_UniformConstant_6 = OpTypePointer UniformConstant %6
+          %8 = OpVariable %_ptr_UniformConstant_6 UniformConstant
+    %v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%SV_Position = OpVariable %_ptr_Input_v4float Input
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+  %SV_Target = OpVariable %_ptr_Output_v4float Output
+%_ptr_Input_float = OpTypePointer Input %float
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Output_float = OpTypePointer Output %float
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+       %main = OpFunction %void None %2
+          %4 = OpLabel
+               OpBranch %41
+         %41 = OpLabel
+         %15 = OpAccessChain %_ptr_Input_float %SV_Position %uint_0
+         %18 = OpLoad %float %15
+         %19 = OpAccessChain %_ptr_Input_float %SV_Position %uint_1
+         %21 = OpLoad %float %19
+         %22 = OpConvertFToS %uint %18
+         %23 = OpConvertFToS %uint %21
+         %24 = OpLoad %6 %8
+         %28 = OpCompositeConstruct %v2uint %22 %23
+         %27 = OpImageRead %v4float %24 %28 NonPrivateTexel
+         %29 = OpCompositeExtract %float %27 0
+         %30 = OpCompositeExtract %float %27 1
+         %31 = OpCompositeExtract %float %27 2
+         %32 = OpCompositeExtract %float %27 3
+         %35 = OpAccessChain %_ptr_Output_float %SV_Target %uint_0
+               OpStore %35 %29
+         %36 = OpAccessChain %_ptr_Output_float %SV_Target %uint_1
+               OpStore %36 %30
+         %37 = OpAccessChain %_ptr_Output_float %SV_Target %uint_2
+               OpStore %37 %31
+         %39 = OpAccessChain %_ptr_Output_float %SV_Target %uint_3
+               OpStore %39 %32
+               OpReturn
+               OpFunctionEnd
