@@ -340,16 +340,36 @@ done
 #     maintenance1/2), and vkd3d-proton requires maintenance5/6 at
 #     device creation. The shim forwards PE Vulkan calls straight to
 #     the host vk64bridge with pointers uninterpreted, so vkd3d sees
-#     the bridge's real caps. Wine's vulkan-1.dll forwarder and the
-#     winevulkan path the rest of the fleet uses stay untouched, as do
-#     ELF clients (they use libvulkan.so.1 below).
+#     the bridge's real caps. ELF clients use libvulkan.so.1 below.
+#   vulkan-1.dll + winevulkan.dll <- the SAME shim bytes, under both
+#     other names a PE client can load it by. System-placement surface
+#     closure (2026-10-27, surface lane; campaign report 4.19): Wine's
+#     builtin dxgi.dll creates D3D12 swapchain surfaces through a
+#     factory that LoadLibrary's "winevulkan.dll" BY NAME (proven by a
+#     WINEDEBUG=+module loader trace of the failing probe: load_dll
+#     "winevulkan.dll", and vulkan-1.dll is never loaded in the D3D12
+#     flow), while native Vulkan apps and DXVK's dxgi load
+#     "vulkan-1.dll". winevulkan treats a VkInstance as a pointer to
+#     its own wrapper struct, but vkd3d's instance (created through
+#     bw64vulkan.dll above) is a bridge handle (an opaque id, not a
+#     pointer), so dxgi's vkCreateWin32SurfaceKHR faulted inside
+#     winevulkan (loader_thunks.c:3097 assert) and every
+#     system-placement D3D12 swapchain aborted before any surface
+#     existed. Resolving all three PE Vulkan names to the shim puts
+#     every PE Vulkan client in one handle domain (the bridge) -- the
+#     configuration the unstaged first-light probe already proved
+#     (it stages the shim under these names in the app dir). No
+#     shipped Wine PE statically imports either name (import scan,
+#     2026-10-27); consumption is dynamic only.
 #   d3d12.dll + d3d12core.dll <- the vkd3d-proton build, replacing
 #     Wine's pair so D3D12 apps are served at system placement with
 #     WINEDLLOVERRIDES=d3d12=n;d3d12core=n, no app-dir copies.
 # The merge-script equivalent for this ARM64 host (where the container
 # staging crashes) is tools/rootfs64/stage-vkd3d-payloads.sh.
-echo "--- staging vkd3d payload (bw64vulkan.dll shim + d3d12 pair) ---"
+echo "--- staging vkd3d payload (bw64vulkan.dll + vulkan-1.dll + winevulkan.dll shim + d3d12 pair) ---"
 cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/bw64vulkan.dll"
+cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll"
+cp "$VKSHIM_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winevulkan.dll"
 cp "$D3D12_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll"
 cp "$D3D12CORE_PREBUILT" "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll"
 

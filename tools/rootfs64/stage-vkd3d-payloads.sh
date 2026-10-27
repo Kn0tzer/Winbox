@@ -16,8 +16,30 @@
 #          puts it at system placement (the prefix's system32 is a .link
 #          into this tree), so ANY D3D12 program in the demo environment
 #          finds it by plain LoadLibrary search — no app-dir copies, no
-#          DLL overrides, and no change to the vulkan-1.dll /
-#          winevulkan path the rest of the fleet (DXVK demos) uses.
+#          DLL overrides.
+#   usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll
+#   usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winevulkan.dll
+#       <- the SAME shim bytes, under both other names a PE client can
+#          load it by. System-placement surface closure (2026-10-27,
+#          surface lane; campaign report 4.19): Wine's builtin dxgi.dll
+#          creates D3D12 swapchain surfaces through a factory that
+#          LoadLibrary's "winevulkan.dll" BY NAME (proven by a
+#          WINEDEBUG=+module loader trace of the failing probe:
+#          load_dll "winevulkan.dll"; vulkan-1.dll is never loaded in
+#          the D3D12 flow), while native Vulkan apps and DXVK's dxgi
+#          load "vulkan-1.dll". winevulkan treats a VkInstance as a
+#          pointer to its own wrapper struct, but vkd3d's instance
+#          (created through bw64vulkan.dll above) is a bridge handle
+#          (an opaque id, not a pointer), so dxgi's
+#          vkCreateWin32SurfaceKHR faulted inside winevulkan
+#          (loader_thunks.c:3097 assert) and every system-placement
+#          D3D12 swapchain aborted before any surface existed.
+#          Resolving all three PE Vulkan names to the shim puts every
+#          PE Vulkan client in one handle domain (the bridge) — the
+#          configuration the unstaged first-light probe already proved
+#          (it stages the shim under these names in the app dir). No
+#          shipped Wine PE statically imports either name (import
+#          scan, 2026-10-27); consumption is dynamic only.
 #   usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll
 #   usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll
 #       <- the vkd3d-proton 3.1.0 build (tools/vkd3d/build.w64, see
@@ -52,6 +74,8 @@ import sys, zipfile
 archive, vkshim, d3d12, d3d12core = sys.argv[1:5]
 want = {
     "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/bw64vulkan.dll": open(vkshim, "rb").read(),
+    "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll": open(vkshim, "rb").read(),
+    "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winevulkan.dll": open(vkshim, "rb").read(),
     "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll": open(d3d12, "rb").read(),
     "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll": open(d3d12core, "rb").read(),
 }
@@ -78,6 +102,8 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     TMP="$(mktemp -d)"
     mkdir -p "$TMP/payload/$WIN64_DIR"
     cp "$VKSHIM" "$TMP/payload/$WIN64_DIR/bw64vulkan.dll"
+    cp "$VKSHIM" "$TMP/payload/$WIN64_DIR/vulkan-1.dll"
+    cp "$VKSHIM" "$TMP/payload/$WIN64_DIR/winevulkan.dll"
     cp "$D3D12" "$TMP/payload/$WIN64_DIR/d3d12.dll"
     cp "$D3D12CORE" "$TMP/payload/$WIN64_DIR/d3d12core.dll"
     ( cd "$TMP/payload" && zip -qry9 "$TMP/payload.zip" usr )
