@@ -1763,7 +1763,11 @@ const R13_DEC = {
   MatrixStride: 7, NonWritable: 24, Offset: 35,
 };
 
-export function uniformBlocksToStorage(mod, log) {
+// WGSL host-shareable layout model, shared by R13 (which rewrites with it)
+// and the block-layout audit below (which rejects with it). One model, one
+// source of truth: the two consumers can never disagree about what WGSL
+// layout computes for a decorated SPIR-V block.
+function createLayoutModel(mod) {
   const byId = new Map();
   for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
 
@@ -1803,17 +1807,23 @@ export function uniformBlocksToStorage(mod, log) {
     return v <= 0x7fffffffn ? Number(v) : null;
   };
   const roundUp = (a, v) => (v + a - 1) & ~(a - 1);
-  const isPow2 = (v) => v > 0 && (v & (v - 1)) === 0;
 
   // WGSL host-shareable layout, per address space ('storage' | 'uniform').
-  // measure(typeId, space, mDeco) -> { size, align, ok } | null
+  // measure(typeId, space, mDeco, trace?) -> { size, align, ok } | null
   //   ok: every decorated stride / offset inside the type equals the value
   //       this space's WGSL layout computes (so naga's re-layout is a
   //       byte-exact no-op). null: a shape this checker does not model.
+  //   size -1 marks an unbounded type (runtime array): layout of its
+  //       elements is still fully modelled; only the total size is unknown.
   // mDeco is the enclosing struct member's decorations (matrix stride /
   // majorness live there, not on the type); arrays pass it through, nested
   // structs replace it with their own members' decorations.
-  function measure(typeId, space, mDeco) {
+  // trace, when given, collects one record per proven inequality:
+  // { kind: 'matrix-stride' | 'array-stride' | 'member-offset', space?,
+  //   type?, struct?, member?, decorated, computed }. Matrix stride is
+  // space-independent (the vector rule in both spaces); the other records
+  // carry the space they were computed for.
+  function measure(typeId, space, mDeco, trace) {
     const t = byId.get(typeId);
     if (!t) return null;
     switch (t.op) {
@@ -1823,7 +1833,7 @@ export function uniformBlocksToStorage(mod, log) {
         return { size, align: size, ok: true };
       }
       case Op.TypeVector: {
-        const comp = measure(t.words[1], space, null);
+        const comp = measure(t.words[1], space, null, trace);
         if (!comp) return null;
         const n = t.words[2];
         return { size: comp.size * n, align: comp.size * (n === 2 ? 2 : 4), ok: comp.ok };
@@ -1832,7 +1842,7 @@ export function uniformBlocksToStorage(mod, log) {
         if (!mDeco || mDeco.matrixStride == null) return null;
         const col = byId.get(t.words[1]);
         if (!col || col.op !== Op.TypeVector) return null;
-        const comp = measure(col.words[1], space, null);
+        const comp = measure(col.words[1], space, null, trace);
         if (!comp) return null;
         const rows = col.words[2], cols = t.words[2];
         // The vectors the buffer actually stores: columns (ColMajor) or
@@ -1842,18 +1852,24 @@ export function uniformBlocksToStorage(mod, log) {
         const vecAlign = comp.size * ((mDeco.rowMajor ? cols : rows) === 2 ? 2 : 4);
         const vecCount = mDeco.rowMajor ? rows : cols;
         const stride = roundUp(vecAlign, vecSize);
+        if (trace && mDeco.matrixStride !== stride)
+          trace.push({ kind: 'matrix-stride', type: typeId, decorated: mDeco.matrixStride, computed: stride });
         return { size: stride * vecCount, align: vecAlign, ok: mDeco.matrixStride === stride };
       }
-      case Op.TypeArray: {
-        const len = constVal(t.words[2]);
+      case Op.TypeArray:
+      case Op.TypeRuntimeArray: {
         const deco = typeDeco.get(typeId);
-        if (len == null || !deco || deco.arrayStride == null) return null;
-        const elem = measure(t.words[1], space, mDeco);
-        if (!elem) return null;
+        if (!deco || deco.arrayStride == null) return null;
+        const len = t.op === Op.TypeArray ? constVal(t.words[2]) : -1;
+        if (len == null) return null;
+        const elem = measure(t.words[1], space, mDeco, trace);
+        if (!elem || elem.size < 0) return null;
         let stride = roundUp(elem.align, elem.size);
         if (space === 'uniform') stride = roundUp(16, stride);
         const align = space === 'uniform' ? Math.max(16, elem.align) : elem.align;
-        return { size: stride * len, align, ok: elem.ok && deco.arrayStride === stride };
+        if (trace && deco.arrayStride !== stride)
+          trace.push({ kind: 'array-stride', space, type: typeId, decorated: deco.arrayStride, computed: stride });
+        return { size: len < 0 ? -1 : stride * len, align, ok: elem.ok && deco.arrayStride === stride };
       }
       case Op.TypeStruct: {
         let endU = 0, endS = 0, alignU = 0, alignS = 0, okU = true, okS = true;
@@ -1861,9 +1877,13 @@ export function uniformBlocksToStorage(mod, log) {
           const mt = t.words[i];
           const md = memberDeco.get(typeId + ':' + (i - 1));
           if (!md || md.offset == null) return null;
-          const mu = measure(mt, 'uniform', md), ms = measure(mt, 'storage', md);
-          if (!mu || !ms) return null;
+          const mu = measure(mt, 'uniform', md, trace), ms = measure(mt, 'storage', md, trace);
+          if (!mu || !ms || mu.size < 0 || ms.size < 0) return null;
           const offU = roundUp(mu.align, endU), offS = roundUp(ms.align, endS);
+          if (trace && md.offset !== offU)
+            trace.push({ kind: 'member-offset', space: 'uniform', struct: typeId, member: i - 1, decorated: md.offset, computed: offU });
+          if (trace && md.offset !== offS)
+            trace.push({ kind: 'member-offset', space: 'storage', struct: typeId, member: i - 1, decorated: md.offset, computed: offS });
           if (md.offset !== offU || !mu.ok) okU = false;
           if (md.offset !== offS || !ms.ok) okS = false;
           endU = offU + mu.size; endS = offS + ms.size;
@@ -1874,7 +1894,7 @@ export function uniformBlocksToStorage(mod, log) {
         return { size: roundUp(alignS, endS), align: alignS, ok: okS };
       }
       default:
-        return null; // bool, runtime array, pointer, image, ...: unmodelled
+        return null; // bool, pointer, image, ...: unmodelled
     }
   }
   // For the block struct itself only member checks matter (nothing follows
@@ -1887,7 +1907,7 @@ export function uniformBlocksToStorage(mod, log) {
       const md = memberDeco.get(structId + ':' + (i - 1));
       if (!md || md.offset == null) return null;
       const mu = measure(t.words[i], 'uniform', md), ms = measure(t.words[i], 'storage', md);
-      if (!mu || !ms) return null;
+      if (!mu || !ms || mu.size < 0 || ms.size < 0) return null;
       if (md.offset !== roundUp(mu.align, endU)) okU = false;
       if (md.offset !== roundUp(ms.align, endS)) okS = false;
       okU = okU && mu.ok; okS = okS && ms.ok;
@@ -1896,6 +1916,11 @@ export function uniformBlocksToStorage(mod, log) {
     }
     return { uniform: okU, storage: okS };
   }
+  return { byId, typeDeco, structKind, memberDeco, varDeco, constVal, roundUp, measure, blockVerdict };
+}
+
+export function uniformBlocksToStorage(mod, log) {
+  const { byId, structKind, varDeco, blockVerdict } = createLayoutModel(mod);
 
   // ---- candidate variables ---------------------------------------------------
   const candidates = [];
@@ -2018,6 +2043,166 @@ export function uniformBlocksToStorage(mod, log) {
   return true;
 }
 
+
+// --- Block-layout audit ------------------------------------------------------
+// The layout model above decides what R13 may REWRITE; this audit decides
+// what the tier may SERVE AT ALL. It runs on the module AFTER applySpirvFix
+// (web/shader.mjs, immediately before naga), so every variable's storage
+// class is final -- R13's demotions have already happened, and a block is
+// judged in exactly the WGSL address space it will be translated into.
+//
+// Why it exists (measured against the vendored naga, campaign report 4.20):
+// naga validates MatrixStride only for matrices that are direct struct
+// members, and array strides only against the address space's alignment
+// rules -- never for equality with its own computed layout. A block whose
+// decorations disagree with WGSL's layout therefore CONVERTS SILENTLY and
+// reads the guest's bytes at the wrong offsets whenever the disagreement
+// hides inside an array element (array<mat3> at MatrixStride 12/20,
+// runtime arrays of mat3) or in a padded array stride (array<f32> at
+// ArrayStride 32 in a uniform block, 16 in a storage block -- WGSL reads
+// 16 / 4). No error appears anywhere; the frame is just wrong.
+//
+// Verdict per block variable (Uniform Block, StorageBuffer Block /
+// BufferBlock, PushConstant Block; descriptor arrays of blocks included):
+//   'ok'      every member is modelled and every decorated Offset /
+//             ArrayStride / MatrixStride EQUALS the WGSL value for the
+//             variable's final address space -- naga's re-layout is a
+//             byte-exact no-op.
+//   'reject'  a proven inequality (the trace names the decoration). The
+//             module cannot be served: naga would misread it silently or
+//             reject it with an unnamed error. web/shader.mjs turns this
+//             into a thrown "spirv-block-layout: ..." error, which the
+//             shader cache logs loudly and no frame is drawn.
+//   'unknown' a shape the layout model does not cover (bool member,
+//             spec-constant array length, missing Offset decoration...).
+//             No verdict: the module keeps today's outcome. The audit only
+//             ever rejects on proof -- it must never be stricter than the
+//             tier it guards.
+// Push constants are judged under the uniform rules: that is the layout
+// naga gives var<immediate> (proven: push-mat3 at MatrixStride 12 fails
+// naga with UnsupportedMatrixStride, push scalars convert).
+const AUDIT_SC = { Uniform: 2, PushConstant: 9, StorageBuffer: 12 };
+
+function layoutTypeName(model, typeId) {
+  const { byId } = model;
+  const t = byId.get(typeId);
+  if (!t) return '%' + typeId;
+  switch (t.op) {
+    case Op.TypeBool: return 'bool';
+    case Op.TypeInt: return (t.words[2] ? 'i' : 'u') + t.words[1];
+    case Op.TypeFloat: return 'f' + t.words[1];
+    case Op.TypeVector: return `vec${t.words[2]}<${layoutTypeName(model, t.words[1])}>`;
+    case Op.TypeMatrix: {
+      const col = byId.get(t.words[1]);
+      const rows = col && col.op === Op.TypeVector ? col.words[2] : '?';
+      return `mat${t.words[2]}x${rows}<${col ? layoutTypeName(model, col.words[1]) : '?'}>`;
+    }
+    case Op.TypeArray: return `array<${layoutTypeName(model, t.words[1])}, ${model.constVal(t.words[2]) ?? '?'}>`;
+    case Op.TypeRuntimeArray: return `array<${layoutTypeName(model, t.words[1])}>`;
+    case Op.TypeStruct: return `struct %${typeId}`;
+    default: return `type %${typeId}`;
+  }
+}
+
+function layoutTraceDetail(model, rec, where) {
+  if (rec.kind === 'matrix-stride')
+    return `${where}: MatrixStride ${rec.decorated} on ${layoutTypeName(model, rec.type)} does not equal the WGSL matrix stride ${rec.computed}; WGSL would read the stored vectors at stride ${rec.computed} with no error`;
+  if (rec.kind === 'array-stride')
+    return `${where}: ArrayStride ${rec.decorated} on ${layoutTypeName(model, rec.type)} does not equal the WGSL ${rec.space} array stride ${rec.computed}; WGSL would index the array at stride ${rec.computed} with no error`;
+  return `${where}: member Offset ${rec.decorated} (struct %${rec.struct} member ${rec.member}) does not equal the WGSL ${rec.space} offset ${rec.computed}`;
+}
+
+// Walk one block struct in ONE address space. Returns { state, detail? }
+// with state 'ok' | 'reject' | 'unknown' as documented above.
+function auditBlockStruct(model, structId, space) {
+  const { byId, memberDeco, measure, roundUp } = model;
+  const t = byId.get(structId);
+  if (!t || t.op !== Op.TypeStruct) return { state: 'unknown' };
+  let end = 0, endKnown = true, sawUnknown = false;
+  for (let i = 1; i < t.words.length; i++) {
+    const idx = i - 1;
+    const md = memberDeco.get(structId + ':' + idx);
+    if (!md || md.offset == null) return { state: 'unknown' };
+    const trace = [];
+    const m = measure(t.words[i], space, md, trace);
+    if (!m) { sawUnknown = true; endKnown = false; continue; }
+    const rec = trace.find((r) => r.kind === 'matrix-stride' || r.space === space);
+    if (rec) return { state: 'reject', detail: layoutTraceDetail(model, rec, `block %${structId} member ${idx}`) };
+    if (!m.ok) return { state: 'unknown' }; // inequality the trace cannot name: stay conservative
+    if (endKnown) {
+      const off = roundUp(m.align, end);
+      if (md.offset !== off)
+        return { state: 'reject', detail: `block %${structId} member ${idx}: member Offset ${md.offset} does not equal the WGSL ${space} offset ${off}` };
+      if (m.size < 0) { // runtime array: modelled, but terminal by spec
+        if (i !== t.words.length - 1) return { state: 'unknown' };
+        endKnown = false;
+      } else end = off + m.size;
+    }
+  }
+  return { state: sawUnknown ? 'unknown' : 'ok' };
+}
+
+// Reflect the block variables of a module and judge each one's layout.
+// Accepts SPIR-V bytes (the post-spirvfix module in the tier flow).
+// Returns null when the module does not parse; otherwise one entry per
+// block variable: { varId, structId, set, binding, storageClass, space,
+// verdict, detail? }. Never throws.
+export function auditBlockLayouts(bytes) {
+  let mod;
+  try { mod = parseSpirv(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)); } catch { return null; }
+  try {
+    const model = createLayoutModel(mod);
+    const { byId, structKind, measure } = model;
+    const bindOf = new Map(); // varId -> { set, binding }
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Decorate) continue;
+      if (ins.words[1] !== Dec.DescriptorSet && ins.words[1] !== Dec.Binding) continue;
+      const b = bindOf.get(ins.words[0]) || {};
+      if (ins.words[1] === Dec.DescriptorSet) b.set = ins.words[2]; else b.binding = ins.words[2];
+      bindOf.set(ins.words[0], b);
+    }
+    const out = [];
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Variable) continue;
+      const sc = ins.words[2];
+      if (sc !== AUDIT_SC.Uniform && sc !== AUDIT_SC.StorageBuffer && sc !== AUDIT_SC.PushConstant) continue;
+      const ptr = byId.get(ins.words[0]);
+      if (!ptr || ptr.op !== Op.TypePointer || ptr.words[1] !== sc) continue;
+      // Unwrap descriptor arrays of blocks (uniform B b[N]): the array's own
+      // stride is judged by measure, the element struct by auditBlockStruct.
+      let pointee = ptr.words[2];
+      const layers = [];
+      let elem = byId.get(pointee);
+      while (elem && (elem.op === Op.TypeArray || elem.op === Op.TypeRuntimeArray)) {
+        layers.push(pointee);
+        pointee = elem.words[1];
+        elem = byId.get(pointee);
+      }
+      const kind = structKind.get(pointee);
+      if (sc === AUDIT_SC.Uniform && kind !== 'block') continue;
+      if (sc === AUDIT_SC.PushConstant && kind !== 'block') continue;
+      if (sc === AUDIT_SC.StorageBuffer && kind !== 'block' && kind !== 'bufferblock') continue;
+      const space = sc === AUDIT_SC.StorageBuffer ? 'storage' : 'uniform';
+      let verdict = 'ok', detail = null, sawUnknown = false;
+      for (const layer of layers) {
+        const trace = [];
+        const m = measure(layer, space, null, trace);
+        if (!m) { sawUnknown = true; continue; }
+        const rec = trace.find((r) => r.kind === 'matrix-stride' || r.space === space);
+        if (rec) { verdict = 'reject'; detail = layoutTraceDetail(model, rec, `block %${pointee} descriptor-array layer`); break; }
+        if (!m.ok) sawUnknown = true;
+      }
+      if (verdict !== 'reject') {
+        const s = auditBlockStruct(model, pointee, space);
+        if (s.state === 'reject') { verdict = 'reject'; detail = s.detail; }
+        else if (s.state === 'unknown' || sawUnknown) verdict = 'unknown';
+      }
+      const b = bindOf.get(ins.resultId) || {};
+      out.push({ varId: ins.resultId, structId: pointee, set: b.set ?? null, binding: b.binding ?? null, storageClass: sc, space, verdict, ...(detail ? { detail } : {}) });
+    }
+    return out;
+  } catch { return null; }
+}
 
 // R14 "storage-image-format": vkd3d typed-UAV codegen (enabled by the
 // bridge's STORAGE_READ_WITHOUT_FORMAT format bits) emits storage images

@@ -1048,3 +1048,121 @@ One un-reproduced observation, recorded for honesty: the first post-staging tri1
 REGISTER: docs/known-gaps/vulkan.md gains one real-workload row (IMPLEMENTED) for the loader-domain collision at the DXGI surface boundary. Counts 354 -> 355 rows (52 IMPLEMENTED / 71 REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN).
 
 NUMBERING NOTE: this tree's report continues at 4.19; the wt-vkd3d-bda tree used 4.19/4.20 for the Route 0 / Route A line — renumber at merge.
+
+## 4.20 Module-layout audit lane: the §4.16 silent-misconversion hazard closed — array-hidden and padded layouts now reject loudly as `spirv-block-layout` (2026-10-27)
+
+§4.16 named the hazard and deferred the fix: "a mat3 block at
+MatrixStride 12 is CONVERTED SILENTLY WRONG by naga today (columns read
+at stride 16 from stride-12 data)... a module-creation layout audit is
+the fix shape, not attempted here." This lane built the modules,
+mapped exactly which shapes are silent, and landed the audit.
+
+### The empirical map (vendored naga 30.2.0; every module spirv-val clean)
+
+§4.16's claim needs one refinement, proven by fixture: the BARE-member
+shape is not silent in this naga build. A mat3 struct member decorated
+MatrixStride 12 — uniform, storage, or push-constant — is rejected
+(`UnsupportedMatrixStride { stride: 12, columns: 3, rows: 3 }`), as are
+mat3x2 members at stride 12 (WGSL computes 8), member Offsets that
+disagree with the computed layout, and under-sized array strides. The
+silent class is everything naga never compares for equality:
+
+- MatrixStride on matrices that are ELEMENTS of OpTypeArray /
+  OpTypeRuntimeArray: array<mat3> at MatrixStride 12 or 20, array<mat2x3>
+  and array<mat4x3> at 12, runtime-array<mat3> at 12 — all convert.
+- ArrayStride LARGER than the WGSL stride (padded arrays): array<f32> at
+  32 in a uniform block (WGSL 16), at 16 in a storage block (WGSL 4) —
+  the emitted WGSL is literally `array<f32, 4>`; the padding is dropped
+  without a word.
+
+Value-level proof on a fixture the tree already carried: the R13 corpus
+module `testdata/spirv/r13/ubo-mat3arr-stride12.spv` reads element
+[0][1].z; the guest wrote it at byte 1*12 + 2*4 = 20; the converted
+WGSL `array<mat3x3<f32>, 1>` in `var<uniform>` reads byte 1*16 + 2*4 =
+24. Wrong data, zero diagnostics — and the array-wrapped form is the
+realistic one: §4.16 itself records that dxil-spirv's D3D12 cbuffer
+form is a wrapper struct around a tightly-strided array. Real-compiler
+grounding: glslang with GL_EXT_scalar_block_layout emits exactly
+ArrayStride 36 + MatrixStride 12 + ColMajor for
+`layout(scalar) uniform B { mat3 m[1]; }` — the decoration set the
+fixtures carry is a real compiler's output shape, not an invention.
+(The fully-scalar module happens to be caught downstream by naga's
+array-stride alignment check; the audit names it precisely regardless.)
+
+### The audit
+
+One layout model, shared: R13's decoration collection and measure()
+walker were refactored into `createLayoutModel` in
+`tools/spirvfix/spirvfix.mjs`; R13 and the new `auditBlockLayouts`
+consume the same model, so the rewriter and the auditor cannot drift.
+For every block variable (Uniform Block, StorageBuffer Block /
+BufferBlock, PushConstant Block; descriptor arrays of blocks unwrapped)
+the audit returns one of three verdicts:
+
+- ok — every decorated Offset / ArrayStride / MatrixStride EQUALS the
+  WGSL value for the variable's final address space;
+- reject — a proven inequality, with a trace detail naming the
+  decoration, the decorated value, the WGSL value, and the block/member
+  (`spirv-block-layout: block %4 member 0: ArrayStride 32 on array<f32, 4>
+  (WGSL stride 16)`);
+- unknown — a shape the model does not cover (bool members,
+  spec-constant array lengths before folding, a block member with no
+  Offset decoration). No verdict is issued and the module keeps its
+  previous outcome: the audit rejects only on proof, because the
+  audit-stricter-than-the-tier defect class is as bad as the reverse.
+
+Enforcement sits in the page tier at translation, in `web/shader.mjs`
+immediately after `applySpirvFix` returns — so storage classes are
+FINAL when the audit walks (R13 demotions already applied; each block
+is judged in the address space it will actually be translated into, by
+construction rather than by convention). The first reject verdict
+throws `spirv-block-layout: ...`; the existing passthrough catch
+rethrows only that token (infrastructure failures keep the old
+warn-and-pass degradation), and the shader cache logs it loudly
+(`vk64: page tier cannot translate the <stage> SPIR-V module
+(spirv-block-layout: ...) — frame skipped`). No frame is drawn from a
+misconverted module. Deliberately not built: a duplicate walker in the
+bridge audit — the bridge sees the raw module (pre-R13), so a bridge
+copy would judge the wrong layout and re-introduce the drift the shared
+model exists to prevent; the tier translation is the gate, the same
+precedent as capability 35's disposition. `scalarBlockLayout` stays
+FALSE; nothing about the SM 6.0 grant changes.
+
+### Guards and corpus
+
+`web/tests/suite/unit/spirvfix-layout-audit.test.mjs` (34 tests) over 16
+new fixtures in `testdata/spirv/layout/` (spirv-val clean, .spvasm
+alongside): the silent set pinned as CONVERTING at naga while the audit
+rejects; loud shapes, servable shapes (mat3 at stride 16, mat3x2 at 8,
+std430 vec4 runtime arrays, scalar push blocks, spec-constant arrays)
+pinned ok; both ordering pins (a stride-4 float block rejects judged as
+uniform and passes post-R13-demotion; a spec-constant-length block is
+unknown raw and ok post-fold); decoration sabotage pairs in BOTH
+directions (12→16 flips a reject to ok; 16→12 and ArrayStride 16→32
+flip ok to reject). Sabotage of the implementation itself: disabling
+the shader.mjs throw reds 11 tests; disabling the auditor's reject path
+reds 26. Corpus gate over all of testdata/spirv: 52 modules, 48 block
+variables, 45 ok, 0 unknown, exactly 3 rejects — the R13 fixtures
+ubo-mat3arr-stride12 (the hazard), ubo-vec3-stride12 (scalar; naga-loud
+today, now named), and ubo-pointer-phi (R13 refuses its demotion over a
+pointer-through-OpPhi, so its stride-4 block still reaches naga as a
+uniform block; the audit names the same unservable outcome instead of
+naga's bare stride error). No false positives anywhere in the corpus;
+R13's own suite stays 11/11 and the spirvfix corpus gate 22/22 after
+the shared-model refactor.
+
+REGISTER: docs/known-gaps/vulkan.md gains one row (REJECTED-LOUDLY) for
+the unservable block-layout shapes at `tools/spirvfix/spirvfix.mjs:2150`
++ `web/shader.mjs:50`. Counts 355 -> 356 rows (52 IMPLEMENTED / 72
+REJECTED-LOUDLY / 232 NOT-A-GAP / 0 OPEN). The row's citation verifies
+as MATCH under tools/vk-register-citation-audit.py (checked coverage
+211 -> 212). Pre-existing, not this lane's: the register's UNCHECKABLE
+count (109) exceeds the citation test's pinned ceiling (102) on the
+pristine tree already — rows added by the Typed-UAV and surface lanes
+after the re-pin baseline; that test fails identically before and after
+this lane's change and wants a re-pin decision at merge.
+
+NUMBERING NOTE: this tree's §4.20 is the layout audit; the wt-vkd3d-bda
+tree used §4.20 for Route A (its §4.19 is Route 0, colliding with this
+tree's §4.19 surface fix) — renumber at merge, as already noted at the
+end of §4.19.
