@@ -255,3 +255,14 @@ they exercise.
 - Citation audit (`tools/vk-register-citation-audit.py`): **198 MATCH /
   14 MATCH-INHERITED / 101 UNCHECKABLE / 8 EXEMPT / 0 DRIFT** — identical
   to the pre-fix baseline, as designed (zero line delta).
+
+## Addendum 2026-10-26 (portal-perf lane): census 241 -> 242
+
+The vk32 BW64_VKPROF parity change (per-trap timers + present-boundary
+breakdown for the 32-bit dispatcher in vk64bridge.cpp) mirrored the 64-bit
+present boundary top-3 trapOther scan, adding one VK64_DROP_IF site:
+continue on w <= 0 in the vk32 vkQueuePresentKHR boundary (the 64-bit twin
+was already in the census). New census: 242 sites = 183 return-form + 59
+flow-control (56 continue + 3 break); classification 56 LIVE / 3 BENIGN
+(the new site is LIVE, same class as its twin). Pins updated in
+web/tests/suite/unit/vk-drop-macro-guard.test.mjs and the register row.

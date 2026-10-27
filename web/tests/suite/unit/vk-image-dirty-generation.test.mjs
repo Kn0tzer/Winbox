@@ -235,6 +235,11 @@ test('every bridge write into image memory bumps the generation signal (census)'
   }
   // (f) raw guest-write primitive count pin: a new write path anywhere in the
   // bridge changes this count and must be dispositioned (bump or exception).
+  // 51 since the portal-perf blit fast path (2026-10-26): the 3 chunk-copy
+  // memcpyToGuest lines in the vkCmdBlitImage/2 handlers (both ABIs) write the
+  // same destination images as the per-pixel loops they accelerate and are
+  // covered by each handler's existing post-loop dirtyGen bump + vk64TouchMem
+  // (asserted per-handler in (b) above).
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 48, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 51, 'pinned count of raw guest-write primitive lines');
 });
