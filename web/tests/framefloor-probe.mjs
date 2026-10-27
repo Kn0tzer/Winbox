@@ -10,7 +10,8 @@ import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
-import { applyJitSetting, launchDemoGame } from './demo-matrix.mjs';
+import { applyJitSetting } from './demo-matrix.mjs';
+import { createGuestDeathWatch, extractMetricsPresent } from './probe-guest-death.mjs';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,6 +26,12 @@ const jit = process.env.JIT || '1';
 const mappedTimeout = Number(process.env.MAPPED_TIMEOUT_S || (demo === 'portal' ? 900 : 300));
 const outDir = resolve(process.env.OUT || `test-results/framefloor/${demo}-${Date.now()}`);
 await mkdir(outDir, { recursive: true });
+// Defect 4: node stdout to a redirected file stayed empty until probe exit.
+// Force blocking stdout (when available) AND mirror milestones synchronously
+// to a progress file so a watcher sees them during the run.
+try { process.stdout._handle?.setBlocking?.(true); } catch {}
+const progressPath = outDir + '.progress.log';
+try { writeFileSync(progressPath, ''); } catch {}
 
 const loadavg = async () => { try { return (await readFile('/proc/loadavg', 'utf8')).trim(); } catch { return '?'; } };
 console.log('LOAD at start:', await loadavg());
@@ -53,25 +60,81 @@ if (process.env.THREAD_DUMPS === '1') {
 }
 const t0 = Date.now();
 const now = () => Date.now() - t0;
+const progress = (msg) => {
+  const line = `[${(now() / 1000).toFixed(1)}s] ${msg}`;
+  console.log(line);
+  try { appendFileSync(progressPath, line + '\n'); } catch {}
+};
 const consoleLines = [];
 const metricsLines = [];
 const pageErrors = [];
 const streamPath = outDir + '.console.jsonl';
 try { writeFileSync(streamPath, ''); } catch {}
+// Defect 2: guest-death detection (see probe-guest-death.mjs). A dead guest
+// must end the probe with GUEST-DIED, never burn a full mapping/activity
+// timeout the way Doom A (~130s) and Gang Beasts (~50 min) did.
+const deathWatch = createGuestDeathWatch();
+let guestDeath = null;
+let metricsTruncatedLines = 0;
+let sdlPresentsTotal = 0;
+const noteDeath = () => {
+  const d = deathWatch.check(now());
+  if (d && !guestDeath) {
+    guestDeath = d;
+    progress(`GUEST-DIED kind=${d.kind} atMs=${d.atMs} sig=${String(d.signature).slice(0, 160)}`);
+  }
+  return guestDeath;
+};
+// Defect 1: the console METRICS channel truncates at ~832 payload chars in
+// play phase, so full snapshots are unparseable there. Poll the wasm census
+// directly (bw64_jit_stats_json_text via ccall, the channel demo-matrix
+// already uses) instead of trusting the console line.
+const jitStatsSamples = [];
+let jitStatsPollErrors = 0;
+let jitPoll = null;
+const getRuntimeFrame = async () => {
+  try { const fh = await page.locator('#display iframe').elementHandle(); return await fh?.contentFrame(); } catch { return null; }
+};
+const pollJitStats = async () => {
+  try {
+    const frame = await getRuntimeFrame();
+    if (!frame) return;
+    const stats = await frame.evaluate(() => {
+      if (typeof Module === 'undefined' || typeof Module.ccall !== 'function') throw new Error('runtime Module export is not available');
+      const r = Module.ccall('bw64_jit_stats_json_text', 'string', [], []);
+      if (typeof r === 'string') return JSON.parse(r);
+      if (r && typeof Module.UTF8ToString === 'function') return JSON.parse(Module.UTF8ToString(r));
+      throw new Error('bw64_jit_stats_json_text returned no readable text');
+    });
+    jitStatsSamples.push({ t: now(), stats });
+  } catch { jitStatsPollErrors++; }
+};
 page.on('console', m => {
   const text = m.text();
-  consoleLines.push({ t: now(), type: m.type(), text });
-  try { appendFileSync(streamPath, JSON.stringify({ t: now(), type: m.type(), text }) + '\n'); } catch {}
+  const entry = { t: now(), type: m.type(), text };
+  consoleLines.push(entry);
+  deathWatch.feed(entry);
+  try { appendFileSync(streamPath, JSON.stringify(entry) + '\n'); } catch {}
   const marker = 'bw64: METRICS ';
   const at = text.indexOf(marker);
   if (at >= 0) {
+    // Defect 3: the present object survives console truncation even when the
+    // full line does not parse, so SDL presents count here (see below).
+    const present = extractMetricsPresent(text);
+    if (present) sdlPresentsTotal += present.sdl;
     try {
       const snap = JSON.parse(text.slice(at + marker.length).split(/\r?\n/, 1)[0].trim());
       metricsLines.push({ t: now(), present: snap?.present?.count ?? null, snap });
-    } catch {}
+    } catch { metricsTruncatedLines++; }
   }
+  noteDeath();
 });
-page.on('pageerror', e => pageErrors.push({ t: now(), msg: String(e && e.message || e) }));
+page.on('pageerror', e => {
+  const msg = String(e && e.message || e);
+  pageErrors.push({ t: now(), msg });
+  deathWatch.feedPageError(msg, now());
+  noteDeath();
+});
 
 const urlParams = new URLSearchParams(process.env.URL_PARAMS || '');
 if ([...urlParams].length) {
@@ -95,13 +158,27 @@ await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 await applyJitSetting(page, jit);
 const clickAt = now();
 let launchError = null;
-try { await launchDemoGame(page, demo, { mappedTimeout }); } catch (e) { launchError = String(e && e.message || e); console.log('LAUNCH FAILED:', launchError); }
-const mappedAt = launchError ? null : now();
-if (!launchError) console.log(`MAPPED demo=${demo} clickToMappedMs=${mappedAt - clickAt}`);
+try {
+  await page.locator(`[data-game="${demo}"]`).click();
+  // Death-aware mapping wait: poll the launcher's 'first window mapped'
+  // marker in 1s slices (the same condition launchDemoGame waits on) so a
+  // dead guest aborts promptly instead of burning mappedTimeout.
+  const deadline = Date.now() + mappedTimeout * 1000;
+  let mapped = false;
+  while (Date.now() < deadline) {
+    if (noteDeath()) break;
+    try { mapped = await page.evaluate(() => document.getElementById('log')?.textContent.includes('first window mapped')); } catch {}
+    if (mapped) break;
+    await page.waitForTimeout(1000);
+  }
+  if (!mapped && !guestDeath) throw new Error(`page.waitForFunction: Timeout ${mappedTimeout * 1000}ms exceeded.`);
+} catch (e) { launchError = String(e && e.message || e); progress('LAUNCH FAILED: ' + launchError); }
+const mappedAt = (launchError || guestDeath) ? null : now();
+if (!launchError && !guestDeath) progress(`MAPPED demo=${demo} clickToMappedMs=${mappedAt - clickAt}`);
 
 let recordStart = now();
 let recordEnd = now();
-if (!launchError) {
+if (!launchError && !guestDeath) {
 // Install the canvas-change sampler inside the runtime iframe.
 let samplerInstalled = false;
 try {
@@ -137,7 +214,9 @@ try {
     samplerInstalled = true;
   }
 } catch (e) { console.log('SAMPLER install failed:', e.message); }
-console.log('SAMPLER installed:', samplerInstalled);
+progress('SAMPLER installed: ' + samplerInstalled);
+await pollJitStats();
+jitPoll = setInterval(() => { pollJitStats().catch(() => {}); }, 15000);
 if (process.env.THREAD_DUMPS === '1') {
   const dumpEveryS = Number(process.env.DUMP_INTERVAL_S || 20);
   const driver = setInterval(async () => {
@@ -165,19 +244,27 @@ const waitActivityS = Number(process.env.WAIT_ACTIVITY_S || 900);
   const deadline = Date.now() + waitActivityS * 1000;
   let presents = 0;
   while (Date.now() < deadline) {
-    presents = consoleLines.filter(l => l.text.includes('vkQueuePresentKHR') || l.text.includes('XWire SDL: presented')).length;
+    // Defect 3: DIB games never emit vkQueuePresentKHR/XWire lines; their
+    // presents arrive as METRICS `sdl` counts (extracted above, even from
+    // truncated lines). Without this the gate burns the whole wait.
+    const vkLines = consoleLines.filter(l => l.text.includes('vkQueuePresentKHR') || l.text.includes('XWire SDL: presented')).length;
+    presents = vkLines + sdlPresentsTotal;
     if (presents >= 30) break;
-    const lastLineT = consoleLines.length ? consoleLines[consoleLines.length - 1].t : mappedAt;
-    if (now() - lastLineT > 180000) { console.log('STALL: console silent >180s, proceeding'); break; }
+    if (noteDeath()) break;
+    // Stall backstop on GUEST activity, not raw console traffic: the
+    // emulator `persist` heartbeat fires every ~5s forever, so a raw
+    // console-silence check can never fire after death.
+    const st = deathWatch.state();
+    if (st.lastGuestActivityMs !== null && now() - st.lastGuestActivityMs > 180000) { progress('STALL: no guest activity >180s, proceeding'); break; }
     await page.waitForTimeout(5000);
   }
-  console.log('ACTIVITY presents=' + presents + ' waitedMs=' + (now() - mappedAt));
+  progress('ACTIVITY presents=' + presents + ' (vkLines+sdl) waitedMs=' + (now() - mappedAt) + (guestDeath ? ' GUEST-DIED' : ''));
 }
-console.log(`SETTLING ${settleS}s`);
-await page.waitForTimeout(settleS * 1000);
+progress(`SETTLING ${settleS}s`);
+for (let i = 0; i < settleS && !noteDeath(); i++) await page.waitForTimeout(1000);
 recordStart = now();
-console.log(`RECORDING ${recordS}s`);
-await page.waitForTimeout(recordS * 1000);
+progress(`RECORDING ${recordS}s`);
+for (let i = 0; i < recordS && !noteDeath(); i++) await page.waitForTimeout(1000);
 recordEnd = now();
 }
 
@@ -196,15 +283,17 @@ try {
   }
 } catch (e) { console.log('SAMPLER read failed:', e.message); }
 
+if (jitPoll) { clearInterval(jitPoll); await pollJitStats(); }
 const pageTier = await page.evaluate(() => { try { return window.bwVkTier?.metrics?.() || null; } catch { return null; } }).catch(() => null);
 
 const result = {
   demo, jit, distDir, launchError, mappedAtMs: mappedAt, recordStartMs: recordStart, recordEndMs: recordEnd,
   loadAtEnd: await loadavg(), pageErrors,
   consoleLines, metricsLines, canvasChanges: ffData, pageTier,
+  guestDeath, metricsTruncatedLines, sdlPresentsTotal, jitStatsSamples, jitStatsPollErrors,
 };
 await writeFile(resolve(outDir, 'probe.json'), JSON.stringify(result, null, 1));
-console.log('WROTE', resolve(outDir, 'probe.json'), 'console lines:', consoleLines.length, 'metrics lines:', metricsLines.length, 'canvas changes:', ffData?.changes?.length ?? null);
+progress('WROTE ' + resolve(outDir, 'probe.json') + ' console lines: ' + consoleLines.length + ' metrics lines: ' + metricsLines.length + ' canvas changes: ' + (ffData?.changes?.length ?? null) + ' guestDeath: ' + (guestDeath ? guestDeath.kind : 'none') + ' truncatedMetrics: ' + metricsTruncatedLines + ' sdlPresents: ' + sdlPresentsTotal + ' jitSamples: ' + jitStatsSamples.length);
 await browser.close();
 server.close();
 slot.release();
