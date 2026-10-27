@@ -104,8 +104,11 @@ bool isMainthread();
 
 // SDL scancode -> X11 keycode (evdev: X keycode == Linux evdev code + 8). Wine's
 // winex11 builds its keymap from GetKeyboardMapping, which we answer minimally,
-// so it maps keycodes through the standard evdev layout. This covers the common
-// typing + editing set; unmapped keys fall through as 0 (ignored).
+// so it maps keycodes through the standard evdev layout. The map covers the
+// full PC set Wine can name (typing, editing, F-keys, navigation cluster,
+// keypad, right-hand modifiers, GUI/Menu); every keycode it emits must have a
+// keysym in keysymForKeycode (xwireconnection.cpp) or winex11 drops the event
+// as NoSymbol. Unmapped keys fall through as 0 (ignored).
 uint32_t sdlScancodeToX11(SDL_Scancode sc) {
     switch (sc) {
         case SDL_SCANCODE_ESCAPE: return 9;
@@ -146,6 +149,22 @@ uint32_t sdlScancodeToX11(SDL_Scancode sc) {
         case SDL_SCANCODE_LEFT: return 113; case SDL_SCANCODE_RIGHT: return 114;
         case SDL_SCANCODE_END: return 115;  case SDL_SCANCODE_DOWN: return 116;
         case SDL_SCANCODE_DELETE: return 119;
+        case SDL_SCANCODE_F11: return 95;  case SDL_SCANCODE_F12: return 96;
+        case SDL_SCANCODE_PRINTSCREEN: return 107; case SDL_SCANCODE_SCROLLLOCK: return 78;
+        case SDL_SCANCODE_PAUSE: return 127; case SDL_SCANCODE_INSERT: return 118;
+        case SDL_SCANCODE_PAGEUP: return 112; case SDL_SCANCODE_PAGEDOWN: return 117;
+        case SDL_SCANCODE_NUMLOCKCLEAR: return 77;
+        case SDL_SCANCODE_KP_DIVIDE: return 106; case SDL_SCANCODE_KP_MULTIPLY: return 63;
+        case SDL_SCANCODE_KP_MINUS: return 82;  case SDL_SCANCODE_KP_PLUS: return 86;
+        case SDL_SCANCODE_KP_ENTER: return 104; case SDL_SCANCODE_KP_PERIOD: return 91;
+        case SDL_SCANCODE_KP_0: return 90; case SDL_SCANCODE_KP_1: return 87;
+        case SDL_SCANCODE_KP_2: return 88; case SDL_SCANCODE_KP_3: return 89;
+        case SDL_SCANCODE_KP_4: return 83; case SDL_SCANCODE_KP_5: return 84;
+        case SDL_SCANCODE_KP_6: return 85; case SDL_SCANCODE_KP_7: return 79;
+        case SDL_SCANCODE_KP_8: return 80; case SDL_SCANCODE_KP_9: return 81;
+        case SDL_SCANCODE_RCTRL: return 105; case SDL_SCANCODE_RALT: return 108;
+        case SDL_SCANCODE_LGUI: return 133;  case SDL_SCANCODE_RGUI: return 134;
+        case SDL_SCANCODE_APPLICATION: return 147;
         default: return 0;
     }
 }
