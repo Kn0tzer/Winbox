@@ -19,7 +19,16 @@ test('descriptor aliases retain every image view even when views share image pix
 #include <map>
 #include <vector>
 using U8=uint8_t;using U32=uint32_t;using U64=uint64_t;
-struct ImageView{U64 image=9;U32 format=37,baseMip=0,levelCount=1,baseLayer=0,layerCount=1,viewType=1,aspect=1;};struct Image{U64 mem=1,memOff=0,pixBytes=4;U64 dirtyGen=0;U32 w=1,h=1,d=1,layers=1,mips=1,format=37;};struct DeviceMemory{U64 writeEpoch=0;bool wasMapped=false;};
+struct ImageView{U64 image=9;U32 format=37,baseMip=0,levelCount=1,baseLayer=0,layerCount=1,viewType=1,aspect=1;};struct Image{U64 mem=1,memOff=0,pixBytes=4;U64 dirtyGen=0;U32 w=1,h=1,d=1,layers=1,mips=1,format=37;};struct MemWriteRange{U64 epoch=0,off=0,len=0;};struct DeviceMemory{U64 writeEpoch=0;bool wasMapped=false;std::vector<MemWriteRange> writes;U64 writesFence=0;};
+inline bool vk64MemRangeCleanSince(const DeviceMemory* m,U64 epoch,U64 off,U64 len){
+  if(!m) return false;
+  if(epoch < m->writesFence) return false;
+  const auto& w = m->writes;
+  size_t lo=0, hi=w.size();
+  while(lo<hi){ size_t mid=(lo+hi)/2; if(w[mid].epoch<=epoch) lo=mid+1; else hi=mid; }
+  for(size_t i=lo;i<w.size();i++) if(w[i].off < off+len && off < w[i].off+w[i].len) return false;
+  return true;
+}
 ImageView views[2];Image image;enum{K_IMAGEVIEW,K_IMAGE,K_MEMORY,V2_IMAGE_DATA};
 template<class T>T* objOf(U64 id,int kind,const char*){if(kind==K_IMAGEVIEW)return (T*)(id==1?&views[0]:id==2?&views[1]:nullptr);return id==9?(T*)&image:nullptr;}
 std::vector<U8> readGuestRange(U64,U64,U64){return {1,2,3,4};}
