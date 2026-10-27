@@ -164,6 +164,43 @@ static KeyPair keysymForKeycode(int kc) {
         case 62: return {0xFFE2, 0xFFE2};                 // Shift_R
         case 64: return {0xFFE9, 0xFFE9};                 // Alt_L
         case 65: return {' ',' '};                        // space
+        case 63: return {0xFFAA, 0xFFAA};                 // KP_Multiply
+        case 66: return {0xFFE5, 0xFFE5};                 // Caps_Lock
+        case 67: return {0xFFBE, 0xFFBE};                 // F1
+        case 68: return {0xFFBF, 0xFFBF};                 // F2
+        case 69: return {0xFFC0, 0xFFC0};                 // F3
+        case 70: return {0xFFC1, 0xFFC1};                 // F4
+        case 71: return {0xFFC2, 0xFFC2};                 // F5
+        case 72: return {0xFFC3, 0xFFC3};                 // F6
+        case 73: return {0xFFC4, 0xFFC4};                 // F7
+        case 74: return {0xFFC5, 0xFFC5};                 // F8
+        case 75: return {0xFFC6, 0xFFC6};                 // F9
+        case 76: return {0xFFC7, 0xFFC7};                 // F10
+        case 77: return {0xFF7F, 0xFF7F};                 // Num_Lock
+        case 78: return {0xFF14, 0xFF14};                 // Scroll_Lock
+        case 79: return {0xFFB7, 0xFFB7};                 // KP_7
+        case 80: return {0xFFB8, 0xFFB8};                 // KP_8
+        case 81: return {0xFFB9, 0xFFB9};                 // KP_9
+        case 82: return {0xFFAD, 0xFFAD};                 // KP_Subtract
+        case 83: return {0xFFB4, 0xFFB4};                 // KP_4
+        case 84: return {0xFFB5, 0xFFB5};                 // KP_5
+        case 85: return {0xFFB6, 0xFFB6};                 // KP_6
+        case 86: return {0xFFAB, 0xFFAB};                 // KP_Add
+        case 87: return {0xFFB1, 0xFFB1};                 // KP_1
+        case 88: return {0xFFB2, 0xFFB2};                 // KP_2
+        case 89: return {0xFFB3, 0xFFB3};                 // KP_3
+        case 90: return {0xFFB0, 0xFFB0};                 // KP_0
+        case 91: return {0xFFAE, 0xFFAE};                 // KP_Decimal
+        case 95: return {0xFFC8, 0xFFC8};                 // F11
+        case 96: return {0xFFC9, 0xFFC9};                 // F12
+        case 104:return {0xFF8D, 0xFF8D};                 // KP_Enter
+        case 106:return {0xFFAF, 0xFFAF};                 // KP_Divide
+        case 107:return {0xFF61, 0xFF61};                 // Print
+        case 108:return {0xFFEA, 0xFFEA};                 // Alt_R
+        case 127:return {0xFF13, 0xFF13};                 // Pause
+        case 133:return {0xFFEB, 0xFFEB};                 // Super_L
+        case 134:return {0xFFEC, 0xFFEC};                 // Super_R
+        case 147:return {0xFF67, 0xFF67};                 // Menu
         case 105:return {0xFFE4, 0xFFE4};                 // Control_R
         case 110:return {0xFF50, 0xFF50};                 // Home
         case 111:return {0xFF52, 0xFF52};                 // Up
