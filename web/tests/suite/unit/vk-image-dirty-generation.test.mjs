@@ -4,10 +4,14 @@
 // vulkan-image-view-aliases.test.mjs) and compiles it against stubs whose guest
 // bytes can be mutated through simulated write paths:
 //
-//   - image-addressed write  -> bumps Image::dirtyGen AND the allocation epoch
-//   - buffer-addressed write -> bumps ONLY the allocation epoch (the aliasing
-//     case: a mutation that never touches the image's own signal MUST still
-//     be caught, via DeviceMemory::writeEpoch)
+//   - image-addressed write  -> bumps Image::dirtyGen AND logs its range on
+//     the allocation (vk64TouchMem ranged form)
+//   - buffer-addressed write -> logs ONLY its range on the allocation (the
+//     aliasing case: a mutation that never touches the image's own signal
+//     MUST still be caught when its range intersects the image's bytes --
+//     and, round 2, a DISJOINT range must NOT defeat the skip: DXVK
+//     suballocates dozens of resources from one allocation, and epoch-only
+//     tracking re-hashed every co-resident resource every frame)
 //
 // The correctness invariant asserted on every submit: the emitted record's
 // hash equals the hash of the CURRENT guest bytes, and a skip (pixel-less
@@ -57,7 +61,17 @@ const cppPrelude = String.raw`
 using U8=uint8_t; using U32=uint32_t; using U64=uint64_t;
 struct ImageView{U64 image=9;U32 format=0,baseMip=0,levelCount=1,baseLayer=0,layerCount=1,viewType=1,aspect=1;};
 struct Image{U64 mem=1,memOff=0,pixBytes=4;U64 dirtyGen=0;U32 w=1,h=1,d=1,layers=1,mips=1,format=37;};
-struct DeviceMemory{U64 writeEpoch=0;bool wasMapped=false;};
+struct MemWriteRange{U64 epoch=0,off=0,len=0;};
+struct DeviceMemory{U64 writeEpoch=0;bool wasMapped=false;std::vector<MemWriteRange> writes;U64 writesFence=0;};
+inline bool vk64MemRangeCleanSince(const DeviceMemory* m,U64 epoch,U64 off,U64 len){
+  if(!m) return false;
+  if(epoch < m->writesFence) return false;
+  const auto& w = m->writes;
+  size_t lo=0, hi=w.size();
+  while(lo<hi){ size_t mid=(lo+hi)/2; if(w[mid].epoch<=epoch) lo=mid+1; else hi=mid; }
+  for(size_t i=lo;i<w.size();i++) if(w[i].off < off+len && off < w[i].off+w[i].len) return false;
+  return true;
+}
 ImageView view; Image image; DeviceMemory memory;
 std::vector<U8> guest = {1,2,3,4};
 int guestReads = 0;
@@ -69,7 +83,7 @@ template<class T>T* objOf(U64 id,int kind,const char*){
   return nullptr;
 }
 std::vector<U8> readGuestRange(U64,U64,U64){ ++guestReads; return guest; }
-U64 fnv1a64(const U8* data,size_t len){ U64 h=14695981039346656037ULL; for(size_t i=0;i<len;i++){ h^=data[i]; h*=1099511628211ULL; } return h; }
+U64 fnv1a64(const U8* data,size_t len){ U64 h=14695981039346656037ULL; size_t i=0; for(;i+8<=len;i+=8){ U64 w; memcpy(&w,data+i,8); h^=w; h*=1099511628211ULL; } for(;i<len;i++){ h^=(U64)data[i]; h*=1099511628211ULL; } h^=(U64)len; h*=1099511628211ULL; h^=h>>33; h*=0xff51afd7ed558ccdULL; h^=h>>33; return h; }
 bool vkProfEnabled(){return false;}
 namespace vkencode{enum Stage{ImageView,ImageDedup,ImageLookup,ImageRead,ImageHash,ImageRecord};}
 struct VkEncodeProfileStub{};struct VkEncodeScope{VkEncodeScope(VkEncodeProfileStub&,int,bool){}void stop(){}};
@@ -95,8 +109,8 @@ int main(){
   auto emit=[&](int,const auto& write){ChunkWriter p;write(p);Rec r;r.hash=p.u64s[2];r.pixLen=p.lastPix;records.push_back(r);};
 /*__LAMBDA__*/
   U64 tick = 1000;
-  auto imgWrite = [&](U8 v){ guest[0]=v; image.dirtyGen=++tick; memory.writeEpoch=tick; };
-  auto bufWrite = [&](U8 v){ guest[0]=v; memory.writeEpoch=++tick; };
+  auto imgWrite = [&](U8 v){ guest[0]=v; image.dirtyGen=++tick; memory.writeEpoch=tick; memory.writes.push_back({tick, image.memOff, (U64)guest.size()}); };
+  auto bufWrite = [&](U8 v){ guest[0]=v; memory.writeEpoch=++tick; memory.writes.push_back({tick, 0, 1}); };
   auto curHash = [&](){ return fnv1a64(guest.data(), guest.size()); };
   auto submit = [&](U64 frame){
     g_v2SubmitFrames=frame; imageDone.clear();
@@ -144,12 +158,33 @@ int main(){
   image.dirtyGen = 0;                              // an image whose writes never went
   r = submit(66);                                  // through a tracked path must
   assert(guestReads == 8);                         // never skip
-  image.dirtyGen = ++tick; memory.writeEpoch = tick;  // same-content rewrite
+  image.dirtyGen = ++tick; memory.writeEpoch = tick; memory.writes.push_back({tick, 0, 4});  // same-content rewrite
   r = submit(67);
   assert(r.pixLen == 0 && guestReads == 9);        // re-read, hash dedups the pixels
   r = submit(68);
   assert(r.pixLen == 0 && guestReads == 9);        // snapshot was refreshed on the
                                                    // dedup path, so the skip engages
+  // Round 2: a write into a DISJOINT range of the same allocation (another
+  // suballocated resource's bytes) must NOT defeat the skip -- this is the
+  // write-epoch aliasing defect measured on Portal's backbuffers.
+  memory.writeEpoch = ++tick; memory.writes.push_back({tick, 1024, 4});
+  r = submit(69);
+  assert(r.pixLen == 0 && guestReads == 9);        // STILL skipped
+  // An INTERSECTING write after the disjoint one still forces the re-read.
+  memory.writeEpoch = ++tick; memory.writes.push_back({tick, 2, 1});
+  r = submit(70);
+  assert(guestReads == 10);                        // re-read forced
+  assert(r.pixLen == 0);                           // bytes unchanged: hash dedups
+  r = submit(71);
+  assert(r.pixLen == 0 && guestReads == 10);       // skip re-engages
+  // Log collapse past the snapshot: the fence forbids the range skip once,
+  // then a refreshed snapshot (at the fence epoch) skips again.
+  memory.writeEpoch = ++tick; memory.writes.clear(); memory.writesFence = tick;
+  memory.writes.push_back({tick, 1024, 4});
+  r = submit(72);
+  assert(guestReads == 11);                        // fence: forced re-read
+  r = submit(73);
+  assert(r.pixLen == 0 && guestReads == 11);       // skip re-engages past the fence
   return 0;
 }
 `;
@@ -228,7 +263,7 @@ test('every bridge write into image memory bumps the generation signal (census)'
   '32-bit vkDestroyImage erases the hash entry');
   // (e) the consult gates on every signal it claims to check.
   const lambda = extractEmitLambda();
-  for (const gate of ['it->second.memEpoch == imem->writeEpoch', '!imem->wasMapped',
+  for (const gate of ['vk64MemRangeCleanSince(imem, it->second.memEpoch, tex->memOff, tex->pixBytes)', '!imem->wasMapped',
     'tex->dirtyGen != 0', 'it->second.memOff == tex->memOff', 'it->second.imgGen == tex->dirtyGen',
     'it->second.pixBytes == tex->pixBytes']) {
     assert.ok(lambda.includes(gate), `emit consult gate present: ${gate}`);

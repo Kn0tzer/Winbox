@@ -212,3 +212,163 @@ Same run shape as prof5 (profiling ON, menu → chamber → inputs →
 - prof5 — baseline build, profiling ON (839 frames; final summary
   screenshot timed out under load, flow fully covered by the step log).
 - prof6 — optimized build, profiling ON (914 frames, clean summary).
+
+## 7. Round 2 (2026-10-27): the content-hash costs (§6 items 2 and 3)
+
+§6 named two emit costs on the post-round-1 build: buffer content hashing
+(~50 ms/frame; ~14.9 MB hashed to send ~21–50 KB) and image content hashing
+(~20–28 ms/frame; two backbuffer-sized images hashed every frame, never
+changed, 0 bytes sent). Both were reproduced on the current build first
+(diagnostic run r2-diag1, medians over the last 100 VKPROF frames, box
+load ~9–11.6): wall 429.6 ms, bufdata 52.6 ms (bufB hashed 15,175,856 B,
+sent 54,116 B), imgdata 24.5 ms (imgB hashed 6,815,744 B, sent 0 B). A
+temporary per-key accounting build (EMITDBG, uncommitted, removed after
+capture) then pinned the exact mechanism of each cost before any fix.
+
+### 7.1 Mechanism proofs
+
+Buffers: the emit keys are per-RANGE, but the skip compared the WHOLE
+buffer's dirtyGen against the snapshot. DXVK writes dynamic data into a
+buffer on every submit, so every range of that buffer lost its skip.
+Flush at 357 submits, buffer 0x324b0136: the 8,306,688-byte range was
+hashed on EVERY submit (2.98 GB over the run) and sent in full on only
+~22% of submits (genuinely dynamic content); the family of 241,496-byte
+ranges on the same and a second buffer was hashed every submit and most
+were sent exactly ONCE in the entire run (static content). The skip's
+"unchanged" proof was at the wrong granularity — per buffer, where the
+emit is per range.
+
+Images: image 0x324b1174 failed the generation skip 596 of 597 submits
+with genMis=0, epochMis=596 — its own generation never moved; the single
+write epoch of its ALLOCATION was bumped by co-resident writes. The
+round-1 write-epoch-aliasing suspicion is CONFIRMED for this image. A
+second image (0x324b111c) behaved differently: one of its views skipped
+every submit while the other re-read every submit, found the hash
+UNCHANGED and sent 0 bytes — that image is genuinely rewritten every
+frame with identical bytes (a mirror of static content). No generation
+scheme can skip its read; only a cheaper hash helps it.
+
+### 7.2 Fixes (bridge only; the page is untouched)
+
+Hash-protocol note: the bridge's fnv1a64 token is opaque to the page —
+the page stores and compares the 16-hex-digit string and never recomputes
+it (its own local fallback is a separate 32-bit FNV; the two key spaces
+are disjoint by construction, since bridge hashes are always 16 hex
+chars). Changing the bridge's hash ALGORITHM is therefore not a protocol
+change and needed no page change.
+
+1. Ranged write tracking. DeviceMemory keeps an epoch-ordered log of
+   written ranges; vk64TouchMem(m, off, len) appends the range actually
+   written. All 21 former whole-allocation touch sites now pass precise
+   ranges (the copy commands log each region's destination range; a
+   collapse cap of 8192 entries folds the log into a fence epoch that
+   conservatively forbids range skips for older snapshots).
+   vk64MemRangeCleanSince(mem, snapshotEpoch, off, len) proves a range
+   current iff no logged write since the snapshot intersects it. Both
+   emit skips consult it over their exact byte range; every other gate is
+   unchanged (image: dirtyGen, binding identity, never-mapped; buffer:
+   dirtyGen nonzero, same allocation, never-mapped). BufHashEntry now
+   snapshots the allocation epoch and allocation id (it previously
+   snapshotted the emit range's dirtyGen, which cannot express the
+   consult).
+2. Word-wise hash. fnv1a64 processes 8 bytes per multiply (memcpy word
+   load, byte tail, length mixed in, splitmix64 finaliser). What is
+   still hashed per frame — genuinely rewritten ranges and the
+   rewritten-with-identical-bytes image — pays ~8x fewer multiplies.
+
+### 7.3 Before / after (portal-gameplay-probe, profiling ON, FREERUN_S=150;
+medians over the last 100 VKPROF frames of the chamber phase)
+
+| stage | before (r2-diag1) | after (r2-after2) |
+|---|---|---|
+| wall | 429.6 ms | 416.8 ms |
+| bufdata | 52.6 ms | 12.8 ms |
+| imgdata | 24.5 ms | 2.6 ms |
+| submit (serialize) | 84.3 ms | 22.9 ms |
+| guest residual | 325.8 ms | 376.3 ms (load-dependent, see note) |
+| buffer bytes hashed | 15,175,856 | 15,175,856 |
+| buffer bytes sent | 54,116 | 58,624 |
+| image bytes hashed | 6,815,744 | 2,621,440 |
+| image bytes sent | 0 | 0 |
+
+Box load: diag run ~9–11.6; after run ~3.8–12 (10–13 users). Stage times
+are guest-side CPU on identical work and are the reliable comparison;
+wall and guest-residual medians move with contention (the guest residual
+is not touched by this change and its median rose on the less-loaded
+run — scheduling variance, not a regression; correctness runs below are
+identical in outcome).
+
+Attribution, stated plainly:
+- Images: BOTH fixes landed. Hashed bytes fell by exactly one
+  backbuffer image (6,815,744 → 2,621,440 B): the epoch-aliased image
+  now range-skips. The remaining 2,621,440 B is the
+  rewritten-with-identical-bytes image, which must be read — its cost is
+  now the word-wise hash (~1.3 ms of the 2.6 ms imgdata total).
+- Buffers: hashed bytes did NOT fall. Portal's emitted buffer ranges are
+  genuinely rewritten every frame (DXVK's per-draw uniform slices are
+  re-uploaded each submit, mostly with identical bytes for static scene
+  objects), so no sound skip can engage for them; the win is the hash
+  itself — bufdata fell 52.6 → 12.8 ms at identical hashed/sent bytes
+  (~3.0 ms/MB → ~0.45 ms/MB of hashing). The ranged consult is retained
+  on the buffer path: it is the same mechanism that won on images, costs
+  a binary search per emit, and is what keeps a buffer that shares an
+  allocation with a written image honest (guard-pinned below). It
+  changes nothing for this workload's buffers today.
+
+### 7.4 Correctness
+
+- Full Portal run on the fixed build (r2-after2, profiling ON): menu →
+  testchamber00 (chamberAt 2229.6 s) → look/move/strafe/jump input pairs
+  positive (look-right 0.164, look-left-back 0.257, forward 0.203,
+  strafe 0.214, jump 0.143, final-forward 0.593 changed fraction;
+  back-s 0.0002 — the spawn orientation backs into the chamber wall, the
+  weakest pair in every run on record) → 150 s freerun, 0 guest faults,
+  0 page errors, chamber 1.53 fps presented.
+  (One earlier unprofiled attempt, r2-after1, is NOT a correctness
+  verdict: under load ~22 the headless page compositor went black at the
+  chapter clicks, voiding every screenshot verdict after that point; the
+  guest presented throughout. r2-after2 re-ran the full flow with the
+  page healthy; its coordinator coords file used the probe's own default
+  click points — the same points the diagnostic run used via the
+  fallback path.)
+- JS unit suite (BW_TEST_DIST=<this tree>/dist, runner.mjs --unit):
+  295 passed, 0 failed (round-1 baseline in this tree's config: 294/0;
+  the +1 is the new guard file below).
+- Dirty-generation guard family, extended for the new tracking:
+  vk-image-dirty-generation (write lambdas now log ranges; new
+  scenarios — a DISJOINT write into the same allocation must still skip,
+  an intersecting write after it must force the re-read, and the
+  collapse fence forces exactly one re-read before the skip re-engages);
+  vk-buffer-dirty-ranges (new — extracts the real emitBufferDataInner:
+  disjoint same-buffer write keeps the skip, intersecting write resends,
+  a write through a DIFFERENT buffer aliasing the same allocation range
+  forces a re-read even though this buffer's dirtyGen never moves,
+  mapped memory never skips, resend cadence intact; every emitted
+  record's hash is asserted equal to the hash of the current guest
+  bytes; vk64MemRangeCleanSince itself is extracted and unit-tested for
+  half-open intersection semantics, the fence, and the null case).
+  Two sibling extraction tests (vk-image-transfer,
+  vulkan-image-view-aliases) had their stub preludes extended with the
+  new symbols. Sabotage-verified: reverting the buffer consult to
+  write-epoch equality turns the buffer guard red (2/2 tests); forcing
+  vk64MemRangeCleanSince to always-clean turns its extraction test red.
+- Register citations re-pinned against the edited bridge (the audit
+  tool's --fix for unambiguous rows; diff-shift mapping with
+  text-identity proof for the rest, including duplicate/inherited rows
+  and the two 'default:' literal rows whose 25-line proximity window the
+  shift crossed): final audit 203 MATCH / 14 MATCH-INHERITED /
+  101 UNCHECKABLE / 7 EXEMPT / 0 DRIFT / 0 MISSING — exact coverage
+  parity with the pre-round-2 baseline.
+
+### 7.5 What remains
+
+- The guest residual (~76–90% of the chamber frame) is untouched; it is
+  the emulator/guest-CPU frontier, not the bridge.
+- The 8.3 MB dynamic range and the per-draw uniform slices are honestly
+  rewritten per frame; their remaining hash cost is ~0.45 ms/MB on the
+  word-wise hash (~7 ms/frame at Portal's working set). Skipping them
+  would require trusting a generation the guest itself invalidates —
+  not sound.
+- The rewritten-with-identical-bytes image (2.62 MB/frame, ~1.3 ms)
+  could only be skipped by ignoring logged writes into its range —
+  exactly the aliasing failure this round fixed. It stays read.

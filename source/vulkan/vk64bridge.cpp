@@ -767,7 +767,17 @@ struct Semaphore : Obj {
     int isTimeline = 0;
     U64  counter = 0;
 };
-struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; U64 writeEpoch = 0; };
+struct MemWriteRange { U64 epoch = 0; U64 off = 0; U64 len = 0; };
+struct DeviceMemory : Obj { U64 size = 0, va = 0; U32 memIndex = 0; bool wasMapped = false; U64 writeEpoch = 0;
+    // Range-precise write log (portal-perf round 2): every bridge write into
+    // this allocation appends its allocation-relative range, stamped with the
+    // write's epoch. Entries are epoch-ordered. When the log outgrows its cap
+    // it collapses: writesFence jumps to the current epoch and snapshots taken
+    // before the fence can no longer range-skip (one full re-read each, then
+    // they re-snapshot past the fence).
+    std::vector<MemWriteRange> writes;
+    U64 writesFence = 0;
+};
 struct Buffer : Obj { U64 size = 0, mem = 0, memOff = 0; U32 usage = 0; U64 dirtyGen = 0; U64 devVa = 0; };
 struct Image  : Obj {
     U32 w = 0, h = 0, d = 0, layers = 0, mips = 0, format = 0, tiling = 0, usage = 0, samples = 0;
@@ -797,12 +807,42 @@ static void vk64InitImageView(ImageView* v, const Image* img, U32 viewType, cons
         }
     }
 }
-// Write-side dirtiness for the image emit fast path (see ImgHashEntry): every
-// bridge write into a DeviceMemory allocation bumps its writeEpoch. An image
-// whose own dirtyGen stood still is provably unchanged only if its
-// allocation's epoch also stood still -- a write addressed through a buffer
-// suballocating the same memory must not be invisible to the image's emit.
-inline void vk64TouchMem(DeviceMemory* m) { if (m) m->writeEpoch = g_bufDirtyTick++; }
+// Write-side dirtiness for the emit fast paths (see ImgHashEntry /
+// BufHashEntry): every bridge write into a DeviceMemory allocation bumps its
+// writeEpoch AND appends its range to the allocation's write log. A tracked
+// range is provably unchanged since a snapshot iff no logged write newer than
+// the snapshot intersects it -- a write addressed through a buffer
+// suballocating the same memory must not be invisible to an image's emit, and
+// (round 2) a write into a DISJOINT range of the same allocation must not
+// defeat the skip either: DXVK suballocates dozens of resources from one
+// allocation, and the old epoch-equality test re-hashed every co-resident
+// resource on every frame. The 1-arg form is the conservative whole-allocation
+// range for call sites without a precise destination range; sites that know
+// their destination pass it (object binding ranges are disjoint within an
+// allocation, so an object-precise range never poisons a co-resident object).
+inline void vk64TouchMem(DeviceMemory* m, U64 off, U64 len) {
+    if (!m) return;
+    const U64 e = g_bufDirtyTick++;
+    m->writeEpoch = e;
+    if (!len) return;
+    if (m->writes.size() >= 8192) { m->writes.clear(); m->writesFence = e; }
+    m->writes.push_back({e, off, len});
+}
+inline void vk64TouchMem(DeviceMemory* m) { if (m) vk64TouchMem(m, 0, m->size); }
+// Consult: true iff the allocation range [off, off+len) provably received no
+// bridge write since `epoch` (the snapshot's writeEpoch). Log entries are
+// epoch-ordered, so the scan starts at the first entry newer than the
+// snapshot and only walks the writes since then.
+inline bool vk64MemRangeCleanSince(const DeviceMemory* m, U64 epoch, U64 off, U64 len) {
+    if (!m) return false;
+    if (epoch < m->writesFence) return false;
+    const auto& w = m->writes;
+    size_t lo = 0, hi = w.size();
+    while (lo < hi) { size_t mid = (lo + hi) / 2; if (w[mid].epoch <= epoch) lo = mid + 1; else hi = mid; }
+    for (size_t i = lo; i < w.size(); i++)
+        if (w[i].off < off + len && off < w[i].off + w[i].len) return false;
+    return true;
+}
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
 struct Sampler : Obj {
     U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
@@ -1835,7 +1875,7 @@ static void execCopyQueryResults(const Cmd& command) {
     VK64_DROP_IF(return, !encoded.valid);
     writeEncodedQueryResults(memory->va + memoryOffset, encoded);
     buffer->dirtyGen = g_bufDirtyTick++;
-    vk64TouchMem(memory);
+    vk64TouchMem(memory, memoryOffset, size);
 }
 
 // Monotonic timestamp source for emulated timestamp queries. The bridge has
@@ -1889,7 +1929,7 @@ void execUpdateBuf(const Cmd& k) {
     if (off + n > m->size) n = m->size - off;
     writeGuestBytes(m->va + off, k.updBytes.data(), n);
     b->dirtyGen = g_bufDirtyTick++;
-    vk64TouchMem(m);
+    vk64TouchMem(m, off, n);
 }
 // Build-9 diagnostic: every early return of execCopy used to be silent, so a
 // texture upload that never landed (all-zero sampled textures on the page) left
@@ -1927,7 +1967,7 @@ void execCopy(const Copy& r) {
     // still leaves earlier rows written), so mark the image and its
     // allocation dirty up front: no emit may skip over a partial write.
     dst->dirtyGen = g_bufDirtyTick++;
-    vk64TouchMem(dmem);
+    vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
     std::vector<U8> tmp((size_t)rowBytes);
     for (U32 layer = 0; layer < r.layerCount; ++layer) {
         for (U32 z = 0; z < r.depth; ++z) {
@@ -3004,12 +3044,31 @@ void hopV2ToPage(const std::string& presentInfo = std::string()) {
     g_v2Pending.clear();
 }
 
-// FNV-1a 64-bit content hash, shared with the page tier: the IMAGE_DATA
-// record carries this hash, so the page keys its texture cache without
-// hashing pixel bytes itself.
+// Content hash for the v2 emit dedup (buffers + images). The value travels
+// in the BUFFER_DATA / IMAGE_DATA records as an opaque token: the page keys
+// its caches with it verbatim and never recomputes it (the page's own local
+// fallback is a different, 32-bit FNV used only for hash-less records), so
+// the algorithm is bridge-internal and only has to be a deterministic,
+// exact function of the bytes. Word-wise FNV-1a (portal-perf round 2): one
+// xor+multiply per 8-byte word instead of per byte -- the byte loop cost
+// ~50 ms/frame over Portal's ~15 MB of per-frame re-hashes. A splitmix64
+// finaliser restores avalanche the wider stride gives up, and the length is
+// mixed in so a word/tail split can never alias a different byte string.
 static U64 fnv1a64(const U8* data, size_t len) {
     U64 h = 14695981039346656037ULL;
-    for (size_t i = 0; i < len; i++) { h ^= (U64)data[i]; h *= 1099511628211ULL; }
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        U64 w;
+        memcpy(&w, data + i, 8);
+        h ^= w;
+        h *= 1099511628211ULL;
+    }
+    for (; i < len; i++) { h ^= (U64)data[i]; h *= 1099511628211ULL; }
+    h ^= (U64)len;
+    h *= 1099511628211ULL;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
     return h;
 }
 
@@ -3019,14 +3078,13 @@ static U64 fnv1a64(const U8* data, size_t len) {
 // vkDestroyImage erases them (both ABIs). When the hash is unchanged,
 // emitImageData sends a pixel-less record (view->image link + hash only),
 // saving wasm->JS bridge bandwidth for static textures. The generation skip
-// in emitImageDataInner goes further: when the image's dirtyGen and its
-// allocation's writeEpoch both match the snapshot (and the memory was never
-// mapped, and the binding is unchanged), the pixel bytes are provably the
-// same bytes that produced the stored hash, so the read + FNV-1a pass is
-// skipped outright. Every bridge write into image memory bumps the image's
-// dirtyGen and its allocation's epoch (vk64TouchMem); every other write into
-// an allocation bumps that allocation's epoch. The periodic full resend
-// (V2_BUF_RESEND_PERIOD) bounds any residual desync, exactly as for buffers.
+// in emitImageDataInner goes further: when the image's dirtyGen matches the
+// snapshot and no write logged on its allocation since the snapshot
+// intersects the image's byte range (and the memory was never mapped, and
+// the binding is unchanged), the pixel bytes are provably the same bytes
+// that produced the stored hash, so the read + hash pass is skipped
+// outright. The periodic full resend (V2_BUF_RESEND_PERIOD) bounds any
+// residual desync, exactly as for buffers.
 struct ImgHashEntry {
     U64 hash = 0;      // FNV-1a of the pixel bytes read at the last full emit
     U64 imgGen = 0;    // Image::dirtyGen at that emit
@@ -3041,8 +3099,10 @@ static std::unordered_map<U64, ImgHashEntry> g_imageContentHash;
 // byte-less record (ids + hash only), saving bridge bandwidth for static
 // vertex/index/uniform buffers. Buffer ids are monotonic (g_nextId), so
 // entries stay valid; vkDestroyBuffer erases them.
-struct BufHashEntry { U64 hash = 0; U64 dirtyGen = 0; };
+struct BufHashEntry { U64 hash = 0; U64 memEpoch = 0; U64 mem = 0; };
 static std::map<std::tuple<U64,U64,U64>, BufHashEntry> g_bufferContentHash;
+
+
 // Page buffers contain the bytes starting at a Vulkan binding offset. Give
 // each slice an opaque replay ID so different offsets of one buffer coexist.
 static std::map<std::pair<U64,U64>, U64> g_bufferSliceIds;
@@ -3053,9 +3113,14 @@ static U64 bufferSliceId(U64 buffer, U64 offset) {
     if (inserted) it->second = ++next;
     return it->second;
 }
-// Global generation counter: bumped whenever any buffer is modified via
-// vkCmdCopyBuffer/vkCmdUpdateBuffer/vkCmdFillBuffer. Lets emitBufferData skip
-// the expensive readGuestRange+hash for static buffers.
+// Buffer emit skip (round 2): emitBufferData consults the backing
+// allocation's ranged write log exactly like the image path -- a snapshot
+// (hash + allocation writeEpoch + memory id) proves an emit range current
+// iff no logged write since the snapshot intersects the range. The round-1
+// test compared the whole BUFFER's dirtyGen against the snapshot, but emit
+// keys are per-RANGE: DXVK writes its dynamic data into one range of a
+// buffer while other ranges (static geometry, constant blocks) sit unchanged
+// for the buffer's whole life, and every submit re-hashed all of them.
 
 // Keep the WebGPU replay format support mirrored in web/vkwebgpu.mjs. These
 // lists include Vulkan formats that the page converts to core WebGPU formats.
@@ -3385,7 +3450,7 @@ static void completeReadbacks() {
         }
         writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr, pxBytes);
         buf->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(mem);
+        vk64TouchMem(mem, buf->memOff + pend.dstBufOff, (U64)pxBytes);
     }
     for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
     g_readbackPending.clear();
@@ -3465,13 +3530,14 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             // is useless here; g_v2SubmitFrames counts real submits.)
             const bool forceFull =
                 (g_v2SubmitFrames <= 3 || (g_v2SubmitFrames % V2_BUF_RESEND_PERIOD) == 0);
-            // Fast path: buffer was hashed before and hasn't been modified
-            // via any Vulkan command since (dirtyGen unchanged) and its
-            // memory was never mapped (no CPU writes possible). Skip the
-            // expensive readGuestRange + fnv1a64 entirely.
+            // Fast path: this range was hashed before and no write logged
+            // on its allocation since the snapshot intersects the range,
+            // and its memory was never mapped (no CPU writes possible).
+            // Skip the expensive readGuestRange + fnv1a64 entirely.
             DeviceMemory* bmem = objOf<DeviceMemory>(b->mem, K_MEMORY, "vkQueueSubmit");
-            if (!forceFull && it != g_bufferContentHash.end() && it->second.dirtyGen == b->dirtyGen &&
-                b->dirtyGen != 0 && bmem && !bmem->wasMapped) {
+            if (!forceFull && it != g_bufferContentHash.end() && it->second.mem == b->mem &&
+                b->dirtyGen != 0 && bmem && !bmem->wasMapped &&
+                vk64MemRangeCleanSince(bmem, it->second.memEpoch, memOff, len)) {
                 emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
                     p.u64(replayId); p.u64(memOff); p.u64(it->second.hash);
                     p.u32(0);
@@ -3490,7 +3556,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             if (tooLarge) {
                 klog_fmt("vk64: BUFFER_DATA capped id=0x%llx len=%llu -> %llu bytes (vkd3d heap-sized buffer; page rejects chunks over 16MB)", (unsigned long long)bufId, (unsigned long long)len, (unsigned long long)sendLen);
             }
-            g_bufferContentHash[key] = {hash, b->dirtyGen};
+            g_bufferContentHash[key] = {hash, bmem ? bmem->writeEpoch : 0, b->mem};
             emit(V2_BUFFER_DATA, [&](ChunkWriter& p) {
                 p.u64(replayId); p.u64(memOff); p.u64(hash);
                 p.u32(sendBytes ? (U32)bytes.size() : 0);
@@ -3537,18 +3603,21 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             std::vector<U8> bytes;
             U64 hash = 0;
             bool sendPixels = true;
-            // Generation skip: writes into the image bump Image::dirtyGen and
-            // every write into the backing allocation bumps its writeEpoch,
-            // so matching generations + an unchanged binding + never-mapped
-            // memory prove the bytes behind the stored hash are still the
-            // image's bytes. Skip the readGuestRange + fnv1a64 entirely; the
-            // record still goes out (the page keys its texture cache by hash).
+            // Generation skip: writes into the image bump Image::dirtyGen
+            // and every write into the backing allocation is range-logged,
+            // so a matching dirtyGen + no logged write intersecting the
+            // image's range since the snapshot + an unchanged binding +
+            // never-mapped memory prove the bytes behind the stored hash
+            // are still the image's bytes. Skip the readGuestRange +
+            // fnv1a64 entirely; the record still goes out (the page keys
+            // its texture cache by hash).
             bool genSkip = false;
             if (!forceFull && tex->mem && tex->pixBytes && tex->dirtyGen != 0 &&
                 imem && !imem->wasMapped) {
                 auto it = g_imageContentHash.find(view->image);
                 if (it != g_imageContentHash.end() && it->second.imgGen == tex->dirtyGen &&
-                    it->second.memEpoch == imem->writeEpoch && it->second.mem == tex->mem &&
+                    vk64MemRangeCleanSince(imem, it->second.memEpoch, tex->memOff, tex->pixBytes) &&
+                    it->second.mem == tex->mem &&
                     it->second.memOff == tex->memOff && it->second.pixBytes == tex->pixBytes) {
                     hash = it->second.hash;
                     sendPixels = false;
@@ -6864,6 +6933,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         bool anyCopy = false;
+        U64 uOff = ~0ULL, uEnd = 0;
         for (const auto& r : regs) {
             U64 sOff = smem->va + src->memOff + r.srcOffset;
             U64 dOff = dmem->va + dst->memOff + r.dstOffset;
@@ -6876,8 +6946,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
             anyCopy = true;
+            uOff = std::min(uOff, dst->memOff + r.dstOffset);
+            uEnd = std::max(uEnd, dst->memOff + r.dstOffset + n);
         }
-        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem); }
+        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem, uOff, uEnd - uOff); }
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer2:
@@ -6902,6 +6974,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         bool anyCopy = false;
+        U64 uOff = ~0ULL, uEnd = 0;
         for (const auto& r : regs) {
             // Validate the bind-relative offset (including the buffer's bind
             // offset) BEFORE computing absolute addresses. The old check
@@ -6926,8 +6999,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
             anyCopy = true;
+            uOff = std::min(uOff, dRel);
+            uEnd = std::max(uEnd, dRel + n);
         }
-        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem); }
+        if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem, uOff, uEnd - uOff); }
         return 0;
     }
 
@@ -6959,7 +7034,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             g_mem->memcpyToGuest(va + i, &data, size - i);
         }
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, offset, size);
         return 0;
     }
     case VK64_fn_vkCmdClearColorImage: {
@@ -6993,7 +7068,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         img->copied = 1;
         img->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, img->memOff, img->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
@@ -7060,7 +7135,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         dst->copied = 1;
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdCopyImage2:
@@ -7116,7 +7191,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         dst->copied = 1;
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdCopyBufferToImage2:
@@ -7248,7 +7323,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         dst->copied = 1;
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdBlitImage2:
@@ -7339,7 +7414,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         dst->copied = 1;
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdResolveImage:
@@ -7395,7 +7470,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         dst->copied = 1;
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdDrawIndirect: {
@@ -9687,7 +9762,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             g_mem32->memcpyToGuest(va + (U32)i, &data, 4);
         if (size % 4) g_mem32->memcpyToGuest(va + (U32)(size & ~3ULL), &data, (U32)(size % 4));
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, offset, size);
         return 0;
     }
     case VK64_fn_vkCmdClearColorImage: {
@@ -9706,7 +9781,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U64 off = 0; off < total; off += 4)
             g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
         im->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, im->memOff, total);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
@@ -9729,12 +9804,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U32 nreg = (U32)args.a[3];
         U8 tmp[65536];
+        U64 uOff = ~0ULL, uEnd = 0;
         for (U32 i = 0; i < nreg && args.a[4]; i++) {
             vk32abi::VkBufferCopy r = {};
             readStruct32((U32)args.a[4] + i * (U32)sizeof(r), r);
             U64 srcVa = smem->va + src->memOff + r.srcOffset;
             U64 dstVa = dmem->va + dst->memOff + r.dstOffset;
             U64 size = r.size;
+            uOff = std::min(uOff, dst->memOff + r.dstOffset);
+            uEnd = std::max(uEnd, dst->memOff + r.dstOffset + size);
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
                 g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
@@ -9743,7 +9821,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, uOff, uEnd - uOff);
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer2:
@@ -9761,6 +9839,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         DeviceMemory* dmem = objOf32<DeviceMemory>(dstB->mem, K_MEMORY, "vkCmdCopyBuffer2");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U8 tmp[65536];
+        U64 uOff = ~0ULL, uEnd = 0;
         for (U32 i = 0; i < nreg && pReg; i++) {
             U32 r = pReg + i * 32;
             U64 srcOff = rd64_32(r + 8);
@@ -9768,6 +9847,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             U64 size = rd64_32(r + 24);
             U64 srcVa = smem->va + srcB->memOff + srcOff;
             U64 dstVa = dmem->va + dstB->memOff + dstOff;
+            uOff = std::min(uOff, dstB->memOff + dstOff);
+            uEnd = std::max(uEnd, dstB->memOff + dstOff + size);
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
                 g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
@@ -9776,7 +9857,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dstB->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, uOff, uEnd - uOff);
         return 0;
     }
     case VK64_fn_vkCmdCopyImage:
@@ -9824,7 +9905,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdCopyBufferToImage:
@@ -9955,7 +10036,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             }
         }
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdResolveImage:
@@ -9985,7 +10066,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             sva += chunk; dva += chunk; total -= chunk;
         }
         dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem);
+        vk64TouchMem(dmem, dst->memOff, dst->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdDrawIndirect: {
