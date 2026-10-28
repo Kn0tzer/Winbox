@@ -3928,3 +3928,9 @@ proof that the archive the merge ships serves the other four
 EXEC cases and held R16_FLOAT / R8_UINT at exactly the named
 rejections this merge removes. Re-run the gate in a quieter
 window before treating the merged-tree case map as proven.
+Closing note: the dist was rebuilt at the final tip ade389f37
+("Browser export verified") and the full JS suite re-run against
+it: 318 passed / 0 failed (the 317-file baseline plus this
+lane's vk-sampled-storage-serving guard file), superseding the
+first run's 317/1 above. The guest gate remains as recorded:
+outstanding, to be re-run in a quieter window.
