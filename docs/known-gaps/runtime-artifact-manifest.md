@@ -10,13 +10,13 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 211760592 | `2128ce79fea1a7ae129dc56897d248f907624b8446b809d434c5c661f90c8de5` | 1257 |
-| w32 | `web/runtime/wine32.zip` | 236650075 | `5203eb540b5af9ac7ef1dbe1598f64bd4968efc3550e53bbf2389a059c59993b` | 1926 |
+| w64 | `web/runtime/wine64.zip` | 211760562 | `2986c2f6fb4092e9dd015e60af13d4d1f9e2d45d06ac64793840b17af7db86a2` | 1257 |
+| w32 | `web/runtime/wine32.zip` | 236650075 | `3da7c635f4e52e091b61785fe05244c9c2a70c77eed58550e85643a256803ac4` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
-| p32 | `web/runtime/prefix32.zip` | 5914534 | `ca99eb6ddbc85dc7c3a000b4c2415457a7e8e6c19e4bcecb8c26d37787f1e959` | 42 |
+| p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
-| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `5f77055dddcb8a5e398f19bd2ed795f24380cab3afb00aeffc64c3f9c3b2bc67` | 154 |
-| support | `dist/runtime/support-108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe.zip` | 517854544 | `108f781c5c8dbd72f19908f5932b10a2075c8dc25c6527ab17a7f3f2f0d5b3fe` | 3543 |
+| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
+| support | `dist/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip` | 517854873 | `bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b` | 3543 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,
@@ -753,7 +753,7 @@ and that `wineserver64` itself is an ELF binary).
 
 ### p32 (3)
 
-- `home/username/d3d11.dll` (7798452 bytes)
+- `home/username/d3d11.dll` (7798449 bytes)
 - `home/username/d3d9.dll` (6238536 bytes)
 - `home/username/dxgi.dll` (4727438 bytes)
 
