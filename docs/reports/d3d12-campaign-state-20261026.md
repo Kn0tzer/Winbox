@@ -3904,37 +3904,6 @@ REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount;
 delta vs the pre-merge tree is exactly the one new IMPLEMENTED
 row plus the narrowing of the storage-format-access row above).
 Native suite 647/0 single-threaded; run-native.py end-to-end
-green (31 PASS blocks); dist export verified (Browser export
-
-### Merge outcome (integ, 2026-10-28)
-
-Merged into integ/winbox-20261022b as 8f077cdd8 (this section
-renumbered 4.34 -> 4.38), with one merge-fallout repair commit
-4afe7ac57. Conflicts were confined to the two docs and
-web/vkwebgpu.mjs (import union; the serveSampledStorage helper
-inserted ahead of HEAD's getPipelineFor, whose section-4.33
-pushBlock parameter is retained). Both sides verified present in
-the merged files: serveSampledStorage is applied to vsR/fsR in the
-graphics builder and to csR in the section-4.30 compute builder,
-each time after rewritePushConstantsWGSL and before declarations
-are scanned; the gpuTextureFor usage guard and the
-V2_STORAGE_USAGE_FORBIDDEN set {76, 13} landed intact, alongside
-the merged tree's resolveStorageVarFormat / planGroupRemap /
-remapDeclGroups machinery. Gates on the merged tree: JS suite 317
-passed / 1 failed on the first run -- the one failure was
-vk-register-citations' coverage ceiling (UNCHECKABLE had grown
-97 -> 105 against the pinned 102), a merge fallout characterized
-and repaired in 4afe7ac57 (duplicate-scan dependents re-pinned to
-follow their primaries; the two catch-literal rows and the
-replay-skip-flag row re-pinned to their merged-tree sites; no row
-text or disposition changed). Citation audit after the repair:
-228 MATCH / 14 MATCH-INHERITED / 95 UNCHECKABLE / 7 EXEMPT over
-344 cited rows, 0 DRIFT / 0 MISSING, and the citations guard
-passes 4/4. Register: 371 rows = 72 IMPLEMENTED / 66
-REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount;
-delta vs the pre-merge tree is exactly the one new IMPLEMENTED
-row plus the narrowing of the storage-format-access row above).
-Native suite 647/0 single-threaded; run-native.py end-to-end
 green (31 PASS blocks); dist export verified ("Browser export
 verified", stamp 8f077cdd8).
 
