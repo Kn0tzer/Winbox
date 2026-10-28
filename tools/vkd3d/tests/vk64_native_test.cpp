@@ -764,6 +764,82 @@ int main() {
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)");
     }
+    // ---- vkCmdClearColorImage (32-bit): the clear value must land as whole
+    // texels. The old handler took only the first 4 bytes of the 16-byte
+    // VkClearColorValue and repeated those in 4-byte steps, so a wide texel
+    // was tiled with its first component (an RGBA32 clear came out
+    // [R,R,R,R] per texel) and a footprint not divisible by 4 was overrun.
+    {
+        KMemory memC; CPU cpuC{&memC};
+        auto callC = [&](U32 fn, const VK32Args& args) {
+            memC.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuC, fn, 128);
+        };
+        vk32abi::VkMemoryAllocateInfo allocC{};
+        allocC.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocC.allocationSize = 8192;
+        memC.memcpyToGuest(512, &allocC, sizeof(allocC));
+        VK32Args amC{}; amC.a[1] = 512; amC.a[3] = 640;
+        assert(callC(VK64_fn_vkAllocateMemory, amC) == VK_SUCCESS);
+        U64 memIdC = memC.readq(640);
+        auto* dmC = objOf32<DeviceMemory>(memIdC, K_MEMORY, "test");
+        assert(dmC && dmC->va);
+        auto clearCase = [&](U32 format, U32 w, U32 h, const vk32abi::VkClearColorValue& col,
+                             const std::vector<U8>& expect) {
+            for (U32 i = 0; i < 8192; ++i) memC.bytes[dmC->va + i] = 0xEE;
+            U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+            img->w = w; img->h = h; img->d = 1; img->layers = 1; img->format = format;
+            img->mem = memIdC; img->memOff = 128;
+            memC.memcpyToGuest(2048, &col, sizeof(col));
+            VK32Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048; cc.a[4] = 1; cc.a[5] = 3072;
+            assert(callC(VK64_fn_vkCmdClearColorImage, cc) == 0);
+            const U32 base = (U32)dmC->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memC.bytes[base + i] == expect[i]);
+            // Nothing outside the footprint may be written (the old loop
+            // wrote a full 4-byte word past a non-multiple-of-4 footprint).
+            assert(memC.bytes[base - 1] == 0xEE && memC.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texel = [](const std::vector<U8>& one, int n) {
+            std::vector<U8> out; for (int i = 0; i < n; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        auto f32x4 = [](float a, float b, float c, float d) {
+            vk32abi::VkClearColorValue v{}; v.float32[0] = a; v.float32[1] = b; v.float32[2] = c; v.float32[3] = d; return v;
+        };
+        // R32G32B32A32_SFLOAT (109, 16 B/texel): the whole clear value per texel.
+        clearCase(109, 2, 1, f32x4(1.0f, 0.5f, 0.25f, 1.0f),
+                  texel({0x00,0x00,0x80,0x3F, 0x00,0x00,0x00,0x3F, 0x00,0x00,0x80,0x3E, 0x00,0x00,0x80,0x3F}, 2));
+        // R32G32B32A32_UINT (107): all four uint32 components per texel.
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0x11223344u; v.uint32[1] = 0x55667788u; v.uint32[2] = 0x99AABBCCu; v.uint32[3] = 0xDDEEFF00u;
+          clearCase(107, 2, 1, v, texel({0x44,0x33,0x22,0x11, 0x88,0x77,0x66,0x55, 0xCC,0xBB,0xAA,0x99, 0x00,0xFF,0xEE,0xDD}, 2)); }
+        // R32G32_SFLOAT (103, 8 B/texel): the first two components per texel.
+        clearCase(103, 2, 1, f32x4(2.0f, -1.0f, 9.0f, 9.0f),
+                  texel({0x00,0x00,0x00,0x40, 0x00,0x00,0x80,0xBF}, 2));
+        // R16G16B16A16_SFLOAT (97, 8 B/texel): components converted to half floats.
+        clearCase(97, 2, 1, f32x4(1.0f, 0.5f, 0.0f, -1.0f),
+                  texel({0x00,0x3C, 0x00,0x38, 0x00,0x00, 0x00,0xBC}, 2));
+        // R16G16B16A16_UINT (95): each uint32 component truncated to uint16.
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0x11223344u; v.uint32[1] = 0x55667788u; v.uint32[2] = 0x99AABBCCu; v.uint32[3] = 0xDDEEFF00u;
+          clearCase(95, 2, 1, v, texel({0x44,0x33, 0x88,0x77, 0xCC,0xBB, 0x00,0xFF}, 2)); }
+        // R8G8B8A8_UNORM (37, 4 B/texel): float components quantized per texel
+        // (the old splat wrote the raw bits of float32[0] instead).
+        clearCase(37, 2, 2, f32x4(1.0f, 0.0f, 0.5f, 1.0f), texel({0xFF,0x00,0x80,0xFF}, 4));
+        // R8_UNORM (9, 1 B/texel), 3x1 footprint: 3 bytes, no overrun.
+        clearCase(9, 3, 1, f32x4(1.0f, 0.0f, 0.0f, 1.0f), {0xFF,0xFF,0xFF});
+        // Packed formats keep the named raw fill: the fallback counts
+        // clear-color-layout and repeats the clear value's first texelSize
+        // bytes per texel (R5G6B5_UNORM_PACK16 = 4, 2 B/texel).
+        { const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+          vk32abi::VkClearColorValue v{}; v.uint32[0] = 0xAABBCCDDu;
+          clearCase(4, 2, 1, v, texel({0xDD,0xCC}, 2));
+          assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore + 1); }
+        // R32_SFLOAT (100) control: single-component behaviour is unchanged.
+        clearCase(100, 2, 1, f32x4(3.0f, 9.0f, 9.0f, 9.0f),
+                  texel({0x00,0x00,0x40,0x40}, 2));
+        VK32Args frC{}; frC.a[1] = memIdC;
+        assert(callC(VK64_fn_vkFreeMemory, frC) == VK_SUCCESS);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 clear-color writes whole texels (wide, half, int and UNORM formats; no footprint overrun)");
+    }
     // ---- Entry points that used to be loud stubs: sizing from a create info,
     // shim-local answers (queue2, granularity, sparse, pipeline cache) and the
     // 64-bit vkDestroyBufferView.

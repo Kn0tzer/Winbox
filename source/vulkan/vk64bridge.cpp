@@ -9406,6 +9406,114 @@ inline void wr64_32(U32 a, U64 v) {
     g_mem32->writed(a + 4, (U32)(v >> 32));
 }
 static U64 rdq32(U64 a) { return rd64_32((U32)a); }
+// ---------------------------------------------------------------------------
+// vkCmdClearColorImage (32-bit) texel construction. A VkClearColorValue is
+// four 32-bit component words; a texel holds those components converted to
+// the format's own component size and type: float32 -> float16 for
+// SFLOAT16, float -> UNORM/SNORM quantization, low bits for integer
+// components, BGRA component order for B8G8R8A8. Returns the texel size
+// (== fmt_bpp(format)) and fills texel[]. Layouts that are not a plain
+// component vector (packed 16/32-bit formats, depth/stencil formats,
+// block-compressed) keep the historical raw fill: the clear value's first
+// bytes, truncated to the texel size and repeated per texel.
+// ---------------------------------------------------------------------------
+static uint16_t vk32FloatToHalf(float f) {
+    U32 bits; memcpy(&bits, &f, 4);
+    U32 sign = (bits >> 16) & 0x8000;
+    U32 expBits = (bits >> 23) & 0xff;
+    U32 mant = bits & 0x7fffff;
+    if (expBits == 0xff) return (uint16_t)(sign | 0x7c00 | (mant ? 0x200 : 0));   // inf / nan
+    int exp = (int)expBits - 112;                                            // rebias 127 -> 15
+    if (exp >= 31) return (uint16_t)(sign | 0x7c00);                              // overflow -> inf
+    if (exp <= 0) {                                                          // subnormal / zero
+        if (exp < -10) return (uint16_t)sign;
+        mant |= 0x800000;
+        U32 shift = (U32)(14 - exp);
+        uint16_t h = (uint16_t)(sign | (mant >> shift));
+        if (((mant >> (shift - 1)) & 1) && ((mant & ((1u << shift) - 1)) || (h & 1))) h++;   // round to nearest, ties to even
+        return h;
+    }
+    uint16_t h = (uint16_t)(sign | ((U32)exp << 10) | (mant >> 13));
+    if (((mant >> 12) & 1) && ((mant & 0xfff) || (h & 1))) h++;               // round to nearest, ties to even
+    return h;
+}
+enum Vk32ClearKind { VK32_CLEAR_FLOAT, VK32_CLEAR_UINT, VK32_CLEAR_SINT, VK32_CLEAR_UNORM, VK32_CLEAR_SNORM };
+static void vk32ClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8 texel[16], U32& texelSize) {
+    texelSize = fmt_bpp(format);
+    memset(texel, 0, 16);
+    U32 ncomp = 0, compBytes = 0; Vk32ClearKind kind = VK32_CLEAR_FLOAT; bool bgra = false;
+    switch (format) {
+        case VK_FORMAT_R8_UNORM: kind = VK32_CLEAR_UNORM; ncomp = 1; compBytes = 1; break;
+        case VK_FORMAT_R8_SNORM: kind = VK32_CLEAR_SNORM; ncomp = 1; compBytes = 1; break;
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_S8_UINT: kind = VK32_CLEAR_UINT; ncomp = 1; compBytes = 1; break;
+        case VK_FORMAT_R8_SINT: kind = VK32_CLEAR_SINT; ncomp = 1; compBytes = 1; break;
+        case VK_FORMAT_R8G8_UNORM: kind = VK32_CLEAR_UNORM; ncomp = 2; compBytes = 1; break;
+        case VK_FORMAT_R8G8_SNORM: kind = VK32_CLEAR_SNORM; ncomp = 2; compBytes = 1; break;
+        case VK_FORMAT_R8G8_UINT: kind = VK32_CLEAR_UINT; ncomp = 2; compBytes = 1; break;
+        case VK_FORMAT_R8G8_SINT: kind = VK32_CLEAR_SINT; ncomp = 2; compBytes = 1; break;
+        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: kind = VK32_CLEAR_UNORM; ncomp = 4; compBytes = 1; break;
+        case VK_FORMAT_R8G8B8A8_SNORM: kind = VK32_CLEAR_SNORM; ncomp = 4; compBytes = 1; break;
+        case VK_FORMAT_R8G8B8A8_UINT: kind = VK32_CLEAR_UINT; ncomp = 4; compBytes = 1; break;
+        case VK_FORMAT_R8G8B8A8_SINT: kind = VK32_CLEAR_SINT; ncomp = 4; compBytes = 1; break;
+        case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB: kind = VK32_CLEAR_UNORM; ncomp = 4; compBytes = 1; bgra = true; break;
+        case VK_FORMAT_R16_UNORM: kind = VK32_CLEAR_UNORM; ncomp = 1; compBytes = 2; break;
+        case VK_FORMAT_R16_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 1; compBytes = 2; break;
+        case VK_FORMAT_R16_UINT: kind = VK32_CLEAR_UINT; ncomp = 1; compBytes = 2; break;
+        case VK_FORMAT_R16_SINT: kind = VK32_CLEAR_SINT; ncomp = 1; compBytes = 2; break;
+        case VK_FORMAT_R16G16_UNORM: kind = VK32_CLEAR_UNORM; ncomp = 2; compBytes = 2; break;
+        case VK_FORMAT_R16G16_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 2; compBytes = 2; break;
+        case VK_FORMAT_R16G16_UINT: kind = VK32_CLEAR_UINT; ncomp = 2; compBytes = 2; break;
+        case VK_FORMAT_R16G16_SINT: kind = VK32_CLEAR_SINT; ncomp = 2; compBytes = 2; break;
+        case VK_FORMAT_R16G16B16A16_UNORM: kind = VK32_CLEAR_UNORM; ncomp = 4; compBytes = 2; break;
+        case VK_FORMAT_R16G16B16A16_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 4; compBytes = 2; break;
+        case VK_FORMAT_R16G16B16A16_UINT: kind = VK32_CLEAR_UINT; ncomp = 4; compBytes = 2; break;
+        case VK_FORMAT_R16G16B16A16_SINT: kind = VK32_CLEAR_SINT; ncomp = 4; compBytes = 2; break;
+        case VK_FORMAT_R32_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 1; compBytes = 4; break;
+        case VK_FORMAT_R32_UINT: kind = VK32_CLEAR_UINT; ncomp = 1; compBytes = 4; break;
+        case VK_FORMAT_R32_SINT: kind = VK32_CLEAR_SINT; ncomp = 1; compBytes = 4; break;
+        case VK_FORMAT_R32G32_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 2; compBytes = 4; break;
+        case VK_FORMAT_R32G32_UINT: kind = VK32_CLEAR_UINT; ncomp = 2; compBytes = 4; break;
+        case VK_FORMAT_R32G32_SINT: kind = VK32_CLEAR_SINT; ncomp = 2; compBytes = 4; break;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: kind = VK32_CLEAR_FLOAT; ncomp = 4; compBytes = 4; break;
+        case VK_FORMAT_R32G32B32A32_UINT: kind = VK32_CLEAR_UINT; ncomp = 4; compBytes = 4; break;
+        case VK_FORMAT_R32G32B32A32_SINT: kind = VK32_CLEAR_SINT; ncomp = 4; compBytes = 4; break;
+    }
+    if (!ncomp) {
+        vk64Unsupported("clear-color-layout", "packed or depth/stencil format; clear value written raw, truncated to the texel size");
+        memcpy(texel, &col, texelSize < 16 ? texelSize : 16);
+        return;
+    }
+    for (U32 i = 0; i < ncomp; i++) {
+        U32 src = bgra ? (i == 0 ? 2 : (i == 2 ? 0 : i)) : i;
+        U8* dst = texel + i * compBytes;
+        switch (kind) {
+            case VK32_CLEAR_FLOAT:
+                if (compBytes == 4) { memcpy(dst, &col.float32[src], 4); }
+                else { uint16_t h = vk32FloatToHalf(col.float32[src]); memcpy(dst, &h, 2); }
+                break;
+            case VK32_CLEAR_UINT: case VK32_CLEAR_SINT: {
+                U32 v = col.uint32[src];
+                for (U32 b = 0; b < compBytes; b++) dst[b] = (U8)(v >> (8 * b));
+                break;
+            }
+            case VK32_CLEAR_UNORM: {
+                float f = col.float32[src] < 0 ? 0 : (col.float32[src] > 1 ? 1 : col.float32[src]);
+                U32 maxv = compBytes == 1 ? 255 : 65535;
+                U32 v = (U32)(f * (float)maxv + 0.5f);
+                for (U32 b = 0; b < compBytes; b++) dst[b] = (U8)(v >> (8 * b));
+                break;
+            }
+            case VK32_CLEAR_SNORM: {
+                float f = col.float32[src] < -1 ? -1 : (col.float32[src] > 1 ? 1 : col.float32[src]);
+                S32 maxv = compBytes == 1 ? 127 : 32767;
+                S32 v = (S32)(f >= 0 ? (f * (float)maxv + 0.5f) : -((-f) * (float)maxv + 0.5f));
+                U32 bits = (U32)v;
+                for (U32 b = 0; b < compBytes; b++) dst[b] = (U8)(bits >> (8 * b));
+                break;
+            }
+        }
+    }
+}
 static void applyWrite32(DescSet& s, const vk32abi::VkWriteDescriptorSet& w) {
     DescWriteReq r;
     r.binding = w.dstBinding; r.elem = w.dstArrayElement; r.count = w.descriptorCount; r.type = (U32)w.descriptorType;
@@ -11143,13 +11251,27 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         vk32abi::VkClearColorValue col = {};
         readStruct32((U32)args.a[3], col);
         U32 pxBytes = fmt_bpp(im->format);
-        U32 pixel; memcpy(&pixel, col.float32, 4);
+        // Fill with whole texels: the clear value converted to the format's
+        // component layout (vk32ClearTexel), repeated per texel. The old
+        // code repeated only float32[0] in 4-byte steps, tiling wide texels
+        // with their first component, and wrote a full word past footprints
+        // not divisible by 4.
+        U8 texel[16]; U32 texelSize = 0;
+        vk32ClearTexel(im->format, col, texel, texelSize);
         U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
         VK64_DROP_IF(return 0, im->memOff >= dmem->size);
         total = std::min(total, dmem->size - im->memOff);
         U32 va = (U32)(dmem->va + im->memOff);
-        for (U64 off = 0; off < total; off += 4)
-            g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
+        const U64 CHUNK = 4096;
+        U8 buf[CHUNK];
+        for (U64 i = 0; i < CHUNK; i++) buf[i] = texel[i % texelSize];
+        U64 done = 0;
+        while (done < total) {
+            U64 n = total - done;
+            if (n > CHUNK) n = CHUNK;
+            g_mem32->memcpyToGuest(va + (U32)done, buf, (U32)n);
+            done += n;
+        }
         im->dirtyGen = g_bufDirtyTick++;
         vk64TouchMem(dmem, im->memOff, total);
         return 0;

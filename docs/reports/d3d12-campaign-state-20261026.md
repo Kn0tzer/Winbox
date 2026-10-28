@@ -3539,3 +3539,94 @@ citation audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
 bridge (project/linux filters vk64bridge.cpp out of TEST_SOURCES, and
 the changed test file is compiled only by run-native.py), so the harness
 is the native check for this change. JS suite: 314 passed / 0 failed on the lane's own dist (bw64-build.sh, "Browser export verified") -- the branch baseline exactly, including vulkan-image-format-size (which compiles fmt_bpp from source) and vk-register-citations.
+
+## 4.37 32-bit vkCmdClearColorImage: the 4-byte clear pattern tiled wide texels (2026-10-28, clear32 lane)
+
+**Question (queued observation from §4.36).** The fmtbpp lane closed
+with an observation, left untouched there: the 32-bit
+`vkCmdClearColorImage` writes its 4-byte clear pattern in 4-byte steps
+regardless of texel size. This lane settles it: **live defect, fixed.**
+
+**The pinned code paths (the two ABIs do not share this handler).**
+The 64-bit handler (`vk64bridge.cpp`, `VK64_fn_vkCmdClearColorImage` in
+`vk64Bridge`) reads the full 16-byte `VkClearColorValue` and repeats
+that 16-byte pattern across `pixBytes * w * h` — exact for 16-byte
+texels (the R32G32B32A32 family, whose texel IS the four 32-bit
+component words). The 32-bit handler (same fn id in `vk32Bridge`) was
+written separately:
+
+```cpp
+U32 pxBytes = fmt_bpp(im->format);
+U32 pixel; memcpy(&pixel, col.float32, 4);
+U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
+...
+for (U64 off = 0; off < total; off += 4)
+    g_mem32->memcpyToGuest(va + (U32)off, &pixel, 4);
+```
+
+It uses `fmt_bpp` only for the total byte count; the pattern is the
+first 4 bytes of the clear value, written unconditionally in 4-byte
+steps — so a wide texel is tiled with its first component, and a
+footprint not divisible by 4 is overrun (the last iteration writes a
+full word at `off < total`).
+
+**Before bytes (native harness, `tools/vkd3d/tests/run-native.py`,
+real bridge + byte-addressed guest memory; 2-texel images).**
+
+| format | clear value | bytes landed per texel (before) | spec texel |
+|---|---|---|---|
+| R32G32B32A32_SFLOAT (16 B) | (1.0, 0.5, 0.25, 1.0) | `00 00 80 3f` x4 = [1.0, 1.0, 1.0, 1.0] | [1.0, 0.5, 0.25, 1.0] |
+| R32G32B32A32_UINT (16 B) | 0x11223344, 0x55667788, 0x99aabbcc, 0xddeeff00 | first word x4 | all four words |
+| R32G32_SFLOAT (8 B) | (2.0, -1.0) | [2.0, 2.0] | [2.0, -1.0] |
+| R16G16B16A16_SFLOAT (8 B) | (1.0, 0.5, 0.0, -1.0) | raw float bits of 1.0, x2 per texel | half floats 0x3c00, 0x3800, 0x0000, 0xbc00 |
+| R16G16B16A16_UINT (8 B) | as above | first uint32 x2 per texel | uint16 truncation per component |
+| R8G8B8A8_UNORM (4 B) | (1.0, 0.0, 0.5, 1.0) | raw float bits of 1.0 | `ff 00 80 ff` |
+| R8_UNORM 3x1 (3 B footprint) | R = 1.0 | `00 00 80` + 1 byte written past the footprint | `ff ff ff`, no overrun |
+
+Verdict: for every format whose texel is not exactly the first
+component word, the guest image memory held wrong bytes, and no test
+caught it because every clear exercised so far used a shape where the
+defect is invisible or the bytes were never read back.
+
+**Fix.** `vk32ClearTexel` (new, beside the other 32-bit helpers)
+converts the `VkClearColorValue` into the format's own component
+layout — component count and size from the format (texel size itself
+still from `fmt_bpp`), float32 -> float16 for SFLOAT16 (round to
+nearest, ties to even, with inf/nan/subnormal handling), UNORM/SNORM
+quantization from the float components, low bits of the integer
+components, and BGRA component order for B8G8R8A8 — and the handler
+repeats the whole texel through a 4 KiB staging buffer (divisible by
+every texel size), truncating the final write at the footprint, so
+nothing is written outside it. The 64-bit handler is unchanged.
+
+**Residue (named).** Layouts that are not a plain component vector —
+the packed formats (R5G6B5, B5G6R5, B5G5R5A1, A1R5G5B5, R4G4B4A4,
+B4G4R4A4, A2B10G10R10, B10G11R11) and the depth/stencil formats —
+keep the historical raw fill, now truncated to the texel size and
+repeated per texel instead of tiled in 4-byte steps; bit-packing a
+clear value into those layouts is a separate change if a workload
+ever needs it. Both handlers also still ignore the subresource
+ranges and clear the whole image; that predates this lane and is
+unchanged.
+
+**Proof.** New native-harness block "Vulkan32 clear-color writes
+whole texels" (9 cases: the seven rows above, a packed-format case
+pinning the named raw fill and its `clear-color-layout` count, and
+an R32_SFLOAT control whose behaviour is unchanged; every case
+carries 0xEE sentinels on both sides of the footprint). Pre-fix the
+block aborts at the first case's byte assertion; post-fix
+run-native.py is end-to-end green (32 PASS blocks, 31 baseline +
+this one). Sabotage: reverting only the bridge change (test kept)
+aborts the harness at the same assertion; restored, green.
+Citation audit re-pinned for the lines the new helper shifts
+(3 rows, construct-verified): 0 DRIFT / 0 MISSING (228 MATCH /
+12 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT). Register: one
+IMPLEMENTED row added (371 = 72/66/233/0). Emulator native suite:
+647 tests, 0 FAILED. JS suite on the lane's own dist (bw64-build.sh,
+"Browser export verified"): 317 passed / 0 failed -- the first run
+failed only `no-silent-failure` (the layout switch's bare `default:`
+counted as an unlogged default, 20 -> 21); the reviewed-baseline
+bump was NOT taken -- the fallback branch now names itself through
+the bridge's own accounting (`vk64Unsupported
+"clear-color-layout"`), the switch needs no default arm, and the
+guard passes at its original strength.
