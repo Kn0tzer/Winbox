@@ -9,16 +9,30 @@
  *   srv: PS returns asfloat(words[0..2]) loaded from the root SRV.
  *   uav: PS Stores 0xA5000000|idx at word idx of the root UAV; the
  *        buffer is then copied to a readback buffer and checked.
- * SRV/UAV flavor note (2026-10-27): the natural HLSL for these cases is
- * ByteAddressBuffer / RWByteAddressBuffer, but Wine 10's builtin
- * d3dcompiler_47 HLSL front end cannot parse those type names at all
- * ("E5000: syntax error, unexpected NEW_IDENTIFIER" at 1:1), and the only
- * genuine Microsoft d3dcompiler_47.dll on this box is a 32-bit build a
- * 64-bit guest cannot load. The cases therefore use the typed forms
- * Buffer<uint> / RWBuffer<uint>: a root SRV/UAV is a raw GPU VA in the
- * root signature regardless of the shader's declared buffer flavor, so
- * vkd3d compiles the same root-descriptor (physical pointer) code path;
- * only the pointee element type differs.
+ * SRV/UAV compiler note (2026-10-28, uintpso lane): NO buffer-typed
+ * resource declaration parses under Wine 10's builtin d3dcompiler_47
+ * HLSL front end -- Buffer, RWBuffer, StructuredBuffer,
+ * RWStructuredBuffer, ByteAddressBuffer and RWByteAddressBuffer all
+ * fail E5000 at 1:1 (hlsl12x compile sweep), so the srv/uav cases can
+ * only compile under a genuine Microsoft compiler. The rig stages a
+ * genuine PE32+ d3dcompiler_47.dll (ANGLE redistributable, from
+ * Chrome-for-Testing 131 win64; sha256 af7b99be1b8770c0e4d18e43b04-
+ * e81d11bdeb667fa6b07ade7a88f4c5676bf9a) beside the probe when
+ * D3DCOMPILER_PATH is set (web/tests/d3d12-pixels.mjs), mirroring
+ * tools/vkd3d/stage-vkd3d.sh's demo arrangement; the DLL itself is
+ * not tracked in git (tools/vkd3d/probe/d3dcompiler_47.dll). Under
+ * the genuine compiler the typed forms below compile as written;
+ * the UAV case additionally needs register(u1): in a pixel shader
+ * u0 is reserved by the render-target output namespace (FXC X4509).
+ * A root SRV/UAV is a raw GPU VA in the root signature regardless of
+ * the shader's declared buffer flavor, so the typed forms exercise
+ * the same vkd3d root-descriptor (physical pointer) code path. In
+ * fact the flavor is NOT free: dxil-spirv rejects typed buffers on
+ * BDA root descriptors outright ("BDA root descriptors must be raw
+ * buffers, structured buffers or RTAS", conversion error -> PSO
+ * E_INVALIDARG), so the cases use the raw forms ByteAddressBuffer /
+ * RWByteAddressBuffer -- which is also what the original probe
+ * intended before the compiler detour.
  * Per-case verdict lines are prefixed "root12: CASE <name>"; the final
  * "root12: RESULT 0" requires all three cases to create their PSO,
  * execute, and match readback. PSO-creation failure (today's expected
@@ -336,9 +350,9 @@ static int case_cbv(struct draw_ctx* cx)
 static int case_srv(struct draw_ctx* cx)
 {
     static const char* PS =
-        "Buffer<uint> gSrv : register(t0);\n"
+        "ByteAddressBuffer gSrv : register(t0);\n"
         "struct PSIn { float4 pos : SV_Position; float4 col : COLOR; };\n"
-        "float4 main(PSIn i) : SV_Target { return float4(asfloat(gSrv[0]), asfloat(gSrv[1]), asfloat(gSrv[2]), 1.0); }\n";
+        "float4 main(PSIn i) : SV_Target { return float4(asfloat(gSrv.Load(0)), asfloat(gSrv.Load(4)), asfloat(gSrv.Load(8)), 1.0); }\n";
     ID3DBlob* ps = compile_shader(PS, "ps_5_0", "srv-ps");
     if (!ps) return 0;
     ID3D12RootSignature* rs = make_rootsig(cx, D3D12_ROOT_PARAMETER_TYPE_SRV, 0, "srv");
@@ -360,12 +374,12 @@ static int case_srv(struct draw_ctx* cx)
 static int case_uav(struct draw_ctx* cx)
 {
     static const char* PS =
-        "RWBuffer<uint> gUav : register(u0);\n"
+        "RWByteAddressBuffer gUav : register(u1);\n"
         "struct PSIn { float4 pos : SV_Position; float4 col : COLOR; };\n"
-        "float4 main(PSIn i) : SV_Target { uint idx = (uint)i.pos.x + 4u * (uint)i.pos.y; gUav[idx] = 0xA5000000u + idx; return float4(0.25, 0.5, 0.75, 1.0); }\n";
+        "float4 main(PSIn i) : SV_Target { uint idx = (uint)i.pos.x + 4u * (uint)i.pos.y; gUav.Store(4u * idx, 0xA5000000u + idx); return float4(0.25, 0.5, 0.75, 1.0); }\n";
     ID3DBlob* ps = compile_shader(PS, "ps_5_0", "uav-ps");
     if (!ps) return 0;
-    ID3D12RootSignature* rs = make_rootsig(cx, D3D12_ROOT_PARAMETER_TYPE_UAV, 0, "uav");
+    ID3D12RootSignature* rs = make_rootsig(cx, D3D12_ROOT_PARAMETER_TYPE_UAV, 1, "uav");
     if (!rs) { ID3D10Blob_Release(ps); return 0; }
     ID3D12Resource* buf = make_buffer(cx->dev, D3D12_HEAP_TYPE_DEFAULT, 64,
                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS,

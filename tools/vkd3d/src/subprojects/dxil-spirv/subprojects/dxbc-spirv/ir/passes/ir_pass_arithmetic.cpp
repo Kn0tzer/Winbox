@@ -808,14 +808,21 @@ Builder::iterator ArithmeticPass::lowerConvertItoF(Builder::iterator op) {
     m_builder.setCursor(fn.function);
     m_builder.add(Op::Label());
 
-    /* Nvidia is broken as of 580.76.05 and will treat UtoF inputs as signed
-     * with our code for some reason. Cast to the next largest integer type
-     * to work around the issue. */
+    /* Upstream widens U32 to U64 here as a workaround for a broken Nvidia
+     * driver (580.76.05 treats UtoF inputs as signed). Boxedwine64 patch:
+     * the only Vulkan implementation this vendored converter ever targets
+     * is the project's own WebGPU ICD, whose OpConvertUToF on U32 inputs
+     * is spec-correct (round-to-nearest-even, identical to D3D utof
+     * semantics), so the widening buys nothing -- and it is actively
+     * harmful here because it injects OpCapability Int64 (plus a 64-bit
+     * integer type) into every module containing a u32-to-float
+     * conversion, which makes vkd3d-proton reject the shader outright on
+     * this Int64-less device (Int64ShaderOps == false). Emit the direct
+     * conversion instead. The U16 widening below is unaffected: it stays
+     * within 32-bit types. */
     auto v = m_builder.add(Op::ParamLoad(srcType, fn.function, param));
 
-    if (srcType == ScalarType::eU32)
-      v = m_builder.add(Op::ConvertItoI(ScalarType::eU64, v));
-    else if (srcType == ScalarType::eU16)
+    if (srcType == ScalarType::eU16)
       v = m_builder.add(Op::ConvertItoI(ScalarType::eU32, v));
 
     v = m_builder.add(Op::ConvertItoF(dstType, v));
