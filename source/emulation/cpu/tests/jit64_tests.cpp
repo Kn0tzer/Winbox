@@ -42,7 +42,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 36, "coverage table has %u entries, want 36", n);
+    CHECK(n == 38, "coverage table has %u entries, want 38", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -73,6 +73,8 @@ static void testCoverageTable() {
     CHECK(t[33].op2 == 0x6F && t[33].kind == J64_SSE_MOV128, "sse rank3 want 0F6F/MOV128 got %02x/%d", t[33].op2, (int)t[33].kind);
     CHECK(t[34].op2 == 0xEF && t[34].kind == J64_SSE_PXOR, "sse rank4 want 0FEF/PXOR got %02x/%d", t[34].op2, (int)t[34].kind);
     CHECK(t[35].op2 == 0x6E && t[35].kind == J64_SSE_MOVD, "sse rank5 want 0F6E/MOVD got %02x/%d", t[35].op2, (int)t[35].kind);
+    CHECK(t[36].op == 0xFF && t[36].kind == J64_CALL_IND, "ff rank1 want FF/CALL_IND got %02x/%d", t[36].op, (int)t[36].kind);
+    CHECK(t[37].op == 0xFF && t[37].kind == J64_JMP_IND, "ff rank2 want FF/JMP_IND got %02x/%d", t[37].op, (int)t[37].kind);
 }
 
 static void testSseDecodeClassify() {
@@ -1232,6 +1234,139 @@ static void testX87NeverJitted() {
 
 // --- emitted-block structure: terminators, hotness, generation lookups ---
 
+static void testFFIndirectEmission() {
+    Jit64Op op;
+    // FF /2 register form: call *rax (the census's ff d0 shape).
+    CHECK(decodeOne({0xFF, 0xD0}, op) &&
+          op.kind == J64_CALL_IND && op.sub == 2 && op.size == 8 && op.len == 2 &&
+          !op.isMem && op.rmIndex == 0, "ff d0 call *rax decode");
+    // FF /4 register form: jmp *rax.
+    CHECK(decodeOne({0xFF, 0xE0}, op) &&
+          op.kind == J64_JMP_IND && op.sub == 4 && op.size == 8 && op.len == 2 &&
+          !op.isMem && op.rmIndex == 0, "ff e0 jmp *rax decode");
+    // REX.B-extended registers: call *r15, jmp *r8.
+    CHECK(decodeOne({0x49, 0xFF, 0xD7}, op) &&
+          op.kind == J64_CALL_IND && !op.isMem && op.rmIndex == 15 && op.len == 3,
+          "49 ff d7 call *r15 rm=%d", op.rmIndex);
+    CHECK(decodeOne({0x49, 0xFF, 0xE0}, op) &&
+          op.kind == J64_JMP_IND && !op.isMem && op.rmIndex == 8 && op.len == 3,
+          "49 ff e0 jmp *r8 rm=%d", op.rmIndex);
+    // No REX.W: the operand stays a full 64-bit target (the interpreter
+    // hardcodes loadRM(m, 8)); size is 8 either way.
+    CHECK(decodeOne({0x41, 0xFF, 0xD0}, op) &&
+          op.kind == J64_CALL_IND && op.size == 8 && op.rmIndex == 8,
+          "41 ff d0 call *r8 (no REX.W) size=%d rm=%d", op.size, op.rmIndex);
+    // Memory forms: call *[rbx]; call *[rax+0x10].
+    CHECK(decodeOne({0xFF, 0x13}, op) &&
+          op.kind == J64_CALL_IND && op.isMem && op.len == 2 && op.ea.baseReg == 3,
+          "ff 13 call *[rbx] decode");
+    CHECK(decodeOne({0xFF, 0x50, 0x10}, op) &&
+          op.kind == J64_CALL_IND && op.isMem && op.len == 3 &&
+          op.ea.baseReg == 0 && op.ea.disp == 16, "ff 50 10 call *[rax+16] decode");
+    // The census's jump-table shape: jmp qword [rax*8 + disp32]
+    // (FF 24 C5: SIB scale 3, index rax, base field 5 + mod 0 = disp32).
+    CHECK(decodeOne({0xFF, 0x24, 0xC5, 0x78, 0x56, 0x34, 0x12}, op) &&
+          op.kind == J64_JMP_IND && op.isMem && op.len == 7 &&
+          op.ea.baseReg == 0xFF && op.ea.idxReg == 0 && op.ea.scale == 3 &&
+          op.ea.disp == 0x12345678,
+          "ff 24 c5 jmp table ea base=%d idx=%d scale=%d disp=%lld",
+          op.ea.baseReg, op.ea.idxReg, op.ea.scale, (long long)op.ea.disp);
+    // Stack-relative forms: jmp *[rsp] (SIB base rsp, no index);
+    // call *[rsp+8].
+    CHECK(decodeOne({0xFF, 0x24, 0x24}, op) &&
+          op.kind == J64_JMP_IND && op.isMem && op.len == 3 &&
+          op.ea.baseReg == 4 && op.ea.idxReg == 0xFF, "ff 24 24 jmp *[rsp] decode");
+    CHECK(decodeOne({0xFF, 0x54, 0x24, 0x08}, op) &&
+          op.kind == J64_CALL_IND && op.isMem && op.len == 4 &&
+          op.ea.baseReg == 4 && op.ea.disp == 8, "ff 54 24 08 call *[rsp+8] decode");
+    // RIP-relative: call *[rip+0x10] at 0x400000: target = base + len + disp.
+    CHECK(decodeOne({0xFF, 0x15, 0x10, 0x00, 0x00, 0x00}, op) &&
+          op.kind == J64_CALL_IND && op.isMem && op.len == 6 && op.ea.ripRel &&
+          op.ea.ripRelTarget == 0x400000 + 6 + 0x10, "ff 15 call *[rip] ea");
+    // The other FF groups must NOT decode: /0 INC, /1 DEC, /3 far CALL,
+    // /5 far JMP, /7 — the interpreter serves /0 /1 and #GP-faults /3 /5
+    // at decode; none may reach the emitter.
+    CHECK(!decodeOne({0xFF, 0xC0}, op), "ff /0 inc decoded");
+    CHECK(!decodeOne({0xFF, 0xC8}, op), "ff /1 dec decoded");
+    CHECK(!decodeOne({0xFF, 0xD8}, op), "ff /3 far call reg decoded");
+    CHECK(!decodeOne({0xFF, 0x18}, op), "ff /3 far call mem decoded");
+    CHECK(!decodeOne({0xFF, 0xE8}, op), "ff /5 far jmp reg decoded");
+    CHECK(!decodeOne({0xFF, 0x28}, op), "ff /5 far jmp mem decoded");
+    CHECK(!decodeOne({0xFF, 0xF8}, op), "ff /7 decoded");
+    // Plans: plain forms fast; LOCK and 0x66 fall back (the interpreter
+    // ignores both for the transfer itself, but admission follows the
+    // FF /6 PUSH precedent — conservative, never wrong); FS/GS memory
+    // operands fall back; an FS-prefixed REGISTER form is exact (the
+    // segment override names no memory operand) and stays fast.
+    Jit64Op c = dec(0x400000, {0xFF, 0xD0});
+    CHECK(c.plan == JIT64_FAST, "call ind plan fallback");
+    Jit64Op j = dec(0x400000, {0xFF, 0x24, 0xC5, 0, 0, 0, 0});
+    CHECK(j.plan == JIT64_FAST, "jmp table plan fallback");
+    {
+        Jit64Op o = dec(0x400000, {0xFF, 0xD0});
+        jit64Classify(o, true, false);
+        CHECK(o.plan == JIT64_FALLBACK, "lock call ind plan fast");
+    }
+    {
+        Jit64Op o = dec(0x400000, {0x66, 0xFF, 0xD0});
+        jit64Classify(o, false, true);
+        CHECK(o.plan == JIT64_FALLBACK, "66 call ind plan fast");
+    }
+    {
+        Jit64Op o = dec(0x400000, {0x64, 0xFF, 0x13}); // call *fs:[rbx]
+        CHECK(o.isMem && o.ea.seg != 0 && o.plan == JIT64_FALLBACK,
+              "fs call ind mem plan fast seg=%d", o.ea.seg);
+    }
+    {
+        Jit64Op o = dec(0x400000, {0x64, 0xFF, 0xD0}); // fs: call *rax
+        CHECK(!o.isMem && o.plan == JIT64_FAST, "fs call ind reg plan fallback");
+    }
+    // Compile stream: the stream stops AFTER an indirect transfer, like
+    // the other terminators; bytes past it belong to the next block.
+    {
+        Jit64Op ops[24];
+        U32 n = jit64CompileStream(0x400000,
+            (const U8[]){0x48, 0x89, 0xC8, 0xFF, 0xD0, 0x90}, 6, ops, 24, true);
+        CHECK(n == 2 && ops[1].kind == J64_CALL_IND, "stream stop after call ind n=%u", n);
+        n = jit64CompileStream(0x400000,
+            (const U8[]){0x48, 0x89, 0xC8, 0xFF, 0xE0, 0x90}, 6, ops, 24, true);
+        CHECK(n == 2 && ops[1].kind == J64_JMP_IND, "stream stop after jmp ind n=%u", n);
+        // A truncated ModRM (stream ends mid-instruction) ends the stream
+        // BEFORE the transfer, never with a half-decoded op.
+        n = jit64CompileStream(0x400000,
+            (const U8[]){0x48, 0x89, 0xC8, 0xFF}, 4, ops, 24, true);
+        CHECK(n == 1, "truncated ff stream n=%u", n);
+    }
+    // Emission: blocks ending in every served form are accepted.
+    CHECK(emitOk({0x48, 0x89, 0xC8, 0xFF, 0xD0}), "call *rax block rejected");
+    CHECK(emitOk({0x48, 0x89, 0xC8, 0xFF, 0xE0}), "jmp *rax block rejected");
+    CHECK(emitOk({0x48, 0x89, 0xC8, 0xFF, 0x13}), "call *[rbx] block rejected");
+    CHECK(emitOk({0x48, 0x89, 0xC8, 0xFF, 0x24, 0xC5, 0, 0, 0, 0}), "jmp table block rejected");
+    CHECK(emitOk({0x48, 0x89, 0xC8, 0xFF, 0x15, 0, 0, 0, 0}), "call *[rip] block rejected");
+    CHECK(emitOk({0xFF, 0xD0, 0x90}) == false, "call ind not last accepted via stream");
+    // A hand-built block with the transfer NOT last is refused by the
+    // emitter (owns-RIP mid-block), even when every op is FAST.
+    {
+        Jit64Op ops[24];
+        U32 n = jit64CompileStream(0x400000,
+            (const U8[]){0xFF, 0xD0, 0x90}, 3, ops, 24, false);
+        CHECK(n == 2, "no-stop stream n=%u", n);
+        Jit64Block block;
+        block.ops.assign(ops, ops + n);
+        std::vector<U8> module;
+        CHECK(!jit64EmitWasm(block, module), "mid-block call ind emitted");
+    }
+    // Store classification (§14.3): CALL_IND stores (the return-address
+    // push); JMP_IND never does.
+    {
+        Jit64Op ops[1];
+        ops[0] = dec(0x400000, {0xFF, 0xD0});
+        CHECK(jit64BlockMayStore(ops, 1), "call ind mayStore false");
+        ops[0] = dec(0x400000, {0xFF, 0xE0});
+        CHECK(!jit64BlockMayStore(ops, 1), "jmp ind mayStore true");
+    }
+}
+
 static void testTerminatorEmission() {
     // INSN after INSN then a terminator: every terminator kind the decoder
     // marks FAST must be emittable now (the archive defect was that the
@@ -1586,6 +1721,7 @@ int main(int argc, char** argv) {
     testShiftCLEmission();
     testImulEmission();
     testGrp3Emission();
+    testFFIndirectEmission();
     testStringEmission();
     testX87NeverJitted();
     testTerminatorEmission();

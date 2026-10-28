@@ -129,6 +129,16 @@ enum Jit64Kind : U8 {
                         // MOVD/MOVQ r/m, xmm (sub = 1: store the low
                         // dword/qword; a register dest zero-extends on the
                         // 32-bit form). size = 4 or 8 (REX.W). No flags.
+    J64_CALL_IND = 36,  // FF /2 CALL near r/m64: sub = 2. Target = the
+                        // register or the qword at the EA (always 64-bit
+                        // in long mode; the interpreter hardcodes
+                        // loadRM(m, 8) and ignores 0x66); push64(rip+len)
+                        // then rip = target. Block terminator (owns RIP).
+                        // No flags touched.
+    J64_JMP_IND = 37,   // FF /4 JMP near r/m64: sub = 4. Target = the
+                        // register or the qword at the EA (always 64-bit);
+                        // rip = target, no stack effect. Block terminator
+                        // (owns RIP). No flags touched.
     J64_UNKNOWN = 255
 };
 

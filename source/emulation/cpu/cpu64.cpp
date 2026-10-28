@@ -8695,6 +8695,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         }
         const bool endedAtControlFlow = n == 1 && ops[0].plan == JIT64_FAST &&
             (ops[0].kind == J64_CALL_REL || ops[0].kind == J64_JMP_REL ||
+             ops[0].kind == J64_CALL_IND || ops[0].kind == J64_JMP_IND ||
              ops[0].kind == J64_JCC || ops[0].kind == J64_RET || ops[0].kind == J64_SYSCALL);
         if (!counted && !endedAtControlFlow) recordRejectedOpcode(offset);
         m_jit->negative.add(r, gen0Entry, rejectOpcodeKey, rejectFailRip);

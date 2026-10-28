@@ -92,12 +92,20 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "660F6F MOVDQA",       0x0F, 0x6F, J64_SSE_MOV128 },  // 33 (census 0F6F: 87 blocks; F3 MOVDQU forms included)
     { "660FEF PXOR",         0x0F, 0xEF, J64_SSE_PXOR },    // 34 (census 0FEF: 54 blocks)
     { "660F6E MOVD",         0x0F, 0x6E, J64_SSE_MOVD },    // 35 (census 0F6E: 40 blocks; 660F7E store form included)
+    // FF round (frame-floor census follow-up): the entry-weighted reject
+    // census convicted the FF group's indirect transfers as block
+    // terminators — ff d0 (call *%rax) 512,000 entries and ff 24 c5
+    // (jmp *table) 448,000 entries on the census fixture; a capstone sweep
+    // of doom.exe .text finds FF only as /2 CALL (166 sites) and /4 JMP
+    // (121). /0 /1 INC/DEC stay interpreter-served by design (ff 05 incl
+    // accounts for most of the remaining FF census weight; it is a plain
+    // read-modify-write, not a transfer).
+    { "FF CALL r/m",         0xFF, 0x00, J64_CALL_IND },    // 36 (FF /2; reg + mem forms)
+    { "FF JMP r/m",          0xFF, 0x00, J64_JMP_IND },     // 37 (FF /4; reg + mem forms)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
-    // the ranks that made its top-20. FF's INC/DEC /0 /1 forms have no fast
-    // path, but in the profiled corpus every FF hit is indirect CALL/JMP /2 /4
-    // (block boundaries, already handled).
+    // the ranks that made its top-20.
 };
 
 const Jit64CoveredOpcode* jit64CoveredOpcodes(U32* countOut) {
@@ -737,10 +745,29 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
     // sub-op does loadRM(m, 8) then push64). mod==3 is the register-direct
     // form (isMem=false); otherwise the EA is decoded (pre-instruction
     // register values, mirroring decodeModRM in cpu64.cpp).
+    // CALL/JMP near r/m64 (FF /2, FF /4): same ModRM plumbing. The
+    // interpreter (cpu64.cpp dsp_33) hardcodes loadRM(m, 8) for both, so
+    // the operand is always a full 64-bit target and 0x66 is ignored;
+    // the classifier keeps 0x66 forms on the interpreter anyway, exactly
+    // like /6 below. Far CALL/JMP (/3 /5) #GP-fault at decode in the
+    // interpreter; INC/DEC (/0 /1) and the remaining groups stay
+    // undecoded here: the stream truncates and the interpreter runs
+    // them, the established convention.
     if (op == 0xFF) {
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
-        if (!ml || (rf & 0x7) != 6) return false;
+        if (!ml) return false;
+        const U8 group = rf & 0x7;
+        if (group == 2 || group == 4) {
+            out.kind = group == 2 ? J64_CALL_IND : J64_JMP_IND;
+            out.sub = group;
+            out.size = 8;
+            out.len = (U8)(opOff + 1 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+            return true;
+        }
+        if (group != 6) return false;
         out.kind = J64_PUSH;
         out.sub = 2; // r/m form
         out.size = 8;
@@ -1062,6 +1089,18 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         if (op.kind == J64_PUSH ? op.sub > 2 : op.sub > 1) return;
         op.plan = JIT64_FAST;
         return;
+    case J64_CALL_IND:
+    case J64_JMP_IND:
+        // FF /2 /4: the target operand is always 64-bit in long mode
+        // (the interpreter hardcodes loadRM(m, 8)); the decoder sets
+        // size=8 and sub=2/4 unconditionally. 0x66 forms stay fallback
+        // via the generic osize16 guard above, exactly like FF /6 PUSH;
+        // LOCK/REP via the generic prefix guard; FS/GS memory operands
+        // via the generic segment guard. Far forms (/3 /5) never decode.
+        if (op.size != 8) return;
+        if (op.kind == J64_CALL_IND ? op.sub != 2 : op.sub != 4) return;
+        op.plan = JIT64_FAST;
+        return;
     case J64_TEST_RM_R:
     case J64_MOV_R_IMM:
     case J64_CALL_REL:
@@ -1146,6 +1185,7 @@ U32 jit64CompileStream(U64 ripBase, const U8* bytes, U32 byteCount,
             switch (op.kind) {
             case J64_CALL_REL: case J64_JMP_REL: case J64_JCC:
             case J64_RET: case J64_SYSCALL:
+            case J64_CALL_IND: case J64_JMP_IND:
                 return n;
             default: break;
             }
@@ -1572,6 +1612,8 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_PUSH:
             return true; // stack store; a pathological rsp could hit code
+        case J64_CALL_IND:
+            return true; // pushes the return address, like CALL rel
         case J64_POP:
             // POP r/m (8F /0, mod!=3) stores to guest memory via storeRM;
             // same hazard as PUSH. Register POPs only touch wasm locals.

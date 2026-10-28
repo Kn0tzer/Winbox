@@ -676,6 +676,7 @@ bool jit64OpWritesMemory(const Jit64Op& op) {
         return op.isMem && op.sub == 1;
     case J64_PUSH:
     case J64_CALL_REL:   // pushes the return address
+    case J64_CALL_IND:   // pushes the return address
         return true;
     case J64_POP:        // POP r/m stores to the destination
         return op.isMem;
@@ -1112,6 +1113,13 @@ void emitSseMovd(Bytes& body, const Jit64Op& op) {
 //   Jcc  cc : rip = cond ? rip+len+delta : rip+len (branchless i64.select).
 //   RET     : rip = pop64().
 //   LEAVE   : RSP = RBP; RBP = pop64().
+//   CALL ind: target = reg or [EA] (qword); push64(rip+len); rip = target.
+//   JMP  ind: rip = reg or [EA] (qword); no stack effect.
+// For the indirect forms the target is materialized FIRST (the
+// interpreter's decodeModRM + loadRM run before push64, all with
+// pre-instruction registers), so a faulting target read leaves RSP and
+// RIP naming this op through the K-M3 gate, and CALL's push then follows
+// the CALL rel pattern (write to the uncommitted RSP-8, commit after).
 void emitTerminator(Bytes& body, const Jit64Op& op, U32 afterOff) {
     switch (op.kind) {
     case J64_NOP:
@@ -1155,6 +1163,49 @@ void emitTerminator(Bytes& body, const Jit64Op& op, U32 afterOff) {
         body.push_back(0x7C); // i64.add
         local(body, 0x21, L_RIP);
         return;
+    case J64_JMP_IND:
+        // rip = target: the register value, or the qword at the EA.
+        // The load completes through the fault gate before L_RIP is
+        // written, so a denied read stops the block at this op with
+        // guest state untouched, exactly like RET's pop.
+        if (op.isMem) {
+            emitEA(body, op);          // EA -> L_T1
+            emitMemRead(body, L_T1, 8); // target -> L_R
+            local(body, 0x20, L_R);
+        } else {
+            local(body, 0x20, op.rmIndex + 1);
+        }
+        local(body, 0x21, L_RIP);
+        return;
+    case J64_CALL_IND:
+        // Target into L_R FIRST (register read, or EA + qword load --
+        // both with pre-instruction registers; for call *%rsp and
+        // call *(rsp) this reads the pre-push RSP exactly like the
+        // interpreter). Then the CALL rel tail: write the return
+        // address to the uncommitted RSP-8, commit RSP, RIP = L_R.
+        // A denied target read or a denied push leaves RSP untouched
+        // and RIP naming this op (K-M3).
+        if (op.isMem) {
+            emitEA(body, op);          // EA -> L_T1
+            emitMemRead(body, L_T1, 8); // target -> L_R
+        } else {
+            local(body, 0x20, op.rmIndex + 1);
+            local(body, 0x21, L_R); // L_R = target
+        }
+        local(body, 0x20, L_ENTRY);
+        i64Const(body, afterOff);
+        body.push_back(0x7C); // i64.add
+        local(body, 0x21, L_A); // L_A = return address (rip + len)
+        local(body, 0x20, L_RSP);
+        i64Const(body, 8);
+        body.push_back(0x7D); // i64.sub
+        local(body, 0x21, L_T1); // L_T1 = RSP - 8 (uncommitted)
+        emitMemWrite(body, L_T1, L_A, 8);
+        local(body, 0x20, L_T1);
+        local(body, 0x21, L_RSP);
+        local(body, 0x20, L_R);
+        local(body, 0x21, L_RIP);
+        return;
     case J64_RET:
         // rip = pop64(): L_R = [RSP]; RSP += 8; RIP = L_R.
         emitMemRead(body, L_RSP, 8);
@@ -1188,7 +1239,8 @@ void emitTerminator(Bytes& body, const Jit64Op& op, U32 afterOff) {
 // must not emit a generic RIP advance for them).
 bool jit64OpOwnsRip(Jit64Kind kind) {
     return kind == J64_JCC || kind == J64_JMP_REL ||
-           kind == J64_CALL_REL || kind == J64_RET;
+           kind == J64_CALL_REL || kind == J64_RET ||
+           kind == J64_CALL_IND || kind == J64_JMP_IND;
 }
 
 // Emit one string op (MOVS/STOS/CMPS/SCAS). Returns 0xFF: RSI/RDI/RCX are
@@ -1304,7 +1356,11 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // fault placement matches the interpreter's readq/writeq pairs.
             bool memSse = op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR ||
                           op.kind == J64_SSE_MOVD;
-            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt && !memSse) || !widthOk) return false;
+            // Indirect CALL/JMP read the target qword through emitEA +
+            // emitMemRead, so their fault placement matches the
+            // interpreter's loadRM exactly.
+            bool memInd = op.kind == J64_CALL_IND || op.kind == J64_JMP_IND;
+            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt && !memSse && !memInd) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -1482,6 +1538,15 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // mode; RET imm16 (C2) and far/indirect forms never decode to
             // these kinds.
             if (!op.len) return false;
+            break;
+        case J64_CALL_IND:
+        case J64_JMP_IND:
+            // FF /2 /4: sub is the group field (2 = CALL, 4 = JMP) and
+            // the operand is always a 64-bit target (size 8). rmIndex is
+            // 0xFF for memory forms; register forms name a GPR 0..15.
+            if (op.kind == J64_CALL_IND ? op.sub != 2 : op.sub != 4) return false;
+            if (op.size != 8 || !op.len) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         default:
             return false; // SYSCALL, FPU, string-less unknowns, ...
@@ -1788,6 +1853,8 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
         case J64_JCC:
         case J64_JMP_REL:
         case J64_CALL_REL:
+        case J64_CALL_IND:
+        case J64_JMP_IND:
         case J64_RET:
             // Control flow. Jcc/JMP/CALL/RET set the guest RIP themselves;
             // NOP/LEAVE only advance it (handled below) -- except that a

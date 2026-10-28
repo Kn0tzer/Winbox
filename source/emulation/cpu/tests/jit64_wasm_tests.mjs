@@ -4217,6 +4217,335 @@ test('LEAVE is RSP = RBP; RBP = pop64() and still advances RIP', async () => {
   expectEmitted(out, 2);
 });
 
+// --- FF /2 /4 indirect CALL/JMP execution tests ---
+// The reference model mirrors the interpreter (cpu64.cpp dsp_33):
+// decodeModRM computes the EA from pre-instruction registers, the target
+// is the register value or the qword at the EA, CALL /2 then does
+// push64(rip+len) and rip = target, JMP /4 only rip = target. Neither
+// touches flags; the target read happens BEFORE the push, so
+// call *[rsp-8] reads the old slot and call *%rsp jumps to the old RSP.
+function encFF({ sub, eaKind = 'reg', rm = 0, base = 0, idx = 1, scale = 0, disp = 0, w = false }) {
+  let rex = 0;
+  if (w) rex |= 0x08;
+  if (eaKind === 'reg' && rm >= 8) rex |= 0x01;
+  if (eaKind !== 'reg' && eaKind !== 'riprel' && base >= 8) rex |= 0x01;
+  if ((eaKind === 'sib' || eaKind === 'sib32') && idx >= 8) rex |= 0x02;
+  const code = [];
+  if (rex) code.push(0x40 | rex);
+  code.push(0xFF);
+  const modrmPos = code.length;
+  let mod, rmField;
+  const sibBytes = [], dispBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmField = rm & 7; }
+  else if (eaKind === 'riprel') { mod = 0; rmField = 5; dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4)); }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rmField = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+    if (mod === 1) dispBytes.push(disp & 0xFF);
+    if (mod === 2 || noBase) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  } else {
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+    if ((base & 7) === 4) {
+      // rm=4 encodes "SIB follows": [rsp] / [r12] need a SIB byte with
+      // the no-index encoding.
+      rmField = 4;
+      sibBytes.push((4 << 3) | (base & 7));
+    } else {
+      rmField = base & 7;
+    }
+    if (mod === 1) dispBytes.push(disp & 0xFF);
+    if (mod === 2) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  }
+  code.push((mod << 6) | (sub << 3) | rmField, ...sibBytes, ...dispBytes);
+  let ea = null;
+  if (eaKind === 'riprel') {
+    // Fixture convention (ripBase=0, as in encAluMem): the target is
+    // addressed relative to the instruction's own offset in the block.
+    ea = { ripRel: true,
+           ripRelTarget: (BigInt(modrmPos) + 5n + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64,
+           baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+  } else if (eaKind !== 'reg') {
+    ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, sub, rmReg: eaKind === 'reg' ? rm : -1 };
+}
+
+function qmap(addr, val) {
+  const m = new Map();
+  for (let i = 0; i < 8; i++) m.set(addr + BigInt(i), Number((val >> BigInt(8 * i)) & 0xFFn));
+  return m;
+}
+
+async function checkInd(enc, { regs, rflags = 0x8D7, memInit = new Map(), rip = RIP0 }) {
+  const model = makeGuestMem();
+  for (const [k, v] of memInit) model.bytes.set(k, v);
+  const target = enc.ea ? model.read(computeEA(enc.ea, regs), 8) : regs[enc.rmReg];
+  const expRegs = [...regs];
+  if (enc.sub === 2) {
+    model.write((regs[4] - 8n) & mask64, 8, (rip + BigInt(enc.code.length)) & mask64);
+    expRegs[4] = (regs[4] - 8n) & mask64;
+  }
+  const out = await runTerm(enc.code, { regs, rflags, rip, memInit });
+  expectEmitted(out, 1);
+  assert.equal(out.ripOut, target & mask64, 'RIP = target');
+  assert.deepEqual(out.regs, expRegs, 'only RSP may change (CALL: -8)');
+  assert.equal(out.rflags, rflags, 'flags untouched');
+  assert.deepEqual(out.guestMem.bytes, model.bytes, 'memory: only the pushed return address');
+}
+
+test('CALL *reg: pushes rip+len and jumps to the register', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x1122334455667788n;
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs });
+});
+
+test('JMP *reg: jumps, stack untouched', async () => {
+  const regs = baseRegs();
+  regs[3] = 0xCAFEBABEDEADBEEFn;
+  regs[4] = 0x800000n;
+  // A sentinel under RSP proves JMP writes nothing.
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 3 }),
+    { regs, memInit: qmap(0x800000n - 8n, 0x5555AAAA5555AAAAn) });
+});
+
+test('CALL *r15 / JMP *r8: REX-extended target registers', async () => {
+  const a = baseRegs();
+  a[15] = 0x0102030405060708n; a[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 15, w: true }), { regs: a });
+  const b = baseRegs();
+  b[8] = 0xFFEEDDCCBBAA9988n; b[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 8 }), { regs: b });
+});
+
+test('CALL *[rbx] / CALL *[rax+0x10]: memory-indirect targets', async () => {
+  const regs = baseRegs();
+  regs[3] = 0x400000n; regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'base', base: 3 }),
+    { regs, memInit: qmap(0x400000n, 0x600000n) });
+  const regs2 = baseRegs();
+  regs2[0] = 0x400000n; regs2[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'disp8', base: 0, disp: 0x10 }),
+    { regs: regs2, memInit: qmap(0x400010n, 0x700000n) });
+});
+
+test('JMP *[rax*8+disp32]: the census jump-table shape (ff 24 c5)', async () => {
+  const regs = baseRegs();
+  regs[0] = 5n; regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'sib32', idx: 0, scale: 3, disp: 0x2000 }),
+    { regs, memInit: qmap(0x2000n + 5n * 8n, 0x600000n) });
+});
+
+test('CALL *[rip+disp]: RIP-relative target slot', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  const enc = encFF({ sub: 2, eaKind: 'riprel', disp: 0x10 });
+  await checkInd(enc, { regs, memInit: qmap(enc.ea.ripRelTarget, 0x600000n) });
+});
+
+test('CALL *[rsp]: the target is read before the push lands', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'sib', base: 4, idx: 4 }),
+    { regs, memInit: qmap(0x800000n, 0x600000n) });
+});
+
+test('CALL *[rsp-8]: read and push name the same slot; the read wins', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'sib', base: 4, idx: 4, disp: -8 }),
+    { regs, memInit: qmap(0x800000n - 8n, 0x600000n) });
+});
+
+test('JMP *[rsp+disp8]: plain-base RSP addressing carries a no-index SIB', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'disp8', base: 4, disp: 0x43 }),
+    { regs, memInit: qmap(0x800043n, 0x600000n) });
+});
+
+test('CALL *%rsp / JMP *%rsp: the target is the pre-push RSP', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 4 }), { regs });
+  const regs2 = baseRegs();
+  regs2[4] = 0x900000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 4 }), { regs: regs2 });
+});
+
+test('CALL with an unaligned RSP: no alignment behavior, push at RSP-8', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x600000n;
+  regs[4] = 0x800003n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs });
+});
+
+test('indirect targets are used verbatim (0 and all-ones)', async () => {
+  const a = baseRegs();
+  a[0] = 0n; a[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 0 }), { regs: a });
+  const b = baseRegs();
+  b[0] = mask64; b[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs: b });
+});
+
+test('mid-block CALL *rbx: earlier ops stand, return address is block-relative', async () => {
+  const regs = baseRegs();
+  regs[3] = 0x600000n;
+  regs[4] = 0x800000n;
+  const out = await runTerm([0x48, 0x89, 0xC8, 0xFF, 0xD3], { regs }); // mov rax,rcx; call *rbx
+  expectEmitted(out, 2);
+  assert.equal(out.regs[0], regs[1], 'mov executed');
+  assert.equal(out.ripOut, 0x600000n, 'jumped to RBX');
+  assert.equal(out.regs[4], 0x800000n - 8n, 'pushed once');
+  assert.equal(out.guestMem.read(0x800000n - 8n, 8), asU64(RIP0 + 5n), 'return = rip + block len');
+});
+
+test('K-M3: CALL *[rbx] with a denied target read changes nothing', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0xFF, 0x13],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'the read is the only import call');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n, 'RIP is the CALL itself');
+  assert.deepEqual(out.regs, regs, 'no register moved (RSP included)');
+  assert.equal(out.guestMem.bytes.size, 0, 'no push was written');
+});
+
+test('K-M3: JMP *[rbx] with a denied target read changes nothing', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0xFF, 0x23],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1);
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.deepEqual(out.regs, regs);
+});
+
+test('K-M3: CALL *rax with a denied push keeps RSP and RIP at the op', async () => {
+  const S = 0x3000n;
+  const regs = baseRegs();
+  regs[0] = 0x600000n; regs[4] = S;
+  const out = await runFault([0xFF, 0xD0],
+    { regs, denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'register target: the push is the only import call');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n, 'RIP did not become the target');
+  assert.equal(out.regs[4], S, 'RSP unchanged');
+  assert.equal(out.guestMem.bytes.size, 0, 'denied push dropped');
+});
+
+test('K-M3: CALL *[rsp] reads the target, then a denied push still changes nothing', async () => {
+  const S = 0x3000n;
+  const regs = baseRegs();
+  regs[4] = S;
+  const out = await runFault([0xFF, 0x14, 0x24],
+    { regs, memInit: qmap(S, 0x600000n), denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'target read, then the denied push');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.regs[4], S, 'RSP unchanged');
+});
+
+test('K-M3: mid-block CALL *[rbx] fault keeps the completed prefix', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0x48, 0x89, 0xC8, 0xFF, 0x13],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.execCount, 1, 'the mov completed');
+  assert.equal(out.ripOut, 0x1000n + 3n, 'RIP is the CALL');
+  assert.equal(out.regs[0], regs[1], 'mov result published');
+  assert.equal(out.regs[4], S, 'no push happened');
+});
+
+test('JMP *reg touches no memory at all', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x600000n; regs[4] = 0x3000n;
+  const out = await runFault([0xFF, 0xE0],
+    { regs, denied: () => true });
+  assert.equal(out.fault, 0, 'no import call, so no fault');
+  assert.equal(out.calls, 0);
+  assert.equal(out.ripOut, 0x600000n);
+  assert.equal(out.regs[4], 0x3000n);
+});
+
+test('FF /2 /4 differential fuzz vs interpreter model', async () => {
+  const rand = mulberry32(0xFF24);
+  const r64 = () => BigInt(Math.floor(rand() * 0xFFFFFFFF)) << 32n |
+                    BigInt(Math.floor(rand() * 0xFFFFFFFF));
+  const ptr = () => 0x10000n + (BigInt(Math.floor(rand() * 0x7000)) << 3n);
+  for (let c = 0; c < 400; c++) {
+    const sub = pick(rand, [2, 2, 4]);
+    const eaKind = pick(rand, ['reg', 'reg', 'base', 'disp8', 'disp32', 'sib', 'sib32', 'riprel']);
+    const regs = baseRegs();
+    regs[4] = ptr();
+    const args = { sub, eaKind, w: rand() < 0.5 };
+    const memInit = new Map();
+    if (eaKind === 'reg') {
+      args.rm = Math.floor(rand() * 16);
+      if (args.rm !== 4) regs[args.rm] = advVal(rand);
+    } else if (eaKind === 'riprel') {
+      args.disp = pick(rand, [0, 8, -8, 0x40, -0x40, 0x1000, -0x1000]);
+    } else if (eaKind === 'sib' || eaKind === 'sib32') {
+      args.idx = Math.floor(rand() * 16);
+      args.scale = Math.floor(rand() * 4);
+      regs[args.idx] = BigInt(Math.floor(rand() * 17));
+      if (eaKind === 'sib') {
+        // mod-0 SIB with base field 5 means disp32-only; keep base != 5
+        // for the disp==0 shape, or give it a disp8.
+        args.base = Math.floor(rand() * 16);
+        args.disp = pick(rand, [0, 8, -16, 120, -128]);
+        if ((args.base & 7) === 5 && args.disp === 0) args.disp = 8;
+        if (args.base !== 4) regs[args.base] = ptr();
+      } else {
+        args.disp = pick(rand, [0, 0x100, 0x2000, -0x80, 0x10000]);
+      }
+    } else {
+      args.base = Math.floor(rand() * 16);
+      if (eaKind === 'base' && (args.base & 7) === 5) args.base = 3; // mod0 rm5 = riprel
+      if (args.base !== 4) regs[args.base] = ptr();
+      if (eaKind === 'disp8') args.disp = Math.floor(rand() * 256) - 128;
+      if (eaKind === 'disp32') args.disp = Math.floor(rand() * 0x2000) - 0x1000;
+    }
+    const enc = encFF(args);
+    if (enc.ea) {
+      const addr = computeEA(enc.ea, regs);
+      for (const [k, v] of qmap(addr, advVal(rand))) memInit.set(k, v);
+    }
+    // Noise: a sentinel in the push slot (CALL must overwrite it, JMP
+    // must leave it) and one unrelated qword.
+    for (const [k, v] of qmap((regs[4] - 8n) & mask64, 0x0BAD0BAD0BAD0BADn)) memInit.set(k, v);
+    for (const [k, v] of qmap(ptr(), r64())) memInit.set(k, v);
+    try {
+      await checkInd(enc, { regs, rflags: pick(rand, [0x202, 0x8D7, 0x0, 0xFFF]), memInit });
+    } catch (e) {
+      e.message = `fuzzInd c=${c} sub=${sub} eaKind=${eaKind} args=${JSON.stringify(args, (k, v) => typeof v === 'bigint' ? v.toString(16) : v)} code=${enc.code.map(b => b.toString(16)).join(' ')}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
 test('PUSH/POP inside a block feed a following RET', async () => {
   const rsp = 0x800000n;
   const retAddr = 0x1122334455667788n;
