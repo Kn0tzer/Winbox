@@ -38,8 +38,13 @@ test('replay carries a pipeline bound before the render pass, preserves push con
         drawIndexed() { this.draw(); },
         draw() {
           draws.push(groups.get(3).entries[0].resource.buffer);
-          assert.equal(groups.get(2).entries[0].resource.buffer.size, 4352);
-          assert.equal(groups.get(1).entries[0].resource.buffer.size, 3840);
+          // Descriptor-group remap (campaign 4.25): the pipeline's
+          // original groups 1/2 are compacted to 0/1; push stays at 3.
+          // Vertex constants (old group 2, 272 vec4 = 4352 bytes) now
+          // bind at group 1; fragment constants (old group 1, 240 vec4
+          // = 3840 bytes) now bind at group 0.
+          assert.equal(groups.get(1).entries[0].resource.buffer.size, 4352);
+          assert.equal(groups.get(0).entries[0].resource.buffer.size, 3840);
         }, end() {} }; },
       copyTextureToBuffer() {}, copyTextureToTexture(src, dst, size) {
         assert.ok(src.texture.width >= size[0] && src.texture.height >= size[1]);

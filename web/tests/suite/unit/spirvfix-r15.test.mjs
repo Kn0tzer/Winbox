@@ -240,3 +240,26 @@ test('bridge mirror: the audit admits 5302/5346/5347 only under the R15 classifi
   assert.ok(tier.includes('declElement(st, d, k)'), 'tier resolves bw_arr elements from the push block');
   assert.ok(tier.includes('d.rootOff != null'), 'tier resolves bw_root bindings from ROOT_DESCS');
 });
+
+// OpExtension strings start at words[0] (unlike OpName, which starts at words[1]).
+const extNamesOf = (mod) => mod.insns.filter(i => i.op === 10).map(i => {
+  const bytes = [];
+  for (let k = 0; k < i.words.length; k++) {
+    let w = i.words[k];
+    for (let b = 0; b < 4; b++) { const c = w & 0xff; if (c === 0) return Buffer.from(bytes).toString('utf8'); bytes.push(c); w >>>= 8; }
+  }
+  return Buffer.from(bytes).toString('utf8');
+});
+
+test('R15b rewrite: the PSB extension is stripped with the PSB capability', () => {
+  // The R15b strip decoded the OpExtension name from the wrong word
+  // (the OpName offset), so the extension survived the rewrite and naga
+  // rejected every root-descriptor module at page translation with
+  // UnsupportedExtension("SPV_KHR_physical_storage_buffer").
+  const fixed = applySpirvFix(cbvBytes);
+  assert.ok(fixed.applied.includes('root-descriptor-bda'), fixed.log.join('; '));
+  const out = parseSpirv(fixed.bytes);
+  assert.ok(!extNamesOf(out).includes('SPV_KHR_physical_storage_buffer'), 'the PSB extension must not survive the rewrite');
+  assert.ok(!capsOf(out).has(5346) && !capsOf(out).has(5347), 'no PSB capability may survive');
+  assert.ok([...namesOf(out).values()].some(n => n.startsWith('bw_root_')), 'the re-rooted variable must survive');
+});

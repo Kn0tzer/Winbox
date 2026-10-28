@@ -182,10 +182,10 @@ export function scanWgslResources(wgsl) {
     // at bind time from the draw's push block, or a constant), and a
     // re-rooted root descriptor carries its push byte offset (resolve the
     // buffer at bind time from the draw's ROOT_DESCS record).
-    const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))$/.exec(decl.name);
+    const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))_?$/.exec(decl.name);
     if (arr && +arr[1] === decl.group && +arr[2] === decl.binding)
       decl.arrSig = arr[3] !== undefined ? { kind: 'push', pushOff: +arr[3], add: +arr[4] } : { kind: 'const', value: +arr[5] };
-    const root = /^bw_root_p(\d+)$/.exec(decl.name);
+    const root = /^bw_root_p(\d+)_?$/.exec(decl.name);
     if (root) decl.rootOff = +root[1];
   }
   return out;

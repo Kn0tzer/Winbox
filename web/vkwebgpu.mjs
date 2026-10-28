@@ -1814,11 +1814,77 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
       }
     }
+    // Descriptor-group remap: guest Vulkan set numbers are virtual
+    // (vkd3d heap-lowering tables, bindless sets) and routinely exceed
+    // the WebGPU bind-group budget, while the bound content resolves by
+    // ORIGINAL set index (st.sets). Compact the pipeline's non-push
+    // groups into the device's budget, keeping push at V2_PUSH_GROUP,
+    // and record the remap so draw-time set lookups still use the
+    // original indices. A pipeline needing more groups than the device
+    // offers still fails loudly (group-count-limit). Group 3 stays
+    // reserved for push: a non-push declaration there is a collision,
+    // not a remappable group.
+    for (const d of decls) {
+      if (d.group === V2_PUSH_GROUP && !(d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
+        noteUnsupported('group-3-non-push', d.group); return fail('group-3-non-push');
+      }
+    }
+    const groupMap = {}; // remapped group -> original set index
+    const remapGroup = new Map(); // original group -> remapped group
+    {
+      let next = 0;
+      for (const g of [...new Set(decls.map(d => d.group))].sort((a, b) => a - b)) {
+        if (g === V2_PUSH_GROUP) { remapGroup.set(g, g); groupMap[g] = g; continue; }
+        while (next === V2_PUSH_GROUP) next++;
+        remapGroup.set(g, next); groupMap[next] = g; next++;
+      }
+    }
+    const maxBindGroups = device.limits?.maxBindGroups || 4;
+    const maxRemapped = Math.max(-1, ...remapGroup.values());
+    if (maxRemapped + 1 > maxBindGroups) {
+      noteUnsupported('group-count-limit', maxRemapped + 1); return fail('group-count-limit');
+    }
+    const rewriteGroups = (code) => code.replace(/@group\((\d+)\)/g, (m, n) => '@group(' + (remapGroup.get(+n) ?? +n) + ')');
+    vsR.code = rewriteGroups(vsR.code);
+    fsR.code = rewriteGroups(fsR.code);
+    for (const d of decls) { d.sourceGroup = d.group; d.group = remapGroup.get(d.group) ?? d.group; }
+    // Binding remap: same class as the group remap. Synthesized bindings
+    // (R15b re-roots root descriptors at 4096 + pushByteOff/8) exceed
+    // Dawn's maxBindingsPerBindGroup binding-number limit (1000), so the
+    // layout is rejected even though the shader translates. Compact each
+    // non-push group's bindings below the device cap, keeping the original
+    // binding for draw-time set lookups (origBinding). The push group is
+    // exempt: its binding 0 is the protocol's push slot.
+    const maxBinding = device.limits?.maxBindingsPerBindGroup || 1000;
+    const bindingRemap = new Map(); // remappedGroup:origBinding -> newBinding
+    {
+      const byRemappedGroup = new Map();
+      for (const d of decls) {
+        if (!byRemappedGroup.has(d.group)) byRemappedGroup.set(d.group, []);
+        byRemappedGroup.get(d.group).push(d);
+      }
+      for (const [g, gdecls] of byRemappedGroup) {
+        if (g === V2_PUSH_GROUP) continue;
+        if (Math.max(...gdecls.map(d => d.binding)) < maxBinding) continue;
+        if (gdecls.length > maxBinding) {
+          noteUnsupported('binding-count-limit', gdecls.length); return fail('binding-count-limit');
+        }
+        [...gdecls].sort((a, b) => a.binding - b.binding)
+          .forEach((d, i) => bindingRemap.set(g + ':' + d.binding, i));
+      }
+    }
+    if (bindingRemap.size) {
+      const rewriteBindings = (code) => code.replace(/@group\((\d+)\)(\s+)@binding\((\d+)\)/g,
+        (m, g, ws, b) => '@group(' + g + ')' + ws + '@binding(' + (bindingRemap.get(g + ':' + b) ?? b) + ')');
+      vsR.code = rewriteBindings(vsR.code);
+      fsR.code = rewriteBindings(fsR.code);
+      for (const d of decls) {
+        const nb = bindingRemap.get(d.group + ':' + d.binding);
+        if (nb !== undefined) { d.origBinding = d.binding; d.binding = nb; }
+      }
+    }
     const byGroup = new Map();
     for (const d of decls) {
-      if (d.group > 2 && !(d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
-        noteUnsupported('group-out-of-range', d.group); return fail('group-out-of-range');
-      }
       if (!byGroup.has(d.group)) byGroup.set(d.group, []);
       byGroup.get(d.group).push(d);
     }
@@ -1933,7 +1999,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         [...code.matchAll(new RegExp(`@group\\(${where[1]}\\)\\s*@binding\\(${where[2]}\\)\\s*var[^;]*;`, 'g'))].map(m => stage + ': ' + m[0].replace(/\s+/g, ' '))).join(' | ') : '';
       return fail('pipeline-rejected:' + err.message.split(' - ')[0] + (decl ? ' [' + decl + ']' : ''));
     }
-    const rec = { key: effKey, pipeline, layouts, decls, hasPush, slotOf, maxGroup, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
+    const rec = { key: effKey, pipeline, layouts, decls, hasPush, slotOf, maxGroup, groupMap, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
     pipelines.set(effKey, rec);
     return rec;
   }
@@ -2010,7 +2076,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   function samplerIdForDecl(sets, group, d, st) {
     const set = sets.get(group);
     const bindings = set ? set.bindings : [];
-    const b = bindingForElement(bindings, d.sourceBinding ?? d.binding, declElement(st, d, 0));
+    const b = bindingForElement(bindings, d.origBinding ?? d.sourceBinding ?? d.binding, declElement(st, d, 0));
     if (b && b.kind === 3) return b.obj;
     if (b && b.kind === 2) return b.range;
     return null;
@@ -2101,11 +2167,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // resolution logic without creating any GPU objects.
   function bindGroupFingerprint(prec, sets, inlineMap, group, st) {
     const parts = [];
-    const set = sets.get(group);
+    const srcGroup = prec.groupMap ? (prec.groupMap[group] ?? group) : group;
+    const set = sets.get(srcGroup);
     const bindings = set ? set.bindings : [];
     const bindFor = (d, k) => {
       if (d.rootOff != null) { const r = st.rootDescs.get(d.rootOff); return r && r.len !== '0' ? { kind: 1, obj: r.obj, bufOff: r.absOff } : null; }
-      return bindingForElement(bindings, d.binding, declElement(st, d, k));
+      return bindingForElement(bindings, d.origBinding ?? d.binding, declElement(st, d, k));
     };
     for (const d of prec.decls) {
       if (d.group !== group) continue;
@@ -2131,7 +2198,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
         }
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const sHex = samplerIdForDecl(sets, group, d, st);
+        const sHex = samplerIdForDecl(sets, srcGroup, d, st);
         const has = sHex && F.samplers.get(sHex);
         parts.push('s' + d.binding + ':' + (has ? sHex + (t === 'sampler_comparison' ? ':c' : ':f') : 'default'));
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
@@ -2191,11 +2258,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   function bindGroupEntries(prec, sets, inlineMap, group, st) {
     const entries = [];
-    const set = sets.get(group);
+    const srcGroup = prec.groupMap ? (prec.groupMap[group] ?? group) : group;
+    const set = sets.get(srcGroup);
     const bindings = set ? set.bindings : [];
     const bindFor = (d, k) => {
       if (d.rootOff != null) { const r = st.rootDescs.get(d.rootOff); return r && r.len !== '0' ? { kind: 1, obj: r.obj, bufOff: r.absOff } : null; }
-      return bindingForElement(bindings, d.binding, declElement(st, d, k));
+      return bindingForElement(bindings, d.origBinding ?? d.binding, declElement(st, d, k));
     };
     for (const d of prec.decls) {
       if (d.group !== group) continue;
@@ -2260,7 +2328,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         }
         entries.push({ binding: d.binding, resource: d.arrayCount > 1 ? views : views[0] });
       } else if (t === 'sampler' || t === 'sampler_comparison') {
-        const sHex = samplerIdForDecl(sets, group, d, st);
+        const sHex = samplerIdForDecl(sets, srcGroup, d, st);
         const s = sHex && F.samplers.get(sHex);
         entries.push({ binding: d.binding, resource: s ? gpuSamplerFor(sHex, s, t === 'sampler_comparison') : device.createSampler(t === 'sampler_comparison' ? { compare: 'always' } : {}) });
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {

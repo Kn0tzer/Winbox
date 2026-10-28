@@ -102,11 +102,12 @@ test('occlusion feature bits stay unadvertised; basic occlusion is served by bri
     'both guest ABIs record occlusion end commands');
 });
 
-test('descriptor-set limit matches the bridge record capacity; shader groups stay tier-gated', () => {
+test('descriptor-set limit matches the bridge record capacity; shader groups stay tier-remapped', () => {
   // Since the 2026-10-26 vkd3d disposition the advertised limit is the
   // bridge's record capacity (VK64_MAX_SETS): vkd3d root signatures require
   // six sets at layout CREATION. What shaders may use stays gated by the
-  // page tier at pipeline build (groups 0-2 + push; "group-out-of-range").
+  // page tier at pipeline build (groups remapped into the device budget;
+  // over-budget pipelines fail "group-count-limit").
   assert.match(bridge, /L\.maxBoundDescriptorSets = VK64_MAX_SETS/);
   const marker = 'case VK64_fn_vkCreatePipelineLayout: {';
   const first = bridge.indexOf(marker), second = bridge.indexOf(marker, first + marker.length);

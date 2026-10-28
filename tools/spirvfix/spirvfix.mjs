@@ -3073,7 +3073,7 @@ export function rewriteRootDescriptors(mod, log) {
   mod.insns = mod.insns.filter(i => !(i.op === Op.TypePointer && i.words[1] === R15_PSB));
   // Strip the capabilities, the extension, and the addressing model.
   mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 5346 || i.words[0] === 5347)));
-  mod.insns = mod.insns.filter(i => !(i.op === R15_OP.Extension && decodeStr(i) === 'SPV_KHR_physical_storage_buffer'));
+  mod.insns = mod.insns.filter(i => !(i.op === R15_OP.Extension && new TextDecoder().decode(new Uint8Array(strOf(i, 0))) === 'SPV_KHR_physical_storage_buffer'));
   for (const ins of mod.insns) {
     if (ins.op === Op.MemoryModel && ins.words[0] === R15_PSB_MODEL) ins.words[0] = 0;
   }

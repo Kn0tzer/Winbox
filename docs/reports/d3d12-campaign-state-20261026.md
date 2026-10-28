@@ -1887,3 +1887,222 @@ names, where a neighboring call site can be nearer than
 the moved true site); final audit: 0 DRIFT / 0 MISSING
 (220 MATCH, 12 MATCH-INHERITED, 98 UNCHECKABLE, 7
 EXEMPT).
+## 4.25 Page-tier draw-execution walls: PSB strip, binding cap, WGSL name mismatch, group remap (2026-10-28)
+
+With readback fixed (§4.24), both original probes stopped at DRAW
+EXECUTION in the page tier, not at data delivery. Four distinct
+defects stood between the probes and their first drawn pixel, found
+in order — each one hid the next. All four are page-tier / tooling
+fixes; no bridge, spirvfix-scheme, or probe change was needed.
+
+### Wall 1 — root12 CBV: page could not translate fragment SPIR-V
+
+Signature (reproduced from §4.24 evidence before changing anything):
+`page tier cannot translate the fragment SPIR-V module
+(error: UnsupportedExtension("SPV_KHR_physical_storage_buffer")`,
+`draw-pipeline-skipped (shader-translation)`, CBV case returning the
+magenta clear instead of the CBV-computed color.
+
+Root cause: NOT the translator and NOT the R15b rewrite logic — a
+one-word decoding bug in the R15b strip itself
+(`tools/spirvfix/spirvfix.mjs`). `parseSpirv` stores operands only, so
+an OpExtension string starts at `words[0]`; the strip decoded it with
+`decodeStr` (the OpName offset, `words[1]`), yielding
+`KHR_physical_storage_buffer`, which never equaled the full name — the
+filter never removed the extension. Naga rejects the OpExtension
+instruction itself regardless of capability use, so every
+root-descriptor module failed page translation. (R8's own PSB strip
+already decoded from `words[0]` correctly; only the R15b strip was
+wrong. The older R15b tests passed because they checked capabilities
+and the re-rooted variable, never the extension list — the same
+audit-stricter-than-the-tier class as R11/R8.)
+
+Fix (one line): the R15b strip now decodes with
+`new TextDecoder().decode(new Uint8Array(strOf(i, 0)))`, mirroring R8.
+Verified in Node on the captured root12 fragment module (byte-identical
+to fixture `testdata/spirv/d3d12-ps-root-cbv.spv`): raw has the PSB
+extension + cap 5347; fixed has neither, caps [1, 5345], `bw_root_p0`
+intact, module re-serializes.
+
+Guard: `spirvfix-r15.test.mjs` gains "R15b rewrite: the PSB extension
+is stripped with the PSB capability" (fixture-based, behavioral).
+Sabotage-verified: restoring `decodeStr` turns the new test red while
+the older R15b tests stay green.
+
+### Wall 1b — root12 CBV: re-rooted binding 4096 exceeds the layout cap
+
+With translation fixed, the micro-probe (`TAG=root12-fix`) showed no
+`shader-translation` drop — and a new failure: `pipeline-rejected:
+[Invalid BindGroupLayout (unlabeled)] is invalid`, with Dawn's full
+reason in the console: "On entries[0]: binding number (4096) exceeds
+the maxBindingsPerBindGroup limit (1000)." R15b re-roots at binding
+`4096 + pushByteOff/8` precisely so it (almost) never collides with a
+module-owned binding — but 4096 exceeds Dawn's binding-number cap, so
+the layout itself was invalid. The group remap (§4.25 wall 2) is
+identity for this pipeline (0→0, 3→3), so this wall is independent
+of it.
+
+Fix (page tier only, `web/vkwebgpu.mjs` `getPipelineFor`, after the
+group remap): per remapped group, compact bindings that exceed the
+device's `maxBindingsPerBindGroup` (default 1000; the page tier does
+not request it, so the default applies) into 0,1,2,… in sorted order,
+rewrite the WGSL `@binding` annotations to match (a second pass that
+changes only the binding axis), and record `origBinding` on each
+remapped decl so draw-time set resolution (`bindFor` in both builders,
+`samplerIdForDecl`) still keys off the original binding. The push
+group is skipped (binding 0 stays the protocol's push slot); a group
+needing more bindings than the cap fails `binding-count-limit`.
+A spirvfix-side scheme change was rejected: the bridge mirrors the
+4096 scheme for its collision audit (`vk64bridge.cpp`), so changing
+it would need an identical bridge change plus a wasm rebuild, for a
+fix that is general (any high binding) when done in the page tier.
+`origBinding` is deliberately a new field, not `sourceBinding` (which
+is set only for split combined samplers and read only by
+`samplerIdForDecl`).
+
+Guards: new `vk-descriptor-binding-remap.test.mjs` (2 tests: a
+behavioral mock-render test driving the real pipeline builder — the
+re-rooted binding must land at layout binding 0, push intact at
+group 3 — plus a source-pattern test for the cap, the fail-closed
+reason, and the `origBinding` lookups). Sabotage-verified: raising
+the cap to 1000000 (remap skipped) turns both tests red.
+
+### Wall 1c — root12 CBV: the draw rendered black — naga's trailing underscore broke R15 name resolution
+
+With the layout fixed, the micro-probe (`TAG=root12-fix2`) showed an
+empty `dropReasons` and a pipeline that builds — but the CBV case
+still failed, now with `got=[0 0 0 0]` (all 16 pixels zero) instead
+of magenta. The diagnosis, in order: the per-pass readback diagnostic
+(`?bwPassReadback=1`) proved the GPU render target itself is constant
+black after a pass that cleared and drew once with no skips — so the
+draw wrote black, and the §4.24 readback path was exonerated (it
+faithfully delivered the GPU's black pixels). A temporary page-tier
+diagnostic then proved the re-rooted bind never resolved at all: the
+bind-group builder's root branch never fired. The captured module's
+WGSL, scanned with the page tier's own `scanWgslResources`, gave the
+reason: naga emits the re-rooted variable as `bw_root_p0_` (trailing
+underscore), but the scan's root regex required an exact
+`bw_root_p(\d+)` match — so `rootOff` was never set, bind resolution
+fell through to the (empty) descriptor-table branch, and the
+"missing uniform data" path silently substituted a ZERO buffer. No
+drop, no error, no counter: a valid bind group holding zeros, which
+the shader dutifully read as gMul=gAdd=0. The same defect affected
+the R15a clone regex (`bw_arr_g5_b0_p0_a0_` scanned with no `arrSig`);
+for the uav12 EXEC cases the fallback accidentally resolves the
+correct single element, so their behavior is unchanged (verified by
+re-probe below). The combined-sampler regex already tolerated a
+suffix (`(?:_\d*)?`) — only the root and array regexes assumed
+SPIR-V names at a WGSL boundary.
+
+Fix (two regexes, `web/wgsl-utils.mjs` `scanWgslResources`): accept
+naga's optional trailing underscore —
+`/^bw_root_p(\d+)_?$/` and
+`/^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))_?$/`.
+Bare SPIR-V names still match.
+
+Guard: new `vk-wgsl-r15-names.test.mjs` (4 tests: suffixed root name
+resolves push offset 0; suffixed array name resolves its push
+signature; bare names still resolve; unrelated names gain no
+metadata). Sabotage-verified: restoring the exact-match regexes
+turns the two suffixed-name tests red while the other two stay green.
+
+### Wall 2 — uav12 EXEC: descriptor-group resolution failure
+
+Signature: `group-out-of-range` (set 5) at pipeline build;
+`draw-pipeline-skipped` for all EXEC draws. The EXEC shaders declare a
+runtime descriptor array of storage images at set 5, binding 0 (the R15a
+specialization target class); the bridge faithfully records DESC_SET
+for sets 1–5, so set 5 is genuinely bound, not stale.
+
+Root cause: the V2 pipeline builder gated groups to 0–2 + push 3,
+encoding the WebGPU default `maxBindGroups = 4`. Guest Vulkan set
+numbers are virtual (vkd3d heap-lowering tables, bindless sets) and
+routinely exceed that budget. Raising the gate alone would only move
+the failure to pipeline-layout validation on a 4-group adapter.
+
+Fix (page tier only, `web/vkwebgpu.mjs` `getPipelineFor`): compact a
+pipeline's non-push groups into the device's bind-group budget (push
+stays group 3), rewrite the WGSL `@group` annotations to match, and
+record a remapped→original map on the pipe record so draw-time set
+lookups (`bindGroupEntries`, `bindGroupFingerprint`, sampler resolution)
+still resolve the guest's original set index. Fail-closed preserved:
+a pipeline needing more groups than the device offers fails
+`group-count-limit`; a non-push declaration at group 3 fails
+`group-3-non-push`. A spirvfix-side set change alone cannot work —
+draw-time binding resolution keys off the original set index — and a
+bridge-side remap would corrupt the V2 protocol's meaning.
+
+Guards: new `vk-descriptor-group-remap.test.mjs` (3 tests: remap
+present + old gate gone; draw-time lookups use original indices; both
+fail-closed reasons present). Sabotage-verified: dropping the push
+groupMap assignment turns the first test red.
+
+### Suite fallout (all honest, no test weakened)
+
+- `v2-replay-state.test.mjs` pinned the OLD group numbering (groups
+  1/2/3); under the remap its two uniform buffers bind at 0/1 and push
+  stays at 3. Assertions updated to the remapped indices with a comment;
+  the test still asserts both buffers' exact sizes, push at 3, and push
+  bytes [1,2].
+- `vk-capabilities.test.mjs`: stale gate comment updated to the remap,
+  and a stale test name ("tier-gated") renamed to "tier-remapped".
+- `vk-register-citations`: each `web/vkwebgpu.mjs` edit shifted later
+  citations. Two re-pin cycles (group remap, then binding remap), each
+  16 mechanical rows (`audit.py --fix`) + 14 manual rows (ambiguous
+  primaries, re-pinned to their fail/definition/call lines, plus
+  orphaned duplicates re-pinned to their primary's new site so
+  inheritance holds). Final audit: 0 DRIFT / 0 MISSING (220 MATCH, 13
+  MATCH-INHERITED, 97 UNCHECKABLE, 7 EXEMPT). The register's
+  descriptor-set prose bullet already described the remap behavior;
+  no table rows were added or removed, so the count is unchanged:
+  364 rows (65 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN).
+- A transient `provenance-artifacts` failure during this lane was a
+  probe-staging artifact, not a code regression: staging probe exes
+  into `dist/runtime/prefix64.zip` makes its namelist differ from the
+  pinned `web/runtime` copy by exactly those 8 entries. The suite
+  result below is on the unstaged dist; staging is re-applied only
+  for probe runs and removed after.
+
+### Suites + probes (verified)
+
+- JS suite: 310/310 files, 0 failed, config
+  `BW_TEST_DIST=<tree>/dist`, `--unit` (baseline 307 at 0d835b123;
+  +1 group-remap file, +1 binding-remap file, +1 r15-names file).
+- Native: 644 OK, 0 FAILED, exit 0, 202s (`Build/Test/boxedwine
+  0 0 1`); the diff touches no C++, so the binary is byte-identical
+  to baseline and this run is a baseline confirmation. Trailing fault
+  output is the designed final crash-path test.
+- Micro-probes (slot-serialized, rebuilt dist, "Browser export
+  verified" each time; staged probes removed after):
+  - root12 CBV (`TAG=root12-fix3`): `CASE cbv OK (RT all 16 px match
+    [191 191 223 255])`, zero drop/translation/group errors. The only
+    remaining root12 failures are the known out-of-scope probe debt
+    (`FAIL D3DCompile(srv-ps/uav-ps, ps_5_0)` — the probe's own HLSL
+    syntax errors).
+  - uav12 EXEC (`TAG=uav12-fix3`): case results IDENTICAL to the
+    pre-fix baseline — R8G8B8A8_UNORM OK, R32G32B32A32_FLOAT OK,
+    R16G16B16A16_FLOAT OK (all 16 texels match); R16_FLOAT FAIL with
+    the same signature (see next wall); R32_UINT / R8_UINT FAIL
+    `CreateGraphicsPipelineState hr=0x80070057` (out of scope, queued
+    separately). No `group-out-of-range` remains anywhere.
+
+### Next wall after these two
+
+- **uav12 EXEC R16_FLOAT: Dawn rejects a read-only storage texture in
+  r16float** — "Texture format TextureFormat::R16Float does not
+  support storage texture access StorageTextureAccess::ReadOnly."
+  The shader only reads (NonWritable), so the layout must be
+  read-only as declared; the other EXEC formats (rgba8unorm, float32,
+  float16x4) build fine, proving this is format-specific, not
+  structural. Candidate narrow fix, UNPROVEN: upgrade
+  shader-declared + layout access to `read-write` for NonWritable
+  storage textures whose format rejects read-only — it needs probe
+  evidence that Dawn accepts r16float + read-write. If that proves
+  invalid, the honest alternatives are a sampled-texture rewrite path
+  (large: spirvfix/page-tier WGSL rewrite + bridge TEXTURE_BINDING
+  usage) or a loud fail-closed reason for read-only storage formats
+  Dawn rejects.
+- Still open, unchanged: rendered-then-B2I'd stale page data (§4.24
+  known limitation — needs page-side B2I application); uav12 UINT
+  EXEC PSO E_INVALIDARG (out of scope); root12 srv/uav D3DCompile
+  probe debt (out of scope).
