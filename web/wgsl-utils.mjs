@@ -190,6 +190,24 @@ export function scanWgslResources(wgsl) {
   }
   return out;
 }
+
+// Storage-texture access rejection (campaign section 4.26): Dawn reports
+// a format it will not serve as a storage texture at bind-group-layout
+// creation, e.g. "Texture format TextureFormat::R16Float does not support
+// storage texture access StorageTextureAccess::ReadOnly." The read-write
+// upgrade was PROVEN USELESS for r16float by micro-probe (Dawn rejects
+// read-write there too), so the page tier does not rewrite the access:
+// it names the rejection and fails the pipeline loudly instead. The
+// serving path for read-path storage in such formats is a
+// sampled-texture rewrite (queued separately, not built here). Format
+// names are Dawn's enum names (R16Float); lowercasing maps them to WGSL
+// names (r16float) for decl lookup.
+export function parseStorageTextureAccessRejection(message) {
+  const m = /Texture format TextureFormat::([\w-]+) does not support storage texture access StorageTextureAccess::(\w+)/.exec(String(message || ''));
+  if (!m) return null;
+  return { format: m[1], access: m[2] };
+}
+
 // WGSL uniform-address-space size computation, for padding short buffers.
 // wgslUniformSizes returns a Map from "group:binding" to the byte size of the
 // uniform struct declared there. Pure and testable.

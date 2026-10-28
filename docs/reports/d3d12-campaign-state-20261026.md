@@ -2106,3 +2106,93 @@ groupMap assignment turns the first test red.
   known limitation — needs page-side B2I application); uav12 UINT
   EXEC PSO E_INVALIDARG (out of scope); root12 srv/uav D3DCompile
   probe debt (out of scope).
+
+## 4.26 R16_FLOAT storage: the read-write candidate is refuted by probe, replaced with a named fail-closed reason (2026-10-28)
+
+With draw execution fixed (§4.25), uav12 EXEC passes R8G8B8A8_UNORM,
+R32G32B32A32_FLOAT, and R16G16B16A16_FLOAT (16 texels each) but R16_FLOAT
+still fails. Reproduced on the §4.25 tip before changing anything:
+`uav12: EXEC R16_FLOAT FAIL mismatches=48/64 first idx=0 ch=0 got=255
+want=16`, with Dawn's "Texture format TextureFormat::R16Float does not
+support storage texture access StorageTextureAccess::ReadOnly." The
+shader only reads (a NonWritable UAV), so the layout must be read-only
+as declared; the other EXEC formats build fine, proving this is
+format-specific, not structural.
+
+### The candidate, tested with probe evidence first — REFUTED
+
+The §4.25 report's candidate was to upgrade shader-declared + layout
+access to `read-write` for NonWritable storage textures whose format
+rejects read-only. It was implemented (a page-tier rewrite applied to
+both the WGSL declarations and the scanned decl types, so layout and
+shader agree) and micro-probed — and the probe refuted it: with the
+upgrade active, the rejection did not go away, it moved. Dawn now
+reported "does not support storage texture access
+StorageTextureAccess::ReadWrite." Dawn rejects r16float for BOTH
+read-only and read-write storage access, so no access rewrite can serve
+read-path storage in that format (write-only cannot serve a shader that
+only reads). The upgrade was reverted, not left in the tree: a
+proven-useless transformation must not ship, and it would only have
+changed which rejection message the same failure produces.
+
+Development note, kept because it is a silent-failure trap of its own:
+the first form of the rewrite helper built its regex with `new RegExp`
+from a string, and a JS string literal swallows the backslashes of `\w`
+and `\s` — the regex could never match, with no error anywhere. The
+helper was rewritten with a regex literal, and the guard pinned the
+behavior (sabotage-verified: restoring the string form turns the new
+test red). Any future regex built from a string needs a test that
+executes it, not just constructs it.
+
+### The fail-closed replacement
+
+The validation error scope now opens BEFORE bind-group-layout creation:
+Dawn reports a format/access rejection at `createBindGroupLayout`, and
+outside a scope that error escaped as an `uncaptured` warning instead of
+a named pipeline failure. At the pop, a rejection matching
+`parseStorageTextureAccessRejection` fails with the named reason
+`storage-format-access:FORMAT:ACCESS` plus the guest-original
+group/binding (from `sourceGroup` / `origBinding` where remapped). The
+generic `pipeline-rejected` path is unchanged for every other failure.
+
+Guards: new `vk-storage-format-access.test.mjs` (the parse helper on
+both Dawn messages plus non-matches; source-pattern pins for the scope
+placement, the named reason, and the upgrade's absence).
+Sabotage-verified: breaking the parse regex turns the unit test red.
+
+### Suites + probes (verified)
+
+- JS suite: 311/310 files, 0 failed, config
+  `BW_TEST_DIST=<tree>/dist`, `--unit` (baseline 310 at b95ce0e51;
+  +1 guard file, replacing the reverted upgrade's guard file).
+- Native: 644 OK, 0 FAILED, exit 0, 203s (`Build/Test/boxedwine
+  0 0 1`); the diff touches no C++, so this is a baseline confirmation.
+  Trailing fault output is the designed final crash-path test.
+- Register citations: 0 DRIFT / 0 MISSING (221 MATCH, 13 INHERITED, 97
+  UNCHECKABLE, 7 EXEMPT). The re-pin cycles' side effect is recorded
+  honestly: moving primaries without their dependents dropped
+  MATCH-INHERITED 13→5 and pushed UNCHECKABLE 97→105, over the test's
+  pinned ceiling of 102. It was repaired without touching the test:
+  the 8 dependents were followed to their primaries' new sites
+  (248→1943, 255→1970, 258→2016, 264→2314), restoring 13/97 exactly.
+  One new REJECTED-LOUDLY row covers this wall, so the register is 365
+  rows (65 IMPLEMENTED / 67 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN).
+- Micro-probe (slot-serialized, rebuilt dist, "Browser export
+  verified"; staged probes removed after): uav12 EXEC R16_FLOAT fails
+  with reason `storage-format-access:R16Float:ReadOnly [@group(5)
+  @binding(0)]`, zero `uncaptured` warnings for the rejection, and
+  dropReasons `storage-format-access:1` (the generic
+  `pipeline-rejected` is gone for this case). All other EXEC formats
+  unchanged (R8/R32F/R16x4 OK; R32_UINT/R8_UINT still E_INVALIDARG at
+  CreateGraphicsPipelineState, out of scope).
+
+### Next wall after this one
+
+- **uav12 EXEC R16_FLOAT, serving path: sampled-texture rewrite** —
+  read-path storage in formats Dawn rejects must be rewritten to
+  sampled reads (spirvfix/page-tier WGSL rewrite + bridge
+  TEXTURE_BINDING usage). Large; queued separately, not built here.
+- Still open, unchanged: rendered-then-B2I'd stale page data (§4.24
+  known limitation — needs page-side B2I application); uav12 UINT
+  EXEC PSO E_INVALIDARG (out of scope); root12 srv/uav D3DCompile
+  probe debt (out of scope).

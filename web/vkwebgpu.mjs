@@ -14,6 +14,7 @@ import { bridgeRecoveryStats, reportBridgeFailure } from './bridge-recovery.mjs'
 import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
+  parseStorageTextureAccessRejection,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
@@ -1889,6 +1890,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       byGroup.get(d.group).push(d);
     }
     const maxGroup = Math.max(0, ...byGroup.keys(), hasPush ? V2_PUSH_GROUP : 0);
+    // The validation scope must open BEFORE layout creation: Dawn
+    // reports a format/access rejection at createBindGroupLayout, and
+    // outside a scope that error escapes as an 'uncaptured' warning
+    // instead of a named pipeline failure (section 4.26).
+    device.pushErrorScope('validation');
     const layouts = [];
     for (let g = 0; g <= maxGroup; g++) {
       /** @type {GPUBindGroupLayoutEntry[]} */
@@ -1958,7 +1964,6 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         ? v2StencilState(pipe, depthFormat)
         : {state:{},reference:null};
     } catch (error) { noteUnsupported('pipeline-build-threw', error.message); return fail(error.message); }
-    device.pushErrorScope('validation');
     const bwModuleT0 = metricsNow();
     const vertexModule = device.createShaderModule({ code: vsR.code });
     // DXVK/Vulkan allow implicit-derivative sampling in non-uniform control
@@ -1990,6 +1995,17 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const err = await device.popErrorScope();
     timing.pipelineMs += metricsNow() - bwPipeT0;
     timing.pipelineCount++;
+    const accessRejection = err ? parseStorageTextureAccessRejection(err.message) : null;
+    if (accessRejection) {
+      // Name the true cause instead of the generic pipeline rejection:
+      // this format cannot serve storage access at all for reads (r16float
+      // rejects read-only AND read-write, probe-proven). The serving path
+      // is a sampled-texture rewrite, queued separately.
+      noteUnsupported('storage-format-access', accessRejection.format + ':' + accessRejection.access);
+      const decl = decls.find(d => d.type.startsWith('texture_storage') && d.type.toLowerCase().includes('<' + accessRejection.format.toLowerCase()));
+      const where = decl ? ' [@group(' + (decl.sourceGroup ?? decl.group) + ') @binding(' + (decl.origBinding ?? decl.binding) + ')]' : '';
+      return fail('storage-format-access:' + accessRejection.format + ':' + accessRejection.access + where);
+    }
     if (err) {
       noteUnsupported('pipeline-rejected', err.message.split(' - ')[0]);
       // Surface the offending declarations: Dawn's message names only group/binding.
