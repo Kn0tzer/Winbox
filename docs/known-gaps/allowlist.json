@@ -109,6 +109,11 @@
       "file": "include/kdspaudio.h",
       "count": 2,
       "reason": "Base KDspAudio capture virtuals are unsupported by design (kernel.md round-3B audio-capture row): the SDL backend overrides them with a real capture device, and DevDsp turns unsupported into -ENOTSUP, never fake data or fake EOF."
+    },
+    {
+      "file": "scripts/build-jit-wasm.sh",
+      "count": 1,
+      "reason": "Gate comment noting the block-invalidation link uses ripSampler.cpp's designed non-multi-threaded inert stubs (the product's own term for its no-op sampler configuration in that build shape); documentary, not a gap."
     }
   ]
 }
