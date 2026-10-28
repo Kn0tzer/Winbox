@@ -1316,6 +1316,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   }
   const noteUnsupported = (reason, detail) => { stats.unsupported++; return noteDrop(reason, detail); };
   const noteSkippedDraw = (reason, detail) => { stats.skippedDraws = (stats.skippedDraws || 0) + 1; return noteDrop(reason, detail); };
+  const noteSkippedDispatch = (reason, detail) => { stats.skippedDispatches = (stats.skippedDispatches || 0) + 1; return noteDrop(reason, detail); };
   const snapshot = () => ({ ...stats, ...shaders.stats, persist: { ...persistStats }, recover: bridgeRecoveryStats(), dropReasons: Object.fromEntries(dropReasons) });
   // Page-tier metrics for the live panel: every field is measured on the page.
   const metrics = () => {
@@ -1446,6 +1447,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // resources, which is small for real apps).
   const persistTexCache = new Map();  // imgHex:hash -> {tex, w, h, format}
   const persistBufCache = new Map();  // bufHex:usage:hash -> GPUBuffer
+  // Storage bindings resolved by bindGroupEntries, keyed bufId:bufOff.
+  // A V2_BUFFER_READBACK names a guest buffer range a dispatch wrote; the
+  // page-side bytes live in the GPUBuffer the binding resolved to, and
+  // this registry is the only place that identity survives to readback
+  // time. Values: { buffer, bufId, baseOff (BigInt guest mem offset) }.
+  const storageBufferRegistry = new Map();
   // Content hash -> GPUBuffer, independent of the VkBuffer id. A byte-less
   // record names content the page may have uploaded under another buffer id
   // (or in an earlier presentation); this lets it recover the real bytes.
@@ -1695,8 +1702,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   };
 
   /** @returns {GPUBindGroupLayoutEntry | null} */
-  function layoutEntryFor(decl) {
-    const vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+  function layoutEntryFor(decl, vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT) {
     const t = decl.type;
     if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
       const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
@@ -1715,6 +1721,87 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const sm = /texture_storage_\w+<\s*([\w-]+)\s*,\s*(\w+)/.exec(t);
     if (sm) return { binding: decl.binding, visibility: vis, storageTexture: { access: sm[2] === 'read_write' ? 'read-write' : sm[2].includes('write') ? 'write-only' : 'read-only', format: /** @type {GPUTextureFormat} */ (sm[1]), viewDimension: '2d' } };
     return null;
+  }
+
+  // Shared by the graphics and compute pipeline builders: compacts a
+  // pipeline's descriptor groups/bindings into the device budget and
+  // rewrites the WGSL holders to match. Returns { groupMap, maxGroup,
+  // byGroup }, or the fail() result ({ skip }) on a loud failure.
+  function remapDeclGroups(decls, holders, hasPush, fail) {
+  // Descriptor-group remap: guest Vulkan set numbers are virtual
+  // (vkd3d heap-lowering tables, bindless sets) and routinely exceed
+  // the WebGPU bind-group budget, while the bound content resolves by
+  // ORIGINAL set index (st.sets). Compact the pipeline's non-push
+  // groups into the device's budget, keeping push at V2_PUSH_GROUP,
+  // and record the remap so draw-time set lookups still use the
+  // original indices. A pipeline needing more groups than the device
+  // offers still fails loudly (group-count-limit). Group 3 stays
+  // reserved for push: a non-push declaration there is a collision,
+  // not a remappable group.
+  for (const d of decls) {
+    if (d.group === V2_PUSH_GROUP && !(d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
+      noteUnsupported('group-3-non-push', d.group); return fail('group-3-non-push');
+    }
+  }
+  const groupMap = {}; // remapped group -> original set index
+  const remapGroup = new Map(); // original group -> remapped group
+  {
+    let next = 0;
+    for (const g of [...new Set(decls.map(d => d.group))].sort((a, b) => a - b)) {
+      if (g === V2_PUSH_GROUP) { remapGroup.set(g, g); groupMap[g] = g; continue; }
+      while (next === V2_PUSH_GROUP) next++;
+      remapGroup.set(g, next); groupMap[next] = g; next++;
+    }
+  }
+  const maxBindGroups = device.limits?.maxBindGroups || 4;
+  const maxRemapped = Math.max(-1, ...remapGroup.values());
+  if (maxRemapped + 1 > maxBindGroups) {
+    noteUnsupported('group-count-limit', maxRemapped + 1); return fail('group-count-limit');
+  }
+  const rewriteGroups = (code) => code.replace(/@group\((\d+)\)/g, (m, n) => '@group(' + (remapGroup.get(+n) ?? +n) + ')');
+  for (const h of holders) h.code = rewriteGroups(h.code);
+  for (const d of decls) { d.sourceGroup = d.group; d.group = remapGroup.get(d.group) ?? d.group; }
+  // Binding remap: same class as the group remap. Synthesized bindings
+  // (R15b re-roots root descriptors at 4096 + pushByteOff/8) exceed
+  // Dawn's maxBindingsPerBindGroup binding-number limit (1000), so the
+  // layout is rejected even though the shader translates. Compact each
+  // non-push group's bindings below the device cap, keeping the original
+  // binding for draw-time set lookups (origBinding). The push group is
+  // exempt: its binding 0 is the protocol's push slot.
+  const maxBinding = device.limits?.maxBindingsPerBindGroup || 1000;
+  const bindingRemap = new Map(); // remappedGroup:origBinding -> newBinding
+  {
+    const byRemappedGroup = new Map();
+    for (const d of decls) {
+      if (!byRemappedGroup.has(d.group)) byRemappedGroup.set(d.group, []);
+      byRemappedGroup.get(d.group).push(d);
+    }
+    for (const [g, gdecls] of byRemappedGroup) {
+      if (g === V2_PUSH_GROUP) continue;
+      if (Math.max(...gdecls.map(d => d.binding)) < maxBinding) continue;
+      if (gdecls.length > maxBinding) {
+        noteUnsupported('binding-count-limit', gdecls.length); return fail('binding-count-limit');
+      }
+      [...gdecls].sort((a, b) => a.binding - b.binding)
+        .forEach((d, i) => bindingRemap.set(g + ':' + d.binding, i));
+    }
+  }
+  if (bindingRemap.size) {
+    const rewriteBindings = (code) => code.replace(/@group\((\d+)\)(\s+)@binding\((\d+)\)/g,
+      (m, g, ws, b) => '@group(' + g + ')' + ws + '@binding(' + (bindingRemap.get(g + ':' + b) ?? b) + ')');
+    for (const h of holders) h.code = rewriteBindings(h.code);
+    for (const d of decls) {
+      const nb = bindingRemap.get(d.group + ':' + d.binding);
+      if (nb !== undefined) { d.origBinding = d.binding; d.binding = nb; }
+    }
+  }
+  const byGroup = new Map();
+  for (const d of decls) {
+    if (!byGroup.has(d.group)) byGroup.set(d.group, []);
+    byGroup.get(d.group).push(d);
+  }
+  const maxGroup = Math.max(0, ...byGroup.keys(), hasPush ? V2_PUSH_GROUP : 0);
+    return { groupMap, maxGroup, byGroup };
   }
 
   async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6, sets = null) {
@@ -1815,81 +1902,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
       }
     }
-    // Descriptor-group remap: guest Vulkan set numbers are virtual
-    // (vkd3d heap-lowering tables, bindless sets) and routinely exceed
-    // the WebGPU bind-group budget, while the bound content resolves by
-    // ORIGINAL set index (st.sets). Compact the pipeline's non-push
-    // groups into the device's budget, keeping push at V2_PUSH_GROUP,
-    // and record the remap so draw-time set lookups still use the
-    // original indices. A pipeline needing more groups than the device
-    // offers still fails loudly (group-count-limit). Group 3 stays
-    // reserved for push: a non-push declaration there is a collision,
-    // not a remappable group.
-    for (const d of decls) {
-      if (d.group === V2_PUSH_GROUP && !(d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
-        noteUnsupported('group-3-non-push', d.group); return fail('group-3-non-push');
-      }
-    }
-    const groupMap = {}; // remapped group -> original set index
-    const remapGroup = new Map(); // original group -> remapped group
-    {
-      let next = 0;
-      for (const g of [...new Set(decls.map(d => d.group))].sort((a, b) => a - b)) {
-        if (g === V2_PUSH_GROUP) { remapGroup.set(g, g); groupMap[g] = g; continue; }
-        while (next === V2_PUSH_GROUP) next++;
-        remapGroup.set(g, next); groupMap[next] = g; next++;
-      }
-    }
-    const maxBindGroups = device.limits?.maxBindGroups || 4;
-    const maxRemapped = Math.max(-1, ...remapGroup.values());
-    if (maxRemapped + 1 > maxBindGroups) {
-      noteUnsupported('group-count-limit', maxRemapped + 1); return fail('group-count-limit');
-    }
-    const rewriteGroups = (code) => code.replace(/@group\((\d+)\)/g, (m, n) => '@group(' + (remapGroup.get(+n) ?? +n) + ')');
-    vsR.code = rewriteGroups(vsR.code);
-    fsR.code = rewriteGroups(fsR.code);
-    for (const d of decls) { d.sourceGroup = d.group; d.group = remapGroup.get(d.group) ?? d.group; }
-    // Binding remap: same class as the group remap. Synthesized bindings
-    // (R15b re-roots root descriptors at 4096 + pushByteOff/8) exceed
-    // Dawn's maxBindingsPerBindGroup binding-number limit (1000), so the
-    // layout is rejected even though the shader translates. Compact each
-    // non-push group's bindings below the device cap, keeping the original
-    // binding for draw-time set lookups (origBinding). The push group is
-    // exempt: its binding 0 is the protocol's push slot.
-    const maxBinding = device.limits?.maxBindingsPerBindGroup || 1000;
-    const bindingRemap = new Map(); // remappedGroup:origBinding -> newBinding
-    {
-      const byRemappedGroup = new Map();
-      for (const d of decls) {
-        if (!byRemappedGroup.has(d.group)) byRemappedGroup.set(d.group, []);
-        byRemappedGroup.get(d.group).push(d);
-      }
-      for (const [g, gdecls] of byRemappedGroup) {
-        if (g === V2_PUSH_GROUP) continue;
-        if (Math.max(...gdecls.map(d => d.binding)) < maxBinding) continue;
-        if (gdecls.length > maxBinding) {
-          noteUnsupported('binding-count-limit', gdecls.length); return fail('binding-count-limit');
-        }
-        [...gdecls].sort((a, b) => a.binding - b.binding)
-          .forEach((d, i) => bindingRemap.set(g + ':' + d.binding, i));
-      }
-    }
-    if (bindingRemap.size) {
-      const rewriteBindings = (code) => code.replace(/@group\((\d+)\)(\s+)@binding\((\d+)\)/g,
-        (m, g, ws, b) => '@group(' + g + ')' + ws + '@binding(' + (bindingRemap.get(g + ':' + b) ?? b) + ')');
-      vsR.code = rewriteBindings(vsR.code);
-      fsR.code = rewriteBindings(fsR.code);
-      for (const d of decls) {
-        const nb = bindingRemap.get(d.group + ':' + d.binding);
-        if (nb !== undefined) { d.origBinding = d.binding; d.binding = nb; }
-      }
-    }
-    const byGroup = new Map();
-    for (const d of decls) {
-      if (!byGroup.has(d.group)) byGroup.set(d.group, []);
-      byGroup.get(d.group).push(d);
-    }
-    const maxGroup = Math.max(0, ...byGroup.keys(), hasPush ? V2_PUSH_GROUP : 0);
+    const remapped = remapDeclGroups(decls, [vsR, fsR], hasPush, fail);
+    if (remapped.skip) return remapped;
+    const { groupMap, maxGroup, byGroup } = remapped;
     // The validation scope must open BEFORE layout creation: Dawn
     // reports a format/access rejection at createBindGroupLayout, and
     // outside a scope that error escapes as an 'uncaptured' warning
@@ -2017,6 +2032,76 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     }
     const rec = { key: effKey, pipeline, layouts, decls, hasPush, slotOf, maxGroup, groupMap, vbWalk, stripIndexType, blendConstantMode, stencilReference:stencil.reference };
     pipelines.set(effKey, rec);
+    return rec;
+  }
+
+  const computePipelines = new Map();   // compute key -> { pipeline, layouts, decls, hasPush, maxGroup, groupMap, key }
+  // The compute sibling of getPipelineFor: same fail-closed discipline
+  // (permanent counted failure per key, never a substituted pipeline),
+  // same descriptor remap helper, same bind-group builders at dispatch
+  // time. Layouts are built with COMPUTE visibility; the storage-format
+  // signature keys the cache exactly like the graphics typed-UAV variant,
+  // because a storage variable's format is a property of the bound view.
+  async function getComputePipelineFor(cpipe, sets = null) {
+    const csm = F.shaders.get(cpipe.csHash);
+    const storageSig = sets && csm ? storageSignatureFor(csm.code, sets) : '';
+    let effKey = 'cs:' + cpipe.csHash + ':spec:' + JSON.stringify((cpipe.csSpec || []).map(e => [e.constantID, e.size, Array.from(e.value)]));
+    if (storageSig) effKey += ':storage:' + storageSig;
+    if (computePipelines.has(effKey)) return computePipelines.get(effKey);
+    if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
+    const fail = (reason) => {
+      pipelineFailures.set(effKey, reason);
+      console.error('vkwebgpu: PIPELINE-FAILED pipeId=' + cpipe.pipeId + ' reason=' + reason);
+      return { skip: reason };
+    };
+    if (!csm) { noteUnsupported('missing-shader', 'compute shader module was not captured'); return fail('missing-shader'); }
+    const csWgsl = await shaders.get('compute', { hash: cpipe.csHash, size: csm.code.length, code: csm.code }, { specOverrides: cpipe.csSpec, ...(storageSig ? { storageFormats: storageSig } : {}) });
+    if (!csWgsl) { noteUnsupported('shader-translation', 'Naga returned no WGSL for a compute stage'); return fail('shader-translation'); }
+    const csR = rewritePushConstantsWGSL(csWgsl);
+    if (csR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return fail('multi-push-block'); }
+    const hasPush = csR.pushBlocks > 0;
+    const decls = scanWgslResources(csR.code);
+    const uniformSizes = wgslUniformSizes(csR.code);
+    for (const d of decls) if (d.addr === "uniform" || d.addr.startsWith("storage")) {
+      const sz = uniformSizes.get(d.group + ":" + d.binding);
+      if (sz) d.minSize = sz;
+    }
+    const remapped = remapDeclGroups(decls, [csR], hasPush, fail);
+    if (remapped.skip) return remapped;
+    const { groupMap, maxGroup, byGroup } = remapped;
+    // Error scope opens BEFORE layout creation, mirroring the graphics
+    // builder (section 4.26): a storage format/access rejection must land
+    // as a named pipeline failure, not an uncaptured warning.
+    device.pushErrorScope('validation');
+    const layouts = [];
+    for (let g = 0; g <= maxGroup; g++) {
+      /** @type {GPUBindGroupLayoutEntry[]} */
+      const entries = [];
+      for (const d of byGroup.get(g) || []) {
+        const e = layoutEntryFor(d, GPUShaderStage.COMPUTE);
+        if (!e) { noteUnsupported('decl-kind', d.type); return fail('decl-kind:' + d.type); }
+        entries.push(e);
+      }
+      if (g === V2_PUSH_GROUP && hasPush && !entries.some(e => e.binding === V2_PUSH_BINDING))
+        entries.push({ binding: V2_PUSH_BINDING, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } });
+      layouts.push(device.createBindGroupLayout({ entries }));
+    }
+    const module = device.createShaderModule({ code: csR.code });
+    const pipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
+      compute: { module, entryPoint: 'main' },
+    });
+    const err = await device.popErrorScope();
+    const accessRejection = err ? parseStorageTextureAccessRejection(err.message) : null;
+    if (accessRejection) {
+      noteUnsupported('storage-format-access', accessRejection.format + ':' + accessRejection.access);
+      const decl = decls.find(d => d.type.startsWith('texture_storage') && d.type.toLowerCase().includes('<' + accessRejection.format.toLowerCase()));
+      const where = decl ? ' [@group(' + (decl.sourceGroup ?? decl.group) + ') @binding(' + (decl.origBinding ?? decl.binding) + ')]' : '';
+      return fail('storage-format-access:' + accessRejection.format + ':' + accessRejection.access + where);
+    }
+    if (err) { noteUnsupported('pipeline-rejected', err.message.split(' - ')[0]); return fail('pipeline-rejected:' + err.message.split(' - ')[0]); }
+    const rec = { key: effKey, pipeline, layouts, decls, hasPush, maxGroup, groupMap };
+    computePipelines.set(effKey, rec);
     return rec;
   }
 
@@ -2393,6 +2478,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
           const gpu = gpuBufferFor(bufHex, bytes, usage, preHash);
+          if (gpu && isStorage && b && b.kind === 1 && !String(bufHex).startsWith('zero:'))
+            storageBufferRegistry.set(b.obj + ':' + (b.bufOff || '0'), { buffer: gpu, bufId: b.obj, baseOff: BigInt(b.bufOff || '0') });
           if (gpu) return { buffer: gpu };
           // Last resort: a null buffer makes createBindGroup throw and the
           // whole frame (including menu text) disappears. Keep the frame and
@@ -2519,7 +2606,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // over to the next pass with attachments instead of being dropped with
     // the per-pass state.
     const st = {
-      pipeRec: null, pipeDesc: null, pipeNeg: false, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
+      pipeRec: null, pipeDesc: null, pipeNeg: false, computeDesc: null, sets: new Map(), setVer: new Map(), inlineMap: new Map(),
       pushBlock: new Uint8Array(V2_PUSH_SIZE), pushDirty: false,
       rootDescs: new Map(), // push byte offset -> {obj, absOff, len} (V2 ROOT_DESCS)
       vbinds: [], ibind: null, viewport: null, scissor: null,
@@ -2731,6 +2818,59 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           }
           case 'bindPipe': {
             st.pipeDesc = op.pipe; st.pipeNeg = false; st.pipeRec = null; st.pipeBad = false;
+            break;
+          }
+          case 'bindComputePipe': {
+            st.computeDesc = op.cpipe;
+            break;
+          }
+          case 'dispatch': {
+            // Compute runs on the frame encoder, outside any render pass,
+            // in stream order with the copies and draws around it. The
+            // pipeline is re-resolved per dispatch (like draws) because
+            // the storage-format variant depends on the CURRENT sets.
+            if (passEnc) { noteSkippedDispatch('compute-in-render-pass'); break; }
+            if (!st.computeDesc) { noteSkippedDispatch('dispatch-no-pipeline'); break; }
+            const rec = await getComputePipelineFor(st.computeDesc, st.sets);
+            if (rec.skip) { noteSkippedDispatch('dispatch-pipeline-skipped', rec.skip); break; }
+            const cp = encoder.beginComputePass();
+            cp.setPipeline(rec.pipeline);
+            let invalidBindGroup = false;
+            for (let g = 0; g <= rec.maxGroup; g++) {
+              if (g === V2_PUSH_GROUP) continue;
+              if (!rec.decls.some(d => d.group === g)) continue;
+              const fp = bindGroupFingerprint(rec, st.sets, st.inlineMap, g, st);
+              const ck = 'g|' + rec.key + '|' + g + '|' + fp;
+              let bg = persistGroupCache.get(ck);
+              if (!bg) {
+                persistStats.groupMiss++;
+                const entries = bindGroupEntries(rec, st.sets, st.inlineMap, g, st);
+                if (!entries) { invalidBindGroup = true; break; }
+                bg = device.createBindGroup({ layout: rec.layouts[g], entries });
+                persistGroupCache.set(ck, bg);
+                if (persistGroupCache.size > PERSIST_GROUP_CACHE_MAX)
+                  persistGroupCache.delete(persistGroupCache.keys().next().value);
+              } else persistStats.groupHits++;
+              cp.setBindGroup(g, bg);
+            }
+            if (!invalidBindGroup && rec.hasPush) {
+              const pushHash = fnv1a(st.pushBlock);
+              const pushBuf = gpuBufferFor('push', st.pushBlock, GPUBufferUsage.UNIFORM, pushHash);
+              const ck = 'g|' + rec.key + '|push|' + pushHash;
+              let pg = persistGroupCache.get(ck);
+              if (!pg) {
+                pg = device.createBindGroup({
+                  layout: rec.layouts[V2_PUSH_GROUP],
+                  entries: [{ binding: V2_PUSH_BINDING, resource: { buffer: pushBuf } }],
+                });
+                persistGroupCache.set(ck, pg);
+              }
+              cp.setBindGroup(V2_PUSH_GROUP, pg);
+            }
+            if (invalidBindGroup) { cp.end(); noteSkippedDispatch('dispatch-bind-group-invalid', 'cs=' + st.computeDesc.csHash); break; }
+            cp.dispatchWorkgroups(op.x, op.y, op.z);
+            cp.end();
+            stats.dispatches = (stats.dispatches || 0) + 1;
             break;
           }
           case 'stencil': {
@@ -2996,7 +3136,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const v2readbacks = [];
     if (frame.readbacks && frame.readbacks.length) {
       for (const rb of frame.readbacks) {
-        const tex = targets.get('img:' + rb.srcImage) || targets.get('imgd:' + rb.srcImage);
+        let tex = targets.get('img:' + rb.srcImage) || targets.get('imgd:' + rb.srcImage);
+        if (!tex) {
+          // Not an attachment this frame: a compute dispatch (or a draw)
+          // may have written the image through a binding only. Resolve
+          // the same GPUTexture the binding used (persistent cache).
+          const img = F.images.get(rb.srcImage);
+          if (img) tex = gpuTextureFor(rb.srcImage, img, false, img.d > 1 ? '3d' : img.layers > 1 ? '2d-array' : '2d');
+        }
         const rbBytesPerRow = Math.ceil(rb.w * 4 / 256) * 256;
         if (!tex) {
           v2readbacks.push({ rb, buffer: null, bytesPerRow: rbBytesPerRow, ok: false });
@@ -3008,6 +3155,34 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           v2readbacks.push({ rb, buffer: buf, bytesPerRow: rbBytesPerRow, ok: true });
         } catch (e) {
           v2readbacks.push({ rb, buffer: null, bytesPerRow: rbBytesPerRow, ok: false });
+        }
+      }
+    }
+
+    // V2_BUFFER_READBACK records (a deferred vkCmdCopyBuffer whose source
+    // range a dispatch wrote): copy the range out of the GPUBuffer the
+    // storage binding resolved to, into a MAP_READ staging buffer now;
+    // resolve to the wasm heap after submit. Ranges the registry cannot
+    // cover stay unresolved and the guest receives zeros, loudly.
+    const v2bufreadbacks = [];
+    if (frame.bufReadbacks && frame.bufReadbacks.length) {
+      for (const brb of frame.bufReadbacks) {
+        let ent = null;
+        for (const cand of storageBufferRegistry.values()) {
+          if (cand.bufId !== brb.srcBuffer) continue;
+          if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { ent = cand; break; }
+        }
+        if (!ent) {
+          noteUnsupported('buffer-readback-unavailable', 'no storage binding covered buffer ' + brb.srcBuffer + '; guest receives zeros');
+          v2bufreadbacks.push({ brb, buffer: null, ok: false });
+          continue;
+        }
+        try {
+          const staging = device.createBuffer({ size: Number(brb.size), usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+          encoder.copyBufferToBuffer(ent.buffer, Number(brb.srcAbsOff - ent.baseOff), staging, 0, Number(brb.size));
+          v2bufreadbacks.push({ brb, buffer: staging, ok: true });
+        } catch (e) {
+          v2bufreadbacks.push({ brb, buffer: null, ok: false });
         }
       }
     }
@@ -3170,6 +3345,27 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, rb.flagPtr, 1), 0, 1);
+      } catch (e) { noteUnsupported('readback-notify-failed', e && e.message); }
+    }
+
+    // Resolve V2_BUFFER_READBACKs: tight bytes (no pitch), then ALWAYS
+    // notify, even on failure, so the bridge never hangs.
+    for (const vbr of v2bufreadbacks) {
+      const { brb, buffer, ok } = vbr;
+      try {
+        const heapBuf = globalThis.bwVkHeapBuffer;
+        if (ok && buffer && heapBuf) {
+          await buffer.mapAsync(GPUMapMode.READ);
+          const src = new Uint8Array(buffer.getMappedRange());
+          const dst = new Uint8Array(heapBuf, brb.heapPtr, Number(brb.size));
+          dst.set(src.subarray(0, Number(brb.size)));
+          buffer.unmap();
+        }
+      } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }
+      try { if (buffer) buffer.destroy(); } catch (e) {}
+      try {
+        const heapBuf = globalThis.bwVkHeapBuffer;
+        if (heapBuf) Atomics.notify(new Int32Array(heapBuf, brb.flagPtr, 1), 0, 1);
       } catch (e) { noteUnsupported('readback-notify-failed', e && e.message); }
     }
 

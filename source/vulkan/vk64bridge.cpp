@@ -1095,17 +1095,18 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     }
     if (imageWriteOpcode && storageImage) storageImageWrite = true; // OpImageWrite cannot target a sampled image (spec), so its presence beside a storage image type is a write
     if (compute && !graphicsEntry) {
-        // Compute-only module: the V2 protocol is render-only, so this
-        // module is never translated by the page tier. It is accepted so
-        // vkCreateComputePipelines can hand out a real pipeline object
-        // (vkd3d-proton builds internal compute pipelines during device
-        // creation and treats refusal as device-fatal). Every dispatch of
-        // such a pipeline is dropped loudly at submit (CMD_DISPATCH,
-        // "compute-dispatch"), which is the only failure channel a void
-        // vkCmdDispatch has. The capability/storage/input-attachment and
-        // SSBO-write checks below protect the graphics translation path
-        // and do not apply to a module that never reaches it.
-        vk64Unsupported("spirv-compute-entry", "compute-only shader module accepted for pipeline creation; dispatch results are not produced (no V2 compute record)");
+        // Compute-only module: accepted so vkCreateComputePipelines can
+        // hand out a real pipeline object (vkd3d-proton builds internal
+        // compute pipelines during device creation and treats refusal as
+        // device-fatal). Dispatches of such pipelines are served by the
+        // V2 compute records (V2_PIPELINE_COMPUTE / V2_DISPATCH, campaign
+        // section 4.27): the page tier translates the module when the
+        // pipeline is built, and any module it cannot translate fails
+        // there, permanently and counted -- the fail-closed gate for
+        // compute. The capability/storage/SSBO-write checks below protect
+        // the graphics translation path at creation time and are not
+        // duplicated here.
+        vk64Unsupported("spirv-compute-entry", "compute-only shader module accepted for pipeline creation; its dispatches are served by the V2 compute records and fail loudly at the page tier if untranslatable");
         return VK_SUCCESS;
     }
     // R15 (Route A, section 4.21): admit the descriptor-addressing
@@ -1652,7 +1653,7 @@ struct Pipeline : Obj {
     float blendConstants[4] = {};
     bool blendConstantsDynamic = false;
     StencilState stencil;
-    StageSpec vsSpec, fsSpec;
+    StageSpec vsSpec, fsSpec, csSpec;
     U32 nvb = 0, nva = 0;
     bool dynamicVertexStride = false;
     struct VertexStrideVariant { std::vector<U32> strides; U64 id; };
@@ -1946,7 +1947,7 @@ enum CmdKind : U32 {
     CMD_BIND_VB, CMD_BIND_IB, CMD_UPDATE_BUF, CMD_COPY_I2B, CMD_DISPATCH, CMD_COPY_IMAGE,
     CMD_STENCIL_STATE, CMD_BLEND_CONSTANTS, CMD_CLEAR_ATTACHMENTS, CMD_COPY_QUERY_RESULTS, CMD_DEPTH_BIAS, CMD_BLIT_IMAGE,
     CMD_RASTER_STATE, CMD_CLEAR_DS_IMAGE, CMD_RESET_QUERY, CMD_NEXT_SUBPASS,
-    CMD_BEGIN_QUERY, CMD_END_QUERY, CMD_WRITE_TIMESTAMP
+    CMD_BEGIN_QUERY, CMD_END_QUERY, CMD_WRITE_TIMESTAMP, CMD_COPY_B2B_RB
 };
 struct Copy {
     U64 srcBuffer = 0, dstImage = 0, bufOff = 0;
@@ -2015,6 +2016,13 @@ struct Cmd {
     int32_t diVertexOffset = 0;
     U32 capCount = 0;
     std::vector<float> capPos, capCol;
+    // CMD_COPY_B2B_RB: buffer->buffer copy deferred to submit time because
+    // its source range was written by a compute dispatch on the GPU (the
+    // eager record-time memcpy in the copy handlers would read stale guest
+    // bytes). Offsets are buffer-relative; the submit path resolves them.
+    struct CopyB2BRb { U64 srcBuffer = 0, dstBuffer = 0, srcOff = 0, dstOff = 0, size = 0; } copyB2BRb;
+    // CMD_DISPATCH: vkCmdDispatchBase Y/Z base groups (the X base rides in d).
+    U32 dispatchBaseY = 0, dispatchBaseZ = 0;
 };
 // Integer colour formats clear with the raw uint/int bits; the protocol carries floats, which
 // are exact up to 2^24 (the replay passes them straight to WebGPU's numeric clearValue).
@@ -3298,6 +3306,7 @@ enum V2Rec : U32 {
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
     V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B, V2_BUFFER_VIEW = 0x1C,
     V2_ROOT_DESCS = 0x1D,
+    V2_PIPELINE_COMPUTE = 0x1E, V2_DISPATCH = 0x1F, V2_BUFFER_READBACK = 0x20,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -4030,9 +4039,106 @@ static void hopV2LastToPage() {
 #endif
 }
 
+// GPU-written buffer ranges (V2 compute serving, campaign section 4.27).
+// When a compute dispatch is recorded, the storage buffers bound to the
+// bound compute pipeline's sets may be written by the GPU at submit. The
+// buffer copy handlers execute eagerly in guest memory at record time, so
+// a guest copy OUT of such a range would read stale bytes; they consult
+// this registry and defer exactly those regions to a submit-time page
+// readback (CMD_COPY_B2B_RB). A mark is stamped with the source memory's
+// write epoch: any later bridge-observed guest write to the range
+// (vk64TouchMem) makes the deferral test fail and the copy falls back to
+// the eager path, so deferral happens only when the guest bytes are
+// provably untouched since the dispatch was recorded.
+struct GpuWriteMark { U64 buf = 0, off = 0, size = 0, mem = 0, epoch = 0; };
+static std::vector<GpuWriteMark> g_gpuWriteMarks;
+
+static void vk64MarkGpuWrite(U64 buf, U64 off, U64 size, U64 mem, U64 epoch) {
+    for (auto& m : g_gpuWriteMarks)
+        if (m.buf == buf && m.off == off && m.size == size) { m.mem = mem; m.epoch = epoch; return; }
+    if (g_gpuWriteMarks.size() >= 4096) g_gpuWriteMarks.erase(g_gpuWriteMarks.begin());
+    g_gpuWriteMarks.push_back(GpuWriteMark{buf, off, size, mem, epoch});
+}
+
+// The mark fully containing [absOff, absOff+size) of buffer `buf`, if the
+// range is still provably untouched: the memory was never guest-mapped
+// (mapped contents can change outside the bridge's observation) and no
+// bridge-observed write hit the range since the mark's epoch.
+static const GpuWriteMark* vk64FindGpuWrite(U64 buf, U64 absOff, U64 size) {
+    for (const auto& m : g_gpuWriteMarks) {
+        if (m.buf != buf) continue;
+        if (absOff < m.off || absOff + size > m.off + m.size) continue;
+        DeviceMemory* mem = objOf<DeviceMemory>(m.mem, K_MEMORY, "compute-readback");
+        if (!mem || mem->wasMapped) continue;
+        if (!vk64MemRangeCleanSince(mem, m.epoch, absOff, size)) continue;
+        return &m;
+    }
+    return nullptr;
+}
+
+// Record-time half of the registry: replay the command buffer's recorded
+// state (the same shadow state the submit emitter resolves) and mark
+// every storage buffer bound to the bound compute pipeline's sets.
+static void vk64MarkComputeWrites(CmdBuf* cb) {
+    U64 pipeId = 0;
+    U64 sets[VK64_MAX_SETS] = {0};
+    std::vector<U32> dyn[VK64_MAX_SETS];
+    for (const Cmd& k : cb->cmds) {
+        if (k.kind == CMD_BIND_PIPE) pipeId = k.a;
+        else if (k.kind == CMD_BIND_SETS) {
+            U32 first = (U32)k.a, count = (U32)k.b;
+            if (first >= VK64_MAX_SETS) continue;
+            if (first + count > VK64_MAX_SETS) count = VK64_MAX_SETS - first;
+            for (U32 i = 0; i < count; i++) {
+                sets[first + i] = k.sets[first + i];
+                dyn[first + i] = i < k.dyn.size() ? k.dyn[i] : std::vector<U32>();
+            }
+        }
+    }
+    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
+    if (!pipe || !pipe->cs) return;
+    for (U32 si = 0; si < VK64_MAX_SETS; si++) {
+        if (!sets[si]) continue;
+        DescSet* set = objOf<DescSet>(sets[si], K_SET, "vkCmdDispatch");
+        if (!set) continue;
+        DescSetLayout* lay = set->layout ? objOf<DescSetLayout>(set->layout, K_SETLAYOUT, "vkCmdDispatch") : nullptr;
+        for (const auto& kv : set->els) {
+            const Binding& b = kv.second;
+            if (b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+                b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) continue;
+            Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkCmdDispatch");
+            if (!buf || !buf->mem) continue;
+            DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatch");
+            if (!mem) continue;
+            U32 dynOff = 0;
+            if (descIsDynamic(b.type) && lay) {
+                auto lb = lay->binds.find(b.binding);
+                if (lb != lay->binds.end()) {
+                    U32 idx = lb->second.dynBase + b.dstArrayElement;
+                    if (idx < dyn[si].size()) dynOff = dyn[si][idx];
+                }
+            }
+            U64 off = b.bufOff + dynOff;
+            U64 len = (b.range == 0 || b.range == ~0ULL) ? (off < buf->size ? buf->size - off : 0) : b.range;
+            if (len) vk64MarkGpuWrite(b.obj, buf->memOff + off, len, buf->mem, mem->writeEpoch);
+        }
+    }
+}
+
+// A deferred buffer->buffer copy planned at submit: the page tier copies
+// the GPU-written source range into the heap and notifies on flagPtr; the
+// bridge then expands it into the destination's guest memory.
+struct BufReadbackPending {
+    U64 srcBuffer = 0, srcAbsOff = 0, size = 0, dstBuffer = 0, dstBufOff = 0;
+    U32 heapPtr = 0, flagPtr = 0;
+    bool emitted = false;
+};
+static std::vector<BufReadbackPending> g_bufReadbacks;
+
 static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
     VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackSetup, vkEncodeDetailEnabled());
     g_readbackPending.clear();
+    g_bufReadbacks.clear();
     for (const auto& fr : frames) {
         CmdBuf* cb = fr.first;
         VK64_DROP_IF(continue, !cb);
@@ -4084,12 +4190,35 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             g_readbackPending.push_back(pend);
         }
     }
-    return !g_readbackPending.empty();
+    for (const auto& fr : frames) {
+        CmdBuf* cb = fr.first;
+        VK64_DROP_IF(continue, !cb);
+        for (const Cmd& k : cb->cmds) {
+            if (k.kind != CMD_COPY_B2B_RB) continue;
+            const auto& cp = k.copyB2BRb;
+            Buffer* sb = objOf<Buffer>(cp.srcBuffer, K_BUFFER, "buf-readback");
+            VK64_DROP_IF(continue, !sb || !cp.size);
+            if (cp.size > 64ull * 1024 * 1024) {
+                vk64Unsupported("compute-buffer-readback", "deferred buffer readback exceeds the 64MB hop cap; the copy is not served");
+                continue;
+            }
+            U8* heap = (U8*)malloc((size_t)cp.size + 4);
+            VK64_DROP_IF(continue, !heap);
+            memset(heap, 0, (size_t)cp.size + 4);
+            BufReadbackPending pend;
+            pend.srcBuffer = cp.srcBuffer; pend.srcAbsOff = sb->memOff + cp.srcOff;
+            pend.size = cp.size; pend.dstBuffer = cp.dstBuffer; pend.dstBufOff = cp.dstOff;
+            pend.heapPtr = (U32)(uintptr_t)heap;
+            pend.flagPtr = (U32)(uintptr_t)(heap + cp.size);
+            g_bufReadbacks.push_back(pend);
+        }
+    }
+    return !g_readbackPending.empty() || !g_bufReadbacks.empty();
 }
 
 static void completeReadbacks() {
     VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackWait, vkEncodeDetailEnabled());
-    if (g_readbackPending.empty()) return;
+    if (g_readbackPending.empty() && g_bufReadbacks.empty()) return;
     hopV2LastToPage();
     for (auto& pend : g_readbackPending) {
         VK64_DROP_IF(continue, !waitForReadbackFlag(pend.flagPtr, 10000));
@@ -4122,6 +4251,43 @@ static void completeReadbacks() {
     }
     for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
     g_readbackPending.clear();
+    // Deferred buffer readbacks (V2 compute): the page copied the
+    // GPU-written range into the heap and notified; expand it into the
+    // destination's guest memory. A pending the emitter never matched, or
+    // whose wait timed out, stays loud -- the guest keeps whatever the
+    // destination buffer already held.
+    for (auto& pend : g_bufReadbacks) {
+        if (!pend.emitted) {
+            vk64Unsupported("compute-buffer-readback", "deferred buffer readback frame never reached the page; the copy is not served");
+        } else if (!waitForReadbackFlag(pend.flagPtr, 10000)) {
+            vk64Unsupported("compute-buffer-readback", "page did not answer a deferred buffer readback in time; the copy is not served");
+        } else {
+            Buffer* buf = objOf<Buffer>(pend.dstBuffer, K_BUFFER, "buf-readback");
+            DeviceMemory* mem = (buf && buf->mem) ? objOf<DeviceMemory>(buf->mem, K_MEMORY, "buf-readback") : nullptr;
+            if (buf && mem && mem->va) {
+                U64 dstVa = mem->va + buf->memOff + pend.dstBufOff;
+                U64 memEnd = mem->va + mem->size;
+                if (dstVa < memEnd) {
+                    size_t n = (size_t)pend.size;
+                    if (dstVa + n > memEnd) n = (size_t)(memEnd - dstVa);
+                    writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr, n);
+                    buf->dirtyGen = g_bufDirtyTick++;
+                    vk64TouchMem(mem, buf->memOff + pend.dstBufOff, n);
+                }
+            }
+        }
+        // The guest now holds the data (or the copy failed loudly): the
+        // consumed marks must not defer a later copy of the same range.
+        for (size_t i = 0; i < g_gpuWriteMarks.size();) {
+            const GpuWriteMark& m = g_gpuWriteMarks[i];
+            if (m.buf == pend.srcBuffer && pend.srcAbsOff >= m.off &&
+                pend.srcAbsOff + pend.size <= m.off + m.size)
+                g_gpuWriteMarks.erase(g_gpuWriteMarks.begin() + (ptrdiff_t)i);
+            else i++;
+        }
+        free((void*)(uintptr_t)pend.heapPtr);
+    }
+    g_bufReadbacks.clear();
 }
 
 
@@ -4147,7 +4313,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             bool relevant = false;
             for (const Cmd& k : st->cmds)
                 if (k.kind == CMD_COPY_IMAGE || k.kind == CMD_BLIT_IMAGE || k.kind == CMD_CLEAR_DS_IMAGE ||
-                    k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH) { relevant = true; break; }
+                    k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH || k.kind == CMD_COPY_B2B_RB) { relevant = true; break; }
             if (!relevant) continue;
         }
         // A render-pass load clear changes its attachment without a draw.
@@ -4523,6 +4689,25 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             VkEncodeScope phase(vkProfAcc().encode, vkencode::Pipeline, detailed);
             Pipeline* pipe = objOf<Pipeline>(pipeId, K_PIPELINE, "vkQueueSubmit");
             VK64_DROP_IF(return, !pipe);
+            if (pipe->cs) {
+                // Compute pipeline: one shader (stage 2) plus its
+                // specialization tail, in the graphics record's
+                // append-only spec format. No fixed-function state exists
+                // to carry.
+                ShaderModule* cs = objOf<ShaderModule>(pipe->cs, K_SHADER, "vkQueueSubmit");
+                emitShader(cs, 2);
+                emit(V2_PIPELINE_COMPUTE, [&](ChunkWriter& p) {
+                    p.u64(pipeId);
+                    p.u64(cs ? cs->hash : 0);
+                    p.u32(pipe->csSpec.n);
+                    for (U32 i = 0; i < pipe->csSpec.n; i++) {
+                        p.u32(pipe->csSpec.entries[i].constantID);
+                        p.u32(pipe->csSpec.entries[i].size);
+                        p.bytes(pipe->csSpec.entries[i].value, pipe->csSpec.entries[i].size);
+                    }
+                });
+                return;
+            }
             ShaderModule* vs = pipe->vs ? objOf<ShaderModule>(pipe->vs, K_SHADER, "vkQueueSubmit") : nullptr;
             ShaderModule* fs = pipe->fs ? objOf<ShaderModule>(pipe->fs, K_SHADER, "vkQueueSubmit") : nullptr;
             // Schema v2 replays the guest pipeline. The legacy procedural
@@ -4965,11 +5150,55 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 case CMD_END_QUERY:
                 case CMD_WRITE_TIMESTAMP:
                     break;
-                case CMD_DISPATCH:
-                    // The V2 protocol is render-only: no compute pipeline or
-                    // dispatch record exists. Never silently drop it.
-                    vk64Unsupported("compute-dispatch", "vkCmdDispatch* has no V2 record; results are not produced");
+                case CMD_DISPATCH: {
+                    // V2 compute serving (campaign section 4.27): the bound
+                    // compute pipeline's root descriptors ride the same
+                    // ROOT_DESCS path as draws, then the dispatch itself.
+                    // What cannot be proven served stays loud under the
+                    // original feature name: no compute pipeline bound
+                    // (including every 32-bit dispatch -- that ABI never
+                    // records a compute stage module), or a
+                    // vkCmdDispatchBase with a non-zero base group (WebGPU
+                    // has no base-group offset to serve it with).
+                    Pipeline* csPipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
+                    if (!csPipe || !csPipe->cs) {
+                        vk64Unsupported("compute-dispatch", "vkCmdDispatch* with no compute pipeline bound has no V2 serving; results are not produced");
+                        break;
+                    }
+                    if (k.d || k.dispatchBaseY || k.dispatchBaseZ) {
+                        vk64Unsupported("compute-dispatch", "vkCmdDispatchBase with a non-zero base group has no WebGPU equivalent; results are not produced");
+                        break;
+                    }
+                    emitRootDescs(csPipe);
+                    emit(V2_DISPATCH, [&](ChunkWriter& p) {
+                        p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c);
+                    });
                     break;
+                }
+                case CMD_COPY_B2B_RB: {
+                    // Deferred buffer->buffer copy: the source range was
+                    // written by a dispatch on the GPU, so the bytes live
+                    // only in the page tier. Emit the readback that submit
+                    // planning (setupReadbacks) prepared for this copy.
+                    Buffer* sb = objOf<Buffer>(k.copyB2BRb.srcBuffer, K_BUFFER, "vkQueueSubmit");
+                    BufReadbackPending* match = nullptr;
+                    if (sb) for (auto& pend : g_bufReadbacks) {
+                        if (!pend.emitted && pend.srcBuffer == k.copyB2BRb.srcBuffer &&
+                            pend.srcAbsOff == sb->memOff + k.copyB2BRb.srcOff &&
+                            pend.dstBuffer == k.copyB2BRb.dstBuffer &&
+                            pend.dstBufOff == k.copyB2BRb.dstOff && pend.size == k.copyB2BRb.size) { match = &pend; break; }
+                    }
+                    if (!match) {
+                        vk64Unsupported("compute-buffer-readback", "deferred buffer readback was not planned at submit; the copy is not served");
+                        break;
+                    }
+                    match->emitted = true;
+                    emit(V2_BUFFER_READBACK, [&](ChunkWriter& p) {
+                        p.u64(match->srcBuffer); p.u64(match->srcAbsOff); p.u64(match->size);
+                        p.u32(match->heapPtr); p.u32(match->flagPtr);
+                    });
+                    break;
+                }
                 default:
                     vk64Unsupported("unknown-cmd-kind", "submit emit loop met a command kind with no V2 record");
                     break;
@@ -6799,14 +7028,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCreateComputePipelines: {
         // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
-        // Compute pipelines are recorded as real objects (stage module +
-        // layout) even though the V2 protocol has no dispatch execution:
+        // Compute pipelines are recorded as real objects (stage module,
+        // layout, specialization constants, root-descriptor census):
         // vkd3d-proton creates internal compute pipelines during D3D12
         // device creation and treats creation failure as device-fatal, so
         // refusing here (the previous disposition) cost the entire D3D12
-        // stack. Dispatches of these pipelines are dropped loudly at
-        // submit (CMD_DISPATCH, "compute-dispatch") -- never silently --
-        // which is the only failure channel vkCmdDispatch has.
+        // stack. Dispatches are served at submit by the V2 compute
+        // records (campaign section 4.27); the cases that stay unserved
+        // (no compute pipeline bound, a non-zero DispatchBase base) drop
+        // loudly there under "compute-dispatch" -- never silently.
         U32 n = (U32)args.a[2];
         if (!objOf<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
             return VK_ERROR_INITIALIZATION_FAILED;
@@ -6817,6 +7047,23 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             Pipeline* p = createObj<Pipeline>(K_PIPELINE, id);
             p->cs = cis[i].stage.module;
             p->layout = cis[i].layout;
+            captureStageSpec(cis[i].stage.pSpecializationInfo, p->csSpec);
+            {   // R15 census, same as the graphics path: the compute stage
+                // module's root-descriptor slots, so root descriptors bound
+                // for a dispatch resolve through V2 ROOT_DESCS like draws.
+                std::set<U32> slots;
+                ShaderModule* sm = p->cs ? objOf<ShaderModule>(p->cs, K_SHADER, "vkCreateComputePipelines") : nullptr;
+                if (sm && sm->code.size() >= 20 && !(sm->code.size() & 3)) {
+                    std::vector<U32> words(sm->code.size() / 4);
+                    memcpy(words.data(), sm->code.data(), sm->code.size());
+                    r15::Module rm;
+                    if (r15::parse(words, rm)) {
+                        r15::RootVerdict rv = r15::analyzeRoot(rm);
+                        if (rv.servable) slots.insert(rv.slots.begin(), rv.slots.end());
+                    }
+                }
+                p->rootSlots.assign(slots.begin(), slots.end());
+            }
             wr64(args.a[5] + (U64)i * 8, id);
         }
         return VK_SUCCESS;
@@ -7484,8 +7731,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdBindDescriptorSets");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
-            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+        // GRAPHICS and COMPUTE binds are both recorded: the replay is a
+        // single state stream (guests rebind when they switch pipeline
+        // kinds) and the page tier resolves the bound sets at each draw or
+        // dispatch. Any other bind point stays loud.
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS && args.a[1] != VK_PIPELINE_BIND_POINT_COMPUTE) {
+            vk64Unsupported("descriptor-bind-point", "descriptor sets bound at a bind point that is neither graphics nor compute are ignored");
             return 0;
         }
         std::vector<U64> ids;
@@ -7539,8 +7790,9 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdPushDescriptorSet");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
-            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+        // See vkCmdBindDescriptorSets: COMPUTE push sets are recorded too.
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS && args.a[1] != VK_PIPELINE_BIND_POINT_COMPUTE) {
+            vk64Unsupported("descriptor-bind-point", "descriptors pushed at a bind point that is neither graphics nor compute are ignored");
             return 0;
         }
         U64 id = 0;
@@ -7862,6 +8114,10 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Immediate CPU memcpy: all Vulkan memory is guest-mapped, so the
         // copy is visible to subsequent reads (e.g. emitBufferData at submit).
         // This is what DXVK uses to upload vertex/index data from staging.
+        // Exception (V2 compute): a region whose source a recorded dispatch
+        // may have written on the GPU defers to a submit-time page readback
+        // (CMD_COPY_B2B_RB below) -- the guest bytes there are stale.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBuffer");
         struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
         U32 nreg = (U32)args.a[3];
         std::vector<VkBufferCopyL> regs;
@@ -7882,6 +8138,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
             if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
             if (!n) continue;
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(args.a[1], src->memOff + r.srcOffset, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{args.a[1], args.a[2], r.srcOffset, r.dstOffset, n};
+                pushCmd(cb, dc);
+                continue;
+            }
             std::vector<U8> tmp((size_t)n);
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
@@ -7902,6 +8164,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // regions from args.a[] as if the shim unpacked the struct; it never
         // did, so vkd3d buffer copies were dropped here (the struct pointer was
         // looked up as a buffer handle) and buffer-copy readbacks read zeros.
+        CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBuffer2");
         U64 pInfo2 = args.a[1];
         VK64_DROP_IF(return 0, !pInfo2);
         U64 hSrc2 = rd64(pInfo2 + 16);
@@ -7944,6 +8207,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (sOff + n > sEnd) n = sEnd - sOff;
             if (dOff + n > dEnd) n = dEnd - dOff;
             if (!n) continue;
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(hSrc2, src->memOff + r.srcOffset, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{hSrc2, hDst2, r.srcOffset, r.dstOffset, n};
+                pushCmd(cb, dc);
+                continue;
+            }
             std::vector<U8> tmp((size_t)n);
             g_mem->memcpyFromGuest(tmp.data(), sOff, n);
             g_mem->memcpyToGuest(dOff, tmp.data(), n);
@@ -8633,6 +8902,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Compute dispatch. Record for page-side handling.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatch");
         VK64_DROP_IF(return 0, !cb);
+        vk64MarkComputeWrites(cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[1];
@@ -8645,12 +8915,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, baseGroupX, baseGroupY, baseGroupZ, groupCountX, groupCountY, groupCountZ)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDispatchBase");
         VK64_DROP_IF(return 0, !cb);
+        vk64MarkComputeWrites(cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = args.a[4];
         c.b = args.a[5];
         c.c = args.a[6];
         c.d = args.a[1]; // baseX in spare
+        c.dispatchBaseY = (U32)args.a[2];
+        c.dispatchBaseZ = (U32)args.a[3];
         pushCmd(cb, c);
         return 0;
     }
@@ -8665,6 +8938,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VK64_DROP_IF(return 0, !mem || !mem->va);
         U32 xyz[3] = {0, 0, 0};
         g_mem->memcpyFromGuest(xyz, mem->va + buf->memOff + args.a[2], 12);
+        vk64MarkComputeWrites(cb);
         Cmd c;
         c.kind = CMD_DISPATCH;
         c.a = xyz[0];

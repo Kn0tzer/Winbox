@@ -2638,3 +2638,120 @@ used for diagnosis was scratch and is not committed.
   widening (the Nvidia-workaround comment exists only in the DXBC
   converter); a DXIL shader with u32->f32 conversion on this device
   deserves one probe before assuming symmetry.
+
+### 4.30 V2 compute execution: dispatches served end to end; the two guest-visible consumers stop at pre-existing walls (2026-10-28, compute lane)
+
+**Drop characterization (the "compute-entry" disposition, three drop points).**
+Compute-only SPIR-V modules were accepted at creation (the audit's
+`spirv-compute-entry` early-accept), but a dispatch died at three successive
+gates: (1) record time in the 64-bit bridge — `vkCmdBindDescriptorSets` and
+`vkCmdPushDescriptorSetKHR` rejected any bind point other than GRAPHICS
+(`compute-descriptor-sets`); (2) submit time in the bridge emitter —
+`serializeSubmitV2`'s CMD_DISPATCH case loud-dropped every dispatch
+(`compute-dispatch`: "no V2 record; results are not produced"); (3) the page
+tier had no compute records at all: the bridge V2Rec enum ended at
+ROOT_DESCS (0x1D), `parseV2Chunk` rejected higher types, the SHADER record
+decode threw for stage > 1, and no compute pipeline or dispatch decode
+existed. Two adjacent data-flow defects mattered for serving: dispatch
+recording dropped vkCmdDispatchBase's baseY/baseZ, and
+`vkCmdCopyBuffer`/`vkCmdCopyBuffer2` executed an eager CPU memcpy at record
+time — a copy out of a buffer a queued dispatch would later write could
+never see the dispatch's results.
+
+**Implementation.** Bridge (`vk64bridge.cpp`, +303/-29): new V2 records
+PIPELINE_COMPUTE (0x1E), DISPATCH (0x1F), BUFFER_READBACK (0x20);
+`vkCreateComputePipelines` captures specialization constants and the R15
+root census, mirroring graphics; both bind gates accept GRAPHICS||COMPUTE
+(residual rejection renamed `descriptor-bind-point`); dispatch handlers
+record baseY/baseZ and, before recording, mark the storage-buffer ranges
+the bound pipeline may write (replaying the command buffer's bound sets,
+dynamic offsets included); a CopyBuffer/CopyBuffer2 whose source range
+intersects a mark — with no bridge-observed write since (write-epoch proof)
+— defers to a pending page readback instead of the eager memcpy, and
+completion writes the page-produced bytes into guest memory with the
+destination buffer's dirtyGen bump + vk64TouchMem (a new bump/write pair,
+census-pinned). Protocol (`vk-protocol.mjs`): the three records decode
+fail-closed (readback sizes range-checked 1..64MB; SHADER stage bound now
+2). Page (`vkwebgpu.mjs`): compute pipelines are built by
+`getComputePipelineFor`, which reuses the graphics path's machinery — the
+§4.25 group/binding remap block was factored verbatim into
+`remapDeclGroups` and is now shared; bind-group construction, the
+fingerprint/persist cache, push-constant handling, §4.26's
+storage-format-access naming, and the error-scope-before-layouts
+discipline are all the graphics code paths. Replay executes real compute
+passes (`beginComputePass`/`dispatchWorkgroups`); buffer readbacks copy
+out of a registry of buffers actually bound as storage. Residual loud
+drops, all named: dispatch with no compute pipeline or a non-zero base
+group (`compute-dispatch`), a compute dispatch recorded into a render pass
+(`compute-in-render-pass`), untranslatable modules (pipeline-creation
+failure), 32-bit compute (never recorded on that ABI).
+
+**Micro-probe (cs12, tools/vkd3d/probe/cs12.c).** Three variants. Before
+the lane (pre3, baseline dist): BUF FAIL (all zeros), BUF2 FAIL, TEX FAIL —
+the console shows the drops (`compute-dispatch` x53+, `compute-descriptor-sets`
+x65+). Two characterization findings shaped the probe: vkd3d's clear-UAV
+builtin takes a vkCmdFillBuffer fast path whenever the byte pattern repeats
+every 4 bytes, so only differing-component multi-byte clears reach the meta
+compute dispatch at all; and the in-guest d3dcompiler SM5 front-end accepts
+no structured-buffer types, no thread-ID semantics, and only unrolled
+constant-index texture writes with pure decimal literals. After the lane:
+the record path is proven in the decoded chunk stream (meta frames decode
+as bindComputePipe/push/dispatch; guest frames as full
+bindSets/descSet/dispatch sequences) and the page tier's serving is proven
+against a recording mock device replaying a real decoded guest frame
+(compute pipeline built with COMPUTE-visibility storage texture, dispatch
+issued, readback copy taken from the bound texture). The three variants
+still fail in the guest, each at a pre-existing wall characterized to root
+cause:
+
+- **BUF/BUF2 (vkd3d's own meta clears)** stop at descriptor delivery for
+  meta pipelines: their submit chunks carry SHADER + PIPELINE_COMPUTE +
+  PUSH + DISPATCH but no descriptor-set records at all, although the meta
+  shader needs exactly one descriptor (its push-descriptor bind never
+  reaches the V2 stream), and the texel-buffer storage image then also
+  misses its format injection (`StorageImageWriteWithoutFormat` at
+  translation). Why the meta bind never enters the stream is unresolved —
+  candidates are a bind-only preamble submit or a heap-set bind the
+  emitter drops; it is a vkd3d-internal path, not guest-visible API
+  behavior.
+- **TEX (guest CS through descriptor-heap tables)** stops at the standing
+  storage-image-write wall, now root-caused: vkd3d lowers a descriptor
+  heap to a SPIR-V runtime array of storage images indexed by a
+  push-constant heap index; spirvfix R15a specializes such arrays only for
+  READ accesses (the array variable must be NonWritable), so an image
+  WRITE through the array survives to naga, which rejects it
+  (`InvalidImage([6])`, offline-reproduced through spirvfix + naga
+  directly). The wall is stage-independent — it equally blocks fragment
+  shaders writing UAVs through heap tables; graphics EXEC probes only
+  passed because they write through render attachments. Guest root
+  descriptors are not an escape: the vendored vkd3d rejects a compute PSO
+  whose root signature carries a root UAV with E_INVALIDARG
+  (probe-verified), so heap tables are the only guest compute shape here.
+
+**Guards and suites.** New: `vk-compute-records.test.mjs` (5 tests —
+record decode incl. fail-closed bounds) and
+`vk-compute-serving-guard.test.mjs` (6 tests — source pins across bridge,
+protocol, page), plus a native extension in `vk64_native_test.cpp`
+(compute pipeline creation emits PIPELINE_COMPUTE; a bound dispatch emits
+DISPATCH with its group counts and drops nothing; a non-zero-base dispatch
+drops loudly and emits none). Census maintenance, all sanctioned by the
+pins' own rules: VK64_DROP_IF sites 247 -> 250, dirtyGen bumps 20 -> 21,
+guest-write primitive lines 52 -> 53 (register addendum). JS suite: 313 passed / 0 failed (311 baseline test files at the branch
+point + the 2 new files above; the 5 pre-existing guards whose pins this
+lane's changes move — drop-macro census, dirty-generation census,
+pipeline-rejection extractor, spirv-rejections phrase, register
+citations — were updated per their own maintenance rules and pass).
+Native: the emulator test binary builds and exits 0; `run-native.py` is
+broken at the branch baseline in this environment (its format-bpp table
+assert fires identically on the pristine integ tree, and a later features
+assert behind it) — the new native block was verified by executing it in a
+diagnostic copy with only the pre-existing assert neutralized; it passes
+and the failure resumes at the pre-existing assert downstream.
+
+**Next walls, in order.** (1) spirvfix: storage-image writes through
+runtime descriptor arrays (extend R15a specialization to writes) — this
+unlocks guest compute through heaps AND heap-bound fragment UAV writes.
+(2) vkd3d meta-pipeline descriptor delivery (why push-descriptor binds
+for meta clears never enter the V2 stream) — unlocks differing-component
+UAV buffer clears. (3) Sampled-texture serving path for r16float/R8_UINT
+storage reads (already queued from §4.26 and the UINT lane).
