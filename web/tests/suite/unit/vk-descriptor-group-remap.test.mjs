@@ -15,12 +15,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const tier = readFileSync(new URL('../../../vkwebgpu.mjs', import.meta.url), 'utf8');
+const utils = readFileSync(new URL('../../../wgsl-utils.mjs', import.meta.url), 'utf8');
 
 test('descriptor groups are remapped into the device budget, not rejected', () => {
   assert.ok(!tier.includes('group-out-of-range'), 'the old group gate must be gone');
-  assert.ok(tier.includes('const groupMap = {};'), 'the remap table is recorded');
-  assert.ok(tier.includes('remapGroup.set(g, g); groupMap[g] = g;'), 'push group stays put');
-  assert.ok(tier.includes('while (next === V2_PUSH_GROUP) next++;'), 'non-push groups skip the push slot');
+  assert.ok(tier.includes('const groupMap = plan.groupMap;'), 'the remap table is recorded');
+  assert.ok(tier.includes('planGroupRemap(decls,'), 'the builder plans through the shared helper');
+  assert.ok(utils.includes('groupMap[V2_PUSH_GROUP] = V2_PUSH_GROUP;'), 'push group stays put');
+  assert.ok(utils.includes('while (next === V2_PUSH_GROUP) next++;'), 'non-push groups skip the push slot');
   assert.ok(tier.includes('code.replace(/@group\\((\\d+)\\)/g'), 'WGSL @group annotations are rewritten to the remapped groups');
   assert.ok(tier.includes('d.sourceGroup = d.group;'), 'decls keep their original set for diagnostics');
 });

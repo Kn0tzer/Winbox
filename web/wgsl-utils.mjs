@@ -254,6 +254,96 @@ export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf) {
   return agreed;
 }
 
+// ---------------------------------------------------------------------------
+// Descriptor-group remap planning (campaign sections 4.25 and 4.32).
+// Guest Vulkan set numbers are virtual (vkd3d heap-lowering tables,
+// bindless sets) and routinely exceed the WebGPU bind-group budget, so
+// the page tier compacts a pipeline's groups into the budget and keeps
+// a remapped->original map for draw-time set lookups. Group
+// V2_PUSH_GROUP is reserved for the push-constant UBO: the draw loop
+// never binds it from a descriptor set, it binds the push block there
+// separately, so after the remap that group may hold ONLY the push
+// declaration. A guest set can legitimately BE numbered V2_PUSH_GROUP
+// (vkd3d heap-lowering places cs12 TEX pass 2's sampled-image table at
+// set 3): its declarations are ordinary guest resources and compact
+// like any other set, splitting the group -- the push declaration
+// stays, the guest declarations move to a free slot, and the WGSL is
+// fixed up per declaration (rewriteGuestGroupDeclWGSL) because a
+// group-number rewrite cannot split one @group between two targets.
+//
+// Classification, all fail-closed:
+//   - the push declaration is PROVEN: group V2_PUSH_GROUP, binding
+//     V2_PUSH_BINDING, addr 'uniform', and the stage actually had a
+//     push block rewritten (hasPush). It keeps group V2_PUSH_GROUP.
+//   - a buffer declaration in the push SLOT (group V2_PUSH_GROUP,
+//     binding V2_PUSH_BINDING) with a storage address space is
+//     ambiguous -- the slot's only legitimate buffer occupant is the
+//     push UBO -- and the plan fails 'group-3-non-push'.
+//   - every other declaration at group V2_PUSH_GROUP (textures,
+//     samplers, storage textures at any binding; buffers at other
+//     bindings; a uniform buffer at the push slot when NO push block
+//     exists, which is provably a guest buffer) is a plain guest
+//     declaration and compacts with its set.
+//   - more distinct groups than the budget fails 'group-count-limit'.
+// For pipelines with no guest declarations at V2_PUSH_GROUP the plan
+// is exactly the pre-4.32 assignment: guest groups in ascending order
+// take the free slots skipping V2_PUSH_GROUP, push stays.
+// Returns { error, count, targets, groupMap, numMap, guest3Target,
+// splitDecls }: targets[i] is decls[i]'s final group; groupMap maps
+// final group -> original guest set (the push group maps to itself);
+// numMap is the group-number rewrite for the WGSL (in the split case
+// it maps V2_PUSH_GROUP to itself and splitDecls are moved by name);
+// guest3Target is the final group of the guest V2_PUSH_GROUP set, or
+// null when the guest has no such set.
+// ---------------------------------------------------------------------------
+export function planGroupRemap(decls, maxBindGroups = 4, hasPush = false) {
+  const isPushDecl = (d) => hasPush && d.group === V2_PUSH_GROUP &&
+    d.binding === V2_PUSH_BINDING && d.addr === 'uniform';
+  for (const d of decls) {
+    if (d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING &&
+        d.addr.startsWith('storage')) {
+      return { error: 'group-3-non-push', count: 0, targets: [], groupMap: {}, numMap: {}, guest3Target: null, splitDecls: [] };
+    }
+  }
+  const guestTarget = new Map(); // original guest group -> final group
+  {
+    let next = 0;
+    const guestGroups = [...new Set(decls.filter(d => !isPushDecl(d)).map(d => d.group))].sort((a, b) => a - b);
+    for (const g of guestGroups) {
+      while (next === V2_PUSH_GROUP) next++;
+      guestTarget.set(g, next); next++;
+    }
+  }
+  const targets = decls.map(d => isPushDecl(d) ? V2_PUSH_GROUP : guestTarget.get(d.group));
+  const maxRemapped = Math.max(-1, ...targets);
+  if (maxRemapped + 1 > maxBindGroups) {
+    return { error: 'group-count-limit', count: maxRemapped + 1, targets: [], groupMap: {}, numMap: {}, guest3Target: null, splitDecls: [] };
+  }
+  const groupMap = {}; // final group -> original guest set index
+  for (const [g, t] of guestTarget) groupMap[t] = g;
+  const hasPushDecl = decls.some(isPushDecl);
+  if (hasPushDecl) groupMap[V2_PUSH_GROUP] = V2_PUSH_GROUP;
+  const numMap = {}; // original group -> final group, for @group(n) rewrites
+  for (const [g, t] of guestTarget) numMap[g] = t;
+  if (hasPushDecl) numMap[V2_PUSH_GROUP] = V2_PUSH_GROUP;
+  const guest3Target = guestTarget.has(V2_PUSH_GROUP) ? guestTarget.get(V2_PUSH_GROUP) : null;
+  const splitDecls = hasPushDecl
+    ? decls.filter(d => !isPushDecl(d) && d.group === V2_PUSH_GROUP) : [];
+  return { error: null, count: maxRemapped + 1, targets, groupMap, numMap, guest3Target, splitDecls };
+}
+
+// Move ONE guest declaration out of the split push group in WGSL text:
+// its @group(fromGroup) becomes @group(toGroup), matched by the
+// declaration's own (binding, name) so the push declaration -- which
+// shares the group and possibly the binding -- is never touched. The
+// pattern mirrors the resource scanner's declaration shape.
+export function rewriteGuestGroupDeclWGSL(code, decl, fromGroup, toGroup) {
+  const name = String(decl.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('@group\\(' + fromGroup + '\\)(\\s*@binding\\(' + decl.binding +
+    '\\)\\s*var(?:<[^>]+>)?\\s+' + name + '(?=\\s*:))', 'g');
+  return String(code).replace(re, (m, rest) => '@group(' + toGroup + ')' + rest);
+}
+
 export function parseStorageTextureAccessRejection(message) {
   const m = /Texture format TextureFormat::([\w-]+) does not support storage texture access StorageTextureAccess::(\w+)/.exec(String(message || ''));
   if (!m) return null;
