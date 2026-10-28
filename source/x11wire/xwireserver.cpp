@@ -13,6 +13,7 @@
  */
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 #include "xwireserver.h"
 #include "xwireconnection.h"
 #include "xwirepresent.h"
@@ -100,6 +101,10 @@ bool XWireServer::acceptConnection(const std::shared_ptr<KUnixSocketObject>& cli
 
     klog_fmt("XWireServer: accepted X11 client connection (now %d open)",
              (int)nconn);
+    // BW64_DRVINIT (section 4.35): the section 4.18 flake signature is an
+    // accept count of 2 vs 5 in passing runs — the timed count is the
+    // first divergence signal.
+    bw64DrvInitStep("x11-accept", "open=%d", (int)nconn);
     return true;
 }
 

@@ -3270,3 +3270,214 @@ needs the meta-bind delivery (lane-metabind). Remaining known
 walls after that: sampled-texture serving for the formats Dawn
 storage rejects outright (lane-sampledtex), then page-tier PSB
 serving (spirv-capability-unknown:5347 -- root12 srv/uav).
+
+## 4.35 Driver-init flake instrumentation: BW64_DRVINIT step trace (2026-10-28)
+
+§4.18 left the Godot DXGI driver-init flake as an open unknown with a
+named next step: "emulator-loader instrumentation on the winex11.drv.so
+init path plus repetition statistics on a quiet box." §4.27 added a
+second sighting family (app processes losing the desktop-init race on
+stretched boots). This section lands the instrumentation half: the
+init path now has a targeted, opt-in step trace that localizes a
+divergence to the exact step, so the next sighting is diagnosable
+instead of anecdotal. No product behavior changes.
+
+### The driver-init sequence, mapped
+
+Page tier and emulator steps are ours; guest steps happen inside the
+prebuilt Wine payload (no Wine source on the box) and are observable
+only through emulator-visible effects (process starts, file opens, X
+connects, bridge traps).
+
+1. **Page**: runtime loads, emulator worker starts, prefix/rootfs
+   staged from the runtime assets.
+2. **Page**: `installVkPageTier` → `createVkRenderer2`:
+   `navigator.gpu.requestAdapter()` → adapter info →
+   `requestDevice()` → the `bwVk*` capability flags are published.
+   TIMING-SENSITIVE: guests query these flags at device creation, so
+   they must exist before the guest's `vkCreateDevice` (the recurring
+   capability-publication defect class).
+3. **Emulator**: session boot — `wineserver -f -p` starts as the
+   persistent foreground process, then services/explorer; every start
+   is a `KProcess::startProcess`.
+4. **Guest** (explorer): win32u loads winex11.drv; its unix side
+   X-connects (XWire accept + handshake) and creates the desktop
+   window (the first CreateWindow). TIMING-SENSITIVE: desktop creation
+   stretches to tens of seconds under emulation — the §4.27 race.
+5. **Guest** (app): dxgi.dll → winevulkan.dll → `init_vulkan`: the
+   graphics driver must be registered as the user driver, and
+   winex11's unix side dlopens `libvulkan.so.1` — `LD_LIBRARY_PATH`
+   decides WHICH file wins (in probes, the staged libvk64 shim .so).
+   **This is the §4.18 failure point**: `init_vulkan` prints "Failed
+   to load Wine graphics driver supporting Vulkan" and the app exits
+   BEFORE its own X connect and BEFORE any bridge trap.
+6. **Guest** (app): window creation — the app's own X connect +
+   handshake + CreateWindow.
+7. **Guest** (vkd3d-proton device creation): `vkCreateInstance`
+   through the PE shim — the bridge's witness trap proves the shim's
+   libvulkan was the one dlopened — then
+   `vkEnumeratePhysicalDevices`, `vkCreateDevice`.
+8. **Guest/page**: swapchain — `vkCreateWin32SurfaceKHR` (§4.19),
+   first `vkQueueSubmit`/`vkQueuePresentKHR`, first frame handed to
+   the page tier.
+
+What the existing logs captured vs missed: X accepts, handshakes,
+CreateWindow, `vkCreateInstance ok`, DLL opens under BW64_DLLTRACE,
+and process exits were all logged — but on different channels with no
+common clock, and three load-bearing steps were missing entirely:
+process STARTS (boot order/timing), the `libvulkan.so` dlopen itself
+(DLLTRACE's patterns do not match `.so` paths — the shim selection was
+invisible), and the page tier's adapter/device timing relative to the
+guest boot.
+
+### The trace
+
+`BW64_DRVINIT=1` enables it. The browser launcher seeds the variable
+from `?drvinit=1` (`project/emscripten/wine64-launcher.js`, mirroring
+`?vktrace=1`); the page can also force it via the
+`bw64_drvinit_enable()` ccall — the same dual gate as BW64_VKTRACE,
+whose getenv is unreachable from some pthread workers. Each step
+emits ONE line on the klog channel:
+
+```
+drvinit: t=<ms> step=<name> <detail>
+```
+
+`t=` is milliseconds since the first step in the process
+(steady_clock; the first call is the first process start, i.e. boot),
+so process, X-server and bridge steps share one relative clock. A
+failing run diffs against a healthy one step by step: the first step
+present in the healthy trace but missing or late in the failing trace
+is the divergence.
+
+Steps: `proc-start` (pid, name, cmd — every process, so boot order is
+explicit), `proc-exit` (pid, exe, status), `dll-open` (pid, full
+path, OK/FAIL+rc — the driver-module set only: winex11.drv,
+winex11.so, libvulkan.so*, winevulkan.dll, vulkan-1.dll,
+bw64vulkan.dll, dxgi.dll, d3d12.dll, d3d12core.dll), `x11-accept`
+(running count — the §4.18 signature is 2 accepts vs 5),
+`x11-handshake` (pid), `x11-first-window` (first CreateWindow
+overall = desktop up), `vk-witness`, and the first-occurrence bridge
+milestones `vk-instance`, `vk-enum-devices`, `vk-device`,
+`vk-surface`, `vk-submit`. Page tier: `adapter` (vendor/architecture/
+description) and `device` (the three published `bwVk*` values) from
+both renderers in `web/vkwebgpu.mjs`, gated on the same `?drvinit=1`
+param, on the same log channel with the same step names.
+
+Implementation: `include/drvinittrace.h` — header-only inline helpers
+(cached getenv gate, steady-clock, first-occurrence flags), chosen so
+no new translation unit or link symbol appears in any build (the gate
+script's hand-maintained source list included). Call sites:
+`source/kernel/kprocess.cpp`, `source/kernel/syscall64.cpp` (exit +
+openat), `source/x11wire/xwireserver.cpp`,
+`source/x11wire/xwireconnection.cpp`, `source/vulkan/vk64bridge.cpp`
+(milestones + the enable ccall), `web/vkwebgpu.mjs`,
+`project/emscripten/wine64-launcher.js`. Every edit is additive; when
+the variable is unset each site costs one cached-flag check — zero
+lines, zero behavior change.
+
+### Exercise: repeated tri12 boots with the trace on
+
+Three consecutive tri12 boots (`web/tests/d3d12-pixels.mjs`,
+`BW_TEST_URL_PARAMS="drvinit=1"`, slot-serialized, box carrying the
+other lanes' probe load throughout) plus one control boot without
+the parameter, and one A/B boot of the identical probe on the
+unmodified integ build. Artifacts: `test-results/dxvk-drvinit{1,2,3,
+ctl}/console.log` in this lane's tree; the integ A/B verdict matches
+the compute merge gate's independent finding (below).
+
+Healthy boots (runs 1-3): guest RESULT 0, exit status 0, and the
+FULL step sequence on one clock — runs 1 and 2 produced identical
+55-step sequences; run 3 produced 56, the delta confined to which
+boot-helper `proc-exit` lines fell inside the capture window; the
+load-bearing sequence was identical in all three. Run 1's trace,
+condensed (t = ms since boot):
+
+```
+t=0      proc-start pid=10 vkboot cmd        t=48    proc-start wineserver
+t=271    proc-start deskpin                  ... boot helpers exit (stretched:
+                                             last at t=51282 under load)
+t=51384  dll-open winex11.drv (x2 paths)     t=51446 dll-open winex11.so pid=38
+t=51707  x11-accept open=1                   t=51711 x11-handshake pid=38
+t=53484  x11-first-window pid=38 (desktop)   ... accepts to open=5
+t=61883  proc-start pid=48 tri12.exe
+t=76930  dll-open d3d12.dll                  t=76969 dll-open d3d12core.dll
+t=76990  dll-open dxgi.dll                   t=78520 dll-open winevulkan.dll
+t=78699  vk-instance                         t=78744 vk-enum-devices
+t=78950  dll-open winex11.so pid=48          t=79196 x11-accept open=6 (the app)
+t=80137  dll-open bw64vulkan.dll (+ FAIL probes for the .so search paths, rc=-2)
+t=81465  vk-device                           t=83601 dll-open libvulkan.so.1 pid=48
+t=83688  vk-witness                          t=83849 vk-submit (vkQueueSubmit2)
+t=84044  proc-exit pid=48 status=0
+```
+
+Two observations the trace makes visible for the first time: the
+boot stretch is quantified (desktop window at t=53.5 s, app start at
+t=61.9 s, device at t=81.5 s under load — the §4.27 race conditions,
+measured), and the loader's failed search probes
+(`bw64vulkan.dll.so` rc=-2) are now distinguishable from real load
+failures. `vk-surface` does not appear: tri12 in this probe mode
+renders offscreen and reads back, creating no Win32 surface — the
+step fires on swapchain paths (uav12/root12 present modes).
+
+Control boot (no `drvinit=1`): ZERO drvinit lines, guest RESULT 0 —
+the instrumentation is fully silent when off, as designed.
+
+Verdict artifact, resolved: the probe harness's composite
+`passed:false` appears on ALL FIVE boots (3 traced, control, and the
+unmodified integ A/B) alongside guest RESULT 0, because this probe
+mode presents no frames for its `vk64: FRAME built` conjunct. The
+compute merge gate reached the same conclusion independently
+("harness composite 'passed:false' is a rig capture artifact,
+present at baseline too"). Guest RESULT + exit status + the step
+trace are the health signals here.
+
+Page-tier steps: the probe harness captures the emulator/guest log
+channel only — page console lines (any vkwebgpu logging, not just
+drvinit) never appear in its console.log. The `adapter`/`device`
+steps are pinned by the guard and fire in the page console wherever
+it is visible (live site / demo harness with `?drvinit=1`).
+
+### Suites and guards
+
+- Guard `web/tests/suite/unit/drvinit-trace.test.mjs` (6 tests):
+  pins the header gate and prefix, the launcher seeding, every C++
+  call site, and the page-tier steps + gate. Sabotage-verified:
+  renaming the proc-start step and breaking the launcher condition
+  each turn exactly one test red.
+- JS suite: **313 passed, 0 failed** (`BW_TEST_DIST` = this
+  tree's dist) — the 312 baseline at 5be0b7225 plus the new guard
+  file; `no-silent-failure` and `vk-register-citations` green after
+  the fixes described in this section.
+- Native: 645 OK, 0 FAILED, single-threaded (`Build/Test/boxedwine
+  0 0 1`, 221 s) — the baseline at 5be0b7225 exactly.
+- Register citations: the insertions drifted 62 citations in
+  vk64bridge.cpp / vkwebgpu.mjs; re-pinned (39 via the audit's --fix,
+  the rest by diff-shift and comma-list hand re-pins). Final audit:
+  224 MATCH / 0 DRIFT / 0 MISSING (UNCHECKABLE 104, EXEMPT 7; the
+  split differs from a pristine checkout's 221/98 because staged
+  payload files present in this tree make more citations checkable).
+- `no-silent-failure` fall-out, fixed at the root: the milestone
+  dispatch's `default: break;` counted as an unlogged default
+  (vk64bridge.cpp 20 → 21). The clause was removed (the switch is on
+  a U64 fn id, not an enum) rather than raising the reviewed
+  baseline.
+
+### Flake status
+
+NOT reproduced: 3 traced boots + 1 control + 1 integ A/B, all
+guest RESULT 0 with complete step sequences, on a loaded box (the
+conditions §4.27 showed stretching boots to ~10x). The flake stays
+OPEN as an unknown, but it is now INSTRUMENTED: the next sighting
+with `drvinit=1` localizes to the first missing or late step by
+construction — §4.18's signature (2 X accepts vs 5, no bridge trap)
+would present as a trace ending before `vk-instance` with the
+`dll-open`/`x11-accept` gap visible, separating the loader-search
+failure from the driver-registration failure from the desktop race,
+which the old logs could not tell apart.
+
+Next step for the flake itself: any future init failure run with
+`?drvinit=1` (demo-matrix and probe URLs accept it via
+BW_TEST_URL_PARAMS) localizes to the first missing/late step;
+repetition statistics on a quiet box remain the other half of
+§4.18's named follow-up.

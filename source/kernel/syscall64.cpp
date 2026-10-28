@@ -8,6 +8,7 @@
  */
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 
 #ifdef BOXEDWINE_GUEST_X64
 
@@ -905,6 +906,13 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
         klog_fmt("CPU64: %s syscall, status=%lld  pid=%d exe='%s' cmd='%s'",
                  group ? "exit_group" : "exit", (long long)status,
                  (int)p->id, p->exe.c_str(), cmd.c_str());
+        // BW64_DRVINIT (section 4.35): a driver-init flake ends with the
+        // app exiting before its X connect / first bridge trap; the timed
+        // exit line closes the step sequence for that pid.
+        if (group) {
+            bw64DrvInitStep("proc-exit", "pid=%d exe=%s status=%lld",
+                            (int)p->id, p->exe.c_str(), (long long)status);
+        }
     } else {
         klog_fmt("CPU64: %s syscall, status=%lld",
                  group ? "exit_group" : "exit", (long long)status);
@@ -1558,6 +1566,18 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
     KFileDescriptorPtr result;
     U32 rc = process->openFile(process->fsContext->currentDirectory, BString::copy(path),
                                (U32)flags, result);
+    // BW64_DRVINIT (section 4.35): driver-module opens are init steps —
+    // including FAILED ones (a libvulkan.so.1 that does not resolve is a
+    // candidate flake mechanism, and DLLTRACE does not match .so paths).
+    if (bw64DrvInitIsDriverPath(path)) {
+        if ((S32)rc < 0) {
+            bw64DrvInitStep("dll-open", "pid=%d FAIL '%s' rc=%d",
+                            (int)process->id, path, (int)(S32)rc);
+        } else {
+            bw64DrvInitStep("dll-open", "pid=%d OK '%s' fd=%d",
+                            (int)process->id, path, (int)result->handle);
+        }
+    }
     if ((S32)rc < 0) {
         if (getenv("BW64_DLLTRACE") && (strstr(path, ".dll") || strstr(path, ".exe") ||
                                         strstr(path, "x86_64-windows") || strstr(path, "kernel32"))) {

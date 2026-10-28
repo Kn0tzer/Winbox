@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 #include "kinotify.h"
 
 #include "kscheduler.h"
@@ -886,6 +887,12 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
             delete openNode;
         }
         scheduleThread(thread);
+        // BW64_DRVINIT (section 4.35): process-start order/timing is the
+        // boot sequence the driver-init flake races against (wineserver,
+        // services, explorer/desktop, then the app).
+        bw64DrvInitStep("proc-start", "pid=%d name=%s cmd=%.*s",
+                        (int)this->id, this->name.c_str(), 160,
+                        this->commandLine.c_str());
     } else {
         if (openNode) {
             openNode->close();

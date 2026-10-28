@@ -48,6 +48,7 @@
 // buffer IS the batching boundary, and only the per-frame handoff hops.
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 #include "vk32bridge_abi.h"
 namespace vk32abi {
 #include "vk32_guest.h"
@@ -3505,6 +3506,14 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE
 #endif
 void bw64_vktrace_enable() { g_traceEnv = 1; g_traceEnvInit = true; }
+// BW64_DRVINIT has the same reachability problem as BW64_VKTRACE, so the
+// launcher/page can force the driver-init step trace through this call
+// (declared in drvinittrace.h as the shared forced flag).
+extern "C"
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+void bw64_drvinit_enable() { bw64DrvInitForcedFlag().store(true); }
 inline bool vkProfEnabled() {
     if (!g_vkProfFirstFrameDone) return false;
     if (g_vkProfForce) return true;
@@ -6000,6 +6009,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // The guest shim's constructor. Proves the guest dlopen()ed THIS
         // libvulkan.so.1 (tasks/p1-final.md unknown #1) before any real call.
         klog("vk64: FIRST trap - guest libvulkan.so.1 mapped (witness fnId=0)");
+        // BW64_DRVINIT (section 4.35): the timed witness is the moment the
+        // guest's Vulkan loader chain reaches THIS shim.
+        bw64DrvInitStep("vk-witness", "pid=%d",
+                        (cpu && cpu->thread && cpu->thread->process)
+                            ? (int)cpu->thread->process->id : -1);
         return 0;
     }
     if (fnId == VK64_fn_unimplemented) {
@@ -6020,6 +6034,33 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
 
     if (vkTrace()) { klog_fmt("vk64: trap %s", fnName(fnId)); g_tracedCalls++; }
+
+    // BW64_DRVINIT (section 4.35): first-occurrence Vulkan init
+    // milestones. A driver-init flake never reaches the bridge at all;
+    // a healthy boot walks witness -> instance -> enum-devices ->
+    // device -> surface -> submit. Entry-side on purpose: a step that
+    // starts but whose case never returns is itself the divergence.
+    if (bw64DrvInitEnabled()) {
+        static std::atomic<bool> s_vkInstance, s_vkEnum, s_vkDevice,
+                                 s_vkSurface, s_vkSubmit;
+        const char* diStep = nullptr;
+        std::atomic<bool>* diFlag = nullptr;
+        switch (fnId) {
+            case VK64_fn_vkCreateInstance:           diStep = "vk-instance";    diFlag = &s_vkInstance; break;
+            case VK64_fn_vkEnumeratePhysicalDevices: diStep = "vk-enum-devices"; diFlag = &s_vkEnum;    break;
+            case VK64_fn_vkCreateDevice:             diStep = "vk-device";      diFlag = &s_vkDevice;  break;
+            case VK64_fn_vkCreateWin32SurfaceKHR:    diStep = "vk-surface";     diFlag = &s_vkSurface; break;
+            case VK64_fn_vkQueueSubmit:
+            case VK64_fn_vkQueueSubmit2:
+            case VK64_fn_vkQueueSubmit2KHR:          diStep = "vk-submit";      diFlag = &s_vkSubmit;  break;
+        }
+        if (diFlag && bw64DrvInitOnce(*diFlag)) {
+            bw64DrvInitStep(diStep, "pid=%d fn=%s",
+                            (cpu && cpu->thread && cpu->thread->process)
+                                ? (int)cpu->thread->process->id : -1,
+                            fnName(fnId));
+        }
+    }
 
     VK64Args args = {};
     if (argsAddr && g_mem) g_mem->memcpyFromGuest(&args, argsAddr, sizeof(args));
