@@ -3874,3 +3874,88 @@ disposition.
   unchanged: cs12 BUF/BUF2 await lane-metabind; the
   rendered-then-B2I'd stale page data (§4.24) and the operand-aware
   array scan remain queued.
+
+### Merge outcome (integ, 2026-10-28)
+
+Merged into integ/winbox-20261022b as 8f077cdd8 (this section
+renumbered 4.34 -> 4.38), with one merge-fallout repair commit
+4afe7ac57. Conflicts were confined to the two docs and
+web/vkwebgpu.mjs (import union; the serveSampledStorage helper
+inserted ahead of HEAD's getPipelineFor, whose section-4.33
+pushBlock parameter is retained). Both sides verified present in
+the merged files: serveSampledStorage is applied to vsR/fsR in the
+graphics builder and to csR in the section-4.30 compute builder,
+each time after rewritePushConstantsWGSL and before declarations
+are scanned; the gpuTextureFor usage guard and the
+V2_STORAGE_USAGE_FORBIDDEN set {76, 13} landed intact, alongside
+the merged tree's resolveStorageVarFormat / planGroupRemap /
+remapDeclGroups machinery. Gates on the merged tree: JS suite 317
+passed / 1 failed on the first run -- the one failure was
+vk-register-citations' coverage ceiling (UNCHECKABLE had grown
+97 -> 105 against the pinned 102), a merge fallout characterized
+and repaired in 4afe7ac57 (duplicate-scan dependents re-pinned to
+follow their primaries; the two catch-literal rows and the
+replay-skip-flag row re-pinned to their merged-tree sites; no row
+text or disposition changed). Citation audit after the repair:
+228 MATCH / 14 MATCH-INHERITED / 95 UNCHECKABLE / 7 EXEMPT over
+344 cited rows, 0 DRIFT / 0 MISSING, and the citations guard
+passes 4/4. Register: 371 rows = 72 IMPLEMENTED / 66
+REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount;
+delta vs the pre-merge tree is exactly the one new IMPLEMENTED
+row plus the narrowing of the storage-format-access row above).
+Native suite 647/0 single-threaded; run-native.py end-to-end
+green (31 PASS blocks); dist export verified (Browser export
+
+### Merge outcome (integ, 2026-10-28)
+
+Merged into integ/winbox-20261022b as 8f077cdd8 (this section
+renumbered 4.34 -> 4.38), with one merge-fallout repair commit
+4afe7ac57. Conflicts were confined to the two docs and
+web/vkwebgpu.mjs (import union; the serveSampledStorage helper
+inserted ahead of HEAD's getPipelineFor, whose section-4.33
+pushBlock parameter is retained). Both sides verified present in
+the merged files: serveSampledStorage is applied to vsR/fsR in the
+graphics builder and to csR in the section-4.30 compute builder,
+each time after rewritePushConstantsWGSL and before declarations
+are scanned; the gpuTextureFor usage guard and the
+V2_STORAGE_USAGE_FORBIDDEN set {76, 13} landed intact, alongside
+the merged tree's resolveStorageVarFormat / planGroupRemap /
+remapDeclGroups machinery. Gates on the merged tree: JS suite 317
+passed / 1 failed on the first run -- the one failure was
+vk-register-citations' coverage ceiling (UNCHECKABLE had grown
+97 -> 105 against the pinned 102), a merge fallout characterized
+and repaired in 4afe7ac57 (duplicate-scan dependents re-pinned to
+follow their primaries; the two catch-literal rows and the
+replay-skip-flag row re-pinned to their merged-tree sites; no row
+text or disposition changed). Citation audit after the repair:
+228 MATCH / 14 MATCH-INHERITED / 95 UNCHECKABLE / 7 EXEMPT over
+344 cited rows, 0 DRIFT / 0 MISSING, and the citations guard
+passes 4/4. Register: 371 rows = 72 IMPLEMENTED / 66
+REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount;
+delta vs the pre-merge tree is exactly the one new IMPLEMENTED
+row plus the narrowing of the storage-format-access row above).
+Native suite 647/0 single-threaded; run-native.py end-to-end
+green (31 PASS blocks); dist export verified ("Browser export
+verified", stamp 8f077cdd8).
+
+Guest gate on the merged dist (shipping path, d3d12-system.mjs):
+NOT YET CONFIRMED -- two attempts were defeated by box
+conditions, not by the build. Attempt 1 (TIMEOUT 900 s,
+test-results/dxvk-sampledtex-merge-uav12): the guest completed
+its Wine boot but produced no RESULT inside 15 minutes at box
+load ~9-12, with a second heavy probe and a three-build convoy
+sharing the machine; harness verdict is the waitForFunction
+timeout. Attempt 2 (TIMEOUT 1800 s,
+test-results/dxvk-sampledtex-merge-uav12b): the session lost
+the explorer desktop-init race under the stretched boot
+(winediag nodrv_CreateWindow, "The explorer process failed to
+start" -- the section-4.27 family); uav12.exe never launched
+(zero mentions in the console log) and the harness timed out at
+30 minutes. Neither attempt exercised the merged serving code
+in the guest, so the all-six EXEC case map on the merged tree
+stands on this lane's branch proof above (Run C, rebuilt pair,
+SUMMARY exec=ALL6, RESULT 0) plus section 4.37's shipping-path
+proof that the archive the merge ships serves the other four
+EXEC cases and held R16_FLOAT / R8_UINT at exactly the named
+rejections this merge removes. Re-run the gate in a quieter
+window before treating the merged-tree case map as proven.
