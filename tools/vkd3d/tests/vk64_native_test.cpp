@@ -1126,8 +1126,9 @@ int main() {
         assert(vk64BridgeUnsupportedCount("fn:vkFooBar") == 1);
         // Compute pipelines are recorded as real objects (vkd3d-proton
         // creates internal compute pipelines during D3D12 device creation
-        // and treats creation failure as device-fatal). Dispatches still
-        // have no V2 record and are reported loudly at submit (below).
+        // and treats creation failure as device-fatal). Dispatches are
+        // served by the V2 compute records (section 4.27); a dispatch
+        // with no compute pipeline bound stays loud at submit (below).
         {
             memory.writeq(3960, 0xdeadbeefull);
             VK64Args cp{}; cp.a[0] = devId; cp.a[2] = 1; cp.a[3] = 3456; cp.a[5] = 3960;
@@ -1136,13 +1137,95 @@ int main() {
             assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
             assert(memory.readq(3960) != 0 && g_objs.size() == objsBefore + 1);
         }
-        // Compute dispatch has no V2 record: submitting one is reported, never dropped quietly.
+        // A dispatch with no compute pipeline bound cannot be served:
+        // submitting one is reported, never dropped quietly.
         U64 cbDispatchId; auto* cbDispatch = createObj<CmdBuf>(K_CMDBUF, cbDispatchId);
         vkCmdDispatch(cbDispatchId, 1, 1, 1);
         assert(vk64BridgeUnsupportedCount("compute-dispatch") == 0);
         serializeSubmitV2({{cbDispatch, cbDispatchId}});
         assert(vk64BridgeUnsupportedCount("compute-dispatch") == 1);
         g_v2Pending.clear();
+        // Compute dispatch SERVED (section 4.27): under a bound compute
+        // pipeline the submit emits PIPELINE_COMPUTE + DISPATCH records
+        // and the drop counter does not move; a DispatchBase-shaped
+        // dispatch (non-zero base group, carried in d) stays loud and
+        // emits no DISPATCH record.
+        {
+            const U32 csWords[] = {
+                0x07230203u, 0x00010500u, 0, 64, 0,
+                (2u << 16) | 17u, 1u,                    // OpCapability Shader
+                (3u << 16) | 14u, 0u, 1u,                // OpMemoryModel Logical GLSL450
+                (5u << 16) | 15u, 5u, 6u, 0x6e69616du, 0u, // OpEntryPoint GLCompute %6 "main"
+                (6u << 16) | 16u, 6u, 17u, 1u, 1u, 1u,   // OpExecutionMode %6 LocalSize 1 1 1
+                (2u << 16) | 19u, 1u,                    // OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                // OpTypeFunction %2 = fn(%1)
+                (5u << 16) | 54u, 1u, 6u, 0u, 2u,        // OpFunction %6
+                (2u << 16) | 248u, 7u,                   // OpLabel
+                (1u << 16) | 253u,                       // OpReturn
+                (1u << 16) | 56u,                        // OpFunctionEnd
+            };
+            memory.memcpyToGuest(4400, csWords, sizeof(csWords));
+            VkShaderModuleCreateInfo smci{}; smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci.codeSize = sizeof(csWords); smci.pCode = 4400;
+            memory.memcpyToGuest(4200, &smci, sizeof(smci));
+            memory.writeq(4600, 0);
+            VK64Args sm{}; sm.a[0] = devId; sm.a[1] = 4200; sm.a[3] = 4600;
+            memory.memcpyToGuest(128, &sm, sizeof(sm));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateShaderModule, 128) == VK_SUCCESS);
+            const U64 csModId = memory.readq(4600);
+            assert(csModId != 0);
+            memory.memcpyToGuest(5050, "main", 5);
+            VkComputePipelineCreateInfo cci{};
+            cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.module = (VkShaderModule)csModId;
+            cci.stage.pName = 5050;
+            memory.memcpyToGuest(4800, &cci, sizeof(cci));
+            memory.writeq(5100, 0);
+            VK64Args cp2{}; cp2.a[0] = devId; cp2.a[2] = 1; cp2.a[3] = 4800; cp2.a[5] = 5100;
+            memory.memcpyToGuest(128, &cp2, sizeof(cp2));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
+            const U64 csPipeId = memory.readq(5100);
+            assert(csPipeId != 0);
+
+            const U32 csCountBefore = vk64BridgeUnsupportedCount("compute-dispatch");
+            U64 cbCsId; auto* cbCs = createObj<CmdBuf>(K_CMDBUF, cbCsId);
+            Cmd bindPipe; bindPipe.kind = CMD_BIND_PIPE; bindPipe.a = csPipeId; pushCmd(cbCs, bindPipe);
+            Cmd disp; disp.kind = CMD_DISPATCH; disp.a = 2; disp.b = 3; disp.c = 4; pushCmd(cbCs, disp);
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbCs, cbCsId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csCountBefore);
+            bool sawComputePipe = false, sawDispatch = false;
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == 0x1E) sawComputePipe = true;
+                    if (type == 0x1F) {
+                        sawDispatch = true;
+                        U32 gx, gy, gz;
+                        memcpy(&gx, chunk.data() + at + 8, 4); memcpy(&gy, chunk.data() + at + 12, 4); memcpy(&gz, chunk.data() + at + 16, 4);
+                        assert(gx == 2 && gy == 3 && gz == 4);
+                    }
+                    at += 8 + len;
+                }
+            }
+            assert(sawComputePipe && sawDispatch);
+            g_v2Pending.clear();
+            U64 cbBaseId; auto* cbBase = createObj<CmdBuf>(K_CMDBUF, cbBaseId);
+            pushCmd(cbBase, bindPipe);
+            Cmd dispBase; dispBase.kind = CMD_DISPATCH; dispBase.a = 1; dispBase.b = 1; dispBase.c = 1; dispBase.d = 5; pushCmd(cbBase, dispBase);
+            serializeSubmitV2({{cbBase, cbBaseId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csCountBefore + 1);
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    assert(type != 0x1F);
+                    at += 8 + len;
+                }
+            }
+            g_v2Pending.clear();
+        }
         // GUARD (silent drop): a command buffer with no render pass but with an image
         // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1
         // frame carrying the copy, while a barrier-only command buffer stays empty.

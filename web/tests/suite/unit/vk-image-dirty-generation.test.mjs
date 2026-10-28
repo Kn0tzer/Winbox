@@ -208,7 +208,7 @@ test('every bridge write into image memory bumps the generation signal (census)'
   const bumpIdx = lines
     .map((l, i) => (/->dirtyGen = g_bufDirtyTick\+\+/.test(l) ? i : -1))
     .filter((i) => i >= 0);
-  assert.equal(bumpIdx.length, 20, 'pinned count of dirtyGen bump sites');
+  assert.equal(bumpIdx.length, 21, 'pinned count of dirtyGen bump sites');
   for (const i of bumpIdx) {
     assert.ok(lines.slice(i, i + 4).join('\n').includes('vk64TouchMem('),
       `dirtyGen bump at line ${i + 1} lacks a paired vk64TouchMem`);
@@ -275,10 +275,14 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // same destination images as the per-pixel loops they accelerate and are
   // covered by each handler's existing post-loop dirtyGen bump + vk64TouchMem
   // (asserted per-handler in (b) above).
+  // 53 since the V2 compute lane: completeReadbacks' deferred buffer
+  // readback writes page-produced bytes into the destination BUFFER's
+  // guest memory, paired with that buffer's dirtyGen bump + vk64TouchMem
+  // (the bump counted in (a) above). Buffer memory, not image memory.
   // 52 since the D3D12 stack merge: walkProperties2's ID-properties case writes
   // a device-properties struct (UUID + nodeMask) back to the guest. It is not
   // image memory, so no dirtyGen bump applies; it is dispositioned here as an
   // exception, not a bump.
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 52, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 53, 'pinned count of raw guest-write primitive lines');
 });

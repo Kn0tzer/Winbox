@@ -101,7 +101,7 @@ test('unsupported stencil enums and two-sided static masks fail both guest pipel
 });
 
 test('resource declarations cover Vulkan descriptor kinds and reject incompatible pipeline interfaces', () => {
-  const layout = functionBody(page, 'function layoutEntryFor(decl) {');
+  const layout = functionBody(page, 'function layoutEntryFor(decl, vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT) {');
   assert.match(layout, /t\.startsWith\('texture_'\)/);
   assert.match(layout, /v2SamplerLayoutType\(t\)/);
   assert.match(layout, /decl\.addr === 'uniform'/);

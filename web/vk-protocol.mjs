@@ -144,6 +144,9 @@ export const V2_REC = Object.freeze({
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
   IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B, BUFFER_VIEW: 0x1C,
   ROOT_DESCS: 0x1D,
+  PIPELINE_COMPUTE: 0x1E,
+  DISPATCH: 0x1F,
+  BUFFER_READBACK: 0x20,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -199,7 +202,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.ROOT_DESCS)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_READBACK)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -797,6 +800,7 @@ export function decodeV2Frame(records, counters = {}) {
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
     images: new Map(), views: new Map(), bufferViews: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
+    computePipelines: new Map(), bufReadbacks: [],
   };
   const implicitPass = () => ({
     rpId: '0', fbId: '0', w: width, h: height, attachments: [],
@@ -851,7 +855,7 @@ export function decodeV2Frame(records, counters = {}) {
         const hash = v2Hex64(r.u64());
         const codeLen = r.u32();
         const code = r.bytes(codeLen); r.done('SHADER');
-        if (stage > 1) throw new Error('vk64: v2 SHADER bad stage');
+        if (stage > 2) throw new Error('vk64: v2 SHADER bad stage');
         if (!frame.shaders.has(hash)) frame.shaders.set(hash, { stage, code: code.slice() });
         break;
       }
@@ -945,6 +949,44 @@ export function decodeV2Frame(records, counters = {}) {
         const pipe = { pipeId, vsHash, fsHash, topology, cull, front, depthTest, depthWrite, depthOp, blend, vb, va, vsSpec, fsSpec, primitiveRestartEnable, ...(cullDynamic || frontDynamic ? { cullDynamic, frontDynamic } : {}), ...(dynMask ? { dynMask } : {}), ...(rasterizerDiscard ? { rasterizerDiscard: 1 } : {}), ...(colorBlend ? { colorBlend, blendConstants } : {}), ...(stencil ? {stencil, blendConstantsDynamic} : {}), ...(depthBias || {}) };
         frame.pipelines.set(pipeId, pipe);
         needPass().ops.push({ op: 'bindPipe', pipe });
+        break;
+      }
+      case V2_REC.PIPELINE_COMPUTE: {
+        const pipeId = v2Hex64(r.u64());
+        const csHash = v2Hex64(r.u64());
+        // Same specialization tail as PIPELINE (emitSpec wire format).
+        let csSpec = [];
+        if (r.p < r.dv.byteLength) {
+          const n = r.u32();
+          if (n > 16) throw new Error('vk64: v2 PIPELINE_COMPUTE spec count out of range');
+          for (let i = 0; i < n; i++) {
+            const constantID = r.u32(), size = r.u32();
+            if (size !== 1 && size !== 2 && size !== 4 && size !== 8)
+              throw new Error('vk64: v2 PIPELINE_COMPUTE spec size out of range');
+            csSpec.push({ constantID, size, value: r.bytes(size) });
+          }
+        }
+        r.done('PIPELINE_COMPUTE');
+        const cpipe = { pipeId, csHash, csSpec };
+        frame.computePipelines.set(pipeId, cpipe);
+        needPass().ops.push({ op: 'bindComputePipe', cpipe });
+        break;
+      }
+      case V2_REC.DISPATCH: {
+        const x = r.u32(), y = r.u32(), z = r.u32();
+        r.done('DISPATCH');
+        if (++draws > MAX_DRAWS) throw new Error('vk64: v2 frame exceeds the page-tier draw limit');
+        needPass().ops.push({ op: 'dispatch', x, y, z });
+        break;
+      }
+      case V2_REC.BUFFER_READBACK: {
+        const srcBuffer = v2Hex64(r.u64());
+        const srcAbsOff = r.u64();
+        const size = r.u64();
+        const heapPtr = r.u32(), flagPtr = r.u32();
+        r.done('BUFFER_READBACK');
+        if (size < 1n || size > 67108864n) throw new Error('vk64: v2 BUFFER_READBACK size out of range');
+        frame.bufReadbacks.push({ srcBuffer, srcAbsOff, size, heapPtr, flagPtr });
         break;
       }
       case V2_REC.BIND_SETS: {
