@@ -2389,21 +2389,28 @@ function injectStorageImageFormats(mod, log, signature) {
 // push-loaded 64-bit value (the form Wine's DXBC compiler + dxbc-spirv
 // emit for root descriptors; census of the captured root12 modules,
 // section 4.21) -- whose address traces to exactly ONE root slot (push
-// byte offset, zero addend) and which is only ever READ through access
-// chains rooted at the materialization, is re-rooted at a synthesized
-// read-only StorageBuffer variable named bw_root_p<pushByteOff> in the
+// byte offset, zero addend) and which is only ever accessed through
+// access chains rooted at the materialization, is re-rooted at a
+// synthesized StorageBuffer variable named bw_root_p<pushByteOff> in the
 // module's heap-array set (else set 0) at binding 4096 + pushByteOff/8.
 // The bridge resolves the slot's VA at draw time and streams the target
 // range in a V2 ROOT_DESCS record; the tier binds it like any other
-// buffer entry. WRITES through a root pointer (OpStore / atomic RMW) are
-// NOT served: the page tier has no GPU->guest buffer writeback (the same
-// wall as spirv-storage-buffer-write), so a module with a writable root
-// pointer keeps the loud capability rejection. Pointer escapes (call
+// buffer entry. The address may also reach the materialization as a
+// v2uint rebuilt by the dxbc-spirv carry idiom (OpIAddCarry over the two
+// push-loaded halves; the form root SRV loads take) -- r15ClassifyVec2Addr
+// classifies exactly that shape under the same zero-addend rule. WRITES
+// through a root pointer (OpStore through a re-rooted chain) ARE served:
+// the synthesized variable is read-write, the bridge marks the resolved
+// range as GPU-written when the draw is recorded, and the section 4.30
+// deferred BUFFER_READBACK path returns the bytes to guest memory before
+// any later copy reads them. Atomic RMW through a root pointer is NOT
+// served (no guest-visible atomicity model) and keeps the loud
+// rejection. Pointer escapes (call
 // arguments, stores of the pointer itself, OpConvertPtrToU, phi/select,
 // OpPtrAccessChain) fail closed the same way, as do pointees whose
 // decorated layout is not byte-exact in WGSL storage layout (the R13
 // measure rules, storage space, plus a runtime-array tail member).
-const R15_OP = { Extension: 10, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, ConvertPtrToU: 117, ConvertUToPtr: 120, Bitcast: 124, IAdd: 128, ISub: 129, AtomicLoad: 227 };
+const R15_OP = { Extension: 10, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, ConvertPtrToU: 117, ConvertUToPtr: 120, Bitcast: 124, IAdd: 128, ISub: 129, IAddCarry: 149, AtomicLoad: 227 };
 const R15_PSB = 5349;          // PhysicalStorageBuffer storage class
 const R15_PSB_MODEL = 5348;    // PhysicalStorageBuffer64 addressing model
 const R15_STORAGE_BUFFER = 12; // StorageBuffer storage class
@@ -2543,12 +2550,114 @@ function r15ClassifyExpr(ctx, id, depth = 0) {
   }
 }
 
+// The result id of the OpLoad an address half ultimately extracts from,
+// unwrapping OpCopyObject; null for anything else.
+function r15BaseLoadId(ctx, id) {
+  let cur = id;
+  for (let i = 0; i < 8; i++) {
+    const s = ctx.byId.get(cur);
+    if (!s) return null;
+    if (s.op === Op.Load) return s.resultId;
+    if (s.op === Op.CopyObject) { cur = s.words[2]; continue; }
+    return null;
+  }
+  return null;
+}
+
+// Classify one 32-bit half of a 64-bit address built by the dxbc-spirv
+// carry idiom: the half traces to OpCompositeExtract <half> of ONE
+// push-loaded v2uint (the root VA), plus constant adds/subs and at most
+// one OpIAddCarry -- whose sum feeds the low half and whose carry the
+// high half consumes through OpIAdd. Returns { loadId, byteOff, half,
+// add, carryId } (add is the constant added to this half, mod 2^32;
+// carryId the OpIAddCarry result id this half produces (low) or
+// consumes (high), or null), or null for any other shape.
+function r15Vec2Half(ctx, id, depth = 0) {
+  if (depth > 8) return null;
+  const ins = ctx.byId.get(id);
+  if (!ins) return null;
+  if (ins.op === Op.CopyObject) return r15Vec2Half(ctx, ins.words[2], depth + 1);
+  if (ins.op === Op.CompositeExtract && ins.words.length === 4) {
+    const half = ins.words[3];
+    if (half !== 0 && half !== 1) return null;
+    const src = ctx.byId.get(ins.words[2]);
+    if (!src) return null;
+    if (src.op === Op.Load || src.op === Op.CopyObject) {
+      const prov = r15ClassifyExpr(ctx, ins.words[2]);
+      if (!prov || prov.kind !== 'push' || prov.add !== 0) return null;
+      const lt = ctx.byId.get(src.resultType);
+      if (!lt || lt.op !== Op.TypeVector || lt.words[2] !== 2) return null;
+      const loadId = r15BaseLoadId(ctx, ins.words[2]);
+      if (loadId == null) return null;
+      return { loadId, byteOff: prov.byteOff, half, add: 0, carryId: null };
+    }
+    if (src.op === R15_OP.IAddCarry && half === 0) {
+      const aC = r15ConstInt(ctx, src.words[2]), bC = r15ConstInt(ctx, src.words[3]);
+      let base = null, c = null;
+      if (bC != null && aC == null) { base = r15Vec2Half(ctx, src.words[2], depth + 1); c = bC; }
+      else if (aC != null && bC == null) { base = r15Vec2Half(ctx, src.words[3], depth + 1); c = aC; }
+      if (!base || base.half !== 0 || base.carryId != null) return null;
+      return { ...base, add: (base.add + c) >>> 0, carryId: src.resultId };
+    }
+    return null;
+  }
+  if (ins.op === R15_OP.IAdd || ins.op === R15_OP.ISub) {
+    const aC = r15ConstInt(ctx, ins.words[2]), bC = r15ConstInt(ctx, ins.words[3]);
+    if (bC != null && aC == null) {
+      const h = r15Vec2Half(ctx, ins.words[2], depth + 1);
+      if (h) return { ...h, add: (h.add + (ins.op === R15_OP.IAdd ? bC : -bC)) >>> 0 };
+    }
+    if (ins.op === R15_OP.IAdd && aC != null && bC == null) {
+      const h = r15Vec2Half(ctx, ins.words[3], depth + 1);
+      if (h) return { ...h, add: (h.add + aC) >>> 0 };
+    }
+    if (ins.op === R15_OP.IAdd && aC == null && bC == null) {
+      // OpIAdd(halfExpr, OpCompositeExtract(OpIAddCarry, 1)): the high
+      // half consuming the low half's carry, in either operand order.
+      for (const [xId, yId] of [[ins.words[2], ins.words[3]], [ins.words[3], ins.words[2]]]) {
+        const y = ctx.byId.get(yId);
+        if (!y || y.op !== Op.CompositeExtract || y.words.length !== 4 || y.words[3] !== 1) continue;
+        const carrySrc = ctx.byId.get(y.words[2]);
+        if (!carrySrc || carrySrc.op !== R15_OP.IAddCarry) continue;
+        const h = r15Vec2Half(ctx, xId, depth + 1);
+        if (h && h.carryId == null) return { ...h, carryId: carrySrc.resultId };
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+// Classify a 64-bit root address materialized as a v2uint:
+// OpCompositeConstruct(loHalf, hiHalf) over one push load, each half
+// classified by r15Vec2Half. Returns { kind:'push', byteOff, add,
+// addHi, vec2:true } or null. analyzeRootDescriptors serves only the
+// zero-addend case, exactly like the scalar form.
+function r15ClassifyVec2Addr(ctx, id) {
+  const ins = ctx.byId.get(id);
+  if (!ins || ins.op !== Op.CompositeConstruct || ins.words.length !== 4) return null;
+  const tt = ctx.byId.get(ins.resultType);
+  if (!tt || tt.op !== Op.TypeVector || tt.words[2] !== 2) return null;
+  const comp = ctx.byId.get(tt.words[1]);
+  if (!comp || comp.op !== Op.TypeInt || comp.words[1] !== 32 || comp.words[2] !== 0) return null;
+  const lo = r15Vec2Half(ctx, ins.words[2], 0);
+  const hi = r15Vec2Half(ctx, ins.words[3], 0);
+  if (!lo || !hi) return null;
+  if (lo.half !== 0 || hi.half !== 1) return null;
+  if (lo.loadId !== hi.loadId || lo.byteOff !== hi.byteOff) return null;
+  // The carry out of the low half's addition must be consumed by the
+  // high half, and the high half may consume no other carry: both sides
+  // must name the same OpIAddCarry (or neither).
+  if (lo.carryId !== hi.carryId) return null;
+  return { kind: 'push', byteOff: lo.byteOff, add: lo.add, addHi: hi.add, vec2: true };
+}
+
 // Classify every use of a pointer value: reads (Load / AtomicLoad through
 // it or through chains/copies rooted at it), writes (Store / atomic RMW),
 // escapes (anything not positively classified). Also collects the cone of
 // access-chain instructions rooted at the pointer.
 function r15PointerUses(ctx, rootId) {
-  const out = { reads: 0, writes: 0, escapes: [], cone: [] };
+  const out = { reads: 0, writes: 0, storeWrites: 0, atomicWrites: 0, escapes: [], cone: [] };
   const seen = new Set();
   const visit = (pid, depth) => {
     if (depth > 16 || seen.has(pid)) return;
@@ -2565,11 +2674,11 @@ function r15PointerUses(ctx, rootId) {
       if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1); continue; }
       if (ins.op === Op.Load && hit === start) { out.reads++; continue; }
       if (ins.op === Op.Store) {
-        if (hit === start) out.writes++; else out.escapes.push('pointer stored as a value');
+        if (hit === start) { out.writes++; out.storeWrites++; } else out.escapes.push('pointer stored as a value');
         continue;
       }
       if (ins.op >= 227 && ins.op <= 245 && hit === start) {
-        if (ins.op === R15_OP.AtomicLoad) out.reads++; else out.writes++;
+        if (ins.op === R15_OP.AtomicLoad) out.reads++; else { out.writes++; out.atomicWrites++; }
         continue;
       }
       out.escapes.push('op' + ins.op);
@@ -2718,7 +2827,7 @@ export function analyzeRootDescriptors(mod) {
     if (ins.op !== R15_OP.ConvertUToPtr && ins.op !== R15_OP.Bitcast) continue;
     const rt = ctx.byId.get(ins.resultType);
     if (!rt || rt.op !== Op.TypePointer || rt.words[1] !== R15_PSB) continue;
-    const provenance = r15ClassifyExpr(ctx, ins.words[2]);
+    const provenance = r15ClassifyExpr(ctx, ins.words[2]) || r15ClassifyVec2Addr(ctx, ins.words[2]);
     const uses = r15PointerUses(ctx, ins.resultId);
     mats.push({
       ins, matId: ins.resultId, ptrTypeId: ins.resultType, pointeeId: rt.words[2],
@@ -2733,8 +2842,9 @@ export function analyzeRootDescriptors(mod) {
       out.rejectReason = 'pointer %' + m.matId + ' address does not trace to a single push-block load';
       return out;
     }
-    if (m.provenance.add !== 0) {
-      out.rejectReason = 'pointer %' + m.matId + ' carries a nonzero address addend (' + m.provenance.add + ')';
+    if (m.provenance.add !== 0 || (m.provenance.addHi || 0) !== 0) {
+      out.rejectReason = 'pointer %' + m.matId + ' carries a nonzero address addend (' +
+        (m.provenance.vec2 ? '0x' + (m.provenance.addHi >>> 0).toString(16) + ':' + (m.provenance.add >>> 0).toString(16) : m.provenance.add) + ')';
       return out;
     }
     if (m.provenance.byteOff % 8 !== 0) {
@@ -2742,10 +2852,11 @@ export function analyzeRootDescriptors(mod) {
       return out;
     }
     const key = m.provenance.byteOff;
-    if (!bySlot.has(key)) bySlot.set(key, { byteOff: key, mats: [], writable: false, escapes: [], pointees: new Set(), coneTypes: new Set() });
+    if (!bySlot.has(key)) bySlot.set(key, { byteOff: key, mats: [], writable: false, atomicWrites: 0, escapes: [], pointees: new Set(), coneTypes: new Set() });
     const s = bySlot.get(key);
     s.mats.push(m);
     if (m.uses.writes > 0) s.writable = true;
+    s.atomicWrites += m.uses.atomicWrites || 0;
     s.escapes.push(...m.uses.escapes);
     s.pointees.add(m.pointeeId);
     for (const c of m.uses.cone) s.coneTypes.add(c.resultType);
@@ -2779,7 +2890,7 @@ export function analyzeRootDescriptors(mod) {
   }
   const flip = new Set();
   for (const s of out.slots) {
-    if (s.writable) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through its pointer (no GPU->guest buffer writeback)'; return out; }
+    if (s.atomicWrites > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through an atomic operation (atomics not served)'; return out; }
     if (s.escapes.length) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointer escapes (' + s.escapes[0] + ')'; return out; }
     if (s.pointees.size !== 1) { out.rejectReason = 'root slot push@' + s.byteOff + ' has ' + s.pointees.size + ' distinct pointee types'; return out; }
     const pointeeId = [...s.pointees][0];
@@ -3013,11 +3124,11 @@ export function rewriteRootDescriptors(mod, log) {
     addNames.push({ op: Op.Name, words: [varId, ...strWords('bw_root_p' + slot.byteOff)], resultType: null, resultId: null });
     addAnnot.push({ op: Op.Decorate, words: [varId, 34, heapSet], resultType: null, resultId: null });
     addAnnot.push({ op: Op.Decorate, words: [varId, 33, binding], resultType: null, resultId: null });
-    addAnnot.push({ op: Op.Decorate, words: [varId, 24], resultType: null, resultId: null });
+    if (!slot.writable) addAnnot.push({ op: Op.Decorate, words: [varId, 24], resultType: null, resultId: null });
     for (const m of slot.mats) baseOf.set(m.matId, varId);
     slot.newVarId = varId;
     newVars.push(varId);
-    log.push('spirvfix: re-rooted root descriptor push@' + slot.byteOff + ' at set ' + heapSet + ' binding ' + binding + ' (bw_root_p' + slot.byteOff + ')');
+    log.push('spirvfix: re-rooted root descriptor push@' + slot.byteOff + ' at set ' + heapSet + ' binding ' + binding + ' (bw_root_p' + slot.byteOff + (slot.writable ? ', writable' : '') + ')');
   }
   // Block -> BufferBlock on the pointee structs, pre-SPIR-V 1.3 only:
   // from 1.3 on, a StorageBuffer variable's struct keeps Block (BufferBlock
@@ -3046,12 +3157,19 @@ export function rewriteRootDescriptors(mod, log) {
     } else if (ins.op === Op.Load && rewritten.has(ins.words[2])) {
       ins.words[2] = baseOf.get(ins.words[2]);
       r15StripAligned(ins, 3);
+    } else if (ins.op === Op.Store && rewritten.has(ins.words[0])) {
+      // A store through a re-rooted chain needs no base change (the
+      // chain was rewritten in place); a store directly on a
+      // materialization takes the synthesized variable. Either way the
+      // Aligned operand goes, as for loads.
+      if (baseOf.has(ins.words[0])) ins.words[0] = baseOf.get(ins.words[0]);
+      r15StripAligned(ins, 2);
     }
   }
   // Delete the materializations, then sweep the address-provenance cone
   // (loads / chains / arithmetic that fed only deleted materializations).
   const drop = new Set(analysis.mats.map(m => m.ins));
-  const sweepOps = new Set([Op.Load, Op.AccessChain, Op.InBoundsAccessChain, Op.CopyObject, R15_OP.IAdd, R15_OP.ISub, R15_OP.Bitcast]);
+  const sweepOps = new Set([Op.Load, Op.AccessChain, Op.InBoundsAccessChain, Op.CopyObject, R15_OP.IAdd, R15_OP.ISub, R15_OP.Bitcast, Op.CompositeConstruct, Op.CompositeExtract, R15_OP.IAddCarry]);
   let grew = true;
   while (grew) {
     grew = false;
@@ -3082,6 +3200,45 @@ export function rewriteRootDescriptors(mod, log) {
     for (const v of newVars) ins.words.push(v);
   }
   r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
+  return true;
+}
+
+// R16 "strip-dead-undefs": dxbc-spirv emits OpUndef for DXIL temp registers
+// that end up never read (vkd3d's root-UAV pixel shader carries three dead
+// OpUndef %uint in main). naga 30.2.0's validator rejects the whole function
+// over them ("Function [0] 'main' is invalid" -- verified against the
+// vendored naga on the real d3d12-ps-root-uav module; removing exactly the
+// dead undefs makes it translate, and the module still passes spirv-val).
+// An OpUndef whose result id has NO consumer anywhere in the module is pure
+// dead weight: removing it cannot change any value any instruction reads.
+// Scope is fail-closed: only function-local undefs (global OpUndef feeds the
+// constant pool, a different naga path), and any undef with even one word
+// equal to its id in another instruction is kept (a literal operand that
+// happens to equal the id therefore also keeps it -- the module then stays
+// untranslated, never mistranslated).
+function stripDeadUndefs(mod, log) {
+  const OP_UNDEF = 1;
+  let inFunc = false;
+  const dead = [];
+  const candidates = [];
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Function) inFunc = true;
+    else if (ins.op === Op.FunctionEnd) inFunc = false;
+    else if (inFunc && ins.op === OP_UNDEF && ins.words.length === 2) candidates.push(ins); // parseSpirv leaves resultId null for OpUndef; its id is words[1]
+  }
+  if (!candidates.length) return false;
+  for (const cand of candidates) {
+    let uses = 0;
+    for (const ins of mod.insns) {
+      if (ins === cand) continue;
+      for (const w of ins.words) if (w === cand.words[1]) uses++;
+    }
+    if (!uses) dead.push(cand);
+  }
+  if (!dead.length) return false;
+  const deadSet = new Set(dead);
+  mod.insns = mod.insns.filter(i => !deadSet.has(i));
+  log.push('spirvfix: stripped ' + dead.length + ' dead OpUndef instruction(s) (naga rejects functions carrying them)');
   return true;
 }
 
@@ -3147,6 +3304,7 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
   try {
     if (stripUnusedPhysicalStorageBuffer(mod, log)) applied.push('strip-unused-physical-storage-buffer');
+    if (stripDeadUndefs(mod, log)) applied.push('strip-dead-undefs');
   } catch (e) {
     log.push('R8 failed: ' + (e.message || e));
   }
@@ -3179,4 +3337,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda'];
+export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];

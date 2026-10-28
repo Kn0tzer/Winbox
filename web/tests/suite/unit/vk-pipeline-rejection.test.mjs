@@ -101,14 +101,14 @@ test('unsupported stencil enums and two-sided static masks fail both guest pipel
 });
 
 test('resource declarations cover Vulkan descriptor kinds and reject incompatible pipeline interfaces', () => {
-  const layout = functionBody(page, 'function layoutEntryFor(decl, vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT) {');
+  const layout = functionBody(page, 'function layoutEntryFor(decl, vis = decl.stageVis ?? (GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT)) {');
   assert.match(layout, /t\.startsWith\('texture_'\)/);
   assert.match(layout, /v2SamplerLayoutType\(t\)/);
   assert.match(layout, /decl\.addr === 'uniform'/);
   assert.match(layout, /decl\.addr\.startsWith\('storage'\)/);
   assert.match(layout, /texture_storage_/);
   const pipeline = functionBody(page, 'async function getPipelineFor(');
-  assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior\)\) !== JSON\.stringify\(layoutEntryFor\(decl\)\)/);
+  assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior, 0\)\) !== JSON\.stringify\(layoutEntryFor\(decl, 0\)\)/);
   assert.match(pipeline, /noteUnsupported\('incompatible-shared-binding'/);
   assert.match(pipeline, /return fail\('incompatible-shared-binding:/); // routed through fail(): registry + PIPELINE-FAILED log, still returns the named skip
 });

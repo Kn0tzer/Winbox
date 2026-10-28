@@ -731,7 +731,7 @@ inline bool chainOffset(const Module& m, U32 ptrId, ChainRes& r, int depth) {
     r = {off, cur}; return true;
 }
 
-struct Expr { bool isConst = false, isPush = false; I64 value = 0, byteOff = 0, add = 0; };
+struct Expr { bool isConst = false, isPush = false; I64 value = 0, byteOff = 0, add = 0, addHi = 0; };
 inline bool classifyExpr(const Module& m, U32 id, Expr& e, int depth) {
     if (depth > 8) return false;
     auto it = m.byId.find(id); if (it == m.byId.end()) return false;
@@ -770,7 +770,7 @@ inline bool classifyExpr(const Module& m, U32 id, Expr& e, int depth) {
     }
 }
 
-struct Uses { int reads = 0, writes = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
+struct Uses { int reads = 0, writes = 0, storeWrites = 0, atomicWrites = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
 inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
     std::unordered_set<U32> seen;
     std::vector<std::pair<U32, int>> stack;
@@ -788,11 +788,11 @@ inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
             if (in.op == 83 && hit == (int)in.fv) { stack.push_back({in.resultId, depth + 1}); continue; }
             if (in.op == 61 && hit == (int)in.fv) { out.reads++; continue; }
             if (in.op == 62) {
-                if (hit == (int)in.fv) out.writes++; else out.escapes.push_back("pointer stored as a value");
+                if (hit == (int)in.fv) { out.writes++; out.storeWrites++; } else out.escapes.push_back("pointer stored as a value");
                 continue;
             }
             if (in.op >= 227 && in.op <= 245 && hit == (int)in.fv) {
-                if (in.op == 227) out.reads++; else out.writes++;
+                if (in.op == 227) out.reads++; else { out.writes++; out.atomicWrites++; }
                 continue;
             }
             out.escapes.push_back("op" + std::to_string(in.op));
@@ -863,7 +863,101 @@ inline bool measure(const Module& m, U32 typeId, const MDeco* md, Measure& out, 
     }
 }
 
-struct RootVerdict { bool hasMats = false, servable = false; std::vector<U32> slots; };
+// The result id of the OpLoad a vec2 address half ultimately extracts
+// from, unwrapping OpCopyObject; 0 for anything else. (Mirror of
+// spirvfix r15BaseLoadId.)
+inline U32 vec2BaseLoadId(const Module& m, U32 id) {
+    U32 cur = id;
+    for (int i = 0; i < 8; i++) {
+        auto it = m.byId.find(cur); if (it == m.byId.end()) return 0;
+        const Insn& s = m.insns[it->second];
+        if (s.op == 61) return s.resultId;
+        if (s.op == 83) { cur = s.w[2]; continue; }
+        return 0;
+    }
+    return 0;
+}
+
+struct V2Half { bool ok = false; U32 loadId = 0; I64 byteOff = 0; int half = 0; U32 add = 0; U32 carryId = 0; };
+// Mirror of spirvfix r15Vec2Half: one 32-bit half of a 64-bit root
+// address built by the dxbc-spirv OpIAddCarry idiom (extract of one
+// push-loaded v2uint, plus constant adds/subs and at most one
+// OpIAddCarry whose sum feeds the low half and whose carry the high
+// half consumes through OpIAdd).
+inline bool vec2Half(const Module& m, U32 id, V2Half& h, int depth) {
+    if (depth > 8) return false;
+    auto it = m.byId.find(id); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    if (in.op == 83) return vec2Half(m, in.w[2], h, depth + 1); // OpCopyObject
+    if (in.op == 81 && in.n == 4) { // OpCompositeExtract, one literal index
+        U32 half = in.w[3];
+        if (half > 1) return false;
+        auto sit = m.byId.find(in.w[2]); if (sit == m.byId.end()) return false;
+        const Insn& src = m.insns[sit->second];
+        if (src.op == 61 || src.op == 83) {
+            Expr prov; if (!classifyExpr(m, in.w[2], prov, 0) || !prov.isPush || prov.add != 0) return false;
+            auto lt = m.byId.find(src.resultType); if (lt == m.byId.end()) return false;
+            const Insn& t = m.insns[lt->second];
+            if (t.op != 23 || t.n < 3 || t.w[2] != 2) return false;
+            U32 loadId = vec2BaseLoadId(m, in.w[2]);
+            if (!loadId) return false;
+            h = V2Half{}; h.ok = true; h.loadId = loadId; h.byteOff = prov.byteOff; h.half = (int)half; return true;
+        }
+        if (src.op == 149 && half == 0) { // OpIAddCarry sum half
+            I64 aC = 0, bC = 0; bool aK = constInt(m, src.w[2], aC), bK = constInt(m, src.w[3], bC);
+            V2Half base; I64 c = 0;
+            if (bK && !aK) { if (!vec2Half(m, src.w[2], base, depth + 1)) return false; c = bC; }
+            else if (aK && !bK) { if (!vec2Half(m, src.w[3], base, depth + 1)) return false; c = aC; }
+            else return false;
+            if (base.half != 0 || base.carryId) return false;
+            h = base; h.add = base.add + (U32)c; h.carryId = src.resultId; return true;
+        }
+        return false;
+    }
+    if (in.op == 128 || in.op == 129) { // OpIAdd / OpISub
+        I64 aC = 0, bC = 0; bool aK = constInt(m, in.w[2], aC), bK = constInt(m, in.w[3], bC);
+        if (bK && !aK) { V2Half t; if (!vec2Half(m, in.w[2], t, depth + 1)) return false; h = t; h.add = t.add + (U32)(in.op == 128 ? bC : -bC); return true; }
+        if (in.op == 128 && aK && !bK) { V2Half t; if (!vec2Half(m, in.w[3], t, depth + 1)) return false; h = t; h.add = t.add + (U32)aC; return true; }
+        if (in.op == 128 && !aK && !bK) {
+            for (int sd = 0; sd < 2; sd++) {
+                U32 xId = sd ? in.w[3] : in.w[2], yId = sd ? in.w[2] : in.w[3];
+                auto yit = m.byId.find(yId); if (yit == m.byId.end()) continue;
+                const Insn& y = m.insns[yit->second];
+                if (y.op != 81 || y.n != 4 || y.w[3] != 1) continue;
+                auto cit = m.byId.find(y.w[2]); if (cit == m.byId.end()) continue;
+                const Insn& cs = m.insns[cit->second];
+                if (cs.op != 149) continue;
+                V2Half t; if (!vec2Half(m, xId, t, depth + 1) || t.carryId) continue;
+                h = t; h.carryId = cs.resultId; return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+// Mirror of spirvfix r15ClassifyVec2Addr: a 64-bit root address
+// materialized as a v2uint via OpCompositeConstruct over the carry
+// idiom. Fills e (isPush, byteOff, add = low-half addend, addHi).
+inline bool classifyRootAddr(const Module& m, U32 id, Expr& e) {
+    auto it = m.byId.find(id); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    if (in.op != 80 || in.n != 4) return false; // OpCompositeConstruct(lo, hi)
+    auto tt = m.byId.find(in.resultType); if (tt == m.byId.end()) return false;
+    const Insn& t = m.insns[tt->second];
+    if (t.op != 23 || t.n < 3 || t.w[2] != 2) return false;
+    auto ct = m.byId.find(t.w[1]); if (ct == m.byId.end()) return false;
+    const Insn& c = m.insns[ct->second];
+    if (c.op != 21 || c.n < 3 || c.w[1] != 32 || c.w[2] != 0) return false;
+    V2Half lo, hi;
+    if (!vec2Half(m, in.w[2], lo, 0) || !vec2Half(m, in.w[3], hi, 0)) return false;
+    if (lo.half != 0 || hi.half != 1) return false;
+    if (!lo.loadId || lo.loadId != hi.loadId || lo.byteOff != hi.byteOff) return false;
+    if (lo.carryId != hi.carryId) return false;
+    e = Expr{}; e.isPush = true; e.byteOff = lo.byteOff; e.add = (I64)lo.add; e.addHi = (I64)hi.add; return true;
+}
+
+struct RootVerdict { bool hasMats = false, servable = false; std::vector<U32> slots, writableSlots; };
 inline RootVerdict analyzeRoot(const Module& m) {
     RootVerdict out;
     struct Mat { U32 matId, ptrTypeId, pointeeId; Expr prov; bool provOk; Uses uses; };
@@ -874,7 +968,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
         const Insn& t = m.insns[rt->second];
         if (t.op != 32 || t.n < 3 || t.w[1] != 5349) continue;
         Mat mt; mt.matId = in.resultId; mt.ptrTypeId = in.resultType; mt.pointeeId = t.w[2];
-        mt.provOk = classifyExpr(m, in.w[2], mt.prov, 0);
+        mt.provOk = classifyExpr(m, in.w[2], mt.prov, 0) || classifyRootAddr(m, in.w[2], mt.prov);
         pointerUses(m, in.resultId, mt.uses);
         mats.push_back(std::move(mt));
     }
@@ -883,7 +977,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
     std::map<I64, std::vector<const Mat*>> bySlot;
     for (const Mat& mt : mats) {
         if (!mt.provOk || !mt.prov.isPush) return out;
-        if (mt.prov.add != 0) return out;
+        if (mt.prov.add != 0 || mt.prov.addHi != 0) return out;
         if (mt.prov.byteOff < 0 || mt.prov.byteOff % 8 != 0) return out;
         bySlot[mt.prov.byteOff].push_back(&mt);
     }
@@ -906,8 +1000,10 @@ inline RootVerdict analyzeRoot(const Module& m) {
     }
     for (auto& kv : bySlot) {
         std::unordered_set<U32> pointees;
+        bool slotWritable = false;
         for (const Mat* mt : kv.second) {
-            if (mt->uses.writes > 0) return out;
+            if (mt->uses.atomicWrites > 0) return out;
+            if (mt->uses.storeWrites > 0) slotWritable = true;
             if (!mt->uses.escapes.empty()) return out;
             pointees.insert(mt->pointeeId);
         }
@@ -922,6 +1018,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
                 if (u.op == 32 && u.n >= 3 && u.w[2] == pointeeId && u.w[1] != 5349) return out;
         }
         out.slots.push_back((U32)kv.first);
+        if (slotWritable) out.writableSlots.push_back((U32)kv.first);
     }
     {
         // The synthesized bindings must not collide with a module-owned
@@ -1673,6 +1770,7 @@ struct Pipeline : Obj {
     bool gsServe = false;           // gs is the layer-passthrough shape AND strip-
                                    // equivalent to fs: draws served by omission.
     std::vector<U32> rootSlots; // R15: root-descriptor push byte offsets across the stage modules (census at creation)
+    std::vector<U32> rootWritableSlots; // R15: the subset of rootSlots stored through (draw-time GPU-write marking)
 };
 template <class T>
 static void captureColorBlend(Pipeline& pipe, const std::vector<T>& states) {
@@ -2111,9 +2209,15 @@ static void vk64FrameOverflow(const char* what) {
     g_frameOverflow = true;
     vk64Unsupported("frame-overflow", what);
 }
+static void vk64MarkDrawRootWrites(CmdBuf* cb); // defined with the GPU-write registry below
 void pushCmd(CmdBuf* st, const Cmd& c) {
     VK64_DROP_IF(return, !st);
     if (st->cmds.size() >= VK64_MAX_CMDS) { vk64FrameOverflow("command buffer holds more than VK64_MAX_CMDS commands"); return; }
+    // R15: a draw under a pipeline with writable root descriptors may
+    // store into guest buffers; mark the resolved ranges BEFORE the draw
+    // is appended, replaying the state recorded so far (the same point
+    // in the record stream where vkCmdDispatch marks compute writes).
+    if (c.kind == CMD_DRAW || c.kind == CMD_DRAW_INDEXED) vk64MarkDrawRootWrites(st);
     st->cmds.push_back(c);
 }
 // vkCmdBindDescriptorSets and push descriptors both end here. `dynFlat` is the
@@ -4125,6 +4229,40 @@ static void vk64MarkComputeWrites(CmdBuf* cb) {
     }
 }
 
+// Draw-time sibling of vk64MarkComputeWrites for R15 root descriptors:
+// replay the command buffer's recorded state (bound pipeline + merged
+// push block -- the same shadow the submit serializer resolves in
+// emitRootDescs) and mark every WRITABLE root-descriptor range, so a
+// later copy out of the buffer defers to a page-tier BUFFER_READBACK
+// instead of memcpy'ing stale guest bytes.
+static void vk64MarkDrawRootWrites(CmdBuf* cb) {
+    U64 pipeId = 0;
+    U8 push[256] = {};
+    for (const Cmd& k : cb->cmds) {
+        if (k.kind == CMD_BIND_PIPE) pipeId = k.a;
+        else if (k.kind == CMD_PUSH_CONST && k.pcOffset < 256) {
+            U32 avail = 256 - k.pcOffset;
+            memcpy(push + k.pcOffset, k.pcBytes, std::min<U32>(k.pcSize, avail));
+        }
+    }
+    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDraw") : nullptr;
+    if (!pipe || pipe->rootWritableSlots.empty() || g_devVaRegistry.empty()) return;
+    for (U32 off : pipe->rootWritableSlots) {
+        if (off + 8 > 256) continue;
+        U64 va; memcpy(&va, push + off, 8);
+        if (!va) continue;
+        auto it = g_devVaRegistry.upper_bound(va);
+        if (it == g_devVaRegistry.begin()) continue;
+        --it;
+        Buffer* buf = objOf<Buffer>(it->second, K_BUFFER, "vkCmdDraw");
+        if (!buf || !buf->mem || va < it->first || va - it->first >= buf->size) continue;
+        DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDraw");
+        if (!mem) continue;
+        U64 boff = va - it->first;
+        vk64MarkGpuWrite(it->second, buf->memOff + boff, buf->size - boff, buf->mem, mem->writeEpoch);
+    }
+}
+
 // A deferred buffer->buffer copy planned at submit: the page tier copies
 // the GPU-written source range into the heap and notifies on flagPtr; the
 // bridge then expands it into the destination's guest memory.
@@ -4540,6 +4678,24 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                 for (const Res& r : res) { p.u32(r.off); p.u64(r.obj); p.u64(r.absOff); p.u64(r.len); }
             });
             for (const Res& r : res) if (r.obj && r.len) emitBufferData(r.obj, r.absOff, r.len);
+            // R15b writable root slots: re-stamp the draw's GPU-write marks
+            // with the memory's CURRENT write epoch. The record-time mark
+            // (vk64MarkDrawRootWrites) predates this submission's own guest
+            // writes -- vkd3d lands a resource's initial-data upload as a
+            // vkCmdUpdateBuffer executed earlier in this very walk -- and
+            // the cleanliness proof must be measured from the draw's
+            // execution point, not its recording. Same dedupe key, so this
+            // refreshes the record-time mark in place.
+            if (!ap->rootWritableSlots.empty()) {
+                for (const Res& r : res) {
+                    if (!r.obj || !r.len) continue;
+                    if (std::find(ap->rootWritableSlots.begin(), ap->rootWritableSlots.end(), r.off) == ap->rootWritableSlots.end()) continue;
+                    Buffer* buf = objOf<Buffer>(r.obj, K_BUFFER, "vkQueueSubmit");
+                    DeviceMemory* mem = (buf && buf->mem) ? objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkQueueSubmit") : nullptr;
+                    if (!mem) continue;
+                    vk64MarkGpuWrite(r.obj, r.absOff, r.len, buf->mem, mem->writeEpoch);
+                }
+            }
         };
         auto emitDescSet = [&](U32 setIndex, U64 setId, const std::vector<U32>* dyn) {
             VkEncodeScope phase(vkProfAcc().encode, vkencode::Descriptors, detailed);
@@ -7008,7 +7164,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             p->layout = ci.layout;
             p->rp = ci.renderPass;
             {   // R15 census: union of root-descriptor slots over the stage modules.
-                std::set<U32> slots;
+                std::set<U32> slots, wslots;
                 for (const VkPipelineShaderStageCreateInfo& st : stages) {
                     ShaderModule* sm = st.module ? objOf<ShaderModule>(st.module, K_SHADER, "vkCreateGraphicsPipelines") : nullptr;
                     if (!sm || sm->code.size() < 20 || (sm->code.size() & 3)) continue;
@@ -7017,10 +7173,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     r15::Module rm;
                     if (r15::parse(words, rm)) {
                         r15::RootVerdict rv = r15::analyzeRoot(rm);
-                        if (rv.servable) slots.insert(rv.slots.begin(), rv.slots.end());
+                        if (rv.servable) { slots.insert(rv.slots.begin(), rv.slots.end()); wslots.insert(rv.writableSlots.begin(), rv.writableSlots.end()); }
                     }
                 }
                 p->rootSlots.assign(slots.begin(), slots.end());
+                p->rootWritableSlots.assign(wslots.begin(), wslots.end());
             }
             wr64(args.a[5] + (U64)i * 8, id);
         }
@@ -7051,7 +7208,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             {   // R15 census, same as the graphics path: the compute stage
                 // module's root-descriptor slots, so root descriptors bound
                 // for a dispatch resolve through V2 ROOT_DESCS like draws.
-                std::set<U32> slots;
+                std::set<U32> slots, wslots;
                 ShaderModule* sm = p->cs ? objOf<ShaderModule>(p->cs, K_SHADER, "vkCreateComputePipelines") : nullptr;
                 if (sm && sm->code.size() >= 20 && !(sm->code.size() & 3)) {
                     std::vector<U32> words(sm->code.size() / 4);
@@ -7059,10 +7216,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     r15::Module rm;
                     if (r15::parse(words, rm)) {
                         r15::RootVerdict rv = r15::analyzeRoot(rm);
-                        if (rv.servable) slots.insert(rv.slots.begin(), rv.slots.end());
+                        if (rv.servable) { slots.insert(rv.slots.begin(), rv.slots.end()); wslots.insert(rv.writableSlots.begin(), rv.writableSlots.end()); }
                     }
                 }
                 p->rootSlots.assign(slots.begin(), slots.end());
+                p->rootWritableSlots.assign(wslots.begin(), wslots.end());
             }
             wr64(args.a[5] + (U64)i * 8, id);
         }

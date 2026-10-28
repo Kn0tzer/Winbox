@@ -46,6 +46,7 @@ test('REWRITES exports every rule', () => {
     'storage-image-format',
     'descriptor-array-specialize',
     'root-descriptor-bda',
+    'strip-dead-undefs',
   ]);
 });
 
