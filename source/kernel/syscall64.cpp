@@ -901,9 +901,10 @@ static U64 sys_exit64(CPU64* cpu, U64 status, bool group) {
     }
     if (cpu->thread && cpu->thread->process) {
         KProcess* p = cpu->thread->process.get();
+        BString cmd = p->commandLineForLog();
         klog_fmt("CPU64: %s syscall, status=%lld  pid=%d exe='%s' cmd='%s'",
                  group ? "exit_group" : "exit", (long long)status,
-                 (int)p->id, p->exe.c_str(), p->commandLine.c_str());
+                 (int)p->id, p->exe.c_str(), cmd.c_str());
     } else {
         klog_fmt("CPU64: %s syscall, status=%lld",
                  group ? "exit_group" : "exit", (long long)status);

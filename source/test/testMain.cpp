@@ -58,6 +58,8 @@
 
 void testWaitPid();
 void testBStringContains();
+void testBStringJoin();
+void testBStringIndexOf();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
 void testKObjectLockStubs();
@@ -792,6 +794,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testSelfModifyingBack, "Test Self Modifying Code Same Block(Next)"},
     {testBrkHeap, "Test brk/mmap heap"},
     {testBStringContains, "Test BString contains with embedded NUL bytes"},
+    {testBStringJoin, "Test BString join delimiter lengths"},
+    {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif

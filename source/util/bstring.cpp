@@ -389,22 +389,60 @@ bool BString::endsWith(char c, bool ignoreCase) const {
     return data->str[length() - 1] == c;
 }
 
-int BString::indexOf(const BString& s, int fromIndex) const {
-    return indexOf(s.data->str, fromIndex);
+// indexOf/lastIndexOf had the same NUL-blindness contains had (see the
+// comment above bstringFind): they were built on strstr/strchr and a
+// strlen-measured std::string_view, so on a string with embedded NUL
+// bytes no match past the first NUL could ever be found -- e.g. the
+// guest TTY capture searches for "\r\n" in output that can carry
+// arbitrary guest bytes. Search the full length() bytes instead.
+// Behavior for NUL-free strings is unchanged, including the edge cases:
+// an empty needle matches at fromIndex, and lastIndexOf(const char*)
+// keeps its long-standing find_last_of character-set semantics (every
+// call site passes a single character, where the two agree). A negative
+// fromIndex is clamped to 0 (passing one to strstr/strchr was
+// undefined).
+static int bstringIndexOf(const char* haystack, int haystackLen, const char* needle, int needleLen, int fromIndex) {
+    if (!haystack || !needle) {
+        return -1;
+    }
+    if (needleLen == 0) {
+        return fromIndex <= haystackLen ? fromIndex : -1;
+    }
+    for (int i = fromIndex; i + needleLen <= haystackLen; i++) {
+        if (memcmp(haystack + i, needle, needleLen) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
-int BString::indexOf(const char* s, int fromIndex) const {
+int BString::indexOf(const BString& s, int fromIndex) const {
     if (isEmpty()) {
         return -1;
     }
     if (fromIndex > length()) {
         return -1;
     }
-    char* p = strstr(data->str + fromIndex, s);
-    if (!p) {
+    if (fromIndex < 0) {
+        fromIndex = 0;
+    }
+    // The needle length comes from the needle itself, like contains:
+    // delegating through the const char* overload would truncate a
+    // needle containing an embedded NUL to its first segment.
+    return bstringIndexOf(data->str, length(), s.data ? s.data->str : nullptr, s.length(), fromIndex);
+}
+
+int BString::indexOf(const char* s, int fromIndex) const {
+    if (isEmpty() || !s) {
         return -1;
     }
-    return (int)(p - data->str);
+    if (fromIndex > length()) {
+        return -1;
+    }
+    if (fromIndex < 0) {
+        fromIndex = 0;
+    }
+    return bstringIndexOf(data->str, length(), s, (int)strlen(s), fromIndex);
 }
 
 int BString::indexOf(char c, int fromIndex) const {
@@ -414,7 +452,21 @@ int BString::indexOf(char c, int fromIndex) const {
     if (fromIndex > length()) {
         return -1;
     }
-    char* p = strchr(data->str + fromIndex, c);
+    if (fromIndex < 0) {
+        fromIndex = 0;
+    }
+    if (c == '\0') {
+        // strchr semantics, kept: the first NUL byte at or after
+        // fromIndex, counting the terminator at length() when the
+        // string carries no embedded NUL.
+        for (int i = fromIndex; i < length(); i++) {
+            if (data->str[i] == '\0') {
+                return i;
+            }
+        }
+        return length();
+    }
+    const char* p = (const char*)memchr(data->str + fromIndex, c, length() - fromIndex);
     if (!p) {
         return -1;
     }
@@ -430,7 +482,7 @@ int BString::lastIndexOf(const BString& s, int fromIndex) const {
         return -1;
     }
     if (s.length() == 1) {
-        return lastIndexOf(s.data->str[0]);
+        return lastIndexOf(s.data->str[0], fromIndex);
     }
     if (s.length() == 0 || !s.data->str) {
         // An empty needle finds nothing (same result find_last_of gives
@@ -440,7 +492,9 @@ int BString::lastIndexOf(const BString& s, int fromIndex) const {
         // e.g. in the test harness).
         return -1;
     }
-    return lastIndexOf(s.data->str);
+    // fromIndex is forwarded (this overload used to drop it silently;
+    // every call site passes the default, so nothing changes for them).
+    return lastIndexOf(s.data->str, fromIndex);
 }
 
 int BString::lastIndexOf(const char* s, int fromIndex) const {
@@ -453,7 +507,10 @@ int BString::lastIndexOf(const char* s, int fromIndex) const {
     } else {
         pos = (size_t)fromIndex;
     }
-    std::string_view view = { data->str };
+    // The view must carry length(): constructing it from data->str
+    // alone measures with strlen and truncates the search at the first
+    // embedded NUL. find_last_of (character-set) semantics are kept.
+    std::string_view view = { data->str, (size_t)length() };
     pos = view.find_last_of(s, pos);
     if (pos == std::string_view::npos) {
         return -1;
@@ -465,18 +522,21 @@ int BString::lastIndexOf(char c, int fromIndex) const {
     if (isEmpty()) {
         return -1;
     }
-    size_t pos = 0;
-    if (fromIndex > length() || fromIndex < 0) {
-        pos = std::string_view::npos;
-    } else {
-        pos = (size_t)fromIndex;
+    // Scan the full length() bytes (the strlen-measured string_view
+    // this replaces truncated the search at the first embedded NUL).
+    // fromIndex keeps its meaning: out of range (negative or past the
+    // end) searches the whole string, otherwise the search covers
+    // [0, fromIndex].
+    int limit = length() - 1;
+    if (fromIndex >= 0 && fromIndex < limit) {
+        limit = fromIndex;
     }
-    std::string_view view = { data->str };
-    pos = view.find_last_of(c, pos);
-    if (pos == std::string_view::npos) {
-        return -1;
+    for (int i = limit; i >= 0; i--) {
+        if (data->str[i] == c) {
+            return i;
+        }
     }
-    return (int)pos;
+    return -1;
 }
 
 int BString::length() const {
@@ -1035,18 +1095,31 @@ BString BString::copy(const char* s, int len) {
 }
 
 BString BString::join(BString delimiter, const std::vector<BString>& values) {
-    return join(delimiter.data->str, values);
-}
-
-BString BString::join(const char* delimiter, const std::vector<BString>& values) {
+    // append(const BString&) is length-aware: the delimiter lands with
+    // its full length() bytes, even when it contains NUL bytes. This
+    // overload used to delegate through the const char* overload below,
+    // which discarded the delimiter's length -- the NUL delimiter
+    // KProcess::commandLine joins argv with contributed zero bytes and
+    // argv landed concatenated.
     BString result;
     for (int i = 0; i < (int)values.size(); i++) {
         if (i != 0) {
-            result += delimiter;
+            result.append(delimiter);
         }
-        result += values[i];
+        result.append(values[i]);
     }
     return result;
+}
+
+BString BString::join(const char* delimiter, const std::vector<BString>& values) {
+    // C-string semantics, by contract (matching append(const char*)):
+    // the delimiter is measured with strlen, so a "\0" delimiter is an
+    // EMPTY delimiter here. Callers that need a delimiter a C string
+    // cannot express must use the BString overload above.
+    if (!delimiter) {
+        delimiter = "";
+    }
+    return join(BString(delimiter, false), values);
 }
 
 BString BString::valueOf(bool b) {

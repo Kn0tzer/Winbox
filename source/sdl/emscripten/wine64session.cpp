@@ -264,16 +264,17 @@ static bool terminatePid(U32 pid, const char* why) {
     // service processes. The X-derived pid below SHOULD always be a real app,
     // but a guard here is cheap and the failure mode without it is fatal.
     BString cmd = process->commandLine;
+    BString cmdForLog = process->commandLineForLog();
     if (cmd.contains("wineserver") || cmd.contains("services.exe") ||
         cmd.contains("winedevice") || cmd.contains("plugplay") ||
         cmd.contains("rpcss") || cmd.contains("explorer.exe") ||
         cmd.contains("deskpin.exe")) {
         klog_fmt("wine64session: REFUSING to kill pid=%d (%s) — system process (%s)",
-                 (int)pid, cmd.c_str(), why);
+                 (int)pid, cmdForLog.c_str(), why);
         return false;
     }
     klog_fmt("wine64session: killing previous app pid=%d (%s) [%s]", (int)pid,
-             cmd.c_str(), why);
+             cmdForLog.c_str(), why);
     process->iterateThreads([](KThread* thread) {
         thread->terminating = true;
         // Wake the thread if it's parked in a guest wait so it sees the flag

@@ -433,6 +433,20 @@ BString KProcess::getAbsoluteExePath() {
     BString path = Fs::getNodeFromLocalPath(B(""), this->exe, true)->path;
     return Fs::getParentPath(path);
 }
+
+BString KProcess::commandLineForLog() const {
+    // commandLine holds the NUL-separated argv (the form
+    // /proc/<pid>/cmdline serves to the guest). Log lines print through
+    // c_str(), which stops at the first NUL and would record only
+    // argv[0]; render a display copy with the separators as spaces so
+    // the recorded command line stays complete and truthful.
+    BString result;
+    for (int i = 0; i < this->commandLine.length(); i++) {
+        char c = this->commandLine.charAt(i);
+        result.append(c == '\0' ? ' ' : c);
+    }
+    return result;
+}
 void KProcess::clone(const KProcessPtr& from, U32 shareFlags) {
     this->parentId = from->id;;
     this->groupId = from->groupId;
@@ -814,11 +828,10 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
     this->exe = argValues[0];
     this->name = Fs::getFileNameFromPath(this->exe);
     
-    for (U32 i=0;i<argValues.size();i++) {
-        if (i>0)
-            this->commandLine+=" ";
-        this->commandLine+=argValues[i];
-    }
+    // Same NUL-separated form exec() builds (see there): commandLine
+    // is the argv array /proc/<pid>/cmdline serves, not a display
+    // string (log lines render it via commandLineForLog()).
+    this->commandLine = BString::join(BString('\0'), argValues);
     
     this->initStdio();
     FsOpenNode* openNode=ElfLoader::inspectNode(currentDirectory, node, loader, interpreter, interpreterArgs);
@@ -1101,7 +1114,14 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     
     this->name = Fs::getFileNameFromPath(node->path);
     
-    this->commandLine = BString::join("\0", args);
+    // commandLine is the NUL-separated argv: /proc/<pid>/cmdline
+    // serves it to the guest verbatim (setupCommandlineNode) and
+    // parsers split it on the NUL bytes. The delimiter must be a
+    // BString carrying its length -- join's const char* overload
+    // measures the delimiter with strlen, so "\0" contributed zero
+    // bytes and argv landed concatenated (exit logs recorded e.g.
+    // 'wine64C:\windows\system32\wineboot.exe--init').
+    this->commandLine = BString::join(BString('\0'), args);
             
     this->path.clear();
     for (U32 i=0;i<envs.size();i++) {
