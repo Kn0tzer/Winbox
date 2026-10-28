@@ -1279,7 +1279,8 @@
                     if (guestDiagModule && typeof guestDiagModule.ccall === "function") {
                         var guestDiagDump = function () {
                             try {
-                                guestDiagModule.ccall("bw64_dump_guest_threads", null, [], []);
+                                var dumpRc = guestDiagModule.ccall("bw64_dump_guest_threads", "number", [], []);
+                                if (dumpRc === 2) console.warn("guestdiag thread dump unavailable: a guest thread holds the log lock across a browser-proxied call; snapshot skipped instead of deadlocking the session");
                                 var profile = guestDiagModule.ccall("bw64_guest_profile_json", "string", [], []);
                                 console.log("BW_GUEST_PROFILE_INTERVAL " + profile);
                                 guestDiagModule.ccall("bw64_guest_profile_reset", null, [], []);

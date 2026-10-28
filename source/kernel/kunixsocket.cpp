@@ -106,25 +106,53 @@ KUnixSocketObject::~KUnixSocketObject() {
 }
 
 void KUnixSocketObject::debugDumpReadWait(U32 waiterPid, U32 waiterTid, FD fd) {
+    // Thread-dump path: never block. This runs on the browser main thread
+    // (see bw64_dump_guest_threads); a socket peer thread can hold lockCond
+    // across a call that needs that same main thread, so a blocking
+    // acquisition can deadlock the session. Try-lock and label instead.
     std::shared_ptr<KUnixSocketObject> peer;
     size_t ownPending = 0;
+#ifdef BOXEDWINE_MULTI_THREADED
+    if (!this->lockCond->tryLock()) {
+        klog_fmt("BW_THREAD_DUMP socket-unavailable pid=%u tid=%u fd=%d lock=socket-lockCond lockOwner=%u",
+                 waiterPid, waiterTid, (int)fd, this->lockCond->lockOwner);
+        return;
+    }
+    ownPending = this->recvBuffer.size_used();
+    peer = this->connection.lock();
+    this->lockCond->unlock();
+#else
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
         ownPending = this->recvBuffer.size_used();
         peer = this->connection.lock();
     }
+#endif
 
     size_t peerPending = 0;
     U32 peerPid = 0;
     U32 peerTid = 0;
+    bool peerPendingKnown = true;
     if (peer) {
+#ifdef BOXEDWINE_MULTI_THREADED
+        if (peer->lockCond->tryLock()) {
+            peerPending = peer->recvBuffer.size_used();
+            peer->lockCond->unlock();
+        } else {
+            peerPendingKnown = false;
+            klog_fmt("BW_THREAD_DUMP socket-peer-unavailable pid=%u tid=%u fd=%d lock=socket-lockCond lockOwner=%u",
+                     waiterPid, waiterTid, (int)fd, peer->lockCond->lockOwner);
+        }
+#else
         {
             BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(peer->lockCond);
             peerPending = peer->recvBuffer.size_used();
         }
+#endif
         peerPid = peer->lastOwnerPid.load(std::memory_order_relaxed);
         peerTid = peer->lastOwnerTid.load(std::memory_order_relaxed);
     }
+    (void)peerPendingKnown;
     klog_fmt("BW_THREAD_DUMP socket_read pid=%u tid=%u fd=%d socket=%p peer=%p ownPending=%llu peerPending=%llu peerOwner=%u/%u ownQueue=%llu/%llu:w%u/%u:r%u/%u:m%llu/%llu peerQueue=%llu/%llu:w%u/%u:r%u/%u:m%llu/%llu inClosed=%d outClosed=%d",
              waiterPid, waiterTid, (int)fd, (void*)this,
              peer ? (void*)peer.get() : nullptr,

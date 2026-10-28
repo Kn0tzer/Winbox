@@ -410,6 +410,20 @@ void KMemory64::cloneFrom(const KMemory64* from) {
     }
 }
 
+bool KMemory64::tryLockPages() {
+#ifdef BOXEDWINE_MULTI_THREADED
+    return pagesMutex.try_lock();
+#else
+    return true;
+#endif
+}
+
+void KMemory64::unlockPages() {
+#ifdef BOXEDWINE_MULTI_THREADED
+    pagesMutex.unlock();
+#endif
+}
+
 K64Page* KMemory64::getPage(U64 pageNum) const {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
     auto it = pages.find(pageNum);

@@ -400,6 +400,34 @@ KThread* KSystem::getThreadById(U32 threadId) {
     return result;
 }
 
+KThread* KSystem::tryGetThreadById(U32 threadId, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<std::mutex> lock(processesCond->m, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    for (auto& p : processes) {
+        const KProcessPtr& process = p.value;
+        if (process) {
+            bool innerBlocked = false;
+            KThread* result = process->tryGetThreadById(threadId, innerBlocked);
+            if (result) {
+                return result;
+            }
+            if (innerBlocked) {
+                lockBlocked = true;
+                return nullptr;
+            }
+        }
+    }
+    return nullptr;
+#else
+    return getThreadById(threadId);
+#endif
+}
+
 U32 KSystem::tgkill(U32 threadGroupId, U32 threadId, U32 signal) {
     KThread* result = KSystem::getThreadById(threadId);
 

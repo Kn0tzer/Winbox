@@ -187,6 +187,20 @@ void klog_nonewline(const char* msg) {
     internal_log(BString::copy(msg), stdout);
 }
 
+bool bw64TryLockLog() {
+#ifdef BOXEDWINE_MULTI_THREADED
+    return logMutex.try_lock();
+#else
+    return true;
+#endif
+}
+
+void bw64UnlockLog() {
+#ifdef BOXEDWINE_MULTI_THREADED
+    logMutex.unlock();
+#endif
+}
+
 void internal_log(BString msg, FILE* f) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
     if (KSystem::logFile.isOpen()) {

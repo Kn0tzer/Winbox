@@ -9,6 +9,7 @@
 import { chromium } from '@playwright/test';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
+import { threadDumpDriverLine, threadDumpStatus } from './thread-dump-driver.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 import { applyJitSetting } from './demo-matrix.mjs';
 import { createGuestDeathWatch, extractMetricsPresent } from './probe-guest-death.mjs';
@@ -219,18 +220,23 @@ await pollJitStats();
 jitPoll = setInterval(() => { pollJitStats().catch(() => {}); }, 15000);
 if (process.env.THREAD_DUMPS === '1') {
   const dumpEveryS = Number(process.env.DUMP_INTERVAL_S || 20);
+  let dumpAttempts = 0;
   const driver = setInterval(async () => {
     try {
       const fh = await page.locator('#display iframe').elementHandle();
       const fr = await fh?.contentFrame();
       if (!fr) return;
-      await fr.evaluate(() => {
+      const dumpResult = await fr.evaluate(() => {
         const M = window.Module;
-        if (!M) return 'no-module';
-        if (typeof M._bw64_dump_guest_threads === 'function') { M._bw64_dump_guest_threads(); return 'ok'; }
-        if (typeof M.ccall === 'function') { M.ccall('bw64_dump_guest_threads', null, [], []); return 'ok-ccall'; }
-        return 'no-export';
+        if (!M) return null;
+        if (typeof M._bw64_dump_guest_threads === 'function') return { via: 'export', rc: M._bw64_dump_guest_threads() };
+        if (typeof M.ccall === 'function') return { via: 'ccall', rc: M.ccall('bw64_dump_guest_threads', 'number', [], []) };
+        return null;
       });
+      dumpAttempts++;
+      if (dumpResult && threadDumpStatus(dumpResult.rc) === 'unavailable-lock-held') {
+        progress(threadDumpDriverLine(dumpResult.rc, dumpResult.via, dumpAttempts));
+      }
     } catch { /* frame churn */ }
   }, dumpEveryS * 1000);
   driver.unref?.();

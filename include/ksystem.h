@@ -130,6 +130,11 @@ public:
     static void eraseProcess(U32 id);
     static std::shared_ptr<FsNode> addProcess(U32 id, const KProcessPtr& process);
     static KThread* getThreadById(U32 threadId);
+    // Thread-dump variant: never blocks. Sets lockBlocked and returns
+    // nullptr when the process table or a process thread table is held
+    // by another thread (which may be waiting on the browser main
+    // thread -- see bw64_dump_guest_threads).
+    static KThread* tryGetThreadById(U32 threadId, bool& lockBlocked);
     static U32 getRunningProcessCount();
     static U32 getProcessCount();
     static void printStacks();
