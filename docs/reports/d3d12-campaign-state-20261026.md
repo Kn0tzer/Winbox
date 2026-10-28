@@ -2364,3 +2364,99 @@ BW64_TRACEPID produced 65k. The source gave up two separate facts:
 - BString::indexOf/lastIndexOf share the strstr pattern family with
   the old contains; not audited here — recorded as a sibling to check
   before any caller relies on them for NUL-containing strings.
+## 4.28 32-bit memory properties: the HOST_CACHED advertisement gap exists but is NOT-A-GAP — DXVK treats the flag as optional (2026-10-28)
+
+The §4.23 lane fixed the 64-bit answer and explicitly left the 32-bit
+path untouched: the 32-bit handler in `vk32Bridge` hand-writes its own
+memory-properties answer and never calls `fillMemoryProperties`. This
+lane (mem32) determined whether 32-bit guests hit the same wall.
+
+### Field-by-field: the two answers
+
+| Field | 64-bit (`fillMemoryProperties`, post-§4.23) | 32-bit (hand-written; identical in the v1 and Properties2 arms) |
+|---|---|---|
+| Heaps | 2: 2 GiB DEVICE_LOCAL; 4 GiB flags 0 | 1: 4 GiB DEVICE_LOCAL |
+| Types | 4 | 1 |
+| Type 0 | heap 0, DEVICE_LOCAL \| HOST_VISIBLE \| HOST_COHERENT | heap 0, DEVICE_LOCAL \| HOST_VISIBLE \| HOST_COHERENT (0x0007) |
+| Types 1–3 | DEVICE_LOCAL-only; HV \| HC \| HOST_CACHED; HV \| HC \| HOST_CACHED | — |
+| Any HOST_CACHED type | yes (types 2, 3) | **no** |
+
+So the advertisement gap exists identically: no 32-bit type carries
+HOST_CACHED (0x0008). (The 32-bit handler also does not zero the guest
+struct first; it writes only the count / type-0 / heap-0 fields.
+Consumers read only what the counts advertise, so the unwritten tail
+is inert.)
+
+### Why it is not a wall: the consumer requirement differs
+
+The 64-bit wall existed because vkd3d-proton's requirement is HARD:
+`vkd3d_select_memory_flags` computes a required mask
+(HOST_VISIBLE | HOST_CACHED for READBACK and CUSTOM WRITE_BACK heaps)
+and the suballocation path has no fallback that relaxes it — empty
+required mask, E_OUTOFMEMORY (§4.23, res12 guest proof).
+
+The 32-bit consumers are DXVK (D3D9/D3D11), built from the vendored
+source at `tools/dxvk/src` (pinned in `tools/dxvk/SOURCES.json`).
+DXVK does request HOST_CACHED — D3D11_USAGE_STAGING buffers and
+textures, CPU-read DEFAULT buffers, D3D9 staging buffers and mapped
+texture buffers all ask for HOST_VISIBLE | HOST_COHERENT |
+HOST_CACHED. But every one of those allocations flows through the
+single `DxvkMemoryAllocator::alloc`, and that allocator classifies
+the flag as a preference: `optionalFlags = DEVICE_LOCAL_BIT |
+HOST_CACHED_BIT`, and when no type satisfies the full request it
+strips the optional flags and retries (`src/dxvk/dxvk_memory.cpp`,
+the alloc fallback; HOST_CACHED's only occurrence in DXVK's core).
+The stripped request reduces to HOST_VISIBLE | HOST_COHERENT, which
+the 32-bit answer's type 0 satisfies. The adapter passes the
+properties through with no existence check, and the one behavioral
+read of the bit (`d3d11_context_imm.cpp`, a Map heuristic: "Uncached
+reads can be so slow that a GPU sync may actually be faster") is a
+performance heuristic, not a requirement — and on this bridge the
+underlying store is the same emulator RAM either way, so the
+heuristic has no cost here either.
+
+Real workloads corroborate: 32-bit Portal (DXVK D3D9) and 32-bit
+Unigine Tropics (DXVK D3D11) already run on this exact answer,
+staging allocations included — a hard requirement would have thrown
+`DxvkError("DxvkMemoryAllocator: Memory allocation failed")` at the
+first staging buffer.
+
+### Verdict
+
+NOT-A-GAP. The flag is absent from the 32-bit advertisement, but no
+32-bit consumer in the shipped configuration requires it, so no
+allocation can fail the way the 64-bit ones did. No product code
+changed. The honest residual: a hypothetical future 32-bit consumer
+with vkd3d-style hard selection (none ships here — Wine's wined3d
+backends are overridden by DXVK per the staging scripts, and there
+is no 32-bit D3D12 target) would need the flag; the guard pins both
+sides of the verdict so that day is caught by the suite, not by a
+guest failure.
+
+### Guard
+
+`vk-memory-properties.test.mjs` gains two tests, sabotage-verified
+in both directions: the 32-bit advertised answer is pinned in source
+(both handler arms: type count 1, type 0 = 0x0007, heap count 1,
+4 GiB DEVICE_LOCAL heap), and the verdict's premise is pinned in the
+vendored DXVK source (optionalFlags contains HOST_CACHED and the
+strip-and-retry line is present). Removing HOST_CACHED from DXVK's
+optionalFlags turns the premise test red and forces re-review of
+this verdict; changing the 32-bit answer (0x0007 → 0x000f) turns the
+shape test red.
+
+### Suites (verified)
+
+- JS suite: 311 passed, 0 failed (`BW_TEST_DIST=<tree>/dist`,
+  `--unit`) — the baseline count at abdca70e9. The guard file keeps
+  its name, so the file count is unchanged; its test count goes
+  2 → 4.
+- Native: 644 tests, 0 FAILED, single-threaded
+  (`Build/Test/boxedwine 0 0 1`, 229s; the trailing fault output is
+  the suite's designed final crash-path test). No C++ touched —
+  baseline confirmation.
+- Register: 366 rows = 65/67/234/0 (+1 NOT-A-GAP); citation audit
+  0 DRIFT / 0 MISSING (221 MATCH, 13 MATCH-INHERITED, 98
+  UNCHECKABLE, 7 EXEMPT).
+- Dist: rebuilt in-tree; "Browser export verified"; the support
+  archive is byte-identical to the checked-in pin (bbc583c6…).
