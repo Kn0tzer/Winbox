@@ -1588,3 +1588,101 @@ after the re-pin baseline; that test fails identically before and after
 this lane's change and wants a re-pin decision at merge.
 
 MERGED NUMBERING (D3D12 stack merge, 2026-10-27): the two lane trees collided on section 4.19/4.20 -- the vkd3d tree used 4.19 for the system-placement surface fix and 4.20 for the module-layout audit, while the vkd3d-bda tree used 4.19 for Route 0 and 4.20 for Route A. This merged report renumbers to one sequence: 4.18 bisect, 4.19 surface fix, 4.20 Route 0, 4.21 Route A, 4.22 layout audit. References inside each section were updated to the merged numbers (the vkd3d tree's layout-audit references now read 4.22; the bda tree's Route 0 / Route A references now read 4.20 / 4.21). SETTLEMENTS RECORDED BY THIS MERGE: (a) the SPIR-V capability exemption union is {4464-4468, 5345, 68, 69} with 5254 kept as a named rejection, and the audit's used-conditioned carve-outs for 5302 (mirror classifier: every runtime array specialized away) and 5346/5347 (mirror classifier: module provably servable) from Route 0/Route A; (b) the vkd3d tree ADOPTS the GB lane's geometry-shader passthrough serve (integ's position: modules pass, GS pipelines created and recorded, served at submit only on a structural layer-passthrough proof plus a strip-equivalent fragment stage, all other GS draws loud-dropped and counted); (c) compute-entry decision: the vkd3d disposition is adopted -- compute-only modules are accepted at creation so vkd3d-proton device creation succeeds (it creates internal compute pipelines during device creation and treats refusal as device-fatal), and dispatches are loud-dropped at submit as `compute-dispatch`; mixed compute+graphics modules still reject, and the cap/storage/SSBO checks still apply to graphics modules. The integ blanket-compute-rejection guards were updated to assert this behavior, not deleted.
+
+## 4.23 Committed-resource wall: the bridge advertised no HOST_CACHED memory type — small READBACK / WRITE_BACK allocations failed E_OUTOFMEMORY (2026-10-28)
+
+CHARACTERIZATION (probe: tools/vkd3d/probe/res12.c, no shaders, no
+pipelines, no draws — D3D12CreateDevice plus a CreateCommittedResource
+matrix). Pre-fix, on the merged build (wasm 60c5705a): default buffers
+(64K, 1M), upload buffer + Map round-trip, default render-target and
+UAV textures, custom WRITE_COMBINE buffer, and GPU_UPLOAD buffer all
+pass; readback-buffer-1k FAILS hr=0x8007000E and custom-writeback-buffer
+FAILS hr=0x8007000E; readback-buffer-4m PASSES with a Map round-trip.
+RESULT 1. The same wall is what stopped root12's CBV case (readback
+buffer for its 4x4 render target) and uav12's float EXEC cases after
+Route A: they pass CreateGraphicsPipelineState, create their textures,
+then stop inside vkd3d committed-resource creation with no bridge
+rejection logged.
+
+ROOT CAUSE (source-proven, then guest-proven). vkd3d-proton's
+vkd3d_select_memory_flags (tools/vkd3d/src/libs/vkd3d/memory.c) requires
+HOST_VISIBLE | HOST_CACHED for READBACK heaps and for CUSTOM heaps with
+WRITE_BACK page property. The bridge's fillMemoryProperties
+(source/vulkan/vk64bridge.cpp) advertised four types and NO type
+carried HOST_CACHED: type 0 DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+(2 GiB device heap), type 1 DEVICE_LOCAL, types 2/3 HOST_VISIBLE |
+HOST_COHERENT (4 GiB host heap). The guest's own BW64OOM instrumentation
+confirms the advertised model in vivo (memtype[0] flags=0x7,
+memtype[1]=0x1, memtype[2]=memtype[3]=0x6) and the exact failure:
+readback-1k reaches vkd3d_suballocate_memory with type_flags=0xa,
+req_mask=0, opt_mask=0, then tries a new 16M chunk with base_mask=0 and
+fails. UPLOAD works (HOST_VISIBLE | HOST_COHERENT is served by types
+2/3), DEFAULT works (DEVICE_LOCAL, type 1), GPU_UPLOAD works (type 0) —
+HOST_CACHED was the ONLY missing flag.
+
+THE SIZE SPLIT (why 1K fails and 4M passes). vkd3d's allocator has two
+tiers: allocations that fit the chunk regime go through suballocation,
+which uses the required-flags mask (empty here → E_OUTOFMEMORY); large
+allocations go direct with the domain type mask (base_mask=0xd) and
+RELAX the flags (the 4M case retries with type_flags=0x2, dropping
+HOST_CACHED) and land on type 2. So the wall bites exactly the regime
+real cases live in: root12's 784-byte readback and uav12's small
+readbacks are all suballocation-regime. The 64K granularity rounding is
+visible in the trace (the 1K resource requests a 64K allocation).
+
+FIX (one flag, two types, no special-casing). fillMemoryProperties now
+advertises HOST_VISIBLE | HOST_COHERENT | HOST_CACHED on the host-only
+types 2 and 3; the DEVICE_LOCAL-only type and the HVV type are
+untouched. The flag is honest, not a lie about coherency: the memory is
+ordinary emulator RAM (host-cacheable) and bridge-managed coherent, so
+CACHED is a property superset of what vkd3d requires with the COHERENT
+bit unchanged — the same combination real UMA hardware advertises.
+Scope note, verified by a fresh read (not assumed): the 64-bit handler
+(vk64Bridge) and the Properties2 handler both call fillMemoryProperties,
+so both ABIs of the 64-bit answer carry the fix; the 32-bit handler
+(vk32Bridge) hand-writes its own memory-properties answer and does NOT
+call fillMemoryProperties, so whether the 32-bit answer needs the same
+addition is a separate, unverified question for a 32-bit lane — this
+fix covers the 64-bit path only, and no 32-bit code was touched.
+
+POST-FIX PROOF (rebuilt dist, wasm 1a3edfe6, "Browser export
+verified"). res12: RESULT 0 — every case passes, including
+readback-1k + Map round-trip and custom-writeback (both previously
+0x8007000E). In-guest mechanism: memtype[2]=memtype[3]=0xe, and the
+readback suballocation now computes req_mask=0xc, opt_mask=0xc with a
+new chunk on a cached type. root12: the CBV case passes its PSO and its
+readback buffer now CREATES (the 784-byte heap_type=3 allocation goes
+through with req_mask=0xc) — the case then reports RT mismatch bad=64
+first px got=[0 0 0 0] want=[191 191 223 255]. uav12: format sweep still
+ALL18, and the four float EXEC cases now pass resource creation and
+complete their execution, but read back zeros (mismatches 64/64 or
+63/64, got=0). The two UINT EXEC cases fail earlier, at
+CreateGraphicsPipelineState hr=0x80070057 — a separate, pre-existing
+PSO-creation wall, not the resource wall (PSO creation precedes
+resource creation in the exec path, so those cases never reached it).
+
+NEXT WALL (stated, not solved here). Execution-to-readback data
+delivery returns zeros: command lists complete without error, but the
+readback buffers contain all zeros — root12 CBV (64/64 pixels) and
+uav12 float EXEC (63–64/64) agree. The stage is NOT yet pinned (draw /
+dispatch execution vs copy vs readback synchronization); no rejection
+in either log explains the zeros, and the console shows no draw
+rejection. Second, separate wall: uav12 UINT EXEC PSO creation
+E_INVALIDARG. Third, separate probe debt: root12's srv/uav cases fail at
+D3DCompile (E5000 syntax errors in the probe's own HLSL strings),
+independent of the resource wall.
+
+GUARDS + SUITES + REGISTER. Guard: web/tests/suite/unit/
+vk-memory-properties.test.mjs (2 tests pinning the advertised answer in
+source; sabotage-verified — removing the HOST_CACHED token from the arm
+fails the first test, restoring it passes 2/2). JS suite 305/0 (baseline
+304/0 at 58b4b779e + the new guard, zero new failures). Native suite: make -C project/linux test exits 0; the __TEST binary single-threaded run reports 644 tests OK, 0 tests FAILED in 205s (the trailing fault output is the suite's designed final crash-path test). jit64_tests / jit64_wasm_tests not re-run: the change touches only the wasm-only bridge file, which the native build does not compile (the test binary came up up-to-date with no recompile), so those CPU gates are unaffected by this change.
+REGISTER: docs/known-gaps/vulkan.md gains one IMPLEMENTED row at
+source/vulkan/vk64bridge.cpp:5606 (fillMemoryProperties); counts
+360 -> 361 rows (62 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP /
+0 OPEN). The +13-line insertion shifted later vk64bridge.cpp citations;
+all 13 drifted rows were re-pinned mechanically (audit --fix for the
+three single-citation marker rows, +13 hand re-pin for the rest, each
+verified against the audit's own nearest occurrence); final audit:
+0 DRIFT / 0 MISSING (217 MATCH, 12 MATCH-INHERITED, 98 UNCHECKABLE,
+7 EXEMPT).

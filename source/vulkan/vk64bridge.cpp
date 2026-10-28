@@ -5617,8 +5617,21 @@ void fillMemoryProperties(VkPhysicalDeviceMemoryProperties* p) {
             (i == 0) ? (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                       : (i == 1 ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-                                : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+                                : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_CACHED_BIT));
     }
+    // Committed-resource wall (2026-10-28, res12 probe): vkd3d-proton
+    // requires HOST_VISIBLE | HOST_CACHED for READBACK heaps and for
+    // CUSTOM heaps with WRITE_BACK page property (memory.c
+    // vkd3d_select_memory_flags). No advertised type carried HOST_CACHED,
+    // so the suballocation path required mask was empty and every small
+    // READBACK / WRITE_BACK allocation failed E_OUTOFMEMORY, while large
+    // allocations succeeded through the direct path (which relaxes the
+    // flags). The host-only types carry it now: the memory is ordinary
+    // emulator RAM (host-cacheable) and bridge-managed coherent, so the
+    // flag is a property superset of what vkd3d requires, not a lie about
+    // coherency -- the COHERENT bit is unchanged. The DEVICE_LOCAL-only
+    // type and the HVV type are untouched.
 }
 
 // Create a surface: there is no windowing system behind it (P1 section 1.4), so
