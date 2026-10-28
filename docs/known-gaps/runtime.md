@@ -3,7 +3,9 @@
 Scope: the Windows runtime a guest program sees — `web/runtime/*.zip`
 (pinned by `tools/browser/runtime-assets.json`, regenerable via
 `tools/rootfs64/build-wine64-zip.sh`, `tools/build-prefix32.sh`,
-`tools/rootfs64/build-prefix64.sh`) and the lazy "support pack" staged by
+`tools/rootfs64/build-prefix64.sh`; `wine32.zip` via
+`tools/rootfs32/regen-wine32-zip.sh` — see the wine32 base-tree
+addendum at the end of this register) and the lazy "support pack" staged by
 `tools/browser/stage-dependencies.py` (the CJK gap found inside it was
 fixed by this lane in bdd258899; the MFC row below documents why that
 lane's remaining item is externally constrained).
@@ -616,3 +618,40 @@ above. Remaining proof is unchanged in kind: an end-to-end media-playing
 guest program is a gate/browser item, as it was pre-split (the
 guest-visible filesystem union is identical; only the archive carrying the
 closure changed).
+
+
+## wine32.zip base-tree provenance (2026-10-28, wine32base lane)
+
+Until this lane, `wine32.zip` was the one shipped archive with no
+producer: its post-steps were scripted (`stage-alsa32.sh`,
+`stage-vkd3d-payloads32.sh`) and its sibling glibc archive had been
+reconstructed by the sysroot32 lane, but the base tree (1,892 of
+1,894 files) had no recorded provenance. The base is now identified
+from the bytes and regenerable: full census, evidence, and proof in
+`docs/reports/wine32-base-forensics-20261028.md`; producer scripts
+`tools/rootfs32/build-wine32-base.sh` (base tree from pinned
+inputs) and `tools/rootfs32/regen-wine32-zip.sh` (zip + post-steps
++ member-by-member verification vs the shipped archive +
+completeness gate). Provenance summary: the WineHQ side is
+`wine-stable-i386 10.0.0.0~noble-1` (Ubuntu pool build, sha256
+`5ba52340…` — NOT the bookworm build pinned for the 64-bit
+backports, which matches only 469 of 1,337 files), with the 12
+unix modules carrying undefined `__isoc23_*` symbols patchelf'd to
+need `libisoc23shim.so` (reproduced byte-for-byte), 22 unix modules
+duplicated as `.dll.so` copies, the `share/wine` data in both
+placements taken from Debian bookworm `libwine 8.0~repack-4`
+(78/78 byte-identical), a Debian-layout usr/ re-layout of the same
+WineHQ tree, and a 71-member bookworm i386 system-library closure
+pinned per-deb in the base script. Regeneration proof (2026-10-28):
+member set, sizes and sha256 IDENTICAL to the shipped archive
+(1,926/1,926); `check_runtime_completeness.py` 0 failures, 5 skips
+against the era-matched runtime set.
+
+Residue (named, preserved — no row opens): two base members are
+locally built artifacts whose sources survive nowhere on the box —
+`usr/lib/wine/wineserver32` (3,794,568 B, sha256 `ac990fd2…`) and
+`libisoc23shim.so` (15,252 B, sha256 `ef5e5696…`, two placements).
+The regen extracts them from the currently shipped (pinned)
+archive and hash-verifies before use, fail-closed — the sysroot32
+residue discipline. If either source is ever identified, check its
+output against those pins and retire the extraction.

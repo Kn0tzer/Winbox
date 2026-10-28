@@ -26,6 +26,8 @@
 /tools/cpu-diff/runner
 /tools/cpu-diff/report.json
 /tools/rootfs64/dist/
+/tools/rootfs32/wine32base-stage/
+/tools/rootfs32/wine32-regen/
 /tools/rootfs64/pages-assets/
 /tools/rootfs64/work/extract/
 /tools/rootfs64/work/lsbundle/
