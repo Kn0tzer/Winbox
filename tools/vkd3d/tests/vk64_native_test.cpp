@@ -494,27 +494,23 @@ int main() {
             {64, 4}, {70, 2}, {74, 2}, {75, 2}, {76, 2}, {77, 4}, {81, 4}, {82, 4}, {83, 4}, {91, 8},
             {95, 8}, {96, 8}, {97, 8}, {98, 4}, {99, 4}, {100, 4}, {101, 8}, {102, 8}, {103, 8},
             {107, 16}, {108, 16}, {109, 16}, {122, 4}, {124, 2}, {125, 4}, {126, 4}, {129, 4}, {130, 8}};
-        // PRODUCT FINDING, pinned rather than hidden (vk64 harness repair, 2026-10-28):
-        // fmt_bpp has no case for these 13 integer formats even though
-        // v2FormatIsSupportedImage() accepts them all, breaking the invariant stated in
-        // fmt_bpp's own default case ("every format v2FormatIsSupportedImage() accepts is
-        // listed above"). Each call lands in the loud default: it returns 4 (the true size
-        // only for 81/82) and counts "format-bpp" once. The pins below assert exactly that
-        // current behaviour so the check on the other 35 formats stays at full strength;
-        // when fmt_bpp grows the missing cases (the product fix), these pins fail and the
-        // formats must move out of this set into the plain spec assertion above.
-        const std::set<U32> fmtBppNoCase = {17, 20, 21, 74, 75, 81, 82, 95, 96, 101, 102, 107, 108};
+        // PRODUCT FINDING, fixed (fmtbpp lane, 2026-10-28): fmt_bpp used to have no case
+        // for 13 integer formats v2FormatIsSupportedImage() accepts (17, 20, 21, 74, 75,
+        // 81, 82, 95, 96, 101, 102, 107, 108), so each call landed in the loud default
+        // (returned 4, counted "format-bpp") and mis-sized image memory math -- 4 B
+        // instead of 16 B for the RGBA32 integer pair. The pins that asserted that
+        // fallback while it was live (vk64 harness repair, 2026-10-28) are gone: fmt_bpp
+        // now has explicit cases for all 48 non-BC supported formats, so every format
+        // below asserts its spec size at full strength and no supported format may
+        // count "format-bpp".
         const U64 before = vk64BridgeUnsupportedCount("format-bpp");
-        U64 gapCalls = 0;
         for (U32 f : kV2SupportedTextureFormats) {
             if (v2FormatIsBC(f)) continue;     // block-compressed sizes come from fmt_block
             auto it = spec.find(f);
             assert(it != spec.end());
-            if (fmtBppNoCase.count(f)) { assert(fmt_bpp(f) == 4); ++gapCalls; }
-            else assert(fmt_bpp(f) == it->second);
+            assert(fmt_bpp(f) == it->second);
         }
-        assert(gapCalls == fmtBppNoCase.size());
-        assert(vk64BridgeUnsupportedCount("format-bpp") == before + gapCalls);
+        assert(vk64BridgeUnsupportedCount("format-bpp") == before);
         assert(fmt_block(131).bytes == 8 && fmt_block(133).bytes == 8 && fmt_block(135).bytes == 16);
         const U64 beforeUnknown = vk64BridgeUnsupportedCount("format-bpp");
         assert(fmt_bpp(0x7ffffff0u) == 4 && vk64BridgeUnsupportedCount("format-bpp") == beforeUnknown + 1);   // unknown -> loud
