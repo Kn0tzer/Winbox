@@ -2460,3 +2460,95 @@ shape test red.
   UNCHECKABLE, 7 EXEMPT).
 - Dist: rebuilt in-tree; "Browser export verified"; the support
   archive is byte-identical to the checked-in pin (bbc583c6…).
+
+## 4.29 x86 vkd3d build: the 32-bit D3D12 frontend exists — PE32 vkd3d-proton built, staged, pinned (2026-10-28)
+
+The vendored vkd3d-proton 3.1.0 was built and shipped only as 64-bit
+guest DLLs; a 32-bit D3D12 guest fell back to WineHQ wine-stable
+10.0's bundled pair in wine32.zip (d3d12.dll 642,962 B, d3d12core.dll
+61,993 B) — upstream vkd3d ~1.16, no DXIL frontend, so the entire
+SM 6.x path was 64-bit-only.
+
+### Recipe provenance
+
+No project-local x86 recipe existed. What existed: BUILD.md's
+verified x86_64 recipe (meson + vendored cross file + the
+PATHCCH_NONE box workaround) and the vendored upstream cross file
+`src/build-win32.txt` (i686-w64-mingw32-gcc), never used on this box.
+The lane's recipe is exactly those two combined, scripted as
+`tools/vkd3d/build-win32.sh` (+ a BUILD.md "Build (32-bit guests)"
+section): meson setup with the vendored win32 cross file, same
+workaround, same options, then ninja. Nothing in the vendored source
+is modified. Toolchain was already on the box (meson 1.12.1, ninja,
+i686-w64-mingw32-gcc 13, i686 widl); nothing was missing except the
+build itself and every piece of staging integration.
+
+### Build result (verified)
+
+- meson setup OK; ninja 209/209 (same step count as the 64-bit
+  build). The build script re-runs cleanly and self-verifies.
+- `build.w32/libs/d3d12/d3d12.dll`: 517,273 B, sha256
+  872c3d65ad3febfb3fdbd935ca2272624a0e711724dd4013001dbc9ffd3ab0e1,
+  PE32 machine 0x14c, exports the full loader set
+  (D3D12CreateDevice, D3D12GetInterface, serializers, debug).
+- `build.w32/libs/d3d12core/d3d12core.dll`: 9,022,393 B, sha256
+  71e9c174084474d84e04893f0cef9eaea9bbede43201308e46b19b01fd727600,
+  PE32 machine 0x14c, exports D3D12GetInterface + D3D12SDKVersion;
+  imports are exactly the 64-bit build's system set (ADVAPI32, dxgi,
+  GDI32, KERNEL32, msvcrt, api-ms-win-core-path-l1-1-0, VERSION) —
+  no libwinpthread/libgcc/libstdc++ DLL dependencies.
+- The PE build is not byte-reproducible (linker TimeDateStamp is a
+  real timestamp; the generated vkd3d_version.h embeds the enclosing
+  repo's git describe — this build reads
+  "rootfs-pages-1486-ge2c11c8d3"). Same as the 64-bit pair: the
+  canonical bytes are the staged ones, pinned, and a rebuild re-pins
+  deliberately.
+
+### Staging integration
+
+- `tools/rootfs64/stage-vkd3d-payloads32.sh` (new) mirrors
+  stage-vkd3d-payloads.sh: PE32 arch check first (a PE32+ copy is
+  silently useless to a 32-bit guest), idempotence check, backup,
+  ZipInfo-preserving merge, final byte verification. It replaces the
+  pair at `opt/wine-stable/lib/wine/i386-windows/` in wine32.zip —
+  prefix32's system32.link target, i.e. system placement.
+- Wired into `tools/rootfs64/apply-runtime-poststeps.sh` after the
+  64-bit vkd3d step, so a fresh assemble cannot omit it.
+- Pins: `VKD3D32_PINS` + `t_vkd3d_payloads32` in
+  `tools/rootfs64/check_runtime_completeness.py`; full gate run on
+  the staged set: 0 failures (new check PASS; validate_service_runtime,
+  manifest-match, and all pre-existing checks PASS; 2 designed skips
+  for absent fresh-worktree caches).
+- Artifact manifest regenerated: the w32 provenance line and the two
+  member sizes are the only changes (wine32.zip now 239,760,722 B,
+  sha256 0562fb32a654e57b1de848603581f094c563a40086999cc28111b6319c41c7ec,
+  1926 members).
+- Deliberately NOT done in-lane: `tools/browser/runtime-assets.json`
+  is not re-pinned here. Its wine32.zip entry must be re-measured on
+  the canonical tree at merge time (the apply-runtime-poststeps
+  re-pin flow), together with the retained-archive rebuild — the
+  same step the 20261026 set is still waiting on. The merge must
+  also copy the two DLLs (or build.w32) into the integ tree and
+  hash-verify them against VKD3D32_PINS before staging, since build
+  outputs are gitignored and rebuilds produce different bytes.
+- Register: runtime.md gains one IMPLEMENTED row (the w32 payload
+  row in the DirectX section).
+
+### What remains for full 32-bit D3D12 support
+
+- Guest verification: no 32-bit D3D12 run has been made. A PE32
+  probe now exists in-tree (`tools/vkd3d/probe/tri12-32.exe`, PE32
+  build of tri12.c, compiles clean against the i686 toolchain);
+  it is not staged anywhere yet, and the demo path does not pass
+  WINEDLLOVERRIDES for 32-bit prefixes yet.
+- Vulkan path beneath it: there is no PE32 bw64vulkan.dll (the bw64
+  PE shim is 64-bit only). The vendored loader tries bw64vulkan.dll,
+  then winevulkan.dll, then vulkan-1.dll, so a 32-bit guest resolves
+  WineHQ 10.0's winevulkan.dll — whose registry is far newer than
+  the Debian 8.0 winevulkan the 64-bit shim bypasses, so the
+  maintenance5/6 blocker may not exist on this path; only a guest
+  run can settle whether device creation works through it and what
+  the 32-bit bridge (vk32) still owes vkd3d.
+- Suites: JS suite and native suite results recorded with the lane
+  commit (zero new failures vs the e2c11c8d3 baseline: JS 311/0,
+  native 645 OK).
