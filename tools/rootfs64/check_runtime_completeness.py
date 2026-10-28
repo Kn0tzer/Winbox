@@ -95,6 +95,10 @@ WINEHQ_PINS = {
 # from the proton build. Re-pins are deliberate: a vkd3d or shim
 # rebuild that changes bytes fails here until the new bytes are
 # reviewed and pinned.
+# 2026-10-28 restage: the pair was rebuilt from the vendored source
+# at 954e72aa1 so the staged d3d12core.dll carries the section-4.29
+# dxbc-spirv utof fix (the previous pins predated that rebuild and
+# uav12 UINT cases still failed PSO creation against them).
 VKD3D_PINS = {
     'bw64vulkan.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
     # vulkan-1.dll and winevulkan.dll carry the SAME shim bytes
@@ -105,8 +109,8 @@ VKD3D_PINS = {
     # (the bridge) or the surface call faults inside winevulkan.
     'vulkan-1.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
     'winevulkan.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
-    'd3d12.dll': 'd77fdad5d3a1426287cec7e642ca8e43f1f52c2f54c7de3bb24a64174ec2284a',
-    'd3d12core.dll': 'd2bd847a7d564fb64aee51461998b0014767b73a3b4f0ec46a977702da0076b3',
+    'd3d12.dll': 'a96b4e9d53ed0bed7c52a9610677e4b4ec4eb13fb5ad4f44a175c7a8da7242f1',
+    'd3d12core.dll': '3d3bfe43cbec123fcdeb8f2b72ee2beaefb7a63eeaf37493bbace5c5ba54e790',
 }
 FONTS32_PINS = {
     'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
