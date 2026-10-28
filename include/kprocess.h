@@ -207,6 +207,9 @@ public:
 	void deleteThread(KThread* thread);
     void killAllThreads(KThread* exceptThisOne = nullptr);
     BString getAbsoluteExePath();
+    // commandLine with its NUL separators rendered as spaces, for log
+    // lines that print through c_str() (which would stop at argv[0]).
+    BString commandLineForLog() const;
     void clone(const KProcessPtr& from, U32 shareFlags = 0);
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);

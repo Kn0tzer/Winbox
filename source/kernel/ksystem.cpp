@@ -485,7 +485,8 @@ void KSystem::printStacks() {
     for (auto& n : KSystem::processes) {
         const KProcessPtr& process = n.value;
 
-        klog_fmt("process %X %s%s", process->id, process->terminated?"TERMINATED ":"", process->commandLine.c_str());
+        BString cmd = process->commandLineForLog();
+        klog_fmt("process %X %s%s", process->id, process->terminated?"TERMINATED ":"", cmd.c_str());
         process->printStack();
     }
 }
