@@ -2219,6 +2219,8 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT:
         case VK_FORMAT_R8_SINT: case VK_FORMAT_S8_UINT: return 1;
         case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT:
+        case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
         case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
         case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
         case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
@@ -2228,14 +2230,18 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
         case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT:
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
         case VK_FORMAT_X8_D24_UNORM_PACK32:
         case VK_FORMAT_D24_UNORM_S8_UINT: case VK_FORMAT_D32_SFLOAT:
         case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 4;
-        case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
-        case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R16G16B16A16_SINT: return 8;
+        case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32_SINT: return 8;
         case VK_FORMAT_D32_SFLOAT_S8_UINT: return 8;   // 4 depth + 1 stencil, padded as hosts store it
-        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_R32G32B32A32_SINT: return 16;
         default:
             // Every format v2FormatIsSupportedImage() accepts is listed above (guarded by the native
             // test); anything else reaching here is a new format added without a size.

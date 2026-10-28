@@ -3481,3 +3481,61 @@ Next step for the flake itself: any future init failure run with
 BW_TEST_URL_PARAMS) localizes to the first missing/late step;
 repetition statistics on a quiet box remain the other half of
 §4.18's named follow-up.
+
+
+## 4.36 fmt_bpp integer formats: the harness repair's one genuine product finding, fixed (2026-10-28, fmtbpp lane)
+
+**The finding (inherited, pinned before it was fixed).** The vk64 harness
+repair lane (lane-vk64harness) completed the native harness's format-bpp
+spec table to all 48 non-BC formats `v2FormatIsSupportedImage()` accepts
+and found 17 missing from it. Four were pure test rot (fmt_bpp already
+served them). The other 13 were a genuine product gap: `fmt_bpp`
+(`source/vulkan/vk64bridge.cpp`) had no case for R8G8_SNORM/UINT/SINT
+(2 B), R16_UINT/SINT (2 B), R16G16_UINT/SINT (4 B),
+R16G16B16A16_UINT/SINT (8 B), R32G32_UINT/SINT (8 B) or
+R32G32B32A32_UINT/SINT (16 B). Every call landed in the loud default --
+returned 4 (the true size only for the R16G16 pair) and counted
+`format-bpp` -- breaking the invariant stated in that default case
+("every format v2FormatIsSupportedImage() accepts is listed above") and
+mis-sizing everything fmt_bpp feeds: image memory requirements
+(imageDataBytes via fmt_block), vkGetImageSubresourceLayout row pitches,
+swapchain/image pixBytes, and the 32-bit copy/blit/resolve pitches --
+4 B instead of 16 B per texel for the RGBA32 integer pair. The harness
+pinned the fallback behaviour (return 4, one count per call) so the
+other 35 formats kept full-strength spec assertions until the product
+fix landed.
+
+**The fix.** All 13 cases added to fmt_bpp with their Vulkan-spec sizes;
+fmt_bpp now has an explicit case for every one of the 48 non-BC supported
+formats, and the loud default remains for genuinely unsupported formats
+(the harness still asserts an unknown format returns 4 and counts once).
+The harness's pin set is removed: the 13 formats moved into the plain
+spec assertion (return value = spec size), and the block now asserts the
+`format-bpp` counter does not move across the whole supported set.
+
+**Consumer check (no compensation existed).** Every fmt_bpp call site in
+the bridge was read: vk64BufferViewRange's texel alignment flooring,
+both ABIs' vkGetImageSubresourceLayout, image creation / swapchain
+pixBytes, the imageDataBytes helpers behind the memory-requirements
+handlers, and the 32-bit clear/copy/blit/resolve paths -- all use the
+returned size purely multiplicatively; none branches on the fallback
+value or special-cases these formats. The page tier is independent of
+fmt_bpp and already had it right: `V2_TEXTURE_UPLOAD_BPP`
+(web/vk-protocol.mjs) carries the correct size for every WebGPU
+counterpart of the 13 (rg8uint 2, rgba32sint 16, ...). One unrelated
+observation, left untouched: the 32-bit vkCmdClearColorImage writes its
+4-byte clear pattern in 4-byte steps regardless of texel size -- it uses
+fmt_bpp only for the total byte count, so it neither compensated for nor
+depended on the fallback.
+
+**Proof.** run-native.py runs end-to-end green (exit 0, all 31 PASS
+blocks, including the format block at its new full strength). Sabotage:
+removing the single R32G32B32A32_UINT case from fmt_bpp aborts the
+harness at the spec assertion (`fmt_bpp(f) == it->second`); the bridge
+file was restored byte-identical (sha256 verified) and the final run is
+green. Register: one IMPLEMENTED row added (merged tree: 370 = 71/66/233/0);
+citation audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
+97 UNCHECKABLE / 7 EXEMPT). The emulator native suite does not cover the
+bridge (project/linux filters vk64bridge.cpp out of TEST_SOURCES, and
+the changed test file is compiled only by run-native.py), so the harness
+is the native check for this change. JS suite: 314 passed / 0 failed on the lane's own dist (bw64-build.sh, "Browser export verified") -- the branch baseline exactly, including vulkan-image-format-size (which compiles fmt_bpp from source) and vk-register-citations.
