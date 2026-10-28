@@ -953,10 +953,16 @@ export function installVkPageTier({ canvas, log = defaultLog } = {}) {
     }
     if (destroyed) return stopped();
     // Pin the selected presentation across latest-frame-wins queue drops.
-    const f = capturePending || v2queue.takeLatest();
+    const batch = capturePending ? [capturePending] : v2queue.takeForPump();
     if (capturePending) { v2queue.q = v2queue.q.filter(frame => frame !== capturePending); capturePending = null; }
     // latest-frame-wins: the guest presenting
-    if (!f) return { rendered: false, reason: 'empty' }; // faster than the page renders never builds a backlog
+    if (!batch.length) return { rendered: false, reason: 'empty' }; // faster than the page renders never builds a backlog
+    let result = null;
+    for (const f of batch) result = await renderOne(f);
+    return result;
+  }
+
+  async function renderOne(f) {
     try {
       // An undersized uniform binding is a size the page did not pad: Dawn
       // names the group, binding, and minimum bytes, so learn it and re-render
@@ -1549,6 +1555,74 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // Also populate frame-local cache for within-frame dedup
     F.texCache.set(imgHex, t);
     return t;
+  }
+
+  // Page-side application of a guest buffer->image copy (B2I_UPLOAD
+  // op): the bridge executed the copy eagerly into the image's guest
+  // memory, but this tier's own GPUTexture for the image -- a render
+  // target it drew into, or a texture materialised from an earlier
+  // upload -- is a separate copy of the content and would otherwise
+  // stay stale forever (section 4.24's known limitation:
+  // rendered-then-overwritten images read back and sample stale).
+  // Apply the uploaded region to that texture, in command order,
+  // through the frame's encoder so the write cannot overtake a draw
+  // recorded earlier in the same submission. Fail-closed: anything not
+  // provably servable keeps the old behaviour and is named (the
+  // guest-memory seed still serves copy-only images, which have no
+  // page texture at all).
+  function applyBufferToImage(op, encoder) {
+    let texture = targets.get(v2ImageTargetKey(op.dstImage, false)) || targets.get(v2ImageTargetKey(op.dstImage, true));
+    const img = F.images.get(op.dstImage);
+    if (!texture && img) texture = gpuTextureFor(op.dstImage, img, false, img.d > 1 ? '3d' : img.layers > 1 ? '2d-array' : '2d');
+    if (!texture) { stats.b2iNoTarget = (stats.b2iNoTarget || 0) + 1; return; }
+    const fmt = v2TextureFormat(op.format, stats, device.features);
+    if (!fmt) { noteUnsupported('b2i-apply-format', op.format); return; }
+    if (fmt.startsWith('depth')) { noteUnsupported('b2i-apply-depth', fmt); return; }
+    if (String(texture.format).replace(/-srgb$/, '') !== fmt.replace(/-srgb$/, '')) {
+      noteUnsupported('b2i-apply-target-format', String(texture.format) + ' vs image ' + fmt); return;
+    }
+    if (op.mip >= (texture.mipLevelCount || 1)) { noteUnsupported('b2i-apply-mip', op.mip); return; }
+    let bytes = F.buffers.get(op.srcBuffer + ':' + op.srcMemOff);
+    if (!bytes) bytes = F.buffers.get(op.srcBuffer);
+    if (!bytes) { noteUnsupported('b2i-apply-source-missing', op.srcBuffer + ':' + op.srcMemOff); return; }
+    // Format conversions that change the byte count per texel (packed
+    // formats expanding to RGBA8) cannot be mapped row-by-row onto the
+    // bridge's source layout; length-preserving ones (norm16 -> half)
+    // convert per texel and stay exact.
+    const pixels = v2TexturePixels(op.format, bytes, device.features);
+    if (pixels.length !== bytes.length) { noteUnsupported('b2i-apply-format-conversion', op.format); return; }
+    const compressed = fmt.startsWith('bc');
+    const bpp = compressed ? 0 : v2TextureUploadBpp(fmt);
+    if (!compressed && !bpp) { noteUnsupported('b2i-apply-format', fmt); return; }
+    const is3d = texture.dimension === '3d';
+    const slices = is3d ? op.depth : op.layerCount;
+    // The source span must cover every byte the copy reads: all slices
+    // but the last span a full source slice; the last spans its copied
+    // rows (block rows for compressed formats, texel rows otherwise).
+    const rowsCopied = Math.ceil(op.h / (compressed ? 4 : 1));
+    const sliceBytes = op.srcRowsPerSlice * op.srcRowBytes;
+    const minLastRow = compressed ? 1 : op.w * bpp;
+    if (pixels.length < (slices - 1) * sliceBytes + (rowsCopied - 1) * op.srcRowBytes + minLastRow) {
+      noteUnsupported('b2i-apply-source-short', pixels.length); return;
+    }
+    if (compressed) {
+      // WebGPU compressed copies need block-aligned origins, and an
+      // extent that is block-aligned or reaches the texture edge.
+      if (op.origin[0] % 4 || op.origin[1] % 4 ||
+          (op.w % 4 && op.origin[0] + op.w < texture.width) ||
+          (op.h % 4 && op.origin[1] + op.h < texture.height)) {
+        noteUnsupported('b2i-apply-block-alignment', op.origin + ' ' + op.w + 'x' + op.h); return;
+      }
+    }
+    const stage = device.createBuffer({ size: Math.max(4, Math.ceil(pixels.length / 4) * 4), usage: GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
+    new Uint8Array(stage.getMappedRange()).set(pixels.subarray(0, Math.min(pixels.length, stage.size)));
+    stage.unmap();
+    F.live.push(stage);
+    encoder.copyBufferToTexture(
+      { buffer: stage, bytesPerRow: op.srcRowBytes, rowsPerImage: op.srcRowsPerSlice },
+      { texture, mipLevel: op.mip, origin: { x: op.origin[0], y: op.origin[1], z: is3d ? op.origin[2] : op.baseLayer } },
+      { width: op.w, height: op.h, depthOrArrayLayers: slices });
+    stats.b2iApplied = (stats.b2iApplied || 0) + 1;
   }
 
   // Identity of a texel texture's content (shared with the bind-group
@@ -2721,6 +2795,11 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
       for (const op of p.ops) {
         switch (op.op) {
+          case 'bufferToImage': {
+            if (passEnc) throw new Error('buffer-to-image upload inside a render pass');
+            applyBufferToImage(op, encoder);
+            break;
+          }
           case 'imageCopy': {
             if (passEnc) throw new Error('image copy inside a render pass');
             const srcImage = F.images.get(op.srcImage), dstImage = F.images.get(op.dstImage);

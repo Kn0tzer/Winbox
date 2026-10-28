@@ -18,6 +18,23 @@
  *   DELAY   : CLEAR repeated, then Sleep(2000) and Map again. If data
  *             appears only on the second read, the fence/submit wait
  *             returned early (premature completion).
+ *   RDB2I   : CLEAR (magenta) in one submission, then a buffer->image
+ *             upload of a per-pixel pattern OVERWRITES the same RT in a
+ *             second submission, then RT -> readback. Expect the upload
+ *             pattern: the newest guest-visible content wins. (The
+ *             section-4.24 known limitation: the page tier never hears
+ *             about the upload, so its rendered texture is served stale.)
+ *   RDB2IP  : same, but the upload covers only a 2x2 sub-rect at (1,1).
+ *             Expect pattern inside the rect, magenta outside it: the
+ *             page must apply exactly the copied region, not the whole
+ *             image and not nothing.
+ *   RDB2IS  : RDB2I with clear + upload-overwrite + copy in ONE
+ *             submission. The readback resolves in the same frame that
+ *             rendered, so the page tier's render target exists and is
+ *             preferred over the bridge's guest-memory seed: without
+ *             page-side B2I application this serves the pre-copy clear
+ *             colour everywhere (the section-4.24 limitation in its
+ *             purest form, no queue timing involved).
  * Every image variant also dumps the FULL readback buffer (not just the
  * footprint rows) plus a nonzero-byte count, so "copy wrote nothing"
  * and "copy wrote at the wrong offset/stride" are distinguishable.
@@ -496,6 +513,186 @@ static int v_constps(struct ctx* cx)
       return ok; }
 }
 
+/* ---------------- VARIANTS: RDB2I / RDB2IP (render, then upload-overwrite, then read back) ---------------- */
+static void fill_pattern(void* mapped, D3D12_PLACED_SUBRESOURCE_FOOTPRINT* fp)
+{
+    int y, x;
+    memset(mapped, 0, (size_t)fp->Footprint.RowPitch * TH);
+    for (y = 0; y < TH; y++) for (x = 0; x < TW; x++) {
+        int idx = x + y * TW;
+        unsigned char* px = (unsigned char*)mapped + fp->Footprint.RowPitch * y + x * 4;
+        px[0] = (unsigned char)(idx * 16); px[1] = (unsigned char)(255 - idx * 8);
+        px[2] = (unsigned char)(idx * 4); px[3] = 255;
+    }
+}
+
+static void pat_px(int idx, unsigned char out[4])
+{
+    out[0] = (unsigned char)(idx * 16); out[1] = (unsigned char)(255 - idx * 8);
+    out[2] = (unsigned char)(idx * 4); out[3] = 255;
+}
+
+static int check_rdb2i(struct ctx* cx, ID3D12Resource* rb, D3D12_PLACED_SUBRESOURCE_FOOTPRINT* fp,
+                       UINT64 total, int partial, const char* name)
+{
+    char b[512];
+    void* mapped = NULL; D3D12_RANGE rr = {0, (SIZE_T)total};
+    HRESULT hr = ID3D12Resource_Map(rb, 0, &rr, &mapped);
+    int bad = 0, fi = -1; unsigned char fg[4] = {0, 0, 0, 0}, fw[4] = {0, 0, 0, 0};
+    int y, x, ch;
+    unsigned int nz;
+    if (FAILED(hr)) { wsprintfA(b, "rb12: VARIANT %s FAIL (RT Map hr=0x%08X)\n", name, (unsigned)hr); dbg(b); return 0; }
+    nz = count_nonzero((const unsigned char*)mapped, (unsigned int)total);
+    for (y = 0; y < TH; y++) for (x = 0; x < TW; x++) {
+        int idx = x + y * TW;
+        unsigned char want[4];
+        int inRect = partial && x >= 1 && x < 3 && y >= 1 && y < 3;
+        if (!partial || inRect) pat_px(idx, want);
+        else { want[0] = 255; want[1] = 0; want[2] = 255; want[3] = 255; }
+        const unsigned char* px = (const unsigned char*)mapped + fp->Footprint.RowPitch * y + x * 4;
+        for (ch = 0; ch < 4; ch++)
+            if (px[ch] != want[ch]) { bad++; if (fi < 0) { fi = idx; memcpy(fg, px, 4); memcpy(fw, want, 4); } }
+    }
+    dump_hex((const unsigned char*)mapped, (unsigned int)total > 1024 ? 1024 : (unsigned int)total, name);
+    ID3D12Resource_Unmap(rb, 0, NULL);
+    wsprintfA(b, "rb12: VARIANT %s %s (bad=%d first idx=%d got=[%d %d %d %d] want=[%d %d %d %d] nonzero=%u/%u RowPitch=%u total=%u)\n",
+              name, bad ? "FAIL" : "OK", bad, fi, fg[0], fg[1], fg[2], fg[3],
+              fw[0], fw[1], fw[2], fw[3], nz, (unsigned int)total, fp->Footprint.RowPitch, (unsigned int)total);
+    dbg(b);
+    return bad == 0;
+}
+
+static int v_rdb2i(struct ctx* cx, int partial)
+{
+    const char* name = partial ? "RDB2IP" : "RDB2I";
+    char b[256];
+    ID3D12Resource* rt = make_rt(cx, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (!rt) { wsprintfA(b, "rb12: VARIANT %s FAIL (RT create)\n", name); dbg(b); return 0; }
+    D3D12_CPU_DESCRIPTOR_HANDLE rtCpu;
+    ID3D12DescriptorHeap* rtHeap = make_rtv(cx, rt, &rtCpu);
+    if (!rtHeap) { ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (RTV create)\n", name); dbg(b); return 0; }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {0}; UINT64 total = 0;
+    rt_footprint(cx, rt, &fp, &total);
+    ID3D12Resource* up = make_buffer(cx->dev, D3D12_HEAP_TYPE_UPLOAD, total,
+                                     D3D12_RESOURCE_STATE_GENERIC_READ, 0, "rdb2i upload");
+    if (!up) { ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (upload create)\n", name); dbg(b); return 0; }
+    { void* mapped = NULL; D3D12_RANGE rr = {0, 0};
+      HRESULT hr = ID3D12Resource_Map(up, 0, &rr, &mapped);
+      if (FAILED(hr)) { ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (upload Map)\n", name); dbg(b); return 0; }
+      fill_pattern(mapped, &fp);
+      ID3D12Resource_Unmap(up, 0, NULL); }
+    ID3D12Resource* rb = make_buffer(cx->dev, D3D12_HEAP_TYPE_READBACK, total,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, 0, "rdb2i readback");
+    if (!rb) { ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (readback create)\n", name); dbg(b); return 0; }
+    /* Submission 1: clear the RT to magenta (page-side rendered content). */
+    ID3D12GraphicsCommandList* list = new_list(cx, NULL);
+    if (!list) { ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (list1 create)\n", name); dbg(b); return 0; }
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rtCpu, FALSE, NULL);
+    { D3D12_VIEWPORT vp = {0}; vp.Width = TW; vp.Height = TH; vp.MaxDepth = 1.0f;
+      ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
+      D3D12_RECT sc = {0, 0, TW, TH};
+      ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc); }
+    { const float clearCol[4] = { 1.0f, 0.0f, 1.0f, 1.0f };
+      ID3D12GraphicsCommandList_ClearRenderTargetView(list, rtCpu, clearCol, 0, NULL); }
+    if (!exec_and_wait(cx, list)) { dbg("rb12: VARIANT RDB2I FAIL (clear exec/fence)\n"); ID3D12GraphicsCommandList_Release(list); ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); return 0; }
+    ID3D12GraphicsCommandList_Release(list);
+    ID3D12CommandAllocator_Reset(cx->alloc);
+    /* Submission 2: upload-overwrite the RT (full or 2x2 sub-rect), then copy to readback. */
+    list = new_list(cx, NULL);
+    if (!list) { ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); wsprintfA(b, "rb12: VARIANT %s FAIL (list2 create)\n", name); dbg(b); return 0; }
+    { D3D12_RESOURCE_BARRIER bar = {0};
+      bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      bar.Transition.pResource = rt;
+      bar.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      bar.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+      bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &bar); }
+    { D3D12_TEXTURE_COPY_LOCATION dstLoc = {0}, srcLoc = {0};
+      dstLoc.pResource = rt; dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dstLoc.SubresourceIndex = 0;
+      srcLoc.pResource = up; srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; srcLoc.PlacedFootprint = fp;
+      if (partial) {
+          D3D12_BOX box = {1, 1, 0, 3, 3, 1};
+          ID3D12GraphicsCommandList_CopyTextureRegion(list, &dstLoc, 1, 1, 0, &srcLoc, &box);
+      } else {
+          ID3D12GraphicsCommandList_CopyTextureRegion(list, &dstLoc, 0, 0, 0, &srcLoc, NULL);
+      } }
+    { D3D12_RESOURCE_BARRIER bar = {0};
+      bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      bar.Transition.pResource = rt;
+      bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+      bar.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &bar); }
+    { D3D12_TEXTURE_COPY_LOCATION rbDst = {0}, rtSrc = {0};
+      rbDst.pResource = rb; rbDst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; rbDst.PlacedFootprint = fp;
+      rtSrc.pResource = rt; rtSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; rtSrc.SubresourceIndex = 0;
+      ID3D12GraphicsCommandList_CopyTextureRegion(list, &rbDst, 0, 0, 0, &rtSrc, NULL); }
+    if (!exec_and_wait(cx, list)) { dbg("rb12: VARIANT RDB2I FAIL (copy exec/fence)\n"); ID3D12GraphicsCommandList_Release(list); ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); return 0; }
+    ID3D12GraphicsCommandList_Release(list);
+    { int ok = check_rdb2i(cx, rb, &fp, total, partial, name);
+      ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt);
+      return ok; }
+}
+
+/* RDB2IS: RDB2I with clear + upload-overwrite + copy in ONE submission. */
+static int v_rdb2is(struct ctx* cx)
+{
+    ID3D12Resource* rt = make_rt(cx, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (!rt) { dbg("rb12: VARIANT RDB2IS FAIL (RT create)\n"); return 0; }
+    D3D12_CPU_DESCRIPTOR_HANDLE rtCpu;
+    ID3D12DescriptorHeap* rtHeap = make_rtv(cx, rt, &rtCpu);
+    if (!rtHeap) { ID3D12Resource_Release(rt); dbg("rb12: VARIANT RDB2IS FAIL (RTV create)\n"); return 0; }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {0}; UINT64 total = 0;
+    rt_footprint(cx, rt, &fp, &total);
+    ID3D12Resource* up = make_buffer(cx->dev, D3D12_HEAP_TYPE_UPLOAD, total,
+                                     D3D12_RESOURCE_STATE_GENERIC_READ, 0, "rdb2is upload");
+    if (!up) { ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); dbg("rb12: VARIANT RDB2IS FAIL (upload create)\n"); return 0; }
+    { void* mapped = NULL; D3D12_RANGE rr = {0, 0};
+      HRESULT hr = ID3D12Resource_Map(up, 0, &rr, &mapped);
+      if (FAILED(hr)) { ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); dbg("rb12: VARIANT RDB2IS FAIL (upload Map)\n"); return 0; }
+      fill_pattern(mapped, &fp);
+      ID3D12Resource_Unmap(up, 0, NULL); }
+    ID3D12Resource* rb = make_buffer(cx->dev, D3D12_HEAP_TYPE_READBACK, total,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, 0, "rdb2is readback");
+    if (!rb) { ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); dbg("rb12: VARIANT RDB2IS FAIL (readback create)\n"); return 0; }
+    ID3D12GraphicsCommandList* list = new_list(cx, NULL);
+    if (!list) { ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); dbg("rb12: VARIANT RDB2IS FAIL (list create)\n"); return 0; }
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rtCpu, FALSE, NULL);
+    { D3D12_VIEWPORT vp = {0}; vp.Width = TW; vp.Height = TH; vp.MaxDepth = 1.0f;
+      ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
+      D3D12_RECT sc = {0, 0, TW, TH};
+      ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc); }
+    { const float clearCol[4] = { 1.0f, 0.0f, 1.0f, 1.0f };
+      ID3D12GraphicsCommandList_ClearRenderTargetView(list, rtCpu, clearCol, 0, NULL); }
+    { D3D12_RESOURCE_BARRIER bar = {0};
+      bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      bar.Transition.pResource = rt;
+      bar.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      bar.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+      bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &bar); }
+    { D3D12_TEXTURE_COPY_LOCATION dstLoc = {0}, srcLoc = {0};
+      dstLoc.pResource = rt; dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dstLoc.SubresourceIndex = 0;
+      srcLoc.pResource = up; srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; srcLoc.PlacedFootprint = fp;
+      ID3D12GraphicsCommandList_CopyTextureRegion(list, &dstLoc, 0, 0, 0, &srcLoc, NULL); }
+    { D3D12_RESOURCE_BARRIER bar = {0};
+      bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      bar.Transition.pResource = rt;
+      bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+      bar.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &bar); }
+    { D3D12_TEXTURE_COPY_LOCATION rbDst = {0}, rtSrc = {0};
+      rbDst.pResource = rb; rbDst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; rbDst.PlacedFootprint = fp;
+      rtSrc.pResource = rt; rtSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; rtSrc.SubresourceIndex = 0;
+      ID3D12GraphicsCommandList_CopyTextureRegion(list, &rbDst, 0, 0, 0, &rtSrc, NULL); }
+    if (!exec_and_wait(cx, list)) { dbg("rb12: VARIANT RDB2IS FAIL (exec/fence)\n"); ID3D12GraphicsCommandList_Release(list); ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt); return 0; }
+    ID3D12GraphicsCommandList_Release(list);
+    { int ok = check_rdb2i(cx, rb, &fp, total, 0, "RDB2IS");
+      ID3D12Resource_Release(rb); ID3D12Resource_Release(up); ID3D12DescriptorHeap_Release(rtHeap); ID3D12Resource_Release(rt);
+      return ok; }
+}
+
 int main(void)
 {
     char b[512];
@@ -543,17 +740,21 @@ int main(void)
     int upldOk = v_upldtex(&cx); ID3D12CommandAllocator_Reset(alloc);
     int constOk = v_constps(&cx); ID3D12CommandAllocator_Reset(alloc);
     int delayOk = v_clear(&cx, 2); ID3D12CommandAllocator_Reset(alloc);
+    int rdb2iOk = v_rdb2i(&cx, 0); ID3D12CommandAllocator_Reset(alloc);
+    int rdb2isOk = v_rdb2is(&cx); ID3D12CommandAllocator_Reset(alloc);
+    int rdb2ipOk = v_rdb2i(&cx, 1); ID3D12CommandAllocator_Reset(alloc);
 
-    wsprintfA(b, "rb12: SUMMARY buf=%s clear=%s upldtex=%s constps=%s delay=%s\n",
+    wsprintfA(b, "rb12: SUMMARY buf=%s clear=%s upldtex=%s constps=%s delay=%s rdb2i=%s rdb2is=%s rdb2ip=%s\n",
               bufOk ? "OK" : "FAIL", clearOk ? "OK" : "FAIL", upldOk ? "OK" : "FAIL",
-              constOk ? "OK" : "FAIL", delayOk ? "OK" : "FAIL");
+              constOk ? "OK" : "FAIL", delayOk ? "OK" : "FAIL",
+              rdb2iOk ? "OK" : "FAIL", rdb2isOk ? "OK" : "FAIL", rdb2ipOk ? "OK" : "FAIL");
     dbg(b);
     ID3D10Blob_Release(vsBlob);
     ID3D12Fence_Release(fence);
     ID3D12CommandAllocator_Release(alloc);
     ID3D12CommandQueue_Release(queue);
     ID3D12Device_Release(dev);
-    if (bufOk && clearOk && upldOk && constOk && delayOk) { dbg("rb12: RESULT 0\n"); return 0; }
+    if (bufOk && clearOk && upldOk && constOk && delayOk && rdb2iOk && rdb2isOk && rdb2ipOk) { dbg("rb12: RESULT 0\n"); return 0; }
     dbg("rb12: RESULT 1\n");
     return 1;
 }
