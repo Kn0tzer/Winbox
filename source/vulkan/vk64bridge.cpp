@@ -2296,6 +2296,71 @@ U64 imageSubresourceOffset(const Image& im, U32 mip, U32 layer) {
     for (U32 m = 0; m < mip; ++m) off += imageMipBytes(im, m);
     return off;
 }
+
+// ---------------------------------------------------------------------------
+// vkCmdClearColorImage subresource ranges (shared by both ABIs; the two
+// handlers used to ignore VkImageSubresourceRange entirely and fill the
+// whole image, so clearing one mip or one layer destroyed the others).
+// A range is resolved fail-closed against the image: the REMAINING_*
+// sentinels (and a zero count, which is invalid Vulkan but is what a
+// zero-filled range decodes to) extend to the end of the image, a count
+// past the end clamps to the end, and a base past the end serves nothing.
+// Colour clears serve the colour aspect only: a range whose mask names no
+// colour aspect is declined by name; a zero mask is treated as colour.
+// Layout math is the bridge's own: imageSubresourceOffset / imageMipBytes
+// (which carry the mip shrink and the block rounding), never a parallel
+// computation. The fill pattern phase is continuous with the image start,
+// so a subresource fill lands exactly the bytes a whole-image fill would
+// have landed there. Returns false when the layout math has no footprint
+// for the image (extent fields unset), so the caller can fall back to its
+// historical whole-allocation fill.
+// ---------------------------------------------------------------------------
+struct VkClearSubRange { U32 baseMip = 0, mipCount = 0, baseLayer = 0, layerCount = 0; };
+static bool vkResolveClearRange(const Image& img, const ClearRangeArg& r, VkClearSubRange& out) {
+    if (r.aspectMask && !(r.aspectMask & 0x1u)) {
+        vk64Unsupported("clear-color-aspect", "vkCmdClearColorImage range names no colour aspect; range not cleared");
+        return false;
+    }
+    const U32 mips = std::max(1U, img.mips), layers = std::max(1U, img.layers);
+    if (r.baseMip >= mips || r.baseLayer >= layers) return false;
+    const U32 mc = (r.levelCount == 0xFFFFFFFFu || r.levelCount == 0) ? (mips - r.baseMip)
+                                                                      : std::min(r.levelCount, mips - r.baseMip);
+    const U32 lc = (r.layerCount == 0xFFFFFFFFu || r.layerCount == 0) ? (layers - r.baseLayer)
+                                                                       : std::min(r.layerCount, layers - r.baseLayer);
+    if (!mc || !lc) return false;
+    out.baseMip = r.baseMip; out.mipCount = mc; out.baseLayer = r.baseLayer; out.layerCount = lc;
+    return true;
+}
+template <class MemT>
+static bool vkClearColorFill(MemT* mem, U64 imageVa, const Image& img, DeviceMemory* dmem,
+                             const std::vector<ClearRangeArg>& ranges, const U8* pattern, U32 patSize) {
+    if (!mem || !patSize || !imageDataBytes(img)) return false;
+    const U64 CHUNK = 4096;
+    U8 buf[CHUNK];
+    for (const ClearRangeArg& r : ranges) {
+        VkClearSubRange sr;
+        if (!vkResolveClearRange(img, r, sr)) continue;
+        for (U32 layer = sr.baseLayer; layer < sr.baseLayer + sr.layerCount; ++layer) {
+            for (U32 mip = sr.baseMip; mip < sr.baseMip + sr.mipCount; ++mip) {
+                const U64 subOff = imageSubresourceOffset(img, mip, layer);
+                U64 subSize = imageMipBytes(img, mip);
+                if (!subSize) continue;
+                const U64 absOff = img.memOff + subOff;
+                if (absOff >= dmem->size) continue;
+                if (subSize > dmem->size - absOff) subSize = dmem->size - absOff;
+                U64 done = 0;
+                while (done < subSize) {
+                    const U64 n = std::min(CHUNK, subSize - done);
+                    for (U64 i = 0; i < n; ++i) buf[i] = pattern[(subOff + done + i) % patSize];
+                    mem->memcpyToGuest(imageVa + subOff + done, buf, n);
+                    done += n;
+                }
+                vk64TouchMem(dmem, absOff, subSize);
+            }
+        }
+    }
+    return true;
+}
 const char* fmt_name(U32 f) {
     switch (f) {
         case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
@@ -8310,36 +8375,43 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdClearColorImage: {
         // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*)
-        // Fill image with color. pColor is VkClearColorValue (16 bytes).
+        // Fill the requested subresources with color. pColor is
+        // VkClearColorValue (16 bytes). Ranges are honoured per mip/layer
+        // (vkClearColorFill); a missing range list keeps the historical
+        // whole-image clear.
         Image* img = objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearColorImage");
         VK64_DROP_IF(return 0, !img || !img->mem);
         DeviceMemory* dmem = objOf<DeviceMemory>(img->mem, K_MEMORY, "vkCmdClearColorImage");
         VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U8 color[16] = {0};
         if (args.a[3]) g_mem->memcpyFromGuest(color, args.a[3], 16);
-        // Calculate image size; fall back to full memory if unknown
-        U64 imgSize = img->pixBytes * (U64)img->w * (U64)img->h;
-        if (!imgSize) imgSize = dmem->size - img->memOff;
-        VK64_DROP_IF(return 0, !imgSize);
-        U64 va = dmem->va + img->memOff;
-        if (va + imgSize > dmem->va + dmem->size) {
-            imgSize = dmem->va + dmem->size - va;
+        std::vector<ClearRangeArg> ranges;
+        if (args.a[4] && args.a[5]) {
+            if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
+            readArray(args.a[5], (U32)args.a[4], ranges);
         }
-        // Fill by repeating the 16-byte color pattern
-        const U64 CHUNK = 4096;
-        U8 buf[CHUNK];
-        for (U64 i = 0; i < 16; i++) buf[i % 16] = color[i % 16];
-        for (U64 i = 16; i < CHUNK; i++) buf[i] = buf[i % 16];
-        U64 done = 0;
-        while (done < imgSize) {
-            U64 n = imgSize - done;
-            if (n > CHUNK) n = CHUNK;
-            g_mem->memcpyToGuest(va + done, buf, n);
-            done += n;
+        if (ranges.empty()) ranges.push_back({0x1u, 0, 0xFFFFFFFFu, 0, 0xFFFFFFFFu});
+        if (!vkClearColorFill(g_mem, dmem->va + img->memOff, *img, dmem, ranges, color, 16)) {
+            // No layout footprint (extent fields unset): the historical
+            // whole-allocation fill.
+            U64 imgSize = img->pixBytes * (U64)img->w * (U64)img->h;
+            if (!imgSize) imgSize = dmem->size - img->memOff;
+            VK64_DROP_IF(return 0, !imgSize || img->memOff >= dmem->size);
+            if (imgSize > dmem->size - img->memOff) imgSize = dmem->size - img->memOff;
+            const U64 va = dmem->va + img->memOff;
+            const U64 CHUNK = 4096;
+            U8 buf[CHUNK];
+            for (U64 i = 0; i < CHUNK; i++) buf[i] = color[i % 16];
+            U64 done = 0;
+            while (done < imgSize) {
+                const U64 n = std::min(CHUNK, imgSize - done);
+                g_mem->memcpyToGuest(va + done, buf, n);
+                done += n;
+            }
+            vk64TouchMem(dmem, img->memOff, imgSize);
         }
         img->copied = 1;
         img->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem, img->memOff, img->pixBytes);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
@@ -11250,30 +11322,42 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK64_DROP_IF(return 0, !dmem || !dmem->va);
         vk32abi::VkClearColorValue col = {};
         readStruct32((U32)args.a[3], col);
-        U32 pxBytes = fmt_bpp(im->format);
         // Fill with whole texels: the clear value converted to the format's
         // component layout (vk32ClearTexel), repeated per texel. The old
         // code repeated only float32[0] in 4-byte steps, tiling wide texels
         // with their first component, and wrote a full word past footprints
-        // not divisible by 4.
+        // not divisible by 4. The requested subresource ranges are honoured
+        // per mip/layer (vkClearColorFill); a missing range list keeps the
+        // whole-image clear.
         U8 texel[16]; U32 texelSize = 0;
         vk32ClearTexel(im->format, col, texel, texelSize);
-        U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
         VK64_DROP_IF(return 0, im->memOff >= dmem->size);
-        total = std::min(total, dmem->size - im->memOff);
-        U32 va = (U32)(dmem->va + im->memOff);
-        const U64 CHUNK = 4096;
-        U8 buf[CHUNK];
-        for (U64 i = 0; i < CHUNK; i++) buf[i] = texel[i % texelSize];
-        U64 done = 0;
-        while (done < total) {
-            U64 n = total - done;
-            if (n > CHUNK) n = CHUNK;
-            g_mem32->memcpyToGuest(va + (U32)done, buf, (U32)n);
-            done += n;
+        std::vector<ClearRangeArg> ranges;
+        if (args.a[4] && args.a[5]) {
+            if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
+            readArray32((U32)args.a[5], (U32)args.a[4], ranges);
+        }
+        if (ranges.empty()) ranges.push_back({0x1u, 0, 0xFFFFFFFFu, 0, 0xFFFFFFFFu});
+        if (!vkClearColorFill(g_mem32, dmem->va + im->memOff, *im, dmem, ranges, texel, texelSize)) {
+            // No layout footprint (extent fields unset): the historical
+            // whole-image fill, still truncated at the allocation.
+            const U32 pxBytes = fmt_bpp(im->format);
+            U64 total = (U64)im->w * im->h * im->d * im->layers * pxBytes;
+            total = std::min(total, dmem->size - im->memOff);
+            const U32 va = (U32)(dmem->va + im->memOff);
+            const U64 CHUNK = 4096;
+            U8 buf[CHUNK];
+            for (U64 i = 0; i < CHUNK; i++) buf[i] = texel[i % texelSize];
+            U64 done = 0;
+            while (done < total) {
+                U64 n = total - done;
+                if (n > CHUNK) n = CHUNK;
+                g_mem32->memcpyToGuest(va + (U32)done, buf, (U32)n);
+                done += n;
+            }
+            vk64TouchMem(dmem, im->memOff, total);
         }
         im->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem, im->memOff, total);
         return 0;
     }
     case VK64_fn_vkCmdClearAttachments:
