@@ -1,5 +1,10 @@
 // gb-menu-probe.mjs -- drive Gang Beasts from its title toward a started
 // round, with screenshot evidence at every step (keyboard + GB-menu lane).
+// Mapping wait is death-aware (D3D12 stack-merge adoption of the
+// frame-floor rig-fix lane, commit 6f3831f26, web/tests/probe-guest-death.mjs):
+// a dead guest aborts promptly with a GUEST-DIED verdict instead of
+// burning the 3600s mapping timeout the way the 2026-10-27 boundary
+// run did (~50 min wasted after the game died at ~622s).
 //
 // Method: launch through the REAL shell (demo-matrix helpers), wait for
 // presented frames, then run a patient input campaign. Round 1 uses the
@@ -17,7 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
-import { applyJitSetting, launchDemoGame } from './demo-matrix.mjs';
+import { applyJitSetting } from './demo-matrix.mjs';
+import { createGuestDeathWatch } from './probe-guest-death.mjs';
 import { screenshotPixels } from './suite/lib/pixels.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -29,6 +35,17 @@ const elapsed = () => (Date.now() - startedAt) / 1000;
 const consoleLines = [];
 const steps = [];
 let slot, server, browser, page, demosOrig = null;
+const deathWatch = createGuestDeathWatch();
+let guestDeath = null;
+const noteDeath = () => {
+  const d = deathWatch.check(elapsed() * 1000);
+  if (d && !guestDeath) {
+    guestDeath = d;
+    consoleLines.push(`[${elapsed().toFixed(1)}s] GUEST-DIED kind=${d.kind} sig=${String(d.signature).slice(0, 160)}`);
+    console.log('GUEST-DIED', d.kind, String(d.signature).slice(0, 160));
+  }
+  return guestDeath;
+};
 
 const sha = buf => createHash('sha256').update(buf).digest('hex').slice(0, 16);
 // Coarse 32x18 average-color grid of a screenshot, decoded in-page. Ambient
@@ -77,7 +94,7 @@ async function statsSnap() {
 }
 async function waitRenders(min, timeoutS) {
   const end = Date.now() + timeoutS * 1000;
-  while (Date.now() < end) { const s = await statsSnap(); if ((s?.rendered ?? 0) >= min) return s; await page.waitForTimeout(5000); }
+  while (Date.now() < end) { if (noteDeath()) return statsSnap(); const s = await statsSnap(); if ((s?.rendered ?? 0) >= min) return s; await page.waitForTimeout(5000); }
   return statsSnap();
 }
 const changed = (a, b) => a && b && a.pngSha !== b.pngSha;
@@ -101,12 +118,42 @@ async function main() {
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.addInitScript(() => { window.__bwStatsEvery = 1; });
-  page.on('console', msg => consoleLines.push(`[${elapsed().toFixed(1)}s] ${msg.type()}: ${msg.text()}`));
-  page.on('pageerror', err => consoleLines.push(`[${elapsed().toFixed(1)}s] pageerror: ${err.message}`));
+  page.on('console', msg => {
+    const text = msg.text();
+    consoleLines.push(`[${elapsed().toFixed(1)}s] ${msg.type()}: ${text}`);
+    deathWatch.feed({ t: elapsed() * 1000, type: msg.type(), text });
+    noteDeath();
+  });
+  page.on('pageerror', err => {
+    consoleLines.push(`[${elapsed().toFixed(1)}s] pageerror: ${err.message}`);
+    deathWatch.feedPageError(err.message, elapsed() * 1000);
+    noteDeath();
+  });
   const baseUrl = `http://127.0.0.1:${server.address().port}/`;
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await applyJitSetting(page, '1');
-  await launchDemoGame(page, 'gangbeasts', { mappedTimeout: 3600 });
+  // Death-aware mapping wait: click the demo, then poll the same
+  // 'first window mapped' condition launchDemoGame waits on in 1s
+  // slices, checking the guest-death watch each slice. A dead guest
+  // aborts here instead of burning the 3600s mappedTimeout.
+  await page.locator('[data-game="gangbeasts"]').click();
+  {
+    const deadline = Date.now() + 3600 * 1000;
+    let mapped = false;
+    while (Date.now() < deadline) {
+      if (noteDeath()) break;
+      try { mapped = await page.evaluate(() => document.getElementById('log')?.textContent.includes('first window mapped')); } catch {}
+      if (mapped) break;
+      await page.waitForTimeout(1000);
+    }
+    if (guestDeath) {
+      const summary = { guestDeath, advancedAt: null, method: null, steps };
+      await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
+      console.log('GBMENU', JSON.stringify({ guestDeath: guestDeath.kind, advancedAt: null }));
+      return;
+    }
+    if (!mapped) throw new Error('first window mapped timeout 3600000ms exceeded');
+  }
   consoleLines.push(`[${elapsed().toFixed(1)}s] probe: window mapped`);
   console.log("MAPPED at", elapsed().toFixed(0));
   await waitRenders(3, 1800);
