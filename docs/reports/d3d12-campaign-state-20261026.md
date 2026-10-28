@@ -3539,3 +3539,91 @@ citation audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
 bridge (project/linux filters vk64bridge.cpp out of TEST_SOURCES, and
 the changed test file is compiled only by run-native.py), so the harness
 is the native check for this change. JS suite: 314 passed / 0 failed on the lane's own dist (bw64-build.sh, "Browser export verified") -- the branch baseline exactly, including vulkan-image-format-size (which compiles fmt_bpp from source) and vk-register-citations.
+
+## 4.37 Compute readback epoch: the graphics re-stamp twin defect, fixed in the dispatch path (2026-10-28, cepoch lane)
+
+**The defect (queued by lane-psb as the twin of its graphics fix).**
+Section 4.30's compute serving marks GPU-written storage ranges at
+dispatch RECORD time: `vk64MarkComputeWrites` replays the command
+buffers recorded commands, resolves every storage-buffer descriptor
+element, and stamps each mark with the memory's `writeEpoch` sampled at
+that moment. The deferred-readback cleanliness proof
+(`vk64FindGpuWrite` + `vk64MemRangeCleanSince`, consulted by the
+`vkCmdCopyBuffer` handlers) defers a copy-out to a V2_BUFFER_READBACK
+only if no write-log entry newer than the marks epoch touches the
+range. lane-psb proved the graphics version of the trap: an initial-data
+upload (`vkCmdUpdateBuffer`) recorded in the SAME submission as the
+draw executes at submit time -- after the record-time snapshot -- and
+its fresh epoch tick lands in the write log covering the very buffer
+the draw writes, so the proof reads the upload as post-draw dirt and
+refuses the deferral; the eager fallback then serves pre-draw data.
+The compute path had the identical shape: a guest that uploads initial
+data and dispatches in one command list, then copies out from a later
+submission (the standard vkd3d readback pattern), would lose the GPU
+output the same way. cs12's proven shapes upload in EARLIER submissions,
+so the defect was latent, not hypothetical-by-construction only: the
+marking, the upload tick (`execUpdateBuf` runs first in
+vkQueueSubmits eager pass) and the proof were all read end-to-end in
+`source/vulkan/vk64bridge.cpp` before the fix.
+
+**The fix (same discipline as the graphics re-stamp, fail-closed).**
+`vk64MarkComputeWrites` is now a wrapper over a prefix-bounded core,
+`vk64MarkComputeWritesUpTo(cb, upto)`, that replays only the commands
+before a given index (clamped); record-time callers (the three
+vkCmdDispatch* handlers) are untouched and still mark the whole list.
+At submit time, `serializeSubmitV2`s CMD_DISPATCH case -- after the two
+loud-drop checks, before `emitRootDescs` and the V2_DISPATCH record --
+calls the new `vk64RestampComputeWrites(st, dispatchIndex)`, which
+re-runs the same prefix replay for that dispatch so every mark it
+produced is refreshed in place (same (buffer, offset, size) key) with
+the memory's CURRENT writeEpoch, exactly as `emitRootDescs` re-stamps
+graphics root ranges. Record-time marking is kept (a same-list
+dispatch-then-copy still defers), and the cleanliness proof is NOT
+weakened: a range genuinely dirtied by an unrelated write after the
+dispatch carries a newer epoch than the re-stamped mark and still
+refuses the deferred readback.
+
+**Proof.** New guard `vk-compute-epoch-restamp` (5 source pins in the
+vk-psb-serving style): record path preserved at all three dispatch
+handlers; the replay is prefix-bounded and clamped; the re-stamp sits
+in the CMD_DISPATCH block after the loud-drop text and before the
+V2_DISPATCH emit; it delegates to the shared replay and refreshes marks
+in place; the proof strings (`wasMapped`, the CleanSince call) are
+pinned unweakened. Sabotage-verified two ways -- deleting the re-stamp
+call fails exactly the ordering pin, replacing the CleanSince check
+with a stub fails exactly the proof pin -- with the bridge restored
+byte-identical (sha256 re-verified) after each. run-native.py
+end-to-end green (31 PASS blocks); emulator native suite 647 OK /
+0 failed; JS suite 318 passed / 0 failed (317-file baseline + the new
+guard). In-guest non-regression on this tree's dist (uploading harness,
+restage pair a96b4e9d/3d3bfe43 + genuine d3dcompiler_47): `cs12:
+VARIANT TEX OK (bad=0 first=(-1,-1) gotR=0)`, BUF/BUF2 FAIL bad=64 at
+the meta-bind wall (lane-metabind, in flight), RESULT 1 for that reason
+alone, dropReasons {} empty, translated 2 / rejected 0 -- the merged
+trees exact signature. A same-list upload-then-dispatch in-guest proof
+was NOT constructed: vkd3d-proton decides upload placement from the
+D3D12 side and no raw-Vulkan guest probe exists, so the evidence for
+the fixed shape is the sabotage-verified guard plus lane-psbs in-guest
+proof of the identical pattern (root12 UAV readback); the first cs12
+attempt additionally died in the section 4.27 desktop-init race under
+box load (zero Vulkan lines logged; the app never started) and the
+retry, queued behind another lanes build by the probe-slot system,
+produced the signature above. Base note: the brief named b6d16b2fe;
+integ had advanced to 8bf268112 (the vk64harness repair it anticipated
+had landed), so the worktree was taken there. Citations: the +39/-4
+bridge insertion drifted 28 register cites (+38/+41 by region); 15 rows
+auto-fixed by the audit tool, 20 cites across the remaining 13 rows
+hand-pinned, every target construct-verified at the audit's own hit
+line; final audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
+97 UNCHECKABLE / 7 EXEMPT, the baseline counts). Register: NO
+disposition changes (370 = 71/66/233/0 stands) -- the defect was latent
+and no row described it.
+
+**Residue (named, out of scope).** On this base, compute
+ROOT-descriptor dispatch writes are not marked at all:
+`vk64MarkComputeWrites` covers only descriptor-set storage buffers
+(the root-slot write census exists on lane-psbs branch). A guest
+writing through a root descriptor in a compute dispatch and copying out
+would miss the deferral entirely -- a distinct missing-mark gap, not
+the epoch twin; it belongs with the psb merge or its own lane. Atomic
+RMW and the other named compute rejections are unchanged.
