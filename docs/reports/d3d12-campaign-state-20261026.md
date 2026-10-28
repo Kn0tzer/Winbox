@@ -2845,3 +2845,151 @@ build itself and every piece of staging integration.
 - Suites: JS suite and native suite results recorded with the lane
   commit (zero new failures vs the e2c11c8d3 baseline: JS 311/0,
   native 645 OK).
+
+## 4.32 SPIR-V fix lane: storage-image WRITES through runtime descriptor arrays specialized (spirvwrite lane, 2026-10-28)
+
+Merged into integ/winbox-20261022b (lane-spirvwrite, from d7b053e5d;
+landed after the compute merge). Follow-up to section 4.30's third
+next wall: the compute lane
+proved dispatch + readback and three of four cs12 variants, but its TEX
+variant -- a storage-image WRITE through vkd3d's descriptor heap -- died
+in naga as InvalidImage([6]) because spirvfix's R15a specialization
+served runtime descriptor arrays for reads only.
+
+**The read-only behavior, pinned.** A vkd3d descriptor heap is one
+SPIR-V runtime array of storage images (element = OpTypeImage
+Sampled=2) indexed by a push-constant heap index. R15a decides
+servability in analyzeDescriptorArrays (tools/spirvfix/spirvfix.mjs),
+mirrored instruction-for-instruction by the bridge audit's
+r15::analyzeArrays (source/vulkan/vk64bridge.cpp) so the bridge admits
+capability 5302 exactly when spirvfix will specialize. Two gates made
+it reads-only: (1) an early "writable gate" -- a storage-image array
+whose variable lacked the NonWritable decoration was classified
+unservable before its index signature was even collected; (2)
+per-chain pointer-use rules reject any OpStore/atomic through an array
+element. With the module left unspecialized, the runtime array reached
+naga, whose WebGPU lowering has no binding arrays, and conversion
+failed with InvalidImage([6]) -- reachable in practice only for
+compute modules, because the bridge audit early-accepts compute-only
+modules (graphics modules that write a storage image are rejected
+earlier, as spirv-storage-image-write; unchanged).
+
+**The extension.** Gate (1) is removed in both classifiers; writability
+is now recorded on the analysis record (spirvfix: rec.writable; the
+mirror classifies by the same signature/uses rules) instead of gating.
+No rewrite change was needed, for two reasons verified in the code and
+by test: specializeDescriptorArrays copies the array variable's
+decorations verbatim onto the scalar clone, so a writable array yields
+a writable clone (NonWritable simply is not there to copy); and a real
+image write (OpImageWrite) operates on the OpLoad'ed image object, not
+through the element pointer, so the pointer-use analysis never counted
+it as a store -- gate (2) keeps guarding exactly the shapes it should
+(pointer-level stores/atomics, texel-pointer escapes), unchanged. The
+page tier also needed no change: scanWgslResources carries the WGSL
+decl verbatim, vkwebgpu parses the storage access (read_write) from
+it, and bw_arr_* element resolution is access-agnostic. End state:
+naga emits texture_storage_2d<rgba8unorm, read_write> with
+textureStore for the heap write.
+
+**Offline before/after (the merge-independent proof).** The corpus had
+no writable-heap capture (the cs12 TEX module itself was never
+snapshotted), so the fixture is a model mutation of a real captured
+module -- testdata/spirv/d3d12-ps-uav-heap-array.spv (a genuine vkd3d
+heap-table array) -- dropping its NonWritable decoration, setting a
+known image format (vkd3d knows the UAV format at PSO time; an Unknown
+format fails earlier at the no-format capability, a different wall),
+and inserting one OpImageWrite beside its OpImageRead, ids preserved.
+Before (pristine spirvfix from git): strips only, naga FAIL
+InvalidImage([6]) -- the compute lane's exact error. After:
+descriptor-array-specialize applies with the (writable) log marker,
+naga OK, WGSL carries the read_write storage texture and textureStore.
+Fixture: testdata/spirv/d3d12-ps-uav-heap-array-write.spv.
+
+**Guards.** spirvfix-r15.test.mjs grows 15 -> 22 tests: writable census
+(read fixture discriminates writable=false), the writable clone rewrite
+(clone keeps set/binding, carries NO NonWritable, the OpImageWrite
+survives, capability 5302 still stripped, no runtime array survives),
+the naga read_write/textureStore conversion, fail-closed residues (a
+second index signature and a pointer-level store and a texel-pointer
+escape all still decline byte-identical), and a bridge-mirror source
+pin. Sabotage-verified both directions: restoring the JS gate fails
+exactly the 7 new tests; restoring the bridge gate fails exactly the
+mirror pin; both files restored byte-identical afterwards.
+
+**Probes** (slot-serialized, this lane's dist, wasm 5b3caf1c). cs12:
+RESULT 1 with BUF bad=64, BUF2 bad=64, TEX bad=16 -- byte-for-byte the
+compute lane's pre-serving baseline (its pre3 run): this branch has no
+compute serving, so all three variants still fail on the
+spirv-compute-entry notices, and crucially TEX fails at dispatch like
+the others, with zero InvalidImage anywhere in the guest log (that
+error can only appear once the compute lane's serving carries the
+module to translation -- the merge-time check below). uav12 with the
+integ-staged DLL pair: the three EXEC formats OK, R16_FLOAT stops at
+the named storage-format-access:R16Float:ReadOnly rejection
+(draw-pipeline-skipped x2, matching the coordinator's compute-tree
+read), and R32_UINT/R8_UINT fail PSO creation -- traced to the staged
+pair itself: integ's build.w64 d3d12core (md5 006c754e) predates the
+section-4.29 dxbc-spirv rebuild (the uintpso lane's pair, md5 e1319ca9,
+differs). Re-run with that pair: R32_UINT EXEC OK (all 16 texels,
+the 4.29 shape verbatim), R8_UINT's PSO creates and its draw stops at
+the named storage-format-access:R8Uint:ReadOnly wall, R16_FLOAT
+unchanged -- the A/B isolates the variable to the staged DLLs and
+proves this lane's edits disturb none of the typed-UAV paths. root12
+(uintpso pair + the real d3dcompiler_47.dll): CASE cbv OK, RT all 16
+px match [191 191 223 255]; srv/uav still stop at
+spirv-capability-unknown:5347 (the queued page-tier PSB wall),
+unchanged.
+
+**Merge-time guest check (merged tree, 2026-10-28; evidence:
+test-results/dxvk-spirvmerge-cs12/).** With the compute merge (section
+4.30) underneath, cs12 on the merged tree's dist: TEX still fails
+(bad=16) but NOT at this lane's wall -- zero InvalidImage anywhere in
+the guest log, the R15a writable specialization applies in-guest, and
+TEX's dispatch reaches the page tier with its full bindSets/descSet +
+push + dispatch sequences. It stops at the next, already-named wall:
+storage-image-write-without-format. The real dxil-spirv heap module
+carries its storage image with format Unknown; naga/WGSL requires a
+concrete texel format for a storage write
+(UnsupportedCapability(StorageImageWriteWithoutFormat)), and nothing
+yet injects the guest UAV's view format into the specialized clone.
+(The offline fixture above set a known format to isolate the
+writability gate, so this stacked wall was invisible offline.) The
+format-injection follow-up lane is running; the same wall also gates
+the meta path's storage writes once meta-bind lands. BUF bad=64 /
+BUF2 bad=64 are unchanged (the vkd3d meta-bind wall), so cs12 remains
+RESULT 1 until both follow-ups land; this section claims the
+writability gate only.
+
+**Suites.** JS 312 passed / 0 failed (the r15 file's growth is inside
+its own count); native 647 tests, 0 FAILED, 205s single-threaded
+(Build/Test/boxedwine 0 0 1). One multi-threaded run along the way
+failed only the setitimer timing probe under load ~7; it passes
+single-threaded on this binary, and the identical flake was recorded
+the same day on the merged integ tree without this change -- not a
+regression. The spirv-offline corpus gate moves 31/33 -> 32/34 (the
+new fixture converts; the two pre-existing Unknown-format read
+fixtures fail the OFFLINE gate identically before and after -- an
+offline-harness artifact, see 4.25-era notes).
+
+Register: vulkan.md grows one IMPLEMENTED row (367 rows in the
+merged tree: 68 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP /
+0 OPEN).
+
+Probe sources: tools/vkd3d/probe/cs12.c + cs12.exe copied from the
+compute lane's tree (byte-identical) so the branch carries the probe
+the merge-time guest check needs.
+
+Known residue (fail-closed, not a silent wrong answer): the shared
+analysis's word scan treats any instruction word equal to the array
+variable's id as a use of it, so a literal operand colliding with a
+small variable id (e.g. an OpCompositeExtract index) can false-decline
+an array module. Observed on an id-renumbered synthetic (var %3);
+captured modules (var %14) do not collide. An operand-aware scan is
+the fix when it bites.
+
+Next walls: vkd3d meta-pipeline descriptor delivery (the cs12 BUF/BUF2
+wall -- the metabind lane's brief), then sampled-texture write serving
+for the formats Dawn storage rejects outright (r16float, R8_UINT),
+then the storage-image format injection named above (the merge-time
+cs12 TEX guest check ran at this merge and stopped at that wall --
+see the merge-time paragraph).

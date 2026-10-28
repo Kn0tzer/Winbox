@@ -971,8 +971,14 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
         if (e.op != 25 && e.op != 26 && e.op != 27) continue; // image / sampler / sampled image
         Arr a; a.varInsn = &in; a.pointeeRA = p.w[2]; a.servable = false;
         out.hasDescriptorArrays = true;
-        bool writableBad = e.op == 25 && e.n >= 8 && e.w[6] == 2 && !m.varNonWritable.count(in.resultId);
-        if (!writableBad) {
+        // Writable storage-image arrays (Sampled==2, no NonWritable) are
+        // classified by the same signature/uses rules as read-only ones:
+        // spirvfix R15a specializes them to writable scalar clones (the
+        // clone inherits the decorations verbatim), mirroring
+        // analyzeDescriptorArrays in spirvfix.mjs (rec.writable). The
+        // module-level spirv-storage-image-write rejection for graphics
+        // modules is a separate check below and stands unchanged.
+        {
             std::set<std::string> sigs; bool bad = false; int nAcc = 0;
             for (size_t ii = m.firstFunc; ii < m.insns.size() && !bad; ii++) {
                 const Insn& u = m.insns[ii];
