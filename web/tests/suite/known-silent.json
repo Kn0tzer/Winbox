@@ -82,7 +82,7 @@
       "unloggedErrno": 0
     },
     "web/vkwebgpu.mjs": {
-      "emptyCatch": 18,
+      "emptyCatch": 19,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     },
