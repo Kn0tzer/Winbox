@@ -2196,3 +2196,181 @@ Sabotage-verified: breaking the parse regex turns the unit test red.
   known limitation — needs page-side B2I application); uav12 UINT
   EXEC PSO E_INVALIDARG (out of scope); root12 srv/uav D3DCompile
   probe debt (out of scope).
+
+## 4.27 UINT-PSO + probe debt: the Int64 was a utof workaround; root12's real compiler lands on the audit's PSB rejection (2026-10-28)
+
+Two unrelated-looking failures remained on the micro-probes: uav12's
+UINT EXEC cases (R32_UINT, R8_UINT) failed at
+CreateGraphicsPipelineState with E_INVALIDARG while every float format
+passed, and root12's srv/uav cases failed at D3DCompile with E5000.
+Both are now pinned to their roots; one is fixed outright, the other is
+fixed as a probe and lands exactly on the next designed wall.
+
+### A. UINT EXEC: the rejection point is three layers from the symptom
+
+Baselines reproduced on this lane's tree before changing anything:
+`uav12: EXEC R32_UINT FAIL (CreateGraphicsPipelineState hr=0x80070057)`
+and the R8_UINT twin, with float formats OK and flag=TRUE /
+sweep=ALL18. A bisect probe (uav12x) isolated the trigger: float4,
+float and SINT typed-UAV loads create their PSO; the UINT load fails
+with an empty root signature too and passes when merely declared, so
+the load itself -- not the table, not the declaration -- is the
+trigger, and an SRV texture uint load fails the same way. Under
+WINEDEBUG the failure names itself:
+
+`warn:vkd3d-proton:d3d12_device_validate_shader_meta: Attempting to
+use Int64 operations in shader 14eaf51505d31a3e, but this is not
+supported.`
+
+The chain, each link probe- or source-verified:
+
+1. Guest vkd3d-proton compiles the PS, then
+   `d3d12_device_validate_shader_meta` (libs/vkd3d/device.c) rejects
+   it because the compiled SPIR-V declares `SpvCapabilityInt64` while
+   `options1.Int64ShaderOps` is false. fmt12 confirms the guest view:
+   `Int64ShaderOps=0`, `TypedUAVLoadAdditionalFormats=1` (all 18
+   formats report Support2 UAV_TYPED_LOAD, so the without-format
+   compile extension was NOT the issue). No Vulkan call is ever made
+   for the PS: the bridge log shows the pipeline layouts and the VS
+   module, then the failure.
+2. The bridge honestly reports `shaderInt64 = VK_FALSE`: WebGPU has
+   no 64-bit shader integers, so the validator is doing its job
+   against a real platform limit -- IF the shader really used Int64.
+3. It does not. A diagnostic census patched into the vendored meta
+   extractor for one build (since reverted) counted exactly ONE
+   OpTypeInt-64 in the 1624-byte module, and a word-level decode of
+   the dumped module showed the only consumer: dxbc-spirv outlines
+   every int-to-float conversion into a `cvt_*` helper function, and
+   inside `cvt_u32_f32` sits `OpUConvert u32 -> u64` followed by
+   `OpConvertUToF`. The image load itself is a clean OpImageRead;
+   the 64-bit value is touched by nothing else.
+4. The widening is `ArithmeticPass::lowerConvertItoF` in vendored
+   dxbc-spirv, and its own comment says why: "Nvidia is broken as of
+   580.76.05 and will treat UtoF inputs as signed with our code for
+   some reason. Cast to the next largest integer type to work around
+   the issue." Every HLSL `utof` (here `float(v)` on the loaded uint)
+   therefore drags Int64 into the module. SINT passes because the
+   signed conversion needs no such workaround; float loads pass
+   because they contain no conversion at all. The "UINT" framing was
+   a symptom -- any SM5 shader converting u32 to f32 hit this wall.
+
+The fix is at the pinned root, in the vendored converter
+(`ir_pass_arithmetic.cpp`): drop the U32->U64 widening, keeping the
+U16->U32 widening (contained in 32-bit types). The vendored
+converter's only target is this project's own WebGPU ICD, which is
+not the broken Nvidia driver; `OpConvertUToF` on a U32 input is
+spec-correct there (round-to-nearest-even, identical to D3D utof
+semantics). A comment in the patch records the reasoning so a
+re-vendor does not silently restore it.
+
+After the fix (vkd3d rebuilt in-lane, rig pointed at the lane's
+build.w64): `uav12: EXEC R32_UINT OK (all 16 texels match)` -- PSO
+creation, draw, typed load and readback all serve end to end.
+R8_UINT's PSO failure is gone too; it now draws and lands on the
+NEXT layer down, the section 4.26 wall's twin: the page tier fails
+its pipeline with the named reason
+`storage-format-access:R8Uint:ReadOnly [@group(5) @binding(0)]`
+(core WebGPU has no read-only storage for r8uint), so the probe
+reports value mismatches (32/64) against the un-drawn target. That
+is a genuine platform limit, already named and loud, with the same
+queued serving path as R16_FLOAT (sampled-texture rewrite) -- not a
+regression and not this lane's scope.
+
+Guard: `vkd3d-utof-int64.test.mjs` pins the patch at source level
+(marker comment present; no eU64 anywhere in lowerConvertItoF;
+U16->U32 widening and the direct ConvertItoF intact).
+Sabotage-verified: restoring the widening turns 2 of its 4 tests
+red; the fix returns 4/4. Root-cause guard for the behavior itself
+is uav12's R32_UINT EXEC line above.
+
+### B. root12 probe debt: three probe defects, then the designed wall
+
+The srv/uav cases never tested the product: they died inside the
+probe's own D3DCompile calls. Three stacked probe defects, each
+characterized before fixing:
+
+1. **No buffer-typed HLSL parses under Wine's compiler at all.**
+   The hlsl12x sweep compiled ten forms against Wine 10's builtin
+   d3dcompiler_47 (vkd3d-shader HLSL): `Buffer`, `RWBuffer`,
+   `StructuredBuffer`, `RWStructuredBuffer`, `ByteAddressBuffer`,
+   `RWByteAddressBuffer` ALL fail E5000 at 1:1 (KW_BUFFER /
+   NEW_IDENTIFIER); controls (cbuffer, RWTexture2D) pass. The
+   earlier flavor swap from ByteAddressBuffer to Buffer<uint> could
+   never have worked. The fix is the arrangement
+   tools/vkd3d/stage-vkd3d.sh already documents for the demo path:
+   a genuine Microsoft d3dcompiler_47.dll beside the probe, selected
+   with `WINEDLLOVERRIDES=d3dcompiler_47=n`. The copy previously on
+   the box is a 32-bit build (LoadLibrary err=126 in a 64-bit
+   guest); a genuine PE32+ copy (4,916,728 bytes, sha256
+   af7b99be1b8770c0e4d18e43b04e81d11bdeb667fa6b07ade7a88f4c5676bf9a)
+   was taken from Chrome-for-Testing 131 win64's ANGLE
+   redistributable and sits untracked at
+   tools/vkd3d/probe/d3dcompiler_47.dll, as the stage script
+   prescribes. The rig gained the matching opt-in:
+   `D3DCOMPILER_PATH` in web/tests/d3d12-pixels.mjs stages the DLL
+   and adds the override, inert when unset.
+2. **The UAV register was illegal.** Under the genuine compiler the
+   uav case failed with FXC error X4509: UAV registers share the
+   output namespace in a pixel shader, so with a render target bound
+   the UAV must start at u1. root12 now declares `register(u1)` and
+   the root signature matches (uav12's u1 was already correct).
+3. **The buffer flavor was wrong for root descriptors.** Typed
+   flavors then compiled but dxil-spirv refused the conversion:
+   "BDA root descriptors must be raw buffers, structured buffers or
+   RTAS" -> E_INVALIDARG at PSO creation. Root descriptors are raw
+   GPU VAs; the cases now use the original raw forms
+   (`ByteAddressBuffer` + Load, `RWByteAddressBuffer` + Store),
+   which is also what real root-descriptor shaders look like.
+
+With all three fixed, both cases compile, convert, and reach the
+bridge -- and hit the wall the R15 lane predicted in root12's own
+header comment: the bridge module audit rejects the srv PS (and the
+uav PS identically) with
+`UNSUPPORTED spirv-capability-unknown:5347` at vkCreateShaderModule,
+surfacing as E_FAIL at CreateGraphicsPipelineState. 5347 is
+PhysicalStorageBufferAddresses, and the audit's Route-0 rule passes
+it only when declared-but-unused; a root-descriptor shader genuinely
+dereferences a physical pointer, and serving that in the page tier
+(the spirvfix PSB rewrite at draw time) is the queued R15-serving
+work, not probe debt. The cases now prove the whole path up to that
+named, loud, designed rejection; the CBV case is unchanged
+(`root12: CASE cbv OK`, all 16 px match), re-verified against the
+lane's fixed vkd3d build as a regression check for part A.
+
+Diagnostic probes committed with this lane: uav12x (PSO bisect
+matrix + DXBC dump), hlsl12x (compiler-form sweep), fmt12
+(guest-visible OPTIONS/OPTIONS1 + the 18-format Support2 table
+behind TypedUAVLoadAdditionalFormats). The WINEDEBUG runner copy
+used for diagnosis was scratch and is not committed.
+
+### Suites + probes (verified)
+
+- JS suite: 312 passed, 0 failed (`BW_TEST_DIST=<tree>/dist`,
+  `--unit`; baseline 311 at abdca70e9, +1 guard file).
+- Native: 644 OK, 0 FAILED in 282s (Build/Test/boxedwine 0 0 1;
+  baseline 644 OK at abdca70e9; the diff touches no first-party C++,
+  so this is a baseline confirmation. Trailing crash-path output is
+  the designed final test.)
+- Register: no row cites the vendored converter or the utof
+  behavior; no citation re-pins needed (audit inputs unchanged).
+- Micro-probes (slot-serialized): uav12 baseline vs fixed as quoted
+  above; root12 in four stages (Wine-compiler E5000 pair -> genuine
+  compiler: srv PSO E_INVALIDARG + uav X4509 -> register fix: both
+  PSO E_INVALIDARG (typed-BDA refusal) -> raw flavors: both PSO
+  E_FAIL on the audit's named 5347 rejection).
+
+### Next wall after this one
+
+- **Root SRV/UAV serving: genuine PSB dereference in the page
+  tier** -- the audit's 5347 rejection is designed and loud; lifting
+  it means spirvfix rewriting physical-pointer derefs to the
+  4096+ root storage buffers for real root-descriptor modules.
+  root12 srv/uav are the ready-made probes for that lane.
+- **R8_UINT EXEC serving** joins R16_FLOAT on the sampled-texture
+  rewrite queue (read-path storage in formats core WebGPU cannot
+  bind read-only); its PSO wall is gone, only the page-tier
+  format/access wall remains.
+- SM6/DXIL utof conversions were not audited for an equivalent
+  widening (the Nvidia-workaround comment exists only in the DXBC
+  converter); a DXIL shader with u32->f32 conversion on this device
+  deserves one probe before assuming symmetry.

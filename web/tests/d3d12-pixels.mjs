@@ -154,6 +154,13 @@ try {
     // PE shim (app dir wins search order), not Wine builtin winevulkan.
     ["vulkan-1.dll", process.env.WINEVULKAN_PATH || "tools/vkd3d/probe/bw64vulkan.dll"],
     ["dxgi.dll", process.env.DXGI_PATH || "tools/dxvk/build.w64/src/dxgi/dxgi.dll"]];
+  // Optional: a genuine Microsoft d3dcompiler_47.dll (PE32+) staged beside
+  // the probe so D3DCompile uses the real HLSL compiler. Wine 10's builtin
+  // vkd3d-shader front end cannot parse ANY buffer-typed resource
+  // declaration (Buffer/RWBuffer/StructuredBuffer/ByteAddressBuffer all
+  // fail E5000), which blocks probes whose shaders declare buffer
+  // resources (root12 srv/uav). Mirrors tools/vkd3d/stage-vkd3d.sh.
+  if (process.env.D3DCOMPILER_PATH) assets.push(["d3dcompiler_47.dll", process.env.D3DCOMPILER_PATH]);
   for (const [name, path] of assets) {
     const bytes = await readFile(path);
     provenance.push({ name, path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
@@ -186,8 +193,10 @@ try {
       return original(bytes, flags);
     };
   });
-  const spawn = await page.evaluate((exeName) => window.bwRuntime.call("bw64_spawn", ["string", "string"],
-    ["/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\" + exeName, "BW64_VKTRACE=2\nBW64_VKFRAME=1\nWINEDLLOVERRIDES=d3d12=n;d3d12core=n;dxgi=n;vulkan-1=n;winevulkan=n\nLD_LIBRARY_PATH=/home/username"]), triExeName);
+  const spawnEnv = "BW64_VKTRACE=2\nBW64_VKFRAME=1\nWINEDLLOVERRIDES=d3d12=n;d3d12core=n;dxgi=n;vulkan-1=n;winevulkan=n"
+    + (process.env.D3DCOMPILER_PATH ? ";d3dcompiler_47=n" : "") + "\nLD_LIBRARY_PATH=/home/username";
+  const spawn = await page.evaluate(({ exeName, spawnEnv }) => window.bwRuntime.call("bw64_spawn", ["string", "string"],
+    ["/usr/lib/wine/wine64\nZ:\\\\home\\\\username\\\\" + exeName, spawnEnv]), { exeName: triExeName, spawnEnv });
   console.log("SPAWN", spawn);
   const until = Date.now() + timeout;
   let lastPrint = 0, lastRendered = 0, shot = null;
