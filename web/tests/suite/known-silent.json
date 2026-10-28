@@ -33,7 +33,7 @@
     },
     "source/vulkan/vk64bridge.cpp": {
       "emptyCatch": 2,
-      "unloggedDefault": 20,
+      "unloggedDefault": 22,
       "unloggedErrno": 0
     },
     "web/app.mjs": {

@@ -18,6 +18,17 @@
 //     text round-trip renumbers and is NOT how this fixture was made).
 //   testdata/spirv/d3d12-ps-root-cbv.spv — root12 CBV PS: the root CBV
 //     VA is push-loaded as vec2<u32> and OpBitcast to a PSB pointer.
+//   testdata/spirv/d3d12-ps-uav-heap-array-smallid.spv — the uav12 PS
+//     module above with ids 3 and 14 swapped (word-exact renumber; the
+//     only literal words equal to 3 are the six pinned positions:
+//     MemoryModel operand, two TypePointer storage classes, the
+//     OpVariable storage class, an OpConstant value, and an
+//     OpCompositeExtract index), so the array variable takes the small
+//     id %3 and the module's own OpCompositeExtract literal index 3
+//     collides with it. spirv-val clean. It pins the operand-aware use
+//     scan (r15IdUseIndex / bridge findIdUse): a raw word scan misreads
+//     that literal as a use of the variable and false-declines the
+//     array ('array variable use op81').
 // The bridge audit mirrors these classifiers (source-pinned below).
 
 import { test } from 'node:test';
@@ -25,7 +36,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   applySpirvFix, parseSpirv, serializeSpirv,
-  analyzeDescriptorArrays, analyzeRootDescriptors, storageImageVars,
+  analyzeDescriptorArrays, analyzeRootDescriptors, storageImageVars, r15IdUseIndex,
 } from '../../../../tools/spirvfix/spirvfix.mjs';
 import { scanWgslResources } from '../../../wgsl-utils.mjs';
 import * as naga from '../../../vendor/naga/node.js';
@@ -35,6 +46,7 @@ const uavBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv
 const cbvBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-root-cbv.spv', import.meta.url)));
 const uav64Bytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-int64.spv', import.meta.url)));
 const uavWriteBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-write.spv', import.meta.url)));
+const uavSmallIdBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-smallid.spv', import.meta.url)));
 
 function namesOf(mod) {
   const out = new Map();
@@ -362,4 +374,123 @@ test('R15b rewrite: the PSB extension is stripped with the PSB capability', () =
   assert.ok(!extNamesOf(out).includes('SPV_KHR_physical_storage_buffer'), 'the PSB extension must not survive the rewrite');
   assert.ok(!capsOf(out).has(5346) && !capsOf(out).has(5347), 'no PSB capability may survive');
   assert.ok([...namesOf(out).values()].some(n => n.startsWith('bw_root_')), 'the re-rooted variable must survive');
+});
+
+// ---------------------------------------------------------------------
+// Operand-aware use scan (r15IdUseIndex; bridge mirror findIdUse).
+// The R15 use scans used to treat ANY instruction word equal to the
+// sought id as a use of it, so a literal operand colliding with a
+// small id false-declined servable modules. The scan now walks only
+// the words the opcode's grammar types as ids.
+
+test('operand-aware scan: the small-id heap array classifies exactly like its unmutated twin', () => {
+  const { arrays } = analyzeDescriptorArrays(parseSpirv(uavSmallIdBytes));
+  assert.equal(arrays.length, 1);
+  const a = arrays[0];
+  assert.equal(a.varId, 3, 'the renumbered array variable is %3');
+  assert.equal(a.set, 5); assert.equal(a.binding, 0); assert.equal(a.elemKind, 'image');
+  // The module's OpCompositeExtract carries literal index 3; a raw word
+  // scan reports 'array variable use op81' here.
+  assert.equal(a.servable, true, a.reason || '');
+  assert.deepEqual(a.signatures[0].sig, { kind: 'push', byteOff: 0, add: 0 });
+});
+
+test('operand-aware scan: the small-id array specializes to the same clone as its twin', () => {
+  const fixed = applySpirvFix(uavSmallIdBytes);
+  assert.ok(fixed.applied.includes('descriptor-array-specialize'), fixed.log.join('; '));
+  const out = parseSpirv(fixed.bytes);
+  assert.ok(!capsOf(out).has(5302), 'RuntimeDescriptorArray must be stripped once no array survives');
+  assert.ok(!out.insns.some(i => i.op === 29), 'no OpTypeRuntimeArray may survive');
+  assert.ok([...namesOf(out).values()].includes('bw_arr_g5_b0_p0_a0'), 'same clone name as the unmutated module');
+});
+
+test('operand-aware scan: a literal equal to the chain id is not a pointer escape', () => {
+  const mod = parseSpirv(uavWriteBytes);
+  const chain = mod.insns.find(i => i.op === 65 && i.resultId === 30);
+  assert.ok(chain, 'write fixture access chain %30 exists');
+  mod.header.bound = 300;
+  const ret = mod.insns.findIndex(i => i.op === 253);
+  assert.ok(ret > 0);
+  // OpCompositeExtract of the loaded texel %37 with literal index 30 --
+  // the chain's own id. A raw word scan reads the index as a use of the
+  // chain pointer and reports 'array element pointer escape (op81)'.
+  mod.insns.splice(ret, 0, { op: 81, words: [10, 90, 37, 30], resultType: 10, resultId: 90 });
+  const { arrays } = analyzeDescriptorArrays(mod);
+  assert.equal(arrays.length, 1);
+  assert.equal(arrays[0].servable, true, arrays[0].reason || '');
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(fixed.applied.includes('descriptor-array-specialize'), fixed.log.join('; '));
+});
+
+test('operand-aware scan: per-opcode operand layouts (literals are not id uses)', () => {
+  const I = (op, words, resultType = null, resultId = null) => ({ op, words, resultType, resultId });
+  const noCtx = { byId: new Map() };
+  // OpSwitch width resolution needs the selector's defining instruction
+  // and its integer type in ctx.byId.
+  const switchCtx = (width) => ({ byId: new Map([
+    [30, I(61, [20, 30, 40], 20, 30)],
+    [20, I(21, [20, width, 0], null, 20)],
+  ]) });
+  const cases = [
+    // [name, ctx, insn, sought id, expected index]
+    ['CompositeExtract index is a literal', noCtx, I(81, [10, 50, 42, 7], 10, 50), 7, -1],
+    ['CompositeExtract composite is an id', noCtx, I(81, [10, 50, 42, 7], 10, 50), 42, 2],
+    ['CompositeExtract second index is a literal', noCtx, I(81, [10, 50, 42, 3, 7], 10, 50), 7, -1],
+    ['CompositeInsert indexes are literals', noCtx, I(82, [10, 50, 42, 43, 7], 10, 50), 7, -1],
+    ['CompositeInsert composite is an id', noCtx, I(82, [10, 50, 42, 43, 7], 10, 50), 43, 3],
+    ['VectorShuffle components are literals', noCtx, I(79, [11, 51, 42, 43, 7, 0, 7, 1], 11, 51), 7, -1],
+    ['VectorShuffle second vector is an id', noCtx, I(79, [11, 51, 42, 43, 7, 0, 7, 1], 11, 51), 43, 3],
+    ['Load Aligned parameter is a literal', noCtx, I(61, [12, 52, 40, 2, 7], 12, 52), 7, -1],
+    ['Load pointer is an id', noCtx, I(61, [12, 52, 40, 2, 7], 12, 52), 40, 2],
+    ['Load MakePointerVisible scope is an id', noCtx, I(61, [12, 52, 40, 18, 4, 44], 12, 52), 44, 5],
+    ['Load Aligned literal before a scope id', noCtx, I(61, [12, 52, 40, 18, 4, 44], 12, 52), 4, -1],
+    ['Store Aligned parameter is a literal', noCtx, I(62, [40, 41, 2, 7]), 7, -1],
+    ['Store object is an id', noCtx, I(62, [40, 41, 2, 7]), 41, 1],
+    ['CopyMemory second-group Aligned is a literal', noCtx, I(63, [40, 41, 0, 2, 7]), 7, -1],
+    ['CopyMemorySized Aligned is a literal', noCtx, I(64, [40, 41, 42, 2, 7]), 7, -1],
+    ['CopyMemorySized size is an id', noCtx, I(64, [40, 41, 42, 2, 7]), 42, 2],
+    ['Variable storage class is a literal', noCtx, I(59, [12, 53, 7], 12, 53), 7, -1],
+    ['Variable initializer is an id', noCtx, I(59, [12, 53, 3, 44], 12, 53), 44, 3],
+    ['Variable storage class 3 is not the initializer slot', noCtx, I(59, [12, 53, 3, 44], 12, 53), 3, -1],
+    ['ExtInst instruction number is a literal', noCtx, I(12, [10, 54, 99, 7, 42], 10, 54), 7, -1],
+    ['ExtInst set is an id', noCtx, I(12, [10, 54, 99, 7, 42], 10, 54), 99, 2],
+    ['ExtInst operand is an id', noCtx, I(12, [10, 54, 99, 7, 42], 10, 54), 42, 4],
+    ['ArrayLength member index is a literal', noCtx, I(68, [9, 55, 40, 7], 9, 55), 7, -1],
+    ['GenericCastToPtrExplicit storage class is a literal', noCtx, I(123, [12, 56, 40, 7], 12, 56), 7, -1],
+    ['LoopMerge control parameters are literals', noCtx, I(246, [60, 61, 1, 7]), 7, -1],
+    ['LoopMerge continue label is an id', noCtx, I(246, [60, 61, 1, 7]), 61, 1],
+    ['SelectionMerge control mask is a literal', noCtx, I(247, [60, 7]), 7, -1],
+    ['BranchConditional weights are literals', noCtx, I(250, [40, 60, 61, 7, 7]), 7, -1],
+    ['BranchConditional false label is an id', noCtx, I(250, [40, 60, 61, 7, 7]), 61, 2],
+    ['Line line/column are literals', noCtx, I(8, [99, 7, 1234]), 7, -1],
+    ['Line file is an id', noCtx, I(8, [99, 7, 1234]), 99, 0],
+    ['ImageSampledImage operands mask is a literal', noCtx, I(87, [10, 57, 40, 41, 7, 42], 10, 57), 7, -1],
+    ['ImageSampledImage bias parameter is an id', noCtx, I(87, [10, 57, 40, 41, 7, 42], 10, 57), 42, 5],
+    ['ImageWrite operands mask is a literal', noCtx, I(99, [40, 41, 42, 7]), 7, -1],
+    ['Switch 32-bit case literal is skipped', switchCtx(32), I(251, [30, 60, 7, 61, 9, 62]), 7, -1],
+    ['Switch 32-bit case label is an id', switchCtx(32), I(251, [30, 60, 7, 61, 9, 62]), 61, 3],
+    ['Switch 32-bit second literal is skipped', switchCtx(32), I(251, [30, 60, 7, 61, 9, 62]), 9, -1],
+    ['Switch 64-bit case literal is two words', switchCtx(64), I(251, [30, 60, 7, 0, 61, 9, 0, 62]), 61, 4],
+    ['Switch 64-bit first literal word is skipped', switchCtx(64), I(251, [30, 60, 7, 0, 61, 9, 0, 62]), 7, -1],
+    ['Switch unresolvable width keeps the historical scan', noCtx, I(251, [30, 60, 7, 61]), 7, 2],
+    ['unlisted opcode keeps the all-id scan', noCtx, I(83, [10, 58, 42], 10, 58), 42, 2],
+  ];
+  for (const [name, ctx, ins, id, want] of cases) {
+    assert.equal(r15IdUseIndex(ctx, ins, id), want, name);
+  }
+});
+
+test('bridge mirror: both R15 use scans route through the operand-aware helper', () => {
+  const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  assert.ok(bridge.includes('int hit = findIdUse(m, in, pid);'), 'bridge pointerUses uses findIdUse');
+  assert.ok(bridge.includes('int hit = findIdUse(m, u, in.resultId);'), 'bridge analyzeArrays uses findIdUse');
+  assert.ok(!bridge.includes('if (in.w[k] == pid)'), 'the raw word scan is gone from bridge pointerUses');
+  assert.ok(!bridge.includes('if (u.w[k] == in.resultId)'), 'the raw word scan is gone from bridge analyzeArrays');
+  assert.ok(bridge.includes('case 81:'), 'bridge findIdUse knows the OpCompositeExtract layout');
+  assert.ok(bridge.includes('case 251:'), 'bridge findIdUse knows the OpSwitch layout');
+  const fix = readFileSync(new URL('../../../../tools/spirvfix/spirvfix.mjs', import.meta.url), 'utf8');
+  assert.ok(fix.includes('const hit = r15IdUseIndex(ctx, ins, pid);'), 'spirvfix r15PointerUses uses r15IdUseIndex');
+  assert.ok(fix.includes('const hit = r15IdUseIndex(ctx, u, ins.resultId);'), 'spirvfix analyzeDescriptorArrays uses r15IdUseIndex');
+  assert.ok(!fix.includes('if (ins.words[k] === pid)'), 'the raw word scan is gone from r15PointerUses');
+  assert.ok(!fix.includes('if (u.words[k] === ins.resultId)'), 'the raw word scan is gone from analyzeDescriptorArrays');
 });

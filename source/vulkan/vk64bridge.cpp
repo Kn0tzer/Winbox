@@ -771,6 +771,136 @@ inline bool classifyExpr(const Module& m, U32 id, Expr& e, int depth) {
     }
 }
 
+// Operand-aware use scan (shared by pointerUses and analyzeArrays;
+// mirror of r15IdUseIndex in spirvfix.mjs -- see the long comment
+// there for the rationale, the operand-layout rules and the named
+// residue). Returns the index of the first word of `in` that is an
+// ID operand equal to `id`, else -1. `in.fv` is the first
+// value-operand index (past the result-type / result-id header
+// words), the mirror of the JS scan's start offset.
+inline int findIdUse(const Module& m, const Insn& in, U32 id) {
+    const U32 n = in.n, start = in.fv;
+    auto hitAt = [&](U32 k) -> int { return (k < n && in.w[k] == id) ? (int)k : -1; };
+    auto scanIds = [&](U32 a, U32 b) -> int {
+        for (U32 k = a; k < b && k < n; k++) if (in.w[k] == id) return (int)k;
+        return -1;
+    };
+    // One trailing MemoryAccess group whose mask word is at p (see
+    // the JS mirror for the bit-by-bit parameter table). Returns
+    // {index just past the group, hit inside the group or -1}.
+    auto memAccess = [&](U32 p) -> std::pair<U32, int> {
+        if (p >= n) return {p, -1};
+        const U32 mask = in.w[p];
+        U32 q = p + 1; int hit = -1;
+        auto param = [&](bool isId) { if (isId) { int h = hitAt(q); if (hit < 0) hit = h; } q++; };
+        if (mask & 2) param(false);  // Aligned: literal alignment
+        if (mask & 8) param(true);   // MakePointerAvailable: scope id
+        if (mask & 16) param(true);  // MakePointerVisible: scope id
+        return {q, hit};
+    };
+    switch (in.op) {
+        case 8:   // OpLine: File id; Line / Column literals.
+            return hitAt(start);
+        case 12: { // OpExtInst: Set id, literal instruction number,
+                   // then id operands.
+            int h = hitAt(start); if (h >= 0) return h;
+            return scanIds(start + 2, n);
+        }
+        case 59:  // OpVariable: literal storage class, then the
+                  // optional initializer id.
+            return scanIds(start + 1, n);
+        case 61: { // OpLoad: Pointer id, then optional MemoryAccess.
+            int h = hitAt(start); if (h >= 0) return h;
+            auto a = memAccess(start + 1); if (a.second >= 0) return a.second;
+            return scanIds(a.first, n);
+        }
+        case 62: { // OpStore: Pointer and Object ids, then MemoryAccess.
+            int h = scanIds(start, start + 2); if (h >= 0) return h;
+            auto a = memAccess(start + 2); if (a.second >= 0) return a.second;
+            return scanIds(a.first, n);
+        }
+        case 63: { // OpCopyMemory: Target / Source ids, then up to
+                   // two MemoryAccess groups.
+            int h = scanIds(start, start + 2); if (h >= 0) return h;
+            auto a = memAccess(start + 2); if (a.second >= 0) return a.second;
+            auto b = memAccess(a.first); if (b.second >= 0) return b.second;
+            return scanIds(b.first, n);
+        }
+        case 64: { // OpCopyMemorySized: Target / Source / Size ids,
+                   // then up to two MemoryAccess groups.
+            int h = scanIds(start, start + 3); if (h >= 0) return h;
+            auto a = memAccess(start + 3); if (a.second >= 0) return a.second;
+            auto b = memAccess(a.first); if (b.second >= 0) return b.second;
+            return scanIds(b.first, n);
+        }
+        case 68:  // OpArrayLength: Structure id; literal member index.
+            return hitAt(start);
+        case 79:  // OpVectorShuffle: two vector ids; literal components.
+            return scanIds(start, start + 2);
+        case 81:  // OpCompositeExtract: composite id; literal indexes.
+            return hitAt(start);
+        case 82:  // OpCompositeInsert: Object and Composite ids;
+                  // literal indexes.
+            return scanIds(start, start + 2);
+        case 123: // OpGenericCastToPtrExplicit: pointer id; literal
+                  // storage class.
+            return hitAt(start);
+        case 246: // OpLoopMerge: Merge / Continue ids; the control
+                  // mask and its parameters are literals.
+            return scanIds(start, start + 2);
+        case 247: // OpSelectionMerge: Merge id; literal control mask.
+            return hitAt(start);
+        case 250: // OpBranchConditional: Condition / True / False
+                  // ids, then optional literal branch weights.
+            return scanIds(start, start + 3);
+        case 251: { // OpSwitch: Selector and Default ids, then
+                    // (literal, label id) pairs; the literal is one
+                    // word for a <=32-bit selector type, two for
+                    // 64-bit. Unresolvable width: the pairs region
+                    // keeps the historical whole-tail scan.
+            int h = scanIds(start, start + 2); if (h >= 0) return h;
+            int wide = -1;
+            if (start < n) {
+                auto sd = m.byId.find(in.w[start]);
+                if (sd != m.byId.end()) {
+                    const Insn& selDef = m.insns[sd->second];
+                    if (selDef.resultType) {
+                        auto td = m.byId.find(selDef.resultType);
+                        if (td != m.byId.end()) {
+                            const Insn& selTy = m.insns[td->second];
+                            if (selTy.op == 21 && selTy.n >= 2) wide = selTy.w[1] > 32 ? 2 : 1;
+                        }
+                    }
+                }
+            }
+            if (wide < 0) return scanIds(start + 2, n);
+            for (U32 k = start + 2 + (U32)wide; k < n; k += (U32)wide + 1) { int hh = hitAt(k); if (hh >= 0) return hh; }
+            return -1;
+        }
+        default: {
+            // Image ops with optional ImageOperands: fixed leading
+            // id count, then one mask literal word, then id-only
+            // parameters (opcode table mirrors the JS side).
+            int fixed = -1;
+            switch (in.op) {
+                case 87: case 88: case 91: case 92: case 95: case 98:
+                case 305: case 306: case 309: case 310: case 313: case 320:
+                    fixed = 2; break;
+                case 89: case 90: case 93: case 94: case 96: case 97: case 99:
+                case 307: case 308: case 311: case 312: case 314: case 315:
+                    fixed = 3; break;
+                case 5283: fixed = 4; break;
+                default: break;
+            }
+            if (fixed >= 0) {
+                int h = scanIds(start, start + (U32)fixed); if (h >= 0) return h;
+                return start + (U32)fixed < n ? scanIds(start + (U32)fixed + 1, n) : -1;
+            }
+            return scanIds(start, n);
+        }
+    }
+}
+
 struct Uses { int reads = 0, writes = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
 inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
     std::unordered_set<U32> seen;
@@ -782,8 +912,7 @@ inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
         seen.insert(pid);
         for (size_t ii = m.firstFunc; ii < m.insns.size(); ii++) {
             const Insn& in = m.insns[ii];
-            int hit = -1;
-            for (U32 k = in.fv; k < in.n; k++) if (in.w[k] == pid) { hit = (int)k; break; }
+            int hit = findIdUse(m, in, pid);
             if (hit < 0) continue;
             if ((in.op == 65 || in.op == 66) && hit == (int)in.fv) { out.coneTypes.push_back(in.resultType); stack.push_back({in.resultId, depth + 1}); continue; }
             if (in.op == 83 && hit == (int)in.fv) { stack.push_back({in.resultId, depth + 1}); continue; }
@@ -983,8 +1112,7 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             std::set<std::string> sigs; bool bad = false; int nAcc = 0;
             for (size_t ii = m.firstFunc; ii < m.insns.size() && !bad; ii++) {
                 const Insn& u = m.insns[ii];
-                int hit = -1;
-                for (U32 k = u.fv; k < u.n; k++) if (u.w[k] == in.resultId) { hit = (int)k; break; }
+                int hit = findIdUse(m, u, in.resultId);
                 if (hit < 0) continue;
                 if ((u.op == 65 || u.op == 66) && hit == (int)u.fv) {
                     if (u.n != u.fv + 2) { bad = true; break; }

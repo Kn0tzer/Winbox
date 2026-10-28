@@ -2571,6 +2571,150 @@ function r15ClassifyExpr(ctx, id, depth = 0) {
   }
 }
 
+// Operand-aware use scan (shared by r15PointerUses and
+// analyzeDescriptorArrays; mirrored instruction-for-instruction by
+// findIdUse in the bridge audit's r15 namespace).
+//
+// The classifiers decide "hit === start" (the id sits in the
+// instruction's pointer/base operand slot) vs "hit elsewhere" vs "no
+// hit". A raw word scan cannot make that distinction soundly: it
+// treats LITERAL operand words -- constant values, composite/vector
+// indexes, memory-access parameters, branch weights, image-operand
+// masks -- as id references, so a literal that happens to equal a
+// small id false-declines a servable module (an OpCompositeExtract
+// literal index 3 against array variable %3; pinned by
+// testdata/spirv/d3d12-ps-uav-heap-array-smallid.spv). SPIR-V
+// operands are positionally typed by the opcode's grammar, so the
+// walk below consults the opcode and visits only the words the
+// grammar types as ids, returning the index of the first one equal
+// to the sought id (or -1). Unlisted opcodes keep the historical
+// every-word-is-an-id scan, which is exact for them: every operand
+// after the result header is an id reference, or the instruction has
+// no literal operands at all. The one systematic exception class --
+// extension instructions whose payloads carry literals inside
+// id-shaped operand slots (debug-info OpExtInst bodies, vendor
+// image/atomic extension ops) -- keeps the historical scan and
+// therefore the historical decline-on-collision: fail-closed, and
+// the named residue of this fix.
+// Image ops with optional ImageOperands: a fixed run of leading id
+// operands, then one mask literal word (present exactly when more
+// words follow); every ImageOperands parameter is itself an id
+// (Bias / Lod / Grad pair / ConstOffset / Offset / ConstOffsets /
+// Sample / MinLod / MakeTexelAvailable / MakeTexelVisible), so the
+// remaining tail scans as ids. Opcode -> leading id count:
+const R15_IMAGE_OPS_ID_PREFIX = {
+  87: 2, 88: 2, 89: 3, 90: 3, 91: 2, 92: 2, 93: 3, 94: 3, 95: 2, 96: 3,
+  97: 3, 98: 2, 99: 3, 305: 2, 306: 2, 307: 3, 308: 3, 309: 2, 310: 2,
+  311: 3, 312: 3, 313: 2, 314: 3, 315: 3, 320: 2, 5283: 4,
+};
+export function r15IdUseIndex(ctx, ins, id) {
+  const w = ins.words, n = w.length;
+  const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+  const hitAt = (k) => (k < n && w[k] === id) ? k : -1;
+  const scanIds = (a, b) => { for (let k = a; k < b && k < n; k++) if (w[k] === id) return k; return -1; };
+  // Walk one trailing MemoryAccess operand group whose mask word is
+  // at p: the mask is a literal; the set bits' parameters follow in
+  // bit order, of which only MakePointerAvailable / MakePointerVisible
+  // carry an id (a scope) -- Aligned carries a literal byte count and
+  // Volatile / Nontemporal / NonPrivatePointer carry nothing. Returns
+  // [index just past the group, hit index inside the group or -1].
+  const memAccess = (p) => {
+    if (p >= n) return [p, -1];
+    const mask = w[p];
+    let q = p + 1, hit = -1;
+    const param = (isId) => { if (isId) { const h = hitAt(q); if (hit < 0) hit = h; } q++; };
+    if (mask & 2) param(false);  // Aligned: literal alignment
+    if (mask & 8) param(true);   // MakePointerAvailable: scope id
+    if (mask & 16) param(true);  // MakePointerVisible: scope id
+    return [q, hit];
+  };
+  switch (ins.op) {
+    case 8:   // OpLine: File is an id; Line / Column are literals.
+      return hitAt(start);
+    case 12: { // OpExtInst: Set is an id, the instruction number is a
+               // literal, the remaining operands are ids. (Debug-info
+               // extension payloads carry literals inside those
+               // operands; they keep decline-on-collision, above.)
+      const h = hitAt(start); if (h >= 0) return h;
+      return scanIds(start + 2, n);
+    }
+    case 59:  // OpVariable: the storage class word is a literal; the
+              // optional initializer is an id.
+      return scanIds(start + 1, n);
+    case 61: { // OpLoad: Pointer id, then an optional MemoryAccess
+               // group; anything past the group still scans as ids.
+      const h = hitAt(start); if (h >= 0) return h;
+      const a = memAccess(start + 1); if (a[1] >= 0) return a[1];
+      return scanIds(a[0], n);
+    }
+    case 62: { // OpStore: Pointer and Object ids, then MemoryAccess.
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      const a = memAccess(start + 2); if (a[1] >= 0) return a[1];
+      return scanIds(a[0], n);
+    }
+    case 63: { // OpCopyMemory: Target and Source ids, then up to two
+               // MemoryAccess groups (target's, then source's).
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      const a = memAccess(start + 2); if (a[1] >= 0) return a[1];
+      const b = memAccess(a[0]); if (b[1] >= 0) return b[1];
+      return scanIds(b[0], n);
+    }
+    case 64: { // OpCopyMemorySized: Target, Source and Size ids, then
+               // up to two MemoryAccess groups.
+      const h = scanIds(start, start + 3); if (h >= 0) return h;
+      const a = memAccess(start + 3); if (a[1] >= 0) return a[1];
+      const b = memAccess(a[0]); if (b[1] >= 0) return b[1];
+      return scanIds(b[0], n);
+    }
+    case 68:  // OpArrayLength: only Structure is an id; the member
+              // index word is a literal.
+      return hitAt(start);
+    case 79:  // OpVectorShuffle: two vector ids; every component word
+              // after them is a literal.
+      return scanIds(start, start + 2);
+    case 81:  // OpCompositeExtract: only the composite is an id; the
+              // indexes are literals.
+      return hitAt(start);
+    case 82:  // OpCompositeInsert: Object and Composite are ids; the
+              // indexes are literals.
+      return scanIds(start, start + 2);
+    case 123: // OpGenericCastToPtrExplicit: only the pointer is an
+              // id; the target storage class is a literal.
+      return hitAt(start);
+    case 246: // OpLoopMerge: Merge and Continue ids; the loop-control
+              // mask and its parameter words are literals (whole tail).
+      return scanIds(start, start + 2);
+    case 247: // OpSelectionMerge: Merge id; the selection-control
+              // mask is a literal.
+      return hitAt(start);
+    case 250: // OpBranchConditional: Condition / True / False ids,
+              // then optional literal branch weights.
+      return scanIds(start, start + 3);
+    case 251: { // OpSwitch: Selector and Default ids, then (literal,
+                // label id) target pairs. The literal is one word
+                // for a <=32-bit selector type, two for 64-bit. If
+                // the width cannot be resolved the pairs region keeps
+                // the historical whole-tail scan (fail-closed).
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      let wide = -1;
+      const selDef = ctx.byId.get(w[start]);
+      const selTy = selDef && selDef.resultType != null ? ctx.byId.get(selDef.resultType) : null;
+      if (selTy && selTy.op === 21) wide = selTy.words[1] > 32 ? 2 : 1;
+      if (wide < 0) return scanIds(start + 2, n);
+      for (let k = start + 2 + wide; k < n; k += wide + 1) { const hh = hitAt(k); if (hh >= 0) return hh; }
+      return -1;
+    }
+    default: {
+      const fixed = R15_IMAGE_OPS_ID_PREFIX[ins.op];
+      if (fixed !== undefined) {
+        const h = scanIds(start, start + fixed); if (h >= 0) return h;
+        return start + fixed < n ? scanIds(start + fixed + 1, n) : -1;
+      }
+      return scanIds(start, n);
+    }
+  }
+}
+
 // Classify every use of a pointer value: reads (Load / AtomicLoad through
 // it or through chains/copies rooted at it), writes (Store / atomic RMW),
 // escapes (anything not positively classified). Also collects the cone of
@@ -2584,8 +2728,7 @@ function r15PointerUses(ctx, rootId) {
     for (let ii = ctx.firstFunc; ii < ctx.mod.insns.length; ii++) {
       const ins = ctx.mod.insns[ii];
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      let hit = -1;
-      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === pid) { hit = k; break; }
+      const hit = r15IdUseIndex(ctx, ins, pid);
       if (hit < 0) continue;
       if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
         out.cone.push(ins); visit(ins.resultId, depth + 1); continue;
@@ -2717,8 +2860,7 @@ export function analyzeDescriptorArrays(mod) {
     for (let ii = ctx.firstFunc; ii < mod.insns.length && !bad; ii++) {
       const u = mod.insns[ii];
       const start = u.resultType != null ? 2 : u.resultId != null ? 1 : 0;
-      let hit = -1;
-      for (let k = start; k < u.words.length; k++) if (u.words[k] === ins.resultId) { hit = k; break; }
+      const hit = r15IdUseIndex(ctx, u, ins.resultId);
       if (hit < 0) continue;
       if ((u.op === Op.AccessChain || u.op === Op.InBoundsAccessChain) && hit === start) {
         if (u.words.length !== start + 2) { bad = 'multi-index array access'; break; }

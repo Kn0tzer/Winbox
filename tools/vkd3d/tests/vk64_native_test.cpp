@@ -1588,6 +1588,107 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
         puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
 
+        // GUARD (operand-aware use scan): a CompositeExtract literal index
+        // equal to the access chain's result id is NOT a use of the chain
+        // pointer. The module below declares a runtime array of sampled
+        // images (set 0 / binding 0), indexes it with constant 0 through
+        // chain %3, loads the element, and runs OpCompositeExtract with
+        // literal index 3. A raw word scan reads that literal as an escape
+        // of the chain pointer, the array classifies unservable, and
+        // RuntimeDescriptorArray is reported; the operand-aware scan
+        // (findIdUse) admits the module exactly like spirvfix does.
+        {
+            const U32 rdaBefore = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+                (2u << 16) | 17u, 1u,                          // OpCapability Shader
+                (2u << 16) | 17u, 5302u,                       // OpCapability RuntimeDescriptorArray
+                (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+                (6u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u, // OpEntryPoint Fragment %17 "main" %8
+                (3u << 16) | 16u, 17u, 7u,                     // OpExecutionMode %17 OriginUpperLeft
+                (4u << 16) | 71u, 8u, 34u, 0u,                 // OpDecorate %8 DescriptorSet 0
+                (4u << 16) | 71u, 8u, 33u, 0u,                 // OpDecorate %8 Binding 0
+                (2u << 16) | 19u, 1u,                          // %1 OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                      // %2 OpTypeFunction %1
+                (3u << 16) | 22u, 4u, 32u,                     // %4 OpTypeFloat 32
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u, // %5 OpTypeImage %4 2D, Sampled=1
+                (3u << 16) | 29u, 6u, 5u,                      // %6 OpTypeRuntimeArray %5
+                (4u << 16) | 32u, 7u, 0u, 6u,                  // %7 OpTypePointer UniformConstant %6
+                (4u << 16) | 21u, 9u, 32u, 0u,                 // %9 OpTypeInt 32 unsigned
+                (4u << 16) | 43u, 9u, 10u, 0u,                 // %10 OpConstant %9 0
+                (4u << 16) | 32u, 11u, 0u, 5u,                 // %11 OpTypePointer UniformConstant %5
+                (4u << 16) | 23u, 12u, 4u, 4u,                 // %12 OpTypeVector %4 4
+                (4u << 16) | 43u, 4u, 13u, 0x3F800000u,        // %13 OpConstant %4 1.0f
+                (7u << 16) | 44u, 12u, 14u, 13u, 13u, 13u, 13u, // %14 OpConstantComposite %12 %13 x4
+                (4u << 16) | 59u, 7u, 8u, 0u,                  // %8 OpVariable %7 UniformConstant
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,             // %17 OpFunction %1 None %2
+                (2u << 16) | 248u, 18u,                        // %18 OpLabel
+                (5u << 16) | 65u, 11u, 3u, 8u, 10u,            // %3 OpAccessChain %11 %8 %10
+                (4u << 16) | 61u, 5u, 15u, 3u,                 // %15 OpLoad %5 %3
+                (5u << 16) | 81u, 4u, 16u, 14u, 3u,            // %16 OpCompositeExtract %4 %14 3 (literal == chain %3)
+                (1u << 16) | 253u,                             // OpReturn
+                (1u << 16) | 56u,                              // OpFunctionEnd
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaBefore);
+            puts("PASS: GUARD a CompositeExtract literal equal to the chain id is not a pointer escape (operand-aware scan)");
+        }
+
+        // GUARD (operand-aware use scan): the REAL captured heap-array
+        // module with ids 3/14 renumbered (testdata/spirv/
+        // d3d12-ps-uav-heap-array-smallid.spv; the array variable is %3
+        // and the module's own OpCompositeExtract carries literal index
+        // 3) is admitted: the array classifies servable and cap 5302 is
+        // skipped, exactly as spirvfix classifies it. A raw word scan
+        // reports RuntimeDescriptorArray at creation.
+        {
+            const U32 rdaBefore = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+            0x00020011u, 0x00000001u, 0x00020011u, 0x00000037u, 0x00020011u, 0x00001172u, 0x00020011u, 0x000014b6u,
+            0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e3u, 0x0008000au, 0x5f565053u, 0x5f545845u, 0x63736564u,
+            0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0007000au, 0x5f565053u, 0x5f52484bu, 0x616f6c66u,
+            0x6f635f74u, 0x6f72746eu, 0x0000736cu, 0x0009000au, 0x5f565053u, 0x5f52484bu, 0x73796870u, 0x6c616369u,
+            0x6f74735fu, 0x65676172u, 0x6675625fu, 0x00726566u, 0x0003000eu, 0x000014e4u, 0x00000003u, 0x0009000fu,
+            0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x00000003u, 0x00000011u, 0x00000013u,
+            0x00030010u, 0x00000004u, 0x00000007u, 0x00040010u, 0x00000004u, 0x0000116du, 0x00000020u, 0x00080007u,
+            0x00000001u, 0x36653266u, 0x30396130u, 0x35346362u, 0x37326462u, 0x6978642eu, 0x0000006cu, 0x00040005u,
+            0x00000004u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000007u, 0x746f6f52u, 0x736e6f43u, 0x746e6174u,
+            0x00000073u, 0x00050005u, 0x00000009u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00050005u, 0x00000011u,
+            0x505f5653u, 0x7469736fu, 0x006e6f69u, 0x00050005u, 0x00000013u, 0x545f5653u, 0x65677261u, 0x00000074u,
+            0x00030047u, 0x00000007u, 0x00000002u, 0x00050048u, 0x00000007u, 0x00000000u, 0x00000023u, 0x00000000u,
+            0x00040047u, 0x00000003u, 0x00000022u, 0x00000005u, 0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u,
+            0x00030047u, 0x00000003u, 0x00000018u, 0x00040047u, 0x00000011u, 0x0000000bu, 0x0000000fu, 0x00040047u,
+            0x00000013u, 0x0000001eu, 0x00000000u, 0x00020013u, 0x00000002u, 0x00030021u, 0x0000000eu, 0x00000002u,
+            0x00040015u, 0x00000006u, 0x00000020u, 0x00000000u, 0x0003001eu, 0x00000007u, 0x00000006u, 0x00040020u,
+            0x00000008u, 0x00000009u, 0x00000007u, 0x0004003bu, 0x00000008u, 0x00000009u, 0x00000009u, 0x00030016u,
+            0x0000000au, 0x00000020u, 0x00090019u, 0x0000000bu, 0x0000000au, 0x00000001u, 0x00000000u, 0x00000000u,
+            0x00000000u, 0x00000002u, 0x00000000u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du,
+            0x00000000u, 0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000fu,
+            0x0000000au, 0x00000004u, 0x00040020u, 0x00000010u, 0x00000001u, 0x0000000fu, 0x0004003bu, 0x00000010u,
+            0x00000011u, 0x00000001u, 0x00040020u, 0x00000012u, 0x00000003u, 0x0000000fu, 0x0004003bu, 0x00000012u,
+            0x00000013u, 0x00000003u, 0x00040020u, 0x00000014u, 0x00000001u, 0x0000000au, 0x0004002bu, 0x00000006u,
+            0x00000016u, 0x00000000u, 0x0004002bu, 0x00000006u, 0x00000019u, 0x00000001u, 0x00040020u, 0x0000001du,
+            0x00000000u, 0x0000000bu, 0x00040020u, 0x0000001fu, 0x00000009u, 0x00000006u, 0x00040017u, 0x00000023u,
+            0x00000006u, 0x00000002u, 0x00040020u, 0x0000002cu, 0x00000003u, 0x0000000au, 0x0004002bu, 0x00000006u,
+            0x00000030u, 0x00000002u, 0x0004002bu, 0x00000006u, 0x00000032u, 0x00000003u, 0x00050036u, 0x00000002u,
+            0x00000004u, 0x00000000u, 0x0000000eu, 0x000200f8u, 0x00000005u, 0x000200f9u, 0x00000033u, 0x000200f8u,
+            0x00000033u, 0x00050041u, 0x00000014u, 0x00000015u, 0x00000011u, 0x00000016u, 0x0004003du, 0x0000000au,
+            0x00000017u, 0x00000015u, 0x00050041u, 0x00000014u, 0x00000018u, 0x00000011u, 0x00000019u, 0x0004003du,
+            0x0000000au, 0x0000001au, 0x00000018u, 0x0004006eu, 0x00000006u, 0x0000001bu, 0x00000017u, 0x0004006eu,
+            0x00000006u, 0x0000001cu, 0x0000001au, 0x00050041u, 0x0000001fu, 0x00000020u, 0x00000009u, 0x00000016u,
+            0x0004003du, 0x00000006u, 0x00000021u, 0x00000020u, 0x00050041u, 0x0000001du, 0x0000001eu, 0x00000003u,
+            0x00000021u, 0x0004003du, 0x0000000bu, 0x00000022u, 0x0000001eu, 0x00050050u, 0x00000023u, 0x00000026u,
+            0x0000001bu, 0x0000001cu, 0x00060062u, 0x0000000fu, 0x00000025u, 0x00000022u, 0x00000026u, 0x00000400u,
+            0x00050051u, 0x0000000au, 0x00000027u, 0x00000025u, 0x00000000u, 0x00050051u, 0x0000000au, 0x00000028u,
+            0x00000025u, 0x00000001u, 0x00050051u, 0x0000000au, 0x00000029u, 0x00000025u, 0x00000002u, 0x00050051u,
+            0x0000000au, 0x0000002au, 0x00000025u, 0x00000003u, 0x00050041u, 0x0000002cu, 0x0000002du, 0x00000013u,
+            0x00000016u, 0x0003003eu, 0x0000002du, 0x00000027u, 0x00050041u, 0x0000002cu, 0x0000002eu, 0x00000013u,
+            0x00000019u, 0x0003003eu, 0x0000002eu, 0x00000028u, 0x00050041u, 0x0000002cu, 0x0000002fu, 0x00000013u,
+            0x00000030u, 0x0003003eu, 0x0000002fu, 0x00000029u, 0x00050041u, 0x0000002cu, 0x00000031u, 0x00000013u,
+            0x00000032u, 0x0003003eu, 0x00000031u, 0x0000002au, 0x000100fdu, 0x00010038u,
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaBefore);
+            puts("PASS: GUARD the small-id heap-array module is admitted (operand-aware scan)");
+        }
+
         // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
         {
             VkSamplerCreateInfo sc{}; sc.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
