@@ -4,9 +4,11 @@
 // D3D device creation. UNIFORM texel buffers are now served end to end:
 // creation succeeds for page-servable formats, the descriptor travels as wire
 // kind 5 with a V2_BUFFER_VIEW record, and spirvfix R12 rewrites the shader
-// fetch onto the materialised 2D texture. STORAGE texel buffers stay
-// REJECTED-LOUDLY (shader writes to a texture copy could never reach guest
-// memory) and are never advertised.
+// fetch onto the materialised 2D texture. STORAGE texel buffers are served
+// the same way as wire kind 6 (metabind lane): spirvfix R12S rewrites the
+// shader onto a writable 2D storage texture and the V2 deferred readback
+// makes its writes reach guest memory. Storage texel stays unadvertised in
+// format feature bits -- serving rides the path guests already take.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -53,16 +55,25 @@ test('format properties advertise UNIFORM_TEXEL_BUFFER only via the servable pre
     'storage texel must never be advertised');
 });
 
-test('descriptor writes: uniform texel records the view, storage stays loud', () => {
+test('descriptor writes: uniform and storage texel both record the view, neither warns', () => {
   const uni = caseBlock('case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:');
   assert.ok(!uni.includes('vk64Unsupported'), 'uniform texel writes must not log unsupported');
   assert.match(uni, /b\.obj = rdq\(w\.pTexel \+ at\)/);
-  const sto = caseBlock('case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:');
-  assert.match(sto, /vk64Unsupported\("texel-buffer-storage"/);
+  // Storage texel writes were a loud class rejection (texel-buffer-storage)
+  // until the metabind lane: the write now records the view and the binding
+  // is served as wire kind 6 (see vk-storage-texel.test.mjs).
+  // caseBlock slices to the next case label, but the storage case is the
+  // switch's last real case -- its slice would overrun past default: into
+  // later functions. Bound it at the case's own break instead.
+  const stoAt = bridge.indexOf('case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:');
+  const sto = bridge.slice(stoAt, bridge.indexOf('break;', stoAt));
+  assert.ok(!sto.includes('vk64Unsupported'), 'storage texel writes must not log unsupported');
+  assert.match(sto, /b\.obj = rdq\(w\.pTexel \+ at\)/);
 });
 
-test('submit path emits the view record, wire kind 5 and the view bytes', () => {
+test('submit path emits the view record, wire kinds 5 and 6 and the view bytes', () => {
   assert.match(bridge, /case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: kind = 5; break;/);
+  assert.match(bridge, /case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: kind = 6; break;/);
   assert.match(bridge, /emit\(V2_BUFFER_VIEW, \[&\]\(ChunkWriter& p\)/);
   assert.match(bridge, /emitBufferData\(bv->buffer, vbuf->memOff \+ bv->offset, bv->range\)/);
   assert.match(bridge, /V2_BUFFER_VIEW = 0x1C/);

@@ -1518,8 +1518,7 @@ static void applyDescWrite(DescSet& s, const DescWriteReq& w, DescRdQ rdq) {
                 if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 5
                 break;
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id
-                vk64Unsupported("texel-buffer-storage", "storage texel buffers are not supported: shader writes to a texture copy could never reach guest memory");
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 6
                 break;
             default:
                 vk64Unsupported("descriptor-type", ("descriptor write type=" + std::to_string(w.type)).c_str());
@@ -4104,6 +4103,21 @@ static void vk64MarkComputeWrites(CmdBuf* cb) {
         DescSetLayout* lay = set->layout ? objOf<DescSetLayout>(set->layout, K_SETLAYOUT, "vkCmdDispatch") : nullptr;
         for (const auto& kv : set->els) {
             const Binding& b = kv.second;
+            if (b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                // A storage texel binding's writes land in the view's
+                // buffer range (the page tier serves the view as a storage
+                // texture and reads it back byte-exactly), so mark that
+                // range GPU-written exactly like a storage buffer's: a
+                // later copy out of it defers to a page readback instead
+                // of reading stale guest bytes.
+                BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkCmdDispatch");
+                Buffer* buf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkCmdDispatch") : nullptr;
+                if (!bv || !buf || !buf->mem) continue;
+                DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatch");
+                if (!mem) continue;
+                if (bv->range) vk64MarkGpuWrite(bv->buffer, buf->memOff + bv->offset, bv->range, buf->mem, mem->writeEpoch);
+                continue;
+            }
             if (b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
                 b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) continue;
             Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkCmdDispatch");
@@ -4590,7 +4604,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             };
             for (const auto& kv : eff) {
                 const Binding& b = kv.second;
-                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) continue;
+                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER &&
+                    b.type != VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) continue;
                 BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                 Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                 if (!bv || !vbuf) {
@@ -4600,9 +4615,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // shader texel slot the app never bound), which the
                     // page tier serves as zero reads -- not a lost view,
                     // and the DESC_SET binding below still goes out with
-                    // kind 5 / id 0. Only a nonzero id can be stale, and
+                    // kind 5/6 / id 0. Only a nonzero id can be stale, and
                     // it stays loud.
-                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
+                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "texel buffer binding names no live buffer view; binding dropped");
                     continue;
                 }
                 emit(V2_BUFFER_VIEW, [&](ChunkWriter& p) {
@@ -4629,6 +4644,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
                         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: kind = 5; break;
+                        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: kind = 6; break;
                         default:
                             vk64Unsupported("descriptor-wire-kind",
                                 ("unsupported descriptor type=" + std::to_string(b.type) + " has no V2 binding kind").c_str());
@@ -4640,7 +4656,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // D3D9 constants); the page keys captures by (id, offset).
                     U64 absOff = 0, len = b.range; Buffer* buf = nullptr;
                     if (kind == 1) bufRange(b, dynOffFor(b), absOff, len, buf);
-                    else if (kind == 5) {
+                    else if (kind == 5 || kind == 6) {
                         BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                         Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                         if (bv && vbuf) { absOff = vbuf->memOff + bv->offset; len = bv->range; }
@@ -4665,7 +4681,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                     emitImageData(b.obj);    // b.obj = image view id (see applyDescWrite)
                     emitSampler(b.range);    // b.range = sampler id
-                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                           b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
                     BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                     Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                     if (bv && vbuf) emitBufferData(bv->buffer, vbuf->memOff + bv->offset, bv->range);

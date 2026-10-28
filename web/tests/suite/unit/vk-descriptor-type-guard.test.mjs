@@ -13,12 +13,13 @@ test('unsupported descriptor writes warn in the one shared write path; uniform t
   assert.ok(write, 'applyDescWrite exists');
   for (const f of ['subpass-input-descriptor', 'descriptor-type'])
     assert.equal((write.match(new RegExp('vk64Unsupported\\("' + f + '"', 'g')) || []).length, 1, f + ' warns in applyDescWrite');
-  // UNIFORM texel buffers are implemented (wire kind 5): the write records the
-  // view and must NOT warn. STORAGE texel buffers stay rejected and warn once.
+  // UNIFORM texel buffers are implemented (wire kind 5) and STORAGE texel
+  // buffers are implemented (wire kind 6, metabind lane): both writes record
+  // the view and must NOT warn; the texel-buffer-storage rejection is retired.
   const uni = write.slice(write.indexOf('case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:'), write.indexOf('case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:'));
   assert.match(uni, /b\.obj = rdq\(w\.pTexel \+ at\)/);
   assert.ok(!uni.includes('vk64Unsupported'), 'uniform texel writes are served, not warned');
-  assert.equal((write.match(/vk64Unsupported\("texel-buffer-storage"/g) || []).length, 1, 'storage texel warns in applyDescWrite');
+  assert.equal((bridge.match(/vk64Unsupported\("texel-buffer-storage"/g) || []).length, 0, 'storage texel no longer warns anywhere in the bridge');
   // Buffer view creation: both ABIs validate through the one shared helper,
   // whose unservable-format rejection warns once.
   assert.equal((bridge.match(/vk64BufferViewRange\(buf->size/g) || []).length, 2, 'both vkCreateBufferView paths share vk64BufferViewRange');

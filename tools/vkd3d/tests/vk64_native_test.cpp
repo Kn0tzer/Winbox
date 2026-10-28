@@ -115,6 +115,8 @@ void vkCmdUpdateBuffer(U64, U64, U64, U64, const void*);
 void vkUpdateDescriptorSets(U64, U32, const void*, U32, const void*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 void vkCmdDispatch(U64, U32, U32, U32);
+void vkCmdCopyBuffer(U64, U64, U64, U32, const void*);
+void vkCmdPushDescriptorSetKHR(U64, U32, U64, U32, U32, const void*);
 void vkGetDeviceImageMemoryRequirements(U64, const void*, void*);
 void vkGetDeviceQueue2(U64, const void*, U64*);
 void vkGetRenderAreaGranularity(U64, U64, U32*);
@@ -1225,6 +1227,87 @@ int main() {
                 }
             }
             g_v2Pending.clear();
+
+            // Storage texel meta-bind (metabind lane, section 4.31):
+            // vkd3d-proton's clear/copy meta pipelines bind a storage
+            // texel buffer with vkCmdPushDescriptorSetKHR. The pushed
+            // descriptor must serialize as wire kind 6 with a
+            // V2_BUFFER_VIEW record, the dispatch under it must mark the
+            // view's range GPU-written at record time, and a copy out of
+            // that range must defer to a V2_BUFFER_READBACK instead of
+            // the eager record-time memcpy.
+            {
+                U64 stMemId; auto* stMem = createObj<DeviceMemory>(K_MEMORY, stMemId);
+                stMem->size = 512; stMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 stBufId; auto* stBuf = createObj<Buffer>(K_BUFFER, stBufId);
+                stBuf->size = 512; stBuf->mem = stMemId; stBuf->memOff = 0;
+                U64 stViewId; auto* stView = createObj<BufferView>(K_BUFFERVIEW, stViewId);
+                stView->buffer = stBufId; stView->format = VK_FORMAT_R32G32_UINT;
+                stView->offset = 64; stView->range = 256;
+                U64 stDstMemId; auto* stDstMem = createObj<DeviceMemory>(K_MEMORY, stDstMemId);
+                stDstMem->size = 256; stDstMem->va = memory.mmapReserveAndMap(256, 3);
+                U64 stDstId; auto* stDst = createObj<Buffer>(K_BUFFER, stDstId);
+                stDst->size = 256; stDst->mem = stDstMemId; stDst->memOff = 0;
+                U64 stLayId; createObj<DescSetLayout>(K_SETLAYOUT, stLayId);
+                U64 stPlId; auto* stPl = createObj<PipelineLayout>(K_PIPELAYOUT, stPlId);
+                stPl->nsets = 1; stPl->sets[0] = stLayId;
+                memory.writeq(3200, stViewId);
+                VkWriteDescriptorSet stw{};
+                stw.dstBinding = 0; stw.descriptorCount = 1;
+                stw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                stw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &stw, sizeof(stw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL stRegion{64, 0, 256};
+                memory.memcpyToGuest(3400, &stRegion, sizeof(stRegion));
+                U64 cbStId; auto* cbSt = createObj<CmdBuf>(K_CMDBUF, cbStId);
+                const U32 kindBefore = vk64BridgeUnsupportedCount("descriptor-wire-kind");
+                const U32 rbBefore = vk64BridgeUnsupportedCount("compute-buffer-readback");
+                vkCmdBindPipeline(cbStId, 1, csPipeId);
+                vkCmdPushDescriptorSetKHR(cbStId, 1, stPlId, 0, 1, (const void*)3264);
+                vkCmdDispatch(cbStId, 1, 1, 1);
+                vkCmdCopyBuffer(cbStId, stBufId, stDstId, 1, (const void*)3400);
+                bool deferred = false;
+                for (const Cmd& k : cbSt->cmds) if (k.kind == CMD_COPY_B2B_RB) deferred = true;
+                assert(deferred); // the copy deferred: the dispatch marked the view range
+                g_v2Pending.clear();
+                // Mirror the vkQueueSubmit sequence: readback planning
+                // (setupReadbacks) runs before serialization, so the
+                // deferred copy finds its planned readback at emit time.
+                setupReadbacks({{cbSt, cbStId}});
+                serializeSubmitV2({{cbSt, cbStId}});
+                assert(vk64BridgeUnsupportedCount("descriptor-wire-kind") == kindBefore);
+                assert(vk64BridgeUnsupportedCount("compute-buffer-readback") == rbBefore);
+                bool sawView = false, sawKind6 = false, sawDisp = false, sawRb = false;
+                for (const auto& chunk : g_v2Pending.back().chunks) {
+                    for (size_t at = 16; at < chunk.size();) {
+                        U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                        const U8* pl = chunk.data() + at + 8;
+                        if (type == 0x1C) { // V2_BUFFER_VIEW
+                            U64 vid, bid; U32 fmt;
+                            memcpy(&vid, pl, 8); memcpy(&bid, pl + 8, 8); memcpy(&fmt, pl + 16, 4);
+                            if (vid == stViewId && bid == stBufId && fmt == VK_FORMAT_R32G32_UINT) sawView = true;
+                        }
+                        if (type == 0x08) { // V2_DESC_SET: 12-byte header, 44-byte entries
+                            uint16_t n; memcpy(&n, pl + 2, 2);
+                            for (U32 e = 0; e < n; e++) {
+                                const U8* en = pl + 12 + e * 44;
+                                U8 kind = en[16]; U64 obj; memcpy(&obj, en + 20, 8);
+                                if (kind == 6 && obj == stViewId) sawKind6 = true;
+                            }
+                        }
+                        if (type == 0x1F) sawDisp = true;
+                        if (type == 0x20) { // V2_BUFFER_READBACK
+                            U64 src; memcpy(&src, pl, 8);
+                            if (src == stBufId) sawRb = true;
+                        }
+                        at += 8 + len;
+                    }
+                }
+                assert(sawView && sawKind6 && sawDisp && sawRb);
+                g_v2Pending.clear();
+                puts("PASS: storage texel push descriptor wires kind 6, marks and reads back");
+            }
         }
         // GUARD (silent drop): a command buffer with no render pass but with an image
         // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1

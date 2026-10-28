@@ -10,7 +10,7 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 213105037 | `14182fe0add94b464f3268c6bd9659a70dbd5152097dda4f26426de71cf725eb` | 1257 |
+| w64 | `web/runtime/wine64.zip` | 213105632 | `b2ac0dc67253caee8559651446a465bf44fc34c7307751960969424807a7de56` | 1257 |
 | w32 | `web/runtime/wine32.zip` | 236650075 | `3da7c635f4e52e091b61785fe05244c9c2a70c77eed58550e85643a256803ac4` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
@@ -412,7 +412,7 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/mscoree.dll` (1289964 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/opengl32.dll` (6115657 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/secur32.dll` (776893 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll` (159504 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll` (160169 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winealsa.drv` (762352 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winhttp.dll` (1521313 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wininet.dll` (2281908 bytes)

@@ -2755,3 +2755,116 @@ unlocks guest compute through heaps AND heap-bound fragment UAV writes.
 for meta clears never enter the V2 stream) — unlocks differing-component
 UAV buffer clears. (3) Sampled-texture serving path for r16float/R8_UINT
 storage reads (already queued from §4.26 and the UINT lane).
+
+### 4.31 Meta-bind delivery: the push-descriptor bind was swallowed by the PE shim's benign stub; storage texel buffers served end to end (2026-10-28, metabind lane + recovery)
+
+**The wall, as inherited.** Section 4.30 left cs12's BUF/BUF2 variants
+failing bad=64: vkd3d-proton's ClearUnorderedAccessView on a typed
+texel-buffer UAV whose components differ cannot take its vkCmdFillBuffer
+fast path, so it runs an internal meta compute pipeline
+(cs_clear_uav_buffer_uint/float) that binds a STORAGE_TEXEL_BUFFER with
+vkCmdPushDescriptorSetKHR and dispatches. The dispatch reached the page
+tier with no descriptor set at all and was skipped, so the readback
+served stale zeros. The wall turned out to be three stacked defects;
+each layer's fix is necessary and none is sufficient alone.
+
+**Layer 1 — the bind never left the guest.** The bridge has trapped
+vkCmdPushDescriptorSetKHR (ABI 914) and
+vkCmdPushDescriptorSetWithTemplateKHR (ABI 915) since the
+push-descriptor work, and the unix shim (libvk64.c) exports both. The
+PE shim did not: tools/vkd3d/probe/exports.txt carried
+`vkCmdPushDescriptorSet 1 1` (the fnId-1 unimplemented stub) and no KHR
+entries at all, and gen_vk64pe.py's vk64_resolve answers any name
+missing from the table with vk64_benign, a do-nothing stub. vkd3d
+therefore called a no-op for every meta push bind. Proven by
+instrumenting the bridge: during BUF/BUF2, recordBindSets was never
+called on the meta command buffer (5 recorded commands, 1 dispatch, 0
+bind-sets), while the same buffer later carried TEX's ten heap binds
+normally. Fix: exports.txt now traps the whole family
+(vkCmdPushDescriptorSet + KHR at 914/6 args,
+vkCmdPushDescriptorSetWithTemplate + KHR at 915/5), the shim was
+regenerated and rebuilt per VULKAN1_DLL_README.md (sha256
+ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89; the
+three staged copies stay byte-identical), the completeness pins moved
+to the new hash (the two d3d12 pair pins were also re-pinned to the
+restaged pair this tree already carries, a96b4e9d/3d3bfe43, matching
+the integ re-pin), both shipped wine64.zip archives were restaged with
+stage-vkd3d-payloads.sh, runtime-assets.json was re-pinned and the
+runtime-artifact manifest regenerated. Guard:
+vk-push-descriptor-shim.test.mjs (sabotage-verified: deleting the KHR
+entry turns it red).
+
+**Layer 2 — storage texel buffers served (the original lane's stack).**
+Once the bind arrives it names a descriptor shape the stack rejected at
+every tier. Bridge (vk64bridge.cpp): applyDescWrite's
+STORAGE_TEXEL_BUFFER case records the view instead of logging
+texel-buffer-storage; the V2 serializer gains wire kind 6 for the type,
+sharing kind 5's V2_BUFFER_VIEW emission and view-range data flow;
+vk64MarkComputeWrites marks a storage-texel binding's view range
+GPU-written at dispatch record time, so a later copy defers to
+V2_BUFFER_READBACK instead of reading stale guest bytes. spirvfix gains
+R12S storageTexelBuffersTo2D: an OpTypeImage with Dim=Buffer, Sampled=2
+is wrapped in the R12 2D layout (8192 wide, (i mod 8192, i div 8192));
+only OpImageWrite/OpImageRead consumers are admitted, anything else
+refuses the conversion whole. Page tier (vkwebgpu.mjs): a
+storageTexelRegistry materialises a kind-6 view as a 2D storage texture
+in the R12S layout, seeded verbatim from guest bytes (fail-closed to a
+loud bind drop when the format or bytes are unknown); a null view id
+serves the zero storage texture; and the readback resolution gains a
+storage-texel fallback that copies the covered rows out of the storage
+texture (with a srcSkip offset) so the guest receives byte-exact
+written data. Storage texel stays UNADVERTISED in the format feature
+bits — serving rides the descriptor path guests already take. Guards:
+vk-storage-texel.test.mjs (wire decode + per-hop source pins), the
+descriptor-type census moving STORAGE_TEXEL_BUFFER from class-rejected
+to zero-served, and a native record-level block driving
+vkCmdPushDescriptorSetKHR with a storage-texel write through kind-6
+wiring, the dispatch write mark, and the deferred readback (verified in
+a diagnostic harness copy: this branch's run-native.py aborts at a
+pre-existing stale format-bpp assert, identical on pristine HEAD, the
+same rot the vk64harness lane repaired on integ).
+
+**Layer 3 — two over-broad refusals inside R12S (found by the
+after-probe split: BUF2 cleared, BUF still bad=64).** Feeding the
+captured guest modules through spirvfix offline isolated two vetting
+defects, both id/value confusions. (1) The consumer scan treated every
+instruction's operands as potential value uses, so the push block's
+OpMemberDecorate Offset literal (35) "consumed" the image — the uint
+module's image load is also numbered %35 (the float twin's is %36,
+which is why only the uint clear refused). Metadata instructions
+(capabilities, entry points, execution modes, source/debug records,
+annotations) carry literals and global ids, never runtime values; the
+scan now skips that family, and every instruction that can actually
+consume a value stays vetted. (2) The write/read operand check refused
+any instruction longer than the bare form; the uint write carries a
+flag-only ZeroExtend image-operand mask (8192, no id operands). The
+check now parses the mask and refuses only masks carrying id operands
+(Lod/Grad/offsets/Sample/MinLod/scope ids), whose coordinate semantics
+the 2D wrap does not rewrite; flag-only masks (NonPrivateTexel,
+VolatileTexel, SignExtend, ZeroExtend, Nontemporal) pass through
+verbatim. Regression: the captured cs_clear_uav_buffer_uint module is
+pinned as a fixture in spirvfix-texel-buffer.test.mjs (converts and
+naga-accepts with the view signature), plus a word-patched
+Lod-operand variant that must still refuse; both fixes are
+sabotage-verified against that fixture (unskipping OpMemberDecorate or
+refusing every masked write each turn exactly that test red).
+
+**Probe (cs12, uploading harness).** Before (this branch's baseline,
+test-results/dxvk-cs12-meta-before3): BUF FAIL bad=64, BUF2 FAIL
+bad=64, TEX FAIL bad=16. With only Layer 1+2 in the dist
+(dxvk-dxvk-cs12-meta-after4): BUF FAIL bad=64, BUF2 OK — the split that
+isolated Layer 3. After all three layers
+(dxvk-dxvk-cs12-meta-after5): **BUF OK (bad=0), BUF2 OK (bad=0)**,
+TEX FAIL bad=16, RESULT 1. TEX's failure is pre-existing on this
+branch base — the spirvwrite/fmtinject/group-3 work it needs is not on
+this branch (TEX is green on integ); RESULT 0 is expected once this
+lane merges into the integ stack. Page stats for after5: both meta
+modules translated, 4 meta dispatches executed, the ImageBuffer
+translation failure gone; remaining translation failures are TEX's two
+known module walls. tri12 spot check on the rebuilt shim: attempted once and starved at the harness timeout under box load (test-results/dxvk-dxvk-tri12-metabind-check: the guest never got past Wine startup, zero chunks captured -- the same starvation signature as the two cs12 timeouts that preceded the successful long-budget run; no verdict either way). The rebuilt shim's behavioural evidence is the cs12 full-path proof above (same loader, same DLL, device creation plus meta and heap traffic), the export-table guard, and the 316/316 suite. JS suite: 316 passed / 0 failed (the pre-recovery run on this branch was 313 passed / 2 failed: the spirvfix REWRITES census missed the new rule and the register citations had drifted with the lane's line shifts; both closed by this lane's bookkeeping, and the new vk-push-descriptor-shim file accounts for the +1 file). Provenance-artifacts and runtime-completeness, which failed mid-recovery against the interrupted export and the stale pins, pass against the final dist. Register: the texel rows' stale
+storage-rejection text updated, one new IMPLEMENTED row for the PE-shim
+push family, closing addendum below the compute addendum; 367 rows =
+68 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN, citation
+audit 0 DRIFT / 0 MISSING after re-pinning the citations the lane's
+line shifts moved (plus the two spirvfix citations the Layer-3 edits
+moved).

@@ -96,17 +96,17 @@ WINEHQ_PINS = {
 # rebuild that changes bytes fails here until the new bytes are
 # reviewed and pinned.
 VKD3D_PINS = {
-    'bw64vulkan.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
+    'bw64vulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
     # vulkan-1.dll and winevulkan.dll carry the SAME shim bytes
     # (surface closure, 2026-10-27): Wine's dxgi creates D3D12
     # swapchain surfaces through a factory that loads winevulkan.dll
     # by name, native Vulkan apps and DXVK's dxgi load vulkan-1.dll,
     # and all three PE Vulkan names must resolve to one handle domain
     # (the bridge) or the surface call faults inside winevulkan.
-    'vulkan-1.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
-    'winevulkan.dll': '73f880f665573fdd15438dfac5d42419ee7c4282496cbd28317dc69dbd5a691c',
-    'd3d12.dll': 'd77fdad5d3a1426287cec7e642ca8e43f1f52c2f54c7de3bb24a64174ec2284a',
-    'd3d12core.dll': 'd2bd847a7d564fb64aee51461998b0014767b73a3b4f0ec46a977702da0076b3',
+    'vulkan-1.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'winevulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'd3d12.dll': 'a96b4e9d53ed0bed7c52a9610677e4b4ec4eb13fb5ad4f44a175c7a8da7242f1',
+    'd3d12core.dll': '3d3bfe43cbec123fcdeb8f2b72ee2beaefb7a63eeaf37493bbace5c5ba54e790',
 }
 FONTS32_PINS = {
     'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
