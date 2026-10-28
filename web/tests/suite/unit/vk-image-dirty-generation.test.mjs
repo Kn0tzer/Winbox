@@ -275,6 +275,10 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // same destination images as the per-pixel loops they accelerate and are
   // covered by each handler's existing post-loop dirtyGen bump + vk64TouchMem
   // (asserted per-handler in (b) above).
+  // 52 since the D3D12 stack merge: walkProperties2's ID-properties case writes
+  // a device-properties struct (UUID + nodeMask) back to the guest. It is not
+  // image memory, so no dirtyGen bump applies; it is dispositioned here as an
+  // exception, not a bump.
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 51, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 52, 'pinned count of raw guest-write primitive lines');
 });

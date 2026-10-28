@@ -115,7 +115,7 @@ with zipfile.ZipFile(dst) as zdst, zipfile.ZipFile(src) as zsrc:
     with zipfile.ZipFile(dst + '.merged', 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as out:
         for info in zdst.infolist():
             if info.filename not in fresh:
-                out.writestr(info.filename, zdst.read(info.filename))
+                out.writestr(info, zdst.read(info.filename))  # keep ZipInfo: symlink bits (external_attr), dates, modes
         for name, data in fresh.items():
             out.writestr(name, data)
 os.replace(dst + '.merged', dst)

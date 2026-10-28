@@ -45,7 +45,7 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
   // the pipeline is RECORDED (module kept in Pipeline.gs) so vkd3d meta-variant
   // creation succeeds; draws under it are dropped loudly at submit
   // (geometry-stage-draw). WebGPU has no geometry stage.
-  assert.match(body, /vk64Unsupported\("geometry-stage", "pipeline recorded;/);
+  assert.match(body, /vk64Unsupported\("geometry-stage", "geometry-stage pipeline recorded;/);
   assert.doesNotMatch(body, /vk64Unsupported\("geometry-stage"[^\n]*reject = true/);
   assert.match(body, /return reject;/);
   assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)(?: \|\| dynamicRejected)?\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
