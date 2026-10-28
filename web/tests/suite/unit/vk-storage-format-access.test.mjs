@@ -5,11 +5,15 @@
 // bind-group-layout creation. The read-write upgrade was PROVEN USELESS
 // for r16float by micro-probe (Dawn rejects read-only AND read-write
 // there), so the page tier does not rewrite the access: it names the
-// rejection and fails the pipeline loudly. The serving path for
-// read-path storage in such formats is a sampled-texture rewrite,
-// queued separately. The live behavioral proof is the uav12 R16_FLOAT
-// probe case failing with the named reason and no "uncaptured" warning
-// for the rejection; these guards pin the parsing and the wiring.
+// rejection and fails the pipeline loudly. Read-only shapes in the two
+// proven formats (r16float, r8uint) are now served upstream of layout
+// creation by the sampled-texture rewrite (rewriteReadOnlyStorageToSampled,
+// vk-sampled-storage-serving.test.mjs); this rejection remains the
+// disposition for every shape that rewrite cannot prove, and for any
+// storage access Dawn refuses in a served format's remaining shapes.
+// The live behavioral proof is the uav12 probe: unserved storage shapes
+// fail with the named reason and no "uncaptured" warning, while
+// R16_FLOAT now executes; these guards pin the parsing and the wiring.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

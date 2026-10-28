@@ -198,8 +198,10 @@ export function scanWgslResources(wgsl) {
 // upgrade was PROVEN USELESS for r16float by micro-probe (Dawn rejects
 // read-write there too), so the page tier does not rewrite the access:
 // it names the rejection and fails the pipeline loudly instead. The
-// serving path for read-path storage in such formats is a
-// sampled-texture rewrite (queued separately, not built here). Format
+// serving path for read-path storage in such formats is the
+// sampled-texture rewrite below (rewriteReadOnlyStorageToSampled), which
+// serves the shapes it can prove before layout creation; this rejection
+// remains for every shape it cannot prove. Format
 // names are Dawn's enum names (R16Float); lowercasing maps them to WGSL
 // names (r16float) for decl lookup.
 // Resolve the SPIR-V Image Format (the spirvfix R14 signature value) for
@@ -348,6 +350,127 @@ export function parseStorageTextureAccessRejection(message) {
   const m = /Texture format TextureFormat::([\w-]+) does not support storage texture access StorageTextureAccess::(\w+)/.exec(String(message || ''));
   if (!m) return null;
   return { format: m[1], access: m[2] };
+}
+
+// ---------------------------------------------------------------------------
+// Sampled-texture serving for read-only storage reads (the serving path
+// section 4.26 named for the storage-format-access rejection above).
+// ---------------------------------------------------------------------------
+// Dawn will not serve some formats as storage textures at all: r16float
+// rejects read-only AND read-write storage access (micro-probe, section
+// 4.26) and r8uint rejects read-only (uav12). Both are ordinary SAMPLED
+// formats in WebGPU, and a read-only storage read is exactly a level-0
+// sampled load of the same texels: Vulkan storage reads address the bound
+// view's base mip, and the page tier binds sampled views with the same
+// subresource-range descriptor it uses for storage views
+// (vkwebgpu.mjs viewRangeDescriptor) over the same GPUTexture
+// (gpuTextureFor always grants TEXTURE_BINDING). A naga declaration
+//   var t: texture_storage_2d<r16float, read>;
+// whose every use is a two-argument textureLoad(t, coords) or a
+// textureDimensions(t) is therefore retyped to
+//   var t: texture_2d<f32>;
+// with each load gaining the explicit level ", 0i". The sampled load of
+// an r16float texel returns the same value the storage load returned
+// (half values are exactly representable in f32); r8uint loads return
+// the same integer texel as vec4<u32>.
+// Fail-closed per variable: any other use (a store, an atomic, the value
+// passed on to a call, a load of another arity, the storage type string
+// appearing anywhere besides declarations) leaves that variable a
+// storage texture, and the pipeline keeps the named
+// storage-format-access rejection for it. Only the two probe-proven
+// formats are served; every other storage shape keeps the storage path
+// (served by Dawn, or rejected by name there).
+export const SAMPLED_STORAGE_FORMATS = { r16float: 'f32', r8uint: 'u32' };
+
+const STORAGE_TEXTURE_DECL = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var\s+(\w+)\s*:\s*(texture_storage_(\w+)<\s*([\w-]+)\s*,\s*(\w+)\s*>)\s*;/g;
+const STORAGE_TEXTURE_TYPE = /texture_storage_\w+<\s*[\w-]+\s*,\s*\w+\s*>/g;
+
+// Classify every use of one storage variable outside its declaration.
+// Sanctioned uses: textureLoad(name, coords) with exactly two arguments
+// (the sampled form gains the level at the recorded close paren) and
+// textureDimensions(name) (identical on a sampled texture: the level-0
+// extent of the bound view). Anything else declines the variable.
+function sampledStorageUses(code, name, declSpans) {
+  const loads = [];
+  const nameRe = new RegExp('\\b' + name + '\\b', 'g');
+  let m;
+  while ((m = nameRe.exec(code))) {
+    if (declSpans.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    const before = code.slice(Math.max(0, m.index - 48), m.index);
+    const call = /(textureLoad|textureDimensions)\s*\(\s*$/.exec(before);
+    if (!call) return { ok: false, reason: 'unrecognized-use' };
+    if (call[1] === 'textureDimensions') {
+      let j = m.index + name.length;
+      while (j < code.length && /\s/.test(code[j])) j++;
+      if (code[j] !== ')') return { ok: false, reason: 'dimensions-arity' };
+      continue;
+    }
+    const openIdx = m.index - before.length + call.index + call[0].indexOf('(');
+    const args = [];
+    let depth = 1, start = openIdx + 1, i = start, closeIdx = -1;
+    for (; i < code.length && depth; i++) {
+      const c = code[i];
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (!depth) { args.push(code.slice(start, i)); closeIdx = i; } }
+      else if (c === ',' && depth === 1) { args.push(code.slice(start, i)); start = i + 1; }
+      else if (c === ';' || c === '{' || c === '}') return { ok: false, reason: 'unbalanced-call' };
+    }
+    if (depth || closeIdx < 0) return { ok: false, reason: 'unbalanced-call' };
+    if (args.length !== 2 || args[0].trim() !== name) return { ok: false, reason: 'load-arity' };
+    loads.push(closeIdx);
+  }
+  return { ok: true, loads };
+}
+
+/**
+ * Retype provably read-only storage textures in Dawn-unservable formats
+ * to sampled textures, as described above. Returns the (possibly
+ * unchanged) code plus per-variable dispositions: `served` entries carry
+ * { name, format, elem, group, binding }; `declined` entries carry the
+ * reason the variable kept the storage path. When nothing is served the
+ * input string is returned identical.
+ */
+export function rewriteReadOnlyStorageToSampled(wgsl) {
+  const code = String(wgsl);
+  const decls = [...code.matchAll(STORAGE_TEXTURE_DECL)];
+  if (!decls.length) return { code, served: [], declined: [] };
+  // A storage type string may appear ONLY in declarations: the same type
+  // in a function parameter or a local cannot be retyped by editing the
+  // declaration, so every variable declared with such a type declines.
+  const typeCount = new Map();
+  for (const m of code.matchAll(STORAGE_TEXTURE_TYPE)) {
+    const key = m[0].replace(/\s+/g, '');
+    typeCount.set(key, (typeCount.get(key) || 0) + 1);
+  }
+  const declCount = new Map();
+  for (const d of decls) {
+    const key = d[4].replace(/\s+/g, '');
+    declCount.set(key, (declCount.get(key) || 0) + 1);
+  }
+  const declSpans = decls.map(d => [d.index, d.index + d[0].length]);
+  const served = [], declined = [], edits = [];
+  for (const d of decls) {
+    const [, group, binding, name, type, dim, format, access] = d;
+    const elem = SAMPLED_STORAGE_FORMATS[format];
+    const entry = { name, format, group: +group, binding: +binding };
+    if (!elem) { declined.push({ ...entry, access, reason: 'format-not-served' }); continue; }
+    if (access !== 'read') { declined.push({ ...entry, access, reason: 'access-not-readonly' }); continue; }
+    if (dim !== '2d') { declined.push({ ...entry, access, reason: 'dimension-not-2d' }); continue; }
+    if (typeCount.get(type.replace(/\s+/g, '')) !== declCount.get(type.replace(/\s+/g, ''))) {
+      declined.push({ ...entry, access, reason: 'type-appears-elsewhere' }); continue;
+    }
+    const uses = sampledStorageUses(code, name, declSpans);
+    if (!uses.ok) { declined.push({ ...entry, access, reason: uses.reason }); continue; }
+    served.push({ ...entry, elem });
+    const typeAt = d.index + d[0].indexOf(type);
+    edits.push({ at: typeAt, len: type.length, text: 'texture_2d<' + elem + '>' });
+    for (const closeIdx of uses.loads) edits.push({ at: closeIdx, len: 0, text: ', 0i' });
+  }
+  if (!served.length) return { code, served, declined };
+  edits.sort((a, b) => b.at - a.at);
+  let out = code;
+  for (const e of edits) out = out.slice(0, e.at) + e.text + out.slice(e.at + e.len);
+  return { code: out, served, declined };
 }
 
 // WGSL uniform-address-space size computation, for padding short buffers.

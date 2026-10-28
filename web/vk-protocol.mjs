@@ -406,6 +406,22 @@ export const V2_STORAGE_FORMAT = {
   108: { spv: 21, kind: 'i', wgsl: 'rgba32sint' },   // R32G32B32A32_SINT -> Rgba32i
   109: { spv: 1, kind: 'f', wgsl: 'rgba32float' },   // R32G32B32A32_SFLOAT -> Rgba32f
 };
+// VkFormats Dawn will not create a texture for with STORAGE_BINDING usage
+// at all: the format has no storage capability in Dawn's table, so the
+// usage request makes the texture itself invalid and poisons every bind
+// of the image, sampled binds included. A format enters this set only on
+// Dawn's own validation message as evidence (uav12 guest run, campaign
+// section 4.34): 76 (R16_SFLOAT) -- "The texture usage includes
+// TextureUsage::StorageBinding, which is incompatible with the format
+// (TextureFormat::R16Float)" -- and 13 (R8_UINT), proven the same way
+// once its pipeline wall was cleared by the rebuilt vkd3d pair (the
+// identical message naming TextureFormat::R8Uint; without the exclusion
+// the case read back all zeros through the invalid texture). These are
+// formats whose read-only storage
+// reads the page tier serves as sampled textures instead
+// (wgsl-utils.mjs SAMPLED_STORAGE_FORMATS); a storage bind of them was
+// already unreachable (the layout entry itself is rejected by name).
+export const V2_STORAGE_USAGE_FORBIDDEN = new Set([76, 13]);
 // UNIFORM texel buffer views the page tier can materialise as a 2D texture
 // (spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div V2_TEXEL_WRAP)).
 // Mirrors v2TexelBufferServable() in vk64bridge.cpp exactly — pinned by

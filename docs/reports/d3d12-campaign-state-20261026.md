@@ -3696,3 +3696,181 @@ dist prefix64.zip (the subtest pins the exported prefix to the pinned
 archive plus deskpin staging only); the final dist was rebuilt from
 the committed tree without probe staging and the suite is 317/0 on
 it, as recorded above.
+## 4.38 Sampled-texture serving: read-only storage reads in r16float and r8uint (2026-10-28)
+
+§4.26 closed the R16_FLOAT wall fail-closed and named the serving path:
+read-path storage in formats Dawn rejects must be rewritten to sampled
+reads. This lane (lane-sampledtex, off integ 1975bb5fa) builds that
+path, for exactly the two probe-proven formats: r16float (Dawn rejects
+read-only AND read-write storage, §4.26 micro-probe) and r8uint
+(read-only rejection reproduced at the §4.29 end state).
+
+### The shape, pinned layer by layer
+
+- Guest side: a read-only UAV read (NonWritable) becomes, through
+  vkd3d-proton + spirvfix (R14 injects the bound view's format into
+  the storage image type; R15a specializes heap-array clones), a naga
+  WGSL declaration `var NAME: texture_storage_2d<r16float,read>;`
+  whose only uses are two-argument `textureLoad(NAME, coords)` and
+  `textureDimensions(NAME)` — verified offline against the real
+  captured module `testdata/spirv/d3d12-ps-uav-heap-array.spv` under
+  the r16float signature (the clone `bw_arr_g5_b0_p0_a0_` at set 5
+  binding 0). The r8uint shape is identical modulo `vec4<u32>`
+  results; that fixture cannot prove it offline (its image sampled
+  type is float, so R14 correctly refuses the kind-mismatched uint
+  injection) — the guest runs below are the r8uint evidence.
+- Page tier, before this lane: `layoutEntryFor` turned that
+  declaration into a `storageTexture` bind-group-layout entry and
+  Dawn rejected it at `createBindGroupLayout` — §4.26's named
+  `storage-format-access` rejection.
+- Why a sampled binding is the same read: the image already exists in
+  the page tier as a GPUTexture that `gpuTextureFor` always creates
+  with TEXTURE_BINDING usage. The sampled bind path resolves the same
+  view of the same image with the same subresource range
+  (`viewRangeDescriptor` is shared by both paths), and a storage read
+  addresses the view's base mip — exactly what a sampled
+  `textureLoad(..., 0)` reads. Component types agree: r16float
+  sampled loads return vec4<f32> (half values are exactly
+  representable in f32); r8uint loads return vec4<u32>. Layouts,
+  fingerprints and bind groups all derive from the scanned
+  declarations, so a rewritten declaration flows through the existing
+  sampled machinery unchanged.
+
+### The implementation
+
+`rewriteReadOnlyStorageToSampled` (web/wgsl-utils.mjs), a pure
+WGSL→WGSL rewrite in the style of the multisample/border rewrites,
+applied by a `serveSampledStorage` helper in BOTH pipeline builders
+(graphics + compute) immediately after the push-constant rewrite and
+before declarations are scanned. For each storage declaration whose
+format is in the served set (exactly `{r16float: f32, r8uint: u32}`),
+access is exactly `read`, and dimension is exactly
+`texture_storage_2d`, it proves every use of the variable:
+two-argument `textureLoad` (the load gains the explicit level `, 0i`)
+or `textureDimensions(var)`. The declaration is then retyped to
+`texture_2d<f32>` / `texture_2d<u32>`. Servings are counted
+(`stats.sampledStorageServed`) and logged per pipeline build. No
+bridge change (TEXTURE_BINDING was already always granted — the
+"bridge TEXTURE_BINDING usage" §4.26 anticipated was already true),
+and no spirvfix change: the rewrite consumes post-spirvfix WGSL, so
+it composes with lane-spirvwrite's R15a writability work without
+touching it.
+
+Fail-closed per variable, with named decline reasons in the guard:
+any other use (a store, an atomic, the value passed to a call, a
+load of another arity, dimensions with an argument), a
+`read_write`/`write` access, a non-2d dimension, a format outside
+the served set, or the storage type string appearing anywhere
+besides declarations (e.g. a function parameter) leaves that
+variable a storage texture, byte-identical — and the pipeline keeps
+§4.26's named `storage-format-access:FORMAT:ACCESS` rejection for
+it. A module with nothing served is returned byte-identical.
+
+### The second layer: texture usage (found by the first guest run)
+
+The first serving run built the pipeline and executed the draw —
+and R16_FLOAT read back 64/64 zeros. Dawn's log named the stacked
+wall underneath: `gpuTextureFor` adds STORAGE_BINDING usage for
+every `V2_STORAGE_FORMAT` image, and Dawn will not create a texture
+with that usage for these formats at all ("The texture usage
+includes TextureUsage::StorageBinding, which is incompatible with
+the format (TextureFormat::R16Float)"), so the texture, its view
+and the bind group were all invalid and the frame encoding was
+rejected. §4.26's run never reached texture creation (the layout
+died first) — a textbook blocker stack. Fix: `gpuTextureFor`
+withholds STORAGE_BINDING for `V2_STORAGE_USAGE_FORBIDDEN`
+(web/vk-protocol.mjs), a set that admits a format only on Dawn's
+own message as evidence: 76 (R16_SFLOAT) from the first run, and 13
+(R8_UINT) from the rebuilt-pair run below, which produced the
+identical message naming R8Uint (its sampled serving fired and the
+case still read zeros through the invalid texture). A storage bind
+of these formats was already unreachable (the layout entry is
+rejected by name), so withholding the usage removes no working
+path; every other format keeps the usage it has today.
+
+### Guards
+
+New `vk-sampled-storage-serving.test.mjs` (10 tests): the served
+set pinned to exactly the two formats; both formats' rewrites;
+multiple loads incl. a dimensions call nested in load coordinates;
+nine decline shapes with reasons, each byte-identical; a mixed
+module (served variable rewritten, unprovable variable untouched);
+identity for storage-free modules; the real captured uav12 module
+served end to end (spirvfix → naga → rewrite → naga WGSL
+validation) while the Dawn-served rgba8unorm signature of the same
+module stays on the storage path; source pins for the wiring in
+both builders; and the usage-exclusion pin (the forbidden set is
+exactly {76, 13} and every member is a sampled-served format).
+Sabotage-verified four ways: dropping r8uint from the served set
+turns 3 tests red; sanctioning textureStore uses turns the decline
+test red; removing the compute builder's serving call turns the
+wiring test red; removing the usage condition turns the exclusion
+test red (all restored and re-verified green).
+`vk-storage-format-access.test.mjs` keeps every assertion — the
+rejection path is untouched — with its header updated to the new
+disposition.
+
+### Suites
+
+- JS suite: 315 passed, 0 failed (files; BW_TEST_DIST=<tree>/dist, --unit; baseline 314 at 1975bb5fa, +1 new guard file). Native: 647 OK,
+  0 FAILED, exit 0 (`Build/Test/boxedwine 0 0 1`, 229s; the diff
+  touches no C++, so this is a baseline confirmation).
+- Register citations: 0 DRIFT / 0 MISSING (223 MATCH / 13
+  MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over 340 cited rows).
+  The insertions drifted 25 citations (24 in vkwebgpu.mjs, 1 in
+  vk-protocol.mjs); 20 were re-pinned by the audit's --fix, 5
+  adjudicated by hand to their true sites, and 7 dependents were
+  followed to their primaries' new sites (the §4.26 repair).
+  Recorded honestly, as in §4.26: the distribution moved +2 MATCH /
+  −2 UNCHECKABLE against the 1975bb5fa baseline (220/13/99/7)
+  because two 'catch'-literal rows became mechanically checkable
+  when the code shifted; no test was touched to produce this.
+- Register: 367 rows (68 IMPLEMENTED / 66 REJECTED-LOUDLY / 233
+  NOT-A-GAP / 0 OPEN) — one new IMPLEMENTED row for the sampled
+  serving; the §4.26 storage-format-access row is narrowed to the
+  shapes that remain rejected.
+
+### Guest proof (uav12, slot-serialized, rebuilt dist each time)
+
+- Run A (staged pair, d3d12core sha d2bd847a…, pre-utof): serving
+  fires for r16float; R16_FLOAT reads 64/64 zeros — the texture
+  usage wall above (evidence: test-results/dxvk-20261028-stx-stagedA).
+- Run A2 (staged pair, usage fix): EXEC R16_FLOAT OK (all 16
+  texels); R8G8B8A8_UNORM / R32G32B32A32_FLOAT /
+  R16G16B16A16_FLOAT OK as before; R32_UINT and R8_UINT still fail
+  CreateGraphicsPipelineState 0x80070057 — the staged pair's known
+  pre-utof wall, not this lane's (evidence:
+  test-results/dxvk-20261028-stx-stagedA2).
+- Run B (rebuilt pair from wt-uintpso, d3d12core md5 e1319ca9):
+  R32_UINT EXEC OK; R8_UINT's serving fires but reads 64/64 zeros
+  with Dawn's message naming R8Uint storage usage — the evidence
+  that admitted 13 to the exclusion set (evidence:
+  test-results/dxvk-20261028-stx-uintpsoB).
+- Run C (rebuilt pair, both fixes): all six EXEC cases OK,
+  `SUMMARY exec=ALL6`, `uav12: RESULT 0`; 4 serving lines (both
+  formats). Evidence: test-results/dxvk-20261028-stx-uintpsoC.
+
+### Process notes (kept because they cost real cycles)
+
+- A fresh worktree's dist export fails in stages on staging this
+  lane had to copy from the integ tree (DXVK build.w32/build.w64,
+  rootfs64 gecko/cjk-font/openal caches, gstreamer32/64 payloads);
+  `bw64-build.sh` prints BUILD COMPLETE even when the export
+  crashes — "Browser export verified" from verify-dist.mjs is the
+  only trustworthy signal, and two completion notices delivered to
+  this lane belonged to other lanes' runs. Every claim above rests
+  on artifacts read back from this tree's own test-results dirs.
+- The staged-pair R8_UINT/R32_UINT PSO wall is closed on
+  lane-restage's branch (rebuilt pair restaged); on the merged tree
+  the Run C end state is the expected one once that merge lands.
+
+### Next wall after this one
+
+- None inside this lane's scope: with a current vkd3d pair, every
+  uav12 EXEC case passes. The unserved remainder of the
+  storage-format-access row is the fail-closed residue by design
+  (writes/atomics/non-2d/other formats in Dawn-unservable storage
+  shapes keep the named rejection). Adjacent standing items are
+  unchanged: cs12 BUF/BUF2 await lane-metabind; the
+  rendered-then-B2I'd stale page data (§4.24) and the operand-aware
+  array scan remain queued.

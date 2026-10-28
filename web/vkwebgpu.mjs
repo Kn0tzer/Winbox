@@ -4,7 +4,7 @@ import {
   V2_PUSH_BINDING, V2_PUSH_GROUP, V2_PUSH_SIZE, V2_QUEUE_CAP,
   V2_SCALED_VERTEX, V2_TOPOLOGY, v2HasColourPass, v2PresentIndex, v2PresentIndexForImage, V2_UNKNOWN_IMAGE, V2_VERT_FORMAT_SIZE, v2Hex64,
   applyDynamicState, decodeV2Frame, parseV2Chunk, repackScaledVb,
-  V2_STORAGE_FORMAT,
+  V2_STORAGE_FORMAT, V2_STORAGE_USAGE_FORBIDDEN,
   swizzleBgraVb, v2DepthStencilUploads, v2ImageBlitRegion, v2TextureFormat, v2TextureMipUploadPlan, v2TexturePixels, v2TexelTextureFormat, V2_TEXEL_WRAP, v2TextureUploadBpp, v2VertexFormat,
   v2IndexedTriangleFanIndices, v2TriangleFanIndices,
 } from './vk-protocol.mjs';
@@ -17,6 +17,7 @@ import {
   parseStorageTextureAccessRejection,
   resolveStorageVarFormat,
   planGroupRemap, rewriteGuestGroupDeclWGSL,
+  rewriteReadOnlyStorageToSampled,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
@@ -1549,7 +1550,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const slices = dimension === '3d' ? d : layers;
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
     if (V2_COLOR_ATTACHMENT_FORMATS.includes(img.format)) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
-    if (V2_STORAGE_FORMAT[img.format]) usage |= GPUTextureUsage.STORAGE_BINDING; // typed UAV reads bind this texture as a storage texture
+    if (V2_STORAGE_FORMAT[img.format] && !V2_STORAGE_USAGE_FORBIDDEN.has(img.format)) usage |= GPUTextureUsage.STORAGE_BINDING; // typed UAV reads bind this texture as a storage texture (unless Dawn forbids the usage for the format outright: V2_STORAGE_USAGE_FORBIDDEN)
     const t = device.createTexture({
       size: [w, h, slices], format: fmt, dimension: textureDimension, mipLevelCount: mips, usage,
     });
@@ -1833,6 +1834,23 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return { groupMap, maxGroup, byGroup };
   }
 
+  // Sampled-texture serving (wgsl-utils.mjs rewriteReadOnlyStorageToSampled,
+  // the path section 4.26 named): read-only storage reads in formats Dawn
+  // will not serve as storage textures (r16float, r8uint) are retyped to
+  // sampled textures BEFORE declarations are scanned, so layouts,
+  // fingerprints and bind groups all see the sampled binding over the same
+  // GPUTexture and view range the storage binding would have used. Shapes
+  // the rewrite cannot prove equivalent keep the storage declaration and
+  // reach the named storage-format-access rejection at layout creation.
+  const serveSampledStorage = (holder) => {
+    const r = rewriteReadOnlyStorageToSampled(holder.code);
+    if (!r.served.length) return holder;
+    stats.sampledStorageServed = (stats.sampledStorageServed || 0) + r.served.length;
+    for (const s of r.served)
+      bwLog(1, 'vulkan', 'v2 serving read-only storage ' + s.format + ' as sampled texture_2d<' + s.elem + '> @group(' + s.group + ') @binding(' + s.binding + ')');
+    return { ...holder, code: r.code };
+  };
+
   async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6, sets = null, pushBlock = null) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
@@ -1888,6 +1906,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const pushBlocks = vsR.pushBlocks + fsR.pushBlocks;
     if (vsR.pushBlocks > 1 || fsR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return fail('multi-push-block'); }
     const hasPush = pushBlocks > 0;
+    vsR = serveSampledStorage(vsR);
+    fsR = serveSampledStorage(fsR);
 
     const declarations = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
     const uniqueDeclarations = new Map();
@@ -2043,8 +2063,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (accessRejection) {
       // Name the true cause instead of the generic pipeline rejection:
       // this format cannot serve storage access at all for reads (r16float
-      // rejects read-only AND read-write, probe-proven). The serving path
-      // is a sampled-texture rewrite, queued separately.
+      // rejects read-only AND read-write, probe-proven). Read-only shapes
+      // the sampled-texture rewrite can prove are served before layout
+      // creation (serveSampledStorage above); reaching here means the
+      // shape was not provable and stays rejected, by name.
       noteUnsupported('storage-format-access', accessRejection.format + ':' + accessRejection.access);
       const decl = decls.find(d => d.type.startsWith('texture_storage') && d.type.toLowerCase().includes('<' + accessRejection.format.toLowerCase()));
       const where = decl ? ' [@group(' + (decl.sourceGroup ?? decl.group) + ') @binding(' + (decl.origBinding ?? decl.binding) + ')]' : '';
@@ -2086,9 +2108,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     if (!csm) { noteUnsupported('missing-shader', 'compute shader module was not captured'); return fail('missing-shader'); }
     const csWgsl = await shaders.get('compute', { hash: cpipe.csHash, size: csm.code.length, code: csm.code }, { specOverrides: cpipe.csSpec, ...(storageSig ? { storageFormats: storageSig } : {}) });
     if (!csWgsl) { noteUnsupported('shader-translation', 'Naga returned no WGSL for a compute stage'); return fail('shader-translation'); }
-    const csR = rewritePushConstantsWGSL(csWgsl);
+    let csR = rewritePushConstantsWGSL(csWgsl);
     if (csR.pushBlocks > 1) { noteUnsupported('multi-push-block'); return fail('multi-push-block'); }
     const hasPush = csR.pushBlocks > 0;
+    csR = serveSampledStorage(csR);
     const decls = scanWgslResources(csR.code);
     const uniformSizes = wgslUniformSizes(csR.code);
     for (const d of decls) if (d.addr === "uniform" || d.addr.startsWith("storage")) {
