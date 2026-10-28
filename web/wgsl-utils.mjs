@@ -202,6 +202,58 @@ export function scanWgslResources(wgsl) {
 // sampled-texture rewrite (queued separately, not built here). Format
 // names are Dawn's enum names (R16Float); lowercasing maps them to WGSL
 // names (r16float) for decl lookup.
+// Resolve the SPIR-V Image Format (the spirvfix R14 signature value) for
+// one format-Unknown storage-image variable from the descriptor entries
+// bound at its binding, or null when the format is not PROVEN. The format
+// is a property of the bound view, and for a descriptor-array variable it
+// is the format of the element the shader will actually touch -- not
+// necessarily element 0: a guest heap table can place the accessed UAV
+// at a nonzero element with a null or unrelated view at element 0, where
+// an element-0 resolution injects nothing (or worse, the wrong format).
+// Proof rules, all fail-closed (null = no claim, the type stays Unknown
+// and translation rejects it loudly):
+//   - direct (non-array) variable: the entry covering element 0, else
+//     the first entry for the binding (the tier's long-standing rule).
+//   - array variable with a proven index signature (spirvfix
+//     analyzeDescriptorArrays, reported by storageImageVars): a constant
+//     index, or a push-constant index evaluated against the draw's push
+//     block, selects the element; only an entry COVERING that element
+//     proves its format -- never a neighbouring element.
+//   - array variable whose element cannot be evaluated (the caller has
+//     no push block): the bound image entries prove the format only when
+//     every one carries a view and they all agree on ONE servable
+//     format; then whichever element the shader selects, it holds.
+// `bindings` are the decoded DESC_SET entries for the variable's set;
+// `viewFormatOf(obj)` maps a bound view id to its SPIR-V Image Format
+// number (already view-format-resolved) or null when unmappable.
+export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf) {
+  const list = (bindings || []).filter((b) => b.binding === v.binding);
+  const fmtOf = (b) => {
+    if (!b || b.kind !== 2 || !b.obj || b.obj === '0000000000000000') return null;
+    const f = viewFormatOf(b.obj);
+    return f == null ? null : f;
+  };
+  const covering = (el) => list.find((b) => el >= b.dstArrayElement && el < b.dstArrayElement + b.count) || null;
+  if (!v.array) return fmtOf(covering(0) || list[0] || null);
+  if (!v.index) return null;
+  let el = null;
+  if (v.index.kind === 'const') el = v.index.value;
+  else if (v.index.kind === 'push' && pushBlock && v.index.byteOff + 4 <= pushBlock.length) {
+    const o = v.index.byteOff;
+    el = ((pushBlock[o] | (pushBlock[o + 1] << 8) | (pushBlock[o + 2] << 16) | (pushBlock[o + 3] << 24)) >>> 0) + v.index.add;
+  }
+  if (el != null) return fmtOf(covering(el));
+  let agreed = null;
+  for (const b of list) {
+    if (b.kind !== 2 || !b.obj || b.obj === '0000000000000000') continue;
+    const f = fmtOf(b);
+    if (f == null) return null;
+    if (agreed == null) agreed = f;
+    else if (agreed !== f) return null;
+  }
+  return agreed;
+}
+
 export function parseStorageTextureAccessRejection(message) {
   const m = /Texture format TextureFormat::([\w-]+) does not support storage texture access StorageTextureAccess::(\w+)/.exec(String(message || ''));
   if (!m) return null;

@@ -2283,6 +2283,7 @@ export function storageImageVars(bytes) {
   const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
   const decorations = storageDecorations(mod);
   const out = [];
+  const arrayVars = new Map(); // varId -> entry, runtime-array vars only
   for (const ins of mod.insns) {
     if (ins.op !== Op.Variable) continue;
     const ptr = byId.get(ins.words[0]);
@@ -2291,11 +2292,27 @@ export function storageImageVars(bytes) {
     // A runtime-array-wrapped storage image (a descriptor heap before the
     // R15a specialization runs -- the tier builds this signature from the
     // ORIGINAL module bytes) counts at its own set/binding.
-    if (pointee && pointee.op === Op.TypeRuntimeArray) pointee = byId.get(pointee.words[1]);
+    const runtimeArray = !!pointee && pointee.op === Op.TypeRuntimeArray;
+    if (runtimeArray) pointee = byId.get(pointee.words[1]);
     const img = pointee;
     if (!img || img.op !== Op.TypeImage || img.words[6] !== 2) continue;
     const d = decorations.get(ins.resultId) || {};
-    out.push({ set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId });
+    const entry = { set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId };
+    // A runtime-array entry additionally carries the array's proven index
+    // signature (filled in below): its format is the format of the element
+    // the shader actually touches, which is not necessarily element 0.
+    if (runtimeArray) { entry.array = true; entry.index = null; arrayVars.set(ins.resultId, entry); }
+    out.push(entry);
+  }
+  if (arrayVars.size) {
+    // The same analysis the R15a specialization serves on: an array earns
+    // an index only when it is servable with exactly one index signature.
+    // Anything else keeps index === null and resolves nothing downstream.
+    const { arrays } = analyzeDescriptorArrays(mod);
+    for (const rec of arrays) {
+      const entry = arrayVars.get(rec.varId);
+      if (entry && rec.servable && rec.signatures.length) entry.index = rec.signatures[0].sig;
+    }
   }
   return out;
 }
