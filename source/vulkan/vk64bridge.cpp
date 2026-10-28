@@ -3974,7 +3974,7 @@ U32 v2VertexFormatBytes(U32 fmt) {
 // graph). One v2 frame per submit-with-draw, queued for the present hop.
 struct ReadbackPending {
     U64 srcImage = 0, dstBuffer = 0, dstBufOff = 0;
-    U32 w = 0, h = 0, heapPtr = 0, flagPtr = 0;
+    U32 w = 0, h = 0, heapPtr = 0, flagPtr = 0, pitch = 0;
 };
 static std::vector<ReadbackPending> g_readbackPending;
 
@@ -4044,9 +4044,41 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             U8* heap = (U8*)malloc(pxBytes + 4);
             VK64_DROP_IF(continue, !heap);
             memset(heap, 0, pxBytes + 4);
+            // Fallback for copy-only textures: if the source image's data
+            // lives in guest memory (a staging B2I landed here and no render
+            // pass ever gave the page a texture for it), seed the heap from
+            // guest memory now. The page tier overwrites the heap when it has
+            // the image (rendered data wins); when it has no target it leaves
+            // the heap alone and notifies, so this seed is what the guest
+            // reads. Eager B2I copies run before setupReadbacks in submit
+            // order, so the seed sees the copied bytes. Best-effort: any
+            // lookup or bounds failure leaves the zeroed heap and the page
+            // path proceeds exactly as before.
+            if (Image* pim = objOf<Image>(rb.srcImage, K_IMAGE, "readback-prefill")) {
+                if (DeviceMemory* pmm = objOf<DeviceMemory>(pim->mem, K_MEMORY, "readback-prefill")) {
+                    if (pmm->va && pim->w && rb.ox >= 0 && rb.oy >= 0
+                        && (U32)rb.ox + rb.w <= pim->w && (U32)rb.oy + rb.h <= pim->h) {
+                        U64 imgRow = (U64)pim->w * 4;
+                        U64 srcBase = pmm->va + pim->memOff + imageSubresourceOffset(*pim, 0, 0)
+                            + (U64)(U32)rb.oy * imgRow + (U64)(U32)rb.ox * 4;
+                        for (U32 py = 0; py < rb.h; py++) {
+                            U64 sOff = srcBase + (U64)py * imgRow;
+                            if (sOff + (U64)rb.w * 4 > pmm->va + pmm->size) break;
+                            readGuestBytes(heap + (size_t)py * rb.w * 4, sOff, (size_t)rb.w * 4);
+                        }
+                    }
+                }
+            }
             ReadbackPending pend;
             pend.srcImage = rb.srcImage; pend.dstBuffer = rb.dstBuffer;
             pend.dstBufOff = rb.bufOff; pend.w = rb.w; pend.h = rb.h;
+            // The copy region's bufferRowLength (texels) is the guest row
+            // pitch: D3D12 readback buffers space rows RowPitch apart (256
+            // for small RGBA8 images), while the page tier packs rows
+            // tightly into the heap. 0 means tightly packed (pitch = w*4).
+            // The old code dropped rowLen here, so the guest received tight
+            // rows and every strided readback check failed past row 0.
+            pend.pitch = rb.rowLen ? rb.rowLen * 4 : rb.w * 4;
             pend.heapPtr = (U32)(uintptr_t)heap;
             pend.flagPtr = (U32)(uintptr_t)(heap + pxBytes);
             g_readbackPending.push_back(pend);
@@ -4065,15 +4097,28 @@ static void completeReadbacks() {
         VK64_DROP_IF(continue, !buf || !buf->mem);
         DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "readback");
         VK64_DROP_IF(continue, !mem || !mem->va);
-        size_t pxBytes = (size_t)pend.w * pend.h * 4;
-        U64 dstVa = mem->va + buf->memOff + pend.dstBufOff;
-        if (buf->memOff + pend.dstBufOff + pxBytes > mem->size) {
-            VK64_DROP_IF(continue, buf->memOff + pend.dstBufOff >= mem->size);
-            pxBytes = (size_t)(mem->size - buf->memOff - pend.dstBufOff);
+        // Expand the page tier's tight rows to the guest row pitch: row y
+        // of the image lives at dstBufOff + y*pitch in the guest buffer,
+        // not at dstBufOff + y*w*4. A pitch narrower than the tight row is
+        // impossible (Vulkan clamps it); treat it as tight. Per-row bounds
+        // replace the old single-range clamp so a short buffer truncates
+        // cleanly instead of overrunning.
+        size_t tightRow = (size_t)pend.w * 4;
+        size_t pitch = pend.pitch ? pend.pitch : tightRow;
+        if (pitch < tightRow) pitch = tightRow;
+        U64 dstBase = mem->va + buf->memOff + pend.dstBufOff;
+        U64 memEnd = mem->va + mem->size;
+        VK64_DROP_IF(continue, dstBase >= memEnd);
+        for (U32 y = 0; y < pend.h; y++) {
+            U64 dstVa = dstBase + (U64)y * pitch;
+            if (dstVa >= memEnd) break;
+            size_t n = tightRow;
+            if (dstVa + n > memEnd) n = (size_t)(memEnd - dstVa);
+            if (!n) break;
+            writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr + (size_t)y * tightRow, n);
         }
-        writeGuestBytes(dstVa, (U8*)(uintptr_t)pend.heapPtr, pxBytes);
         buf->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(mem, buf->memOff + pend.dstBufOff, (U64)pxBytes);
+        vk64TouchMem(mem, buf->memOff + pend.dstBufOff, (U64)((pend.h - 1) * pitch + tightRow));
     }
     for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
     g_readbackPending.clear();
@@ -7784,15 +7829,25 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U32 w; U32 h; U32 d;
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyImageToBuffer2");
-        U32 nreg = (U32)args.a[4];
-        // Defensive: garbage regionCount would cause std::length_error in readArray.
+        // The PE shim passes trap args verbatim: (cmdBuf, pCopyImageToBufferInfo2*).
+        // Parse the info struct (x86-64): sType(0,4), pNext(8,8), srcImage(16,8),
+        // srcImageLayout(24,4), dstBuffer(32,8), regionCount(40,4), pRegions(48,8).
+        // The old code read src/dst/count/regions from args.a[] as if the shim
+        // unpacked the struct; it never did, so every vkd3d image-to-buffer copy
+        // was recorded with regionCount 0 and readbacks returned zeros.
+        U64 pInfo2 = args.a[1];
+        VK64_DROP_IF(return 0, !pInfo2);
+        U64 hSrcImage2 = rd64(pInfo2 + 16);
+        U64 hDstBuffer2 = rd64(pInfo2 + 32);
+        U32 nreg = rd32(pInfo2 + 40);
+        U64 pRegs2 = rd64(pInfo2 + 48);
         VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
-        readArray(args.a[5], nreg, regs);
+        readArray(pRegs2, nreg, regs);
         VK64_DROP_IF(return 0, !cb);
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c; c.kind = CMD_COPY_I2B;
-            c.copyI2B.srcImage = args.a[1]; c.copyI2B.dstBuffer = args.a[3];
+            c.copyI2B.srcImage = hSrcImage2; c.copyI2B.dstBuffer = hDstBuffer2;
             c.copyI2B.bufOff = regs[i].bufferOffset;
             c.copyI2B.rowLen = regs[i].bufferRowLength;
             c.copyI2B.imgH = regs[i].bufferImageHeight;
@@ -7839,21 +7894,30 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdCopyBuffer2:
     case VK64_fn_vkCmdCopyBuffer2KHR: {
-        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) — shim
-        // unpacks VkCopyBufferInfo2; regions are VkBufferCopy2 (sType+pNext header).
+        // Regions are VkBufferCopy2 (sType+pNext header).
+        // The PE shim passes trap args verbatim: (cmdBuf, pCopyBufferInfo2*).
+        // Parse the info struct (x86-64): sType(0,4), pNext(8,8), srcBuffer(16,8),
+        // dstBuffer(24,8), regionCount(32,4), pRegions(40,8). Regions are
+        // VkBufferCopy2 (sType+pNext header). The old code read src/dst/count/
+        // regions from args.a[] as if the shim unpacked the struct; it never
+        // did, so vkd3d buffer copies were dropped here (the struct pointer was
+        // looked up as a buffer handle) and buffer-copy readbacks read zeros.
+        U64 pInfo2 = args.a[1];
+        VK64_DROP_IF(return 0, !pInfo2);
+        U64 hSrc2 = rd64(pInfo2 + 16);
+        U64 hDst2 = rd64(pInfo2 + 24);
+        U32 nreg = rd32(pInfo2 + 32);
+        U64 pRegs2 = rd64(pInfo2 + 40);
         struct VkBufferCopy2L {
             U32 sType; U32 _p0; U64 pNext;
             U64 srcOffset; U64 dstOffset; U64 size;
         };
-        U32 nreg = (U32)args.a[3];
-        // Defensive: a garbage regionCount (e.g. 1447756043 observed from
-        // mismatched shim args) would cause std::length_error in readArray.
         // No legitimate call needs more than 1024 regions.
         VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferCopy2L> regs;
-        readArray(args.a[4], nreg, regs);
-        Buffer* src = objOf<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer2");
-        Buffer* dst = objOf<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer2");
+        readArray(pRegs2, nreg, regs);
+        Buffer* src = objOf<Buffer>(hSrc2, K_BUFFER, "vkCmdCopyBuffer2");
+        Buffer* dst = objOf<Buffer>(hDst2, K_BUFFER, "vkCmdCopyBuffer2");
         VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyBuffer2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyBuffer2");
@@ -8025,7 +8089,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdCopyImage2:
     case VK64_fn_vkCmdCopyImage2KHR: {
-        // (cmdBuf, srcImage, dstImage, regionCount, pRegions*) — shim unpacks VkCopyImageInfo2
+        // The PE shim passes trap args verbatim: (cmdBuf, pCopyImageInfo2*).
+        // Parse the info struct (x86-64): sType(0,4), pNext(8,8), srcImage(16,8),
+        // srcImageLayout(24,4), dstImage(32,8), dstImageLayout(40,4),
+        // regionCount(44,4), pRegions(48,8). The old code read src/dst/count/
+        // regions from args.a[] as if the shim unpacked the struct; it never
+        // did, so vkd3d image copies were dropped here and read zeros.
+        U64 pInfo2 = args.a[1];
+        VK64_DROP_IF(return 0, !pInfo2);
+        U64 hSrcImage2 = rd64(pInfo2 + 16);
+        U64 hDstImage2 = rd64(pInfo2 + 32);
+        U32 nreg = rd32(pInfo2 + 44);
+        U64 pRegs2 = rd64(pInfo2 + 48);
         // VkImageCopy2 has sType+pNext header (72 bytes total vs 68 for VkImageCopy).
         struct VkImageCopy2L {
             U32 sType; U32 _p0; U64 pNext;
@@ -8035,17 +8110,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t dstX; int32_t dstY; int32_t dstZ;
             U32 w; U32 h; U32 d;
         };
-        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdCopyImage2");
-        Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdCopyImage2");
+        Image* src = objOf<Image>(hSrcImage2, K_IMAGE, "vkCmdCopyImage2");
+        Image* dst = objOf<Image>(hDstImage2, K_IMAGE, "vkCmdCopyImage2");
         VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdCopyImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdCopyImage2");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
-        U32 nreg = (U32)args.a[3];
         std::vector<VkImageCopy2L> regs;
-        readArray(args.a[4], nreg, regs);
+        readArray(pRegs2, nreg, regs);
         for (const auto& r : regs)
-            recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage2"), args.a[1], args.a[2], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
+            recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage2"), hSrcImage2, hDstImage2, r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
                 r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
         U32 pxBytes = (U32)src->pixBytes;
         if (!pxBytes) pxBytes = 4;
@@ -8081,7 +8155,18 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdCopyBufferToImage2:
     case VK64_fn_vkCmdCopyBufferToImage2KHR: {
-        // (cmdBuf, srcBuffer, dstImage, regionCount, pRegions*) — shim unpacks
+        // The PE shim passes trap args verbatim: (cmdBuf, pCopyBufferToImageInfo2*).
+        // Parse the info struct (x86-64): sType(0,4), pNext(8,8), srcBuffer(16,8),
+        // dstImage(24,8), dstImageLayout(32,4), regionCount(36,4), pRegions(40,8).
+        // The old code read src/dst/count/regions from args.a[] as if the shim
+        // unpacked the struct; it never did, so vkd3d buffer-to-image copies
+        // were recorded with regionCount 0 and uploads never landed.
+        U64 pInfo2 = args.a[1];
+        VK64_DROP_IF(return 0, !pInfo2);
+        U64 hSrcBuffer2 = rd64(pInfo2 + 16);
+        U64 hDstImage2 = rd64(pInfo2 + 24);
+        U32 nreg = rd32(pInfo2 + 36);
+        U64 pRegs2 = rd64(pInfo2 + 40);
         // VkBufferImageCopy2 has sType+pNext header (72 bytes).
         struct VkBufferImageCopy2L {
             U32 sType; U32 _p0; U64 pNext;
@@ -8091,19 +8176,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             U32 w; U32 h; U32 d;
         };
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBufferToImage2");
-        U32 nreg = (U32)args.a[3];
-        // Defensive: garbage regionCount (PE shim arg shift) would cause
-        // massive over-allocation in readArray and millions of no-op copies.
         VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkBufferImageCopy2L> regs;
-        readArray(args.a[4], nreg, regs);
+        readArray(pRegs2, nreg, regs);
         VK64_DROP_IF(return 0, !cb);
         // Record as CMD_COPY_B2I like the v1 version; page handles the copy
         for (U32 i = 0; i < regs.size(); i++) {
             Cmd c;
             c.kind = CMD_COPY_B2I;
-            c.copy.srcBuffer = args.a[1];
-            c.copy.dstImage = args.a[2];
+            c.copy.srcBuffer = hSrcBuffer2;
+            c.copy.dstImage = hDstImage2;
             c.copy.bufOff = regs[i].bufferOffset;
             c.copy.rowLen = regs[i].bufferRowLength;
             c.copy.imgH = regs[i].bufferImageHeight;
@@ -8213,7 +8295,19 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdBlitImage2:
     case VK64_fn_vkCmdBlitImage2KHR: {
-        // (cmdBuf, srcImage, dstImage, regionCount, pRegions*, filter) — shim unpacks
+        // The PE shim passes trap args verbatim: (cmdBuf, pBlitImageInfo2*).
+        // Parse the info struct (x86-64): sType(0,4), pNext(8,8), srcImage(16,8),
+        // srcImageLayout(24,4), dstImage(32,8), dstImageLayout(40,4),
+        // regionCount(44,4), pRegions(48,8), filter(56,4). The old code read
+        // src/dst/count/regions/filter from args.a[] as if the shim unpacked
+        // the struct; it never did, so vkd3d blits were dropped here.
+        U64 pInfo2 = args.a[1];
+        VK64_DROP_IF(return 0, !pInfo2);
+        U64 hSrcImage2 = rd64(pInfo2 + 16);
+        U64 hDstImage2 = rd64(pInfo2 + 32);
+        U32 nreg = rd32(pInfo2 + 44);
+        U64 pRegs2 = rd64(pInfo2 + 48);
+        U32 filter2 = rd32(pInfo2 + 56);
         // VkImageBlit2 has sType+pNext header.
         struct VkImageBlit2L {
             U32 sType; U32 _p0; U64 pNext;
@@ -8224,18 +8318,17 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             int32_t dstX0; int32_t dstY0; int32_t dstZ0;
             int32_t dstX1; int32_t dstY1; int32_t dstZ1;
         };
-        Image* src = objOf<Image>(args.a[1], K_IMAGE, "vkCmdBlitImage2");
-        Image* dst = objOf<Image>(args.a[2], K_IMAGE, "vkCmdBlitImage2");
+        Image* src = objOf<Image>(hSrcImage2, K_IMAGE, "vkCmdBlitImage2");
+        Image* dst = objOf<Image>(hDstImage2, K_IMAGE, "vkCmdBlitImage2");
         VK64_DROP_IF(return 0, !src || !dst);
-        U32 nreg = (U32)args.a[3];
         VK64_DROP_IF(return 0, nreg > 1024);
         std::vector<VkImageBlit2L> regs;
-        readArray(args.a[4], nreg, regs);
+        readArray(pRegs2, nreg, regs);
         for (const auto& r : regs) {
             const int32_t srcOffsets[2][3] = {{r.srcX0, r.srcY0, r.srcZ0}, {r.srcX1, r.srcY1, r.srcZ1}};
             const int32_t dstOffsets[2][3] = {{r.dstX0, r.dstY0, r.dstZ0}, {r.dstX1, r.dstY1, r.dstZ1}};
-            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage2"), args.a[1], args.a[2],
-                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, (U32)args.a[5],
+            recordImageBlit(cbOf(args.a[0], "vkCmdBlitImage2"), hSrcImage2, hDstImage2,
+                r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer, filter2,
                 srcOffsets, dstOffsets, r.srcLayerCount);
         }
         VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);

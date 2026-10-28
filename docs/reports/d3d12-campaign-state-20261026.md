@@ -1686,3 +1686,204 @@ three single-citation marker rows, +13 hand re-pin for the rest, each
 verified against the audit's own nearest occurrence); final audit:
 0 DRIFT / 0 MISSING (217 MATCH, 12 MATCH-INHERITED, 98 UNCHECKABLE,
 7 EXEMPT).
+
+## 4.24 Readback-zeros wall: three stages, not one — the *2KHR copy handlers never parsed their Info2 structs, readback rows were copied tight, and copy-only textures had no page target (2026-10-28)
+
+CHARACTERIZATION (probe: tools/vkd3d/probe/rb12.c, new, five
+variants with ONE variable changed per variant on the same
+device/queue/fence: BUF = upload-to-default-to-readback buffer copies
+only; CLEAR = clear-only render target, no draw; UPLDTEX =
+upload-filled texture copied to a render target, then read back
+(buffer-to-image and image-to-buffer copies, no draw); CONSTPS =
+clear plus a constant-color fullscreen draw; DELAY = CLEAR repeated,
+then a 2-second sleep and a second Map). Pre-fix, on the
+committed-resource-fixed dist (wasm 1a3edfe6): BUF FAIL bad=64
+(first mismatch at byte 0, got 0x00 want 0x10); CLEAR FAIL bad=48,
+nonzero=0/784; UPLDTEX FAIL bad=62, nonzero=0/784; CONSTPS PSO OK
+then FAIL bad=64, nonzero=0/784; DELAY FAIL on both reads (the
+sleep changes nothing, so fence/map timing is not the gap). The
+same zeros are what stopped root12's CBV case (64/64 pixels,
+first px got=[0 0 0 0] want=[191 191 223 255]) and uav12's four
+float EXEC cases (63-64/64 mismatches, got=0) after §4.23. The
+bridge log's only lead was two DROPPED guest commands in
+vkCmdCopyBuffer2 (guard `!src || !dst || !src->mem ||
+!dst->mem`) — the copy handlers, not the draw or the fence.
+
+ROOT CAUSE 1 (source-proven, then guest-proven): the "shim
+unpacks Info2" assumption is false. The five 64-bit *2KHR copy
+handlers read src/dst/count/regions from trap args as if the PE
+shim unpacked the Info2 struct into v1-style args. The shim
+never does that: tools/vkd3d/probe/gen_vk64pe.py generates
+normal trap stubs as verbatim positional args, with exactly one
+special case (vkCmdSetViewportWithCount / vkCmdSetScissorWithCount
+insert first=0). The ABI header was split-brained (CopyBuffer2
+already said (cmdBuf, pCopyBufferInfo*); the other four said
+(unpacked)) and exports.txt stub arity was wrong for four of
+the five (CopyBuffer2/CopyImage2/CopyBufferToImage2 1 instead
+of 2, CopyImageToBuffer2 5 instead of 2). Consequences:
+CopyBuffer2/CopyImage2/CopyBufferToImage2 lost the struct
+pointer (args.a[1..]=0) and DROPPED; CopyImageToBuffer2 read
+its region count from caller garbage and recorded zero copies,
+so setupReadbacks found nothing and no readback ran, silently;
+CopyBufferToImage2 recorded zero regions, so the upload never
+landed, silently. vkd3d-proton calls the *2 variants
+exclusively for copies, which is why DXVK's v1 paths worked
+while every D3D12 readback returned zeros. The other 2KHR
+handlers (SetEvent2, BeginRenderPass2, EndRenderPass2,
+PipelineBarrier2, PushConstants2, BindIndexBuffer2,
+BindVertexBuffers2) take verbatim scalar args or parse struct
+pointers and are correct; the 32-bit CopyBuffer2 handler
+already parses its struct pointer and does not share this
+defect.
+
+FIX 1. Each handler now reads its Info2 struct from args.a[1]
+with rd64/rd32, drops loudly on a null struct pointer, and
+keeps the nreg > 1024 guard (now guarding a real count).
+Correct layouts, compiler-verified with offsetof against the
+vendored header: CopyBufferInfo2 src@16 dst@24 count@32
+regions@40; CopyImageToBufferInfo2 srcImage@16 dstBuffer@32
+count@40 regions@48; CopyBufferToImageInfo2 srcBuffer@16
+dstImage@24 count@36 regions@40; CopyImageInfo2 srcImage@16
+dstImage@32 count@44 regions@48; BlitImageInfo2 srcImage@16
+dstImage@32 count@44 regions@48 filter@56. (First attempt got
+three offsets wrong by assuming a 4-byte pad after every
+4-byte enum field; the rb12-3 buffer-to-image nreg > 1024 drop
+exposed it. Padding exists only when the next field needs
+stricter alignment.) The shim was rebuilt (GCC 13-win32,
+-static-libgcc is required or Wine lacks libgcc_s_seh-1.dll)
+and all three probe DLLs are byte-identical (sha 73f880f6...),
+re-staged under all three PE names and re-pinned in
+check_runtime_completeness.py. The build's runtime-assets
+bootstrap 404 (the 20261026 release tar was never uploaded)
+was resolved by the same deliberate re-pin pattern: the staged
+wine64.zip entry in tools/browser/runtime-assets.json now
+carries its new hash/bytes; no file was downloaded from the
+external release URL.
+
+ROOT CAUSE 2 (guest-proven by the rb12-2 strided pattern):
+readback row pitch dropped. setupReadbacks dropped the copy
+region's bufferRowLength and allocated a tight heap (w*h*4);
+completeReadbacks copied one tight block to the guest; the
+page tier also packs tight rows into the heap. The guest
+(D3D12) reads rows RowPitch apart (256 bytes for a 4x4
+RGBA8 image), so row 0 was correct and rows 1-3 read as zeros
+at strided offsets — exactly rb12-2's CLEAR bad=36 (12 pixels
+x 3 nonzero channels) and CONSTPS bad=48 (12 pixels x 4),
+first mismatch at pixel 4 (first pixel of row 1), with the
+full 4x4 image correct contiguously in the HEX dump.
+
+FIX 2 (bridge only, no protocol or page change). The pending
+record gains pitch: pend.pitch = rb.rowLen ? rb.rowLen * 4 :
+rb.w * 4 (bufferRowLength is in texels; 0 = tightly packed
+per Vulkan semantics). completeReadbacks copies per row from
+heapPtr + y*tightRow to dstBase + y*pitch, bounds-clamped
+per row; when pitch == tightRow the output bytes are
+identical to the old single-copy behavior. The v1 I2B
+handlers also store rowLen, so v1 readbacks gain the fix too
+(with rowLen=0 behavior unchanged).
+
+ROOT CAUSE 3 (guest-proven by the rb12-4 bridge log):
+copy-only textures have no page target. UPLDTEX's render
+target is never rendered and never sampled — only a
+buffer-to-image destination then an image-to-buffer source —
+so the page tier's readback lookup (targets.get('img:' +
+srcImage) || 'imgd:' + srcImage) finds nothing, pushes
+readback-unavailable, never touches the heap, and still
+notifies the flag: zeros with no error. The bridge log
+proves the upload itself executes (execCopy B2I ok, img
+fmt=37 4x4) and that submit order puts that data in image
+guest memory before setupReadbacks runs. The bridge does NOT
+send buffer-to-image copies to the page (the "page handles
+the copy" comment was stale); it handles them eagerly.
+
+FIX 3 (bridge only). setupReadbacks seeds the heap from the
+source image's guest memory after zeroing it and before
+pushing the pending: look up the Image and its DeviceMemory,
+require non-negative origins within the image extent, copy
+tight rows from mm->va + im->memOff +
+imageSubresourceOffset(*im, 0, 0) + oy*imgRow + ox*4
+(mip 0 / layer 0, matching the page path; the I2B record
+carries no mip/layer). Any lookup or bounds failure leaves
+the zeroed heap and the page path proceeds exactly as
+before. The seed survives exactly when the page has no
+target, because the page overwrites the heap whenever it
+has data. KNOWN LIMITATION (not solved here):
+rendered-then-overwritten-by-buffer-to-image images read
+stale page data; that needs page-side buffer-to-image
+application, a bigger change.
+
+POST-FIX PROOF (rebuilt dist, wasm 7075d8e0, "Browser export
+verified"). rb12-5: BUF OK, CLEAR OK, UPLDTEX OK, CONSTPS
+OK, DELAY OK (first=OK second=OK), SUMMARY all OK, RESULT 0.
+The staged experiment table: rb12-1 (pre-fix) all FAIL;
+rb12-2 (Info2 fix) BUF OK, CLEAR/CONSTPS/DELAY strided-FAIL,
+UPLDTEX FAIL; rb12-3 (pitch fix) all OK except UPLDTEX;
+rb12-4 (offset correction) same as rb12-3 with the
+buffer-to-image drop gone; rb12-5 (prefill) all OK. The
+original probes were re-run on the same dist to confirm the
+fix generalizes: root12 CBV now FAILS with got=[255 0 255
+255] (the magenta CLEAR) instead of zeros, bad=48; uav12
+float EXEC now FAILS with mismatches=48/64, first px ch=0
+got=255 (the clear) instead of 63-64/64 zeros. Both readbacks
+now return real page data instead of zeros — the readback
+mechanism is fixed; what stops them now is draw execution
+(see next walls). Unchanged and out of scope: uav12 UINT
+EXEC still fails at CreateGraphicsPipelineState
+hr=0x80070057; root12 srv/uav still fail at D3DCompile
+(E5000 in the probe's own HLSL strings).
+
+NEXT WALLS (stated, not solved here). First: root12's CBV
+draw is skipped at the page tier — the page cannot translate
+the fragment SPIR-V module (error:
+UnsupportedExtension("SPV_KHR_physical_storage_buffer")),
+dropReasons shader-translation:1, draw-pipeline-skipped:2.
+That capability comes from Route A's R15b root-descriptor
+rewrite (push-block pointers become storage buffers), so
+every D3D12 shader that reads a root descriptor currently
+fails page translation. Second: uav12's EXEC draws are
+skipped at the page tier for descriptor-group resolution
+(dropReasons group-out-of-range:2/4,
+draw-pipeline-skipped:4/8; the draws use descriptor tables,
+bindSets/descSet, not root descriptors) — a page-tier
+descriptor-group issue distinct from the first wall. Third:
+the rendered-then-buffer-to-image staleness limitation from
+Fix 3 above. None of these is a readback defect; the
+readback path now delivers whatever the page actually
+rendered (here, the clear).
+
+GUARDS + SUITES + REGISTER. Guards:
+web/tests/suite/unit/vk-copy2-info-structs.test.mjs (7
+tests pinning the five Info2 layouts, the shim arity 2 for
+all ten entry points, and v1 handlers untouched;
+sabotage-verified both directions) and
+web/tests/suite/unit/vk-readback-pitch.test.mjs (5 tests:
+pending pitch, setupReadbacks pitch assignment,
+completeReadbacks strided copy, prefill seed, prefill
+bounds; sabotage-verified). The 5 new drop sites moved the
+VK64_DROP_IF census pin 242 -> 247 (188 return-form + 59
+flow-control; the readback-completion guard was reworded,
+same continue site) with matching updates to the register
+row and the macro-audit report addendum. JS suite 307/0
+(baseline 305/0 at d39dec846 + the 2 new files, zero new
+failures). Native suite: make -C project/linux test exits
+0; the test binary single-threaded run reports 644 tests
+OK, 0 tests FAILED in 198s (trailing fault output is the
+designed final crash-path test). jit64_tests /
+jit64_wasm_tests not re-run: the change touches only the
+wasm-only bridge file, which the native build does not
+compile (the test binary came up up-to-date with no
+recompile), so those CPU gates are unaffected.
+REGISTER: docs/known-gaps/vulkan.md gains three
+IMPLEMENTED rows (Info2 parsing, readback pitch,
+copy-only prefill); counts 361 -> 364 rows (65
+IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0
+OPEN). The +93-line bridge insertion shifted later
+citations; all 26 drifted rows were re-pinned (audit
+--fix for the 13 single-citation marker/token rows,
+diff-shift re-pin for the 13 func/multi-citation rows,
+each verified against the shifted line — the audit's
+nearest occurrence is unreliable for common function
+names, where a neighboring call site can be nearer than
+the moved true site); final audit: 0 DRIFT / 0 MISSING
+(220 MATCH, 12 MATCH-INHERITED, 98 UNCHECKABLE, 7
+EXEMPT).

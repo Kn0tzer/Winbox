@@ -293,7 +293,7 @@ enum {
     // readback: image->buffer copies (append-only; DXVK readback path)
     VK64_fn_vkCmdCopyImageToBuffer,                  // (cmdBuf, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
     VK64_fn_vkCmdCopyImage,                          // (cmdBuf, ...) -> no-op (ID stability)
-    VK64_fn_vkCmdCopyImageToBuffer2,                 // (cmdBuf, srcImage, 0, dstBuffer, regionCount, pRegions*) -> records CMD_COPY_I2B
+    VK64_fn_vkCmdCopyImageToBuffer2,                 // (cmdBuf, pCopyImageToBufferInfo2*) -> records CMD_COPY_I2B
     VK64_fn_vkCmdCopyImageToBuffer2KHR,              // alias of vkCmdCopyImageToBuffer2
     VK64_fn_vkCmdCopyBuffer,                        // (cmdBuf, srcBuffer, dstBuffer, regionCount, pRegions*) -> immediate CPU memcpy
     VK64_fn_vkCmdCopyBuffer2,                       // (cmdBuf, pCopyBufferInfo*) -> immediate CPU memcpy
@@ -303,12 +303,12 @@ enum {
     VK64_fn_vkCmdClearColorImage,                   // (cmdBuf, image, layout, pColor*, rangeCount, pRanges*) -> fill image
     VK64_fn_vkCmdClearAttachments,                  // (cmdBuf, attachCount, pAttach*, rectCount, pRects*) -> clear in RP
     VK64_fn_vkCmdClearAttachmentsKHR,               // alias
-    VK64_fn_vkCmdCopyImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyImage2,                        // (cmdBuf, pCopyImageInfo2*) -> immediate copy
     VK64_fn_vkCmdCopyImage2KHR,                     // alias
-    VK64_fn_vkCmdCopyBufferToImage2,                // (cmdBuf, srcBuf, dstImg, nRegions, pRegions*) -> immediate copy (unpacked)
+    VK64_fn_vkCmdCopyBufferToImage2,                // (cmdBuf, pCopyBufferToImageInfo2*) -> records CMD_COPY_B2I
     VK64_fn_vkCmdCopyBufferToImage2KHR,             // alias
     VK64_fn_vkCmdBlitImage,                         // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*, filter) -> scaled copy
-    VK64_fn_vkCmdBlitImage2,                        // (cmdBuf, srcImg, dstImg, nRegions, pRegions*, filter) -> scaled copy (unpacked)
+    VK64_fn_vkCmdBlitImage2,                        // (cmdBuf, pBlitImageInfo2*) -> scaled copy
     VK64_fn_vkCmdBlitImage2KHR,                     // alias
     VK64_fn_vkCmdResolveImage,                      // (cmdBuf, srcImg, srcLayout, dstImg, dstLayout, nRegions, pRegions*) -> MSAA resolve
     VK64_fn_vkCmdResolveImageKHR,                   // alias

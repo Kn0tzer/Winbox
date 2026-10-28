@@ -266,3 +266,19 @@ was already in the census). New census: 242 sites = 183 return-form + 59
 flow-control (56 continue + 3 break); classification 56 LIVE / 3 BENIGN
 (the new site is LIVE, same class as its twin). Pins updated in
 web/tests/suite/unit/vk-drop-macro-guard.test.mjs and the register row.
+
+## Addendum 2026-10-28 (readback-zeros lane): census 242 -> 247
+
+The D3D12 readback-zeros fix rewrote the five 64-bit *2KHR copy handlers
+(vkCmdCopyBuffer2, vkCmdCopyImageToBuffer2, vkCmdCopyBufferToImage2,
+vkCmdCopyImage2, vkCmdBlitImage2) to parse their Info2 struct pointer
+verbatim from the trap args (the PE shim passes the struct pointer, it
+does not unpack it). Each handler gained one VK64_DROP_IF site: return 0
+on a null Info2 pointer. The readback-completion guard was reworded in
+the same change from the allocation-bounds check
+(`buf->memOff + pend.dstBufOff >= mem->size`) to the computed
+destination-base check (`dstBase >= memEnd`): same continue site, still
+LIVE, not a new site. New census: 247 sites = 188 return-form + 59
+flow-control (56 continue + 3 break); classification unchanged apart
+from the five new return-form sites. Pins updated in
+web/tests/suite/unit/vk-drop-macro-guard.test.mjs and the register row.
