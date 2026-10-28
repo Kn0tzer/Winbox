@@ -3539,3 +3539,116 @@ citation audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
 bridge (project/linux filters vk64bridge.cpp out of TEST_SOURCES, and
 the changed test file is compiled only by run-native.py), so the harness
 is the native check for this change. JS suite: 314 passed / 0 failed on the lane's own dist (bw64-build.sh, "Browser export verified") -- the branch baseline exactly, including vulkan-image-format-size (which compiles fmt_bpp from source) and vk-register-citations.
+
+## 4.37 x64 vkd3d restage: the staged pair now carries the §4.29 utof fix (2026-10-28, restage lane)
+
+§4.29 fixed the UINT pipeline wall in the vendored dxbc-spirv source
+(`cad7cdf81`: `lowerConvertItoF` no longer widens U32->U64), but the
+pair staged in the shipped `wine64.zip` was built before that fix —
+canonical `d3d12.dll` `d77fdad5…` / `d3d12core.dll` `d2bd847a…`
+(md5 `006c754e…`). The gap was proven twice independently before this
+lane: the compute merge gate's baseline matrix and the spirvwrite
+lane's A/B both showed uav12's R32_UINT and R8_UINT still failing
+`CreateGraphicsPipelineState` with E_INVALIDARG against the staged
+pair, while a rebuilt pair reproduced the §4.29 end state exactly.
+The fix existed only in source; the shipped bytes never carried it.
+
+### The rebuild
+
+Fresh from the vendored source at `954e72aa1` via
+`tools/vkd3d/BUILD.md` (meson + the `PATHCCH_NONE` box workaround,
+ninja 209/209). New pair:
+
+- `d3d12.dll`: 517,717 B, sha256 `a96b4e9d53ed0bed…`
+- `d3d12core.dll`: 8,825,383 B, sha256 `3d3bfe43cbec123f…`
+  (md5 `a38c3769…`)
+
+Sizes are identical to the previous pair; hashes differ because PE
+builds are not byte-reproducible (linker TimeDateStamp + the git
+describe embedded in the version header — the same caveat as the
+32-bit pair's build). Both are PE32+ (machine 0x8664);
+`d3d12core.dll` exports exactly `D3D12GetInterface` +
+`D3D12SDKVersion`, and both export sets are identical to the
+uintpso lane's known-good rebuild. Behavioral equivalence, not
+byte identity, is the criterion — and it is what the probes below
+establish. The build output stays in `tools/vkd3d/build.w64` of the
+lane tree as the merge transfer source (the staged archive is
+gitignored; the merge re-stages from these bytes on the canonical
+tree and verifies them against the pins below before staging).
+
+### Probe proof, before staging (app-dir rig, built pair uploaded)
+
+`test-results/dxvk-uav12-restage-pre/`: the case map is the §4.29
+end state, case for case —
+
+- EXEC R32_UINT **OK (all 16 texels match)** — was
+  `CreateGraphicsPipelineState hr=0x80070057` against the staged pair.
+- EXEC R8_UINT FAIL `mismatches=32/64` — the PSO wall is gone; the
+  draw reaches the page tier and stops at the named rejection
+  (`storage-format-access:R8Uint:ReadOnly` in the run log), which is
+  the sampled-texture serving queue, not a pipeline failure.
+- EXEC R16_FLOAT FAIL `mismatches=48/64` (named
+  `storage-format-access:R16Float:ReadOnly`, unchanged).
+- EXEC R8G8B8A8_UNORM / R32G32B32A32_FLOAT / R16G16B16A16_FLOAT OK;
+  `flag=TRUE sweep=ALL18`.
+
+Sanity: tri12 RESULT 0 (`dxvk-tri12-restage-pre/`); root12 CBV OK
+(all 16 px `[191 191 223 255]`), srv/uav PSO `E_FAIL` on the named
+`spirv-capability-unknown:5347` ×2 — the queued PSB-serving wall,
+unchanged (`dxvk-root12-restage-pre/`).
+
+### Staging and re-pins
+
+`tools/rootfs64/stage-vkd3d-payloads.sh` merged the new pair into
+`web/runtime/wine64.zip` and `dist/runtime/wine64.zip` (shim members
+unchanged). `VKD3D_PINS` in `check_runtime_completeness.py` now pins
+the new pair; the artifact manifest regenerated with exactly the w64
+line changed; `tools/browser/runtime-assets.json` re-pins
+`web/runtime/wine64.zip` at **213,105,320 B, sha256 `70d752371a…`**
+(measured on this tree — replaced members carry wall-clock DOS
+timestamps, so a staged archive's whole-archive hash is re-measured
+per staging and is not expected to match any other run's; the member
+pins + size + completeness gate are the invariants, per the x86
+merge's controlled experiment). Full completeness gate: **0
+failures** (`vkd3d payloads` PASS against source + shipped zip,
+`manifest matches shipped zips` PASS; the one skip is the
+pre-existing environmental prefix64 one). `bootstrap.py --check`
+passes (13 files). Pre-staging backups:
+`/home/ubuntu/backups/winbox-vkd3d64-restage-20261028-135228/` (this
+lane) and the staging script's own
+`/home/ubuntu/backups/winbox-vkd3d-payloads-20261028-135229/`.
+
+### Probe proof, after staging (system placement — the shipping path)
+
+`d3d12-system.mjs` uploads nothing; the guest resolved the pair from
+`wine64.zip` system placement exactly as the demo environment does.
+uav12's case map is identical to the pre-staging map, case for case
+(`dxvk-uav12-restage-sys/`), and tri12 returns RESULT 0
+(`dxvk-tri12-restage-sys/`). The end state survives staging.
+
+One ordering note for future restages: the dist must be exported
+*after* staging, not staged into. A first verification pass here
+staged into an already-built dist and `provenance-artifacts` failed
+two subtests — the two archives are merged in separate runs (their
+member timestamps differ, so dist ≠ web byte-wise) and the font
+provenance record anchors to the pre-staging `wine64.zip` hash.
+Rebuilding the dist from the staged set made `dist/runtime/wine64.zip`
+a byte copy of the staged archive and the suite green; the canonical
+flow (stage → export) exists precisely to keep that invariant.
+
+### Suites (verified on this tree)
+
+- JS suite: **314 passed, 0 failed** (`BW_TEST_DIST=<tree>/dist`,
+  `--unit`) — baseline exact at `954e72aa1`.
+- Native: **647 OK, 0 FAILED** in 249 s (`Build/Test/boxedwine 0 0 1`,
+  single-threaded) — baseline exact.
+- Dist: `Browser export verified`; support archive unchanged
+  (`bbc583c6…`).
+
+### Next wall after this one
+
+Unchanged queue: R8_UINT / R16_FLOAT read-path serving via the
+sampled-texture rewrite (§4.26), and root12 srv/uav via page-tier
+PSB serving (the 5347 rejection). The remaining vkd3d staging debt
+is the 32-bit guest verification of the §4.31-x86 pair (built and
+staged; never yet run in a 32-bit guest).
