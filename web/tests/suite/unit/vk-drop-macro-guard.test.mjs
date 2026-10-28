@@ -88,13 +88,13 @@ function dropSites(src) {
   return sites;
 }
 
-test('guarded-site census: 247 sites, flow-control sites exactly as audited', () => {
+test('guarded-site census: 250 sites, flow-control sites exactly as audited', () => {
   const sites = dropSites(bridge);
-  assert.equal(sites.length, 247, 'total VK64_DROP_IF call sites changed');
+  assert.equal(sites.length, 250, 'total VK64_DROP_IF call sites changed');
   const byAction = {};
   for (const [a] of sites) byAction[a] = (byAction[a] || 0) + 1;
   assert.deepEqual(byAction,
-    { 'return 0': 159, 'return': 28, 'return nullptr': 1, 'continue': 56, 'break': 3 });
+    { 'return 0': 159, 'return': 28, 'return nullptr': 1, 'continue': 59, 'break': 3 });
   // The 58 continue/break sites from the macro-class audit (action, condition)
   // with multiplicities (mirrored handlers share condition text). Any site
   // added, removed or reworded must update this pin and the register row.
@@ -102,9 +102,10 @@ test('guarded-site census: 247 sites, flow-control sites exactly as audited', ()
     'break ||| first >= VK64_MAX_SETS': 1,
     'break ||| out.n >= 16': 2,
     'continue ||| !buf || !buf->mem': 1,
-    'continue ||| !cb': 4,
-    'continue ||| !heap': 1,
+    'continue ||| !cb': 5,
+    'continue ||| !heap': 2,
     'continue ||| !mem || !mem->va': 1,
+    'continue ||| !sb || !cp.size': 1,
     'continue ||| !rb.w || !rb.h || rb.w > 4096 || rb.h > 4096': 1,
     'continue ||| !s': 2,
     'continue ||| !sec': 1,
