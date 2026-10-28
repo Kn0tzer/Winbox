@@ -57,6 +57,7 @@
 #include "mmu/testBrk.h"
 
 void testWaitPid();
+void testBStringContains();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
 void testKObjectLockStubs();
@@ -790,6 +791,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSelfModifyingFront, "Test Self Modifying Code Same Block(Previous)"},
     {testSelfModifyingBack, "Test Self Modifying Code Same Block(Next)"},
     {testBrkHeap, "Test brk/mmap heap"},
+    {testBStringContains, "Test BString contains with embedded NUL bytes"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif

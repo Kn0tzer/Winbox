@@ -21,6 +21,7 @@
 #include "ptrpool.h"
 
 #include <charconv>
+#include <ctype.h>
 
 class BStringData {
 public:
@@ -312,18 +313,55 @@ int BString::compareTo(const char* s, bool ignoreCase, int offset, int len) cons
     }
 }
 
-bool BString::contains(const BString& s, bool ignoreCase) const {
-    return contains(s.data->str, ignoreCase);
+// BString is a length-carrying byte string and may contain embedded NUL
+// bytes (appendAfterNull builds them; KProcess::commandLine is written
+// to join argv with NUL separators).
+// A search built on strstr/strcasestr silently stops at the first NUL, so
+// a needle past that point can never match -- this made the
+// BW64_TRACE_EXE syscall tracer's commandLine match dead for every
+// argument after argv[0]. Search the full length() bytes instead;
+// behavior for NUL-free strings (and for the empty-needle and
+// empty-haystack cases) is unchanged.
+static bool bstringFind(const char* haystack, int haystackLen, const char* needle, int needleLen, bool ignoreCase) {
+    if (needleLen == 0) {
+        return true;
+    }
+    if (!haystack || !needle || haystackLen < needleLen) {
+        return false;
+    }
+    for (int i = 0; i + needleLen <= haystackLen; i++) {
+        int j = 0;
+        while (j < needleLen) {
+            unsigned char a = (unsigned char)haystack[i + j];
+            unsigned char b = (unsigned char)needle[j];
+            if (ignoreCase) {
+                a = (unsigned char)tolower(a);
+                b = (unsigned char)tolower(b);
+            }
+            if (a != b) {
+                break;
+            }
+            j++;
+        }
+        if (j == needleLen) {
+            return true;
+        }
+    }
+    return false;
 }
 
-bool BString::contains(const char* s, bool ignoreCase) const {
+bool BString::contains(const BString& s, bool ignoreCase) const {
     if (isEmpty()) {
         return false;
     }
-    if (!ignoreCase) {
-        return strstr(data->str, s) != nullptr;
+    return bstringFind(data->str, length(), s.data ? s.data->str : nullptr, s.length(), ignoreCase);
+}
+
+bool BString::contains(const char* s, bool ignoreCase) const {
+    if (isEmpty() || !s) {
+        return false;
     }
-    return strcasestr(data->str, s) != nullptr;
+    return bstringFind(data->str, length(), s, (int)strlen(s), ignoreCase);
 }
 
 bool BString::endsWith(const BString& s, bool ignoreCase) const {

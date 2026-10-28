@@ -2196,3 +2196,171 @@ Sabotage-verified: breaking the parse regex turns the unit test red.
   known limitation — needs page-side B2I application); uav12 UINT
   EXEC PSO E_INVALIDARG (out of scope); root12 srv/uav D3DCompile
   probe debt (out of scope).
+
+## 4.27 Session teardown at ~166 s: guest-side desktop-init race — no emulator defect isolated; BString::contains NUL blindness fixed en route (2026-10-28)
+
+### The defect, as briefed
+
+Minimal and real guests alike sometimes die at ~166 s with one signature:
+the session tears down (services/explorer exit, imm32 exit_group), only
+2 XWire clients ever connect (healthy runs show 5), and the guest never
+maps a window. It hit a shipped-build Doom run twice (box loads 5.2 and
+2.94), a Gang Beasts menu run, and the tiny Snake demo in the rig-fix
+lane's live check. Brief: reproduce with a minimal guest, pin the
+mechanism, fix product code if it pins there, otherwise prove a
+rig/environment cause with the same rigor. Minimal guests only; no game
+boots.
+
+### Reproduction (this lane)
+
+Snake on the shipped build (c01fdb666, the build Doom died on) reproduced
+the full signature three times:
+
+- **snake-c** — pid10 exit_group status=1 at 211.8 s page time
+  (guestdiag=15 thread dumps running; explorer exits 220.5 s, session
+  silent after).
+- **snake-e** — pid10 dead at 295.9 s, with the wineserver's complete
+  syscall trace captured (65,606 lines, BW64_TRACEPID=14).
+- **snake-g** — pid10 dead at 163.7 s, with the app process's own
+  complete syscall trace (BW64_TRACEPID=10).
+
+Controls: two current-tip runs healthy (snake-a idle; snake-d under
+contention, mapped at 234.0 s — a slower boot than any dying run's), and
+one shipped-build run healthy (snake-f, mapped 162.4 s). The failure is
+stochastic, and it has not reproduced at the current tip in this lane.
+Gang Beasts is excluded from the family on its own log's evidence: the
+game itself crashed (UnityCrashHandler64.exe opened at 259.3 s) roughly
+300 s before its session unwound; only the downstream cascade is shared.
+
+### What the traces pin
+
+- **There is no fixed ~166 s deadline.** App-process death times across
+  all evidence: 133.3 / 134.0 / 135.7 / 154.6 s (2026-10-27 runs) and
+  163.7 / 211.8 / 295.9 s (this lane). The "~166 s" was when the cascade
+  finished in the original runs, not a timer expiring.
+- **The app process dies by its own decision, at the end of GUI init.**
+  pid10 is the session anchor: its exit is the first failure event in
+  every failing run; explorer and services unwind after it. In snake-g's
+  trace its life is: a 25.2 s blocked connect to the wineserver, a
+  77.3 s boot wait on the server socket, a 22.7 s wait spanning
+  explorer's desktop creation (explorer needed >53 s from start to X
+  connect), then 7.4 s of dense, promptly answered server round-trips
+  (fd-passing recvmsg, file stats, closes), a final burst of completed
+  round-trips inside the last 0.1 s, close, exit_group(1). In snake-c's
+  dumps the same endgame shows the thread inside a win32u call
+  (syscall 0x105c) with a freetype burst in its final sample. Nothing
+  kills it: no signal, no trap, no unanswered request.
+- **The wineserver is not the killer.** In snake-e's trace the server is
+  alive and answering in the death second itself (replies on the app's
+  channel at 295.815 / 295.858 / 295.862 s, a registry-file flush just
+  before), and it reaps the app's fds (epoll_ctl DEL + closes at
+  295.919-296.037 s) only after the app exits. Cause and effect run
+  app-first.
+- **The cascade is Wine's own session unwind.** With the app gone, the
+  winstation desktop loses its last user; explorer exits ~2.6 s after
+  creating the desktop window (SHAPE print) — Wine's close-desktop
+  timeout in server/winstation.c (remove_desktop_user arms a 1 s
+  close_timeout when desktop users drop to the desktop window itself).
+  Vanilla Wine carries the same winstation_init / explorer /
+  close_timeout race family (Wine bug 59393).
+- **Cleared suspects.** (1) The wineserver's perpetual 16 ms epoll
+  timeout: present identically in the healthy tip run snake-d (dumps
+  show timeout=0x10 throughout, occasionally 3-5 ms) — the server's own
+  cadence in this environment; it costs CPU but does not kill. (2) Box
+  CPU load: deaths at load 2.94; snake-b stayed healthy under 4 added
+  load hogs; snake-d survived heavier contention on the tip. (Boots are
+  not box-CPU-bound: guest boot time did not move under added load.)
+  (3) The M18 bare-wineserver race: its -p fix is present in every
+  failing log, and this defect's wineserver demonstrably outlives the
+  app and orchestrates the unwind. (4) The fd9/fd7 two-channel wait
+  choreography: identical shape in healthy runs (snake-d spent 51-231 s
+  in the same waits and mapped).
+
+### Verdict
+
+The fatal hop is inside the prebuilt guest Wine payload (win32u /
+wineserver are payload binaries; there is no Wine source tree on the
+box) losing its own desktop-init race when the emulated boot stretches
+that race from ~1 s natively to tens of seconds: a startup call chain in
+the app returns failure after its desktop wait resolves against a
+desktop explorer is still creating, and the app exits status 1 instead
+of ever mapping a window. No emulator defect was isolated — every
+emulator-side suspect was checked against traces and cleared (the
+socket layer delivered every reply; every wait returned; the server
+never stalled). Accordingly **no product fix is shipped for the
+teardown**: a speculative pacing patch would be exactly the wrong move.
+The practical mitigation already happened incidentally — the current
+tip's boot is much faster (wineboot exit 55.5 s vs 92-121 s in the
+failing runs), which shrinks the race window; both tip runs here were
+healthy. If it recurs at the tip, the next instrument is decoding
+wineserver request opcodes from guest memory at the failing wait (the
+tracer logs syscall entries only, not request buffers). The wasm-trap
+question (the JIT-improved build's Doom run dying at 345.9 s with a
+memory-access-out-of-bounds RuntimeError) was not reached: no run in
+this lane hit a trap — every death was a clean guest exit_group — and
+no game was booted for it. It stays open.
+
+### Found en route, fixed: BString::contains stopped at the first NUL byte
+
+The diagnosis leaned on BW64_TRACE_EXE and got zero lines while
+BW64_TRACEPID produced 65k. The source gave up two separate facts:
+
+1. **contains() was NUL-blind (fixed here).** BString::contains used
+   strstr/strcasestr, which stop at the first NUL byte. BString is a
+   length-carrying byte string and embedded-NUL instances are real
+   (appendAfterNull builds them), so a needle past the first NUL could
+   never match — a silent no-op for any such caller, in the same
+   silent-disable trap class as the stale-ABI JIT disables. Fix:
+   length-aware search over length() bytes in both overloads; the
+   BString overload now searches with the needle's own length. NUL-free
+   behavior, including the empty-needle and empty-haystack edges, is
+   unchanged.
+2. **The tracer was not in fact broken (recorded, not fixed).**
+   KProcess::commandLine is built with BString::join("\0", args)
+   (kprocess.cpp), but join's const char* delimiter is measured with
+   strlen, so the NUL delimiter contributes zero bytes and argv lands
+   concatenated with no separator at all — runtime proof in this lane's
+   own logs: cmd='/usr/lib/wine/wine64C:\\windows\\system32\\wineboot.exe--init'.
+   Substring matching still works on that string, so TRACE_EXE stands.
+   Making commandLine truly NUL-joined needs a consumer audit first
+   (exit/dump logging prints it through c_str() and would truncate at
+   the first NUL); the call site should move to the BString-delimiter
+   join overload with an explicit 1-byte NUL delimiter after that
+   audit. (For the record: BW64_TRACE_EXE was also never actually set
+   in the snake-e run — this lane's scratch-launcher patch placed the
+   assignment as the body of a braceless if(). The 65k-line pid14 trace
+   from that run came from the unconditional TRACEPID statement and is
+   unaffected.)
+
+### Guards + suites (verified)
+
+- New native guard **testBStringContains**
+  (source/test/util/testBString.cpp; Build/Test table index 601):
+  needles in argv[1]/argv[2] past real NUL separators, ignoreCase past
+  a NUL, a needle spanning a NUL through the BString overload,
+  absent-needle and segment-boundary negatives, NUL-free regression
+  cases. Sabotage-verified: against the original contains it fails at
+  "contains must find a needle past the first embedded NUL (argv[1])".
+- Native Build/Test suite (single-threaded, `boxedwine 0 0 1`):
+  **645 tests, 0 FAILED** (644 baseline + the new guard). X64Test
+  suite: **49/0**, identical to a pristine-baseline run. (An earlier
+  4-threaded X64Test run showed a guest-topology FAILED and a teardown
+  crash; both vanish single-threaded on pristine and fixed builds
+  alike — harness-threading artifacts under load, not product
+  failures.)
+- JS suite: **311 passed, 0 failed**.
+- Evidence: test-results/teardown/{snake-a,snake-b,snake-c,snake-d,
+  snake-e-traced,snake-f-traced10,snake-g-traced10} in this tree
+  (console JSONL + progress logs; snake-e/g include the full syscall
+  traces cited above).
+
+### Still open after this lane
+
+- Teardown recurrence watch at the tip (see verdict); wineserver
+  request-opcode decoding if it recurs.
+- commandLine NUL-join consumer audit + call-site fix (above).
+- Wasm-trap question (Doom B, 345.9 s) — untouched, needs a run that
+  reaches it; no game boot authorized for it.
+- BString::indexOf/lastIndexOf share the strstr pattern family with
+  the old contains; not audited here — recorded as a sibling to check
+  before any caller relies on them for NUL-containing strings.
