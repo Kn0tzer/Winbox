@@ -3539,3 +3539,93 @@ citation audit 0 DRIFT / 0 MISSING (227 MATCH / 12 MATCH-INHERITED /
 bridge (project/linux filters vk64bridge.cpp out of TEST_SOURCES, and
 the changed test file is compiled only by run-native.py), so the harness
 is the native check for this change. JS suite: 314 passed / 0 failed on the lane's own dist (bw64-build.sh, "Browser export verified") -- the branch baseline exactly, including vulkan-image-format-size (which compiles fmt_bpp from source) and vk-register-citations.
+
+## 4.37 32-bit Properties2 walker parity: four missing arms, three divergent arms, one mis-offset write (2026-10-28, prop32 lane)
+
+**The census.** `walkProperties2` (64-bit) models ten pNext node types;
+`vk32_walkProperties2` modeled six. Arm by arm, with the 64-bit served
+values: ID properties (uuid + deviceNodeMask 1) -- present, identical;
+subgroup properties (32 / all stages / all operations / quad-in-all) --
+present, identical; push-descriptor properties (64) -- present;
+robustness-2 properties (alignments 4/4) -- present. **Absent:**
+maintenance-5 properties (three rasterizer booleans TRUE),
+descriptor-indexing properties (the 17 update-after-bind limits),
+transform-feedback properties, Vulkan 1.3 properties.
+**Divergent:** the Vulkan 1.2 arm omitted
+`maxDescriptorSetUpdateAfterBindUniformBuffersDynamic` /
+`...StorageBuffersDynamic` (64 each), `maxTimelineSemaphoreValueDifference`
+(0xFFFFFFFF), and wrote only 8 of driverName's 9 characters; the Vulkan
+1.1 arm never wrote `pointClippingBehavior`. The features walkers, by
+contrast, are already at parity (the same 15 arms, the same shared fill
+functions), which is what made the properties gaps self-contradictory: a
+32-bit guest was told descriptor indexing and timeline semaphores are
+supported (TRUE feature bits) while the matching limits read zero -- the
+exact shape the 64-bit walker's header comment warns about ("advertising
+the features above with a zero limit would make the device
+self-contradictory"; DXVK refuses descriptor-indexing layouts above the
+advertised limits).
+
+**The mis-offset write (found by the census, in an arm marked
+"present").** The 32-bit field writers compute guest addresses as host
+`offsetof` - 8, valid only until a `uint64_t` whose host 8-alignment
+padding the i386 layout lacks. A compiled offset census over both guest
+headers (host `vk64_guest.h` vs the pack(4) `vk32_guest.h`) shows the
+rule holds for every previously written field **except**
+`VkPhysicalDeviceVulkan11Properties.maxMemoryAllocationSize`: host
+offsetof 104, host-8 = 96, guest offsetof **92**. The walker wrote the
+2 GiB limit 4 bytes late: the field itself read back as garbage (the
+limit's high bytes landed past it), and 4 bytes past the field were
+overwritten. This is the same layout discipline as the empirical 32-bit
+sample-count offsets: guest offsets come from the packed guest header,
+never from host offsetof arithmetic.
+
+**Dispositions.** Every absent arm is SERVE -- each value is a tier
+truth already served to 64-bit guests, and no arm is declined: the TF
+arm's *content* is the decline-by-design (stream-out limits zero and the
+feature-shaped fields FALSE because WebGPU has no stream-out and the TF
+entry points are absent, so use fails at proc lookup; the single TRUE,
+`transformFeedbackQueries`, is the property the vkd3d-proton
+device-creation gate reads, and a guest creating a TF query pool hits
+the loud query-path failure). The 1.3 arm serves subgroup 32/32, both
+single-texel alignments TRUE (texel buffers are byte-addressable; the
+same gate the 64-bit arm documents), and `maxBufferSize` = 2^30 matching
+`fillLimits`' advertised storage range. Fields neither walker serves
+(maintenance-5's swizzle/parallelogram fields, descriptor-indexing's
+`*Native` booleans, the 1.3 dot-product set) stay guest-owned on both
+ABIs -- the guard pins that with garbage prefill rather than assuming
+zeros.
+
+**Implementation.** Four new arms plus the 1.1/1.2 completions in
+`vk32_walkProperties2`. New arms write through guest-offset writers
+(`vk32_g32f` / `vk32_g64f`) taking `offsetof` in the packed guest
+structs -- `vk32abi::` where the guest header has the struct, and a new
+`Vk32Vulkan13Properties` mirror under `#pragma pack(push, 4)` (the guest
+header's own i386 convention) where it does not: for the 1.3 arm the
+host-8 rule diverges past the first `uint64_t` and would have written
+`maxBufferSize` 8 bytes past the end of the 200-byte guest struct. The
+mirror is pinned by static_asserts (sizeof 200; the served fields'
+offsets). `maxMemoryAllocationSize` moves to the same guest-offset
+writer. No 64-bit behavior changed; no JS touched.
+
+**Proof.** The native harness gains a Properties2 parity block: all six
+disputed nodes chained on both ABIs over buffers pre-filled with 0xAA
+(so a served 0 is distinguishable from an untouched field), every served
+field asserted identical across ABIs, unserved fields asserted to keep
+the guest's bytes on both sides, and the `properties2-struct`
+"not modeled" counter asserted unchanged across both calls.
+run-native.py: exit 0, 32 PASS blocks (31 baseline + the new guard).
+Sabotage, three rounds, each restored byte-identical (sha256 verified):
+zeroing the TF `transformFeedbackQueries` fill aborts at the TF
+assertion; zeroing the 1.3 `maxBufferSize` fill aborts at the 1.3
+assertion; restoring the old host-offset `maxMemoryAllocationSize`
+write aborts at the 1.1 assertion -- the guard would have caught the
+live mis-offset bug. Register: one IMPLEMENTED row added (371 = 72/66/
+233/0 on this branch); citation audit 0 DRIFT / 0 MISSING (227 MATCH /
+12 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT) after a delta-map
+re-pin over this lane's bridge diff plus one hand-pinned row verified
+against the dispatch sites. JS suite: 317 passed / 0 failed on the
+lane's own dist (bw64-build.sh, "Browser export verified", support
+archive bbc583c6) -- the branch baseline exactly, including
+vk-register-citations. Emulator native suite: 647 tests, 0 FAILED,
+single-threaded (the bridge is outside its build graph, as expected;
+run-native.py is the native surface for this change).
