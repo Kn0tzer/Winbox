@@ -8416,6 +8416,13 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn, bool speculative)
     for (U32 i = 0; i < 16; i++) gpr[i] = reg[i].u64;
     Jit64WasmState st;
     jit64WasmStateInit(st, gpr, rip, rflags);
+    // XMM bridge: flatten xmm[16] (lo/hi pairs) into the wasm state; the
+    // module stages them into locals and publishes them back on exit.
+    {
+        U64 xmmFlat[32];
+        for (U32 i = 0; i < 16; i++) { xmmFlat[2 * i] = xmm[i].lo; xmmFlat[2 * i + 1] = xmm[i].hi; }
+        jit64WasmStateInitXmm(st, xmmFlat);
+    }
     st.limit = (U32)limit;
     jit64WasmStateSetGens(st, m_jit->genBaseAddr, block.gen0, block.gen1);
     // K-M3: arm the guest-access context for the whole call, exactly as
@@ -8445,6 +8452,11 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn, bool speculative)
     U32 outFlags = rflags;
     jit64WasmStateRead(st, outGpr, outRip, outFlags);
     for (U32 i = 0; i < 16; i++) reg[i].setU64(outGpr[i]);
+    {
+        U64 xmmFlat[32];
+        jit64WasmStateReadXmm(st, xmmFlat);
+        for (U32 i = 0; i < 16; i++) { xmm[i].lo = xmmFlat[2 * i]; xmm[i].hi = xmmFlat[2 * i + 1]; }
+    }
     rip = outRip;
     rflags = outFlags;
     U32 executed = st.execCount;
@@ -8469,6 +8481,10 @@ U32 CPU64::execWasmBlock(const Jit64Block& block, U64 maxInsn, bool speculative)
         // semantics. The run loops deliver the fault from here.
         memoryFaultRip = st.rip;
         for (int i = 0; i < X64_REG_COUNT; i++) faultCheckpointRegs[i] = reg[i];
+        // The state read-back above already published the pre-fault XMM
+        // state (SSE loads commit only after both qword reads pass), so
+        // the checkpoint takes the same values.
+        for (int i = 0; i < 16; i++) faultCheckpointXmm[i] = xmm[i];
         faultCheckpointFlags = rflags;
         faultCheckpointFsBase = fsbase;
         faultCheckpointGsBase = gsbase;
@@ -8492,11 +8508,14 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
     const U64 startRip = block.startRip;
     U64 savedGpr[X64_REG_COUNT];
     for (U32 i = 0; i < X64_REG_COUNT; i++) savedGpr[i] = reg[i].u64;
+    Xmm savedXmm[16];
+    for (U32 i = 0; i < 16; i++) savedXmm[i] = xmm[i];
     const U64 savedRip = rip;
     const U32 savedFlags = rflags;
     m_jit->verifyChecks++;
     auto reject = [&](const char* reason, U32 interpDone, U32 jitDone) -> U32 {
         for (U32 i = 0; i < X64_REG_COUNT; i++) reg[i].setU64(savedGpr[i]);
+        for (U32 i = 0; i < 16; i++) xmm[i] = savedXmm[i];
         rip = savedRip;
         rflags = savedFlags;
         U32 gen = KMemory64::blockPageGenOf(block.page0);
@@ -8545,6 +8564,13 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
     for (U32 i = 0; i < X64_REG_COUNT; i++) {
         if (reg[i].u64 != interpreter.reg[i].u64) { regMismatch = i; break; }
     }
+    // XMM state is part of the architectural comparison: the clone carries
+    // the pre-block XMM values (cloneRegistersFrom copies xmm), and the
+    // wasm module publishes its XMM locals back through execWasmBlock.
+    U32 xmmMismatch = 16;
+    for (U32 i = 0; i < 16; i++) {
+        if (xmm[i].lo != interpreter.xmm[i].lo || xmm[i].hi != interpreter.xmm[i].hi) { xmmMismatch = i; break; }
+    }
     bool writesMatch = interpMemory.writes.size() == jitMemory.writes.size();
     if (writesMatch) {
         for (const auto& write : interpMemory.writes) {
@@ -8556,6 +8582,7 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
         }
     }
     const bool matches = jitDone == interpDone && regMismatch == X64_REG_COUNT &&
+        xmmMismatch == 16 &&
         rip == interpreter.rip && rflags == interpreter.rflags && writesMatch;
     if (!matches) {
         if (regMismatch < X64_REG_COUNT) {
@@ -8563,6 +8590,14 @@ U32 CPU64::verifyWasmBlock(Jit64Block& block, U64 maxInsn) {
                      (unsigned long long)startRip, regMismatch,
                      (unsigned long long)interpreter.reg[regMismatch].u64,
                      (unsigned long long)reg[regMismatch].u64);
+        }
+        if (xmmMismatch < 16) {
+            klog_fmt("JIT64 VERIFY xmm mismatch rip=0x%llx xmm=%u interp=%llx:%llx jit=%llx:%llx",
+                     (unsigned long long)startRip, xmmMismatch,
+                     (unsigned long long)interpreter.xmm[xmmMismatch].hi,
+                     (unsigned long long)interpreter.xmm[xmmMismatch].lo,
+                     (unsigned long long)xmm[xmmMismatch].hi,
+                     (unsigned long long)xmm[xmmMismatch].lo);
         }
         if (rip != interpreter.rip || rflags != interpreter.rflags || !writesMatch || jitDone != interpDone) {
             klog_fmt("JIT64 VERIFY state mismatch rip=0x%llx interpRip=0x%llx jitRip=0x%llx interpFlags=0x%x jitFlags=0x%x writes=%u/%u",
@@ -8597,7 +8632,19 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     // A rip already known unemittable at this generation never pays the
     // snapshot + decode again (no page of a rejected block is registered, so
     // the entry simply stays until this page is written).
-    if (m_jit->negative.rejected(r, gen0Entry)) { m_jit->insnsFallback++; return 0; }
+    U16 negOpcodeKey = 0xFFFF;
+    U64 negFailRip = 0;
+    if (m_jit->negative.rejectedInfo(r, gen0Entry, negOpcodeKey, negFailRip)) {
+        // Entry-weighted census: attribute this fallback entry to the
+        // opcode that rejected the block at compile time.
+        if (negOpcodeKey >= 0x100 && negOpcodeKey != 0xFFFF)
+            m_jit->rejectEntry0FOpcode[(U8)negOpcodeKey].fetch_add(1, std::memory_order_relaxed);
+        else if (negOpcodeKey != 0xFFFF)
+            m_jit->rejectEntryOpcode[(U8)negOpcodeKey].fetch_add(1, std::memory_order_relaxed);
+        if (negFailRip) m_jit->recordRejectSite(r, negFailRip, negOpcodeKey, nullptr, 0, 1);
+        m_jit->insnsFallback++;
+        return 0;
+    }
     // Hotness: do not compile every one-off startup block. The saturated
     // threshold is reserved as an explicit no-compile mode for dispatch-cost
     // measurements; still update the counter so it measures the full cold path.
@@ -8611,11 +8658,29 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     for (U32 i = 0; i < (U32)sizeof(snap); i++) snap[i] = fetchByte(r + i);
     Jit64Op ops[24];
     U32 n = jit64CompileStream(r, snap, (U32)sizeof(snap), ops, 24, true);
+    // Reject attribution on two axes: rejectOpcode counts compile attempts
+    // (the historical distinct-block census); rejectEntryOpcode plus the
+    // reject-site table count fallback ENTRIES, attributing this entry to
+    // the opcode / RIP that truncated the block. The values are carried
+    // into the negative cache so later entries of the same block keep
+    // counting without a re-decode (see the rejectedInfo fast path above).
+    U16 rejectOpcodeKey = 0xFFFF;
+    U64 rejectFailRip = 0;
     auto recordRejectedOpcode = [&](U32 offset) {
         U8 opcode = 0, opcode2 = 0;
         if (!jit64OpcodeBytes(snap + offset, (U32)sizeof(snap) - offset, opcode, opcode2)) return;
-        if (opcode == 0x0F) m_jit->reject0FOpcode[opcode2].fetch_add(1, std::memory_order_relaxed);
-        else m_jit->rejectOpcode[opcode].fetch_add(1, std::memory_order_relaxed);
+        if (opcode == 0x0F) {
+            m_jit->reject0FOpcode[opcode2].fetch_add(1, std::memory_order_relaxed);
+            m_jit->rejectEntry0FOpcode[opcode2].fetch_add(1, std::memory_order_relaxed);
+            rejectOpcodeKey = (U16)(0x100 + opcode2);
+        } else {
+            m_jit->rejectOpcode[opcode].fetch_add(1, std::memory_order_relaxed);
+            m_jit->rejectEntryOpcode[opcode].fetch_add(1, std::memory_order_relaxed);
+            rejectOpcodeKey = opcode;
+        }
+        rejectFailRip = r + offset;
+        m_jit->recordRejectSite(r, rejectFailRip, rejectOpcodeKey, snap + offset,
+                                (U32)sizeof(snap) - offset, 1);
     };
     if (n < 2) {
         U32 offset = 0;
@@ -8630,9 +8695,10 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
         }
         const bool endedAtControlFlow = n == 1 && ops[0].plan == JIT64_FAST &&
             (ops[0].kind == J64_CALL_REL || ops[0].kind == J64_JMP_REL ||
+             ops[0].kind == J64_CALL_IND || ops[0].kind == J64_JMP_IND ||
              ops[0].kind == J64_JCC || ops[0].kind == J64_RET || ops[0].kind == J64_SYSCALL);
         if (!counted && !endedAtControlFlow) recordRejectedOpcode(offset);
-        m_jit->negative.add(r, gen0Entry);
+        m_jit->negative.add(r, gen0Entry, rejectOpcodeKey, rejectFailRip);
         m_jit->insnsFallback++;
         return 0;
     }
@@ -8641,7 +8707,7 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     for (U32 i = 0; i < n; i++) {
         if (ops[i].plan != JIT64_FAST) {
             recordRejectedOpcode(offset);
-            m_jit->negative.add(r, gen0Entry);
+            m_jit->negative.add(r, gen0Entry, rejectOpcodeKey, rejectFailRip);
             m_jit->insnsFallback++;
             return 0;
         }

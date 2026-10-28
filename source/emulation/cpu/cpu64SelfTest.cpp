@@ -9713,7 +9713,7 @@ int runX64SelfTest() {
         // Process-wide aggregate JSON: exercises jit64RegisterState +
         // jit64GlobalStatsJson (the panel's read path) in a real build.
         {
-            char stats[768];
+            char stats[8192];
             if (jit64GlobalStatsJson(stats, sizeof(stats))) printf("BW64JITSTATS: %s\n", stats);
         }
         printf("WASM64: blocks=%llu insns=%llu entered=%llu rejected=%llu instantiateFailed=%llu\n",

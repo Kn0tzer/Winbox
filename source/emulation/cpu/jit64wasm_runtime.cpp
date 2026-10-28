@@ -207,8 +207,11 @@ U32 jit64WasmOwnerId() {
 }
 
 bool jit64WasmHostAbiOk() {
+    // The size pin covers the whole staged state, including the XMM
+    // staging area appended at offset 176 (256 bytes): 176 + 256 = 432.
+    // include/jit64wasm.h static_asserts the same value; grow both together.
     return sizeof(void*) == 4 &&
-           sizeof(Jit64WasmState) == 176 &&
+           sizeof(Jit64WasmState) == 432 &&
            offsetof(Jit64WasmState, rip) == 128 &&
            offsetof(Jit64WasmState, genBase) == 152 &&
            offsetof(Jit64WasmState, limit) == 168;
