@@ -9,6 +9,13 @@
 // (tools/vkd3d/probe/uav12.c and root12.c via web/tests/d3d12-dump.mjs):
 //   testdata/spirv/d3d12-ps-uav-heap-array.spv — uav12 PS: runtime array
 //     of storage images at set 5/binding 0, index = push@0 + 0.
+//   testdata/spirv/d3d12-ps-uav-heap-array-write.spv — the WRITE shape of
+//     the same heap array (the cs12 TEX wall): model-mutated from the
+//     capture above with the minimal dxbc-spirv delta for a UAV store —
+//     NonWritable dropped, image format Unknown -> Rgba8 (vkd3d knows the
+//     UAV desc format, so cap 55 goes too), and an OpImageWrite of the
+//     loaded texel back through the same element. Ids preserved (a spirv-as
+//     text round-trip renumbers and is NOT how this fixture was made).
 //   testdata/spirv/d3d12-ps-root-cbv.spv — root12 CBV PS: the root CBV
 //     VA is push-loaded as vec2<u32> and OpBitcast to a PSB pointer.
 // The bridge audit mirrors these classifiers (source-pinned below).
@@ -21,11 +28,13 @@ import {
   analyzeDescriptorArrays, analyzeRootDescriptors, storageImageVars,
 } from '../../../../tools/spirvfix/spirvfix.mjs';
 import { scanWgslResources } from '../../../wgsl-utils.mjs';
+import * as naga from '../../../vendor/naga/node.js';
 import { decodeV2Frame, V2_REC } from '../../../vk-protocol.mjs';
 
 const uavBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array.spv', import.meta.url)));
 const cbvBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-root-cbv.spv', import.meta.url)));
 const uav64Bytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-int64.spv', import.meta.url)));
+const uavWriteBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-write.spv', import.meta.url)));
 
 function namesOf(mod) {
   const out = new Map();
@@ -115,6 +124,89 @@ test('R15a variant: push index plus a constant addend stays servable (signature 
   assert.ok([...namesOf(parseSpirv(fixed.bytes)).values()].includes('bw_arr_g5_b0_p0_a1'));
 });
 
+test('R15a census: a writable storage-image array is servable and flagged writable', () => {
+  const { arrays } = analyzeDescriptorArrays(parseSpirv(uavWriteBytes));
+  assert.equal(arrays.length, 1);
+  const a = arrays[0];
+  assert.equal(a.set, 5); assert.equal(a.binding, 0); assert.equal(a.elemKind, 'image');
+  assert.equal(a.writable, true, 'no NonWritable on a Sampled==2 image array means writable');
+  assert.equal(a.servable, true, a.reason || '');
+  assert.deepEqual(a.signatures[0].sig, { kind: 'push', byteOff: 0, add: 0 });
+  // The read fixture discriminates the flag: NonWritable-decorated, so not writable.
+  const ro = analyzeDescriptorArrays(parseSpirv(uavBytes)).arrays[0];
+  assert.equal(ro.writable, false);
+  assert.equal(ro.servable, true, ro.reason || '');
+});
+
+test('R15a rewrite: a writable array specializes to a WRITABLE scalar clone', () => {
+  const fixed = applySpirvFix(uavWriteBytes);
+  assert.ok(fixed.applied.includes('descriptor-array-specialize'), fixed.log.join('; '));
+  assert.ok(fixed.log.some(l => l.includes('(writable)')), 'the specialization log names writability');
+  const out = parseSpirv(fixed.bytes);
+  assert.ok(!capsOf(out).has(5302), 'RuntimeDescriptorArray must be stripped once no array survives');
+  assert.ok(!out.insns.some(i => i.op === 29), 'no OpTypeRuntimeArray may survive');
+  const names = namesOf(out);
+  const clone = [...names.entries()].find(([, n]) => n === 'bw_arr_g5_b0_p0_a0');
+  assert.ok(clone, 'clone carries its signature in its name');
+  const decos = out.insns.filter(i => i.op === 71 && i.words[0] === clone[0]);
+  assert.ok(decos.some(d => d.words[1] === 34 && d.words[2] === 5), 'clone keeps DescriptorSet 5');
+  assert.ok(decos.some(d => d.words[1] === 33 && d.words[2] === 0), 'clone keeps Binding 0');
+  assert.ok(!decos.some(d => d.words[1] === 24), 'clone must NOT gain NonWritable: it stays writable');
+  assert.ok(out.insns.some(i => i.op === 99), 'the OpImageWrite survives, re-targeted at the loaded clone');
+});
+
+test('R15a naga: the specialized write module converts to a read_write storage texture with textureStore', () => {
+  const fixed = applySpirvFix(uavWriteBytes);
+  const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: fixed.bytes }));
+  assert.match(wgsl, /bw_arr_g5_b0_p0_a0_?: texture_storage_2d<rgba8unorm,\s*read_write>/,
+    'naga emits the clone as a read_write storage texture (the tier parses this access for the layout)');
+  assert.ok(wgsl.includes('textureStore'), 'the image write survives translation as textureStore');
+});
+
+test('R15a fail-closed: a writable array with a second index signature is left unchanged', () => {
+  const mod = parseSpirv(uavWriteBytes);
+  mod.header.bound = 300;
+  const ret = mod.insns.findIndex(i => i.op === 253); // OpReturn
+  assert.ok(ret > 0);
+  mod.insns.splice(ret, 0,
+    { op: 65, words: [29, 91, 14, 50], resultType: 29, resultId: 91 },
+    { op: 61, words: [11, 92, 91], resultType: 11, resultId: 92 });
+  const { arrays } = analyzeDescriptorArrays(mod);
+  assert.equal(arrays[0].writable, true);
+  assert.equal(arrays[0].servable, false);
+  assert.match(arrays[0].reason, /distinct index signatures/);
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
+});
+
+test('R15a fail-closed: a store through the element pointer defeats specialization', () => {
+  const mod = parseSpirv(uavWriteBytes);
+  const ret = mod.insns.findIndex(i => i.op === 253);
+  assert.ok(ret > 0);
+  // OpStore through chain %30 (the array element pointer), value %37.
+  mod.insns.splice(ret, 0, { op: 62, words: [30, 37], resultType: null, resultId: null });
+  const { arrays } = analyzeDescriptorArrays(mod);
+  assert.equal(arrays[0].servable, false);
+  assert.match(arrays[0].reason, /store through an array element/);
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
+});
+
+test('R15a fail-closed: a texel-pointer use of the element is an escape', () => {
+  const mod = parseSpirv(uavWriteBytes);
+  mod.header.bound = 300;
+  const ret = mod.insns.findIndex(i => i.op === 253);
+  assert.ok(ret > 0);
+  // OpImageTexelPointer(resultType %29, id %93, image = chain %30, coord %38, sample %37):
+  // the element pointer escapes into a texel pointer -- no WGSL equivalent.
+  mod.insns.splice(ret, 0, { op: 60, words: [29, 93, 30, 38, 37], resultType: 29, resultId: 93 });
+  const { arrays } = analyzeDescriptorArrays(mod);
+  assert.equal(arrays[0].servable, false);
+  assert.match(arrays[0].reason, /escape \(op60\)/);
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
+});
+
 test('R15b census: the real root12 CBV module is one read-only root slot at push@0', () => {
   const ra = analyzeRootDescriptors(parseSpirv(cbvBytes));
   assert.equal(ra.mats.length, 2);
@@ -191,6 +283,14 @@ test('R15b fail-closed: a module-owned binding at the synthesized slot collides'
   assert.match(ra.rejectReason, /collides with a module-owned binding/);
   const fixed = applySpirvFix(serializeSpirv(mod));
   assert.ok(!fixed.applied.includes('root-descriptor-bda'));
+});
+
+test('bridge mirror: array writability is classified by signature/uses, not by NonWritable', () => {
+  const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  assert.ok(!bridge.includes('writableBad'), 'the bridge mirror must not gate runtime arrays on NonWritable (spirvfix parity)');
+  const fix = readFileSync(new URL('../../../../tools/spirvfix/spirvfix.mjs', import.meta.url), 'utf8');
+  assert.ok(!fix.includes('storage-image array is writable (writes not served)'), 'the writable-array rejection is gone from spirvfix');
+  assert.ok(fix.includes('rec.writable = '), 'spirvfix records writability on the array rec instead');
 });
 
 test('tier contract: scanWgslResources decodes bw_arr_* / bw_root_* names', () => {

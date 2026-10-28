@@ -2380,9 +2380,20 @@ function injectStorageImageFormats(mod, log, signature) {
 // (the bw_combined_* precedent: resolution metadata travels in the name;
 // the bind-group fingerprint covers the resolved entry). Two distinct
 // signatures on one array would need two resources at one binding in a
-// single draw -- unservable, left unchanged. The array variable must be
-// NonWritable-decorated: image stores through an array element are not
-// served (same wall as spirv-storage-image-write).
+// single draw -- unservable, left unchanged. Writable storage-image
+// arrays (Sampled==2 without NonWritable) specialize the same way: the
+// clone copies the array's decorations verbatim, so it stays writable,
+// naga emits a write / read_write storage texture, and the tier binds it
+// with the shader-declared access through the same bw_arr_* resolution
+// (the access is parsed from the WGSL decl, never assumed). That serves
+// the shapes that reach translation: compute modules (the bridge audit's
+// compute carve-out admits them before the capability checks) and
+// graphics modules that only READ through a writable-declared array. A
+// graphics module that actually writes a storage image still meets the
+// bridge's module-level spirv-storage-image-write rejection, unchanged.
+// Stores/atomics through an element POINTER and texel-pointer forms stay
+// fail-closed in the per-chain uses analysis: servable image writes go
+// through the loaded image object (OpImageWrite), never the pointer.
 //
 // R15b "root-descriptor-bda": a physical-storage-buffer pointer
 // materialized from the push block -- OpConvertUToPtr, or OpBitcast of a
@@ -2671,13 +2682,19 @@ export function analyzeDescriptorArrays(mod) {
     const rec = {
       varId: ins.resultId, varIns: ins, set: d.set ?? 0, binding: d.binding ?? 0,
       elemTypeId: pointee.words[1], elemKind, sc: ptr.words[1],
-      signatures: [], servable: false, reason: null,
+      signatures: [], servable: false, reason: null, writable: false,
     };
     if (!elemKind) { rec.reason = 'array element is not a descriptor type'; arrays.push(rec); continue; }
     // Writability only exists for storage images (Sampled==2); sampled
     // images and samplers cannot be stored through at all. A writable
-    // storage-image array lacks the NonWritable decoration -> rejected.
-    if (elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable) { rec.reason = 'storage-image array is writable (writes not served)'; arrays.push(rec); continue; }
+    // storage-image array (no NonWritable decoration) is NOT a rejection:
+    // the clone inherits the decorations verbatim and stays writable, so
+    // image writes through the element (OpImageWrite on the loaded image
+    // object) translate to a storage-texture store on the scalar clone.
+    // Recorded on the rec for the census/tests; the per-chain uses
+    // analysis below still fails closed on pointer-level stores, atomics
+    // and escapes (texel-pointer forms included).
+    rec.writable = elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable;
     const sigKeys = new Map();
     let bad = null;
     for (let ii = ctx.firstFunc; ii < mod.insns.length && !bad; ii++) {
@@ -2924,7 +2941,7 @@ export function specializeDescriptorArrays(mod, log) {
     }
     drop.add(a.varIns);
     for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) drop.add(dins);
-    log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')');
+    log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')' + (a.writable ? ' (writable)' : ''));
   }
   mod.insns = mod.insns.filter(i => !drop.has(i));
   r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
