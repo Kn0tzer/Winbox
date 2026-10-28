@@ -40,7 +40,7 @@ test('page replay counts and logs unsupported operations and skipped draws', () 
 test('pipeline skip paths for absent shaders, failed translation, and binding collisions log a feature', () => {
   assert.match(replay, /if \(!vsm \|\| !fsm\) \{ noteUnsupported\('missing-shader'/);
   assert.match(replay, /if \(!vsWgsl \|\| !fsWgsl\) \{ noteUnsupported\('shader-translation'/);
-  assert.match(replay, /if \(prior && JSON\.stringify\(layoutEntryFor\(prior\)\) !== JSON\.stringify\(layoutEntryFor\(decl\)\)\) \{\s*noteUnsupported\('incompatible-shared-binding'/);
+  assert.match(replay, /if \(prior && JSON\.stringify\(layoutEntryFor\(prior, 0\)\) !== JSON\.stringify\(layoutEntryFor\(decl, 0\)\)\) \{\s*noteUnsupported\('incompatible-shared-binding'/);
 });
 
 test('Vulkan transport hook installation does not swallow assignment failures', () => {

@@ -2,11 +2,15 @@
 // regression tests, campaign section 4.21.
 //
 // R15a specializes a runtime descriptor array with ONE provable index
-// signature into a scalar clone (bw_arr_*); R15b re-roots read-only root
+// signature into a scalar clone (bw_arr_*); R15b re-roots root
 // descriptors (physical-storage-buffer pointers materialized from the
-// push block) at synthesized storage bindings (bw_root_*). Both fail
-// closed. The fixtures are REAL guest modules captured in the emulator
-// (tools/vkd3d/probe/uav12.c and root12.c via web/tests/d3d12-dump.mjs):
+// push block) at synthesized storage bindings (bw_root_*), read-only or
+// read-write when the slot is stored through (the bridge marks such
+// ranges at draw record time and the section 4.30 BUFFER_READBACK path
+// returns the bytes to guest memory; atomic RMW stays unserved). Both
+// fail closed. The fixtures are REAL guest modules captured in the
+// emulator (tools/vkd3d/probe/uav12.c and root12.c via
+// web/tests/d3d12-dump.mjs):
 //   testdata/spirv/d3d12-ps-uav-heap-array.spv — uav12 PS: runtime array
 //     of storage images at set 5/binding 0, index = push@0 + 0.
 //   testdata/spirv/d3d12-ps-uav-heap-array-write.spv — the WRITE shape of
@@ -18,6 +22,10 @@
 //     text round-trip renumbers and is NOT how this fixture was made).
 //   testdata/spirv/d3d12-ps-root-cbv.spv — root12 CBV PS: the root CBV
 //     VA is push-loaded as vec2<u32> and OpBitcast to a PSB pointer.
+//   testdata/spirv/d3d12-ps-root-srv.spv — root12 SRV PS: the root SRV
+//     VA is rebuilt as a v2uint by the OpIAddCarry idiom, then bitcast.
+//   testdata/spirv/d3d12-ps-root-uav.spv — root12 UAV PS: one bitcast
+//     root VA, a runtime-index chain, and an OpStore through it.
 // The bridge audit mirrors these classifiers (source-pinned below).
 
 import { test } from 'node:test';
@@ -33,6 +41,8 @@ import { decodeV2Frame, V2_REC } from '../../../vk-protocol.mjs';
 
 const uavBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array.spv', import.meta.url)));
 const cbvBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-root-cbv.spv', import.meta.url)));
+const srvRootBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-root-srv.spv', import.meta.url)));
+const uavRootBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-root-uav.spv', import.meta.url)));
 const uav64Bytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-int64.spv', import.meta.url)));
 const uavWriteBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/d3d12-ps-uav-heap-array-write.spv', import.meta.url)));
 
@@ -234,18 +244,30 @@ test('R15b rewrite: re-rooted storage binding; 5346/5347 and the PSB model are g
   assert.ok(decos.some(d => d.words[1] === 33 && d.words[2] === 4096), 'root var at binding 4096 + pushOff/8');
 });
 
-test('R15b fail-closed: a store through the root pointer keeps the module untouched', () => {
+test('R15b writable: a store through the root pointer is served, not rejected', () => {
+  // Policy reversal, deliberate: this used to be the fail-closed case
+  // ("no GPU->guest buffer writeback"). The section 4.30 BUFFER_READBACK
+  // path plus draw-time GPU-write marking in the bridge removed that
+  // premise, so an OpStore through a root cone now makes the slot
+  // writable and servable; the fail-closed boundary moved to atomics,
+  // escapes, and unresolvable address shapes (all still pinned below).
   const mod = parseSpirv(cbvBytes);
   const ret = mod.insns.findIndex(i => i.op === 253);
   assert.ok(ret > 0);
   // OpStore through chain %39 (a root-pointer cone chain), value %40.
   mod.insns.splice(ret, 0, { op: 62, words: [39, 40], resultType: null, resultId: null });
   const ra = analyzeRootDescriptors(mod);
-  assert.equal(ra.moduleServable, false);
-  assert.match(ra.rejectReason, /written through/);
+  assert.equal(ra.moduleServable, true, ra.rejectReason || '');
+  assert.equal(ra.slots.length, 1);
+  assert.equal(ra.slots[0].writable, true);
   const fixed = applySpirvFix(serializeSpirv(mod));
-  assert.ok(!fixed.applied.includes('root-descriptor-bda'));
-  assert.ok(capsOf(parseSpirv(fixed.bytes)).has(5347), 'the loud rejection must stand');
+  assert.ok(fixed.applied.includes('root-descriptor-bda'), fixed.log.join('; '));
+  const out = parseSpirv(fixed.bytes);
+  const rootVar = [...namesOf(out).entries()].find(([, n]) => n === 'bw_root_p0');
+  assert.ok(rootVar, 'synthesized variable carries bw_root_p0');
+  const decos = out.insns.filter(i => i.op === 71 && i.words[0] === rootVar[0]);
+  assert.ok(!decos.some(d => d.words[1] === 24), 'a writable root variable carries no NonWritable decoration');
+  assert.ok(out.insns.some(i => i.op === 62 && i.words[0] === 39), 'the store through the re-rooted chain survives');
 });
 
 test('R15b fail-closed: converting the root pointer back to an integer is an escape', () => {
@@ -308,6 +330,13 @@ test('tier contract: scanWgslResources decodes bw_arr_* / bw_root_* names', () =
   assert.equal(root.rootOff, 0);
 });
 
+test('tier contract: a read_write bw_root_* variable decodes its push offset', () => {
+  const decls = scanWgslResources('@group(0) @binding(4097) var<storage, read_write> bw_root_p8: UAV;');
+  const root = decls.find(d => d.name === 'bw_root_p8');
+  assert.ok(root, 'read_write root variable is scanned');
+  assert.equal(root.rootOff, 8);
+});
+
 test('protocol contract: ROOT_DESCS (0x1D) decodes into a rootDescs op keyed by push offset', () => {
   assert.equal(V2_REC.ROOT_DESCS, 0x1D);
   const payload = new Uint8Array(4 + 28);
@@ -339,6 +368,10 @@ test('bridge mirror: the audit admits 5302/5346/5347 only under the R15 classifi
   assert.ok(tier.includes("case 'rootDescs': st.rootDescs = op.entries;"), 'tier applies ROOT_DESCS state');
   assert.ok(tier.includes('declElement(st, d, k)'), 'tier resolves bw_arr elements from the push block');
   assert.ok(tier.includes('d.rootOff != null'), 'tier resolves bw_root bindings from ROOT_DESCS');
+  assert.ok(bridge.includes('classifyRootAddr'), 'bridge mirrors the vec2 carry-idiom address classifier');
+  assert.ok(bridge.includes('rootWritableSlots'), 'bridge censuses writable root slots onto the pipeline');
+  assert.ok(bridge.includes('vk64MarkDrawRootWrites'), 'bridge marks writable root ranges when a draw is recorded');
+  assert.ok(bridge.includes('atomicWrites'), 'bridge mirror splits atomic writes from plain stores');
 });
 
 // OpExtension strings start at words[0] (unlike OpName, which starts at words[1]).
@@ -362,4 +395,86 @@ test('R15b rewrite: the PSB extension is stripped with the PSB capability', () =
   assert.ok(!extNamesOf(out).includes('SPV_KHR_physical_storage_buffer'), 'the PSB extension must not survive the rewrite');
   assert.ok(!capsOf(out).has(5346) && !capsOf(out).has(5347), 'no PSB capability may survive');
   assert.ok([...namesOf(out).values()].some(n => n.startsWith('bw_root_')), 'the re-rooted variable must survive');
+});
+
+test('R15b census: the real root12 SRV module traces through the OpIAddCarry idiom', () => {
+  const ra = analyzeRootDescriptors(parseSpirv(srvRootBytes));
+  assert.equal(ra.mats.length, 1);
+  assert.equal(ra.mats[0].form, 'bitcast');
+  assert.equal(ra.moduleServable, true, ra.rejectReason || '');
+  assert.deepEqual(ra.slots.map(x => [x.byteOff, x.writable]), [[0, false]]);
+});
+
+test('R15b rewrite: the SRV carry cone is swept and the slot re-roots read-only', () => {
+  const fixed = applySpirvFix(srvRootBytes);
+  assert.ok(fixed.applied.includes('root-descriptor-bda'), fixed.log.join('; '));
+  const out = parseSpirv(fixed.bytes);
+  assert.ok(!out.insns.some(i => i.op === 149), 'no OpIAddCarry may survive the rewrite');
+  assert.ok(!out.insns.some(i => i.op === 32 && i.words[1] === 5349), 'no PSB pointer type may survive');
+  const rootVar = [...namesOf(out).entries()].find(([, n]) => n === 'bw_root_p0');
+  assert.ok(rootVar, 'synthesized variable carries bw_root_p0');
+  const decos = out.insns.filter(i => i.op === 71 && i.words[0] === rootVar[0]);
+  assert.ok(decos.some(d => d.words[1] === 24), 'a read-only root variable keeps NonWritable');
+  assert.ok(decos.some(d => d.words[1] === 33 && d.words[2] === 4096), 'root var at binding 4096');
+});
+
+test('R15b census: the real root12 UAV module is one writable root slot at push@0', () => {
+  const ra = analyzeRootDescriptors(parseSpirv(uavRootBytes));
+  assert.equal(ra.mats.length, 1);
+  assert.equal(ra.moduleServable, true, ra.rejectReason || '');
+  assert.deepEqual(ra.slots.map(x => [x.byteOff, x.writable]), [[0, true]]);
+});
+
+test('R15b rewrite: the UAV slot re-roots read-write and its store survives, Aligned stripped', () => {
+  const fixed = applySpirvFix(uavRootBytes);
+  assert.ok(fixed.applied.includes('root-descriptor-bda'), fixed.log.join('; '));
+  const out = parseSpirv(fixed.bytes);
+  const rootVar = [...namesOf(out).entries()].find(([, n]) => n === 'bw_root_p0');
+  assert.ok(rootVar, 'synthesized variable carries bw_root_p0');
+  const decos = out.insns.filter(i => i.op === 71 && i.words[0] === rootVar[0]);
+  assert.ok(!decos.some(d => d.words[1] === 24), 'a writable root variable carries no NonWritable decoration');
+  assert.ok(!out.insns.some(i => i.op === 32 && i.words[1] === 5349), 'no PSB pointer type may survive');
+  // Walk access chains from every store's pointer operand: exactly one
+  // store must bottom out at the synthesized root variable.
+  const baseOf = new Map();
+  for (const i of out.insns) {
+    if ((i.op === 65 || i.op === 66 || i.op === 83) && i.resultId != null) baseOf.set(i.resultId, i.words[2]);
+  }
+  const rootOf = id => { let cur = id, guard = 0; while (baseOf.has(cur) && guard++ < 32) cur = baseOf.get(cur); return cur; };
+  const rootStores = out.insns.filter(i => i.op === 62 && rootOf(i.words[0]) === rootVar[0]);
+  assert.equal(rootStores.length, 1, 'exactly one store goes through the root variable');
+  const st = rootStores[0];
+  assert.ok(st.words.length < 3 || (st.words[2] & 2) === 0, 'the Aligned memory operand is stripped from the re-rooted store');
+});
+
+test('R15b fail-closed: a nonzero addend in the carry idiom is not served', () => {
+  const mod = parseSpirv(srvRootBytes);
+  mod.header.bound = 300;
+  const carry = mod.insns.find(i => i.op === 149);
+  assert.ok(carry, 'fixture carries an OpIAddCarry');
+  const uintTy = mod.insns.find(i => i.op === 21 && i.words[1] === 32 && i.words[2] === 0);
+  assert.ok(uintTy, 'fixture declares u32');
+  const firstFunc = mod.insns.findIndex(i => i.op === 54);
+  mod.insns.splice(firstFunc, 0, { op: 43, words: [uintTy.resultId, 200, 4], resultType: uintTy.resultId, resultId: 200 });
+  carry.words[3] = 200; // IAddCarry(lo, 4): the address addend becomes 4
+  const ra = analyzeRootDescriptors(mod);
+  assert.equal(ra.moduleServable, false);
+  assert.match(ra.rejectReason, /nonzero address addend/);
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!fixed.applied.includes('root-descriptor-bda'));
+});
+
+test('R15b fail-closed: an atomic through the root pointer is not served', () => {
+  const probe = analyzeRootDescriptors(parseSpirv(uavRootBytes));
+  const coneIds = new Set(probe.mats[0].uses.cone.map(c => c.resultId));
+  assert.ok(coneIds.size > 0, 'fixture root cone has a chain');
+  const mod = parseSpirv(uavRootBytes);
+  const store = mod.insns.find(i => i.op === 62 && coneIds.has(i.words[0]));
+  assert.ok(store, 'fixture stores through its root chain');
+  store.op = 228; // OpAtomicStore: same pointer operand, atomic semantics
+  const ra = analyzeRootDescriptors(mod);
+  assert.equal(ra.moduleServable, false);
+  assert.match(ra.rejectReason, /atomic/);
+  const fixed = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!fixed.applied.includes('root-descriptor-bda'));
 });

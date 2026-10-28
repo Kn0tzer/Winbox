@@ -3934,3 +3934,126 @@ it: 318 passed / 0 failed (the 317-file baseline plus this
 lane's vk-sampled-storage-serving guard file), superseding the
 first run's 317/1 above. The guest gate remains as recorded:
 outstanding, to be re-run in a quieter window.
+
+## 4.39 Root SRV/UAV serving: writable root descriptors execute end to end, with readback (2026-10-28, lane-psb)
+
+**The pinned gap (real modules, not fixtures).** With root12's probe debt
+fixed (section 4.29: genuine d3dcompiler_47.dll), its SRV and UAV cases
+compile and reach the bridge as physical-storage-buffer shader code, and
+both died at pipeline creation on the named rejection
+`spirv-capability-unknown:5347` (PhysicalStorageBufferAddresses). The
+modules were captured in-guest (VKD3D_SHADER_DUMP_PATH; fixtures
+`testdata/spirv/d3d12-ps-root-srv.spv` / `d3d12-ps-root-uav.spv`):
+the SRV pixel shader rebuilds the root VA from the push block with the
+carry idiom (CompositeExtract both halves of a v2uint push load,
+OpIAddCarry -- opcode 149 -- for the low half, CompositeConstruct,
+OpBitcast) and performs ONE merged OpLoad through an
+OpInBoundsAccessChain; the UAV pixel shader OpBitcasts the push-loaded
+v2uint directly, chains with a RUNTIME index into a runtime array of
+uint, and OpStores through it (memory operands Aligned|NonPrivatePointer).
+Both arrive as ROOT descriptors (the VA is push-constant data), not heap
+descriptors, so the serving vehicle is the R15b root-descriptor rewrite
+(section 4.21) -- which admitted neither shape: its provenance classifier
+could not see through the carry idiom (rejection: "pointer address does
+not trace to a single push-block load"), and its writable policy rejected
+any slot stored through (rejection: "root slot is written through its
+pointer (no GPU->guest buffer writeback)") -- a premise section 4.30's
+BUFFER_READBACK machinery had already removed for compute.
+
+**The blocker stack, as it actually unfolded.** (1) Admission: extend the
+provenance classifiers (spirvfix `r15ClassifyVec2Addr`, bridge mirror
+`classifyRootAddr` at `vk64bridge.cpp:942`) to the carry idiom -- both
+halves extracted from ONE push load of a v2uint, per-half constant
+add/sub, at most one OpIAddCarry whose sum feeds the low half and whose
+carry the high half consumes; any nonzero 64-bit addend stays rejected.
+The writable policy inverts: a slot stored through becomes servable and
+WRITABLE (no NonWritable decoration; the OpStore's Aligned operand is
+stripped on re-rooting, as loads already were); a slot written through
+an ATOMIC operation stays rejected by name ("atomics not served").
+(2) Translation: with the module admitted and rewritten, naga 30.2.0
+rejected the UAV function wholesale ("Function [0] 'main' is invalid")
+over three dead OpUndef %uint dxbc-spirv emits for never-read DXIL temp
+registers -- bisected on the real module against the vendored naga.
+New spirvfix R16 `strip-dead-undefs` (`spirvfix.mjs:3219`) removes a
+function-local OpUndef only when its id has no consumer word anywhere
+in the module (fail-closed: a literal word equal to the id keeps it).
+(3) Pipeline creation: Dawn refused the pipeline -- "Read-write storage
+buffer binding is used with a visibility (Vertex|Fragment) that contains
+Vertex". The tier merged both stages' declarations and gave every
+layout entry VERTEX|FRAGMENT; bind-group-layout visibility now follows
+the stages that actually declare the binding (`stageVis` on the merged
+declarations, `layoutEntryFor` at `web/vkwebgpu.mjs:1705`), which is
+also the honest WebGPU model for every other resource kind. A read-write
+storage binding genuinely declared by a vertex shader remains
+unservable and fails with Dawn's own named message.
+(4) Readback correctness, two layers. The bridge marks writable root
+ranges at draw record time (`vk64MarkDrawRootWrites`,
+`vk64bridge.cpp:4238`, replaying the recorded pipeline + merged push
+block exactly as emitRootDescs resolves them) -- but the mark's
+cleanliness epoch must be measured at the draw's EXECUTION point:
+vkd3d lands a resource's initial data as a vkCmdUpdateBuffer executed
+earlier in the same submission's serializer walk, so a record-time
+epoch snapshot counts the guest's own upload as post-draw dirt.
+emitRootDescs therefore re-stamps each writable slot's mark with the
+memory's current writeEpoch at submit (`vk64bridge.cpp:4696`); the
+record-time mark is kept because a copy recorded later in the SAME
+command buffer must still find it. And the page tier created every
+storage GPUBuffer with usage CopyDst|Storage, so the deferred
+V2_BUFFER_READBACK's copyBufferToBuffer failed Dawn validation
+("usage (CopyDst|Storage) doesn't include CopySrc") and the bridge
+timed the readback out; storage buffers now also carry COPY_SRC at both
+usage computations (bind-group key builder and entry builder, which
+must agree). The same COPY_SRC gap latent-affected compute readbacks
+whose source buffer was created through the same path.
+
+**Guest proof (slot-serialized, genuine d3dcompiler_47.dll).** BEFORE:
+root12 cbv OK, srv + uav FAIL CreateGraphicsPipelineState 0x80004005 on
+spirv-capability-unknown:5347. AFTER (evidence
+test-results/dxvk-psbroot9, dist wasm a1bd43ea): root12 RESULT 0 --
+cbv OK (RT 16/16 [191 191 223 255]), srv OK (RT 16/16 [255 128 64 255]),
+uav OK (RT 16/16 [64 128 191 255] AND all 16 stored words match
+0xA5000000+i, read back through the deferred V2_BUFFER_READBACK path).
+Tier stats on the passing run: 4 pipelines translated, 0 rejected,
+dropReasons {}.
+
+**Guards.** spirvfix-r15.test.mjs extended to 22 (carry-idiom census +
+rewrite, writable census + rewrite with NonWritable absent and Aligned
+stripped, nonzero-vec2-addend and atomic fail-closed mutants, bridge
+mirror pins); spirvfix-r16.test.mjs x5 (the real module's three dead
+undefs, strip + composition with the R15b rewrite, no-fire on CBV/SRV,
+used-undef kept); vk-psb-serving.test.mjs x3 (stageVis pins, COPY_SRC at
+both sites, bridge marking + re-stamp pins); the REWRITES coverage list,
+the vk-pipeline-rejection and vk-silent-drop-guard pins for the
+layoutEntryFor signature / shared-binding comparison (visibility now
+forced in the comparison, so a stage-usage difference cannot masquerade
+as a kind incompatibility). Sabotage-verified: disconnecting the vec2
+classifier fails exactly the 3 SRV tests; removing the atomic gate fails
+exactly 1; always emitting NonWritable fails exactly 2; removing the
+store Aligned strip fails exactly 1; neutering stripDeadUndefs fails
+the R16 strip tests; reverting the stageVis default fails the tier pin.
+
+**Residue / next walls (named, by design).** Atomic RMW through a root
+pointer rejects loudly (atomics not served). Root address materialization
+with a nonzero constant addend (scalar or vec2) rejects loudly -- folding
+a proven constant into the re-rooted chains is the future fix if a real
+module needs it. An OpUndef WITH consumers stays in the module (naga
+rejects it at translation, loudly) -- substituting zero for a used undef
+is a semantics decision no real module has forced yet. The compute
+sibling of the epoch lesson is noted, not fixed here: vk64MarkComputeWrites
+also snapshots at record time, so a same-list upload-then-dispatch
+pattern would fail its cleanliness proof the way draws did; cs12's
+proven shapes upload in earlier submissions and are unaffected.
+32-bit root descriptors ride the same bridge mirror (the classifier is
+ABI-shared) but have no guest proof yet -- that is lane-d3d12-32's
+territory.
+
+**Process findings worth keeping.** vkTrace() is not evidence after the
+fact: its free budget is 256 trap prints and BW64_VKTRACE latches on the
+first calling thread (getenv is unreliable on guest worker threads), so
+trace-gated diagnostics placed past bring-up print nothing -- this
+lane's first diagnostic round was invisible for exactly that reason and
+the mechanism it watched was blamed unfairly for one cycle. And a
+sabotage restore via `git checkout --` on UNCOMMITTED files reverts to
+the base commit, not to the pre-sabotage state; the lane's files were
+recovered byte-identical from the dist export (hash-verified), but the
+rule stands: back up to files, not to git, when the work is uncommitted.

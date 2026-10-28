@@ -1732,7 +1732,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   };
 
   /** @returns {GPUBindGroupLayoutEntry | null} */
-  function layoutEntryFor(decl, vis = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT) {
+  function layoutEntryFor(decl, vis = decl.stageVis ?? (GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT)) {
     const t = decl.type;
     if (t.startsWith('texture_') && !t.startsWith('texture_storage')) {
       const elem = /texture_\w+<(\w+)>/.exec(t)?.[1] || 'f32';
@@ -1909,16 +1909,26 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     vsR = serveSampledStorage(vsR);
     fsR = serveSampledStorage(fsR);
 
-    const declarations = scanWgslResources(vsR.code).concat(scanWgslResources(fsR.code));
+    // Visibility must name the stages that actually declare the binding:
+    // Dawn refuses a read-write storage buffer (or write-access storage
+    // texture) whose layout visibility includes the vertex stage, and a
+    // root-descriptor UAV declared only by the fragment shader would
+    // otherwise inherit the merged VERTEX|FRAGMENT default and take the
+    // whole pipeline down (root12 UAV case, lane-psb). Read-only resources
+    // are unaffected either way; narrower visibility is always valid for a
+    // binding a stage never declares.
+    const declarations = scanWgslResources(vsR.code).map(d => ({ ...d, stageVis: GPUShaderStage.VERTEX }))
+      .concat(scanWgslResources(fsR.code).map(d => ({ ...d, stageVis: GPUShaderStage.FRAGMENT })));
     const uniqueDeclarations = new Map();
     for (const decl of declarations) {
       const key = decl.group + ':' + decl.binding;
       const prior = uniqueDeclarations.get(key);
-      if (prior && JSON.stringify(layoutEntryFor(prior)) !== JSON.stringify(layoutEntryFor(decl))) {
+      if (prior && JSON.stringify(layoutEntryFor(prior, 0)) !== JSON.stringify(layoutEntryFor(decl, 0))) {
         noteUnsupported('incompatible-shared-binding', key);
         return fail('incompatible-shared-binding:' + key);
       }
       if (!prior) uniqueDeclarations.set(key, decl);
+      else prior.stageVis |= decl.stageVis;
     }
     const decls = [...uniqueDeclarations.values()];
     // Uniform block sizes from the WGSL, so short buffers can be padded.
@@ -2365,7 +2375,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         parts.push('s' + d.binding + ':' + (has ? sHex + (t === 'sampler_comparison' ? ':c' : ':f') : 'default'));
       } else if (d.addr === 'uniform' || d.addr.startsWith('storage')) {
         const isStorage = d.addr.startsWith('storage');
-        const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
+        // Storage buffers also need COPY_SRC: a deferred buffer readback
+        // (V2_BUFFER_READBACK -- a dispatch OR a writable-root-descriptor
+        // draw wrote the range, and a later vkCmdCopyBuffer reads it back)
+        // copies OUT of the bound GPUBuffer, and Dawn rejects the copy when
+        // the source usage lacks CopySrc (root12 UAV readback, lane-psb).
+        const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST | (isStorage ? GPUBufferUsage.COPY_SRC : 0);
         const n = Math.max(1, d.arrayCount || 1);
         for (let k = 0; k < n; k++) {
           const b = bindFor(d, k);
@@ -2537,7 +2552,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
             bufHex += ':min' + minSize;
           }
-          const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST;
+          // Storage buffers also need COPY_SRC: a deferred buffer readback
+        // (V2_BUFFER_READBACK -- a dispatch OR a writable-root-descriptor
+        // draw wrote the range, and a later vkCmdCopyBuffer reads it back)
+        // copies OUT of the bound GPUBuffer, and Dawn rejects the copy when
+        // the source usage lacks CopySrc (root12 UAV readback, lane-psb).
+        const usage = (isStorage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM) | GPUBufferUsage.COPY_DST | (isStorage ? GPUBufferUsage.COPY_SRC : 0);
           const gpu = gpuBufferFor(bufHex, bytes, usage, preHash);
           if (gpu && isStorage && b && b.kind === 1 && !String(bufHex).startsWith('zero:'))
             storageBufferRegistry.set(b.obj + ':' + (b.bufOff || '0'), { buffer: gpu, bufId: b.obj, baseOff: BigInt(b.bufOff || '0') });
