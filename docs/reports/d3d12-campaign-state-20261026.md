@@ -3652,3 +3652,47 @@ sampled-texture rewrite (§4.26), and root12 srv/uav via page-tier
 PSB serving (the 5347 rejection). The remaining vkd3d staging debt
 is the 32-bit guest verification of the §4.31-x86 pair (built and
 staged; never yet run in a 32-bit guest).
+
+MERGE OUTCOME (2026-10-28, restage merge lane): merged into
+integ/winbox-20261022b as merge commit 847579870 (parents 8bf268112 +
+f69fbcb3a); this section was renumbered 4.31 -> 4.37 at the merge. The
+canonical re-stage was performed on the merged tree under the transfer
+discipline above: the pair was COPIED from wt-restage's preserved build
+output (tools/vkd3d/build.w64) after both files hashed exactly to the
+new pins (d3d12.dll a96b4e9d53ed0bed..., d3d12core.dll 3d3bfe43cbec...)
+and was never rebuilt. Staging on the merged tree measured
+web/runtime/wine64.zip at 213,105,320 bytes / sha256
+8bbd57c0c7e4db20751612796ff7da3c7bd31827c7332a2d8340412cf02a53ec -- a
+per-staging measurement (its DOS timestamps differ from the lane
+tree's 70d752371a... for the identical member set, as the
+staged-archive invariant predicts; member pins + archive size + the
+completeness gate are the invariants). Follow-up commit 3b19232fc
+re-pinned runtime-assets.json's wine64 entry to the merged measurement
+(one line) and regenerated the artifact manifest (exactly the w64 line
+changed). Gates on the merged tree: completeness 0 failures (1
+environmental skip); citation audit 0 DRIFT / 0 MISSING (227 MATCH /
+12 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT); register unchanged at
+370 = 71/66/233/0; JS suite 317/0 on the final dist; native suite
+647/0; dist export verified ("Browser export verified") with
+dist/runtime/wine64.zip byte-identical to the staged web archive.
+Shipping-path guest proof on the merged dist (system placement from
+wine64.zip; tools/vkd3d/stage-vkd3d.sh probe staging into the dist
+prefix; test-results/dxvk-restage-merge-uav12-sys4 and
+dxvk-restage-merge-tri12-sys2): the uav12 case map matches the lane's
+post-staging map CASE FOR CASE -- EXEC OK for R8G8B8A8_UNORM,
+R32G32B32A32_FLOAT, R16G16B16A16_FLOAT and R32_UINT (all 16 texels;
+the section-4.29 fix now serves from the shipping archive), R16_FLOAT
+FAIL mismatches=48/64 and R8_UINT FAIL mismatches=32/64 at their named
+storage-format-access:<fmt>:ReadOnly rejections (the sampled serving
+of lane-sampledtex is not yet merged), zero 5347 rejections,
+sweep=ALL18; tri12 RESULT 0 (device created through the system-placed
+pair). Two earlier probe attempts in this merge were lost to box
+incidents rather than the build -- one guest run died when the disk
+hit 100% mid-boot (ENOSPC in the harness's result write) and one tri12
+run hit the 900 s harness timeout at load ~10 with its boot stretched
+past the window; the runs above are the evidence. One suite run
+mid-merge showed provenance-artifacts failing on the probe-staged
+dist prefix64.zip (the subtest pins the exported prefix to the pinned
+archive plus deskpin staging only); the final dist was rebuilt from
+the committed tree without probe staging and the suite is 317/0 on
+it, as recorded above.
