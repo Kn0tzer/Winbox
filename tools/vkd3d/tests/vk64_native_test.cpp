@@ -4,6 +4,11 @@
 #define __CPU64_H__
 #define __KMEMORY64_H__
 #define __KPROCESS_H__
+// log.h is suppressed too: drvinittrace.h (campaign section 4.35) includes
+// it for klog_fmt, which this file already stubs below; the rest of log.h
+// declares BString-by-value functions from the suppressed emulator
+// environment, so it can never parse in this translation unit.
+#define __LOG_H__
 #define BOXEDWINE_VULKAN64
 #include <cstdint>
 #include <cstring>
