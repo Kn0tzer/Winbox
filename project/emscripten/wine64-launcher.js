@@ -1105,6 +1105,7 @@
                 if (param("vkprof") === "1") ENV["BW64_VKPROF"] = "1";
                 if (param("framelog") === "1") ENV["BW64_FRAMELOG"] = "1";
                 if (param("vktrace") === "1") ENV["BW64_VKTRACE"] = "1";
+                if (param("drvinit") === "1") ENV["BW64_DRVINIT"] = "1";
                 if (param("winmmbypass") === "1") ENV["WINEDLLOVERRIDES"] = "winmm=n";
                 if (param("bssdiag") && param("bssdiag") !== "0") ENV["BW64_BSSDIAG"] = param("bssdiag") === "1" ? "img" : param("bssdiag");
                 if (param("ripsample") === "1") {

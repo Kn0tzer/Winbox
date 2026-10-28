@@ -13,6 +13,7 @@
  */
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 #include "xwireconnection.h"
 #include "xwireserver.h"
 #include "xwirepresent.h"
@@ -681,6 +682,9 @@ void XWireConnection::doHandshake() {
     handshakeDone = true;
     klog_fmt("XWire: handshake complete (vendor=%s root=0x%x visual=0x%x), %d body bytes",
              vendor, rootWindow, rootVisual, (int)body.size());
+    // BW64_DRVINIT (section 4.30): an accept without a handshake is a
+    // client that connected but never became a working X client.
+    bw64DrvInitStep("x11-handshake", "pid=%u root=0x%x", ownerPid, rootWindow);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +716,16 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
             // adopt logic can tell the freshly spawned app's windows apart from a
             // still-running previous app's (whose base was allocated earlier).
             w.ownerClientBase = clientIdBase;
+            // BW64_DRVINIT (section 4.30): the first window overall is
+            // the desktop coming up (explorer) — the readiness point
+            // the section 4.27 desktop-init race is about.
+            {
+                static std::atomic<bool> s_firstWindow;
+                if (bw64DrvInitOnce(s_firstWindow)) {
+                    bw64DrvInitStep("x11-first-window", "pid=%u wid=0x%x parent=0x%x",
+                                    ownerPid, wid, w.parent);
+                }
+            }
             {
                 XWireServer& srv = XWireServer::instance();
                 std::lock_guard<std::mutex> lk(srv.regMutex);
