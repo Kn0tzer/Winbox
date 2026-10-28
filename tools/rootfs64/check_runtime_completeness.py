@@ -136,6 +136,34 @@ def t_vkd3d_payloads():
         assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned vkd3d payload bytes'
 
 
+# The 32-bit D3D12 payload staged into wine32.zip at system placement
+# by stage-vkd3d-payloads32.sh (x86 vkd3d lane, 2026-10-28): the PE32
+# vkd3d-proton 3.1.0 build (tools/vkd3d/build.w32; recipe in
+# tools/vkd3d/BUILD.md, scripted as tools/vkd3d/build-win32.sh)
+# replaces WineHQ wine-stable 10.0's bundled pair in the i386 tree —
+# the tree prefix32's system32.link points at. As on the 64-bit side,
+# Wine's own d3d12core has no DXIL frontend, and the pair moves
+# together. Re-pins are deliberate: a vkd3d rebuild that changes bytes
+# fails here until the new bytes are reviewed and pinned. (The PE
+# build is not byte-reproducible — linker timestamp + the version
+# header embeds the enclosing repo's git describe — so the canonical
+# bytes are the staged ones, transferred and hash-verified, exactly
+# like the 64-bit pair.)
+VKD3D32_PINS = {
+    'opt/wine-stable/lib/wine/i386-windows/d3d12.dll': '872c3d65ad3febfb3fdbd935ca2272624a0e711724dd4013001dbc9ffd3ab0e1',
+    'opt/wine-stable/lib/wine/i386-windows/d3d12core.dll': '71e9c174084474d84e04893f0cef9eaea9bbede43201308e46b19b01fd727600',
+}
+
+
+def t_vkd3d_payloads32():
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()
+                   if n in VKD3D32_PINS}
+    for name, pin in VKD3D32_PINS.items():
+        assert name in members, f'{name} missing from shipped wine32.zip'
+        assert sha(members[name]) == pin, f'{name} in wine32.zip != pinned vkd3d32 payload bytes'
+
+
 def t_winehq_source_and_zip():
     for name, pin in WINEHQ_PINS.items():
         src = ROOT / 'tools/rootfs64/winehq10-x86_64' / name
@@ -399,6 +427,7 @@ def t_prefix64_built():
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
+    check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('DirectX redist sets complete (both zips)', t_directx_sets)

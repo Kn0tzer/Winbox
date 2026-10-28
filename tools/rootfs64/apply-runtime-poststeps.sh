@@ -60,6 +60,10 @@ tools/rootfs64/stage-wine64-payloads.sh
 # vkd3d D3D12 payload (bw64 vulkan-1.dll shim + vkd3d-proton d3d12 pair)
 # into wine64.zip at system placement; same merge-script path.
 tools/rootfs64/stage-vkd3d-payloads.sh
+# vkd3d D3D12 payload, 32-bit (PE32 vkd3d-proton d3d12 pair from
+# tools/vkd3d/build.w32) into wine32.zip at system placement; same
+# merge-script path.
+tools/rootfs64/stage-vkd3d-payloads32.sh
 
 # The manifest is generated from the shipped zips; regenerate it from the
 # final bytes before gating so the gate compares like with like.
