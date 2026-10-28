@@ -15,6 +15,7 @@ import {
   parseMinBindingSize, rewritePushConstantsWGSL, rewriteResolvedDxvkPresent,
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
   parseStorageTextureAccessRejection,
+  resolveStorageVarFormat,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
@@ -1804,7 +1805,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return { groupMap, maxGroup, byGroup };
   }
 
-  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6, sets = null) {
+  async function getPipelineFor(pipe, sampleCount, unnegated = false, passHasDepth = false, indexType = 0, colorFormats = [format], depthFormat = 'depth24plus', depthAspects = 6, sets = null, pushBlock = null) {
     // WebGPU requires the pipeline's depthStencil state to match the render
     // pass attachments: a pipeline without depthStencil cannot be set in a
     // pass with a depth attachment (Vulkan allows it). Key the cache on the
@@ -1823,8 +1824,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // format), so -- like the border variant below -- the pipeline is keyed
     // on the resolved formats and never shared across different ones.
     const vsmPre = F.shaders.get(pipe.vsHash), fsmPre = F.shaders.get(pipe.fsHash);
-    const vsStorageSig = sets && vsmPre ? storageSignatureFor(vsmPre.code, sets) : '';
-    const fsStorageSig = sets && fsmPre ? storageSignatureFor(fsmPre.code, sets) : '';
+    const vsStorageSig = sets && vsmPre ? storageSignatureFor(vsmPre.code, sets, pushBlock) : '';
+    const fsStorageSig = sets && fsmPre ? storageSignatureFor(fsmPre.code, sets, pushBlock) : '';
     let effKey = key;
     if (vsStorageSig || fsStorageSig) effKey = key + ':storage:vs[' + vsStorageSig + ']fs[' + fsStorageSig + ']';
     if (!borderPre) {
@@ -2158,18 +2159,27 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // "set:binding=spvFormat" signature to inject at translation time.
   // Variables that cannot be resolved are omitted from the signature, which
   // leaves their type Unknown and fails translation loudly (never a guess).
-  function storageSignatureFor(code, sets) {
+  function storageSignatureFor(code, sets, pushBlock = null) {
     const vars = storageImageVars(code);
     if (!vars || !vars.length) return '';
     const parts = [];
     for (const v of vars) {
       if (v.format !== 0) { parts.push(v.set + ':' + v.binding + '=' + v.format); continue; }
       const set = sets?.get(v.set);
-      const b = set ? bindingForElement(set.bindings || [], v.binding, 0) : null;
-      const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
-      const img = imgHex && imageForView(b?.obj, imgHex);
-      const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
-      if (entry) parts.push(v.set + ':' + v.binding + '=' + entry.spv);
+      if (!set) continue;
+      // The format is the bound view's format at the element the shader
+      // touches: descriptor-array variables carry their proven index
+      // signature and resolve against the entry covering that element
+      // (the draw's push block evaluates push-indexed signatures), never
+      // element 0 by default. See wgsl-utils.mjs resolveStorageVarFormat
+      // for the proof rules; unproven formats are omitted, not guessed.
+      const spv = resolveStorageVarFormat(set.bindings || [], v, pushBlock, (obj) => {
+        const imgHex = F.views.get(obj);
+        const img = imgHex && imageForView(obj, imgHex);
+        const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
+        return entry ? entry.spv : null;
+      });
+      if (spv != null) parts.push(v.set + ':' + v.binding + '=' + spv);
     }
     return parts.join(';');
   }
@@ -2932,7 +2942,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             if (drawPipe.rasterizerDiscard) { stats.discardedDraws = (stats.discardedDraws || 0) + 1; break; }   // RASTERIZER_DISCARD: no fragments, VS has no other visible effect here
             if (drawPipe.depthBiasDynamic && st.depthBias)
               drawPipe = {...drawPipe,depthBiasConstantFactor:st.depthBias.constantFactor,depthBiasClamp:st.depthBias.clamp,depthBiasSlopeFactor:st.depthBias.slopeFactor};
-            const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects,st.sets);
+            const selected=await getPipelineFor(drawPipe,passSamples,st.pipeNeg,!!depthView,st.ibind?.indexType||0,passColorFormats,passDepthFormat,passDepthAspects,st.sets, st.pushBlock);
             if(selected.skip) {noteSkippedDraw('draw-pipeline-skipped', 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + String(selected.skip).slice(0, 160));if (diagOn) v2DiagNoteSkip(passDiagDraws.skips, 'vs=' + st.pipeDesc.vsHash + ' fs=' + st.pipeDesc.fsHash + ' ' + selected.skip);break;}
             st.pipeRec=selected;
             passEnc.setPipeline(selected.pipeline);
@@ -2946,7 +2956,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
                 // framebuffer mapping bit-for-bit.
                 const negH = h < 0;
                 if (negH !== st.pipeNeg && st.pipeDesc) {
-                  const rec = await getPipelineFor(drawPipe, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets);
+                  const rec = await getPipelineFor(drawPipe, passSamples, negH, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets, st.pushBlock);
                   if (!rec.skip) { st.pipeRec = rec; st.pipeNeg = negH; if (passEnc) passEnc.setPipeline(rec.pipeline); }
                 }
                 passEnc.setViewport(x, negH ? y + h : y, w, Math.abs(h), md, xmd);
@@ -2959,7 +2969,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
               if (sc) passEnc.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
             }
             if (st.pipeRec.stripIndexType !== undefined && st.pipeRec.stripIndexType !== (st.ibind?.indexType || 0)) {
-              const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets);
+              const rec = await getPipelineFor(drawPipe, passSamples, st.pipeNeg, !!depthView, st.ibind?.indexType || 0, passColorFormats, passDepthFormat, passDepthAspects, st.sets, st.pushBlock);
               if (rec.skip) { noteSkippedDraw('draw-strip-index-pipeline-skipped', rec.skip); break; }
               st.pipeRec = rec;
               passEnc.setPipeline(rec.pipeline);

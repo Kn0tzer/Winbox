@@ -2993,3 +2993,158 @@ for the formats Dawn storage rejects outright (r16float, R8_UINT),
 then the storage-image format injection named above (the merge-time
 cs12 TEX guest check ran at this merge and stopped at that wall --
 see the merge-time paragraph).
+
+## 4.33 Storage-image format injection: the tier resolves the written element's view format (fmtinject lane, 2026-10-28)
+
+Merged into integ (lane-fmtinject, from 7817bd19c, the spirvwrite
+tip). Follow-up to section 4.32: with writable
+heap arrays specialized, the spirvwrite merge attempt carried cs12 TEX
+in-guest to the page tier with full bind sequences and zero
+InvalidImage -- and hit the next wall in the stack: the real heap
+module declares its storage image with format Unknown, naga requires a
+concrete texel format for a storage WRITE, and nothing injected the
+guest UAV's view format for an array variable. The tier reported
+'cannot translate the compute SPIR-V module
+(UnsupportedCapability(StorageImageWriteWithoutFormat))' and skipped
+both dispatches. The same wall stood behind the meta path named in
+4.30's next-walls.
+
+**The data flow, pinned.** The guest's view format never needed a new
+record: vkd3d writes the UAV into the guest heap, the bridge's
+descriptor updates carry each write as a V2 DESC_SET entry {binding,
+dstArrayElement, count, kind=2 (image), obj=viewId}, and the page
+tier's view registry resolves obj -> image -> the VIEW's format
+(F.views / imageForView, which applies the view-format override) ->
+the V2_STORAGE_FORMAT spv number. spirvfix R14
+(injectStorageImageFormats) has always been able to inject that number
+into the OpTypeImage format operand (words[7]) given a
+"set:binding=spvFormat" signature, and the tier builds the signature
+in storageSignatureFor. The defect was the resolution: for a
+format-Unknown variable it read the entry at ELEMENT 0
+(bindingForElement(..., 0)). For a direct binding that IS the element;
+for a heap array the shader's element is the R15a index signature
+evaluated per draw, and element 0 can hold another view -- or none.
+
+**The failing shape, from the captured stream.** Decoding the merge
+attempt's evidence chunks (integ test-results/dxvk-spirvmerge-cs12):
+cs12 TEX pass 2 binds set 5 binding 0 with TWO entries -- element 0
+written with a NULL view, element 1 with tex2's UAV (view format
+R8G8B8A8_UNORM) -- and the module's array index signature is push@0 + 1
+(descriptor-table start 0 + the UAV range's heap offset). Element-0
+resolution found the null entry, produced no signature part, and R14
+left the type Unknown: exactly one PIPELINE-FAILED line (pass 2's
+pipeline) in the guest console, both frames' pass-2 dispatches
+skipped, readback zeros, TEX bad=16. Pass 1 (signature push@0 + 0,
+element 0 = its UAV) resolved under the old rule and its dispatch ran.
+uav12 never bit this because its heap target sits at element 0.
+
+**The fix (three layers, all fail-closed).** (1) spirvfix
+storageImageVars: a runtime-array storage variable's entry now also
+carries array:true and index -- the array's single proven index
+signature from analyzeDescriptorArrays (the same analysis R15a serves
+on), or null when the array is unservable or multi-signature.
+Non-array entries are byte-identical to before (the coverage suite's
+deepEqual pin holds). (2) New pure helper resolveStorageVarFormat
+(web/wgsl-utils.mjs): given the binding's DESC_SET entries, the
+variable record, the draw's push block, and a view->spv-format
+callback, it returns the format ONLY when proven for the touched
+element -- constant index directly; push index evaluated as
+u32(push, byteOff) + add and proven only by an entry COVERING that
+element with a non-null, mappable view. When the caller has no push
+block, the bound image entries prove the format only if every one
+carries a view and all agree on ONE format. Anything else returns
+null; the signature omits the variable, the type stays Unknown, and
+translation keeps the named rejection. (3) web/vkwebgpu.mjs:
+storageSignatureFor delegates per-variable resolution to the helper
+(direct variables keep the long-standing element-0 rule inside it);
+getPipelineFor takes the draw's push block and all three draw sites
+pass st.pushBlock -- the same value the bind-group builder uses for
+bw_arr_* element resolution, so the injected format and the bound
+clone element describe the same draw. The signature feeds the
+pipeline cache key, so different proven formats key different
+pipeline variants, as typed-UAV serving already did.
+
+No bridge or record-stream change was needed (the format was already
+carried, as view ids in DESC_SET entries). Read serving is untouched:
+formats Dawn rejects as storage keep their dispositions (the
+storage-format-access named rejections; the r16float/r8uint READ
+serving path is lane-sampledtex's sampled-texture rewrite), and R14's
+kind check still refuses a format whose scalar kind differs from the
+image's.
+
+**Offline proof (the definitive, merge-independent kind).** The
+fixtures are the REAL captured cs12 modules, extracted from the merge
+attempt's V2 chunk stream (the first frame's SHADER records):
+testdata/spirv/d3d12-cs-uav-heap-write-unknown-pass1.spv (index
+push@0+0) and -pass2.spv (index push@0+1; it also carries the set-3
+sampled-image array). On pass 2: element-0 resolution builds an empty
+signature and naga fails with
+UnsupportedCapability(StorageImageWriteWithoutFormat) -- the exact
+in-guest error, reproduced offline. The resolver, fed the captured
+descriptor state (element 0 null, element 1 = the RGBA8 view) and the
+pass's push block, yields 5:0=4, and naga accepts:
+texture_storage_2d<rgba8unorm, write> with textureStore. A
+kind-mismatched signature (5:0=39, R8ui against the float-typed
+image) is refused by R14 and the wall stands; an element view in
+Rgba8Snorm injects 5 and yields rgba8snorm (the format comes from the
+element's view, not a constant).
+
+**Guards.** New web/tests/suite/unit/vk-storage-format-inject.test.mjs
+(12 tests): reflection pins on both fixtures plus the uav12 read
+fixture; the resolver proof rules (pass-2 strict and fallback, pass-1,
+push-value table-start selection, constant index, and the fail-closed
+set -- uncovered element, null view at the element, unmappable
+format, disagreeing elements without a push block, unproven index);
+end-to-end naga conversions; tier wiring source pins. Sabotage-
+verified at all three layers: restoring element-0 resolution in the
+helper fails 6 tests; suppressing the reflection's index fails 7
+(across this file and spirvfix-r15); dropping one draw site's push
+block fails the wiring pin; every sabotage restored byte-identical.
+
+**Suites.** JS 324 passed / 0 failed (the 312 branch baseline + the 12
+new tests). The spirv-offline corpus gate moves 32/34 -> 32/36: both
+new fixtures fail the BARE gate with the same named
+StorageImageWriteWithoutFormat class as the two pre-existing uav12
+heap fixtures -- the gate supplies no bound-view signature, which is
+precisely the wall; with the resolver-built signature both convert
+(proven above). No bridge or native code was touched (vk64bridge.cpp
+untouched, so no run-native.py needed). Citations: this lane's
+vkwebgpu/spirvfix line shifts re-pinned; the register citation audit
+is back to 0 DRIFT / 0 MISSING (224 MATCH / 12 MATCH-INHERITED /
+98 UNCHECKABLE / 7 EXEMPT).
+
+Register: vulkan.md grows one IMPLEMENTED row (368 rows on the
+merged tree: 69 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP /
+0 OPEN).
+
+**Merge-time guest check (merged tree, 2026-10-28; evidence: integ
+test-results/dxvk-fmtinject-merge-cs12/).** This base (7817bd19c)
+predates the compute merge, so the in-guest cs12 run belongs to the
+merge. It ran on the merged tree: the format wall is GONE --
+renderErrors [] (was StorageImageWriteWithoutFormat), pipelines
+translated 2 / rejected 0 (was 1 / 1), pass 2 converting with the
+injected format through the compute caller's no-push-block fallback
+exactly as predicted below (integ's getComputePipelineFor calls
+storageSignatureFor with two arguments; the new third parameter
+defaults to null, and the resolver's unique-agreement fallback
+resolves cs12 pass 2 there -- its bound elements are one null write
+and one RGBA8 view -- so no integ-side caller change was needed).
+TEX still reports bad=16, one stage later, at the next named wall:
+PIPELINE-FAILED reason=group-3-non-push (dropReasons
+{group-3-non-push: 1, dispatch-pipeline-skipped: 2}) -- pass 2's
+module also declares its sampled-image array at descriptor SET 3,
+the page tier's reserved push-constant group, and remapDeclGroups
+(section 4.25) fails closed on a non-push group-3 declaration instead
+of compacting it like other guest sets; translation precedes the
+group remap, so this wall was invisible until the format wall fell.
+This section claims the format wall only; the group-3 compaction
+follow-up (lane-group3, stacked on this lane) merges next and
+carries the cs12 TEX bad=0 gate. cs12 RESULT 0 additionally needs
+the meta-bind delivery (BUF/BUF2) from lane-metabind.
+
+Next walls: vkd3d meta-pipeline descriptor delivery (cs12 BUF/BUF2 --
+lane-metabind), sampled-texture serving for the formats Dawn storage
+rejects outright (lane-sampledtex), page-tier PSB serving
+(spirv-capability-unknown:5347 -- root12 srv/uav), then the merge-time
+cs12 full pass.
+
