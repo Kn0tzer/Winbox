@@ -2845,3 +2845,133 @@ build itself and every piece of staging integration.
 - Suites: JS suite and native suite results recorded with the lane
   commit (zero new failures vs the e2c11c8d3 baseline: JS 311/0,
   native 645 OK).
+
+## 4.32 32-bit D3D12 guest verification: tri12-32.exe runs — RESULT 0 (2026-10-28, d3d12-32 lane)
+
+Section 4.31 staged the PE32 vkd3d-proton pair and listed what was
+missing: a 32-bit guest actually running DirectX 12. That run has now
+happened. `tri12-32.exe` (PE32, in-tree) boots in a 32-bit guest,
+creates a D3D12 device through the staged pair, renders its ten
+clear frames and reports `tri12: RESULT 0` — the same verdict shape
+as the 64-bit tri12 baseline in the same harness family (RESULT 0;
+tri12 has no swapchain or present by design, so no chunks are
+captured for either ABI).
+
+### Resolution path (guest-side evidence, +loaddll)
+
+- `C:\windows\system32\d3d12.dll` and `d3d12core.dll` load **native**
+  — the §4.31 pair at system placement, selected by
+  `WINEDLLOVERRIDES=d3d12=n;d3d12core=n` passed by the probe rig
+  (probe-local configuration in the new harness
+  `web/tests/d3d12-32-system.mjs`; the demo path is unchanged).
+- `C:\windows\system32\winevulkan.dll` loads **builtin** — WineHQ
+  10.0's PE32 winevulkan from wine32.zip. There is no PE32
+  bw64vulkan shim; the path winevulkan.dll → winevulkan.so →
+  libvk32 → the 32-bit bridge survives instance creation,
+  enumeration and device creation (256 vk32 traps in the passing
+  run). The maintenance5/6 question §4.31 left open does not bite
+  on this path.
+- Rig note: the 32-bit session must spawn the launcher's ARCH32
+  loader (`/opt/wine-stable/bin/wine`). The Debian-layout loader
+  (`/usr/lib/wine/wine`) fails to find the wine-stable NLS files and
+  NULL-dereferences inside `ntdll.so` (i386-unix) during environment
+  init — a rig wall, not a product wall; the never-run
+  `d3d9-32bit-smoke.mjs` uses the Debian loader and would hit it.
+
+### The wall stack, in the order the guest hit it
+
+1. **Loader/NLS (rig)** — above; fixed in the harness.
+2. **`D3D12CreateDevice` → E_INVALIDARG**: vkd3d-proton's
+   device-caps gate stops at `Lacking support for single texel
+   alignment`. The bridge log showed the cause:
+   `UNSUPPORTED properties2-struct (sType=1000028001 …)` ×8.
+   `vk32_walkProperties2` had no arm for
+   `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT`
+   (whose `transformFeedbackQueries` the same gate reads) and none
+   for `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES`
+   (the single-texel fields). **Fix 1** adds both arms to the 32-bit
+   walker, values mirroring the 64-bit arms. Layout proof is
+   compile-time (i686 static asserts against the tree's own
+   `vk32_guest.h`): the bridge walks the UNIX-side chain in i386
+   SysV layout; the transform-feedback arm is exact under the
+   `vk32_w*f` host-offset rule, but the 1.3 arm must write raw guest
+   offsets — the rule would place
+   `uniformTexelBufferOffsetSingleTexelAlignment` at 184, over
+   `maxBufferSize`, where the verified offset is 188 (storage twin
+   at 176). The arm's comment records this divergence.
+3. **`D3D12CreateDevice` → E_FAIL**: with the caps gates served,
+   device creation died in `vkd3d_clear_uav_ops_init` —
+   `Failed to create compute pipeline 0, vr -3`. The 32-bit
+   `vkCreateComputePipelines` handler validated and wrote
+   `args.a[4]`, but the libvk32 shim's layout is a[3]=pCreateInfos,
+   a[4]=pAllocator, a[5]=pPipelines; vkd3d passes a NULL allocator,
+   so every creation "failed". The 64-bit handler uses a[5].
+   **Fix 2** checks and writes a[5].
+4. **RESULT 0** — `D3D12CreateDevice OK`, `render target created`,
+   `10 frames cleared+submitted`, `RESULT 0`; harness verdict
+   `passed: true` on two consecutive runs
+   (`test-results/dxvk-d3d12-32-fix3`, `-fix4`).
+
+Guards: `web/tests/suite/unit/vk-properties2-32.test.mjs` (4 tests,
+source-pin style). Sabotage-verified: reverting the TF publication,
+the 1.3 offset, or the a[5] fix individually fails exactly its own
+test; the restored file passes all four and is byte-identical to the
+probed build's source.
+
+### Named residue (the stack below RESULT 0)
+
+- **32-bit compute dispatch serving.** The 32-bit
+  `vkCmdDispatch` records CMD_DISPATCH, but the shared submit
+  emitter drops it loudly (`compute-dispatch`): this ABI's pipeline
+  creation never records a compute stage module, so there is
+  nothing to serve a dispatch with. Device creation succeeds
+  because creation now works; executing 32-bit compute means
+  recording stage module/layout/spec at creation on this ABI like
+  the 64-bit handler does, plus the R15 census. This is the next
+  wall for 32-bit D3D12 compute consumers.
+- **`vkCmdBeginRendering` attachment drops** (guard at
+  vk64bridge.cpp:11612). Two drops per frame are by design (tri12's
+  NULL depth and stencil attachments are fed to the same lambda);
+  the deduplicated counter brackets the 10-frame total at 16–31,
+  so log evidence alone does not settle whether the color
+  attachment also drops in some calls. The `vk32abi` rendering
+  structs check out canonical. Settling it needs an instrumented
+  run or a presenting probe (next item).
+- **tri12draw-32.exe** (PE32 build of tri12draw.c, built by this
+  lane, in-tree) passes device creation, swapchain creation, RTV
+  creation and **PSO creation**, then the guest faults inside a
+  libvk32 trap stub (`vk64_benign`, at its `int 0x80`) called from
+  a vkd3d worker thread; the fault address (0x324B0105) sits in the
+  bridge's minted 32-bit handle range, which points at a
+  handle/pointer confusion in the benign-trap path. Pixel-level
+  32-bit proof waits on this.
+- Unmodeled properties2 sTypes observed non-fatally in the 32-bit
+  chain (left as-is, device creation unaffected): 1000470001,
+  1000190000, 1000545001.
+- The 32-bit guest console strips spaces from guest stderr
+  (`tri12:RESULT0`); the harness matches space-tolerantly. Noted,
+  not fixed — it is the emulator console path, shared with all
+  32-bit guests.
+
+### Suites and register
+
+- JS suite on this tree: 117 test files pass, 3 fail —
+  `provenance-artifacts`, `binary-patch-registry`,
+  `runtime-completeness` — exclusively on hand-assembled-dist
+  subtests (BUILD_INFO/wasm divergence, dist↔web/runtime sync,
+  the gstreamer staged tree absent from a fresh worktree). Zero
+  product-code failures; the probe dist was assembled from the
+  integ dist plus this lane's build (wasm sha256 `f543cd28…`)
+  because the fresh worktree initially lacked the export staging
+  payloads (copied since) and the shared build lane was occupied
+  at close-out; the merge re-exports canonically. The new guard
+  passes in-suite.
+- `run-native.py` compiles the bridge edits and aborts on the same
+  stale spec-census assert with the pristine base file —
+  pre-existing on this base (the vk64harness repair is queued
+  ahead of this lane). vk64bridge.cpp is not in the linux native
+  suite's graph.
+- Register: no disposition changes. The vulkan.md
+  transform-feedback row's stated publication (queries TRUE, limits
+  zero, features FALSE, because vkd3d's gate reads it) now holds on
+  the 32-bit walker as well as the 64-bit one.
