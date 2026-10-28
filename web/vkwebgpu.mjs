@@ -16,6 +16,7 @@ import {
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
   parseStorageTextureAccessRejection,
   resolveStorageVarFormat,
+  planGroupRemap, rewriteGuestGroupDeclWGSL,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
@@ -1732,36 +1733,36 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // Descriptor-group remap: guest Vulkan set numbers are virtual
   // (vkd3d heap-lowering tables, bindless sets) and routinely exceed
   // the WebGPU bind-group budget, while the bound content resolves by
-  // ORIGINAL set index (st.sets). Compact the pipeline's non-push
-  // groups into the device's budget, keeping push at V2_PUSH_GROUP,
-  // and record the remap so draw-time set lookups still use the
-  // original indices. A pipeline needing more groups than the device
-  // offers still fails loudly (group-count-limit). Group 3 stays
-  // reserved for push: a non-push declaration there is a collision,
-  // not a remappable group.
-  for (const d of decls) {
-    if (d.group === V2_PUSH_GROUP && !(d.binding === V2_PUSH_BINDING && d.addr === 'uniform')) {
-      noteUnsupported('group-3-non-push', d.group); return fail('group-3-non-push');
-    }
+  // ORIGINAL set index (st.sets). Compact the pipeline's groups into
+  // the device's budget, keeping push at V2_PUSH_GROUP, and record the
+  // remap so draw-time set lookups still use the original indices. A
+  // pipeline needing more groups than the device offers still fails
+  // loudly (group-count-limit). Group V2_PUSH_GROUP stays reserved
+  // for the push-constant UBO, the only declaration that may remain
+  // there; a guest set numbered V2_PUSH_GROUP (vkd3d heap-lowering
+  // puts real tables there) compacts like any other set, splitting
+  // the group. The planning is planGroupRemap in wgsl-utils.mjs,
+  // shared by the graphics and compute builders through this
+  // function; ambiguous push-slot shapes still fail loudly
+  // (group-3-non-push).
+  const plan = planGroupRemap(decls, device.limits?.maxBindGroups || 4, hasPush);
+  if (plan.error === 'group-3-non-push') {
+    noteUnsupported('group-3-non-push', V2_PUSH_GROUP); return fail('group-3-non-push');
   }
-  const groupMap = {}; // remapped group -> original set index
-  const remapGroup = new Map(); // original group -> remapped group
-  {
-    let next = 0;
-    for (const g of [...new Set(decls.map(d => d.group))].sort((a, b) => a - b)) {
-      if (g === V2_PUSH_GROUP) { remapGroup.set(g, g); groupMap[g] = g; continue; }
-      while (next === V2_PUSH_GROUP) next++;
-      remapGroup.set(g, next); groupMap[next] = g; next++;
-    }
+  if (plan.error) {
+    noteUnsupported('group-count-limit', plan.count); return fail('group-count-limit');
   }
-  const maxBindGroups = device.limits?.maxBindGroups || 4;
-  const maxRemapped = Math.max(-1, ...remapGroup.values());
-  if (maxRemapped + 1 > maxBindGroups) {
-    noteUnsupported('group-count-limit', maxRemapped + 1); return fail('group-count-limit');
-  }
-  const rewriteGroups = (code) => code.replace(/@group\((\d+)\)/g, (m, n) => '@group(' + (remapGroup.get(+n) ?? +n) + ')');
+  const groupMap = plan.groupMap; // remapped group -> original set index
+  const rewriteGroups = (code) => code.replace(/@group\((\d+)\)/g, (m, n) => '@group(' + (plan.numMap[+n] ?? +n) + ')');
   for (const h of holders) h.code = rewriteGroups(h.code);
-  for (const d of decls) { d.sourceGroup = d.group; d.group = remapGroup.get(d.group) ?? d.group; }
+  // Split case: the number rewrite kept all of group V2_PUSH_GROUP at
+  // V2_PUSH_GROUP (the push declaration's home); move the guest
+  // declarations out by name, before the binding remap below keys on
+  // final groups.
+  for (const d of plan.splitDecls) {
+    for (const h of holders) h.code = rewriteGuestGroupDeclWGSL(h.code, d, V2_PUSH_GROUP, plan.guest3Target);
+  }
+  decls.forEach((d, i) => { d.sourceGroup = d.group; d.group = plan.targets[i]; });
   // Binding remap: same class as the group remap. Synthesized bindings
   // (R15b re-roots root descriptors at 4096 + pushByteOff/8) exceed
   // Dawn's maxBindingsPerBindGroup binding-number limit (1000), so the

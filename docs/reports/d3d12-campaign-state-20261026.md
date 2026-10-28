@@ -3142,9 +3142,131 @@ follow-up (lane-group3, stacked on this lane) merges next and
 carries the cs12 TEX bad=0 gate. cs12 RESULT 0 additionally needs
 the meta-bind delivery (BUF/BUF2) from lane-metabind.
 
+**Gate outcome (stacked group3 merge, 2026-10-28; evidence: integ
+test-results/dxvk-fmtinject-group3-merge-cs12/).** With section
+4.34's compaction merged on top, the gate ran on the combined tree:
+'cs12: VARIANT TEX OK (bad=0)' -- both TEX dispatches serve end to
+end; zero group-3-non-push occurrences in the guest console;
+dropReasons {}; renderErrors []. BUF/BUF2 still fail (bad=64) at
+the meta-bind wall, so cs12 RESULT stays 1 until lane-metabind
+lands.
+
 Next walls: vkd3d meta-pipeline descriptor delivery (cs12 BUF/BUF2 --
 lane-metabind), sampled-texture serving for the formats Dawn storage
 rejects outright (lane-sampledtex), page-tier PSB serving
 (spirv-capability-unknown:5347 -- root12 srv/uav), then the merge-time
 cs12 full pass.
 
+
+## 4.34 Guest descriptor set 3 compaction: the reserved push group splits (group3 lane, 2026-10-28)
+
+Merged into integ (lane-group3, from 2612ecb66, the fmtinject tip),
+stacked on section 4.33's merge. Follow-up to section 4.33: the fmtinject
+merge attempt proved the format wall gone in-guest (pipelines
+translated 2 / rejected 0, renderErrors []) and cs12 TEX advanced one
+stage -- to the descriptor-group remap, where it died as
+'PIPELINE-FAILED reason=group-3-non-push' with both dispatches skipped
+(evidence: integ test-results/dxvk-fmtinject-merge-cs12/). Translation
+precedes the remap, which is why this wall was invisible until the
+format wall fell.
+
+**The failing shape, from the real module.** cs12 TEX pass 2's
+translated WGSL (spirvfix -> naga -> push rewrite -> resource scan,
+reproduced offline from the captured fixture
+testdata/spirv/d3d12-cs-uav-heap-write-unknown-pass2.spv) declares
+three resources: the push block 'registers' at group 3 binding 0
+(var<uniform>), the R15a clone of the sampled-image heap table
+(bw_arr_g3_b0_p0_a0_, texture_2d<f32>) ALSO at group 3 binding 0, and
+the storage clone (bw_arr_g5_b0_p0_a1_) at group 5. vkd3d heap-lowering
+numbered the sampled table set 3 -- a real guest set, bound in the
+stream like any other -- and the tier's section-4.25 remap failed
+closed on any group-3 declaration that was not the push binding.
+
+**The invariants, pinned.** Group 3 is the protocol's push group
+(V2_PUSH_GROUP): the draw loop skips it in the generic bind pass and
+binds the push UBO there separately when the pipeline has a push
+block; bind-group construction and its fingerprint skip it likewise.
+A declaration left at group 3 after the remap is therefore NEVER
+bound -- so the remap's real invariant is not "group 3 is forbidden"
+but "after the remap, group 3 holds only the push declaration". The
+push declaration is proven by shape: group 3, binding V2_PUSH_BINDING,
+addr 'uniform', created by rewritePushConstantsWGSL from the stage's
+push block (hasPush). groupMap (final group -> original set) is
+consulted per bound group, so the push group mapping to set 3 and a
+compacted guest group also mapping to set 3 coexist without
+interference; a guest declaration's bound content resolves from the
+guest's original set 3 via its final group's groupMap entry.
+
+**The fix.** New pure helper planGroupRemap (web/wgsl-utils.mjs),
+following the resolveStorageVarFormat pattern of section 4.33: it
+classifies each declaration, assigns final groups, and returns the
+per-declaration targets, the groupMap, the @group number-rewrite map,
+and -- in the split case -- the guest declarations to move by name.
+Guest groups (the guest's set 3 numbered among them) take free slots
+in ascending order, skipping group 3; the push declaration keeps
+group 3; binding numbers within a set are unchanged. The WGSL is
+rewritten in two steps: the existing number rewrite first (in the
+split case it maps group 3 to itself, the push declaration's home),
+then rewriteGuestGroupDeclWGSL moves each guest set-3 declaration by
+its (binding, name) -- a number rewrite cannot split one @group
+between two targets, and the push declaration may share the guest's
+binding number (the fixture's clone sits at binding 0 too).
+At merge the helper is wired into remapDeclGroups (the factored
+section-4.30 home of this block): the shared function plans through
+the helper, applies the number rewrite and the by-name split to every
+stage holder, and keeps its binding remap, so the graphics and
+compute builders share one classification; the lane's two
+stage-literal wiring pins were adapted to the shared holder loop
+(intent preserved). Fail-closed residues: a storage buffer at (group 3,
+binding 0) stays 'group-3-non-push' -- the push slot's only legitimate
+buffer occupant is the push UBO, so a buffer there in a non-push shape
+is ambiguous -- and more distinct groups than the device budget stays
+'group-count-limit'. A uniform buffer at the push slot with NO push
+block is provably a guest buffer and compacts. Pipelines with no
+guest declarations at group 3 receive exactly the pre-existing
+assignment (pinned by a legacy non-regression test).
+
+**Proof (offline; this base predates compute serving, so the in-guest
+cs12 TEX check is the merge-time gate, as with 4.33).** On the real
+pass-2 fixture: the plan puts the sampled clone at group 0, the
+storage clone at group 1, the push declaration at group 3, groupMap
+{0:3, 1:5, 3:3}; the rewritten WGSL rescans to exactly those
+declarations, push intact. Pass 1 (no guest set 3) keeps its old
+assignment. Guards: vk-descriptor-group3-compaction.test.mjs (9 tests:
+both real fixtures, synthetic split / set-3-only / push-slot shapes,
+the budget edge, legacy non-regression, tier wiring pins),
+sabotage-verified three ways -- restoring the blanket group-3
+rejection fails 5 of them, disabling the by-name WGSL rewrite fails
+the fixture's rescan assertions, disabling push recognition fails 7.
+The section-4.25 source-pin test's two pins that named the old inline
+assignment moved with it to the helper. Suites: full JS suite 313
+files passed / 1 failed -- the failure is provenance-artifacts'
+wine32.zip dist-vs-web hash, cross-lineage only (the integ dist
+carries the x86-staged archive at 955cc41c...; this branch's manifest
+pins the pre-staging archive at 3da7c635..., against which
+bootstrap --check passes), A/B-proven pre-existing on the pristine
+tree in the same environment; zero new failures. No bridge or native
+code touched (no run-native.py needed); the spirvfix corpus is
+untouched (32/36 stands). Register: one new IMPLEMENTED row (369 rows on the merged tree =
+70 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN);
+citations 0 DRIFT / 0 MISSING on the merged tree (225 MATCH /
+12 MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT); the new row's
+planning-call citation was re-pinned at merge to the shared
+function's line (vkwebgpu.mjs:1748).
+
+**Merge-time gate (ran on the merged tree, 2026-10-28; evidence:
+integ test-results/dxvk-fmtinject-group3-merge-cs12/).**
+lane-fmtinject (section 4.33) and this lane merged into integ in
+that order; the combined tree verifies: dist 'Browser export
+verified', JS suite 316 files / 0 failed, native suite 647 / 0,
+citation audit 0 DRIFT / 0 MISSING (225 MATCH / 12 MATCH-INHERITED
+/ 98 UNCHECKABLE / 7 EXEMPT). The gate passed: 'cs12: VARIANT TEX
+OK (bad=0 first=(-1,-1) gotR=0)' -- pass 2's pipeline builds (format
+injected per 4.33, set 3 compacted per this section) and both TEX
+dispatches serve; zero group-3-non-push in the guest console;
+dropReasons {}; renderErrors []. BUF/BUF2 still fail (bad=64) at
+the meta-bind wall, so cs12 RESULT is 1; RESULT 0 additionally
+needs the meta-bind delivery (lane-metabind). Remaining known
+walls after that: sampled-texture serving for the formats Dawn
+storage rejects outright (lane-sampledtex), then page-tier PSB
+serving (spirv-capability-unknown:5347 -- root12 srv/uav).
