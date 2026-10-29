@@ -1226,6 +1226,193 @@ int main() {
             }
             g_v2Pending.clear();
         }
+        {
+            // Compute ROOT-descriptor write marking (lane-crootmark): a
+            // dispatch whose compute pipeline stores through a writable
+            // root descriptor (the target VA is push-block data, served by
+            // the R15b re-rooting) must leave a GPU-write mark on the
+            // resolved range, or a later copy out of it finds no mark and
+            // takes the copy handlers' eager memcpy, silently serving
+            // pre-dispatch bytes. The mark must survive the cleanliness
+            // check with the re-stamped epoch once the same submission's
+            // own upload has landed, and genuinely later dirt must still
+            // refuse the deferral. A second pair of cases pins the
+            // registry's offset space (the open question from the
+            // frontier review of the metabind diff): every producer and
+            // consumer of the registry speaks MEMORY-ABSOLUTE offsets
+            // (memOff + buffer-relative), but a memOff=0 allocation
+            // cannot distinguish the two spaces, so both mark kinds are
+            // re-checked below on buffers bound at memOff 8192 -- each
+            // mark must land at the absolute offset and NOT at the
+            // relative one.
+            const U32 csRootWords[] = {
+                0x07230203u, 0x00010500u, 0, 20, 0,
+                (2u << 16) | 17u, 1u,                       // OpCapability Shader
+                (2u << 16) | 17u, 5347u,                    // OpCapability PhysicalStorageBufferAddresses
+                (3u << 16) | 14u, 2u, 1u,                   // OpMemoryModel Physical64 GLSL450
+                (5u << 16) | 15u, 5u, 12u, 0x6e69616du, 0u, // OpEntryPoint GLCompute %12 "main"
+                (6u << 16) | 16u, 12u, 17u, 1u, 1u, 1u,     // OpExecutionMode %12 LocalSize 1 1 1
+                (3u << 16) | 71u, 4u, 2u,                   // OpDecorate %4 Block
+                (5u << 16) | 72u, 4u, 0u, 35u, 0u,          // OpMemberDecorate %4 0 Offset 0
+                (2u << 16) | 19u, 1u,                       // OpTypeVoid
+                (4u << 16) | 21u, 2u, 64u, 0u,              // OpTypeInt 64 0
+                (4u << 16) | 21u, 3u, 32u, 0u,              // OpTypeInt 32 0
+                (3u << 16) | 30u, 4u, 2u,                   // OpTypeStruct { %2 }
+                (4u << 16) | 32u, 5u, 9u, 4u,               // OpTypePointer PushConstant %4
+                (4u << 16) | 32u, 7u, 5349u, 3u,            // OpTypePointer PhysicalStorageBuffer %3
+                (4u << 16) | 32u, 8u, 9u, 2u,               // OpTypePointer PushConstant %2
+                (4u << 16) | 43u, 3u, 9u, 0u,               // OpConstant %3 0 (member index)
+                (4u << 16) | 43u, 3u, 10u, 0xA5A50001u,     // OpConstant %3 (stored value)
+                (4u << 16) | 59u, 5u, 6u, 9u,               // OpVariable %6 : PushConstant %5
+                (3u << 16) | 33u, 11u, 1u,                  // OpTypeFunction %11 = fn(%1)
+                (5u << 16) | 54u, 1u, 12u, 0u, 11u,         // OpFunction %12
+                (2u << 16) | 248u, 13u,                     // OpLabel
+                (5u << 16) | 65u, 8u, 14u, 6u, 9u,          // OpAccessChain %14 = &push.member0
+                (4u << 16) | 61u, 2u, 15u, 14u,             // OpLoad %15 = the root VA
+                (4u << 16) | 124u, 7u, 16u, 15u,            // OpBitcast %16 = (uint*)VA
+                (3u << 16) | 62u, 16u, 10u,                 // OpStore *%16 = value
+                (1u << 16) | 253u,                          // OpReturn
+                (1u << 16) | 56u,                           // OpFunctionEnd
+            };
+            memory.memcpyToGuest(4400, csRootWords, sizeof(csRootWords));
+            VkShaderModuleCreateInfo smci{}; smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci.codeSize = sizeof(csRootWords); smci.pCode = 4400;
+            memory.memcpyToGuest(4200, &smci, sizeof(smci));
+            memory.writeq(4900, 0);
+            VK64Args sm{}; sm.a[0] = devId; sm.a[1] = 4200; sm.a[3] = 4900;
+            memory.memcpyToGuest(128, &sm, sizeof(sm));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateShaderModule, 128) == VK_SUCCESS);
+            const U64 csRootModId = memory.readq(4900);
+            assert(csRootModId != 0);
+            memory.memcpyToGuest(5400, "main", 5);
+            VkComputePipelineCreateInfo cci{};
+            cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.module = (VkShaderModule)csRootModId;
+            cci.stage.pName = 5400;
+            memory.memcpyToGuest(5000, &cci, sizeof(cci));
+            memory.writeq(5500, 0);
+            VK64Args cp3{}; cp3.a[0] = devId; cp3.a[2] = 1; cp3.a[3] = 5000; cp3.a[5] = 5500;
+            memory.memcpyToGuest(128, &cp3, sizeof(cp3));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
+            const U64 csRootPipeId = memory.readq(5500);
+            assert(csRootPipeId != 0);
+            auto* csRootPipe = objOf<Pipeline>(csRootPipeId, K_PIPELINE, "test");
+            assert(csRootPipe && csRootPipe->rootSlots.size() == 1 && csRootPipe->rootSlots[0] == 0);
+            assert(csRootPipe->rootWritableSlots.size() == 1 && csRootPipe->rootWritableSlots[0] == 0);
+            // The store target: a fresh buffer in fresh memory, its device
+            // address registered through the real trap.
+            U64 rootMemId; auto* rootMem = createObj<DeviceMemory>(K_MEMORY, rootMemId);
+            rootMem->size = 4096; rootMem->va = memory.mmapReserveAndMap(4096, 3);
+            U64 rootBufId; auto* rootBuf = createObj<Buffer>(K_BUFFER, rootBufId);
+            rootBuf->size = 4096; rootBuf->mem = rootMemId; rootBuf->memOff = 0;
+            U64 bdaInfo[3] = {0, 0, rootBufId}; // sType, pNext, buffer
+            memory.memcpyToGuest(5600, bdaInfo, sizeof(bdaInfo));
+            VK64Args bda{}; bda.a[1] = 5600;
+            memory.memcpyToGuest(128, &bda, sizeof(bda));
+            const U64 rootVa = vk64Bridge(&cpu, VK64_fn_vkGetBufferDeviceAddress, 128);
+            assert(rootVa != 0 && rootBuf->devVa == rootVa);
+            // Record: bind the pipeline, push the VA (at buffer offset 64),
+            // dispatch. The dispatch trap marks the bound pipeline's writes
+            // before the dispatch command is appended.
+            U64 cbRootId; auto* cbRoot = createObj<CmdBuf>(K_CMDBUF, cbRootId);
+            Cmd bindRoot; bindRoot.kind = CMD_BIND_PIPE; bindRoot.a = csRootPipeId; pushCmd(cbRoot, bindRoot);
+            const U64 pushVa = rootVa + 64;
+            memory.memcpyToGuest(5700, &pushVa, 8);
+            VK64Args pc{}; pc.a[0] = cbRootId; pc.a[2] = 0x20; pc.a[3] = 0; pc.a[4] = 8; pc.a[5] = 5700;
+            memory.memcpyToGuest(128, &pc, sizeof(pc));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdPushConstants, 128) == 0);
+            vkCmdDispatch(cbRootId, 1, 1, 1);
+            const GpuWriteMark* rootMark = vk64FindGpuWrite(rootBufId, 64, 128);
+            assert(rootMark && rootMark->epoch == rootMem->writeEpoch);
+            assert(vk64FindGpuWrite(rootBufId, 0, 32) == nullptr); // ahead of the VA: unmarked
+            // The same submission's own initial-data upload lands in the
+            // target range before the dispatch executes (the submit eager
+            // pass; vk64TouchMem is exactly what its execution does): the
+            // record-time stamp is poisoned, as the epoch lesson predicts.
+            vk64TouchMem(rootMem, 64, 128);
+            assert(vk64FindGpuWrite(rootBufId, 64, 128) == nullptr);
+            // Submit: the dispatch serializes (ROOT_DESCS + DISPATCH) and
+            // the submit-time resolution re-stamps the mark in place.
+            const U64 csRootCountBefore = vk64BridgeUnsupportedCount("compute-dispatch");
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbRoot, cbRootId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csRootCountBefore);
+            bool sawRootDescs = false, sawRootDispatch = false;
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == 0x1D) sawRootDescs = true;
+                    if (type == 0x1F) sawRootDispatch = true;
+                    at += 8 + len;
+                }
+            }
+            assert(sawRootDescs && sawRootDispatch);
+            g_v2Pending.clear();
+            rootMark = vk64FindGpuWrite(rootBufId, 64, 128);
+            assert(rootMark && rootMark->epoch == rootMem->writeEpoch); // re-stamped at the execution point
+            // Genuinely later guest dirt still refuses the deferral: the
+            // cleanliness proof is not weakened by the new census.
+            vk64TouchMem(rootMem, 64, 128);
+            assert(vk64FindGpuWrite(rootBufId, 64, 128) == nullptr);
+            // Offset-space pin, root census: the same root-descriptor
+            // dispatch, but the target buffer sits at memOff 8192 in a
+            // larger allocation.
+            U64 offMemId; auto* offMem = createObj<DeviceMemory>(K_MEMORY, offMemId);
+            offMem->size = 16384; offMem->va = memory.mmapReserveAndMap(16384, 3);
+            U64 offBufId; auto* offBuf = createObj<Buffer>(K_BUFFER, offBufId);
+            offBuf->size = 4096; offBuf->mem = offMemId; offBuf->memOff = 8192;
+            U64 bdaInfo2[3] = {0, 0, offBufId};
+            memory.memcpyToGuest(5600, bdaInfo2, sizeof(bdaInfo2));
+            VK64Args bda2{}; bda2.a[1] = 5600;
+            memory.memcpyToGuest(128, &bda2, sizeof(bda2));
+            const U64 offVa = vk64Bridge(&cpu, VK64_fn_vkGetBufferDeviceAddress, 128);
+            assert(offVa != 0 && offBuf->devVa == offVa);
+            U64 cbOffId; auto* cbOff = createObj<CmdBuf>(K_CMDBUF, cbOffId);
+            Cmd bindOff; bindOff.kind = CMD_BIND_PIPE; bindOff.a = csRootPipeId; pushCmd(cbOff, bindOff);
+            const U64 pushOffVa = offVa + 64;
+            memory.memcpyToGuest(5700, &pushOffVa, 8);
+            VK64Args pc2{}; pc2.a[0] = cbOffId; pc2.a[2] = 0x20; pc2.a[3] = 0; pc2.a[4] = 8; pc2.a[5] = 5700;
+            memory.memcpyToGuest(128, &pc2, sizeof(pc2));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdPushConstants, 128) == 0);
+            vkCmdDispatch(cbOffId, 1, 1, 1);
+            const GpuWriteMark* offMark = vk64FindGpuWrite(offBufId, 8192 + 64, 128);
+            assert(offMark && offMark->epoch == offMem->writeEpoch);
+            assert(vk64FindGpuWrite(offBufId, 64, 128) == nullptr); // buffer-relative: unmarked
+            assert(vk64FindGpuWrite(offBufId, 8192, 32) == nullptr); // ahead of the VA, absolute: unmarked
+            // The submit re-stamp refreshes the ABSOLUTE key in place.
+            vk64TouchMem(offMem, 8192 + 64, 128);
+            assert(vk64FindGpuWrite(offBufId, 8192 + 64, 128) == nullptr);
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbOff, cbOffId}});
+            offMark = vk64FindGpuWrite(offBufId, 8192 + 64, 128);
+            assert(offMark && offMark->epoch == offMem->writeEpoch);
+            assert(vk64FindGpuWrite(offBufId, 64, 128) == nullptr); // still no relative mark
+            g_v2Pending.clear();
+            // Offset-space pin, descriptor-set census: a storage-buffer
+            // element (bufOff 128, range 512) on a buffer at memOff 8192,
+            // bound through a recorded CMD_BIND_SETS and dispatched under
+            // the same compute pipeline (no push record: the root census
+            // sees a zero VA and stays out of this case).
+            U64 setMemId; auto* setMem = createObj<DeviceMemory>(K_MEMORY, setMemId);
+            setMem->size = 16384; setMem->va = memory.mmapReserveAndMap(16384, 3);
+            U64 setBufId; auto* setBuf = createObj<Buffer>(K_BUFFER, setBufId);
+            setBuf->size = 4096; setBuf->mem = setMemId; setBuf->memOff = 8192;
+            U64 setId; auto* set = createObj<DescSet>(K_SET, setId);
+            Binding sb; sb.binding = 0; sb.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            sb.obj = setBufId; sb.bufOff = 128; sb.range = 512;
+            set->els[DescKey(0, 0)] = sb;
+            U64 cbSetId; auto* cbSet = createObj<CmdBuf>(K_CMDBUF, cbSetId);
+            Cmd bindSetPipe; bindSetPipe.kind = CMD_BIND_PIPE; bindSetPipe.a = csRootPipeId; pushCmd(cbSet, bindSetPipe);
+            Cmd bindSets; bindSets.kind = CMD_BIND_SETS; bindSets.a = 0; bindSets.b = 1; bindSets.sets[0] = setId; pushCmd(cbSet, bindSets);
+            vkCmdDispatch(cbSetId, 1, 1, 1);
+            const GpuWriteMark* setMark = vk64FindGpuWrite(setBufId, 8192 + 128, 512);
+            assert(setMark && setMark->epoch == setMem->writeEpoch);
+            assert(vk64FindGpuWrite(setBufId, 128, 512) == nullptr); // buffer-relative: unmarked
+            assert(vk64FindGpuWrite(setBufId, 8192 + 128 + 512, 64) == nullptr); // past the element range
+            puts("PASS: compute root-descriptor dispatch writes are marked, re-stamped at submit, and later dirt still refuses deferral");
+        }
         // GUARD (silent drop): a command buffer with no render pass but with an image
         // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1
         // frame carrying the copy, while a barrier-only command buffer stays empty.
