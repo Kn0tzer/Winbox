@@ -12,12 +12,18 @@
 // 32-bit arms in source so a regression fails the suite without a guest
 // run. The guest proof itself is web/tests/d3d12-32-system.mjs.
 //
-// The 1.3 arm intentionally writes RAW guest offsets, not the vk32_w*f
-// hostOff-8 rule: the struct's tail interleaves VkBool32 and VkDeviceSize
-// and the i386 layout the bridge walks packs
-// uniformTexelBufferOffsetAlignmentBytes at 180 where the host rule would
-// write 184. The offsets below were compile-verified with
-// i686-linux-gnu-gcc against the canonical field list (sizeof 200).
+// The 1.3 arm must not use the vk32_w*f hostOff-8 rule: the struct's
+// tail interleaves VkBool32 and VkDeviceSize and the i386 layout the
+// bridge walks packs uniformTexelBufferOffsetAlignmentBytes at 180
+// where the host rule would write 184. As merged in section 4.40 the
+// arm wrote the raw guest offsets directly (compile-verified with
+// i686-linux-gnu-gcc against the canonical field list, sizeof 200);
+// the prop32 merge (section 4.55) reconciled the arm to the
+// packed-guest-struct discipline: it now writes through
+// vk32_g32f/vk32_g64f taking offsetof in the pack(4)
+// Vk32Vulkan13Properties mirror, whose static_asserts pin the same
+// verified offsets (8/12/176/188/192, sizeof 200). The tests below pin
+// the composed form: same values, same offsets, no hostOff-8 writers.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,36 +54,79 @@ test('32-bit walker serves the transform feedback properties arm with transformF
   );
 });
 
-test('32-bit walker serves the Vulkan 1.3 properties arm at the verified raw guest offsets', () => {
+function mirrorRegion() {
+  const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  const start = bridge.indexOf('// vk32_guest.h has no VkPhysicalDeviceVulkan13Properties');
+  assert.ok(start >= 0, 'the Vk32Vulkan13Properties mirror comment must exist in vk64bridge.cpp');
+  const end = bridge.indexOf('32-bit 1.3 properties mirror offsets', start);
+  assert.ok(end > start, 'mirror region must terminate at the offsets static_assert');
+  return bridge.slice(start, end).replace(/\s+/g, ' ');
+}
+
+test('32-bit walker serves the Vulkan 1.3 properties arm at the verified guest offsets (packed-mirror writers)', () => {
   const flat = walkerRegion();
   assert.ok(
     flat.includes('case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES:'),
     'the Vulkan 1.3 properties case must exist in vk32_walkProperties2',
   );
+  // The arm serves the same five fields with the same values as the
+  // 64-bit walker, through the guest-offset writers (the prop32 form;
+  // section 4.55 reconciliation of the section 4.40 raw-offset arm).
   assert.ok(
-    flat.includes('wr32_32(cur + 176, (U32)VK_TRUE); // storageTexelBufferOffsetSingleTexelAlignment'),
-    'storage single-texel alignment must be VK_TRUE at guest offset 176',
+    flat.includes('vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, minSubgroupSize), 32);') &&
+    flat.includes('vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, maxSubgroupSize), 32);'),
+    'subgroup size range must be 32..32, written via the guest-offset writer',
   );
   assert.ok(
-    flat.includes('wr32_32(cur + 188, (U32)VK_TRUE); // uniformTexelBufferOffsetSingleTexelAlignment'),
-    'uniform single-texel alignment must be VK_TRUE at guest offset 188',
+    flat.includes('vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, storageTexelBufferOffsetSingleTexelAlignment), (U32)VK_TRUE);'),
+    'storage single-texel alignment must be VK_TRUE via the guest-offset writer',
   );
   assert.ok(
-    flat.includes('wr64_32(cur + 192, 1ull << 30); // maxBufferSize (as the 64-bit arm)'),
-    'maxBufferSize must be 1<<30 at guest offset 192',
+    flat.includes('vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, uniformTexelBufferOffsetSingleTexelAlignment), (U32)VK_TRUE);'),
+    'uniform single-texel alignment must be VK_TRUE via the guest-offset writer',
   );
   assert.ok(
-    flat.includes('wr32_32(cur + 8, 32); // minSubgroupSize') &&
-    flat.includes('wr32_32(cur + 12, 32); // maxSubgroupSize'),
-    'subgroup size range must be 32..32 at guest offsets 8/12',
+    flat.includes('vk32_g64f(cur, offsetof(Vk32Vulkan13Properties, maxBufferSize), 1ull << 30);'),
+    'maxBufferSize must be 1<<30 via the guest-offset writer',
+  );
+  // The verified guest offsets themselves (compile-verified against the
+  // canonical field list) are pinned by the mirror's static_asserts.
+  const mirror = mirrorRegion();
+  assert.ok(
+    mirror.includes('offsetof(Vk32Vulkan13Properties, minSubgroupSize) == 8') &&
+    mirror.includes('offsetof(Vk32Vulkan13Properties, storageTexelBufferOffsetSingleTexelAlignment) == 176') &&
+    mirror.includes('offsetof(Vk32Vulkan13Properties, uniformTexelBufferOffsetSingleTexelAlignment) == 188') &&
+    mirror.includes('offsetof(Vk32Vulkan13Properties, maxBufferSize) == 192'),
+    'the mirror static_asserts must pin the verified guest offsets 8/176/188/192',
+  );
+  assert.ok(
+    mirror.includes('sizeof(Vk32Vulkan13Properties) == 200'),
+    'the mirror static_assert must pin sizeof 200',
+  );
+  // The hostOff-8 writers must not serve this struct: their rule
+  // diverges past the first uint64_t in it.
+  const armStart = flat.indexOf('case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES:');
+  const armEnd = flat.indexOf('case VK_STRUCTURE_TYPE', armStart + 1);
+  const arm = flat.slice(armStart, armEnd);
+  assert.ok(
+    !arm.includes('vk32_w32f') && !arm.includes('vk32_w64f'),
+    'the 1.3 arm must not use the vk32_w*f hostOff-8 field writers',
   );
 });
 
 test('the 1.3 arm documents why it must not use the hostOff-8 field writers', () => {
   const flat = walkerRegion();
   assert.ok(
-    flat.includes('NOT the vk32_w*f hostOff-8 rule'),
-    'the raw-offset rationale comment must stay with the arm',
+    flat.includes('offsets come from the packed Vk32 mirror -- host') &&
+    flat.includes('offsetof - 8 diverges past the first uint64_t here'),
+    'the arm comment must document why host offsetof - 8 diverges for this struct',
+  );
+  const mirror = mirrorRegion();
+  assert.ok(
+    mirror.includes('host offsetof(maxBufferSize) - 8 = 200 would write') &&
+    mirror.includes('8 bytes past the end of the 200-byte guest struct') &&
+    mirror.includes('never host offsetof - 8, for every field of the 1.3 arm'),
+    'the mirror comment must document the hostOff-8 divergence and the guest-offset discipline',
   );
 });
 
