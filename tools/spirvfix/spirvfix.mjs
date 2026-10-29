@@ -204,6 +204,193 @@ function sections(mod) {
   }
   return { lastDebug, lastAnnot, firstFunc };
 }
+// --- operand-aware id-use scan ----------------------------------------------
+// idOperandUseIndex(byId, ins, id): the index of the first word of `ins`
+// that the SPIR-V grammar types as an id reference to `id`, or -1.
+// Companion to r15IdUseIndex (the R15 classifiers' walker, which covers
+// the function-body layouts): the same discipline -- only id-typed
+// operand positions are walked, and unlisted opcodes keep the
+// historical every-operand scan (exact for them, or fail-closed) --
+// extended with the declaration, annotation and constant layouts the
+// module-wide veto scans meet, because those scans also walk the
+// declaration sections, where literal words (constant values, type
+// widths, decoration parameters, packed name strings) are the common
+// case rather than the exception. The vetoes that matched raw words
+// instead false-declined servable modules whenever a literal happened
+// to equal a small id:
+//   - replaceDrawParameterBuiltins read any literal equal to the
+//     builtin variable's id (an OpConstant value suffices) as a
+//     pointer use outside OpLoad;
+//   - texelBuffersTo2D's consumer veto read an OpConstant value or a
+//     decoration literal equal to a converted load's id as the image
+//     value feeding that instruction;
+//   - uniformBlocksToStorage's pointer trace read literals inside
+//     executable instructions (an OpVectorShuffle component index, a
+//     branch weight) equal to a traced pointer id as the pointer
+//     escaping its loads;
+//   - analyzeRootDescriptors read any word equal to an unreferenced
+//     PhysicalStorageBuffer pointer type's id as an external use of
+//     the type.
+// Mirrored by idOperandUseIndex in the bridge audit's r15 namespace
+// (vk64bridge.cpp) for the analyzeRootDescriptors check.
+// `byId` (id -> defining instruction) is consulted only to resolve an
+// OpSwitch selector's width; pass null to keep the historical
+// pairs-region scan there.
+// Image ops with optional ImageOperands: a fixed run of leading id
+// operands, then one mask literal word (present exactly when more
+// words follow); every ImageOperands parameter is itself an id, so
+// the remaining tail scans as ids. Opcode -> leading id count
+// (shared with r15IdUseIndex's table).
+const ID_USE_IMAGE_OPS_PREFIX = {
+  87: 2, 88: 2, 89: 3, 90: 3, 91: 2, 92: 2, 93: 3, 94: 3, 95: 2, 96: 3,
+  97: 3, 98: 2, 99: 3, 305: 2, 306: 2, 307: 3, 308: 3, 309: 2, 310: 2,
+  311: 3, 312: 3, 313: 2, 314: 3, 315: 3, 320: 2, 5283: 4,
+};
+export function idOperandUseIndex(byId, ins, id) {
+  const w = ins.words, n = w.length;
+  const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+  const hitAt = (k) => (k >= 0 && k < n && w[k] === id) ? k : -1;
+  const scanIds = (a, b) => { for (let k = a; k < b && k < n; k++) if (w[k] === id) return k; return -1; };
+  // Walk one trailing MemoryAccess operand group whose mask word is
+  // at p: the mask is a literal; the set bits' parameters follow in
+  // bit order, of which only MakePointerAvailable / MakePointerVisible
+  // carry an id (a scope) -- Aligned carries a literal byte count and
+  // Volatile / Nontemporal / NonPrivatePointer carry nothing. Returns
+  // [index just past the group, hit index inside the group or -1].
+  const memAccess = (p) => {
+    if (p >= n) return [p, -1];
+    const mask = w[p];
+    let q = p + 1, hit = -1;
+    const param = (isId) => { if (isId) { const h = hitAt(q); if (hit < 0) hit = h; } q++; };
+    if (mask & 2) param(false);  // Aligned: literal alignment
+    if (mask & 8) param(true);   // MakePointerAvailable: scope id
+    if (mask & 16) param(true);  // MakePointerVisible: scope id
+    return [q, hit];
+  };
+  switch (ins.op) {
+    // Directives / debug / annotation families: at most one leading
+    // id (a target, an entry point, a file); everything after it is a
+    // literal, an enum word or packed string bytes.
+    case 2: case 3: case 4:   // OpSourceContinued / OpSource / OpSourceExtension:
+      return -1;              // literals, an optional OpString id, string text
+    case 5: case 6:           // OpName / OpMemberName: target id, then string bytes
+      return hitAt(0);
+    case 7: case 9: case 10:  // OpString / OpExtension / OpExtInstImport: own id + string
+      return -1;
+    case 8:                   // OpLine: File is an id; Line / Column are literals
+      return hitAt(start);
+    case 14: case 17:         // OpMemoryModel / OpCapability: literal words only
+      return -1;
+    case 15: {                // OpEntryPoint: model literal, entry id,
+                              // name string, then interface ids
+      const h = hitAt(1); if (h >= 0) return h;
+      return scanIds(r15EntryPointTail(ins), n);
+    }
+    case 16:                  // OpExecutionMode: entry id; mode + params are literals
+      return hitAt(0);
+    case 71:                  // OpDecorate: target id; decoration + params are literals
+      return hitAt(0);
+    case 72:                  // OpMemberDecorate: struct id; member / decoration / values are literals
+      return hitAt(0);
+    case 330:                 // OpModuleProcessed: packed string words only
+      return -1;
+    case 5632: case 5633:     // OpDecorateString / OpMemberDecorateString:
+      return hitAt(0);        // target id, then decoration literal + string words
+    // Type declarations (result id at words[0]; operands from 1):
+    case 21: case 22:         // OpTypeInt / OpTypeFloat: width (+ signedness) literals
+      return -1;
+    case 23: case 24: case 25: case 27: case 29:
+                              // vector / matrix / image / sampled-image /
+                              // runtime-array types: the element type id only
+      return hitAt(1);
+    case 28:                  // OpTypeArray: element type + length ids
+      return scanIds(1, 3);
+    case 30: case 33:         // OpTypeStruct / OpTypeFunction: member / signature ids
+      return scanIds(1, n);
+    case 31:                  // OpTypeOpaque: a name string
+      return -1;
+    case 32:                  // OpTypePointer: storage-class literal, then the pointee id
+      return hitAt(2);
+    case 39:                  // OpTypeForwardPointer: the pointer type id, then a storage literal
+      return hitAt(0);
+    // Constants:
+    case 43: case 50:         // OpConstant / OpSpecConstant: the value words are literals
+      return -1;
+    case 45:                  // OpConstantSampler: addressing / param / filter literals
+      return -1;
+    case 52:                  // OpSpecConstantOp: inner opcode literal, then operand ids
+      return scanIds(start + 1, n);
+    case 54:                  // OpFunction: control-mask literal, then the function type id
+      return hitAt(start + 1);
+    case 59:                  // OpVariable: storage-class literal, then the optional initializer id
+      return scanIds(start + 1, n);
+    case 12: {                // OpExtInst: Set id, the instruction number is
+                              // a literal, the remaining operands are ids
+      const h = hitAt(start); if (h >= 0) return h;
+      return scanIds(start + 2, n);
+    }
+    case 61: {                // OpLoad: Pointer id, then an optional MemoryAccess group
+      const h = hitAt(start); if (h >= 0) return h;
+      const a = memAccess(start + 1); if (a[1] >= 0) return a[1];
+      return scanIds(a[0], n);
+    }
+    case 62: {                // OpStore: Pointer and Object ids, then MemoryAccess
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      const a = memAccess(start + 2); if (a[1] >= 0) return a[1];
+      return scanIds(a[0], n);
+    }
+    case 63: {                // OpCopyMemory: Target and Source ids, then up to two MemoryAccess groups
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      const a = memAccess(start + 2); if (a[1] >= 0) return a[1];
+      const b = memAccess(a[0]); if (b[1] >= 0) return b[1];
+      return scanIds(b[0], n);
+    }
+    case 64: {                // OpCopyMemorySized: Target, Source and Size ids, then MemoryAccess groups
+      const h = scanIds(start, start + 3); if (h >= 0) return h;
+      const a = memAccess(start + 3); if (a[1] >= 0) return a[1];
+      const b = memAccess(a[0]); if (b[1] >= 0) return b[1];
+      return scanIds(b[0], n);
+    }
+    case 68:                  // OpArrayLength: only Structure is an id; the index is a literal
+      return hitAt(start);
+    case 79:                  // OpVectorShuffle: two vector ids; the components are literals
+      return scanIds(start, start + 2);
+    case 81:                  // OpCompositeExtract: only the composite is an id; indexes are literals
+      return hitAt(start);
+    case 82:                  // OpCompositeInsert: Object and Composite ids; indexes are literals
+      return scanIds(start, start + 2);
+    case 123:                 // OpGenericCastToPtrExplicit: only the pointer is an id; the storage class is a literal
+      return hitAt(start);
+    case 246:                 // OpLoopMerge: Merge and Continue ids; control mask + params are literals
+      return scanIds(start, start + 2);
+    case 247:                 // OpSelectionMerge: Merge id; the control mask is a literal
+      return hitAt(start);
+    case 250:                 // OpBranchConditional: Condition / True / False ids, then literal weights
+      return scanIds(start, start + 3);
+    case 251: {               // OpSwitch: Selector and Default ids, then
+                              // (literal, label id) target pairs; the literal
+                              // is one word for a <=32-bit selector type, two
+                              // for 64-bit. Unresolvable width keeps the
+                              // historical pairs-region scan (fail-closed).
+      const h = scanIds(start, start + 2); if (h >= 0) return h;
+      let wide = -1;
+      const selDef = byId ? byId.get(w[start]) : null;
+      const selTy = selDef && selDef.resultType != null ? byId.get(selDef.resultType) : null;
+      if (selTy && selTy.op === 21) wide = selTy.words[1] > 32 ? 2 : 1;
+      if (wide < 0) return scanIds(start + 2, n);
+      for (let k = start + 2 + wide; k < n; k += wide + 1) { const hh = hitAt(k); if (hh >= 0) return hh; }
+      return -1;
+    }
+    default: {
+      const fixed = ID_USE_IMAGE_OPS_PREFIX[ins.op];
+      if (fixed !== undefined) {
+        const h = scanIds(start, start + fixed); if (h >= 0) return h;
+        return start + fixed < n ? scanIds(start + fixed + 1, n) : -1;
+      }
+      return scanIds(start, n);
+    }
+  }
+}
 // --- R1: split combined SampledImage uniforms -------------------------------
 // A UniformConstant variable of OpTypeSampledImage becomes an image uniform
 // (same set/binding) plus a sampler uniform (same set, first free binding).
@@ -1144,7 +1331,7 @@ function replaceDrawParameterBuiltins(mod, log) {
         }
         loads.push(ins);
       } else if (ins.op !== Op.Variable && ins.op !== Op.Decorate && ins.op !== Op.Name && ins.op !== Op.EntryPoint &&
-          ins.words.includes(id)) {
+          idOperandUseIndex(byId, ins, id) >= 0) {
         log.push(`spirvfix: left DrawParameters builtin %${id} unchanged (pointer is used outside OpLoad)`);
         return false;
       }
@@ -1439,13 +1626,15 @@ function fragmentLayerToZero(mod, log) {
       if (ins === v || ins.op === Op.Decorate || ins.op === Op.Name || ins.op === Op.EntryPoint) continue;
       if (ins.op === Op.Load && ins.words[2] === id) { loads.push(ins); continue; }
       // The pointer may only be consumed by loads. Scan only the opcodes
-      // that can consume a pointer-typed operand: a raw words.includes(id)
-      // over every instruction false-positives on literal operands that
-      // numerically equal the id (DXVK copy_color_2d has its Layer variable
-      // at id 32 and an OpTypeInt of width 32). In a valid module no other
-      // opcode can reference an Input pointer id -- any other use would be
-      // a type error the translator rejects anyway.
-      if (POINTER_USE_OPS.has(ins.op) && ins.words.includes(id)) {
+      // that can consume a pointer-typed operand, and within those only
+      // id-typed operand positions (idOperandUseIndex): a raw word match
+      // false-positives on literal operands that numerically equal the id
+      // (DXVK copy_color_2d has its Layer variable at id 32 and an
+      // OpTypeInt of width 32; an OpCopyMemory Aligned literal equal to
+      // the id false-declines the same way). In a valid module no other
+      // opcode can reference an Input pointer id -- any other use would
+      // be a type error the translator rejects anyway.
+      if (POINTER_USE_OPS.has(ins.op) && idOperandUseIndex(byId, ins, id) >= 0) {
         log.push(`spirvfix: left Layer builtin %${id} unchanged (pointer used outside OpLoad)`);
         return false;
       }
@@ -1565,10 +1754,15 @@ export function texelBuffersTo2D(mod, log) {
     } else if (ins.op === Op.ImageFetch) {
       if (tracedImage.has(w[2]) || tracedSampled.has(w[2])) fetches.push(ins);
     } else {
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < w.length; k++)
-        if (tracedSampled.has(w[k]) || tracedImage.has(w[k]))
-          return refuse('converted image value feeds opcode ' + ins.op);
+      // Any other instruction consuming a converted value refuses the
+      // conversion -- but only an id-typed operand position counts as
+      // consumption (idOperandUseIndex): literal words (a constant
+      // value, a decoration parameter, a packed string) that happen to
+      // equal a traced id are not uses of the value.
+      for (const tid of tracedSampled)
+        if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
+      for (const tid of tracedImage)
+        if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
     }
   }
   for (const f of fetches) {
@@ -1854,9 +2048,12 @@ export function storageTexelBuffersTo2D(mod, log) {
         ins.op === Op.MemberDecorate || ins.op === Op.GroupDecorate ||
         ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 8 ||
         ins.op === 10 || ins.op === 14 || ins.op === 73 || ins.op === 75) continue;
-    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-    for (let k = start; k < ins.words.length; k++)
-      if (traced.has(ins.words[k])) return refuse('storage texel image consumed by op ' + ins.op);
+    // Operand-aware (rawscan audit): only id-typed operand positions
+    // count as consumption -- a literal (a type width, a constant value,
+    // a shuffle index, packed string words) that equals a traced id is
+    // not a use of the image.
+    for (const tid of traced)
+      if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('storage texel image consumed by op ' + ins.op);
   }
   if (!writes.length && !reads.length) return refuse('storage texel image has no read/write consumer');
   // Image-operand masks: an operand that carries ids (Lod, Grad, offsets,
@@ -2197,8 +2394,12 @@ export function uniformBlocksToStorage(mod, log) {
         // first value operand index: after (resultType, resultId) when the
         // instruction has them, else after resultId alone, else 0.
         const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+        // Only id-typed operand positions count (idOperandUseIndex): a
+        // literal word inside an executable instruction (a shuffle
+        // component index, a switch case value, an ImageOperands mask)
+        // that equals a traced id is not the pointer escaping.
         let hit = -1;
-        for (let k = start; k < w.length; k++) if (traced.has(w[k])) { hit = k; break; }
+        for (const tid of traced) { const h = idOperandUseIndex(byId, ins, tid); if (h >= 0) { hit = h; break; } }
         if (hit < 0) continue;
         if (ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain || ins.op === Op.PtrAccessChain || ins.op === Op.CopyObject) {
           // access chains / pointer copies: the base must be the operand in
@@ -3232,24 +3433,23 @@ export function analyzeRootDescriptors(mod) {
   const matTypes = new Set(mats.map(m => m.ptrTypeId));
   const coneTypes = new Set();
   for (const s of out.slots) for (const t of s.coneTypes) coneTypes.add(t);
-  const referenced = new Set();
-  for (const ins of mod.insns) for (const w of ins.words) referenced.add(w);
   for (const ins of mod.insns) {
     if (ins.op !== Op.TypePointer || ins.words[1] !== R15_PSB) continue;
     const tid = ins.resultId;
-    if (matTypes.has(tid) || coneTypes.has(tid)) continue;
-    if (referenced.has(tid) && ins.resultId != null) {
-      // referenced by something outside the analyzed cones (its own
-      // declaration does not count: resultId is not an operand word)
-      let external = false;
-      for (const u of mod.insns) {
-        if (u === ins) continue;
-        if (u.words.includes(tid)) { external = true; break; }
-      }
-      if (external) {
-        out.rejectReason = 'PhysicalStorageBuffer pointer type %' + tid + ' is used outside a root-descriptor cone';
-        return out;
-      }
+    if (tid == null || matTypes.has(tid) || coneTypes.has(tid)) continue;
+    // Referenced by something outside the analyzed cones? Only a
+    // result-type slot or an id-typed operand position counts as a
+    // reference (idOperandUseIndex): a literal word that happens to
+    // equal the type's id (a constant value, a storage-class word) is
+    // not a use of the type. Its own declaration does not count.
+    let external = false;
+    for (const u of mod.insns) {
+      if (u === ins) continue;
+      if (u.resultType === tid || idOperandUseIndex(ctx.byId, u, tid) >= 0) { external = true; break; }
+    }
+    if (external) {
+      out.rejectReason = 'PhysicalStorageBuffer pointer type %' + tid + ' is used outside a root-descriptor cone';
+      return out;
     }
   }
   const flip = new Set();

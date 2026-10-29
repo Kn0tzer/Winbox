@@ -2532,6 +2532,51 @@ int main() {
             assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaBefore);
             puts("PASS: GUARD the small-id heap-array module is admitted (operand-aware scan)");
         }
+        // GUARD (rawscan): a literal word equal to an unreferenced
+        // PhysicalStorageBuffer pointer type's id is not a use of the
+        // type. The module below carries a servable root-descriptor
+        // cone (push-loaded VA -> OpConvertUToPtr -> read) whose
+        // materialized pointer type is %10, a STRAY PSB pointer type
+        // %20 referenced by nothing, and an OpConstant whose VALUE is
+        // 20. The audit's raw word scan read the constant as an
+        // external use of %20, the root check failed, and the module
+        // was rejected as spirv-capability-unknown:5347; the
+        // operand-aware scan (idOperandUseIndex) admits it.
+        // Audit-shaped words in the style of the guards above (not
+        // spirv-val input).
+        const U32 psbBefore = vk64BridgeUnsupportedCount("spirv-capability-unknown:5347");
+        assert(module({
+            (2u << 16) | 17u, 1u,                          // OpCapability Shader
+            (2u << 16) | 17u, 5347u,                       // OpCapability PhysicalStorageBufferAddresses
+            (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+            (3u << 16) | 71u, 6u, 2u,                      // OpDecorate %6 Block
+            (5u << 16) | 72u, 6u, 0u, 35u, 0u,             // OpMemberDecorate %6 0 Offset 0
+            (3u << 16) | 71u, 5u, 2u,                      // OpDecorate %5 Block
+            (5u << 16) | 72u, 5u, 0u, 35u, 0u,             // OpMemberDecorate %5 0 Offset 0
+            (2u << 16) | 19u, 1u,                          // %1 = OpTypeVoid
+            (4u << 16) | 21u, 2u, 32u, 0u,                 // %2 = OpTypeInt 32 0
+            (4u << 16) | 21u, 3u, 64u, 0u,                 // %3 = OpTypeInt 64 0
+            (3u << 16) | 22u, 4u, 32u,                     // %4 = OpTypeFloat 32
+            (3u << 16) | 30u, 5u, 4u,                      // %5 = OpTypeStruct %4
+            (3u << 16) | 30u, 6u, 3u,                      // %6 = OpTypeStruct %3
+            (4u << 16) | 32u, 7u, 9u, 6u,                  // %7 = OpTypePointer PushConstant %6
+            (4u << 16) | 59u, 7u, 8u, 9u,                  // %8 = OpVariable %7 PushConstant
+            (4u << 16) | 32u, 9u, 9u, 3u,                  // %9 = OpTypePointer PushConstant %3
+            (4u << 16) | 32u, 10u, 5349u, 5u,              // %10 = OpTypePointer PhysicalStorageBuffer %5
+            (4u << 16) | 32u, 20u, 5349u, 5u,              // %20 = OpTypePointer PhysicalStorageBuffer %5 (stray)
+            (4u << 16) | 43u, 2u, 11u, 0u,                 // %11 = OpConstant %2 0
+            (4u << 16) | 43u, 2u, 21u, 20u,                // %21 = OpConstant %2 20 (value == stray id)
+            (3u << 16) | 33u, 13u, 1u,                     // %13 = OpTypeFunction %1
+            (5u << 16) | 54u, 1u, 12u, 0u, 13u,            // %12 = OpFunction %1 None %13
+            (2u << 16) | 248u, 14u,                        // %14 = OpLabel
+            (5u << 16) | 65u, 9u, 15u, 8u, 11u,            // %15 = OpAccessChain %9 %8 %11
+            (4u << 16) | 61u, 3u, 16u, 15u,                // %16 = OpLoad %3 %15
+            (4u << 16) | 120u, 10u, 17u, 16u,              // %17 = OpConvertUToPtr %10 %16
+            (4u << 16) | 61u, 5u, 18u, 17u,                // %18 = OpLoad %5 %17
+            (1u << 16) | 253u,                             // OpReturn
+            (1u << 16) | 56u}) == VK_SUCCESS);             // OpFunctionEnd
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore);
+        puts("PASS: GUARD a constant value equal to a stray physical-buffer pointer type id is not an external use");
 
         // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
         {

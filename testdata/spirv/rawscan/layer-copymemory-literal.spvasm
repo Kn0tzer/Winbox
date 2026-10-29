@@ -1,0 +1,40 @@
+; rawscan fixture F4 (R11, fragmentLayerToZero): the Layer input
+; variable sits at id 16 and an unrelated OpCopyMemory between two
+; function-local floats carries Aligned 16 -- its literal word equals
+; the variable's id. The Layer pointer itself is only ever loaded. A
+; raw word scan (even restricted to pointer-consuming opcodes) reads
+; the Aligned literal as a pointer use outside OpLoad and declines;
+; the operand-aware scan rewrites the Layer load to zero.
+OpCapability Shader
+OpCapability Geometry
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %40 "main" %16 %50
+OpExecutionMode %40 OriginUpperLeft
+OpDecorate %16 BuiltIn Layer
+OpDecorate %50 Location 0
+%1 = OpTypeVoid
+%2 = OpTypeInt 32 1
+%3 = OpTypeFloat 32
+%4 = OpTypePointer Input %2
+%16 = OpVariable %4 Input
+%5 = OpTypeVector %3 4
+%6 = OpTypePointer Output %5
+%50 = OpVariable %6 Output
+%7 = OpTypeFunction %1
+%8 = OpTypePointer Function %3
+%9 = OpConstant %3 1.5
+%10 = OpConstant %3 0.25
+%40 = OpFunction %1 None %7
+%41 = OpLabel
+%42 = OpVariable %8 Function
+%43 = OpVariable %8 Function
+%44 = OpLoad %2 %16
+OpStore %42 %9
+OpCopyMemory %43 %42 Aligned 16
+%45 = OpLoad %3 %43
+%46 = OpConvertSToF %3 %44
+%47 = OpFAdd %3 %45 %46
+%48 = OpCompositeConstruct %5 %47 %10 %10 %9
+OpStore %50 %48
+OpReturn
+OpFunctionEnd

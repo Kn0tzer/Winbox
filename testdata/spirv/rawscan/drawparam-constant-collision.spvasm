@@ -1,0 +1,27 @@
+; rawscan fixture F1 (R5, replaceDrawParameterBuiltins): the BaseVertex
+; builtin variable sits at id 10 and an OpConstant carries the VALUE 10.
+; The constant is a genuine operand of the OpIAdd; nothing but the
+; constant's literal word mentions 10. A raw word scan reads the
+; constant as a use of the pointer outside OpLoad and declines a
+; servable module; the operand-aware scan converts it.
+OpCapability Shader
+OpCapability DrawParameters
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %20 "main" %10 %12
+OpDecorate %10 BuiltIn BaseVertex
+OpDecorate %12 Location 0
+%2 = OpTypeInt 32 1
+%3 = OpTypePointer Input %2
+%10 = OpVariable %3 Input
+%4 = OpTypePointer Output %2
+%12 = OpVariable %4 Output
+%1 = OpTypeVoid
+%5 = OpTypeFunction %1
+%11 = OpConstant %2 10
+%20 = OpFunction %1 None %5
+%21 = OpLabel
+%22 = OpLoad %2 %10
+%23 = OpIAdd %2 %22 %11
+OpStore %12 %23
+OpReturn
+OpFunctionEnd

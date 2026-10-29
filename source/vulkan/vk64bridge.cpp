@@ -1087,6 +1087,119 @@ inline bool classifyRootAddr(const Module& m, U32 id, Expr& e) {
 }
 
 struct RootVerdict { bool hasMats = false, servable = false; std::vector<U32> slots, writableSlots; };
+
+// Operand-aware id-use scan: the index of the first word of `in` that
+// the SPIR-V grammar types as an id reference to `id`, or -1. Mirror
+// of idOperandUseIndex in spirvfix.mjs (which see for the defect
+// history: a literal word that happens to equal a sought id -- a
+// constant value, a storage-class word, a decoration parameter -- is
+// not a use of that id). Used by analyzeRoot's external-reference
+// check, the one audit scan here that walks the declaration sections,
+// where literal words are the common case. Unlisted opcodes keep the
+// historical every-operand scan (exact for them, or fail-closed).
+inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
+    const U32* w = in.w; const int n = (int)in.n; const int start = (int)in.fv;
+    auto hitAt = [&](int k) -> int { return (k >= 0 && k < n && w[k] == id) ? k : -1; };
+    auto scanIds = [&](int a, int b) -> int { for (int k = a; k < b && k < n; k++) if (w[k] == id) return k; return -1; };
+    // One trailing MemoryAccess operand group whose mask word is at
+    // p: the mask is a literal; only the MakePointerAvailable /
+    // MakePointerVisible parameters are ids (scopes) -- Aligned is a
+    // literal byte count and the rest carry nothing. Returns {index
+    // just past the group, hit index inside the group or -1}.
+    auto memAccess = [&](int p) -> std::pair<int, int> {
+        if (p >= n) return { p, -1 };
+        const U32 mask = w[p];
+        int q = p + 1, hit = -1;
+        auto param = [&](bool isId) { if (isId) { int h = hitAt(q); if (hit < 0) hit = h; } q++; };
+        if (mask & 2) param(false);  // Aligned: literal alignment
+        if (mask & 8) param(true);   // MakePointerAvailable: scope id
+        if (mask & 16) param(true);  // MakePointerVisible: scope id
+        return { q, hit };
+    };
+    // Image ops with optional ImageOperands: a fixed run of leading
+    // id operands, one mask literal word, then id parameters only.
+    // (Table mirrors ID_USE_IMAGE_OPS_PREFIX in spirvfix.mjs.)
+    static const int kImagePrefix[][2] = {
+        {87, 2}, {88, 2}, {89, 3}, {90, 3}, {91, 2}, {92, 2}, {93, 3}, {94, 3},
+        {95, 2}, {96, 3}, {97, 3}, {98, 2}, {99, 3}, {305, 2}, {306, 2}, {307, 3},
+        {308, 3}, {309, 2}, {310, 2}, {311, 3}, {312, 3}, {313, 2}, {314, 3},
+        {315, 3}, {320, 2}, {5283, 4},
+    };
+    for (const auto& e : kImagePrefix) if (in.op == e[0]) {
+        int fixed = e[1];
+        int h = scanIds(start, start + fixed); if (h >= 0) return h;
+        return start + fixed < n ? scanIds(start + fixed + 1, n) : -1;
+    }
+    switch (in.op) {
+        // Directives / debug / annotation families: at most one
+        // leading id; the rest is literals, enums or string bytes.
+        case 2: case 3: case 4: return -1;              // source family
+        case 5: case 6: return hitAt(0);                // OpName / OpMemberName: target id
+        case 7: case 9: case 10: return -1;             // OpString / OpExtension / OpExtInstImport
+        case 8: return hitAt(start);                    // OpLine: the File id
+        case 14: case 17: return -1;                    // OpMemoryModel / OpCapability
+        case 15: {                                      // OpEntryPoint: model literal, entry id, name string, interface ids
+            int h = hitAt(1); if (h >= 0) return h;
+            int k = 2; bool done = false;
+            while (k < n && !done) {
+                U32 word = w[k++];
+                for (int b = 0; b < 4; b++) if (((word >> (8 * b)) & 0xFF) == 0) { done = true; break; }
+            }
+            return scanIds(k, n);
+        }
+        case 16: return hitAt(0);                       // OpExecutionMode: entry id
+        case 71: case 72: return hitAt(0);              // OpDecorate / OpMemberDecorate: target / struct id
+        case 330: return -1;                            // OpModuleProcessed: string words only
+        case 5632: case 5633: return hitAt(0);          // OpDecorateString / OpMemberDecorateString: target id, then literals + string
+        // Type declarations (result id at w[0]; operands from 1):
+        case 21: case 22: return -1;                    // OpTypeInt / OpTypeFloat: width literals
+        case 23: case 24: case 25: case 27: case 29: return hitAt(1); // element type id only
+        case 28: return scanIds(1, 3);                  // OpTypeArray: element + length ids
+        case 30: case 33: return scanIds(1, n);         // OpTypeStruct / OpTypeFunction
+        case 31: return -1;                             // OpTypeOpaque: a name string
+        case 32: return hitAt(2);                       // OpTypePointer: storage literal, pointee id
+        case 39: return hitAt(0);                       // OpTypeForwardPointer
+        // Constants:
+        case 43: case 50: return -1;                    // OpConstant / OpSpecConstant: value literals
+        case 45: return -1;                             // OpConstantSampler: literal params
+        case 52: return scanIds(start + 1, n);          // OpSpecConstantOp: opcode literal, operand ids
+        case 54: return hitAt(start + 1);               // OpFunction: control literal, type id
+        case 59: return scanIds(start + 1, n);          // OpVariable: storage literal, initializer id
+        case 12: { int h = hitAt(start); if (h >= 0) return h; return scanIds(start + 2, n); } // OpExtInst: set id, literal, operand ids
+        case 61: { int h = hitAt(start); if (h >= 0) return h; auto a = memAccess(start + 1); if (a.second >= 0) return a.second; return scanIds(a.first, n); } // OpLoad
+        case 62: { int h = scanIds(start, start + 2); if (h >= 0) return h; auto a = memAccess(start + 2); if (a.second >= 0) return a.second; return scanIds(a.first, n); } // OpStore
+        case 63: { int h = scanIds(start, start + 2); if (h >= 0) return h; auto a = memAccess(start + 2); if (a.second >= 0) return a.second; auto b = memAccess(a.first); if (b.second >= 0) return b.second; return scanIds(b.first, n); } // OpCopyMemory
+        case 64: { int h = scanIds(start, start + 3); if (h >= 0) return h; auto a = memAccess(start + 3); if (a.second >= 0) return a.second; auto b = memAccess(a.first); if (b.second >= 0) return b.second; return scanIds(b.first, n); } // OpCopyMemorySized
+        case 68: return hitAt(start);                   // OpArrayLength: structure id; index is a literal
+        case 79: return scanIds(start, start + 2);      // OpVectorShuffle: two vector ids; components are literals
+        case 81: return hitAt(start);                   // OpCompositeExtract: composite id; indexes are literals
+        case 82: return scanIds(start, start + 2);      // OpCompositeInsert: object + composite ids
+        case 123: return hitAt(start);                  // OpGenericCastToPtrExplicit: pointer id; storage is a literal
+        case 246: return scanIds(start, start + 2);     // OpLoopMerge: merge + continue ids
+        case 247: return hitAt(start);                  // OpSelectionMerge: merge id
+        case 250: return scanIds(start, start + 3);     // OpBranchConditional: condition + labels; weights are literals
+        case 251: {                                     // OpSwitch: selector + default ids, then (literal, label) pairs
+            int h = scanIds(start, start + 2); if (h >= 0) return h;
+            int wide = -1;
+            auto sd = m.byId.find(w[start]);
+            if (sd != m.byId.end()) {
+                const Insn& def = m.insns[sd->second];
+                if (def.resultType) {
+                    auto tt = m.byId.find(def.resultType);
+                    if (tt != m.byId.end() && m.insns[tt->second].op == 21)
+                        wide = m.insns[tt->second].w[1] > 32 ? 2 : 1;
+                }
+            }
+            if (wide < 0) return scanIds(start + 2, n); // unresolvable width: historical scan (fail-closed)
+            for (int k = start + 2 + wide; k < n; k += wide + 1) { int hh = hitAt(k); if (hh >= 0) return hh; }
+            return -1;
+        }
+    }
+    // Unlisted opcodes: the historical every-operand scan from the
+    // first value operand -- exact for them, or fail-closed.
+    return scanIds(start, n);
+}
+
 inline RootVerdict analyzeRoot(const Module& m) {
     RootVerdict out;
     struct Mat { U32 matId, ptrTypeId, pointeeId; Expr prov; bool provOk; Uses uses; };
@@ -1119,11 +1232,15 @@ inline RootVerdict analyzeRoot(const Module& m) {
         if (in.op != 32 || in.n < 3 || in.w[1] != 5349) continue;
         U32 tid = in.resultId;
         if (!tid || matTypes.count(tid) || coneTypes.count(tid)) continue;
+        // Only a result-type slot or an id-typed operand position
+        // counts as a reference (idOperandUseIndex, mirroring
+        // spirvfix's analyzeRootDescriptors): a literal word equal to
+        // the type's id (a constant value, a storage-class word) is
+        // not a use of the type.
         bool external = false;
         for (const Insn& u : m.insns) {
             if (&u == &in) continue;
-            for (U32 k = 0; k < u.n; k++) if (u.w[k] == tid) { external = true; break; }
-            if (external) break;
+            if (u.resultType == tid || idOperandUseIndex(m, u, tid) >= 0) { external = true; break; }
         }
         if (external) return out;
     }
