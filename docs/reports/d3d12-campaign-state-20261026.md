@@ -4244,3 +4244,56 @@ probed build's source.
   transform-feedback row's stated publication (queries TRUE, limits
   zero, features FALSE, because vkd3d's gate reads it) now holds on
   the 32-bit walker as well as the 64-bit one.
+### Merge outcome (integ, 2026-10-29)
+
+Merged as fb8f5ed5a (parents a23d1263c + 12a402fd6); the lane
+section above is renumbered 4.32 -> 4.40. The only content
+conflict was this report (HEAD kept wholesale, the lane section
+appended); vk64bridge.cpp auto-merged and its merged delta is
+byte-identical to the lane delta, verified hunk for hunk -- both
+vk32 fixes survive verbatim. No payload, pin, or staged member
+changed; no register disposition changes (register unchanged
+372 = 73/66/233/0, diff-proven: the only register edits are two
+citation re-pins, +51 across the walker insertion -- logAskedFor
+9865->9916, vk64Unsupported 9866->9917, construct-verified by
+direct read; citation audit 0 DRIFT / 0 MISSING, 228/14/96/7).
+Suites on the merged tree: JS 321/0 (320 baseline + the lane
+guard vk-properties2-32); native 647/0 single-threaded;
+run-native.py end-to-end green (31 PASS blocks). Dist rebuilt:
+"Browser export verified", stamp 178ee00d6, wasm sha 08d3a0d0,
+support archive bbc583c6.
+
+One merge fallout, adjudicated as test rot: run-native.py first
+aborted at the harness 32-bit vkCreateComputePipelines block --
+the harness packed the out-pointer at a[4], the convention the
+buggy handler used. The real shim packs a[3]=pCreateInfos,
+a[4]=pAllocator, a[5]=pPipelines (tools/rootfs64/libvk32/
+libvk32.c, quoted in the lane fix comment), and the guest proof
+above ran through that shim. The harness now packs per the shim
+(a[4]=0, the NULL allocator vkd3d passes; a[5]=out), both
+assertions at full strength; sabotage loop closed -- the
+corrected harness aborts against the reverted (a[4]) handler and
+passes against the merged one (fallout commit 8b247b79c).
+
+Guest gate on the merged dist (slot-serialized, uploading
+harness; test-results/dxvk-d3d12-32merge-*): (a) tri12-32.exe
+RESULT 0, verdict passed:true -- d3d12.dll/d3d12core.dll native
+from system placement, winevulkan.dll builtin, 256 vk32 traps,
+the lane signature reproduced on the merged tree; (b) tri12
+RESULT 0 (guest verdict; the harness composite reads
+passed:false on the zero-chunk capture artifact -- tri12
+presents nothing by design, as this section notes for both
+ABIs); (c) uav12 SUMMARY exec=ALL6, RESULT 0 -- no regression
+from the vk32 changes; (d) cs12 signature unchanged -- TEX OK
+(bad=0), BUF/BUF2 FAIL bad=64 at the meta-bind wall (metabind
+not yet merged), RESULT 1 for that reason alone.
+
+PROP32 OVERLAP FLAG for that merge: lane-prop32 independently
+added TRANSFORM_FEEDBACK and VULKAN_1_3 arms to
+vk32_walkProperties2 (plus maintenance-5, descriptor-indexing,
+and the 1.1/1.2 completions). The arms merged here are now the
+integ text; the prop32 merge must reconcile per arm rather than
+re-add -- in particular this lane 1.3 arm writes raw guest
+offsets while prop32 built a pack(4) guest-struct mirror with
+its own writers, and the two lanes guards (source-pin here,
+harness block there) are the arbiters.
