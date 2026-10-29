@@ -12569,11 +12569,40 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdCopyImageToBuffer:
     case VK64_fn_vkCmdCopyImageToBuffer2:
     case VK64_fn_vkCmdCopyImageToBuffer2KHR: {
+        // All three forms arrive in the same unpacked shape (the shim's
+        // vk32_copyImageToBuffer2 reads the Info2 itself, libvk32.c):
+        // a[1]=srcImage, a[3]=dstBuffer, a[4]=regionCount, a[5]=pRegions;
+        // only the region struct differs (VkBufferImageCopy vs
+        // VkBufferImageCopy2 with its sType/pNext head). Until this fix the
+        // handler recorded the command with an all-zero CopyI2B, so
+        // setupReadbacks dropped it on its w/h guard and every 32-bit
+        // image->buffer readback served zeros while the buffer variants
+        // passed (cs12-32 TEX, campaign 4.64; the 64-bit handlers were
+        // fixed for the same defect class in 4.24).
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyImageToBuffer");
         VK64_DROP_IF(return 0, !cb);
-        Cmd c; c.kind = CMD_COPY_I2B;
-        c.a = args.a[1]; c.b = args.a[3];
-        pushCmd(cb, c);
+        U64 src = args.a[1], dst = args.a[3];
+        U32 count = args.a[4], regions = args.a[5];
+        const bool copy2 = fnId != VK64_fn_vkCmdCopyImageToBuffer;
+        VK64_DROP_IF(return 0, count > 1024 || !regions);
+        auto record = [&](const auto& r) {
+            Cmd c; c.kind = CMD_COPY_I2B; c.a = src; c.b = dst;
+            c.copyI2B.srcImage = src; c.copyI2B.dstBuffer = dst;
+            c.copyI2B.bufOff = r.bufferOffset; c.copyI2B.rowLen = r.bufferRowLength;
+            c.copyI2B.imgH = r.bufferImageHeight;
+            c.copyI2B.ox = r.imageOffset.x; c.copyI2B.oy = r.imageOffset.y;
+            c.copyI2B.w = r.imageExtent.width; c.copyI2B.h = r.imageExtent.height;
+            pushCmd(cb, c);
+        };
+        for (U32 i = 0; i < count; ++i) {
+            if (copy2) {
+                vk32abi::VkBufferImageCopy2 r = {};
+                readStruct32(regions + (U64)i * sizeof(r), r); record(r);
+            } else {
+                vk32abi::VkBufferImageCopy r = {};
+                readStruct32(regions + (U64)i * sizeof(r), r); record(r);
+            }
+        }
         return 0;
     }
     case VK64_fn_vkCmdBlitImage:

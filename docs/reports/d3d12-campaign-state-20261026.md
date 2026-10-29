@@ -8197,3 +8197,72 @@ REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN. Citations: 0 DRIFT /
 0 MISSING (350 cited rows: 230 MATCH / 14 MATCH-INHERITED / 99
 UNCHECKABLE / 7 EXEMPT; the new row's citation is UNCHECKABLE-class,
 like the row it splits from).
+
+## 4.64-on-branch 32-bit texture readback zeros: vkCmdCopyImageToBuffer recorded no regions on the vk32 ABI (2026-10-29, lane-cs32tex)
+
+THE FAILURE (evidence: wt-cs32mem test-results/dxvk-cs32mem-after): with
+the section 4.63 memory wall fixed, cs12-32 creates every resource and
+its BUF and BUF2 variants pass end to end (bad=0), but the TEX variant
+fails on data -- VARIANTTEX FAIL (bad=16 first=(0,0) gotR=0): all 16
+texels wrong, the readback returns zeros from the first texel, with zero
+decline lines. On the 64-bit ABI the same probe's TEX passes.
+
+LOCALIZATION: the failing run's console carried exactly one
+setupReadbacks drop (vk64bridge.cpp:4842, guard `!rb.w || !rb.h`). The
+32-bit vkCmdCopyImageToBuffer / vkCmdCopyImageToBuffer2 /
+vkCmdCopyImageToBuffer2KHR handler recorded the CMD_COPY_I2B command
+with only c.a/c.b set and never filled the CopyI2B struct -- the region
+extent stayed w=0/h=0, the readback was dropped at planning, no
+V2_READBACK (0x13) record was emitted, completeReadbacks never ran, and
+the guest readback buffer kept its initial zeros. The same defect class
+as the 64-bit section 4.24 stage-1 fix, surviving on the 32-bit ABI.
+Ground truth for the argument packing (tools/rootfs64/libvk32/
+libvk32.c, vk32_copyImageToBuffer2): the shim unpacks the *2 Info2
+itself, so all three forms trap identically (a[1]=srcImage,
+a[2]=layout, a[3]=dstBuffer, a[4]=regionCount, a[5]=pRegions); only the
+region struct differs (vk32abi::VkBufferImageCopy vs
+vk32abi::VkBufferImageCopy2). The sibling 32-bit CopyBufferToImage
+handler, immediately above, parses its regions correctly -- the shape
+the fix mirrors. (Contrast the *2KHR copy handlers of section 4.24,
+where the PE shim passes the Info2 pointer verbatim and the bridge
+re-reads it.)
+
+THE FIX (source/vulkan/vk64bridge.cpp, the vk32Bridge
+VK64_fn_vkCmdCopyImageToBuffer case): the handler now records each
+region through a lambda that fills CopyI2B fully (srcImage, dstBuffer,
+bufferOffset, bufferRowLength, bufferImageHeight, imageOffset.x/y,
+extent w/h) and keeps c.a/c.b; an insane region count or a null region
+array is dropped loudly. One new VK64_DROP_IF site: the drop-macro
+census moves 256 -> 257 ('return 0' 161 -> 162), updated through the
+audited-census path (pin in vk-drop-macro-guard.test.mjs + the census
+history clause on the macro register row).
+
+GUARD: native harness block "Vulkan32 CopyImageToBuffer records region
+fields (v1 + 2KHR) and submits a READBACK" in
+tools/vkd3d/tests/vk64_native_test.cpp -- drives both trap forms with
+crafted i386 regions, asserts every recorded CopyI2B field, asserts
+setupReadbacks plans both readbacks, and asserts the serializer emits
+the 0x13 READBACK with the right image/extent. Sabotage-verified: with
+the handler temporarily restored to the stub the harness dies SIGABRT
+at the guard's field assertion (vk64_native_test.cpp:872); the fix was
+restored byte-identical (sha256
+9aee5e59453a2ff14bcd2c7b3f9a97039a383a3e3d81e5adb90442defeb2de5b).
+
+SUITES (lane tree): run-native 49 PASS (incl. the new block); JS unit
+332/0; emulator native 648 OK / 0 FAILED.
+
+GUEST PROOF (lane dist, "Browser export verified"): cs12-32 RESULT 0,
+full signature -- VARIANTBUF OK bad=0, VARIANTBUF2 OK bad=0,
+VARIANTTEX OK bad=0 (evidence test-results/dxvk-cs32tex). The 4842
+setupReadbacks drop is absent from the new console. The three
+emitImageData drops at vk64bridge.cpp:5115 persist at the same count
+with TEX passing, which proves them the benign null-descriptor
+bindings, not a second leg. tri12-32 RESULT 0, no regression
+(test-results/dxvk-cs32tex-tri). This guest-proves the cs12-32 leg the
+section 4.59 vk32compute merge gate owed; the batched regime's final
+gate re-runs it on the merged tree.
+
+REGISTER (on-branch): +1 IMPLEMENTED row for the 32-bit handler
+(citation vk64bridge.cpp:12569 on-branch) -> 380 rows = 80 IMPLEMENTED
+/ 66 REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN. Section number is
+on-branch; it renumbers at merge.
