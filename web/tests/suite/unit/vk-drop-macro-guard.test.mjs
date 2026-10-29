@@ -88,13 +88,13 @@ function dropSites(src) {
   return sites;
 }
 
-test('guarded-site census: 256 sites, flow-control sites exactly as audited', () => {
+test('guarded-site census: 257 sites, flow-control sites exactly as audited', () => {
   const sites = dropSites(bridge);
-  assert.equal(sites.length, 256, 'total VK64_DROP_IF call sites changed');
+  assert.equal(sites.length, 257, 'total VK64_DROP_IF call sites changed');
   const byAction = {};
   for (const [a] of sites) byAction[a] = (byAction[a] || 0) + 1;
   assert.deepEqual(byAction,
-    { 'return 0': 161, 'return': 28, 'return nullptr': 1, 'continue': 63, 'break': 3 });
+    { 'return 0': 162, 'return': 28, 'return nullptr': 1, 'continue': 63, 'break': 3 });
   // The 58 continue/break sites from the macro-class audit (action, condition)
   // with multiplicities (mirrored handlers share condition text). Any site
   // added, removed or reworded must update this pin and the register row.

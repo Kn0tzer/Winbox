@@ -823,6 +823,83 @@ int main() {
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)");
     }
+    // ---- vkCmdCopyImageToBuffer (32-bit): the recorded CopyI2B must carry
+    // the region fields for every trap form (campaign 4.66). The handler
+    // used to record an all-zero CopyI2B (only c.a/c.b set), so
+    // setupReadbacks dropped the command on its w/h guard and every 32-bit
+    // image->buffer readback served zeros -- cs12-32's TEX variant failed
+    // bad=16 while its BUF/BUF2 variants passed. Drive the real traps with
+    // crafted i386 regions, pin the recorded fields, then prove the submit
+    // path accepts the records: setupReadbacks must plan both readbacks
+    // and the serializer must emit the V2 READBACK record.
+    {
+        KMemory memoryI; CPU cpuI{&memoryI};
+        auto callI = [&](U32 fn, const VK32Args& a) {
+            memoryI.memcpyToGuest(128, &a, sizeof(a));
+            return vk32Bridge(&cpuI, fn, 128);
+        };
+        U64 devIId; createObj32<Device>(K_DEVICE, devIId);
+        U64 imgMemId; auto* imgMem = createObj32<DeviceMemory>(K_MEMORY, imgMemId);
+        imgMem->size = 4096; imgMem->va = memoryI.mmapReserveAndMap(4096, 3);
+        U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+        img->w = 4; img->h = 4; img->d = 1; img->layers = 1; img->mips = 1;
+        img->format = VK_FORMAT_R8G8B8A8_UNORM; img->mem = imgMemId; img->memOff = 0; img->pixBytes = 64;
+        U64 bufMemId; auto* bufMem = createObj32<DeviceMemory>(K_MEMORY, bufMemId);
+        bufMem->size = 4096; bufMem->va = memoryI.mmapReserveAndMap(4096, 3);
+        U64 bufId; auto* buf = createObj32<Buffer>(K_BUFFER, bufId);
+        buf->size = 1024; buf->mem = bufMemId; buf->memOff = 0;
+        U64 cbIId; auto* cbI = createObj32<CmdBuf>(K_CMDBUF, cbIId);
+        // v1 form: VkBufferImageCopy at guest 2048 (shim packing a[1]=src,
+        // a[3]=dst, a[4]=count, a[5]=regions; libvk32.c).
+        vk32abi::VkBufferImageCopy r1{};
+        r1.bufferOffset = 64; r1.bufferRowLength = 8; r1.bufferImageHeight = 4;
+        r1.imageOffset = {1, 2, 0}; r1.imageExtent = {3, 2, 1};
+        memoryI.memcpyToGuest(2048, &r1, sizeof(r1));
+        VK32Args a1{}; a1.a[0] = cbIId; a1.a[1] = imgId; a1.a[2] = 0; a1.a[3] = bufId; a1.a[4] = 1; a1.a[5] = 2048;
+        callI(VK64_fn_vkCmdCopyImageToBuffer, a1);
+        // *2KHR form: VkBufferImageCopy2 (sType/pNext head) at guest 2176;
+        // the shim unpacks the Info2 into the same trap shape.
+        vk32abi::VkBufferImageCopy2 r2{};
+        r2.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
+        r2.bufferOffset = 128; r2.bufferRowLength = 0; r2.bufferImageHeight = 0;
+        r2.imageOffset = {0, 0, 0}; r2.imageExtent = {4, 4, 1};
+        memoryI.memcpyToGuest(2176, &r2, sizeof(r2));
+        VK32Args a2{}; a2.a[0] = cbIId; a2.a[1] = imgId; a2.a[2] = 0; a2.a[3] = bufId; a2.a[4] = 1; a2.a[5] = 2176;
+        callI(VK64_fn_vkCmdCopyImageToBuffer2KHR, a2);
+        assert(cbI->cmds.size() == 2);
+        assert(cbI->cmds[0].kind == CMD_COPY_I2B);
+        const CopyI2B& c1 = cbI->cmds[0].copyI2B;
+        assert(c1.srcImage == imgId && c1.dstBuffer == bufId && c1.bufOff == 64 &&
+               c1.rowLen == 8 && c1.imgH == 4 && c1.ox == 1 && c1.oy == 2 && c1.w == 3 && c1.h == 2);
+        assert(cbI->cmds[1].kind == CMD_COPY_I2B);
+        const CopyI2B& c2 = cbI->cmds[1].copyI2B;
+        assert(c2.srcImage == imgId && c2.dstBuffer == bufId && c2.bufOff == 128 &&
+               c2.rowLen == 0 && c2.imgH == 0 && c2.ox == 0 && c2.oy == 0 && c2.w == 4 && c2.h == 4);
+        // Submit path: neither record dies on the setupReadbacks w/h guard,
+        // and the serializer pairs the 4x4 copy with a READBACK record.
+        g_v2Pending.clear();
+        setupReadbacks({{cbI, cbIId}});
+        assert(g_readbackPending.size() == 2);
+        serializeSubmitV2({{cbI, cbIId}});
+        bool sawRb = false;
+        for (const auto& chunk : g_v2Pending.back().chunks) {
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                const U8* pl = chunk.data() + at + 8;
+                if (type == 0x13) { // V2_READBACK
+                    U64 src; U32 w, h;
+                    memcpy(&src, pl, 8); memcpy(&w, pl + 8, 4); memcpy(&h, pl + 12, 4);
+                    if (src == imgId && w == 4 && h == 4) sawRb = true;
+                }
+                at += 8 + len;
+            }
+        }
+        assert(sawRb);
+        g_v2Pending.clear();
+        g_readbackPending.clear();
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 CopyImageToBuffer records region fields (v1 + 2KHR) and submits a READBACK");
+    }
     // ---- vkCmdClearColorImage (32-bit): the clear value must land as whole
     // texels. The old handler took only the first 4 bytes of the 16-byte
     // VkClearColorValue and repeated those in 4-byte steps, so a wide texel
