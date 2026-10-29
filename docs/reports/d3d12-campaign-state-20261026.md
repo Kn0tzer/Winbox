@@ -6082,3 +6082,51 @@ bump was NOT taken -- the fallback branch now names itself through
 the bridge's own accounting (`vk64Unsupported
 "clear-color-layout"`), the switch needs no default arm, and the
 guard passes at its original strength.
+
+**Merge outcome (integ, 2026-10-29).** Merged as `ed7cd8520`
+(parents `f066da209` + `5f9a03be4`); citation re-pin fallout
+`e6b632e36`. The lane's section 4.37 is renumbered 4.51 here.
+Composition verified by diff accounting: the merged
+`source/vulkan/vk64bridge.cpp` delta against pre-merge integ is
+line-identical to the lane delta against its base (same two hunks,
+same added and removed lines) -- no `fmt_bpp` hunk rides in from the
+old base, and the 64-bit clear handler (a separate implementation
+in `vk64Bridge`) is byte-identical to pre-merge; the native-test
+delta is likewise line-identical (+76, the guard block). The
+register was applied as a delta, not taken from the branch: one
+IMPLEMENTED row added with its citations re-pinned to the merged
+tree (`vk32ClearTexel` at vk64bridge.cpp:9990, the 32-bit handler
+at :11841), totals 375 = 76 IMPLEMENTED / 66 REJECTED-LOUDLY /
+233 NOT-A-GAP / 0 OPEN. Citation audit: the +108-line helper
+insertion drifted exactly the three rows the lane itself had
+re-pinned (marker, once-per-name diagnostic, unimplemented 32-bit
+trap); re-pinned by the exact +108 delta, construct-verified --
+the fn32-trap row now cites the actual trap fallback call
+(:10416); its old line had matched only by checker tolerance to an
+unrelated properties2 call. Final audit 0 DRIFT / 0 MISSING
+(229 MATCH / 14 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over
+347 cited rows). `no-silent-failure` passes with
+`known-silent.json` unchanged from pre-merge -- the lane's
+no-baseline-bump resolution (the fallback names itself via
+`clear-color-layout`) holds on the merged tree. Suites on the
+merged tree: JS unit 328 passed / 0 failed (BW_TEST_DIST=integ
+dist; the lane added no JS files); emulator native 648 OK /
+0 FAILED; run-native.py 38 PASS / 0 FAIL -- 37 baseline plus the
+lane's block, accounted by name ("Vulkan32 clear-color writes
+whole texels (wide, half, int and UNORM formats; no footprint
+overrun)"). Dist built from the re-pin commit (stamp `e6b632e36`,
+wasm `1dc475a6...`), "Browser export verified", completeness
+0 failures / 1 pre-existing environmental skip; wine64.zip
+member-verified (shim `ae96105b...` under bw64vulkan.dll /
+vulkan-1.dll / winevulkan.dll; canonical d3d12 pair `a96b4e9d...` /
+`3d3bfe43...`) and wine32.zip still carries the PE32 pair
+`872c3d65...` / `71e9c174...`. Guest gate on the merged dist
+(probe slot, guest-verdict adjudication): tri12-32 via the 32-bit
+system-placement harness (arch=x86) passed:true outright,
+RESULT 0 (d3d12 pair loaded native from C:\windows\system32,
+winevulkan builtin, 256 vk32 traps;
+test-results/dxvk-clear32merge-tri32); tri12 RESULT 0
+(test-results/dxvk-clear32merge-tri12; composite passed:false is
+the standing 0-chunk capture artifact); cs12 RESULT 0 with the
+full standing signature (SUMMARY buf=OK buf2=OK tex=OK;
+test-results/dxvk-clear32merge-cs12). GATE COMPLETE.
