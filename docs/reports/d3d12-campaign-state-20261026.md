@@ -8567,3 +8567,90 @@ READBACK'). No dist rebuild and no guest probes in this lane, per the
 batched regime: the final full gate re-proves cs12-32 on the merged tree
 (lane-side guest proof stands meanwhile: cs12-32 RESULT 0 full signature
 and tri12-32 RESULT 0 on the lane dist).
+
+## 4.67 FINAL FULL GATE (2026-10-29, final-gate lane): steps 0-2 and probes (a)-(g) GREEN; item (h) d3d11 browser debt RED on two attempts (documented desktop-init race signatures) -- gate NOT fully green, deploy does not proceed on this verdict
+
+Pre-step (step 0): the orphan conflict-end marker left by the
+r8downgrade merge resolution was removed from this file (exactly -1
+line, verified by diff; commit efa0189a1). The gate ran on the
+post-cleanup tip efa0189a1.
+
+STEP 1 -- FRESH DIST (from efa0189a1): tools/bw64-build.sh completed
+with the literal 'Browser export verified' line; completeness gate
+0 failures, 1 skip (the standing environmental skip). BUILD_INFO
+git_sha efa0189a1f0fca417c2e675832c4e639a4fa6c8e; wasm sha256
+18137f348945ee9535e8756a0d1710beaf528a6c4d670b3e6351481a3866fdb4
+(5,520,023 B). Runtime archives verified by member pins + sizes
+(whole-archive hashes are non-reproducible by staging design):
+wine64.zip 213,105,632 B -- d3d12.dll 517,717 B a96b4e9d,
+d3d12core.dll 8,825,383 B 3d3bfe43, PE shim ae96105b (160,169 B)
+under vulkan-1.dll, winevulkan.dll and bw64vulkan.dll;
+wine32.zip 239,760,722 B -- PE32 pair at
+opt/wine-stable/lib/wine/i386-windows/: d3d12.dll 517,273 B
+872c3d65, d3d12core.dll 9,022,393 B 71e9c174.
+
+STEP 2 -- SUITES ON THE FRESH DIST: JS unit 332 passed / 0 failed
+(BW_TEST_DIST = the fresh dist). Emulator native 648 OK / 0 FAILED
+(rc=0; Build/Test/boxedwine 0 0 1 run itself). run-native 50 PASS /
+0 FAIL. Citation audit 0 DRIFT / 0 MISSING over 351 cited rows
+(231 MATCH / 14 MATCH-INHERITED / 99 UNCHECKABLE / 7 EXEMPT).
+Register recount: vulkan.md 380 = 80 IMPLEMENTED / 66
+REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN (pipe-aware; the parser's
+known undercount is exactly two IMPLEMENTED rows whose gap cells
+contain literal unescaped pipes -- lines 402 and 408, both located
+and read directly).
+
+STEP 3 -- GUEST PROBES (probe slot, one at a time; evidence
+test-results/dxvk-finalgate-*): (a) tri12 RESULT 0 (guest verdict;
+harness composite passed:false is the known offscreen-capture
+artifact -- 0 chunks captured, 0 errors, 0 FAIL lines). (b)
+tri12-32 passed:true outright, RESULT 0. (c) cs12 RESULT 0 full
+signature (BUF/BUF2/TEX all bad=0). (d) uav12 exec=ALL6 RESULT 0.
+(e) rb12 RESULT 0 all-8 (SUMMARY buf/clear/upldtex/constps/delay/
+rdb2i/rdb2is/rdb2ip all OK). (f) root12 RESULT 0 (cbv/srv/uav OK).
+(g) cs12-32 RESULT 0 FULL SIGNATURE (BUF/BUF2/TEX all bad=0) --
+the cs32mem + cs32tex stack re-proven on the merged tree; the
+vk32compute guest gate owed since section 4.59 is discharged here.
+
+(h) THE SECTION 4.63 D3D11 BROWSER DEBT -- RED (two attempts,
+--filter=d3d11 against the fresh dist; expected 2 passed / 0
+failed, got 1 passed / 2 failed both times; the pass is the
+d3d11-contract unit test):
+Attempt 1: d3d11-comprehensive booted and ran -- the guest itself
+printed 'tri1193: LIT=0' / 'tri1193: RESULT 1' after
+'D3D11CreateDevice OK FL=0x9300' and 'shaders compiled'. Its
+console carries 5 DROPPED-command lines vs the 4 standing drops in
+the section 4.63 lane's passing console (the BeginRendering and
+CreateGraphicsPipelines drops are present in BOTH runs and are
+standing noise); the one extra drop is a vkQueueSubmit2 whose
+readback-flag wait timed out (guard
+'!waitForReadbackFlag(pend.flagPtr, 10000)'), after which the
+guest's staging readback served zeros. Exactly one
+trap vkCmdCopyBuffer2 line and zero gipa lines, matching the
+repaired expectation. d3d11-triangle timed out at bootGuest
+(page.waitForFunction, 600 s); its console never printed an app
+line and ends in session teardown.
+Attempt 2 (box otherwise idle of gate work): both tests timed out
+at bootGuest (600 s). BOTH consoles carry the section 4.27
+signature verbatim -- 'err:winediag:nodrv_CreateWindow "The
+explorer process failed to start."' followed by explorer.exe /
+services.exe exit and session teardown, so bwRuntime.ready()
+never became true. Box load average during the attempts was
+~6.4 on 4 CPUs from other tenants.
+Adjudication evidence, for the coordinator: the two attempts
+failed at DIFFERENT stages (in-app readback timeout vs boot),
+the nondeterminism fingerprint of the documented guest-side
+desktop-init race (section 4.27: adjudicated a guest-side race,
+NO emulator fix) plus readback timing under load -- not of a
+deterministic code regression. Every D3D11-adjacent product path
+re-proved green on this same dist in the probe rig today
+(rb12 readbacks all-8, cs12/cs12-32 copies and readbacks,
+tri12/tri12-32 draws), and section 4.63's lane proof passed both
+tests 2/0 on its dist. But as measured at this gate item (h)
+did NOT pass on either attempt, so this gate is NOT fully green
+and the user-ordered deploy + push does not proceed on this
+lane's verdict. Recommended next step (coordinator's call): one
+further --filter=d3d11 attempt at a quieter box moment; if it
+passes 2/0 the gate completes, if it reproduces the in-app
+LIT=0 without the boot race, the readback-flag timeout drop
+becomes a diagnosis lane of its own.
