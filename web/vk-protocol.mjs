@@ -838,6 +838,9 @@ export function decodeV2Frame(records, counters = {}) {
     clearColor: [0, 0, 0, 1], clearDepth: 1, clearStencil: 0, ops: [],
   });
   let pass = null;
+  // Per-buffer-id bare-key arbitration for BUFFER_DATA (see that case):
+  // bufId -> { memOffBig, len } of the record currently holding the bare key.
+  const bareBest = new Map();
   const needPass = () => pass || (pass = frame.passes[frame.passes.push(implicitPass()) - 1]);
   let draws = 0;
 
@@ -1075,24 +1078,42 @@ export function decodeV2Frame(records, counters = {}) {
       }
       case V2_REC.BUFFER_DATA: {
         const bufId = v2Hex64(r.u64());
-        const memOff = r.u64().toString();
+        const memOffBig = r.u64();
+        const memOff = memOffBig.toString();
         const hash = v2Hex64(r.u64());
         const len = r.u32();
         if (len > V2_MAX_RECORD_BYTES) throw new Error('vk64: v2 BUFFER_DATA len out of range');
         const bytes = len ? r.bytes(len) : null; r.done('BUFFER_DATA');
         // One VkBuffer may back several bindings at different offsets; key by
-        // (id, offset). Keep the bare-id key (first record) for VB/IB lookups.
-        // Byte-less record (len 0): wasm-side dedup, content unchanged since
-        // the last full record. Store the hash; the GPU resource resolves
-        // from the persistent cache.
+        // (id, offset). Byte-less record (len 0): wasm-side dedup, content
+        // unchanged since the last full record. Store the hash; the GPU
+        // resource resolves from the persistent cache.
         const key = bufId + ':' + memOff;
         if (!frame.buffers.has(key)) {
           frame.buffers.set(key, bytes ? bytes.slice() : null);
           frame.bufHashes.set(key, hash); // always store bridge hash
         }
-        if (!frame.buffers.has(bufId)) {
+        // The bare-id key serves the VB/IB lookups (and last-resort
+        // fallbacks), which treat it as the buffer's base slice: the bytes
+        // starting at the buffer's lowest range offset. It must therefore
+        // hold the LOWEST-offset range record for the id, never simply the
+        // first record in the stream -- any range emission may precede the
+        // base record in command order (a descriptor range, an update, or,
+        // since section 4.41, a buffer->image copy source). First-record
+        // wins silently handed the vertex path the copy source's bytes
+        // when vkd3d sub-allocated the upload heap and the vertex buffer
+        // from one VkBuffer: the draw's "vertex buffer" was built from the
+        // upload pattern, the triangle degenerated, and the render target
+        // kept its clear colour (the uav12 regression). Ties at the lowest
+        // offset prefer the longest byte payload, so a short descriptor
+        // range at the base cannot starve a longer base slice.
+        const bareLen = bytes ? bytes.length : -1;
+        const prevBare = bareBest.get(bufId);
+        if (!prevBare || memOffBig < prevBare.memOffBig ||
+            (memOffBig === prevBare.memOffBig && bareLen > prevBare.len)) {
+          bareBest.set(bufId, { memOffBig, len: bareLen });
           frame.buffers.set(bufId, bytes ? bytes.slice() : null);
-          frame.bufHashes.set(bufId, hash); // always store bridge hash
+          frame.bufHashes.set(bufId, hash); // the chosen record's hash
         }
         break;
       }

@@ -4456,3 +4456,133 @@ seed alone). This merge is therefore NOT gate-complete: the
 section-4.41 claims themselves (rb12 rendered-then-copied readback)
 stand as proven, but the merge is flagged to the coordinator for a
 fix-forward lane on the upload-then-shader-load flow (or a revert).
+
+
+## 4.42 uav12 regression from 4.41 fixed: the decoder's bare buffer key is the base slice, not the first range record (2026-10-29, lane-b2ifix)
+
+The 4.41 merge-outcome addendum flagged this merge not gate-complete:
+uav12 exec=FAILED on all six cases with a uniform got=255 signature.
+The addendum's ranked hypothesis (H1, texture-instance shadowing --
+applyBufferToImage's gpuTextureFor fallback resolving a different
+texture instance than the draw binds) is REFUTED, as is the weaker H2
+(stale F.buffers source record). The texture-instance discipline was
+never broken: the failing run's page stats show the apply creating the
+texture and the draw's bind hitting it (texMiss 12 / texHits 12,
+exactly one miss + one hit per frame), and a guest-free replay of the
+captured chunks through the genuine tier and real Dawn (below) shows
+the bind group referencing a view of the very texture the copy wrote.
+H2 falls to the wire decode: the copy's source record carries the
+pattern bytes at the exact (buffer, offset) key applyBufferToImage
+looks up, and the copy math is exact for all six formats.
+
+Root cause, convicted at three independent levels. (1) The 0xFF is
+the render target's CLEAR, not a fill: uav12 clears to magenta
+(1,0,1,1) ("never an expected value"), and the guest's mismatch
+counts match magenta exactly (48/64 with every alpha agreeing; the
+page's present sample reads lit=0 / painted=16, i.e. the target holds
+exactly its clear). So the draw rasterised ZERO fragments. (2) The
+wire order in every failing frame: BUFFER_DATA for the shared heap
+buffer at offset 65536 (the B2I upload source, 784 pattern bytes)
+comes FIRST, then B2I_UPLOAD, then VERTEX_BIND, then BUFFER_DATA for
+the same buffer at offset 0 (112 vertex bytes). Pre-merge, the vertex
+record was the buffer's only record. vkd3d sub-allocates the upload
+heap and the vertex buffer from ONE VkBuffer; the guest's list is
+copy-then-draw, and section 4.41's serializer streams the copy's
+source range in command order, ahead of the draw state. (3) The page
+decoder kept the bare-id buffer key from the FIRST record for that id
+("Keep the bare-id key (first record) for VB/IB lookups"), and the
+draw path builds the vertex GPUBuffer from the bare key
+(web/vkwebgpu.mjs, the vbind loop; the index paths read the same
+key). Post-4.41 the bare key held the upload pattern, so the draw's
+"vertex buffer" was pattern bytes: read as float positions they are
+denormal garbage, the fullscreen triangle degenerates to zero area,
+no fragments run, the clear survives, and the readback returns the
+clear colour -- the exact guest signature, including R16_FLOAT/R8_UINT
+(their sampled-storage serving is downstream of the same dead draw).
+rb12 was never exposed (its consumer is a readback copy of the image,
+resolved through qualified keys), tri12 neither (its vertex buffer's
+buffer carries no earlier foreign range record), and descriptor
+bindings were immune (they already key by (id, offset)). The index
+paths shared the exposure for any offset-0 index slice of a shared
+buffer; no in-tree probe exercises that shape.
+
+Fix (web/vk-protocol.mjs only, decodeV2Frame's BUFFER_DATA case; no
+wire change, no tier change, no bridge change): the bare-id key is
+arbitrated to the LOWEST-offset range record for the buffer id --
+which is what every bare-key consumer already assumes it holds (the
+base slice) -- taking bytes and hash from that record; ties at the
+lowest offset prefer the longest payload so a short descriptor range
+at the base cannot starve a longer base slice. A buffer with no
+low-offset record in frame keeps its only record as the bare key
+(legacy behaviour preserved). Qualified (id, offset) keys are
+untouched, as are applyBufferToImage, takeForPump ordering, and the
+4.38/4.39 texture paths.
+
+Guard: web/tests/suite/unit/vk-buffer-bare-key.test.mjs (5 tests) --
+the uav12 frame shape (copy-source range preceding the base record),
+the later-frame shape (base record byte-less: the bare key follows
+the base hash, so the tier resolves the vertex buffer from its
+persistent cache, not from the copy source's bytes), base-first
+order unchanged, the base-offset tie, and the no-base-record
+fallback. Sabotage-verified: with the arbitration reverted, exactly
+the three arbitration cases fail and the two order-preserving cases
+stay green; vk-b2i-page-apply (rb12's guard) is green throughout.
+
+Verification on this branch: JS suite 323 files / 0 failures (322 at
+base + the new guard); run-native.py 31 PASS blocks, 0 FAIL; register
+citations 0 DRIFT / 0 MISSING (the vk-register-citations audit passes
+unchanged; the edit's line growth is inside one decoder case).
+Real-browser chunk replay (the genuine page tier + Dawn on the
+captured failing chunks, no guest): before the fix the readback heap
+bytes are the magenta clear and lit=0; after the fix the same chunks
+yield the pattern bytes and lit=16. Guest gate on this branch's own
+dist (uploading harness, canonical pair a96b4e9d/3d3bfe43): uav12
+exec=ALL6 RESULT 0 (all six EXEC cases OK, 16/16 texels each;
+b2iApplied 12 -- the 4.41 path still exercised; evidence
+test-results/dxvk-b2ifix-uav12b; the first attempt died at the
+session-ready wait under box load and produced no verdict), rb12
+RESULT 0 with all eight variants OK (the 4.41 claim preserved),
+tri12 RESULT 0, cs12 signature unchanged (TEX OK bad=0; BUF/BUF2
+bad=64 at the not-yet-merged metabind wall).
+
+Register: NO disposition change. The 4.41 row's claim (rendered-
+then-copied readback served page-side) was and remains true; the
+regression was a decoder keying defect in a neighbouring consumer
+(the draw's vertex/index byte source), and this fix restores the
+pre-merge uav12 behaviour without touching any row's disposition.
+The register stays 373 = 74 IMPLEMENTED / 66 REJECTED-LOUDLY /
+233 NOT-A-GAP / 0 OPEN.
+
+Residue (named): the bare key remains a first-class fallback for
+producers that emit a single range per buffer; a vertex/index slice
+bound at a NONZERO offset of a shared buffer travels under its bridge
+slice id (bufferSliceId), whose only record is the slice itself, so
+it was never exposed to this defect. Descriptor-binding bare
+fallbacks (qualified record absent) now also resolve to the base
+slice instead of an arbitrary first range -- strictly more correct,
+and unchanged in the case that fallback exists for.
+
+
+Addendum gate item (coordinator, from the rawscan lane's unadjudicated
+flag): d3d11-triangle run on this branch's fixed dist. Attempt 1 died
+in bootGuest (session-ready wait, 600 s timeout) under box load ~9 --
+no verdict, the known boot wedge. Attempts 2 and 3 both ran the guest
+to completion and failed IDENTICALLY on the same assertion --
+"vkCmdCopyBuffer must be gipa-HIT" (count 0) -- so by the addendum's
+rule the signature is DETERMINISTIC, not a load artifact. But the
+characterisation acquits the product path: the guest itself fully
+succeeded (tri1193: D3D11CreateDevice OK FL=0x9300; shaders compiled;
+LIT=8192 -- the triangle rendered; RESULT 0), and the run's console
+contains zero gipa lines of any kind and exactly one copy line,
+"vk64: trap vkCmdCopyBuffer2": DXVK's copy reached the bridge through
+the KHR *2 entry point's trap, not through a logged
+vkGetInstanceProcAddr HIT for the v1 name the test counts. The
+failing assertion is a trace-log expectation about HOW the copy
+entry point is resolved, not a rendering or copy failure -- the same
+*2KHR-serving world section 4.24 established. No B2I_UPLOAD /
+takeForPump involvement is observable (this is a DXVK/D3D11 flow, and
+the gipa trace is bridge-side, upstream of everything this lane or
+the 4.41 merge touched on the page). NOT fixed in this lane, per the
+addendum: it is a separate determination (test expectation vs the
+*2 trap path) for the coordinator. Evidence:
+test-results/suite-d3d11-triangle (third run's console).
