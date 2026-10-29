@@ -68,9 +68,12 @@ export default class D3D11ComprehensiveTest extends ProbeTest {
     const frameLine = logs.find(l => /FRAME \d+ built \(v2\)/.test(l));
     check(frameLine !== undefined, 'V2 frame must be built');
 
-    // COMMON: vkCmdCopyBuffer must be HIT (staging uploads)
-    const copyHits = logs.filter(l => /gipa HIT.*vkCmdCopyBuffer/.test(l)).length;
-    checkGreaterThan(copyHits, 0, 'vkCmdCopyBuffer must be gipa-HIT for buffer uploads');
+    // COMMON: buffer copies must be exercised (staging uploads). Copies are
+    // served through the *2KHR entry points (campaign §4.24), which log a
+    // 'vk64: trap vkCmdCopyBuffer2' line instead of a v1 gipa HIT; accept
+    // either form as copy evidence.
+    const copyHits = logs.filter(l => /gipa HIT.*vkCmdCopyBuffer|trap vkCmdCopyBuffer2/.test(l)).length;
+    checkGreaterThan(copyHits, 0, 'vkCmdCopyBuffer path must be exercised for buffer uploads (gipa HIT or CopyBuffer2 trap)');
 
     // EDGE: no WebGPU validation errors (scissor clamp, depth-stencil fixes)
     const validationErrs = logs.filter(l =>
