@@ -7176,3 +7176,62 @@ Residue (out of class — recorded, not fixed here):
   (under-detection; GLSL.std.450 instructions take no pointers).
 - OpGroupDecorate (74) and unlisted opcodes keep the historical scan
   inside the new helper, per the established fail-closed discipline.
+
+**Merge outcome — LIGHT GATE COMPLETE (batched regime; §4.57, merge
+e22f6fca0 + citation fallout 7ffebc587 + this record; integ tip before
+this record 7ffebc587):** preconditions verified (integ exactly
+a292e665b, lane exactly 417c338f4). Seven files conflicted; all
+compositions verified by full-diff accounting. spirvfix.mjs: the
+auto-merge landed the lane's verbatim R12S import as a DUPLICATE
+definition beside integ's composed R12S (a module SyntaxError, caught
+by inspection, not by a suite) — the duplicate was removed and the
+merged file's R12S is integ's own function with exactly one change,
+the consumer scan: the 3-line raw word scan is replaced by rawscan's
+6-line operand-aware scan (the sole deviation between rawscan's R12S
+and metabind's original, isolated by direct diff before merging).
+Rider verification, all three points: (1) metabindfix's
+variable-vetting scan survives in the composed function (the
+'beyond OpLoad' refusal), pinned by spirvfix-texel-buffer's
+texel-pointer atomic test, PASS in the merged suite; (2) the consumer
+scan is rawscan's operand-aware version, pinned by the F6 fixture test
+in spirvfix-rawscan (PASS) and by the corpus meta-clear modules
+converting identically; (3) the REWRITES coverage pin reflects the
+composed function — spirvfix-coverage PASSes with exactly one
+'storage-texel-buffer-to-2d' entry (the lane's duplicate pin did not
+land). Multiset accounting for spirvfix.mjs: the merged delta vs
+pre-merge integ equals the lane delta minus the R12S import block,
+plus zero merged-only lines. vk64bridge.cpp: the conflict composed
+HEAD's PSB carry-idiom functions WITH the lane's r15-namespace
+idOperandUseIndex (RootVerdict stays HEAD's, with writableSlots); the
+merged bridge delta is multiset-IDENTICAL to the lane delta.
+Coexistence: idOperandUseIndex (JS + bridge r15) and opscan's
+r15IdUseIndex / findIdUse all present under their distinct names, each
+defined once. Native test file: opscan's and rawscan's guard blocks
+both landed (merged delta = the lane's block, byte-identical but one
+blank line). Known-silent: no-silent-failure PASSes with
+known-silent.json untouched — vk64bridge unloggedDefault stays at the
+reviewed baseline 20, no bump (the lane's restructure, not a waiver).
+Register: no delta — 377 = 78 IMPLEMENTED / 66 REJECTED-LOUDLY / 233
+NOT-A-GAP / 0 OPEN (pipe-aware recount; the one wide-layout row is the
+psb root row, IMPLEMENTED). Citations: 0 DRIFT / 0 MISSING (230 MATCH
+/ 14 MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT over 349 rows — the
+exact pre-merge distribution, baseline-audited in a scratch worktree);
+31 rows re-pinned by audit --fix, 22 hand-pinned by the exact merge
+band maps with content verification at the mapped lines; tests.md's
+spirvfix row re-pinned by the same map (branch geometry preserved:
+each cite keeps its pre-merge offset to its log line); tests.md's
+gen_vk64pe row bridge numbers are pre-existing stale lane-era
+cross-references, not code cites — left untouched deliberately.
+Suites (standing dist, batched regime): JS unit 330 passed / 0 failed
+(329 + spirvfix-rawscan; the whole spirvfix battery green);
+emulator native 648 / 0; run-native 43 PASS (42 + the F5b block,
+'GUARD a constant value equal to a stray physical-buffer pointer type
+id is not an external use'). Corpus gate: 34/39 modules convert (the
+standing 5 by-design format-signature failures) AND applySpirvFix
+output is byte-identical to the pre-merge tree for all 39 corpus
+modules (sha256 of output bytes + applied lists compared directly —
+the lane's 38-module claim re-proven on the merged tree at 39).
+No dist rebuild, no guest probes (batched regime; the full gate runs
+at the batch boundary). Residue §4.57 names is unchanged: the heapSets
+mirror divergence and the name-placement item have their own lanes
+queued behind this merge.
