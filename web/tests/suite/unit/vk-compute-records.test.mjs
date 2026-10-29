@@ -113,10 +113,10 @@ test('parseV2Chunk accepts the compute record types and rejects the next one', (
     d.setUint32(20, 4, true);
     return out;
   };
-  for (const t of [V2_REC.PIPELINE_COMPUTE, V2_REC.DISPATCH, V2_REC.BUFFER_READBACK]) {
+  for (const t of [V2_REC.PIPELINE_COMPUTE, V2_REC.DISPATCH, V2_REC.BUFFER_READBACK, V2_REC.B2I_UPLOAD]) {
     const parsed = parseV2Chunk(chunk(t));
     assert.equal(parsed.records.length, 1);
     assert.equal(parsed.records[0].type, t);
   }
-  assert.throws(() => parseV2Chunk(chunk(0x21)), /unknown record type/);
+  assert.throws(() => parseV2Chunk(chunk(0x22)), /unknown record type/);
 });

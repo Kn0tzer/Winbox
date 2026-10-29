@@ -4297,3 +4297,122 @@ re-add -- in particular this lane 1.3 arm writes raw guest
 offsets while prop32 built a pack(4) guest-struct mirror with
 its own writers, and the two lanes guards (source-pin here,
 harness block there) are the arbiters.
+## 4.41 Rendered-then-copied readback: page-side buffer->image application + readback-batch queue drain (2026-10-28, lane-b2i)
+
+The limitation section 4.24 named when readback-zeros were fixed is
+closed: an image rendered into on the page tier and then overwritten
+by a buffer->image copy (B2I) read back stale. Pinning the flow with a
+new probe shape showed the stale answer is TWO drops compounding, not
+one -- a blocker stack in miniature.
+
+The probe (tools/vkd3d/probe/rb12.c, three new variants on the rb12
+rig): RDB2I clears a render target to magenta in one submission, then
+a B2I upload of a per-pixel pattern overwrites it in a second
+submission, then the target is copied to a readback heap. RDB2IP is
+the same with a 2x2 sub-rect upload at (1,1) (expect pattern inside
+the rect, magenta outside). RDB2IS puts clear + B2I + copy in ONE
+submission. Baseline on this lane's base (f47fc8606):
+
+- RDB2I OK -- accidentally: the section-4.24 heap seed serves guest
+  memory, and for a FULL overwrite the seed is the complete final
+  content, so the wrong path gives the right answer.
+- RDB2IS FAIL bad=48, first pixel got [255 0 255 255] (the clear
+  colour), want the pattern: the render and the readback share a
+  frame, the page's render target exists, and the readback resolution
+  prefers it over the seed -- but the B2I was never applied page-side,
+  so the pre-copy content is served. 4.24's limitation in pure form.
+- RDB2IP FAIL bad=36, first pixel got [0 0 0 0], want magenta: the
+  rendered content never reached the readback at all. Chunk-stream
+  forensics on the captured run: 14 present batches received, exactly
+  the 4 clear-only producer batches never rendered (pipeline2
+  rendered=10); the readback recorded readback-unavailable (ok=false)
+  and the seed -- pattern rect over zeros, the guest memory having
+  never held the GPU-side clear -- was served.
+
+Drop (1), the queue: non-readback submits never block the guest, so
+the render batch is still queued when the readback batch lands behind
+it; the page pump's latest-frame-wins takeLatest() then discards the
+render batch unrendered (a present-pacing choice that is only safe
+for frames nothing synchronous depends on). Drop (2), the copy: the
+bridge executed CMD_COPY_B2I eagerly into guest memory (execCopy) and
+serialized NOTHING for it -- a command buffer holding only B2I copies
+was not even frame-relevant -- so the page tier could never learn the
+upload happened.
+
+Fix, fail-closed at each layer:
+
+- Bridge (source/vulkan/vk64bridge.cpp): CMD_COPY_B2I joins the
+  frame-relevance set, and its serializer case streams the copy in
+  command order: the source range through the same deduped
+  BUFFER_DATA path every other consumer uses, then a B2I_UPLOAD
+  record (V2 0x21) naming the destination image, the source buffer +
+  absolute offset, the image format, and the exact region (mip,
+  baseLayer/layerCount, origin, extent) in execCopy's own
+  source-layout terms (source row stride + rows per slice from
+  fmt_block). A copy whose source span exceeds the per-buffer send
+  cap emits nothing and is named (vk64Unsupported "b2i-page-apply");
+  copies that failed in execCopy were already named there. One
+  serializer serves both ABIs.
+- Protocol (web/vk-protocol.mjs): V2_REC.B2I_UPLOAD 0x21 (the chunk
+  parser bound moves with it; the vk-compute-records pin for "the
+  next type is rejected" moves 0x21 -> 0x22). The decoder validates
+  the region (non-zero, bounded extent/layers/mip, non-zero layout)
+  and queues a bufferToImage op on an implicit pass. And
+  V2FrameQueue.takeForPump(): when any queued batch carries readbacks
+  (a guest-blocking consumer point), the pump drains the queue in
+  order up to and including the first such batch; otherwise
+  latest-frame-wins exactly as before.
+- Page (web/vkwebgpu.mjs): the pump renders the takeForPump batch in
+  order (the per-frame retry body is renderOne, unchanged). The
+  bufferToImage op applies through applyBufferToImage: destination is
+  the image's render target, else its materialised texture; no page
+  texture counts stats.b2iNoTarget and stays seed-served (copy-only
+  images, the 4.24 case). The write goes through the frame's command
+  encoder (never queue.writeTexture, which would jump ahead of
+  not-yet-submitted draws), staged from the frame's retained buffer
+  bytes with the bridge's row layout. Declines by name: depth formats
+  (b2i-apply-depth), target/image format mismatch, mip beyond the
+  texture, missing or short source bytes, byte-expanding format
+  conversions (packed formats; length-preserving ones like
+  norm16->half convert per texel and stay exact), block-misaligned
+  compressed regions.
+
+Guest proof (uploading harness, canonical pair d77fdad5/d2bd847a,
+evidence test-results/dxvk-b2i-{pre,pre2,post,sab,tri,draw}):
+baseline above; post-fix rb12 RESULT 0 -- all eight variants OK
+(stats: b2iApplied 4, b2iNoTarget 2 = UPLDTEX's upload, whose readback
+stays seed-served by design; readback-unavailable back to exactly
+UPLDTEX's two). tri12 RESULT 0 (twice; the in-tree tri12 is
+clear-and-submit, its verdict is self-contained) and tri12draw
+RESULT 0, 10 frames drawn+presented, centre [127,64,64] (the
+first-light signature) -- the pump change does not disturb the
+present path. Sabotage run (takeForPump neutered + applyBufferToImage
+disabled, dist rebuilt): the exact baseline signatures return --
+RDB2IS bad=48 stale magenta, RDB2IP bad=36 zeros, RDB2I OK,
+pre-existing variants green, RESULT 1.
+
+Guards: web/tests/suite/unit/vk-b2i-page-apply.test.mjs (7 tests:
+wire decode + rejection shapes, bridge/protocol/page source pins,
+takeForPump policy, mock-device application incl. partial region and
+the decline set). Sabotage-verified: the unit file fails 3 tests
+under the same two neuters used for the guest sabotage run, and the
+guest run above restores the failures. The vk-compute-records chunk
+pin moved as noted. Suites on this branch: JS 315 files / 0 failures
+(314 at base + the new file); register 368 rows = 69 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN, citations 0 DRIFT /
+0 MISSING (221/13/100/7; 205 citation numbers re-pinned by pure
+delta map over this lane's three file diffs, plus the new row).
+Native suite not run on this branch: the bridge is not in the linux
+native build graph (its native check is the harness repair the
+coordinator's merge queue carries); the wasm build compiles the
+changed bridge TU and the guest probes exercise it end to end.
+
+Residue (named, not silent): B2I spans over the 8 MiB send cap stay
+guest-memory-only (b2i-page-apply); depth-image uploads decline
+(b2i-apply-depth) -- a rendered depth image overwritten by B2I still
+serves stale to a later sample/readback; the queue cap (3 batches)
+can still drop a producer batch under heavy present traffic ahead of
+a readback batch (pre-existing cap behaviour; the guest then gets
+the seed + a named readback-unavailable). Next wall in this area:
+none known for colour readbacks; the D3D12 campaign queue continues
+at the vkd3d meta-pipeline descriptor wall (cs12 BUF/BUF2).

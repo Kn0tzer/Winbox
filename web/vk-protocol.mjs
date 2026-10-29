@@ -147,6 +147,7 @@ export const V2_REC = Object.freeze({
   PIPELINE_COMPUTE: 0x1E,
   DISPATCH: 0x1F,
   BUFFER_READBACK: 0x20,
+  B2I_UPLOAD: 0x21,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -202,7 +203,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_READBACK)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.B2I_UPLOAD)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -334,6 +335,20 @@ export class V2FrameQueue {
     const f = this.q[this.q.length - 1];
     this.q.length = 0;
     return f;
+  }
+  // The pump's selection: latest-frame-wins normally, but a queued batch
+  // carrying readbacks is a guest-blocking consumer point -- the guest
+  // is parked on the readback flag -- and every batch ahead of it may
+  // hold content the readback must serve (a render into the image it
+  // copies). Dropping those producers serves stale or guest-memory-seed
+  // data instead of the rendered content, so drain in order up to and
+  // including the first readback batch. Later batches stay queued for
+  // latest-frame-wins.
+  takeForPump() {
+    const at = this.q.findIndex(b => (b.submissions || [b]).some(s => s.readbacks?.length || s.bufReadbacks?.length));
+    if (at >= 0) return this.q.splice(0, at + 1);
+    const f = this.takeLatest();
+    return f ? [f] : [];
   }
   clear() { this.q.length = 0; }
 }
@@ -1003,6 +1018,30 @@ export function decodeV2Frame(records, counters = {}) {
         r.done('BUFFER_READBACK');
         if (size < 1n || size > 67108864n) throw new Error('vk64: v2 BUFFER_READBACK size out of range');
         frame.bufReadbacks.push({ srcBuffer, srcAbsOff, size, heapPtr, flagPtr });
+        break;
+      }
+      case V2_REC.B2I_UPLOAD: {
+        // Page-side application of a guest buffer->image copy the bridge
+        // executed eagerly into guest memory (vkCmdCopyBufferToImage*):
+        // the source range's bytes ride BUFFER_DATA under
+        // (srcBuffer, srcMemOff); this record names the destination image
+        // and the exact region, in execCopy's source-layout terms
+        // (srcRowBytes = source row stride, srcRowsPerSlice = source rows
+        // per layer/depth slice), so the tier can apply the upload to its
+        // own texture for the image in command order.
+        const dstImage = v2Hex64(r.u64()), srcBuffer = v2Hex64(r.u64());
+        const srcMemOff = r.u64().toString();
+        const format = r.u32();
+        const mip = r.u32(), baseLayer = r.u32(), layerCount = r.u32();
+        const origin = [r.u32(), r.u32(), r.u32()];
+        const w = r.u32(), h = r.u32(), depth = r.u32();
+        const srcRowBytes = r.u32(), srcRowsPerSlice = r.u32();
+        r.done('B2I_UPLOAD');
+        if (dstImage === V2_UNKNOWN_IMAGE || !w || !h || w > MAX_DIMENSION || h > MAX_DIMENSION ||
+            !depth || depth > MAX_DIMENSION || !layerCount || layerCount > MAX_DIMENSION || mip > 32 ||
+            !srcRowBytes || !srcRowsPerSlice || origin.some(n => n > MAX_DIMENSION) || pass?.attachments.length)
+          throw new Error('vk64: v2 invalid B2I_UPLOAD');
+        needPass().ops.push({ op: 'bufferToImage', dstImage, srcBuffer, srcMemOff, format, mip, baseLayer, layerCount, origin, w, h, depth, srcRowBytes, srcRowsPerSlice });
         break;
       }
       case V2_REC.BIND_SETS: {

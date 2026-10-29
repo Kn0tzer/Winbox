@@ -3423,7 +3423,7 @@ enum V2Rec : U32 {
     V2_DEPTH_BIAS = 0x18, V2_IMAGE_BLIT = 0x19,
     V2_RASTER_STATE = 0x1A, V2_IMAGE_CLEAR_DS = 0x1B, V2_BUFFER_VIEW = 0x1C,
     V2_ROOT_DESCS = 0x1D,
-    V2_PIPELINE_COMPUTE = 0x1E, V2_DISPATCH = 0x1F, V2_BUFFER_READBACK = 0x20,
+    V2_PIPELINE_COMPUTE = 0x1E, V2_DISPATCH = 0x1F, V2_BUFFER_READBACK = 0x20, V2_B2I_UPLOAD = 0x21,
 };
 const U32 V2_CHUNK_MAGIC = 0x46324B56u;   // 'VK2F' little-endian: bytes 56 4B 32 46
 const U32 V2_CHUNK_VERSION = 2;
@@ -4472,7 +4472,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             bool relevant = false;
             for (const Cmd& k : st->cmds)
                 if (k.kind == CMD_COPY_IMAGE || k.kind == CMD_BLIT_IMAGE || k.kind == CMD_CLEAR_DS_IMAGE ||
-                    k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH || k.kind == CMD_COPY_B2B_RB) { relevant = true; break; }
+                    k.kind == CMD_COPY_B2I || k.kind == CMD_COPY_I2B || k.kind == CMD_DISPATCH || k.kind == CMD_COPY_B2B_RB) { relevant = true; break; }
             if (!relevant) continue;
         }
         // A render-pass load clear changes its attachment without a draw.
@@ -5315,11 +5315,56 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     }
                     break;
                 }
+                case CMD_COPY_B2I: {
+                    // Page-side buffer->image application (campaign section
+                    // 4.41): execCopy already landed the bytes in the
+                    // image's guest memory at submit time, but the page
+                    // tier's own GPUTexture for the image (a render target
+                    // it drew into, or a texture it materialised from an
+                    // earlier upload) is never updated, so a later readback
+                    // or sample serves the stale page content -- section
+                    // 4.24's known limitation. Stream the copy to the page
+                    // in command order: the source range's bytes (the same
+                    // deduped BUFFER_DATA path every other consumer uses)
+                    // plus a B2I_UPLOAD record naming the exact region in
+                    // execCopy's own source-layout terms, so the page
+                    // applies the upload to its texture where the command
+                    // stream places it. A copy whose source span exceeds
+                    // the per-buffer send cap keeps the old behaviour and
+                    // is named, not silent; copies that failed in execCopy
+                    // were already named there.
+                    const Copy& cp = k.copy;
+                    Buffer* sb = objOf<Buffer>(cp.srcBuffer, K_BUFFER, "vkQueueSubmit");
+                    Image* di = objOf<Image>(cp.dstImage, K_IMAGE, "vkQueueSubmit");
+                    if (!sb || !di || !sb->mem || !cp.w || !cp.h) break;
+                    const auto blk = fmt_block(di->format);
+                    const U64 rowBytes = (U64)((cp.w + blk.w - 1) / blk.w) * blk.bytes;
+                    const U64 srcRow = (U64)(((cp.rowLen ? cp.rowLen : cp.w) + blk.w - 1) / blk.w) * blk.bytes;
+                    const U32 rows = (cp.h + blk.h - 1) / blk.h;
+                    const U64 rowsPerSlice = ((cp.imgH ? cp.imgH : cp.h) + blk.h - 1) / blk.h;
+                    const U64 srcSlice = srcRow * rowsPerSlice;
+                    const U64 slices = (U64)cp.layerCount * std::max(1U, cp.depth);
+                    const U64 span = (slices - 1) * srcSlice + (U64)(rows - 1) * srcRow + rowBytes;
+                    if (span > V2_MAX_BUF_SEND) {
+                        vk64Unsupported("b2i-page-apply", "buffer->image copy source span exceeds the send cap; the page texture is not updated");
+                        break;
+                    }
+                    const U64 absOff = sb->memOff + cp.bufOff;
+                    emitBufferData(cp.srcBuffer, absOff, span);
+                    emit(V2_B2I_UPLOAD, [&](ChunkWriter& p) {
+                        p.u64(cp.dstImage); p.u64(cp.srcBuffer); p.u64(absOff);
+                        p.u32(di->format);
+                        p.u32(cp.mip); p.u32(cp.baseLayer); p.u32(cp.layerCount);
+                        p.u32((U32)cp.ox); p.u32((U32)cp.oy); p.u32((U32)cp.oz);
+                        p.u32(cp.w); p.u32(cp.h); p.u32(cp.depth);
+                        p.u32((U32)srcRow); p.u32((U32)rowsPerSlice);
+                    });
+                    break;
+                }
                 // Executed eagerly at record/submit time (see the CMD_* handlers
                 // for copies, updates, query results and timestamps, or no-ops
                 // in snapshot replay (BARRIER): nothing to put on the wire.
                 case CMD_BARRIER:
-                case CMD_COPY_B2I:
                 case CMD_UPDATE_BUF:
                 case CMD_COPY_QUERY_RESULTS:
                 case CMD_RESET_QUERY:
