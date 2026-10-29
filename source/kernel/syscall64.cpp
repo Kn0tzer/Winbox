@@ -4288,7 +4288,7 @@ static inline bool bwThreadDumpEnabled() {
 // (no unwind info), but it names the Windows module/function a thread is in
 // even when the host-visible rip is just the libc syscall stub. Every read is
 // guarded by isPageMapped so a racing/stale RSP cannot fault the dumper.
-static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
+static void bwDumpGuestStackLocked(CPU64* c, U32 pid, U32 tid) {
     KMemory64* mem = c->memory;
     if (!mem || !c->gsbase) return;
     auto readable = [&](U64 addr, U64 len) {
@@ -4417,17 +4417,72 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
     }
 }
 
+// Thread-dump wrapper: the walk below reads guest memory through
+// KMemory64 lookups that each take pagesMutex. A guest thread can hold
+// pagesMutex across a browser-proxied call, and this dump runs
+// synchronously on the browser main thread that services those calls --
+// a blocking acquisition deadlocks the session (see
+// bw64_dump_guest_threads). Hold pagesMutex via try-lock for the whole
+// walk (it is recursive, so the walk's own lookups proceed) or label
+// the stack unavailable and move on.
+static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
+    KMemory64* mem = c->memory;
+    if (!mem) return;
+    if (!mem->tryLockPages()) {
+        klog_fmt("BW_THREAD_DUMP stack-unavailable pid=%u tid=%u lock=pagesMutex", pid, tid);
+        return;
+    }
+    bwDumpGuestStackLocked(c, pid, tid);
+    mem->unlockPages();
+}
+
 // Called by the demo diagnostic timer only when the runtime URL opts in with
 // ?bw64diag=threads. The wrapper maps that URL flag to BW_THREAD_DUMP before
 // Emscripten caches ENV, so normal launches do not emit these snapshots.
-extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
-    if (!bwThreadDumpEnabled()) return;
+// Deadlock contract (the THREAD_DUMPS rig defect): every caller invokes
+// this synchronously on the browser main thread (page.evaluate in the
+// probe rigs, the guestdiag interval in the launcher), and the build is
+// PROXY_TO_PTHREAD -- guest pthreads service JS/library calls by proxying
+// them to that same main thread and blocking until it runs them. If a
+// guest thread holds an emulator lock across such a proxied call (the
+// concrete case: internal_log holds logMutex across fwrite(stdout),
+// whose Emscripten implementation is a proxied JS call; the same shape
+// applies to processesCond/threadsMutex, fdsMutex, KMemory64::pagesMutex
+// and the socket/epoll condition locks), a dump that BLOCKS on that lock
+// waits for a main thread that can never service the proxied call: the
+// session wedges permanently and the probe is lost with no evidence.
+//
+// Therefore this function never blocks on an emulator lock:
+//   1. It try-locks logMutex for the whole dump. Success also proves no
+//      guest thread is mid-log (mid-proxied-fwrite), so every klog_fmt
+//      below is safe; failure returns 2 immediately and the JS caller
+//      prints the labeled unavailable line (the dump cannot log -- the
+//      log is the contended resource).
+//   2. Every other acquisition on the dump path is a try-lock variant
+//      (tryGetThreadById / tryGetFileDescriptor / KMemory64::tryLockPages
+//      / the socket and epoll debug dumps); a held lock produces a
+//      labeled "unavailable" line naming the lock (and its owner tid
+//      where the condition records one) and that section is skipped.
+// Return: 0 = diagnostics not enabled, 1 = dump taken (possibly with
+// labeled unavailable sections), 2 = not taken, log lock held.
+extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
+    if (!bwThreadDumpEnabled()) return 0;
+    if (!bw64TryLockLog()) return 2;
 
     U32 maxTid = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
+    U32 dumped = 0;
+    U32 skippedLock = 0;
     klog_fmt("BW_THREAD_DUMP begin maxTid=%u", maxTid);
     for (U32 tid = 1; tid <= maxTid; ++tid) {
-        KThread* thread = KSystem::getThreadById(tid);
+        bool lockBlocked = false;
+        KThread* thread = KSystem::tryGetThreadById(tid, lockBlocked);
+        if (lockBlocked) {
+            ++skippedLock;
+            klog_fmt("BW_THREAD_DUMP unavailable tid=%u lock=processes/threads", tid);
+            continue;
+        }
         if (!thread || !thread->process) continue;
+        ++dumped;
         const U32 pid = thread->process->id;
         const bool blocked = thread->waitingCond != nullptr;
         const char* state = blocked ? "blocked" : "running";
@@ -4450,16 +4505,26 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                      (unsigned long long)rip, waitName);
             if (blocked && thread->process &&
                 (nr == X64_SYS_read || nr == X64_SYS_readv || nr == X64_SYS_recvfrom || nr == X64_SYS_recvmsg)) {
-                KFileDescriptorPtr fd = thread->process->getFileDescriptor((FD)c->reg[X64_RDI].u64);
-                std::shared_ptr<KUnixSocketObject> socket = fd && fd->kobject
-                    ? std::dynamic_pointer_cast<KUnixSocketObject>(fd->kobject) : nullptr;
-                if (socket) socket->debugDumpReadWait(pid, thread->id, (FD)c->reg[X64_RDI].u64);
+                bool fdBlocked = false;
+                KFileDescriptorPtr fd = thread->process->tryGetFileDescriptor((FD)c->reg[X64_RDI].u64, fdBlocked);
+                if (fdBlocked) {
+                    klog_fmt("BW_THREAD_DUMP fd-detail-unavailable pid=%u tid=%u lock=fdsMutex", pid, thread->id);
+                } else {
+                    std::shared_ptr<KUnixSocketObject> socket = fd && fd->kobject
+                        ? std::dynamic_pointer_cast<KUnixSocketObject>(fd->kobject) : nullptr;
+                    if (socket) socket->debugDumpReadWait(pid, thread->id, (FD)c->reg[X64_RDI].u64);
+                }
             }
             if (blocked && thread->process && nr == X64_SYS_epoll_wait) {
-                KFileDescriptorPtr fd = thread->process->getFileDescriptor((FD)c->reg[X64_RDI].u64);
-                std::shared_ptr<KEPoll> epoll = fd && fd->kobject
-                    ? std::dynamic_pointer_cast<KEPoll>(fd->kobject) : nullptr;
-                if (epoll) epoll->debugDumpRegistrations(thread->process.get(), pid, thread->id);
+                bool fdBlocked = false;
+                KFileDescriptorPtr fd = thread->process->tryGetFileDescriptor((FD)c->reg[X64_RDI].u64, fdBlocked);
+                if (fdBlocked) {
+                    klog_fmt("BW_THREAD_DUMP fd-detail-unavailable pid=%u tid=%u lock=fdsMutex", pid, thread->id);
+                } else {
+                    std::shared_ptr<KEPoll> epoll = fd && fd->kobject
+                        ? std::dynamic_pointer_cast<KEPoll>(fd->kobject) : nullptr;
+                    if (epoll) epoll->debugDumpRegistrations(thread->process.get(), pid, thread->id);
+                }
             }
             bwDumpGuestStack(c, pid, thread->id);
             continue;
@@ -4475,7 +4540,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void bw64_dump_guest_threads() {
                  c ? c->eip.u32 : 0, waitName);
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
-    klog_fmt("BW_THREAD_DUMP end");
+    klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);
+    bw64UnlockLog();
+    return 1;
 }
 #endif
 

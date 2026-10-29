@@ -6785,3 +6785,102 @@ tri12-32 device creation re-proven on the reconciled arms (it passed at
 the section 4.50 gate on section 4.40's forms; the guest reads the TF
 queries property and the 1.3 single-texel bools through exactly these
 arms), with tri12, cs12 full signature and uav12.
+
+## 4.56 Thread-dump deadlock: the probe rig's guest thread dump can never wedge the session (2026-10-28)
+
+(Renumbered to 4.56 at merge; written as 4.39 on the lane branch.)
+
+The rig defect, known since the 2026-10-27 boundary window:
+THREAD_DUMPS -- the periodic `bw64_dump_guest_threads` ccall the probe
+rigs use to diagnose hung guests -- could deadlock the session it was
+diagnosing, losing the probe with no evidence. The workaround was
+"don't dump at the wrong moment", which is exactly when dumps are
+needed.
+
+The pinned wait cycle. Every dump caller invokes the export
+synchronously on the browser main thread (demo-matrix and
+framefloor-probe via Playwright `frame.evaluate`, gl-game-probe via
+`page.evaluate`, the launcher's `?guestdiag=` interval via
+`window.setInterval` + ccall). The build is PROXY_TO_PTHREAD: guest
+pthreads service JS/library calls by proxying them to that same main
+thread and blocking until it runs them. The dump path blocked on
+emulator locks -- `KSystem::getThreadById` on processesCond +
+per-process threadsMutex, `getFileDescriptor` on fdsMutex,
+`KMemory64` page lookups on pagesMutex (the stack walk makes ~6k of
+them), the socket/epoll debug dumps on their condition locks, and
+every `klog_fmt` on logMutex. A guest thread holding any of those
+across a proxied call waits for the main thread; the dump, running on
+the main thread, waits for the lock; the main thread can never
+service the proxied call. The concrete holder: `internal_log` holds
+logMutex across `fwrite(stdout)`, whose Emscripten implementation is
+a proxied JS call -- any guest thread logging at the wrong moment
+was a standing wedge for the dump's very first `klog_fmt`.
+
+The fix (fail-visible, never blocking). `bw64_dump_guest_threads`
+now returns a status (0 disabled / 1 dumped / 2 not taken) and never
+blocks on an emulator lock:
+
+1. It try-locks logMutex for the whole dump (`bw64TryLockLog` in
+   log.cpp). Success also proves no guest thread is mid-log
+   (mid-proxied-fwrite), so every dump `klog_fmt` is safe. Failure
+   returns 2 immediately; the JS caller prints the labeled
+   unavailable line, because the dump itself cannot log -- the log
+   is the contended resource.
+2. Every other acquisition on the path is a try-lock variant:
+   `KSystem::tryGetThreadById` / `KProcess::tryGetThreadById`
+   (processes/threads), `KProcess::tryGetFileDescriptor` (fds), the
+   stack walk holds `KMemory64::pagesMutex` via try-lock for the
+   whole walk (`tryLockPages`/`unlockPages`; the mutex is recursive,
+   so the walk's own lookups proceed), the socket debug dump
+   try-locks its own and its peer's lockCond (the condition records
+   `lockOwner`, which the unavailable line names), and the epoll
+   debug dump try-locks the data/waiters mutexes and the waiter's
+   pollCond. A held lock produces a labeled `BW_THREAD_DUMP
+   ...-unavailable ... lock=<name>` line and only that section is
+   skipped; the dump's end line carries `dumped=N skipped-lock=M`.
+   The dump remains useful under contention: everything not behind
+   the held lock is still reported.
+
+Rig side: the four call sites consume the status.
+`web/tests/thread-dump-driver.mjs` is the shared interpretation
+(`callThreadDump`, `threadDumpStatus`, `threadDumpDriverLine`);
+demo-matrix and gl-game-probe record the helper's line (an
+unavailable dump reads `BW_THREAD_DUMP_DRIVER unavailable: dump not
+taken -- ...`, never as an invocation), framefloor-probe logs it via
+its progress channel, and the launcher's guestdiag interval warns on
+rc=2. Demo-matrix's counters still count attempts; the line itself
+now says whether a dump was taken.
+
+Guards: `web/tests/suite/unit/thread-dump-driver.test.mjs` (3
+tests). The contended case uses a stand-in module whose export
+returns 2 while its lock flag is held (a real guest thread cannot
+be driven into the proxied state from a unit test; the C++ return
+contract is what the rig consumes) and asserts the call returns
+promptly with the labeled unavailable status/line, then `dumped`
+once the flag clears; the ccall path must request the `'number'`
+return type. Source pins assert the dump body uses only the try
+variants (restoring `KSystem::getThreadById` in the dump re-trips
+the test) and that the socket/epoll sub-dumps try-lock and label.
+Sabotage-verified both directions: neutering the helper's rc=2
+mapping fails 2 of 3 tests; restoring the blocking lookup in the
+dump body fails the source-pin test.
+
+Verification: lane dist built and "Browser export verified"
+(dependency archive bbc583c6e657; the export step first needed the
+fresh-worktree staging payloads -- DXVK build.w32/build.w64 and the
+gstreamer trees -- copied from the integ tree, after which it
+completed with 0 failures). JS suite on the lane dist: 319 passed /
+0 failed (the 318-file base plus the new guard file). The changed
+native translation units (ksystem, kprocess, kmemory64, kunixsocket,
+kepoll, syscall64, util/log) compile clean with the native test
+build's exact flags; the full native suite and a guest run were not
+run on the branch -- the box sat at load ~10-12 throughout with a
+coordinator merge gate owed the probe slot, so per the lane brief
+the proof rests on the unit guard, the source pins, and the
+real-build compile (the merge runs the full gates). The dump's
+in-guest call shape is unchanged apart from the return type.
+No register disposition
+changes (rig/tooling + dump internals; no guest-visible behaviour
+changes when no lock is contended -- the dump output format is
+unchanged apart from the end-line counters and the new labeled
+unavailable lines).

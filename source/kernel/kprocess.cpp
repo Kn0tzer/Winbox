@@ -372,6 +372,20 @@ KThread* KProcess::getThreadById(U32 tid) {
     return this->threads[tid];
 }
 
+KThread* KProcess::tryGetThreadById(U32 tid, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<BOXEDWINE_MUTEX> lock(threadsMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    return this->threads[tid];
+#else
+    return getThreadById(tid);
+#endif
+}
+
 U32 KProcess::getThreadCount() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
     return (U32)this->threads.size();
@@ -921,6 +935,20 @@ U32 KProcess::exit(KThread* thread, U32 code) {
 KFileDescriptorPtr KProcess::getFileDescriptor(FD handle) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     return this->fds[handle];
+}
+
+KFileDescriptorPtr KProcess::tryGetFileDescriptor(FD handle, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<BOXEDWINE_MUTEX> lock(fdsMutex(), std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    return this->fds[handle];
+#else
+    return getFileDescriptor(handle);
+#endif
 }
 
 KFileDescriptor* KProcess::getFileDescriptor_nolock(FD handle) {
