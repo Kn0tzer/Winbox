@@ -8284,3 +8284,29 @@ descriptor-addressing research note) cites the same files at
 their writing-time lines and is left as written, per standing
 practice.
 >>>>>>> lane-r8downgrade
+
+MERGE OUTCOME (batched regime, light merge; merge 44e6f1d83 +
+citation re-pin abfbe74bf + harness fallout cd1f037b7): the merged
+spirvfix.mjs and vk64bridge.cpp deltas are change-set identical to
+the lane delta (diff-of-diffs, hunk headers normalised); spirvres'
+section-4.61 regions are byte-identical to pre-merge, and the lane's
+five "(campaign 4.43)" comments were renumbered to 4.64. The native
+harness conflict composed as the union of guard blocks, with ONE
+composition fix the lane could not have seen on its base: its block's
+local psbBefore redeclared the psb-era block of the same name in the
+shared harness scope (compile error on the merged tree) -- renamed
+r8PsbBefore inside the lane block only, assertions unchanged.
+Register: no disposition change -- the two register files took
+integ's text and the re-pin moved citation numbers only (digit-masked
+diff proves it): 378 = 78/66/234/0. Citations 0 DRIFT / 0 MISSING,
+distribution identical to a pre-merge baseline run (230 MATCH /
+14 MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT over 349 rows).
+Light suites on the merged tree: JS unit 332 passed / 0 failed
+(BW_TEST_DIST = batch-gate-#2 dist, stamp 17a8c95a2); emulator
+native 648 tests, 0 FAILED; run-native 48 PASS including "GUARD R8
+downgrade census shapes are reported at vkCreateShaderModule".
+Corpus gate: applySpirvFix output bytes + applied lists
+byte-identical to the pre-merge tree for all 39 corpus modules.
+No dist rebuild, no guest probes (batched regime) -- the final full
+gate covers this merge. This was the last merge in the standing
+queue.
