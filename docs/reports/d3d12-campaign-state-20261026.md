@@ -6590,3 +6590,64 @@ keeps its historical un-named raw fill, an asymmetry documented
 here rather than changed (adding the counter to the 64-bit path
 was out of this lane's scope). A2R10G10B10 and E5B9G9R9 appear in
 no bridge table and stay outside the supported set.
+
+**Merge outcome (integ, 2026-10-29).** GATE COMPLETE. Merge
+`27bcccb33` (tips verified exact beforehand: integ `d10bffe44`,
+lane `4ea38239d`), fallout `d4587ca79` (citation re-pins) and
+`b8ecaa2d8` (test-file brace restoration); this record closes the
+merge. Composition, per this section's MERGE-TIME UNIFICATION
+checklist: (1) the 3-way merge itself composed the identical adds
+to single copies -- exactly one definition each of `vk32PackUnorm`,
+`vk32RoundShiftEven`, `vk32FloatToUFloat`, one `fmt_bpp` case set
+for R5G5B5A1 / A2B10G10R10_UINT (grep-verified), and the merged
+`vkPackedClearTexel` block is byte-identical to the lane's (70/70
+added lines compared). The merged bridge delta against the
+pre-merge integ tip is exactly five hunks (forward declaration,
+64-bit wiring x2, the unification edit below, the shared function);
+the 64-bit wiring is the lane's text verbatim, composed with
+subclear's `vkClearColorFill` ranges call so the fill pattern is
+the converted texel (subrange phase invariant holds structurally
+and is guard-pinned). (2) `vk32ClearTexel`'s no-component path now
+calls `vkPackedClearTexel` and falls through to the named raw fill
+when it returns false -- lane-packedclear's inline packed switch is
+retired, the conversion lives in exactly one place, and the retired
+switch was verified expression-for-expression identical to the
+shared function's. (3) Both packed harness blocks pass byte-for-byte
+after the unification (see run-native below). (4) Register composed
+in lane order: the header gained the packed-clear-64 closure after
+the packedclear closure, and the clear32 row's packed sentence is
+settled to the end state (bit-packed on both ABIs; depth/stencil +
+block-compressed the only raw-fill residue). Register unchanged at
+**376 rows = 77 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP /
+0 OPEN** (same-parser recount identical before and after the merge).
+Citations: 11 DRIFT on the first audit -- one auto-fixed, nine
+hand-pinned by exact band delta and construct-verified (several
+cites were already stale inside the checker's tolerance before this
+merge; the pins now name the true lines) -- final audit **0 DRIFT /
+0 MISSING** (230 MATCH / 14 MATCH-INHERITED / 97 UNCHECKABLE /
+7 EXEMPT over 348 cited rows). One merge incident: the 3-way merge
+factored the 32-bit packed harness block's closing brace out as
+shared context, leaving the composed test file one brace short
+(compile error, caught by the first run-native attempt); the brace
+was restored and both packed blocks verified byte-identical to
+their lane sources (`b8ecaa2d8`). Suites on the merged tree: JS unit
+**328/0** -- the three failures this section names as subclear's
+debt (`vk-image-dirty-generation`, `vk-image-transfer`,
+`vulkan-image-format-size`) were repaired at the 4.52 merge and
+PASS here by name, so they did not recur; emulator native **648 OK /
+0 FAILED**; run-native **41 PASS blocks** (40 + the new 64-bit
+packed block; clear32 whole-texels, subclear ranges and 32-bit
+packed blocks all pass by name). Build: "Browser export verified",
+completeness gate 0 failures; wine64.zip carries shim `ae96105b...`
+under all three names plus the canonical d3d12 pair
+(`a96b4e9d...` / `3d3bfe43...`); wine32.zip (1,926 members) carries
+the PE32 pair (`872c3d65...` / `71e9c174...`) at system placement.
+Guest gate on the merged dist, adjudicated on guest verdicts:
+tri12 **RESULT 0** (the harness composite reads passed:false on
+zero captured chunks -- the known rig capture artifact; the guest
+verdict and clean exit are the evidence); uav12 **exec=ALL6,
+RESULT 0** (its clears exercise the 64-bit clear path); cs12
+**RESULT 0** with the full standing signature (TEX/BUF/BUF2 all
+bad=0); tri12-32 **RESULT 0, harness passed:true outright** (256
+vk32 traps, DLLs native from C:\windows\system32) -- the 32-bit
+path is behaviourally untouched, as designed.
