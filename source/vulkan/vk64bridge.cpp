@@ -1276,7 +1276,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
             const Insn& ptr = m.insns[pit->second];
             if (ptr.op != 32 || ptr.n < 3) continue;
             auto qit = m.byId.find(ptr.w[2]); if (qit == m.byId.end()) continue;
-            if (m.insns[qit->second].op == 48) {
+            if (m.insns[qit->second].op == 29) { // OpTypeRuntimeArray: the heap set is the set of the module's runtime-array variables (mirrors spirvfix)
                 auto dit = m.varSet.find(ins.resultId);
                 heapSets.insert(dit != m.varSet.end() ? dit->second : 0);
             }

@@ -327,6 +327,15 @@ test('bridge mirror: array writability is classified by signature/uses, not by N
   assert.ok(fix.includes('rec.writable = '), 'spirvfix records writability on the array rec instead');
 });
 
+test('bridge mirror: the heap-set scan tests OpTypeRuntimeArray pointees', () => {
+  const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  const at = bridge.indexOf('std::set<U32> heapSets;');
+  assert.ok(at > 0, 'the bridge heap-set scan exists');
+  const scan = bridge.slice(at, bridge.indexOf('heapSet = heapSets.size()', at));
+  assert.ok(scan.includes('.op == 29'), 'the bridge heap-set scan must test OpTypeRuntimeArray (29) pointees, as spirvfix does');
+  assert.ok(!scan.includes('.op == 48'), 'op 48 is OpSpecConstantTrue: never a pointer pointee type, so a scan testing it can never fire');
+});
+
 test('tier contract: scanWgslResources decodes bw_arr_* / bw_root_* names', () => {
   const wgsl = [
     '@group(5) @binding(0) var bw_arr_g5_b0_p0_a0: texture_storage_2d<rgba8unorm, read>;',
