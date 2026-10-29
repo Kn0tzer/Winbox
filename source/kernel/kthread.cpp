@@ -2162,18 +2162,23 @@ U32 KThread::sleep(U32 ms) {
     while (true) {
         if (!this->condStartWaitTime) {
             this->condStartWaitTime = KSystem::getMilliesSinceStart();
-        } else {
-            U32 diff = KSystem::getMilliesSinceStart()-this->condStartWaitTime;
-            if (diff>ms) {
-                this->condStartWaitTime = 0;
-                return 0;
-            }
-            ms-=diff;
+        }
+        // Keep the original deadline, like internal_poll_impl does:
+        // recompute the remaining time from condStartWaitTime on every
+        // pass instead of subtracting the total elapsed time from an
+        // already-reduced timeout. The old ms -= diff form double-counted
+        // elapsed time after any non-terminal wake (a waitingCond kick
+        // that is not a signal delivery, a spurious condition wake), so
+        // repeated wakes returned the sleep progressively early.
+        U32 diff = KSystem::getMilliesSinceStart()-this->condStartWaitTime;
+        if (diff>=ms) {
+            this->condStartWaitTime = 0;
+            return 0;
         }
 
         {
             BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->sleepCond);
-            BOXEDWINE_CONDITION_WAIT_TIMEOUT(this->sleepCond, ms);
+            BOXEDWINE_CONDITION_WAIT_TIMEOUT(this->sleepCond, ms-diff);
         }
 #ifdef BOXEDWINE_MULTI_THREADED
 		if (this->terminating) {
