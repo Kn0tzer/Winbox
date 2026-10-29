@@ -6130,3 +6130,94 @@ test-results/dxvk-clear32merge-tri32); tri12 RESULT 0
 the standing 0-chunk capture artifact); cs12 RESULT 0 with the
 full standing signature (SUMMARY buf=OK buf2=OK tex=OK;
 test-results/dxvk-clear32merge-cs12). GATE COMPLETE.
+
+## 4.52 vkCmdClearColorImage subresource ranges: both handlers cleared the whole image (2026-10-28, subclear lane)
+
+**Question (named residue of §4.51).** The clear32 lane closed its
+report with a residue it did not touch: both `vkCmdClearColorImage`
+handlers ignore the `VkImageSubresourceRange` arguments and clear the
+whole image — every mip level, every array layer — whatever the guest
+asked for. This lane settles it: **live defect, fixed in both ABIs.**
+
+**Before behaviour (pinned).** The 64-bit handler
+(`VK64_fn_vkCmdClearColorImage` in `vk64Bridge`) never read
+`args.a[4]`/`args.a[5]` (rangeCount / pRanges); it computed
+`pixBytes * w * h` (falling back to the whole allocation) and repeated
+the 16-byte clear colour across it. The 32-bit handler (same fn id in
+`vk32Bridge`) likewise never read the ranges; after clear32 it computed
+`w * h * d * layers * fmt_bpp` — mip 0 of every layer, repeated — and
+repeated the converted texel across that span, which for a multi-mip
+image both overruns the true footprint (clamped only by the
+allocation) and still writes mips/layers the guest never named. A
+guest clearing one mip or one layer silently destroyed the others'
+contents.
+
+**Layout math (reused, not reinvented).** The bridge already carries
+the canonical image layout: `imageMipBytes` (per-mip byte size with
+the mip shrink and block rounding), `imageLayerBytes`,
+`imageDataBytes`, and `imageSubresourceOffset` (layer stride plus
+preceding mips). The fix uses exactly those; `Image::pixBytes` is not
+used for placement (its meaning differs by creation path).
+
+**Fix.** Two shared helpers beside the layout math serve both ABIs.
+`vkResolveClearRange` resolves one guest range against the image,
+fail-closed: `VK_REMAINING_MIP_LEVELS` / `VK_REMAINING_ARRAY_LAYERS`
+(and a zero count — invalid Vulkan, but what a zero-filled range
+decodes to, and what the pre-existing harness guard supplies) extend
+to the end of the image; a count past the end clamps to the end; a
+base past the end serves nothing. The aspect mask: a range naming no
+colour aspect is declined by name (`clear-color-aspect`, counted
+through `vk64Unsupported`) and not cleared; a zero mask is treated as
+colour. `vkClearColorFill` then fills each requested (mip, layer) at
+`imageSubresourceOffset` for `imageMipBytes`, truncated at the
+allocation, touching exactly those ranges (`vk64TouchMem` per
+subresource), with the pattern phase continuous with the image start
+so a subresource fill lands exactly the bytes a whole-image fill would
+have landed there. A missing range list keeps the whole-image clear
+(one synthetic REMAINING range). When the layout math has no footprint
+for the image (extent fields unset), each handler falls back to its
+historical whole-allocation fill, unchanged. What a texel contains is
+untouched: the 64-bit 16-byte pattern and the 32-bit `vk32ClearTexel`
+conversion (including the named `clear-color-layout` raw fill for
+packed/depth layouts) are exactly clear32's semantics — this lane
+changes only where fills land. Both handlers now also cap the range
+count at 64 (the `vkCmdClearDepthStencilImage` precedent) with
+`vk64FrameOverflow`.
+
+**Proof.** New native-harness block \u201cvkCmdClearColorImage honours
+subresource ranges\u201d: both ABIs over an R8G8B8A8_UNORM 4x4 image with
+3 mips and 2 layers (mip sizes 64/16/4, layer stride 84, footprint
+168) prefilled with 0xEE sentinels, asserting every byte inside the
+cleared spans and every byte outside them (plus both footprint
+neighbours). Cases per ABI: one mip + one layer, a middle mip range,
+REMAINING_* from the tail, over-range counts clamping, no range list
+(whole image), and a non-colour aspect declined by name with its
+count; the 32-bit side adds a two-ranges-in-one-call case. Post-fix
+run-native.py is end-to-end green (33 PASS blocks, 32 baseline + this
+one; the clear32 block passes unmodified — its unwritten range slot
+decodes to zeros, which the zero-count rule resolves to a whole-image
+clear). Sabotage: forcing `vkResolveClearRange` to resolve every range
+to the whole image aborts the harness at the outside-bytes assertions;
+restored, green. Citation audit re-pinned for the lines the new
+helpers and handler bodies shift (38 citations, occurrence-mapped and
+construct-verified): 0 DRIFT / 0 MISSING. Register: one IMPLEMENTED
+row added (372 = 73/66/233/0), and the clear32 row's handler citation
+re-pinned with its residue sentence pointed here. Emulator native
+suite: not run — the change is confined to `vk64bridge.cpp`
+(outside the linux native build graph; the wasm build compiles the
+TU) plus the harness and docs, and no shared header is touched. JS
+suite: a full run needs a lane dist; the bootstrap was restored and
+verified (13 files, completeness gate 0 failures), but the dist build
+waited out a sibling lane's probe drain and then lost the build lock
+to the concurrent integ build, so no lane dist exists. The dist-less
+unit run's failures are all the missing-dist class (the runner's own
+NOTE; 67 files failing at setup), and the four source guards that
+adjudicate this change pass there: `vk-register-citations`,
+`no-silent-failure`, `no-silent-drops`, `vk-shim-bridge-parity`.
+
+**Residue (named).** Packed and depth/stencil texel layouts keep the
+clear32 named raw fill (unchanged); depth/stencil *images* are
+cleared by `vkCmdClearDepthStencilImage`, a separate handler whose
+ranges already reach the page tier as recorded commands — out of
+scope here. An image whose extent fields are unset still takes the
+historical whole-allocation fill (no recorded workload creates one).

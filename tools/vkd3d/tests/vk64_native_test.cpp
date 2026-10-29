@@ -844,6 +844,103 @@ int main() {
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 clear-color writes whole texels (wide, half, int and UNORM formats; no footprint overrun)");
     }
+    // ---- vkCmdClearColorImage subresource ranges (both ABIs): a clear must
+    // write only the requested mips/layers. The handlers used to ignore
+    // VkImageSubresourceRange and fill the whole image. Image: R8G8B8A8_UNORM
+    // 4x4, 3 mips, 2 layers -- mip sizes 64/16/4, layer stride 84, total 168.
+    // Layer 0: mip0@0, mip1@64, mip2@80. Layer 1: mip0@84, mip1@148, mip2@164.
+    {
+        const U32 REM = 0xFFFFFFFFu;
+        auto inSpans = [](U32 o, const std::vector<std::pair<U32, U32>>& spans) {
+            for (const auto& sp : spans) if (o >= sp.first && o < sp.first + sp.second) return true;
+            return false;
+        };
+        // 32-bit ABI.
+        {
+            KMemory memS; CPU cpuS{&memS};
+            auto callS = [&](U32 fn, const VK32Args& args) {
+                memS.memcpyToGuest(128, &args, sizeof(args));
+                return vk32Bridge(&cpuS, fn, 128);
+            };
+            vk32abi::VkMemoryAllocateInfo allocS{};
+            allocS.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocS.allocationSize = 8192;
+            memS.memcpyToGuest(512, &allocS, sizeof(allocS));
+            VK32Args amS{}; amS.a[1] = 512; amS.a[3] = 640;
+            assert(callS(VK64_fn_vkAllocateMemory, amS) == VK_SUCCESS);
+            U64 memIdS = memS.readq(640);
+            auto* dmS = objOf32<DeviceMemory>(memIdS, K_MEMORY, "test");
+            assert(dmS && dmS->va);
+            U64 imgIdS; auto* imgS = createObj32<Image>(K_IMAGE, imgIdS);
+            imgS->w = 4; imgS->h = 4; imgS->d = 1; imgS->mips = 3; imgS->layers = 2;
+            imgS->format = 37; imgS->mem = memIdS; imgS->memOff = 256;
+            vk32abi::VkClearColorValue colS{};
+            colS.float32[0] = 1.0f; colS.float32[1] = 0.0f; colS.float32[2] = 0.5f; colS.float32[3] = 1.0f;
+            memS.memcpyToGuest(2048, &colS, sizeof(colS));
+            const U8 texelS[4] = {0xFF, 0x00, 0x80, 0xFF};   // RGBA8 UNORM conversion of the colour
+            const U32 baseS = (U32)dmS->va + 256;
+            auto runS = [&](const std::vector<ClearRangeArg>& ranges,
+                            const std::vector<std::pair<U32, U32>>& cleared) {
+                for (U32 i = 0; i < 8192; ++i) memS.bytes[dmS->va + i] = 0xEE;
+                if (!ranges.empty()) memS.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+                VK32Args cc{}; cc.a[1] = imgIdS; cc.a[3] = 2048;
+                cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+                assert(callS(VK64_fn_vkCmdClearColorImage, cc) == 0);
+                for (U32 o = 0; o < 168; ++o) {
+                    const U8 want = inSpans(o, cleared) ? texelS[o % 4] : (U8)0xEE;
+                    assert(memS.bytes[baseS + o] == want);
+                }
+                assert(memS.bytes[baseS - 1] == 0xEE && memS.bytes[baseS + 168] == 0xEE);
+            };
+            runS({{1, 1, 1, 1, 1}}, {{148, 16}});                                   // one mip, one layer
+            runS({{1, 0, 2, 0, 1}}, {{0, 64}, {64, 16}});                          // middle mip range, layer 0
+            runS({{1, 2, REM, 1, REM}}, {{164, 4}});                               // REMAINING_* from the tail
+            runS({{1, 1, 99, 0, 99}}, {{64, 16}, {80, 4}, {148, 16}, {164, 4}});   // over-range counts clamp
+            runS({{1, 2, 1, 0, 1}, {1, 0, 1, 1, 1}}, {{80, 4}, {84, 64}});         // two ranges in one call
+            runS({}, {{0, 168}});                                                  // no range list: whole image
+            const U64 aspBefore = vk64BridgeUnsupportedCount("clear-color-aspect");
+            runS({{2, 0, REM, 0, REM}}, {});                                       // depth aspect: declined by name
+            assert(vk64BridgeUnsupportedCount("clear-color-aspect") == aspBefore + 1);
+            VK32Args frS{}; frS.a[1] = memIdS;
+            assert(callS(VK64_fn_vkFreeMemory, frS) == VK_SUCCESS);
+            g_mem32 = nullptr; g_mem = &memory;
+        }
+        // 64-bit ABI (the pattern is the raw 16-byte colour, phase-continuous
+        // with the image start -- the handler's historical semantics).
+        {
+            U64 memId; auto* dm = createObj<DeviceMemory>(K_MEMORY, memId);
+            dm->size = 8192; dm->va = memory.mmapReserveAndMap(dm->size, 3);
+            U64 imgId; auto* img = createObj<Image>(K_IMAGE, imgId);
+            img->w = 4; img->h = 4; img->d = 1; img->mips = 3; img->layers = 2;
+            img->format = 37; img->mem = memId; img->memOff = 256;
+            const float cf[4] = {1.0f, 0.5f, 0.25f, 1.0f};
+            U8 pat[16]; memcpy(pat, cf, 16);
+            memory.memcpyToGuest(2048, pat, 16);
+            const U64 base = dm->va + 256;
+            auto run = [&](const std::vector<ClearRangeArg>& ranges,
+                           const std::vector<std::pair<U32, U32>>& cleared) {
+                for (U32 i = 0; i < 8192; ++i) memory.bytes[dm->va + i] = 0xEE;
+                if (!ranges.empty()) memory.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+                VK64Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048;
+                cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+                memory.memcpyToGuest(128, &cc, sizeof(cc));
+                assert(vk64Bridge(&cpu, VK64_fn_vkCmdClearColorImage, 128) == 0);
+                for (U32 o = 0; o < 168; ++o) {
+                    const U8 want = inSpans(o, cleared) ? pat[o % 16] : (U8)0xEE;
+                    assert(memory.bytes[base + o] == want);
+                }
+                assert(memory.bytes[base - 1] == 0xEE && memory.bytes[base + 168] == 0xEE);
+            };
+            run({{1, 1, 1, 1, 1}}, {{148, 16}});                                   // one mip, one layer
+            run({{1, 1, REM, 0, REM}}, {{64, 16}, {80, 4}, {148, 16}, {164, 4}});  // REMAINING_* past mip 0
+            run({{1, 0, 99, 0, 99}}, {{0, 168}});                                  // over-range counts clamp
+            run({}, {{0, 168}});                                                   // no range list: whole image
+            const U64 aspBefore = vk64BridgeUnsupportedCount("clear-color-aspect");
+            run({{2, 0, REM, 0, REM}}, {});                                        // depth aspect: declined by name
+            assert(vk64BridgeUnsupportedCount("clear-color-aspect") == aspBefore + 1);
+        }
+        puts("PASS: vkCmdClearColorImage honours subresource ranges (both ABIs; outside bytes untouched, REMAINING and clamp)");
+    }
     // ---- Entry points that used to be loud stubs: sizing from a create info,
     // shim-local answers (queue2, granularity, sparse, pipeline cache) and the
     // 64-bit vkDestroyBufferView.
