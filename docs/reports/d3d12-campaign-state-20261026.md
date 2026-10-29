@@ -8283,7 +8283,6 @@ report prose (this file's earlier sections, the
 descriptor-addressing research note) cites the same files at
 their writing-time lines and is left as written, per standing
 practice.
->>>>>>> lane-r8downgrade
 
 MERGE OUTCOME (batched regime, light merge; merge 44e6f1d83 +
 citation re-pin abfbe74bf + harness fallout cd1f037b7): the merged
