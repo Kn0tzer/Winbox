@@ -4646,3 +4646,338 @@ separate lane (lane-d3d11test) is fixing the test expectation; no
 test was changed in this merge. This also adjudicates the rawscan
 lane's open d3d11 flag: not a load artifact and not a b2i-merge
 side effect -- a test-expectation defect.
+
+## 4.43 Meta-bind delivery: the push-descriptor bind was swallowed by the PE shim's benign stub; storage texel buffers served end to end (2026-10-28, metabind lane + recovery)
+
+**The wall, as inherited.** Section 4.30 left cs12's BUF/BUF2 variants
+failing bad=64: vkd3d-proton's ClearUnorderedAccessView on a typed
+texel-buffer UAV whose components differ cannot take its vkCmdFillBuffer
+fast path, so it runs an internal meta compute pipeline
+(cs_clear_uav_buffer_uint/float) that binds a STORAGE_TEXEL_BUFFER with
+vkCmdPushDescriptorSetKHR and dispatches. The dispatch reached the page
+tier with no descriptor set at all and was skipped, so the readback
+served stale zeros. The wall turned out to be three stacked defects;
+each layer's fix is necessary and none is sufficient alone.
+
+**Layer 1 — the bind never left the guest.** The bridge has trapped
+vkCmdPushDescriptorSetKHR (ABI 914) and
+vkCmdPushDescriptorSetWithTemplateKHR (ABI 915) since the
+push-descriptor work, and the unix shim (libvk64.c) exports both. The
+PE shim did not: tools/vkd3d/probe/exports.txt carried
+`vkCmdPushDescriptorSet 1 1` (the fnId-1 unimplemented stub) and no KHR
+entries at all, and gen_vk64pe.py's vk64_resolve answers any name
+missing from the table with vk64_benign, a do-nothing stub. vkd3d
+therefore called a no-op for every meta push bind. Proven by
+instrumenting the bridge: during BUF/BUF2, recordBindSets was never
+called on the meta command buffer (5 recorded commands, 1 dispatch, 0
+bind-sets), while the same buffer later carried TEX's ten heap binds
+normally. Fix: exports.txt now traps the whole family
+(vkCmdPushDescriptorSet + KHR at 914/6 args,
+vkCmdPushDescriptorSetWithTemplate + KHR at 915/5), the shim was
+regenerated and rebuilt per VULKAN1_DLL_README.md (sha256
+ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89; the
+three staged copies stay byte-identical), the completeness pins moved
+to the new hash (the two d3d12 pair pins were also re-pinned to the
+restaged pair this tree already carries, a96b4e9d/3d3bfe43, matching
+the integ re-pin), both shipped wine64.zip archives were restaged with
+stage-vkd3d-payloads.sh, runtime-assets.json was re-pinned and the
+runtime-artifact manifest regenerated. Guard:
+vk-push-descriptor-shim.test.mjs (sabotage-verified: deleting the KHR
+entry turns it red).
+
+**Layer 2 — storage texel buffers served (the original lane's stack).**
+Once the bind arrives it names a descriptor shape the stack rejected at
+every tier. Bridge (vk64bridge.cpp): applyDescWrite's
+STORAGE_TEXEL_BUFFER case records the view instead of logging
+texel-buffer-storage; the V2 serializer gains wire kind 6 for the type,
+sharing kind 5's V2_BUFFER_VIEW emission and view-range data flow;
+vk64MarkComputeWrites marks a storage-texel binding's view range
+GPU-written at dispatch record time, so a later copy defers to
+V2_BUFFER_READBACK instead of reading stale guest bytes. spirvfix gains
+R12S storageTexelBuffersTo2D: an OpTypeImage with Dim=Buffer, Sampled=2
+is wrapped in the R12 2D layout (8192 wide, (i mod 8192, i div 8192));
+only OpImageWrite/OpImageRead consumers are admitted, anything else
+refuses the conversion whole. Page tier (vkwebgpu.mjs): a
+storageTexelRegistry materialises a kind-6 view as a 2D storage texture
+in the R12S layout, seeded verbatim from guest bytes (fail-closed to a
+loud bind drop when the format or bytes are unknown); a null view id
+serves the zero storage texture; and the readback resolution gains a
+storage-texel fallback that copies the covered rows out of the storage
+texture (with a srcSkip offset) so the guest receives byte-exact
+written data. Storage texel stays UNADVERTISED in the format feature
+bits — serving rides the descriptor path guests already take. Guards:
+vk-storage-texel.test.mjs (wire decode + per-hop source pins), the
+descriptor-type census moving STORAGE_TEXEL_BUFFER from class-rejected
+to zero-served, and a native record-level block driving
+vkCmdPushDescriptorSetKHR with a storage-texel write through kind-6
+wiring, the dispatch write mark, and the deferred readback (verified in
+a diagnostic harness copy: this branch's run-native.py aborts at a
+pre-existing stale format-bpp assert, identical on pristine HEAD, the
+same rot the vk64harness lane repaired on integ).
+
+**Layer 3 — two over-broad refusals inside R12S (found by the
+after-probe split: BUF2 cleared, BUF still bad=64).** Feeding the
+captured guest modules through spirvfix offline isolated two vetting
+defects, both id/value confusions. (1) The consumer scan treated every
+instruction's operands as potential value uses, so the push block's
+OpMemberDecorate Offset literal (35) "consumed" the image — the uint
+module's image load is also numbered %35 (the float twin's is %36,
+which is why only the uint clear refused). Metadata instructions
+(capabilities, entry points, execution modes, source/debug records,
+annotations) carry literals and global ids, never runtime values; the
+scan now skips that family, and every instruction that can actually
+consume a value stays vetted. (2) The write/read operand check refused
+any instruction longer than the bare form; the uint write carries a
+flag-only ZeroExtend image-operand mask (8192, no id operands). The
+check now parses the mask and refuses only masks carrying id operands
+(Lod/Grad/offsets/Sample/MinLod/scope ids), whose coordinate semantics
+the 2D wrap does not rewrite; flag-only masks (NonPrivateTexel,
+VolatileTexel, SignExtend, ZeroExtend, Nontemporal) pass through
+verbatim. Regression: the captured cs_clear_uav_buffer_uint module is
+pinned as a fixture in spirvfix-texel-buffer.test.mjs (converts and
+naga-accepts with the view signature), plus a word-patched
+Lod-operand variant that must still refuse; both fixes are
+sabotage-verified against that fixture (unskipping OpMemberDecorate or
+refusing every masked write each turn exactly that test red).
+
+**Probe (cs12, uploading harness).** Before (this branch's baseline,
+test-results/dxvk-cs12-meta-before3): BUF FAIL bad=64, BUF2 FAIL
+bad=64, TEX FAIL bad=16. With only Layer 1+2 in the dist
+(dxvk-dxvk-cs12-meta-after4): BUF FAIL bad=64, BUF2 OK — the split that
+isolated Layer 3. After all three layers
+(dxvk-dxvk-cs12-meta-after5): **BUF OK (bad=0), BUF2 OK (bad=0)**,
+TEX FAIL bad=16, RESULT 1. TEX's failure is pre-existing on this
+branch base — the spirvwrite/fmtinject/group-3 work it needs is not on
+this branch (TEX is green on integ); RESULT 0 is expected once this
+lane merges into the integ stack. Page stats for after5: both meta
+modules translated, 4 meta dispatches executed, the ImageBuffer
+translation failure gone; remaining translation failures are TEX's two
+known module walls. tri12 spot check on the rebuilt shim: attempted once and starved at the harness timeout under box load (test-results/dxvk-dxvk-tri12-metabind-check: the guest never got past Wine startup, zero chunks captured -- the same starvation signature as the two cs12 timeouts that preceded the successful long-budget run; no verdict either way). The rebuilt shim's behavioural evidence is the cs12 full-path proof above (same loader, same DLL, device creation plus meta and heap traffic), the export-table guard, and the 316/316 suite. JS suite: 316 passed / 0 failed (the pre-recovery run on this branch was 313 passed / 2 failed: the spirvfix REWRITES census missed the new rule and the register citations had drifted with the lane's line shifts; both closed by this lane's bookkeeping, and the new vk-push-descriptor-shim file accounts for the +1 file). Provenance-artifacts and runtime-completeness, which failed mid-recovery against the interrupted export and the stale pins, pass against the final dist. Register: the texel rows' stale
+storage-rejection text updated, one new IMPLEMENTED row for the PE-shim
+push family, closing addendum below the compute addendum; 367 rows =
+68 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN, citation
+audit 0 DRIFT / 0 MISSING after re-pinning the citations the lane's
+line shifts moved (plus the two spirvfix citations the Layer-3 edits
+moved).
+
+## 4.44 Metabind frontier-review fixes: texel materialisation lifetime, R12S variable vetting, partial-overlap copies, draw-time write marks (2026-10-29, metabindfix lane)
+
+An independent frontier-model review of the metabind commit (a997ea0a7)
+returned 'merge with fixes': two HIGH findings (kind-6 page textures
+cached by seed-content hash while dispatches write into them; the
+storage-texel readback registry's missing lifetime rule), two MEDIUM
+(R12S never vets uses of the image VARIABLE; no size limits on the
+materialised texture), plus aliasing, partial-overlap-copy, graphics-
+stage marking and a vacuous shim test. This lane adjudicated every
+finding from the code before changing anything; verdicts, fixes,
+guards and sabotage results below. Branch lane-metabindfix on
+a997ea0a7; not merged, not pushed (the metabind merge is gated on
+this lane).
+
+Finding 1 (HIGH) -- CONFIRMED in both failure modes; the [unverified]
+':nohash' leg REFUTED as a staleness vector. storageTexelTextureKey
+keyed persistTexCache by view id + format + a pure bridge content
+hash of the seed bytes; GPU writes never touch guest memory or the
+hash, so a guest re-upload of the original bytes cache-hit a texture
+holding earlier GPU writes (silent wrong reads), and an unrelated CPU
+write reseeded and discarded GPU writes with no signal. The nohash
+leg: the BUFFER_DATA decoder sets bytes and hash together under the
+same key (bufferId:absOff), storageTexelTextureFor required the bytes
+before creating, and a bind with no record degraded to the LOUD
+'bind-group-storage-texel-unavailable' drop -- a missing hash could
+freeze the key but could never serve stale bytes. FIX (web/vkwebgpu.mjs):
+content is no longer part of kind-6 identity at all. One materialisation
+state per guest view id (stexelState): identity = view id + buffer +
+absolute offset + format + length; content is managed by IN-PLACE
+reseed (queue.writeTexture into the same GPUTexture) so cached bind
+groups stay valid. Reseed rules follow the guest stream order, judged
+per submission batch: a changed bridge content hash reseeds (the CPU
+write wins); an unchanged hash reseeds only when the texture was bound
+in an EARLIER batch (the guest re-emitted the original bytes after the
+GPU wrote -- failure A); a same-batch re-emission keeps the texture
+(the bridge re-sending an unchanged record is not an upload). A view
+id reused for a different range/format destroys the old texture and
+clears the bind-group cache. storageTexelBind runs from BOTH the
+bind-group fingerprint and bindGroupEntries, so a fingerprint-cache
+hit still reseeds/registers (this is also finding 2's registration
+half).
+
+Finding 2 (HIGH) -- CONFIRMED with a correction. The registry was
+never cleared (grep-verified), but neither is storageBufferRegistry,
+and the bridge can defer a copy into a later submission than the
+dispatch that wrote the data: renderer-lifetime persistence IS this
+tier's registry lifecycle, and a per-submission clear would strand
+exactly the deferred readbacks (the repeat meta clear reading zeros).
+The true defects were the ones the review named second: lookup took
+the FIRST bufId+range match (two views over one buffer could serve
+the wrong texture), and entries were texture snapshots a replacement
+could orphan. FIX: storageTexelRegistry maps view id -> the SHARED
+state object (never a snapshot), so a replaced texture is unreachable;
+readback resolution (pickTexelReadback) picks the freshest covering
+state by last-bound batch, and several DISTINCT textures tied at the
+freshest batch decline by name ('buffer-readback-texel-ambiguous')
+instead of an arbitrary first match. States are destroyed in exactly
+one place (view-identity change), which also drops the directory
+entry by replacing the state.
+
+Finding 3 (MEDIUM-HIGH) -- disposition: readback precedence fixed,
+claim NARROWED, residue named. Within one submission batch a buffer
+readback now prefers a covering texel state over a raw storage-buffer
+binding of the same buffer (before, the SSBO registry was consulted
+first and texel writes could be lost); a cross-batch texel entry is
+still served after the SSBO tier when nothing fresher exists. The
+register's texel-buffer-view row now scopes its claim to the
+deferred-copy readback of the same buffer and names the residue:
+other views of the buffer bound in later submissions still read guest
+bytes, because GPU texel writes are not propagated into guest memory
+outside the readback path.
+
+Finding 4 (MEDIUM) -- CONFIRMED. spirvfix R12S vetted only Load/
+CopyObject RESULT ids (traced); OpImageTexelPointer and OpCopyMemory
+name the image VARIABLE, which was never checked, so an atomic
+(InterlockedAdd on an RWBuffer) slipped through and R12S emitted
+invalid SPIR-V while logging success. FIX (tools/spirvfix/spirvfix.mjs):
+inside storageTexelBuffersTo2D, scan FUNCTION BODIES only (globals
+excluded -- a decoration/type literal can numerically equal a variable
+id, the same literal-collision class the metabind R12S fixes closed)
+and refuse when any instruction other than Load/CopyObject/Variable
+or a debug op names a varIds member: 'storage texel image variable
+used by op N beyond OpLoad (texel-pointer/atomics are not wrappable)'.
+Guard: hand-built SPIR-V fixtures in spirvfix-texel-buffer.test.mjs
+(the atomic module refuses, Dim stays Buffer; the identical module
+without the atomic converts); sabotage (scan disabled) turns exactly
+the atomic case red.
+
+Finding 6 (MEDIUM) -- CONFIRMED, all three legs. No maxTextureDimension2D
+check (a 128M-element R32 view needs height 16384 at the 8192 wrap ->
+async createTexture error invalidating the frame); no storage-format
+capability check (r16float/r8uint are refused by Dawn for storage,
+probe-proven in the sampledtex work); and floor-sized texel counts
+dropped partial tail texels and let readback rows exceed the texture
+height for non-bpp-multiple view lengths. FIX: storageTexelCreate
+declines BY NAME before creating ('storage-texel-format-unmaterialisable',
+'storage-texel-too-large', each reported once per view); the texel
+count is ceil (tail texel materialised, zero-padded at seed); the
+readback rows computation is defensively checked against the texture
+height ('buffer-readback-texel-rows') so a copy can never exceed the
+texture as an async encoder error.
+
+Finding 7 (MEDIUM) -- mechanism CONFIRMED, the 'zeros' outcome
+REFUTED. The bridge deferred a copy only when a GPU-write mark FULLY
+CONTAINED the copy range (vk64FindGpuWrite), so a partly-overlapping
+copy fell back to the record-time eager memcpy: bytes outside the
+view were copied CORRECTLY (no zeros) -- the actual defect is that
+the overlapped subrange silently served stale pre-dispatch bytes.
+FIX (source/vulkan/vk64bridge.cpp): vk64FindGpuWriteOverlap finds the
+earliest clean mark intersecting the range (cleanliness judged on the
+overlap subrange), and vk64CopyRegionSplit walks each copy region
+deferring maximal covered subranges as CMD_COPY_B2B_RB records and
+memcpy-ing the rest eagerly at record time; both vkCmdCopyBuffer and
+vkCmdCopyBuffer2/KHR route through it (containment is now the special
+case of a single deferred record). Native guard: a dispatch writing
+view [64,320) of a 512-byte buffer, then a whole-buffer copy, yields
+exactly one deferred record {srcOff 64, size 256} with the outer
+ranges already correct in guest memory at record time; sabotage
+(overlap query disabled) aborts the run at the first
+deferral-dependent block.
+
+Finding 9 (LOW) -- CONFIRMED reachable, fixed by marking. In this
+tree vk64MarkComputeWrites was called ONLY from the three dispatch
+traps, while R12S conversion is stage-agnostic and the bridge audit
+admits Dim=Buffer storage writes for any stage -- a fragment-shader
+UAV write would be served but never marked, so a later copy read
+stale bytes eagerly. FIX: the mark walk was extracted
+(vk64ReplayBoundState / vk64MarkBoundWrites, shared with the compute
+path) and vk64MarkDrawWrites now runs at the top of all six 64-bit
+draw traps for graphics pipelines (it also marks descriptor-set SSBO
+writes at draw time, a latent sibling of the same shape). Native
+guard: a graphics pipeline with a kind-6 push binding + vkCmdDraw
+defers the copy of the view range; sabotage (the vkCmdDraw call
+removed) turns exactly that block red.
+
+Finding 10 (LOW, test fix) -- the built-DLL check in
+vk-push-descriptor-shim.test.mjs matched 'vkCmdPushDescriptorSet' as a
+raw substring, which the KHR name also satisfies (the old DLL already
+contained the core string inside the KHR one, so the check was
+vacuous). Now matches NUL-terminated export strings, with a self-pin:
+a buffer containing only the KHR name must NOT satisfy the core name.
+Sabotage (substring matcher) turns the test red.
+
+Finding 12 (register formatting) -- CONFIRMED and fixed: the
+storage-format-access row and the metabind exports row were joined on
+one physical line in docs/known-gaps/vulkan.md; they are now separate
+rows. Pipe-aware recount is unchanged: 367 rows = 68 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (both rows were already
+counted). Citations re-pinned after this lane's line shifts (audit
+--fix plus exact diff line-mapping for the multi-site function
+citations): 0 DRIFT / 0 MISSING.
+
+Guards added: web/tests/suite/unit/vk-storage-texel-lifetime.test.mjs
+(mock-device replay: stream-order lifecycle incl. the repeat-bind and
+re-upload cases cs12 cannot reach because it runs each case once;
+two-views freshness + same-batch ambiguity decline; texel-over-SSBO
+precedence; too-large and unmaterialisable declines; tail-texel
+serving) -- 5/5, six sabotages each turning exactly one case red.
+vk-storage-texel.test.mjs pins updated to the new shapes (5/5);
+spirvfix-texel-buffer.test.mjs 10/10; vk-push-descriptor-shim.test.mjs
+3/3. Native: run-native.py (stock) aborts at the stale fmt-bpp table
+assert (vk64_native_test.cpp:501), byte-identical on pristine
+a997ea0a7 -- the base predates the harness repair, as the brief
+records. Diagnostic mode (a scratch copy with ONLY that assert
+neutralized, the recovery-lane precedent): 24 PASS blocks, including
+the metabind storage-texel block and this lane's two new blocks,
+then execution aborts at the second pre-existing stale assert (the
+features assert; pristine line 1357, this tree's 1470 after the
+lane's insertions). Pristine diagnostic: 22 PASS blocks, the same
+features abort. Sabotages: overlap query disabled -> abort at the
+first deferral-dependent block; the vkCmdDraw marking call removed
+-> abort exactly in the draw-marking block.
+
+Suites + probes (verified): JS unit suite on the lane dist ('Browser export verified'):
+317 passed / 0 failed (base 316/0; the +1 is the new
+vk-storage-texel-lifetime guard file). Census maintenance in the
+established style: vk-image-dirty-generation's raw guest-write
+primitive pin 53 -> 52 (the copy split consolidated two per-handler
+memcpyToGuest lines into the helper's single line; disposition note
+recorded in the test). Citations 0 DRIFT / 0 MISSING (220 MATCH /
+14 MATCH-INHERITED, identical to base). cs12 guest re-run (uploading
+harness, this lane's dist): BUF OK (bad=0), BUF2 OK (bad=0), TEX
+FAIL (bad=16, the branch-base wall), RESULT 1 for TEX alone -- the
+expected branch signature, unchanged from the metabind tip.
+Evidence: test-results/dxvk-metabindfix-cs12/. Cross-reference:
+frontier review #2 (vk32compute) lists partially-overlapping copies
+going eager/stale as a shared-with-64-bit limitation; on this branch
+that limitation is closed for the 64-bit handlers by the finding-7
+split (the 32-bit handlers are unchanged here -- the vk32fix lane's
+scope).
+
+Residue: cross-view aliasing of GPU texel writes (finding 3, named
+in the register); the page tier still cannot serve r16float/r8uint
+storage texel views (declined by name at materialisation; the r16
+lane's sampled-texture rewrite is the serving path, queued
+separately). MERGE NOTE for the crootmark lane: this lane extracted
+the compute mark walk into vk64ReplayBoundState/vk64MarkBoundWrites
+(vk64MarkComputeWrites is now a thin wrapper keeping its pipe->cs
+gate); crootmark's vk64MarkComputeWritesUpTo prefix pattern should
+wrap vk64MarkBoundWrites the same way at its merge.
+
+ENVIRONMENT REPAIR (recorded for the merge lane): the pinned
+wine64.zip archive for this base (runtime-assets.json sha256
+b2ac0dc6..., 213105632 bytes) existed only in the metabind lane's
+web/runtime, which its completion strip deleted; the GitHub
+runtime-assets release now 404s. The archive was RE-STAGED on this
+branch from the pinned pre-restage base (sha256 14182fe0..., preserved
+in /home/ubuntu/backups/winbox-vkd3d64-restage-20261028-135228/)
+merged with this tree's pinned payloads via
+tools/rootfs64/stage-vkd3d-payloads.sh: member-level identity with
+the lost archive is proven (same 1257 members; every non-payload
+member byte-identical to the pinned base; the five payload members
+byte-identical to the completeness-pinned payload sources; total size
+exactly 213105632). Only the five staged members' zip timestamps
+differ, so the archive hash differs: the branch's runtime-assets.json
+and docs/known-gaps/runtime-artifact-manifest.md pins were updated to
+the re-staged hash 47d24015... (bootstrap --check: 13 files verified,
+completeness 0 failures). wine32.zip was recovered byte-exact from
+/home/ubuntu/backups/winbox-vkd3d32-payloads-20261028-130037/ (hash
+matches the existing pin). At the metabind merge the integ lineage's
+manifest and archives govern; this repair is branch-local.
