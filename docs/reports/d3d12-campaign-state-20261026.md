@@ -4586,3 +4586,63 @@ the 4.41 merge touched on the page). NOT fixed in this lane, per the
 addendum: it is a separate determination (test expectation vs the
 *2 trap path) for the coordinator. Evidence:
 test-results/suite-d3d11-triangle (third run's console).
+
+### Merge outcome (integ, 2026-10-29)
+
+Merge commit 361f31502 (parents 6b15ff9ee + 1a713dd24) + citation
+re-pin 5caf4d245. The merged web/vk-protocol.mjs delta is
+byte-identical to the lane delta (diff sha256 3f10c9a2...); section
+4.42 stands as numbered, no renumbering, no duplicate sections.
+This merge CLOSES section 4.41's NOT-GATE-COMPLETE flag: the uav12
+regression the 4.41 merge record flagged is fixed by this lane and
+re-proven on the merged tree below (gate (a)); the 4.41 merge is
+now gate-complete, and its claims (rb12 rendered-then-copied
+readback) were never in doubt.
+
+Suites on the merged tree: citation audit 0 DRIFT / 0 MISSING
+(228 MATCH / 14 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over 346
+cited rows -- the lane's decoder edit had shifted the decodeV2Frame
+default case, moving that one row MATCH -> UNCHECKABLE in the raw
+audit; re-pin 5caf4d245 moves its citation 1290 -> 1326 and restores
+the baseline exactly); register unchanged 373 = 74 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount);
+JS unit suite 323 passed / 0 failed (runner --unit,
+BW_TEST_DIST=integ dist); emulator native 647 OK / 0 FAILED;
+run-native.py 31 PASS / 0 FAIL. Dist built from the merge commit
+(stamp 361f31502, wasm ca4ebe1f...; "Browser export verified";
+completeness gate 0 failures, 1 pre-existing environmental skip).
+
+GUEST GATE on the merged dist (uploading harness d3d12-pixels.mjs;
+canonical d3d12 pair sha-verified a96b4e9d... / 3d3bfe43... from
+wt-restage build.w64; probe slot, one at a time):
+(a) uav12 PASS -- SUMMARY flag=TRUE sweep=ALL18 exec=ALL6,
+RESULT 0, b2iApplied 12 (the 4.41 path still exercised); the
+harness composite passed:false is its clear-colour pixel check
+(it demands tri12's cornflower clear of a 4x4 UAV target),
+adjudicated on the guest verdict + SUMMARY. Evidence:
+test-results/dxvk-b2ifixmerge-uav12.
+(b) rb12 PASS -- RESULT 0, all 8 variants OK, bad=0 (BUF, CLEAR,
+UPLDTEX, CONSTPS, DELAY, RDB2I, RDB2IP, RDB2IS). Evidence:
+test-results/dxvk-b2ifixmerge-rb12.
+(c) tri12 PASS -- guest RESULT 0, no errors, no FAIL lines; the
+composite passed:false came with 0 chunks captured, the known
+offscreen capture artifact, adjudicated on the guest verdict.
+Evidence: test-results/dxvk-b2ifixmerge-tri12.
+(d) cs12 PASS, signature unchanged -- TEX OK bad=0; BUF bad=64 and
+BUF2 bad=64 at the meta-bind wall (metabind merges next); RESULT 1
+for that reason alone. Evidence: test-results/dxvk-b2ifixmerge-cs12.
+
+D3D11 DETERMINATION (coordinator, from this lane's addendum): the
+d3d11-triangle browser-test failure is a STALE TEST EXPECTATION,
+not a product defect. On the fixed dist the guest fully succeeds
+(D3D11CreateDevice OK FL=0x9300, shaders compiled, LIT=8192
+rendered, RESULT 0), the console contains zero gipa lines of any
+kind, and its single buffer copy arrives through the
+vkCmdCopyBuffer2 trap -- the *2KHR serving world of section 4.24 --
+while the test counts a v1 vkCmdCopyBuffer gipa-HIT that no longer
+occurs. No B2I_UPLOAD / takeForPump involvement is observable. Two
+identical failures make it deterministic, not a load artifact. A
+separate lane (lane-d3d11test) is fixing the test expectation; no
+test was changed in this merge. This also adjudicates the rawscan
+lane's open d3d11 flag: not a load artifact and not a b2i-merge
+side effect -- a test-expectation defect.
