@@ -8017,3 +8017,59 @@ Corpus gate: applySpirvFix output sha256 + applied lists
 byte-identical to the pre-merge tree for all 39 corpus
 modules; gate.mjs 34/39 convert, the standing by-design
 count.
+
+## 4.62 Batch gate #2: dist rebuild + guest gate for batch 2 (vk32compute stack §4.59, heapsets §4.60, spirvres §4.61) (2026-10-29)
+
+Batch 2's three light merges landed without a dist rebuild or guest
+probes (batched regime, user order 2026-10-29); this gate is the batch
+boundary check, run on integ tip 17a8c95a2. Dist rebuilt with
+tools/bw64-build.sh: "Browser export verified"; dist stamp 17a8c95a2,
+wasm sha256 e853184ca3b2... (5,517,355 B); completeness gate
+0 failures / 1 pre-existing environmental skip. Archives
+member-verified in the rebuilt dist: wine64.zip carries the shim
+ae96105b... (160,169 B) under bw64vulkan.dll / vulkan-1.dll /
+winevulkan.dll and the canonical pair a96b4e9d... (517,717 B) /
+3d3bfe43... (8,825,383 B); wine32.zip carries the PE32 pair
+872c3d65... (517,273 B) / 71e9c174... (9,022,393 B) at
+opt/wine-stable/lib/wine/i386-windows (system placement). JS unit
+suite re-run against the FRESH dist: 332 passed / 0 failed --
+identical to the light merges' result, so nothing that passed on the
+older dist fails on the rebuilt artifacts. Guest gate (probe slot,
+one at a time, guest-verdict adjudication): (a) tri12-32 via the
+32-bit system-placement harness (arch=x86): passed:true outright,
+RESULT 0 -- d3d12.dll + d3d12core.dll loaded native from
+C:\windows\system32, winevulkan builtin, 256 vk32 traps (evidence
+test-results/dxvk-batchgate2-tri32). (b) tri12 (uploading harness):
+RESULT 0, no FAIL lines (harness composite passed:false = the
+standing 0-chunk capture artifact; evidence
+test-results/dxvk-batchgate2-tri12). (c) cs12 (uploading harness):
+RESULT 0, full standing signature -- SUMMARY buf=OK buf2=OK tex=OK,
+all bad=0 (evidence test-results/dxvk-batchgate2-cs12). (d) uav12
+(uploading harness): SUMMARY flag=TRUE sweep=ALL18 exec=ALL6,
+RESULT 0 -- all six EXEC cases OK (evidence
+test-results/dxvk-batchgate2-uav12). (e) cs12-32, the guest run owed
+since the vk32compute lane (its base died at vkd3d's caps check
+before any dispatch): THE OWED GATE IS NOT DISCHARGED, but the
+blocker moved one layer down and the upstream half of the claim is
+now guest-proven. The guest prints "cs12: D3D12CreateDevice OK" --
+device creation succeeds on the merged tree (the Properties2 walker
+gap fixed in section 4.40 and refined in section 4.55 holds
+in-guest). The run then stops at resource creation: each variant's
+first CreateCommittedResource -- a readback-heap resource -- fails
+with hr=0x8007000E (E_OUTOFMEMORY): "FAIL CreateCommittedResource
+(clear readback)" (BUF and BUF2, stage "resources"), "FAIL
+CreateCommittedResource (tex readback)" (TEX, stage "readback");
+SUMMARY buf=FAIL buf2=FAIL tex=FAIL, RESULT 1, 256 vk32 traps, and
+no vk64Unsupported decline line anywhere in the console -- no
+compute pipeline, dispatch, or copy was ever reached, so the 32-bit
+compute record path itself remains unexercised in-guest (evidence
+test-results/dxvk-batchgate2-cs32). The failure signature is the
+committed-resource family of section 4.23 (whose 64-bit cause was
+the memory-type flags vkd3d-proton hard-requires for READBACK
+heaps); whether the 32-bit memory-properties advertisement differs
+for vkd3d-proton's hard selection -- section 4.28 adjudicated
+NOT-A-GAP only for DXVK's preference-based allocator -- is the next
+lane's question, not adjudicated here. BATCH 2 GATE: items (a)-(d)
+green; item (e) red at guest resource creation with the exact
+signature above; the vk32compute guest proof stays owed, re-scoped
+to the committed-resource wall.
