@@ -829,12 +829,13 @@ int main() {
         clearCase(37, 2, 2, f32x4(1.0f, 0.0f, 0.5f, 1.0f), texel({0xFF,0x00,0x80,0xFF}, 4));
         // R8_UNORM (9, 1 B/texel), 3x1 footprint: 3 bytes, no overrun.
         clearCase(9, 3, 1, f32x4(1.0f, 0.0f, 0.0f, 1.0f), {0xFF,0xFF,0xFF});
-        // Packed formats keep the named raw fill: the fallback counts
-        // clear-color-layout and repeats the clear value's first texelSize
-        // bytes per texel (R5G6B5_UNORM_PACK16 = 4, 2 B/texel).
+        // Depth/stencil formats keep the named raw fill: the fallback
+        // counts clear-color-layout and repeats the clear value's first
+        // texelSize bytes per texel (D16_UNORM = 124, 2 B/texel). (Packed
+        // colour formats converted instead -- the packed block below.)
         { const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
           vk32abi::VkClearColorValue v{}; v.uint32[0] = 0xAABBCCDDu;
-          clearCase(4, 2, 1, v, texel({0xDD,0xCC}, 2));
+          clearCase(124, 2, 1, v, texel({0xDD,0xCC}, 2));
           assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore + 1); }
         // R32_SFLOAT (100) control: single-component behaviour is unchanged.
         clearCase(100, 2, 1, f32x4(3.0f, 9.0f, 9.0f, 9.0f),
@@ -940,6 +941,82 @@ int main() {
             assert(vk64BridgeUnsupportedCount("clear-color-aspect") == aspBefore + 1);
         }
         puts("PASS: vkCmdClearColorImage honours subresource ranges (both ABIs; outside bytes untouched, REMAINING and clamp)");
+    }
+    // ---- vkCmdClearColorImage (32-bit), packed formats: the clear value
+    // must be bit-packed into the format's field layout (fields in
+    // format-name order, most significant first). Distinctive component
+    // values make field bleeding, swapped field order and
+    // truncation-instead-of-rounding each change the expected bytes.
+    {
+        KMemory memP; CPU cpuP{&memP};
+        auto callP = [&](U32 fn, const VK32Args& args) {
+            memP.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuP, fn, 128);
+        };
+        vk32abi::VkMemoryAllocateInfo allocP{};
+        allocP.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocP.allocationSize = 8192;
+        memP.memcpyToGuest(512, &allocP, sizeof(allocP));
+        VK32Args amP{}; amP.a[1] = 512; amP.a[3] = 640;
+        assert(callP(VK64_fn_vkAllocateMemory, amP) == VK_SUCCESS);
+        U64 memIdP = memP.readq(640);
+        auto* dmP = objOf32<DeviceMemory>(memIdP, K_MEMORY, "test");
+        assert(dmP && dmP->va);
+        auto clearCaseP = [&](U32 format, const vk32abi::VkClearColorValue& col,
+                              const std::vector<U8>& expect) {
+            for (U32 i = 0; i < 8192; ++i) memP.bytes[dmP->va + i] = 0xEE;
+            U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+            img->w = 2; img->h = 1; img->d = 1; img->layers = 1; img->format = format;
+            img->mem = memIdP; img->memOff = 128;
+            memP.memcpyToGuest(2048, &col, sizeof(col));
+            VK32Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048; cc.a[4] = 1; cc.a[5] = 3072;
+            assert(callP(VK64_fn_vkCmdClearColorImage, cc) == 0);
+            const U32 base = (U32)dmP->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memP.bytes[base + i] == expect[i]);
+            assert(memP.bytes[base - 1] == 0xEE && memP.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texelP = [](const std::vector<U8>& one) {
+            std::vector<U8> out; for (int i = 0; i < 2; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        auto f32x4 = [](float a, float b, float c, float d) {
+            vk32abi::VkClearColorValue v{}; v.float32[0] = a; v.float32[1] = b; v.float32[2] = c; v.float32[3] = d; return v;
+        };
+        const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+        // R4G4B4A4_UNORM_PACK16 (2): R=15, G=round(7.5)=8, B=0, A=round(3.75)=4.
+        clearCaseP(2, f32x4(1.0f, 0.5f, 0.0f, 0.25f), texelP({0x04,0xF8}));
+        // B4G4R4A4_UNORM_PACK16 (3): B=15, G=8, R=4, A=0 (R/B swapped vs fmt 2).
+        clearCaseP(3, f32x4(0.25f, 0.5f, 1.0f, 0.0f), texelP({0x40,0xF8}));
+        // R5G6B5_UNORM_PACK16 (4): R=31, G=round(31.5)=32, B=round(7.75)=8.
+        clearCaseP(4, f32x4(1.0f, 0.5f, 0.25f, 0.0f), texelP({0x08,0xFC}));
+        // B5G6R5_UNORM_PACK16 (5): B=round(23.25)=23, G=round(15.75)=16, R=16.
+        clearCaseP(5, f32x4(0.5f, 0.25f, 0.75f, 0.0f), texelP({0x10,0xBA}));
+        // R5G5B5A1_UNORM_PACK16 (6): R=31, G=0, B=16, A=1; alpha 0.4 -> A=0.
+        clearCaseP(6, f32x4(1.0f, 0.0f, 0.5f, 1.0f), texelP({0x21,0xF8}));
+        clearCaseP(6, f32x4(1.0f, 0.0f, 0.5f, 0.4f), texelP({0x20,0xF8}));
+        // B5G5R5A1_UNORM_PACK16 (7): B=31, G=0, R=16, A=0.
+        clearCaseP(7, f32x4(0.5f, 0.0f, 1.0f, 0.0f), texelP({0x20,0xF8}));
+        // A1R5G5B5_UNORM_PACK16 (8): A=1, R=8, G=16, B=23 (alpha is the MSB).
+        clearCaseP(8, f32x4(0.25f, 0.5f, 0.75f, 1.0f), texelP({0x17,0xA2}));
+        // A2B10G10R10_UNORM_PACK32 (64): A=round(2.25)=2, B=round(255.75)=256,
+        // G=round(511.5)=512, R=1023.
+        clearCaseP(64, f32x4(1.0f, 0.5f, 0.25f, 0.75f), texelP({0xFF,0x03,0x08,0x90}));
+        // A2B10G10R10_UINT_PACK32 (68): uint32 components' low bits only
+        // (R carries excess bits that must be masked off).
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0xFFFFF123u; v.uint32[1] = 0x2ABu; v.uint32[2] = 0x3FFu; v.uint32[3] = 0x2u;
+          clearCaseP(68, v, texelP({0x23,0xAD,0xFA,0xBF})); }
+        // B10G11R11_UFLOAT_PACK32 (122): R=1.0 -> 0x3C0, G=0.5 -> 0x380 at
+        // bit 11, B=2.0 -> 0x200 at bit 22.
+        clearCaseP(122, f32x4(1.0f, 0.5f, 2.0f, 0.0f), texelP({0xC0,0x03,0x1C,0x80}));
+        // UFLOAT rounding: 0.3 rounds UP to field 13 (truncation gives 12).
+        clearCaseP(122, f32x4(0.3f, 0.0f, 0.0f, 0.0f), texelP({0x4D,0x03,0x00,0x00}));
+        // UFLOAT subnormal: 2^-20 is exactly one subnormal step of R11.
+        clearCaseP(122, f32x4(0x1p-20f, 0.0f, 0.0f, 0.0f), texelP({0x01,0x00,0x00,0x00}));
+        // No packed case may fall into the named raw fill.
+        assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore);
+        VK32Args frP{}; frP.a[1] = memIdP;
+        assert(callP(VK64_fn_vkFreeMemory, frP) == VK_SUCCESS);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT)");
     }
     // ---- Entry points that used to be loud stubs: sizing from a create info,
     // shim-local answers (queue2, granularity, sparse, pipeline cache) and the

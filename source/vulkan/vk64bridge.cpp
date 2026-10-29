@@ -2452,13 +2452,14 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT:
         case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
         case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
-        case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R5G5B5A1_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
         case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
         case VK_FORMAT_D16_UNORM: return 2;
         case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT:
         case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
-        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
         case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SFLOAT:
         case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT:
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
@@ -10032,11 +10033,14 @@ static U64 rdq32(U64 a) { return rd64_32((U32)a); }
 // four 32-bit component words; a texel holds those components converted to
 // the format's own component size and type: float32 -> float16 for
 // SFLOAT16, float -> UNORM/SNORM quantization, low bits for integer
-// components, BGRA component order for B8G8R8A8. Returns the texel size
-// (== fmt_bpp(format)) and fills texel[]. Layouts that are not a plain
-// component vector (packed 16/32-bit formats, depth/stencil formats,
-// block-compressed) keep the historical raw fill: the clear value's first
-// bytes, truncated to the texel size and repeated per texel.
+// components, BGRA component order for B8G8R8A8, and bit-packing for the
+// PACK16/PACK32 formats (fields in format-name order, most significant
+// first; UNORM fields round to nearest, B10G11R11 fields are converted
+// to their unsigned-float layout with round-to-nearest-even). Returns
+// the texel size (== fmt_bpp(format)) and fills texel[]. Layouts with
+// no per-component clear conversion here (depth/stencil formats,
+// block-compressed) keep the historical raw fill: the clear value's
+// first bytes, truncated to the texel size and repeated per texel.
 // ---------------------------------------------------------------------------
 static uint16_t vk32FloatToHalf(float f) {
     U32 bits; memcpy(&bits, &f, 4);
@@ -10057,6 +10061,44 @@ static uint16_t vk32FloatToHalf(float f) {
     uint16_t h = (uint16_t)(sign | ((U32)exp << 10) | (mant >> 13));
     if (((mant >> 12) & 1) && ((mant & 0xfff) || (h & 1))) h++;               // round to nearest, ties to even
     return h;
+}
+// Packed-format helpers for vk32ClearTexel. UNORM fields quantize with
+// the same round-half-up discipline as the plain UNORM path below.
+static U32 vk32PackUnorm(float f, U32 bits) {
+    float c = f < 0 ? 0 : (f > 1 ? 1 : f);
+    return (U32)(c * (float)((1u << bits) - 1) + 0.5f);
+}
+static U32 vk32RoundShiftEven(U32 v, U32 shift) {
+    if (!shift) return v;
+    if (shift >= 32) return 0;
+    U32 rem = v & ((1u << shift) - 1);
+    U32 half = 1u << (shift - 1);
+    U32 out = v >> shift;
+    if (rem > half || (rem == half && (out & 1))) out++;
+    return out;
+}
+// float32 -> the unsigned-float field of B10G11R11_UFLOAT_PACK32 (5
+// exponent bits, bias 15, mantBits mantissa bits, no sign bit). The
+// conversion is exact round-to-nearest-even onto the target grid
+// (normals, subnormals, overflow to the inf pattern), so the error is
+// at most half a target ULP -- the same guarantee as vk32FloatToHalf.
+// Negative inputs clamp to zero, as UFLOAT has no sign.
+static U32 vk32FloatToUFloat(float f, U32 mantBits) {
+    U32 bits; memcpy(&bits, &f, 4);
+    const U32 inf = 0x1fu << mantBits;
+    if ((bits >> 31) || !(bits & 0x7fffffff)) return 0;              // negative / zero
+    U32 expBits = (bits >> 23) & 0xff;
+    U32 mant = bits & 0x7fffff;
+    if (expBits == 0xff) return mant ? (inf | (1u << (mantBits - 1))) : inf;   // nan keeps a mantissa bit; inf
+    int exp = (int)expBits - 127 + 15;
+    if (exp >= 31) return inf;                                       // overflow -> inf
+    if (exp <= 0) {                                                  // subnormal / zero
+        U32 shift = (U32)(1 - exp) + (23 - mantBits);
+        return vk32RoundShiftEven(mant | 0x800000, shift);           // may round up to the min-normal pattern, the adjacent encoding
+    }
+    U32 field = vk32RoundShiftEven(mant, 23 - mantBits);
+    if (field == (1u << mantBits)) { field = 0; if (++exp >= 31) return inf; }
+    return ((U32)exp << mantBits) | field;
 }
 enum Vk32ClearKind { VK32_CLEAR_FLOAT, VK32_CLEAR_UINT, VK32_CLEAR_SINT, VK32_CLEAR_UNORM, VK32_CLEAR_SNORM };
 static void vk32ClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8 texel[16], U32& texelSize) {
@@ -10100,7 +10142,52 @@ static void vk32ClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8
         case VK_FORMAT_R32G32B32A32_SINT: kind = VK32_CLEAR_SINT; ncomp = 4; compBytes = 4; break;
     }
     if (!ncomp) {
-        vk64Unsupported("clear-color-layout", "packed or depth/stencil format; clear value written raw, truncated to the texel size");
+        // Packed formats: fields in format-name order, most significant
+        // first (the order web/vk-protocol.mjs packedUnormToRgba8 decodes
+        // and WebGPU's rgb10a2/rg11b10 formats use); a texel is the packed
+        // word stored little-endian. UNORM fields take the float
+        // components, the A2B10G10R10 UINT sibling takes the uint32
+        // components' low bits, B10G11R11 takes float components as
+        // unsigned floats. Formats left here (depth/stencil, block
+        // compressed) keep the named raw fill below.
+        U32 packed = 0; bool isPacked = false;
+        switch (format) {
+            case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[0], 4) << 12) | (vk32PackUnorm(col.float32[1], 4) << 8) |
+                         (vk32PackUnorm(col.float32[2], 4) << 4) | vk32PackUnorm(col.float32[3], 4); isPacked = true; break;
+            case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[2], 4) << 12) | (vk32PackUnorm(col.float32[1], 4) << 8) |
+                         (vk32PackUnorm(col.float32[0], 4) << 4) | vk32PackUnorm(col.float32[3], 4); isPacked = true; break;
+            case VK_FORMAT_R5G6B5_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[0], 5) << 11) | (vk32PackUnorm(col.float32[1], 6) << 5) |
+                         vk32PackUnorm(col.float32[2], 5); isPacked = true; break;
+            case VK_FORMAT_B5G6R5_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[2], 5) << 11) | (vk32PackUnorm(col.float32[1], 6) << 5) |
+                         vk32PackUnorm(col.float32[0], 5); isPacked = true; break;
+            case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[0], 5) << 11) | (vk32PackUnorm(col.float32[1], 5) << 6) |
+                         (vk32PackUnorm(col.float32[2], 5) << 1) | vk32PackUnorm(col.float32[3], 1); isPacked = true; break;
+            case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[2], 5) << 11) | (vk32PackUnorm(col.float32[1], 5) << 6) |
+                         (vk32PackUnorm(col.float32[0], 5) << 1) | vk32PackUnorm(col.float32[3], 1); isPacked = true; break;
+            case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+                packed = (vk32PackUnorm(col.float32[3], 1) << 15) | (vk32PackUnorm(col.float32[0], 5) << 10) |
+                         (vk32PackUnorm(col.float32[1], 5) << 5) | vk32PackUnorm(col.float32[2], 5); isPacked = true; break;
+            case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+                packed = (vk32PackUnorm(col.float32[3], 2) << 30) | (vk32PackUnorm(col.float32[2], 10) << 20) |
+                         (vk32PackUnorm(col.float32[1], 10) << 10) | vk32PackUnorm(col.float32[0], 10); isPacked = true; break;
+            case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+                packed = ((col.uint32[3] & 3) << 30) | ((col.uint32[2] & 1023) << 20) |
+                         ((col.uint32[1] & 1023) << 10) | (col.uint32[0] & 1023); isPacked = true; break;
+            case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+                packed = (vk32FloatToUFloat(col.float32[2], 5) << 22) | (vk32FloatToUFloat(col.float32[1], 6) << 11) |
+                         vk32FloatToUFloat(col.float32[0], 6); isPacked = true; break;
+        }
+        if (isPacked) {
+            for (U32 b = 0; b < texelSize && b < 4; b++) texel[b] = (U8)(packed >> (8 * b));
+            return;
+        }
+        vk64Unsupported("clear-color-layout", "depth/stencil or block-compressed format; clear value written raw, truncated to the texel size");
         memcpy(texel, &col, texelSize < 16 ? texelSize : 16);
         return;
     }
