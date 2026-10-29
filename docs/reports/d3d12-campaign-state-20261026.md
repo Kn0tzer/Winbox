@@ -4114,3 +4114,138 @@ the vkd3d meta-pipeline descriptor wall, RESULT 1 for that
 reason alone (dxvk-psbmerge-cs12). That wall is the
 metabind lane's, solved on its own branch and merged
 separately; nothing in this merge touches it.
+
+
+## 4.40-on-branch 32-bit V2 compute execution: the section 4.30 mirror lands on the vk32 ABI (2026-10-28, lane-vk32compute; renumbers at merge -- integ's 4.40 is the d3d12-32 merge)
+
+Named residue closed: lane-crootmark recorded that 32-bit
+dispatches record no compute stage and drop loudly at submit.
+The census on this base (a23d1263c) proved the gap is wider
+than the residue line suggested -- it is the whole record path,
+not the serializer:
+
+    entry point (32-bit trap)        census verdict
+    -------------------------------  --------------------------------------
+    vkCreateComputePipelines         minted BARE Pipeline objects: no
+                                     shader stage, no layout, no root
+                                     census -- every dispatch on them
+                                     declined downstream as
+                                     "compute-dispatch". It ALSO read
+                                     the out array from a[4]
+                                     (pAllocator) instead of a[5]
+                                     (libvk32.c ground truth): a real
+                                     guest with a NULL allocator got
+                                     VK_ERROR_INITIALIZATION_FAILED.
+                                     The a[5] half is fixed upstream in
+                                     integ (section 4.40, d3d12-32
+                                     merge); this lane's handler carries
+                                     the same read as the recording
+                                     mirror and the merge reconciles to
+                                     one text.
+    vkCmdBindDescriptorSets          COMPUTE bind point loudly dropped
+                                     ("compute-descriptor-sets"); the
+                                     64-bit gate has accepted GRAPHICS
+                                     or COMPUTE since section 4.30.
+    vkCmdPushDescriptorSetKHR        same COMPUTE drop.
+    vkCmdDispatch / Indirect / Base  CMD_DISPATCH recorded but
+                                     vk64MarkComputeWrites never called
+                                     (no GPU-write marks at all), and
+                                     DispatchBase DISCARDED its base
+                                     groups -- a nonzero base would have
+                                     executed silently at base 0 once
+                                     serving landed.
+    vkCmdCopyBuffer / CopyBuffer2KHR eager record-time memcpy only:
+                                     never consulted the GPU-write
+                                     registry, never deferred -- even
+                                     with marks present, a
+                                     dispatch-then-copy readback served
+                                     pre-dispatch bytes.
+
+NOT-A-GAP, proven from the same code: one shared object
+registry (32-bit ids are the shared ids masked to 32 bits);
+both ABIs' vkCreateShaderModule call the same vk64AuditSpirv
+(compute-only modules accepted); serializeSubmitV2 is shared
+and already called from the 32-bit submit -- its CMD_DISPATCH
+case keys only off the pipeline's recorded stage and the
+command's base fields; setupReadbacks / completeReadbacks are
+shared and called from the 32-bit submit; vkCmdBindPipeline
+records identically on both ABIs (the pipeline object decides);
+32-bit PushConstants already records CMD_PUSH_CONST with stage
+flags; the page tier's records carry no ABI provenance (the
+compute record/serving guards build them synthetically).
+
+Implementation (source/vulkan/vk64bridge.cpp,
+tools/vulkan/gen/gen_vk32_guest.py + regenerated
+source/vulkan/vk32_guest.h -- one additive struct,
+VkComputePipelineCreateInfo, i386 pack(4): stage at 12,
+layout at 44, size 64):
+
+  * CreateComputePipelines32 mirrors the 64-bit handler:
+    validates device/out/count, reads the create infos, and
+    records the shader module, layout, captured specialization
+    constants and the R15 root-descriptor census on the
+    pipeline object.
+  * Both bind gates accept GRAPHICS or COMPUTE; the residual
+    decline for any other bind point takes the shared
+    "descriptor-bind-point" name.
+  * The Dispatch32 family records the base groups and calls
+    vk64MarkComputeWrites before recording -- the same
+    record-time marking the 64-bit path uses on this base.
+    The submit-time epoch re-stamp (lane-cepoch, merged before
+    this lane) replays the SHARED serializer case over shared
+    command records, so 32-bit-recorded dispatches are
+    re-stamped automatically; it is deliberately not
+    duplicated here.
+  * Both 32-bit buffer copies defer per region through the
+    shared CMD_COPY_B2B_RB record when a GPU write covers the
+    source range (bounds-clamped, no-overflow checks), falling
+    back to the eager copy otherwise; the dirty bump stays
+    adjacent to its vk64TouchMem.
+
+Proof. Native harness guard (run-native.py, 32 PASS blocks,
+baseline 31): the full 32-bit trap path on a KMemory fixture --
+compute pipeline records its stage and layout; descriptor
+bind and push-descriptor-set at the COMPUTE bind point record
+without a decline; Dispatch(2,3,4) marks the descriptor
+buffer's write in MEMORY-ABSOLUTE coordinates (source buffer
+at memOff 8192: the mark is findable at 8192+128 and NOT at
+128); both copy entry points defer with exact record fields
+and leave the poisoned destination untouched;
+serializeSubmitV2 emits the section 4.30 record kinds
+(0x1E pipeline-compute, 0x1F dispatch with payload 2,3,4,
+0x20 buffer-readback) with no "compute-dispatch" decline;
+DispatchBase(5,0,0) records base 5 and declines loudly at
+submit (only the direct form is served on this base, as on
+64-bit). Seven sabotages, each caught at its exact assert,
+bridge restored byte-identical after each (sha256
+dbfcd52d...): stage not recorded; bind gate reverted; marking
+removed; CopyBuffer deferral disabled; DispatchBase base
+dropped; push gate reverted; CopyBuffer2 deferral disabled.
+JS pin guard vk32-compute.test.mjs (5/5 standalone; full
+suite below). The harness's stale early 32-bit compute block
+was rewritten to the shim packing convention (a[4] = NULL
+allocator, a[5] = out) with a real zeroed create info -- the
+same correction integ's section 4.40 made independently; the
+merge keeps one text. One 64-bit guard block's absolute
+"compute-dispatch" counter asserts became relative (same
+strength): the new guard legitimately moves the shared
+counter first.
+
+Suites: JS 321 passed / 0 failed on this tree's dist
+("Browser export verified", support archive bbc583c6) --
+320-file base plus vk32-compute, citation audit clean after
+the register re-pins. Emulator native suite: 647 passed / 0 failed, single-threaded (343 s run; the known setitimer load flake did not appear). run-native.py end-to-end green (32 PASS blocks) as recorded above.
+
+Guest evidence: a cs12-32.exe PE32 twin of cs12 was built
+with the i686 mingw toolchain (289,635 bytes) for an
+uploading-harness run. the 32-bit session boots (arch=x86, wine32.zip + prefix32), the PE32 vkd3d pair loads from system placement (loadDll lines: d3d12.dll / d3d12core.dll from C:\windows\system32, dxgi.dll native, winevulkan.dll builtin), and the guest drives 44 vk32 traps into this bridge -- vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice, vkGetPhysicalDeviceProperties2KHR. D3D12CreateDevice then fails at vkd3d-proton's own caps check ("Lacking support for single texel alignment", hr=0x80070057): the 32-bit Properties2 walker gap that the d3d12-32 merge (section 4.40) fixed upstream -- tri12-32 creates its device and returns RESULT 0 on the merged tree, and this base predates that merge. No dispatch was reached, so the in-guest dispatch proof is owed at this lane's merge gate: re-run cs12-32 there (device creation already proven on that tree) with BW_32_RESULTTAG=cs12. Two misfires are part of the record: the 64-bit uploading harness boots a PE32 guest in Wine's experimental WoW64 mode, which dies loading syswow64\ntdll.dll (c0000135) -- the arch=x86 session is the only supported 32-bit route. cs12-32.exe is committed beside tri12-32.exe for the gate.
+
+Register: total unchanged, 372 = 73 / 66 / 233 / 0. Row 42's
+disposition now claims V2 compute execution on BOTH ABIs,
+cited to the 32-bit recording sites; the section 4.30
+addendum's "32-bit compute (never recorded)" residue is
+closed by the new addendum in docs/known-gaps/vulkan.md.
+Honest limits: no cs12-32 in-guest proof yet (see above); the
+epoch re-stamp coverage of 32-bit dispatches is by shared-code
+construction and lands with the cepoch merge order, not
+duplicated on this branch.

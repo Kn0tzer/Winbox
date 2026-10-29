@@ -39,7 +39,7 @@ Rows: 372 source and follow-up rows (73 IMPLEMENTED, 66 REJECTED-LOUDLY, 233 NOT
 | `source/vulkan/vk64bridge.cpp:3419` (swallowed catch, fixed) | V2 transport installs the heap-buffer hook before readback. A failed global assignment would prevent the page from waking the guest readback. | High | IMPLEMENTED; assignment errors now surface instead of being swallowed. Regression/guard: `vk-silent-drop-guard.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:4151` (caught chunk-handler error) | The page chunk callback can throw while the bridge forwards a V2 frame. | High | REJECTED-LOUDLY for this runtime failure; the bridge increments a counter and logs `v2-chunk-handler-threw` on a rate-limited schedule. Regression/guard: `vk-silent-drop-guard.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:4810` (descriptor wire default) | `applyDescWrite` stores a descriptor type the V2 protocol does not serialize. | High | REJECTED-LOUDLY: valid buffer, image, sampler, and inline-uniform kinds are serialized; any remaining type gets a rate-limited `descriptor-wire-kind` warning at serialization. Acceleration-structure descriptors are behind an unadvertised extension. Regression: `vk-descriptor-type-guard.test.mjs`, `vk-capabilities.test.mjs`. |
-| `source/vulkan/vk64bridge.cpp:5165` (compute dispatch) | DXVK/vkd3d would submit a compute dispatch. | High | IMPLEMENTED (V2 compute lane, 2026-10-28): the submit emitter serves CMD_DISPATCH for a bound compute pipeline (the pipeline's root descriptors, then V2_DISPATCH); a dispatch with no compute pipeline bound, or a vkCmdDispatchBase with a non-zero base group (WebGPU has no base-group offset), still drops loudly as `compute-dispatch`. Storage-buffer writes a dispatch may perform are marked at record time so a later vkCmdCopyBuffer of the written range defers to a page readback (V2_BUFFER_READBACK) instead of the eager record-time memcpy. Regression: `vk-silent-drop-guard.test.mjs`, `vk-compute-serving-guard.test.mjs`, `vk-compute-records.test.mjs`. |
+| `source/vulkan/vk64bridge.cpp:5330` (compute dispatch) | DXVK/vkd3d would submit a compute dispatch. | High | IMPLEMENTED (V2 compute lane, 2026-10-28; 32-bit mirror: vk32compute lane, 2026-10-28): the submit emitter serves CMD_DISPATCH for a bound compute pipeline (the pipeline's root descriptors, then V2_DISPATCH); a dispatch with no compute pipeline bound, or a vkCmdDispatchBase with a non-zero base group (WebGPU has no base-group offset), still drops loudly as `compute-dispatch`. Storage-buffer writes a dispatch may perform are marked at record time so a later vkCmdCopyBuffer of the written range defers to a page readback (V2_BUFFER_READBACK) instead of the eager record-time memcpy. The 32-bit ABI records into the same path: `vkCreateComputePipelines` records the stage module, layout, specialization and root census (vk64bridge.cpp:12361), both descriptor bind gates accept the COMPUTE bind point (vk64bridge.cpp:11095, vk64bridge.cpp:12302), dispatch handlers mark writes and record the DispatchBase base groups (vk64bridge.cpp:11793), and both buffer-copy handlers defer marked ranges (vk64bridge.cpp:11357, vk64bridge.cpp:11416). Regression: `vk-silent-drop-guard.test.mjs`, `vk-compute-serving-guard.test.mjs`, `vk-compute-records.test.mjs`, `vk32-compute.test.mjs`, native "32-bit compute dispatch is recorded, marked, deferred and served". |
 | `source/vulkan/vk64bridge.cpp:5380` (default) | Internal command kind has no V2 record. | Medium | NOT-A-GAP for valid guest commands: every supported command is explicitly serialized; unsupported compute pipelines are rejected before recording. Any residual unknown kind is diagnosed by the adjacent `unknown-cmd-kind` logger and is an internal bridge invariant violation. Guard: `vk-silent-drop-guard.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:5380` (unknown internal command) | Bridge command enum has no corresponding V2 serialization. | Medium | NOT-A-GAP for valid guest commands: the adjacent default logs `unknown-cmd-kind`; compute pipeline creation is rejected, and other guest commands are mapped explicitly. Guard: `vk-silent-drop-guard.test.mjs`. |
 | `source/vulkan/vk64bridge.cpp:5544` (marker) | marker: `* geometryShader/tessellationShader are false (WebGPU has neither stage), so`. Guest behavior and impact require the listed handler/replay path to be exercised. | Informational: comment/reference only | NOT-A-GAP (comment only; no runtime path) |
@@ -662,3 +662,38 @@ sites 247 -> 250 and dirtyGen bump sites 20 -> 21 / guest-write
 primitive lines 52 -> 53 (the deferred readback's paired bump + write),
 pinned in `vk-drop-macro-guard.test.mjs` and
 `vk-image-dirty-generation.test.mjs`.
+
+## Addendum -- 32-bit V2 compute execution (2026-10-28, vk32compute lane)
+
+Full evidence: `docs/reports/d3d12-campaign-state-20261026.md` section
+4.40. The "32-bit compute (never recorded on that ABI)" residue above
+is closed: the 32-bit trap handlers now mirror the 64-bit compute path
+into the same shared records, object registry and submit serializer,
+so a dispatch recorded by a 32-bit guest is served by the page tier
+identically (the V2 records carry no ABI provenance). Census of the
+gap, per entry point: `vkCreateComputePipelines` minted bare pipeline
+objects (no stage recorded -- every dispatch then met the serializer's
+no-compute-pipeline decline); `vkCmdBindDescriptorSets` and
+`vkCmdPushDescriptorSetKHR` dropped COMPUTE binds loudly as
+`compute-descriptor-sets` (renamed to the shared `descriptor-bind-point`
+residual); `vkCmdDispatch*` recorded the dispatch but never marked
+storage writes, and `vkCmdDispatchBase` discarded the base groups (a
+non-zero base would have been silently served at base zero once
+recording worked -- the base is now recorded and declines at submit
+like the 64-bit path); `vkCmdCopyBuffer`/`vkCmdCopyBuffer2KHR` never
+deferred, so a dispatch-then-copy readback served stale guest bytes.
+Proven NOT-A-GAP by the same census: the shared shader-module audit
+(compute-only modules accepted on both ABIs), pipeline-layout /
+push-constant / push-template recording, `setupReadbacks` planning and
+the serializer itself were already ABI-shared. Proof: native guard
+"32-bit compute dispatch is recorded, marked, deferred and served"
+(full trap path: creation, COMPUTE binds, push descriptors, dispatch,
+both copy entry points, nonzero-memOff write mark, serialized
+PIPELINE_COMPUTE / DISPATCH / BUFFER_READBACK records; sabotage-
+verified per fix), plus `vk32-compute.test.mjs` source pins. Honest
+limits: no 32-bit compute GUEST probe exists yet (cs12 is 64-bit; a
+PE32 compute twin is future work), so in-guest evidence rests on the
+trap-level guard plus the 64-bit path's in-guest proof of the
+identical records; the submit-time epoch re-stamp for compute marks
+is the cepoch lane's serializer-side fix, which covers 32-bit-recorded
+dispatches unchanged when it merges (the record stream is shared).

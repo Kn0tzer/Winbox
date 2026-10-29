@@ -6117,6 +6117,16 @@ typedef struct VkPipelineShaderStageCreateInfo {
     uint32_t pSpecializationInfo;
 } VkPipelineShaderStageCreateInfo;
 
+typedef struct VkComputePipelineCreateInfo {
+    VkStructureType                    sType;
+    uint32_t pNext;
+    VkPipelineCreateFlags              flags;
+    VkPipelineShaderStageCreateInfo    stage;
+    VkPipelineLayout                   layout;
+    VkPipeline                         basePipelineHandle;
+    int32_t                            basePipelineIndex;
+} VkComputePipelineCreateInfo;
+
 typedef struct VkVertexInputBindingDescription {
     uint32_t             binding;
     uint32_t             stride;
