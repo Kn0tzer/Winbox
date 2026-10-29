@@ -22,6 +22,7 @@ import { decodeV2Frame, V2_REC } from '../../../vk-protocol.mjs';
 
 const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
 const page = readFileSync(new URL('../../../../web/vkwebgpu.mjs', import.meta.url), 'utf8');
+const wgsl = readFileSync(new URL('../../../../web/wgsl-utils.mjs', import.meta.url), 'utf8');
 
 function u8s(...v) { return new Uint8Array(v); }
 function u16s(...v) { const b = new Uint8Array(v.length * 2); const d = new DataView(b.buffer); v.forEach((x, i) => d.setUint16(i * 2, x, true)); return b; }
@@ -102,7 +103,13 @@ test('bridge: a dispatch through a storage texel binding marks the view range GP
 
 test('page: kind 6 resolves in the format signature, the bind group, its fingerprint and the readback', () => {
   const sig = page.slice(page.indexOf('function storageSignatureFor'), page.indexOf('function samplerIdForDecl'));
-  assert.match(sig, /b\.kind === 6/, 'the R14 signature resolves storage texel views');
+  // Composed shape (metabind merge, integ): storageSignatureFor delegates
+  // format proof to resolveStorageVarFormat (fmtinject, section 4.33), so
+  // the kind dispatch lives in the helper's fmtOf; the page tier's half is
+  // the texelFormatOf callback inside storageSignatureFor, which takes the
+  // spv format from the bound buffer view. Both halves stay pinned here.
+  const helper = wgsl.slice(wgsl.indexOf('export function resolveStorageVarFormat'), wgsl.indexOf('export function planGroupRemap'));
+  assert.match(helper, /if \(b\.kind === 6 && texelFormatOf\)/, 'the R14 signature resolves storage texel views');
   assert.match(sig, /V2_STORAGE_FORMAT\[bv\.format\]/, 'the signature takes the spv format from the bound view');
   const entriesAt = page.indexOf('function bindGroupEntries');
   const entries = page.slice(entriesAt, page.indexOf('async function render', entriesAt));
