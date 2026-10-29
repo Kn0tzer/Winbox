@@ -8310,3 +8310,126 @@ byte-identical to the pre-merge tree for all 39 corpus modules.
 No dist rebuild, no guest probes (batched regime) -- the final full
 gate covers this merge. This was the last merge in the standing
 queue.
+
+## 4.65 32-bit committed-resource wall: the section 4.23 wall on the vk32 ABI (2026-10-29, lane-cs32mem)
+
+Batch gate #2 (section 4.62) left cs12-32 red at its first
+CreateCommittedResource (hr=0x8007000E on all three variants) and named
+the question: is this the section 4.23 committed-resource wall on the
+32-bit path -- the case section 4.28's NOT-A-GAP never covered, because
+it was adjudicated only for DXVK's preference-based allocator while
+32-bit device creation was still broken? It is. Diagnosis, fix, and
+guest proof below; the run then advances one layer deeper, named at
+the end.
+
+### Diagnosis (guest trace + vendored source, no inference)
+
+The staged vkd3d-proton carries BW64OOM instrumentation, and the
+gate's console (integ test-results/dxvk-batchgate2-cs32) records the
+whole mechanism. At device creation the guest prints the advertised
+table it was given: `memprops typeCount=1 heapCount=1`,
+`memtype[0] flags=0x7 heapIndex=0`, `memheap[0] size=4294967296
+flags=0x1`. DEFAULT-heap resources allocate fine (suballocator chunk
+of 16 MiB, vkAllocateMemory vr=0). The first READBACK-heap resource
+(heap_type=3) computes `mem_init type_flags=0xa req_mask=0
+opt_mask=0`, tries to add a chunk with `type_mask=0`, and
+`vkd3d_try_allocate_device_memory` reports `candidates=0
+chosen_type=32`, retries with the relaxed mask 0x2 against the same
+empty base mask, and ends at `NO_SUITABLE_TYPE type_flags=0x2
+(vkAllocateMemory NOT attempted)` -> E_OUTOFMEMORY.
+
+From the vendored source (tools/vkd3d/src/libs/vkd3d/memory.c):
+vkd3d_select_memory_flags returns HOST_VISIBLE | HOST_CACHED (0xA)
+for D3D12_HEAP_TYPE_READBACK and for CUSTOM heaps with WRITE_BACK
+page property; vkd3d_suballocate_memory derives required_mask and
+optional_mask with vkd3d_find_memory_types_with_flags, a superset
+test over the advertised types. The 32-bit bridge answer is
+hand-written in the two vk32Bridge memory-properties handlers (v1 and
+*2) and never calls the 64-bit fillMemoryProperties: ONE type, flags
+0x0007 = DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT, one 4 GiB
+DEVICE_LOCAL heap. No advertised type is a superset of 0xA, so both
+masks are empty and the allocation fails before any vkAllocateMemory
+call -- the "no memory type satisfies the requirements" class, not an
+allocation failure.
+
+Ruled out, from the same evidence: a size/budget artifact. The heap
+advertises 4 GiB; every vkAllocateMemory actually attempted (16 MiB
+chunks, 512 B dedicated) returned VK_SUCCESS through the 32-bit
+handler, whose own size accounting is sound (packed-struct read;
+sizes over 1 GiB rejected loudly). tri12-32 passes on the same table
+because it creates only DEFAULT (mask 0x1) and UPLOAD (HVV:
+DEVICE_LOCAL | HOST_COHERENT, 0x5) resources -- both masks have a
+superset type; only 0xA did not. Section 4.28's reasoning stands for
+DXVK and only DXVK: its allocator classifies HOST_CACHED as optional
+and retries with it stripped, so the missing bit could never fail a
+DXVK allocation; vkd3d-proton has no such strip.
+
+### Fix
+
+Both 32-bit memory-properties handlers now write propertyFlags
+0x000F: the single type gains HOST_CACHED. Table shape unchanged
+(one type, heapIndex 0, one 4 GiB DEVICE_LOCAL heap), so DXVK's type
+choice cannot change -- there is one type to choose. The flag is
+honest for this bridge: every allocation is ordinary emulator RAM,
+host-cacheable by construction, the same basis on which the 64-bit
+host-only types have carried it since section 4.23.
+
+### Guards (both sabotage-verified)
+
+- Native harness block "Vulkan32 memory properties satisfy vkd3d
+  heap-class masks (HOST_CACHED advertised for READBACK)": drives
+  both real handlers through vk32Bridge and asserts the advertised
+  type is a superset of every heap-class required mask (0x1 DEFAULT,
+  0x5 UPLOAD-HVV, 0xA READBACK / WRITE_BACK), plus the table shape
+  (counts, heap size and flags). Restoring 0x0007 in both writers
+  aborts the harness at exactly this block's assertion
+  ((flags & mask) == mask); the pre-existing blocks are blind to the
+  bug (the set-0/offset-0 blindness pattern in its flag form).
+- vk-memory-properties.test.mjs: the 32-bit answer pin moves
+  0x0007 -> 0x000F and its verdict comment is rewritten to the two
+  halves (DXVK premise unchanged and still pinned against the
+  vendored source). At 0x0007 exactly the pin test fails (3 pass /
+  1 fail).
+
+### Suites and guest proof
+
+run-native 48 PASS (47 standing + the new block); JS unit 332/0 on
+the lane dist; emulator native 648/0. Guest proof via the 32-bit
+system-placement harness (arch=x86, BW_32_RESULTTAG=cs12), lane dist:
+
+- BEFORE (unmodified lane build): the batch-gate signature
+  reproduced exactly -- three FAIL CreateCommittedResource
+  hr=0x8007000E, RESULT 1 (test-results/dxvk-cs32mem-before).
+- AFTER: zero 0x8007000E in the console; every committed resource in
+  all three variants creates; BUF OK and BUF2 OK end to end
+  (bad=0) -- compute pipeline, descriptor binds, dispatch, deferred
+  copy and readback all serve, so the 32-bit compute record path is
+  exercised in-guest for the first time (test-results/
+  dxvk-cs32mem-after).
+- tri12-32 on the fixed dist: passed:true outright, RESULT 0
+  (test-results/dxvk-cs32mem-tri32) -- no regression on the standing
+  32-bit path.
+
+### The next layer (named, not addressed here)
+
+TEX no longer dies at resource creation; it runs the full pipeline
+and fails on DATA: `VARIANTTEX FAIL (bad=16 first=(0,0) gotR=0)`,
+RESULT 1. No decline or drop lines on the path; the 4x4 storage
+texture's readback returns wrong data on the 32-bit ABI where the
+64-bit path passes the identical probe. One of the 32-bit legs of
+storage-texture dispatch serving, texture-to-buffer copy, or
+texture readback is implicated; adjudicating between them is the
+next lane's work. The vk32compute guest gate (section 4.62 item (e))
+is discharged for resource creation and the buffer variants; it
+stays open on the TEX signature above.
+
+### Register
+
+The section 4.28 row is narrowed to DXVK (its evidence and NOT-A-GAP
+stand for that consumer; its "no 32-bit consumer hard-requires the
+flag" sentence is corrected in place); one new IMPLEMENTED row
+covers the vkd3d half. Register: 379 rows = 79 IMPLEMENTED / 66
+REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN. Citations: 0 DRIFT /
+0 MISSING (350 cited rows: 230 MATCH / 14 MATCH-INHERITED / 99
+UNCHECKABLE / 7 EXEMPT; the new row's citation is UNCHECKABLE-class,
+like the row it splits from).

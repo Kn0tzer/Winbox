@@ -781,6 +781,48 @@ int main() {
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)");
     }
+    // ---- 32-bit memory properties: the advertised table must satisfy
+    // vkd3d-proton's hard memory-type masks for every D3D12 heap class.
+    // vkd3d_select_memory_flags requires DEVICE_LOCAL (0x1) for DEFAULT,
+    // DEVICE_LOCAL | HOST_COHERENT (0x5) for UPLOAD on a UMA/HVV device,
+    // and HOST_VISIBLE | HOST_CACHED (0xA) for READBACK and CUSTOM
+    // WRITE_BACK; vkd3d_find_memory_types_with_flags is a superset test,
+    // so each required mask needs at least one advertised type carrying
+    // all of its bits. The pre-fix table (single type 0x0007, no
+    // HOST_CACHED) left both READBACK masks empty, and every 32-bit
+    // vkd3d readback committed resource failed E_OUTOFMEMORY before
+    // vkAllocateMemory was attempted (cs12-32, batch gate #2). DXVK
+    // never needed the bit (its allocator strips HOST_CACHED and
+    // retries), and with a single type its choice cannot change.
+    {
+        KMemory memM; CPU cpuM{&memM};
+        auto callM = [&](U32 fn, const VK32Args& args) {
+            memM.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuM, fn, 128);
+        };
+        const U32 requiredMasks[3] = {0x1, 0x5, 0xA};
+        auto checkTable = [&](U32 base) {
+            assert(memM.readd(base + 0) == 1);                 // memoryTypeCount
+            U32 flags = memM.readd(base + 4);                  // memoryTypes[0].propertyFlags
+            assert(memM.readd(base + 8) == 0);                 // memoryTypes[0].heapIndex
+            for (U32 mask : requiredMasks)
+                assert((flags & mask) == mask);                // the only type satisfies every heap-class mask
+            U32 heapOff = base + 4 + 32 * 8;
+            assert(memM.readd(heapOff) == 1);                  // memoryHeapCount
+            assert(memM.readq(heapOff + 4) == 0x100000000ULL); // heap 0 size: 4 GiB
+            assert(memM.readd(heapOff + 12) == 0x1);           // heap 0 flags: DEVICE_LOCAL
+        };
+        for (U32 i = 0; i < 1024; i += 4) memM.writed(8192 + i, 0xAAAAAAAA);
+        VK32Args mp{}; mp.a[1] = 8192;
+        assert(callM(VK64_fn_vkGetPhysicalDeviceMemoryProperties, mp) == 0);
+        checkTable(8192);
+        for (U32 i = 0; i < 1024; i += 4) memM.writed(16384 + i, 0xAAAAAAAA);
+        VK32Args mp2{}; mp2.a[1] = 16384;
+        assert((S64)callM(VK64_fn_vkGetPhysicalDeviceMemoryProperties2, mp2) == VK_SUCCESS);
+        checkTable(16384 + 8); // memProps sit behind sType + pNext in the *2 struct
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)");
+    }
     // ---- vkCmdClearColorImage (32-bit): the clear value must land as whole
     // texels. The old handler took only the first 4 bytes of the 16-byte
     // VkClearColorValue and repeated those in 4-byte steps, so a wide texel

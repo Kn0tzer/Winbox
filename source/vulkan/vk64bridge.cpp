@@ -11013,7 +11013,21 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK64_DROP_IF(return 0, !args.a[1]);
         U32 dst = (U32)args.a[1];
         wr32_32(dst + 0, 1);
-        wr32_32(dst + 4 + 0, 0x0007);
+        // The single type carries HOST_CACHED (0x000F, not 0x0007): this
+        // is the section 4.23 committed-resource wall on the 32-bit ABI.
+        // vkd3d-proton hard-requires HOST_VISIBLE | HOST_CACHED for
+        // READBACK and CUSTOM WRITE_BACK heaps (memory.c
+        // vkd3d_select_memory_flags, a superset test over the advertised
+        // types); with no cached type, its required AND optional type
+        // masks are both empty, so every such committed resource fails
+        // E_OUTOFMEMORY before vkAllocateMemory is ever attempted
+        // (cs12-32, batch gate #2). Section 4.28's NOT-A-GAP covered
+        // only DXVK, whose allocator treats HOST_CACHED as optional
+        // (strip-and-retry); the bit cannot change DXVK's choice -- this
+        // is the only type there is to choose. The memory behind every
+        // bridge allocation is ordinary emulator RAM, host-cacheable by
+        // construction, exactly as the 64-bit host types advertise.
+        wr32_32(dst + 4 + 0, 0x000F);
         wr32_32(dst + 4 + 4, 0);
         U32 heapOff = 4 + 32 * 8;
         wr32_32(dst + heapOff, 1);
@@ -11059,7 +11073,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         if (!args.a[1]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 dst = (U32)args.a[1] + 8;
         wr32_32(dst + 0, 1);
-        wr32_32(dst + 4 + 0, 0x0007);
+        // Same advertised answer as the v1 handler above: one type,
+        // 0x000F including HOST_CACHED (see its note).
+        wr32_32(dst + 4 + 0, 0x000F);
         wr32_32(dst + 4 + 4, 0);
         U32 heapOff = 4 + 32 * 8;
         wr32_32(dst + heapOff, 1);
