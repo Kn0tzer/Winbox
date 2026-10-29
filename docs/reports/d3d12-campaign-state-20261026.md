@@ -7775,3 +7775,45 @@ restores the behaviour the Route A closure text already claims --
 the bridge audit admits exactly what the mirror classifiers prove
 servable, no wider, no narrower. Register unchanged at 373 =
 74 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN.
+
+### 4.60 merge outcome (coordinator merge, BATCHED REGIME -- light merge)
+
+Merged into integ as 577d50115 (parents f38da66cb + 10ddc95d3).
+Per the user's batching order this merge ran LIGHT: no dist
+rebuild and no guest probes; the JS suite ran against the batch
+gate #1 dist (stamp 47f63dbd2).
+
+Composition accounting (full-diff): the merged delta vs
+pre-merge integ is 4 files, +188/-1, vs the lane delta
++189/-1. The bridge hunk is byte-identical to the lane's
+one-liner, landed in the current merged r15::analyzeRoot at
+vk64bridge.cpp:1279 (post-merge: exactly one op == 29 pointee
+test inside analyzeRoot; zero op == 48 remaining file-wide).
+The harness conflict was a pure same-anchor insertion (the
+opscan/rawscan guard blocks vs the heapsets block) resolved as
+a union: the merged harness delta is exactly the lane's +85
+block, sitting after the rawscan blocks and before the sampler
+guard. The JS pin auto-merged exactly (+9). Docs: the lane
+section renumbered 4.42-on-branch -> 4.60 and appended after
+section 4.59; the -1 line vs the lane delta is the rawscan
+cross-reference composed into one line ("(section 4.57 in the
+merged tree)"). The section's closing register sentence is the
+lane's branch statement (373 on its base); the merged register
+is unchanged (below).
+
+Register: unchanged 378 = 78 IMPLEMENTED / 66 REJECTED-LOUDLY
+/ 234 NOT-A-GAP / 0 OPEN (the register file is not in the merge
+diff; pipe-aware recount -- the raw parser's one extra hit is
+the appendix summary line). Citations: audit 0 DRIFT / 0
+MISSING (230 MATCH / 14 MATCH-INHERITED / 98 UNCHECKABLE / 7
+EXEMPT over 349 audited rows, identical distribution to
+pre-merge; the one-line edit moves no line counts and the
+harness insertions sit below every audited citation).
+
+Suites on the merged tree: JS unit 331 passed / 0 failed
+(against the batch gate #1 dist; the heap-set source pin lives
+inside the existing spirvfix-r15.test.mjs); emulator native
+648 OK / 0 FAILED (binary summary "0 tests FAILED in 216s");
+run-native 47 PASS / 0 FAIL (46 baseline + "GUARD
+root-descriptor collision check consults the descriptor-heap
+set (nonzero-set admission and decline)", accounted by name).
