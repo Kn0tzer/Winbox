@@ -3934,3 +3934,260 @@ it: 318 passed / 0 failed (the 317-file baseline plus this
 lane's vk-sampled-storage-serving guard file), superseding the
 first run's 317/1 above. The guest gate remains as recorded:
 outstanding, to be re-run in a quieter window.
+
+
+## 4.40 Raw-scan audit: the literal-vs-id word-scan class, censused end to end (2026-10-28)
+
+The defect class — a SPIR-V analysis scan that compares RAW instruction
+words against a sought id, mistaking a literal operand (a constant value,
+a decoration parameter, a component index, an alignment literal) for a
+use of that id — had bitten three times before this lane: R15's
+descriptor-array use scans (fixed by lane-opscan 74d38f6b3, ahead in the merge queue), R12S's
+consumer scan mistaking an OpMemberDecorate Offset literal for an image
+use (lane-metabind's metadata-family skip -- necessary, not sufficient:
+the scan still raw-walked every non-metadata instruction, and is fixed
+in full as item (6) below), and R11's original Layer scan (the id-32 variable
+vs the OpTypeInt width-32 word). This lane (lane-rawscan, off integ
+fdcb3a79d) censused EVERY word-level scan in tools/spirvfix/spirvfix.mjs
+(R1–R16 and helpers) and in the bridge audit mirrors in
+source/vulkan/vk64bridge.cpp, classified each, and fixed every exposed
+one. The census, by verdict:
+
+- Operand-aware or positional already (no word-set membership is ever
+  tested): R1's descriptor/binop lookups and EntryPoint interface
+  scans; R2's spec-constant lookups; stripPointBuiltins' positional
+  words[0]/words[2] checks; the tail/mid-shader discard lowerings
+  (OpSwitch successors are taken at label positions only); R5's strip
+  check, R6, R7, R8, R10, R14 (all fixed-position literal comparisons,
+  not id searches); R12's split and fetch-widening traces (positional
+  words[2]); R13's layout model and the block-layout audit (decorations
+  read positionally, types walked byId); R15's chainOffset /
+  classifyExpr (byId definitions, positional operands);
+  analyzeRootDescriptors' flip check and heap-set/occupancy tests
+  (positional); specializeDescriptorArrays' EntryPoint tail rewrite
+  (interface positions only, every word there is an id); the bridge
+  audit body's fixed-offset switch; the bridge r15 chain/measure
+  classifiers.
+- Raw but PROVABLY safe (4 scans): the three deletion sweeps —
+  pruneSpecializedAliases' `referenced` census,
+  specializeDescriptorArrays' orphan sweep, rewriteRootDescriptors'
+  provenance-cone sweep — and the bridge's skip5302 simulation scan
+  that mirrors the second. A raw scan can only ADD phantom references
+  (a literal equal to an id counts as a use), so each sweep's live set
+  is a superset of the true references; deletion requires absence from
+  the set, and the sweeps are fixpoint-closed under real operand
+  references (a survivor's operand words are all in the set, so
+  anything it genuinely references survives the same round). A
+  collision can retain dead code; it can never delete live code.
+  Left raw deliberately.
+- Raw and EXPOSED (5 scans, 6 sites counting the mirror): fixed here.
+  (1) R5 replaceDrawParameterBuiltins scanned every non-excluded
+  instruction with words.includes(id): any literal equal to the
+  builtin variable's id — an OpConstant value suffices — read as
+  "pointer is used outside OpLoad" and declined the shader.
+  (2) R11 fragmentLayerToZero, already restricted to pointer-consuming
+  opcodes after its first fix, still matched raw words inside them:
+  an OpCopyMemory MemoryAccess Aligned literal equal to the Layer
+  variable's id false-declined the same way. (3) R12
+  texelBuffersTo2D's consumer veto scanned all operand words of every
+  unhandled opcode against the traced image values: constant values,
+  MemberDecorate Offset literals (the metabind shape), packed name
+  strings and mask words all read as the converted image value
+  feeding that instruction and refused servable texel-buffer modules.
+  (4) R13 uniformBlocksToStorage's forward pointer trace scanned all
+  words of executable instructions: VectorShuffle component indexes,
+  switch case values, branch weights and ImageOperands masks equal to
+  a traced block-pointer id read as the pointer escaping and aborted
+  valid demotions. (5) The root-descriptor external-use check in
+  analyzeRootDescriptors (spirvfix) and r15::analyzeRoot (bridge):
+  any word equal to an unreferenced PhysicalStorageBuffer pointer
+  type's id — a constant value is enough — marked the type "used
+  outside a root-descriptor cone" and made the module unservable in
+  both classifiers. (6) R12S's consumer scan (storageTexelBuffersTo2D;
+  the pass itself arrives with lane-metabind -- see the delivery note
+  below): after skipping the metadata family, it compared every word
+  past the result id of every remaining instruction against the
+  traced image ids. Any literal in a non-metadata instruction still
+  collides: an OpTypeInt width, an OpConstant value, an OpTypeVector
+  count, OpSwitch case literals, shuffle/extract indices, merge
+  masks, the OpExtInst instruction number, string words in
+  OpExtension / OpModuleProcessed / OpDecorateString. A
+  frontier-model review of lane-metabind named the exact shape:
+  renumber the meta shader so its image load is %32 (or %128 where a
+  constant 128 exists) and the uint clear refuses again -- "the
+  fixture pins a lucky numbering, not the class of bug."
+- Raw on this base but already fixed ahead in the merge queue (NOT
+  re-fixed here, deliberately): R15's four use scans
+  (analyzeDescriptorArrays, r15PointerUses and the bridge
+  r15::analyzeArrays / r15::pointerUses) — lane-opscan 74d38f6b3.
+
+The fix is one helper per mirror, idOperandUseIndex (exported from
+spirvfix.mjs; same name in the bridge's r15 namespace): given an
+instruction and a sought id, return the index of the first word the
+SPIR-V grammar types as an id reference to it, or -1. It walks only
+id-typed operand positions, with the special layouts the grammar
+requires (MemoryAccess groups where only the MakePointerAvailable /
+Visible scope parameters are ids and Aligned is a literal; OpSwitch
+literal/label pairs with the selector width resolved through byId;
+image ops' fixed id prefix before the mask literal; OpEntryPoint's
+name-string skip), plus the declaration/annotation/constant layouts
+the module-wide veto scans meet (OpConstant / OpSpecConstant value
+words are never id uses; type widths, storage classes, decoration
+parameters and packed strings are skipped positionally). Unlisted
+opcodes keep the historical every-operand scan — exact for them, or
+fail-closed. It is a superset of lane-opscan's r15IdUseIndex in
+coverage, under a distinct name, so the two coexist after both merges
+without a divergent duplicate. Call sites: R5, R11, the R12 veto and
+the R13 trace in spirvfix (R13's hit-position semantics preserved: a
+chain base must still sit at the first value operand), and the root
+check in both mirrors (external iff a result-type slot or an id-typed
+operand names the type), and the R12S consumer scan (spirvfix only --
+R12S has no bridge mirror). The R12S fix also extended the helper in
+both mirrors with three string-record layouts the review named:
+OpModuleProcessed (330 -- string words only, never a use) and
+OpDecorateString / OpMemberDecorateString (5632/5633 -- the target id
+at operand 0, then a decoration literal and string words).
+
+Guards: web/tests/suite/unit/spirvfix-rawscan.test.mjs (seven tests)
+with fixtures in testdata/spirv/rawscan/ — four hand-written .spvasm
+modules assembled with spirv-as --preserve-numeric-ids (without the
+flag the assembler renumbers and the collisions evaporate), each
+spirv-val clean under its provenance environment (vulkan1.1 / spv1.5 /
+spv1.3 / default), each carrying exactly one literal collision as its
+only pre-fix trigger; F5 instead mutates the real captured
+d3d12-ps-root-cbv.spv (a stray PSB pointer type at the header bound
+plus a constant whose value is that id; the word-level twin of the
+mutation is spirv-val clean). The C++ mirror gets one guard block in
+tools/vkd3d/tests/vk64_native_test.cpp (a hand-built servable root
+cone + stray type + collision constant through vkCreateShaderModule).
+F6 guards R12S: storage-texel-width-collision.spv (vulkan1.1; the
+input and the converted output are both spirv-val clean) -- a
+writeonly-uimageBuffer compute module in the meta-clear shape whose
+image load is numbered %32 while OpTypeInt carries the width literal
+32; pre-fix it refuses with 'storage texel image consumed by op 21'.
+No naga assertion in F6: the image format is Unknown by design (R14
+injects it from the bound view at runtime; the real meta module
+carries StorageImageWriteWithoutFormat for the same reason).
+Sabotage, per fix: restoring the raw scan at each call site re-trips
+exactly its own fixture and nothing else (7/7; the C++ sabotage
+aborts the native test at the guard's assert). Restoring the fix
+returns everything green.
+
+Suites: run-native.py 32 PASS blocks end to end (the 31 baseline
+blocks plus the new guard); the spirvfix corpus gate's output is
+byte-identical before and after the fix (32/36 modules convert both
+ways — the four refusals are the known loud ones). The full JS
+suite ran on this lane's dist ('Browser export verified'; the fresh
+worktree first needed the DXVK build products and the GStreamer
+payloads copied from the integ tree — the 13-file bootstrap does not
+cover them, and stage-dependencies names each missing piece in
+turn): 328 passed / 21 failed. The unit phase accounts for 318
+passed / 1 failed of its 319 files (the 318 base files plus this
+lane's guard file): the single unit failure is this lane's own —
+no-silent-failure counted +2 unloggedDefault for the bridge
+helper's two classification-fallback default branches (the outer
+fail-closed fallback and the inner image-op switch). Fixed by
+restructuring, not by touching the reviewed baseline (lane-opscan's
+4.35 entry records the baseline-bump resolution of the same shape):
+the image-op prefix lookup is now a static table mirroring the JS
+side and unlisted opcodes fall past the switch to the historical
+scan; re-verified standalone (count back at the baseline 20, the
+test green, run-native.py still 32/32, the C++ sabotage re-run
+trips and restores cleanly). The 20 browser failures are all
+environment-shaped, on a box at load ~13 with several lanes' suites
+and probes competing (a trivial smoke boot took 184 s in the same
+run): six boot/readiness starvation timeouts (600 s page timeouts
+and runner watchdogs up to 1260 s — celeste-boot,
+common-dependencies, d3d12-comprehensive, d3d9-32,
+d3d9-comprehensive, fork-mapping), three rig deaths (fna-runtime's
+browser closed mid-test; memory-shared and winsock-http died in
+probe setup), and eleven guest-fixture/counter assertions whose
+guests starved (the d3d11 pair's vkCmdCopyBuffer gipa-HIT count 0,
+cpu64-selftest at 953/955, the gl32 trio, cpu32-jit-growth, jit64,
+jitbench, input-fullscreen, input-mouse-rel). The three
+assert-shaped failures nearest this lane's surface
+(d3d11-triangle, cpu64-selftest, gl32-triangle) were re-run
+standalone after the suite: all three reproduce identically
+(same assertions; the self-test split is the same 953/2) -- and all
+three fail identically a second time on the integ tree's current
+dist, which contains none of this lane's changes. They are
+pre-existing in the present box/tree state, not regressions from
+this lane; they will recur at the merge gate and should not be
+attributed to it. None of the browser
+failures touches a code path this lane changed (SPIR-V analysis and
+the module-admission audit; d3d10-comprehensive, both boot smokes,
+audio-tone and input-keyboard passed in the same run), and the
+merge gate re-runs the full suite on the merged tree regardless. Citations: the bridge helper
+insertion (+113 lines) and the spirvfix helper (+183) shifted both
+files; every register-table citation in docs/known-gaps/vulkan.md and
+docs/known-gaps/tests.md was re-pinned by the exact diff-hunk delta
+maps (bridge +117 past the insertion band, spirvfix +183/+185/+190/
++194/+193 by band), including the bare shorthand cites the mechanical
+checker does not parse; vk-register-citations passes 4/4 with checked
+coverage back at the pinned floor. The dated appendix records at the
+end of vulkan.md were left exactly as written (they are historical
+before/after notes, and past lanes' copies of the same note carry
+different era numbers — they were never blanket-re-pinned).
+R12S round (coordinator addendum, following the frontier review):
+with the pass imported and its scan fixed, verification re-ran end
+to end -- the spirvfix unit family is all green, including the
+imported texel-buffer suite (8/8; metabind's version replaces the
+pre-metabind 'storage texel buffer is NOT converted' test, whose
+premise R12S removed); the corpus gate output is STILL byte-identical
+(no corpus module declares a Sampled=2 Buffer image, so activating
+R12S moves nothing on this base); run-native.py still passes 32
+blocks; and a second citation re-pin (delta bands: spirvfix helper
++4, R12S import +162, dispatch +1; bridge helper +2 -- comma-list
+citations needed their trailing elements mapped by the same bands)
+leaves vk-register-citations at 4/4.
+Register: NO disposition changes (371 rows still read 72 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN) — every fix widens
+serving inside an already-IMPLEMENTED pass, and the fail-closed
+residues are unchanged in kind: a genuine id-typed use still declines
+by the same name. R12S's own register disposition rides with
+lane-metabind; this lane changes no register rows for it.
+
+R12S delivery note (merge mechanics): R12S does not exist on this
+lane's base -- it lands with lane-metabind, ahead of rawscan in the
+queue. This branch therefore IMPORTS the pass verbatim from
+lane-metabind a997ea0a7 (the function, its dispatch call, the
+REWRITES entry, the coverage-test pin entry, and metabind's
+spirvfix-texel-buffer.test.mjs) with exactly one deviation: the
+consumer scan, fixed as item (6). At the rawscan merge (after
+metabind), the R12S regions resolve by taking this branch's consumer
+scan; everything else in the imported text is byte-identical to
+metabind's.
+
+Residue (out of class — recorded, not fixed here):
+- stripPointBuiltins' escape check does not cover OpFunctionCall
+  arguments: a gl_PerVertex pointer passed to a function is a missed
+  use (the opposite failure direction — under-detection, not a
+  literal collision).
+- The bridge's r15::analyzeRoot heap-set test is divergent from its
+  mirror in a positional check: where spirvfix tests the pointee
+  `op === Op.TypeRuntimeArray` (29), the bridge tests `op == 48`
+  (OpSpecConstantTrue — a constant instruction, never a type), so the
+  bridge's heapSets is always empty and its synthesized-binding
+  collision check always uses set 0. With a heap array living in a
+  nonzero set, the bridge can in principle admit or decline against
+  the wrong set's occupancy. Positional opcode test, not a word
+  scan; flagged for its own lane.
+- Name placement in the split/splice helpers: for a module with NO
+  debug (OpName) instructions, the synthesized bw_combined_* OpName
+  is spliced at index 0 — before OpCapability — which is invalid
+  SPIR-V (spirv-val: "Name cannot appear before the memory model
+  instruction"; naga rejects the module). The shared split helper
+  (R1 §line 496, R12 §line 1877: `sections(kept).lastDebug + 1` with
+  lastDebug = -1) and r15SpliceAdditions (same +1 pattern) share the
+  shape. Found via this lane's first F2 fixture version: the R12
+  conversion reported success and produced a module no consumer
+  accepts. Real glslang/DXVK modules carry names, so the served path
+  is unaffected; name-less modules (dxbc-spirv output) reaching
+  R1/R12/R15 rewrites would convert into untranslatable output —
+  still loud at translation, never silent. Not this lane's class.
+- R13's trace skip treats every opcode below 57 as a declaration,
+  which also sweeps OpExtInst (12) under the rug: a block pointer
+  genuinely consumed by an extended instruction would be missed
+  (under-detection; GLSL.std.450 instructions take no pointers).
+- OpGroupDecorate (74) and unlisted opcodes keep the historical scan
+  inside the new helper, per the established fail-closed discipline.

@@ -1,0 +1,34 @@
+; F6 (R12S): the storage texel image load is numbered %32 while the
+; uint type declaration carries the literal width 32. The pre-fix
+; consumer scan compares raw words and mistakes the width literal for
+; a consumer of the image; the operand-aware scan walks only id-typed
+; operands and the conversion proceeds. Modeled on vkd3d-proton's
+; cs_clear_uav_buffer_uint meta clear (writeonly uimageBuffer, format
+; injected later by R14 from the bound view, hence Unknown here with
+; the WriteWithoutFormat capability the real module carries).
+; Assemble: spirv-as --preserve-numeric-ids --target-env vulkan1.1
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability StorageImageWriteWithoutFormat
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %13 "main"
+OpExecutionMode %13 LocalSize 1 1 1
+OpDecorate %6 DescriptorSet 0
+OpDecorate %6 Binding 0
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpTypeImage %3 Buffer 0 0 0 2 Unknown
+%5 = OpTypePointer UniformConstant %4
+%6 = OpVariable %5 UniformConstant
+%7 = OpTypeFunction %2
+%8 = OpConstant %3 7
+%9 = OpTypeVector %3 4
+%10 = OpConstant %3 255
+%11 = OpConstantComposite %9 %10 %10 %10 %10
+%13 = OpFunction %2 None %7
+%14 = OpLabel
+%32 = OpLoad %4 %6
+OpImageWrite %32 %8 %11
+OpReturn
+OpFunctionEnd

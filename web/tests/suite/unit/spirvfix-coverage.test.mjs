@@ -29,6 +29,7 @@ const entryPoint = (model, id) => ({ op: 15, words: [model, id, 0x6E69616D, 0] }
 test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
     'texel-buffer-to-2d',
+    'storage-texel-buffer-to-2d',
     'split-combined-sampler',
     'fold-spec-constants',
     'strip-point-builtins',
