@@ -8433,3 +8433,38 @@ REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN. Citations: 0 DRIFT /
 0 MISSING (350 cited rows: 230 MATCH / 14 MATCH-INHERITED / 99
 UNCHECKABLE / 7 EXEMPT; the new row's citation is UNCHECKABLE-class,
 like the row it splits from).
+
+MERGE OUTCOME (batched regime, light merge; merge 88f153086):
+pre-merge tips verified exactly (integ 012efcade, lane 0fdd87f6e).
+Full-diff accounting: the merged vk64bridge.cpp, vk64_native_test.cpp
+and vk-memory-properties.test.mjs deltas vs pre-merge integ are
+change-set identical to the lane delta vs its base (sorted line
+multisets equal); the merged bridge carries 0x000F in BOTH vk32
+memory-properties handlers (vk64bridge.cpp:11030, :11078) and no
+0x0007 memory-type write remains in either (the only other 0x000F is
+the pre-existing queue-family flags write). Integ-side drift since
+the lane base (vk64Unsupported / vk64AuditSpirv hunks, one harness
+block) is disjoint from the lane's hunks and accounted. Register
+applied as a delta onto integ's current text (branch register file
+not taken): the section 4.28 row is narrowed to DXVK in place
+(citation kept at its integ pin :10058 -- the bridge insertions land
+below it) and one new IMPLEMENTED row for the vkd3d half was inserted
+after it, cited at the merged v1 handler (:11012); totals 379 = 79
+IMPLEMENTED / 66 REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN (pipe-aware
+recount). Citations: 0 DRIFT / 0 MISSING (350 cited rows: 230 MATCH /
+14 MATCH-INHERITED / 99 UNCHECKABLE / 7 EXEMPT; the +1 over the
+pre-merge 349 is the new row, UNCHECKABLE-class as the lane recorded;
+no re-pin needed). This section was appended at the report tail
+renumbered 4.63-on-branch -> 4.65 (integ's 4.63/4.64 are the
+d3d11test/r8downgrade records, kept verbatim ahead of it; the
+section's self-references in the register rows, the register header
+closure note and the JS test comment were renumbered with it). Light
+suites on the merged tree: JS unit 332 passed / 0 failed against the
+batch-gate-#2 dist (stamp 17a8c95a2; vk-memory-properties PASS at the
+new 0x000F pin), emulator native 648 tests / 0 FAILED, run-native 49
+PASS / 0 FAIL (48 + 'Vulkan32 memory properties satisfy vkd3d
+heap-class masks', accounted by name). No dist rebuild, no guest
+probes (batched regime) -- the FINAL FULL GATE after this merge
+re-proves the guest behaviour (lane-side guest proof stands
+meanwhile: cs12-32 BUF/BUF2 OK end to end, tri12-32 passed:true
+RESULT 0 on the lane dist).
