@@ -137,6 +137,9 @@ test('the 1.3 arm documents why it must not use the hostOff-8 field writers', ()
 // and 32-bit D3D12CreateDevice died in vkd3d_clear_uav_ops_init (vr -3)
 // even though device caps had passed. The libvk32 shim's arg order is
 // pinned by vk-abi-layout for the enum; this pins the handler's use of it.
+// Section 4.59 replaced the stub handler with the full recording mirror
+// (stage module, layout, specialization, R15 census); the a[5] discipline
+// is unchanged and the pins below follow the handler's current text.
 
 function computePipelineRegion() {
   const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
@@ -144,21 +147,27 @@ function computePipelineRegion() {
   assert.ok(fn >= 0, 'vk32Bridge must exist in vk64bridge.cpp');
   const start = bridge.indexOf('case VK64_fn_vkCreateComputePipelines:', fn);
   assert.ok(start >= 0, 'the 32-bit vkCreateComputePipelines case must exist');
-  return bridge.slice(start, start + 1600).replace(/\s+/g, ' ');
+  const end = bridge.indexOf('case VK64_fn_', start + 10);
+  assert.ok(end > start, 'the next case must bound the region');
+  return bridge.slice(start, end).replace(/\s+/g, ' ');
 }
 
 test('32-bit vkCreateComputePipelines writes pipeline handles to a[5] (pPipelines), not a[4] (pAllocator)', () => {
   const flat = computePipelineRegion();
   assert.ok(
-    flat.includes('if (!args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;'),
+    flat.includes('!args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;'),
     'creation must validate the pPipelines pointer a[5]',
   );
   assert.ok(
-    flat.includes('U32 outAddr = (U32)args.a[5];'),
+    flat.includes('wr64_32((U32)args.a[5] + i * 8, id);'),
     'pipeline handles must be written through a[5]',
   );
   assert.ok(
     !flat.includes('U32 outAddr = (U32)args.a[4];'),
     'the allocator pointer a[4] must never receive pipeline handles',
+  );
+  assert.ok(
+    !flat.includes('wr64_32((U32)args.a[4]'),
+    'no write of any form may go through the allocator pointer a[4]',
   );
 });
