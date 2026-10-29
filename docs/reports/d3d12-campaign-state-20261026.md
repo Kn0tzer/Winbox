@@ -4456,3 +4456,97 @@ seed alone). This merge is therefore NOT gate-complete: the
 section-4.41 claims themselves (rb12 rendered-then-copied readback)
 stand as proven, but the merge is flagged to the coordinator for a
 fix-forward lane on the upload-then-shader-load flow (or a revert).
+
+## 4.42 Bridge audit heap-set scan: the root collision check consulted set 0 for every module (2026-10-29, lane-heapsets)
+
+Residue item 2 of the rawscan census (section 4.40-on-branch in that
+lane's tree): the descriptor-heap analysis exists in two
+instruction-for-instruction mirrors, and their heapSets computations
+diverged in exactly one constant. Verified here by reading both
+implementations end to end before touching anything.
+
+The computation, both sides: collect the descriptor sets of the
+module's runtime-array variables (heapSets); if exactly one distinct
+set occurs, the synthesized root bindings (R15b: binding 4096 +
+byteOff/8 per root slot) are checked for collision against the
+(set, binding) pairs the guest already occupies IN THAT SET (heapSet);
+with zero or several heap sets the check falls back to set 0. spirvfix
+computes it in analyzeRootDescriptors (and identically in
+rewriteRootDescriptors): a variable counts when its OpTypePointer's
+pointee type is op 29, OpTypeRuntimeArray. The bridge mirror,
+r15::analyzeRoot in source/vulkan/vk64bridge.cpp, tested the pointee
+as op == 48. Op 48 is OpSpecConstantTrue -- a constant-value
+instruction that can never be the pointee type of a valid
+OpTypePointer -- so the bridge's heapSets was ALWAYS EMPTY and its
+heapSet always 0: the collision check consulted set 0's occupancy for
+every module, whatever set its descriptor heaps actually live in.
+Everything else in the two computations is equivalent (verified field
+by field: the set source -- OpDecorate DescriptorSet with default 0;
+the occupied set, which requires set AND binding on both sides; the
+exactly-one pick; the collision loop itself). One naming correction
+to the lane brief that commissioned this fix: the divergence lives in
+the ROOT pair (analyzeRootDescriptors / r15::analyzeRoot); the R15a
+pair (analyzeDescriptorArrays / r15::analyzeArrays) tests op 29
+correctly on both sides. The bridge additionally carries a defensive
+ptr.n < 3 guard with an equivalent outcome; no JS-side defect was
+found, so the JS side is unchanged and remains the reference.
+
+Consequence, both directions pinned from the code:
+
+- False DECLINE (guest-visible): a module whose runtime arrays share
+  one nonzero set S and which also owns an ordinary binding at
+  (0, 4096+off/8) -- vkd3d modules carry heaps in a nonzero set and
+  unrelated bindings in set 0 as a matter of course -- was declined
+  by the audit (vkCreateShaderModule fails) even though the
+  synthesized bindings land in set S and collide with nothing:
+  spirvfix serves the module, the audit refused it.
+- False ADMIT: a module owning (S, 4096+off/8) -- a REAL collision --
+  was admitted by the audit, which looked at set 0 and saw nothing.
+  The audit/rewrite mirror invariant (the audit admits exactly what
+  the classifiers prove servable) was broken; spirvfix's own analysis
+  declines the rewrite, so the module failed loudly page-side rather
+  than being silently mis-served, but the gate no longer agreed with
+  the tier it gates.
+
+Fix: one line in r15::analyzeRoot -- the pointee test is op == 29
+(OpTypeRuntimeArray), with a comment naming the mirror. No other line
+changes; no line counts move.
+
+Guard (tools/vkd3d/tests/vk64_native_test.cpp, run-native.py): a
+hand-built module in the root-cbv cone shape (push-block v2uint load,
+bitcast to a PSB pointer, access chain, load; a BufferBlock pointee
+that passes measure(); exactly one read-only root slot at push@0, so
+exactly one synthesized binding, 4096, in the heap set), plus a
+parameterized heap variable (runtime array of f32, DescriptorSet =
+heap set, Binding 0) and a trojan variable (DescriptorSet = trojan
+set, Binding 4096). Three cases, each asserted BOTH at the classifier
+level (r15::analyzeRoot's servable verdict) and end to end
+(vkCreateShaderModule's return): (heap 2, trojan 0) servable /
+VK_SUCCESS -- the false-decline flip; (0, 0) unservable /
+VK_ERROR_FEATURE_NOT_PRESENT -- set-0 behaviour unchanged; (2, 2)
+unservable -- the false-admit flip. A JS source pin in the
+established mirror-parity idiom (web/tests/suite/unit/
+spirvfix-r15.test.mjs) slices the bridge's heap-set scan and requires
+it to test .op == 29 and never .op == 48.
+
+Sabotage: restoring op == 48 aborts the native test at the new
+guard's first flip case (assertion 'verdict(2, 0)') and nothing else
+-- the pristine base passes all 31 pre-existing blocks with the bug
+present, so the failure is attributable to the new guard alone. Fix
+restored byte-exact.
+
+Suites (base 6b15ff9ee): run-native.py 32 PASS blocks (31 + the new
+guard); JS suite on the lane dist 322 passed / 0 failed (file count
+unchanged -- the pin lives inside the existing r15 file; includes
+vk-register-citations, 0 DRIFT / 0 MISSING); emulator native 647 / 0
+FAILED, single-threaded. No guest gate: the lane is audit-side C++
+plus guards, and the base carries the known b2i uav12 regression,
+which this lane does not touch.
+
+Register: no row changes and no disposition changes. No register row
+cites or describes the heap-set scan itself (the R15b rows cite the
+root-address classifiers and the analyzeArrays mirror); the fix
+restores the behaviour the Route A closure text already claims --
+the bridge audit admits exactly what the mirror classifiers prove
+servable, no wider, no narrower. Register unchanged at 373 =
+74 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN.

@@ -1590,6 +1590,91 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
         puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
 
+        // GUARD (heapSets mirror divergence): the bridge audit's R15b
+        // collision check must consult the module's descriptor-heap set --
+        // the set shared by its runtime-array variables -- exactly as
+        // spirvfix's analyzeRootDescriptors does (the synthesized root
+        // bindings land in that set, at 4096 + push offset / 8). A minimal
+        // root module (one read-only root slot at push@0, so the
+        // synthesized binding is 4096) is built three ways: heap array in
+        // set 2 with binding 4096 owned in set 0 (no collision in the heap
+        // set: servable), heap in set 0 with binding 4096 owned in set 0
+        // (collision under either reading: unservable, unchanged), and
+        // heap in set 2 with binding 4096 owned in set 2 (a real collision
+        // in the heap set: unservable). The first and third verdicts flip
+        // if the bridge's heap-set scan tests the wrong pointee opcode and
+        // always consults set 0.
+        {
+            auto rootModule = [](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = {0x07230203u, 0x00010600u, 0, 64, 0};
+                auto ins = [&w](U32 op, std::vector<U32> ops) {
+                    w.push_back(((U32)(ops.size() + 1) << 16) | op);
+                    w.insert(w.end(), ops.begin(), ops.end());
+                };
+                ins(17, {1}); ins(17, {5347});                       // Shader, PhysicalStorageBufferAddressesEXT
+                ins(14, {5348, 3});                                  // MemoryModel PhysicalStorageBuffer64, Vulkan
+                ins(15, {4, 30, 1852399981u, 0, 7});                 // EntryPoint Fragment %30 "main" {%7}
+                ins(16, {30, 7});                                    // ExecutionMode OriginUpperLeft
+                ins(71, {5, 2}); ins(72, {5, 0, 35, 0});             // push struct Block, member Offset 0
+                ins(71, {11, 6, 16});                                // CBV array ArrayStride 16
+                ins(71, {12, 3}); ins(72, {12, 0, 35, 0});           // root pointee BufferBlock, member Offset 0
+                ins(71, {22, 34, heapSet}); ins(71, {22, 33, 0});    // heap var: DescriptorSet heapSet, Binding 0
+                ins(71, {24, 34, trojanSet}); ins(71, {24, 33, 4096}); // trojan var: DescriptorSet trojanSet, Binding 4096
+                ins(19, {1});                                        // %1 void
+                ins(33, {2, 1});                                     // %2 function type
+                ins(21, {3, 32, 0});                                 // %3 u32
+                ins(23, {4, 3, 2});                                  // %4 v2<u32>
+                ins(30, {5, 4});                                     // %5 push struct
+                ins(32, {6, 9, 5});                                  // %6 ptr PushConstant %5
+                ins(59, {6, 7, 9});                                  // %7 push variable
+                ins(22, {8, 32});                                    // %8 f32
+                ins(23, {9, 8, 4});                                  // %9 v4<f32>
+                ins(43, {3, 16, 0});                                 // %16 const 0
+                ins(43, {3, 10, 4096});                              // %10 const 4096
+                ins(28, {11, 9, 10});                                // %11 array<v4f, 4096>
+                ins(30, {12, 11});                                   // %12 root pointee struct
+                ins(32, {13, 5349, 12});                             // %13 ptr PhysicalStorageBuffer %12
+                ins(32, {14, 5349, 9});                              // %14 ptr PhysicalStorageBuffer %9
+                ins(32, {15, 9, 4});                                 // %15 ptr PushConstant %4
+                ins(29, {20, 8});                                    // %20 runtime array<f32>
+                ins(32, {21, 0, 20});                                // %21 ptr UniformConstant %20
+                ins(59, {21, 22, 0});                                // %22 heap variable
+                ins(32, {23, 0, 8});                                 // %23 ptr UniformConstant %8
+                ins(59, {23, 24, 0});                                // %24 trojan variable
+                ins(54, {1, 30, 0, 2});                              // %30 function
+                ins(248, {31});                                      // %31 label
+                ins(65, {15, 32, 7, 16});                            // %32 access chain into the push block
+                ins(61, {4, 33, 32});                                // %33 load v2uint (the root VA)
+                ins(124, {13, 34, 33});                              // %34 bitcast to a PSB pointer (the materialization)
+                ins(66, {14, 35, 34, 16, 16});                       // %35 in-bounds chain to element 0
+                ins(61, {9, 36, 35});                                // %36 load v4f through the root pointer
+                ins(253, {});                                        // ReturnVoid
+                ins(56, {});                                         // FunctionEnd
+                return w;
+            };
+            auto verdict = [&rootModule](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = rootModule(heapSet, trojanSet);
+                r15::Module m; assert(r15::parse(w, m));
+                r15::RootVerdict rv = r15::analyzeRoot(m);
+                assert(rv.hasMats && rv.slots.size() == 1 && rv.slots[0] == 0);
+                return rv.servable;
+            };
+            assert(verdict(2, 0));   // heap set consulted: binding 4096 in set 0 is no collision
+            assert(!verdict(0, 0));  // set-0 heap: the collision is real under either reading
+            assert(!verdict(2, 2));  // binding 4096 owned in the heap set itself: real collision
+            // End to end: the audit admits the physical-buffer capabilities
+            // exactly when the classifier says servable (the module()
+            // helper prepends the SPIR-V header itself).
+            auto audit = [&module, &rootModule](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = rootModule(heapSet, trojanSet);
+                return module({w.begin() + 5, w.end()});
+            };
+            assert(audit(2, 0) == VK_SUCCESS);
+            assert(audit(0, 0) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(audit(2, 2) == VK_ERROR_FEATURE_NOT_PRESENT);
+            puts("PASS: GUARD root-descriptor collision check consults the descriptor-heap set (nonzero-set admission and decline)");
+        }
+
         // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
         {
             VkSamplerCreateInfo sc{}; sc.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
