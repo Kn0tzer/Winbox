@@ -7607,3 +7607,78 @@ copies go eager/stale; deferred-copy destinations are unmarked
 (chained copies can serve stale data); an eager copy landing
 after a deferred one has no ordering rule. All three are
 both-ABI properties of the deferral design, unchanged here.
+
+### 4.59 merge outcome (coordinator merge, BATCHED REGIME -- light merge)
+
+Merged into integ as a2c27c5db (parents 101258a85 + b1fa88737), plus
+fallout 55bf66473 (rider 1 pin + register cite re-pins) and b48cb71b5
+(vk-properties2-32 guard re-pin). Per the user's batching order this
+merge ran LIGHT: no dist rebuild and no guest probes; the JS suite ran
+against the batch gate #1 dist (stamp 47f63dbd2, wasm 179d6074...).
+The cs12-32 in-guest run named in item (c) above is BATCH GATE #2 debt,
+owed there with BW_32_RESULTTAG=cs12 via d3d12-32-system.mjs (arch=x86).
+
+Composition accounting (bridge, full-diff multiset): the merged
+vk64bridge.cpp delta vs pre-merge integ equals the stack delta vs its
+base EXCEPT (i) the vkCreateComputePipelines32 overlap -- the merged
+handler is the branch's full recording text with exactly ONE a[5]
+out-pointer read and the full census (rider 2; integ's section 4.40
+stub text was replaced, not duplicated, and its a[5] fix is subsumed),
+and (ii) two in-code section renumbers (4.40-on-branch -> 4.59) in the
+serializer comment and the handler comment. The marking neighbourhood
+was verified by reading: vk64MarkComputeWrites(cb); call sites are
+exactly 4 (9786/9799/9822 64-bit + 12821 32-bit dispatch, immediately
+before pushCmd), and the merged 32-bit dispatch handler carries the
+DispatchBase base groups and the loud DispatchIndirect drop verbatim.
+
+Riders: (1) the epoch guard pin rose 3 -> 4
+(vk-compute-epoch-restamp.test.mjs) and re-ran green. (2) One a[5]
+text, verified above. (3) Harness convergence: ONE early
+create-pipelines block in the shim convention -- the branch's device +
+real create-info text (the merged handler requires a real device in
+a[0], which integ's section 4.40 block did not pass, so that block
+could not survive as-is), with integ's libvk32.c trap-args comment
+kept and the lane's merge NOTE retired into a provenance sentence;
+run-native arbitrated (below).
+
+Register applied as a delta: 378 = 78 IMPLEMENTED / 66 REJECTED-LOUDLY
+/ 234 NOT-A-GAP / 0 OPEN (pipe-aware recount). NOTE: this is +1 row
+over pre-merge integ (377), not flat -- vk32fix's shared-bind-stream
+register note IS a new NOT-A-GAP row (the recordBindSets row in its
+addendum), exactly as the branch's own header delta (372 -> 373,
+233 -> 234 NOT-A-GAP) and its merge-gate item (b) above carry it; the
+coordinator brief's flat-377 expectation did not account for the row.
+Row 42's both-ABIs wording was composed with integ's crootmark
+sentence (both kept). Citations: audit 0 DRIFT / 0 MISSING (230 MATCH
+/ 14 MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT over 349 audited
+rows, identical distribution -- the stack's bridge insertions sit
+below every audited citation); the audit does not scan the appendix
+region, so row 42's new prose cites and the addendum recordBindSets
+cite were re-pinned to merged-tree lines by hand (13389 / 12077 /
+13324 / 12786 / 12347 / 12406; recordBindSets at 2476). Stale forward
+references in the appended addenda, superseded here: the cepoch
+re-stamp the vk32compute addendum awaited ("when it merges") IS
+merged (section 4.45) and covers 32-bit dispatches by construction;
+the "PE32 compute twin is future work" line is superseded by
+cs12-32.exe, committed in this very merge.
+
+Fallout: vk-properties2-32's a[5] guard pinned section 4.40's stub
+text; re-pinned to the merged handler at full strength (compound
+a[5] validation, the direct wr64_32 a[5] write, both a[4] negatives
+plus a new any-form a[4] write negative; region extractor now bounds
+at the next case). Sabotage-verified: mutating the merged write to
+a[4] fails the guard; bridge restored byte-identical
+(sha256 ef0a09603c79757d).
+
+Suites on the merged tree: JS unit 331 passed / 0 failed (330 batch
+gate #1 baseline + the stack's new vk32-compute.test.mjs, accounted
+by name; the epoch guard passes at its new pin 4); emulator native
+648 OK / 0 FAILED; run-native 46 PASS (43 baseline + the stack's
+three blocks by name: "32-bit compute dispatch is recorded, marked,
+deferred and served", "32-bit vkMapMemory flags mapped memory;
+compute deferral declines on it (wasMapped)", "32-bit copy regions
+are bounds-checked loudly and clamped; indirect dispatch must
+resolve"). The merged vk32_guest.h static_asserts (sizeof 64 /
+stage 12 / layout 44) compile into the harness build, which is the
+finding-6 layout proof at native level; its in-guest half rides the
+cs12-32 batch gate #2 run.
