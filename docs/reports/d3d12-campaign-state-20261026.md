@@ -4456,3 +4456,53 @@ seed alone). This merge is therefore NOT gate-complete: the
 section-4.41 claims themselves (rb12 rendered-then-copied readback)
 stand as proven, but the merge is flagged to the coordinator for a
 fix-forward lane on the upload-then-shader-load flow (or a revert).
+
+## 4.42 D3D11 browser tests: stale vkCmdCopyBuffer gipa-HIT expectation corrected to the *2KHR serving world (2026-10-29, lane-d3d11test)
+
+DETERMINATION (coordinator-confirmed; characterised by lane-b2ifix): the
+d3d11-triangle and d3d11-comprehensive browser tests asserted that the
+guest's staging-upload copies appear in the console as a v1
+'gipa HIT ... vkCmdCopyBuffer' line. Since the *2KHR copy handlers were
+fixed (§4.24), DXVK's copies are served through vkCmdCopyBuffer2 and the
+bridge logs 'vk64: trap vkCmdCopyBuffer2'; a fully successful guest run
+contains ZERO gipa lines of any kind. Evidence (lane-b2ifix captured run,
+test-results/suite-d3d11-triangle/console.log on wt-b2ifix):
+D3D11CreateDevice OK FL=0x9300, LIT=8192 (triangle rendered), RESULT 0,
+exactly one copy line 'vk64: trap vkCmdCopyBuffer2', gipa count 0. The
+tests failed at the copy check on a log shape that no longer occurs — a
+stale test expectation, not a product defect. Lane-rawscan's
+load-starved full-suite run flagged the identical failure in both tests;
+lane-b2ifix's addendum runs reproduced it deterministically (two
+identical failures on its fixed dist, the guest succeeding each time).
+
+FIX (tests only; no product code): both assertions now count copy-path
+evidence as lines matching
+/gipa HIT.*vkCmdCopyBuffer|trap vkCmdCopyBuffer2/ — the historical v1
+gipa-HIT (whose pattern also matches a CopyBuffer2 HIT line) or the *2
+trap line (matching both the vkCmdCopyBuffer2 and vkCmdCopyBuffer2KHR
+trap names). The assertion's purpose is unchanged: prove the guest's
+buffer-copy path was actually exercised during staging uploads. All
+other checks (RESULT 0, D3D11CreateDevice, LIT>0, V2 frame presence,
+WebGPU validation) are untouched. These were the only two occurrences of
+the pattern in the suite (grep over web/tests/suite; the unit
+vk-shim-gipa test asserts shim proc-table membership, a different claim;
+the standalone portal-dxvk-probe already accepts (trap|gipa HIT)
+generically and is not a suite test).
+
+SABOTAGE: against the captured console.log the old predicate counts 0
+(the bug) and the new predicate counts 1; with every vkCmdCopyBuffer
+line removed from that log the new predicate counts 0, so the assertion
+still fails when no copy is served; a synthetic v1-only log (gipa HIT,
+no trap line) still counts 1.
+
+VERIFICATION (lane dist, base 6b15ff9ee, BUILD_INFO git_dirty_files=3 =
+the two tests + this section): JS unit suite 322 passed / 0 failed
+(unchanged from base, as expected for a browser-test-only change).
+Browser suite --filter=d3d11: 2 passed / 0 failed — d3d11-comprehensive
+(112 s) and d3d11-triangle (136 s). Each run's own console.log repeats
+the characterised shape exactly (0 gipa lines, one
+'vk64: trap vkCmdCopyBuffer2', D3D11CreateDevice OK FL=0x9300,
+LIT=8192, RESULT 0): the log shape that failed both tests at the copy
+check before this fix now passes end to end, and the sabotage variant
+above proves the check still fails when no copy is served.
+Register: no changes.
