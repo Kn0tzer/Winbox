@@ -9,9 +9,11 @@
 // that behavior rests on, each of which fails SILENTLY if reverted:
 //   1. The compute marking core calls the root census, after the
 //      descriptor-set marking -- a census living anywhere else falls
-//      out of the submit-time re-stamp discipline. The call passes the
-//      core's whole-list bound on this base; the census takes a prefix
-//      bound so a bounded submit-time re-run re-marks identically.
+//      out of the submit-time re-stamp discipline. On the merged tree
+//      the core is vk64MarkComputeWritesUpTo: the record-time wrapper
+//      passes the whole list, the core passes its own upto bound to
+//      the census, and the submit-time re-stamp re-runs the same core
+//      bounded to each dispatch, re-marking identically.
 //   2. The census mirrors the draw census exactly: same VA resolution
 //      through the device-address registry, same fail-closed skips,
 //      same (buf, off, size) mark key -- a different key would never be
@@ -39,14 +41,18 @@ const bodyOf = (src, startMarker, endMarker) => {
 };
 
 test('bridge: the compute marking core calls the root census after the set marking', () => {
-  const core = bodyOf(bridge, 'static void vk64MarkComputeWrites(CmdBuf* cb) {',
-    '// Draw-time sibling of vk64MarkComputeWrites');
-  assert.ok(core.includes('vk64MarkComputeRootWrites(cb, cb->cmds.size());'),
-    'vk64MarkComputeWrites must call the root census');
-  const setMark = core.indexOf('vk64MarkGpuWrite(b.obj, buf->memOff + off, len, buf->mem, mem->writeEpoch)');
-  const censusCall = core.indexOf('vk64MarkComputeRootWrites(cb, cb->cmds.size());');
+  const core = bodyOf(bridge, 'static void vk64MarkComputeWritesUpTo(CmdBuf* cb, size_t upto) {',
+    '// Submit-time half of the registry');
+  assert.ok(core.includes('vk64MarkComputeRootWrites(cb, upto);'),
+    'vk64MarkComputeWritesUpTo must call the root census with its own bound');
+  const setMark = core.indexOf('vk64MarkBoundWrites(sets, dyn, "vkCmdDispatch");');
+  const censusCall = core.indexOf('vk64MarkComputeRootWrites(cb, upto);');
   assert.ok(setMark >= 0 && censusCall > setMark,
     'the root census runs after the descriptor-set marking, inside the same core');
+  assert.ok(bridge.includes('static void vk64MarkComputeWrites(CmdBuf* cb) { vk64MarkComputeWritesUpTo(cb, cb->cmds.size()); }'),
+    'the record-time entry passes the whole list into the bounded core');
+  assert.ok(bridge.includes('vk64MarkComputeWritesUpTo(cb, dispatchIdx);'),
+    'the submit-time re-stamp re-runs the same core bounded to the dispatch');
 });
 
 test('bridge: the compute root census mirrors the draw census (resolution, key, fail-closed skips)', () => {
@@ -79,10 +85,12 @@ test('bridge: the cleanliness proof the marks feed is unweakened', () => {
   assert.ok(proof.includes('mem->wasMapped'), 'mapped memory never defers');
   assert.ok(proof.includes('vk64MemRangeCleanSince(mem, m.epoch, absOff, size)'),
     'deferral requires the range provably untouched since the mark epoch');
-  assert.ok(bridge.includes('vk64FindGpuWrite(args.a[1], src->memOff + r.srcOffset, n)'),
-    'vkCmdCopyBuffer defers only on a proven mark');
-  assert.ok(bridge.includes('vk64FindGpuWrite(hSrc2, src->memOff + r.srcOffset, n)'),
-    'vkCmdCopyBuffer2 defers only on a proven mark');
+  assert.ok(bridge.includes('vk64FindGpuWriteOverlap(srcId, absPos, n - done, covOff, covSize)'),
+    'the copy split defers only the subranges a proven mark covers');
+  assert.ok(bridge.includes('vk64CopyRegionSplit(cb, args.a[1], args.a[2], src->memOff, r.srcOffset, r.dstOffset, n,'),
+    'vkCmdCopyBuffer routes its regions through the mark-gated split');
+  assert.ok(bridge.includes('vk64CopyRegionSplit(cb, hSrc2, hDst2, src->memOff, r.srcOffset, r.dstOffset, n,'),
+    'vkCmdCopyBuffer2 routes its regions through the mark-gated split');
 });
 
 test('native: the behavioral guard block is present in the vk64 harness', () => {
