@@ -5873,3 +5873,121 @@ no FAIL lines; provenance sha-verifies the canonical pair and
 the merged shim). The harness composite passed:false with 0
 chunks captured is the standing offscreen capture artifact;
 the verdict above is the guest's own.
+
+
+## 4.50 wine32.zip base tree: the last unproduced archive gets a provenance and a producer (2026-10-28, wine32base lane)
+
+Until this lane, wine32.zip was the one shipped archive with no
+producer: its post-steps were scripted, but the base tree (1,892
+of 1,894 files) had no recorded provenance. The lane identified
+the base from the bytes and scripted its regeneration (full
+census, evidence, and proof:
+docs/reports/wine32-base-forensics-20261028.md). The shipped
+archive (1,926 members) is: the WineHQ wine-stable-i386
+10.0.0.0~noble-1 deb (sha256 5ba523409...; 1,323 of 1,337 tree
+files byte-identical -- the bookworm build of the same version
+matches only 469 and is ruled out), whose 14 exceptions are the
+d3d12 post-step pair plus the 12 patchelf'd unix modules (exactly
+the noble modules with undefined __isoc23_* symbols;
+patchelf --add-needed reproduces all 12 byte-for-byte); the
+share/wine data (78 files, two placements) from Debian bookworm
+libwine 8.0 (78/78 byte-identical); and a 71-file system-library
+closure byte-attributed to bookworm i386 debs (71/71).
+Deliverables: tools/rootfs32/build-wine32-base.sh and
+regen-wine32-zip.sh (every input pinned URL+sha256+size,
+fail-closed). Proof on the lane base: the regenerated archive is
+member-identical to the shipped one (set, sizes, sha256,
+1,926/1,926) against an era-matched oracle set; against current
+integ exactly one non-wine32 check differs (the wine64 vkd3d
+pins -- an oracle-era artifact). Residue (named, preserved): two
+base members are locally built artifacts whose sources survive
+nowhere -- usr/lib/wine/wineserver32 (3,794,568 B, sha256
+ac990fd2...) and libisoc23shim.so (15,252 B, sha256 ef5e5696...,
+two placements). The regen extracts both from the shipped
+(pinned) archive and hash-verifies before use, fail-closed.
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as d0e7a9bd9 (parents 7a8b5975d + 16480cfbd). Pre-merge
+tips verified exactly (integ 7a8b5975d, lane 16480cfbd). One
+content conflict: docs/known-gaps/runtime.md -- this lane and
+the sysroot32 lane (merged as 4.49) both appended a provenance
+addendum after the same anchor. Resolved by keeping BOTH
+addenda verbatim, sysroot32's first, then this lane's; verified
+from both sides: the merged file equals pre-merge integ plus
+exactly the lane's runtime.md delta (+40/-1: the header scope
+sentence and the addendum), and equals the lane file plus
+exactly the 45-line sysroot32 addendum, 0 lines removed. The
+other four files (.gitignore, the forensics report, both
+scripts) are byte-identical to the lane tip; merged delta total
+5 files, +774/-1, identical to the lane's own diffstat. No
+product code; no staged bytes change. This section is new in
+the campaign report (the lane's record is its forensics
+report); numbered 4.50, no renumber needed.
+
+REGISTER: runtime.md rows unchanged -- table lines 93 with 14
+separators, identical pre- and post-merge (the lane delta is
+prose only); no row changed disposition, OPEN stays 0, standing
+totals untouched (runtime.md 57 rows; vulkan.md 374 = 75
+IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN).
+Citation audit: 228 MATCH / 14 MATCH-INHERITED / 97 UNCHECKABLE
+/ 7 EXEMPT over 346 cited rows, 0 DRIFT / 0 MISSING -- the
+identical distribution to pre-merge, no re-pins (the merge
+touches no cited file).
+
+CHECKS: (1) tools/browser/bootstrap.py --check exit 0, "Runtime
+assets verified (13 files)"; (2) check_runtime_completeness.py
+standalone: 0 failures, 1 skip (pre-existing environmental:
+prefix64 built artifact not present); (3) fail-closed proven
+LIVE on the merged tree's own scripts, in /tmp scratch only
+(the integ tree's archives were never touched; scratch since
+removed): (i) an oracle dir without wine32.zip makes
+regen-wine32-zip.sh exit 2 naming the missing archive before
+any work; (ii) an oracle wine32.zip rebuilt with the
+wineserver32 member replaced by same-length zeroed bytes (a
+valid zip; member sha256 9f64bc4c...) makes build-wine32-base.sh
+abort at the preserved-member step, exit 1 -- "preserved member
+usr/lib/wine/wineserver32 hash mismatch: 9f64bc4c... !=
+ac990fd260af..." -- and NO regenerated archive was produced.
+The untampered shipped members verify against their pins
+(wineserver32 ac990fd260af..., libisoc23shim.so
+ef5e5696a194...), re-verified in the merged dist's wine32.zip
+below. The lane's committed proof log (wt-wine32base
+test-results/wine32base/regen-proof-20261028.log) shows the
+full untampered regeneration: both preserved members sha256
+verified, member-identical result, completeness 0 failures / 5
+skips against the era-matched set (the skip profile differs
+from integ's by oracle era, as the lane documented).
+(4) JS unit suite 328 passed / 0 failed (BW_TEST_DIST = merged
+dist). (5) Emulator native 648 OK / 0 FAILED -- the binary's
+own summary "0 tests FAILED in 216s", run single-threaded,
+exit 0 (the condStartWaitTime guard from 4.48 ran and passed).
+(6) run-native 37 PASS / 0 FAIL (37 PASS lines, 0 FAIL lines,
+exit 0). (7) Citations as above.
+
+BUILD AND ARCHIVES: bw64-build.sh -- Browser export verified,
+completeness gate 0 failures / 1 skip inside the build. Dist
+stamp d0e7a9bd9, wasm d48af057... (unchanged from the pre-merge
+build -- the merge carries no product code).
+dist/runtime/wine64.zip member-verified: shim ae96105b...
+(160,169 B) under bw64vulkan.dll, vulkan-1.dll and
+winevulkan.dll; canonical pair a96b4e9d... (517,717 B) /
+3d3bfe43... (8,825,383 B) unchanged. dist/runtime/wine32.zip
+(1,926 members) member-verified: the PE32 pair at
+opt/wine-stable/lib/wine/i386-windows -- d3d12.dll 872c3d65...
+(517,273 B) / d3d12core.dll 71e9c174... (9,022,393 B); the two
+preserved members at their pins (above).
+
+GUEST GATE: (a) tri12 RESULT 0 -- guest verdict tri12Result 0,
+no FAIL lines, guest exit status 0; the run's provenance
+sha-verifies the canonical pair and the merged shim
+(test-results/dxvk-wine32basemerge-tri12). The harness
+composite passed:false with 0 chunks captured is the standing
+offscreen capture artifact; the verdict above is the guest's
+own. (b) tri12-32 RESULT 0 via the 32-bit system-placement
+harness (arch=x86) -- harness passed:true, tri12Result 0, no
+FAIL lines, and the loaddll trace proves the shipping path this
+merge documents: d3d12.dll and d3d12core.dll loaded native from
+C:\windows\system32 (wine32.zip system placement), winevulkan
+.dll builtin, 256 vk32 traps
+(test-results/dxvk-wine32basemerge-tri32).
