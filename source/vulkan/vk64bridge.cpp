@@ -4173,7 +4173,11 @@ static void hopV2LastToPage() {
 // write epoch: any later bridge-observed guest write to the range
 // (vk64TouchMem) makes the deferral test fail and the copy falls back to
 // the eager path, so deferral happens only when the guest bytes are
-// provably untouched since the dispatch was recorded.
+// provably untouched since the dispatch was recorded. The stamp is
+// refreshed at submit time (vk64RestampComputeWrites) to the dispatch's
+// execution point, so a submission's own earlier guest writes -- an
+// initial-data upload recorded in the same command buffer -- do not
+// count as dirt.
 struct GpuWriteMark { U64 buf = 0, off = 0, size = 0, mem = 0, epoch = 0; };
 static std::vector<GpuWriteMark> g_gpuWriteMarks;
 
@@ -4229,11 +4233,17 @@ static bool vk64FindGpuWriteOverlap(U64 buf, U64 absOff, U64 size, U64& covOff, 
 // state (the same shadow state the submit emitter resolves) and mark
 // every storage range bound to the bound pipeline's sets. The recorded
 // stream is a single state stream (guests rebind when they switch
-// pipeline kinds), so the last pipeline bind is the executing one.
-static void vk64ReplayBoundState(CmdBuf* cb, U64& pipeId, U64 sets[], std::vector<U32>* dyn) {
+// pipeline kinds), so the last pipeline bind is the executing one. The
+// replay can be bounded to the first `upto` commands: the whole stream
+// at record time; at submit time (vk64RestampComputeWrites) everything
+// recorded before the dispatch being serialized -- the state that
+// dispatch executes under.
+static void vk64ReplayBoundStateUpTo(CmdBuf* cb, size_t upto, U64& pipeId, U64 sets[], std::vector<U32>* dyn) {
     pipeId = 0;
     for (U32 si = 0; si < VK64_MAX_SETS; si++) { sets[si] = 0; dyn[si].clear(); }
-    for (const Cmd& k : cb->cmds) {
+    if (upto > cb->cmds.size()) upto = cb->cmds.size();
+    for (size_t ci = 0; ci < upto; ci++) {
+        const Cmd& k = cb->cmds[ci];
         if (k.kind == CMD_BIND_PIPE) pipeId = k.a;
         else if (k.kind == CMD_BIND_SETS) {
             U32 first = (U32)k.a, count = (U32)k.b;
@@ -4245,6 +4255,10 @@ static void vk64ReplayBoundState(CmdBuf* cb, U64& pipeId, U64 sets[], std::vecto
             }
         }
     }
+}
+
+static void vk64ReplayBoundState(CmdBuf* cb, U64& pipeId, U64 sets[], std::vector<U32>* dyn) {
+    vk64ReplayBoundStateUpTo(cb, cb->cmds.size(), pipeId, sets, dyn);
 }
 
 // Mark every storage buffer/texel range bound in the replayed sets.
@@ -4328,14 +4342,41 @@ static void vk64MarkDrawRootWrites(CmdBuf* cb) {
     }
 }
 
-static void vk64MarkComputeWrites(CmdBuf* cb) {
+// Mark every storage range the bound compute pipeline's sets would
+// write, resolving only the first `upto` recorded commands (see
+// vk64ReplayBoundStateUpTo for the bound's meaning at record time vs
+// submit time).
+static void vk64MarkComputeWritesUpTo(CmdBuf* cb, size_t upto) {
     U64 pipeId = 0;
     U64 sets[VK64_MAX_SETS] = {0};
     std::vector<U32> dyn[VK64_MAX_SETS];
-    vk64ReplayBoundState(cb, pipeId, sets, dyn);
+    if (upto > cb->cmds.size()) upto = cb->cmds.size();
+    vk64ReplayBoundStateUpTo(cb, upto, pipeId, sets, dyn);
     Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
     if (!pipe || !pipe->cs) return;
     vk64MarkBoundWrites(sets, dyn, "vkCmdDispatch");
+}
+
+static void vk64MarkComputeWrites(CmdBuf* cb) { vk64MarkComputeWritesUpTo(cb, cb->cmds.size()); }
+
+// Submit-time half of the registry: re-run the record-time resolution for
+// the dispatch at command index `dispatchIdx` of a command buffer being
+// serialized, refreshing its marks with the memories' CURRENT write
+// epochs. vk64MarkGpuWrite keys marks by (buf, off, size), so this
+// refreshes the record-time marks in place. The refresh matters when the
+// same submission lands guest writes before the dispatch executes: the
+// eager execution pass runs vkCmdUpdateBuffer initial-data uploads (the
+// standard vkd3d pattern -- a resource's initial data goes into the very
+// buffer the dispatch writes) before serializeSubmitV2 walks, so by the
+// time the walk reaches the dispatch those uploads carry newer epochs
+// than the record-time stamp and would poison the copy-out cleanliness
+// proof (vk64FindGpuWrite) even though they precede the dispatch's
+// execution. Writes landing after this point carry newer epochs still
+// and keep poisoning the marks, so the proof is not weakened. This is
+// the compute sibling of the graphics re-stamp lane-psb added inside
+// emitRootDescs for writable root slots.
+static void vk64RestampComputeWrites(CmdBuf* cb, size_t dispatchIdx) {
+    vk64MarkComputeWritesUpTo(cb, dispatchIdx);
 }
 
 // Graphics-stage twin (metabindfix, campaign section 4.32; frontier
@@ -5510,6 +5551,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         vk64Unsupported("compute-dispatch", "vkCmdDispatchBase with a non-zero base group has no WebGPU equivalent; results are not produced");
                         break;
                     }
+                    // Refresh this dispatch's GPU-write marks at their
+                    // execution point (see vk64RestampComputeWrites).
+                    vk64RestampComputeWrites(st, (size_t)(&k - st->cmds.data()));
                     emitRootDescs(csPipe);
                     emit(V2_DISPATCH, [&](ChunkWriter& p) {
                         p.u32((U32)k.a); p.u32((U32)k.b); p.u32((U32)k.c);
