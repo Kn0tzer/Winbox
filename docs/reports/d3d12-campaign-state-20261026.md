@@ -5773,3 +5773,103 @@ the full standing signature -- SUMMARY buf=OK buf2=OK tex=OK
 (test-results/dxvk-condwaitmerge-cs12). The harness composite
 passed:false in both runs is the standing capture artifact; the
 verdicts above are the guests' own, with guest exit status 0.
+
+## 4.49 32-bit sysroot regeneration: the img386 producer path is rebuilt and scripted (2026-10-28, sysroot32 lane)
+
+The one producer path the post-step elimination pass could not
+re-run: apply-runtime-poststeps.sh's first step reads its payload
+from /home/ubuntu/wine32-stage/img386, a deleted tree, and the
+closure producer survived only as an untracked backup copy. The
+lane rebuilt the path and scripted it under tools/rootfs32/
+(full evidence: docs/reports/sysroot32-regeneration-20261028.md).
+Forensics, byte-proven: img386 was a dpkg -x extraction of Debian
+bookworm i386 packages, and the shipped glibc-rootfs32.zip is a
+three-vintage hybrid -- bookworm i386 closure libraries at pinned
+revisions, a bookworm font payload (libfontconfig1 2.14.1-4,
+libexpat1 2.5.0-1+deb12u4), and a hand swap of Ubuntu noble
+libc6 2.39-0ubuntu8's whole library directory. Deliverables:
+build-img386.sh (26 sha256-pinned packages, hash-verified,
+fail-closed on missing consumer paths), closure32.sh (the
+backup's producer restored verbatim, IMG/OUT parameterized),
+regen-glibc-rootfs32.sh (img386 -> closure -> the two proven
+assembly adjustments -> the 32-bit post-steps in finisher order
+-> member-by-member verification -> completeness checker).
+Regeneration proof on the lane base: identical 154-member set,
+150 byte-identical; checker 0 failures. Residue, named: four
+glibc aux members (libanl.so.1, libnsl.so.1, libpcprofile.so,
+libthread_db.so.1; 170,840 B) match no durable pinned source --
+the regen fails closed on exactly those unless
+--allow-glibc-aux-diff substitutes the noble-release bytes, and
+prints the difference either way; none is DT_NEEDED by any guest
+binary. Also named, out of scope: wine32.zip's base tree still
+has no committed producer (only its post-steps are scripted).
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as a2f4f6832 (parents 26d747b22 + 1f8bf4a5e), clean ort
+merge, no conflicts. This section is new in the campaign report
+(the lane's record is its regeneration report); numbered 4.49,
+no renumber needed. COMPOSITION: the merged delta is
+byte-identical to the lane delta (verified by diffing the two
+diffs) -- 5 files, +703/-0: the three tools/rootfs32/ scripts,
+the regeneration report, and the runtime.md addendum. No
+product code; no staged runtime bytes change.
+
+RE-PIN RECONCILIATION: the committed merge changes no pin.
+tools/browser/runtime-assets.json carries the identical
+glibc-rootfs32 entry on the lane base, the lane tip, and
+pre-merge integ (3,875,770 B, sha256 32f9e512...), and the
+archive present in the merged tree hashes to exactly that pin.
+The lane's regenerated zip (3,877,987 B, sha256 30e88797...)
+was proven against a scratch copy of the manifest re-pinned to
+those values (bootstrap.py --check exit 0 there); re-pinning
+is the documented publishing step (the regeneration report's
+Proof section; the regen script's own closing instructions),
+performed when a regenerated set is published -- it is not a
+committed change of this merge, and no archive in the tree was
+replaced.
+
+REGISTER AND CITATIONS: runtime.md rows unchanged -- the
+addendum is prose (table lines 93 with 14 separators, identical
+pre- and post-merge); no row changed disposition, OPEN stays
+0, and the standing register totals are untouched (vulkan.md
+374 = 75 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0
+OPEN). Citation audit: 228 MATCH / 14 MATCH-INHERITED / 97
+UNCHECKABLE / 7 EXEMPT over 346 cited rows, 0 DRIFT / 0
+MISSING -- the identical distribution to pre-merge, with no
+re-pins (the merge touches no cited file).
+
+CHECKS: (1) tools/browser/bootstrap.py --check exit 0,
+"Runtime assets verified (13 files)"; (2)
+check_runtime_completeness.py standalone: 0 failures, 1 skip
+(pre-existing environmental: prefix64 built artifact not
+present); (3) fail-closed re-proven on the merged tree's own
+script: regen-glibc-rootfs32.sh in a scratch worktree of the
+merge commit, WITHOUT --allow-glibc-aux-diff, exited 1 at the
+verification step, naming exactly the four residue members
+with their shipped sizes and hashes (libanl.so.1 13,736 B
+sha256 909e5568...; libnsl.so.1 100,300 B sha256 567f7696...;
+libpcprofile.so 13,852 B sha256 0c8181ee...;
+libthread_db.so.1 42,952 B sha256 472d3516...), before the
+completeness step ran. The integ tree's own archives were
+never touched -- the run's reference was its own copy and the
+regenerated zip stayed in the scratch worktree, since removed.
+
+BUILD AND SUITES: bw64-build.sh -- Browser export verified,
+completeness gate 0 failures / 1 skip inside the build. dist
+stamp a2f4f6832, wasm d48af057... (unchanged from the pre-merge
+build -- the merge carries no product code).
+dist/runtime/wine64.zip member-verified: shim ae96105b...
+(160,169 B) under bw64vulkan.dll, vulkan-1.dll and
+winevulkan.dll; canonical pair a96b4e9d... (517,717 B) /
+3d3bfe43... (8,825,383 B) unchanged. JS unit suite 328 passed
+/ 0 failed (BW_TEST_DIST = merged dist). Emulator native 648
+OK / 0 FAILED (222 s, single-threaded). run-native 37 PASS /
+0 FAIL.
+
+GUEST GATE: tri12 RESULT 0 -- guest verdict in
+test-results/dxvk-sysroot32merge-tri12 (guest exit status 0,
+no FAIL lines; provenance sha-verifies the canonical pair and
+the merged shim). The harness composite passed:false with 0
+chunks captured is the standing offscreen capture artifact;
+the verdict above is the guest's own.
