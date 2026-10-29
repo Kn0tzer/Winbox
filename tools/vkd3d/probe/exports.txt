@@ -73,7 +73,10 @@ vkCmdPipelineBarrier2KHR 732 2
 vkCmdPushConstants 713 6
 vkCmdPushConstants2 733 2
 vkCmdPushConstants2KHR 734 2
-vkCmdPushDescriptorSet 1 1
+vkCmdPushDescriptorSet 914 6
+vkCmdPushDescriptorSetKHR 914 6
+vkCmdPushDescriptorSetWithTemplate 915 5
+vkCmdPushDescriptorSetWithTemplateKHR 915 5
 vkCmdResetEvent 1 1
 vkCmdResetQueryPool 1 1
 vkCmdResolveImage 826 7

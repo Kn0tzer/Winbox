@@ -1489,6 +1489,41 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   // this registry is the only place that identity survives to readback
   // time. Values: { buffer, bufId, baseOff (BigInt guest mem offset) }.
   const storageBufferRegistry = new Map();
+  // Storage TEXEL views (wire kind 6): one materialisation state per
+  // guest view id (stexelState), plus the readback directory pointing at
+  // those states (storageTexelRegistry, view id -> state). A
+  // V2_BUFFER_READBACK names the guest buffer a dispatch wrote; for a
+  // storage texel binding the written bytes live in the 2D storage
+  // texture the view materialised as, in the spirvfix R12S wrap layout,
+  // so the readback copies out of that texture instead. Both maps live
+  // for the renderer lifetime, like the other persistent caches and the
+  // storageBufferRegistry above: the bridge may defer a copy into a
+  // LATER submission than the dispatch that wrote the data, so a
+  // per-submission clear would strand exactly the readbacks the
+  // deferral exists for (frontier review finding 2, metabindfix
+  // campaign section 4.32). Directory entries reference the shared
+  // state object, never a texture snapshot, so a texture replaced on a
+  // view-identity change can never be reached through a stale entry.
+  // State: { viewHex, tex, w, h, fmtName, bpp, bufferId, baseOff
+  // (BigInt guest mem offset), viewLen (BigInt), seedHash, gpuDirty,
+  // dirtySeq, lastBoundSeq }.
+  const stexelState = new Map();
+  const storageTexelRegistry = new Map();
+  // Monotonic submission-batch counter: incremented once per top-level
+  // render() call and shared by its submission sub-renders. Texel
+  // states record the batch they were last bound in; readback
+  // resolution prefers the freshest covering state (pickTexelReadback).
+  let stexelBatchSeq = 0;
+  // Named declines are reported once per view identity, not per draw: a
+  // permanently unmaterialisable view would otherwise re-report on
+  // every fingerprint/bind of every frame.
+  const stexelDeclined = new Set();
+  const stexelDeclineOnce = (viewHex, reason, detail) => {
+    const key = viewHex + ':' + reason;
+    if (stexelDeclined.has(key)) return;
+    stexelDeclined.add(key);
+    noteUnsupported(reason, detail);
+  };
   // Content hash -> GPUBuffer, independent of the VkBuffer id. A byte-less
   // record names content the page may have uploaded under another buffer id
   // (or in an earlier presentation); this lets it recover the real bytes.
@@ -1692,6 +1727,164 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     device.queue.writeTexture({ texture: t }, padded, { bytesPerRow: rowBytes, rowsPerImage: h }, [w, h, 1]);
     persistTexCache.set(ck, { tex: t, w, h, format: fmt });
     return t;
+  }
+
+  // Bind-group identity of a storage texel materialisation (shared with
+  // the bind-group fingerprint): the view id plus the state's identity
+  // components (buffer, offset, format, length). Content is NOT part of
+  // the identity: the texture is reseeded in place when the guest stream
+  // overwrites it, so a bind group built over it stays valid across
+  // content changes (frontier review finding 1, metabindfix 4.32).
+  function storageTexelTextureKey(st) {
+    return 'stexel:' + st.viewHex + ':' + st.bufferId + ':' + st.baseOff.toString(16) +
+      ':' + st.fmtName + ':' + st.viewLen.toString(16);
+  }
+
+  // Formats Dawn refuses at createTexture time with STORAGE_BINDING
+  // usage (probe evidence from the sampledtex work: r16float rejects
+  // for read-only AND read-write storage, r8uint likewise). Creating
+  // one anyway surfaces as an asynchronous validation error that
+  // invalidates the whole frame's encoder, so decline by name before
+  // creating instead (frontier review finding 6).
+  const STEXEL_UNMATERIALISABLE = new Set(['r16float', 'r8uint']);
+
+  // Create the 2D storage texture for a kind-6 view, in the spirvfix
+  // R12S layout: element i at (i mod V2_TEXEL_WRAP, i div
+  // V2_TEXEL_WRAP). Dimensions are checked against the device limit
+  // BEFORE creating: an oversize UAV (a 128M-element R32 view needs
+  // height 16384 at the 8192 wrap) must decline by name here, not as an
+  // async createTexture error that rejects the frame (finding 6).
+  function storageTexelCreate(viewHex, view, fmt, bpp) {
+    const viewLen = Number(view.len);
+    // ceil, not floor: a partial tail texel is part of the texture
+    // (zero-padded at seed time). Floor-sizing it away left the tail
+    // bytes unmaterialised and let the readback rows math exceed the
+    // texture height for non-bpp-multiple view lengths (finding 6).
+    const count = Math.max(1, Math.ceil(viewLen / bpp));
+    const w = V2_TEXEL_WRAP, h = Math.max(1, Math.ceil(count / w));
+    if (STEXEL_UNMATERIALISABLE.has(fmt)) {
+      stexelDeclineOnce(viewHex, 'storage-texel-format-unmaterialisable', fmt + ' view=' + viewHex);
+      return null;
+    }
+    const maxDim = device.limits ? device.limits.maxTextureDimension2D : 0;
+    if (maxDim && (w > maxDim || h > maxDim)) {
+      stexelDeclineOnce(viewHex, 'storage-texel-too-large',
+        w + 'x' + h + ' exceeds maxTextureDimension2D=' + maxDim + ' view=' + viewHex);
+      return null;
+    }
+    const tex = device.createTexture({ size: [w, h, 1], format: fmt, dimension: '2d',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    return {
+      viewHex, tex, w, h, fmtName: fmt, bpp,
+      bufferId: view.bufferId, baseOff: BigInt(view.absOff), viewLen: BigInt(view.len),
+      seedHash: undefined, gpuDirty: false, dirtySeq: 0, lastBoundSeq: 0,
+    };
+  }
+
+  function storageTexelSeed(st, bytes) {
+    const rowBytes = st.w * st.bpp;
+    const padded = new Uint8Array(rowBytes * st.h);
+    padded.set(bytes.subarray(0, Math.min(bytes.length, rowBytes * st.h)));
+    device.queue.writeTexture({ texture: st.tex }, padded, { bytesPerRow: rowBytes, rowsPerImage: st.h }, [st.w, st.h, 1]);
+  }
+
+  // Resolve a STORAGE texel buffer view (wire kind 6) to its
+  // materialisation state, creating, (re)seeding and registering it as
+  // the guest stream requires. Every V2_STORAGE_FORMAT format is
+  // byte-identity between guest buffer and texture texel, so the seed
+  // bytes upload verbatim and a later copyTextureToBuffer returns
+  // exactly the bytes the dispatch wrote -- that is what makes shader
+  // writes to this texture reachable from guest memory
+  // (V2_BUFFER_READBACK).
+  //
+  // Called from BOTH the bind-group fingerprint and bindGroupEntries,
+  // so a bind served entirely from persistGroupCache still registers
+  // for readback and still observes re-uploads (finding 2). Content
+  // rules, in stream order: the bridge content hash of the view's seed
+  // record is the only signal that guest bytes changed underneath the
+  // texture. A changed hash reseeds (the CPU write wins over GPU
+  // writes). An unchanged hash reseeds ONLY when the texture was bound
+  // for execution in an EARLIER batch -- the guest re-emitted the
+  // original bytes after the GPU wrote into the texture, and the
+  // re-upload is later in stream order (finding 1 failure A). A repeat
+  // emission within the same batch is the bridge re-sending an
+  // unchanged record, not an upload event, and same-batch writes stand.
+  // With no emission this batch, the texture stands as-is: it is the
+  // only copy of anything the GPU wrote.
+  function storageTexelBind(viewHex) {
+    const view = F.bufferViews?.get(viewHex);
+    if (!view) return null;
+    const entry = V2_STORAGE_FORMAT[view.format];
+    if (!entry) { noteUnsupported('storage-texel-format-page', view.format); return null; }
+    const fmt = entry.wgsl;
+    const bpp = v2TextureUploadBpp(fmt);
+    if (!bpp) return null;
+    const qkey = view.bufferId + ':' + view.absOff;
+    const hash = F.bufHashes ? F.bufHashes.get(qkey) : undefined;
+    const bytes = F.buffers.get(qkey);
+    let st = stexelState.get(viewHex);
+    if (st && (st.bufferId !== view.bufferId || st.baseOff !== BigInt(view.absOff) ||
+               st.viewLen !== BigInt(view.len) || st.fmtName !== fmt)) {
+      // The guest reused the view id for a different range or format:
+      // the old texture no longer denotes this view. It is destroyed
+      // here and nowhere else, directory entries follow the state
+      // object to its replacement, and cached bind groups keyed by the
+      // old identity are dropped so none can reference the dead
+      // texture (finding 2).
+      st.tex.destroy(); // GPUTexture.destroy() does not throw
+      stexelState.delete(viewHex);
+      persistGroupCache.clear();
+      st = null;
+    }
+    if (!st) {
+      if (!bytes) return null; // byte-less record and content never seen: nothing honest to bind
+      const viewLen = Number(view.len);
+      if (!(viewLen > 0) || bytes.length < viewLen) return null; // seed must cover the whole view
+      st = storageTexelCreate(viewHex, view, fmt, bpp);
+      if (!st) return null;
+      storageTexelSeed(st, bytes);
+      st.seedHash = hash;
+      stexelState.set(viewHex, st);
+    } else if (hash !== undefined && hash !== st.seedHash) {
+      if (!bytes) return null; // hash without its bytes: fail loud, never stale
+      storageTexelSeed(st, bytes);
+      st.seedHash = hash;
+      st.gpuDirty = false; st.dirtySeq = 0;
+    } else if (hash !== undefined && st.gpuDirty && st.dirtySeq < stexelBatchSeq) {
+      if (!bytes) return null;
+      storageTexelSeed(st, bytes);
+      st.gpuDirty = false; st.dirtySeq = 0;
+    }
+    // Bound for execution in this batch: from here the texture may
+    // diverge from guest memory, and it is the freshest readback
+    // source for its range.
+    st.gpuDirty = true;
+    st.dirtySeq = stexelBatchSeq;
+    st.lastBoundSeq = stexelBatchSeq;
+    storageTexelRegistry.set(viewHex, st);
+    return st;
+  }
+
+  // Readback resolution over the texel directory (finding 2): among
+  // the states covering the readback range, the freshest binding wins.
+  // Several DISTINCT textures tied at the freshest batch are genuinely
+  // ambiguous -- decline ('ambiguous') instead of returning whichever
+  // was inserted first. thisBatchOnly restricts to states bound in the
+  // current batch (the finding-3 precedence tier).
+  function pickTexelReadback(brb, thisBatchOnly) {
+    let best = null, bestSeq = -1, ambiguous = false;
+    for (const cand of storageTexelRegistry.values()) {
+      if (cand.bufferId !== brb.srcBuffer) continue;
+      if (thisBatchOnly && cand.lastBoundSeq !== stexelBatchSeq) continue;
+      const rel = brb.srcAbsOff - cand.baseOff;
+      if (rel < 0n || rel % BigInt(cand.bpp) !== 0n) continue;
+      if (brb.srcAbsOff + brb.size > cand.baseOff + cand.viewLen) continue;
+      if (cand.lastBoundSeq > bestSeq) { best = cand; bestSeq = cand.lastBoundSeq; ambiguous = false; }
+      else if (cand.lastBoundSeq === bestSeq && best && cand.tex !== best.tex) ambiguous = true;
+    }
+    if (!best) return null;
+    if (ambiguous) return 'ambiguous';
+    return { st: best, rel: brb.srcAbsOff - best.baseOff };
   }
 
   // Buffer cache key (shared with the bind-group fingerprint).
@@ -2313,6 +2506,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const img = imgHex && imageForView(obj, imgHex);
         const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
         return entry ? entry.spv : null;
+      }, (obj) => {
+        // Storage texel buffer (kind 6): the bound buffer view's format,
+        // resolved with the same element accuracy as image views above.
+        const bv = F.bufferViews?.get(obj);
+        const bentry = bv ? V2_STORAGE_FORMAT[bv.format] : null;
+        return bentry ? bentry.spv : null;
       });
       if (spv != null) parts.push(v.set + ':' + v.binding + '=' + spv);
     }
@@ -2498,6 +2697,16 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         for (let k = 0; k < n; k++) {
           const b = bindFor(d, k);
           if (b && b.kind === 2 && b.obj === '0000000000000000') { parts.push('x' + d.binding + ':' + k + ':null'); continue; }
+          if (b && b.kind === 6) {
+            // Resolving through storageTexelBind (not just keying) is
+            // what keeps cache-hit binds registered for readback and
+            // alert to re-uploads: on a fingerprint hit bindGroupEntries
+            // never runs (frontier review finding 2, metabindfix 4.32).
+            if (b.obj === '0000000000000000') { parts.push('x' + d.binding + ':' + k + ':null'); continue; }
+            const stex = storageTexelBind(b.obj);
+            parts.push('x' + d.binding + ':' + k + ':' + (stex ? storageTexelTextureKey(stex) : 'stexel-missing:' + b.obj));
+            continue;
+          }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           const img = imgHex && imageForView(b?.obj, imgHex);
           parts.push('x' + d.binding + ':' + k + ':' + (img ? textureKey(imgHex, img, null, cube, dimension).ck + viewRangeKey(sampledViewRange(b?.obj)) : 'blank'));
@@ -2662,6 +2871,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           // declared format. A NONZERO view that cannot be resolved is a
           // genuinely lost binding and drops loudly below.
           if (b && b.kind === 2 && b.obj === '0000000000000000') { views.push(zeroStorageTexture(t).createView()); continue; }
+          if (b && b.kind === 6) {
+            // Storage texel buffer view (spirvfix R12S shape): a guest
+            // VK_NULL_HANDLE view serves the zero texture (writes are
+            // discarded, per nullDescriptor semantics); a real view
+            // materialises as a storage texture over its buffer bytes,
+            // and is registered so a V2_BUFFER_READBACK out of the
+            // underlying buffer can resolve to it.
+            if (b.obj === '0000000000000000') { views.push(zeroStorageTexture(t).createView()); continue; }
+            const stex = storageTexelBind(b.obj);
+            if (!stex) { noteDrop('bind-group-storage-texel-unavailable', b.obj); return null; }
+            views.push(stex.tex.createView());
+            continue;
+          }
           const imgHex = b && b.kind === 2 ? F.views.get(b.obj) : null;
           const img = imgHex && imageForView(b?.obj, imgHex);
           if (!img) { noteDrop('bind-group-storage-view-unresolved', b?.obj); return null; }
@@ -2677,9 +2899,14 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return entries;
   }
 
-  async function render(frame, { present = true, presentImageId = null } = {}) {
+  async function render(frame, { present = true, presentImageId = null, batchSeq = null } = {}) {
     const bwRenderT0 = metricsNow();
     if (destroyed) throw new Error('page tier destroyed');
+    // One submission batch per top-level render() call; submission
+    // sub-renders inherit it (metabindfix 4.32: texel freshness and
+    // re-upload ordering are judged per batch).
+    if (batchSeq === null) stexelBatchSeq++;
+    else stexelBatchSeq = batchSeq;
     // A submission with no colour attachment (copy/blit/clear-only command
     // buffers) must still execute, but it cannot be the one that presents.
     if (frame.submissions) {
@@ -2687,7 +2914,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       const byImage = frame.presentImageId != null ? v2PresentIndexForImage(frame.submissions, frame.presentImageId) : -1;
       const presentAt = byImage >= 0 ? byImage : v2PresentIndex(frame.submissions);
       for (let i = 0; i < frame.submissions.length; i++) {
-        result = await render(frame.submissions[i], { present: present && i === presentAt, presentImageId: i === presentAt ? (frame.presentImageId ?? null) : null });
+        result = await render(frame.submissions[i], { present: present && i === presentAt, presentImageId: i === presentAt ? (frame.presentImageId ?? null) : null, batchSeq: stexelBatchSeq });
         if (!result?.rendered) return result;
       }
       return result;
@@ -3327,12 +3554,58 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const v2bufreadbacks = [];
     if (frame.bufReadbacks && frame.bufReadbacks.length) {
       for (const brb of frame.bufReadbacks) {
+        // Serve from a picked texel state: the written bytes live in its
+        // 2D storage texture (R12S wrap layout). Copy the covered rows
+        // out; the staging rows are the full texture width apart with no
+        // padding (bytesPerRow == width * bpp), so the wanted range is
+        // one linear slice of the staging buffer starting at srcSkip.
+        const serveTexel = (pick) => {
+          try {
+            const rowBytes = BigInt(V2_TEXEL_WRAP * pick.st.bpp);
+            const rows = Number((pick.rel + brb.size + rowBytes - 1n) / rowBytes);
+            if (rows > pick.st.h) {
+              // Defensive: with ceil-sized textures this cannot happen,
+              // but a copy larger than the texture must decline by name
+              // here, not as an async encoder validation error that
+              // invalidates the whole frame (finding 6).
+              noteUnsupported('buffer-readback-texel-rows', 'rows=' + rows + ' exceed texture height ' + pick.st.h + ' for buffer ' + brb.srcBuffer + '; guest receives zeros');
+              v2bufreadbacks.push({ brb, buffer: null, ok: false });
+              return;
+            }
+            const staging = device.createBuffer({ size: Number(rowBytes) * rows, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+            encoder.copyTextureToBuffer({ texture: pick.st.tex }, { buffer: staging, bytesPerRow: Number(rowBytes) }, [V2_TEXEL_WRAP, rows, 1]);
+            v2bufreadbacks.push({ brb, buffer: staging, ok: true, srcSkip: Number(pick.rel) });
+          } catch (e) {
+            v2bufreadbacks.push({ brb, buffer: null, ok: false });
+          }
+        };
+        // Precedence (metabindfix 4.32, frontier review findings 2+3):
+        // a kind-6 view bound in THIS batch outranks a raw storage
+        // binding of the same buffer -- its writes are invisible to any
+        // other view, so the texture is the only truthful source. A raw
+        // storage binding outranks a texel state bound in an EARLIER
+        // batch (its content is newer in stream order). Ambiguity among
+        // distinct textures tied at the freshest batch declines loudly.
+        const freshPick = pickTexelReadback(brb, true);
+        if (freshPick === 'ambiguous') {
+          noteUnsupported('buffer-readback-texel-ambiguous', 'several storage texel views bound this batch cover buffer ' + brb.srcBuffer + '; guest receives zeros');
+          v2bufreadbacks.push({ brb, buffer: null, ok: false });
+          continue;
+        }
+        if (freshPick) { serveTexel(freshPick); continue; }
         let ent = null;
         for (const cand of storageBufferRegistry.values()) {
           if (cand.bufId !== brb.srcBuffer) continue;
           if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { ent = cand; break; }
         }
         if (!ent) {
+          const stalePick = pickTexelReadback(brb, false);
+          if (stalePick === 'ambiguous') {
+            noteUnsupported('buffer-readback-texel-ambiguous', 'several storage texel views cover buffer ' + brb.srcBuffer + '; guest receives zeros');
+            v2bufreadbacks.push({ brb, buffer: null, ok: false });
+            continue;
+          }
+          if (stalePick) { serveTexel(stalePick); continue; }
           noteUnsupported('buffer-readback-unavailable', 'no storage binding covered buffer ' + brb.srcBuffer + '; guest receives zeros');
           v2bufreadbacks.push({ brb, buffer: null, ok: false });
           continue;
@@ -3518,7 +3791,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           await buffer.mapAsync(GPUMapMode.READ);
           const src = new Uint8Array(buffer.getMappedRange());
           const dst = new Uint8Array(heapBuf, brb.heapPtr, Number(brb.size));
-          dst.set(src.subarray(0, Number(brb.size)));
+          dst.set(src.subarray(vbr.srcSkip || 0, (vbr.srcSkip || 0) + Number(brb.size)));
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }

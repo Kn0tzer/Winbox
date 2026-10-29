@@ -228,12 +228,21 @@ export function scanWgslResources(wgsl) {
 // `bindings` are the decoded DESC_SET entries for the variable's set;
 // `viewFormatOf(obj)` maps a bound view id to its SPIR-V Image Format
 // number (already view-format-resolved) or null when unmappable.
-export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf) {
+// `texelFormatOf(obj)`, when supplied, does the same for a bound
+// storage-texel-buffer (kind 6) view id.
+export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf, texelFormatOf = null) {
   const list = (bindings || []).filter((b) => b.binding === v.binding);
+  // kind 2 = image view; kind 6 = storage texel buffer view. spirvfix
+  // R12S converts a Dim=Buffer storage image to the same 2D storage-image
+  // shape, so a kind-6 entry's view format proves the variable's format
+  // the same way -- but only when the caller supplies texelFormatOf;
+  // without it kind 6 stays unproven, exactly as before (metabind,
+  // campaign section 4.43).
   const fmtOf = (b) => {
-    if (!b || b.kind !== 2 || !b.obj || b.obj === '0000000000000000') return null;
-    const f = viewFormatOf(b.obj);
-    return f == null ? null : f;
+    if (!b || !b.obj || b.obj === '0000000000000000') return null;
+    if (b.kind === 2) { const f = viewFormatOf(b.obj); return f == null ? null : f; }
+    if (b.kind === 6 && texelFormatOf) { const f = texelFormatOf(b.obj); return f == null ? null : f; }
+    return null;
   };
   const covering = (el) => list.find((b) => el >= b.dstArrayElement && el < b.dstArrayElement + b.count) || null;
   if (!v.array) return fmtOf(covering(0) || list[0] || null);
@@ -247,7 +256,8 @@ export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf) {
   if (el != null) return fmtOf(covering(el));
   let agreed = null;
   for (const b of list) {
-    if (b.kind !== 2 || !b.obj || b.obj === '0000000000000000') continue;
+    if (!b || !b.obj || b.obj === '0000000000000000') continue;
+    if (b.kind !== 2 && !(b.kind === 6 && texelFormatOf)) continue;
     const f = fmtOf(b);
     if (f == null) return null;
     if (agreed == null) agreed = f;

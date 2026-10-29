@@ -1622,8 +1622,7 @@ static void applyDescWrite(DescSet& s, const DescWriteReq& w, DescRdQ rdq) {
                 if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 5
                 break;
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id
-                vk64Unsupported("texel-buffer-storage", "storage texel buffers are not supported: shader writes to a texture copy could never reach guest memory");
+                if (w.pTexel) b.obj = rdq(w.pTexel + at);     // VkBufferView id; served via wire kind 6
                 break;
             default:
                 vk64Unsupported("descriptor-type", ("descriptor write type=" + std::to_string(w.type)).c_str());
@@ -4201,13 +4200,39 @@ static const GpuWriteMark* vk64FindGpuWrite(U64 buf, U64 absOff, U64 size) {
     return nullptr;
 }
 
+// Overlap variant (metabindfix, campaign section 4.32; frontier review
+// finding 7): the earliest subrange of [absOff, absOff+size) covered by
+// a clean GPU-write mark, if any. The cleanliness test is the
+// containment test applied to the OVERLAP: a guest write elsewhere in
+// the queried range does not defeat deferral of the covered part, and
+// the covered part is never served eagerly either -- pre-fix, a
+// partially covered copy failed the containment test above and copied
+// the whole range eagerly, reading stale pre-dispatch bytes inside
+// the mark. The copy handlers split regions at these boundaries.
+static bool vk64FindGpuWriteOverlap(U64 buf, U64 absOff, U64 size, U64& covOff, U64& covSize) {
+    bool found = false;
+    U64 bestLo = 0, bestHi = 0;
+    for (const auto& m : g_gpuWriteMarks) {
+        if (m.buf != buf) continue;
+        U64 lo = std::max(absOff, m.off), hi = std::min(absOff + size, m.off + m.size);
+        if (lo >= hi) continue;
+        DeviceMemory* mem = objOf<DeviceMemory>(m.mem, K_MEMORY, "compute-readback");
+        if (!mem || mem->wasMapped) continue;
+        if (!vk64MemRangeCleanSince(mem, m.epoch, lo, hi - lo)) continue;
+        if (!found || lo < bestLo || (lo == bestLo && hi > bestHi)) { found = true; bestLo = lo; bestHi = hi; }
+    }
+    if (found) { covOff = bestLo; covSize = bestHi - bestLo; }
+    return found;
+}
+
 // Record-time half of the registry: replay the command buffer's recorded
 // state (the same shadow state the submit emitter resolves) and mark
-// every storage buffer bound to the bound compute pipeline's sets.
-static void vk64MarkComputeWrites(CmdBuf* cb) {
-    U64 pipeId = 0;
-    U64 sets[VK64_MAX_SETS] = {0};
-    std::vector<U32> dyn[VK64_MAX_SETS];
+// every storage range bound to the bound pipeline's sets. The recorded
+// stream is a single state stream (guests rebind when they switch
+// pipeline kinds), so the last pipeline bind is the executing one.
+static void vk64ReplayBoundState(CmdBuf* cb, U64& pipeId, U64 sets[], std::vector<U32>* dyn) {
+    pipeId = 0;
+    for (U32 si = 0; si < VK64_MAX_SETS; si++) { sets[si] = 0; dyn[si].clear(); }
     for (const Cmd& k : cb->cmds) {
         if (k.kind == CMD_BIND_PIPE) pipeId = k.a;
         else if (k.kind == CMD_BIND_SETS) {
@@ -4220,20 +4245,39 @@ static void vk64MarkComputeWrites(CmdBuf* cb) {
             }
         }
     }
-    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
-    if (!pipe || !pipe->cs) return;
+}
+
+// Mark every storage buffer/texel range bound in the replayed sets.
+// Stage-agnostic: the same bindings write the same ranges whether the
+// executing command is a dispatch or a draw.
+static void vk64MarkBoundWrites(U64 sets[], std::vector<U32>* dyn, const char* who) {
     for (U32 si = 0; si < VK64_MAX_SETS; si++) {
         if (!sets[si]) continue;
-        DescSet* set = objOf<DescSet>(sets[si], K_SET, "vkCmdDispatch");
+        DescSet* set = objOf<DescSet>(sets[si], K_SET, who);
         if (!set) continue;
-        DescSetLayout* lay = set->layout ? objOf<DescSetLayout>(set->layout, K_SETLAYOUT, "vkCmdDispatch") : nullptr;
+        DescSetLayout* lay = set->layout ? objOf<DescSetLayout>(set->layout, K_SETLAYOUT, who) : nullptr;
         for (const auto& kv : set->els) {
             const Binding& b = kv.second;
+            if (b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                // A storage texel binding's writes land in the view's
+                // buffer range (the page tier serves the view as a storage
+                // texture and reads it back byte-exactly), so mark that
+                // range GPU-written exactly like a storage buffer's: a
+                // later copy out of it defers to a page readback instead
+                // of reading stale guest bytes.
+                BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, who);
+                Buffer* buf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, who) : nullptr;
+                if (!bv || !buf || !buf->mem) continue;
+                DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, who);
+                if (!mem) continue;
+                if (bv->range) vk64MarkGpuWrite(bv->buffer, buf->memOff + bv->offset, bv->range, buf->mem, mem->writeEpoch);
+                continue;
+            }
             if (b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
                 b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) continue;
-            Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, "vkCmdDispatch");
+            Buffer* buf = objOf<Buffer>(b.obj, K_BUFFER, who);
             if (!buf || !buf->mem) continue;
-            DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatch");
+            DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, who);
             if (!mem) continue;
             U32 dynOff = 0;
             if (descIsDynamic(b.type) && lay) {
@@ -4281,6 +4325,75 @@ static void vk64MarkDrawRootWrites(CmdBuf* cb) {
         if (!mem) continue;
         U64 boff = va - it->first;
         vk64MarkGpuWrite(it->second, buf->memOff + boff, buf->size - boff, buf->mem, mem->writeEpoch);
+static void vk64MarkComputeWrites(CmdBuf* cb) {
+    U64 pipeId = 0;
+    U64 sets[VK64_MAX_SETS] = {0};
+    std::vector<U32> dyn[VK64_MAX_SETS];
+    vk64ReplayBoundState(cb, pipeId, sets, dyn);
+    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
+    if (!pipe || !pipe->cs) return;
+    vk64MarkBoundWrites(sets, dyn, "vkCmdDispatch");
+}
+
+// Graphics-stage twin (metabindfix, campaign section 4.32; frontier
+// review finding 9): storage writes from vertex/fragment shaders were
+// never marked -- only the dispatch traps called vk64MarkComputeWrites
+// -- but the shapes DO reach serving: spirvfix R12S converts a
+// Dim=Buffer storage image in any stage, and the bridge audit admits
+// such modules (the meta compute module is the proven case; the audit
+// is stage-agnostic), so a fragment shader writing a storage texel
+// buffer left later copies reading stale guest bytes eagerly. Mark at
+// draw time too, under the same bound-state replay. Over-marking is
+// safe: a marked range the draw did not actually write defers its copy
+// to a page readback of the same uploaded bytes.
+static void vk64MarkDrawWrites(CmdBuf* cb) {
+    if (!vkSchemaV2()) return;
+    U64 pipeId = 0;
+    U64 sets[VK64_MAX_SETS] = {0};
+    std::vector<U32> dyn[VK64_MAX_SETS];
+    vk64ReplayBoundState(cb, pipeId, sets, dyn);
+    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDraw") : nullptr;
+    if (!pipe || pipe->cs || (!pipe->vs && !pipe->fs)) return;
+    vk64MarkBoundWrites(sets, dyn, "vkCmdDraw");
+}
+
+// Record one clamped buffer->buffer copy region, splitting at clean
+// GPU-write mark boundaries (metabindfix 4.32, finding 7): covered
+// subranges defer to submit-time page readbacks (CMD_COPY_B2B_RB), the
+// rest copies eagerly in guest memory NOW, exactly as an unmarked
+// region always did. srcOff/dstOff are buffer-relative; marks are
+// memory-absolute (srcMemOff + offset). uOff/uEnd accumulate the
+// memory-absolute destination range eagerly written (the caller bumps
+// the destination's dirty generation when anyCopy is set). The pre-fix
+// shape deferred only a FULLY contained region and copied a partially
+// covered one entirely eagerly -- the covered subrange read stale
+// pre-dispatch bytes. (Overlapping regions within one copy call are
+// invalid Vulkan usage and guests do not emit them; eager segments run
+// at record time and deferred ones at submit, as mixed calls already
+// did before the split.)
+static void vk64CopyRegionSplit(CmdBuf* cb, U64 srcId, U64 dstId, U64 srcMemOff, U64 srcOff, U64 dstOff, U64 n,
+                                U64 sVa, U64 dVa, U64 dstMemOff, bool& anyCopy, U64& uOff, U64& uEnd) {
+    const bool v2 = cb && vkSchemaV2();
+    U64 done = 0;
+    while (done < n) {
+        U64 covOff = 0, covSize = 0;
+        const U64 absPos = srcMemOff + srcOff + done;
+        const bool covered = v2 && vk64FindGpuWriteOverlap(srcId, absPos, n - done, covOff, covSize);
+        const U64 eagerLen = covered ? (covOff - absPos) : (n - done);
+        if (eagerLen) {
+            std::vector<U8> tmp((size_t)eagerLen);
+            g_mem->memcpyFromGuest(tmp.data(), sVa + done, eagerLen);
+            g_mem->memcpyToGuest(dVa + done, tmp.data(), eagerLen);
+            anyCopy = true;
+            uOff = std::min(uOff, dstMemOff + dstOff + done);
+            uEnd = std::max(uEnd, dstMemOff + dstOff + done + eagerLen);
+            done += eagerLen;
+            continue;
+        }
+        Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+        dc.copyB2BRb = Cmd::CopyB2BRb{srcId, dstId, srcOff + done, dstOff + done, covSize};
+        pushCmd(cb, dc);
+        done += covSize;
     }
 }
 
@@ -4767,7 +4880,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             };
             for (const auto& kv : eff) {
                 const Binding& b = kv.second;
-                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) continue;
+                if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER &&
+                    b.type != VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) continue;
                 BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                 Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                 if (!bv || !vbuf) {
@@ -4777,9 +4891,9 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // shader texel slot the app never bound), which the
                     // page tier serves as zero reads -- not a lost view,
                     // and the DESC_SET binding below still goes out with
-                    // kind 5 / id 0. Only a nonzero id can be stale, and
+                    // kind 5/6 / id 0. Only a nonzero id can be stale, and
                     // it stays loud.
-                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "uniform texel buffer binding names no live buffer view; binding dropped");
+                    if (b.obj) vk64Unsupported("texel-buffer-view-missing", "texel buffer binding names no live buffer view; binding dropped");
                     continue;
                 }
                 emit(V2_BUFFER_VIEW, [&](ChunkWriter& p) {
@@ -4806,6 +4920,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                         case VK_DESCRIPTOR_TYPE_SAMPLER: kind = 3; break;
                         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: kind = 4; break;
                         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: kind = 5; break;
+                        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: kind = 6; break;
                         default:
                             vk64Unsupported("descriptor-wire-kind",
                                 ("unsupported descriptor type=" + std::to_string(b.type) + " has no V2 binding kind").c_str());
@@ -4817,7 +4932,7 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // D3D9 constants); the page keys captures by (id, offset).
                     U64 absOff = 0, len = b.range; Buffer* buf = nullptr;
                     if (kind == 1) bufRange(b, dynOffFor(b), absOff, len, buf);
-                    else if (kind == 5) {
+                    else if (kind == 5 || kind == 6) {
                         BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                         Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                         if (bv && vbuf) { absOff = vbuf->memOff + bv->offset; len = bv->range; }
@@ -4842,7 +4957,8 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                            b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                     emitImageData(b.obj);    // b.obj = image view id (see applyDescWrite)
                     emitSampler(b.range);    // b.range = sampler id
-                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+                } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                           b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
                     BufferView* bv = objOf<BufferView>(b.obj, K_BUFFERVIEW, "vkQueueSubmit");
                     Buffer* vbuf = bv ? objOf<Buffer>(bv->buffer, K_BUFFER, "vkQueueSubmit") : nullptr;
                     if (bv && vbuf) emitBufferData(bv->buffer, vbuf->memOff + bv->offset, bv->range);
@@ -8147,6 +8263,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, vertexCount, instanceCount, firstVertex, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDraw");
         VK64_DROP_IF(return 0, !cb);
+        vk64MarkDrawWrites(cb);
         Cmd c;
         c.kind = CMD_DRAW;
         c.a = args.a[1];   // vertexCount
@@ -8202,6 +8319,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // (cmdBuf, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
         CmdBuf* cb = cbOf(args.a[0], "vkCmdDrawIndexed");
         VK64_DROP_IF(return 0, !cb);
+        vk64MarkDrawWrites(cb);
         Cmd c;
         c.kind = CMD_DRAW_INDEXED;
         c.a = args.a[1];   // indexCount
@@ -8370,9 +8488,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // Immediate CPU memcpy: all Vulkan memory is guest-mapped, so the
         // copy is visible to subsequent reads (e.g. emitBufferData at submit).
         // This is what DXVK uses to upload vertex/index data from staging.
-        // Exception (V2 compute): a region whose source a recorded dispatch
-        // may have written on the GPU defers to a submit-time page readback
-        // (CMD_COPY_B2B_RB below) -- the guest bytes there are stale.
+        // Exception (V2): a region whose source a recorded dispatch or
+        // draw may have written on the GPU defers -- in the covered
+        // subranges, split at the mark boundaries -- to a submit-time
+        // page readback (CMD_COPY_B2B_RB) -- the guest bytes there are
+        // stale (vk64CopyRegionSplit, campaign section 4.32).
         CmdBuf* cb = cbOf(args.a[0], "vkCmdCopyBuffer");
         struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
         U32 nreg = (U32)args.a[3];
@@ -8394,18 +8514,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (sOff + n > smem->va + smem->size) n = smem->va + smem->size - sOff;
             if (dOff + n > dmem->va + dmem->size) n = dmem->va + dmem->size - dOff;
             if (!n) continue;
-            if (cb && vkSchemaV2() && vk64FindGpuWrite(args.a[1], src->memOff + r.srcOffset, n)) {
-                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
-                dc.copyB2BRb = Cmd::CopyB2BRb{args.a[1], args.a[2], r.srcOffset, r.dstOffset, n};
-                pushCmd(cb, dc);
-                continue;
-            }
-            std::vector<U8> tmp((size_t)n);
-            g_mem->memcpyFromGuest(tmp.data(), sOff, n);
-            g_mem->memcpyToGuest(dOff, tmp.data(), n);
-            anyCopy = true;
-            uOff = std::min(uOff, dst->memOff + r.dstOffset);
-            uEnd = std::max(uEnd, dst->memOff + r.dstOffset + n);
+            vk64CopyRegionSplit(cb, args.a[1], args.a[2], src->memOff, r.srcOffset, r.dstOffset, n,
+                                sOff, dOff, dst->memOff, anyCopy, uOff, uEnd);
         }
         if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem, uOff, uEnd - uOff); }
         return 0;
@@ -8463,18 +8573,8 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             if (sOff + n > sEnd) n = sEnd - sOff;
             if (dOff + n > dEnd) n = dEnd - dOff;
             if (!n) continue;
-            if (cb && vkSchemaV2() && vk64FindGpuWrite(hSrc2, src->memOff + r.srcOffset, n)) {
-                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
-                dc.copyB2BRb = Cmd::CopyB2BRb{hSrc2, hDst2, r.srcOffset, r.dstOffset, n};
-                pushCmd(cb, dc);
-                continue;
-            }
-            std::vector<U8> tmp((size_t)n);
-            g_mem->memcpyFromGuest(tmp.data(), sOff, n);
-            g_mem->memcpyToGuest(dOff, tmp.data(), n);
-            anyCopy = true;
-            uOff = std::min(uOff, dRel);
-            uEnd = std::max(uEnd, dRel + n);
+            vk64CopyRegionSplit(cb, hSrc2, hDst2, src->memOff, r.srcOffset, r.dstOffset, n,
+                                sOff, dOff, dst->memOff, anyCopy, uOff, uEnd);
         }
         if (anyCopy) { dst->dirtyGen = g_bufDirtyTick++; vk64TouchMem(dmem, uOff, uEnd - uOff); }
         return 0;
@@ -8994,6 +9094,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
             drawCount = VK64_MAX_INDIRECT_DRAWS;
         }
+        vk64MarkDrawWrites(cb);
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -9027,6 +9128,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             vk64DropLog("drawCount > maxDrawIndirectCount", __LINE__);
             drawCount = VK64_MAX_INDIRECT_DRAWS;
         }
+        vk64MarkDrawWrites(cb);
         for (U32 i = 0; i < drawCount; i++) {
             VkDrawIndexedIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -9066,6 +9168,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 stride = (U32)args.a[6];
         if (!stride) stride = sizeof(VkDrawIndirectCommandL);
+        vk64MarkDrawWrites(cb);
         for (U32 i = 0; i < actualCount; i++) {
             VkDrawIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));
@@ -9104,6 +9207,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         U64 baseOff = mem->va + buf->memOff + args.a[2];
         U32 stride = (U32)args.a[6];
         if (!stride) stride = sizeof(VkDrawIndexedIndirectCommandL);
+        vk64MarkDrawWrites(cb);
         for (U32 i = 0; i < actualCount; i++) {
             VkDrawIndexedIndirectCommandL cmd;
             g_mem->memcpyFromGuest(&cmd, baseOff + (U64)i * stride, sizeof(cmd));

@@ -1746,6 +1746,194 @@ export function texelBuffersTo2D(mod, log) {
   return true;
 }
 
+// --- R12S: storage-texel-buffer-to-2d ---------------------------------------
+// A STORAGE texel buffer (OpTypeImage Dim=Buffer, Sampled=2) is the shape
+// vkd3d-proton's internal meta pipelines bind for typed buffer clears/copies
+// (cs_clear_uav_buffer_uint: `layout(binding=0) writeonly uniform
+// uimageBuffer`). naga rejects Dim=Buffer images outright, exactly as for
+// the uniform case R12 handles. R12 historically refused storage buffers
+// because "shader writes to a texture copy could never reach guest
+// memory" -- that premise is gone: the bridge now marks dispatch-written
+// buffer ranges (vk64MarkComputeWrites) and defers copies out of them to
+// page-side readbacks (V2_BUFFER_READBACK), so a storage texture bound for
+// the view (wire kind 6) is read back byte-exactly, like a storage buffer.
+// The conversion mirrors R12: Dim Buffer -> 2D, scalar coordinates widened
+// to (i mod 8192, i div 8192). Only OpImageWrite / OpImageRead consumers
+// are rewritten; any other consumer (size queries name the 1D length, which
+// no 2D shape expresses; sampling/fetch shapes belong to other rewrites)
+// refuses the whole conversion, module untouched. The image format word is
+// left for R14 (storageFormats signature carries storage texel bindings
+// too), which injects it from the bound view exactly as for storage images.
+export function storageTexelBuffersTo2D(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const newId = makeIdSource(mod);
+  const findType = (op, eq) => mod.insns.find(i => i.op === op && eq(i))?.resultId ?? null;
+  const refuse = why => { log.push('spirvfix R12S: ' + why + '; storage texel buffer conversion refused'); return false; };
+
+  const convTy = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeImage && ins.words[2] === 5 && ins.words[6] === 2) convTy.add(ins.resultId);
+  if (!convTy.size) return false;
+  // Variables: UniformConstant pointers directly at a converted image type
+  // (storage images are never OpTypeSampledImage-wrapped).
+  const varIds = new Set();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== SC.UniformConstant) continue;
+    const ptr = byId.get(ins.words[0]);
+    if (ptr && ptr.op === Op.TypePointer && convTy.has(ptr.words[2])) varIds.add(ins.resultId);
+  }
+  if (!varIds.size) return false;
+  // Trace image values from those variables (Load + CopyObject chains only).
+  const traced = new Set();
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Load && convTy.has(ins.resultType)) {
+      if (!varIds.has(ins.words[2])) return refuse('storage texel image load from an unknown source');
+      traced.add(ins.resultId);
+    }
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const ins of mod.insns)
+      if (ins.op === Op.CopyObject && traced.has(ins.words[2]) && !traced.has(ins.resultId)) { traced.add(ins.resultId); grew = true; }
+  }
+  if (!traced.size) return refuse('storage texel image type declared but never loaded');
+  // Vet uses of the image VARIABLE itself (frontier review finding 4,
+  // metabindfix 4.32): the consumer scan below only sees values traced
+  // from OpLoad, but OpImageTexelPointer takes the VARIABLE -- it is
+  // the operand of every texel atomic (an InterlockedAdd on an
+  // RWBuffer) -- and OpCopyMemory on the variable has the same shape.
+  // Neither is in traced, so both slipped through: the rewrite flipped
+  // the image type to 2D, left the texel pointer's scalar coordinate
+  // untouched, and emitted invalid SPIR-V while logging success. The
+  // variable may only be consumed by OpLoad; anything else naming it
+  // refuses the conversion. Only function bodies are scanned: a
+  // variable can only be USED at runtime there (entry points list
+  // interface variables and decorations target them, but those are
+  // metadata), and the global sections are full of literals that can
+  // numerically equal a variable id -- an OpTypeImage's Dim word is
+  // the proven case (Dim=Buffer is 5, a perfectly ordinary variable
+  // id), the same collision class the consumer scan's metadata skip
+  // exists for. In-body debug records stay skipped for the same
+  // reason (their string-id words are literals, not uses).
+  const varScanSections = sections(mod);
+  const varScanStart = varScanSections.firstFunc < 0 ? mod.insns.length : varScanSections.firstFunc;
+  for (let ix = varScanStart; ix < mod.insns.length; ix++) {
+    const ins = mod.insns[ix];
+    if (ins.op === Op.Load || ins.op === Op.CopyObject || ins.op === Op.Variable) continue;
+    if (ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 8 ||
+        ins.op === 10 || ins.op === 14 || ins.op === 73 || ins.op === 75) continue;
+    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+    for (let k = start; k < ins.words.length; k++)
+      if (varIds.has(ins.words[k])) return refuse('storage texel image variable used by op ' + ins.op + ' beyond OpLoad (texel-pointer/atomics are not wrappable)');
+  }
+  // Vet consumers: OpImageWrite (99, result-less: image at words[0],
+  // coordinate words[1]) and OpImageRead (98: image words[2], coordinate
+  // words[3]) are the only legal consumers. Image operands on either are
+  // refused (a Lod/Grad operand has no storage-image meaning here).
+  const writes = [], reads = [];
+  for (const ins of mod.insns) {
+    if (ins.op === 99) { if (traced.has(ins.words[0])) writes.push(ins); continue; }
+    if (ins.op === 98) { if (traced.has(ins.words[2])) reads.push(ins); continue; }
+    if (ins.op === Op.Load || ins.op === Op.CopyObject || ins.op === Op.Variable) continue;
+    // Metadata instructions are not consumers: capabilities, entry points,
+    // execution modes, source/debug records and annotations carry literals
+    // (capability numbers, decoration numbers, member indices, packed
+    // string words) and global ids, never runtime values. A literal that
+    // numerically equals a traced SSA id is not a use of the image. Proven
+    // in the wild: vkd3d's cs_clear_uav_buffer_uint numbers its image load
+    // %35, which collides with the Offset decoration literal (35) in the
+    // push block's OpMemberDecorate set -- the scan refused the conversion
+    // while the float twin (load %36) converted, so only the uint meta
+    // clear reached naga as Dim=Buffer and died on the ImageBuffer
+    // capability. Skip the whole metadata family; every instruction that
+    // can actually consume a value stays vetted.
+    if (ins.op === Op.Capability || ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode ||
+        ins.op === Op.Name || ins.op === Op.MemberName || ins.op === Op.Decorate ||
+        ins.op === Op.MemberDecorate || ins.op === Op.GroupDecorate ||
+        ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 8 ||
+        ins.op === 10 || ins.op === 14 || ins.op === 73 || ins.op === 75) continue;
+    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+    for (let k = start; k < ins.words.length; k++)
+      if (traced.has(ins.words[k])) return refuse('storage texel image consumed by op ' + ins.op);
+  }
+  if (!writes.length && !reads.length) return refuse('storage texel image has no read/write consumer');
+  // Image-operand masks: an operand that carries ids (Lod, Grad, offsets,
+  // Sample, MinLod, texel-availability scopes) has coordinate semantics the
+  // 2D wrap does not rewrite, so it still refuses. A FLAG-ONLY mask
+  // (NonPrivateTexel, VolatileTexel, SignExtend, ZeroExtend, Nontemporal)
+  // carries no ids and is unaffected by the coordinate widening -- the
+  // in-place rewrite keeps the mask word verbatim. vkd3d's uint meta clear
+  // writes with ZeroExtend (mask 8192) while the float twin writes bare;
+  // refusing the mask wholesale left the uint clear unconverted.
+  const IMG_OPERAND_ID_COUNT = [[0, 1], [1, 1], [2, 2], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1], [9, 1], [16, 1]];
+  const operandIds = mask => IMG_OPERAND_ID_COUNT.reduce((n, [bit, c]) => n + (mask & (1 << bit) ? c : 0), 0);
+  for (const w of writes) {
+    if (w.words.length === 3) continue;
+    if (w.words.length < 4 || w.words.length !== 4 + operandIds(w.words[3])) return refuse('OpImageWrite image-operand shape is not understood');
+    if (operandIds(w.words[3])) return refuse('OpImageWrite carries image operands');
+  }
+  for (const r of reads) {
+    if (r.words.length === 4) continue;
+    if (r.words.length < 5 || r.words.length !== 5 + operandIds(r.words[4])) return refuse('OpImageRead image-operand shape is not understood');
+    if (operandIds(r.words[4])) return refuse('OpImageRead carries image operands');
+  }
+  const ops = [...writes.map(w => ({ ins: w, coordAt: 1 })), ...reads.map(r => ({ ins: r, coordAt: 3 }))];
+  for (const { ins, coordAt } of ops) {
+    const def = byId.get(ins.words[coordAt]);
+    const t = def && byId.get(def.resultType);
+    if (!t || t.op !== Op.TypeInt || t.words[1] !== 32)
+      return refuse('storage texel coordinate is not a 32-bit integer scalar');
+  }
+  // --- mutate ---------------------------------------------------------------
+  for (const ins of mod.insns) if (convTy.has(ins.resultId)) ins.words[2] = 1; // Dim Buffer -> 2D
+  // Conversion types/constants (uint, uvec2, wrap width), mirroring R12.
+  const addType = [];
+  let uintTy = findType(Op.TypeInt, i => i.words[1] === 32 && i.words[2] === 0);
+  if (uintTy == null) { uintTy = newId(); addType.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy }); }
+  let uvec2Ty = findType(Op.TypeVector, i => i.words[1] === uintTy && i.words[2] === 2);
+  if (uvec2Ty == null) { uvec2Ty = newId(); addType.push({ op: Op.TypeVector, words: [uvec2Ty, uintTy, 2], resultType: null, resultId: uvec2Ty }); }
+  let wConst = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === TEXEL_WRAP_WIDTH)?.resultId ?? null;
+  if (wConst == null) { wConst = newId(); addType.push({ op: Op.Constant, words: [uintTy, wConst, TEXEL_WRAP_WIDTH], resultType: uintTy, resultId: wConst }); }
+  if (addType.length) {
+    const s = sections(mod);
+    mod.insns.splice(s.firstFunc < 0 ? mod.insns.length : s.firstFunc, 0, ...addType);
+  }
+  byId.clear();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  // Widen coordinates: scalar i -> uvec2(i mod 8192, i div 8192).
+  for (const { ins, coordAt } of ops) {
+    const coordId = ins.words[coordAt];
+    const def = byId.get(coordId);
+    const t = def && byId.get(def.resultType);
+    const seq = [];
+    let u = coordId;
+    if (t && t.words[2] === 1) { // signed -> bitcast to uint
+      u = newId();
+      seq.push({ op: Op.Bitcast, words: [uintTy, u, coordId], resultType: uintTy, resultId: u });
+    }
+    const x = newId(), y = newId(), vec = newId();
+    seq.push({ op: Op.UMod, words: [uintTy, x, u, wConst], resultType: uintTy, resultId: x });
+    seq.push({ op: Op.UDiv, words: [uintTy, y, u, wConst], resultType: uintTy, resultId: y });
+    seq.push({ op: Op.CompositeConstruct, words: [uvec2Ty, vec, x, y], resultType: uvec2Ty, resultId: vec });
+    const idx = mod.insns.indexOf(ins);
+    mod.insns.splice(idx, 0, ...seq);
+    ins.words[coordAt] = vec;
+  }
+  // The Buffer-image capabilities are only droppable once no Dim=Buffer
+  // image type remains in the module: 46 (SampledBuffer, the uniform case
+  // per the R12 pin) and 47 (ImageBuffer, the storage case -- measured on
+  // glslang output for the vkd3d meta-clear shape and convicted directly
+  // by naga's UnsupportedCapability(ImageBuffer)). The WithoutFormat
+  // capabilities (55/56) are R14's to strip once formats are injected.
+  if (!mod.insns.some(i => i.op === Op.TypeImage && i.words[2] === 5))
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 46 || i.words[0] === 47)));
+  log.push(`spirvfix R12S: rewrote ${ops.length} storage texel buffer access(es) to the ${TEXEL_WRAP_WIDTH}-wide 2D wrap`);
+  return true;
+}
+
+
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
 // --- R13: uniform-block-to-storage -------------------------------------------
@@ -3287,6 +3475,7 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
   try {
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
+    if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
   } catch (e) {
     log.push('R12 failed: ' + (e.message || e));
   }
@@ -3371,4 +3560,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];
+export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];
