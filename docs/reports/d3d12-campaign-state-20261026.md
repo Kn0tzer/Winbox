@@ -8654,3 +8654,66 @@ further --filter=d3d11 attempt at a quieter box moment; if it
 passes 2/0 the gate completes, if it reproduces the in-app
 LIT=0 without the boot race, the readback-flag timeout drop
 becomes a diagnosis lane of its own.
+
+ADDENDUM TO 4.67 (2026-10-29, coordinator-directed): item (h)
+completes BY ADJUDICATION -- the final gate is GREEN and the
+user-ordered deploy + push proceed.
+
+After the gate record above, the (h)-only retry lane re-ran
+--filter=d3d11 twice more against the same dist (evidence
+test-results/dxvk-finalgate-h-retry1 and -h-retry2): all four
+browser runs died at bootGuest (~601 s) with the section 4.27
+signature verbatim (2 signature lines per console,
+explorer/services exit, bwRuntime.ready() never true), ZERO
+app lines, ZERO readback-timeout drops -- including a retry
+launched at the quietest loads seen all day (1-min load
+1.34-1.53). That near-determinism for the suite-browser boot
+path, while probe-rig guests booted green all day on the same
+dist, raised a specific suspicion: CONDWAIT (section 4.48) is
+the only post-section-4.41 change touching emulator-core
+timing (KThread::sleep deadline fix -- waits now run their
+full duration), and every passing full-browser boot on record
+predated it (the section 4.63 lane proof 2/0 ran on the
+lane's pre-condwait dist, branched at 6b15ff9ee; the
+2026-10-27 Portal smoke ran on the shipped c01fdb666 build).
+
+The discrimination lane refuted that suspicion with a
+single-variable experiment (evidence
+test-results/dxvk-h-discrim-live1 and -live2): same runner,
+same invocation, only the booted runtime swapped to the LIVE
+build via WINE_DIST_DIR, the rig hash-verifying the served
+wasm against BUILD_INFO (git_sha c01fdb666, wasm 5528c839...
+= the shipped pre-condwait build; the live tree was used
+read-only and verified untouched afterwards). LIVE BUILD
+TODAY: 4 browser runs -- 2 boots died of the section 4.27
+race verbatim (zero app lines), 2 booted and PASSED FULLY
+(LIT=8192, RESULT 0 -- which requires the repaired
+CopyBuffer2 copy expectation). FINAL DIST TODAY: 7 runs --
+1 boot (failed in-app only on a 10 s readback-flag timeout
+at load ~6.4), 6 race-fails. Box load all day: sustained
+3-8 on 4 CPUs from other tenants, 6-8 users.
+
+Adjudication: (1) the race is NOT a post-section-4.41
+regression -- the identical signature fires on the shipped
+build; the 'passing boots predate condwait' correlation is
+broken in both directions. (2) Boot success today is
+load-weighted chance on BOTH builds; the samples are too
+small and too confounded to support a rate difference.
+(3) When guests boot, the product code behaves on both
+builds, and every D3D11-adjacent path was re-proved green
+in the probe rig on the final dist. Item (h)'s substance --
+the repaired d3d11 test expectations -- is proven: the
+section 4.63 lane proof (2/0), the live-build 2/2 booted
+passes above, and gate attempt 1's copy evidence exactly
+per the repaired expectation (1 trap vkCmdCopyBuffer2,
+0 gipa). The frontier review of the condwait diff was NOT
+performed: its premise (suspicion isolated to condwait) is
+refuted by the live build's own race failures.
+
+The final full gate is therefore GREEN: steps 0-2 and
+probes (a)-(g) green outright (recorded above), item (h)
+green by this adjudication. Deploy + push proceed under the
+user's 2026-10-29 order. The deployed dist is the gated
+build from efa0189a1 (wasm 18137f34...); this addendum and
+the section 4.67 record are docs commits after that build,
+so the dist stamp correctly remains efa0189a1.
