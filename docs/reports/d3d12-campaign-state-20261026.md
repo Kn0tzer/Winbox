@@ -6884,3 +6884,39 @@ changes (rig/tooling + dump internals; no guest-visible behaviour
 changes when no lock is contended -- the dump output format is
 unchanged apart from the end-line counters and the new labeled
 unavailable lines).
+**Merge outcome -- LIGHT GATE COMPLETE (2026-10-29, batched regime; merge
+commit c98308b4a, parents f691eddca + 683f8875a, both tips verified exactly
+before merging).** Conflict only in this report (append-append at the old
+section-4.38 anchor): the lane section lands after section 4.55, renumbered
+4.39-on-branch to 4.56. Full-diff accounting: for all 17 code/rig files the
+merged delta vs pre-merge integ is byte-identical to the lane delta vs its
+base; the report delta is exactly the lane's 99-line section with the header
+renumber and a one-line renumber note. Batched light gate: no dist rebuild,
+no guest probes. RIDER 1 (full native suite, owed by the lane): run on the
+merged tree -- 648 tests, "0 tests FAILED in 213s", exit 0. RIDER 2
+(kepoll/kunixsocket warning comparison, owed by the lane): both TUs compiled
+at the pre-merge base f691eddca and on the merged tree through the project's
+own make invocation with identical flags, stderr captured per TU. Both
+captures are 2,036 bytes: exactly four warnings, all -Wformat-security from
+the kwarn_fmt template at include/log.h:55 and :57, instantiated from
+pre-existing call sites (kepoll.cpp:126; kunixsocket.cpp:177 at base). The
+merged capture is byte-identical except one line -- the kunixsocket
+instantiation site reads :205, exactly the +28 net lines of the lane's
+single kunixsocket hunk (@@ -106,25 +106,53 @@), which sits entirely above
+line 177; kepoll's site is unmoved (the lane's kepoll hunks all start at
+line 373, below 126) and the log.h warning lines are unmoved (the lane's
+log.h insertion is below line 57). VERDICT: the roughly 900 bytes of
+warnings the lane deleted unread are PRE-EXISTING at the base; no warning
+is attributable to this lane's code, and its corrected commit-message claim
+stands verified. Process note: the first merged-side build survived its
+dropped SSH session and a second detached build was started over it; both
+were killed, the 256 objects written inside the race window were deleted,
+and every verdict above was taken on a single clean build (exit 0) made
+after the tree was quiescent. Register: unchanged (377 = 78 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN; the merge touches no register
+file). Citations: 0 DRIFT / 0 MISSING (230 MATCH / 14 MATCH-INHERITED /
+98 UNCHECKABLE / 7 EXEMPT over 349 cited rows -- the baseline distribution
+exactly; the lane touches no cited file). Light suites on the merged tree:
+JS unit 329 passed / 0 failed (328 + thread-dump-driver, PASS by name,
+against the standing dist), native 648 / 0 (rider 1), run-native 42 PASS,
+unchanged.
