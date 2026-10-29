@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "drvinittrace.h"
 #include "kinotify.h"
 
 #include "kscheduler.h"
@@ -371,6 +372,20 @@ KThread* KProcess::getThreadById(U32 tid) {
     return this->threads[tid];
 }
 
+KThread* KProcess::tryGetThreadById(U32 tid, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<BOXEDWINE_MUTEX> lock(threadsMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    return this->threads[tid];
+#else
+    return getThreadById(tid);
+#endif
+}
+
 U32 KProcess::getThreadCount() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
     return (U32)this->threads.size();
@@ -432,6 +447,20 @@ void KProcess::setupCommandlineNode() {
 BString KProcess::getAbsoluteExePath() { 
     BString path = Fs::getNodeFromLocalPath(B(""), this->exe, true)->path;
     return Fs::getParentPath(path);
+}
+
+BString KProcess::commandLineForLog() const {
+    // commandLine holds the NUL-separated argv (the form
+    // /proc/<pid>/cmdline serves to the guest). Log lines print through
+    // c_str(), which stops at the first NUL and would record only
+    // argv[0]; render a display copy with the separators as spaces so
+    // the recorded command line stays complete and truthful.
+    BString result;
+    for (int i = 0; i < this->commandLine.length(); i++) {
+        char c = this->commandLine.charAt(i);
+        result.append(c == '\0' ? ' ' : c);
+    }
+    return result;
 }
 void KProcess::clone(const KProcessPtr& from, U32 shareFlags) {
     this->parentId = from->id;;
@@ -814,11 +843,10 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
     this->exe = argValues[0];
     this->name = Fs::getFileNameFromPath(this->exe);
     
-    for (U32 i=0;i<argValues.size();i++) {
-        if (i>0)
-            this->commandLine+=" ";
-        this->commandLine+=argValues[i];
-    }
+    // Same NUL-separated form exec() builds (see there): commandLine
+    // is the argv array /proc/<pid>/cmdline serves, not a display
+    // string (log lines render it via commandLineForLog()).
+    this->commandLine = BString::join(BString('\0'), argValues);
     
     this->initStdio();
     FsOpenNode* openNode=ElfLoader::inspectNode(currentDirectory, node, loader, interpreter, interpreterArgs);
@@ -873,6 +901,12 @@ KThread* KProcess::startProcess(BString currentDirectory, const std::vector<BStr
             delete openNode;
         }
         scheduleThread(thread);
+        // BW64_DRVINIT (section 4.35): process-start order/timing is the
+        // boot sequence the driver-init flake races against (wineserver,
+        // services, explorer/desktop, then the app).
+        bw64DrvInitStep("proc-start", "pid=%d name=%s cmd=%.*s",
+                        (int)this->id, this->name.c_str(), 160,
+                        this->commandLine.c_str());
     } else {
         if (openNode) {
             openNode->close();
@@ -901,6 +935,20 @@ U32 KProcess::exit(KThread* thread, U32 code) {
 KFileDescriptorPtr KProcess::getFileDescriptor(FD handle) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     return this->fds[handle];
+}
+
+KFileDescriptorPtr KProcess::tryGetFileDescriptor(FD handle, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<BOXEDWINE_MUTEX> lock(fdsMutex(), std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    return this->fds[handle];
+#else
+    return getFileDescriptor(handle);
+#endif
 }
 
 KFileDescriptor* KProcess::getFileDescriptor_nolock(FD handle) {
@@ -1101,7 +1149,14 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     
     this->name = Fs::getFileNameFromPath(node->path);
     
-    this->commandLine = BString::join("\0", args);
+    // commandLine is the NUL-separated argv: /proc/<pid>/cmdline
+    // serves it to the guest verbatim (setupCommandlineNode) and
+    // parsers split it on the NUL bytes. The delimiter must be a
+    // BString carrying its length -- join's const char* overload
+    // measures the delimiter with strlen, so "\0" contributed zero
+    // bytes and argv landed concatenated (exit logs recorded e.g.
+    // 'wine64C:\windows\system32\wineboot.exe--init').
+    this->commandLine = BString::join(BString('\0'), args);
             
     this->path.clear();
     for (U32 i=0;i<envs.size();i++) {

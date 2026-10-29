@@ -4,6 +4,11 @@
 #define __CPU64_H__
 #define __KMEMORY64_H__
 #define __KPROCESS_H__
+// log.h is suppressed too: drvinittrace.h (campaign section 4.35) includes
+// it for klog_fmt, which this file already stubs below; the rest of log.h
+// declares BString-by-value functions from the suppressed emulator
+// environment, so it can never parse in this translation unit.
+#define __LOG_H__
 #define BOXEDWINE_VULKAN64
 #include <cstdint>
 #include <cstring>
@@ -115,6 +120,8 @@ void vkCmdUpdateBuffer(U64, U64, U64, U64, const void*);
 void vkUpdateDescriptorSets(U64, U32, const void*, U32, const void*);
 void vkCmdBindVertexBuffers2EXT(U64, U32, U32, const U64*, const U64*, const U64*, const U64*);
 void vkCmdDispatch(U64, U32, U32, U32);
+void vkCmdCopyBuffer(U64, U64, U64, U32, const void*);
+void vkCmdPushDescriptorSetKHR(U64, U32, U64, U32, U32, const void*);
 void vkGetDeviceImageMemoryRequirements(U64, const void*, void*);
 void vkGetDeviceQueue2(U64, const void*, U64*);
 void vkGetRenderAreaGranularity(U64, U64, U32*);
@@ -489,9 +496,20 @@ int main() {
         // fall back silently to 4 bytes (wrong for B4G4R4A4, B5G6R5, A1R5G5B5 and D32S8).
         // Expected sizes come from the Vulkan spec, independent of fmt_bpp's own table.
         const std::map<U32, U32> spec = {
-            {2, 2}, {3, 2}, {5, 2}, {7, 2}, {8, 2}, {9, 1}, {16, 2}, {37, 4}, {38, 4}, {41, 4}, {43, 4},
-            {44, 4}, {50, 4}, {64, 4}, {70, 2}, {76, 2}, {77, 4}, {83, 4}, {91, 8}, {97, 8}, {98, 4},
-            {99, 4}, {100, 4}, {103, 8}, {109, 16}, {122, 4}, {124, 2}, {125, 4}, {126, 4}, {129, 4}, {130, 8}};
+            {2, 2}, {3, 2}, {5, 2}, {7, 2}, {8, 2}, {9, 1}, {10, 1}, {13, 1}, {14, 1}, {16, 2},
+            {17, 2}, {20, 2}, {21, 2}, {37, 4}, {38, 4}, {41, 4}, {42, 4}, {43, 4}, {44, 4}, {50, 4},
+            {64, 4}, {70, 2}, {74, 2}, {75, 2}, {76, 2}, {77, 4}, {81, 4}, {82, 4}, {83, 4}, {91, 8},
+            {95, 8}, {96, 8}, {97, 8}, {98, 4}, {99, 4}, {100, 4}, {101, 8}, {102, 8}, {103, 8},
+            {107, 16}, {108, 16}, {109, 16}, {122, 4}, {124, 2}, {125, 4}, {126, 4}, {129, 4}, {130, 8}};
+        // PRODUCT FINDING, fixed (fmtbpp lane, 2026-10-28): fmt_bpp used to have no case
+        // for 13 integer formats v2FormatIsSupportedImage() accepts (17, 20, 21, 74, 75,
+        // 81, 82, 95, 96, 101, 102, 107, 108), so each call landed in the loud default
+        // (returned 4, counted "format-bpp") and mis-sized image memory math -- 4 B
+        // instead of 16 B for the RGBA32 integer pair. The pins that asserted that
+        // fallback while it was live (vk64 harness repair, 2026-10-28) are gone: fmt_bpp
+        // now has explicit cases for all 48 non-BC supported formats, so every format
+        // below asserts its spec size at full strength and no supported format may
+        // count "format-bpp".
         const U64 before = vk64BridgeUnsupportedCount("format-bpp");
         for (U32 f : kV2SupportedTextureFormats) {
             if (v2FormatIsBC(f)) continue;     // block-compressed sizes come from fmt_block
@@ -501,7 +519,8 @@ int main() {
         }
         assert(vk64BridgeUnsupportedCount("format-bpp") == before);
         assert(fmt_block(131).bytes == 8 && fmt_block(133).bytes == 8 && fmt_block(135).bytes == 16);
-        assert(fmt_bpp(0x7ffffff0u) == 4 && vk64BridgeUnsupportedCount("format-bpp") == before + 1);   // unknown -> loud
+        const U64 beforeUnknown = vk64BridgeUnsupportedCount("format-bpp");
+        assert(fmt_bpp(0x7ffffff0u) == 4 && vk64BridgeUnsupportedCount("format-bpp") == beforeUnknown + 1);   // unknown -> loud
         for (U32 f : kV2SupportedVertexFormats) {
             const U64 vb = vk64BridgeUnsupportedCount("vertex-format-size");
             assert(v2VertexFormatBytes(f) > 0 && v2VertexFormatBytes(f) <= 16);
@@ -659,11 +678,29 @@ int main() {
     memory32.memcpyToGuest(512, &allocation32, sizeof(allocation32));
     VK32Args args32{}; args32.a[1] = 512; args32.a[3] = 640;
     {
-        const U64 before = vk64BridgeUnsupportedCount("compute-pipeline");
+        // Compute pipelines are recorded as real objects (vkd3d-proton
+        // creates internal compute pipelines during D3D12 device creation
+        // and treats creation failure as device-fatal). The guest shim
+        // marshals the standard layout -- create infos in a[3], allocator
+        // in a[4] (null here), out array in a[5] -- and the bridge records
+        // the stage module, layout, specialization and root census on the
+        // object, so dispatches recorded on this ABI are served at submit
+        // (section 4.59; the full serving guard is in the descriptor
+        // section below). Integ's section 4.40 (d3d12-32) corrected this
+        // same block to the shim packing after fixing the handler's
+        // out-slot read; the two texts are one here.
+        U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+        vk32abi::VkComputePipelineCreateInfo cci32{};
+        cci32.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cci32.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cci32.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+        memory32.memcpyToGuest(1024, &cci32, sizeof(cci32));
         memory32.writeq(704, 0xdeadbeefull);
-        VK32Args cp{}; cp.a[2] = 1; cp.a[3] = 512; cp.a[4] = 704;
-        assert((S64)call32(VK64_fn_vkCreateComputePipelines, cp) == VK_ERROR_FEATURE_NOT_PRESENT);
-        assert(memory32.readq(704) == 0 && vk64BridgeUnsupportedCount("compute-pipeline") == before + 1);
+        // Trap args per libvk32.c: a[3]=pCreateInfos, a[4]=pAllocator
+        // (NULL here, as vkd3d passes), a[5]=pPipelines.
+        VK32Args cp{}; cp.a[0] = dev32Id; cp.a[2] = 1; cp.a[3] = 1024; cp.a[5] = 704;
+        assert((S64)call32(VK64_fn_vkCreateComputePipelines, cp) == VK_SUCCESS);
+        assert(memory32.readq(704) != 0);
     }
     assert(call32(VK64_fn_vkAllocateMemory, args32) == VK_SUCCESS);
     U64 allocationId32 = memory32.readq(640);
@@ -743,6 +780,480 @@ int main() {
         assert(call32b(VK64_fn_vkFreeMemory, fr) == VK_SUCCESS);
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)");
+    }
+    // ---- 32-bit memory properties: the advertised table must satisfy
+    // vkd3d-proton's hard memory-type masks for every D3D12 heap class.
+    // vkd3d_select_memory_flags requires DEVICE_LOCAL (0x1) for DEFAULT,
+    // DEVICE_LOCAL | HOST_COHERENT (0x5) for UPLOAD on a UMA/HVV device,
+    // and HOST_VISIBLE | HOST_CACHED (0xA) for READBACK and CUSTOM
+    // WRITE_BACK; vkd3d_find_memory_types_with_flags is a superset test,
+    // so each required mask needs at least one advertised type carrying
+    // all of its bits. The pre-fix table (single type 0x0007, no
+    // HOST_CACHED) left both READBACK masks empty, and every 32-bit
+    // vkd3d readback committed resource failed E_OUTOFMEMORY before
+    // vkAllocateMemory was attempted (cs12-32, batch gate #2). DXVK
+    // never needed the bit (its allocator strips HOST_CACHED and
+    // retries), and with a single type its choice cannot change.
+    {
+        KMemory memM; CPU cpuM{&memM};
+        auto callM = [&](U32 fn, const VK32Args& args) {
+            memM.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuM, fn, 128);
+        };
+        const U32 requiredMasks[3] = {0x1, 0x5, 0xA};
+        auto checkTable = [&](U32 base) {
+            assert(memM.readd(base + 0) == 1);                 // memoryTypeCount
+            U32 flags = memM.readd(base + 4);                  // memoryTypes[0].propertyFlags
+            assert(memM.readd(base + 8) == 0);                 // memoryTypes[0].heapIndex
+            for (U32 mask : requiredMasks)
+                assert((flags & mask) == mask);                // the only type satisfies every heap-class mask
+            U32 heapOff = base + 4 + 32 * 8;
+            assert(memM.readd(heapOff) == 1);                  // memoryHeapCount
+            assert(memM.readq(heapOff + 4) == 0x100000000ULL); // heap 0 size: 4 GiB
+            assert(memM.readd(heapOff + 12) == 0x1);           // heap 0 flags: DEVICE_LOCAL
+        };
+        for (U32 i = 0; i < 1024; i += 4) memM.writed(8192 + i, 0xAAAAAAAA);
+        VK32Args mp{}; mp.a[1] = 8192;
+        assert(callM(VK64_fn_vkGetPhysicalDeviceMemoryProperties, mp) == 0);
+        checkTable(8192);
+        for (U32 i = 0; i < 1024; i += 4) memM.writed(16384 + i, 0xAAAAAAAA);
+        VK32Args mp2{}; mp2.a[1] = 16384;
+        assert((S64)callM(VK64_fn_vkGetPhysicalDeviceMemoryProperties2, mp2) == VK_SUCCESS);
+        checkTable(16384 + 8); // memProps sit behind sType + pNext in the *2 struct
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)");
+    }
+    // ---- vkCmdCopyImageToBuffer (32-bit): the recorded CopyI2B must carry
+    // the region fields for every trap form (campaign 4.66). The handler
+    // used to record an all-zero CopyI2B (only c.a/c.b set), so
+    // setupReadbacks dropped the command on its w/h guard and every 32-bit
+    // image->buffer readback served zeros -- cs12-32's TEX variant failed
+    // bad=16 while its BUF/BUF2 variants passed. Drive the real traps with
+    // crafted i386 regions, pin the recorded fields, then prove the submit
+    // path accepts the records: setupReadbacks must plan both readbacks
+    // and the serializer must emit the V2 READBACK record.
+    {
+        KMemory memoryI; CPU cpuI{&memoryI};
+        auto callI = [&](U32 fn, const VK32Args& a) {
+            memoryI.memcpyToGuest(128, &a, sizeof(a));
+            return vk32Bridge(&cpuI, fn, 128);
+        };
+        U64 devIId; createObj32<Device>(K_DEVICE, devIId);
+        U64 imgMemId; auto* imgMem = createObj32<DeviceMemory>(K_MEMORY, imgMemId);
+        imgMem->size = 4096; imgMem->va = memoryI.mmapReserveAndMap(4096, 3);
+        U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+        img->w = 4; img->h = 4; img->d = 1; img->layers = 1; img->mips = 1;
+        img->format = VK_FORMAT_R8G8B8A8_UNORM; img->mem = imgMemId; img->memOff = 0; img->pixBytes = 64;
+        U64 bufMemId; auto* bufMem = createObj32<DeviceMemory>(K_MEMORY, bufMemId);
+        bufMem->size = 4096; bufMem->va = memoryI.mmapReserveAndMap(4096, 3);
+        U64 bufId; auto* buf = createObj32<Buffer>(K_BUFFER, bufId);
+        buf->size = 1024; buf->mem = bufMemId; buf->memOff = 0;
+        U64 cbIId; auto* cbI = createObj32<CmdBuf>(K_CMDBUF, cbIId);
+        // v1 form: VkBufferImageCopy at guest 2048 (shim packing a[1]=src,
+        // a[3]=dst, a[4]=count, a[5]=regions; libvk32.c).
+        vk32abi::VkBufferImageCopy r1{};
+        r1.bufferOffset = 64; r1.bufferRowLength = 8; r1.bufferImageHeight = 4;
+        r1.imageOffset = {1, 2, 0}; r1.imageExtent = {3, 2, 1};
+        memoryI.memcpyToGuest(2048, &r1, sizeof(r1));
+        VK32Args a1{}; a1.a[0] = cbIId; a1.a[1] = imgId; a1.a[2] = 0; a1.a[3] = bufId; a1.a[4] = 1; a1.a[5] = 2048;
+        callI(VK64_fn_vkCmdCopyImageToBuffer, a1);
+        // *2KHR form: VkBufferImageCopy2 (sType/pNext head) at guest 2176;
+        // the shim unpacks the Info2 into the same trap shape.
+        vk32abi::VkBufferImageCopy2 r2{};
+        r2.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
+        r2.bufferOffset = 128; r2.bufferRowLength = 0; r2.bufferImageHeight = 0;
+        r2.imageOffset = {0, 0, 0}; r2.imageExtent = {4, 4, 1};
+        memoryI.memcpyToGuest(2176, &r2, sizeof(r2));
+        VK32Args a2{}; a2.a[0] = cbIId; a2.a[1] = imgId; a2.a[2] = 0; a2.a[3] = bufId; a2.a[4] = 1; a2.a[5] = 2176;
+        callI(VK64_fn_vkCmdCopyImageToBuffer2KHR, a2);
+        assert(cbI->cmds.size() == 2);
+        assert(cbI->cmds[0].kind == CMD_COPY_I2B);
+        const CopyI2B& c1 = cbI->cmds[0].copyI2B;
+        assert(c1.srcImage == imgId && c1.dstBuffer == bufId && c1.bufOff == 64 &&
+               c1.rowLen == 8 && c1.imgH == 4 && c1.ox == 1 && c1.oy == 2 && c1.w == 3 && c1.h == 2);
+        assert(cbI->cmds[1].kind == CMD_COPY_I2B);
+        const CopyI2B& c2 = cbI->cmds[1].copyI2B;
+        assert(c2.srcImage == imgId && c2.dstBuffer == bufId && c2.bufOff == 128 &&
+               c2.rowLen == 0 && c2.imgH == 0 && c2.ox == 0 && c2.oy == 0 && c2.w == 4 && c2.h == 4);
+        // Submit path: neither record dies on the setupReadbacks w/h guard,
+        // and the serializer pairs the 4x4 copy with a READBACK record.
+        g_v2Pending.clear();
+        setupReadbacks({{cbI, cbIId}});
+        assert(g_readbackPending.size() == 2);
+        serializeSubmitV2({{cbI, cbIId}});
+        bool sawRb = false;
+        for (const auto& chunk : g_v2Pending.back().chunks) {
+            for (size_t at = 16; at < chunk.size();) {
+                U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                const U8* pl = chunk.data() + at + 8;
+                if (type == 0x13) { // V2_READBACK
+                    U64 src; U32 w, h;
+                    memcpy(&src, pl, 8); memcpy(&w, pl + 8, 4); memcpy(&h, pl + 12, 4);
+                    if (src == imgId && w == 4 && h == 4) sawRb = true;
+                }
+                at += 8 + len;
+            }
+        }
+        assert(sawRb);
+        g_v2Pending.clear();
+        g_readbackPending.clear();
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 CopyImageToBuffer records region fields (v1 + 2KHR) and submits a READBACK");
+    }
+    // ---- vkCmdClearColorImage (32-bit): the clear value must land as whole
+    // texels. The old handler took only the first 4 bytes of the 16-byte
+    // VkClearColorValue and repeated those in 4-byte steps, so a wide texel
+    // was tiled with its first component (an RGBA32 clear came out
+    // [R,R,R,R] per texel) and a footprint not divisible by 4 was overrun.
+    {
+        KMemory memC; CPU cpuC{&memC};
+        auto callC = [&](U32 fn, const VK32Args& args) {
+            memC.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuC, fn, 128);
+        };
+        vk32abi::VkMemoryAllocateInfo allocC{};
+        allocC.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocC.allocationSize = 8192;
+        memC.memcpyToGuest(512, &allocC, sizeof(allocC));
+        VK32Args amC{}; amC.a[1] = 512; amC.a[3] = 640;
+        assert(callC(VK64_fn_vkAllocateMemory, amC) == VK_SUCCESS);
+        U64 memIdC = memC.readq(640);
+        auto* dmC = objOf32<DeviceMemory>(memIdC, K_MEMORY, "test");
+        assert(dmC && dmC->va);
+        auto clearCase = [&](U32 format, U32 w, U32 h, const vk32abi::VkClearColorValue& col,
+                             const std::vector<U8>& expect) {
+            for (U32 i = 0; i < 8192; ++i) memC.bytes[dmC->va + i] = 0xEE;
+            U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+            img->w = w; img->h = h; img->d = 1; img->layers = 1; img->format = format;
+            img->mem = memIdC; img->memOff = 128;
+            memC.memcpyToGuest(2048, &col, sizeof(col));
+            VK32Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048; cc.a[4] = 1; cc.a[5] = 3072;
+            assert(callC(VK64_fn_vkCmdClearColorImage, cc) == 0);
+            const U32 base = (U32)dmC->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memC.bytes[base + i] == expect[i]);
+            // Nothing outside the footprint may be written (the old loop
+            // wrote a full 4-byte word past a non-multiple-of-4 footprint).
+            assert(memC.bytes[base - 1] == 0xEE && memC.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texel = [](const std::vector<U8>& one, int n) {
+            std::vector<U8> out; for (int i = 0; i < n; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        auto f32x4 = [](float a, float b, float c, float d) {
+            vk32abi::VkClearColorValue v{}; v.float32[0] = a; v.float32[1] = b; v.float32[2] = c; v.float32[3] = d; return v;
+        };
+        // R32G32B32A32_SFLOAT (109, 16 B/texel): the whole clear value per texel.
+        clearCase(109, 2, 1, f32x4(1.0f, 0.5f, 0.25f, 1.0f),
+                  texel({0x00,0x00,0x80,0x3F, 0x00,0x00,0x00,0x3F, 0x00,0x00,0x80,0x3E, 0x00,0x00,0x80,0x3F}, 2));
+        // R32G32B32A32_UINT (107): all four uint32 components per texel.
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0x11223344u; v.uint32[1] = 0x55667788u; v.uint32[2] = 0x99AABBCCu; v.uint32[3] = 0xDDEEFF00u;
+          clearCase(107, 2, 1, v, texel({0x44,0x33,0x22,0x11, 0x88,0x77,0x66,0x55, 0xCC,0xBB,0xAA,0x99, 0x00,0xFF,0xEE,0xDD}, 2)); }
+        // R32G32_SFLOAT (103, 8 B/texel): the first two components per texel.
+        clearCase(103, 2, 1, f32x4(2.0f, -1.0f, 9.0f, 9.0f),
+                  texel({0x00,0x00,0x00,0x40, 0x00,0x00,0x80,0xBF}, 2));
+        // R16G16B16A16_SFLOAT (97, 8 B/texel): components converted to half floats.
+        clearCase(97, 2, 1, f32x4(1.0f, 0.5f, 0.0f, -1.0f),
+                  texel({0x00,0x3C, 0x00,0x38, 0x00,0x00, 0x00,0xBC}, 2));
+        // R16G16B16A16_UINT (95): each uint32 component truncated to uint16.
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0x11223344u; v.uint32[1] = 0x55667788u; v.uint32[2] = 0x99AABBCCu; v.uint32[3] = 0xDDEEFF00u;
+          clearCase(95, 2, 1, v, texel({0x44,0x33, 0x88,0x77, 0xCC,0xBB, 0x00,0xFF}, 2)); }
+        // R8G8B8A8_UNORM (37, 4 B/texel): float components quantized per texel
+        // (the old splat wrote the raw bits of float32[0] instead).
+        clearCase(37, 2, 2, f32x4(1.0f, 0.0f, 0.5f, 1.0f), texel({0xFF,0x00,0x80,0xFF}, 4));
+        // R8_UNORM (9, 1 B/texel), 3x1 footprint: 3 bytes, no overrun.
+        clearCase(9, 3, 1, f32x4(1.0f, 0.0f, 0.0f, 1.0f), {0xFF,0xFF,0xFF});
+        // Depth/stencil formats keep the named raw fill: the fallback
+        // counts clear-color-layout and repeats the clear value's first
+        // texelSize bytes per texel (D16_UNORM = 124, 2 B/texel). (Packed
+        // colour formats converted instead -- the packed block below.)
+        { const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+          vk32abi::VkClearColorValue v{}; v.uint32[0] = 0xAABBCCDDu;
+          clearCase(124, 2, 1, v, texel({0xDD,0xCC}, 2));
+          assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore + 1); }
+        // R32_SFLOAT (100) control: single-component behaviour is unchanged.
+        clearCase(100, 2, 1, f32x4(3.0f, 9.0f, 9.0f, 9.0f),
+                  texel({0x00,0x00,0x40,0x40}, 2));
+        VK32Args frC{}; frC.a[1] = memIdC;
+        assert(callC(VK64_fn_vkFreeMemory, frC) == VK_SUCCESS);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 clear-color writes whole texels (wide, half, int and UNORM formats; no footprint overrun)");
+    }
+    // ---- vkCmdClearColorImage subresource ranges (both ABIs): a clear must
+    // write only the requested mips/layers. The handlers used to ignore
+    // VkImageSubresourceRange and fill the whole image. Image: R8G8B8A8_UNORM
+    // 4x4, 3 mips, 2 layers -- mip sizes 64/16/4, layer stride 84, total 168.
+    // Layer 0: mip0@0, mip1@64, mip2@80. Layer 1: mip0@84, mip1@148, mip2@164.
+    {
+        const U32 REM = 0xFFFFFFFFu;
+        auto inSpans = [](U32 o, const std::vector<std::pair<U32, U32>>& spans) {
+            for (const auto& sp : spans) if (o >= sp.first && o < sp.first + sp.second) return true;
+            return false;
+        };
+        // 32-bit ABI.
+        {
+            KMemory memS; CPU cpuS{&memS};
+            auto callS = [&](U32 fn, const VK32Args& args) {
+                memS.memcpyToGuest(128, &args, sizeof(args));
+                return vk32Bridge(&cpuS, fn, 128);
+            };
+            vk32abi::VkMemoryAllocateInfo allocS{};
+            allocS.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocS.allocationSize = 8192;
+            memS.memcpyToGuest(512, &allocS, sizeof(allocS));
+            VK32Args amS{}; amS.a[1] = 512; amS.a[3] = 640;
+            assert(callS(VK64_fn_vkAllocateMemory, amS) == VK_SUCCESS);
+            U64 memIdS = memS.readq(640);
+            auto* dmS = objOf32<DeviceMemory>(memIdS, K_MEMORY, "test");
+            assert(dmS && dmS->va);
+            U64 imgIdS; auto* imgS = createObj32<Image>(K_IMAGE, imgIdS);
+            imgS->w = 4; imgS->h = 4; imgS->d = 1; imgS->mips = 3; imgS->layers = 2;
+            imgS->format = 37; imgS->mem = memIdS; imgS->memOff = 256;
+            vk32abi::VkClearColorValue colS{};
+            colS.float32[0] = 1.0f; colS.float32[1] = 0.0f; colS.float32[2] = 0.5f; colS.float32[3] = 1.0f;
+            memS.memcpyToGuest(2048, &colS, sizeof(colS));
+            const U8 texelS[4] = {0xFF, 0x00, 0x80, 0xFF};   // RGBA8 UNORM conversion of the colour
+            const U32 baseS = (U32)dmS->va + 256;
+            auto runS = [&](const std::vector<ClearRangeArg>& ranges,
+                            const std::vector<std::pair<U32, U32>>& cleared) {
+                for (U32 i = 0; i < 8192; ++i) memS.bytes[dmS->va + i] = 0xEE;
+                if (!ranges.empty()) memS.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+                VK32Args cc{}; cc.a[1] = imgIdS; cc.a[3] = 2048;
+                cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+                assert(callS(VK64_fn_vkCmdClearColorImage, cc) == 0);
+                for (U32 o = 0; o < 168; ++o) {
+                    const U8 want = inSpans(o, cleared) ? texelS[o % 4] : (U8)0xEE;
+                    assert(memS.bytes[baseS + o] == want);
+                }
+                assert(memS.bytes[baseS - 1] == 0xEE && memS.bytes[baseS + 168] == 0xEE);
+            };
+            runS({{1, 1, 1, 1, 1}}, {{148, 16}});                                   // one mip, one layer
+            runS({{1, 0, 2, 0, 1}}, {{0, 64}, {64, 16}});                          // middle mip range, layer 0
+            runS({{1, 2, REM, 1, REM}}, {{164, 4}});                               // REMAINING_* from the tail
+            runS({{1, 1, 99, 0, 99}}, {{64, 16}, {80, 4}, {148, 16}, {164, 4}});   // over-range counts clamp
+            runS({{1, 2, 1, 0, 1}, {1, 0, 1, 1, 1}}, {{80, 4}, {84, 64}});         // two ranges in one call
+            runS({}, {{0, 168}});                                                  // no range list: whole image
+            const U64 aspBefore = vk64BridgeUnsupportedCount("clear-color-aspect");
+            runS({{2, 0, REM, 0, REM}}, {});                                       // depth aspect: declined by name
+            assert(vk64BridgeUnsupportedCount("clear-color-aspect") == aspBefore + 1);
+            VK32Args frS{}; frS.a[1] = memIdS;
+            assert(callS(VK64_fn_vkFreeMemory, frS) == VK_SUCCESS);
+            g_mem32 = nullptr; g_mem = &memory;
+        }
+        // 64-bit ABI (the pattern is the raw 16-byte colour, phase-continuous
+        // with the image start -- the handler's historical semantics).
+        {
+            U64 memId; auto* dm = createObj<DeviceMemory>(K_MEMORY, memId);
+            dm->size = 8192; dm->va = memory.mmapReserveAndMap(dm->size, 3);
+            U64 imgId; auto* img = createObj<Image>(K_IMAGE, imgId);
+            img->w = 4; img->h = 4; img->d = 1; img->mips = 3; img->layers = 2;
+            img->format = 37; img->mem = memId; img->memOff = 256;
+            const float cf[4] = {1.0f, 0.5f, 0.25f, 1.0f};
+            U8 pat[16]; memcpy(pat, cf, 16);
+            memory.memcpyToGuest(2048, pat, 16);
+            const U64 base = dm->va + 256;
+            auto run = [&](const std::vector<ClearRangeArg>& ranges,
+                           const std::vector<std::pair<U32, U32>>& cleared) {
+                for (U32 i = 0; i < 8192; ++i) memory.bytes[dm->va + i] = 0xEE;
+                if (!ranges.empty()) memory.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+                VK64Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048;
+                cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+                memory.memcpyToGuest(128, &cc, sizeof(cc));
+                assert(vk64Bridge(&cpu, VK64_fn_vkCmdClearColorImage, 128) == 0);
+                for (U32 o = 0; o < 168; ++o) {
+                    const U8 want = inSpans(o, cleared) ? pat[o % 16] : (U8)0xEE;
+                    assert(memory.bytes[base + o] == want);
+                }
+                assert(memory.bytes[base - 1] == 0xEE && memory.bytes[base + 168] == 0xEE);
+            };
+            run({{1, 1, 1, 1, 1}}, {{148, 16}});                                   // one mip, one layer
+            run({{1, 1, REM, 0, REM}}, {{64, 16}, {80, 4}, {148, 16}, {164, 4}});  // REMAINING_* past mip 0
+            run({{1, 0, 99, 0, 99}}, {{0, 168}});                                  // over-range counts clamp
+            run({}, {{0, 168}});                                                   // no range list: whole image
+            const U64 aspBefore = vk64BridgeUnsupportedCount("clear-color-aspect");
+            run({{2, 0, REM, 0, REM}}, {});                                        // depth aspect: declined by name
+            assert(vk64BridgeUnsupportedCount("clear-color-aspect") == aspBefore + 1);
+        }
+        puts("PASS: vkCmdClearColorImage honours subresource ranges (both ABIs; outside bytes untouched, REMAINING and clamp)");
+    }
+    // ---- vkCmdClearColorImage (32-bit), packed formats: the clear value
+    // must be bit-packed into the format's field layout (fields in
+    // format-name order, most significant first). Distinctive component
+    // values make field bleeding, swapped field order and
+    // truncation-instead-of-rounding each change the expected bytes.
+    {
+        KMemory memP; CPU cpuP{&memP};
+        auto callP = [&](U32 fn, const VK32Args& args) {
+            memP.memcpyToGuest(128, &args, sizeof(args));
+            return vk32Bridge(&cpuP, fn, 128);
+        };
+        vk32abi::VkMemoryAllocateInfo allocP{};
+        allocP.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocP.allocationSize = 8192;
+        memP.memcpyToGuest(512, &allocP, sizeof(allocP));
+        VK32Args amP{}; amP.a[1] = 512; amP.a[3] = 640;
+        assert(callP(VK64_fn_vkAllocateMemory, amP) == VK_SUCCESS);
+        U64 memIdP = memP.readq(640);
+        auto* dmP = objOf32<DeviceMemory>(memIdP, K_MEMORY, "test");
+        assert(dmP && dmP->va);
+        auto clearCaseP = [&](U32 format, const vk32abi::VkClearColorValue& col,
+                              const std::vector<U8>& expect) {
+            for (U32 i = 0; i < 8192; ++i) memP.bytes[dmP->va + i] = 0xEE;
+            U64 imgId; auto* img = createObj32<Image>(K_IMAGE, imgId);
+            img->w = 2; img->h = 1; img->d = 1; img->layers = 1; img->format = format;
+            img->mem = memIdP; img->memOff = 128;
+            memP.memcpyToGuest(2048, &col, sizeof(col));
+            VK32Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048; cc.a[4] = 1; cc.a[5] = 3072;
+            assert(callP(VK64_fn_vkCmdClearColorImage, cc) == 0);
+            const U32 base = (U32)dmP->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memP.bytes[base + i] == expect[i]);
+            assert(memP.bytes[base - 1] == 0xEE && memP.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texelP = [](const std::vector<U8>& one) {
+            std::vector<U8> out; for (int i = 0; i < 2; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        auto f32x4 = [](float a, float b, float c, float d) {
+            vk32abi::VkClearColorValue v{}; v.float32[0] = a; v.float32[1] = b; v.float32[2] = c; v.float32[3] = d; return v;
+        };
+        const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+        // R4G4B4A4_UNORM_PACK16 (2): R=15, G=round(7.5)=8, B=0, A=round(3.75)=4.
+        clearCaseP(2, f32x4(1.0f, 0.5f, 0.0f, 0.25f), texelP({0x04,0xF8}));
+        // B4G4R4A4_UNORM_PACK16 (3): B=15, G=8, R=4, A=0 (R/B swapped vs fmt 2).
+        clearCaseP(3, f32x4(0.25f, 0.5f, 1.0f, 0.0f), texelP({0x40,0xF8}));
+        // R5G6B5_UNORM_PACK16 (4): R=31, G=round(31.5)=32, B=round(7.75)=8.
+        clearCaseP(4, f32x4(1.0f, 0.5f, 0.25f, 0.0f), texelP({0x08,0xFC}));
+        // B5G6R5_UNORM_PACK16 (5): B=round(23.25)=23, G=round(15.75)=16, R=16.
+        clearCaseP(5, f32x4(0.5f, 0.25f, 0.75f, 0.0f), texelP({0x10,0xBA}));
+        // R5G5B5A1_UNORM_PACK16 (6): R=31, G=0, B=16, A=1; alpha 0.4 -> A=0.
+        clearCaseP(6, f32x4(1.0f, 0.0f, 0.5f, 1.0f), texelP({0x21,0xF8}));
+        clearCaseP(6, f32x4(1.0f, 0.0f, 0.5f, 0.4f), texelP({0x20,0xF8}));
+        // B5G5R5A1_UNORM_PACK16 (7): B=31, G=0, R=16, A=0.
+        clearCaseP(7, f32x4(0.5f, 0.0f, 1.0f, 0.0f), texelP({0x20,0xF8}));
+        // A1R5G5B5_UNORM_PACK16 (8): A=1, R=8, G=16, B=23 (alpha is the MSB).
+        clearCaseP(8, f32x4(0.25f, 0.5f, 0.75f, 1.0f), texelP({0x17,0xA2}));
+        // A2B10G10R10_UNORM_PACK32 (64): A=round(2.25)=2, B=round(255.75)=256,
+        // G=round(511.5)=512, R=1023.
+        clearCaseP(64, f32x4(1.0f, 0.5f, 0.25f, 0.75f), texelP({0xFF,0x03,0x08,0x90}));
+        // A2B10G10R10_UINT_PACK32 (68): uint32 components' low bits only
+        // (R carries excess bits that must be masked off).
+        { vk32abi::VkClearColorValue v{}; v.uint32[0] = 0xFFFFF123u; v.uint32[1] = 0x2ABu; v.uint32[2] = 0x3FFu; v.uint32[3] = 0x2u;
+          clearCaseP(68, v, texelP({0x23,0xAD,0xFA,0xBF})); }
+        // B10G11R11_UFLOAT_PACK32 (122): R=1.0 -> 0x3C0, G=0.5 -> 0x380 at
+        // bit 11, B=2.0 -> 0x200 at bit 22.
+        clearCaseP(122, f32x4(1.0f, 0.5f, 2.0f, 0.0f), texelP({0xC0,0x03,0x1C,0x80}));
+        // UFLOAT rounding: 0.3 rounds UP to field 13 (truncation gives 12).
+        clearCaseP(122, f32x4(0.3f, 0.0f, 0.0f, 0.0f), texelP({0x4D,0x03,0x00,0x00}));
+        // UFLOAT subnormal: 2^-20 is exactly one subnormal step of R11.
+        clearCaseP(122, f32x4(0x1p-20f, 0.0f, 0.0f, 0.0f), texelP({0x01,0x00,0x00,0x00}));
+        // No packed case may fall into the named raw fill.
+        assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore);
+        VK32Args frP{}; frP.a[1] = memIdP;
+        assert(callP(VK64_fn_vkFreeMemory, frP) == VK_SUCCESS);
+        g_mem32 = nullptr; g_mem = &memory;
+        puts("PASS: Vulkan32 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT)");
+    }
+    // ---- vkCmdClearColorImage (64-bit), packed formats: the clear value
+    // must be bit-packed into the format's field layout (fields in
+    // format-name order, most significant first). The handler used to
+    // repeat the raw 16-byte colour for every format, so a 2-byte texel
+    // received float32[0]'s low half tiled at a 16-byte period and a
+    // 4-byte texel float32[0]'s raw bits. Same distinctive values as the
+    // 32-bit packed block: field bleeding, swapped field order and
+    // truncation-instead-of-rounding each change the expected bytes.
+    // The subrange cases pin the phase invariant: vkClearColorFill
+    // indexes the pattern from the image start and every subresource
+    // offset is a whole number of texels, so a one-mip clear lands
+    // exactly the bytes the whole-image fill lands at those offsets
+    // (the chosen mip offsets are texel-aligned but not 16-aligned, so
+    // a 16-byte-period phase would show).
+    {
+        U64 memId; auto* dm = createObj<DeviceMemory>(K_MEMORY, memId);
+        dm->size = 8192; dm->va = memory.mmapReserveAndMap(dm->size, 3);
+        auto f32col = [](float a, float b, float c, float d) {
+            std::vector<U8> out(16); const float f[4] = {a, b, c, d};
+            memcpy(out.data(), f, 16); return out;
+        };
+        auto u32col = [](U32 a, U32 b, U32 c, U32 d) {
+            std::vector<U8> out(16); const U32 u[4] = {a, b, c, d};
+            memcpy(out.data(), u, 16); return out;
+        };
+        auto runClear = [&](U32 format, U32 w, U32 h, U32 mips, U32 layers,
+                            const std::vector<U8>& col,
+                            const std::vector<ClearRangeArg>& ranges,
+                            const std::vector<U8>& expect) {
+            U64 imgId; auto* img = createObj<Image>(K_IMAGE, imgId);
+            img->w = w; img->h = h; img->d = 1; img->mips = mips; img->layers = layers;
+            img->format = format; img->mem = memId; img->memOff = 128;
+            for (U32 i = 0; i < 8192; ++i) memory.bytes[dm->va + i] = 0xEE;
+            memory.memcpyToGuest(2048, col.data(), 16);
+            if (!ranges.empty()) memory.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+            VK64Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048;
+            cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+            memory.memcpyToGuest(128, &cc, sizeof(cc));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdClearColorImage, 128) == 0);
+            const U64 base = dm->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memory.bytes[base + i] == expect[i]);
+            assert(memory.bytes[base - 1] == 0xEE && memory.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texelX = [](const std::vector<U8>& one, int n) {
+            std::vector<U8> out; for (int i = 0; i < n; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        // Expected footprint for a subrange case: sentinels everywhere,
+        // the texel pattern (phased from the image start) in the spans.
+        auto subExpect = [](U32 total, const std::vector<U8>& texel,
+                            const std::vector<std::pair<U32, U32>>& spans) {
+            std::vector<U8> out(total, 0xEE);
+            for (const auto& sp : spans)
+                for (U32 o = sp.first; o < sp.first + sp.second; ++o) out[o] = texel[o % texel.size()];
+            return out;
+        };
+        const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+        // R4G4B4A4_UNORM_PACK16 (2): R=15, G=round(7.5)=8, B=0, A=round(3.75)=4.
+        runClear(2, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.0f, 0.25f), {}, texelX({0x04,0xF8}, 2));
+        // B4G4R4A4_UNORM_PACK16 (3): B=15, G=8, R=4, A=0 (R/B swapped vs fmt 2).
+        runClear(3, 2, 1, 1, 1, f32col(0.25f, 0.5f, 1.0f, 0.0f), {}, texelX({0x40,0xF8}, 2));
+        // R5G6B5_UNORM_PACK16 (4): R=31, G=round(31.5)=32, B=round(7.75)=8.
+        runClear(4, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {}, texelX({0x08,0xFC}, 2));
+        // B5G6R5_UNORM_PACK16 (5): B=round(23.25)=23, G=round(15.75)=16, R=16.
+        runClear(5, 2, 1, 1, 1, f32col(0.5f, 0.25f, 0.75f, 0.0f), {}, texelX({0x10,0xBA}, 2));
+        // R5G5B5A1_UNORM_PACK16 (6): R=31, G=0, B=16, A=1; alpha 0.4 -> A=0.
+        runClear(6, 2, 1, 1, 1, f32col(1.0f, 0.0f, 0.5f, 1.0f), {}, texelX({0x21,0xF8}, 2));
+        runClear(6, 2, 1, 1, 1, f32col(1.0f, 0.0f, 0.5f, 0.4f), {}, texelX({0x20,0xF8}, 2));
+        // B5G5R5A1_UNORM_PACK16 (7): B=31, G=0, R=16, A=0.
+        runClear(7, 2, 1, 1, 1, f32col(0.5f, 0.0f, 1.0f, 0.0f), {}, texelX({0x20,0xF8}, 2));
+        // A1R5G5B5_UNORM_PACK16 (8): A=1, R=8, G=16, B=23 (alpha is the MSB).
+        runClear(8, 2, 1, 1, 1, f32col(0.25f, 0.5f, 0.75f, 1.0f), {}, texelX({0x17,0xA2}, 2));
+        // A2B10G10R10_UNORM_PACK32 (64): A=round(2.25)=2, B=round(255.75)=256,
+        // G=round(511.5)=512, R=1023.
+        runClear(64, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.25f, 0.75f), {}, texelX({0xFF,0x03,0x08,0x90}, 2));
+        // A2B10G10R10_UINT_PACK32 (68): uint32 components' low bits only
+        // (R carries excess bits that must be masked off).
+        runClear(68, 2, 1, 1, 1, u32col(0xFFFFF123u, 0x2ABu, 0x3FFu, 0x2u), {}, texelX({0x23,0xAD,0xFA,0xBF}, 2));
+        // B10G11R11_UFLOAT_PACK32 (122): R=1.0 -> 0x3C0, G=0.5 -> 0x380 at
+        // bit 11, B=2.0 -> 0x200 at bit 22.
+        runClear(122, 2, 1, 1, 1, f32col(1.0f, 0.5f, 2.0f, 0.0f), {}, texelX({0xC0,0x03,0x1C,0x80}, 2));
+        // UFLOAT rounding: 0.3 rounds UP to field 13 (truncation gives 12).
+        runClear(122, 2, 1, 1, 1, f32col(0.3f, 0.0f, 0.0f, 0.0f), {}, texelX({0x4D,0x03,0x00,0x00}, 2));
+        // UFLOAT subnormal: 2^-20 is exactly one subnormal step of R11.
+        runClear(122, 2, 1, 1, 1, f32col(0x1p-20f, 0.0f, 0.0f, 0.0f), {}, texelX({0x01,0x00,0x00,0x00}, 2));
+        // Subrange phase (R5G6B5, 2x2, 2 mips: mip0 8 B @0, mip1 2 B @8;
+        // 2 layers: layer stride 10 B).
+        runClear(4, 2, 2, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {}, texelX({0x08,0xFC}, 5));
+        runClear(4, 2, 2, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {{1, 1, 1, 0, 1}},
+                 subExpect(10, {0x08,0xFC}, {{8, 2}}));
+        runClear(4, 2, 2, 2, 2, f32col(1.0f, 0.5f, 0.25f, 0.0f), {{1, 0, 1, 1, 1}},
+                 subExpect(20, {0x08,0xFC}, {{10, 8}}));
+        // Subrange phase (A2B10G10R10_UNORM, 2x1, 2 mips: mip0 8 B @0,
+        // mip1 4 B @8).
+        runClear(64, 2, 1, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.75f), {{1, 1, 1, 0, 1}},
+                 subExpect(12, {0xFF,0x03,0x08,0x90}, {{8, 4}}));
+        // D16_UNORM (124) keeps the historical raw fill on the 64-bit
+        // path (the first bytes of the 16-byte pattern) and does not take
+        // the 32-bit path's named fallback -- the clear-color-layout
+        // naming lives in vk32ClearTexel; the counter pin below covers
+        // both statements.
+        runClear(124, 2, 1, 1, 1, u32col(0xAABBCCDDu, 0, 0, 0), {}, {0xDD,0xCC,0xBB,0xAA});
+        // No packed case may fall into the named raw fill.
+        assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore);
+        puts("PASS: Vulkan64 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT; subrange phase)");
     }
     // ---- Entry points that used to be loud stubs: sizing from a create info,
     // shim-local answers (queue2, granularity, sparse, pipeline cache) and the
@@ -1070,6 +1581,562 @@ int main() {
             assert(s32->els.size() == 3);
             for (U32 i = 0; i < 3; i++) assert(s32->els.at(DescKey(20, i)).obj == v[i] && s32->els.at(DescKey(20, i)).range == smpId);
         }
+        // 9. 32-bit compute serving (section 4.59): the full guest path --
+        // shader module, compute pipeline, descriptor set holding a storage
+        // buffer, COMPUTE binds, dispatch, and a copy out of the written
+        // range -- is recorded on this ABI and served by the shared V2
+        // compute records, exactly like the 64-bit path. Before this lane
+        // the pipeline recorded no stage, both descriptor bind gates
+        // dropped COMPUTE binds loudly ("compute-descriptor-sets"),
+        // dispatches were never write-marked, and buffer copies never
+        // deferred: every 32-bit dispatch died at submit as
+        // "compute-dispatch" and readbacks would have served stale bytes.
+        {
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            // One 256 KiB allocation; the source buffer is suballocated at
+            // memOff 8192 (NONZERO -- a write mark keyed buffer-relative
+            // instead of memory-absolute passes memOff 0 and fails here),
+            // the destination at 128 KiB.
+            vk32abi::VkMemoryAllocateInfo ai32{};
+            ai32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai32.allocationSize = 256 * 1024;
+            memory32.memcpyToGuest(600000, &ai32, sizeof(ai32));
+            memory32.writeq(600064, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600000; a.a[3] = 600064;
+              assert((S64)call32(VK64_fn_vkAllocateMemory, a) == VK_SUCCESS); }
+            const U64 mem32Id = memory32.readq(600064);
+            auto* mem32o = objOf32<DeviceMemory>(mem32Id, K_MEMORY, "test");
+            assert(mem32o && mem32o->va);
+            const U64 memVa = mem32o->va;
+            auto mkBuf32 = [&](U64 size, U64 memOff) {
+                vk32abi::VkBufferCreateInfo bci{};
+                bci.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = size;
+                bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                memory32.memcpyToGuest(600128, &bci, sizeof(bci));
+                memory32.writeq(600192, 0);
+                VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600128; a.a[3] = 600192;
+                assert((S64)call32(VK64_fn_vkCreateBuffer, a) == VK_SUCCESS);
+                U64 id = memory32.readq(600192);
+                assert(id != 0);
+                VK32Args b{}; b.a[0] = dev32Id; b.a[1] = id; b.a[2] = mem32Id; b.a[3] = memOff;
+                assert((S64)call32(VK64_fn_vkBindBufferMemory, b) == VK_SUCCESS);
+                return id;
+            };
+            const U64 srcBuf32 = mkBuf32(4096, 8192);
+            const U64 dstBuf32 = mkBuf32(4096, 128 * 1024);
+            // Compute shader module: the same minimal GLCompute module the
+            // 64-bit served-dispatch guard uses.
+            const U32 csWords[] = {
+                0x07230203u, 0x00010500u, 0, 64, 0,
+                (2u << 16) | 17u, 1u,
+                (3u << 16) | 14u, 0u, 1u,
+                (5u << 16) | 15u, 5u, 6u, 0x6e69616du, 0u,
+                (6u << 16) | 16u, 6u, 17u, 1u, 1u, 1u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (5u << 16) | 54u, 1u, 6u, 0u, 2u,
+                (2u << 16) | 248u, 7u,
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            };
+            memory32.memcpyToGuest(600256, csWords, sizeof(csWords));
+            vk32abi::VkShaderModuleCreateInfo smci32{};
+            smci32.sType = vk32abi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci32.codeSize = sizeof(csWords); smci32.pCode = 600256;
+            memory32.memcpyToGuest(600512, &smci32, sizeof(smci32));
+            memory32.writeq(600576, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600512; a.a[3] = 600576;
+              assert((S64)call32(VK64_fn_vkCreateShaderModule, a) == VK_SUCCESS); }
+            const U64 csMod32 = memory32.readq(600576);
+            assert(csMod32 != 0);
+            // Descriptor set layout: one storage buffer at binding 0.
+            vk32abi::VkDescriptorSetLayoutBinding lb32{};
+            lb32.binding = 0; lb32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lb32.descriptorCount = 1; lb32.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            memory32.memcpyToGuest(600640, &lb32, sizeof(lb32));
+            vk32abi::VkDescriptorSetLayoutCreateInfo lci32{};
+            lci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            lci32.bindingCount = 1; lci32.pBindings = 600640;
+            memory32.memcpyToGuest(600704, &lci32, sizeof(lci32));
+            memory32.writeq(600768, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600704; a.a[3] = 600768;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorSetLayout, a) == VK_SUCCESS); }
+            const U64 lay32 = memory32.readq(600768);
+            assert(lay32 != 0);
+            // Pipeline layout over that set layout.
+            memory32.writeq(600832, lay32);
+            vk32abi::VkPipelineLayoutCreateInfo plci32{};
+            plci32.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            plci32.setLayoutCount = 1; plci32.pSetLayouts = 600832;
+            memory32.memcpyToGuest(600896, &plci32, sizeof(plci32));
+            memory32.writeq(600960, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600896; a.a[3] = 600960;
+              assert((S64)call32(VK64_fn_vkCreatePipelineLayout, a) == VK_SUCCESS); }
+            const U64 pl32 = memory32.readq(600960);
+            assert(pl32 != 0);
+            // Compute pipeline, packed per the guest shim (allocator slot
+            // a[4] left null, out array in a[5]): the stage module and
+            // layout land on the recorded object.
+            memory32.memcpyToGuest(601024, "main", 5);
+            vk32abi::VkComputePipelineCreateInfo cci32{};
+            cci32.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci32.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci32.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+            cci32.stage.module = csMod32;
+            cci32.stage.pName = 601024;
+            cci32.layout = pl32;
+            memory32.memcpyToGuest(601088, &cci32, sizeof(cci32));
+            memory32.writeq(601216, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[2] = 1; a.a[3] = 601088; a.a[5] = 601216;
+              assert((S64)call32(VK64_fn_vkCreateComputePipelines, a) == VK_SUCCESS); }
+            const U64 pipe32 = memory32.readq(601216);
+            assert(pipe32 != 0);
+            auto* pipe32o = objOf<Pipeline>(pipe32, K_PIPELINE, "test");
+            assert(pipe32o && pipe32o->cs == csMod32 && pipe32o->layout == pl32);
+            // Descriptor pool + set, updated to srcBuf32 range [128, 512).
+            vk32abi::VkDescriptorPoolSize psz32{};
+            psz32.type = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; psz32.descriptorCount = 1;
+            memory32.memcpyToGuest(601280, &psz32, sizeof(psz32));
+            vk32abi::VkDescriptorPoolCreateInfo pci32{};
+            pci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pci32.maxSets = 1; pci32.poolSizeCount = 1; pci32.pPoolSizes = 601280;
+            memory32.memcpyToGuest(601344, &pci32, sizeof(pci32));
+            memory32.writeq(601408, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601344; a.a[3] = 601408;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorPool, a) == VK_SUCCESS); }
+            const U64 pool32 = memory32.readq(601408);
+            assert(pool32 != 0);
+            memory32.writeq(601472, lay32);
+            vk32abi::VkDescriptorSetAllocateInfo sai32{};
+            sai32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            sai32.descriptorPool = (U32)pool32; sai32.descriptorSetCount = 1; sai32.pSetLayouts = 601472;
+            memory32.memcpyToGuest(601536, &sai32, sizeof(sai32));
+            memory32.writeq(601600, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601536; a.a[2] = 601600;
+              assert((S64)call32(VK64_fn_vkAllocateDescriptorSets, a) == VK_SUCCESS); }
+            const U64 set32 = memory32.readq(601600);
+            assert(set32 != 0);
+            vk32abi::VkDescriptorBufferInfo dbi32{};
+            dbi32.buffer = srcBuf32; dbi32.offset = 128; dbi32.range = 512;
+            memory32.memcpyToGuest(601664, &dbi32, sizeof(dbi32));
+            vk32abi::VkWriteDescriptorSet w32{};
+            w32.dstSet = set32; w32.dstBinding = 0; w32.descriptorCount = 1;
+            w32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w32.pBufferInfo = 601664;
+            memory32.memcpyToGuest(601728, &w32, sizeof(w32));
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 1; a.a[2] = 601728;
+              call32(VK64_fn_vkUpdateDescriptorSets, a); }
+            auto* set32o = objOf<DescSet>(set32, K_SET, "test");
+            assert(set32o && set32o->els.size() == 1);
+            // Record: bind pipeline + set at the COMPUTE bind point,
+            // dispatch, then copy out of the written range.
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pipe32;
+              call32(VK64_fn_vkCmdBindPipeline, a); }
+            memory32.writeq(601792, set32);
+            const U32 dropBefore = vk64BridgeUnsupportedCount("compute-descriptor-sets");
+            const U32 bindDropBefore = vk64BridgeUnsupportedCount("descriptor-bind-point");
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pl32;
+              a.a[3] = 0; a.a[4] = 1; a.a[5] = 601792;
+              call32(VK64_fn_vkCmdBindDescriptorSets, a); }
+            assert(vk64BridgeUnsupportedCount("compute-descriptor-sets") == dropBefore);
+            assert(vk64BridgeUnsupportedCount("descriptor-bind-point") == bindDropBefore);
+            bool sawBindSets = false;
+            for (const Cmd& k : cb32->cmds) if (k.kind == CMD_BIND_SETS) sawBindSets = true;
+            assert(sawBindSets);
+            // Push descriptors at the COMPUTE bind point record too (the
+            // meta-bind path): the gate change covers both bind entry
+            // points, not just vkCmdBindDescriptorSets.
+            vk32abi::VkWriteDescriptorSet pw32{};
+            pw32.dstBinding = 0; pw32.descriptorCount = 1;
+            pw32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            pw32.pBufferInfo = 601664;
+            memory32.memcpyToGuest(601920, &pw32, sizeof(pw32));
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pl32;
+              a.a[3] = 0; a.a[4] = 1; a.a[5] = 601920;
+              call32(VK64_fn_vkCmdPushDescriptorSetKHR, a); }
+            assert(vk64BridgeUnsupportedCount("descriptor-bind-point") == bindDropBefore);
+            assert(cb32->pushSets[0] != 0);
+            auto* pushSet32 = objOf<DescSet>(cb32->pushSets[0], K_SET, "test");
+            assert(pushSet32 && pushSet32->els.count(DescKey(0, 0)) &&
+                   pushSet32->els.at(DescKey(0, 0)).obj == srcBuf32);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 2; a.a[2] = 3; a.a[3] = 4;
+              call32(VK64_fn_vkCmdDispatch, a); }
+            // The dispatch marked the storage range memory-absolute:
+            // memOff 8192 + bufOff 128, exactly 512 bytes; the relative
+            // range carries no mark.
+            assert(vk64FindGpuWrite(srcBuf32, 8192 + 128, 512) != nullptr);
+            assert(vk64FindGpuWrite(srcBuf32, 128, 512) == nullptr);
+            // Sentinels: the destination is poisoned; a deferred copy
+            // leaves it untouched at record time.
+            for (U32 i = 0; i < 512; i++) memory32.bytes[memVa + 128 * 1024 + i] = 0xEE;
+            vk32abi::VkBufferCopy reg32{};
+            reg32.srcOffset = 128; reg32.dstOffset = 0; reg32.size = 512;
+            memory32.memcpyToGuest(601856, &reg32, sizeof(reg32));
+            const size_t cmdsBefore = cb32->cmds.size();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = srcBuf32; a.a[2] = dstBuf32; a.a[3] = 1; a.a[4] = 601856;
+              call32(VK64_fn_vkCmdCopyBuffer, a); }
+            assert(cb32->cmds.size() == cmdsBefore + 1);
+            const Cmd& rbCmd = cb32->cmds.back();
+            assert(rbCmd.kind == CMD_COPY_B2B_RB && rbCmd.copyB2BRb.srcBuffer == srcBuf32 &&
+                   rbCmd.copyB2BRb.dstBuffer == dstBuf32 && rbCmd.copyB2BRb.srcOff == 128 &&
+                   rbCmd.copyB2BRb.dstOff == 0 && rbCmd.copyB2BRb.size == 512);
+            for (U32 i = 0; i < 512; i++) assert(memory32.bytes[memVa + 128 * 1024 + i] == 0xEE);
+            // The *2 copy entry point defers the same way: a second region
+            // inside the marked range, copied via vkCmdCopyBuffer2KHR's
+            // hand-parsed info struct (offsets per the handler).
+            for (U32 i = 0; i < 256; i++) memory32.bytes[memVa + 128 * 1024 + 1024 + i] = 0xDD;
+            memory32.writeq(601984 + 8, srcBuf32);
+            memory32.writeq(601984 + 16, dstBuf32);
+            memory32.writed(601984 + 24, 1);
+            memory32.writed(601984 + 28, 602048);
+            memory32.writeq(602048 + 8, 256);
+            memory32.writeq(602048 + 16, 1024);
+            memory32.writeq(602048 + 24, 256);
+            const size_t cmdsBefore2 = cb32->cmds.size();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 601984;
+              call32(VK64_fn_vkCmdCopyBuffer2KHR, a); }
+            assert(cb32->cmds.size() == cmdsBefore2 + 1);
+            const Cmd& rbCmd2 = cb32->cmds.back();
+            assert(rbCmd2.kind == CMD_COPY_B2B_RB && rbCmd2.copyB2BRb.srcOff == 256 &&
+                   rbCmd2.copyB2BRb.dstOff == 1024 && rbCmd2.copyB2BRb.size == 256);
+            for (U32 i = 0; i < 256; i++) assert(memory32.bytes[memVa + 128 * 1024 + 1024 + i] == 0xDD);
+            // Submit side: the shared serializer emits the compute records
+            // for the 32-bit-recorded stream -- PIPELINE_COMPUTE, DISPATCH
+            // with the recorded group counts, and the BUFFER_READBACK the
+            // deferred copy planned.
+            g_mem = &memory; g_mem32 = &memory32;
+            assert(setupReadbacks({{cb32, cb32Id}}));
+            g_v2Pending.clear();
+            const U32 csDropBefore = vk64BridgeUnsupportedCount("compute-dispatch");
+            serializeSubmitV2({{cb32, cb32Id}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csDropBefore);
+            bool sawPipe = false, sawDisp = false, sawRb = false;
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == 0x1E) sawPipe = true;
+                    if (type == 0x1F) {
+                        sawDisp = true;
+                        U32 gx, gy, gz;
+                        memcpy(&gx, chunk.data() + at + 8, 4); memcpy(&gy, chunk.data() + at + 12, 4); memcpy(&gz, chunk.data() + at + 16, 4);
+                        assert(gx == 2 && gy == 3 && gz == 4);
+                    }
+                    if (type == 0x20) sawRb = true;
+                    at += 8 + len;
+                }
+            }
+            assert(sawPipe && sawDisp && sawRb);
+            g_v2Pending.clear(); g_bufReadbacks.clear(); g_readbackPending.clear();
+            // DispatchBase with a non-zero base group: the base is
+            // recorded, so the submit emitter declines it loudly instead
+            // of silently serving the dispatch at base zero.
+            U64 cbB32Id; auto* cbB32 = createObj32<CmdBuf>(K_CMDBUF, cbB32Id);
+            { VK32Args a{}; a.a[0] = cbB32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pipe32;
+              call32(VK64_fn_vkCmdBindPipeline, a); }
+            { VK32Args a{}; a.a[0] = cbB32Id; a.a[1] = 5; a.a[2] = 0; a.a[3] = 0; a.a[4] = 1; a.a[5] = 1; a.a[6] = 1;
+              call32(VK64_fn_vkCmdDispatchBase, a); }
+            assert(cbB32->cmds.back().kind == CMD_DISPATCH && cbB32->cmds.back().d == 5);
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbB32, cbB32Id}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csDropBefore + 1);
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    assert(type != 0x1F);
+                    at += 8 + len;
+                }
+            }
+            g_v2Pending.clear();
+            g_mem32 = nullptr; g_mem = &memory;
+        }
+        puts("PASS: 32-bit compute dispatch is recorded, marked, deferred and served (V2 compute records)");
+        // 10. 32-bit mapped memory (lane-vk32fix, frontier-review finding
+        // 2): vkMapMemory on this ABI must set wasMapped, exactly like the
+        // 64-bit handler. The flag is the trust root of the compute
+        // deferral: vk64FindGpuWrite refuses marks on mapped memory
+        // (contents can change outside the bridge's observation) and the
+        // submit-side emitBufferData fast path re-hashes mapped buffers.
+        // Before the fix the 32-bit handler never set it, so a dispatch
+        // writing a persistently-mapped buffer was trusted for deferral
+        // and later copies could serve GPU-side state instead of the
+        // bytes the guest wrote through the mapping.
+        {
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            vk32abi::VkMemoryAllocateInfo ai32{};
+            ai32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai32.allocationSize = 64 * 1024;
+            memory32.memcpyToGuest(600000, &ai32, sizeof(ai32));
+            memory32.writeq(600064, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600000; a.a[3] = 600064;
+              assert((S64)call32(VK64_fn_vkAllocateMemory, a) == VK_SUCCESS); }
+            const U64 mem32Id = memory32.readq(600064);
+            auto* mem32o = objOf32<DeviceMemory>(mem32Id, K_MEMORY, "test");
+            assert(mem32o && mem32o->va && !mem32o->wasMapped);
+            const U64 memVa = mem32o->va;
+            // Map the whole allocation through the 32-bit trap: the guest
+            // VA is written back and the memory is flagged as mapped.
+            memory32.writeq(602112, 0);
+            { VK32Args a{}; a.a[1] = mem32Id; a.a[2] = 0; a.a[3] = VK_WHOLE_SIZE; a.a[5] = 602112;
+              assert((S64)call32(VK64_fn_vkMapMemory, a) == VK_SUCCESS); }
+            assert(memory32.readd(602112) == memVa);
+            assert(mem32o->wasMapped);
+            // An offset past the end fails, as on the 64-bit handler
+            // (before the fix this returned VK_SUCCESS).
+            { VK32Args a{}; a.a[1] = mem32Id; a.a[2] = 64 * 1024 + 4096; a.a[3] = VK_WHOLE_SIZE; a.a[5] = 602112;
+              assert((S64)call32(VK64_fn_vkMapMemory, a) == VK_ERROR_MEMORY_MAP_FAILED); }
+            auto mkBuf32 = [&](U64 size, U64 memOff) {
+                vk32abi::VkBufferCreateInfo bci{};
+                bci.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = size;
+                bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                memory32.memcpyToGuest(600128, &bci, sizeof(bci));
+                memory32.writeq(600192, 0);
+                VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600128; a.a[3] = 600192;
+                assert((S64)call32(VK64_fn_vkCreateBuffer, a) == VK_SUCCESS);
+                U64 id = memory32.readq(600192);
+                assert(id != 0);
+                VK32Args b{}; b.a[0] = dev32Id; b.a[1] = id; b.a[2] = mem32Id; b.a[3] = memOff;
+                assert((S64)call32(VK64_fn_vkBindBufferMemory, b) == VK_SUCCESS);
+                return id;
+            };
+            const U64 srcBuf32 = mkBuf32(4096, 8192);
+            const U64 dstBuf32 = mkBuf32(4096, 32 * 1024);
+            // Compute chain (the same minimal GLCompute module as block 9).
+            const U32 csWords[] = {
+                0x07230203u, 0x00010500u, 0, 64, 0,
+                (2u << 16) | 17u, 1u,
+                (3u << 16) | 14u, 0u, 1u,
+                (5u << 16) | 15u, 5u, 6u, 0x6e69616du, 0u,
+                (6u << 16) | 16u, 6u, 17u, 1u, 1u, 1u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (5u << 16) | 54u, 1u, 6u, 0u, 2u,
+                (2u << 16) | 248u, 7u,
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            };
+            memory32.memcpyToGuest(600256, csWords, sizeof(csWords));
+            vk32abi::VkShaderModuleCreateInfo smci32{};
+            smci32.sType = vk32abi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci32.codeSize = sizeof(csWords); smci32.pCode = 600256;
+            memory32.memcpyToGuest(600512, &smci32, sizeof(smci32));
+            memory32.writeq(600576, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600512; a.a[3] = 600576;
+              assert((S64)call32(VK64_fn_vkCreateShaderModule, a) == VK_SUCCESS); }
+            const U64 csMod32 = memory32.readq(600576);
+            assert(csMod32 != 0);
+            vk32abi::VkDescriptorSetLayoutBinding lb32{};
+            lb32.binding = 0; lb32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lb32.descriptorCount = 1; lb32.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            memory32.memcpyToGuest(600640, &lb32, sizeof(lb32));
+            vk32abi::VkDescriptorSetLayoutCreateInfo lci32{};
+            lci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            lci32.bindingCount = 1; lci32.pBindings = 600640;
+            memory32.memcpyToGuest(600704, &lci32, sizeof(lci32));
+            memory32.writeq(600768, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600704; a.a[3] = 600768;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorSetLayout, a) == VK_SUCCESS); }
+            const U64 lay32 = memory32.readq(600768);
+            assert(lay32 != 0);
+            memory32.writeq(600832, lay32);
+            vk32abi::VkPipelineLayoutCreateInfo plci32{};
+            plci32.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            plci32.setLayoutCount = 1; plci32.pSetLayouts = 600832;
+            memory32.memcpyToGuest(600896, &plci32, sizeof(plci32));
+            memory32.writeq(600960, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600896; a.a[3] = 600960;
+              assert((S64)call32(VK64_fn_vkCreatePipelineLayout, a) == VK_SUCCESS); }
+            const U64 pl32 = memory32.readq(600960);
+            assert(pl32 != 0);
+            memory32.memcpyToGuest(601024, "main", 5);
+            vk32abi::VkComputePipelineCreateInfo cci32{};
+            cci32.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci32.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci32.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+            cci32.stage.module = csMod32;
+            cci32.stage.pName = 601024;
+            cci32.layout = pl32;
+            memory32.memcpyToGuest(601088, &cci32, sizeof(cci32));
+            memory32.writeq(601216, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[2] = 1; a.a[3] = 601088; a.a[5] = 601216;
+              assert((S64)call32(VK64_fn_vkCreateComputePipelines, a) == VK_SUCCESS); }
+            const U64 pipe32 = memory32.readq(601216);
+            assert(pipe32 != 0);
+            vk32abi::VkDescriptorPoolSize psz32{};
+            psz32.type = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; psz32.descriptorCount = 1;
+            memory32.memcpyToGuest(601280, &psz32, sizeof(psz32));
+            vk32abi::VkDescriptorPoolCreateInfo pci32{};
+            pci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pci32.maxSets = 1; pci32.poolSizeCount = 1; pci32.pPoolSizes = 601280;
+            memory32.memcpyToGuest(601344, &pci32, sizeof(pci32));
+            memory32.writeq(601408, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601344; a.a[3] = 601408;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorPool, a) == VK_SUCCESS); }
+            const U64 pool32 = memory32.readq(601408);
+            assert(pool32 != 0);
+            memory32.writeq(601472, lay32);
+            vk32abi::VkDescriptorSetAllocateInfo sai32{};
+            sai32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            sai32.descriptorPool = (U32)pool32; sai32.descriptorSetCount = 1; sai32.pSetLayouts = 601472;
+            memory32.memcpyToGuest(601536, &sai32, sizeof(sai32));
+            memory32.writeq(601600, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601536; a.a[2] = 601600;
+              assert((S64)call32(VK64_fn_vkAllocateDescriptorSets, a) == VK_SUCCESS); }
+            const U64 set32 = memory32.readq(601600);
+            assert(set32 != 0);
+            vk32abi::VkDescriptorBufferInfo dbi32{};
+            dbi32.buffer = srcBuf32; dbi32.offset = 128; dbi32.range = 512;
+            memory32.memcpyToGuest(601664, &dbi32, sizeof(dbi32));
+            vk32abi::VkWriteDescriptorSet w32{};
+            w32.dstSet = set32; w32.dstBinding = 0; w32.descriptorCount = 1;
+            w32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w32.pBufferInfo = 601664;
+            memory32.memcpyToGuest(601728, &w32, sizeof(w32));
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 1; a.a[2] = 601728;
+              call32(VK64_fn_vkUpdateDescriptorSets, a); }
+            // Record: bind pipeline + set at COMPUTE, dispatch. The
+            // dispatch marks the storage range in the global registry...
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pipe32;
+              call32(VK64_fn_vkCmdBindPipeline, a); }
+            memory32.writeq(601792, set32);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pl32;
+              a.a[3] = 0; a.a[4] = 1; a.a[5] = 601792;
+              call32(VK64_fn_vkCmdBindDescriptorSets, a); }
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 1; a.a[2] = 1; a.a[3] = 1;
+              call32(VK64_fn_vkCmdDispatch, a); }
+            bool markSeen = false;
+            for (const auto& mk : g_gpuWriteMarks)
+                if (mk.buf == srcBuf32 && mk.off == 8192 + 128 && mk.size == 512) markSeen = true;
+            assert(markSeen);
+            // ...but the mark is NOT trusted for deferral: the memory is
+            // guest-mapped, so its contents can change unobserved.
+            assert(vk64FindGpuWrite(srcBuf32, 8192 + 128, 512) == nullptr);
+            // The guest writes new inputs through the mapping; a copy out
+            // of the marked range must serve those current bytes eagerly
+            // instead of deferring to a GPU readback.
+            for (U32 i = 0; i < 512; i++) memory32.bytes[memVa + 8192 + 128 + i] = (U8)(i * 7 + 3);
+            for (U32 i = 0; i < 512; i++) memory32.bytes[memVa + 32 * 1024 + i] = 0xEE;
+            vk32abi::VkBufferCopy reg32{};
+            reg32.srcOffset = 128; reg32.dstOffset = 0; reg32.size = 512;
+            memory32.memcpyToGuest(601856, &reg32, sizeof(reg32));
+            const size_t cmdsBefore = cb32->cmds.size();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = srcBuf32; a.a[2] = dstBuf32; a.a[3] = 1; a.a[4] = 601856;
+              call32(VK64_fn_vkCmdCopyBuffer, a); }
+            assert(cb32->cmds.size() == cmdsBefore); // no CMD_COPY_B2B_RB recorded
+            for (U32 i = 0; i < 512; i++) assert(memory32.bytes[memVa + 32 * 1024 + i] == (U8)(i * 7 + 3));
+        }
+        puts("PASS: 32-bit vkMapMemory flags mapped memory; compute deferral declines on it (wasMapped)");
+        // 11. 32-bit copy bounds + indirect dispatch resolution
+        // (lane-vk32fix, frontier-review findings 3 and 4). Copy regions
+        // whose bind-relative start lies outside either memory drop
+        // loudly (VK64_DROP_IF), like the 64-bit handlers; a partially
+        // overrunning region copies only its clamped prefix. The pre-fix
+        // code clamped only for the deferral decision and ran the eager
+        // memcpy with the raw guest size. vkCmdDispatchIndirect with an
+        // unresolvable buffer drops loudly instead of recording a
+        // spurious (0,0,0) dispatch and stamping marks for it.
+        {
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            vk32abi::VkMemoryAllocateInfo ai32{};
+            ai32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai32.allocationSize = 64 * 1024;
+            memory32.memcpyToGuest(600000, &ai32, sizeof(ai32));
+            memory32.writeq(600064, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600000; a.a[3] = 600064;
+              assert((S64)call32(VK64_fn_vkAllocateMemory, a) == VK_SUCCESS); }
+            const U64 mem32Id = memory32.readq(600064);
+            auto* mem32o = objOf32<DeviceMemory>(mem32Id, K_MEMORY, "test");
+            assert(mem32o && mem32o->va && !mem32o->wasMapped);
+            const U64 memVa = mem32o->va;
+            auto mkBuf32 = [&](U64 size, U64 memOff) {
+                vk32abi::VkBufferCreateInfo bci{};
+                bci.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = size;
+                bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                memory32.memcpyToGuest(600128, &bci, sizeof(bci));
+                memory32.writeq(600192, 0);
+                VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600128; a.a[3] = 600192;
+                assert((S64)call32(VK64_fn_vkCreateBuffer, a) == VK_SUCCESS);
+                U64 id = memory32.readq(600192);
+                assert(id != 0);
+                VK32Args b{}; b.a[0] = dev32Id; b.a[1] = id; b.a[2] = mem32Id; b.a[3] = memOff;
+                assert((S64)call32(VK64_fn_vkBindBufferMemory, b) == VK_SUCCESS);
+                return id;
+            };
+            const U64 srcBuf32 = mkBuf32(4096, 8192);
+            const U64 dstBuf32 = mkBuf32(4096, 32 * 1024);
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            // Source patterns: a full-copy range inside the source buffer,
+            // and a 16-byte tail at the very end of the allocation.
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 8192 + 128 + i] = (U8)(0x40 + i);
+            for (U32 i = 0; i < 16; i++) memory32.bytes[memVa + 64 * 1024 - 16 + i] = (U8)(0x90 + i);
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 8192 + 512 + i] = (U8)(0x50 + i);
+            // Poison every destination range.
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + i] = 0xEE;
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + 1024 + i] = 0xEE;
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + 2048 + i] = 0xEE;
+            for (U32 i = 0; i < 32; i++) memory32.bytes[memVa + 32 * 1024 + 4096 + i] = 0xEE;
+            // vkCmdCopyBuffer with three regions in one call: [0] starts
+            // exactly at the end of the source memory (dropped loudly),
+            // [1] overruns the source end by 48 bytes (clamped prefix
+            // copies), [2] is a plain valid copy.
+            vk32abi::VkBufferCopy regs[3]{};
+            regs[0].srcOffset = 64 * 1024 - 8192; regs[0].dstOffset = 0; regs[0].size = 64;
+            regs[1].srcOffset = 64 * 1024 - 16 - 8192; regs[1].dstOffset = 1024; regs[1].size = 64;
+            regs[2].srcOffset = 128; regs[2].dstOffset = 2048; regs[2].size = 64;
+            memory32.memcpyToGuest(601856, regs, sizeof(regs));
+            const U64 dropsBefore = vk64BridgeDropCount();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = srcBuf32; a.a[2] = dstBuf32; a.a[3] = 3; a.a[4] = 601856;
+              call32(VK64_fn_vkCmdCopyBuffer, a); }
+            assert(vk64BridgeDropCount() == dropsBefore + 1);
+            assert(cb32->cmds.empty()); // eager path records nothing
+            for (U32 i = 0; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + i] == 0xEE);
+            for (U32 i = 0; i < 16; i++) assert(memory32.bytes[memVa + 32 * 1024 + 1024 + i] == (U8)(0x90 + i));
+            for (U32 i = 16; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + 1024 + i] == 0xEE);
+            for (U32 i = 0; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + 2048 + i] == (U8)(0x40 + i));
+            // vkCmdCopyBuffer2KHR with two regions: [0]'s destination
+            // starts exactly at the end of the destination memory
+            // (dropped loudly), [1] is a plain valid copy.
+            memory32.writeq(601984 + 8, srcBuf32);
+            memory32.writeq(601984 + 16, dstBuf32);
+            memory32.writed(601984 + 24, 2);
+            memory32.writed(601984 + 28, 602048);
+            memory32.writeq(602048 + 8, 256);
+            memory32.writeq(602048 + 16, 64 * 1024 - 32 * 1024);
+            memory32.writeq(602048 + 24, 64);
+            memory32.writeq(602048 + 32 + 8, 512);
+            memory32.writeq(602048 + 32 + 16, 4096);
+            memory32.writeq(602048 + 32 + 24, 32);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 601984;
+              call32(VK64_fn_vkCmdCopyBuffer2KHR, a); }
+            assert(vk64BridgeDropCount() == dropsBefore + 2);
+            assert(cb32->cmds.empty());
+            for (U32 i = 0; i < 32; i++) assert(memory32.bytes[memVa + 32 * 1024 + 4096 + i] == (U8)(0x50 + i));
+            // vkCmdDispatchIndirect: a resolvable buffer records its
+            // stored group counts (positive control); a bogus handle and
+            // an unbound buffer both drop loudly and record nothing.
+            const U64 indBuf32 = mkBuf32(64, 0);
+            memory32.writed(memVa + 0, 7); memory32.writed(memVa + 4, 8); memory32.writed(memVa + 8, 9);
+            U64 cbI32Id; auto* cbI32 = createObj32<CmdBuf>(K_CMDBUF, cbI32Id);
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = indBuf32; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(cbI32->cmds.size() == 1 && cbI32->cmds[0].kind == CMD_DISPATCH &&
+                   cbI32->cmds[0].a == 7 && cbI32->cmds[0].b == 8 && cbI32->cmds[0].c == 9);
+            const U64 dropsBeforeInd = vk64BridgeDropCount();
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = 0x0BADB001; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(vk64BridgeDropCount() == dropsBeforeInd + 1);
+            assert(cbI32->cmds.size() == 1); // no spurious (0,0,0) dispatch
+            U64 unboundId; createObj32<Buffer>(K_BUFFER, unboundId);
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = unboundId; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(vk64BridgeDropCount() == dropsBeforeInd + 2);
+            assert(cbI32->cmds.size() == 1);
+        }
+        puts("PASS: 32-bit copy regions are bounds-checked loudly and clamped; indirect dispatch must resolve");
         // dropObj cascades (pool -> sets, command buffer -> dynamic objects), so snapshot the ids first.
         std::vector<U64> toDrop;
         for (auto& kv : g_objs) if (!idsBefore.count(kv.first)) toDrop.push_back(kv.first);
@@ -1092,7 +2159,7 @@ int main() {
     {
         U64 devId; createObj<Device>(K_DEVICE, devId);
         const size_t objectsBefore = g_objs.size();
-        // Pipeline with a geometry stage: rejected, handle written as 0, no leak.
+        // Pipeline with a geometry stage: RECORDED since the 2026-10-26 vkd3d disposition (meta variants must create; draws under a geometry stage are dropped loudly at submit).
         VkPipelineShaderStageCreateInfo stages[2] = {};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[1].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
@@ -1103,10 +2170,10 @@ int main() {
         memory.memcpyToGuest(3456, &gp, sizeof(gp));
         memory.writeq(3840, 0xdeadbeefULL);
         assert(vk64BridgeUnsupportedCount("geometry-stage") == 0);
-        assert((S64)vkCreateGraphicsPipelines(devId, 0, 1, (void*)3456, nullptr, (void*)3840) == VK_ERROR_FEATURE_NOT_PRESENT);
-        assert(memory.readq(3840) == 0);
+        assert((S64)vkCreateGraphicsPipelines(devId, 0, 1, (void*)3456, nullptr, (void*)3840) == VK_SUCCESS);
+        assert(memory.readq(3840) != 0);
         assert(vk64BridgeUnsupportedCount("geometry-stage") == 1);
-        assert(g_objs.size() == objectsBefore);
+        assert(g_objs.size() == objectsBefore + 1);
         // Tessellation topology (patch list) is also rejected, vertex-only stays accepted.
         ia.topology = (VkPrimitiveTopology)10; stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         memory.memcpyToGuest(3072, stages, sizeof(stages)); memory.memcpyToGuest(3328, &ia, sizeof(ia));
@@ -1121,25 +2188,491 @@ int main() {
         memory.memcpyToGuest(128, &unimpl, sizeof(unimpl));
         assert((S64)vk64Bridge(&cpu, VK64_fn_unimplemented, 128) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("fn:vkFooBar") == 1);
-        // Compute pipelines can never be valid (compute modules are refused), so creation fails
-        // loudly with null handles rather than yielding a pipeline whose dispatches vanish.
+        // Compute pipelines are recorded as real objects (vkd3d-proton
+        // creates internal compute pipelines during D3D12 device creation
+        // and treats creation failure as device-fatal). Dispatches are
+        // served by the V2 compute records (section 4.27); a dispatch
+        // with no compute pipeline bound stays loud at submit (below).
         {
-            const U64 before = vk64BridgeUnsupportedCount("compute-pipeline");
             memory.writeq(3960, 0xdeadbeefull);
             VK64Args cp{}; cp.a[0] = devId; cp.a[2] = 1; cp.a[3] = 3456; cp.a[5] = 3960;
             memory.memcpyToGuest(128, &cp, sizeof(cp));
             const size_t objsBefore = g_objs.size();
-            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_ERROR_FEATURE_NOT_PRESENT);
-            assert(memory.readq(3960) == 0 && g_objs.size() == objsBefore);
-            assert(vk64BridgeUnsupportedCount("compute-pipeline") == before + 1);
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
+            assert(memory.readq(3960) != 0 && g_objs.size() == objsBefore + 1);
         }
-        // Compute dispatch has no V2 record: submitting one is reported, never dropped quietly.
+        // A dispatch with no compute pipeline bound cannot be served:
+        // submitting one is reported, never dropped quietly.
         U64 cbDispatchId; auto* cbDispatch = createObj<CmdBuf>(K_CMDBUF, cbDispatchId);
         vkCmdDispatch(cbDispatchId, 1, 1, 1);
-        assert(vk64BridgeUnsupportedCount("compute-dispatch") == 0);
+        // Relative, not absolute: the 32-bit compute guard above already
+        // exercised one loud DispatchBase decline on this shared counter.
+        const U32 csNoPipeBefore = vk64BridgeUnsupportedCount("compute-dispatch");
         serializeSubmitV2({{cbDispatch, cbDispatchId}});
-        assert(vk64BridgeUnsupportedCount("compute-dispatch") == 1);
+        assert(vk64BridgeUnsupportedCount("compute-dispatch") == csNoPipeBefore + 1);
         g_v2Pending.clear();
+        // Compute dispatch SERVED (section 4.27): under a bound compute
+        // pipeline the submit emits PIPELINE_COMPUTE + DISPATCH records
+        // and the drop counter does not move; a DispatchBase-shaped
+        // dispatch (non-zero base group, carried in d) stays loud and
+        // emits no DISPATCH record.
+        {
+            const U32 csWords[] = {
+                0x07230203u, 0x00010500u, 0, 64, 0,
+                (2u << 16) | 17u, 1u,                    // OpCapability Shader
+                (3u << 16) | 14u, 0u, 1u,                // OpMemoryModel Logical GLSL450
+                (5u << 16) | 15u, 5u, 6u, 0x6e69616du, 0u, // OpEntryPoint GLCompute %6 "main"
+                (6u << 16) | 16u, 6u, 17u, 1u, 1u, 1u,   // OpExecutionMode %6 LocalSize 1 1 1
+                (2u << 16) | 19u, 1u,                    // OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                // OpTypeFunction %2 = fn(%1)
+                (5u << 16) | 54u, 1u, 6u, 0u, 2u,        // OpFunction %6
+                (2u << 16) | 248u, 7u,                   // OpLabel
+                (1u << 16) | 253u,                       // OpReturn
+                (1u << 16) | 56u,                        // OpFunctionEnd
+            };
+            memory.memcpyToGuest(4400, csWords, sizeof(csWords));
+            VkShaderModuleCreateInfo smci{}; smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci.codeSize = sizeof(csWords); smci.pCode = 4400;
+            memory.memcpyToGuest(4200, &smci, sizeof(smci));
+            memory.writeq(4600, 0);
+            VK64Args sm{}; sm.a[0] = devId; sm.a[1] = 4200; sm.a[3] = 4600;
+            memory.memcpyToGuest(128, &sm, sizeof(sm));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateShaderModule, 128) == VK_SUCCESS);
+            const U64 csModId = memory.readq(4600);
+            assert(csModId != 0);
+            memory.memcpyToGuest(5050, "main", 5);
+            VkComputePipelineCreateInfo cci{};
+            cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.module = (VkShaderModule)csModId;
+            cci.stage.pName = 5050;
+            memory.memcpyToGuest(4800, &cci, sizeof(cci));
+            memory.writeq(5100, 0);
+            VK64Args cp2{}; cp2.a[0] = devId; cp2.a[2] = 1; cp2.a[3] = 4800; cp2.a[5] = 5100;
+            memory.memcpyToGuest(128, &cp2, sizeof(cp2));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
+            const U64 csPipeId = memory.readq(5100);
+            assert(csPipeId != 0);
+
+            const U32 csCountBefore = vk64BridgeUnsupportedCount("compute-dispatch");
+            U64 cbCsId; auto* cbCs = createObj<CmdBuf>(K_CMDBUF, cbCsId);
+            Cmd bindPipe; bindPipe.kind = CMD_BIND_PIPE; bindPipe.a = csPipeId; pushCmd(cbCs, bindPipe);
+            Cmd disp; disp.kind = CMD_DISPATCH; disp.a = 2; disp.b = 3; disp.c = 4; pushCmd(cbCs, disp);
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbCs, cbCsId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csCountBefore);
+            bool sawComputePipe = false, sawDispatch = false;
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == 0x1E) sawComputePipe = true;
+                    if (type == 0x1F) {
+                        sawDispatch = true;
+                        U32 gx, gy, gz;
+                        memcpy(&gx, chunk.data() + at + 8, 4); memcpy(&gy, chunk.data() + at + 12, 4); memcpy(&gz, chunk.data() + at + 16, 4);
+                        assert(gx == 2 && gy == 3 && gz == 4);
+                    }
+                    at += 8 + len;
+                }
+            }
+            assert(sawComputePipe && sawDispatch);
+            g_v2Pending.clear();
+            U64 cbBaseId; auto* cbBase = createObj<CmdBuf>(K_CMDBUF, cbBaseId);
+            pushCmd(cbBase, bindPipe);
+            Cmd dispBase; dispBase.kind = CMD_DISPATCH; dispBase.a = 1; dispBase.b = 1; dispBase.c = 1; dispBase.d = 5; pushCmd(cbBase, dispBase);
+            serializeSubmitV2({{cbBase, cbBaseId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csCountBefore + 1);
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    assert(type != 0x1F);
+                    at += 8 + len;
+                }
+            }
+            g_v2Pending.clear();
+
+            // Storage texel meta-bind (metabind lane, section 4.31):
+            // vkd3d-proton's clear/copy meta pipelines bind a storage
+            // texel buffer with vkCmdPushDescriptorSetKHR. The pushed
+            // descriptor must serialize as wire kind 6 with a
+            // V2_BUFFER_VIEW record, the dispatch under it must mark the
+            // view's range GPU-written at record time, and a copy out of
+            // that range must defer to a V2_BUFFER_READBACK instead of
+            // the eager record-time memcpy.
+            {
+                U64 stMemId; auto* stMem = createObj<DeviceMemory>(K_MEMORY, stMemId);
+                stMem->size = 512; stMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 stBufId; auto* stBuf = createObj<Buffer>(K_BUFFER, stBufId);
+                stBuf->size = 512; stBuf->mem = stMemId; stBuf->memOff = 0;
+                U64 stViewId; auto* stView = createObj<BufferView>(K_BUFFERVIEW, stViewId);
+                stView->buffer = stBufId; stView->format = VK_FORMAT_R32G32_UINT;
+                stView->offset = 64; stView->range = 256;
+                U64 stDstMemId; auto* stDstMem = createObj<DeviceMemory>(K_MEMORY, stDstMemId);
+                stDstMem->size = 256; stDstMem->va = memory.mmapReserveAndMap(256, 3);
+                U64 stDstId; auto* stDst = createObj<Buffer>(K_BUFFER, stDstId);
+                stDst->size = 256; stDst->mem = stDstMemId; stDst->memOff = 0;
+                U64 stLayId; createObj<DescSetLayout>(K_SETLAYOUT, stLayId);
+                U64 stPlId; auto* stPl = createObj<PipelineLayout>(K_PIPELAYOUT, stPlId);
+                stPl->nsets = 1; stPl->sets[0] = stLayId;
+                memory.writeq(3200, stViewId);
+                VkWriteDescriptorSet stw{};
+                stw.dstBinding = 0; stw.descriptorCount = 1;
+                stw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                stw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &stw, sizeof(stw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL stRegion{64, 0, 256};
+                memory.memcpyToGuest(3400, &stRegion, sizeof(stRegion));
+                U64 cbStId; auto* cbSt = createObj<CmdBuf>(K_CMDBUF, cbStId);
+                const U32 kindBefore = vk64BridgeUnsupportedCount("descriptor-wire-kind");
+                const U32 rbBefore = vk64BridgeUnsupportedCount("compute-buffer-readback");
+                vkCmdBindPipeline(cbStId, 1, csPipeId);
+                vkCmdPushDescriptorSetKHR(cbStId, 1, stPlId, 0, 1, (const void*)3264);
+                vkCmdDispatch(cbStId, 1, 1, 1);
+                vkCmdCopyBuffer(cbStId, stBufId, stDstId, 1, (const void*)3400);
+                bool deferred = false;
+                for (const Cmd& k : cbSt->cmds) if (k.kind == CMD_COPY_B2B_RB) deferred = true;
+                assert(deferred); // the copy deferred: the dispatch marked the view range
+                g_v2Pending.clear();
+                // Mirror the vkQueueSubmit sequence: readback planning
+                // (setupReadbacks) runs before serialization, so the
+                // deferred copy finds its planned readback at emit time.
+                setupReadbacks({{cbSt, cbStId}});
+                serializeSubmitV2({{cbSt, cbStId}});
+                assert(vk64BridgeUnsupportedCount("descriptor-wire-kind") == kindBefore);
+                assert(vk64BridgeUnsupportedCount("compute-buffer-readback") == rbBefore);
+                bool sawView = false, sawKind6 = false, sawDisp = false, sawRb = false;
+                for (const auto& chunk : g_v2Pending.back().chunks) {
+                    for (size_t at = 16; at < chunk.size();) {
+                        U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                        const U8* pl = chunk.data() + at + 8;
+                        if (type == 0x1C) { // V2_BUFFER_VIEW
+                            U64 vid, bid; U32 fmt;
+                            memcpy(&vid, pl, 8); memcpy(&bid, pl + 8, 8); memcpy(&fmt, pl + 16, 4);
+                            if (vid == stViewId && bid == stBufId && fmt == VK_FORMAT_R32G32_UINT) sawView = true;
+                        }
+                        if (type == 0x08) { // V2_DESC_SET: 12-byte header, 44-byte entries
+                            uint16_t n; memcpy(&n, pl + 2, 2);
+                            for (U32 e = 0; e < n; e++) {
+                                const U8* en = pl + 12 + e * 44;
+                                U8 kind = en[16]; U64 obj; memcpy(&obj, en + 20, 8);
+                                if (kind == 6 && obj == stViewId) sawKind6 = true;
+                            }
+                        }
+                        if (type == 0x1F) sawDisp = true;
+                        if (type == 0x20) { // V2_BUFFER_READBACK
+                            U64 src; memcpy(&src, pl, 8);
+                            if (src == stBufId) sawRb = true;
+                        }
+                        at += 8 + len;
+                    }
+                }
+                assert(sawView && sawKind6 && sawDisp && sawRb);
+                g_v2Pending.clear();
+                puts("PASS: storage texel push descriptor wires kind 6, marks and reads back");
+            }
+
+            // Partial-overlap copy split (metabindfix, section 4.32;
+            // frontier review finding 7): a copy region only PARTIALLY
+            // covered by a GPU-write mark used to fail the containment
+            // test and copy eagerly as a whole -- the covered subrange
+            // read stale pre-dispatch bytes. The handler now splits the
+            // region at the mark boundaries: covered subranges defer
+            // (CMD_COPY_B2B_RB), the rest copies eagerly at record time.
+            {
+                U64 spMemId; auto* spMem = createObj<DeviceMemory>(K_MEMORY, spMemId);
+                spMem->size = 512; spMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 spBufId; auto* spBuf = createObj<Buffer>(K_BUFFER, spBufId);
+                spBuf->size = 512; spBuf->mem = spMemId; spBuf->memOff = 0;
+                U64 spViewId; auto* spView = createObj<BufferView>(K_BUFFERVIEW, spViewId);
+                spView->buffer = spBufId; spView->format = VK_FORMAT_R32G32_UINT;
+                spView->offset = 64; spView->range = 256;
+                U64 spDstMemId; auto* spDstMem = createObj<DeviceMemory>(K_MEMORY, spDstMemId);
+                spDstMem->size = 512; spDstMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 spDstId; auto* spDst = createObj<Buffer>(K_BUFFER, spDstId);
+                spDst->size = 512; spDst->mem = spDstMemId; spDst->memOff = 0;
+                U64 spLayId; createObj<DescSetLayout>(K_SETLAYOUT, spLayId);
+                U64 spPlId; auto* spPl = createObj<PipelineLayout>(K_PIPELAYOUT, spPlId);
+                spPl->nsets = 1; spPl->sets[0] = spLayId;
+                std::vector<U8> pat(512), zeros(512, 0), back(512);
+                for (size_t i = 0; i < pat.size(); i++) pat[i] = (U8)(i & 0xff);
+                memory.memcpyToGuest(spMem->va, pat.data(), 512);
+                memory.memcpyToGuest(spDstMem->va, zeros.data(), 512);
+                memory.writeq(3200, spViewId);
+                VkWriteDescriptorSet spw{};
+                spw.dstBinding = 0; spw.descriptorCount = 1;
+                spw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                spw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &spw, sizeof(spw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL whole{0, 0, 512};
+                memory.memcpyToGuest(3400, &whole, sizeof(whole));
+                VkBufferCopyL outside{384, 0, 64};
+                memory.memcpyToGuest(3424, &outside, sizeof(outside));
+                U64 cbSpId; auto* cbSp = createObj<CmdBuf>(K_CMDBUF, cbSpId);
+                vkCmdBindPipeline(cbSpId, 1, csPipeId);
+                vkCmdPushDescriptorSetKHR(cbSpId, 1, spPlId, 0, 1, (const void*)3264);
+                vkCmdDispatch(cbSpId, 1, 1, 1);
+                vkCmdCopyBuffer(cbSpId, spBufId, spDstId, 1, (const void*)3400);
+                // Exactly one deferred segment: the mark's [64, 320).
+                U32 rbSegs = 0;
+                for (const Cmd& k : cbSp->cmds) {
+                    if (k.kind != CMD_COPY_B2B_RB) continue;
+                    rbSegs++;
+                    assert(k.copyB2BRb.srcBuffer == spBufId && k.copyB2BRb.dstBuffer == spDstId);
+                    assert(k.copyB2BRb.srcOff == 64 && k.copyB2BRb.dstOff == 64 && k.copyB2BRb.size == 256);
+                }
+                assert(rbSegs == 1);
+                // The eager segments already landed at record time; the
+                // covered range is still zeros in the destination.
+                memory.memcpyFromGuest(back.data(), spDstMem->va, 512);
+                assert(memcmp(back.data(), pat.data(), 64) == 0);
+                assert(memcmp(back.data() + 64, zeros.data(), 256) == 0);
+                assert(memcmp(back.data() + 320, pat.data() + 320, 192) == 0);
+                // A copy with NO overlap stays a single eager copy.
+                vkCmdCopyBuffer(cbSpId, spBufId, spDstId, 1, (const void*)3424);
+                U32 rbSegs2 = 0;
+                for (const Cmd& k : cbSp->cmds) if (k.kind == CMD_COPY_B2B_RB) rbSegs2++;
+                assert(rbSegs2 == 1);
+                memory.memcpyFromGuest(back.data(), spDstMem->va, 64);
+                assert(memcmp(back.data(), pat.data() + 384, 64) == 0);
+                puts("PASS: partial-overlap copy splits at the GPU-write mark boundaries");
+            }
+
+            // Draw-time GPU-write marks (metabindfix, section 4.32;
+            // frontier review finding 9): a vertex/fragment shader can
+            // write a storage texel buffer too (spirvfix R12S converts
+            // Dim=Buffer images in any stage, and the bridge audit is
+            // stage-agnostic), so the draw traps mark the bound sets'
+            // storage ranges exactly like the dispatch traps. Before
+            // this, only dispatches marked, and a copy after such a
+            // draw read stale guest bytes eagerly.
+            {
+                U64 drMemId; auto* drMem = createObj<DeviceMemory>(K_MEMORY, drMemId);
+                drMem->size = 512; drMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 drBufId; auto* drBuf = createObj<Buffer>(K_BUFFER, drBufId);
+                drBuf->size = 512; drBuf->mem = drMemId; drBuf->memOff = 0;
+                U64 drViewId; auto* drView = createObj<BufferView>(K_BUFFERVIEW, drViewId);
+                drView->buffer = drBufId; drView->format = VK_FORMAT_R32G32_UINT;
+                drView->offset = 64; drView->range = 256;
+                U64 drDstMemId; auto* drDstMem = createObj<DeviceMemory>(K_MEMORY, drDstMemId);
+                drDstMem->size = 256; drDstMem->va = memory.mmapReserveAndMap(256, 3);
+                U64 drDstId; auto* drDst = createObj<Buffer>(K_BUFFER, drDstId);
+                drDst->size = 256; drDst->mem = drDstMemId; drDst->memOff = 0;
+                U64 drLayId; createObj<DescSetLayout>(K_SETLAYOUT, drLayId);
+                U64 drPlId; auto* drPl = createObj<PipelineLayout>(K_PIPELAYOUT, drPlId);
+                drPl->nsets = 1; drPl->sets[0] = drLayId;
+                U64 gfxPipeId; auto* gfxPipe = createObj<Pipeline>(K_PIPELINE, gfxPipeId);
+                gfxPipe->vs = csModId; // a stage module is bound: the mark gate is stage presence
+                gfxPipe->layout = drPlId;
+                memory.writeq(3200, drViewId);
+                VkWriteDescriptorSet drw{};
+                drw.dstBinding = 0; drw.descriptorCount = 1;
+                drw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                drw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &drw, sizeof(drw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL region{64, 0, 256};
+                memory.memcpyToGuest(3400, &region, sizeof(region));
+                U64 cbDrId; auto* cbDr = createObj<CmdBuf>(K_CMDBUF, cbDrId);
+                vkCmdBindPipeline(cbDrId, 0, gfxPipeId);
+                vkCmdPushDescriptorSetKHR(cbDrId, 0, drPlId, 0, 1, (const void*)3264);
+                vkCmdDraw(cbDrId, 3, 1, 0, 0);
+                vkCmdCopyBuffer(cbDrId, drBufId, drDstId, 1, (const void*)3400);
+                bool deferred = false;
+                for (const Cmd& k : cbDr->cmds) if (k.kind == CMD_COPY_B2B_RB) deferred = true;
+                assert(deferred); // the draw marked the view range: the copy defers
+                puts("PASS: draw-time storage writes mark the view range (graphics-stage UAV)");
+            }
+        }
+        {
+            // Compute ROOT-descriptor write marking (lane-crootmark): a
+            // dispatch whose compute pipeline stores through a writable
+            // root descriptor (the target VA is push-block data, served by
+            // the R15b re-rooting) must leave a GPU-write mark on the
+            // resolved range, or a later copy out of it finds no mark and
+            // takes the copy handlers' eager memcpy, silently serving
+            // pre-dispatch bytes. The mark must survive the cleanliness
+            // check with the re-stamped epoch once the same submission's
+            // own upload has landed, and genuinely later dirt must still
+            // refuse the deferral. A second pair of cases pins the
+            // registry's offset space (the open question from the
+            // frontier review of the metabind diff): every producer and
+            // consumer of the registry speaks MEMORY-ABSOLUTE offsets
+            // (memOff + buffer-relative), but a memOff=0 allocation
+            // cannot distinguish the two spaces, so both mark kinds are
+            // re-checked below on buffers bound at memOff 8192 -- each
+            // mark must land at the absolute offset and NOT at the
+            // relative one.
+            const U32 csRootWords[] = {
+                0x07230203u, 0x00010500u, 0, 20, 0,
+                (2u << 16) | 17u, 1u,                       // OpCapability Shader
+                (2u << 16) | 17u, 5347u,                    // OpCapability PhysicalStorageBufferAddresses
+                (3u << 16) | 14u, 2u, 1u,                   // OpMemoryModel Physical64 GLSL450
+                (5u << 16) | 15u, 5u, 12u, 0x6e69616du, 0u, // OpEntryPoint GLCompute %12 "main"
+                (6u << 16) | 16u, 12u, 17u, 1u, 1u, 1u,     // OpExecutionMode %12 LocalSize 1 1 1
+                (3u << 16) | 71u, 4u, 2u,                   // OpDecorate %4 Block
+                (5u << 16) | 72u, 4u, 0u, 35u, 0u,          // OpMemberDecorate %4 0 Offset 0
+                (2u << 16) | 19u, 1u,                       // OpTypeVoid
+                (4u << 16) | 21u, 2u, 64u, 0u,              // OpTypeInt 64 0
+                (4u << 16) | 21u, 3u, 32u, 0u,              // OpTypeInt 32 0
+                (3u << 16) | 30u, 4u, 2u,                   // OpTypeStruct { %2 }
+                (4u << 16) | 32u, 5u, 9u, 4u,               // OpTypePointer PushConstant %4
+                (4u << 16) | 32u, 7u, 5349u, 3u,            // OpTypePointer PhysicalStorageBuffer %3
+                (4u << 16) | 32u, 8u, 9u, 2u,               // OpTypePointer PushConstant %2
+                (4u << 16) | 43u, 3u, 9u, 0u,               // OpConstant %3 0 (member index)
+                (4u << 16) | 43u, 3u, 10u, 0xA5A50001u,     // OpConstant %3 (stored value)
+                (4u << 16) | 59u, 5u, 6u, 9u,               // OpVariable %6 : PushConstant %5
+                (3u << 16) | 33u, 11u, 1u,                  // OpTypeFunction %11 = fn(%1)
+                (5u << 16) | 54u, 1u, 12u, 0u, 11u,         // OpFunction %12
+                (2u << 16) | 248u, 13u,                     // OpLabel
+                (5u << 16) | 65u, 8u, 14u, 6u, 9u,          // OpAccessChain %14 = &push.member0
+                (4u << 16) | 61u, 2u, 15u, 14u,             // OpLoad %15 = the root VA
+                (4u << 16) | 124u, 7u, 16u, 15u,            // OpBitcast %16 = (uint*)VA
+                (3u << 16) | 62u, 16u, 10u,                 // OpStore *%16 = value
+                (1u << 16) | 253u,                          // OpReturn
+                (1u << 16) | 56u,                           // OpFunctionEnd
+            };
+            memory.memcpyToGuest(4400, csRootWords, sizeof(csRootWords));
+            VkShaderModuleCreateInfo smci{}; smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci.codeSize = sizeof(csRootWords); smci.pCode = 4400;
+            memory.memcpyToGuest(4200, &smci, sizeof(smci));
+            memory.writeq(4900, 0);
+            VK64Args sm{}; sm.a[0] = devId; sm.a[1] = 4200; sm.a[3] = 4900;
+            memory.memcpyToGuest(128, &sm, sizeof(sm));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateShaderModule, 128) == VK_SUCCESS);
+            const U64 csRootModId = memory.readq(4900);
+            assert(csRootModId != 0);
+            memory.memcpyToGuest(5400, "main", 5);
+            VkComputePipelineCreateInfo cci{};
+            cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.module = (VkShaderModule)csRootModId;
+            cci.stage.pName = 5400;
+            memory.memcpyToGuest(5000, &cci, sizeof(cci));
+            memory.writeq(5500, 0);
+            VK64Args cp3{}; cp3.a[0] = devId; cp3.a[2] = 1; cp3.a[3] = 5000; cp3.a[5] = 5500;
+            memory.memcpyToGuest(128, &cp3, sizeof(cp3));
+            assert((S64)vk64Bridge(&cpu, VK64_fn_vkCreateComputePipelines, 128) == VK_SUCCESS);
+            const U64 csRootPipeId = memory.readq(5500);
+            assert(csRootPipeId != 0);
+            auto* csRootPipe = objOf<Pipeline>(csRootPipeId, K_PIPELINE, "test");
+            assert(csRootPipe && csRootPipe->rootSlots.size() == 1 && csRootPipe->rootSlots[0] == 0);
+            assert(csRootPipe->rootWritableSlots.size() == 1 && csRootPipe->rootWritableSlots[0] == 0);
+            // The store target: a fresh buffer in fresh memory, its device
+            // address registered through the real trap.
+            U64 rootMemId; auto* rootMem = createObj<DeviceMemory>(K_MEMORY, rootMemId);
+            rootMem->size = 4096; rootMem->va = memory.mmapReserveAndMap(4096, 3);
+            U64 rootBufId; auto* rootBuf = createObj<Buffer>(K_BUFFER, rootBufId);
+            rootBuf->size = 4096; rootBuf->mem = rootMemId; rootBuf->memOff = 0;
+            U64 bdaInfo[3] = {0, 0, rootBufId}; // sType, pNext, buffer
+            memory.memcpyToGuest(5600, bdaInfo, sizeof(bdaInfo));
+            VK64Args bda{}; bda.a[1] = 5600;
+            memory.memcpyToGuest(128, &bda, sizeof(bda));
+            const U64 rootVa = vk64Bridge(&cpu, VK64_fn_vkGetBufferDeviceAddress, 128);
+            assert(rootVa != 0 && rootBuf->devVa == rootVa);
+            // Record: bind the pipeline, push the VA (at buffer offset 64),
+            // dispatch. The dispatch trap marks the bound pipeline's writes
+            // before the dispatch command is appended.
+            U64 cbRootId; auto* cbRoot = createObj<CmdBuf>(K_CMDBUF, cbRootId);
+            Cmd bindRoot; bindRoot.kind = CMD_BIND_PIPE; bindRoot.a = csRootPipeId; pushCmd(cbRoot, bindRoot);
+            const U64 pushVa = rootVa + 64;
+            memory.memcpyToGuest(5700, &pushVa, 8);
+            VK64Args pc{}; pc.a[0] = cbRootId; pc.a[2] = 0x20; pc.a[3] = 0; pc.a[4] = 8; pc.a[5] = 5700;
+            memory.memcpyToGuest(128, &pc, sizeof(pc));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdPushConstants, 128) == 0);
+            vkCmdDispatch(cbRootId, 1, 1, 1);
+            const GpuWriteMark* rootMark = vk64FindGpuWrite(rootBufId, 64, 128);
+            assert(rootMark && rootMark->epoch == rootMem->writeEpoch);
+            assert(vk64FindGpuWrite(rootBufId, 0, 32) == nullptr); // ahead of the VA: unmarked
+            // The same submission's own initial-data upload lands in the
+            // target range before the dispatch executes (the submit eager
+            // pass; vk64TouchMem is exactly what its execution does): the
+            // record-time stamp is poisoned, as the epoch lesson predicts.
+            vk64TouchMem(rootMem, 64, 128);
+            assert(vk64FindGpuWrite(rootBufId, 64, 128) == nullptr);
+            // Submit: the dispatch serializes (ROOT_DESCS + DISPATCH) and
+            // the submit-time resolution re-stamps the mark in place.
+            const U64 csRootCountBefore = vk64BridgeUnsupportedCount("compute-dispatch");
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbRoot, cbRootId}});
+            assert(vk64BridgeUnsupportedCount("compute-dispatch") == csRootCountBefore);
+            bool sawRootDescs = false, sawRootDispatch = false;
+            for (const auto& chunk : g_v2Pending.back().chunks) {
+                for (size_t at = 16; at < chunk.size();) {
+                    U32 type, len; memcpy(&type, chunk.data() + at, 4); memcpy(&len, chunk.data() + at + 4, 4);
+                    if (type == 0x1D) sawRootDescs = true;
+                    if (type == 0x1F) sawRootDispatch = true;
+                    at += 8 + len;
+                }
+            }
+            assert(sawRootDescs && sawRootDispatch);
+            g_v2Pending.clear();
+            rootMark = vk64FindGpuWrite(rootBufId, 64, 128);
+            assert(rootMark && rootMark->epoch == rootMem->writeEpoch); // re-stamped at the execution point
+            // Genuinely later guest dirt still refuses the deferral: the
+            // cleanliness proof is not weakened by the new census.
+            vk64TouchMem(rootMem, 64, 128);
+            assert(vk64FindGpuWrite(rootBufId, 64, 128) == nullptr);
+            // Offset-space pin, root census: the same root-descriptor
+            // dispatch, but the target buffer sits at memOff 8192 in a
+            // larger allocation.
+            U64 offMemId; auto* offMem = createObj<DeviceMemory>(K_MEMORY, offMemId);
+            offMem->size = 16384; offMem->va = memory.mmapReserveAndMap(16384, 3);
+            U64 offBufId; auto* offBuf = createObj<Buffer>(K_BUFFER, offBufId);
+            offBuf->size = 4096; offBuf->mem = offMemId; offBuf->memOff = 8192;
+            U64 bdaInfo2[3] = {0, 0, offBufId};
+            memory.memcpyToGuest(5600, bdaInfo2, sizeof(bdaInfo2));
+            VK64Args bda2{}; bda2.a[1] = 5600;
+            memory.memcpyToGuest(128, &bda2, sizeof(bda2));
+            const U64 offVa = vk64Bridge(&cpu, VK64_fn_vkGetBufferDeviceAddress, 128);
+            assert(offVa != 0 && offBuf->devVa == offVa);
+            U64 cbOffId; auto* cbOff = createObj<CmdBuf>(K_CMDBUF, cbOffId);
+            Cmd bindOff; bindOff.kind = CMD_BIND_PIPE; bindOff.a = csRootPipeId; pushCmd(cbOff, bindOff);
+            const U64 pushOffVa = offVa + 64;
+            memory.memcpyToGuest(5700, &pushOffVa, 8);
+            VK64Args pc2{}; pc2.a[0] = cbOffId; pc2.a[2] = 0x20; pc2.a[3] = 0; pc2.a[4] = 8; pc2.a[5] = 5700;
+            memory.memcpyToGuest(128, &pc2, sizeof(pc2));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdPushConstants, 128) == 0);
+            vkCmdDispatch(cbOffId, 1, 1, 1);
+            const GpuWriteMark* offMark = vk64FindGpuWrite(offBufId, 8192 + 64, 128);
+            assert(offMark && offMark->epoch == offMem->writeEpoch);
+            assert(vk64FindGpuWrite(offBufId, 64, 128) == nullptr); // buffer-relative: unmarked
+            assert(vk64FindGpuWrite(offBufId, 8192, 32) == nullptr); // ahead of the VA, absolute: unmarked
+            // The submit re-stamp refreshes the ABSOLUTE key in place.
+            vk64TouchMem(offMem, 8192 + 64, 128);
+            assert(vk64FindGpuWrite(offBufId, 8192 + 64, 128) == nullptr);
+            g_v2Pending.clear();
+            serializeSubmitV2({{cbOff, cbOffId}});
+            offMark = vk64FindGpuWrite(offBufId, 8192 + 64, 128);
+            assert(offMark && offMark->epoch == offMem->writeEpoch);
+            assert(vk64FindGpuWrite(offBufId, 64, 128) == nullptr); // still no relative mark
+            g_v2Pending.clear();
+            // Offset-space pin, descriptor-set census: a storage-buffer
+            // element (bufOff 128, range 512) on a buffer at memOff 8192,
+            // bound through a recorded CMD_BIND_SETS and dispatched under
+            // the same compute pipeline (no push record: the root census
+            // sees a zero VA and stays out of this case).
+            U64 setMemId; auto* setMem = createObj<DeviceMemory>(K_MEMORY, setMemId);
+            setMem->size = 16384; setMem->va = memory.mmapReserveAndMap(16384, 3);
+            U64 setBufId; auto* setBuf = createObj<Buffer>(K_BUFFER, setBufId);
+            setBuf->size = 4096; setBuf->mem = setMemId; setBuf->memOff = 8192;
+            U64 setId; auto* set = createObj<DescSet>(K_SET, setId);
+            Binding sb; sb.binding = 0; sb.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            sb.obj = setBufId; sb.bufOff = 128; sb.range = 512;
+            set->els[DescKey(0, 0)] = sb;
+            U64 cbSetId; auto* cbSet = createObj<CmdBuf>(K_CMDBUF, cbSetId);
+            Cmd bindSetPipe; bindSetPipe.kind = CMD_BIND_PIPE; bindSetPipe.a = csRootPipeId; pushCmd(cbSet, bindSetPipe);
+            Cmd bindSets; bindSets.kind = CMD_BIND_SETS; bindSets.a = 0; bindSets.b = 1; bindSets.sets[0] = setId; pushCmd(cbSet, bindSets);
+            vkCmdDispatch(cbSetId, 1, 1, 1);
+            const GpuWriteMark* setMark = vk64FindGpuWrite(setBufId, 8192 + 128, 512);
+            assert(setMark && setMark->epoch == setMem->writeEpoch);
+            assert(vk64FindGpuWrite(setBufId, 128, 512) == nullptr); // buffer-relative: unmarked
+            assert(vk64FindGpuWrite(setBufId, 8192 + 128 + 512, 64) == nullptr); // past the element range
+            puts("PASS: compute root-descriptor dispatch writes are marked, re-stamped at submit, and later dirt still refuses deferral");
+        }
         // GUARD (silent drop): a command buffer with no render pass but with an image
         // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1
         // frame carrying the copy, while a barrier-only command buffer stays empty.
@@ -1185,9 +2718,17 @@ int main() {
         VkPhysicalDeviceFeatures f64{};
         assert(call64(VK64_fn_vkGetPhysicalDeviceFeatures, 0, 8192) == VK_SUCCESS);
         memory.memcpyFromGuest(&f64, 8192, sizeof(f64));
-        assert(!f64.geometryShader && !f64.tessellationShader && f64.imageCubeArray && f64.textureCompressionBC);
+        assert(!f64.geometryShader && !f64.tessellationShader && f64.imageCubeArray);
+        // textureCompressionBC mirrors the page-published flag (v2WebGpuBcSupported):
+        // FALSE in this native run (no page), TRUE in the browser once the device
+        // publishes BC support. Assert the product's own rule, not a constant, so the
+        // gate is checked in both environments.
+        assert(f64.textureCompressionBC == (v2WebGpuBcSupported() ? VK_TRUE : VK_FALSE));
         assert(!f64.shaderInt64 && !f64.shaderFloat64 && !f64.shaderStorageImageExtendedFormats);
-        assert(!f64.shaderStorageImageReadWithoutFormat && !f64.shaderStorageImageWriteWithoutFormat);
+        // shaderStorageImageReadWithoutFormat is TRUE (typed-UAV work: typed storage
+        // reads are served end to end; register row IMPLEMENTED). The WRITE form,
+        // whose modules reject at audit, stays FALSE.
+        assert(f64.shaderStorageImageReadWithoutFormat && !f64.shaderStorageImageWriteWithoutFormat);
         assert(!f64.sparseBinding && !f64.wideLines && !f64.logicOp);
         // 32-bit guest: previously only robustBufferAccess was set.
         VkPhysicalDeviceFeatures f32{};
@@ -1211,7 +2752,7 @@ int main() {
             memory.memcpyFromGuest(&v12, 12288, sizeof(v12));
             memory.memcpyFromGuest(&v11, 16384, sizeof(v11));
             memory.memcpyFromGuest(&fp, 20480, sizeof(fp));
-            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && !v12.samplerMirrorClampToEdge);
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
             assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
             assert(!fp.shaderFloat16 && !fp.shaderInt8);
         };
@@ -1233,7 +2774,7 @@ int main() {
             memory32.memcpyFromGuest(&v12, 12288, sizeof(v12));
             memory32.memcpyFromGuest(&v11, 16384, sizeof(v11));
             memory32.memcpyFromGuest(&fp, 20480, sizeof(fp));
-            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && !v12.samplerMirrorClampToEdge);
+            assert(v12.timelineSemaphore && !v12.bufferDeviceAddress && v12.samplerMirrorClampToEdge);
             assert(v11.shaderDrawParameters && !v11.multiview && !v11.variablePointers && !v11.storageBuffer16BitAccess);
             assert(!fp.shaderFloat16 && !fp.shaderInt8);
         }
@@ -1272,6 +2813,110 @@ int main() {
             memory32.memcpyToGuest(128, &c32, sizeof(c32));
             vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
             assert(vk64BridgeUnsupportedCount("properties2-struct") == before + 2);
+        }
+        // Properties2 parity (prop32 lane): every node the 64-bit walker
+        // models is answered identically for a 32-bit guest. Buffers are
+        // pre-filled with 0xAA so a written field is observable -- a served
+        // 0 differs from an untouched 0xAAAAAAAA -- and fields neither
+        // walker serves must keep the guest's bytes on BOTH sides.
+        {
+            const U32 propBefore = vk64BridgeUnsupportedCount("properties2-struct");
+            // ---- 64-bit chain: m5 -> descIdx -> TF -> 1.3 -> 1.1 -> 1.2
+            auto fill64 = [&](U64 addr, U32 size, U32 sType, U64 next) {
+                std::vector<U8> buf(size, 0xAA);
+                memcpy(buf.data(), &sType, 4); memcpy(buf.data() + 8, &next, 8);
+                memory.memcpyToGuest(addr, buf.data(), size);
+            };
+            fill64(32768, sizeof(VkPhysicalDeviceMaintenance5Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES, 33792);
+            fill64(33792, sizeof(VkPhysicalDeviceDescriptorIndexingProperties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES, 34816);
+            fill64(34816, sizeof(VkPhysicalDeviceTransformFeedbackPropertiesEXT), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT, 35840);
+            fill64(35840, sizeof(Vk64Vulkan13Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, 36864);
+            fill64(36864, sizeof(VkPhysicalDeviceVulkan11Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, 37888);
+            fill64(37888, sizeof(VkPhysicalDeviceVulkan12Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, 0);
+            VkPhysicalDeviceProperties2 p2{}; p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; p2.pNext = 32768;
+            memory.memcpyToGuest(31744, &p2, sizeof(p2));
+            U64 pdId; createObj<PhysDev>(K_PHYSDEV, pdId);
+            VK64Args a{}; a.a[0] = pdId; a.a[1] = 31744;
+            memory.memcpyToGuest(128, &a, sizeof(a));
+            assert(vk64Bridge(&cpu, VK64_fn_vkGetPhysicalDeviceProperties2, 128) == VK_SUCCESS);
+            VkPhysicalDeviceMaintenance5Properties m5; memory.memcpyFromGuest(&m5, 32768, sizeof(m5));
+            VkPhysicalDeviceDescriptorIndexingProperties di; memory.memcpyFromGuest(&di, 33792, sizeof(di));
+            VkPhysicalDeviceTransformFeedbackPropertiesEXT tf; memory.memcpyFromGuest(&tf, 34816, sizeof(tf));
+            Vk64Vulkan13Properties v13; memory.memcpyFromGuest(&v13, 35840, sizeof(v13));
+            VkPhysicalDeviceVulkan11Properties v11; memory.memcpyFromGuest(&v11, 36864, sizeof(v11));
+            VkPhysicalDeviceVulkan12Properties v12; memory.memcpyFromGuest(&v12, 37888, sizeof(v12));
+            assert(m5.earlyFragmentMultisampleCoverageAfterSampleCounting == VK_TRUE && m5.earlyFragmentSampleMaskTestBeforeSampleCounting == VK_TRUE && m5.polygonModePointSize == VK_TRUE);
+            assert(m5.depthStencilSwizzleOneSupport == 0xAAAAAAAAu); // not served on either ABI: guest bytes kept
+            assert(di.maxUpdateAfterBindDescriptorsInAllPools == 1024 && di.maxPerStageDescriptorUpdateAfterBindSamplers == 16 && di.maxPerStageDescriptorUpdateAfterBindUniformBuffers == 16);
+            assert(di.maxPerStageDescriptorUpdateAfterBindStorageBuffers == 1000000 && di.maxPerStageDescriptorUpdateAfterBindSampledImages == 1000000 && di.maxPerStageDescriptorUpdateAfterBindStorageImages == 1000000);
+            assert(di.maxPerStageDescriptorUpdateAfterBindInputAttachments == 4 && di.maxPerStageUpdateAfterBindResources == 128);
+            assert(di.maxDescriptorSetUpdateAfterBindSamplers == 1024 && di.maxDescriptorSetUpdateAfterBindUniformBuffers == 1024 && di.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64);
+            assert(di.maxDescriptorSetUpdateAfterBindStorageBuffers == 1024 && di.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(di.maxDescriptorSetUpdateAfterBindSampledImages == 1024 && di.maxDescriptorSetUpdateAfterBindStorageImages == 1024 && di.maxDescriptorSetUpdateAfterBindInputAttachments == 16);
+            assert(tf.maxTransformFeedbackStreams == 0 && tf.maxTransformFeedbackBuffers == 0 && tf.maxTransformFeedbackBufferSize == 0);
+            assert(tf.maxTransformFeedbackStreamDataSize == 0 && tf.maxTransformFeedbackBufferDataSize == 0 && tf.maxTransformFeedbackBufferDataStride == 0);
+            assert(tf.transformFeedbackQueries == VK_TRUE && tf.transformFeedbackStreamsLinesTriangles == VK_FALSE && tf.transformFeedbackDraw == VK_FALSE);
+            assert(v13.minSubgroupSize == 32 && v13.maxSubgroupSize == 32);
+            assert(v13.storageTexelBufferOffsetSingleTexelAlignment == VK_TRUE && v13.uniformTexelBufferOffsetSingleTexelAlignment == VK_TRUE);
+            assert(v13.maxBufferSize == (1ull << 30));
+            assert(v13.integerDotProduct8BitUnsignedAccelerated == 0xAAAAAAAAu); // not served on either ABI
+            assert(v11.pointClippingBehavior == VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES && v11.maxPerSetDescriptors == 1024 && v11.subgroupSize == 32);
+            assert(v11.maxMemoryAllocationSize == 2ull * 1024 * 1024 * 1024);
+            assert(v12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64 && v12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(v12.maxTimelineSemaphoreValueDifference == 0xFFFFFFFFull && v12.framebufferIntegerColorSampleCounts == VK_SAMPLE_COUNT_1_BIT);
+            assert(memcmp(v12.driverName, "boxedwine", 9) == 0);
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == propBefore);
+            // ---- 32-bit chain: same nodes, packed guest layouts
+            auto fill32 = [&](U32 addr, U32 size, U32 sType, U32 next) {
+                std::vector<U8> buf(size, 0xAA);
+                memcpy(buf.data(), &sType, 4); memcpy(buf.data() + 4, &next, 4);
+                memory32.memcpyToGuest(addr, buf.data(), size);
+            };
+            fill32(49152, sizeof(vk32abi::VkPhysicalDeviceMaintenance5Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES, 50176);
+            fill32(50176, sizeof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES, 51200);
+            fill32(51200, sizeof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT, 52224);
+            fill32(52224, sizeof(Vk32Vulkan13Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, 53248);
+            fill32(53248, sizeof(vk32abi::VkPhysicalDeviceVulkan11Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, 54272);
+            fill32(54272, sizeof(vk32abi::VkPhysicalDeviceVulkan12Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, 0);
+            U8 q2[8 + 800] = {}; U32 qst = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; memcpy(q2, &qst, 4);
+            U32 qnext = 49152; memcpy(q2 + 4, &qnext, 4);
+            memory32.memcpyToGuest(48128, q2, sizeof(q2));
+            U64 pdId32; createObj32<PhysDev>(K_PHYSDEV, pdId32);
+            VK32Args c32{}; c32.a[0] = pdId32; c32.a[1] = 48128;
+            memory32.memcpyToGuest(128, &c32, sizeof(c32));
+            vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
+            vk32abi::VkPhysicalDeviceMaintenance5Properties m532; memory32.memcpyFromGuest(&m532, 49152, sizeof(m532));
+            vk32abi::VkPhysicalDeviceDescriptorIndexingProperties di32; memory32.memcpyFromGuest(&di32, 50176, sizeof(di32));
+            vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT tf32; memory32.memcpyFromGuest(&tf32, 51200, sizeof(tf32));
+            Vk32Vulkan13Properties v1332; memory32.memcpyFromGuest(&v1332, 52224, sizeof(v1332));
+            vk32abi::VkPhysicalDeviceVulkan11Properties v1132; memory32.memcpyFromGuest(&v1132, 53248, sizeof(v1132));
+            vk32abi::VkPhysicalDeviceVulkan12Properties v1232; memory32.memcpyFromGuest(&v1232, 54272, sizeof(v1232));
+            assert(m532.earlyFragmentMultisampleCoverageAfterSampleCounting == VK_TRUE && m532.earlyFragmentSampleMaskTestBeforeSampleCounting == VK_TRUE && m532.polygonModePointSize == VK_TRUE);
+            assert(m532.depthStencilSwizzleOneSupport == 0xAAAAAAAAu);
+            assert(di32.maxUpdateAfterBindDescriptorsInAllPools == 1024 && di32.maxPerStageDescriptorUpdateAfterBindSamplers == 16 && di32.maxPerStageDescriptorUpdateAfterBindUniformBuffers == 16);
+            assert(di32.maxPerStageDescriptorUpdateAfterBindStorageBuffers == 1000000 && di32.maxPerStageDescriptorUpdateAfterBindSampledImages == 1000000 && di32.maxPerStageDescriptorUpdateAfterBindStorageImages == 1000000);
+            assert(di32.maxPerStageDescriptorUpdateAfterBindInputAttachments == 4 && di32.maxPerStageUpdateAfterBindResources == 128);
+            assert(di32.maxDescriptorSetUpdateAfterBindSamplers == 1024 && di32.maxDescriptorSetUpdateAfterBindUniformBuffers == 1024 && di32.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64);
+            assert(di32.maxDescriptorSetUpdateAfterBindStorageBuffers == 1024 && di32.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(di32.maxDescriptorSetUpdateAfterBindSampledImages == 1024 && di32.maxDescriptorSetUpdateAfterBindStorageImages == 1024 && di32.maxDescriptorSetUpdateAfterBindInputAttachments == 16);
+            assert(tf32.maxTransformFeedbackStreams == 0 && tf32.maxTransformFeedbackBuffers == 0 && tf32.maxTransformFeedbackBufferSize == 0);
+            assert(tf32.maxTransformFeedbackStreamDataSize == 0 && tf32.maxTransformFeedbackBufferDataSize == 0 && tf32.maxTransformFeedbackBufferDataStride == 0);
+            assert(tf32.transformFeedbackQueries == VK_TRUE && tf32.transformFeedbackStreamsLinesTriangles == VK_FALSE && tf32.transformFeedbackDraw == VK_FALSE);
+            assert(v1332.minSubgroupSize == 32 && v1332.maxSubgroupSize == 32);
+            assert(v1332.storageTexelBufferOffsetSingleTexelAlignment == VK_TRUE && v1332.uniformTexelBufferOffsetSingleTexelAlignment == VK_TRUE);
+            assert(v1332.maxBufferSize == (1ull << 30));
+            assert(v1332.integerDotProduct8BitUnsignedAccelerated == 0xAAAAAAAAu);
+            assert(v1132.pointClippingBehavior == VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES && v1132.maxPerSetDescriptors == 1024 && v1132.subgroupSize == 32);
+            // The offset pin: this field sits at guest offsetof 92, not at
+            // host offsetof - 8 = 96; the pre-fix walker wrote the limit
+            // 4 bytes late and this readback was garbage.
+            assert(v1132.maxMemoryAllocationSize == 2ull * 1024 * 1024 * 1024);
+            assert(v1232.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64 && v1232.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(v1232.maxTimelineSemaphoreValueDifference == 0xFFFFFFFFull && v1232.framebufferIntegerColorSampleCounts == VK_SAMPLE_COUNT_1_BIT);
+            assert(memcmp(v1232.driverName, "boxedwine", 9) == 0);
+            // Every chained node was modeled: no new "not modeled" counts.
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == propBefore);
+            puts("PASS: GUARD Properties2 answers are identical for 32-bit and 64-bit guests (maintenance5, descriptor-indexing, transform-feedback, Vulkan 1.1/1.2/1.3 arms)");
         }
     {
         // Image views keep their real subresource range and type; non-identity swizzle and
@@ -1457,6 +3102,12 @@ int main() {
         const U32 cullBefore = vk64BridgeUnsupportedCount("spirv-capability:CullDistance");
         assert(module({(2u << 16) | 17u, 10u, (2u << 16) | 17u, 33u, (2u << 16) | 17u, 1u}) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("spirv-capability:Float64") == f64Before + 1);
+        // CullDistance DECLARED but unused is not counted: DXVK declares it
+        // unconditionally and the tier converts it as-is. Only the USED form
+        // (a BuiltIn CullDistance member decoration) rejects, exercised next.
+        assert(vk64BridgeUnsupportedCount("spirv-capability:CullDistance") == cullBefore);
+        // OpCapability CullDistance; %1 = OpTypeStruct; OpMemberDecorate %1 0 BuiltIn CullDistance.
+        assert(module({(2u << 16) | 17u, 33u, (2u << 16) | 30u, 1u, (5u << 16) | 72u, 1u, 0u, 11u, 4u}) == VK_ERROR_FEATURE_NOT_PRESENT);
         assert(vk64BridgeUnsupportedCount("spirv-capability:CullDistance") == cullBefore + 1);
         // %1 = OpTypeStruct; %2 = OpTypePointer StorageBuffer %1; %3 = OpVariable %2 StorageBuffer
         const U32 sbBefore = vk64BridgeUnsupportedCount("spirv-storage-buffer-write");
@@ -1471,6 +3122,297 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
         puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
 
+        // GUARD (operand-aware use scan): a CompositeExtract literal index
+        // equal to the access chain's result id is NOT a use of the chain
+        // pointer. The module below declares a runtime array of sampled
+        // images (set 0 / binding 0), indexes it with constant 0 through
+        // chain %3, loads the element, and runs OpCompositeExtract with
+        // literal index 3. A raw word scan reads that literal as an escape
+        // of the chain pointer, the array classifies unservable, and
+        // RuntimeDescriptorArray is reported; the operand-aware scan
+        // (findIdUse) admits the module exactly like spirvfix does.
+        {
+            const U32 rdaBefore = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+                (2u << 16) | 17u, 1u,                          // OpCapability Shader
+                (2u << 16) | 17u, 5302u,                       // OpCapability RuntimeDescriptorArray
+                (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+                (6u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u, // OpEntryPoint Fragment %17 "main" %8
+                (3u << 16) | 16u, 17u, 7u,                     // OpExecutionMode %17 OriginUpperLeft
+                (4u << 16) | 71u, 8u, 34u, 0u,                 // OpDecorate %8 DescriptorSet 0
+                (4u << 16) | 71u, 8u, 33u, 0u,                 // OpDecorate %8 Binding 0
+                (2u << 16) | 19u, 1u,                          // %1 OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                      // %2 OpTypeFunction %1
+                (3u << 16) | 22u, 4u, 32u,                     // %4 OpTypeFloat 32
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u, // %5 OpTypeImage %4 2D, Sampled=1
+                (3u << 16) | 29u, 6u, 5u,                      // %6 OpTypeRuntimeArray %5
+                (4u << 16) | 32u, 7u, 0u, 6u,                  // %7 OpTypePointer UniformConstant %6
+                (4u << 16) | 21u, 9u, 32u, 0u,                 // %9 OpTypeInt 32 unsigned
+                (4u << 16) | 43u, 9u, 10u, 0u,                 // %10 OpConstant %9 0
+                (4u << 16) | 32u, 11u, 0u, 5u,                 // %11 OpTypePointer UniformConstant %5
+                (4u << 16) | 23u, 12u, 4u, 4u,                 // %12 OpTypeVector %4 4
+                (4u << 16) | 43u, 4u, 13u, 0x3F800000u,        // %13 OpConstant %4 1.0f
+                (7u << 16) | 44u, 12u, 14u, 13u, 13u, 13u, 13u, // %14 OpConstantComposite %12 %13 x4
+                (4u << 16) | 59u, 7u, 8u, 0u,                  // %8 OpVariable %7 UniformConstant
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,             // %17 OpFunction %1 None %2
+                (2u << 16) | 248u, 18u,                        // %18 OpLabel
+                (5u << 16) | 65u, 11u, 3u, 8u, 10u,            // %3 OpAccessChain %11 %8 %10
+                (4u << 16) | 61u, 5u, 15u, 3u,                 // %15 OpLoad %5 %3
+                (5u << 16) | 81u, 4u, 16u, 14u, 3u,            // %16 OpCompositeExtract %4 %14 3 (literal == chain %3)
+                (1u << 16) | 253u,                             // OpReturn
+                (1u << 16) | 56u,                              // OpFunctionEnd
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaBefore);
+            puts("PASS: GUARD a CompositeExtract literal equal to the chain id is not a pointer escape (operand-aware scan)");
+        }
+
+        // GUARD (operand-aware use scan): the REAL captured heap-array
+        // module with ids 3/14 renumbered (testdata/spirv/
+        // d3d12-ps-uav-heap-array-smallid.spv; the array variable is %3
+        // and the module's own OpCompositeExtract carries literal index
+        // 3) is admitted: the array classifies servable and cap 5302 is
+        // skipped, exactly as spirvfix classifies it. A raw word scan
+        // reports RuntimeDescriptorArray at creation.
+        {
+            const U32 rdaBefore = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+            0x00020011u, 0x00000001u, 0x00020011u, 0x00000037u, 0x00020011u, 0x00001172u, 0x00020011u, 0x000014b6u,
+            0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e3u, 0x0008000au, 0x5f565053u, 0x5f545845u, 0x63736564u,
+            0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0007000au, 0x5f565053u, 0x5f52484bu, 0x616f6c66u,
+            0x6f635f74u, 0x6f72746eu, 0x0000736cu, 0x0009000au, 0x5f565053u, 0x5f52484bu, 0x73796870u, 0x6c616369u,
+            0x6f74735fu, 0x65676172u, 0x6675625fu, 0x00726566u, 0x0003000eu, 0x000014e4u, 0x00000003u, 0x0009000fu,
+            0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x00000003u, 0x00000011u, 0x00000013u,
+            0x00030010u, 0x00000004u, 0x00000007u, 0x00040010u, 0x00000004u, 0x0000116du, 0x00000020u, 0x00080007u,
+            0x00000001u, 0x36653266u, 0x30396130u, 0x35346362u, 0x37326462u, 0x6978642eu, 0x0000006cu, 0x00040005u,
+            0x00000004u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000007u, 0x746f6f52u, 0x736e6f43u, 0x746e6174u,
+            0x00000073u, 0x00050005u, 0x00000009u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00050005u, 0x00000011u,
+            0x505f5653u, 0x7469736fu, 0x006e6f69u, 0x00050005u, 0x00000013u, 0x545f5653u, 0x65677261u, 0x00000074u,
+            0x00030047u, 0x00000007u, 0x00000002u, 0x00050048u, 0x00000007u, 0x00000000u, 0x00000023u, 0x00000000u,
+            0x00040047u, 0x00000003u, 0x00000022u, 0x00000005u, 0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u,
+            0x00030047u, 0x00000003u, 0x00000018u, 0x00040047u, 0x00000011u, 0x0000000bu, 0x0000000fu, 0x00040047u,
+            0x00000013u, 0x0000001eu, 0x00000000u, 0x00020013u, 0x00000002u, 0x00030021u, 0x0000000eu, 0x00000002u,
+            0x00040015u, 0x00000006u, 0x00000020u, 0x00000000u, 0x0003001eu, 0x00000007u, 0x00000006u, 0x00040020u,
+            0x00000008u, 0x00000009u, 0x00000007u, 0x0004003bu, 0x00000008u, 0x00000009u, 0x00000009u, 0x00030016u,
+            0x0000000au, 0x00000020u, 0x00090019u, 0x0000000bu, 0x0000000au, 0x00000001u, 0x00000000u, 0x00000000u,
+            0x00000000u, 0x00000002u, 0x00000000u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du,
+            0x00000000u, 0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000fu,
+            0x0000000au, 0x00000004u, 0x00040020u, 0x00000010u, 0x00000001u, 0x0000000fu, 0x0004003bu, 0x00000010u,
+            0x00000011u, 0x00000001u, 0x00040020u, 0x00000012u, 0x00000003u, 0x0000000fu, 0x0004003bu, 0x00000012u,
+            0x00000013u, 0x00000003u, 0x00040020u, 0x00000014u, 0x00000001u, 0x0000000au, 0x0004002bu, 0x00000006u,
+            0x00000016u, 0x00000000u, 0x0004002bu, 0x00000006u, 0x00000019u, 0x00000001u, 0x00040020u, 0x0000001du,
+            0x00000000u, 0x0000000bu, 0x00040020u, 0x0000001fu, 0x00000009u, 0x00000006u, 0x00040017u, 0x00000023u,
+            0x00000006u, 0x00000002u, 0x00040020u, 0x0000002cu, 0x00000003u, 0x0000000au, 0x0004002bu, 0x00000006u,
+            0x00000030u, 0x00000002u, 0x0004002bu, 0x00000006u, 0x00000032u, 0x00000003u, 0x00050036u, 0x00000002u,
+            0x00000004u, 0x00000000u, 0x0000000eu, 0x000200f8u, 0x00000005u, 0x000200f9u, 0x00000033u, 0x000200f8u,
+            0x00000033u, 0x00050041u, 0x00000014u, 0x00000015u, 0x00000011u, 0x00000016u, 0x0004003du, 0x0000000au,
+            0x00000017u, 0x00000015u, 0x00050041u, 0x00000014u, 0x00000018u, 0x00000011u, 0x00000019u, 0x0004003du,
+            0x0000000au, 0x0000001au, 0x00000018u, 0x0004006eu, 0x00000006u, 0x0000001bu, 0x00000017u, 0x0004006eu,
+            0x00000006u, 0x0000001cu, 0x0000001au, 0x00050041u, 0x0000001fu, 0x00000020u, 0x00000009u, 0x00000016u,
+            0x0004003du, 0x00000006u, 0x00000021u, 0x00000020u, 0x00050041u, 0x0000001du, 0x0000001eu, 0x00000003u,
+            0x00000021u, 0x0004003du, 0x0000000bu, 0x00000022u, 0x0000001eu, 0x00050050u, 0x00000023u, 0x00000026u,
+            0x0000001bu, 0x0000001cu, 0x00060062u, 0x0000000fu, 0x00000025u, 0x00000022u, 0x00000026u, 0x00000400u,
+            0x00050051u, 0x0000000au, 0x00000027u, 0x00000025u, 0x00000000u, 0x00050051u, 0x0000000au, 0x00000028u,
+            0x00000025u, 0x00000001u, 0x00050051u, 0x0000000au, 0x00000029u, 0x00000025u, 0x00000002u, 0x00050051u,
+            0x0000000au, 0x0000002au, 0x00000025u, 0x00000003u, 0x00050041u, 0x0000002cu, 0x0000002du, 0x00000013u,
+            0x00000016u, 0x0003003eu, 0x0000002du, 0x00000027u, 0x00050041u, 0x0000002cu, 0x0000002eu, 0x00000013u,
+            0x00000019u, 0x0003003eu, 0x0000002eu, 0x00000028u, 0x00050041u, 0x0000002cu, 0x0000002fu, 0x00000013u,
+            0x00000030u, 0x0003003eu, 0x0000002fu, 0x00000029u, 0x00050041u, 0x0000002cu, 0x00000031u, 0x00000013u,
+            0x00000032u, 0x0003003eu, 0x00000031u, 0x0000002au, 0x000100fdu, 0x00010038u,
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaBefore);
+            puts("PASS: GUARD the small-id heap-array module is admitted (operand-aware scan)");
+        }
+        // GUARD (rawscan): a literal word equal to an unreferenced
+        // PhysicalStorageBuffer pointer type's id is not a use of the
+        // type. The module below carries a servable root-descriptor
+        // cone (push-loaded VA -> OpConvertUToPtr -> read) whose
+        // materialized pointer type is %10, a STRAY PSB pointer type
+        // %20 referenced by nothing, and an OpConstant whose VALUE is
+        // 20. The audit's raw word scan read the constant as an
+        // external use of %20, the root check failed, and the module
+        // was rejected as spirv-capability-unknown:5347; the
+        // operand-aware scan (idOperandUseIndex) admits it.
+        // Audit-shaped words in the style of the guards above (not
+        // spirv-val input).
+        const U32 psbBefore = vk64BridgeUnsupportedCount("spirv-capability-unknown:5347");
+        assert(module({
+            (2u << 16) | 17u, 1u,                          // OpCapability Shader
+            (2u << 16) | 17u, 5347u,                       // OpCapability PhysicalStorageBufferAddresses
+            (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+            (3u << 16) | 71u, 6u, 2u,                      // OpDecorate %6 Block
+            (5u << 16) | 72u, 6u, 0u, 35u, 0u,             // OpMemberDecorate %6 0 Offset 0
+            (3u << 16) | 71u, 5u, 2u,                      // OpDecorate %5 Block
+            (5u << 16) | 72u, 5u, 0u, 35u, 0u,             // OpMemberDecorate %5 0 Offset 0
+            (2u << 16) | 19u, 1u,                          // %1 = OpTypeVoid
+            (4u << 16) | 21u, 2u, 32u, 0u,                 // %2 = OpTypeInt 32 0
+            (4u << 16) | 21u, 3u, 64u, 0u,                 // %3 = OpTypeInt 64 0
+            (3u << 16) | 22u, 4u, 32u,                     // %4 = OpTypeFloat 32
+            (3u << 16) | 30u, 5u, 4u,                      // %5 = OpTypeStruct %4
+            (3u << 16) | 30u, 6u, 3u,                      // %6 = OpTypeStruct %3
+            (4u << 16) | 32u, 7u, 9u, 6u,                  // %7 = OpTypePointer PushConstant %6
+            (4u << 16) | 59u, 7u, 8u, 9u,                  // %8 = OpVariable %7 PushConstant
+            (4u << 16) | 32u, 9u, 9u, 3u,                  // %9 = OpTypePointer PushConstant %3
+            (4u << 16) | 32u, 10u, 5349u, 5u,              // %10 = OpTypePointer PhysicalStorageBuffer %5
+            (4u << 16) | 32u, 20u, 5349u, 5u,              // %20 = OpTypePointer PhysicalStorageBuffer %5 (stray)
+            (4u << 16) | 43u, 2u, 11u, 0u,                 // %11 = OpConstant %2 0
+            (4u << 16) | 43u, 2u, 21u, 20u,                // %21 = OpConstant %2 20 (value == stray id)
+            (3u << 16) | 33u, 13u, 1u,                     // %13 = OpTypeFunction %1
+            (5u << 16) | 54u, 1u, 12u, 0u, 13u,            // %12 = OpFunction %1 None %13
+            (2u << 16) | 248u, 14u,                        // %14 = OpLabel
+            (5u << 16) | 65u, 9u, 15u, 8u, 11u,            // %15 = OpAccessChain %9 %8 %11
+            (4u << 16) | 61u, 3u, 16u, 15u,                // %16 = OpLoad %3 %15
+            (4u << 16) | 120u, 10u, 17u, 16u,              // %17 = OpConvertUToPtr %10 %16
+            (4u << 16) | 61u, 5u, 18u, 17u,                // %18 = OpLoad %5 %17
+            (1u << 16) | 253u,                             // OpReturn
+            (1u << 16) | 56u}) == VK_SUCCESS);             // OpFunctionEnd
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore);
+        puts("PASS: GUARD a constant value equal to a stray physical-buffer pointer type id is not an external use");
+
+        // GUARD (heapSets mirror divergence): the bridge audit's R15b
+        // collision check must consult the module's descriptor-heap set --
+        // the set shared by its runtime-array variables -- exactly as
+        // spirvfix's analyzeRootDescriptors does (the synthesized root
+        // bindings land in that set, at 4096 + push offset / 8). A minimal
+        // root module (one read-only root slot at push@0, so the
+        // synthesized binding is 4096) is built three ways: heap array in
+        // set 2 with binding 4096 owned in set 0 (no collision in the heap
+        // set: servable), heap in set 0 with binding 4096 owned in set 0
+        // (collision under either reading: unservable, unchanged), and
+        // heap in set 2 with binding 4096 owned in set 2 (a real collision
+        // in the heap set: unservable). The first and third verdicts flip
+        // if the bridge's heap-set scan tests the wrong pointee opcode and
+        // always consults set 0.
+        {
+            auto rootModule = [](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = {0x07230203u, 0x00010600u, 0, 64, 0};
+                auto ins = [&w](U32 op, std::vector<U32> ops) {
+                    w.push_back(((U32)(ops.size() + 1) << 16) | op);
+                    w.insert(w.end(), ops.begin(), ops.end());
+                };
+                ins(17, {1}); ins(17, {5347});                       // Shader, PhysicalStorageBufferAddressesEXT
+                ins(14, {5348, 3});                                  // MemoryModel PhysicalStorageBuffer64, Vulkan
+                ins(15, {4, 30, 1852399981u, 0, 7});                 // EntryPoint Fragment %30 "main" {%7}
+                ins(16, {30, 7});                                    // ExecutionMode OriginUpperLeft
+                ins(71, {5, 2}); ins(72, {5, 0, 35, 0});             // push struct Block, member Offset 0
+                ins(71, {11, 6, 16});                                // CBV array ArrayStride 16
+                ins(71, {12, 3}); ins(72, {12, 0, 35, 0});           // root pointee BufferBlock, member Offset 0
+                ins(71, {22, 34, heapSet}); ins(71, {22, 33, 0});    // heap var: DescriptorSet heapSet, Binding 0
+                ins(71, {24, 34, trojanSet}); ins(71, {24, 33, 4096}); // trojan var: DescriptorSet trojanSet, Binding 4096
+                ins(19, {1});                                        // %1 void
+                ins(33, {2, 1});                                     // %2 function type
+                ins(21, {3, 32, 0});                                 // %3 u32
+                ins(23, {4, 3, 2});                                  // %4 v2<u32>
+                ins(30, {5, 4});                                     // %5 push struct
+                ins(32, {6, 9, 5});                                  // %6 ptr PushConstant %5
+                ins(59, {6, 7, 9});                                  // %7 push variable
+                ins(22, {8, 32});                                    // %8 f32
+                ins(23, {9, 8, 4});                                  // %9 v4<f32>
+                ins(43, {3, 16, 0});                                 // %16 const 0
+                ins(43, {3, 10, 4096});                              // %10 const 4096
+                ins(28, {11, 9, 10});                                // %11 array<v4f, 4096>
+                ins(30, {12, 11});                                   // %12 root pointee struct
+                ins(32, {13, 5349, 12});                             // %13 ptr PhysicalStorageBuffer %12
+                ins(32, {14, 5349, 9});                              // %14 ptr PhysicalStorageBuffer %9
+                ins(32, {15, 9, 4});                                 // %15 ptr PushConstant %4
+                ins(29, {20, 8});                                    // %20 runtime array<f32>
+                ins(32, {21, 0, 20});                                // %21 ptr UniformConstant %20
+                ins(59, {21, 22, 0});                                // %22 heap variable
+                ins(32, {23, 0, 8});                                 // %23 ptr UniformConstant %8
+                ins(59, {23, 24, 0});                                // %24 trojan variable
+                ins(54, {1, 30, 0, 2});                              // %30 function
+                ins(248, {31});                                      // %31 label
+                ins(65, {15, 32, 7, 16});                            // %32 access chain into the push block
+                ins(61, {4, 33, 32});                                // %33 load v2uint (the root VA)
+                ins(124, {13, 34, 33});                              // %34 bitcast to a PSB pointer (the materialization)
+                ins(66, {14, 35, 34, 16, 16});                       // %35 in-bounds chain to element 0
+                ins(61, {9, 36, 35});                                // %36 load v4f through the root pointer
+                ins(253, {});                                        // ReturnVoid
+                ins(56, {});                                         // FunctionEnd
+                return w;
+            };
+            auto verdict = [&rootModule](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = rootModule(heapSet, trojanSet);
+                r15::Module m; assert(r15::parse(w, m));
+                r15::RootVerdict rv = r15::analyzeRoot(m);
+                assert(rv.hasMats && rv.slots.size() == 1 && rv.slots[0] == 0);
+                return rv.servable;
+            };
+            assert(verdict(2, 0));   // heap set consulted: binding 4096 in set 0 is no collision
+            assert(!verdict(0, 0));  // set-0 heap: the collision is real under either reading
+            assert(!verdict(2, 2));  // binding 4096 owned in the heap set itself: real collision
+            // End to end: the audit admits the physical-buffer capabilities
+            // exactly when the classifier says servable (the module()
+            // helper prepends the SPIR-V header itself).
+            auto audit = [&module, &rootModule](U32 heapSet, U32 trojanSet) {
+                std::vector<U32> w = rootModule(heapSet, trojanSet);
+                return module({w.begin() + 5, w.end()});
+            };
+            assert(audit(2, 0) == VK_SUCCESS);
+            assert(audit(0, 0) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(audit(2, 2) == VK_ERROR_FEATURE_NOT_PRESENT);
+            puts("PASS: GUARD root-descriptor collision check consults the descriptor-heap set (nonzero-set admission and decline)");
+        }
+        // GUARD (campaign 4.64): the Route 0 used-test mirrors spirvfix R8's
+        // downgrade census. A module can owe its validity to the physical
+        // addressing model without dereferencing a physical pointer -- a
+        // pointer call argument in a storage class the Logical model
+        // forbids as a call operand, a variable allocating a pointer type,
+        // a pointer OpSelect without a VariablePointers capability -- and
+        // R8 leaves those modules physical, so the audit must NOT exempt
+        // their 5346/5347 either: they reject here as
+        // spirv-capability-unknown:5347. When a VariablePointers capability
+        // IS declared the census shape is not a physical use (R8 strips
+        // 5347 and downgrades), so 5347 stays exempt and the module takes
+        // the standing VariablePointers rejection by name instead.
+        const U32 r8PsbBefore = vk64BridgeUnsupportedCount("spirv-capability-unknown:5347");
+        // OpCapability Shader + PhysicalStorageBufferAddresses; OpMemoryModel
+        // PhysicalStorageBuffer64 Vulkan; %20 f32, %23 void, %21 ptr Output
+        // %20, %30 OpVariable Output; callee %26 (OpTypeFunction %25,
+        // parameter %27) takes the pointer; caller %29 (OpTypeFunction %28)
+        // passes %30 to it.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 19u, 23u, (4u << 16) | 32u, 21u, 3u, 20u,
+                       (4u << 16) | 59u, 21u, 30u, 3u,
+                       (4u << 16) | 33u, 25u, 23u, 21u, (5u << 16) | 54u, 23u, 26u, 0u, 25u,
+                       (3u << 16) | 55u, 21u, 27u, (2u << 16) | 248u, 90u, (1u << 16) | 253u, (1u << 16) | 56u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (5u << 16) | 57u, 23u, 35u, 26u, 30u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == r8PsbBefore + 1);
+        // %21 ptr Private %20; %22 ptr Private %21; %30 OpVariable %22
+        // Private -- a variable allocating a pointer type.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (4u << 16) | 32u, 21u, 6u, 20u,
+                       (4u << 16) | 32u, 22u, 6u, 21u, (4u << 16) | 59u, 22u, 30u, 6u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == r8PsbBefore + 2);
+        // %24 bool, %32 OpConstant true; %35 OpSelect over the Private
+        // pointers %30/%31 inside caller %29, no VariablePointers capability.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 20u, 24u, (2u << 16) | 19u, 23u,
+                       (4u << 16) | 32u, 21u, 6u, 20u, (4u << 16) | 59u, 21u, 30u, 6u,
+                       (4u << 16) | 59u, 21u, 31u, 6u, (4u << 16) | 43u, 24u, 32u, 1u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (6u << 16) | 169u, 21u, 35u, 32u, 30u, 31u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == r8PsbBefore + 3);
+        // The same OpSelect WITH OpCapability VariablePointers: not a
+        // physical use, so 5347 stays exempt (its counter is unchanged) and
+        // the module rejects on the VariablePointers capability itself.
+        const U32 vpBefore = vk64BridgeUnsupportedCount("spirv-capability:VariablePointers");
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (2u << 16) | 17u, 4442u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 20u, 24u, (2u << 16) | 19u, 23u,
+                       (4u << 16) | 32u, 21u, 6u, 20u, (4u << 16) | 59u, 21u, 30u, 6u,
+                       (4u << 16) | 59u, 21u, 31u, 6u, (4u << 16) | 43u, 24u, 32u, 1u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (6u << 16) | 169u, 21u, 35u, 32u, 30u, 31u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == r8PsbBefore + 3);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:VariablePointers") == vpBefore + 1);
+        // Declared-but-unused 5347 on its own still passes (R8 strips it).
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == r8PsbBefore + 3);
+        puts("PASS: GUARD R8 downgrade census shapes are reported at vkCreateShaderModule");
+
         // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
         {
             VkSamplerCreateInfo sc{}; sc.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1481,8 +3423,10 @@ int main() {
             const U32 m0 = vk64BridgeUnsupportedCount("mirror-clamp-to-edge");
             const U32 b0 = vk64BridgeUnsupportedCount("sampler-border-colour");
             const U32 l0 = vk64BridgeUnsupportedCount("sampler-mip-lod-bias");
-            // mirror-clamp is gated by a FALSE feature bit: creation is rejected, border/bias are not.
-            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_ERROR_FEATURE_NOT_PRESENT);
+            // mirror-clamp is advertised (vkd3d-proton device gate) and served by the
+            // page tier as mirror-repeat: creation succeeds; the approximation is
+            // reported, like border colour and LOD bias.
+            assert(call64(VK64_fn_vkCreateSampler, dev2, 30720, 0, 31744) == VK_SUCCESS);
             assert(vk64BridgeUnsupportedCount("mirror-clamp-to-edge") == m0 + 1);
             assert(vk64BridgeUnsupportedCount("sampler-border-colour") == b0 + 1);
             assert(vk64BridgeUnsupportedCount("sampler-mip-lod-bias") == l0 + 1);

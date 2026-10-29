@@ -46,7 +46,7 @@ VkPipelineTessellationStateCreateInfo VkPipelineViewportStateCreateInfo
 VkPipelineRasterizationStateCreateInfo VkPipelineMultisampleStateCreateInfo
 VkPipelineDepthStencilStateCreateInfo VkPipelineColorBlendAttachmentState
 VkPipelineColorBlendStateCreateInfo VkPipelineDynamicStateCreateInfo
-VkPipelineTessellationStateCreateInfo2 VkGraphicsPipelineCreateInfo
+VkPipelineTessellationStateCreateInfo2 VkGraphicsPipelineCreateInfo VkComputePipelineCreateInfo
 VkPipelineShaderStageCreateInfo VkPipelineLayoutCreateInfo
 VkPipelineCacheCreateInfo VkPipelineCacheDataInfo VkPipelineRasterizationLineStateCreateInfoEXT
 VkDescriptorSetLayoutBinding VkDescriptorSetLayoutCreateInfo VkDescriptorPoolSize
@@ -287,9 +287,31 @@ def main() -> int:
         #   u32 transforms + u32 curTransform + u32 compositeAlpha +
         #   u32 imgUsage = 4+4+8+8+8+4+4+4+4+4 = 52
         ('VkSurfaceCapabilitiesKHR', 'sizeof', 52),
+        # VkPipelineShaderStageCreateInfo: u32 sType + u32 pNext + u32 flags +
+        #   u32 stage + u64 module(4-aligned at 16) + u32 pName +
+        #   u32 pSpecializationInfo = 32; module offset is load-bearing
+        #   (every pipeline creation reads the shader handle through it).
+        ('VkPipelineShaderStageCreateInfo', 'sizeof', 32),
+        ('VkPipelineShaderStageCreateInfo', 'offsetof:module', 16),
+        # VkComputePipelineCreateInfo: u32 sType + u32 pNext + u32 flags +
+        #   VkPipelineShaderStageCreateInfo stage(32, at 12) +
+        #   u64 layout(4-aligned at 44) + u64 basePipelineHandle(52) +
+        #   i32 basePipelineIndex(60) = 64. Added by lane-vk32compute; the
+        #   layout was pinned by lane-vk32fix after an offsetof probe
+        #   compiled against this header (host g++ and i686-w64-mingw32-g++
+        #   agree: 64 / stage 12 / layout 44 / handle 52 / index 60).
+        ('VkComputePipelineCreateInfo', 'sizeof', 64),
+        ('VkComputePipelineCreateInfo', 'offsetof:stage', 12),
+        ('VkComputePipelineCreateInfo', 'offsetof:layout', 44),
+        ('VkComputePipelineCreateInfo', 'offsetof:basePipelineHandle', 52),
+        ('VkComputePipelineCreateInfo', 'offsetof:basePipelineIndex', 60),
     ]
-    for t, _, v in guards:
-        out.append('static_assert(sizeof(%s) == %d, "%s layout drifted from i386 guest ABI");' % (t, v, t))
+    for t, kind, v in guards:
+        if kind == 'sizeof':
+            out.append('static_assert(sizeof(%s) == %d, "%s layout drifted from i386 guest ABI");' % (t, v, t))
+        else:  # kind == 'offsetof:<field>'
+            field = kind.split(':', 1)[1]
+            out.append('static_assert(offsetof(%s, %s) == %d, "%s.%s layout drifted from i386 guest ABI");' % (t, field, v, t, field))
     out.append('')
     out.append('#endif // __VK32_GUEST_H__')
     text = '\n'.join(out)

@@ -1,0 +1,37 @@
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %var %outColor
+OpExecutionMode %main OriginUpperLeft
+OpSource GLSL 450
+OpDecorate %Block Block
+OpMemberDecorate %Block 0 Offset 0
+OpDecorate %arrT ArrayStride 16
+OpDecorate %len SpecId 0
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %outColor Location 0
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4f32 = OpTypeVector %f32 4
+%int = OpTypeInt 32 1
+%uint = OpTypeInt 32 0
+%len = OpSpecConstant %uint 4
+%arrT = OpTypeArray %f32 %len
+%Block = OpTypeStruct %arrT
+%ptrBlock = OpTypePointer Uniform %Block
+%var = OpVariable %ptrBlock Uniform
+%ptrF = OpTypePointer Uniform %f32
+%ptrOut = OpTypePointer Output %v4f32
+%outColor = OpVariable %ptrOut Output
+%fnT = OpTypeFunction %void
+%c0 = OpConstant %int 0
+%c1 = OpConstant %int 1
+%f1 = OpConstant %f32 1.0
+%main = OpFunction %void None %fnT
+%lbl = OpLabel
+%pf = OpAccessChain %ptrF %var %c0 %c1
+%x = OpLoad %f32 %pf
+%out = OpCompositeConstruct %v4f32 %x %x %x %f1
+OpStore %outColor %out
+OpReturn
+OpFunctionEnd

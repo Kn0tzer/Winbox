@@ -3,7 +3,9 @@
 Scope: the Windows runtime a guest program sees — `web/runtime/*.zip`
 (pinned by `tools/browser/runtime-assets.json`, regenerable via
 `tools/rootfs64/build-wine64-zip.sh`, `tools/build-prefix32.sh`,
-`tools/rootfs64/build-prefix64.sh`) and the lazy "support pack" staged by
+`tools/rootfs64/build-prefix64.sh`; `wine32.zip` via
+`tools/rootfs32/regen-wine32-zip.sh` — see the wine32 base-tree
+addendum at the end of this register) and the lazy "support pack" staged by
 `tools/browser/stage-dependencies.py` (the CJK gap found inside it was
 fixed by this lane in bdd258899; the MFC row below documents why that
 lane's remaining item is externally constrained).
@@ -93,6 +95,7 @@ disposition. "x86+x64" means both `w32` and `w64` unless noted.
 | dinput, dinput8, dplay, dplayx, dpnet, dplaysvr, ddraw, dsound | YES both | `dinput.dll`, `dinput8.dll`, `dplayx.dll`, `dpnet.dll`, `dplaysvr.exe`, `dsound.dll` | – | NOT-A-GAP |
 | d3d8, d3d9, d3d10core, d3d11, d3d12, dxgi (builtin) | YES both | `d3d8.dll`, `d3d9.dll`, `d3d10core.dll`, `d3d11.dll`, `d3d12.dll`, `dxgi.dll` | – | NOT-A-GAP |
 | d3d12core.dll | YES x86 (`w32:i386-windows/d3d12core.dll`); NO x64 | `w64` has no `x86_64-windows/d3d12core.dll` (Debian wine 8.0 predates `dlls/d3d12core`) | would break games that `LoadLibrary("d3d12core.dll")` on the 64-bit prefix | IMPLEMENTED: `tools/rootfs64/winehq10-x86_64/d3d12core.dll` (WineHQ wine-stable 10.0 amd64, sha256-pinned) staged into wine64.zip by `build-wine64-zip.sh`; required by `prepare_prefixes.validate_service_runtime`; pinned by `runtime-completeness.test.mjs` Shipped-zip presence delivered by `stage-wine64-payloads.sh` (a2377ce48) while the container build is unavailable on this ARM64 host; `validate_service_runtime` PASS on the shipped pair (2026-10-25) |
+| d3d12.dll + d3d12core.dll (w32 payload) | WineHQ-bundled vkd3d (~1.16), no DXIL frontend | `w32` shipped WineHQ wine-stable 10.0's bundled pair at `opt/wine-stable/lib/wine/i386-windows/` (d3d12.dll 642962 B, d3d12core.dll 61993 B) while the 64-bit pair is the vkd3d-proton 3.1.0 build — a 32-bit D3D12 guest had no SM 6.x/DXIL path at all | 32-bit D3D12 programs could not run DXIL shaders; D3D12 support was 64-bit-only | IMPLEMENTED (x86 vkd3d lane, 2026-10-28): vkd3d-proton 3.1.0 built for PE32 from the same vendored pin (`tools/vkd3d/build-win32.sh`; vendored `src/build-win32.txt`, ninja 209/209; d3d12.dll 517273 B sha256 `872c3d65…`, d3d12core.dll 9022393 B sha256 `71e9c174…`; both PE32 machine 0x14c; core exports `D3D12GetInterface`/`D3D12SDKVersion`; imports match the 64-bit build's system set) and staged at system placement into `wine32.zip` by `tools/rootfs64/stage-vkd3d-payloads32.sh` (wired into `apply-runtime-poststeps.sh`); pinned by `check_runtime_completeness.py` (`VKD3D32_PINS`, gate PASS) + artifact manifest. NOT yet guest-verified: no PE32 `bw64vulkan.dll` exists (the vendored loader falls back to WineHQ 10.0 `winevulkan.dll`) and no 32-bit D3D12 guest run has been made; `tools/vkd3d/probe/tri12-32.exe` is in-tree for that follow-up |
 | msmpeg2vdec.dll (MF video decoder) | YES x86 (`w32:i386-windows/msmpeg2vdec.dll`); NO x64 | `w64` has no `x86_64-windows/msmpeg2vdec.dll` (not built by Debian wine 8.0) | would break WMV/H.264 cutscene decode on the 64-bit prefix | IMPLEMENTED: `tools/rootfs64/winehq10-x86_64/msmpeg2vdec.dll` (WineHQ wine-stable 10.0 amd64, sha256-pinned) staged into wine64.zip; its mfplat imports (`MFTRegister`/`MFTUnregister`) verified present in wine64's mfplat.dll; required by `validate_service_runtime`; pinned by `runtime-completeness.test.mjs` Shipped-zip presence delivered by `stage-wine64-payloads.sh` (a2377ce48) while the container build is unavailable on this ARM64 host; `validate_service_runtime` PASS on the shipped pair (2026-10-25) |
 | Native DXVK/DXVK-DLL set | YES | `p32:home/username/{d3d9,d3d11,dxgi}.dll` (per-app override DLLs in the 32-bit prefix root, loaded before builtin via Wine's DLL search order); vulkan guest shims `libvk32/libvk64` via `support` | – | NOT-A-GAP; guard: `prepare_prefixes.py` requires the 32-bit payloads (`validate_prefix_zip` win32 branch) |
 | WINEDLLOVERRIDES defaults d3d8/9/10/11/12, dxgi, d3d12core | N/A (no override needed) | `web/runtime/wine64-launcher.js:193` passes `WINEDLLOVERRIDES` only when the `dlloverides` URL param is set; builtin Wine D3D is the default and 32-bit games find the per-app DXVK DLLs by DLL search order, so an override would *disable* the fix | – | NOT-A-GAP (reference: `wine64-launcher.js` env construction) |
@@ -615,3 +618,85 @@ above. Remaining proof is unchanged in kind: an end-to-end media-playing
 guest program is a gate/browser item, as it was pre-split (the
 guest-visible filesystem union is identical; only the archive carrying the
 closure changed).
+
+
+### 32-bit sysroot regeneration (2026-10-28, sysroot32 lane)
+
+The one producer path the post-step elimination pass could not
+re-run: `apply-runtime-poststeps.sh`'s first step
+(`tools/rootfs32/stage-fonts.py`) reads its payload from
+`/home/ubuntu/wine32-stage/img386`, and that tree had been deleted;
+the closure producer (`closure32.sh`) survived only as an untracked
+copy in `/home/ubuntu/backups/wine32-stage-20261020/`. The path is
+rebuilt and scripted under `tools/rootfs32/`:
+
+- **`build-img386.sh`** rebuilds the img386-equivalent tree from
+  26 sha256-pinned packages (Debian bookworm i386 pools +
+  snapshot.debian.org for the two superseded versions + the Ubuntu
+  noble `libc6` overlay), hash-verified before extraction, and
+  fails closed if any consumer-named path is absent.
+- **`closure32.sh`** is the backup's closure producer restored
+  verbatim (IMG/OUT parameterized, historical defaults kept).
+- **`regen-glibc-rootfs32.sh`** runs the whole chain — img386,
+  closure, the two assembly adjustments the shipped artifact
+  proves (the noble glibc set replacing the closure's bookworm
+  glibc; six `/lib` libraries staged explicitly by SONAME), the
+  32-bit post-steps in finisher order — then verifies the result
+  member-by-member against the previously shipped zip and runs
+  the completeness checker.
+
+Byte provenance of the shipped zip, established this pass: the
+closure libraries are Debian bookworm i386 at pinned revisions;
+the font payload is bookworm (libfontconfig1 2.14.1-4,
+libexpat1 2.5.0-1+deb12u4); the glibc set is a hand swap of Ubuntu
+noble `libc6` 2.39-0ubuntu8's library directory, now scripted.
+Regeneration proof: 154 members, identical set, **150
+byte-identical**; checker **0 failures** (pristine-state skip
+profile); `bootstrap.py --check` green after the documented
+one-entry re-pin. Residue, named in
+`docs/reports/sysroot32-regeneration-20261028.md`: four glibc
+auxiliary members (`libanl.so.1`, `libnsl.so.1`, `libpcprofile.so`,
+`libthread_db.so.1`; 170,840 B) match no pinned source — the
+regen fails closed on exactly those unless
+`--allow-glibc-aux-diff` substitutes the noble-release bytes, and
+prints the difference either way. Also named there, out of scope:
+wine32.zip's base tree still has no committed producer (only its
+post-steps are scripted). Register stays **OPEN: 0**; no row
+changed disposition.
+
+
+## wine32.zip base-tree provenance (2026-10-28, wine32base lane)
+
+Until this lane, `wine32.zip` was the one shipped archive with no
+producer: its post-steps were scripted (`stage-alsa32.sh`,
+`stage-vkd3d-payloads32.sh`) and its sibling glibc archive had been
+reconstructed by the sysroot32 lane, but the base tree (1,892 of
+1,894 files) had no recorded provenance. The base is now identified
+from the bytes and regenerable: full census, evidence, and proof in
+`docs/reports/wine32-base-forensics-20261028.md`; producer scripts
+`tools/rootfs32/build-wine32-base.sh` (base tree from pinned
+inputs) and `tools/rootfs32/regen-wine32-zip.sh` (zip + post-steps
++ member-by-member verification vs the shipped archive +
+completeness gate). Provenance summary: the WineHQ side is
+`wine-stable-i386 10.0.0.0~noble-1` (Ubuntu pool build, sha256
+`5ba52340…` — NOT the bookworm build pinned for the 64-bit
+backports, which matches only 469 of 1,337 files), with the 12
+unix modules carrying undefined `__isoc23_*` symbols patchelf'd to
+need `libisoc23shim.so` (reproduced byte-for-byte), 22 unix modules
+duplicated as `.dll.so` copies, the `share/wine` data in both
+placements taken from Debian bookworm `libwine 8.0~repack-4`
+(78/78 byte-identical), a Debian-layout usr/ re-layout of the same
+WineHQ tree, and a 71-member bookworm i386 system-library closure
+pinned per-deb in the base script. Regeneration proof (2026-10-28):
+member set, sizes and sha256 IDENTICAL to the shipped archive
+(1,926/1,926); `check_runtime_completeness.py` 0 failures, 5 skips
+against the era-matched runtime set.
+
+Residue (named, preserved — no row opens): two base members are
+locally built artifacts whose sources survive nowhere on the box —
+`usr/lib/wine/wineserver32` (3,794,568 B, sha256 `ac990fd2…`) and
+`libisoc23shim.so` (15,252 B, sha256 `ef5e5696…`, two placements).
+The regen extracts them from the currently shipped (pinned)
+archive and hash-verifies before use, fail-closed — the sysroot32
+residue discipline. If either source is ever identified, check its
+output against those pins and retire the extraction.

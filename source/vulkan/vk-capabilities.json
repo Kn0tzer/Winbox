@@ -49,10 +49,61 @@
     "fillVulkan12Features.timelineSemaphore": {
       "status": "implemented"
     },
+    "fillVulkan12Features.uniformBufferStandardLayout": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.shaderInt16": {
+      "status": "implemented"
+    },
+    "fillCoreFeatures.shaderStorageImageReadWithoutFormat": {
+      "status": "implemented"
+    },
+    "fillUniformBufferStandardLayout.uniformBufferStandardLayout": {
+      "status": "implemented"
+    },
     "fillVulkan11Features.shaderDrawParameters": {
       "status": "implemented"
     },
     "fillVulkan13Features.shaderDemoteToHelperInvocation": {
+      "status": "implemented"
+    },
+    "fillMaintenance5.maintenance5": {
+      "status": "implemented"
+    },
+    "fillMaintenance6.maintenance6": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.samplerMirrorClampToEdge": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.descriptorIndexing": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.shaderStorageImageArrayNonUniformIndexing": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.descriptorBindingVariableDescriptorCount": {
+      "status": "implemented"
+    },
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateDivisor": {
+      "status": "implemented"
+    },
+    "fillVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor": {
+      "status": "implemented"
+    },
+    "fillVulkan13Features.synchronization2": {
+      "status": "implemented"
+    },
+    "fillVulkan13Features.dynamicRendering": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.shaderOutputViewportIndex": {
+      "status": "implemented"
+    },
+    "fillVulkan12Features.shaderOutputLayer": {
       "status": "implemented"
     }
   },
@@ -86,6 +137,21 @@
       },
       "VK_EXT_depth_clip_enable": {
         "status": "implemented"
+      },
+      "VK_KHR_push_descriptor": {
+        "status": "implemented"
+      },
+      "VK_EXT_vertex_attribute_divisor": {
+        "status": "implemented"
+      },
+      "VK_EXT_transform_feedback": {
+        "status": "implemented"
+      },
+      "VK_KHR_maintenance5": {
+        "status": "implemented"
+      },
+      "VK_KHR_maintenance6": {
+        "status": "implemented"
       }
     }
   },
@@ -107,13 +173,11 @@
     "fillCoreFeatures.shaderTessellationAndGeometryPointSize",
     "fillCoreFeatures.shaderFloat64",
     "fillCoreFeatures.shaderImageGatherExtended",
-    "fillCoreFeatures.shaderInt16",
     "fillCoreFeatures.shaderInt64",
     "fillCoreFeatures.shaderResourceMinLod",
     "fillCoreFeatures.shaderResourceResidency",
     "fillCoreFeatures.shaderStorageImageExtendedFormats",
     "fillCoreFeatures.shaderStorageImageMultisample",
-    "fillCoreFeatures.shaderStorageImageReadWithoutFormat",
     "fillCoreFeatures.shaderStorageImageWriteWithoutFormat",
     "fillCoreFeatures.shaderUniformBufferArrayDynamicIndexing",
     "fillCoreFeatures.shaderSampledImageArrayDynamicIndexing",
@@ -155,38 +219,26 @@
     "fillDescriptorIndexing.shaderUniformBufferArrayNonUniformIndexing",
     "fillDescriptorIndexing.shaderUniformTexelBufferArrayDynamicIndexing",
     "fillDescriptorIndexing.shaderUniformTexelBufferArrayNonUniformIndexing",
-    "fillMaintenance5.maintenance5",
-    "fillMaintenance6.maintenance6",
     "fillTransformFeedback.geometryStreams",
     "fillTransformFeedback.transformFeedback",
-    "fillVertexAttributeDivisor.vertexAttributeInstanceRateDivisor",
-    "fillVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor",
     "fillVulkan11Features.multiview",
     "fillVulkan11Features.storageBuffer16BitAccess",
     "fillVulkan11Features.variablePointers",
     "fillVulkan12Features.bufferDeviceAddress",
     "fillVulkan12Features.descriptorBindingPartiallyBound",
     "fillVulkan12Features.descriptorBindingUpdateUnusedWhilePending",
-    "fillVulkan12Features.descriptorBindingVariableDescriptorCount",
-    "fillVulkan12Features.descriptorIndexing",
     "fillVulkan12Features.runtimeDescriptorArray",
-    "fillVulkan12Features.samplerMirrorClampToEdge",
     "fillVulkan12Features.shaderInputAttachmentArrayDynamicIndexing",
     "fillVulkan12Features.shaderSampledImageArrayNonUniformIndexing",
     "fillVulkan12Features.shaderStorageBufferArrayNonUniformIndexing",
-    "fillVulkan12Features.shaderStorageImageArrayNonUniformIndexing",
     "fillVulkan12Features.shaderStorageTexelBufferArrayDynamicIndexing",
-    "fillVulkan12Features.shaderStorageTexelBufferArrayNonUniformIndexing",
     "fillVulkan12Features.shaderUniformBufferArrayNonUniformIndexing",
     "fillVulkan12Features.shaderUniformTexelBufferArrayDynamicIndexing"
   ],
   "notAdvertisedExtensions": [
-    "VK_KHR_push_descriptor",
     "VK_KHR_dynamic_rendering",
     "VK_EXT_descriptor_indexing",
     "VK_KHR_multiview",
-    "VK_EXT_transform_feedback",
-    "VK_EXT_vertex_attribute_divisor",
     "VK_EXT_mesh_shader",
     "VK_KHR_acceleration_structure",
     "VK_KHR_ray_tracing_pipeline",

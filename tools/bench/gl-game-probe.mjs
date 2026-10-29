@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { acquireProbeSlot } from '../../web/tests/probe-slots.mjs';
+import { threadDumpDriverLine } from '../../web/tests/thread-dump-driver.mjs';
 import { waitForBuildIdle } from '../../web/tests/build-lock.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -314,19 +315,19 @@ try {
       const due = mappedAt + seconds * 1000;
       while (Date.now() < due) await page.waitForTimeout(Math.min(1000, due - Date.now()));
       if (guestDiagnostics) {
-        const invoked = await page.evaluate(() => {
+        const dumpResult = await page.evaluate(() => {
           const module = globalThis.Module;
           if (typeof module?._bw64_dump_guest_threads === 'function') {
-            module._bw64_dump_guest_threads();
-            return 'export';
+            return { via: 'export', rc: module._bw64_dump_guest_threads() };
           }
           if (typeof module?.ccall === 'function') {
-            module.ccall('bw64_dump_guest_threads', null, [], []);
-            return 'ccall';
+            return { via: 'ccall', rc: module.ccall('bw64_dump_guest_threads', 'number', [], []) };
           }
-          return 'unavailable';
+          return null;
         });
-        record(`BW_THREAD_DUMP_DRIVER invoked via ${invoked}`);
+        record(dumpResult
+          ? threadDumpDriverLine(dumpResult.rc, dumpResult.via)
+          : 'BW_THREAD_DUMP_DRIVER unavailable: thread dump export is not available');
         await page.waitForTimeout(250);
       }
       const sample = await page.evaluate(() => {

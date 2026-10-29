@@ -15,6 +15,9 @@ test('swapchain binary semaphores signal on acquire/submit and are consumed by s
     'queue submits signal binary semaphores in both ABIs');
   assert.ok((bridge.match(/"binary-semaphore-wait"/g) || []).length >= 3);
   assert.equal((bridge.match(/"binary-semaphore-present-wait"/g) || []).length, 2);
-  assert.match(bridge, /timeline submit is not connected to WebGPU replay; VK_ERROR_FEATURE_NOT_PRESENT/);
-  assert.match(bridge, /timeline submit is not connected to WebGPU replay"/);
+  // Since the 2026-10-26 vkd3d disposition, timeline submits are emulated
+  // (immediate-execution counter model) instead of rejected; the submit-side
+  // contract is pinned in vk-timeline-semaphore.test.mjs.
+  assert.doesNotMatch(bridge, /timeline submit is not connected to WebGPU replay/);
+  assert.doesNotMatch(bridge, /submit2 timeline signal is not supported/);
 });

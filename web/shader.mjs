@@ -38,9 +38,18 @@ async function translateWGSL(from, source, stage='vertex', entryPoint='main', op
     // Byte-identical passthrough when nothing applies. The export includes a
     // sibling implementation so this also works below a /winbox/ URL prefix.
     try {
-      const { applySpirvFix } = await import('./spirvfix.mjs');
+      const { applySpirvFix, auditBlockLayouts } = await import('./spirvfix.mjs');
       source = applySpirvFix(source, options).bytes;
+      // Block-layout audit (tools/spirvfix/spirvfix.mjs): runs on the
+      // post-spirvfix module, whose storage classes are final, and rejects
+      // blocks whose decorated layout provably differs from the WGSL layout
+      // naga will use -- the shapes naga converts SILENTLY (matrix strides
+      // hidden in array elements, padded array strides), which would read
+      // the guest's buffer bytes at wrong offsets with no error anywhere.
+      const badLayout = (auditBlockLayouts(source) || []).find((v) => v.verdict === 'reject');
+      if (badLayout) throw new Error('spirv-block-layout: ' + badLayout.detail);
     } catch(e) {
+      if (String(e?.message || e).startsWith('spirv-block-layout:')) throw e;
       console.warn('spirvfix pre-pass unavailable, passing SPIR-V through unmodified:', e?.message || e);
     }
     return translate({from:'spirv',to:'wgsl',source});

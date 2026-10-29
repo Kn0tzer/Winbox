@@ -70,6 +70,11 @@ echo "--- jit64 block-invalidation tests (section 14.3) ---"
 # NOTE: -ffunction-sections/-fdata-sections are load-bearing here: fpu.cpp
 # also implements 32-bit-KMemory FPU helpers (FSTENV/FRSTOR/...) that must be
 # dead-stripped by --gc-sections at link time.
+# cpu64.cpp's control-trace calls link ripSampler.cpp directly (in this
+# non-multi-threaded configuration it provides the product's inert stubs).
+# Its bw64Recover* calls are defined by the test harness instead: they live
+# in source/util/log.cpp, whose logging core (klog/kpanic/KSystem::logFile)
+# the standalone harness deliberately replaces with its own definitions.
 g++ -std=c++20 -DBOXEDWINE_GUEST_X64=1 -ffunction-sections -fdata-sections -c \
     -I"$REPO/include" -I"$REPO/lib/simde" \
     "$REPO/source/emulation/cpu/common/fpu.cpp" -o "$BUILD_TMP/inv_fpu.o"
@@ -90,6 +95,7 @@ for mode in interp blocks; do
         "$REPO/source/emulation/cpu/jit64.cpp" \
         "$REPO/source/emulation/cpu/jit64wasm.cpp" \
         "$REPO/source/emulation/cpu/common/common_lock.cpp" \
+        "$REPO/source/emulation/cpu/normal/ripSampler.cpp" \
         "$REPO/source/kernel/kmemory64.cpp" \
         "$REPO/source/util/bstring.cpp" \
         "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
@@ -144,7 +150,7 @@ if ! BW64_JIT=0 BW64_JIT_VERIFY=0 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/se
     echo "FAIL: interpreter self-test; see $BUILD_TMP/selftest_interp.log" >&2
     exit 1
 fi
-if ! BW64_JIT=1 BW64_JIT_VERIFY=1 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_jit.log" 2>&1; then
+if ! BW64_JIT=1 BW64_JIT_VERIFY=1 BW64_JIT_HOT=0 node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_jit.log" 2>&1; then
     echo "FAIL: JIT self-test; see $BUILD_TMP/selftest_jit.log" >&2
     exit 1
 fi
@@ -154,7 +160,7 @@ fi
 # host's call count.
 grep -E '^JIT64: engine=wasm blocks=[1-9][0-9]* insns=[1-9][0-9]*$' "$BUILD_TMP/selftest_jit.log"
 grep -E '^WASM64: blocks=[1-9][0-9]* insns=[1-9][0-9]* entered=[1-9][0-9]* ' "$BUILD_TMP/selftest_jit.log"
-sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
+sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' -e '/JIT64-CASE:/d' "$BUILD_TMP/selftest_jit.log" > "$BUILD_TMP/selftest_jit_results.log"
 if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_jit_results.log"; then
     echo "OK: BW64_JIT=1 output identical to interpreter baseline."
 else
@@ -231,7 +237,7 @@ printf 'OK: fixture %s identical across interpreter%s and emitted modules (.elf=
 echo "=== [5/5] opt-in engine comparison (BW64_JIT_ENGINE=interp vs wasm) ==="
 BW64_JIT=1 BW64_JIT_VERIFY=1 BW64_JIT_ENGINE=interp node "$JS_CJS" --x64-selftest > "$BUILD_TMP/selftest_interpengine.log" 2>&1
 grep -E '^JIT64: engine=interp blocks=[1-9]' "$BUILD_TMP/selftest_interpengine.log"
-sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' "$BUILD_TMP/selftest_interpengine.log" > "$BUILD_TMP/selftest_interpengine_results.log"
+sed -e '/^JIT64:/d' -e '/^WASM64:/d' -e '/^BW64JITSTATS:/d' -e '/JIT64-CASE:/d' "$BUILD_TMP/selftest_interpengine.log" > "$BUILD_TMP/selftest_interpengine_results.log"
 if diff -u "$BUILD_TMP/selftest_interp.log" "$BUILD_TMP/selftest_interpengine_results.log"; then
     echo "OK: phase-1 interpreter engine also matches the interpreter baseline."
 else

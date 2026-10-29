@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '../../tools/browser/serve.mjs';
 import { screenshotPixels } from './suite/lib/pixels.mjs';
 import { acquireProbeSlot } from './probe-slots.mjs';
+import { threadDumpDriverLine } from './thread-dump-driver.mjs';
 import { waitForBuildIdle } from './build-lock.mjs';
 import { writeVkCapture } from '../../tools/bench/vk-capture-artifact.mjs';
 
@@ -251,17 +252,15 @@ try {
             const invoked = await runtimeFrame.evaluate(() => {
               if (typeof Module === 'undefined') throw new Error('runtime Module is not available');
               if (typeof Module._bw64_dump_guest_threads === 'function') {
-                Module._bw64_dump_guest_threads();
-                return 'export';
+                return { via: 'export', rc: Module._bw64_dump_guest_threads() };
               }
               if (typeof Module.ccall === 'function') {
-                Module.ccall('bw64_dump_guest_threads', null, [], []);
-                return 'ccall';
+                return { via: 'ccall', rc: Module.ccall('bw64_dump_guest_threads', 'number', [], []) };
               }
               throw new Error('thread dump export is not available');
             });
             threadDumpInvocations++;
-            const line = `[${elapsedSeconds().toFixed(1)}s] BW_THREAD_DUMP_DRIVER invoked via ${invoked} (#${threadDumpInvocations})`;
+            const line = `[${elapsedSeconds().toFixed(1)}s] ${threadDumpDriverLine(invoked.rc, invoked.via, threadDumpInvocations)}`;
             consoleLines.push(line);
             console.log(line);
           } catch (error) {

@@ -18,13 +18,14 @@ const mask64 = (1n << 64n) - 1n;
 const STATE = {
   rip: 128, rflags: 136, entered: 140, scratch: 144,
   genBase: 152, gen0: 156, gen1: 160, execCount: 164, limit: 168,
+  xmm: 176, // 16 registers as lo/hi u64 pairs, appended at struct end
 };
 
 // Stage the struct exactly like CPU64::execWasmBlock does: GPRs, RIP, RFLAGS,
 // the block's entry generations, the instruction budget and a zeroed
 // emitted-code entry counter.
 function initState(view, ptr, regs, rip, rflags, opts = {}) {
-  const { genBase = 0, gen0 = 0, gen1 = 0, limit = 0xFFFFFFFF, entered = 0, genTable = null } = opts;
+  const { genBase = 0, gen0 = 0, gen1 = 0, limit = 0xFFFFFFFF, entered = 0, genTable = null, xmm = null } = opts;
   regs.forEach((v, i) => view.setBigUint64(ptr + i * 8, v, true));
   view.setBigUint64(ptr + STATE.rip, rip, true);
   view.setUint32(ptr + STATE.rflags, rflags >>> 0, true);
@@ -35,6 +36,9 @@ function initState(view, ptr, regs, rip, rflags, opts = {}) {
   view.setUint32(ptr + STATE.gen1, gen1, true);
   view.setUint32(ptr + STATE.execCount, 0, true);
   view.setUint32(ptr + STATE.limit, limit, true);
+  // XMM staging (flat array of 32 u64: register r lo at 2r, hi at 2r+1);
+  // defaults to all-zero so non-SSE tests stay deterministic.
+  for (let i = 0; i < 32; i++) view.setBigUint64(ptr + STATE.xmm + i * 8, xmm ? (xmm[i] ?? 0n) : 0n, true);
   // Optional host-side page-generation table (the emitted module reads it at
   // genBase + slot*4; KMemory64::blockSlot hashes pages to those slots).
   if (genTable) for (const [slot, value] of genTable) view.setUint32(genBase + slot * 4, value >>> 0, true);
@@ -54,6 +58,7 @@ function readState(view, ptr) {
     // cache can produce them).
     entered: view.getUint32(ptr + STATE.entered, true),
     execCount: view.getUint32(ptr + STATE.execCount, true),
+    xmm: Array.from({ length: 32 }, (_, i) => view.getBigUint64(ptr + STATE.xmm + i * 8, true)),
   };
 }
 
@@ -130,8 +135,10 @@ test('C7 imm32 sign-extends for a 64-bit register destination', () => check(
 test('C7 imm32 zero-extends for a 32-bit register destination', () => check(
   [0x41, 0xC7, 0xC0, 0x80, 0xFF, 0xFF, 0xFF], regs => { regs[8] = 0xFFFFFF80n; }));
 test('RIP advancement wraps modulo 64 bits', () => check(movabs(0, 1n), regs => { regs[0] = 1n; }, mask64 - 3n));
+// The bound is sizeof(Jit64WasmState) = 432 since the XMM staging area was
+// appended (176..431); the prologue reads the XMM pairs on every block.
 test('state at the end of imported memory stays in bounds', () => check(
-  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 172));
+  movabs(0, 7n), regs => { regs[0] = 7n; }, 0n, 65536 - 432));
 test('unaligned state pointer executes correctly', () => check(
   movabs(0, 9n), regs => { regs[0] = 9n; }, 0n, 513));
 test('out-of-bounds state traps before modifying any guest state', async () => {
@@ -2534,10 +2541,13 @@ test('GRP3 MUL: unsigned RDX:RAX product, CF/OF=(hi!=0)', async () => {
   await checkGrp3(encGrp3({ sub: 4, size: 4, eaKind: 'base', base: 1 }), { regs: regs7, memInit });
 });
 
-test('GRP3 whole-block fallback rejects DIV/IDIV and /1', () => {
-  assert.equal(emit([0xF7, 0xF0]).result.status, 2); // DIV r/m32
-  assert.equal(emit([0xF7, 0xF8]).result.status, 2); // IDIV r/m32
-  assert.equal(emit([0xF6, 0xF0]).result.status, 2); // DIV r/m8
+test('GRP3 whole-block fallback rejects /1 (DIV/IDIV emit since the guard-bail fast path)', () => {
+  // DIV/IDIV used to be rejected here; they now emit (the execution
+  // semantics, including the interpreter bail, are pinned by the DIV/IDIV
+  // execution tests below).
+  assert.equal(emit([0xF7, 0xF0]).result.status, 0); // DIV r/m32
+  assert.equal(emit([0xF7, 0xF8]).result.status, 0); // IDIV r/m32
+  assert.equal(emit([0xF6, 0xF0]).result.status, 0); // DIV r/m8
   assert.equal(emit([0xF7, 0xC8]).result.status, 2); // /1 invalid
   assert.equal(emit([0xF0, 0xF7, 0xD0]).result.status, 2); // LOCK NOT
 });
@@ -2579,6 +2589,160 @@ test('fuzz F6/F7 group 3 vs reference (600 cases)', async () => {
       await checkGrp3(enc, { regs, rflags, memInit });
     } catch (e) {
       e.message = `${tag}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
+// --- F6/F7 group 3 /6 /7 DIV/IDIV execution tests ---
+// Reference model mirrors the interpreter (cpu64.cpp F6/F7 dsp): the only
+// fault is divide-by-zero; the 8-bit form divides AX in 16 bits and
+// truncates the stored quotient/remainder bytes; wider forms divide the
+// DX:AX / EDX:EAX / RDX:RAX pair in a wider intermediate. The emitted
+// code computes only the width-exact cases and bails to the interpreter
+// BEFORE the op otherwise (divisor 0; a high dividend half that is not
+// the zero/sign extension of the low half; INT64_MIN / -1), so a bail
+// must show execCount at the op's index, RIP at the op, and untouched
+// registers and flags.
+const DIV_RIP = 0x12345678ABCDEFF0n;
+function refDiv({ signed, size, rax, rdx, divisor }) {
+  const bits = size * 8;
+  const m = (1n << BigInt(bits)) - 1n;
+  const d = divisor & m;
+  if (d === 0n) return { bail: true };
+  if (size === 1) {
+    const num = rax & 0xFFFFn;
+    let q, r;
+    if (signed) {
+      const sn = BigInt.asIntN(16, num), sd = BigInt.asIntN(8, d);
+      q = sn / sd; r = sn % sd;
+    } else { q = num / d; r = num % d; }
+    const ax = (BigInt.asUintN(8, r) << 8n) | BigInt.asUintN(8, q);
+    return { bail: false, rax: (rax & ~0xFFFFn) | ax, rdx };
+  }
+  const lo = rax & m, hi = rdx & m;
+  let num;
+  if (signed) {
+    const ext = (lo & (1n << BigInt(bits - 1))) !== 0n ? m : 0n;
+    if (hi !== ext) return { bail: true };
+    num = BigInt.asIntN(bits, lo);
+    if (size === 8 && num === -(1n << 63n) && BigInt.asIntN(64, d) === -1n)
+      return { bail: true };
+  } else {
+    if (hi !== 0n) return { bail: true };
+    num = lo;
+  }
+  const dv = signed ? BigInt.asIntN(bits, d) : d;
+  const q = num / dv, r = num % dv;
+  if (size === 2) {
+    return { bail: false,
+      rax: (rax & ~0xFFFFn) | BigInt.asUintN(16, q),
+      rdx: (rdx & ~0xFFFFn) | BigInt.asUintN(16, r) };
+  }
+  // 32-bit results zero-extend; 64-bit results are the full registers.
+  return { bail: false, rax: BigInt.asUintN(bits, q), rdx: BigInt.asUintN(bits, r) };
+}
+function encDiv(size, signed) {
+  const modrmByte = modrm(signed ? 7 : 6, 3); // divisor in RBX
+  if (size === 1) return [0xF6, modrmByte];
+  if (size === 2) return [0x66, 0xF7, modrmByte];
+  if (size === 4) return [0xF7, modrmByte];
+  return [0x48, 0xF7, modrmByte];
+}
+async function checkDiv(code, args, flags = 0x8D7) {
+  const regs = baseRegs();
+  regs[0] = args.rax; regs[2] = args.rdx; regs[3] = args.divisor;
+  const ref = refDiv(args);
+  const out = await runAlu(code, regs, flags);
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+  assert.equal(out.rflags, flags, 'DIV/IDIV leave flags untouched');
+  if (ref.bail) {
+    assert.equal(out.execCount, 0, 'bail happens before the op');
+    assert.equal(out.ripOut, DIV_RIP, 'RIP stays at the op on bail');
+    assert.deepEqual(out.regs, regs, 'bail leaves registers untouched');
+  } else {
+    assert.equal(out.execCount, 1, 'one op executed');
+    assert.equal(out.ripOut, (DIV_RIP + BigInt(code.length)) & mask64, 'RIP advances');
+    const expected = [...regs];
+    expected[0] = ref.rax; expected[2] = ref.rdx;
+    assert.deepEqual(out.regs, expected, 'RAX/RDX results');
+  }
+}
+
+test('DIV r32: quotient/remainder, results zero-extend', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 0xDEADBEEF00000064n, rdx: 0n, divisor: 7n });
+});
+test('DIV r32: nonzero EDX bails to the interpreter', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 100n, rdx: 1n, divisor: 7n });
+});
+test('DIV r32: divide by zero bails', async () => {
+  await checkDiv(encDiv(4, false),
+    { signed: false, size: 4, rax: 100n, rdx: 0n, divisor: 0n });
+});
+test('IDIV r64: negative dividend via CQO form', async () => {
+  await checkDiv(encDiv(8, true),
+    { signed: true, size: 8, rax: BigInt.asUintN(64, -100n), rdx: mask64, divisor: 7n });
+});
+test('IDIV r64: INT64_MIN / -1 bails (interpreter truncates)', async () => {
+  await checkDiv(encDiv(8, true),
+    { signed: true, size: 8, rax: 0x8000000000000000n, rdx: mask64, divisor: mask64 });
+});
+test('DIV r64: wide dividend, zero high half', async () => {
+  await checkDiv(encDiv(8, false),
+    { signed: false, size: 8, rax: 1n << 40n, rdx: 0n, divisor: 1000n });
+});
+test('DIV r8: AX divided, quotient/remainder bytes packed, upper RAX kept', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(1, false),
+    { signed: false, size: 1, rax: regs[0], rdx: regs[2], divisor: regs[3] });
+});
+test('IDIV r8: negative AX, negative remainder', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(1, true),
+    { signed: true, size: 1, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: regs[2], divisor: 7n });
+});
+test('DIV r16 / IDIV r16: CWD form and bad-high-half bail', async () => {
+  const regs = baseRegs();
+  await checkDiv(encDiv(2, false),
+    { signed: false, size: 2, rax: (regs[0] & ~0xFFFFn) | 1000n, rdx: regs[2] & ~0xFFFFn, divisor: 7n });
+  await checkDiv(encDiv(2, true),
+    { signed: true, size: 2, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: (regs[2] & ~0xFFFFn) | 0xFFFFn, divisor: 7n });
+  await checkDiv(encDiv(2, true),
+    { signed: true, size: 2, rax: (regs[0] & ~0xFFFFn) | 0xFF9Cn, rdx: (regs[2] & ~0xFFFFn) | 5n, divisor: 7n });
+});
+test('DIV bail mid-block: earlier ops stand, RIP/execCount at the DIV', async () => {
+  const regs = baseRegs();
+  regs[0] = 100n; regs[2] = 9n; regs[3] = 7n; // EDX=9 -> the DIV bails
+  const code = [0x83, 0xC0, 0x01, 0xF7, 0xF3]; // add eax,1 ; div ebx
+  const out = await runAlu(code, regs, 0x202);
+  assert.equal(out.execCount, 1, 'only the ADD executed');
+  assert.equal(out.ripOut, DIV_RIP + 3n, 'RIP at the DIV');
+  assert.equal(out.regs[0], 101n, 'ADD result stands (zero-extended)');
+  assert.equal(out.regs[2], 9n, 'RDX untouched');
+});
+test('DIV/IDIV differential fuzz (register forms)', async () => {
+  const rng = mulberry32(0xD17D);
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+  for (let i = 0; i < 160; i++) {
+    const size = pick([1, 2, 4, 8]);
+    const signed = rng() < 0.5;
+    const bits = size * 8;
+    const m = (1n << BigInt(bits)) - 1n;
+    const lo = BigInt(Math.floor(rng() * 0x100000000)) & m;
+    // Bias the high half toward the extension shapes real code produces.
+    const hiShape = rng();
+    const hi = hiShape < 0.4 ? 0n : hiShape < 0.7 ? m
+      : BigInt(Math.floor(rng() * 0x100000000)) & m;
+    const divisor = rng() < 0.12 ? 0n : BigInt(Math.floor(rng() * 0x100000000)) & m;
+    const rax = (0xA5A5A5A5A5A5A5A5n & ~m) | lo;
+    const rdx = (0x3C3C3C3C3C3C3C3Cn & ~m) | hi;
+    try {
+      await checkDiv(encDiv(size, signed), { signed, size, rax, rdx, divisor },
+        pick([0x202, 0x8D7, 0x0]));
+    } catch (e) {
+      e.message = `fuzzDiv i=${i} size=${size} signed=${signed} rax=${rax.toString(16)} rdx=${rdx.toString(16)} divisor=${divisor.toString(16)}: ${e.message}`;
       throw e;
     }
   }
@@ -3633,6 +3797,285 @@ test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
 }, 180000);
 
 // ---------------------------------------------------------------------------
+// SSE set: 16-byte XMM moves (MOVUPS/MOVUPD/MOVAPS/MOVAPD/MOVDQA/MOVDQU),
+// PXOR and MOVD/MOVQ (J64_SSE_MOV128 / J64_SSE_PXOR / J64_SSE_MOVD).
+//
+// Semantics transcribed from the interpreter's blocks in cpu64.cpp: every
+// 16-byte move is two independent qword accesses with NO alignment check
+// (MOVAPS/MOVDQA do not fault on misalignment there), PXOR is a plain
+// 128-bit XOR, a MOVD load zero-extends a 32-bit source and always zeroes
+// the high qword, and a 32-bit MOVD store to a register zero-extends the
+// destination. None of them touches RFLAGS. The model below applies the
+// same rules; the differential fuzz drives random op streams through
+// both the wasm module and the model.
+// ---------------------------------------------------------------------------
+
+const SSE_RIP = 0x12345678ABCDEFF0n;
+const SBX = 0x2000n; // scratch base held in RBX for SSE tests
+
+async function runSse(code, { regs, rflags = 0x202, memInit = new Map(), xmm = null, ptr = 512 } = {}) {
+  const { result, path } = emit(code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guestMem = makeGuestMem();
+  for (const [k, v] of memInit) guestMem.bytes.set(k, v);
+  const view = new DataView(memory.buffer);
+  initState(view, ptr, regs, SSE_RIP, rflags, { xmm });
+  const { instance } = await WebAssembly.instantiate(readFileSync(path), stringEnv(memory, guestMem));
+  instance.exports.execute(ptr);
+  return { ...readState(view, ptr), guestMem };
+}
+
+// Flat 32-entry xmm init from { regIndex: [lo, hi] }.
+function xmmInit(pairs) {
+  const a = new Array(32).fill(0n);
+  for (const [r, [lo, hi]] of Object.entries(pairs)) { a[2 * Number(r)] = lo; a[2 * Number(r) + 1] = hi; }
+  return a;
+}
+const xmmReg = (out, r) => [out.xmm[2 * r], out.xmm[2 * r + 1]];
+const zeroRegs = () => new Array(16).fill(0n);
+
+test('SSE movdqa register form copies 128 bits and preserves flags', async () => {
+  const regs = zeroRegs();
+  const out = await runSse([0x66, 0x0F, 0x6F, 0xDD], { // movdqa xmm3, xmm5
+    regs, rflags: 0x8D5,
+    xmm: xmmInit({ 5: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+  });
+  assert.deepEqual(xmmReg(out, 3), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+  assert.deepEqual(xmmReg(out, 5), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+  assert.equal(out.rflags, 0x8D5, 'SSE moves must not touch RFLAGS');
+  expectEmitted(out, 1);
+});
+
+test('SSE 16-byte memory loads: movdqa aligned, movdqu unaligned', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 32 }, (_, i) => 0xA0 + i);
+  const out = await runSse([
+    0x66, 0x0F, 0x6F, 0x13,       // movdqa xmm2, [rbx]
+    0xF3, 0x0F, 0x6F, 0x63, 0x03, // movdqu xmm4, [rbx+3]
+  ], { regs, memInit: memBytes(SBX, bytes) });
+  const q = (arr, off) => arr.slice(off, off + 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 2), [q(bytes, 0), q(bytes, 8)]);
+  assert.deepEqual(xmmReg(out, 4), [q(bytes, 3), q(bytes, 11)]);
+  expectEmitted(out, 2);
+});
+
+test('SSE movups load, movaps store, movupd reload round-trip', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 16 }, (_, i) => i * 7 + 1);
+  const out = await runSse([
+    0x0F, 0x10, 0x03,             // movups xmm0, [rbx]
+    0x0F, 0x29, 0x43, 0x10,       // movaps [rbx+16], xmm0
+    0x66, 0x0F, 0x10, 0x4B, 0x10, // movupd xmm1, [rbx+16]
+  ], { regs, memInit: memBytes(SBX, bytes) });
+  const lo = bytes.slice(0, 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  const hi = bytes.slice(8, 16).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 1), [lo, hi]);
+  assert.equal(out.guestMem.read(SBX + 16n, 8), lo);
+  assert.equal(out.guestMem.read(SBX + 24n, 8), hi);
+  expectEmitted(out, 3);
+});
+
+test('SSE pxor: self-xor zeroes, memory form XORs both qwords', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const memInit = memBytes(SBX, [...little(0xFF00FF00FF00FF00n, 8), ...little(0x0F0F0F0F0F0F0F0Fn, 8)]);
+  const out = await runSse([
+    0x66, 0x0F, 0xEF, 0xD2, // pxor xmm2, xmm2
+    0x66, 0x0F, 0xEF, 0x23, // pxor xmm4, [rbx]
+  ], { regs, memInit, xmm: xmmInit({ 2: [9n, 9n], 4: [0xFF00FF00FF00FF00n, 0xF0F0F0F0F0F0F0F0n] }) });
+  assert.deepEqual(xmmReg(out, 2), [0n, 0n]);
+  assert.deepEqual(xmmReg(out, 4), [0n, 0xFFFFFFFFFFFFFFFFn]);
+  expectEmitted(out, 2);
+});
+
+test('SSE movd/movq GPR transfers zero-extend and clear the high qword', async () => {
+  const regs = zeroRegs();
+  regs[0] = 0xDEADBEEFCAFEBABEn; regs[3] = SBX; regs[1] = 0xFFFFFFFFFFFFFFFFn;
+  const out = await runSse([
+    0x66, 0x0F, 0x6E, 0xE8,       // movd xmm5, eax
+    0x66, 0x48, 0x0F, 0x6E, 0xF3, // movq xmm6, rbx
+    0x66, 0x0F, 0x7E, 0xE9,       // movd ecx, xmm5
+    0x66, 0x48, 0x0F, 0x7E, 0xF2, // movq rdx, xmm6
+  ], { regs, xmm: xmmInit({ 5: [0xAAAAAAAAAAAAAAAAn, 0xBBBBBBBBBBBBBBBBn] }) });
+  assert.deepEqual(xmmReg(out, 5), [0xCAFEBABEn, 0n], 'movd load zeroes high qword');
+  assert.deepEqual(xmmReg(out, 6), [SBX, 0n]);
+  assert.equal(out.regs[1], 0xCAFEBABEn, 'movd store zero-extends the GPR');
+  assert.equal(out.regs[2], SBX);
+  assert.equal(out.regs[0], 0xDEADBEEFCAFEBABEn, 'source GPR untouched');
+  expectEmitted(out, 4);
+});
+
+test('SSE movd memory forms: dword load, qword store', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0x66, 0x0F, 0x6E, 0x0B,       // movd xmm1, [rbx]
+    0x66, 0x48, 0x0F, 0x7E, 0x4B, 0x08, // movq [rbx+8], xmm1
+  ], { regs, memInit: memBytes(SBX, [0xDD, 0xCC, 0xBB, 0xAA]),
+       xmm: xmmInit({ 1: [0x1111111111111111n, 0x2222222222222222n] }) });
+  assert.deepEqual(xmmReg(out, 1), [0xAABBCCDDn, 0n]);
+  assert.equal(out.guestMem.read(SBX + 8n, 8), 0xAABBCCDDn);
+  expectEmitted(out, 2);
+});
+
+test('SSE REX-extended XMM registers (xmm8..xmm15)', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const bytes = Array.from({ length: 16 }, (_, i) => 0x50 + i);
+  const out = await runSse([
+    0x45, 0x0F, 0x28, 0xC1,       // movaps xmm8, xmm9
+    0x66, 0x44, 0x0F, 0x6F, 0x13, // movdqa xmm10, [rbx]
+  ], { regs, memInit: memBytes(SBX, bytes),
+       xmm: xmmInit({ 9: [0x1111111111111111n, 0x2222222222222222n] }) });
+  assert.deepEqual(xmmReg(out, 8), [0x1111111111111111n, 0x2222222222222222n]);
+  const lo = bytes.slice(0, 8).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  const hi = bytes.slice(8, 16).reduce((v, b, i) => v | (BigInt(b) << BigInt(8 * i)), 0n);
+  assert.deepEqual(xmmReg(out, 10), [lo, hi]);
+  expectEmitted(out, 2);
+});
+
+// Differential fuzz: random SSE op streams through the emitted module and
+// a JS model of the interpreter's SSE blocks.
+test('SSE differential fuzz vs interpreter model', async () => {
+  const next = mulberry32(0x55EE12);
+  const ru64 = () => (BigInt(Math.floor(next() * 0x100000000)) << 32n) | BigInt(Math.floor(next() * 0x100000000));
+  const pick = n => Math.floor(next() * n);
+  const MOVES = [
+    { pre: [], op2: 0x10, op2s: 0x11 }, { pre: [0x66], op2: 0x10, op2s: 0x11 },
+    { pre: [], op2: 0x28, op2s: 0x29 }, { pre: [0x66], op2: 0x28, op2s: 0x29 },
+    { pre: [0x66], op2: 0x6F, op2s: 0x7F }, { pre: [0xF3], op2: 0x6F, op2s: 0x7F },
+  ];
+  function enc({ pre, op2, reg, rmReg = null, disp = null, rexW = false }) {
+    const bytes = [...pre];
+    const rexBits = (rexW ? 8 : 0) | (reg >= 8 ? 4 : 0) | (rmReg !== null && rmReg >= 8 ? 1 : 0);
+    if (rexBits) bytes.push(0x40 | rexBits);
+    bytes.push(0x0F, op2);
+    if (disp === null) bytes.push(0xC0 | ((reg & 7) << 3) | (rmReg & 7));
+    else if (disp === 0) bytes.push(((reg & 7) << 3) | 3);
+    else bytes.push(0x40 | ((reg & 7) << 3) | 3, disp);
+    return bytes;
+  }
+  for (let iter = 0; iter < 500; iter++) {
+    const regs0 = Array.from({ length: 16 }, () => ru64());
+    regs0[3] = SBX;
+    const xmm0 = Array.from({ length: 32 }, () => ru64());
+    const mem = makeGuestMem();
+    for (let i = 0; i < 96; i++) mem.bytes.set(SBX + BigInt(i), pick(256));
+    const memInit = new Map(mem.bytes);
+    const regs = [...regs0], xmm = [...xmm0];
+    const rflags = pick(0x10000);
+    const code = [];
+    const nOps = 1 + pick(4);
+    for (let k = 0; k < nOps; k++) {
+      const fam = pick(6);
+      const useMem = next() < 0.45;
+      const disp = useMem ? [0, 3, 8, 16, 24, 40][pick(6)] : null;
+      // RBX may be rewritten by MOVD stores; guest EAs wrap at 2^64.
+      const addr = () => (regs[3] + BigInt(disp ?? 0)) & mask64;
+      const addr8 = () => (addr() + 8n) & mask64;
+      if (fam === 0 || fam === 1 || fam === 5) { // 16-byte move (fam 1 = store)
+        const mv = MOVES[pick(MOVES.length)];
+        const store = fam === 1;
+        const xr = pick(16), other = pick(16);
+        code.push(...enc({ pre: mv.pre, op2: store ? mv.op2s : mv.op2,
+                           reg: xr, rmReg: useMem ? null : other, disp }));
+        if (!store) {
+          const v = useMem ? [mem.read(addr(), 8), mem.read(addr8(), 8)]
+                           : [xmm[2 * other], xmm[2 * other + 1]];
+          xmm[2 * xr] = v[0]; xmm[2 * xr + 1] = v[1];
+        } else if (useMem) {
+          mem.write(addr(), 8, xmm[2 * xr]); mem.write(addr8(), 8, xmm[2 * xr + 1]);
+        } else {
+          xmm[2 * other] = xmm[2 * xr]; xmm[2 * other + 1] = xmm[2 * xr + 1];
+        }
+      } else if (fam === 2) { // PXOR
+        const dst = pick(16), src = pick(16);
+        code.push(...enc({ pre: [0x66], op2: 0xEF, reg: dst, rmReg: useMem ? null : src, disp }));
+        const s = useMem ? [mem.read(addr(), 8), mem.read(addr8(), 8)]
+                         : [xmm[2 * src], xmm[2 * src + 1]];
+        xmm[2 * dst] ^= s[0]; xmm[2 * dst + 1] ^= s[1];
+      } else { // MOVD/MOVQ load (fam 3) / store (fam 4)
+        const store = fam === 4;
+        const size8 = next() < 0.5;
+        const xr = pick(16), gr = pick(16);
+        code.push(...enc({ pre: [0x66], op2: store ? 0x7E : 0x6E, reg: xr,
+                           rmReg: useMem ? null : gr, disp, rexW: size8 }));
+        if (!store) {
+          const v = useMem ? mem.read(addr(), size8 ? 8 : 4)
+                           : (size8 ? regs[gr] : regs[gr] & 0xFFFFFFFFn);
+          xmm[2 * xr] = v; xmm[2 * xr + 1] = 0n;
+        } else if (useMem) {
+          mem.write(addr(), size8 ? 8 : 4, xmm[2 * xr]);
+        } else {
+          regs[gr] = size8 ? xmm[2 * xr] : xmm[2 * xr] & 0xFFFFFFFFn;
+        }
+      }
+    }
+    const out = await runSse(code, { regs: regs0, rflags, memInit, xmm: xmm0 });
+    assert.deepEqual(out.regs, regs, `iter ${iter} GPRs`);
+    assert.deepEqual(out.xmm, xmm, `iter ${iter} XMM`);
+    assert.equal(out.rflags, rflags >>> 0, `iter ${iter} RFLAGS`);
+    assert.equal(out.execCount, nOps, `iter ${iter} execCount`);
+    assert.equal(out.ripOut, (SSE_RIP + BigInt(code.length)) & mask64, `iter ${iter} RIP`);
+    const refKeys = [...mem.bytes.keys()].map(String).sort();
+    const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+    assert.deepEqual(outKeys, refKeys, `iter ${iter} written addresses`);
+    for (const key of refKeys)
+      assert.equal(out.guestMem.bytes.get(BigInt(key)), mem.bytes.get(BigInt(key)), `iter ${iter} mem[${key}]`);
+  }
+}, 240000);
+
+test('SSE fault: movdqa load with second qword denied leaves the xmm untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0x6F, 0x0B], { // movdqa xmm1, [rbx]
+    regs, xmm: xmmInit({ 1: [0x1111111111111111n, 0x2222222222222222n] }),
+    denied: a => a >= 0x3008n,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 1), [0x1111111111111111n, 0x2222222222222222n]);
+  assert.equal(r.rflags, 0x202, 'fault gate restores entry flags');
+});
+
+test('SSE fault: movdqa store publishes the first qword before the second faults', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0x7F, 0x13], { // movdqa [rbx], xmm2
+    regs, xmm: xmmInit({ 2: [0xAAAAAAAAAAAAAAAAn, 0xBBBBBBBBBBBBBBBBn] }),
+    denied: (a, w) => w && a >= 0x3008n,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.equal(r.guestMem.read(0x3000n, 8), 0xAAAAAAAAAAAAAAAAn, 'first qword landed');
+  assert.equal(r.guestMem.bytes.has(0x3008n), false, 'second qword never written');
+});
+
+test('SSE fault: pxor memory source denied leaves the destination untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x66, 0x0F, 0xEF, 0x1B], { // pxor xmm3, [rbx]
+    regs, xmm: xmmInit({ 3: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 3), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+});
+
+test('SSE fault: earlier ops commit, the faulting op does not', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([
+    0x66, 0x0F, 0x6F, 0xCA, // movdqa xmm1, xmm2
+    0x0F, 0x10, 0x1B,       // movups xmm3, [rbx]
+  ], {
+    regs, xmm: xmmInit({ 2: [0x1111111111111111n, 0x2222222222222222n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 1, 'only the completed op is credited');
+  assert.deepEqual(xmmReg(r, 1), [0x1111111111111111n, 0x2222222222222222n]);
+  assert.deepEqual(xmmReg(r, 3), [0n, 0n]);
+  assert.equal(r.ripOut, 0x1004n, 'fault RIP is the faulting instruction');
+});
+
+// ---------------------------------------------------------------------------
 // Control flow, bounded execution and inline invalidation.
 //
 // The JIT decoder ends a block AFTER its terminator (Jcc/JMP/CALL/RET), so the
@@ -3774,6 +4217,335 @@ test('LEAVE is RSP = RBP; RBP = pop64() and still advances RIP', async () => {
   expectEmitted(out, 2);
 });
 
+// --- FF /2 /4 indirect CALL/JMP execution tests ---
+// The reference model mirrors the interpreter (cpu64.cpp dsp_33):
+// decodeModRM computes the EA from pre-instruction registers, the target
+// is the register value or the qword at the EA, CALL /2 then does
+// push64(rip+len) and rip = target, JMP /4 only rip = target. Neither
+// touches flags; the target read happens BEFORE the push, so
+// call *[rsp-8] reads the old slot and call *%rsp jumps to the old RSP.
+function encFF({ sub, eaKind = 'reg', rm = 0, base = 0, idx = 1, scale = 0, disp = 0, w = false }) {
+  let rex = 0;
+  if (w) rex |= 0x08;
+  if (eaKind === 'reg' && rm >= 8) rex |= 0x01;
+  if (eaKind !== 'reg' && eaKind !== 'riprel' && base >= 8) rex |= 0x01;
+  if ((eaKind === 'sib' || eaKind === 'sib32') && idx >= 8) rex |= 0x02;
+  const code = [];
+  if (rex) code.push(0x40 | rex);
+  code.push(0xFF);
+  const modrmPos = code.length;
+  let mod, rmField;
+  const sibBytes = [], dispBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmField = rm & 7; }
+  else if (eaKind === 'riprel') { mod = 0; rmField = 5; dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4)); }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rmField = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+    if (mod === 1) dispBytes.push(disp & 0xFF);
+    if (mod === 2 || noBase) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  } else {
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+    if ((base & 7) === 4) {
+      // rm=4 encodes "SIB follows": [rsp] / [r12] need a SIB byte with
+      // the no-index encoding.
+      rmField = 4;
+      sibBytes.push((4 << 3) | (base & 7));
+    } else {
+      rmField = base & 7;
+    }
+    if (mod === 1) dispBytes.push(disp & 0xFF);
+    if (mod === 2) dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  }
+  code.push((mod << 6) | (sub << 3) | rmField, ...sibBytes, ...dispBytes);
+  let ea = null;
+  if (eaKind === 'riprel') {
+    // Fixture convention (ripBase=0, as in encAluMem): the target is
+    // addressed relative to the instruction's own offset in the block.
+    ea = { ripRel: true,
+           ripRelTarget: (BigInt(modrmPos) + 5n + BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64,
+           baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+  } else if (eaKind !== 'reg') {
+    ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32: false, seg: 0 };
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, sub, rmReg: eaKind === 'reg' ? rm : -1 };
+}
+
+function qmap(addr, val) {
+  const m = new Map();
+  for (let i = 0; i < 8; i++) m.set(addr + BigInt(i), Number((val >> BigInt(8 * i)) & 0xFFn));
+  return m;
+}
+
+async function checkInd(enc, { regs, rflags = 0x8D7, memInit = new Map(), rip = RIP0 }) {
+  const model = makeGuestMem();
+  for (const [k, v] of memInit) model.bytes.set(k, v);
+  const target = enc.ea ? model.read(computeEA(enc.ea, regs), 8) : regs[enc.rmReg];
+  const expRegs = [...regs];
+  if (enc.sub === 2) {
+    model.write((regs[4] - 8n) & mask64, 8, (rip + BigInt(enc.code.length)) & mask64);
+    expRegs[4] = (regs[4] - 8n) & mask64;
+  }
+  const out = await runTerm(enc.code, { regs, rflags, rip, memInit });
+  expectEmitted(out, 1);
+  assert.equal(out.ripOut, target & mask64, 'RIP = target');
+  assert.deepEqual(out.regs, expRegs, 'only RSP may change (CALL: -8)');
+  assert.equal(out.rflags, rflags, 'flags untouched');
+  assert.deepEqual(out.guestMem.bytes, model.bytes, 'memory: only the pushed return address');
+}
+
+test('CALL *reg: pushes rip+len and jumps to the register', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x1122334455667788n;
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs });
+});
+
+test('JMP *reg: jumps, stack untouched', async () => {
+  const regs = baseRegs();
+  regs[3] = 0xCAFEBABEDEADBEEFn;
+  regs[4] = 0x800000n;
+  // A sentinel under RSP proves JMP writes nothing.
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 3 }),
+    { regs, memInit: qmap(0x800000n - 8n, 0x5555AAAA5555AAAAn) });
+});
+
+test('CALL *r15 / JMP *r8: REX-extended target registers', async () => {
+  const a = baseRegs();
+  a[15] = 0x0102030405060708n; a[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 15, w: true }), { regs: a });
+  const b = baseRegs();
+  b[8] = 0xFFEEDDCCBBAA9988n; b[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 8 }), { regs: b });
+});
+
+test('CALL *[rbx] / CALL *[rax+0x10]: memory-indirect targets', async () => {
+  const regs = baseRegs();
+  regs[3] = 0x400000n; regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'base', base: 3 }),
+    { regs, memInit: qmap(0x400000n, 0x600000n) });
+  const regs2 = baseRegs();
+  regs2[0] = 0x400000n; regs2[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'disp8', base: 0, disp: 0x10 }),
+    { regs: regs2, memInit: qmap(0x400010n, 0x700000n) });
+});
+
+test('JMP *[rax*8+disp32]: the census jump-table shape (ff 24 c5)', async () => {
+  const regs = baseRegs();
+  regs[0] = 5n; regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'sib32', idx: 0, scale: 3, disp: 0x2000 }),
+    { regs, memInit: qmap(0x2000n + 5n * 8n, 0x600000n) });
+});
+
+test('CALL *[rip+disp]: RIP-relative target slot', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  const enc = encFF({ sub: 2, eaKind: 'riprel', disp: 0x10 });
+  await checkInd(enc, { regs, memInit: qmap(enc.ea.ripRelTarget, 0x600000n) });
+});
+
+test('CALL *[rsp]: the target is read before the push lands', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'sib', base: 4, idx: 4 }),
+    { regs, memInit: qmap(0x800000n, 0x600000n) });
+});
+
+test('CALL *[rsp-8]: read and push name the same slot; the read wins', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'sib', base: 4, idx: 4, disp: -8 }),
+    { regs, memInit: qmap(0x800000n - 8n, 0x600000n) });
+});
+
+test('JMP *[rsp+disp8]: plain-base RSP addressing carries a no-index SIB', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'disp8', base: 4, disp: 0x43 }),
+    { regs, memInit: qmap(0x800043n, 0x600000n) });
+});
+
+test('CALL *%rsp / JMP *%rsp: the target is the pre-push RSP', async () => {
+  const regs = baseRegs();
+  regs[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 4 }), { regs });
+  const regs2 = baseRegs();
+  regs2[4] = 0x900000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 4 }), { regs: regs2 });
+});
+
+test('CALL with an unaligned RSP: no alignment behavior, push at RSP-8', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x600000n;
+  regs[4] = 0x800003n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs });
+});
+
+test('indirect targets are used verbatim (0 and all-ones)', async () => {
+  const a = baseRegs();
+  a[0] = 0n; a[4] = 0x800000n;
+  await checkInd(encFF({ sub: 4, eaKind: 'reg', rm: 0 }), { regs: a });
+  const b = baseRegs();
+  b[0] = mask64; b[4] = 0x800000n;
+  await checkInd(encFF({ sub: 2, eaKind: 'reg', rm: 0 }), { regs: b });
+});
+
+test('mid-block CALL *rbx: earlier ops stand, return address is block-relative', async () => {
+  const regs = baseRegs();
+  regs[3] = 0x600000n;
+  regs[4] = 0x800000n;
+  const out = await runTerm([0x48, 0x89, 0xC8, 0xFF, 0xD3], { regs }); // mov rax,rcx; call *rbx
+  expectEmitted(out, 2);
+  assert.equal(out.regs[0], regs[1], 'mov executed');
+  assert.equal(out.ripOut, 0x600000n, 'jumped to RBX');
+  assert.equal(out.regs[4], 0x800000n - 8n, 'pushed once');
+  assert.equal(out.guestMem.read(0x800000n - 8n, 8), asU64(RIP0 + 5n), 'return = rip + block len');
+});
+
+test('K-M3: CALL *[rbx] with a denied target read changes nothing', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0xFF, 0x13],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'the read is the only import call');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n, 'RIP is the CALL itself');
+  assert.deepEqual(out.regs, regs, 'no register moved (RSP included)');
+  assert.equal(out.guestMem.bytes.size, 0, 'no push was written');
+});
+
+test('K-M3: JMP *[rbx] with a denied target read changes nothing', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0xFF, 0x23],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1);
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.deepEqual(out.regs, regs);
+});
+
+test('K-M3: CALL *rax with a denied push keeps RSP and RIP at the op', async () => {
+  const S = 0x3000n;
+  const regs = baseRegs();
+  regs[0] = 0x600000n; regs[4] = S;
+  const out = await runFault([0xFF, 0xD0],
+    { regs, denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 1, 'register target: the push is the only import call');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n, 'RIP did not become the target');
+  assert.equal(out.regs[4], S, 'RSP unchanged');
+  assert.equal(out.guestMem.bytes.size, 0, 'denied push dropped');
+});
+
+test('K-M3: CALL *[rsp] reads the target, then a denied push still changes nothing', async () => {
+  const S = 0x3000n;
+  const regs = baseRegs();
+  regs[4] = S;
+  const out = await runFault([0xFF, 0x14, 0x24],
+    { regs, memInit: qmap(S, 0x600000n), denied: (addr, write) => write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.calls, 2, 'target read, then the denied push');
+  assert.equal(out.execCount, 0);
+  assert.equal(out.ripOut, 0x1000n);
+  assert.equal(out.regs[4], S, 'RSP unchanged');
+});
+
+test('K-M3: mid-block CALL *[rbx] fault keeps the completed prefix', async () => {
+  const A = 0x2000n, S = 0x3000n;
+  const regs = baseRegs();
+  regs[3] = A; regs[4] = S;
+  const out = await runFault([0x48, 0x89, 0xC8, 0xFF, 0x13],
+    { regs, denied: (addr, write) => !write });
+  assert.equal(out.fault, 1);
+  assert.equal(out.execCount, 1, 'the mov completed');
+  assert.equal(out.ripOut, 0x1000n + 3n, 'RIP is the CALL');
+  assert.equal(out.regs[0], regs[1], 'mov result published');
+  assert.equal(out.regs[4], S, 'no push happened');
+});
+
+test('JMP *reg touches no memory at all', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x600000n; regs[4] = 0x3000n;
+  const out = await runFault([0xFF, 0xE0],
+    { regs, denied: () => true });
+  assert.equal(out.fault, 0, 'no import call, so no fault');
+  assert.equal(out.calls, 0);
+  assert.equal(out.ripOut, 0x600000n);
+  assert.equal(out.regs[4], 0x3000n);
+});
+
+test('FF /2 /4 differential fuzz vs interpreter model', async () => {
+  const rand = mulberry32(0xFF24);
+  const r64 = () => BigInt(Math.floor(rand() * 0xFFFFFFFF)) << 32n |
+                    BigInt(Math.floor(rand() * 0xFFFFFFFF));
+  const ptr = () => 0x10000n + (BigInt(Math.floor(rand() * 0x7000)) << 3n);
+  for (let c = 0; c < 400; c++) {
+    const sub = pick(rand, [2, 2, 4]);
+    const eaKind = pick(rand, ['reg', 'reg', 'base', 'disp8', 'disp32', 'sib', 'sib32', 'riprel']);
+    const regs = baseRegs();
+    regs[4] = ptr();
+    const args = { sub, eaKind, w: rand() < 0.5 };
+    const memInit = new Map();
+    if (eaKind === 'reg') {
+      args.rm = Math.floor(rand() * 16);
+      if (args.rm !== 4) regs[args.rm] = advVal(rand);
+    } else if (eaKind === 'riprel') {
+      args.disp = pick(rand, [0, 8, -8, 0x40, -0x40, 0x1000, -0x1000]);
+    } else if (eaKind === 'sib' || eaKind === 'sib32') {
+      args.idx = Math.floor(rand() * 16);
+      args.scale = Math.floor(rand() * 4);
+      regs[args.idx] = BigInt(Math.floor(rand() * 17));
+      if (eaKind === 'sib') {
+        // mod-0 SIB with base field 5 means disp32-only; keep base != 5
+        // for the disp==0 shape, or give it a disp8.
+        args.base = Math.floor(rand() * 16);
+        args.disp = pick(rand, [0, 8, -16, 120, -128]);
+        if ((args.base & 7) === 5 && args.disp === 0) args.disp = 8;
+        if (args.base !== 4) regs[args.base] = ptr();
+      } else {
+        args.disp = pick(rand, [0, 0x100, 0x2000, -0x80, 0x10000]);
+      }
+    } else {
+      args.base = Math.floor(rand() * 16);
+      if (eaKind === 'base' && (args.base & 7) === 5) args.base = 3; // mod0 rm5 = riprel
+      if (args.base !== 4) regs[args.base] = ptr();
+      if (eaKind === 'disp8') args.disp = Math.floor(rand() * 256) - 128;
+      if (eaKind === 'disp32') args.disp = Math.floor(rand() * 0x2000) - 0x1000;
+    }
+    const enc = encFF(args);
+    if (enc.ea) {
+      const addr = computeEA(enc.ea, regs);
+      for (const [k, v] of qmap(addr, advVal(rand))) memInit.set(k, v);
+    }
+    // Noise: a sentinel in the push slot (CALL must overwrite it, JMP
+    // must leave it) and one unrelated qword.
+    for (const [k, v] of qmap((regs[4] - 8n) & mask64, 0x0BAD0BAD0BAD0BADn)) memInit.set(k, v);
+    for (const [k, v] of qmap(ptr(), r64())) memInit.set(k, v);
+    try {
+      await checkInd(enc, { regs, rflags: pick(rand, [0x202, 0x8D7, 0x0, 0xFFF]), memInit });
+    } catch (e) {
+      e.message = `fuzzInd c=${c} sub=${sub} eaKind=${eaKind} args=${JSON.stringify(args, (k, v) => typeof v === 'bigint' ? v.toString(16) : v)} code=${enc.code.map(b => b.toString(16)).join(' ')}: ${e.message}`;
+      throw e;
+    }
+  }
+}, 180000);
+
 test('PUSH/POP inside a block feed a following RET', async () => {
   const rsp = 0x800000n;
   const retAddr = 0x1122334455667788n;
@@ -3910,7 +4682,7 @@ test('shared-memory import descriptor links only a shared host memory', async ()
 // on placeholder values instead.
 const FAULT_OFF = 172;
 
-async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denied, rip = 0x1000n, ptr = 512 }) {
+async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denied, rip = 0x1000n, ptr = 512, xmm = null }) {
   const { result, path } = emit(code);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(WebAssembly.validate(readFileSync(path)), 'emitted module must validate');
@@ -3918,7 +4690,7 @@ async function runFault(code, { regs, rflags = 0x202, memInit = new Map(), denie
   const guestMem = makeGuestMem();
   for (const [k, v] of memInit) guestMem.bytes.set(k, v);
   const view = new DataView(memory.buffer);
-  initState(view, ptr, regs, rip, rflags);
+  initState(view, ptr, regs, rip, rflags, { xmm });
   view.setUint32(ptr + FAULT_OFF, 0, true);
   let calls = 0;
   const u32 = n => Number(BigInt.asUintN(32, BigInt(n)));

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Merge the winehq10 backport DLLs into the shipped wine64.zip archives
-# WITHOUT a full rootfs rebuild.
+# WITHOUT a full rootfs rebuild. (d3d12core.dll is NOT one of them any
+# more: since the 2026-10-26 D3D12 restage it ships from the vkd3d-proton
+# build via tools/rootfs64/stage-vkd3d-payloads.sh, paired with proton's
+# d3d12.dll and the bw64 vulkan-1.dll shim.)
 #
 # The canonical path is build-wine64-zip.sh (container staging), which
 # performs exactly these copies; this script is the merge-script path for
@@ -14,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
-for dll in d3d12core.dll msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
+for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
     [[ -f "$HERE/winehq10-x86_64/$dll" ]] || { echo "stage-wine64-payloads: missing $HERE/winehq10-x86_64/$dll" >&2; exit 2; }
 done
 
@@ -24,7 +27,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     [[ ! -L "$runtime" ]] || { echo "stage-wine64-payloads: refuse symlinked runtime dir $runtime" >&2; exit 2; }
     archive="$runtime/wine64.zip"
     [[ -f "$archive" ]] || { echo "stage-wine64-payloads: expected $archive" >&2; exit 2; }
-    if unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/d3d12core.dll" \
+    if unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/msmpeg2vdec.dll" \
        && unzip -Z1 "$archive" | grep -qx "$WIN64_DIR/msvcp140_codecvt_ids.dll"; then
         echo "stage-wine64-payloads: $archive already carries the backport DLLs — skipping"
         continue
@@ -34,7 +37,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     cp "$archive" "$backup/$(basename "$runtime")-wine64.zip"
     TMP="$(mktemp -d)"
     mkdir -p "$TMP/payload/$WIN64_DIR"
-    cp "$HERE/winehq10-x86_64/d3d12core.dll" "$HERE/winehq10-x86_64/msmpeg2vdec.dll" "$HERE/winehq10-x86_64/msvcp140_codecvt_ids.dll" "$TMP/payload/$WIN64_DIR/"
+    cp "$HERE/winehq10-x86_64/msmpeg2vdec.dll" "$HERE/winehq10-x86_64/msvcp140_codecvt_ids.dll" "$TMP/payload/$WIN64_DIR/"
     ( cd "$TMP/payload" && zip -qry9 "$TMP/payload.zip" usr )
     python3 - "$archive" "$TMP/payload.zip" <<'EOF'
 import os, sys, zipfile

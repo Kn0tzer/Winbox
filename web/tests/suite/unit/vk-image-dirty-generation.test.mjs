@@ -204,13 +204,30 @@ test('image generation skip never serves a stale hash (extracted emitImageDataIn
 
 test('every bridge write into image memory bumps the generation signal (census)', () => {
   const lines = bridgeSource.split('\n');
-  // (a) every dirtyGen bump is paired with a vk64TouchMem within 3 lines.
+  // (a) every dirtyGen bump is paired with a vk64TouchMem within 3 lines,
+  // or delegates its write to vkClearColorFill (whose own per-subresource
+  // touch is pinned below, so the delegation cannot silently lose it).
   const bumpIdx = lines
     .map((l, i) => (/->dirtyGen = g_bufDirtyTick\+\+/.test(l) ? i : -1))
     .filter((i) => i >= 0);
-  assert.equal(bumpIdx.length, 20, 'pinned count of dirtyGen bump sites');
+  assert.equal(bumpIdx.length, 21, 'pinned count of dirtyGen bump sites');
+  // Helper-mediated pairing (subclear lane, 2026-10-28): both
+  // vkCmdClearColorImage handlers delegate their fill to vkClearColorFill,
+  // which touches every cleared subresource range in its own body; their
+  // bumps are paired through that call. Pin the helper's touch first: if it
+  // leaves the helper, or the call leaves a handler, the bump is unpaired
+  // again and this census goes red.
+  const fillBegin = bridgeSource.indexOf('static bool vkClearColorFill(');
+  assert.ok(fillBegin >= 0, 'vkClearColorFill present');
+  assert.ok(bridgeSource.slice(fillBegin, fillBegin + 2600).includes('vk64TouchMem(dmem, absOff, subSize)'),
+    'vkClearColorFill touches each cleared subresource range');
   for (const i of bumpIdx) {
-    assert.ok(lines.slice(i, i + 4).join('\n').includes('vk64TouchMem('),
+    if (lines.slice(i, i + 4).join('\n').includes('vk64TouchMem(')) continue;
+    const bumpOff = lines.slice(0, i).join('\n').length + 1;
+    const regionBegin = bridgeSource.lastIndexOf('case VK64_fn_', bumpOff);
+    const regionEnd = bridgeSource.indexOf('\n    }\n    case VK64_fn_', bumpOff);
+    const region = bridgeSource.slice(regionBegin, regionEnd > regionBegin ? regionEnd : undefined);
+    assert.ok(regionBegin >= 0 && region.includes('vkClearColorFill('),
       `dirtyGen bump at line ${i + 1} lacks a paired vk64TouchMem`);
   }
   // (b) per-handler region pins, split by ABI half.
@@ -275,6 +292,25 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // same destination images as the per-pixel loops they accelerate and are
   // covered by each handler's existing post-loop dirtyGen bump + vk64TouchMem
   // (asserted per-handler in (b) above).
+  // 53 since the V2 compute lane: completeReadbacks' deferred buffer
+  // readback writes page-produced bytes into the destination BUFFER's
+  // guest memory, paired with that buffer's dirtyGen bump + vk64TouchMem
+  // (the bump counted in (a) above). Buffer memory, not image memory.
+  // 52 since the D3D12 stack merge: walkProperties2's ID-properties case writes
+  // a device-properties struct (UUID + nodeMask) back to the guest. It is not
+  // image memory, so no dirtyGen bump applies; it is dispositioned here as an
+  // exception, not a bump.
+  // 52 again since the metabindfix copy split (2026-10-29, campaign 4.32):
+  // vk64CopyRegionSplit holds the single eager memcpyToGuest line that both
+  // vkCmdCopyBuffer handlers route through (previously one per handler, net
+  // -1 from 53). It writes the destination BUFFER's guest memory for the
+  // segments not covered by a GPU-write mark, covered by each handler's
+  // existing post-loop dirtyGen bump + vk64TouchMem (asserted in (b)).
+  // 53 since the subclear lane (2026-10-28, campaign 4.52): vkClearColorFill
+  // holds the single chunk-copy memcpyToGuest line both vkCmdClearColorImage
+  // handlers route their ranged fills through. It writes the cleared
+  // subresources' guest bytes, paired with the helper's per-subresource
+  // vk64TouchMem (pinned in (a) above) and each handler's dirtyGen bump.
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 51, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 53, 'pinned count of raw guest-write primitive lines');
 });

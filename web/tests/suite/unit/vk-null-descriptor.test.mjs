@@ -32,9 +32,12 @@
 //                                       zero like the class stub.  SERVED
 //   UNIFORM_TEXEL_BUFFER (null view)    zero texel texture (was: the whole
 //                                       bind group dropped the draw). SERVED
-//   STORAGE_TEXEL_BUFFER                rejected loudly as a class at write
-//                                       time (texel-buffer-storage); null
-//                                       adds nothing.     CLASS-REJECTED
+//   STORAGE_TEXEL_BUFFER (null view)    recorded at write time and wired
+//                                       kind 6 with id 0 (metabind lane);
+//                                       the page tier's texture_storage
+//                                       branch serves the zero storage
+//                                       texture, so writes are discarded
+//                                       and reads are zero.     SERVED
 //   INPUT_ATTACHMENT                    rejected loudly as a class at write
 //                                       time (subpass-input-descriptor).
 //                                                         CLASS-REJECTED
@@ -77,7 +80,7 @@ const CENSUS = {
   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: 'zero-served',
   VK_DESCRIPTOR_TYPE_SAMPLER: 'substituted',
   VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: 'zero-served',
-  VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: 'class-rejected',
+  VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: 'zero-served',
   VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: 'class-rejected',
   VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: 'not-a-handle',
 };

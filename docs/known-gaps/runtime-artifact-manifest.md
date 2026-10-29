@@ -10,12 +10,12 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 210270035 | `67bdbc5dc32655d221583f60bfd4770a67c343413afa443f1d1052d610b96fba` | 1256 |
-| w32 | `web/runtime/wine32.zip` | 236650075 | `ce9a29ee2d41eb16e3ebccb9458649acb69631f19a2ad7e7d1f9254f9047923f` | 1926 |
+| w64 | `web/runtime/wine64.zip` | 213105632 | `1fc1e0ad8aca6db99b1f09eadbc070e8deb37164b8619764103ce9f38f734623` | 1257 |
+| w32 | `web/runtime/wine32.zip` | 239760722 | `955cc41cf6d92a0dc7d98fcfccb76e4d6d70e4daa5ea744c2be1e735c3950f4c` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
-| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `84e343abb45eaac5ee9b0b693be91d7272c82f30791887d341b362e0d273f926` | 154 |
+| g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
 | support | `dist/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip` | 517854873 | `bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b` | 3543 |
 
 Labels match the register legend in `runtime.md`
@@ -198,8 +198,8 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10.dll` (1531455 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10core.dll` (192842 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d11.dll` (3427605 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll` (588985 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll` (70654 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll` (517717 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll` (8825383 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d8.dll` (1294568 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll` (1839425 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/ddraw.dll` (3266205 bytes)
@@ -224,8 +224,8 @@ Labels match the register legend in `runtime.md`
 - `opt/wine-stable/lib/wine/i386-windows/d3d10.dll` (1346342 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/d3d10core.dll` (176826 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/d3d11.dll` (3469190 bytes)
-- `opt/wine-stable/lib/wine/i386-windows/d3d12.dll` (642962 bytes)
-- `opt/wine-stable/lib/wine/i386-windows/d3d12core.dll` (61993 bytes)
+- `opt/wine-stable/lib/wine/i386-windows/d3d12.dll` (517273 bytes)
+- `opt/wine-stable/lib/wine/i386-windows/d3d12core.dll` (9022393 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/d3d8.dll` (1097089 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/d3d9.dll` (1573317 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/ddraw.dll` (2866289 bytes)
@@ -412,7 +412,7 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/mscoree.dll` (1289964 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/opengl32.dll` (6115657 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/secur32.dll` (776893 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll` (83473 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll` (160169 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winealsa.drv` (762352 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winhttp.dll` (1521313 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wininet.dll` (2281908 bytes)

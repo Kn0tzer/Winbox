@@ -16,7 +16,11 @@ export default class D3D11TriangleTest extends ProbeTest {
     const result = await this.waitForLog(page, /tri1193: RESULT [01]/, 600000, from);
     check(/RESULT 0/.test(result), `D3D11 fixture must succeed (${result})`);
     check(this.consoleLines.some(l => /tri1193: D3D11CreateDevice OK/.test(l)), 'D3D11CreateDevice must succeed');
-    checkGreaterThan(this.countConsole(/gipa HIT.*vkCmdCopyBuffer/), 0, 'vkCmdCopyBuffer must be gipa-HIT');
+    // Staging uploads must provably exercise the buffer-copy path. Copies are
+    // served through the *2KHR entry points (campaign §4.24): the guest log
+    // shows a 'vk64: trap vkCmdCopyBuffer2' line and no gipa line at all, so
+    // accept either the historical v1 gipa-HIT or the *2 trap as evidence.
+    checkGreaterThan(this.countConsole(/gipa HIT.*vkCmdCopyBuffer|trap vkCmdCopyBuffer2/), 0, 'vkCmdCopyBuffer path must be exercised (gipa HIT or CopyBuffer2 trap)');
     const litLine = this.consoleLines.find(l => /tri1193: LIT=/.test(l));
     checkGreaterThan(Number(litLine?.match(/LIT=(\d+)/)?.[1]), 0, `D3D11 triangle must render non-zero pixels (${litLine})`);
     await page.screenshot({ path: this.dir + '/triangle.png' });

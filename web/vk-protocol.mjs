@@ -87,7 +87,7 @@ export const MAX_DRAWS = 4096;
 // Vulkan enums, mapped once (the numeric tables are P1's, host/p1render.mjs).
 export const FILTER = { 0: 'nearest', 1: 'linear' };
 // WebGPU has no border addressing or mirror-clamp mode; both use clamp-to-edge.
-export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'clamp-to-edge' };
+export const ADDR = { 0: 'repeat', 1: 'mirror-repeat', 2: 'clamp-to-edge', 3: 'clamp-to-edge', 4: 'mirror-repeat' };
 // ===========================================================================
 // Schema v2 — binary framed records (docs/vulkan-protocol.md §2-3). The v1 JSON
 // manifest (parseManifest/createVkRenderer in vkwebgpu.mjs) is vkcube-shaped: one frame
@@ -143,6 +143,11 @@ export const V2_REC = Object.freeze({
   DRAW: 0x11, INLINE_BYTES: 0x12, READBACK: 0x13, IMAGE_COPY: 0x14,
   STENCIL_STATE: 0x15, BLEND_CONSTANTS: 0x16, CLEAR_ATTACHMENTS: 0x17, DEPTH_BIAS: 0x18,
   IMAGE_BLIT: 0x19, RASTER_STATE: 0x1A, IMAGE_CLEAR_DS: 0x1B, BUFFER_VIEW: 0x1C,
+  ROOT_DESCS: 0x1D,
+  PIPELINE_COMPUTE: 0x1E,
+  DISPATCH: 0x1F,
+  BUFFER_READBACK: 0x20,
+  B2I_UPLOAD: 0x21,
 });
 
 // Vulkan descriptor types (numeric, as the bridge records them).
@@ -198,7 +203,7 @@ export function parseV2Chunk(bytes) {
     if (p + V2_REC_HEADER_LEN > bytes.length) throw new Error('vk64: v2 chunk truncated record header');
     const type = dv.getUint16(p, true);
     const len = dv.getUint32(p + 4, true);
-    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.BUFFER_VIEW)
+    if (type < V2_REC.FRAME_BEGIN || type > V2_REC.B2I_UPLOAD)
       throw new Error('vk64: v2 unknown record type 0x' + type.toString(16));
     if (len > V2_MAX_RECORD_BYTES || p + V2_REC_HEADER_LEN + len > bytes.length)
       throw new Error('vk64: v2 record 0x' + type.toString(16) + ' truncated (len ' + len + ')');
@@ -331,6 +336,20 @@ export class V2FrameQueue {
     this.q.length = 0;
     return f;
   }
+  // The pump's selection: latest-frame-wins normally, but a queued batch
+  // carrying readbacks is a guest-blocking consumer point -- the guest
+  // is parked on the readback flag -- and every batch ahead of it may
+  // hold content the readback must serve (a render into the image it
+  // copies). Dropping those producers serves stale or guest-memory-seed
+  // data instead of the rendered content, so drain in order up to and
+  // including the first readback batch. Later batches stay queued for
+  // latest-frame-wins.
+  takeForPump() {
+    const at = this.q.findIndex(b => (b.submissions || [b]).some(s => s.readbacks?.length || s.bufReadbacks?.length));
+    if (at >= 0) return this.q.splice(0, at + 1);
+    const f = this.takeLatest();
+    return f ? [f] : [];
+  }
   clear() { this.q.length = 0; }
 }
 
@@ -344,6 +363,9 @@ const V2_TEX_FORMAT = {
   70: 'r16float', 76: 'r16float', 77: 'rg16float', 83: 'rg16float',
   91: 'rgba16float', 97: 'rgba16float',
   9: 'r8unorm', 16: 'rg8unorm', 41: 'rgba8uint', 64: 'rgb10a2unorm', 122: 'rg11b10ufloat',
+  10: 'r8snorm', 13: 'r8uint', 14: 'r8sint', 17: 'rg8snorm', 20: 'rg8uint', 21: 'rg8sint', 42: 'rgba8sint',
+  74: 'r16uint', 75: 'r16sint', 81: 'rg16uint', 82: 'rg16sint', 95: 'rgba16uint', 96: 'rgba16sint',
+  101: 'rg32uint', 102: 'rg32sint', 107: 'rgba32uint', 108: 'rgba32sint',
   98: 'r32uint', 99: 'r32sint', 100: 'r32float', 103: 'rg32float', 109: 'rgba32float',
   131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
   133: 'bc1-rgba-unorm', 134: 'bc1-rgba-unorm-srgb',
@@ -353,6 +375,68 @@ const V2_TEX_FORMAT = {
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float', 145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
   124: 'depth16unorm', 125: 'depth32float', 126: 'depth32float', 129: 'depth24plus-stencil8', 130: 'depth24plus-stencil8',
 };
+
+// Typed STORAGE-IMAGE reads (UAV loads): VkFormat -> { spv: SPIR-V
+// ImageFormat value, kind: component kind, wgsl: WebGPU storage texture
+// format }. A format is listed exactly when all three agree: the bridge
+// grants it STORAGE_IMAGE + STORAGE_READ_WITHOUT_FORMAT (v2StorageLoadServable
+// in vk64bridge.cpp -- the two lists are pinned equal by
+// vk-storage-format-mirror.test.mjs), spirvfix R14 can inject `spv` into a
+// shader's Unknown-format storage type, and WebGPU serves `wgsl` as a core
+// storage texture format. Storage WRITES are not served: nothing here
+// implies a write path (writing shader modules reject in the bridge audit).
+// R16_UNORM/R16G16_UNORM are absent on purpose (norm16 textures are
+// materialised as rgba16float by v2TexturePixels, so an r16unorm storage
+// view would read converted bytes), as is B8G8R8A8 (no SPIR-V storage
+// format exists for it).
+export const V2_STORAGE_FORMAT = {
+  9: { spv: 15, kind: 'f', wgsl: 'r8unorm' },        // R8_UNORM -> R8
+  10: { spv: 20, kind: 'f', wgsl: 'r8snorm' },       // R8_SNORM -> R8Snorm
+  13: { spv: 39, kind: 'u', wgsl: 'r8uint' },        // R8_UINT -> R8ui
+  14: { spv: 29, kind: 'i', wgsl: 'r8sint' },        // R8_SINT -> R8i
+  16: { spv: 13, kind: 'f', wgsl: 'rg8unorm' },      // R8G8_UNORM -> Rg8
+  17: { spv: 18, kind: 'f', wgsl: 'rg8snorm' },      // R8G8_SNORM -> Rg8Snorm
+  20: { spv: 37, kind: 'u', wgsl: 'rg8uint' },       // R8G8_UINT -> Rg8ui
+  21: { spv: 27, kind: 'i', wgsl: 'rg8sint' },       // R8G8_SINT -> Rg8i
+  37: { spv: 4, kind: 'f', wgsl: 'rgba8unorm' },     // R8G8B8A8_UNORM -> Rgba8
+  38: { spv: 5, kind: 'f', wgsl: 'rgba8snorm' },     // R8G8B8A8_SNORM -> Rgba8Snorm
+  41: { spv: 32, kind: 'u', wgsl: 'rgba8uint' },     // R8G8B8A8_UINT -> Rgba8ui
+  42: { spv: 23, kind: 'i', wgsl: 'rgba8sint' },     // R8G8B8A8_SINT -> Rgba8i
+  74: { spv: 38, kind: 'u', wgsl: 'r16uint' },       // R16_UINT -> R16ui
+  75: { spv: 28, kind: 'i', wgsl: 'r16sint' },       // R16_SINT -> R16i
+  76: { spv: 9, kind: 'f', wgsl: 'r16float' },       // R16_SFLOAT -> R16f
+  81: { spv: 36, kind: 'u', wgsl: 'rg16uint' },      // R16G16_UINT -> Rg16ui
+  82: { spv: 26, kind: 'i', wgsl: 'rg16sint' },      // R16G16_SINT -> Rg16i
+  83: { spv: 7, kind: 'f', wgsl: 'rg16float' },      // R16G16_SFLOAT -> Rg16f
+  95: { spv: 31, kind: 'u', wgsl: 'rgba16uint' },    // R16G16B16A16_UINT -> Rgba16ui
+  96: { spv: 22, kind: 'i', wgsl: 'rgba16sint' },    // R16G16B16A16_SINT -> Rgba16i
+  97: { spv: 2, kind: 'f', wgsl: 'rgba16float' },    // R16G16B16A16_SFLOAT -> Rgba16f
+  98: { spv: 33, kind: 'u', wgsl: 'r32uint' },       // R32_UINT -> R32ui
+  99: { spv: 24, kind: 'i', wgsl: 'r32sint' },       // R32_SINT -> R32i
+  100: { spv: 3, kind: 'f', wgsl: 'r32float' },      // R32_SFLOAT -> R32f
+  101: { spv: 35, kind: 'u', wgsl: 'rg32uint' },     // R32G32_UINT -> Rg32ui
+  102: { spv: 25, kind: 'i', wgsl: 'rg32sint' },     // R32G32_SINT -> Rg32i
+  103: { spv: 6, kind: 'f', wgsl: 'rg32float' },     // R32G32_SFLOAT -> Rg32f
+  107: { spv: 30, kind: 'u', wgsl: 'rgba32uint' },   // R32G32B32A32_UINT -> Rgba32ui
+  108: { spv: 21, kind: 'i', wgsl: 'rgba32sint' },   // R32G32B32A32_SINT -> Rgba32i
+  109: { spv: 1, kind: 'f', wgsl: 'rgba32float' },   // R32G32B32A32_SFLOAT -> Rgba32f
+};
+// VkFormats Dawn will not create a texture for with STORAGE_BINDING usage
+// at all: the format has no storage capability in Dawn's table, so the
+// usage request makes the texture itself invalid and poisons every bind
+// of the image, sampled binds included. A format enters this set only on
+// Dawn's own validation message as evidence (uav12 guest run, campaign
+// section 4.34): 76 (R16_SFLOAT) -- "The texture usage includes
+// TextureUsage::StorageBinding, which is incompatible with the format
+// (TextureFormat::R16Float)" -- and 13 (R8_UINT), proven the same way
+// once its pipeline wall was cleared by the rebuilt vkd3d pair (the
+// identical message naming TextureFormat::R8Uint; without the exclusion
+// the case read back all zeros through the invalid texture). These are
+// formats whose read-only storage
+// reads the page tier serves as sampled textures instead
+// (wgsl-utils.mjs SAMPLED_STORAGE_FORMATS); a storage bind of them was
+// already unreachable (the layout entry itself is rejected by name).
+export const V2_STORAGE_USAGE_FORBIDDEN = new Set([76, 13]);
 // UNIFORM texel buffer views the page tier can materialise as a 2D texture
 // (spirvfix R12 layout: element i at (i mod V2_TEXEL_WRAP, i div V2_TEXEL_WRAP)).
 // Mirrors v2TexelBufferServable() in vk64bridge.cpp exactly — pinned by
@@ -747,12 +831,16 @@ export function decodeV2Frame(records, counters = {}) {
     shaders: new Map(), pipelines: new Map(), buffers: new Map(),
     images: new Map(), views: new Map(), bufferViews: new Map(), viewRanges: new Map(), viewFormats: new Map(), samplers: new Map(),
     bufHashes: new Map(), readbacks: [],
+    computePipelines: new Map(), bufReadbacks: [],
   };
   const implicitPass = () => ({
     rpId: '0', fbId: '0', w: width, h: height, attachments: [],
     clearColor: [0, 0, 0, 1], clearDepth: 1, clearStencil: 0, ops: [],
   });
   let pass = null;
+  // Per-buffer-id bare-key arbitration for BUFFER_DATA (see that case):
+  // bufId -> { memOffBig, len } of the record currently holding the bare key.
+  const bareBest = new Map();
   const needPass = () => pass || (pass = frame.passes[frame.passes.push(implicitPass()) - 1]);
   let draws = 0;
 
@@ -801,7 +889,7 @@ export function decodeV2Frame(records, counters = {}) {
         const hash = v2Hex64(r.u64());
         const codeLen = r.u32();
         const code = r.bytes(codeLen); r.done('SHADER');
-        if (stage > 1) throw new Error('vk64: v2 SHADER bad stage');
+        if (stage > 2) throw new Error('vk64: v2 SHADER bad stage');
         if (!frame.shaders.has(hash)) frame.shaders.set(hash, { stage, code: code.slice() });
         break;
       }
@@ -897,6 +985,68 @@ export function decodeV2Frame(records, counters = {}) {
         needPass().ops.push({ op: 'bindPipe', pipe });
         break;
       }
+      case V2_REC.PIPELINE_COMPUTE: {
+        const pipeId = v2Hex64(r.u64());
+        const csHash = v2Hex64(r.u64());
+        // Same specialization tail as PIPELINE (emitSpec wire format).
+        let csSpec = [];
+        if (r.p < r.dv.byteLength) {
+          const n = r.u32();
+          if (n > 16) throw new Error('vk64: v2 PIPELINE_COMPUTE spec count out of range');
+          for (let i = 0; i < n; i++) {
+            const constantID = r.u32(), size = r.u32();
+            if (size !== 1 && size !== 2 && size !== 4 && size !== 8)
+              throw new Error('vk64: v2 PIPELINE_COMPUTE spec size out of range');
+            csSpec.push({ constantID, size, value: r.bytes(size) });
+          }
+        }
+        r.done('PIPELINE_COMPUTE');
+        const cpipe = { pipeId, csHash, csSpec };
+        frame.computePipelines.set(pipeId, cpipe);
+        needPass().ops.push({ op: 'bindComputePipe', cpipe });
+        break;
+      }
+      case V2_REC.DISPATCH: {
+        const x = r.u32(), y = r.u32(), z = r.u32();
+        r.done('DISPATCH');
+        if (++draws > MAX_DRAWS) throw new Error('vk64: v2 frame exceeds the page-tier draw limit');
+        needPass().ops.push({ op: 'dispatch', x, y, z });
+        break;
+      }
+      case V2_REC.BUFFER_READBACK: {
+        const srcBuffer = v2Hex64(r.u64());
+        const srcAbsOff = r.u64();
+        const size = r.u64();
+        const heapPtr = r.u32(), flagPtr = r.u32();
+        r.done('BUFFER_READBACK');
+        if (size < 1n || size > 67108864n) throw new Error('vk64: v2 BUFFER_READBACK size out of range');
+        frame.bufReadbacks.push({ srcBuffer, srcAbsOff, size, heapPtr, flagPtr });
+        break;
+      }
+      case V2_REC.B2I_UPLOAD: {
+        // Page-side application of a guest buffer->image copy the bridge
+        // executed eagerly into guest memory (vkCmdCopyBufferToImage*):
+        // the source range's bytes ride BUFFER_DATA under
+        // (srcBuffer, srcMemOff); this record names the destination image
+        // and the exact region, in execCopy's source-layout terms
+        // (srcRowBytes = source row stride, srcRowsPerSlice = source rows
+        // per layer/depth slice), so the tier can apply the upload to its
+        // own texture for the image in command order.
+        const dstImage = v2Hex64(r.u64()), srcBuffer = v2Hex64(r.u64());
+        const srcMemOff = r.u64().toString();
+        const format = r.u32();
+        const mip = r.u32(), baseLayer = r.u32(), layerCount = r.u32();
+        const origin = [r.u32(), r.u32(), r.u32()];
+        const w = r.u32(), h = r.u32(), depth = r.u32();
+        const srcRowBytes = r.u32(), srcRowsPerSlice = r.u32();
+        r.done('B2I_UPLOAD');
+        if (dstImage === V2_UNKNOWN_IMAGE || !w || !h || w > MAX_DIMENSION || h > MAX_DIMENSION ||
+            !depth || depth > MAX_DIMENSION || !layerCount || layerCount > MAX_DIMENSION || mip > 32 ||
+            !srcRowBytes || !srcRowsPerSlice || origin.some(n => n > MAX_DIMENSION) || pass?.attachments.length)
+          throw new Error('vk64: v2 invalid B2I_UPLOAD');
+        needPass().ops.push({ op: 'bufferToImage', dstImage, srcBuffer, srcMemOff, format, mip, baseLayer, layerCount, origin, w, h, depth, srcRowBytes, srcRowsPerSlice });
+        break;
+      }
       case V2_REC.BIND_SETS: {
         const firstSet = r.u8(), setCount = r.u8(); r.skip(2);
         if (firstSet + setCount > V2_MAX_SETS) throw new Error('vk64: v2 BIND_SETS out of range');
@@ -928,24 +1078,42 @@ export function decodeV2Frame(records, counters = {}) {
       }
       case V2_REC.BUFFER_DATA: {
         const bufId = v2Hex64(r.u64());
-        const memOff = r.u64().toString();
+        const memOffBig = r.u64();
+        const memOff = memOffBig.toString();
         const hash = v2Hex64(r.u64());
         const len = r.u32();
         if (len > V2_MAX_RECORD_BYTES) throw new Error('vk64: v2 BUFFER_DATA len out of range');
         const bytes = len ? r.bytes(len) : null; r.done('BUFFER_DATA');
         // One VkBuffer may back several bindings at different offsets; key by
-        // (id, offset). Keep the bare-id key (first record) for VB/IB lookups.
-        // Byte-less record (len 0): wasm-side dedup, content unchanged since
-        // the last full record. Store the hash; the GPU resource resolves
-        // from the persistent cache.
+        // (id, offset). Byte-less record (len 0): wasm-side dedup, content
+        // unchanged since the last full record. Store the hash; the GPU
+        // resource resolves from the persistent cache.
         const key = bufId + ':' + memOff;
         if (!frame.buffers.has(key)) {
           frame.buffers.set(key, bytes ? bytes.slice() : null);
           frame.bufHashes.set(key, hash); // always store bridge hash
         }
-        if (!frame.buffers.has(bufId)) {
+        // The bare-id key serves the VB/IB lookups (and last-resort
+        // fallbacks), which treat it as the buffer's base slice: the bytes
+        // starting at the buffer's lowest range offset. It must therefore
+        // hold the LOWEST-offset range record for the id, never simply the
+        // first record in the stream -- any range emission may precede the
+        // base record in command order (a descriptor range, an update, or,
+        // since section 4.41, a buffer->image copy source). First-record
+        // wins silently handed the vertex path the copy source's bytes
+        // when vkd3d sub-allocated the upload heap and the vertex buffer
+        // from one VkBuffer: the draw's "vertex buffer" was built from the
+        // upload pattern, the triangle degenerated, and the render target
+        // kept its clear colour (the uav12 regression). Ties at the lowest
+        // offset prefer the longest byte payload, so a short descriptor
+        // range at the base cannot starve a longer base slice.
+        const bareLen = bytes ? bytes.length : -1;
+        const prevBare = bareBest.get(bufId);
+        if (!prevBare || memOffBig < prevBare.memOffBig ||
+            (memOffBig === prevBare.memOffBig && bareLen > prevBare.len)) {
+          bareBest.set(bufId, { memOffBig, len: bareLen });
           frame.buffers.set(bufId, bytes ? bytes.slice() : null);
-          frame.bufHashes.set(bufId, hash); // always store bridge hash
+          frame.bufHashes.set(bufId, hash); // the chosen record's hash
         }
         break;
       }
@@ -1004,6 +1172,25 @@ export function decodeV2Frame(records, counters = {}) {
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
           anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
         });
+        break;
+      }
+      case V2_REC.ROOT_DESCS: {
+        // Root-descriptor resolutions for the next draw(s): one entry per
+        // root slot of the bound pipeline, keyed by push byte offset. A
+        // zero-length entry is an unresolved/null root descriptor (the
+        // tier binds zero-filled storage; D3D12 reads return 0).
+        const count = r.u32();
+        if (count > 64) throw new Error('vk64: v2 ROOT_DESCS count out of range');
+        const entries = new Map();
+        for (let i = 0; i < count; i++) {
+          const pushOff = r.u32();
+          const obj = v2Hex64(r.u64());
+          const absOff = r.u64().toString();
+          const len = r.u64().toString();
+          entries.set(pushOff, { obj, absOff, len });
+        }
+        r.done('ROOT_DESCS');
+        needPass().ops.push({ op: 'rootDescs', entries });
         break;
       }
       case V2_REC.PUSH: {

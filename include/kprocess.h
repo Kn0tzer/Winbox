@@ -203,10 +203,15 @@ public:
     KThread* createThread();
     void removeThread(KThread* thread);
     KThread* getThreadById(U32 tid);
+    // Thread-dump variant: never blocks (see KSystem::tryGetThreadById).
+    KThread* tryGetThreadById(U32 tid, bool& lockBlocked);
     U32 getThreadCount();
 	void deleteThread(KThread* thread);
     void killAllThreads(KThread* exceptThisOne = nullptr);
     BString getAbsoluteExePath();
+    // commandLine with its NUL separators rendered as spaces, for log
+    // lines that print through c_str() (which would stop at argv[0]).
+    BString commandLineForLog() const;
     void clone(const KProcessPtr& from, U32 shareFlags = 0);
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);
@@ -221,6 +226,8 @@ public:
 #endif
     KFileDescriptorPtr allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle);
     KFileDescriptorPtr getFileDescriptor(FD handle);
+    // Thread-dump variant: never blocks (see KSystem::tryGetThreadById).
+    KFileDescriptorPtr tryGetFileDescriptor(FD handle, bool& lockBlocked);
     KFileDescriptor* getFileDescriptor_nolock(FD handle);
     void clearFdHandle(FD handle);
     U32 openFile(BString currentDirectory, BString localPath, U32 accessFlags, KFileDescriptorPtr& result);

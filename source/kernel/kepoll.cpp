@@ -373,7 +373,12 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
     };
     std::vector<Registration> registrations;
     {
-        std::lock_guard<std::mutex> lock(g_epollDataMutex);
+        // Thread-dump path: never block (see bw64_dump_guest_threads).
+        std::unique_lock<std::mutex> lock(g_epollDataMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            klog_fmt("BW_THREAD_DUMP epoll-unavailable pid=%u tid=%u lock=epoll-data", pid, tid);
+            return;
+        }
         for (const auto& entry : this->data) {
             const Data* registration = entry.value;
             if (registration) {
@@ -381,8 +386,14 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
             }
         }
     }
+    bool fdLockBlockedNoted = false;
     for (const Registration& registration : registrations) {
-        KFileDescriptorPtr fd = process ? process->getFileDescriptor((FD)registration.fd) : nullptr;
+        bool fdBlocked = false;
+        KFileDescriptorPtr fd = process ? process->tryGetFileDescriptor((FD)registration.fd, fdBlocked) : nullptr;
+        if (fdBlocked && !fdLockBlockedNoted) {
+            fdLockBlockedNoted = true;
+            klog_fmt("BW_THREAD_DUMP epoll-fd-unavailable pid=%u tid=%u lock=fdsMutex", pid, tid);
+        }
         bool readable = fd && fd->kobject && fd->kobject->isReadReady();
         bool writable = fd && fd->kobject && fd->kobject->isWriteReady();
         std::shared_ptr<KUnixSocketObject> socket = fd && fd->kobject
@@ -418,7 +429,10 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
 
     std::vector<KPollData> activeSnapshot;
     {
-        std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
+        std::unique_lock<std::mutex> lock(g_epollWaitersMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            klog_fmt("BW_THREAD_DUMP epoll-snapshot-unavailable pid=%u tid=%u lock=epoll-waiters", pid, tid);
+        } else {
         auto it = g_epollWaiters.find(this);
         if (it != g_epollWaiters.end()) {
             for (const std::shared_ptr<KEPollWaiter>& waiter : it->second) {
@@ -426,10 +440,21 @@ void KEPoll::debugDumpRegistrations(KProcess* process, U32 pid, U32 tid) {
                 if (!thread || !thread->process || thread->process->id != pid || thread->id != tid) {
                     continue;
                 }
+#ifdef BOXEDWINE_MULTI_THREADED
+                if (thread->pollCond->tryLock()) {
+                    activeSnapshot = thread->pollData;
+                    thread->pollCond->unlock();
+                } else {
+                    klog_fmt("BW_THREAD_DUMP epoll-snapshot-unavailable pid=%u tid=%u lock=pollCond lockOwner=%u",
+                             pid, tid, thread->pollCond->lockOwner);
+                }
+#else
                 BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(thread->pollCond);
                 activeSnapshot = thread->pollData;
+#endif
                 break;
             }
+        }
         }
     }
     for (const KPollData& entry : activeSnapshot) {

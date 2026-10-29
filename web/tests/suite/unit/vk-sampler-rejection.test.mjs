@@ -1,6 +1,9 @@
 // Sampler-state dispositions at the WebGPU tier boundary (docs/known-gaps/vulkan.md):
 //  - MIRROR_CLAMP_TO_EDGE: the samplerMirrorClampToEdge feature is not advertised,
-//    so creation is REJECTED with VK_ERROR_FEATURE_NOT_PRESENT.
+//    but the vkd3d lane serves it as mirror-repeat (D3D12 mirror-once needs it;
+//    ADDR[4]='mirror-repeat' in vk-protocol.mjs). Creation succeeds; the audit
+//    logs mirror-clamp-to-edge with the approximation note (identical on [-1, 2];
+//    beyond that range coordinates keep mirroring instead of pinning the edge texel).
 //  - nonzero mipLodBias: governed by the advertised maxSamplerLodBias limit, which
 //    is 0 because WebGPU samplers have no LOD bias. A conforming guest cannot
 //    request a nonzero bias (VUID-VkSamplerCreateInfo-mipLodBias-01069: |mipLodBias|
@@ -33,19 +36,18 @@ function body(source, header) {
   throw new Error(`unbalanced function ${header}`);
 }
 
-test("mirror clamp rejects sampler creation, for both ABIs", () => {
+test("mirror clamp is served as mirror-repeat, for both ABIs", () => {
   const audit = body(bridge, "static bool vk64AuditSampler(");
   assert.ok(audit.includes("vk64Unsupported(\"mirror-clamp-to-edge\""), "greppable diagnostic");
-  assert.match(audit, /return reject;/);
-  // Only the feature-gated mode rejects; border and bias must not make DXVK throw from sampler creation.
-  assert.equal((audit.match(/reject = true/g) || []).length, 1);
-  assert.match(audit.slice(audit.indexOf("mode == 4"), audit.indexOf("mode == 3")), /reject = true/);
+  assert.match(audit, /served by the page tier as mirror-repeat/);
+  // Served, not rejected: the audit must not set reject for mirror-clamp.
+  assert.doesNotMatch(audit.slice(audit.indexOf("mode == 4"), audit.indexOf("mode == 3")), /reject = true/);
+  assert.ok(protocol.includes("4: 'mirror-repeat'"), "decoder maps mode 4 to mirror-repeat");
   const cases = [...bridge.matchAll(/case VK64_fn_vkCreateSampler: \{([\s\S]*?)\n    \}/g)].map((m) => m[1]);
   assert.equal(cases.length, 2);
   for (const handler of cases) {
     assert.match(handler, /vk64AuditSampler\(/);
-    assert.match(handler, /VK_ERROR_FEATURE_NOT_PRESENT/);
-    assert.ok(handler.indexOf("vk64AuditSampler(") < handler.indexOf("createObj"), "reject before creating a sampler");
+    assert.ok(handler.indexOf("vk64AuditSampler(") < handler.indexOf("createObj"), "audit before creating a sampler");
   }
 });
 

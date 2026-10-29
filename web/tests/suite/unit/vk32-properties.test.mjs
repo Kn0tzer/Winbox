@@ -15,6 +15,8 @@ test('32-bit Vulkan properties use the Linux driver ABI without overwriting adja
   const shared = source.match(/template <class Limits>\nvoid fillLimits\(Limits& L\) \{[\s\S]*?\n\}/)?.[0] || '';
   const indirectLimit = source.match(/const U32 VK64_MAX_INDIRECT_DRAWS = \d+;/)?.[0];
   assert.ok(indirectLimit, 'indirect draw limit exists');
+  const maxSets = source.match(/const U32 VK64_MAX_SETS = [^;]+;/)?.[0];
+  assert.ok(maxSets, 'max descriptor sets constant exists (vkd3d disposition: maxBoundDescriptorSets = VK64_MAX_SETS)');
   const requirements = source.match(/inline void vk32_writeRequirements\(U32 out, U64 size\) \{[\s\S]*?\n\}/)?.[0];
   assert.ok(requirements, 'requirements writer exists');
   const dir = mkdtempSync(join(tmpdir(), 'vk32-properties-'));
@@ -35,6 +37,7 @@ void wr64_32(U32 a, U64 v) { memcpy(memory + a, &v, 8); }
 U32 rd32_32(U32 a) { U32 v; memcpy(&v, memory + a, 4); return v; }
 template<class T> void writeStruct32(U32 a, const T& v) { memcpy(memory + a, &v, sizeof(v)); }
 ${indirectLimit}
+${maxSets}
 ${shared}
 ${writer}
 ${requirements}

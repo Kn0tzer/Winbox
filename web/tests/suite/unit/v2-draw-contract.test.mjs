@@ -28,6 +28,7 @@ struct Pipeline {U64 gs=0;bool gsServe=false;};
 static Pipeline g_pipe;
 template<typename T> T* objOf(U64, int, const char*) { return reinterpret_cast<T*>(&g_pipe); }
 static void vk64Unsupported(const char*, const char*) {}
+static void emitRootDescs(Pipeline*) {}  // bda R15 census call in the extracted submit cases; no-op here so the pinned draw-arg values are unchanged
 std::vector<U32> run(Cmd k) {
   U32 nDraw=0;size_t v2DrawIdx=0;U64 v2RepVsHash=1;std::vector<U32> v2DrawVtxOff{12};U64 activePipe=1;
   ChunkWriter result;

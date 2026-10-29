@@ -41,6 +41,12 @@ test('unsupported graphics pipeline state is warned and rejected in the shared a
     'tessellation-control-stage', 'tessellation-evaluation-stage', 'task-stage', 'mesh-stage',
     'unknown-graphics-stage', 'patch-list-topology', 'adjacency-topology',
   ]) assert.match(body, new RegExp(`vk64Unsupported\\("${feature}"[^\\n]*reject = true`), feature);
+  // Geometry stage is the deliberate exception (vkd3d campaign, 2026-10-26):
+  // the pipeline is RECORDED (module kept in Pipeline.gs) so vkd3d meta-variant
+  // creation succeeds; draws under it are dropped loudly at submit
+  // (geometry-stage-draw). WebGPU has no geometry stage.
+  assert.match(body, /vk64Unsupported\("geometry-stage", "geometry-stage pipeline recorded;/);
+  assert.doesNotMatch(body, /vk64Unsupported\("geometry-stage"[^\n]*reject = true/);
   assert.match(body, /return reject;/);
   assert.match(bridge, /if \(vk64AuditGraphicsPipeline\(audit\)(?: \|\| dynamicRejected)?\) \{[\s\S]{0,180}VK_ERROR_FEATURE_NOT_PRESENT/);
   for (const capability of [
@@ -95,14 +101,14 @@ test('unsupported stencil enums and two-sided static masks fail both guest pipel
 });
 
 test('resource declarations cover Vulkan descriptor kinds and reject incompatible pipeline interfaces', () => {
-  const layout = functionBody(page, 'function layoutEntryFor(decl) {');
+  const layout = functionBody(page, 'function layoutEntryFor(decl, vis = decl.stageVis ?? (GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT)) {');
   assert.match(layout, /t\.startsWith\('texture_'\)/);
   assert.match(layout, /v2SamplerLayoutType\(t\)/);
   assert.match(layout, /decl\.addr === 'uniform'/);
   assert.match(layout, /decl\.addr\.startsWith\('storage'\)/);
   assert.match(layout, /texture_storage_/);
   const pipeline = functionBody(page, 'async function getPipelineFor(');
-  assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior\)\) !== JSON\.stringify\(layoutEntryFor\(decl\)\)/);
+  assert.match(pipeline, /prior && JSON\.stringify\(layoutEntryFor\(prior, 0\)\) !== JSON\.stringify\(layoutEntryFor\(decl, 0\)\)/);
   assert.match(pipeline, /noteUnsupported\('incompatible-shared-binding'/);
   assert.match(pipeline, /return fail\('incompatible-shared-binding:/); // routed through fail(): registry + PIPELINE-FAILED log, still returns the named skip
 });

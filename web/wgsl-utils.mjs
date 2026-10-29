@@ -177,9 +177,312 @@ export function scanWgslResources(wgsl) {
     const source = /^bw_combined_g(\d+)_b(\d+)_v\d+(?:_\d*)?$/.exec(decl.name);
     if (source && +source[1] === decl.group && /^sampler(?:_comparison)?$/.test(decl.type))
       decl.sourceBinding = +source[2];
+    // spirvfix R15 metadata in generated names: a specialized descriptor
+    // array clone carries its single index signature (resolve the element
+    // at bind time from the draw's push block, or a constant), and a
+    // re-rooted root descriptor carries its push byte offset (resolve the
+    // buffer at bind time from the draw's ROOT_DESCS record).
+    const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))_?$/.exec(decl.name);
+    if (arr && +arr[1] === decl.group && +arr[2] === decl.binding)
+      decl.arrSig = arr[3] !== undefined ? { kind: 'push', pushOff: +arr[3], add: +arr[4] } : { kind: 'const', value: +arr[5] };
+    const root = /^bw_root_p(\d+)_?$/.exec(decl.name);
+    if (root) decl.rootOff = +root[1];
   }
   return out;
 }
+
+// Storage-texture access rejection (campaign section 4.26): Dawn reports
+// a format it will not serve as a storage texture at bind-group-layout
+// creation, e.g. "Texture format TextureFormat::R16Float does not support
+// storage texture access StorageTextureAccess::ReadOnly." The read-write
+// upgrade was PROVEN USELESS for r16float by micro-probe (Dawn rejects
+// read-write there too), so the page tier does not rewrite the access:
+// it names the rejection and fails the pipeline loudly instead. The
+// serving path for read-path storage in such formats is the
+// sampled-texture rewrite below (rewriteReadOnlyStorageToSampled), which
+// serves the shapes it can prove before layout creation; this rejection
+// remains for every shape it cannot prove. Format
+// names are Dawn's enum names (R16Float); lowercasing maps them to WGSL
+// names (r16float) for decl lookup.
+// Resolve the SPIR-V Image Format (the spirvfix R14 signature value) for
+// one format-Unknown storage-image variable from the descriptor entries
+// bound at its binding, or null when the format is not PROVEN. The format
+// is a property of the bound view, and for a descriptor-array variable it
+// is the format of the element the shader will actually touch -- not
+// necessarily element 0: a guest heap table can place the accessed UAV
+// at a nonzero element with a null or unrelated view at element 0, where
+// an element-0 resolution injects nothing (or worse, the wrong format).
+// Proof rules, all fail-closed (null = no claim, the type stays Unknown
+// and translation rejects it loudly):
+//   - direct (non-array) variable: the entry covering element 0, else
+//     the first entry for the binding (the tier's long-standing rule).
+//   - array variable with a proven index signature (spirvfix
+//     analyzeDescriptorArrays, reported by storageImageVars): a constant
+//     index, or a push-constant index evaluated against the draw's push
+//     block, selects the element; only an entry COVERING that element
+//     proves its format -- never a neighbouring element.
+//   - array variable whose element cannot be evaluated (the caller has
+//     no push block): the bound image entries prove the format only when
+//     every one carries a view and they all agree on ONE servable
+//     format; then whichever element the shader selects, it holds.
+// `bindings` are the decoded DESC_SET entries for the variable's set;
+// `viewFormatOf(obj)` maps a bound view id to its SPIR-V Image Format
+// number (already view-format-resolved) or null when unmappable.
+// `texelFormatOf(obj)`, when supplied, does the same for a bound
+// storage-texel-buffer (kind 6) view id.
+export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf, texelFormatOf = null) {
+  const list = (bindings || []).filter((b) => b.binding === v.binding);
+  // kind 2 = image view; kind 6 = storage texel buffer view. spirvfix
+  // R12S converts a Dim=Buffer storage image to the same 2D storage-image
+  // shape, so a kind-6 entry's view format proves the variable's format
+  // the same way -- but only when the caller supplies texelFormatOf;
+  // without it kind 6 stays unproven, exactly as before (metabind,
+  // campaign section 4.43).
+  const fmtOf = (b) => {
+    if (!b || !b.obj || b.obj === '0000000000000000') return null;
+    if (b.kind === 2) { const f = viewFormatOf(b.obj); return f == null ? null : f; }
+    if (b.kind === 6 && texelFormatOf) { const f = texelFormatOf(b.obj); return f == null ? null : f; }
+    return null;
+  };
+  const covering = (el) => list.find((b) => el >= b.dstArrayElement && el < b.dstArrayElement + b.count) || null;
+  if (!v.array) return fmtOf(covering(0) || list[0] || null);
+  if (!v.index) return null;
+  let el = null;
+  if (v.index.kind === 'const') el = v.index.value;
+  else if (v.index.kind === 'push' && pushBlock && v.index.byteOff + 4 <= pushBlock.length) {
+    const o = v.index.byteOff;
+    el = ((pushBlock[o] | (pushBlock[o + 1] << 8) | (pushBlock[o + 2] << 16) | (pushBlock[o + 3] << 24)) >>> 0) + v.index.add;
+  }
+  if (el != null) return fmtOf(covering(el));
+  let agreed = null;
+  for (const b of list) {
+    if (!b || !b.obj || b.obj === '0000000000000000') continue;
+    if (b.kind !== 2 && !(b.kind === 6 && texelFormatOf)) continue;
+    const f = fmtOf(b);
+    if (f == null) return null;
+    if (agreed == null) agreed = f;
+    else if (agreed !== f) return null;
+  }
+  return agreed;
+}
+
+// ---------------------------------------------------------------------------
+// Descriptor-group remap planning (campaign sections 4.25 and 4.32).
+// Guest Vulkan set numbers are virtual (vkd3d heap-lowering tables,
+// bindless sets) and routinely exceed the WebGPU bind-group budget, so
+// the page tier compacts a pipeline's groups into the budget and keeps
+// a remapped->original map for draw-time set lookups. Group
+// V2_PUSH_GROUP is reserved for the push-constant UBO: the draw loop
+// never binds it from a descriptor set, it binds the push block there
+// separately, so after the remap that group may hold ONLY the push
+// declaration. A guest set can legitimately BE numbered V2_PUSH_GROUP
+// (vkd3d heap-lowering places cs12 TEX pass 2's sampled-image table at
+// set 3): its declarations are ordinary guest resources and compact
+// like any other set, splitting the group -- the push declaration
+// stays, the guest declarations move to a free slot, and the WGSL is
+// fixed up per declaration (rewriteGuestGroupDeclWGSL) because a
+// group-number rewrite cannot split one @group between two targets.
+//
+// Classification, all fail-closed:
+//   - the push declaration is PROVEN: group V2_PUSH_GROUP, binding
+//     V2_PUSH_BINDING, addr 'uniform', and the stage actually had a
+//     push block rewritten (hasPush). It keeps group V2_PUSH_GROUP.
+//   - a buffer declaration in the push SLOT (group V2_PUSH_GROUP,
+//     binding V2_PUSH_BINDING) with a storage address space is
+//     ambiguous -- the slot's only legitimate buffer occupant is the
+//     push UBO -- and the plan fails 'group-3-non-push'.
+//   - every other declaration at group V2_PUSH_GROUP (textures,
+//     samplers, storage textures at any binding; buffers at other
+//     bindings; a uniform buffer at the push slot when NO push block
+//     exists, which is provably a guest buffer) is a plain guest
+//     declaration and compacts with its set.
+//   - more distinct groups than the budget fails 'group-count-limit'.
+// For pipelines with no guest declarations at V2_PUSH_GROUP the plan
+// is exactly the pre-4.32 assignment: guest groups in ascending order
+// take the free slots skipping V2_PUSH_GROUP, push stays.
+// Returns { error, count, targets, groupMap, numMap, guest3Target,
+// splitDecls }: targets[i] is decls[i]'s final group; groupMap maps
+// final group -> original guest set (the push group maps to itself);
+// numMap is the group-number rewrite for the WGSL (in the split case
+// it maps V2_PUSH_GROUP to itself and splitDecls are moved by name);
+// guest3Target is the final group of the guest V2_PUSH_GROUP set, or
+// null when the guest has no such set.
+// ---------------------------------------------------------------------------
+export function planGroupRemap(decls, maxBindGroups = 4, hasPush = false) {
+  const isPushDecl = (d) => hasPush && d.group === V2_PUSH_GROUP &&
+    d.binding === V2_PUSH_BINDING && d.addr === 'uniform';
+  for (const d of decls) {
+    if (d.group === V2_PUSH_GROUP && d.binding === V2_PUSH_BINDING &&
+        d.addr.startsWith('storage')) {
+      return { error: 'group-3-non-push', count: 0, targets: [], groupMap: {}, numMap: {}, guest3Target: null, splitDecls: [] };
+    }
+  }
+  const guestTarget = new Map(); // original guest group -> final group
+  {
+    let next = 0;
+    const guestGroups = [...new Set(decls.filter(d => !isPushDecl(d)).map(d => d.group))].sort((a, b) => a - b);
+    for (const g of guestGroups) {
+      while (next === V2_PUSH_GROUP) next++;
+      guestTarget.set(g, next); next++;
+    }
+  }
+  const targets = decls.map(d => isPushDecl(d) ? V2_PUSH_GROUP : guestTarget.get(d.group));
+  const maxRemapped = Math.max(-1, ...targets);
+  if (maxRemapped + 1 > maxBindGroups) {
+    return { error: 'group-count-limit', count: maxRemapped + 1, targets: [], groupMap: {}, numMap: {}, guest3Target: null, splitDecls: [] };
+  }
+  const groupMap = {}; // final group -> original guest set index
+  for (const [g, t] of guestTarget) groupMap[t] = g;
+  const hasPushDecl = decls.some(isPushDecl);
+  if (hasPushDecl) groupMap[V2_PUSH_GROUP] = V2_PUSH_GROUP;
+  const numMap = {}; // original group -> final group, for @group(n) rewrites
+  for (const [g, t] of guestTarget) numMap[g] = t;
+  if (hasPushDecl) numMap[V2_PUSH_GROUP] = V2_PUSH_GROUP;
+  const guest3Target = guestTarget.has(V2_PUSH_GROUP) ? guestTarget.get(V2_PUSH_GROUP) : null;
+  const splitDecls = hasPushDecl
+    ? decls.filter(d => !isPushDecl(d) && d.group === V2_PUSH_GROUP) : [];
+  return { error: null, count: maxRemapped + 1, targets, groupMap, numMap, guest3Target, splitDecls };
+}
+
+// Move ONE guest declaration out of the split push group in WGSL text:
+// its @group(fromGroup) becomes @group(toGroup), matched by the
+// declaration's own (binding, name) so the push declaration -- which
+// shares the group and possibly the binding -- is never touched. The
+// pattern mirrors the resource scanner's declaration shape.
+export function rewriteGuestGroupDeclWGSL(code, decl, fromGroup, toGroup) {
+  const name = String(decl.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('@group\\(' + fromGroup + '\\)(\\s*@binding\\(' + decl.binding +
+    '\\)\\s*var(?:<[^>]+>)?\\s+' + name + '(?=\\s*:))', 'g');
+  return String(code).replace(re, (m, rest) => '@group(' + toGroup + ')' + rest);
+}
+
+export function parseStorageTextureAccessRejection(message) {
+  const m = /Texture format TextureFormat::([\w-]+) does not support storage texture access StorageTextureAccess::(\w+)/.exec(String(message || ''));
+  if (!m) return null;
+  return { format: m[1], access: m[2] };
+}
+
+// ---------------------------------------------------------------------------
+// Sampled-texture serving for read-only storage reads (the serving path
+// section 4.26 named for the storage-format-access rejection above).
+// ---------------------------------------------------------------------------
+// Dawn will not serve some formats as storage textures at all: r16float
+// rejects read-only AND read-write storage access (micro-probe, section
+// 4.26) and r8uint rejects read-only (uav12). Both are ordinary SAMPLED
+// formats in WebGPU, and a read-only storage read is exactly a level-0
+// sampled load of the same texels: Vulkan storage reads address the bound
+// view's base mip, and the page tier binds sampled views with the same
+// subresource-range descriptor it uses for storage views
+// (vkwebgpu.mjs viewRangeDescriptor) over the same GPUTexture
+// (gpuTextureFor always grants TEXTURE_BINDING). A naga declaration
+//   var t: texture_storage_2d<r16float, read>;
+// whose every use is a two-argument textureLoad(t, coords) or a
+// textureDimensions(t) is therefore retyped to
+//   var t: texture_2d<f32>;
+// with each load gaining the explicit level ", 0i". The sampled load of
+// an r16float texel returns the same value the storage load returned
+// (half values are exactly representable in f32); r8uint loads return
+// the same integer texel as vec4<u32>.
+// Fail-closed per variable: any other use (a store, an atomic, the value
+// passed on to a call, a load of another arity, the storage type string
+// appearing anywhere besides declarations) leaves that variable a
+// storage texture, and the pipeline keeps the named
+// storage-format-access rejection for it. Only the two probe-proven
+// formats are served; every other storage shape keeps the storage path
+// (served by Dawn, or rejected by name there).
+export const SAMPLED_STORAGE_FORMATS = { r16float: 'f32', r8uint: 'u32' };
+
+const STORAGE_TEXTURE_DECL = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var\s+(\w+)\s*:\s*(texture_storage_(\w+)<\s*([\w-]+)\s*,\s*(\w+)\s*>)\s*;/g;
+const STORAGE_TEXTURE_TYPE = /texture_storage_\w+<\s*[\w-]+\s*,\s*\w+\s*>/g;
+
+// Classify every use of one storage variable outside its declaration.
+// Sanctioned uses: textureLoad(name, coords) with exactly two arguments
+// (the sampled form gains the level at the recorded close paren) and
+// textureDimensions(name) (identical on a sampled texture: the level-0
+// extent of the bound view). Anything else declines the variable.
+function sampledStorageUses(code, name, declSpans) {
+  const loads = [];
+  const nameRe = new RegExp('\\b' + name + '\\b', 'g');
+  let m;
+  while ((m = nameRe.exec(code))) {
+    if (declSpans.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    const before = code.slice(Math.max(0, m.index - 48), m.index);
+    const call = /(textureLoad|textureDimensions)\s*\(\s*$/.exec(before);
+    if (!call) return { ok: false, reason: 'unrecognized-use' };
+    if (call[1] === 'textureDimensions') {
+      let j = m.index + name.length;
+      while (j < code.length && /\s/.test(code[j])) j++;
+      if (code[j] !== ')') return { ok: false, reason: 'dimensions-arity' };
+      continue;
+    }
+    const openIdx = m.index - before.length + call.index + call[0].indexOf('(');
+    const args = [];
+    let depth = 1, start = openIdx + 1, i = start, closeIdx = -1;
+    for (; i < code.length && depth; i++) {
+      const c = code[i];
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (!depth) { args.push(code.slice(start, i)); closeIdx = i; } }
+      else if (c === ',' && depth === 1) { args.push(code.slice(start, i)); start = i + 1; }
+      else if (c === ';' || c === '{' || c === '}') return { ok: false, reason: 'unbalanced-call' };
+    }
+    if (depth || closeIdx < 0) return { ok: false, reason: 'unbalanced-call' };
+    if (args.length !== 2 || args[0].trim() !== name) return { ok: false, reason: 'load-arity' };
+    loads.push(closeIdx);
+  }
+  return { ok: true, loads };
+}
+
+/**
+ * Retype provably read-only storage textures in Dawn-unservable formats
+ * to sampled textures, as described above. Returns the (possibly
+ * unchanged) code plus per-variable dispositions: `served` entries carry
+ * { name, format, elem, group, binding }; `declined` entries carry the
+ * reason the variable kept the storage path. When nothing is served the
+ * input string is returned identical.
+ */
+export function rewriteReadOnlyStorageToSampled(wgsl) {
+  const code = String(wgsl);
+  const decls = [...code.matchAll(STORAGE_TEXTURE_DECL)];
+  if (!decls.length) return { code, served: [], declined: [] };
+  // A storage type string may appear ONLY in declarations: the same type
+  // in a function parameter or a local cannot be retyped by editing the
+  // declaration, so every variable declared with such a type declines.
+  const typeCount = new Map();
+  for (const m of code.matchAll(STORAGE_TEXTURE_TYPE)) {
+    const key = m[0].replace(/\s+/g, '');
+    typeCount.set(key, (typeCount.get(key) || 0) + 1);
+  }
+  const declCount = new Map();
+  for (const d of decls) {
+    const key = d[4].replace(/\s+/g, '');
+    declCount.set(key, (declCount.get(key) || 0) + 1);
+  }
+  const declSpans = decls.map(d => [d.index, d.index + d[0].length]);
+  const served = [], declined = [], edits = [];
+  for (const d of decls) {
+    const [, group, binding, name, type, dim, format, access] = d;
+    const elem = SAMPLED_STORAGE_FORMATS[format];
+    const entry = { name, format, group: +group, binding: +binding };
+    if (!elem) { declined.push({ ...entry, access, reason: 'format-not-served' }); continue; }
+    if (access !== 'read') { declined.push({ ...entry, access, reason: 'access-not-readonly' }); continue; }
+    if (dim !== '2d') { declined.push({ ...entry, access, reason: 'dimension-not-2d' }); continue; }
+    if (typeCount.get(type.replace(/\s+/g, '')) !== declCount.get(type.replace(/\s+/g, ''))) {
+      declined.push({ ...entry, access, reason: 'type-appears-elsewhere' }); continue;
+    }
+    const uses = sampledStorageUses(code, name, declSpans);
+    if (!uses.ok) { declined.push({ ...entry, access, reason: uses.reason }); continue; }
+    served.push({ ...entry, elem });
+    const typeAt = d.index + d[0].indexOf(type);
+    edits.push({ at: typeAt, len: type.length, text: 'texture_2d<' + elem + '>' });
+    for (const closeIdx of uses.loads) edits.push({ at: closeIdx, len: 0, text: ', 0i' });
+  }
+  if (!served.length) return { code, served, declined };
+  edits.sort((a, b) => b.at - a.at);
+  let out = code;
+  for (const e of edits) out = out.slice(0, e.at) + e.text + out.slice(e.at + e.len);
+  return { code: out, served, declined };
+}
+
 // WGSL uniform-address-space size computation, for padding short buffers.
 // wgslUniformSizes returns a Map from "group:binding" to the byte size of the
 // uniform struct declared there. Pure and testable.
@@ -217,7 +520,7 @@ export function wgslUniformSizes(wgsl) {
     structs.set(m[1], fields);
   }
   const out = new Map();
-  const declRe = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<uniform>\s*\w+\s*:\s*([^;]+);/g;
+  const declRe = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<(?:uniform|storage(?:\s*,\s*(?:read|read_write))?)>\s*\w+\s*:\s*([^;]+);/g;
   while ((m = declRe.exec(wgsl))) {
     const t = wgslTypeLayout(m[3].trim(), structs);
     if (t) out.set(m[1] + ":" + m[2], t.size);

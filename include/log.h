@@ -62,6 +62,15 @@ void kwarn_fmt(const char* format, Args&&... args) {
 void klog(const char* msg);
 void klog_nonewline(const char* msg);
 
+// Non-blocking access to the log mutex for the guest thread dump
+// (bw64_dump_guest_threads). The dump runs synchronously on the browser
+// main thread; a guest thread can hold logMutex across a browser-proxied
+// call (its fwrite to stdout is serviced by that same main thread), so a
+// blocking acquisition deadlocks the session. bw64TryLockLog() returns
+// false instead of waiting; the caller must bw64UnlockLog() on success.
+bool bw64TryLockLog();
+void bw64UnlockLog();
+
 template <class... Args>
 void klog_fmt(const char* format, Args&&... args) {
 	auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);

@@ -224,6 +224,12 @@ public:
 
     // Permission query / page state.
     bool isPageMapped(U64 pageNum) const;
+    // Thread-dump support: try to hold pagesMutex across a diagnostic
+    // stack walk so the walk's (recursively locking) page lookups can
+    // never block on a guest thread. Returns false when another thread
+    // holds it; on success the caller must unlockPages() exactly once.
+    bool tryLockPages();
+    void unlockPages();
     U32  getPageFlags(U64 pageNum) const;
     U64  pageMapGeneration() const {
         return pageMapGenerationValue.load(std::memory_order_acquire);

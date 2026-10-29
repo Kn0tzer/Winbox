@@ -1,0 +1,24 @@
+; point-direct.spvasm -- lane-spirvres control fixture (Item 1).
+; The served shape: a standalone PointSize output touched only by a
+; direct store. stripPointBuiltins must still apply.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %ps %pos
+OpDecorate %ps BuiltIn PointSize
+OpDecorate %pos BuiltIn Position
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4 = OpTypeVector %f32 4
+%ptr_out_f32 = OpTypePointer Output %f32
+%ptr_out_v4 = OpTypePointer Output %v4
+%fn = OpTypeFunction %void
+%one = OpConstant %f32 1.0
+%posval = OpConstantComposite %v4 %one %one %one %one
+%ps = OpVariable %ptr_out_f32 Output
+%pos = OpVariable %ptr_out_v4 Output
+%main = OpFunction %void None %fn
+%ml = OpLabel
+OpStore %pos %posval
+OpStore %ps %one
+OpReturn
+OpFunctionEnd

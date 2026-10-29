@@ -1,0 +1,59 @@
+; rawscan fixture F2 (R12, texelBuffersTo2D consumer veto): a
+; usamplerBuffer texelFetch modeled on the DXVK HUD module (named,
+; with a gl_PerVertex output block, like the real glslang shape).
+; The sampled-image load lands at id 40 and the fetch coordinate is
+; an OpConstant whose VALUE is 40 -- the only word in the module
+; equal to 40 outside id positions. A raw word scan reads the
+; constant as the converted image value feeding OpConstant and
+; refuses the conversion; the operand-aware scan converts it.
+OpCapability Shader
+OpCapability SampledBuffer
+OpCapability ClipDistance
+OpCapability CullDistance
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %20 "main" %9 %11 %17
+OpName %20 "main"
+OpName %9 "tex_buffer"
+OpName %11 "o_val"
+OpDecorate %9 DescriptorSet 0
+OpDecorate %9 Binding 0
+OpDecorate %11 Location 0
+OpDecorate %15 Block
+OpMemberDecorate %15 0 BuiltIn Position
+OpMemberDecorate %15 1 BuiltIn PointSize
+OpMemberDecorate %15 2 BuiltIn ClipDistance
+OpMemberDecorate %15 3 BuiltIn CullDistance
+%2 = OpTypeInt 32 0
+%3 = OpTypeInt 32 1
+%4 = OpTypeFloat 32
+%5 = OpTypeVector %2 4
+%6 = OpTypeImage %2 Buffer 0 0 0 1 Unknown
+%7 = OpTypeSampledImage %6
+%8 = OpTypePointer UniformConstant %7
+%9 = OpVariable %8 UniformConstant
+%10 = OpTypePointer Output %4
+%11 = OpVariable %10 Output
+%13 = OpTypeVector %4 4
+%22 = OpConstant %2 1
+%14 = OpTypeArray %4 %22
+%15 = OpTypeStruct %13 %4 %14 %14
+%16 = OpTypePointer Output %15
+%17 = OpVariable %16 Output
+%18 = OpTypePointer Output %13
+%1 = OpTypeVoid
+%12 = OpTypeFunction %1
+%19 = OpConstant %3 0
+%31 = OpConstant %3 40
+%20 = OpFunction %1 None %12
+%21 = OpLabel
+%40 = OpLoad %7 %9
+%41 = OpImage %6 %40
+%42 = OpImageFetch %5 %41 %31
+%43 = OpCompositeExtract %2 %42 0
+%44 = OpConvertUToF %4 %43
+%45 = OpCompositeConstruct %13 %44 %44 %44 %44
+%46 = OpAccessChain %18 %17 %19
+OpStore %46 %45
+OpStore %11 %44
+OpReturn
+OpFunctionEnd

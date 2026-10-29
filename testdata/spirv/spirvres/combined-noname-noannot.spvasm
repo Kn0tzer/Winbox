@@ -1,0 +1,33 @@
+; combined-noname-noannot.spvasm -- lane-spirvres fixture (Item 3).
+; As combined-noname, but the split drops the module's ONLY
+; annotations (the combined variable's own decorations; the output
+; carries none), so the annotation anchor falls back too: both
+; synthesized OpDecorate and OpName instructions must land in legal
+; section positions (names before annotations, both after the
+; header block).
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %tex %color
+OpExecutionMode %main OriginUpperLeft
+OpDecorate %tex DescriptorSet 0
+OpDecorate %tex Binding 0
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v2 = OpTypeVector %f32 2
+%v4 = OpTypeVector %f32 4
+%img = OpTypeImage %f32 2D 0 0 0 1 Unknown
+%simg = OpTypeSampledImage %img
+%ptr_uc = OpTypePointer UniformConstant %simg
+%ptr_out = OpTypePointer Output %v4
+%fn = OpTypeFunction %void
+%half = OpConstant %f32 0.5
+%uv = OpConstantComposite %v2 %half %half
+%tex = OpVariable %ptr_uc UniformConstant
+%color = OpVariable %ptr_out Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%si = OpLoad %simg %tex
+%px = OpImageSampleImplicitLod %v4 %si %uv
+OpStore %color %px
+OpReturn
+OpFunctionEnd

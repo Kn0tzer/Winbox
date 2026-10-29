@@ -21,6 +21,8 @@
 //       -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
 //       -Iinclude -Ilib/simde source/emulation/cpu/cpu64.cpp \
 //       source/emulation/cpu/jit64.cpp source/emulation/cpu/jit64wasm.cpp \
+//       source/emulation/cpu/common/common_lock.cpp \
+//       source/emulation/cpu/normal/ripSampler.cpp \
 //       source/kernel/kmemory64.cpp source/util/bstring.cpp \
 //       <fpu.o> source/emulation/cpu/tests/jit64_invalidate_tests.cpp \
 //       -Wl,--gc-sections -o /tmp/jit64_invalidate_tests
@@ -32,6 +34,7 @@
 #include "kmemory64.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -42,6 +45,29 @@ void internal_log(BString msg, FILE* f) { std::fprintf(f, "%s\n", msg.str()); }
 void internal_kpanic(BString msg) { std::fprintf(stderr, "KPANIC: %s\n", msg.str()); std::abort(); }
 void kpanic(const char* msg) { std::fprintf(stderr, "KPANIC: %s\n", msg); std::abort(); }
 void klog(const char* msg) { std::fprintf(stderr, "klog: %s\n", msg); }
+// cpu64's instruction-recovery hooks live in source/util/log.cpp, which this
+// harness cannot link (its logging core is replaced above). Mirror the
+// product semantics instead: recovery stays opt-in only (BW64_RECOVER=1,
+// exactly as log.cpp's bw64RecoverEnabled decides), and ClaimRip keeps the
+// product's first-claim-per-(arch, rip) dedup with the same 200-entry cap.
+// The Note* counters only feed the JS-side recover stats JSON, which has no
+// consumer in this harness.
+bool bw64RecoverEnabled() {
+    const char* value = std::getenv("BW64_RECOVER");
+    return value && value[0] == '1';
+}
+void bw64RecoverNoteSkippedInstruction(bool) {}
+void bw64RecoverNoteSigillFallback() {}
+bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
+    static std::mutex recoverRipMutex;
+    static std::set<std::pair<unsigned, U64>> recoverLoggedRips;
+    std::lock_guard<std::mutex> lock(recoverRipMutex);
+    const auto key = std::make_pair(architecture, rip);
+    if (recoverLoggedRips.find(key) != recoverLoggedRips.end() ||
+        recoverLoggedRips.size() >= 200) return false;
+    recoverLoggedRips.insert(key);
+    return true;
+}
 void ksyscall64(CPU64*) { std::fprintf(stderr, "STUB: ksyscall64 reached\n"); std::abort(); }
 bool CPU64::raiseSyncFault(U32, U32, S32, U64, U32) { std::abort(); return false; }
 void KProcess::signalProcess(U32) {}
@@ -59,8 +85,17 @@ static int g_pass = 0, g_fail = 0;
 struct Ctx {
     KMemory64 mem;
     CPU64 cpu;
+    std::set<U64> execPages;
     Ctx() : mem(nullptr), cpu(&mem) {}
     void code(U64 addr, const U8* bytes, U64 len) {
+        // Since 5fb4f1ad1 the CPU faults instruction fetches from pages
+        // that are not mapped executable, and a bare writeb materializes
+        // a data page without K64_PAGE_EXEC. Establish code pages RWX
+        // first, the same way cpu64SelfTest plants its code.
+        for (U64 page = addr & ~0xFFFULL; page < addr + len; page += 0x1000) {
+            if (execPages.insert(page).second)
+                mem.mmapAnonymousFixed(page, 0x1000, 7); // RWX
+        }
         for (U64 i = 0; i < len; i++) mem.writeb(addr + i, bytes[i]);
     }
     void resetRegs() {

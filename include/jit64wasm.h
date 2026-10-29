@@ -38,6 +38,12 @@ struct Jit64WasmState {
     // fault the interpreter delivers. Was reserved3 (never read); the
     // rename keeps the offset (172) and the struct size unchanged.
     U32 faultPending;
+    // XMM registers as 32 qwords: xmm[i] = { xmm[2*i] (lo), xmm[2*i+1] (hi) }.
+    // Appended after faultPending so every pre-SSE offset above is unchanged.
+    // The emitted module stages all 16 registers into locals at entry and
+    // publishes them back in the epilogue, exactly like the GPRs; ops that
+    // never touch XMM therefore cost two bulk copies and nothing else.
+    U64 xmm[32];
 };
 static_assert(offsetof(Jit64WasmState, rip) == 128, "wasm guest RIP offset");
 static_assert(offsetof(Jit64WasmState, rflags) == 136, "wasm guest flags offset");
@@ -49,7 +55,8 @@ static_assert(offsetof(Jit64WasmState, gen1) == 160, "wasm gen1 offset");
 static_assert(offsetof(Jit64WasmState, execCount) == 164, "wasm exec count offset");
 static_assert(offsetof(Jit64WasmState, limit) == 168, "wasm limit offset");
 static_assert(offsetof(Jit64WasmState, faultPending) == 172, "wasm fault offset");
-static_assert(sizeof(Jit64WasmState) == 176, "wasm guest state size");
+static_assert(offsetof(Jit64WasmState, xmm) == 176, "wasm guest XMM offset");
+static_assert(sizeof(Jit64WasmState) == 432, "wasm guest state size");
 
 // UNBOUNDED_LIMIT: the `limit` value for an entry that may run the whole block.
 constexpr U32 JIT64_WASM_UNBOUNDED = 0xFFFFFFFFu;
@@ -59,6 +66,12 @@ constexpr U32 JIT64_WASM_UNBOUNDED = 0xFFFFFFFFu;
 // header dependency-free (no cpu64.h/SDL) so the native harness can test it.
 void jit64WasmStateInit(Jit64WasmState& state, const U64 gpr[16], U64 rip, U32 rflags);
 void jit64WasmStateRead(const Jit64WasmState& state, U64 gpr[16], U64& rip, U32& rflags);
+// XMM half of the state bridge: `xmm` carries 16 {lo, hi} pairs (the CPU64
+// Xmm layout). Init copies them into state.xmm; Read copies them back out.
+// Split from the GPR bridge so existing callers without XMM state (the
+// native harness) keep the original two calls bit-identical.
+void jit64WasmStateInitXmm(Jit64WasmState& state, const U64 xmm[32]);
+void jit64WasmStateReadXmm(const Jit64WasmState& state, U64 xmm[32]);
 // Entry generations + generation-table address for the inline invalidation
 // checks the emitted module performs after every guest store.
 void jit64WasmStateSetGens(Jit64WasmState& state, U32 genBase, U32 gen0, U32 gen1);
@@ -76,7 +89,9 @@ struct Jit64EmitOptions {
 // Supported: register/memory 8/16/32/64-bit MOV, ALU (ADD/ADC/SUB/SBB/AND/OR/
 // XOR/CMP/TEST), shifts/rotates by immediate/1/CL, IMUL (1/2/3-operand),
 // MOVZX/MOVSX/MOVSXD, LEA, PUSH/POP, group 3 (TEST/NOT/NEG/MUL), CBW/CWDE/
-// CDQE, CWD/CDQ/CQO, CMOVcc, SETcc, BT/BTS/BTR/BTC, string ops, and the
+// CDQE, CWD/CDQ/CQO, CMOVcc, SETcc, BT/BTS/BTR/BTC, string ops, the SSE
+// integer/move set (MOVUPS/MOVUPD/MOVAPS/MOVAPD/MOVDQA/MOVDQU 16-byte
+// moves, PXOR, MOVD/MOVQ between GPRs and XMM), and the
 // control flow the block terminator needs: NOP, Jcc, JMP rel, CALL rel, RET,
 // LEAVE.
 //
