@@ -5475,3 +5475,103 @@ is emitRootDescs only), so it has no prefix to honour. (d) The
 multi-dispatch root re-stamp interplay is exercised by the native
 guard at the registry level only; no guest probe constructs it
 (vkd3d-proton controls the guest's command stream).
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as 35c8ec3fd (parents aab45dc08 + 8da8eb2f1); the lane
+section above is renumbered 4.33 -> 4.46. Fallout: caad76ee8
+(citation re-pins) and dc2ea39e5 (guard re-pin). Cross-references
+in the lane text were renumbered to this tree's numbering: the psb
+graphics census the lane cites as section 4.32 (its number on the
+lane's base) is section 4.39 here (four places), and the
+section 4.37-on-branch residue reference is lane-cepoch's merged
+section 4.45. The vulkan.md header note and the compute-dispatch
+row's new sentence say "inside the compute marking core
+(vk64MarkComputeWritesUpTo)" where the lane text said "inside
+vk64MarkComputeWrites", for the composition reason below.
+
+COMPOSITION (the upto rider, landed exactly as this section's own
+MERGE NOTE prescribes): the 3-way auto-merge interleaved badly
+around the marking functions -- its bridge conflict spanned the
+factored core through vk64CopyRegionSplit's tail, the
+identical-tail hazard for the third merge running -- so the
+interleave was discarded and the proven texts composed by hand in
+integ's factored shape. The merged bridge delta against the
+pre-merge tree is exactly three insertions, +68/-0, verified by
+full-diff accounting (three hunks, zero deletions):
+vk64CopyRegionSplit (definition and both call sites),
+vk64MarkDrawRootWrites, vk64MarkDrawWrites, vk64MarkBoundWrites,
+vk64ReplayBoundStateUpTo and vk64RestampComputeWrites are
+byte-identical to pre-merge. (1) The forward declaration sits
+after vk64FindGpuWriteOverlap (on the lane's base the declaration
+followed vk64FindGpuWrite directly; the metabindfix overlap
+variant intervenes here). (2) The census definition sits
+immediately after vk64MarkDrawRootWrites, as on the lane, and is
+byte-identical to the lane's 54 lines except one comment phrase
+naming the composed core (vk64MarkComputeWritesUpTo for
+vk64MarkComputeWrites). (3) The census call lands INSIDE
+vk64MarkComputeWritesUpTo, at the end of the bounded core after
+vk64MarkBoundWrites, passing the core's own upto through --
+vk64MarkComputeRootWrites(cb, upto) -- not in the record-time
+wrapper and not with cb->cmds.size(). A submit-time re-stamp
+(vk64RestampComputeWrites) therefore re-runs the census bounded
+to each dispatch and never resolves root state recorded after
+that dispatch. Placement equivalence with the lane's shape is
+exact, not approximate: on the lane the call also sat behind the
+core's pipe check, and the bounded core's early return fires
+only when !pipe || !pipe->cs, under which the census's own
+predicate returns without marking. The two commented divergences
+(the !pipe || !pipe->cs predicate; the invocation point inside
+the marking core) are preserved. The 'vk64MarkComputeWrites(cb);'
+call-site count stays 3 on the merged tree.
+
+GUARDS: the native root-mark block auto-merged cleanly and is
+byte-identical to the lane's block (+187/-0 in
+vk64_native_test.cpp); run-native.py runs 35 PASS blocks (34 +
+this one) including "compute root-descriptor dispatch writes are
+marked, re-stamped at submit, and later dirt still refuses
+deferral". The JS guard vk-compute-root-marks.test.mjs passes 5/5
+after a re-pin to the composed shape (fallout dc2ea39e5): test 1
+now pins the census call inside vk64MarkComputeWritesUpTo with
+its upto argument after vk64MarkBoundWrites, the wrapper's
+whole-list delegation, and the re-stamp's bounded re-run; test 4
+pins the mark-gated vk64CopyRegionSplit deferral gate both copy
+handlers route through (the pre-metabindfix direct
+vk64FindGpuWrite call shapes the branch pinned no longer exist
+on this tree). Sabotage-verified: removing the census call fails
+exactly test 1 (4/5, mirroring the lane's own call-removal
+sabotage), bridge restored byte-identical (sha256 f2b08400...).
+
+REGISTER / CITATIONS: no delta -- 374 = 75 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (pipe-aware recount;
+the compute-dispatch row's marking sentence and Regression list
+gained the root-descriptor coverage, its disposition unchanged,
+and the header gained the dated closure note). The insertions
+drifted 29 cited rows; all bridge citations in register rows
+were re-pinned by the exact merge-delta band map (+2 below the
+declaration, +57 below the census definition, +68 below the
+call; 58 rows shifted including duplicate-scan dependents),
+restoring the audit to exactly its pre-merge distribution:
+0 DRIFT / 0 MISSING (228 MATCH / 14 MATCH-INHERITED /
+97 UNCHECKABLE / 7 EXEMPT over 346 cited rows).
+
+SUITES (merged tree): JS unit suite 328 passed / 0 failed
+(327 baseline + the new guard file; BW_TEST_DIST=integ dist);
+emulator native 647 OK / 0 FAILED; run-native.py 35 PASS /
+0 FAIL. Dist built from dc2ea39e5 (wasm 173d917b...), "Browser
+export verified"; completeness gate 0 failures / 1 pre-existing
+environmental skip; dist/runtime/wine64.zip member-verified:
+shim ae96105b... under all three names (bw64vulkan.dll /
+vulkan-1.dll / winevulkan.dll), canonical d3d12 pair unchanged
+(a96b4e9d... / 3d3bfe43...).
+
+GUEST GATE (merged dist, uploading harness, probe slot,
+canonical pair + shim sha-verified in each run's provenance;
+adjudicated on guest verdicts): (a) cs12 RESULT 0, full standing
+signature -- TEX OK bad=0, BUF OK bad=0, BUF2 OK bad=0
+(test-results/dxvk-crootmarkmerge-cs12); (b) uav12 exec=ALL6,
+RESULT 0 (test-results/dxvk-crootmarkmerge-uav12); (c) tri12
+RESULT 0 (test-results/dxvk-crootmarkmerge-tri12). As the lane
+stated plainly: no guest compute-root probe exists, so the gate
+proves no regression; the marking proof is the native guard plus
+section 4.39's in-guest proof of the identical graphics pattern.
