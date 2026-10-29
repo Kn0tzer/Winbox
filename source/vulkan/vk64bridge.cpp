@@ -4229,6 +4229,8 @@ static bool vk64FindGpuWriteOverlap(U64 buf, U64 absOff, U64 size, U64& covOff, 
     return found;
 }
 
+static void vk64MarkComputeRootWrites(CmdBuf* cb, size_t upto); // defined with the draw sibling below
+
 // Record-time half of the registry: replay the command buffer's recorded
 // state (the same shadow state the submit emitter resolves) and mark
 // every storage range bound to the bound pipeline's sets. The recorded
@@ -4342,6 +4344,61 @@ static void vk64MarkDrawRootWrites(CmdBuf* cb) {
     }
 }
 
+// Compute sibling of vk64MarkDrawRootWrites: a dispatch under a compute
+// pipeline with writable root descriptors stores through the R15b
+// re-rooted pointers exactly as a draw does, but the descriptor-set
+// census above cannot see those writes -- the target VA is push-block
+// data, not a set element. Before this census, such a range carried no
+// GPU-write mark at all, so a later copy out of it found nothing in
+// vk64FindGpuWrite and took the copy handlers' eager record-time
+// memcpy, silently serving the pre-dispatch guest bytes (a dispatch's
+// results exist only in the page tier until a deferred readback expands
+// them; the eager copy is the stale-data path, not a slow path). The
+// replay, the VA resolution and the (buf, off, size) mark key are the
+// draw census's, verbatim, so the submit-time re-stamps that already
+// serve dispatches refresh these marks in place: emitRootDescs
+// re-stamps the active pipeline's writable root slots when the
+// CMD_DISPATCH serializer case resolves them, and the epoch re-stamp's
+// prefix-bounded re-run of the marking core re-marks them identically.
+// The divergences from the draw census are the invocation point
+// (dispatch record time, from inside vk64MarkComputeWritesUpTo) and the
+// predicate: the bound pipeline must be a compute pipeline -- a
+// dispatch never executes a graphics pipeline, whose root slots are
+// the draw census's business. The replay honours the caller's prefix
+// bound (upto), so a submit-time re-run of the core up to one dispatch
+// never resolves root state recorded after that dispatch. Fail-closed
+// throughout, as there: a zero VA, an unknown VA and an out-of-range
+// VA each leave the slot unmarked, never guessed.
+static void vk64MarkComputeRootWrites(CmdBuf* cb, size_t upto) {
+    U64 pipeId = 0;
+    U8 push[256] = {};
+    if (upto > cb->cmds.size()) upto = cb->cmds.size();
+    for (size_t ci = 0; ci < upto; ci++) {
+        const Cmd& k = cb->cmds[ci];
+        if (k.kind == CMD_BIND_PIPE) pipeId = k.a;
+        else if (k.kind == CMD_PUSH_CONST && k.pcOffset < 256) {
+            U32 avail = 256 - k.pcOffset;
+            memcpy(push + k.pcOffset, k.pcBytes, std::min<U32>(k.pcSize, avail));
+        }
+    }
+    Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
+    if (!pipe || !pipe->cs || pipe->rootWritableSlots.empty() || g_devVaRegistry.empty()) return;
+    for (U32 off : pipe->rootWritableSlots) {
+        if (off + 8 > 256) continue;
+        U64 va; memcpy(&va, push + off, 8);
+        if (!va) continue;
+        auto it = g_devVaRegistry.upper_bound(va);
+        if (it == g_devVaRegistry.begin()) continue;
+        --it;
+        Buffer* buf = objOf<Buffer>(it->second, K_BUFFER, "vkCmdDispatch");
+        if (!buf || !buf->mem || va < it->first || va - it->first >= buf->size) continue;
+        DeviceMemory* mem = objOf<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatch");
+        if (!mem) continue;
+        U64 boff = va - it->first;
+        vk64MarkGpuWrite(it->second, buf->memOff + boff, buf->size - boff, buf->mem, mem->writeEpoch);
+    }
+}
+
 // Mark every storage range the bound compute pipeline's sets would
 // write, resolving only the first `upto` recorded commands (see
 // vk64ReplayBoundStateUpTo for the bound's meaning at record time vs
@@ -4355,6 +4412,17 @@ static void vk64MarkComputeWritesUpTo(CmdBuf* cb, size_t upto) {
     Pipeline* pipe = pipeId ? objOf<Pipeline>(pipeId, K_PIPELINE, "vkCmdDispatch") : nullptr;
     if (!pipe || !pipe->cs) return;
     vk64MarkBoundWrites(sets, dyn, "vkCmdDispatch");
+    // Root-descriptor ranges this dispatch writes (the sibling census
+    // below). The call stays inside this marking core on purpose: the
+    // submit-time re-stamp discipline refreshes marks by re-resolving
+    // what the core marks (emitRootDescs re-stamps the active pipeline's
+    // writable root slots with the identical key; this core's own
+    // prefix-bounded re-run at submit -- vk64RestampComputeWrites --
+    // refreshes them the same way), and a census living anywhere else
+    // would silently fall out of it. The bound is this core's own upto,
+    // so a re-stamp up to one dispatch never resolves root state
+    // recorded after that dispatch.
+    vk64MarkComputeRootWrites(cb, upto);
 }
 
 static void vk64MarkComputeWrites(CmdBuf* cb) { vk64MarkComputeWritesUpTo(cb, cb->cmds.size()); }

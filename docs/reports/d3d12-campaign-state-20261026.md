@@ -5282,3 +5282,196 @@ RESULT 0. Evidence: test-results/dxvk-cepochmerge-uav12.
 (c) tri12 PASS -- RESULT 0, 10 frames cleared+submitted (composite
 passed:false with 0 chunks captured = the known offscreen capture
 artifact). Evidence: test-results/dxvk-cepochmerge-tri12.
+
+## 4.46 Compute root-descriptor write marks: the missing-mark gap lane-cepoch named is closed (2026-10-29, lane-crootmark)
+
+Base: psb tip 60cd0f215. The gap (§4.45 residue from
+lane-cepoch, restated in its commit): vk64MarkComputeWrites marked only
+DESCRIPTOR-SET storage-buffer ranges written by a dispatch. A compute
+dispatch writing through a ROOT descriptor (a root UAV / storage-buffer
+VA in the push block, served via the R15b re-rooting of §4.39) left no
+GPU-write mark at all.
+
+CONSEQUENCE, pinned from the code before fixing: correctness exposure,
+not merely the slow path. Both copy handlers (vkCmdCopyBuffer,
+vkCmdCopyBuffer2/KHR) defer a copy-out to the submit-time page readback
+ONLY when vk64FindGpuWrite proves a mark; with no mark they take the
+eager record-time memcpy from guest memory. A dispatch's results exist
+only page-side until a deferred readback expands them, so the eager
+copy silently serves the PRE-dispatch bytes, same-list dispatch->copy
+and cross-submission alike. No diagnostic fires.
+
+FIX (source/vulkan/vk64bridge.cpp, +65/-0 on this base including the
+guard-driven additions below): vk64MarkComputeRootWrites, a verbatim
+mirror of the graphics census vk64MarkDrawRootWrites (§4.39) -- same
+replay of the recorded command stream, same push-block merge, same
+VA->(buffer, offset) resolution through g_devVaRegistry (upper_bound
+walk, buffer registered by vkGetBufferDeviceAddress), same bounds
+checks, same mark key (buf, buf->memOff + boff, buf->size - boff,
+buf->mem, mem->writeEpoch) into the same g_gpuWriteMarks store the
+cleanliness proof consults. Exactly two divergences, both commented:
+the predicate (the bound pipeline must be a compute pipeline,
+!pipe || !pipe->cs -- a dispatch never executes a graphics pipeline)
+and the invocation point: the census is called at the END of
+vk64MarkComputeWrites, inside the marking core, from all three
+dispatch traps' existing record-time call. Unresolvable root state
+fails closed in the marking sense: a zero VA, an unknown VA and an
+out-of-range VA each leave the slot unmarked, never guessed (an
+unmarked range keeps the copy handlers' pre-existing eager behaviour;
+the census never invents a range). Because the marks key identically,
+the submit-time re-stamp that already served dispatches refreshes them
+in place: emitRootDescs re-stamps the CMD_DISPATCH case's writable
+root slots with the memory's current write epoch during the
+serializer's in-order walk (prefix-exact by construction).
+
+PREFIX BOUND (merge-critical): the census takes the caller's prefix
+bound, vk64MarkComputeRootWrites(CmdBuf* cb, size_t upto), clamped to
+the recorded list; the record-time core passes cb->cmds.size(). On
+this base there is no bounded re-run of the core, so the parameter is
+whole-list at every call. lane-cepoch (merging BEFORE this lane)
+refactors the core into vk64MarkComputeWritesUpTo(cb, upto) +
+vk64RestampComputeWrites, re-running the core at submit up to each
+dispatch. MERGE NOTE: the merged tree must keep this lane's census
+call inside vk64MarkComputeWritesUpTo and pass its upto argument
+through (not cb->cmds.size()); the signature already takes the bound,
+so the change is the one call-site argument. Without it, a submit
+re-stamp would resolve end-of-list root state for every dispatch and
+refresh the wrong ranges in multi-dispatch lists.
+
+OFFSET-SPACE PIN (frontier-review follow-up, routed by the
+coordinator): the metabind review flagged that vk64MarkComputeWrites
+passes buf->memOff + bv->offset -- a memory-ABSOLUTE offset -- beside
+the buffer handle, and that the existing native test used memOff=0 and
+could not distinguish the spaces. Pinned from the code: the registry
+is memory-absolute on BOTH sides. vk64FindGpuWrite's parameter is
+named absOff; its containment test compares it directly against
+GpuWriteMark.off, and the cleanliness leg consumes it as a memory
+offset (vk64MemRangeCleanSince). Every producer passes
+memOff + relative: the descriptor-set core (buf->memOff + off), both
+root censuses (buf->memOff + boff), and emitRootDescs' re-stamp
+(r.absOff, itself defined as buf->memOff + boff). Every consumer
+passes the same space: both copy handlers query
+src->memOff + r.srcOffset. The buffer handle rides along because the
+registry is keyed per (buffer, absolute range); two buffers sharing
+one allocation at different memOffs occupy disjoint absolute ranges.
+VERDICT: the suspicion is REFUTED -- no producer or consumer was in
+the wrong space, and no offset fix was needed. The genuine gap was
+that no test pinned the space; see the guards. Two sibling flags from
+the same review are likewise refuted on this base: (a) the mark does
+NOT rely on an unresolved VK_WHOLE_SIZE -- the core resolves
+b.range == 0 || b.range == ~0ULL against the buffer size (clamped by
+the element offset) before marking; (b) no stale-object diagnostic
+fires per dispatch for a null descriptor -- objOf logs only for
+nonzero ids (!o && id), and the marking core performs no BufferView
+lookup at all on this base.
+
+FRONTIER REVIEW OF THIS DIFF (Claude Code, Opus, high effort;
+advice verified against the code, per standing practice): (1)
+"graphics binds after the compute bind silently drop the marks" --
+REFUTED as a defect in this codebase. The bridge deliberately models
+a single state stream (the vkCmdBindPipeline trap ignores the bind
+point; the set-bind trap's comment states the model: guests rebind
+when they switch pipeline kinds). The serializer resolves the same
+last-bind state and LOUDLY drops a dispatch whose active pipeline is
+not compute (vk64Unsupported "compute-dispatch"), so in the
+interleaved sequence the dispatch produces no writes at all -- there
+is nothing to mark, and the core's replay with its !pipe->cs return
+matches the execution model exactly. A per-bind-point census would
+mark writes for dispatches that never execute. (2) "an early return
+may skip the census for root-only pipelines" -- the core's only early
+return is the pipe check above; a root-only dispatch (no sets bound)
+reaches the census, proven behaviourally by the native guard. (3)
+"the census may not respect the submit-time prefix bound" -- REAL as
+a post-merge hazard; closed structurally by the upto parameter
+above. (4) "fail-closed wording" -- the header scopes the term to the
+marking decision and states the stale-copy consequence in the same
+paragraph; no change. (5) "deduplicate the two censuses" -- declined:
+the draw census is shipped §4.39 code, the mirror is deliberate, and
+the JS guard pins the two bodies' shared key line occurring exactly
+twice.
+
+GUARDS. Native (tools/vkd3d/tests/vk64_native_test.cpp): the block
+"compute root-descriptor dispatch writes are marked, re-stamped at
+submit, and later dirt still refuses deferral" -- a hand-built 96-word
+compute module (push-block uint64 -> OpLoad -> OpBitcast to a
+PhysicalStorageBuffer pointer -> OpStore) censused rootSlots ==
+rootWritableSlots == {0}; target buffer in fresh memory, VA
+registered through the real vkGetBufferDeviceAddress trap; record
+bind + vkCmdPushConstants (VA = devVa+64) + dispatch; the mark is
+found containing [64,192) at the memory's writeEpoch, [0,32) is
+unmarked; vk64TouchMem (the same-submission upload stand-in) poisons
+the record-time stamp; serializeSubmitV2 emits ROOT_DESCS (0x1D) +
+DISPATCH (0x1F), moves no "compute-dispatch" unsupported count, and
+the find succeeds again at the CURRENT epoch; a second touch refuses
+again. Offset-space sub-cases appended in the same block: (A) the
+root census repeated on a buffer bound at memOff 8192 -- the mark
+lands at 8192+64, the buffer-relative [64,192) stays unmarked, the
+span ahead of the VA stays unmarked, and the touch/serialize cycle
+re-stamps the ABSOLUTE key in place; (B) the descriptor-set census on
+a storage element (bufOff 128, range 512) of a buffer at memOff 8192,
+bound via a recorded CMD_BIND_SETS -- the mark lands at 8192+128 for
+exactly 512 bytes, the relative range stays unmarked, and the range
+past the element stays unmarked. JS (web/tests/suite/unit/
+vk-compute-root-marks.test.mjs) x5: the core calls the census after
+the set marking; the census mirrors the draw census (registry
+resolution, skips, the shared key line occurring exactly 2x in the
+bridge); the prefix-bound pins (clamp + bounded loop); the
+submit-time re-stamp reachability (emitRootDescs(csPipe) + the
+absolute re-stamp line); the proof pins (wasMapped, clean-since, both
+copy-handler gates) and the native block's presence incl. its offset
+asserts. SABOTAGE x3, each restored byte-identical (bridge sha256
+7c504173...): removing the census call re-trips the JS guard (4/5)
+and aborts the native run at the block's first root-mark assert;
+making the census key buffer-relative aborts at sub-case (A)'s
+absolute assert -- AFTER passing the memOff=0 case, demonstrating
+exactly the blindness the review flagged; making the core set-mark
+buffer-relative aborts at sub-case (B)'s assert.
+
+HARNESS STATE: run-native.py aborts on this base at the known stale
+assert vk64_native_test.cpp:499 (the test's 31-entry format table vs
+the bridge's wider supported set; the lane-vk64harness repair is not
+in this base) -- verified to abort IDENTICALLY on pristine 60cd0f215
+and on this tree, compile clean in both. The block was therefore
+executed out-of-tree against lane-vk64harness's repaired test file
+(766a5c7c4) carrying this lane's block, compiled with run-native.py's
+exact recipe against this tree's bridge and shim: 32 PASS blocks
+(the repaired suite's 31 + this one), exit code 0.
+
+SUITES: JS suite on the lane dist (bw64-build "Browser export
+verified") 317 files passed / 0 failed -- the psb base's 316 plus the
+new guard file, zero new failures. Emulator native 647 tests / 0
+failed (vk64bridge.cpp is not in that build graph). Citation audit
+222 MATCH / 13 MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT, 0 DRIFT /
+0 MISSING (the +4-line guard-driven delta fell inside tolerance; the
+register guard passes 4/4).
+
+GUEST: cs12 on the lane dist via the uploading harness
+(web/tests/d3d12-pixels.mjs, slot-serialized), the guest pair taken
+from this tree's own pin-verified wine64.zip via the harness's
+D3D12_PATH/D3D12CORE_PATH overrides (d3d12.dll d77fdad5...,
+d3d12core.dll d2bd847a... -- the pre-restage pair this base pins) and
+the genuine d3dcompiler_47.dll af7b99be...: TEX FAIL bad=16, BUF FAIL
+bad=64, BUF2 FAIL bad=64, RESULT 1 -- the psb-base signature EXACTLY
+(TEX at this lineage's format wall, BUF/BUF2 at the meta-bind wall;
+neither is in this lane's lineage and neither moved). No guest
+compute-root probe exists -- root12's family is graphics-only -- so
+the guest evidence rests on the native guard plus §4.39's in-guest
+proof of the identical graphics pattern (the lane-cepoch precedent),
+stated plainly.
+
+REGISTER: no disposition change. Counts on this base stay 367 =
+68 IMPLEMENTED / 66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN. The
+vulkan.md header gains the dated closure note and the
+compute-dispatch row's marking sentence now covers root-descriptor
+ranges (naming vk64MarkComputeRootWrites) with the two guard files in
+its Regression list.
+
+RESIDUE: (a) 32-bit dispatches never record a compute stage and drop
+loudly at submit -- nothing exists to mark for, unchanged. (b)
+Root-pointer atomics remain classifier-rejected by name upstream, so
+no mark is owed for them. (c) The draw census keeps its unbounded
+replay: no bounded core re-run exists for graphics (its re-stamp path
+is emitRootDescs only), so it has no prefix to honour. (d) The
+multi-dispatch root re-stamp interplay is exercised by the native
+guard at the registry level only; no guest probe constructs it
+(vkd3d-proton controls the guest's command stream).
