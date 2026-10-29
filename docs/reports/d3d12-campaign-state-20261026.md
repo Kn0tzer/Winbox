@@ -3630,3 +3630,110 @@ bump was NOT taken -- the fallback branch now names itself through
 the bridge's own accounting (`vk64Unsupported
 "clear-color-layout"`), the switch needs no default arm, and the
 guard passes at its original strength.
+
+## 4.38 32-bit clear colour, packed formats: the raw fill packed nothing (2026-10-28, packedclear lane)
+
+**Question (§4.37's named residue).** §4.37 converted the plain
+component-vector formats in `vk32ClearTexel` and left the bit-packed
+formats on the historical raw fill, named via `vk64Unsupported
+"clear-color-layout"`: the clear value's first bytes, truncated to the
+texel size. For a packed format those bytes are the raw bits of
+`float32[0]` (or of `uint32[0]`), which are not the packed encoding of
+any component — a clear of a packed image wrote wrong bytes for every
+texel. This lane closes the packed half of the residue.
+
+**Census (the bridge's supported set: `fmt_bpp`'s table, the
+supported-image list, the tier's format map in `web/vk-protocol.mjs`).**
+Fields are listed most-significant first — for packed formats the
+Vulkan layout is the field order of the format name, which is also the
+order the tier's own `packedUnormToRgba8` decodes and the integer
+layout of WebGPU's `rgb10a2unorm` / `rg11b10ufloat`:
+
+| format | layout (MSB -> LSB) | clear input | tier format |
+|---|---|---|---|
+| R4G4B4A4_UNORM_PACK16 (2) | R4 G4 B4 A4 | float32 | rgba8unorm (converted) |
+| B4G4R4A4_UNORM_PACK16 (3) | B4 G4 R4 A4 | float32 | rgba8unorm (converted) |
+| R5G6B5_UNORM_PACK16 (4) | R5 G6 B5 | float32 | (fmt_bpp only; not in the image list) |
+| B5G6R5_UNORM_PACK16 (5) | B5 G6 R5 | float32 | rgba8unorm (converted) |
+| R5G5B5A1_UNORM_PACK16 (6) | R5 G5 B5 A1 | float32 | (fmt_bpp only; see below) |
+| B5G5R5A1_UNORM_PACK16 (7) | B5 G5 R5 A1 | float32 | rgba8unorm (converted) |
+| A1R5G5B5_UNORM_PACK16 (8) | A1 R5 G5 B5 | float32 | rgba8unorm (converted) |
+| A2B10G10R10_UNORM_PACK32 (64) | A2 B10 G10 R10 | float32 | rgb10a2unorm |
+| A2B10G10R10_UINT_PACK32 (68) | A2 B10 G10 R10 | uint32 | rgb10a2uint |
+| B10G11R11_UFLOAT_PACK32 (122) | B10 G11 R11 (unsigned float, 5-bit exponent, bias 15; 6-bit mantissa for the 11-bit fields, 5-bit for B) | float32 | rg11b10ufloat |
+
+Two census defects rode along: `fmt_bpp` had **no case** for
+R5G5B5A1 (it fell into the loud 4-byte default — a wrong texel size,
+not just a missing conversion) and none for A2B10G10R10_UINT (the
+default's 4 was the right size, with a spurious `format-bpp` note).
+Both are explicit cases now. Outside the supported set entirely, and
+untouched: A2R10G10B10 (58/62) and E5B9G9R9_UFLOAT_PACK32 (123)
+appear in no bridge table (`fmt_bpp`, supported-image, texel-buffer),
+so no clear can reach them through an image this bridge creates.
+
+**Fix (conversion path only — where fills land is unchanged, and is
+the sibling subclear lane's surface in the same handlers).**
+`vk32ClearTexel` gains a packed branch before the named fallback:
+UNORM fields quantize from the float components with the plain path's
+round-half-up discipline (`vk32PackUnorm`; the 1-bit alpha fields are
+the same formula at 1 bit, i.e. a 0.5 threshold); the UINT sibling
+takes the uint32 components' low bits, masked per field; B10G11R11
+fields convert through `vk32FloatToUFloat` — an exact
+round-to-nearest-even conversion onto the target grid (normals,
+subnormals, overflow to the inf pattern, negatives clamped to zero),
+so the error is at most half a target ULP, the same guarantee as the
+existing float32->float16 helper. The packed word is stored
+little-endian, `texelSize` bytes. The conversion was cross-checked
+against an independent exact-rational model of the UFLOAT grid on
+1,234 values (boundaries, subnormals, random magnitudes): identical
+encodings everywhere.
+
+**The 64-bit handler (checked, named residue — not fixed here).** It
+repeats the raw 16-byte `VkClearColorValue` pattern, so for packed
+formats it is provably wrong the same way: a 2-byte packed texel gets
+the low half of `float32[0]`'s raw bits, tiled with a 16-byte period;
+a 4-byte packed texel gets `float32[0]`'s raw bits verbatim. No
+conversion happens on that path for any packed format. The repair is
+not the same change, though: the 64-bit fill loop repeats a fixed
+16-byte pattern and has no per-texel conversion step to extend — it
+must be restructured to repeat a converted texel, which is the fill
+machinery the subclear lane owns in the same handler. Named here as
+the remaining packed residue: **64-bit packed clears write the
+unconverted pattern** (subclear's range work composes first; this
+conversion is the follow-up on top of it).
+
+**Residue (named, unchanged).** Depth/stencil formats (D16_UNORM,
+X8_D24_UNORM_PACK32, D24_UNORM_S8_UINT, D32_SFLOAT,
+D32_SFLOAT_S8_UINT) and the block-compressed formats keep the named
+raw fill (`clear-color-layout`, message updated to say so): a
+`VkClearColorValue` carries no depth/stencil semantics for a colour
+clear, and a BC block has no per-texel layout to pack into.
+
+**Proof.** New native-harness block "Vulkan32 clear-color packs
+bit-packed formats": 12 cases over the 10 formats above (R5G5B5A1
+twice for the alpha threshold, B10G11R11 three times — exact values,
+a rounding case where truncation and round-to-nearest differ, and a
+subnormal at exactly one R11 step), each with 0xEE footprint
+sentinels, plus an assertion that no packed case touches the
+`clear-color-layout` count. §4.37's block stays green; its one
+packed-fallback case now pins the fallback on D16_UNORM instead of
+R5G6B5 (same intent — a non-converted layout keeping the named raw
+fill — on a format that still takes that path). Sabotage, both
+reverted after proof: swapping the R/B fields of the R5G6B5 arm
+aborts the harness at the packed block's byte assertion; making the
+UFLOAT rounding truncate aborts it the same way. run-native.py
+end-to-end green, 33 PASS blocks (32 at base + this one). Citation
+audit: 0 DRIFT / 0 MISSING (228 MATCH / 12 MATCH-INHERITED / 97
+UNCHECKABLE / 7 EXEMPT; 145 numbers re-pinned by a pure delta map over
+this lane's bridge diff, construct-verified by the audit). Register:
+no count change (371 = 72/66/233/0) — the §4.37 row's residue note is
+narrowed to depth/stencil + block-compressed, and the header records
+this closure. Emulator native suite not run: the bridge is outside
+its build graph and no shared header changed. JS suite on the lane's
+own dist (bw64-build.sh, "Browser export verified", support archive
+bbc583c6e657): 316 passed / 1 failed — the one failure is
+probe-slots, a probe-rig concurrency test whose slot-ordering
+assertion is defeated by the box's concurrent lane probing (a heavy
+slot was held by another tree's guest probe throughout; the failure
+reproduces solo under the same load and this lane changes no JS or
+probe code).
