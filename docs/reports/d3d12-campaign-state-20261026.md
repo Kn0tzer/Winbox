@@ -7235,3 +7235,38 @@ No dist rebuild, no guest probes (batched regime; the full gate runs
 at the batch boundary). Residue §4.57 names is unchanged: the heapSets
 mirror divergence and the name-placement item have their own lanes
 queued behind this merge.
+
+## 4.58 Batch gate #1: dist rebuild + guest gate for batch 1 (prop32 §4.55, threaddump §4.56, rawscan §4.57) (2026-10-29)
+
+Batch 1's three light merges landed without a dist rebuild or guest
+probes (batched regime, user order 2026-10-29); this gate is the batch
+boundary check, run on integ tip 47f63dbd2. Dist rebuilt with
+tools/bw64-build.sh: "Browser export verified"; dist stamp 47f63dbd2,
+wasm sha256 179d6074d996... (5,514,850 B); completeness gate
+0 failures / 1 pre-existing environmental skip. Archives
+member-verified in the rebuilt dist: wine64.zip carries the shim
+ae96105b... (160,169 B) under bw64vulkan.dll / vulkan-1.dll /
+winevulkan.dll and the canonical pair a96b4e9d... (517,717 B) /
+3d3bfe43... (8,825,383 B); wine32.zip carries the PE32 pair
+872c3d65... (517,273 B) / 71e9c174... (9,022,393 B) at
+opt/wine-stable/lib/wine/i386-windows (system placement). JS unit
+suite re-run against the FRESH dist: 330 passed / 0 failed --
+identical to the light merges' result against the older §4.54 dist,
+so nothing that passed there fails on the rebuilt artifacts. Guest
+gate (probe slot, one at a time, guest-verdict adjudication):
+(a) tri12-32 via the 32-bit system-placement harness (arch=x86):
+passed:true outright, RESULT 0 -- d3d12.dll + d3d12core.dll loaded
+native from C:\windows\system32, winevulkan builtin, 256 vk32 traps.
+Device creation reads the TRANSFORM_FEEDBACK queries property and
+the Vulkan 1.3 fields through the prop32-reconciled walker arms
+(§4.55); the values hold in-guest, so the reconciliation claim is
+now guest-proven (evidence test-results/dxvk-batchgate1-tri32).
+(b) tri12 (uploading harness): RESULT 0, no FAIL lines (harness
+composite passed:false = the standing 0-chunk capture artifact;
+evidence test-results/dxvk-batchgate1-tri12). (c) cs12 (uploading
+harness): RESULT 0, full standing signature -- SUMMARY buf=OK
+buf2=OK tex=OK, all bad=0; the composed R12S + spirvfix scans serve
+in-guest (evidence test-results/dxvk-batchgate1-cs12). (d) uav12
+(uploading harness): SUMMARY exec=ALL6, RESULT 0 -- all six EXEC
+cases OK (evidence test-results/dxvk-batchgate1-uav12).
+BATCH 1 GATE COMPLETE: the batch is green end to end.
