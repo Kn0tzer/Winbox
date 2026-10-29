@@ -5202,3 +5202,83 @@ writing through a root descriptor in a compute dispatch and copying out
 would miss the deferral entirely -- a distinct missing-mark gap, not
 the epoch twin; it belongs with the psb merge or its own lane. Atomic
 RMW and the other named compute rejections are unchanged.
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as 59b1032db (parents c13c999a7 + 8edf68b9f) + citation
+fallout a31c48b6c; this section renumbered 4.37 -> 4.45 at the merge.
+
+COMPOSITION (the load-bearing judgment call). The lane's base
+(8bf268112) predates the psb/metabind factoring of the marking path
+into the shared vk64ReplayBoundState / vk64MarkBoundWrites walkers,
+and git's 3-way merge interleaved the two shapes badly: the lane's
+wrapper + vk64RestampComputeWrites landed inside the tail of
+vk64CopyRegionSplit (the same identical-tail brace hazard as the
+metabind merge). The bridge was therefore resolved by composing the
+two proven texts in integ's factored shape, not by patching the
+interleave: the prefix bound now lives in vk64MarkComputeWritesUpTo
+(the lane's core, with its clamp) AND in the new
+vk64ReplayBoundStateUpTo, the shared replay the core resolves
+through; vk64ReplayBoundState delegates with the whole stream, so
+the draw paths (vk64MarkDrawRootWrites / vk64MarkDrawWrites) are
+unchanged by construction. The one-line record-time wrapper and
+vk64RestampComputeWrites are the lane's verbatim text; the
+serializer call is the lane's, placed after the two CMD_DISPATCH
+loud-drop checks and before emitRootDescs / the V2_DISPATCH emit.
+Verified by full-diff accounting against the pre-merge tree: the
+merged bridge delta is exactly five hunks (registry comment, bounded
+replay + delegate, bounded marking core + wrapper + restamp,
+serializer call) and nothing else -- vk64CopyRegionSplit (both
+64-bit copy-handler call sites), vk64MarkDrawRootWrites,
+vk64MarkDrawWrites and vk64MarkBoundWrites are byte-identical to
+pre-merge, checked by diff, not by name matching. The guard's pins
+were additionally checked against the merged function bodies: the
+'vk64MarkComputeWrites(cb);' call-site count is 3 on the merged
+tree (the three vkCmdDispatch* traps), as the guard requires at
+this merge.
+
+STRUCTURE NOTE FOR THE NEXT MERGE (lane-crootmark): its
+vk64MarkComputeRootWrites census call must land INSIDE
+vk64MarkComputeWritesUpTo, taking that function's `upto` bound --
+not in the record-time wrapper vk64MarkComputeWrites -- so a
+submit-time re-stamp bounds the root census to the dispatch's own
+prefix, the shape the crootmark lane closed structurally on its
+branch. The vk32compute merge later raises the guard's call-site
+pin from 3 to 4; this merge keeps it at 3.
+
+REGISTER / CITATIONS: no disposition changes; integ register
+unchanged at 374 = 75 IMPLEMENTED / 66 REJECTED-LOUDLY / 233
+NOT-A-GAP / 0 OPEN (pipe-aware recount). Citations: the bridge
+insertions drifted 28 rows; re-pinned via the audit tool's --fix
+(15) plus 20 cites hand-pinned by the exact merge-delta bands
+(+41 below the marking insertions, +44 below the serializer
+insertion), each construct-verified at its new line; final audit
+0 DRIFT / 0 MISSING (228 MATCH / 14 MATCH-INHERITED / 97
+UNCHECKABLE / 7 EXEMPT over 346 cited rows -- the pre-merge
+distribution exactly).
+
+SUITES on the merged tree: JS unit suite 327 passed / 0 failed
+(runner --unit, BW_TEST_DIST=integ dist; 326 baseline + the new
+vk-compute-epoch-restamp guard); emulator native 647 OK / 0 FAILED;
+run-native.py 34 PASS / 0 FAIL (31 baseline + the metabind stack's
+3 blocks; cepoch adds no native blocks, as expected).
+
+DIST: built from a31c48b6c (wasm 35dfc7c8...), "Browser export
+verified", completeness gate 0 failures / 1 pre-existing
+environmental skip. dist/runtime/wine64.zip member-verified: shim
+ae96105b... under all three names (bw64vulkan.dll / vulkan-1.dll /
+winevulkan.dll) and the canonical d3d12 pair a96b4e9d... /
+3d3bfe43... unchanged.
+
+GUEST GATE on the merged dist (uploading harness d3d12-pixels.mjs;
+canonical pair + merged shim sha-verified in each run's provenance;
+probe slot, one at a time; adjudicated on guest verdicts, harness
+composites are the known pixel-check artifacts):
+(a) cs12 PASS -- RESULT 0 with the full standing signature: TEX OK
+bad=0, BUF OK bad=0, BUF2 OK bad=0 (SUMMARY buf=OK buf2=OK tex=OK).
+Evidence: test-results/dxvk-cepochmerge-cs12.
+(b) uav12 PASS -- SUMMARY flag=TRUE sweep=ALL18 exec=ALL6,
+RESULT 0. Evidence: test-results/dxvk-cepochmerge-uav12.
+(c) tri12 PASS -- RESULT 0, 10 frames cleared+submitted (composite
+passed:false with 0 chunks captured = the known offscreen capture
+artifact). Evidence: test-results/dxvk-cepochmerge-tri12.
