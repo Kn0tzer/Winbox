@@ -5915,11 +5915,11 @@ void serializeSubmitV2(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
                     // compute pipeline's root descriptors ride the same
                     // ROOT_DESCS path as draws, then the dispatch itself.
                     // What cannot be proven served stays loud under the
-                    // original feature name: no compute pipeline bound
-                    // (including every 32-bit dispatch -- that ABI never
-                    // records a compute stage module), or a
-                    // vkCmdDispatchBase with a non-zero base group (WebGPU
-                    // has no base-group offset to serve it with).
+                    // original feature name: no compute pipeline bound, or
+                    // a vkCmdDispatchBase with a non-zero base group
+                    // (WebGPU has no base-group offset to serve it with).
+                    // Both ABIs record compute stages since section 4.59,
+                    // so this decline means the guest really bound none.
                     Pipeline* csPipe = activePipe ? objOf<Pipeline>(activePipe, K_PIPELINE, "vkQueueSubmit") : nullptr;
                     if (!csPipe || !csPipe->cs) {
                         vk64Unsupported("compute-dispatch", "vkCmdDispatch* with no compute pipeline bound has no V2 serving; results are not produced");
@@ -11948,7 +11948,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkMapMemory: {
         DeviceMemory* m = objOf32<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
         if (!m || !args.a[5]) return VK_ERROR_MEMORY_MAP_FAILED;
+        if (args.a[2] > m->size) return VK_ERROR_MEMORY_MAP_FAILED;
         wr32_32((U32)args.a[5], (U32)(m->va + args.a[2]));
+        // Mark as mapped, mirroring the 64-bit handler: guest may write via
+        // CPU, so buffer dirty-tracking cannot assume content is unchanged.
+        // vk64FindGpuWrite refuses to trust a GPU-write mark on mapped
+        // memory and emitBufferData always re-hashes buffers on it. (This
+        // line was missing on the 32-bit path; the V2 compute deferral is
+        // the first consumer that depended on it -- lane-vk32fix.)
+        m->wasMapped = true;
         return VK_SUCCESS;
     }
     case VK64_fn_vkUnmapMemory:
@@ -12070,8 +12078,12 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (cmdBuf, bindPoint, layout, firstSet, setCount, pSets*, nDyn, pDynOffsets*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdBindDescriptorSets");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
-            vk64Unsupported("compute-descriptor-sets", "descriptor sets bound at a non-graphics bind point are ignored (no compute path)");
+        // GRAPHICS and COMPUTE binds are both recorded, exactly like the
+        // 64-bit handler: the replay is a single state stream and the page
+        // tier resolves the bound sets at each draw or dispatch. Any other
+        // bind point stays loud.
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS && args.a[1] != VK_PIPELINE_BIND_POINT_COMPUTE) {
+            vk64Unsupported("descriptor-bind-point", "descriptor sets bound at a bind point that is neither graphics nor compute are ignored");
             return 0;
         }
         std::vector<U64> ids;
@@ -12333,6 +12345,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer: {
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyBuffer");
         Buffer* src = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdCopyBuffer");
         Buffer* dst = objOf32<Buffer>(args.a[2], K_BUFFER, "vkCmdCopyBuffer");
         VK64_DROP_IF(return 0, !src || !dst || !src->mem || !dst->mem);
@@ -12342,14 +12355,41 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U32 nreg = (U32)args.a[3];
         U8 tmp[65536];
         U64 uOff = ~0ULL, uEnd = 0;
+        bool anyCopy = false;
         for (U32 i = 0; i < nreg && args.a[4]; i++) {
             vk32abi::VkBufferCopy r = {};
             readStruct32((U32)args.a[4] + i * (U32)sizeof(r), r);
-            U64 srcVa = smem->va + src->memOff + r.srcOffset;
-            U64 dstVa = dmem->va + dst->memOff + r.dstOffset;
-            U64 size = r.size;
-            uOff = std::min(uOff, dst->memOff + r.dstOffset);
-            uEnd = std::max(uEnd, dst->memOff + r.dstOffset + size);
+            // Bounds discipline, mirroring the 64-bit CopyBuffer2 handler:
+            // a region whose bind-relative start lies outside either memory
+            // (or wraps) is dropped loudly, and the clamped length is used
+            // for BOTH the deferral decision and the eager copy. (The
+            // pre-fix code clamped only inside the deferral check and ran
+            // the eager memcpy with the raw guest size -- lane-vk32fix.)
+            U64 sRel = src->memOff + r.srcOffset;
+            U64 dRel = dst->memOff + r.dstOffset;
+            VK64_DROP_IF(continue, sRel < src->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dst->memOff || dRel >= dmem->size);
+            U64 n = r.size;
+            if (n > smem->size - sRel) n = smem->size - sRel;
+            if (n > dmem->size - dRel) n = dmem->size - dRel;
+            if (!n) continue;
+            // V2 compute, mirroring the 64-bit handler: a region whose
+            // source a recorded dispatch may have written on the GPU
+            // defers to a submit-time page readback (CMD_COPY_B2B_RB) --
+            // the guest bytes there are stale, because the dispatch has
+            // not executed when this handler runs at record time.
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(args.a[1], sRel, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{args.a[1], args.a[2], r.srcOffset, r.dstOffset, n};
+                pushCmd(cb, dc);
+                continue;
+            }
+            U64 srcVa = smem->va + sRel;
+            U64 dstVa = dmem->va + dRel;
+            U64 size = n;
+            uOff = std::min(uOff, dRel);
+            uEnd = std::max(uEnd, dRel + size);
+            anyCopy = true;
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
                 g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
@@ -12357,13 +12397,16 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 srcVa += chunk; dstVa += chunk; size -= chunk;
             }
         }
-        dst->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem, uOff, uEnd - uOff);
+        if (anyCopy) {
+            dst->dirtyGen = g_bufDirtyTick++;
+            vk64TouchMem(dmem, uOff, uEnd - uOff);
+        }
         return 0;
     }
     case VK64_fn_vkCmdCopyBuffer2:
     case VK64_fn_vkCmdCopyBuffer2KHR: {
         VK64_DROP_IF(return 0, !args.a[1]);
+        CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdCopyBuffer2");
         U32 info = (U32)args.a[1];
         U64 src = rd64_32(info + 8);
         U64 dst = rd64_32(info + 16);
@@ -12377,15 +12420,37 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         U8 tmp[65536];
         U64 uOff = ~0ULL, uEnd = 0;
+        bool anyCopy = false;
         for (U32 i = 0; i < nreg && pReg; i++) {
             U32 r = pReg + i * 32;
             U64 srcOff = rd64_32(r + 8);
             U64 dstOff = rd64_32(r + 16);
             U64 size = rd64_32(r + 24);
-            U64 srcVa = smem->va + srcB->memOff + srcOff;
-            U64 dstVa = dmem->va + dstB->memOff + dstOff;
-            uOff = std::min(uOff, dstB->memOff + dstOff);
-            uEnd = std::max(uEnd, dstB->memOff + dstOff + size);
+            // Bounds discipline as in the vkCmdCopyBuffer handler above:
+            // out-of-range (or wrapping) bind-relative starts drop loudly;
+            // the clamped length drives the deferral AND the eager copy.
+            U64 sRel = srcB->memOff + srcOff;
+            U64 dRel = dstB->memOff + dstOff;
+            VK64_DROP_IF(continue, sRel < srcB->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dstB->memOff || dRel >= dmem->size);
+            U64 n = size;
+            if (n > smem->size - sRel) n = smem->size - sRel;
+            if (n > dmem->size - dRel) n = dmem->size - dRel;
+            if (!n) continue;
+            // Deferred readback for dispatch-written sources, exactly as
+            // in the vkCmdCopyBuffer handler above.
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(src, sRel, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{src, dst, srcOff, dstOff, n};
+                pushCmd(cb, dc);
+                continue;
+            }
+            U64 srcVa = smem->va + sRel;
+            U64 dstVa = dmem->va + dRel;
+            size = n;
+            uOff = std::min(uOff, dRel);
+            uEnd = std::max(uEnd, dRel + size);
+            anyCopy = true;
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
                 g_mem32->memcpyFromGuest(tmp, (U32)srcVa, chunk);
@@ -12393,8 +12458,10 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                 srcVa += chunk; dstVa += chunk; size -= chunk;
             }
         }
-        dstB->dirtyGen = g_bufDirtyTick++;
-        vk64TouchMem(dmem, uOff, uEnd - uOff);
+        if (anyCopy) {
+            dstB->dirtyGen = g_bufDirtyTick++;
+            vk64TouchMem(dmem, uOff, uEnd - uOff);
+        }
         return 0;
     }
     case VK64_fn_vkCmdCopyImage:
@@ -12726,16 +12793,32 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             c.a = args.a[1]; c.b = args.a[2]; c.c = args.a[3];
         } else if (fnId == VK64_fn_vkCmdDispatchBase) {
             c.a = args.a[4]; c.b = args.a[5]; c.c = args.a[6];
+            // The base groups ride along exactly as the 64-bit handler
+            // records them: the submit emitter declines a non-zero base
+            // loudly ("compute-dispatch") because WebGPU has no base-group
+            // offset. Dropping them here would serve the dispatch at base
+            // zero instead -- silently wrong.
+            c.d = args.a[1]; // baseX in spare
+            c.dispatchBaseY = (U32)args.a[2];
+            c.dispatchBaseZ = (U32)args.a[3];
         } else {
+            // Mirror the 64-bit handler: an indirect buffer (or its memory)
+            // that cannot be resolved drops the call loudly. The pre-fix
+            // code fell through with c.a/c.b/c.c still zero, recording a
+            // spurious (0,0,0) dispatch AND stamping GPU-write marks for
+            // it below (lane-vk32fix).
             Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
-            if (buf && buf->mem) {
-                DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
-                if (dmem && dmem->va) {
-                    U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
-                    c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
-                }
-            }
+            VK64_DROP_IF(return 0, !buf || !buf->mem);
+            DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
+            VK64_DROP_IF(return 0, !dmem || !dmem->va);
+            U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+            c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
         }
+        // Mark the storage writes before the dispatch joins the stream,
+        // exactly as the 64-bit handlers do: a later copy out of a written
+        // range defers to a page readback instead of serving stale bytes
+        // through the eager record-time memcpy.
+        vk64MarkComputeWrites(cb);
         pushCmd(cb, c);
         return 0;
     }
@@ -13242,8 +13325,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (cmdBuf, bindPoint, layout, set, writeCount, pWrites*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdPushDescriptorSet");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS) {
-            vk64Unsupported("compute-descriptor-sets", "descriptors pushed at a non-graphics bind point are ignored (no compute path)");
+        // See vkCmdBindDescriptorSets: COMPUTE push sets are recorded too.
+        if (args.a[1] != VK_PIPELINE_BIND_POINT_GRAPHICS && args.a[1] != VK_PIPELINE_BIND_POINT_COMPUTE) {
+            vk64Unsupported("descriptor-bind-point", "descriptors pushed at a bind point that is neither graphics nor compute are ignored");
             return 0;
         }
         U64 id = 0;
@@ -13303,25 +13387,45 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateComputePipelines: {
-        // Real pipeline objects so vkd3d device creation can proceed
-        // (it creates its internal clear/copy compute pipelines during
-        // D3D12CreateDevice and treats creation failure as device-fatal).
-        // The stage module is not recorded on this ABI yet, so dispatches
-        // drop loudly at submit under "compute-dispatch" (the emitter
-        // names exactly this case); serving them means recording the
-        // stage module/layout/spec here like the 64-bit handler does.
-        // Trap args (libvk32.c): a[3]=pCreateInfos, a[4]=pAllocator,
-        // a[5]=pPipelines. This handler previously validated and wrote
-        // a[4] -- the allocator, NULL for vkd3d -- so every creation
-        // returned VK_ERROR_INITIALIZATION_FAILED and 32-bit
-        // D3D12CreateDevice died in vkd3d_clear_uav_ops_init (vr -3).
-        if (!args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
-        U32 count = (U32)args.a[2];
-        U32 outAddr = (U32)args.a[5];
-        for (U32 i = 0; i < count; i++) {
+        // (device, cache, n, pCreateInfos*, pAllocator, out VkPipeline*)
+        // Mirror of the 64-bit handler: real pipeline objects carrying the
+        // compute stage module, layout, specialization constants and the
+        // R15 root census, so dispatches recorded on this ABI are served
+        // by the shared V2 compute records at submit (campaign section
+        // 4.59). The previous stub minted bare objects and read the out
+        // array from the pAllocator slot (a[4], per the guest shim's
+        // standard marshalling the out array is a[5]): a real guest with
+        // the usual null allocator got VK_ERROR_INITIALIZATION_FAILED,
+        // and no 32-bit dispatch ever had a compute stage to serve.
+        U32 n = (U32)args.a[2];
+        if (!objOf32<Device>(args.a[0], K_DEVICE, "vkCreateComputePipelines") || !n || !args.a[3] || !args.a[5])
+            return VK_ERROR_INITIALIZATION_FAILED;
+        std::vector<vk32abi::VkComputePipelineCreateInfo> cis;
+        readArray32((U32)args.a[3], n, cis);
+        for (U32 i = 0; i < n; i++) {
             U64 id = 0;
-            createObj32<Pipeline>(K_PIPELINE, id);
-            wr64_32(outAddr + i * 8, id);
+            Pipeline* p = createObj32<Pipeline>(K_PIPELINE, id);
+            p->cs = cis[i].stage.module;
+            p->layout = cis[i].layout;
+            captureStageSpec32(cis[i].stage.pSpecializationInfo, p->csSpec);
+            {   // R15 census, same as the 64-bit path: the compute stage
+                // module's root-descriptor slots, so root descriptors bound
+                // for a dispatch resolve through V2 ROOT_DESCS like draws.
+                std::set<U32> slots, wslots;
+                ShaderModule* sm = p->cs ? objOf<ShaderModule>(p->cs, K_SHADER, "vkCreateComputePipelines") : nullptr;
+                if (sm && sm->code.size() >= 20 && !(sm->code.size() & 3)) {
+                    std::vector<U32> words(sm->code.size() / 4);
+                    memcpy(words.data(), sm->code.data(), sm->code.size());
+                    r15::Module rm;
+                    if (r15::parse(words, rm)) {
+                        r15::RootVerdict rv = r15::analyzeRoot(rm);
+                        if (rv.servable) { slots.insert(rv.slots.begin(), rv.slots.end()); wslots.insert(rv.writableSlots.begin(), rv.writableSlots.end()); }
+                    }
+                }
+                p->rootSlots.assign(slots.begin(), slots.end());
+                p->rootWritableSlots.assign(wslots.begin(), wslots.end());
+            }
+            wr64_32((U32)args.a[5] + i * 8, id);
         }
         return VK_SUCCESS;
     }
