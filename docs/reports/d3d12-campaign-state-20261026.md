@@ -6740,3 +6740,48 @@ archive bbc583c6) -- the branch baseline exactly, including
 vk-register-citations. Emulator native suite: 647 tests, 0 FAILED,
 single-threaded (the bridge is outside its build graph, as expected;
 run-native.py is the native surface for this change).
+
+**Merge outcome -- LIGHT GATE COMPLETE (2026-10-29, batched regime; merge
+0336b5c3c + citation fallout e49ac398c + guard re-pin ef2d6820e).** The
+auto-merge kept BOTH versions of the two overlapping arms (duplicate case
+labels, uncompilable); the section 4.40 duplicates were removed by hand and
+the merged walker is byte-identical to the lane's walker (the merged bridge
+delta's added lines are identical, sorted multiset, to the lane delta's).
+Per-arm reconciliation, as briefed: TRANSFORM_FEEDBACK -- prop32's form won
+(guest-offset writers over the vk32abi:: packed struct, replacing section
+4.40's host-offset writers); the served values are unchanged (all nine
+fields; section 4.40's own comment conceded its hostOff-8 rule was exact
+for this struct, so both forms wrote identical guest offsets -- the
+guest-struct form wins on discipline, not on a value difference).
+VULKAN_1_3 -- prop32's form won (guest-offset writers over the new pack(4)
+Vk32Vulkan13Properties mirror, replacing section 4.40's raw-offset
+writes); section 4.40's compile-verified guest offsets (8 / 12 / 176 /
+188 / 192, sizeof 200) are exactly the mirror's static_asserts, so the
+values and offsets the vkd3d device gate reads are unchanged. The other
+arms (maintenance-5, descriptor-indexing, the 1.1 completion with the
+maxMemoryAllocationSize guest-offset fix, the 1.2 completion) landed as
+the lane wrote them. Guard arbitration: the lane's chained-nodes native
+guard passes on the merged text (it reads every served field back through
+the packed guest structs, so the reconciled offsets are behaviourally
+verified, including maxMemoryAllocationSize at guest offsetof 92); the
+section 4.40 JS guard's TF test passes unmodified, and its 1.3 tests were
+re-pinned to the composed form at full strength -- writer pins plus
+static_assert pins plus an explicit no-hostOff-8-writers assertion over
+the arm plus both documentation comments -- sabotage-verified both ways
+(reverting maxBufferSize to the host-offset writer fails it; changing the
+176 assert to 180 fails it; the bridge was restored byte-identical after
+each). Register applied as a delta: 377 = 78/66/233/0 (the lane's one
+IMPLEMENTED row inserted after the fmt_bpp row, its citation re-pinned to
+the merged walker at vk64bridge.cpp:10487, its section reference updated
+to 4.55). Citations 0 DRIFT / 0 MISSING (230 MATCH / 14 MATCH-INHERITED /
+98 UNCHECKABLE / 7 EXEMPT over 349 rows; 7 by the auditor's --fix, 10
+hand-pinned by the exact band map, construct-verified; the +1 UNCHECKABLE
+is the new row, under the guard's pinned ceiling of 102). Light suites on
+the merged tree: JS 328/0 (vk-properties2-32 PASS), emulator native
+648/0, run-native 42 PASS (41 + this lane's Properties2 parity block).
+BATCH-GATE DEBT: per the batched regime this merge ran no dist rebuild
+and no guest probes; the batch gate after rawscan owes the rebuild plus
+tri12-32 device creation re-proven on the reconciled arms (it passed at
+the section 4.50 gate on section 4.40's forms; the guest reads the TF
+queries property and the 1.3 single-texel bools through exactly these
+arms), with tri12, cs12 full signature and uav12.
