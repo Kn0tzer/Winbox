@@ -204,13 +204,30 @@ test('image generation skip never serves a stale hash (extracted emitImageDataIn
 
 test('every bridge write into image memory bumps the generation signal (census)', () => {
   const lines = bridgeSource.split('\n');
-  // (a) every dirtyGen bump is paired with a vk64TouchMem within 3 lines.
+  // (a) every dirtyGen bump is paired with a vk64TouchMem within 3 lines,
+  // or delegates its write to vkClearColorFill (whose own per-subresource
+  // touch is pinned below, so the delegation cannot silently lose it).
   const bumpIdx = lines
     .map((l, i) => (/->dirtyGen = g_bufDirtyTick\+\+/.test(l) ? i : -1))
     .filter((i) => i >= 0);
   assert.equal(bumpIdx.length, 21, 'pinned count of dirtyGen bump sites');
+  // Helper-mediated pairing (subclear lane, 2026-10-28): both
+  // vkCmdClearColorImage handlers delegate their fill to vkClearColorFill,
+  // which touches every cleared subresource range in its own body; their
+  // bumps are paired through that call. Pin the helper's touch first: if it
+  // leaves the helper, or the call leaves a handler, the bump is unpaired
+  // again and this census goes red.
+  const fillBegin = bridgeSource.indexOf('static bool vkClearColorFill(');
+  assert.ok(fillBegin >= 0, 'vkClearColorFill present');
+  assert.ok(bridgeSource.slice(fillBegin, fillBegin + 2600).includes('vk64TouchMem(dmem, absOff, subSize)'),
+    'vkClearColorFill touches each cleared subresource range');
   for (const i of bumpIdx) {
-    assert.ok(lines.slice(i, i + 4).join('\n').includes('vk64TouchMem('),
+    if (lines.slice(i, i + 4).join('\n').includes('vk64TouchMem(')) continue;
+    const bumpOff = lines.slice(0, i).join('\n').length + 1;
+    const regionBegin = bridgeSource.lastIndexOf('case VK64_fn_', bumpOff);
+    const regionEnd = bridgeSource.indexOf('\n    }\n    case VK64_fn_', bumpOff);
+    const region = bridgeSource.slice(regionBegin, regionEnd > regionBegin ? regionEnd : undefined);
+    assert.ok(regionBegin >= 0 && region.includes('vkClearColorFill('),
       `dirtyGen bump at line ${i + 1} lacks a paired vk64TouchMem`);
   }
   // (b) per-handler region pins, split by ABI half.
@@ -289,6 +306,11 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // -1 from 53). It writes the destination BUFFER's guest memory for the
   // segments not covered by a GPU-write mark, covered by each handler's
   // existing post-loop dirtyGen bump + vk64TouchMem (asserted in (b)).
+  // 53 since the subclear lane (2026-10-28, campaign 4.52): vkClearColorFill
+  // holds the single chunk-copy memcpyToGuest line both vkCmdClearColorImage
+  // handlers route their ranged fills through. It writes the cleared
+  // subresources' guest bytes, paired with the helper's per-subresource
+  // vk64TouchMem (pinned in (a) above) and each handler's dirtyGen bump.
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 52, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 53, 'pinned count of raw guest-write primitive lines');
 });
