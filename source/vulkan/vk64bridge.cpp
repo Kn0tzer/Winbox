@@ -10965,7 +10965,15 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkMapMemory: {
         DeviceMemory* m = objOf32<DeviceMemory>(args.a[1], K_MEMORY, "vkMapMemory");
         if (!m || !args.a[5]) return VK_ERROR_MEMORY_MAP_FAILED;
+        if (args.a[2] > m->size) return VK_ERROR_MEMORY_MAP_FAILED;
         wr32_32((U32)args.a[5], (U32)(m->va + args.a[2]));
+        // Mark as mapped, mirroring the 64-bit handler: guest may write via
+        // CPU, so buffer dirty-tracking cannot assume content is unchanged.
+        // vk64FindGpuWrite refuses to trust a GPU-write mark on mapped
+        // memory and emitBufferData always re-hashes buffers on it. (This
+        // line was missing on the 32-bit path; the V2 compute deferral is
+        // the first consumer that depended on it -- lane-vk32fix.)
+        m->wasMapped = true;
         return VK_SUCCESS;
     }
     case VK64_fn_vkUnmapMemory:
@@ -11342,31 +11350,36 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         for (U32 i = 0; i < nreg && args.a[4]; i++) {
             vk32abi::VkBufferCopy r = {};
             readStruct32((U32)args.a[4] + i * (U32)sizeof(r), r);
+            // Bounds discipline, mirroring the 64-bit CopyBuffer2 handler:
+            // a region whose bind-relative start lies outside either memory
+            // (or wraps) is dropped loudly, and the clamped length is used
+            // for BOTH the deferral decision and the eager copy. (The
+            // pre-fix code clamped only inside the deferral check and ran
+            // the eager memcpy with the raw guest size -- lane-vk32fix.)
+            U64 sRel = src->memOff + r.srcOffset;
+            U64 dRel = dst->memOff + r.dstOffset;
+            VK64_DROP_IF(continue, sRel < src->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dst->memOff || dRel >= dmem->size);
+            U64 n = r.size;
+            if (n > smem->size - sRel) n = smem->size - sRel;
+            if (n > dmem->size - dRel) n = dmem->size - dRel;
+            if (!n) continue;
             // V2 compute, mirroring the 64-bit handler: a region whose
             // source a recorded dispatch may have written on the GPU
             // defers to a submit-time page readback (CMD_COPY_B2B_RB) --
             // the guest bytes there are stale, because the dispatch has
             // not executed when this handler runs at record time.
-            if (cb && vkSchemaV2()) {
-                U64 sRel = src->memOff + r.srcOffset;
-                U64 dRel = dst->memOff + r.dstOffset;
-                U64 n = r.size;
-                if (sRel >= src->memOff && sRel < smem->size && dRel >= dst->memOff && dRel < dmem->size) {
-                    if (n > smem->size - sRel) n = smem->size - sRel;
-                    if (n > dmem->size - dRel) n = dmem->size - dRel;
-                    if (n && vk64FindGpuWrite(args.a[1], sRel, n)) {
-                        Cmd dc; dc.kind = CMD_COPY_B2B_RB;
-                        dc.copyB2BRb = Cmd::CopyB2BRb{args.a[1], args.a[2], r.srcOffset, r.dstOffset, n};
-                        pushCmd(cb, dc);
-                        continue;
-                    }
-                }
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(args.a[1], sRel, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{args.a[1], args.a[2], r.srcOffset, r.dstOffset, n};
+                pushCmd(cb, dc);
+                continue;
             }
-            U64 srcVa = smem->va + src->memOff + r.srcOffset;
-            U64 dstVa = dmem->va + dst->memOff + r.dstOffset;
-            U64 size = r.size;
-            uOff = std::min(uOff, dst->memOff + r.dstOffset);
-            uEnd = std::max(uEnd, dst->memOff + r.dstOffset + size);
+            U64 srcVa = smem->va + sRel;
+            U64 dstVa = dmem->va + dRel;
+            U64 size = n;
+            uOff = std::min(uOff, dRel);
+            uEnd = std::max(uEnd, dRel + size);
             anyCopy = true;
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
@@ -11404,27 +11417,30 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             U64 srcOff = rd64_32(r + 8);
             U64 dstOff = rd64_32(r + 16);
             U64 size = rd64_32(r + 24);
+            // Bounds discipline as in the vkCmdCopyBuffer handler above:
+            // out-of-range (or wrapping) bind-relative starts drop loudly;
+            // the clamped length drives the deferral AND the eager copy.
+            U64 sRel = srcB->memOff + srcOff;
+            U64 dRel = dstB->memOff + dstOff;
+            VK64_DROP_IF(continue, sRel < srcB->memOff || sRel >= smem->size);
+            VK64_DROP_IF(continue, dRel < dstB->memOff || dRel >= dmem->size);
+            U64 n = size;
+            if (n > smem->size - sRel) n = smem->size - sRel;
+            if (n > dmem->size - dRel) n = dmem->size - dRel;
+            if (!n) continue;
             // Deferred readback for dispatch-written sources, exactly as
             // in the vkCmdCopyBuffer handler above.
-            if (cb && vkSchemaV2()) {
-                U64 sRel = srcB->memOff + srcOff;
-                U64 dRel = dstB->memOff + dstOff;
-                U64 n = size;
-                if (sRel >= srcB->memOff && sRel < smem->size && dRel >= dstB->memOff && dRel < dmem->size) {
-                    if (n > smem->size - sRel) n = smem->size - sRel;
-                    if (n > dmem->size - dRel) n = dmem->size - dRel;
-                    if (n && vk64FindGpuWrite(src, sRel, n)) {
-                        Cmd dc; dc.kind = CMD_COPY_B2B_RB;
-                        dc.copyB2BRb = Cmd::CopyB2BRb{src, dst, srcOff, dstOff, n};
-                        pushCmd(cb, dc);
-                        continue;
-                    }
-                }
+            if (cb && vkSchemaV2() && vk64FindGpuWrite(src, sRel, n)) {
+                Cmd dc; dc.kind = CMD_COPY_B2B_RB;
+                dc.copyB2BRb = Cmd::CopyB2BRb{src, dst, srcOff, dstOff, n};
+                pushCmd(cb, dc);
+                continue;
             }
-            U64 srcVa = smem->va + srcB->memOff + srcOff;
-            U64 dstVa = dmem->va + dstB->memOff + dstOff;
-            uOff = std::min(uOff, dstB->memOff + dstOff);
-            uEnd = std::max(uEnd, dstB->memOff + dstOff + size);
+            U64 srcVa = smem->va + sRel;
+            U64 dstVa = dmem->va + dRel;
+            size = n;
+            uOff = std::min(uOff, dRel);
+            uEnd = std::max(uEnd, dRel + size);
             anyCopy = true;
             while (size > 0) {
                 U32 chunk = size > sizeof(tmp) ? sizeof(tmp) : (U32)size;
@@ -11777,14 +11793,17 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             c.dispatchBaseY = (U32)args.a[2];
             c.dispatchBaseZ = (U32)args.a[3];
         } else {
+            // Mirror the 64-bit handler: an indirect buffer (or its memory)
+            // that cannot be resolved drops the call loudly. The pre-fix
+            // code fell through with c.a/c.b/c.c still zero, recording a
+            // spurious (0,0,0) dispatch AND stamping GPU-write marks for
+            // it below (lane-vk32fix).
             Buffer* buf = objOf32<Buffer>(args.a[1], K_BUFFER, "vkCmdDispatchIndirect");
-            if (buf && buf->mem) {
-                DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
-                if (dmem && dmem->va) {
-                    U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
-                    c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
-                }
-            }
+            VK64_DROP_IF(return 0, !buf || !buf->mem);
+            DeviceMemory* dmem = objOf32<DeviceMemory>(buf->mem, K_MEMORY, "vkCmdDispatchIndirect");
+            VK64_DROP_IF(return 0, !dmem || !dmem->va);
+            U32 base = (U32)(dmem->va + buf->memOff + args.a[2]);
+            c.a = rd32_32(base + 0); c.b = rd32_32(base + 4); c.c = rd32_32(base + 8);
         }
         // Mark the storage writes before the dispatch joins the stream,
         // exactly as the 64-bit handlers do: a later copy out of a written

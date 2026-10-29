@@ -7264,5 +7264,12 @@ static_assert(sizeof(VkBufferCopy) == 24, "VkBufferCopy layout drifted from i386
 static_assert(sizeof(VkImageCopy) == 68, "VkImageCopy layout drifted from i386 guest ABI");
 static_assert(sizeof(VkSubmitInfo) == 36, "VkSubmitInfo layout drifted from i386 guest ABI");
 static_assert(sizeof(VkSurfaceCapabilitiesKHR) == 52, "VkSurfaceCapabilitiesKHR layout drifted from i386 guest ABI");
+static_assert(sizeof(VkPipelineShaderStageCreateInfo) == 32, "VkPipelineShaderStageCreateInfo layout drifted from i386 guest ABI");
+static_assert(offsetof(VkPipelineShaderStageCreateInfo, module) == 16, "VkPipelineShaderStageCreateInfo.module layout drifted from i386 guest ABI");
+static_assert(sizeof(VkComputePipelineCreateInfo) == 64, "VkComputePipelineCreateInfo layout drifted from i386 guest ABI");
+static_assert(offsetof(VkComputePipelineCreateInfo, stage) == 12, "VkComputePipelineCreateInfo.stage layout drifted from i386 guest ABI");
+static_assert(offsetof(VkComputePipelineCreateInfo, layout) == 44, "VkComputePipelineCreateInfo.layout layout drifted from i386 guest ABI");
+static_assert(offsetof(VkComputePipelineCreateInfo, basePipelineHandle) == 52, "VkComputePipelineCreateInfo.basePipelineHandle layout drifted from i386 guest ABI");
+static_assert(offsetof(VkComputePipelineCreateInfo, basePipelineIndex) == 60, "VkComputePipelineCreateInfo.basePipelineIndex layout drifted from i386 guest ABI");
 
 #endif // __VK32_GUEST_H__

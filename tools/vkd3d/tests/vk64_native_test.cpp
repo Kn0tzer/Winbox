@@ -1375,6 +1375,291 @@ int main() {
             g_mem32 = nullptr; g_mem = &memory;
         }
         puts("PASS: 32-bit compute dispatch is recorded, marked, deferred and served (V2 compute records)");
+        // 10. 32-bit mapped memory (lane-vk32fix, frontier-review finding
+        // 2): vkMapMemory on this ABI must set wasMapped, exactly like the
+        // 64-bit handler. The flag is the trust root of the compute
+        // deferral: vk64FindGpuWrite refuses marks on mapped memory
+        // (contents can change outside the bridge's observation) and the
+        // submit-side emitBufferData fast path re-hashes mapped buffers.
+        // Before the fix the 32-bit handler never set it, so a dispatch
+        // writing a persistently-mapped buffer was trusted for deferral
+        // and later copies could serve GPU-side state instead of the
+        // bytes the guest wrote through the mapping.
+        {
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            vk32abi::VkMemoryAllocateInfo ai32{};
+            ai32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai32.allocationSize = 64 * 1024;
+            memory32.memcpyToGuest(600000, &ai32, sizeof(ai32));
+            memory32.writeq(600064, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600000; a.a[3] = 600064;
+              assert((S64)call32(VK64_fn_vkAllocateMemory, a) == VK_SUCCESS); }
+            const U64 mem32Id = memory32.readq(600064);
+            auto* mem32o = objOf32<DeviceMemory>(mem32Id, K_MEMORY, "test");
+            assert(mem32o && mem32o->va && !mem32o->wasMapped);
+            const U64 memVa = mem32o->va;
+            // Map the whole allocation through the 32-bit trap: the guest
+            // VA is written back and the memory is flagged as mapped.
+            memory32.writeq(602112, 0);
+            { VK32Args a{}; a.a[1] = mem32Id; a.a[2] = 0; a.a[3] = VK_WHOLE_SIZE; a.a[5] = 602112;
+              assert((S64)call32(VK64_fn_vkMapMemory, a) == VK_SUCCESS); }
+            assert(memory32.readd(602112) == memVa);
+            assert(mem32o->wasMapped);
+            // An offset past the end fails, as on the 64-bit handler
+            // (before the fix this returned VK_SUCCESS).
+            { VK32Args a{}; a.a[1] = mem32Id; a.a[2] = 64 * 1024 + 4096; a.a[3] = VK_WHOLE_SIZE; a.a[5] = 602112;
+              assert((S64)call32(VK64_fn_vkMapMemory, a) == VK_ERROR_MEMORY_MAP_FAILED); }
+            auto mkBuf32 = [&](U64 size, U64 memOff) {
+                vk32abi::VkBufferCreateInfo bci{};
+                bci.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = size;
+                bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                memory32.memcpyToGuest(600128, &bci, sizeof(bci));
+                memory32.writeq(600192, 0);
+                VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600128; a.a[3] = 600192;
+                assert((S64)call32(VK64_fn_vkCreateBuffer, a) == VK_SUCCESS);
+                U64 id = memory32.readq(600192);
+                assert(id != 0);
+                VK32Args b{}; b.a[0] = dev32Id; b.a[1] = id; b.a[2] = mem32Id; b.a[3] = memOff;
+                assert((S64)call32(VK64_fn_vkBindBufferMemory, b) == VK_SUCCESS);
+                return id;
+            };
+            const U64 srcBuf32 = mkBuf32(4096, 8192);
+            const U64 dstBuf32 = mkBuf32(4096, 32 * 1024);
+            // Compute chain (the same minimal GLCompute module as block 9).
+            const U32 csWords[] = {
+                0x07230203u, 0x00010500u, 0, 64, 0,
+                (2u << 16) | 17u, 1u,
+                (3u << 16) | 14u, 0u, 1u,
+                (5u << 16) | 15u, 5u, 6u, 0x6e69616du, 0u,
+                (6u << 16) | 16u, 6u, 17u, 1u, 1u, 1u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (5u << 16) | 54u, 1u, 6u, 0u, 2u,
+                (2u << 16) | 248u, 7u,
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            };
+            memory32.memcpyToGuest(600256, csWords, sizeof(csWords));
+            vk32abi::VkShaderModuleCreateInfo smci32{};
+            smci32.sType = vk32abi::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            smci32.codeSize = sizeof(csWords); smci32.pCode = 600256;
+            memory32.memcpyToGuest(600512, &smci32, sizeof(smci32));
+            memory32.writeq(600576, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600512; a.a[3] = 600576;
+              assert((S64)call32(VK64_fn_vkCreateShaderModule, a) == VK_SUCCESS); }
+            const U64 csMod32 = memory32.readq(600576);
+            assert(csMod32 != 0);
+            vk32abi::VkDescriptorSetLayoutBinding lb32{};
+            lb32.binding = 0; lb32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lb32.descriptorCount = 1; lb32.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            memory32.memcpyToGuest(600640, &lb32, sizeof(lb32));
+            vk32abi::VkDescriptorSetLayoutCreateInfo lci32{};
+            lci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            lci32.bindingCount = 1; lci32.pBindings = 600640;
+            memory32.memcpyToGuest(600704, &lci32, sizeof(lci32));
+            memory32.writeq(600768, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600704; a.a[3] = 600768;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorSetLayout, a) == VK_SUCCESS); }
+            const U64 lay32 = memory32.readq(600768);
+            assert(lay32 != 0);
+            memory32.writeq(600832, lay32);
+            vk32abi::VkPipelineLayoutCreateInfo plci32{};
+            plci32.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            plci32.setLayoutCount = 1; plci32.pSetLayouts = 600832;
+            memory32.memcpyToGuest(600896, &plci32, sizeof(plci32));
+            memory32.writeq(600960, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600896; a.a[3] = 600960;
+              assert((S64)call32(VK64_fn_vkCreatePipelineLayout, a) == VK_SUCCESS); }
+            const U64 pl32 = memory32.readq(600960);
+            assert(pl32 != 0);
+            memory32.memcpyToGuest(601024, "main", 5);
+            vk32abi::VkComputePipelineCreateInfo cci32{};
+            cci32.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci32.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci32.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+            cci32.stage.module = csMod32;
+            cci32.stage.pName = 601024;
+            cci32.layout = pl32;
+            memory32.memcpyToGuest(601088, &cci32, sizeof(cci32));
+            memory32.writeq(601216, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[2] = 1; a.a[3] = 601088; a.a[5] = 601216;
+              assert((S64)call32(VK64_fn_vkCreateComputePipelines, a) == VK_SUCCESS); }
+            const U64 pipe32 = memory32.readq(601216);
+            assert(pipe32 != 0);
+            vk32abi::VkDescriptorPoolSize psz32{};
+            psz32.type = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; psz32.descriptorCount = 1;
+            memory32.memcpyToGuest(601280, &psz32, sizeof(psz32));
+            vk32abi::VkDescriptorPoolCreateInfo pci32{};
+            pci32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pci32.maxSets = 1; pci32.poolSizeCount = 1; pci32.pPoolSizes = 601280;
+            memory32.memcpyToGuest(601344, &pci32, sizeof(pci32));
+            memory32.writeq(601408, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601344; a.a[3] = 601408;
+              assert((S64)call32(VK64_fn_vkCreateDescriptorPool, a) == VK_SUCCESS); }
+            const U64 pool32 = memory32.readq(601408);
+            assert(pool32 != 0);
+            memory32.writeq(601472, lay32);
+            vk32abi::VkDescriptorSetAllocateInfo sai32{};
+            sai32.sType = vk32abi::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            sai32.descriptorPool = (U32)pool32; sai32.descriptorSetCount = 1; sai32.pSetLayouts = 601472;
+            memory32.memcpyToGuest(601536, &sai32, sizeof(sai32));
+            memory32.writeq(601600, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 601536; a.a[2] = 601600;
+              assert((S64)call32(VK64_fn_vkAllocateDescriptorSets, a) == VK_SUCCESS); }
+            const U64 set32 = memory32.readq(601600);
+            assert(set32 != 0);
+            vk32abi::VkDescriptorBufferInfo dbi32{};
+            dbi32.buffer = srcBuf32; dbi32.offset = 128; dbi32.range = 512;
+            memory32.memcpyToGuest(601664, &dbi32, sizeof(dbi32));
+            vk32abi::VkWriteDescriptorSet w32{};
+            w32.dstSet = set32; w32.dstBinding = 0; w32.descriptorCount = 1;
+            w32.descriptorType = (vk32abi::VkDescriptorType)VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w32.pBufferInfo = 601664;
+            memory32.memcpyToGuest(601728, &w32, sizeof(w32));
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 1; a.a[2] = 601728;
+              call32(VK64_fn_vkUpdateDescriptorSets, a); }
+            // Record: bind pipeline + set at COMPUTE, dispatch. The
+            // dispatch marks the storage range in the global registry...
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pipe32;
+              call32(VK64_fn_vkCmdBindPipeline, a); }
+            memory32.writeq(601792, set32);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = VK_PIPELINE_BIND_POINT_COMPUTE; a.a[2] = pl32;
+              a.a[3] = 0; a.a[4] = 1; a.a[5] = 601792;
+              call32(VK64_fn_vkCmdBindDescriptorSets, a); }
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 1; a.a[2] = 1; a.a[3] = 1;
+              call32(VK64_fn_vkCmdDispatch, a); }
+            bool markSeen = false;
+            for (const auto& mk : g_gpuWriteMarks)
+                if (mk.buf == srcBuf32 && mk.off == 8192 + 128 && mk.size == 512) markSeen = true;
+            assert(markSeen);
+            // ...but the mark is NOT trusted for deferral: the memory is
+            // guest-mapped, so its contents can change unobserved.
+            assert(vk64FindGpuWrite(srcBuf32, 8192 + 128, 512) == nullptr);
+            // The guest writes new inputs through the mapping; a copy out
+            // of the marked range must serve those current bytes eagerly
+            // instead of deferring to a GPU readback.
+            for (U32 i = 0; i < 512; i++) memory32.bytes[memVa + 8192 + 128 + i] = (U8)(i * 7 + 3);
+            for (U32 i = 0; i < 512; i++) memory32.bytes[memVa + 32 * 1024 + i] = 0xEE;
+            vk32abi::VkBufferCopy reg32{};
+            reg32.srcOffset = 128; reg32.dstOffset = 0; reg32.size = 512;
+            memory32.memcpyToGuest(601856, &reg32, sizeof(reg32));
+            const size_t cmdsBefore = cb32->cmds.size();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = srcBuf32; a.a[2] = dstBuf32; a.a[3] = 1; a.a[4] = 601856;
+              call32(VK64_fn_vkCmdCopyBuffer, a); }
+            assert(cb32->cmds.size() == cmdsBefore); // no CMD_COPY_B2B_RB recorded
+            for (U32 i = 0; i < 512; i++) assert(memory32.bytes[memVa + 32 * 1024 + i] == (U8)(i * 7 + 3));
+        }
+        puts("PASS: 32-bit vkMapMemory flags mapped memory; compute deferral declines on it (wasMapped)");
+        // 11. 32-bit copy bounds + indirect dispatch resolution
+        // (lane-vk32fix, frontier-review findings 3 and 4). Copy regions
+        // whose bind-relative start lies outside either memory drop
+        // loudly (VK64_DROP_IF), like the 64-bit handlers; a partially
+        // overrunning region copies only its clamped prefix. The pre-fix
+        // code clamped only for the deferral decision and ran the eager
+        // memcpy with the raw guest size. vkCmdDispatchIndirect with an
+        // unresolvable buffer drops loudly instead of recording a
+        // spurious (0,0,0) dispatch and stamping marks for it.
+        {
+            U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+            vk32abi::VkMemoryAllocateInfo ai32{};
+            ai32.sType = vk32abi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai32.allocationSize = 64 * 1024;
+            memory32.memcpyToGuest(600000, &ai32, sizeof(ai32));
+            memory32.writeq(600064, 0);
+            { VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600000; a.a[3] = 600064;
+              assert((S64)call32(VK64_fn_vkAllocateMemory, a) == VK_SUCCESS); }
+            const U64 mem32Id = memory32.readq(600064);
+            auto* mem32o = objOf32<DeviceMemory>(mem32Id, K_MEMORY, "test");
+            assert(mem32o && mem32o->va && !mem32o->wasMapped);
+            const U64 memVa = mem32o->va;
+            auto mkBuf32 = [&](U64 size, U64 memOff) {
+                vk32abi::VkBufferCreateInfo bci{};
+                bci.sType = vk32abi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = size;
+                bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                memory32.memcpyToGuest(600128, &bci, sizeof(bci));
+                memory32.writeq(600192, 0);
+                VK32Args a{}; a.a[0] = dev32Id; a.a[1] = 600128; a.a[3] = 600192;
+                assert((S64)call32(VK64_fn_vkCreateBuffer, a) == VK_SUCCESS);
+                U64 id = memory32.readq(600192);
+                assert(id != 0);
+                VK32Args b{}; b.a[0] = dev32Id; b.a[1] = id; b.a[2] = mem32Id; b.a[3] = memOff;
+                assert((S64)call32(VK64_fn_vkBindBufferMemory, b) == VK_SUCCESS);
+                return id;
+            };
+            const U64 srcBuf32 = mkBuf32(4096, 8192);
+            const U64 dstBuf32 = mkBuf32(4096, 32 * 1024);
+            U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+            // Source patterns: a full-copy range inside the source buffer,
+            // and a 16-byte tail at the very end of the allocation.
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 8192 + 128 + i] = (U8)(0x40 + i);
+            for (U32 i = 0; i < 16; i++) memory32.bytes[memVa + 64 * 1024 - 16 + i] = (U8)(0x90 + i);
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 8192 + 512 + i] = (U8)(0x50 + i);
+            // Poison every destination range.
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + i] = 0xEE;
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + 1024 + i] = 0xEE;
+            for (U32 i = 0; i < 64; i++) memory32.bytes[memVa + 32 * 1024 + 2048 + i] = 0xEE;
+            for (U32 i = 0; i < 32; i++) memory32.bytes[memVa + 32 * 1024 + 4096 + i] = 0xEE;
+            // vkCmdCopyBuffer with three regions in one call: [0] starts
+            // exactly at the end of the source memory (dropped loudly),
+            // [1] overruns the source end by 48 bytes (clamped prefix
+            // copies), [2] is a plain valid copy.
+            vk32abi::VkBufferCopy regs[3]{};
+            regs[0].srcOffset = 64 * 1024 - 8192; regs[0].dstOffset = 0; regs[0].size = 64;
+            regs[1].srcOffset = 64 * 1024 - 16 - 8192; regs[1].dstOffset = 1024; regs[1].size = 64;
+            regs[2].srcOffset = 128; regs[2].dstOffset = 2048; regs[2].size = 64;
+            memory32.memcpyToGuest(601856, regs, sizeof(regs));
+            const U64 dropsBefore = vk64BridgeDropCount();
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = srcBuf32; a.a[2] = dstBuf32; a.a[3] = 3; a.a[4] = 601856;
+              call32(VK64_fn_vkCmdCopyBuffer, a); }
+            assert(vk64BridgeDropCount() == dropsBefore + 1);
+            assert(cb32->cmds.empty()); // eager path records nothing
+            for (U32 i = 0; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + i] == 0xEE);
+            for (U32 i = 0; i < 16; i++) assert(memory32.bytes[memVa + 32 * 1024 + 1024 + i] == (U8)(0x90 + i));
+            for (U32 i = 16; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + 1024 + i] == 0xEE);
+            for (U32 i = 0; i < 64; i++) assert(memory32.bytes[memVa + 32 * 1024 + 2048 + i] == (U8)(0x40 + i));
+            // vkCmdCopyBuffer2KHR with two regions: [0]'s destination
+            // starts exactly at the end of the destination memory
+            // (dropped loudly), [1] is a plain valid copy.
+            memory32.writeq(601984 + 8, srcBuf32);
+            memory32.writeq(601984 + 16, dstBuf32);
+            memory32.writed(601984 + 24, 2);
+            memory32.writed(601984 + 28, 602048);
+            memory32.writeq(602048 + 8, 256);
+            memory32.writeq(602048 + 16, 64 * 1024 - 32 * 1024);
+            memory32.writeq(602048 + 24, 64);
+            memory32.writeq(602048 + 32 + 8, 512);
+            memory32.writeq(602048 + 32 + 16, 4096);
+            memory32.writeq(602048 + 32 + 24, 32);
+            { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = 601984;
+              call32(VK64_fn_vkCmdCopyBuffer2KHR, a); }
+            assert(vk64BridgeDropCount() == dropsBefore + 2);
+            assert(cb32->cmds.empty());
+            for (U32 i = 0; i < 32; i++) assert(memory32.bytes[memVa + 32 * 1024 + 4096 + i] == (U8)(0x50 + i));
+            // vkCmdDispatchIndirect: a resolvable buffer records its
+            // stored group counts (positive control); a bogus handle and
+            // an unbound buffer both drop loudly and record nothing.
+            const U64 indBuf32 = mkBuf32(64, 0);
+            memory32.writed(memVa + 0, 7); memory32.writed(memVa + 4, 8); memory32.writed(memVa + 8, 9);
+            U64 cbI32Id; auto* cbI32 = createObj32<CmdBuf>(K_CMDBUF, cbI32Id);
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = indBuf32; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(cbI32->cmds.size() == 1 && cbI32->cmds[0].kind == CMD_DISPATCH &&
+                   cbI32->cmds[0].a == 7 && cbI32->cmds[0].b == 8 && cbI32->cmds[0].c == 9);
+            const U64 dropsBeforeInd = vk64BridgeDropCount();
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = 0x0BADB001; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(vk64BridgeDropCount() == dropsBeforeInd + 1);
+            assert(cbI32->cmds.size() == 1); // no spurious (0,0,0) dispatch
+            U64 unboundId; createObj32<Buffer>(K_BUFFER, unboundId);
+            { VK32Args a{}; a.a[0] = cbI32Id; a.a[1] = unboundId; a.a[2] = 0;
+              call32(VK64_fn_vkCmdDispatchIndirect, a); }
+            assert(vk64BridgeDropCount() == dropsBeforeInd + 2);
+            assert(cbI32->cmds.size() == 1);
+        }
+        puts("PASS: 32-bit copy regions are bounds-checked loudly and clamped; indirect dispatch must resolve");
         // dropObj cascades (pool -> sets, command buffer -> dynamic objects), so snapshot the ids first.
         std::vector<U64> toDrop;
         for (auto& kv : g_objs) if (!idsBefore.count(kv.first)) toDrop.push_back(kv.first);

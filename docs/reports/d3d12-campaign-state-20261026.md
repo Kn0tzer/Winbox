@@ -4191,11 +4191,21 @@ layout at 44, size 64):
   * The Dispatch32 family records the base groups and calls
     vk64MarkComputeWrites before recording -- the same
     record-time marking the 64-bit path uses on this base.
-    The submit-time epoch re-stamp (lane-cepoch, merged before
-    this lane) replays the SHARED serializer case over shared
-    command records, so 32-bit-recorded dispatches are
-    re-stamped automatically; it is deliberately not
-    duplicated here.
+    The submit-time epoch re-stamp is deliberately not
+    duplicated here. Lane-cepoch's fix is NOT merged on this
+    branch -- it precedes this lane in the merge queue -- but
+    it replays the SHARED serializer case over shared command
+    records, so once both lanes have merged, 32-bit-recorded
+    dispatches are re-stamped automatically by construction.
+    On this branch alone, the record-time epoch snapshot
+    stands (the same pre-cepoch state the 64-bit path shipped
+    in section 4.30). [Corrected by lane-vk32fix: this bullet
+    originally claimed cepoch was "merged before this lane",
+    which is false -- 8edf68b9f is not an ancestor of this
+    branch and the re-stamp functions do not exist in this
+    tree. The lane's commit message carries the same false
+    sentence; a commit message cannot be rewritten, so this
+    correction and section 4.41-on-branch are the record.]
   * Both 32-bit buffer copies defer per region through the
     shared CMD_COPY_B2B_RB record when a GPU write covers the
     source range (bounds-clamped, no-overflow checks), falling
@@ -4249,3 +4259,193 @@ Honest limits: no cs12-32 in-guest proof yet (see above); the
 epoch re-stamp coverage of 32-bit dispatches is by shared-code
 construction and lands with the cepoch merge order, not
 duplicated on this branch.
+## 4.41-on-branch vk32compute frontier-review fixes: the six findings of review #2, confirmed and closed (2026-10-29, lane-vk32fix; renumbers at merge)
+
+Frontier review #2 (Claude Code, Opus, high effort, diff-only) of
+the vk32compute commit 91feb035d returned "merge with fixes": the
+32-bit argument slots, struct offsets, offset spaces and record
+shapes were verified correct, and six findings remained. This lane
+re-derived every finding from the code before touching anything.
+All six CONFIRMED; none refuted. The vk32compute merge was gated
+on this lane; the gate is now clear, with four merge-gate items
+named at the end of this section.
+
+1. (HIGH, text) The false epoch claim -- CONFIRMED and corrected.
+   `git merge-base --is-ancestor 8edf68b9f HEAD` on this branch:
+   NOT an ancestor (only lane-cepoch contains it); neither
+   vk64RestampComputeWrites nor vk64MarkComputeWritesUpTo exists
+   in this tree. The false sentence "(lane-cepoch, merged before
+   this lane)" stood in the 91feb035d commit message and in
+   section 4.40-on-branch's serializer bullet; the register
+   addendum already said the honest thing ("when it merges").
+   The 4.40-on-branch bullet is corrected in place, marked as
+   corrected by this lane; the commit message itself cannot be
+   rewritten, so the correction lives here and in that bullet.
+   The composition IS sound by merge order -- cepoch precedes
+   vk32compute in the queue, the re-stamp operates on the shared
+   records, and vk64MarkComputeWrites stays a wrapper -- and the
+   text now says exactly that.
+
+2. (MEDIUM, real hole) 32-bit vkMapMemory never set wasMapped --
+   CONFIRMED and fixed. The 64-bit handler checks
+   `args.a[2] > m->size` and sets `m->wasMapped = true`
+   (vk64bridge.cpp:7629/7633); the 32-bit handler had neither.
+   The flag is load-bearing: vk64FindGpuWrite's trust check
+   (vk64bridge.cpp:4197) skips marks on mapped memory, and the
+   emitBufferData / image paths take their always-re-hash fast
+   path from it (:4532, :4609). With the 32-bit compute deferral
+   keying on marks, a persistently-mapped 32-bit buffer would
+   have deferred on untrusted marks and skipped re-hashing --
+   stale GPU inputs, wrong readbacks. The 32-bit handler now
+   mirrors the 64-bit one exactly (offset check returning
+   VK_ERROR_MEMORY_MAP_FAILED, then the flag).
+
+3. (LOW-MED) 32-bit copy regions: clamped size used only for the
+   deferral decision -- CONFIRMED and fixed. Both 32-bit copy
+   handlers computed a clamped `n` inside the deferral block,
+   then ran the eager fallback with the RAW region size and an
+   unclamped uEnd. Both handlers now mirror the 64-bit
+   CopyBuffer2 discipline: bind-relative source/destination
+   offsets are bounds-checked up front as VK64_DROP_IF(continue)
+   (a region starting at or past the end of its allocation drops
+   loudly and is counted), the clamped size drives BOTH the
+   deferral decision and the eager memcpy, and uOff/uEnd use the
+   clamped values throughout.
+
+4. (LOW) 32-bit DispatchIndirect silently recorded (0,0,0) --
+   CONFIRMED and fixed. The combined 32-bit dispatch handler
+   fell through with zero group counts when the indirect buffer,
+   its memory, or its VA could not be resolved -- recording a
+   phantom dispatch AND stamping GPU-write marks on it, so later
+   copies deferred against a dispatch that never happened, with
+   no decline recorded. The indirect branch now drops loudly via
+   VK64_DROP_IF(return 0) at each resolution step, mirroring the
+   64-bit handler; nothing is recorded and nothing is marked.
+
+5. (INFORMATIONAL) One bind stream for GRAPHICS and COMPUTE --
+   CONFIRMED as the deliberate model; register row added.
+   recordBindSets (vk64bridge.cpp:2233) takes no bind-point
+   parameter on either ABI; the single cb->sets[] stream is the
+   bridge's model since the V2 compute lane, adjudicated
+   by-design in the crootmark review and again in review #2.
+   The register now names it: a new NOT-A-GAP row (register on
+   this branch 373 = 73/66/234/0) states the guest-visible bound
+   plainly -- interleaved bind points in one command buffer see
+   the last-bound sets at each index; per-pipeline root state
+   does not flow through this stream. No code change.
+
+6. (INFORMATIONAL -> pin) VkComputePipelineCreateInfo layout --
+   probe CONFIRMS the reviewer's reasoned values for the bridge
+   header, and the asserts are now pinned. An offsetof probe
+   compiled against source/vulkan/vk32_guest.h prints sizeof 64,
+   stage at 12, stage.module at 28 (stage + 16), layout at 44,
+   basePipelineHandle at 52, basePipelineIndex at 60,
+   sizeof(VkPipelineShaderStageCreateInfo) 32. The generator
+   (tools/vulkan/gen/gen_vk32_guest.py) now emits sizeof AND
+   offsetof static_asserts for both structs, and the regenerated
+   header differs from the committed one by exactly those seven
+   assert lines; the asserts compile under host g++ and under
+   i686-w64-mingw32-g++ (the guest toolchain). One divergence,
+   reported rather than hidden: the RAW vendored
+   source/vulkan/vk/vulkan_core.h under default MinGW i686 gives
+   sizeof 72 / stage 16 / layout 48 (8-byte alignment of the
+   uint64-bearing stage struct). The bridge header's boundary is
+   not the raw header: its own header comment documents that
+   Wine converts Windows structs before this boundary and every
+   struct in it sits in #pragma pack(push, 4) to reproduce the
+   i386 driver layout exactly -- the established, empirically
+   proven model for this header (the campaign has already
+   falsified default-MinGW offsetof as guest truth once, on the
+   32-bit sample-count offsets). The bridge values are pinned;
+   the struct-specific in-guest proof remains the cs12-32 merge
+   gate below.
+
+Citation re-pins: the bridge edits shifted every construct
+below the 32-bit map handler, so register row 42's six cites
+were re-pinned to the lines the same constructs occupy now
+(create-pipelines case 12361 -> 12380; bind gates 11095 ->
+11103 and 12302 -> 12321; dispatch mark 11793 -> 11812; copy
+deferral tests 11357 -> 11372 and 11416 -> 11433), each
+verified by reading the construct at its new line.
+
+Guards (run-native, tools/vkd3d/tests/vk64_native_test.cpp):
+two new blocks after the vk32compute guard block.
+- "32-bit vkMapMemory flags mapped memory; compute deferral
+  declines on it (wasMapped)": the full compute chain on an
+  allocation mapped FIRST through the 32-bit trap -- map returns
+  VK_SUCCESS, writes the VA back, sets wasMapped; a map with the
+  offset past the allocation end returns
+  VK_ERROR_MEMORY_MAP_FAILED; the dispatch still records its
+  GPU-write mark (asserted present in the mark list at the
+  memory-absolute offset) but vk64FindGpuWrite now declines it,
+  and a copy of the written range serves the guest's CURRENT
+  bytes eagerly (no readback record) instead of deferring.
+- "32-bit copy regions are bounds-checked loudly and clamped;
+  indirect dispatch must resolve": vkCmdCopyBuffer with a
+  region starting exactly at the allocation end drops loudly
+  (drop counter +1, nothing recorded); an overrunning region
+  copies only its clamped prefix (bytes past the clamp keep
+  their poison); a valid region copies. vkCmdCopyBuffer2KHR
+  with a destination starting at the allocation end drops
+  likewise. DispatchIndirect over a real buffer records the
+  buffer's group counts; an unresolvable handle and an unbound
+  buffer each drop loudly (+1 each) and record nothing.
+Sabotage (each reverted to the byte-identical fixed tree and
+re-verified by md5 / generator regeneration): removing the
+32-bit handler's `m->wasMapped = true;` aborts the test at the
+wasMapped assert (vk64_native_test.cpp:1407); restoring the
+raw-size eager copy in the v1 handler aborts at the poison
+assert (the clamped prefix's tail must stay 0xEE, :1621);
+restoring the silent indirect fall-through aborts at the
+drop-count assert for the unresolvable handle (:1654); and
+swapping the layout/basePipelineHandle field order in
+vk32_guest.h fails COMPILATION on the new static_asserts
+(offsetof(layout) 52 != 44, vk32_guest.h:7271) -- after which
+the header was restored by regenerating it from the generator,
+byte-identical. Each guard therefore fails without its fix and
+passes with it.
+
+Census maintenance: the six new VK64_DROP_IF sites (findings 3
+and 4) move the macro census 250 -> 256; the pin in
+vk-drop-macro-guard.test.mjs and the macro row's census text in
+the register are updated, per that guard's own rule that any
+added site updates both. All six are LIVE sites of the same
+classes as their 64-bit twins (the *2KHR handler's bounds pair
+names its buffers srcB/dstB, so its two condition texts are new
+pin entries).
+
+Suites: run-native 34 PASS blocks (32 baseline + the 2 new),
+zero failures. JS unit suite 321 passed / 0 failed on this
+branch's rebuilt dist ("Browser export verified"), identical
+to the base. Emulator native suite 647 tests, 0 FAILED.
+Citation audit 0/0 (228 MATCH / 14 MATCH-INHERITED / 96
+UNCHECKABLE / 7 EXEMPT) after the row-42 re-pins above.
+
+MERGE-GATE ITEMS for the vk32compute merge (named, in order):
+(a) Cepoch's guard web/tests/suite/vk-compute-epoch-restamp.
+    test.mjs pins the count of `vk64MarkComputeWrites(cb);`
+    call sites at 3; the vk32compute branch carries a fourth
+    (the 32-bit dispatch site). At the vk32compute merge, bump
+    that pin to 4 and re-run the guard. (The test file does not
+    exist on this branch; nothing here touches it.)
+(b) The register recount: this branch's register is 373
+    (73/66/234/0) including the row above; integ's register is
+    also 373 via a different row (the section 4.41 b2i row), so
+    the merged register recounts to 374. Re-run the citation
+    audit on the merged tree.
+(c) cs12-32 in-guest on the merged tree (carried from section
+    4.40-on-branch): BW_32_RESULTTAG=cs12 with the 32-bit
+    system-placement harness (d3d12-32-system.mjs, arch=x86);
+    the 64-bit uploading harness boots PE32 guests in WoW64 mode
+    and dies c0000135. This is also the in-guest proof for the
+    finding-6 struct layout.
+(d) Harness convergence (carried from 4.40-on-branch): this
+    tree's native-test create-pipelines block and integ's
+    section 4.40 correction are the same text; keep one.
+
+Residue (from the review, shared with the 64-bit path,
+pre-existing, out of this lane's scope): partially-overlapping
+copies go eager/stale; deferred-copy destinations are unmarked
+(chained copies can serve stale data); an eager copy landing
+after a deferred one has no ordering rule. All three are
+both-ABI properties of the deferral design, unchanged here.

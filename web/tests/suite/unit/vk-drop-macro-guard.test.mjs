@@ -88,13 +88,13 @@ function dropSites(src) {
   return sites;
 }
 
-test('guarded-site census: 250 sites, flow-control sites exactly as audited', () => {
+test('guarded-site census: 256 sites, flow-control sites exactly as audited', () => {
   const sites = dropSites(bridge);
-  assert.equal(sites.length, 250, 'total VK64_DROP_IF call sites changed');
+  assert.equal(sites.length, 256, 'total VK64_DROP_IF call sites changed');
   const byAction = {};
   for (const [a] of sites) byAction[a] = (byAction[a] || 0) + 1;
   assert.deepEqual(byAction,
-    { 'return 0': 159, 'return': 28, 'return nullptr': 1, 'continue': 59, 'break': 3 });
+    { 'return 0': 161, 'return': 28, 'return nullptr': 1, 'continue': 63, 'break': 3 });
   // The 58 continue/break sites from the macro-class audit (action, condition)
   // with multiplicities (mirrored handlers share condition text). Any site
   // added, removed or reworded must update this pin and the register row.
@@ -116,7 +116,8 @@ test('guarded-site census: 250 sites, flow-control sites exactly as audited', ()
     'continue ||| !waitForReadbackFlag(pend.flagPtr, 10000)': 1,
     'continue ||| dstBase >= memEnd': 1,
     'continue ||| dOff + pxBytes > dEndB': 2,
-    'continue ||| dRel < dst->memOff || dRel >= dmem->size': 1,
+    'continue ||| dRel < dst->memOff || dRel >= dmem->size': 2,
+    'continue ||| dRel < dstB->memOff || dRel >= dmem->size': 1,
     'continue ||| dxAbs >= dst->w': 3,
     'continue ||| dyAbs >= dst->h': 3,
     'continue ||| me.offset + me.size > si.dataSize || me.size > 8 || me.size == 0': 1,
@@ -126,7 +127,8 @@ test('guarded-site census: 250 sites, flow-control sites exactly as audited', ()
     'continue ||| sOff + pxBytes > sEndB': 2,
     'continue ||| sOff >= sEnd || dOff >= dEnd': 3,
     'continue ||| sOff >= sEndB || dOff >= dEndB': 2,
-    'continue ||| sRel < src->memOff || sRel >= smem->size': 1,
+    'continue ||| sRel < src->memOff || sRel >= smem->size': 2,
+    'continue ||| sRel < srcB->memOff || sRel >= smem->size': 1,
     'continue ||| slot >= VK64_MAX_VERT_BINDINGS': 1,
     'continue ||| srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0': 3,
     'continue ||| sx < 0 || (U32)sx >= src->w': 3,
