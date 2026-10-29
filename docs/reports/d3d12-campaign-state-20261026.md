@@ -6221,3 +6221,68 @@ cleared by `vkCmdClearDepthStencilImage`, a separate handler whose
 ranges already reach the page tier as recorded commands — out of
 scope here. An image whose extent fields are unset still takes the
 historical whole-allocation fill (no recorded workload creates one).
+
+**Merge outcome (integ, 2026-10-29) -- GATE COMPLETE.** Merged as
+`b0f0634b5` (parents `140701294` + `2abd3d4d9`); citation re-pin
+fallout `a59d6b8b2`; the merge rider (below) landed as `b16984d2f`.
+The lane's section is renumbered 4.52 here. The bridge merged
+delta against pre-merge integ is exactly three hunks -- the shared
+helpers (+65 lines at the layout helpers), the 64-bit handler
+rewrite, the 32-bit handler rewrite -- giving exact citation band
+deltas (+65 from old line 2532, +72 cumulative from 8891, +84
+cumulative from 11875). The register was applied as a delta, not
+taken from the branch: one IMPLEMENTED row added (helpers at
+vk64bridge.cpp:2524/:2549/:2565, handlers at :8921/:11913), the
+clear32 row's citations re-pinned through the insertion and its
+residue sentence closed; totals 376 = 77 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN. Citation audit back
+to 0 DRIFT / 0 MISSING (230 MATCH / 14 MATCH-INHERITED /
+97 UNCHECKABLE / 7 EXEMPT over 348 cited rows; 17 re-pins by the
+auditor's safe --fix, 16 hand-pinned by the band deltas,
+construct-verified). THE RIDER: the lane's insertions broke three
+existing JS tests on the integ-shaped tree (proven independently
+by the packedclear64 lane on a pristine worktree at the lane tip),
+and the repair is part of this merge, at full assertion strength.
+vk-image-transfer and vulkan-image-format-size extract bridge
+slices that now include vkResolveClearRange/vkClearColorFill, so
+their stub preambles gain the ClearRangeArg mirror (plus a
+vk64Unsupported stub for transfer; <vector>/U8/DeviceMemory/
+vk64TouchMem declarations and Image.memOff for format-size) --
+stub reversion reproduces the original ClearRangeArg compile
+failures verbatim. The vk-image-dirty-generation census did not
+pair the clear handlers' dirtyGen bumps with a vk64TouchMem: the
+touch now happens per subresource inside vkClearColorFill. The
+census's (a) pairing rule learned that delegation, pinned at the
+helper's own body (`vk64TouchMem(dmem, absOff, subSize)`), and
+the (f) raw-write pin moved 52 -> 53 with its disposition note
+(the helper's one memcpyToGuest line, tied into the signal by the
+helper touch + each handler's bump). Honesty, by scratch mutation
+with the bridge restored byte-identical (sha256-checked) after
+each: deleting the helper's touch turns the census red at the
+helper pin; renaming the 64-bit handler's vkClearColorFill call
+reproduces the original "dirtyGen bump at line 8959 lacks a
+paired vk64TouchMem" failure; neutralizing an unrelated bump's
+adjacent touch is still caught (line 2773). Suites on the merged
+tree: JS unit 328 passed / 0 failed (BW_TEST_DIST=integ dist)
+with the three repaired tests passing by name
+(vk-image-dirty-generation, vk-image-transfer,
+vulkan-image-format-size); emulator native 648 OK / 0 FAILED;
+run-native.py 39 PASS / 0 FAIL -- 38 baseline plus the lane's
+block, accounted by name ("vkCmdClearColorImage honours
+subresource ranges (both ABIs; outside bytes untouched, REMAINING
+and clamp)"), and the clear32 block ("Vulkan32 clear-color writes
+whole texels") still passes. Dist built from the rider commit
+(stamp `b16984d2f`, wasm `5a5458bafc4f...`), "Browser export
+verified", completeness 0 failures / 1 pre-existing environmental
+skip; wine64.zip member-verified (shim `ae96105b...` under
+bw64vulkan.dll / vulkan-1.dll / winevulkan.dll; canonical d3d12
+pair `a96b4e9d...` / `3d3bfe43...`) and wine32.zip carries the
+PE32 pair `872c3d65...` / `71e9c174...`. Guest gate on the merged
+dist (probe slot, one at a time, guest-verdict adjudication):
+tri12-32 via the 32-bit system-placement harness (arch=x86)
+passed:true outright, RESULT 0
+(test-results/dxvk-subclearmerge-tri32); tri12 RESULT 0 with no
+fail lines (test-results/dxvk-subclearmerge-tri12; composite
+passed:false is the standing 0-chunk capture artifact); cs12
+RESULT 0 with the full standing signature (VARIANT TEX/BUF/BUF2
+all bad=0; test-results/dxvk-subclearmerge-cs12). GATE COMPLETE.
