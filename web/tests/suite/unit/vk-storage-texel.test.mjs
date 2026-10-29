@@ -89,11 +89,15 @@ test('bridge: emitDescSet wires kind 6 with the view record, its bytes, and view
 });
 
 test('bridge: a dispatch through a storage texel binding marks the view range GPU-written', () => {
-  const start = bridge.indexOf('static void vk64MarkComputeWrites');
+  // The marking walk is shared by the dispatch and draw entry points
+  // (metabindfix 4.32): vk64MarkBoundWrites carries the walk itself.
+  const start = bridge.indexOf('static void vk64MarkBoundWrites');
   const mark = bridge.slice(start, bridge.indexOf('\n}\n', start));
   assert.match(mark, /b\.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER/);
   assert.match(mark, /vk64MarkGpuWrite\(bv->buffer, buf->memOff \+ bv->offset, bv->range, buf->mem, mem->writeEpoch\)/,
     'the view range is epoch-marked so a later copy defers to a page readback');
+  assert.match(bridge, /static void vk64MarkComputeWrites/, 'the dispatch entry point remains');
+  assert.match(bridge, /static void vk64MarkDrawWrites/, 'draws mark too (finding 9: fragment-stage storage writes)');
 });
 
 test('page: kind 6 resolves in the format signature, the bind group, its fingerprint and the readback', () => {
@@ -103,16 +107,20 @@ test('page: kind 6 resolves in the format signature, the bind group, its fingerp
   const entriesAt = page.indexOf('function bindGroupEntries');
   const entries = page.slice(entriesAt, page.indexOf('async function render', entriesAt));
   assert.match(entries, /b\.kind === 6/, 'bind-group construction serves kind 6');
-  assert.match(entries, /storageTexelRegistry\.set\(/, 'served views register for readback resolution');
+  assert.match(entries, /storageTexelBind\(b\.obj\)/, 'served views resolve through the shared bind helper, which registers them for readback resolution');
+  const bindFn = page.slice(page.indexOf('function storageTexelBind'), page.indexOf('function pickTexelReadback'));
+  assert.match(bindFn, /storageTexelRegistry\.set\(viewHex, st\)/, 'the bind helper registers the view state in the readback directory');
   assert.match(entries, /noteDrop\('bind-group-storage-texel-unavailable'/, 'an unmaterialisable view still drops loudly');
   const fp = page.slice(page.indexOf('function bindGroupFingerprint'), page.indexOf('function bindGroupEntries'));
-  assert.match(fp, /b\.kind === 6/, 'the fingerprint keys kind 6 on its content');
-  assert.match(fp, /storageTexelTextureKey\(b\.obj\)/, 'the fingerprint uses the storage texel content key');
-  assert.match(page, /function storageTexelTextureFor\(viewHex\)/, 'the storage texel materialiser exists');
+  assert.match(fp, /b\.kind === 6/, 'the fingerprint keys kind 6');
+  assert.match(fp, /storageTexelBind\(b\.obj\)/, 'the fingerprint resolves through the bind helper, so cache-hit binds still register and observe re-uploads (finding 2)');
+  assert.match(fp, /storageTexelTextureKey\(stex\)/, 'the fingerprint keys the bind group on the materialisation identity (view + buffer + format + length, never the seed content hash -- finding 1)');
+  assert.match(page, /function storageTexelBind\(viewHex\)/, 'the storage texel materialiser exists');
   assert.match(page, /GPUTextureUsage\.STORAGE_BINDING \| GPUTextureUsage\.COPY_DST \| GPUTextureUsage\.COPY_SRC/,
     'the materialised texture is writable by the dispatch and readable by the readback copy');
   const rb = page.slice(page.indexOf('const v2bufreadbacks = []'), page.indexOf('// Readback of the present target'));
-  assert.match(rb, /storageTexelRegistry\.values\(\)/, 'the readback encoder falls back to storage texel textures');
+  assert.match(rb, /pickTexelReadback\(brb, true\)/, 'the readback encoder resolves storage texel textures through the freshness-ordered picker');
+  assert.match(page, /storageTexelRegistry\.values\(\)/, 'the picker walks the readback directory');
   assert.match(rb, /copyTextureToBuffer/, 'the readback copies out of the storage texture');
   assert.match(page, /src\.subarray\(vbr\.srcSkip \|\| 0/, 'the resolver honours the in-texture skip');
 });

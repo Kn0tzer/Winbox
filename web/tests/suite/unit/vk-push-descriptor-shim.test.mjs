@@ -52,10 +52,21 @@ test('the built PE shim DLLs export the push family and stay byte-identical', ()
   assert.ok(names[0].equals(names[1]) && names[0].equals(names[2]),
     'the three staged shim copies must stay byte-identical (one handle domain)');
   const dll = names[0].toString('latin1');
+  // PE export names are NUL-terminated strings in the export table:
+  // match them whole. A bare substring check is vacuous for the core
+  // names -- 'vkCmdPushDescriptorSet' is a prefix of the KHR name, and
+  // the old DLL already contained the core string as part of it, so
+  // the check could not fail (frontier review finding 10, metabindfix
+  // 4.32). The matcher is pinned against exactly that trap below.
+  const hasExport = (text, name) => text.includes(name + '\0');
   for (const name of ['vkCmdPushDescriptorSetKHR', 'vkCmdPushDescriptorSet',
     'vkCmdPushDescriptorSetWithTemplateKHR', 'vkCmdPushDescriptorSetWithTemplate']) {
-    assert.ok(dll.includes(name), `${name} not exported by the built shim`);
+    assert.ok(hasExport(dll, name), `${name} not exported by the built shim`);
   }
+  const khrOnly = 'xxvkCmdPushDescriptorSetKHR\0yy';
+  assert.ok(hasExport(khrOnly, 'vkCmdPushDescriptorSetKHR'), 'the matcher finds the KHR export');
+  assert.ok(!hasExport(khrOnly, 'vkCmdPushDescriptorSet'),
+    'a buffer carrying only the KHR name must not satisfy the core export name');
 });
 
 test('the runtime completeness pins match the built shim sha256', () => {

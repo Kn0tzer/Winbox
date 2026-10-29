@@ -1308,6 +1308,119 @@ int main() {
                 g_v2Pending.clear();
                 puts("PASS: storage texel push descriptor wires kind 6, marks and reads back");
             }
+
+            // Partial-overlap copy split (metabindfix, section 4.32;
+            // frontier review finding 7): a copy region only PARTIALLY
+            // covered by a GPU-write mark used to fail the containment
+            // test and copy eagerly as a whole -- the covered subrange
+            // read stale pre-dispatch bytes. The handler now splits the
+            // region at the mark boundaries: covered subranges defer
+            // (CMD_COPY_B2B_RB), the rest copies eagerly at record time.
+            {
+                U64 spMemId; auto* spMem = createObj<DeviceMemory>(K_MEMORY, spMemId);
+                spMem->size = 512; spMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 spBufId; auto* spBuf = createObj<Buffer>(K_BUFFER, spBufId);
+                spBuf->size = 512; spBuf->mem = spMemId; spBuf->memOff = 0;
+                U64 spViewId; auto* spView = createObj<BufferView>(K_BUFFERVIEW, spViewId);
+                spView->buffer = spBufId; spView->format = VK_FORMAT_R32G32_UINT;
+                spView->offset = 64; spView->range = 256;
+                U64 spDstMemId; auto* spDstMem = createObj<DeviceMemory>(K_MEMORY, spDstMemId);
+                spDstMem->size = 512; spDstMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 spDstId; auto* spDst = createObj<Buffer>(K_BUFFER, spDstId);
+                spDst->size = 512; spDst->mem = spDstMemId; spDst->memOff = 0;
+                U64 spLayId; createObj<DescSetLayout>(K_SETLAYOUT, spLayId);
+                U64 spPlId; auto* spPl = createObj<PipelineLayout>(K_PIPELAYOUT, spPlId);
+                spPl->nsets = 1; spPl->sets[0] = spLayId;
+                std::vector<U8> pat(512), zeros(512, 0), back(512);
+                for (size_t i = 0; i < pat.size(); i++) pat[i] = (U8)(i & 0xff);
+                memory.memcpyToGuest(spMem->va, pat.data(), 512);
+                memory.memcpyToGuest(spDstMem->va, zeros.data(), 512);
+                memory.writeq(3200, spViewId);
+                VkWriteDescriptorSet spw{};
+                spw.dstBinding = 0; spw.descriptorCount = 1;
+                spw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                spw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &spw, sizeof(spw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL whole{0, 0, 512};
+                memory.memcpyToGuest(3400, &whole, sizeof(whole));
+                VkBufferCopyL outside{384, 0, 64};
+                memory.memcpyToGuest(3424, &outside, sizeof(outside));
+                U64 cbSpId; auto* cbSp = createObj<CmdBuf>(K_CMDBUF, cbSpId);
+                vkCmdBindPipeline(cbSpId, 1, csPipeId);
+                vkCmdPushDescriptorSetKHR(cbSpId, 1, spPlId, 0, 1, (const void*)3264);
+                vkCmdDispatch(cbSpId, 1, 1, 1);
+                vkCmdCopyBuffer(cbSpId, spBufId, spDstId, 1, (const void*)3400);
+                // Exactly one deferred segment: the mark's [64, 320).
+                U32 rbSegs = 0;
+                for (const Cmd& k : cbSp->cmds) {
+                    if (k.kind != CMD_COPY_B2B_RB) continue;
+                    rbSegs++;
+                    assert(k.copyB2BRb.srcBuffer == spBufId && k.copyB2BRb.dstBuffer == spDstId);
+                    assert(k.copyB2BRb.srcOff == 64 && k.copyB2BRb.dstOff == 64 && k.copyB2BRb.size == 256);
+                }
+                assert(rbSegs == 1);
+                // The eager segments already landed at record time; the
+                // covered range is still zeros in the destination.
+                memory.memcpyFromGuest(back.data(), spDstMem->va, 512);
+                assert(memcmp(back.data(), pat.data(), 64) == 0);
+                assert(memcmp(back.data() + 64, zeros.data(), 256) == 0);
+                assert(memcmp(back.data() + 320, pat.data() + 320, 192) == 0);
+                // A copy with NO overlap stays a single eager copy.
+                vkCmdCopyBuffer(cbSpId, spBufId, spDstId, 1, (const void*)3424);
+                U32 rbSegs2 = 0;
+                for (const Cmd& k : cbSp->cmds) if (k.kind == CMD_COPY_B2B_RB) rbSegs2++;
+                assert(rbSegs2 == 1);
+                memory.memcpyFromGuest(back.data(), spDstMem->va, 64);
+                assert(memcmp(back.data(), pat.data() + 384, 64) == 0);
+                puts("PASS: partial-overlap copy splits at the GPU-write mark boundaries");
+            }
+
+            // Draw-time GPU-write marks (metabindfix, section 4.32;
+            // frontier review finding 9): a vertex/fragment shader can
+            // write a storage texel buffer too (spirvfix R12S converts
+            // Dim=Buffer images in any stage, and the bridge audit is
+            // stage-agnostic), so the draw traps mark the bound sets'
+            // storage ranges exactly like the dispatch traps. Before
+            // this, only dispatches marked, and a copy after such a
+            // draw read stale guest bytes eagerly.
+            {
+                U64 drMemId; auto* drMem = createObj<DeviceMemory>(K_MEMORY, drMemId);
+                drMem->size = 512; drMem->va = memory.mmapReserveAndMap(512, 3);
+                U64 drBufId; auto* drBuf = createObj<Buffer>(K_BUFFER, drBufId);
+                drBuf->size = 512; drBuf->mem = drMemId; drBuf->memOff = 0;
+                U64 drViewId; auto* drView = createObj<BufferView>(K_BUFFERVIEW, drViewId);
+                drView->buffer = drBufId; drView->format = VK_FORMAT_R32G32_UINT;
+                drView->offset = 64; drView->range = 256;
+                U64 drDstMemId; auto* drDstMem = createObj<DeviceMemory>(K_MEMORY, drDstMemId);
+                drDstMem->size = 256; drDstMem->va = memory.mmapReserveAndMap(256, 3);
+                U64 drDstId; auto* drDst = createObj<Buffer>(K_BUFFER, drDstId);
+                drDst->size = 256; drDst->mem = drDstMemId; drDst->memOff = 0;
+                U64 drLayId; createObj<DescSetLayout>(K_SETLAYOUT, drLayId);
+                U64 drPlId; auto* drPl = createObj<PipelineLayout>(K_PIPELAYOUT, drPlId);
+                drPl->nsets = 1; drPl->sets[0] = drLayId;
+                U64 gfxPipeId; auto* gfxPipe = createObj<Pipeline>(K_PIPELINE, gfxPipeId);
+                gfxPipe->vs = csModId; // a stage module is bound: the mark gate is stage presence
+                gfxPipe->layout = drPlId;
+                memory.writeq(3200, drViewId);
+                VkWriteDescriptorSet drw{};
+                drw.dstBinding = 0; drw.descriptorCount = 1;
+                drw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                drw.pTexelBufferView = 3200;
+                memory.memcpyToGuest(3264, &drw, sizeof(drw));
+                struct VkBufferCopyL { U64 srcOffset; U64 dstOffset; U64 size; };
+                VkBufferCopyL region{64, 0, 256};
+                memory.memcpyToGuest(3400, &region, sizeof(region));
+                U64 cbDrId; auto* cbDr = createObj<CmdBuf>(K_CMDBUF, cbDrId);
+                vkCmdBindPipeline(cbDrId, 0, gfxPipeId);
+                vkCmdPushDescriptorSetKHR(cbDrId, 0, drPlId, 0, 1, (const void*)3264);
+                vkCmdDraw(cbDrId, 3, 1, 0, 0);
+                vkCmdCopyBuffer(cbDrId, drBufId, drDstId, 1, (const void*)3400);
+                bool deferred = false;
+                for (const Cmd& k : cbDr->cmds) if (k.kind == CMD_COPY_B2B_RB) deferred = true;
+                assert(deferred); // the draw marked the view range: the copy defers
+                puts("PASS: draw-time storage writes mark the view range (graphics-stage UAV)");
+            }
         }
         // GUARD (silent drop): a command buffer with no render pass but with an image
         // copy used to be skipped ("no framebuffer, skipped"); it now becomes a 1x1

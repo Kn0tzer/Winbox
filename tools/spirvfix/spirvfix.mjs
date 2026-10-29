@@ -1799,6 +1799,35 @@ export function storageTexelBuffersTo2D(mod, log) {
       if (ins.op === Op.CopyObject && traced.has(ins.words[2]) && !traced.has(ins.resultId)) { traced.add(ins.resultId); grew = true; }
   }
   if (!traced.size) return refuse('storage texel image type declared but never loaded');
+  // Vet uses of the image VARIABLE itself (frontier review finding 4,
+  // metabindfix 4.32): the consumer scan below only sees values traced
+  // from OpLoad, but OpImageTexelPointer takes the VARIABLE -- it is
+  // the operand of every texel atomic (an InterlockedAdd on an
+  // RWBuffer) -- and OpCopyMemory on the variable has the same shape.
+  // Neither is in traced, so both slipped through: the rewrite flipped
+  // the image type to 2D, left the texel pointer's scalar coordinate
+  // untouched, and emitted invalid SPIR-V while logging success. The
+  // variable may only be consumed by OpLoad; anything else naming it
+  // refuses the conversion. Only function bodies are scanned: a
+  // variable can only be USED at runtime there (entry points list
+  // interface variables and decorations target them, but those are
+  // metadata), and the global sections are full of literals that can
+  // numerically equal a variable id -- an OpTypeImage's Dim word is
+  // the proven case (Dim=Buffer is 5, a perfectly ordinary variable
+  // id), the same collision class the consumer scan's metadata skip
+  // exists for. In-body debug records stay skipped for the same
+  // reason (their string-id words are literals, not uses).
+  const varScanSections = sections(mod);
+  const varScanStart = varScanSections.firstFunc < 0 ? mod.insns.length : varScanSections.firstFunc;
+  for (let ix = varScanStart; ix < mod.insns.length; ix++) {
+    const ins = mod.insns[ix];
+    if (ins.op === Op.Load || ins.op === Op.CopyObject || ins.op === Op.Variable) continue;
+    if (ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 8 ||
+        ins.op === 10 || ins.op === 14 || ins.op === 73 || ins.op === 75) continue;
+    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+    for (let k = start; k < ins.words.length; k++)
+      if (varIds.has(ins.words[k])) return refuse('storage texel image variable used by op ' + ins.op + ' beyond OpLoad (texel-pointer/atomics are not wrappable)');
+  }
   // Vet consumers: OpImageWrite (99, result-less: image at words[0],
   // coordinate words[1]) and OpImageRead (98: image words[2], coordinate
   // words[3]) are the only legal consumers. Image operands on either are

@@ -283,6 +283,12 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // a device-properties struct (UUID + nodeMask) back to the guest. It is not
   // image memory, so no dirtyGen bump applies; it is dispositioned here as an
   // exception, not a bump.
+  // 52 again since the metabindfix copy split (2026-10-29, campaign 4.32):
+  // vk64CopyRegionSplit holds the single eager memcpyToGuest line that both
+  // vkCmdCopyBuffer handlers route through (previously one per handler, net
+  // -1 from 53). It writes the destination BUFFER's guest memory for the
+  // segments not covered by a GPU-write mark, covered by each handler's
+  // existing post-loop dirtyGen bump + vk64TouchMem (asserted in (b)).
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 53, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 52, 'pinned count of raw guest-write primitive lines');
 });

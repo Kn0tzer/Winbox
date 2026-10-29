@@ -254,3 +254,74 @@ test('R12S: an id-carrying image operand (Lod) on the write still refuses the co
   assert.ok(!r.applied.includes('storage-texel-buffer-to-2d'), JSON.stringify(r.applied));
   assert.ok(r.log.some(l => l.includes('R12S') && l.includes('refused')), JSON.stringify(r.log));
 });
+
+// --- Finding 4 (metabindfix 4.32): uses of the image VARIABLE ----------
+// A storage texel buffer consumed through OpImageTexelPointer +
+// OpAtomicIAdd (the InterlockedAdd-on-RWBuffer shape). The texel
+// pointer names the image VARIABLE, not a load result, so the consumer
+// trace never sees it: pre-fix, R12S rewrote the image type to 2D,
+// left the pointer's scalar coordinate untouched, and emitted invalid
+// SPIR-V while logging success. The module below ALSO carries a plain
+// load+store (so the traced set is non-empty and the conversion would
+// otherwise proceed): R12S must refuse on the variable use alone.
+function spvWords(insns) {
+  const words = [0x07230203, 0x00010000, 0, 32, 0];
+  for (const [op, ...operands] of insns) words.push(((operands.length + 1) << 16) | op, ...operands);
+  const b = new Uint8Array(words.length * 4);
+  const d = new DataView(b.buffer);
+  words.forEach((w, i) => d.setUint32(i * 4, w, true));
+  return b;
+}
+function texelModule(withAtomic) {
+  const insns = [
+    [17, 1], [17, 47],                       // Shader, ImageBuffer
+    [14, 0, 1],                               // OpMemoryModel Logical GLSL450
+    [15, 5, 15, 0x6e69616d, 0],               // OpEntryPoint GLCompute %main "main"
+    [16, 15, 17, 1, 1, 1],                    // OpExecutionMode LocalSize 1 1 1
+    [71, 5, 34, 0], [71, 5, 33, 0],           // OpDecorate %var DescriptorSet 0 / Binding 0
+    [21, 1, 32, 0],                           // %uint
+    [21, 2, 32, 1],                           // %int
+    [25, 3, 1, 5, 0, 0, 0, 2, 34],            // %img = OpTypeImage %uint Buffer ... R32ui
+    [32, 4, 0, 3],                            // %ptrImg = OpTypePointer UniformConstant %img
+    [32, 6, 11, 1],                           // %ptrScalar = OpTypePointer Image %uint
+    [19, 7],                                  // %void
+    [33, 8, 7],                               // %fnTy
+    [24, 9, 1, 4],                            // %uvec4
+    [59, 4, 5, 0],                            // %var = OpVariable %ptrImg UniformConstant
+    [43, 2, 10, 0],                           // %c0 = OpConstant %int 0
+    [43, 1, 11, 1],                           // %one = OpConstant %uint 1
+    [43, 1, 12, 1],                           // %scope = OpConstant %uint 1 (Device)
+    [43, 1, 13, 0],                           // %sem = OpConstant %uint 0
+    [44, 9, 14, 11, 11, 11, 11],              // %texel = OpConstantComposite %uvec4 (1,1,1,1)
+    [54, 7, 15, 0, 8],                        // %main = OpFunction
+    [248, 16],                                // OpLabel
+    [61, 3, 17, 5],                           // %loaded = OpLoad %img %var
+    [99, 17, 10, 14],                         // OpImageWrite %loaded %c0 %texel
+  ];
+  if (withAtomic) insns.push(
+    [60, 6, 18, 5, 10, 10],                   // %tp = OpImageTexelPointer %ptrScalar %var %c0 %c0
+    [194, 1, 19, 18, 12, 13, 11],             // %r = OpAtomicIAdd %uint %tp %scope %sem %one
+  );
+  insns.push([253], [56]);                    // OpReturn, OpFunctionEnd
+  return spvWords(insns);
+}
+
+test('R12S: a texel-pointer atomic naming the image variable refuses the conversion', () => {
+  const mod = texelModule(true);
+  const r = applySpirvFix(mod);
+  assert.ok(!r.applied.includes('storage-texel-buffer-to-2d'),
+    'a module whose image variable feeds OpImageTexelPointer must not be converted');
+  assert.ok(r.log.some(l => l.includes('R12S') && l.includes('variable used by op 60')),
+    'the refusal names the variable use: ' + JSON.stringify(r.log));
+  const out = parseSpirv(r.bytes);
+  const img = out.insns.find(i => i.op === 25);
+  assert.equal(img.words[2], 5, 'the image type stays Dim=Buffer on refusal');
+});
+
+test('R12S: the same module without the atomic converts (the vetting is not over-broad)', () => {
+  const r = applySpirvFix(texelModule(false));
+  assert.ok(r.applied.includes('storage-texel-buffer-to-2d'), JSON.stringify(r.applied));
+  const out = parseSpirv(r.bytes);
+  const img = out.insns.find(i => i.op === 25);
+  assert.equal(img.words[2], 1, 'Dim Buffer -> 2D');
+});
