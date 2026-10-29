@@ -8537,3 +8537,34 @@ REGISTER (merged, section renumbered 4.66): +1 IMPLEMENTED row for the
 32-bit handler (citation re-pinned to the merged handler at
 vk64bridge.cpp:12626) -> integ totals 380 rows = 80 IMPLEMENTED /
 66 REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN.
+
+MERGE OUTCOME (batched regime, light merge; merge de374b88f): the merged
+vk64bridge.cpp, vk64_native_test.cpp and vk-drop-macro-guard.test.mjs deltas
+are change-set identical to the lane delta (the cs32mem content in the lane's
+parent chain was already in integ via section 4.65 and is not double-applied;
+merge base is exactly 0fdd87f6e); the two "(campaign 4.64)" comments in the
+bridge and harness were renumbered to 4.66. The merged handler was read end
+to end: all three trap forms share the case at vk64bridge.cpp:12626, the
+shim-unpacked slots are a[1]=srcImage, a[3]=dstBuffer, a[4]=regionCount,
+a[5]=pRegions, the v1 form reads vk32abi::VkBufferImageCopy regions and the
+*2 forms VkBufferImageCopy2, and the record lambda fills CopyI2B fully
+(srcImage, dstBuffer, bufferOffset, bufferRowLength, bufferImageHeight,
+imageOffset x/y, extent w/h) behind the new loud drop on count > 1024 or a
+null region array. Register as delta (branch register file NOT taken): the
+header moves 379 -> 380 (79 -> 80 IMPLEMENTED) with a Cs32tex closure note,
+the VK64_DROP_IF macro row gains the 256 -> 257 census clause, and one new
+IMPLEMENTED row for the 32-bit handler is inserted after the 2KHR Info2 row,
+cited at the merged handler (vk64bridge.cpp:12626) -> integ totals 380 =
+80 IMPLEMENTED / 66 REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN (same-parser
+before/after recount: +1 row, +1 IMPLEMENTED, all other dispositions
+unchanged). Citation audit 0 DRIFT / 0 MISSING over 351 cited rows
+(231 MATCH / 14 MATCH-INHERITED / 99 UNCHECKABLE / 7 EXEMPT; the new row
+lands as MATCH). Light suites on the merged tree: JS unit 332 passed /
+0 failed against the batch-gate-#2 dist (stamp 17a8c95a2), with
+vk-drop-macro-guard green by name at the 257-site / 162-'return 0' pin;
+emulator native 648 tests / 0 FAILED; run-native 50 PASS (49 + 'Vulkan32
+CopyImageToBuffer records region fields (v1 + 2KHR) and submits a
+READBACK'). No dist rebuild and no guest probes in this lane, per the
+batched regime: the final full gate re-proves cs12-32 on the merged tree
+(lane-side guest proof stands meanwhile: cs12-32 RESULT 0 full signature
+and tri12-32 RESULT 0 on the lane dist).
