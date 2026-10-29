@@ -5589,3 +5589,111 @@ section 4.39's in-guest proof of the identical graphics pattern.
 **Suites.** spirvfix-r15 27/27 (22 + 5 new). JS suite: the final full run reads 313 passed / 4 failed, where the failure set is provenance-artifacts (the branch baseline's sole failure — the documented fresh-worktree missing-dist artifact) plus fork-fd-snapshot, vk-gs-passthrough and xwire-input2, all three of which pass standalone on this tree and passed in both earlier full runs (load flakes under parallel lane builds; none touches the R15 classifiers). The two failures the change itself caused — vk-register-citations (line drift; re-pinned below) and no-silent-failure (reviewed baseline; below) — pass in the final run, so the change adds zero new failures. run-native.py end-to-end green, 33 PASS blocks (31 at base + the 2 new guards). Corpus gate 32/37 (32/36 at base): the added fixture specializes, then stops at the same by-design naga UnsupportedCapability(StorageImageReadWithoutFormat) as its unmutated twin — the deliberate fixture-addition change. Register: no disposition changes — the fix removes a false decline no register row counted. Citations: the insertions shifted vk64bridge.cpp lines below the r15 namespace, so the lane re-pinned the drifted vulkan.md citations (31 by the audit's --fix, 18 hand-pinned construct-by-construct, each content-verified against its pre-change line) — audit 228 MATCH / 12 MATCH-INHERITED / 96 UNCHECKABLE / 7 EXEMPT, 0 DRIFT / 0 MISSING (base 227/12/97/7; one row moved UNCHECKABLE → MATCH under the re-pins — coverage grew, no disposition changed). The no-silent-failure guard's reviewed baseline for vk64bridge.cpp unloggedDefault moves 20 → 22: findIdUse's two `default:` arms are operand-classification fallbacks (they select the historical all-id scan), not silent failure sites, the same reviewed-bump pattern as §4.35's fallout fix. Base note: the lane branched from the integ tip 8bf268112 (the brief's b6d16b2fe is an ancestor; the tip adds the vk64harness repair this lane's bridge verification runs on).
 
 **Residue (named).** (1) Extension instructions whose payloads carry literals inside id-shaped operand slots — debug-info OpExtInst bodies (OpenCL.DebugInfo.100 / NonSemantic.Shader.DebugInfo.*) and vendor image/atomic extension ops — keep the historical scan and therefore decline-on-collision: fail-closed, unchanged from before. (2) An OpSwitch whose selector width cannot be resolved keeps the historical scan over its pairs region. (3) The orphan sweep's type-liveness scan answers a different question (which TYPE declarations survive specialization) and is untouched; its known sibling imprecision stays with the previously queued R5 item, out of this lane's scope.
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as 6939c8c9e (parents 9dc56a62f + 74d38f6b3); the lane
+section above is renumbered 4.37 -> 4.47. Fallout: 056e13097
+(citation re-pins) and affc3c0f9 (comprehensive citation
+band-map).
+
+COMPOSITION: conflicts in five files. vulkan.md took integ's
+version wholesale (the lane's re-pins were computed against its
+own base's line numbers) and was re-pinned against the merged
+tree in fallout. In vk64bridge.cpp the lane's findIdUse helper
+landed byte-identical to the lane's text (verified by extraction
+diff), followed by integ's r15::Uses line (psb's storeWrites /
+atomicWrites fields kept). In spirvfix.mjs both sides' insertions
+before r15PointerUses were kept verbatim -- integ's psb helpers
+(r15BaseLoadId / r15Vec2Half / r15ClassifyVec2Addr) first, then
+the lane's R15_IMAGE_OPS_ID_PREFIX + r15IdUseIndex -- with one
+repair: git had shared r15ClassifyVec2Addr's closing brace as
+common context, so each parent's region excluded it and the
+first composition did not parse; the brace was restored (the
+identical-tail trap in miniature, fourth merge running). The
+test file is a header-comment union plus a test-append union:
+22 base + 7 integ + 5 lane = 34 tests, all passing; the one
+base-test name absent from the union (the R15b root-store
+fail-closed test) was replaced by psb commit 60cd0f215 itself
+with its served-not-rejected successor, verified by pickaxe --
+integ's evolution stands. Full-diff accounting: the merged
+bridge delta is the lane's exact 3 hunks (+136: helper, the
+pointerUses call site, the analyzeArrays call site); the merged
+spirvfix delta is the lane's exact 3 hunks (+150) modulo the
+one-brace seam repair; vk64_native_test.cpp auto-merged as +101
+pure insertions (the lane's 2 guard blocks).
+
+MIRROR PARITY (the point of the merge), verified by extracting
+both helpers and comparing case-by-case: the outer opcode
+switches are identical (cases 8, 12, 59, 61, 62, 63, 64, 68, 79,
+81, 82, 123, 246, 247, 250, 251); the image-op prefix mappings
+are identical (26 entries, same three width classes); the
+MemoryAccess mask bits (2/8/16) and the OpSwitch selector-width
+rule match; all four call sites (spirvfix r15PointerUses +
+analyzeDescriptorArrays, bridge r15::pointerUses +
+r15::analyzeArrays) walk id-typed operands through the helper.
+r15IdUseIndex / findIdUse keep their own names -- rawscan's
+superset idOperandUseIndex is designed to coexist with them at
+its later merge.
+
+KNOWN-SILENT DECISION (explicit): the lane's reviewed baseline
+bump for vk64bridge.cpp unloggedDefault (20 -> 22, for the
+helper's two classification-fallback default branches) was NOT
+taken. Following the rawscan lane's restructure preference,
+findIdUse was restructured semantics-identically instead: the
+outer switch's default block became a post-switch fall-through
+(every case returns, so the fall-through is exactly the old
+default body) and the inner image-op switch became a static
+table, kImageOpPrefix, entry-for-entry identical to the JS
+R15_IMAGE_OPS_ID_PREFIX. known-silent.json is unchanged from
+pre-merge and no-silent-failure passes at full strength with
+vk64bridge.cpp unloggedDefault at exactly 20.
+
+CORPUS GATE: gate.mjs 34/39 post-merge against the pre-merge
+baseline 34/38, captured before merging. The only delta is the
+lane's added fixture (d3d12-ps-uav-heap-array-smallid.spv), which
+applies descriptor-array-specialize and stops at the same
+by-design naga bucket as its unmutated twin; all 38 pre-existing
+modules' outputs are byte-identical.
+
+CITATIONS AND REGISTER: final audit 228 MATCH / 14
+MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over 346 cited rows,
+0 DRIFT / 0 MISSING -- the identical distribution AND identical
+per-row verdicts to pre-merge (verified by a per-row verdict
+diff against a scratch worktree at the pre-merge tip). Path:
+audit --fix repaired 31; 28 more were hand-pinned by the exact
+merge-delta band map (+127 below the bridge hunks, each landing
+line content-verified); row 37's cites were band-mapped after
+the shift made an unrelated default: fall inside the checker
+tolerance of its unchanged cite (a coincidental UNCHECKABLE ->
+MATCH, corrected back); a final occurrence-aligned pass moved
+94 further citations the checker tolerates or cannot see
+(including the row-403 Route A cites, which pointed into the
+inserted helper table) -- all 163 citations to the two changed
+files now sit at their exact post-merge lines. Register
+unchanged: 374 = 75 IMPLEMENTED / 66 REJECTED-LOUDLY / 233
+NOT-A-GAP / 0 OPEN (pipe-aware recount, identical pre/post).
+
+BUILD AND SUITES: bw64-build.sh -- Browser export verified,
+completeness gate 0 failures. dist/runtime/wine64.zip
+(213,105,632 B) carries the shim ae96105b (160,169 B) under
+bw64vulkan.dll, vulkan-1.dll and winevulkan.dll, and the
+canonical pair a96b4e9d (d3d12.dll) / 3d3bfe43 (d3d12core.dll).
+JS unit suite 328 passed / 0 failed (BW_TEST_DIST = the merged
+dist; the lane's tests expand existing spirvfix files, so the
+file total is unchanged -- the r15 file itself runs 34/34);
+emulator native 647 OK / 0 FAILED; run-native 37 PASS (the 35
+baseline blocks plus the lane's two: "a CompositeExtract literal
+equal to the chain id is not a pointer escape" and "the small-id
+heap-array module is admitted").
+
+GUEST GATE (uploading harness, acquireProbeSlot, canonical pair
+and shim sha-verified in every run's provenance): (a) cs12
+RESULT 0 with the full standing signature -- VARIANT TEX OK
+(bad=0), VARIANT BUF OK (bad=0), VARIANT BUF2 OK (bad=0)
+(test-results/dxvk-opscanmerge-cs12); (b) uav12 SUMMARY
+flag=TRUE sweep=ALL18 exec=ALL6, RESULT 0
+(test-results/dxvk-opscanmerge-uav12); (c) tri12 RESULT 0
+(test-results/dxvk-opscanmerge-tri12). The harness composite
+passed:false in all three runs is the standing capture artifact;
+the verdicts above are the guests' own, with guest exit status 0.
