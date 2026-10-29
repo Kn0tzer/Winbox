@@ -6392,3 +6392,66 @@ assertion is defeated by the box's concurrent lane probing (a heavy
 slot was held by another tree's guest probe throughout; the failure
 reproduces solo under the same load and this lane changes no JS or
 probe code).
+
+**Merge outcome (integ, 2026-10-29) -- GATE COMPLETE.** Merged as
+`b8abace41` (parents `69f9778d0` + `75dc30787`); citation re-pin
+fallout `976bc7cb4`. The lane's section is renumbered 4.53 here
+(its in-text section 4.37 references, clear32's on-branch number,
+read 4.51 on the merged tree). Conflicts were confined to the
+two docs and the native test file; `vk64bridge.cpp` auto-merged,
+and its merged delta's changed lines are identical (sorted
+multiset) to the lane delta's -- the subclear composition the
+brief required is exact: the merged 32-bit handler converts via
+the packed-aware `vk32ClearTexel` (vk64bridge.cpp:10104) and
+fills per subresource via `vkClearColorFill` (handler case at
+:12000). fmt_bpp verified directly: the section 4.36 table plus
+this lane's two explicit cases (R5G5B5A1_UNORM_PACK16 in the
+2-byte group at :2455, A2B10G10R10_UINT_PACK32 in the 4-byte
+group at :2462), 41 case labels, no duplicate. The native-test
+conflict was resolved by composition (HEAD's subclear block and
+the lane's packed block both whole); the merged test delta is
+likewise line-identical to the lane delta, and clear32's D16
+re-pin of its packed-fallback case landed (`clearCase(124,
+...)`). The helper text is byte-identical to the lane's, as the
+packedclear64 merge (next) requires. Register: no disposition
+delta -- the lane's residue narrowing was applied as a delta
+onto integ's current clear row (line 373): the row now records
+the packed layouts as bit-packed by the same helper (this
+section) and keeps depth/stencil and block-compressed layouts
+as the named raw-fill residue (section 4.51); wording
+reconciliation, recorded per the brief: the row's citations
+were re-pinned to the merged tree (:10104/:12000) and integ's
+trailing subclear sentence on the row was kept verbatim after
+the lane's narrowed text. Pipe-aware recount identical before
+and after the merge: 376 = 77 IMPLEMENTED / 66 REJECTED-LOUDLY
+/ 233 NOT-A-GAP / 0 OPEN. Citations: 4 rows drifted by the
+bridge insertions (+1 at fmt_bpp, +42 cumulative to
+vk32ClearTexel, +87 below it) -- one re-pinned by the auditor's
+safe --fix, three hand-pinned by the exact band delta,
+construct-verified (reg:60 marker at :10286; reg:65
+`logAskedFor` at :10574; reg:68 fn32 trap fallback at :10575;
+reg:8's third cite to :10347, the features2-struct default
+call -- its pre-merge tolerance anchor, moved by the same +87).
+Final audit 0 DRIFT / 0 MISSING (230 MATCH / 14 MATCH-INHERITED
+/ 97 UNCHECKABLE / 7 EXEMPT over 348 cited rows). Suites on the
+merged dist: JS unit 328/0 (the lane's branch probe-slots flake
+did not recur on the merged tree); emulator native 648 OK /
+0 FAILED; run-native 40 PASS -- the packed block ("Vulkan32
+clear-color packs bit-packed formats (PACK16 fields,
+A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT)") plus clear32's and
+subclear's blocks all passing by name. Dist built from the
+fallout commit (stamp `976bc7cb4`, wasm `54b713ea...`),
+"Browser export verified"; completeness gate 0 failures /
+1 pre-existing environmental skip; wine64.zip member-verified
+(shim `ae96105b...` under all three names; canonical pair
+`a96b4e9d...`/`3d3bfe43...`), wine32.zip carries the PE32 pair
+(`872c3d65...`/`71e9c174...`). Guest gate, probes via
+acquireProbeSlot one at a time: tri12-32 (arch=x86 system
+placement) passed:true, RESULT 0
+(test-results/dxvk-packedclearmerge-tri32); tri12 RESULT 0 on
+the guest verdict (harness composite passed:false = the known
+zero-chunk capture artifact, chunksCaptured 0, no guest FAIL
+lines; test-results/dxvk-packedclearmerge-tri12); cs12 RESULT 0
+with the full standing signature -- VARIANT BUF OK (bad=0),
+BUF2 OK (bad=0), TEX OK (bad=0), SUMMARY buf=OK buf2=OK tex=OK
+(test-results/dxvk-packedclearmerge-cs12).
