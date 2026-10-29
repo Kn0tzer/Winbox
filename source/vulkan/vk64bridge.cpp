@@ -4325,6 +4325,9 @@ static void vk64MarkDrawRootWrites(CmdBuf* cb) {
         if (!mem) continue;
         U64 boff = va - it->first;
         vk64MarkGpuWrite(it->second, buf->memOff + boff, buf->size - boff, buf->mem, mem->writeEpoch);
+    }
+}
+
 static void vk64MarkComputeWrites(CmdBuf* cb) {
     U64 pipeId = 0;
     U64 sets[VK64_MAX_SETS] = {0};
