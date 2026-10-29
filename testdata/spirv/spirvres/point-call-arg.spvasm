@@ -1,0 +1,41 @@
+; point-call-arg.spvasm -- lane-spirvres fixture (Item 1).
+; A standalone PointSize output whose pointer is ALSO passed as an
+; OpFunctionCall argument. stripPointBuiltins must decline (the call
+; argument is a use outside direct loads/stores); stripping would
+; delete the variable and leave the call naming a dead id.
+; The module uses the PhysicalStorageBuffer64 addressing model --
+; the model the tier's D3D12 guest modules arrive in -- because
+; passing an interface pointer as a call argument is only
+; expressible there; under the logical model the shape cannot be
+; written at all, so no logical-model module can carry it.
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Vertex %main "main" %ps %pos
+OpDecorate %ps BuiltIn PointSize
+OpDecorate %pos Location 0
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4 = OpTypeVector %f32 4
+%ptr_out_f32 = OpTypePointer Output %f32
+%ptr_out_v4 = OpTypePointer Output %v4
+%fn_ptr = OpTypeFunction %void %ptr_out_f32
+%fn = OpTypeFunction %void
+%one = OpConstant %f32 1.0
+%posval = OpConstantComposite %v4 %one %one %one %one
+%ps = OpVariable %ptr_out_f32 Output
+%pos = OpVariable %ptr_out_v4 Output
+%helper = OpFunction %void None %fn_ptr
+%p = OpFunctionParameter %ptr_out_f32
+%hl = OpLabel
+OpStore %p %one
+OpReturn
+OpFunctionEnd
+%main = OpFunction %void None %fn
+%ml = OpLabel
+OpStore %pos %posval
+OpStore %ps %one
+%call = OpFunctionCall %void %helper %ps
+OpReturn
+OpFunctionEnd
