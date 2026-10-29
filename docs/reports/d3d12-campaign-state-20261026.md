@@ -3935,6 +3935,24 @@ lane's vk-sampled-storage-serving guard file), superseding the
 first run's 317/1 above. The guest gate remains as recorded:
 outstanding, to be re-run in a quieter window.
 
+Gate closure (psb merge, 2026-10-28): CONFIRMED. The merged
+tree of section 4.39 (which contains this section's serving
+code unchanged) ran uav12 in the guest via the uploading
+harness with the archive's own pair (the app-dir rig's
+default d3d12 pair is byte-identical to the staged canonical
+pair, sha a96b4e9d / 3d3bfe43, verified against the
+completeness pins): SUMMARY flag=TRUE sweep=ALL18
+exec=ALL6, RESULT 0 -- EXEC OK for R8G8B8A8_UNORM,
+R32G32B32A32_FLOAT, R16G16B16A16_FLOAT, R16_FLOAT, R32_UINT
+and R8_UINT, all 16 texels each (evidence
+test-results/dxvk-psbmerge-uav12c). Two earlier attempts in
+the same session died at the harness session-ready timeout
+under box load 10-15 with build convoys on the probe slot;
+the control runs bracketing them (root12 and tri12, same
+rig, same dist) completed normally, and the passing run
+followed within the same hour as load fell -- the timeouts
+were box conditions, as this section's own attempts were.
+
 ## 4.39 Root SRV/UAV serving: writable root descriptors execute end to end, with readback (2026-10-28, lane-psb)
 
 **The pinned gap (real modules, not fixtures).** With root12's probe debt
@@ -4057,3 +4075,42 @@ sabotage restore via `git checkout --` on UNCOMMITTED files reverts to
 the base commit, not to the pre-sabotage state; the lane's files were
 recovered byte-identical from the dist export (hash-verified), but the
 rule stands: back up to files, not to git, when the work is uncommitted.
+
+Merge addendum (integ merge of lane-psb, 2026-10-28): merged
+as c2735d008 on top of fdcb3a79d (the section 4.38 tip).
+Conflicts were confined to the two documents (the campaign
+tail and the register header/rows); all code auto-merged,
+and the merged regions were diffed against both parents --
+the mirror pair both carry the carry-idiom extension
+(spirvfix r15ClassifyVec2Addr at tools/spirvfix/spirvfix.mjs
+and the bridge vec2Half / classifyRootAddr in
+source/vulkan/vk64bridge.cpp), R16 strip-dead-undefs is
+present, and the page tier carries stageVis visibility plus
+storage COPY_SRC. Register: 372 rows = 73 IMPLEMENTED / 66
+REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN (the lane's one new
+IMPLEMENTED row; no disposition changed). Citations: 0
+DRIFT / 0 MISSING (228 MATCH / 14 MATCH-INHERITED / 96
+UNCHECKABLE / 7 EXEMPT) after re-pinning -- 48 citations
+auto-fixed by the audit, 24 hand-pinned through the merge's
+line map, 9 duplicate-scan dependents restored to their
+primaries' sites, and the new row's citations pinned to the
+merged constructs. Suites on the merged tree: JS 320 passed
+/ 0 failed (318-file baseline plus spirvfix-r16 and
+vk-psb-serving); native 647 / 0 single-threaded;
+run-native.py end-to-end green (31 PASS blocks). Dist
+rebuilt: "Browser export verified", stamp c2735d008, wasm
+sha d7605626, support archive bbc583c6.
+Guest gate on the merged dist (uploading harness,
+test-results/dxvk-psbmerge-*): root12 RESULT 0 -- SUMMARY
+cbv=OK srv=OK uav=OK, the UAV render target and all 16
+stored words correct through the deferred
+V2_BUFFER_READBACK (run dxvk-psbmerge-root12); uav12
+RESULT 0 with all six EXEC cases OK (run dxvk-psbmerge-
+uav12c; discharges the section 4.38 gate debt, see the
+closure note there); tri12 RESULT 0, 10 frames
+(dxvk-psbmerge-tri12); cs12 signature unchanged from the
+pre-merge tree -- TEX OK (bad=0), BUF / BUF2 FAIL bad=64 at
+the vkd3d meta-pipeline descriptor wall, RESULT 1 for that
+reason alone (dxvk-psbmerge-cs12). That wall is the
+metabind lane's, solved on its own branch and merged
+separately; nothing in this merge touches it.
