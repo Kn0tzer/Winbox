@@ -4416,3 +4416,43 @@ a readback batch (pre-existing cap behaviour; the guest then gets
 the seed + a named readback-unavailable). Next wall in this area:
 none known for colour readbacks; the D3D12 campaign queue continues
 at the vkd3d meta-pipeline descriptor wall (cs12 BUF/BUF2).
+
+Merge outcome (2026-10-28, merge lane): merged as ff832946b +
+citation re-pin fallout 1f0d00241. Post-merge verification: JS suite
+322/0 (321 baseline + vk-b2i-page-apply), native 647/0, run-native.py
+31 PASS blocks end-to-end, citation audit 0 DRIFT / 0 MISSING
+(228/14/97/7 over 346 cited rows), register 373 = 74/66/233/0, dist
+"Browser export verified". Guest gate: (a) rb12 RESULT 0, all eight
+variants OK, page stats b2iApplied 4 / b2iNoTarget 2 matching the
+branch signature exactly (evidence test-results/dxvk-b2i-merge-rb12);
+(b) tri12 guest RESULT 0 (harness composite passed:false = the known
+zero-chunk capture artifact, adjudicated on the guest verdict) and
+tri12draw passed:true RESULT 0, centre [127,64,64]; (d) cs12
+signature unchanged (TEX OK bad=0; BUF/BUF2 bad=64 at the
+not-yet-merged metabind wall).
+
+(c) uav12 FAILED -- a regression from this merge. exec=FAILED on all
+six EXEC cases, RESULT 1, reproduced identically in two genuine guest
+verdicts (evidence test-results/dxvk-b2i-merge-uav12 and
+dxvk-b2i-merge-uav12c; one further attempt wedged in guest boot under
+box load and produced no verdict). Signature: uav12's pixel shader is
+a pure copy (return uav[texel]) of the pattern its own upload copy
+placed in the texture, and it reads 0xFF-filled content instead
+(got=255 at idx 0 ch 0 in every case; mismatch counts
+48/45/48/48/32/32 of 64 words, identical across both runs);
+flag=TRUE and sweep=ALL18 still pass. Page stats for the failing runs
+show b2iApplied 12: the new path IS exercised by uav12 -- its per-case
+upload copy leads every frame's op stream (bufferToImage first, then
+the draw). The pre-merge tip 369f011c5 passed uav12 exec=ALL6 at the
+d3d12-32 merge gate the same day, and lane-b2i is the only product
+delta since, so the regression is attributable to this merge. The
+discriminating difference from rb12 (which passes): rb12's consumer
+of the uploaded image is a readback copy, uav12's is a shader load in
+the SAME frame as the upload -- the applied upload evidently does not
+reach the texture instance the draw samples (applyBufferToImage
+resolves or creates its target before the draw binds its own;
+pre-merge, the same frames were served correctly by the guest-memory
+seed alone). This merge is therefore NOT gate-complete: the
+section-4.41 claims themselves (rb12 rendered-then-copied readback)
+stand as proven, but the merge is flagged to the coordinator for a
+fix-forward lane on the upload-then-shader-load flow (or a revert).
