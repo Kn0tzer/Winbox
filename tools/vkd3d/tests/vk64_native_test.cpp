@@ -1017,6 +1017,7 @@ int main() {
         assert(callP(VK64_fn_vkFreeMemory, frP) == VK_SUCCESS);
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT)");
+    }
     // ---- vkCmdClearColorImage (64-bit), packed formats: the clear value
     // must be bit-packed into the format's field layout (fields in
     // format-name order, most significant first). The handler used to
