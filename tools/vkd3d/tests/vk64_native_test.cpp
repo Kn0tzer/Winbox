@@ -681,7 +681,9 @@ int main() {
         // and treats creation failure as device-fatal). Dispatches still
         // have no V2 record and are reported loudly at submit.
         memory32.writeq(704, 0xdeadbeefull);
-        VK32Args cp{}; cp.a[2] = 1; cp.a[3] = 512; cp.a[4] = 704;
+        // Trap args per libvk32.c: a[3]=pCreateInfos, a[4]=pAllocator
+        // (NULL here, as vkd3d passes), a[5]=pPipelines.
+        VK32Args cp{}; cp.a[2] = 1; cp.a[3] = 512; cp.a[4] = 0; cp.a[5] = 704;
         assert((S64)call32(VK64_fn_vkCreateComputePipelines, cp) == VK_SUCCESS);
         assert(memory32.readq(704) != 0);
     }
