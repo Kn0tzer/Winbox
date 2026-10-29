@@ -1,0 +1,30 @@
+; r8-ptr-holding-var.spvasm -- lane-r8downgrade fixture (R8 downgrade census, arm B).
+; A physically-addressed module whose only physical-addressing feature is
+; a function-local variable that ALLOCATES a pointer value: its type is a
+; pointer (Function storage class) whose pointee is itself a pointer.
+; Valid as written; under the Logical model spirv-val rejects the
+; variable ("In Logical addressing, variables may not allocate a pointer
+; type"). R8 must decline by name and leave the module physical.
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Vertex %main "main" %pos
+OpDecorate %pos Location 0
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4 = OpTypeVector %f32 4
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_fn_ptr = OpTypePointer Function %ptr_out_v4
+%fn = OpTypeFunction %void
+%one = OpConstant %f32 1.0
+%posval = OpConstantComposite %v4 %one %one %one %one
+%pos = OpVariable %ptr_out_v4 Output
+%main = OpFunction %void None %fn
+%ml = OpLabel
+%local = OpVariable %ptr_fn_ptr Function
+OpStore %local %pos
+%ld = OpLoad %ptr_out_v4 %local
+OpStore %ld %posval
+OpReturn
+OpFunctionEnd

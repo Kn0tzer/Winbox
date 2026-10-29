@@ -4646,3 +4646,138 @@ separate lane (lane-d3d11test) is fixing the test expectation; no
 test was changed in this merge. This also adjudicates the rawscan
 lane's open d3d11 flag: not a load artifact and not a b2i-merge
 side effect -- a test-expectation defect.
+
+## 4.43 R8 downgrade census: physical-model validity beyond pointer dereference (2026-10-29, lane-r8downgrade)
+
+THE GAP (named by lane-spirvres in its 4.42-on-branch residue):
+spirvfix R8, stripUnusedPhysicalStorageBuffer, downgrades a
+physically-addressed module to the Logical addressing model when its
+used-test -- no OpConvertUToPtr / OpConvertPtrToU (op 120/121), no
+OpTypePointer with storage class 5349 -- finds no physical pointer
+use. The used-test proves no pointer is DEREFERENCED through the
+physical model. It does not prove the module's validity is
+independent of the physical model: spirvres' point-call-arg fixture
+(a call passing an interface pointer) is valid physical, and the
+downgraded form is a module spirv-val rejects at the call. Spirvres
+made its own pass decline that shape; the downgrade decision itself
+was R8's open residue.
+
+THE CENSUS (each candidate shape assembled with spirv-as, validated
+under PhysicalStorageBuffer64, then textually downgraded --
+capability + extension dropped, OpMemoryModel 5348 -> 0 -- and
+re-validated; ~40 probe modules, /tmp scratch during the lane):
+INVALID after downgrade, now census arms:
+  A. OpFunctionCall passes a pointer argument whose storage class
+     the Logical model forbids as a call operand -- every class
+     except UniformConstant (0), Workgroup (4), Private (6) and
+     Function (7); StorageBuffer (12) is forbidden unless a
+     VariablePointers capability (4441 VariablePointersStorageBuffer
+     / 4442 VariablePointers) is declared. Validator: "Invalid
+     storage class for pointer operand" at the call (without
+     VariablePointers, for StorageBuffer: the VariablePointers
+     capability message). Covers Output / Input / Uniform /
+     PushConstant / CrossWorkgroup arguments alike.
+  B. An OpVariable whose pointer type's pointee is itself a pointer
+     type (Function and Private storage probed). Validator: "In
+     Logical addressing, variables may not allocate a pointer type".
+  C. A pointer value flowing through OpSelect or OpPhi while
+     neither VariablePointers capability is declared. Validator:
+     "Using pointers with OpSelect/OpPhi requires capability
+     VariablePointers or VariablePointersStorageBuffer".
+  D. OpPtrEqual / OpPtrNotEqual: physical-only in every probed form
+     (Output or Function operands, with or without
+     VariablePointers) -- "Invalid pointer storage class" /
+     VariablePointers-required errors in all of them.
+Probed and NOT blockers (the downgraded module still validates, so
+the strip stays in force): pointer call arguments in classes
+0/4/6/7 (UniformConstant interface pointers, plain and sampled-image
+pointees, included); a declared-but-uncalled pointer-parameter
+function (the validator keys on the call, not the declaration);
+OpConstantNull / OpUndef of pointer type; pointer-typed struct
+members; fixed and runtime arrays of pointers, including a Function
+variable allocating an array of pointers and storing pointer values
+into its elements; OpSelect/OpPhi over pointers WITH a
+VariablePointers capability; a StorageBuffer call argument with
+either VariablePointers capability. Out of class: Generic
+storage-class pointers and OpPtrDiff already require capabilities
+(GenericPointer / Addresses-family) the pipeline rejects upstream,
+physical or not.
+
+THE FIX, in both mirrors (the audit's Route-0 used-test claims
+byte-for-byte parity with R8, and the two parsers' result-type
+attribution tables -- spirvfix HAS_TYPE_ID / HAS_ID_ONLY and the
+bridge's r15 hasTypeId / hasIdOnly -- are the same table, so
+argument resolution agrees word for word):
+  - spirvfix: r8DowngradeBlocker(mod) implements arms A-D;
+    stripUnusedPhysicalStorageBuffer consults it after the unchanged
+    used-test and declines BY NAME ("spirvfix:
+    PhysicalStorageBufferAddresses downgrade declined: <arm-specific
+    reason>"), leaving the module physical. Call arguments are
+    resolved through the defining instruction's result type, which
+    uniformly covers variables, parameters, access chains, loads,
+    copies and selects -- no operand-shape special cases.
+  - bridge: vk64AuditSpirv runs the same census over the r15 parse
+    immediately after it, setting physicalBufferUsed for exactly
+    those shapes, so a census module's 5346/5347 no longer takes
+    the declared-but-unused exemption and rejects as
+    spirv-capability-unknown:<n> -- the audit never admits a module
+    R8 leaves physical. (Where a VariablePointers capability makes a
+    shape exempt in R8, the audit agrees: 5347 stays exempt and the
+    module takes the standing spirv-capability:VariablePointers
+    named rejection instead.) All pre-existing source pins of the
+    used-test (vk-spirv-rejections.test.mjs) survive unchanged.
+
+FIXTURES + GUARDS, sabotage-verified both sides:
+  - testdata/spirv/r8/: r8-ptr-call-arg.spv (arm A),
+    r8-ptr-holding-var.spv (arm B), r8-ptr-select.spv (arm C),
+    assembled from the committed .spvasm sources. Pre-fix pin: the
+    unfixed pipeline applied strip-unused-physical-storage-buffer
+    to all three and every output was spirv-val-invalid with
+    exactly the census errors. Post-fix: all three decline by name,
+    applied=[] for R8, outputs remain valid physical modules.
+  - spirvfix-r8.test.mjs: 14 new tests (4 arms, the per-class and
+    VariablePointers exemptions, the declared-but-uncalled and
+    pointer-to-float controls, the 3 fixtures). Sabotage: disabling
+    the census hook fails exactly the 9 decline tests and nothing
+    else; restored byte-identical, 18/18 pass.
+  - vk64_native_test.cpp: new GUARD block driving the audit through
+    vkCreateShaderModule -- arm A, arm B and arm C modules reject
+    with the spirv-capability-unknown:5347 counter incremented per
+    module; the arm C shape WITH cap 4442 leaves that counter
+    unchanged and increments spirv-capability:VariablePointers; a
+    bare declared-but-unused 5347 module still returns VK_SUCCESS.
+    Sabotage: disabling the bridge census aborts the test at the
+    guard's first assertion; restored byte-identical.
+
+CORPUS PROOF: applySpirvFix output (bytes + applied list) is
+byte-identical before/after for all 38 corpus modules; the corpus
+gate is unchanged at 34/38 convert. No served module changes
+behaviour.
+
+SUITES: spirvfix battery 147 pass / 0 fail (133 at base + 14 new census
+tests, including vk-spirv-rejections' source pins of the used-test,
+unchanged); JS unit suite 323 passed / 0 failed (runner --unit,
+BW_TEST_DIST=lane dist; dist built from the lane tree at base
+86d841a78 + lane changes, wasm c739c118..., "Browser export
+verified"); emulator native 647 OK / 0 FAILED; run-native.py
+32 PASS / 0 FAIL (31 at base + the new census GUARD block).
+
+REGISTER: no disposition change. Both halves widen correctness
+inside the already-claimed R8 / Route-0 rows (the downgrade and its
+audit exemption now decline exactly the shapes they always claimed
+to leave alone); only citation re-pins: the insertions shift cited lines in
+the two edited files (vk64bridge.cpp +9 above the census block,
++57 below it; spirvfix.mjs +4 / +76 / +81 by band), and every
+citation to either file in docs/known-gaps/vulkan.md and
+docs/known-gaps/tests.md was re-pinned by exactly that delta --
+the 52 audit-checked DRIFT rows plus the audit-uncheckable and
+prose cites the same diff map proves stale. Verification is
+mechanical: every cite in both files now equals its base value
+plus the delta of the diff hunks above it, and spot constructs
+land exactly (stripDeadUndefs at spirvfix.mjs:3334,
+vk64MarkDrawRootWrites at vk64bridge.cpp:4316). Citation audit
+0 DRIFT / 0 MISSING, coverage pinned at the base totals. Dated
+report prose (this file's earlier sections, the
+descriptor-addressing research note) cites the same files at
+their writing-time lines and is left as written, per standing
+practice.

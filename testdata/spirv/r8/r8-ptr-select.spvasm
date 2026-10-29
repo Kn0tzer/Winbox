@@ -1,0 +1,34 @@
+; r8-ptr-select.spvasm -- lane-r8downgrade fixture (R8 downgrade census, arm C).
+; A physically-addressed module whose only physical-addressing feature is
+; an OpSelect over two pointer values, with NO VariablePointers /
+; VariablePointersStorageBuffer capability declared: the physical model
+; grants pointer value flow implicitly, but under the Logical model
+; spirv-val rejects it ("Using pointers with OpSelect requires capability
+; VariablePointers or VariablePointersStorageBuffer"). R8 must decline by
+; name and leave the module physical. (With either capability declared
+; the shape stays legal after the downgrade and R8 still strips -- see
+; the control cases in spirvfix-r8.test.mjs.)
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Vertex %main "main" %pos %pos2
+OpDecorate %pos Location 0
+OpDecorate %pos2 Location 1
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4 = OpTypeVector %f32 4
+%bool = OpTypeBool
+%ptr_out_v4 = OpTypePointer Output %v4
+%fn = OpTypeFunction %void
+%one = OpConstant %f32 1.0
+%posval = OpConstantComposite %v4 %one %one %one %one
+%t = OpConstantTrue %bool
+%pos = OpVariable %ptr_out_v4 Output
+%pos2 = OpVariable %ptr_out_v4 Output
+%main = OpFunction %void None %fn
+%ml = OpLabel
+%sel = OpSelect %ptr_out_v4 %t %pos %pos2
+OpStore %sel %posval
+OpReturn
+OpFunctionEnd
