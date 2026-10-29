@@ -3233,6 +3233,66 @@ int main() {
             assert(audit(2, 2) == VK_ERROR_FEATURE_NOT_PRESENT);
             puts("PASS: GUARD root-descriptor collision check consults the descriptor-heap set (nonzero-set admission and decline)");
         }
+        // GUARD (campaign 4.64): the Route 0 used-test mirrors spirvfix R8's
+        // downgrade census. A module can owe its validity to the physical
+        // addressing model without dereferencing a physical pointer -- a
+        // pointer call argument in a storage class the Logical model
+        // forbids as a call operand, a variable allocating a pointer type,
+        // a pointer OpSelect without a VariablePointers capability -- and
+        // R8 leaves those modules physical, so the audit must NOT exempt
+        // their 5346/5347 either: they reject here as
+        // spirv-capability-unknown:5347. When a VariablePointers capability
+        // IS declared the census shape is not a physical use (R8 strips
+        // 5347 and downgrades), so 5347 stays exempt and the module takes
+        // the standing VariablePointers rejection by name instead.
+        const U32 psbBefore = vk64BridgeUnsupportedCount("spirv-capability-unknown:5347");
+        // OpCapability Shader + PhysicalStorageBufferAddresses; OpMemoryModel
+        // PhysicalStorageBuffer64 Vulkan; %20 f32, %23 void, %21 ptr Output
+        // %20, %30 OpVariable Output; callee %26 (OpTypeFunction %25,
+        // parameter %27) takes the pointer; caller %29 (OpTypeFunction %28)
+        // passes %30 to it.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 19u, 23u, (4u << 16) | 32u, 21u, 3u, 20u,
+                       (4u << 16) | 59u, 21u, 30u, 3u,
+                       (4u << 16) | 33u, 25u, 23u, 21u, (5u << 16) | 54u, 23u, 26u, 0u, 25u,
+                       (3u << 16) | 55u, 21u, 27u, (2u << 16) | 248u, 90u, (1u << 16) | 253u, (1u << 16) | 56u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (5u << 16) | 57u, 23u, 35u, 26u, 30u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 1);
+        // %21 ptr Private %20; %22 ptr Private %21; %30 OpVariable %22
+        // Private -- a variable allocating a pointer type.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (4u << 16) | 32u, 21u, 6u, 20u,
+                       (4u << 16) | 32u, 22u, 6u, 21u, (4u << 16) | 59u, 22u, 30u, 6u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 2);
+        // %24 bool, %32 OpConstant true; %35 OpSelect over the Private
+        // pointers %30/%31 inside caller %29, no VariablePointers capability.
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 20u, 24u, (2u << 16) | 19u, 23u,
+                       (4u << 16) | 32u, 21u, 6u, 20u, (4u << 16) | 59u, 21u, 30u, 6u,
+                       (4u << 16) | 59u, 21u, 31u, 6u, (4u << 16) | 43u, 24u, 32u, 1u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (6u << 16) | 169u, 21u, 35u, 32u, 30u, 31u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 3);
+        // The same OpSelect WITH OpCapability VariablePointers: not a
+        // physical use, so 5347 stays exempt (its counter is unchanged) and
+        // the module rejects on the VariablePointers capability itself.
+        const U32 vpBefore = vk64BridgeUnsupportedCount("spirv-capability:VariablePointers");
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (2u << 16) | 17u, 4442u, (3u << 16) | 14u, 5348u, 1u,
+                       (3u << 16) | 22u, 20u, 32u, (2u << 16) | 20u, 24u, (2u << 16) | 19u, 23u,
+                       (4u << 16) | 32u, 21u, 6u, 20u, (4u << 16) | 59u, 21u, 30u, 6u,
+                       (4u << 16) | 59u, 21u, 31u, 6u, (4u << 16) | 43u, 24u, 32u, 1u,
+                       (3u << 16) | 33u, 28u, 23u, (5u << 16) | 54u, 23u, 29u, 0u, 28u,
+                       (2u << 16) | 248u, 91u, (6u << 16) | 169u, 21u, 35u, 32u, 30u, 31u,
+                       (1u << 16) | 253u, (1u << 16) | 56u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 3);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:VariablePointers") == vpBefore + 1);
+        // Declared-but-unused 5347 on its own still passes (R8 strips it).
+        assert(module({(2u << 16) | 17u, 1u, (2u << 16) | 17u, 5347u, (3u << 16) | 14u, 5348u, 1u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 3);
+        puts("PASS: GUARD R8 downgrade census shapes are reported at vkCreateShaderModule");
 
         // GUARD: sampler state WebGPU cannot honour is reported at vkCreateSampler.
         {

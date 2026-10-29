@@ -1,0 +1,41 @@
+; r8-ptr-call-arg.spvasm -- lane-r8downgrade fixture (R8 downgrade census, arm A).
+; A physically-addressed module whose only physical-addressing feature is
+; passing an interface (Output) pointer as an OpFunctionCall argument --
+; the shape lane-spirvres named (its point-call-arg fixture minus the
+; PointSize variable, so no other spirvfix pass fires here).
+; The module is valid as written (PhysicalStorageBuffer64). R8's contract
+; is to strip the PhysicalStorageBufferAddresses capability ONLY when the
+; addressing model is unobservable; here it is not: under the Logical
+; model spirv-val rejects the call ("Invalid storage class for pointer
+; operand" at OpFunctionCall), so R8 must decline by name and leave the
+; module physical.
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Vertex %main "main" %pos %ps
+OpDecorate %pos Location 0
+OpDecorate %ps Location 1
+%void = OpTypeVoid
+%f32 = OpTypeFloat 32
+%v4 = OpTypeVector %f32 4
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_f32 = OpTypePointer Output %f32
+%fn_ptr = OpTypeFunction %void %ptr_out_f32
+%fn = OpTypeFunction %void
+%one = OpConstant %f32 1.0
+%posval = OpConstantComposite %v4 %one %one %one %one
+%pos = OpVariable %ptr_out_v4 Output
+%ps = OpVariable %ptr_out_f32 Output
+%helper = OpFunction %void None %fn_ptr
+%p = OpFunctionParameter %ptr_out_f32
+%hl = OpLabel
+OpStore %p %one
+OpReturn
+OpFunctionEnd
+%main = OpFunction %void None %fn
+%ml = OpLabel
+%call = OpFunctionCall %void %helper %ps
+OpStore %pos %posval
+OpReturn
+OpFunctionEnd

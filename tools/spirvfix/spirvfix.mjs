@@ -61,7 +61,11 @@
 //      OpConvertUToPtr/OpConvertPtrToU and no PhysicalStorageBuffer pointer
 //      types exist: drop the capability + extension, rewrite OpMemoryModel
 //      addressing to Logical. Safe: with no physical pointers the addressing
-//      model is unobservable.
+//      model is unobservable. The downgrade census in r8DowngradeBlocker
+//      guards the remaining shapes that owe their validity to the physical
+//      model (pointer-valued call arguments, pointer-allocating variables,
+//      pointer value flow / comparison without VariablePointers): those
+//      decline by name instead of downgrading into invalid modules.
 //
 // Interface: applySpirvFix(bytes: Uint8Array) -> { bytes, applied, log }.
 // applied is [] when the module needs nothing (byte-identical passthrough).
@@ -90,7 +94,7 @@ const Op = {
   ImageSampleProjImplicitLod: 91, ImageSampleProjExplicitLod: 92,
   ImageGather: 96, ImageDrefGather: 97,
   CompositeExtract: 81, CopyObject: 83,
-  Select: 169, Label: 248,
+  Select: 169, Label: 248, Phi: 245, PtrEqual: 401, PtrNotEqual: 402,
 };
 // opcodes whose instruction words start with (result-type, result-id).
 // Verified against tools/dxvk/src/include/spirv/include/spirv/unified1/spirv.h:
@@ -1458,6 +1462,78 @@ function stripFloatControls(mod, log) {
 // capability is unused, drop it and the extension and rewrite the addressing
 // model to Logical (memory model untouched). If physical pointers ARE used,
 // leave the module alone (naga cannot translate it; the frame is skipped).
+
+// R8 downgrade census (lane-r8downgrade, campaign 4.64): the used-test in
+// stripUnusedPhysicalStorageBuffer proves no pointer is DEREFERENCED
+// through the physical model, but a module can still owe its validity to
+// the physical addressing model in four further ways. Each arm below was
+// proven against spirv-val with a module that is valid as a physical
+// module and invalid after this pass's downgrade (fixtures for arms A-C
+// in testdata/spirv/r8/; the pre-fix pipeline downgraded all three into
+// modules spirv-val rejects):
+//   A. an OpFunctionCall passes a pointer argument whose storage class
+//      the Logical model does not allow as a call operand -- every class
+//      except UniformConstant (0), Workgroup (4), Private (6) and
+//      Function (7); StorageBuffer (12) is allowed only when a
+//      VariablePointers capability (4441/4442) is declared. Validator:
+//      "Invalid storage class for pointer operand" at the call.
+//   B. an OpVariable allocates a pointer value: its pointer type's
+//      pointee is itself a pointer type. Validator: "In Logical
+//      addressing, variables may not allocate a pointer type".
+//   C. a pointer value flows through OpSelect / OpPhi while neither
+//      VariablePointers capability is declared: the physical model
+//      grants that flow implicitly, the Logical model does not.
+//      Validator: "Using pointers with OpSelect/OpPhi requires
+//      capability VariablePointers or VariablePointersStorageBuffer".
+//   D. OpPtrEqual / OpPtrNotEqual: every probed Logical form (Output or
+//      Function operands, with or without VariablePointers) is invalid;
+//      the physical model is the only one that admits the comparison.
+// Probed and NOT blockers -- the downgraded module still validates, so
+// stripping stays in force for: pointer call arguments in classes
+// 0/4/6/7 (UniformConstant interface pointers included), declared-but-
+// uncalled pointer-parameter functions, OpConstantNull / OpUndef of a
+// pointer type, pointer-typed struct members, and fixed/runtime arrays
+// of pointers (including a variable allocating one and storing pointer
+// values into its elements). The bridge audit mirrors this census
+// (vk64AuditSpirv) so it admits exactly the modules this pass strips.
+function r8DowngradeBlocker(mod) {
+  const byId = new Map();
+  for (const i of mod.insns) if (i.resultId != null) byId.set(i.resultId, i);
+  const ptrStorageClass = (typeId) => {
+    const t = byId.get(typeId);
+    return t && t.op === Op.TypePointer ? t.words[1] : null;
+  };
+  const hasVariablePointers = mod.insns.some(i =>
+    i.op === Op.Capability && (i.words[0] === 4441 || i.words[0] === 4442));
+  for (const i of mod.insns) {
+    if (i.op === Op.FunctionCall) {
+      for (let k = 3; k < i.words.length; k++) {
+        const arg = byId.get(i.words[k]);
+        const sc = arg ? ptrStorageClass(arg.resultType) : null;
+        if (sc === null || sc === 0 || sc === 4 || sc === 6 || sc === 7) continue;
+        if (sc === 12 && hasVariablePointers) continue;
+        return 'OpFunctionCall passes a pointer with storage class ' + sc +
+          ', which the Logical addressing model does not allow as a call operand';
+      }
+    } else if (i.op === Op.Variable) {
+      const pt = byId.get(i.resultType);
+      if (pt && pt.op === Op.TypePointer) {
+        const pointee = byId.get(pt.words[2]);
+        if (pointee && pointee.op === Op.TypePointer)
+          return 'an OpVariable allocates a pointer type, which the Logical addressing model forbids';
+      }
+    } else if (!hasVariablePointers && (i.op === Op.Select || i.op === Op.Phi) &&
+        ptrStorageClass(i.resultType) !== null) {
+      return 'a pointer value flows through OpSelect/OpPhi without a VariablePointers ' +
+        'capability, which only the physical addressing model grants implicitly';
+    } else if (i.op === Op.PtrEqual || i.op === Op.PtrNotEqual) {
+      return 'OpPtrEqual/OpPtrNotEqual compares pointer values, which only the ' +
+        'physical addressing model admits';
+    }
+  }
+  return null;
+}
+
 function stripUnusedPhysicalStorageBuffer(mod, log) {
   const hasCap = mod.insns.some(i => i.op === 17 && (i.words[0] === 5346 || i.words[0] === 5347));
   if (!hasCap) return false;
@@ -1466,6 +1542,11 @@ function stripUnusedPhysicalStorageBuffer(mod, log) {
     (i.op === Op.TypePointer && i.words[1] === 5349)); // PhysicalStorageBuffer storage class (operands: [resultId, storageClass, pointee])
   if (usesPsb) {
     log.push('spirvfix: PhysicalStorageBufferAddresses is actually used; not stripping');
+    return false;
+  }
+  const blocker = r8DowngradeBlocker(mod);
+  if (blocker) {
+    log.push('spirvfix: PhysicalStorageBufferAddresses downgrade declined: ' + blocker);
     return false;
   }
   const extName = insn => new TextDecoder().decode(new Uint8Array(strOf(insn, 0)));

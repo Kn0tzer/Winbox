@@ -476,7 +476,16 @@ static void vk64Unsupported(const char* feature, const char* detail = "") {
 // for byte R8's: an op 120/121, or an OpTypePointer whose storage class
 // is 5349 (PhysicalStorageBuffer) -- finds no use. Modules that DO
 // dereference physical pointers fall through to the existing
-// "spirv-capability-unknown:5347" rejection, loudly.
+// "spirv-capability-unknown:5347" rejection, loudly. The used-test also
+// carries R8's downgrade census (campaign 4.64, r8DowngradeBlocker in
+// spirvfix): a module can owe its validity to the physical addressing
+// model without dereferencing a physical pointer -- a pointer argument
+// to OpFunctionCall in a storage class the Logical model forbids as a
+// call operand, an OpVariable allocating a pointer type, pointer values
+// flowing through OpSelect/OpPhi or compared with OpPtrEqual /
+// OpPtrNotEqual without a VariablePointers capability -- and R8 leaves
+// those modules physical, so the audit must not exempt them either; the
+// census below sets physicalBufferUsed for exactly those shapes.
 // ---------------------------------------------------------------------------
 // Sampler state the WebGPU tier cannot honour. Reported once per sampler, not per draw.
 //  - MIRROR_CLAMP_TO_EDGE: samplerMirrorClampToEdge is advertised (a
@@ -1396,7 +1405,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     std::vector<Var> vars;
     bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
     bool storageImageWrite = false, imageWriteOpcode = false;
-    bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349
+    bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349, or by the R8 downgrade census further down
     std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
     std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
     std::unordered_map<U32, Var*> varById;
@@ -1464,6 +1473,54 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     r15::RootVerdict r15Root;
     r15::ArrayVerdict r15Arr;
     if (r15::parse(w, r15m)) { r15Root = r15::analyzeRoot(r15m); r15Arr = r15::analyzeArrays(r15m); }
+    // R8 downgrade census (campaign 4.64): mirror of r8DowngradeBlocker in
+    // spirvfix. The used-test above proves no pointer is dereferenced
+    // through the physical model, but a module can still owe its validity
+    // to the physical addressing model in four further ways -- an
+    // OpFunctionCall passing a pointer argument in a storage class the
+    // Logical model forbids as a call operand (StorageBuffer exempt when
+    // a VariablePointers capability, 4441/4442, is declared), an
+    // OpVariable allocating a pointer type, pointer values flowing
+    // through OpSelect/OpPhi without a VariablePointers capability, and
+    // OpPtrEqual/OpPtrNotEqual. spirvfix R8 declines the downgrade for
+    // exactly those shapes and leaves the modules physical, so the audit
+    // must not exempt their 5346/5347 either: the census sets
+    // physicalBufferUsed for the same shapes. (The r15 parser's
+    // result-type attribution table is spirvfix's own HAS_TYPE_ID /
+    // HAS_ID_ONLY table, so argument resolution agrees word for word.)
+    if (r15m.parsed && !physicalBufferUsed) {
+        const bool varPtrs = caps.count(4441) || caps.count(4442);
+        auto insnOf = [&](U32 id) -> const r15::Insn* {
+            auto it = r15m.byId.find(id);
+            return it == r15m.byId.end() ? nullptr : &r15m.insns[it->second];
+        };
+        auto ptrScOf = [&](U32 typeId) -> int {
+            const r15::Insn* t = insnOf(typeId);
+            return (t && t->op == 32 && t->n >= 3) ? (int)t->w[1] : -1; // OpTypePointer: w = [resultId, storageClass, pointee]
+        };
+        for (const r15::Insn& in : r15m.insns) {
+            if (physicalBufferUsed) break;
+            if (in.op == 57) { // OpFunctionCall: w = [resultType, resultId, function, args...]
+                for (U32 k = 3; k < in.n && !physicalBufferUsed; k++) {
+                    const r15::Insn* def = insnOf(in.w[k]);
+                    int sc = def ? ptrScOf(def->resultType) : -1;
+                    if (sc < 0 || sc == 0 || sc == 4 || sc == 6 || sc == 7) continue;
+                    if (sc == 12 && varPtrs) continue;
+                    physicalBufferUsed = true;
+                }
+            } else if (in.op == 59) { // OpVariable: blocker if its pointer type's pointee is itself a pointer type
+                const r15::Insn* pt = insnOf(in.resultType);
+                if (pt && pt->op == 32 && pt->n >= 3) {
+                    const r15::Insn* pointee = insnOf(pt->w[2]);
+                    if (pointee && pointee->op == 32) physicalBufferUsed = true;
+                }
+            } else if (!varPtrs && (in.op == 169 || in.op == 245)) { // OpSelect / OpPhi over a pointer value
+                if (ptrScOf(in.resultType) >= 0) physicalBufferUsed = true;
+            } else if (in.op == 401 || in.op == 402) { // OpPtrEqual / OpPtrNotEqual
+                physicalBufferUsed = true;
+            }
+        }
+    }
     for (U32 c : caps) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
