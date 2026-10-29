@@ -6185,6 +6185,70 @@ struct Vk32UniformBufferStandardLayoutFeatures {
 };
 static_assert(sizeof(Vk32UniformBufferStandardLayoutFeatures) == 12,
               "32-bit UBSL features mirror layout");
+// vk32_guest.h has no VkPhysicalDeviceVulkan13Properties (the 64-bit header
+// lacks it too; Vk64Vulkan13Properties above is the host mirror). The 32-bit
+// mirror is packed to 4 -- the guest header's own i386 convention -- because
+// the host layout inserts 8-alignment padding before
+// uniformTexelBufferOffsetAlignmentBytes and maxBufferSize that the i386
+// layout does not have: host offsetof(maxBufferSize) - 8 = 200 would write
+// 8 bytes past the end of the 200-byte guest struct. The 32-bit properties
+// walker therefore takes this struct's offsets directly (vk32_g32f/vk32_g64f),
+// never host offsetof - 8, for every field of the 1.3 arm.
+#pragma pack(push, 4)
+struct Vk32Vulkan13Properties {
+    VkStructureType sType;
+    U32             pNext;
+    U32 minSubgroupSize, maxSubgroupSize, maxComputeWorkgroupSubgroups;
+    U32 requiredSubgroupSizeStages; // VkShaderStageFlags
+    U32 maxInlineUniformBlockSize, maxPerStageDescriptorInlineUniformBlocks;
+    U32 maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks;
+    U32 maxDescriptorSetInlineUniformBlocks;
+    U32 maxDescriptorSetUpdateAfterBindInlineUniformBlocks;
+    U32 maxInlineUniformTotalSize;
+    VkBool32 integerDotProduct8BitUnsignedAccelerated;
+    VkBool32 integerDotProduct8BitSignedAccelerated;
+    VkBool32 integerDotProduct8BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedUnsignedAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedSignedAccelerated;
+    VkBool32 integerDotProduct4x8BitPackedMixedSignednessAccelerated;
+    VkBool32 integerDotProduct16BitUnsignedAccelerated;
+    VkBool32 integerDotProduct16BitSignedAccelerated;
+    VkBool32 integerDotProduct16BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct32BitUnsignedAccelerated;
+    VkBool32 integerDotProduct32BitSignedAccelerated;
+    VkBool32 integerDotProduct32BitMixedSignednessAccelerated;
+    VkBool32 integerDotProduct64BitUnsignedAccelerated;
+    VkBool32 integerDotProduct64BitSignedAccelerated;
+    VkBool32 integerDotProduct64BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitUnsignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitSignedAccelerated;
+    VkBool32 integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated;
+    U64 storageTexelBufferOffsetAlignmentBytes;      // VkDeviceSize
+    VkBool32 storageTexelBufferOffsetSingleTexelAlignment;
+    U64 uniformTexelBufferOffsetAlignmentBytes;      // VkDeviceSize
+    VkBool32 uniformTexelBufferOffsetSingleTexelAlignment;
+    U64 maxBufferSize;                               // VkDeviceSize
+};
+#pragma pack(pop)
+static_assert(sizeof(Vk32Vulkan13Properties) == 200,
+              "32-bit 1.3 properties mirror layout");
+static_assert(offsetof(Vk32Vulkan13Properties, minSubgroupSize) == 8 &&
+              offsetof(Vk32Vulkan13Properties, storageTexelBufferOffsetSingleTexelAlignment) == 176 &&
+              offsetof(Vk32Vulkan13Properties, uniformTexelBufferOffsetSingleTexelAlignment) == 188 &&
+              offsetof(Vk32Vulkan13Properties, maxBufferSize) == 192,
+              "32-bit 1.3 properties mirror offsets");
 template <class T> inline void fillVertexAttributeDivisor(T& f) {
     f.vertexAttributeInstanceRateDivisor = VK_TRUE;
     f.vertexAttributeInstanceRateZeroDivisor = VK_TRUE;
@@ -10364,6 +10428,19 @@ inline void vk32_w32f(U32 base, size_t hostOff, U32 v) {
 inline void vk32_w64f(U32 base, size_t hostOff, U64 v) {
     wr64_32(base + (U32)hostOff - 8, v);
 }
+// Guest-offset writers: guestOff = offsetof in the PACKED guest struct
+// (vk32abi:: or the Vk32 mirrors above), for fields where host offsetof - 8
+// diverges from the guest layout -- the host inserts 8-alignment padding
+// before a uint64_t that the i386 layout lacks. Proven case:
+// VkPhysicalDeviceVulkan11Properties.maxMemoryAllocationSize is at host
+// offsetof 104 (host-8 = 96) but guest offsetof 92, so the host-offset
+// writer landed the 2 GiB limit 4 bytes late, straddling the field.
+inline void vk32_g32f(U32 base, size_t guestOff, U32 v) {
+    wr32_32(base + (U32)guestOff, v);
+}
+inline void vk32_g64f(U32 base, size_t guestOff, U64 v) {
+    wr64_32(base + (U32)guestOff, v);
+}
 
 void vk32_walkFeatures2(U32 pNextAddr) {
     for (U32 cur = pNextAddr; cur && g_mem32;) {
@@ -10427,6 +10504,40 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, quadOperationsInAllStages), (U32)VK_TRUE);
                 break;
             }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES: {
+                // Parity with the 64-bit walker (the maintenance5 feature
+                // bit is already answered TRUE on this ABI): the three
+                // rasterizer properties the tier claims. The remaining
+                // fields stay as the guest left them, as on the 64-bit side.
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceMaintenance5Properties, earlyFragmentMultisampleCoverageAfterSampleCounting), (U32)VK_TRUE);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceMaintenance5Properties, earlyFragmentSampleMaskTestBeforeSampleCounting), (U32)VK_TRUE);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceMaintenance5Properties, polygonModePointSize), (U32)VK_TRUE);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES: {
+                // Parity with the 64-bit walker: fillVulkan12Features
+                // already advertises descriptor indexing on this ABI, and
+                // the 64-bit walker's own header note applies -- a zero
+                // update-after-bind limit next to a TRUE feature would make
+                // the device self-contradictory (DXVK refuses such layouts).
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxUpdateAfterBindDescriptorsInAllPools), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindSamplers), 16);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindUniformBuffers), 16);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindStorageBuffers), 1000000);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindSampledImages), 1000000);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindStorageImages), 1000000);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageDescriptorUpdateAfterBindInputAttachments), 4);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxPerStageUpdateAfterBindResources), 128);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindSamplers), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindUniformBuffers), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindUniformBuffersDynamic), 64);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindStorageBuffers), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindStorageBuffersDynamic), 64);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindSampledImages), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindStorageImages), 1024);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties, maxDescriptorSetUpdateAfterBindInputAttachments), 16);
+                break;
+            }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR: {
                 // Pushed sets are materialized synthetically at record
                 // time; 64 comfortably exceeds the root-descriptor pushes
@@ -10440,6 +10551,26 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w64f(cur, offsetof(VkPhysicalDeviceRobustness2PropertiesEXT, robustUniformBufferAccessSizeAlignment), 4);
                 break;
             }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
+                // The 64-bit walker's answer, verbatim: the stream-out
+                // limits stay zero and the transformFeedback feature bits
+                // stay FALSE (WebGPU has no stream-out; the entry points
+                // are absent, so use fails at proc lookup), while
+                // transformFeedbackQueries is TRUE -- the one property the
+                // vkd3d-proton device-creation gate reads. A guest that
+                // actually creates a TF query pool hits the loud query-path
+                // failure, not a silent success.
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreams), 0);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBuffers), 0);
+                vk32_g64f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferSize), 0);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreamDataSize), 0);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataSize), 0);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataStride), 0);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackQueries), (U32)VK_TRUE);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackStreamsLinesTriangles), (U32)VK_FALSE);
+                vk32_g32f(cur, offsetof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackDraw), (U32)VK_FALSE);
+                break;
+            }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES: {
                 for (int i = 0; i < 16; i++) g_mem32->writeb(cur + 8 + i, uuid[i]);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, deviceNodeMask), 1);
@@ -10449,15 +10580,33 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupQuadOperationsInAllStages), (U32)VK_TRUE);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewViewCount), 6);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewInstanceIndex), 0xFFFFFFFFu);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, pointClippingBehavior), (U32)VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxPerSetDescriptors), 1024);
-                vk32_w64f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMemoryAllocationSize), 2ull * 1024 * 1024 * 1024);
+                // Guest-offset writer: host offsetof - 8 = 96 lands 4 bytes
+                // past this field's guest offset (92) -- see vk32_g64f.
+                vk32_g64f(cur, offsetof(vk32abi::VkPhysicalDeviceVulkan11Properties, maxMemoryAllocationSize), 2ull * 1024 * 1024 * 1024);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES: {
+                // Parity with the 64-bit walker: the single-texel-alignment
+                // answers are the tier's truth (texel buffers are
+                // byte-addressable), maxBufferSize matches the
+                // maxStorageBufferRange already advertised in fillLimits,
+                // and the subgroup is 32-wide like every other arm. All
+                // offsets come from the packed Vk32 mirror -- host
+                // offsetof - 8 diverges past the first uint64_t here.
+                vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, minSubgroupSize), 32);
+                vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, maxSubgroupSize), 32);
+                vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, storageTexelBufferOffsetSingleTexelAlignment), (U32)VK_TRUE);
+                vk32_g32f(cur, offsetof(Vk32Vulkan13Properties, uniformTexelBufferOffsetSingleTexelAlignment), (U32)VK_TRUE);
+                vk32_g64f(cur, offsetof(Vk32Vulkan13Properties, maxBufferSize), 1ull << 30);
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES: {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, driverID), (U32)VK_DRIVER_ID_MESA_LLVMPIPE);
                 U32 dn = (U32)offsetof(VkPhysicalDeviceVulkan12Properties, driverName) - 8;
                 const char* nm = "boxedwine";
-                for (int i = 0; i < 8; i++) g_mem32->writeb(cur + dn + i, (U8)nm[i]);
+                for (int i = 0; i < 9; i++) g_mem32->writeb(cur + dn + i, (U8)nm[i]);
                 U32 di = (U32)offsetof(VkPhysicalDeviceVulkan12Properties, driverInfo) - 8;
                 const char* inf = "vk64";
                 for (int i = 0; i < 4; i++) g_mem32->writeb(cur + di + i, (U8)inf[i]);
@@ -10471,57 +10620,14 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxPerStageUpdateAfterBindResources), 128);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindSamplers), 1024);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindUniformBuffers), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindUniformBuffersDynamic), 64);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindStorageBuffers), 1024);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindStorageBuffersDynamic), 64);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindSampledImages), 1024);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindStorageImages), 1024);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxDescriptorSetUpdateAfterBindInputAttachments), 16);
+                vk32_w64f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, maxTimelineSemaphoreValueDifference), 0xFFFFFFFFull);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, framebufferIntegerColorSampleCounts), (U32)VK_SAMPLE_COUNT_1_BIT);
-                break;
-            }
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
-                // Mirrors the 64-bit arm field for field. The stream-out
-                // limits stay zero and the capability bits stay FALSE (no
-                // stream-out can be served; the entry points are absent) --
-                // except transformFeedbackQueries, which the vkd3d-proton
-                // device-creation gate reads (vkd3d_init_device_caps: ERR +
-                // E_INVALIDARG when false). TF query pools themselves stay
-                // unservable and fail loudly on the query path. The
-                // vk32_w*f helpers' hostOff-8 rule is exact for this struct:
-                // its one u64 sits where host and i386 layouts coincide
-                // (compile-verified against vk32_guest.h, i686 gcc).
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreams), 0);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBuffers), 0);
-                vk32_w64f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferSize), 0);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreamDataSize), 0);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataSize), 0);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataStride), 0);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackQueries), (U32)VK_TRUE);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackStreamsLinesTriangles), (U32)VK_FALSE);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackDraw), (U32)VK_FALSE);
-                break;
-            }
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES: {
-                // Mirrors the 64-bit arm's values. The writes use RAW guest
-                // offsets, NOT the vk32_w*f hostOff-8 rule: this struct's
-                // tail interleaves VkBool32 and VkDeviceSize, and the i386
-                // layout the bridge walks (the unix-side chain, 4-byte u64
-                // alignment) packs the uniform alignment at 180 where the
-                // host rule would write 184 -- into maxBufferSize. Guest
-                // offsets compile-verified with i686-linux-gnu-gcc against
-                // the canonical field list: minSubgroupSize 8,
-                // maxSubgroupSize 12, storageTexelBufferOffsetAlignmentBytes
-                // 168, storageTexelBufferOffsetSingleTexelAlignment 176,
-                // uniformTexelBufferOffsetAlignmentBytes 180,
-                // uniformTexelBufferOffsetSingleTexelAlignment 188,
-                // maxBufferSize 192, sizeof 200.
-                // vkd3d-proton single-texel gate (device.c): the
-                // SingleTexelAlignment bools satisfy it for both texel
-                // buffer kinds, as on the 64-bit arm.
-                wr32_32(cur + 8, 32);   // minSubgroupSize
-                wr32_32(cur + 12, 32);  // maxSubgroupSize
-                wr32_32(cur + 176, (U32)VK_TRUE);  // storageTexelBufferOffsetSingleTexelAlignment
-                wr32_32(cur + 188, (U32)VK_TRUE);  // uniformTexelBufferOffsetSingleTexelAlignment
-                wr64_32(cur + 192, 1ull << 30);    // maxBufferSize (as the 64-bit arm)
                 break;
             }
             default:

@@ -2124,6 +2124,110 @@ int main() {
             vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
             assert(vk64BridgeUnsupportedCount("properties2-struct") == before + 2);
         }
+        // Properties2 parity (prop32 lane): every node the 64-bit walker
+        // models is answered identically for a 32-bit guest. Buffers are
+        // pre-filled with 0xAA so a written field is observable -- a served
+        // 0 differs from an untouched 0xAAAAAAAA -- and fields neither
+        // walker serves must keep the guest's bytes on BOTH sides.
+        {
+            const U32 propBefore = vk64BridgeUnsupportedCount("properties2-struct");
+            // ---- 64-bit chain: m5 -> descIdx -> TF -> 1.3 -> 1.1 -> 1.2
+            auto fill64 = [&](U64 addr, U32 size, U32 sType, U64 next) {
+                std::vector<U8> buf(size, 0xAA);
+                memcpy(buf.data(), &sType, 4); memcpy(buf.data() + 8, &next, 8);
+                memory.memcpyToGuest(addr, buf.data(), size);
+            };
+            fill64(32768, sizeof(VkPhysicalDeviceMaintenance5Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES, 33792);
+            fill64(33792, sizeof(VkPhysicalDeviceDescriptorIndexingProperties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES, 34816);
+            fill64(34816, sizeof(VkPhysicalDeviceTransformFeedbackPropertiesEXT), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT, 35840);
+            fill64(35840, sizeof(Vk64Vulkan13Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, 36864);
+            fill64(36864, sizeof(VkPhysicalDeviceVulkan11Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, 37888);
+            fill64(37888, sizeof(VkPhysicalDeviceVulkan12Properties), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, 0);
+            VkPhysicalDeviceProperties2 p2{}; p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; p2.pNext = 32768;
+            memory.memcpyToGuest(31744, &p2, sizeof(p2));
+            U64 pdId; createObj<PhysDev>(K_PHYSDEV, pdId);
+            VK64Args a{}; a.a[0] = pdId; a.a[1] = 31744;
+            memory.memcpyToGuest(128, &a, sizeof(a));
+            assert(vk64Bridge(&cpu, VK64_fn_vkGetPhysicalDeviceProperties2, 128) == VK_SUCCESS);
+            VkPhysicalDeviceMaintenance5Properties m5; memory.memcpyFromGuest(&m5, 32768, sizeof(m5));
+            VkPhysicalDeviceDescriptorIndexingProperties di; memory.memcpyFromGuest(&di, 33792, sizeof(di));
+            VkPhysicalDeviceTransformFeedbackPropertiesEXT tf; memory.memcpyFromGuest(&tf, 34816, sizeof(tf));
+            Vk64Vulkan13Properties v13; memory.memcpyFromGuest(&v13, 35840, sizeof(v13));
+            VkPhysicalDeviceVulkan11Properties v11; memory.memcpyFromGuest(&v11, 36864, sizeof(v11));
+            VkPhysicalDeviceVulkan12Properties v12; memory.memcpyFromGuest(&v12, 37888, sizeof(v12));
+            assert(m5.earlyFragmentMultisampleCoverageAfterSampleCounting == VK_TRUE && m5.earlyFragmentSampleMaskTestBeforeSampleCounting == VK_TRUE && m5.polygonModePointSize == VK_TRUE);
+            assert(m5.depthStencilSwizzleOneSupport == 0xAAAAAAAAu); // not served on either ABI: guest bytes kept
+            assert(di.maxUpdateAfterBindDescriptorsInAllPools == 1024 && di.maxPerStageDescriptorUpdateAfterBindSamplers == 16 && di.maxPerStageDescriptorUpdateAfterBindUniformBuffers == 16);
+            assert(di.maxPerStageDescriptorUpdateAfterBindStorageBuffers == 1000000 && di.maxPerStageDescriptorUpdateAfterBindSampledImages == 1000000 && di.maxPerStageDescriptorUpdateAfterBindStorageImages == 1000000);
+            assert(di.maxPerStageDescriptorUpdateAfterBindInputAttachments == 4 && di.maxPerStageUpdateAfterBindResources == 128);
+            assert(di.maxDescriptorSetUpdateAfterBindSamplers == 1024 && di.maxDescriptorSetUpdateAfterBindUniformBuffers == 1024 && di.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64);
+            assert(di.maxDescriptorSetUpdateAfterBindStorageBuffers == 1024 && di.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(di.maxDescriptorSetUpdateAfterBindSampledImages == 1024 && di.maxDescriptorSetUpdateAfterBindStorageImages == 1024 && di.maxDescriptorSetUpdateAfterBindInputAttachments == 16);
+            assert(tf.maxTransformFeedbackStreams == 0 && tf.maxTransformFeedbackBuffers == 0 && tf.maxTransformFeedbackBufferSize == 0);
+            assert(tf.maxTransformFeedbackStreamDataSize == 0 && tf.maxTransformFeedbackBufferDataSize == 0 && tf.maxTransformFeedbackBufferDataStride == 0);
+            assert(tf.transformFeedbackQueries == VK_TRUE && tf.transformFeedbackStreamsLinesTriangles == VK_FALSE && tf.transformFeedbackDraw == VK_FALSE);
+            assert(v13.minSubgroupSize == 32 && v13.maxSubgroupSize == 32);
+            assert(v13.storageTexelBufferOffsetSingleTexelAlignment == VK_TRUE && v13.uniformTexelBufferOffsetSingleTexelAlignment == VK_TRUE);
+            assert(v13.maxBufferSize == (1ull << 30));
+            assert(v13.integerDotProduct8BitUnsignedAccelerated == 0xAAAAAAAAu); // not served on either ABI
+            assert(v11.pointClippingBehavior == VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES && v11.maxPerSetDescriptors == 1024 && v11.subgroupSize == 32);
+            assert(v11.maxMemoryAllocationSize == 2ull * 1024 * 1024 * 1024);
+            assert(v12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64 && v12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(v12.maxTimelineSemaphoreValueDifference == 0xFFFFFFFFull && v12.framebufferIntegerColorSampleCounts == VK_SAMPLE_COUNT_1_BIT);
+            assert(memcmp(v12.driverName, "boxedwine", 9) == 0);
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == propBefore);
+            // ---- 32-bit chain: same nodes, packed guest layouts
+            auto fill32 = [&](U32 addr, U32 size, U32 sType, U32 next) {
+                std::vector<U8> buf(size, 0xAA);
+                memcpy(buf.data(), &sType, 4); memcpy(buf.data() + 4, &next, 4);
+                memory32.memcpyToGuest(addr, buf.data(), size);
+            };
+            fill32(49152, sizeof(vk32abi::VkPhysicalDeviceMaintenance5Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES, 50176);
+            fill32(50176, sizeof(vk32abi::VkPhysicalDeviceDescriptorIndexingProperties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES, 51200);
+            fill32(51200, sizeof(vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT, 52224);
+            fill32(52224, sizeof(Vk32Vulkan13Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, 53248);
+            fill32(53248, sizeof(vk32abi::VkPhysicalDeviceVulkan11Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, 54272);
+            fill32(54272, sizeof(vk32abi::VkPhysicalDeviceVulkan12Properties), vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, 0);
+            U8 q2[8 + 800] = {}; U32 qst = vk32abi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; memcpy(q2, &qst, 4);
+            U32 qnext = 49152; memcpy(q2 + 4, &qnext, 4);
+            memory32.memcpyToGuest(48128, q2, sizeof(q2));
+            U64 pdId32; createObj32<PhysDev>(K_PHYSDEV, pdId32);
+            VK32Args c32{}; c32.a[0] = pdId32; c32.a[1] = 48128;
+            memory32.memcpyToGuest(128, &c32, sizeof(c32));
+            vk32Bridge(&cpu32, VK64_fn_vkGetPhysicalDeviceProperties2, 128);
+            vk32abi::VkPhysicalDeviceMaintenance5Properties m532; memory32.memcpyFromGuest(&m532, 49152, sizeof(m532));
+            vk32abi::VkPhysicalDeviceDescriptorIndexingProperties di32; memory32.memcpyFromGuest(&di32, 50176, sizeof(di32));
+            vk32abi::VkPhysicalDeviceTransformFeedbackPropertiesEXT tf32; memory32.memcpyFromGuest(&tf32, 51200, sizeof(tf32));
+            Vk32Vulkan13Properties v1332; memory32.memcpyFromGuest(&v1332, 52224, sizeof(v1332));
+            vk32abi::VkPhysicalDeviceVulkan11Properties v1132; memory32.memcpyFromGuest(&v1132, 53248, sizeof(v1132));
+            vk32abi::VkPhysicalDeviceVulkan12Properties v1232; memory32.memcpyFromGuest(&v1232, 54272, sizeof(v1232));
+            assert(m532.earlyFragmentMultisampleCoverageAfterSampleCounting == VK_TRUE && m532.earlyFragmentSampleMaskTestBeforeSampleCounting == VK_TRUE && m532.polygonModePointSize == VK_TRUE);
+            assert(m532.depthStencilSwizzleOneSupport == 0xAAAAAAAAu);
+            assert(di32.maxUpdateAfterBindDescriptorsInAllPools == 1024 && di32.maxPerStageDescriptorUpdateAfterBindSamplers == 16 && di32.maxPerStageDescriptorUpdateAfterBindUniformBuffers == 16);
+            assert(di32.maxPerStageDescriptorUpdateAfterBindStorageBuffers == 1000000 && di32.maxPerStageDescriptorUpdateAfterBindSampledImages == 1000000 && di32.maxPerStageDescriptorUpdateAfterBindStorageImages == 1000000);
+            assert(di32.maxPerStageDescriptorUpdateAfterBindInputAttachments == 4 && di32.maxPerStageUpdateAfterBindResources == 128);
+            assert(di32.maxDescriptorSetUpdateAfterBindSamplers == 1024 && di32.maxDescriptorSetUpdateAfterBindUniformBuffers == 1024 && di32.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64);
+            assert(di32.maxDescriptorSetUpdateAfterBindStorageBuffers == 1024 && di32.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(di32.maxDescriptorSetUpdateAfterBindSampledImages == 1024 && di32.maxDescriptorSetUpdateAfterBindStorageImages == 1024 && di32.maxDescriptorSetUpdateAfterBindInputAttachments == 16);
+            assert(tf32.maxTransformFeedbackStreams == 0 && tf32.maxTransformFeedbackBuffers == 0 && tf32.maxTransformFeedbackBufferSize == 0);
+            assert(tf32.maxTransformFeedbackStreamDataSize == 0 && tf32.maxTransformFeedbackBufferDataSize == 0 && tf32.maxTransformFeedbackBufferDataStride == 0);
+            assert(tf32.transformFeedbackQueries == VK_TRUE && tf32.transformFeedbackStreamsLinesTriangles == VK_FALSE && tf32.transformFeedbackDraw == VK_FALSE);
+            assert(v1332.minSubgroupSize == 32 && v1332.maxSubgroupSize == 32);
+            assert(v1332.storageTexelBufferOffsetSingleTexelAlignment == VK_TRUE && v1332.uniformTexelBufferOffsetSingleTexelAlignment == VK_TRUE);
+            assert(v1332.maxBufferSize == (1ull << 30));
+            assert(v1332.integerDotProduct8BitUnsignedAccelerated == 0xAAAAAAAAu);
+            assert(v1132.pointClippingBehavior == VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES && v1132.maxPerSetDescriptors == 1024 && v1132.subgroupSize == 32);
+            // The offset pin: this field sits at guest offsetof 92, not at
+            // host offsetof - 8 = 96; the pre-fix walker wrote the limit
+            // 4 bytes late and this readback was garbage.
+            assert(v1132.maxMemoryAllocationSize == 2ull * 1024 * 1024 * 1024);
+            assert(v1232.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic == 64 && v1232.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic == 64);
+            assert(v1232.maxTimelineSemaphoreValueDifference == 0xFFFFFFFFull && v1232.framebufferIntegerColorSampleCounts == VK_SAMPLE_COUNT_1_BIT);
+            assert(memcmp(v1232.driverName, "boxedwine", 9) == 0);
+            // Every chained node was modeled: no new "not modeled" counts.
+            assert(vk64BridgeUnsupportedCount("properties2-struct") == propBefore);
+            puts("PASS: GUARD Properties2 answers are identical for 32-bit and 64-bit guests (maintenance5, descriptor-indexing, transform-feedback, Vulkan 1.1/1.2/1.3 arms)");
+        }
     {
         // Image views keep their real subresource range and type; non-identity swizzle and
         // render-target mip/layer selection are reported loudly instead of silently dropped.
