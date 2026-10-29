@@ -6455,3 +6455,138 @@ lines; test-results/dxvk-packedclearmerge-tri12); cs12 RESULT 0
 with the full standing signature -- VARIANT BUF OK (bad=0),
 BUF2 OK (bad=0), TEX OK (bad=0), SUMMARY buf=OK buf2=OK tex=OK
 (test-results/dxvk-packedclearmerge-cs12).
+## 4.54 64-bit vkCmdClearColorImage: packed formats tiled the raw clear value (2026-10-28, packedclear64 lane)
+
+**Question (named residue of the packedclear lane, §4.53).** The packedclear lane bit-packed the ten packed colour
+formats in the 32-bit path and named the remaining half: the 64-bit
+`vkCmdClearColorImage` handler repeats the raw 16-byte
+`VkClearColorValue` for every format, so packed formats are wrong
+there the same way the 32-bit path was wrong before §4.51. This lane
+settles it: **live defect, fixed; the packed residue is now closed on
+both ABIs.**
+
+**Before behaviour (pinned).** The 64-bit handler read the 16-byte
+colour and handed it to `vkClearColorFill` as a 16-byte pattern. For
+a packed format that pattern is the packed encoding of no component:
+a 2-byte texel (the PACK16 family) received `float32[0]`'s low half
+tiled at a 16-byte period; a 4-byte texel (A2B10G10R10, B10G11R11)
+received `float32[0]`'s raw bits. The handler was exact only for
+16-byte texels (and, by the §4.52 settlement, only where the ranges
+put those bytes).
+
+**The fix.** A shared conversion, `vkPackedClearTexel`, bit-packs
+the clear value into the format's field layout for the ten packed
+colour formats (PACK16: R4G4B4A4, B4G4R4A4, R5G6B5, B5G6R5,
+R5G5B5A1, B5G5R5A1, A1R5G5B5; PACK32: A2B10G10R10 UNORM and UINT,
+B10G11R11 UFLOAT — fields in format-name order, most significant
+first) and returns false for every other format. The 64-bit handler
+converts once and fills with the texel as the pattern period through
+`vkClearColorFill`; the no-footprint fallback takes the same
+pattern/period (its 4 KiB staging chunk is a multiple of both packed
+periods, so the fallback stays in phase). Every non-packed format
+keeps the raw 16-byte pattern with `pattern == color, patSize == 16`
+— byte-identical to before. The two `fmt_bpp` census cases the
+packedclear lane added (R5G5B5A1 at 2 bytes, A2B10G10R10_UINT at 4)
+are carried identically, so the 64-bit layout math sizes these
+formats correctly ahead of the packedclear merge.
+
+**Sharing structure (chosen to minimise merge risk).** The merge
+order is lane-clear32 → lane-subclear → lane-packedclear → this
+lane, and this lane's base (subclear's tip) predates packedclear's
+conversion, so the conversion could not simply be called. The three
+conversion helpers (`vk32PackUnorm`, `vk32RoundShiftEven`,
+`vk32FloatToUFloat`) are inserted **textually identical** to
+lane-packedclear's, at the same anchor after `vk32FloatToHalf`
+(verified mechanically: the helper block and `fmt_bpp` diff empty
+against the packedclear tree), so the two merges compose to a
+single copy. `vkPackedClearTexel`'s switch mirrors packedclear's
+`vk32ClearTexel` branch expression for expression. One trap found
+en route: the forward declaration must sit **outside** the bridge's
+unnamed namespace (it was placed after that namespace closes) —
+inside it, the declaration names a distinct internal entity from
+the file-scope definition the 32-bit machinery sits beside, and
+the link fails with the declaration "used but never defined".
+
+**Phase invariant (subrange clears).** `vkClearColorFill` indexes
+the pattern from the image start (`pattern[(subOff + done + i) %
+patSize]`), and for these 1x1-block formats `imageMipBytes` is a
+multiple of the texel size, so every subresource offset is a whole
+number of texels: a subrange fill lands exactly the texel bytes a
+whole-image fill lands at those offsets, for any period. The guard
+pins it with mip offsets of 8 bytes — texel-aligned but not
+16-aligned, where a 16-byte-period phase would show.
+
+**Guards.** New native-harness block "Vulkan64 clear-color packs
+bit-packed formats": the 32-bit lane's thirteen cases with the same
+distinctive values and expected bytes (field order, field bleed and
+rounding-vs-truncation each observable, 0xEE footprint sentinels),
+four subrange phase cases (R5G6B5 mip-only and layer-only,
+A2B10G10R10 mip-only), a D16_UNORM case pinning the historical raw
+fill on this path, and a `clear-color-layout` counter pin (no
+packed case, and not the depth case either, takes the 32-bit
+path's named fallback from the 64-bit handler). The §4.51 and §4.53
+harness blocks pass unmodified. **Sabotage-verified both ways:**
+swapping the R/B fields in `vkPackedClearTexel`'s R5G6B5 arm and
+replacing the UFLOAT normal-path round-to-nearest-even with
+truncation each abort at the new block's byte assertion; both
+sabotages were reverted byte-identically (sha256-checked).
+
+**UFLOAT cross-check.** `vk32FloatToUFloat` on this tree against an
+independent exact-rational model of the UFLOAT grid (round to
+nearest, ties to even encoding): 102,568 float inputs × both
+mantissa widths (6 and 5), **0 mismatches** — subnormals, overflow
+to the inf pattern, NaN and negative inputs included. (The model's
+one initial disagreement was the model: −inf is a negative input
+and clamps to zero, the function's sign-first discipline.)
+
+**Suites, citations, register.** run-native.py end-to-end green,
+**34 PASS blocks** (33 on the base + the new block). JS suite on
+the lane dist: **314 PASS / 3 FAIL** (dist stamp `2abd3d4d9` + this
+diff, 5 dirty files, wasm `8eee616a…`; suite total on this base
+is 317). The 3 failures — `vk-image-dirty-generation`,
+`vk-image-transfer`, `vulkan-image-format-size` — are **not this
+lane's**: all three reproduce identically on the pristine base
+`2abd3d4d9` (verified by direct `node --test` runs of the three
+files in a clean base worktree after the suite run). All three
+are static source-slice / census tests broken by lane-subclear's
+insertions into what they scan: the `imageSubresourceOffset` ->
+`fmt_name` slice now contains `vkResolveClearRange`, whose
+`ClearRangeArg` type the tests' stub preambles do not define
+(transfer + format-size compile errors), and the census does not
+pair the 64-bit clear handler's closing `dirtyGen` bump with a
+`vk64TouchMem` it recognises (dirty-generation; the bump is
+subclear's handler shape, base line 8414). Zero NEW failures vs
+base; the three are lane-subclear's merge-gate debt (its branch
+JS suite was never run), named here for the merge lane. Citation audit **0 DRIFT /
+0 MISSING** (229 MATCH / 12 MATCH-INHERITED / 97 UNCHECKABLE /
+7 EXEMPT; 103 citations re-pinned by a pure delta map over this
+diff). Register unchanged at **372 rows = 73 IMPLEMENTED /
+66 REJECTED-LOUDLY / 233 NOT-A-GAP / 0 OPEN** — no disposition
+changes; the header records this closure and the clear32 row's
+packed sentence is settled to the both-ABIs end state.
+
+**MERGE-TIME UNIFICATION (required when this lane merges).**
+(1) Verify exactly one definition each of `vk32PackUnorm`,
+`vk32RoundShiftEven`, `vk32FloatToUFloat` and one `fmt_bpp` case
+set for R5G5B5A1 / A2B10G10R10_UINT (the identical adds from both
+lanes). (2) In `vk32ClearTexel`'s no-component path, replace
+lane-packedclear's packed switch with a call to
+`vkPackedClearTexel`, falling through to the named raw fill when
+it returns false, so the conversion lives in exactly one place.
+(3) Both packed harness blocks (32-bit and 64-bit) must stay green
+byte-for-byte after the unification. (4) Compose the register
+header closures in lane order (clear32 → subclear → packedclear →
+packedclear64) and settle the clear32 row's disposition to the
+end state: packed colour layouts bit-packed on **both** ABIs;
+depth/stencil and block-compressed layouts the only raw-fill
+residue. This section is §4.54 as merged
+(§4.39 on this branch; renumbered at merge like its siblings).
+
+**Residue (named).** Depth/stencil and block-compressed formats
+keep the historical raw fill on both ABIs — a colour clear value
+has no depth/stencil semantics and BC has no per-texel layout; the
+32-bit path names it (`clear-color-layout`) while the 64-bit path
+keeps its historical un-named raw fill, an asymmetry documented
+here rather than changed (adding the counter to the 64-bit path
+was out of this lane's scope). A2R10G10B10 and E5B9G9R9 appear in
+no bridge table and stay outside the supported set.
