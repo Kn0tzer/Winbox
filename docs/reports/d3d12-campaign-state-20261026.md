@@ -5697,3 +5697,79 @@ flag=TRUE sweep=ALL18 exec=ALL6, RESULT 0
 (test-results/dxvk-opscanmerge-tri12). The harness composite
 passed:false in all three runs is the standing capture artifact;
 the verdicts above are the guests' own, with guest exit status 0.
+
+## 4.48 condStartWaitTime audit: KThread::sleep keeps its original deadline across wakes (2026-10-28, condwait lane)
+
+The audit (full text: docs/reports/cond-start-wait-time-audit-20261028.md)
+cleared the suspect and convicted its neighbour. condStartWaitTime
+(include/kthread.h) anchors exactly two waits -- internal_poll_impl
+(kpoll.cpp) and KThread::sleep (kthread.cpp) -- plus the 32-bit
+signal frame's save/restore and one debug-dump read. The missing
+-K_CONTINUE reset is CORRECT, proven: both dispatchers leave guest
+EIP on the syscall instruction and write no result-register
+sentinel, so after onExitSignal restores the saved anchor the same
+syscall re-executes and must resume its ORIGINAL deadline
+(SA_RESTART continuation); resetting on -K_CONTINUE would restart
+the full timeout after every signal. A stale anchor's damage is
+bounded: it can shorten the NEXT wait at most once. The live
+defect was in sleep only: it subtracted TOTAL elapsed time from an
+ALREADY-REDUCED timeout on every in-invocation wake (ms -= diff) --
+the exact pattern fc6818ec1 fixed in internal_poll_impl, a pass
+that touched only kpoll.cpp. Masked single-threaded; live in the
+multi-threaded shipping config (tgkill kicks and KThread::signal's
+wait branch wake the sleep condition WITHOUT setting startSignal,
+and sleep's loop had no pending-signal check to exit on). Measured:
+kicks every ~100 ms cut a 2000 ms sleep to 608 ms. Fix (sleep
+only): never mutate ms; recompute diff from the anchor each pass;
+terminal test diff >= ms; the condition wait takes ms - diff.
+Guard: testCondStartWaitTime (source/test/process/testCondWait.cpp,
+registered in BOTH TEST_ENTRIES arrays) -- the sleep-deadline case
+fails pre-fix (608 ms) and passes post-fix (lane sabotage loop:
+revert -> 606 ms FAIL, re-apply -> PASS); poll deadline pin;
+-K_CONTINUE pin; leaked-anchor bound. One item deliberately
+unchanged: sleep's loop still has no pending-signal check -- a
+latency property, not a deadline defect. No register row covers
+this field.
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE
+
+Merged as b728bcee4 (parents a3406666c + 45749655c), clean ort
+merge, no conflicts. This section is new in the campaign report
+(the lane's record is its audit doc); numbered 4.48, no renumber
+needed. COMPOSITION: the merged delta for source/kernel/kthread.cpp
+and source/test/testMain.cpp is byte-identical to the lane delta
+(verified by diffing the two diffs); the guard registration
+survives in BOTH TEST_ENTRIES arrays on the merged tree
+(testMain.cpp:146 and :801, declaration at :63), and sleep's loop
+carries no added pending-signal check -- the deliberately-unchanged
+item is unchanged.
+
+CITATIONS AND REGISTER: citation audit 228 MATCH / 14
+MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over 346 cited rows,
+0 DRIFT / 0 MISSING -- the identical distribution to pre-merge,
+with no re-pins (the merge touches no cited file). Register
+unchanged: no register file is in the merge delta (vulkan.md
+stands at 374 = 75 IMPLEMENTED / 66 REJECTED-LOUDLY / 233
+NOT-A-GAP / 0 OPEN), and kernel.md carries no condStartWaitTime
+row, as the lane stated.
+
+BUILD AND SUITES: bw64-build.sh -- Browser export verified,
+completeness gate 0 failures, 1 skip (pre-existing environmental).
+dist stamp b728bcee4, wasm d48af057...; dist/runtime/wine64.zip
+carries the shim ae96105b (160,169 B) under bw64vulkan.dll,
+vulkan-1.dll and winevulkan.dll, and the canonical pair a96b4e9d
+(d3d12.dll) / 3d3bfe43 (d3d12core.dll). Emulator native suite
+648 OK / 0 FAILED in 216 s (647 baseline + the lane's guard),
+and the guard provably ran: "Test condStartWaitTime deadline
+accounting (sleep/poll) ... OK" in the suite output. JS unit
+suite 328 passed / 0 failed (BW_TEST_DIST = the merged dist);
+run-native 37 PASS / 0 FAIL.
+
+GUEST GATE (light, per the kernel-side scope; uploading harness,
+acquireProbeSlot via the harness, canonical pair and shim
+sha-verified in every run's provenance): (a) tri12 RESULT 0
+(test-results/dxvk-condwaitmerge-tri12); (b) cs12 RESULT 0 with
+the full standing signature -- SUMMARY buf=OK buf2=OK tex=OK
+(test-results/dxvk-condwaitmerge-cs12). The harness composite
+passed:false in both runs is the standing capture artifact; the
+verdicts above are the guests' own, with guest exit status 0.
