@@ -34,7 +34,7 @@ test('bridge: record-time compute marking still resolves the full recorded prefi
   assert.ok(bridge.includes('static void vk64MarkComputeWrites(CmdBuf* cb) { vk64MarkComputeWritesUpTo(cb, cb->cmds.size()); }'),
     'vk64MarkComputeWrites must remain the record-time entry over the whole command buffer');
   const calls = bridge.split('vk64MarkComputeWrites(cb);').length - 1;
-  assert.equal(calls, 3, 'vkCmdDispatch, vkCmdDispatchBase and vkCmdDispatchIndirect must each mark at record time');
+  assert.equal(calls, 4, 'vkCmdDispatch, vkCmdDispatchBase and vkCmdDispatchIndirect must each mark at record time (64-bit and 32-bit handlers)');
 });
 
 test('bridge: the marking replay is prefix-bounded and clamped', () => {
