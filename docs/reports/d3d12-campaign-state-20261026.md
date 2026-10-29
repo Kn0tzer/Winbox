@@ -4981,3 +4981,136 @@ completeness 0 failures). wine32.zip was recovered byte-exact from
 /home/ubuntu/backups/winbox-vkd3d32-payloads-20261028-130037/ (hash
 matches the existing pin). At the metabind merge the integ lineage's
 manifest and archives govern; this repair is branch-local.
+
+### Merge outcome (integ, 2026-10-29) -- GATE COMPLETE: cs12 RESULT 0 on integ
+
+Merged into integ (branch integ/winbox-20261022b) as merge 8e8d6597f
+(lane-metabindfix 4736ba8c9, carrying lane-metabind a997ea0a7), fallout
+6fd18f716 (shim re-stage re-pins + register delta + these sections,
+renumbered 4.43/4.44), repair 9e9989e0f, citation re-pin fallout
+88415a446, and guard re-pin fallout cc40671d9. NOT pushed; the dist has
+not been redeployed.
+
+Convergence (hazard 1): the branch carries its own merge of
+lane-compute, already in integ via 954e72aa1 (section 4.30). The
+merge-base is b277cbf01 (the 4.30 commit itself); the branch delta
+against it includes already-integ compute/bstring/uintpso/mem32
+content with identical bytes, which auto-merged to no-ops (verified
+per file: kprocess/bstring/test files, d3d12-pixels.mjs show no delta
+vs HEAD). The four hand-resolved files were verified against BOTH
+parents: vk64bridge.cpp (the metabindfix helper factorization --
+vk64ReplayBoundState + vk64MarkBoundWrites -- is a strict superset of
+integ section 4.30/4.39 inline forms, plus the new STORAGE_TEXEL_BUFFER
+marking case; vk64MarkComputeWrites / vk64MarkDrawWrites /
+vk64CopyRegionSplit byte-identical to the branch), spirvfix.mjs
+(diff-of-diffs vs the stack delta differs ONLY in the REWRITES union
+line: integ list + storage-texel-buffer-to-2d, keeping strip-dead-undefs),
+vkwebgpu.mjs + wgsl-utils.mjs (the signature composition, below).
+
+BRACE-REPAIR INCIDENT (9e9989e0f): the first merged build failed
+compiling vk64bridge.cpp ("function definition is not allowed here").
+The three-way merge had aligned vk64MarkDrawRootWrites final two
+closing lines as the common tail of vk64CopyRegionSplit ending
+(identical text, wrong owner), leaving DrawRootWrites unclosed in the
+conflict region; the union resolution preserved the defect.
+CopyRegionSplit itself was complete and byte-identical to the branch.
+PROCESS LESSON: the merge-time extraction check that "verified"
+DrawRootWrites was a FALSE POSITIVE -- its signature search matched
+the FORWARD DECLARATION (line ~2218) in both files and compared the
+wrong span; the build caught it. Extraction checks must search for
+the definition (signature + " {"), never a bare signature string.
+The repair restored the two closing lines; the repaired function is
+byte-identical to its pre-merge integ text.
+
+SIGNATURE COMPOSITION: integ storageSignatureFor (fmtinject, section
+4.33) delegates format proof to resolveStorageVarFormat, whose fmtOf
+historically proved formats only from kind-2 (image view) entries --
+kind-6 entries returned null, which alone would have left the
+meta-bind signature wall standing. Composition: resolveStorageVarFormat
+takes an optional texelFormatOf callback; fmtOf proves kind 6 through
+it (and the array-agreement loop admits kind 6 only with the callback);
+vkwebgpu storageSignatureFor supplies it from F.bufferViews ->
+V2_STORAGE_FORMAT[bv.format].spv, with the same element accuracy as
+image views. Without the callback, behaviour is byte-identical to
+pre-merge (the fmtinject guards 4-argument calls pin this).
+
+SHIM RE-STAGE (hazard 4/5): stage-vkd3d-payloads.sh re-staged BOTH
+web/runtime and dist/runtime wine64.zip (backups
+/home/ubuntu/backups/winbox-vkd3d-payloads-20261029-071326). Both
+archives now carry the merged shim sha256 ae96105b... (160,169 B)
+under ALL THREE names (bw64vulkan.dll / vulkan-1.dll / winevulkan.dll),
+and the canonical restaged d3d12 pair UNCHANGED (d3d12.dll a96b4e9d...,
+517,717 B; d3d12core.dll 3d3bfe43..., 8,825,383 B -- provenance:
+lane-restage build in wt-restage/tools/vkd3d/build.w64, section 4.37;
+the branch in-commit pin moves were NOT inherited). Staged
+web/runtime/wine64.zip 213,105,632 B sha256 1fc1e0ad... (member pins +
+size + gate are the invariants; whole-archive hashes are not
+reproducible across staging runs). Completeness gate: 0 failures,
+1 pre-existing environmental skip. Dist rebuilt FROM the staged set:
+stamp 9e9989e0f, wasm 2de1197c..., "Browser export verified".
+
+REGISTER AS DELTA (hazard 2): the branch register (367 rows, old base)
+was NOT taken. The stack true semantic delta (citation-normalized row
+comparison) applied onto integ 373: +1 row (PE shim push-descriptor
+exports family, IMPLEMENTED), the texel-buffer-view row and the
+applyDescWrite texel row texts replaced with the branch served
+wording, and the null-descriptor row clause-spliced (STORAGE_TEXEL_BUFFER
+null views serve the zero storage texture since 4.43). Final register
+(pipe-aware recount): 374 rows = 75 IMPLEMENTED / 66 REJECTED-LOUDLY /
+233 NOT-A-GAP / 0 OPEN. Citations: the merge line shifts (vk64bridge
++116..+159 by region, vkwebgpu +35..+227, spirvfix +188, wgsl-utils
++10/+12) drifted 57 citations; re-pinned in 88415a446 (34 by the audit
+--fix pass, 39 by hand via line-text mapping against the pre-merge
+tree with definition-delta preservation, the 13 duplicate-scan rows
+re-followed to their primaries, 2 catch-literal rows re-pinned to
+their moved block, and the resolveStorageVarFormat row marker updated
+to the composed signature). Final audit: 0 DRIFT / 0 MISSING
+(228 MATCH / 14 MATCH-INHERITED / 97 UNCHECKABLE / 7 EXEMPT over 346
+cited rows -- exactly the pre-merge coverage totals).
+
+GUARD RE-PIN (cc40671d9): vk-storage-texel subtest 5 pinned the kind-6
+dispatch inside vkwebgpu storageSignatureFor (the branch computed
+formats inline there). In the composed shape the dispatch lives in
+resolveStorageVarFormat fmtOf; the guard now pins both halves at their
+composed locations, with the kind assert regex-tightened to the fmtOf
+dispatch (the array-agreement loop also names kind 6 and would have
+satisfied a loose pin -- caught by sabotage). Sabotage-verified both
+directions: breaking the fmtOf kind-6 arm or the callback format
+lookup each fail the guard; restores byte-identical. No product code
+changed in this fallout.
+
+R12S COMPOSITION NOTE (hazard 6, for the rawscan merge): metabindfix
+variable-vetting scan (frontier finding 4, a function-body scan over
+varIds) and rawscan consumer scan (finding 5) live in DIFFERENT
+regions of storageTexelBuffersTo2D and must compose at the rawscan
+merge -- neither overwrites the other. This merge brought metabindfix
+version in cleanly.
+
+SUITES on the merged tree: JS unit suite 326 passed / 0 failed
+(runner --unit, BW_TEST_DIST=integ dist; 323 baseline + the stack 3
+new guard files vk-storage-texel / vk-storage-texel-lifetime /
+vk-push-descriptor-shim; vk-register-citations and
+vk-storage-format-inject both pass); emulator native 647 OK /
+0 FAILED; run-native.py 34 PASS / 0 FAIL (31 baseline + the stack 3
+new blocks: storage texel push descriptor wires kind 6 marks and
+reads back; partial-overlap copy splits at the GPU-write mark
+boundaries; draw-time storage writes mark the view range).
+
+GUEST GATE on the merged dist (uploading harness d3d12-pixels.mjs;
+canonical pair + merged shim sha-verified in the harness provenance:
+a96b4e9d... / 3d3bfe43... / ae96105b...; probe slot, one at a time;
+adjudicated on guest verdicts, harness composites are the known
+pixel-check artifacts):
+(a) cs12 PASS -- RESULT 0: TEX OK bad=0, BUF OK bad=0, BUF2 OK bad=0
+(SUMMARY buf=OK buf2=OK tex=OK). The meta-bind wall is closed on
+integ; cs12 reaches its end state. Evidence:
+test-results/dxvk-metabindmerge-cs12.
+(b) uav12 PASS -- SUMMARY flag=TRUE sweep=ALL18 exec=ALL6, RESULT 0.
+Evidence: test-results/dxvk-metabindmerge-uav12.
+(c) rb12 PASS -- RESULT 0, all 8 variants OK (SUMMARY buf=OK clear=OK
+upldtex=OK constps=OK delay=OK rdb2i=OK rdb2ip=OK rdb2is=OK).
+Evidence: test-results/dxvk-metabindmerge-rb12.
+(d) tri12 PASS -- RESULT 0. Evidence:
+test-results/dxvk-metabindmerge-tri12.
+(e) root12 PASS -- SUMMARY cbv=OK srv=OK uav=OK, RESULT 0. Evidence:
+test-results/dxvk-metabindmerge-root12.
