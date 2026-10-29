@@ -46,22 +46,26 @@ test('DEVICE_LOCAL-only type stays uncached and the advertised shape is unchange
 });
 
 // ---------------------------------------------------------------------------
-// 32-bit path (campaign section 4.28, mem32 lane): the 32-bit handler in
-// vk32Bridge hand-writes its own answer and never calls
-// fillMemoryProperties. Its single advertised type is
-// DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (0x0007) -- no HOST_CACHED
-// anywhere. That is NOT the 64-bit wall, because the 32-bit consumers are
-// DXVK (D3D9/D3D11, vendored at tools/dxvk/src), and DXVK's allocator
-// treats HOST_CACHED as an OPTIONAL flag: DxvkMemoryAllocator::alloc
-// retries with DEVICE_LOCAL | HOST_CACHED stripped when no type satisfies
-// the full request, so staging / CPU-read allocations (which do request
-// HOST_CACHED) fall back to HOST_VISIBLE | HOST_COHERENT and succeed.
-// vkd3d-proton, by contrast, has no such strip -- its required mask is
-// hard, which is why the identical advertisement gap was a wall on the
-// 64-bit path and is a NOT-A-GAP here. These tests pin both halves of
-// that verdict: the 32-bit advertised answer, and the allocator premise
-// it rests on. If a future DXVK vendoring removes the optional strip,
-// the second test fails and this verdict must be re-reviewed.
+// 32-bit path (campaign sections 4.28 + 4.63, mem32 + cs32mem lanes):
+// the 32-bit handler in vk32Bridge hand-writes its own answer and never
+// calls fillMemoryProperties. Section 4.28 adjudicated the missing
+// HOST_CACHED NOT-A-GAP -- for DXVK (D3D9/D3D11, vendored at
+// tools/dxvk/src), the only 32-bit Vulkan consumer then reachable:
+// DXVK's allocator treats HOST_CACHED as an OPTIONAL flag:
+// DxvkMemoryAllocator::alloc retries with DEVICE_LOCAL | HOST_CACHED
+// stripped when no type satisfies the full request, so staging / CPU-read
+// allocations (which do request HOST_CACHED) fall back to
+// HOST_VISIBLE | HOST_COHERENT and succeed. That verdict never covered
+// vkd3d-proton, whose required mask has no such strip: once 32-bit
+// D3D12 device creation worked (section 4.40), cs12-32 hit the section
+// 4.23 wall on this ABI -- every READBACK / WRITE_BACK committed
+// resource failed E_OUTOFMEMORY before vkAllocateMemory, because the
+// single advertised type carried no HOST_CACHED. The type now carries
+// it (0x000F); DXVK's choice cannot change (there is one type to
+// choose), and the premise test below still pins why it never needed
+// the bit. These tests pin both halves: the 32-bit advertised answer,
+// and the allocator premise. If a future DXVK vendoring removes the
+// optional strip, the second test fails and this must be re-reviewed.
 // ---------------------------------------------------------------------------
 
 function vk32MemPropsBlocks() {
@@ -89,11 +93,11 @@ function vk32MemPropsBlocks() {
   };
 }
 
-test('32-bit memory properties: single type is DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT, one 4 GiB device-local heap', () => {
+test('32-bit memory properties: single type is DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED, one 4 GiB device-local heap', () => {
   const { v1, v2 } = vk32MemPropsBlocks();
   for (const [name, b] of [['v1', v1], ['v2', v2]]) {
     assert.ok(b.includes('wr32_32(dst + 0, 1);'), `${name}: memoryTypeCount must be 1`);
-    assert.ok(b.includes('wr32_32(dst + 4 + 0, 0x0007);'), `${name}: type 0 propertyFlags must be 0x0007 (DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT)`);
+    assert.ok(b.includes('wr32_32(dst + 4 + 0, 0x000F);'), `${name}: type 0 propertyFlags must be 0x000F (DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED)`);
     assert.ok(b.includes('wr32_32(dst + 4 + 4, 0);'), `${name}: type 0 heapIndex must be 0`);
     assert.ok(b.includes('wr32_32(dst + heapOff, 1);'), `${name}: memoryHeapCount must be 1`);
     assert.ok(b.includes('wr64_32(dst + heapOff + 4, 0x100000000ULL);'), `${name}: heap 0 size must be 4 GiB`);
