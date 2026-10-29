@@ -8123,3 +8123,28 @@ LIT=8192, RESULT 0): the log shape that failed both tests at the copy
 check before this fix now passes end to end, and the sabotage variant
 above proves the check still fails when no copy is served.
 Register: no changes.
+
+MERGE OUTCOME (batched regime, LIGHT merge -- no dist rebuild, no
+guest probes, per the 2026-10-29 batching order): merged into integ
+as 2eef956e1 (parents 31046747c + 5d53c721e). FULL-DIFF ACCOUNTING:
+the merged delta vs pre-merge integ is exactly the lane delta vs its
+base (3 files, +61/-4): both test files landed byte-identical to the
+lane blobs, and this section was appended at the report tail
+renumbered 4.42-on-branch -> 4.63 (the only report conflict; integ's
+sections 4.42-4.62 kept verbatim ahead of it). Pre-merge check: both
+test files on integ were byte-identical to the lane's base blobs and
+the stale 'gipa HIT.*vkCmdCopyBuffer' pattern was still present
+verbatim, so the fix was not already present in any form. Register
+unchanged: the register file is byte-identical across the merge
+(378 = 78/66/234/0). Citations 0 DRIFT / 0 MISSING (230 MATCH / 14
+MATCH-INHERITED / 98 UNCHECKABLE / 7 EXEMPT over 349 rows; the lane
+touches no cited files). Light suites on the merged tree: JS unit
+332 passed / 0 failed against the batch-gate-#2 dist (stamp
+17a8c95a2; the changed files are browser-phase tests, not unit
+files), emulator native 648 tests / 0 FAILED, run-native 47 PASS /
+0 FAIL (unchanged). DEBT RECORDED: the two repaired browser tests
+themselves (d3d11-triangle, d3d11-comprehensive) were NOT re-run in
+this lane; they are proven at the FINAL FULL GATE, which runs the
+browser suite --filter=d3d11 against the final dist (lane-side
+evidence stands meanwhile: --filter=d3d11 2 passed / 0 failed on the
+lane dist, each run's console repeating the characterised shape).
