@@ -2222,13 +2222,14 @@ U32 fmt_bpp(U32 f) {
         case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT:
         case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
         case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
-        case VK_FORMAT_B5G5R5A1_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+        case VK_FORMAT_R5G5B5A1_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
         case VK_FORMAT_R4G4B4A4_UNORM_PACK16: case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
         case VK_FORMAT_D16_UNORM: return 2;
         case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT:
         case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
-        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
         case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SFLOAT:
         case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT:
         case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
@@ -6014,6 +6015,10 @@ static void logAskedFor(const char* abi, const std::string& name) {
 
 } // namespace
 
+// Packed-format clear texel conversion (defined with the 32-bit clear
+// machinery below; shared by both vkCmdClearColorImage handlers).
+static bool vkPackedClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8 texel[16], U32& texelSize);
+
 // ---------------------------------------------------------------------------
 // Entry point from ksyscall64.
 // ---------------------------------------------------------------------------
@@ -8385,13 +8390,34 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         VK64_DROP_IF(return 0, !dmem || !dmem->va);
         U8 color[16] = {0};
         if (args.a[3]) g_mem->memcpyFromGuest(color, args.a[3], 16);
+        // Packed formats: the raw 16-byte value is the packed encoding of
+        // no component (a 2-byte texel would receive float32[0]'s low half
+        // tiled at a 16-byte period, a 4-byte texel its raw bits), so
+        // convert the colour once into the format's texel and fill with
+        // the texel as the period. The subrange phase stays coherent:
+        // vkClearColorFill indexes the pattern from the image start, and
+        // for these formats every subresource offset is a whole number of
+        // texels (imageMipBytes is a multiple of the texel size when the
+        // block is 1x1), so a subrange fill lands exactly the texel bytes
+        // a whole-image fill would land there. Every other format keeps
+        // the raw 16-byte pattern, byte-identical.
+        const U8* pattern = color;
+        U32 patSize = 16;
+        U8 packedTexel[16];
+        U32 packedTexelSize = 0;
+        vk32abi::VkClearColorValue colv;
+        memcpy(&colv, color, 16);
+        if (vkPackedClearTexel(img->format, colv, packedTexel, packedTexelSize)) {
+            pattern = packedTexel;
+            patSize = packedTexelSize;
+        }
         std::vector<ClearRangeArg> ranges;
         if (args.a[4] && args.a[5]) {
             if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
             readArray(args.a[5], (U32)args.a[4], ranges);
         }
         if (ranges.empty()) ranges.push_back({0x1u, 0, 0xFFFFFFFFu, 0, 0xFFFFFFFFu});
-        if (!vkClearColorFill(g_mem, dmem->va + img->memOff, *img, dmem, ranges, color, 16)) {
+        if (!vkClearColorFill(g_mem, dmem->va + img->memOff, *img, dmem, ranges, pattern, patSize)) {
             // No layout footprint (extent fields unset): the historical
             // whole-allocation fill.
             U64 imgSize = img->pixBytes * (U64)img->w * (U64)img->h;
@@ -8401,7 +8427,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
             const U64 va = dmem->va + img->memOff;
             const U64 CHUNK = 4096;
             U8 buf[CHUNK];
-            for (U64 i = 0; i < CHUNK; i++) buf[i] = color[i % 16];
+            for (U64 i = 0; i < CHUNK; i++) buf[i] = pattern[i % patSize];
             U64 done = 0;
             while (done < imgSize) {
                 const U64 n = std::min(CHUNK, imgSize - done);
@@ -9509,6 +9535,44 @@ static uint16_t vk32FloatToHalf(float f) {
     if (((mant >> 12) & 1) && ((mant & 0xfff) || (h & 1))) h++;               // round to nearest, ties to even
     return h;
 }
+// Packed-format helpers for vk32ClearTexel. UNORM fields quantize with
+// the same round-half-up discipline as the plain UNORM path below.
+static U32 vk32PackUnorm(float f, U32 bits) {
+    float c = f < 0 ? 0 : (f > 1 ? 1 : f);
+    return (U32)(c * (float)((1u << bits) - 1) + 0.5f);
+}
+static U32 vk32RoundShiftEven(U32 v, U32 shift) {
+    if (!shift) return v;
+    if (shift >= 32) return 0;
+    U32 rem = v & ((1u << shift) - 1);
+    U32 half = 1u << (shift - 1);
+    U32 out = v >> shift;
+    if (rem > half || (rem == half && (out & 1))) out++;
+    return out;
+}
+// float32 -> the unsigned-float field of B10G11R11_UFLOAT_PACK32 (5
+// exponent bits, bias 15, mantBits mantissa bits, no sign bit). The
+// conversion is exact round-to-nearest-even onto the target grid
+// (normals, subnormals, overflow to the inf pattern), so the error is
+// at most half a target ULP -- the same guarantee as vk32FloatToHalf.
+// Negative inputs clamp to zero, as UFLOAT has no sign.
+static U32 vk32FloatToUFloat(float f, U32 mantBits) {
+    U32 bits; memcpy(&bits, &f, 4);
+    const U32 inf = 0x1fu << mantBits;
+    if ((bits >> 31) || !(bits & 0x7fffffff)) return 0;              // negative / zero
+    U32 expBits = (bits >> 23) & 0xff;
+    U32 mant = bits & 0x7fffff;
+    if (expBits == 0xff) return mant ? (inf | (1u << (mantBits - 1))) : inf;   // nan keeps a mantissa bit; inf
+    int exp = (int)expBits - 127 + 15;
+    if (exp >= 31) return inf;                                       // overflow -> inf
+    if (exp <= 0) {                                                  // subnormal / zero
+        U32 shift = (U32)(1 - exp) + (23 - mantBits);
+        return vk32RoundShiftEven(mant | 0x800000, shift);           // may round up to the min-normal pattern, the adjacent encoding
+    }
+    U32 field = vk32RoundShiftEven(mant, 23 - mantBits);
+    if (field == (1u << mantBits)) { field = 0; if (++exp >= 31) return inf; }
+    return ((U32)exp << mantBits) | field;
+}
 enum Vk32ClearKind { VK32_CLEAR_FLOAT, VK32_CLEAR_UINT, VK32_CLEAR_SINT, VK32_CLEAR_UNORM, VK32_CLEAR_SNORM };
 static void vk32ClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8 texel[16], U32& texelSize) {
     texelSize = fmt_bpp(format);
@@ -9585,6 +9649,76 @@ static void vk32ClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// vkCmdClearColorImage packed-format texel conversion, shared by both
+// handlers: bit-pack the clear value into the format's field layout for
+// the ten packed colour formats (the PACK16 family, A2B10G10R10 UNORM
+// and UINT, B10G11R11 UFLOAT) and return true; any other format returns
+// false and the caller keeps its existing path (the 32-bit handler's
+// named raw fill for depth/stencil and block-compressed formats, the
+// 64-bit handler's raw 16-byte pattern).
+//
+// Structure, chosen for the merge order (lane-clear32, lane-subclear,
+// lane-packedclear, then this lane): the three helpers above are
+// textually identical to lane-packedclear's, inserted at the same
+// anchor, so the two merges compose to a single copy; the switch below
+// mirrors the packed branch lane-packedclear added inside
+// vk32ClearTexel expression for expression. The merge of this lane must
+// retire that branch in favour of this function (call it from
+// vk32ClearTexel's no-component path and fall through to the named raw
+// fill when it returns false), so the conversion lives in exactly one
+// place; both lanes' harness guards pin the resulting bytes.
+// ---------------------------------------------------------------------------
+static bool vkPackedClearTexel(U32 format, const vk32abi::VkClearColorValue& col, U8 texel[16], U32& texelSize) {
+    // Packed formats: fields in format-name order, most significant
+    // first (the order web/vk-protocol.mjs packedUnormToRgba8 decodes
+    // and WebGPU's rgb10a2/rg11b10 formats use); a texel is the packed
+    // word stored little-endian. UNORM fields take the float
+    // components, the A2B10G10R10 UINT sibling takes the uint32
+    // components' low bits, B10G11R11 takes float components as
+    // unsigned floats. Any other format (depth/stencil, block
+    // compressed, plain component vectors) is not packed and returns
+    // false below.
+    U32 packed = 0; bool isPacked = false;
+    switch (format) {
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[0], 4) << 12) | (vk32PackUnorm(col.float32[1], 4) << 8) |
+                     (vk32PackUnorm(col.float32[2], 4) << 4) | vk32PackUnorm(col.float32[3], 4); isPacked = true; break;
+        case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[2], 4) << 12) | (vk32PackUnorm(col.float32[1], 4) << 8) |
+                     (vk32PackUnorm(col.float32[0], 4) << 4) | vk32PackUnorm(col.float32[3], 4); isPacked = true; break;
+        case VK_FORMAT_R5G6B5_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[0], 5) << 11) | (vk32PackUnorm(col.float32[1], 6) << 5) |
+                     vk32PackUnorm(col.float32[2], 5); isPacked = true; break;
+        case VK_FORMAT_B5G6R5_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[2], 5) << 11) | (vk32PackUnorm(col.float32[1], 6) << 5) |
+                     vk32PackUnorm(col.float32[0], 5); isPacked = true; break;
+        case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[0], 5) << 11) | (vk32PackUnorm(col.float32[1], 5) << 6) |
+                     (vk32PackUnorm(col.float32[2], 5) << 1) | vk32PackUnorm(col.float32[3], 1); isPacked = true; break;
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[2], 5) << 11) | (vk32PackUnorm(col.float32[1], 5) << 6) |
+                     (vk32PackUnorm(col.float32[0], 5) << 1) | vk32PackUnorm(col.float32[3], 1); isPacked = true; break;
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+            packed = (vk32PackUnorm(col.float32[3], 1) << 15) | (vk32PackUnorm(col.float32[0], 5) << 10) |
+                     (vk32PackUnorm(col.float32[1], 5) << 5) | vk32PackUnorm(col.float32[2], 5); isPacked = true; break;
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+            packed = (vk32PackUnorm(col.float32[3], 2) << 30) | (vk32PackUnorm(col.float32[2], 10) << 20) |
+                     (vk32PackUnorm(col.float32[1], 10) << 10) | vk32PackUnorm(col.float32[0], 10); isPacked = true; break;
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+            packed = ((col.uint32[3] & 3) << 30) | ((col.uint32[2] & 1023) << 20) |
+                     ((col.uint32[1] & 1023) << 10) | (col.uint32[0] & 1023); isPacked = true; break;
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+            packed = (vk32FloatToUFloat(col.float32[2], 5) << 22) | (vk32FloatToUFloat(col.float32[1], 6) << 11) |
+                     vk32FloatToUFloat(col.float32[0], 6); isPacked = true; break;
+    }
+    if (!isPacked) return false;
+    texelSize = fmt_bpp(format);
+    memset(texel, 0, 16);
+    for (U32 b = 0; b < texelSize && b < 4; b++) texel[b] = (U8)(packed >> (8 * b));
+    return true;
 }
 static void applyWrite32(DescSet& s, const vk32abi::VkWriteDescriptorSet& w) {
     DescWriteReq r;

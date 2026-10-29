@@ -937,6 +937,111 @@ int main() {
         }
         puts("PASS: vkCmdClearColorImage honours subresource ranges (both ABIs; outside bytes untouched, REMAINING and clamp)");
     }
+    // ---- vkCmdClearColorImage (64-bit), packed formats: the clear value
+    // must be bit-packed into the format's field layout (fields in
+    // format-name order, most significant first). The handler used to
+    // repeat the raw 16-byte colour for every format, so a 2-byte texel
+    // received float32[0]'s low half tiled at a 16-byte period and a
+    // 4-byte texel float32[0]'s raw bits. Same distinctive values as the
+    // 32-bit packed block: field bleeding, swapped field order and
+    // truncation-instead-of-rounding each change the expected bytes.
+    // The subrange cases pin the phase invariant: vkClearColorFill
+    // indexes the pattern from the image start and every subresource
+    // offset is a whole number of texels, so a one-mip clear lands
+    // exactly the bytes the whole-image fill lands at those offsets
+    // (the chosen mip offsets are texel-aligned but not 16-aligned, so
+    // a 16-byte-period phase would show).
+    {
+        U64 memId; auto* dm = createObj<DeviceMemory>(K_MEMORY, memId);
+        dm->size = 8192; dm->va = memory.mmapReserveAndMap(dm->size, 3);
+        auto f32col = [](float a, float b, float c, float d) {
+            std::vector<U8> out(16); const float f[4] = {a, b, c, d};
+            memcpy(out.data(), f, 16); return out;
+        };
+        auto u32col = [](U32 a, U32 b, U32 c, U32 d) {
+            std::vector<U8> out(16); const U32 u[4] = {a, b, c, d};
+            memcpy(out.data(), u, 16); return out;
+        };
+        auto runClear = [&](U32 format, U32 w, U32 h, U32 mips, U32 layers,
+                            const std::vector<U8>& col,
+                            const std::vector<ClearRangeArg>& ranges,
+                            const std::vector<U8>& expect) {
+            U64 imgId; auto* img = createObj<Image>(K_IMAGE, imgId);
+            img->w = w; img->h = h; img->d = 1; img->mips = mips; img->layers = layers;
+            img->format = format; img->mem = memId; img->memOff = 128;
+            for (U32 i = 0; i < 8192; ++i) memory.bytes[dm->va + i] = 0xEE;
+            memory.memcpyToGuest(2048, col.data(), 16);
+            if (!ranges.empty()) memory.memcpyToGuest(3072, ranges.data(), sizeof(ClearRangeArg) * ranges.size());
+            VK64Args cc{}; cc.a[1] = imgId; cc.a[3] = 2048;
+            cc.a[4] = (U64)ranges.size(); cc.a[5] = ranges.empty() ? 0 : 3072;
+            memory.memcpyToGuest(128, &cc, sizeof(cc));
+            assert(vk64Bridge(&cpu, VK64_fn_vkCmdClearColorImage, 128) == 0);
+            const U64 base = dm->va + 128;
+            for (size_t i = 0; i < expect.size(); ++i) assert(memory.bytes[base + i] == expect[i]);
+            assert(memory.bytes[base - 1] == 0xEE && memory.bytes[base + expect.size()] == 0xEE);
+        };
+        auto texelX = [](const std::vector<U8>& one, int n) {
+            std::vector<U8> out; for (int i = 0; i < n; ++i) out.insert(out.end(), one.begin(), one.end()); return out;
+        };
+        // Expected footprint for a subrange case: sentinels everywhere,
+        // the texel pattern (phased from the image start) in the spans.
+        auto subExpect = [](U32 total, const std::vector<U8>& texel,
+                            const std::vector<std::pair<U32, U32>>& spans) {
+            std::vector<U8> out(total, 0xEE);
+            for (const auto& sp : spans)
+                for (U32 o = sp.first; o < sp.first + sp.second; ++o) out[o] = texel[o % texel.size()];
+            return out;
+        };
+        const U64 fbBefore = vk64BridgeUnsupportedCount("clear-color-layout");
+        // R4G4B4A4_UNORM_PACK16 (2): R=15, G=round(7.5)=8, B=0, A=round(3.75)=4.
+        runClear(2, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.0f, 0.25f), {}, texelX({0x04,0xF8}, 2));
+        // B4G4R4A4_UNORM_PACK16 (3): B=15, G=8, R=4, A=0 (R/B swapped vs fmt 2).
+        runClear(3, 2, 1, 1, 1, f32col(0.25f, 0.5f, 1.0f, 0.0f), {}, texelX({0x40,0xF8}, 2));
+        // R5G6B5_UNORM_PACK16 (4): R=31, G=round(31.5)=32, B=round(7.75)=8.
+        runClear(4, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {}, texelX({0x08,0xFC}, 2));
+        // B5G6R5_UNORM_PACK16 (5): B=round(23.25)=23, G=round(15.75)=16, R=16.
+        runClear(5, 2, 1, 1, 1, f32col(0.5f, 0.25f, 0.75f, 0.0f), {}, texelX({0x10,0xBA}, 2));
+        // R5G5B5A1_UNORM_PACK16 (6): R=31, G=0, B=16, A=1; alpha 0.4 -> A=0.
+        runClear(6, 2, 1, 1, 1, f32col(1.0f, 0.0f, 0.5f, 1.0f), {}, texelX({0x21,0xF8}, 2));
+        runClear(6, 2, 1, 1, 1, f32col(1.0f, 0.0f, 0.5f, 0.4f), {}, texelX({0x20,0xF8}, 2));
+        // B5G5R5A1_UNORM_PACK16 (7): B=31, G=0, R=16, A=0.
+        runClear(7, 2, 1, 1, 1, f32col(0.5f, 0.0f, 1.0f, 0.0f), {}, texelX({0x20,0xF8}, 2));
+        // A1R5G5B5_UNORM_PACK16 (8): A=1, R=8, G=16, B=23 (alpha is the MSB).
+        runClear(8, 2, 1, 1, 1, f32col(0.25f, 0.5f, 0.75f, 1.0f), {}, texelX({0x17,0xA2}, 2));
+        // A2B10G10R10_UNORM_PACK32 (64): A=round(2.25)=2, B=round(255.75)=256,
+        // G=round(511.5)=512, R=1023.
+        runClear(64, 2, 1, 1, 1, f32col(1.0f, 0.5f, 0.25f, 0.75f), {}, texelX({0xFF,0x03,0x08,0x90}, 2));
+        // A2B10G10R10_UINT_PACK32 (68): uint32 components' low bits only
+        // (R carries excess bits that must be masked off).
+        runClear(68, 2, 1, 1, 1, u32col(0xFFFFF123u, 0x2ABu, 0x3FFu, 0x2u), {}, texelX({0x23,0xAD,0xFA,0xBF}, 2));
+        // B10G11R11_UFLOAT_PACK32 (122): R=1.0 -> 0x3C0, G=0.5 -> 0x380 at
+        // bit 11, B=2.0 -> 0x200 at bit 22.
+        runClear(122, 2, 1, 1, 1, f32col(1.0f, 0.5f, 2.0f, 0.0f), {}, texelX({0xC0,0x03,0x1C,0x80}, 2));
+        // UFLOAT rounding: 0.3 rounds UP to field 13 (truncation gives 12).
+        runClear(122, 2, 1, 1, 1, f32col(0.3f, 0.0f, 0.0f, 0.0f), {}, texelX({0x4D,0x03,0x00,0x00}, 2));
+        // UFLOAT subnormal: 2^-20 is exactly one subnormal step of R11.
+        runClear(122, 2, 1, 1, 1, f32col(0x1p-20f, 0.0f, 0.0f, 0.0f), {}, texelX({0x01,0x00,0x00,0x00}, 2));
+        // Subrange phase (R5G6B5, 2x2, 2 mips: mip0 8 B @0, mip1 2 B @8;
+        // 2 layers: layer stride 10 B).
+        runClear(4, 2, 2, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {}, texelX({0x08,0xFC}, 5));
+        runClear(4, 2, 2, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.0f), {{1, 1, 1, 0, 1}},
+                 subExpect(10, {0x08,0xFC}, {{8, 2}}));
+        runClear(4, 2, 2, 2, 2, f32col(1.0f, 0.5f, 0.25f, 0.0f), {{1, 0, 1, 1, 1}},
+                 subExpect(20, {0x08,0xFC}, {{10, 8}}));
+        // Subrange phase (A2B10G10R10_UNORM, 2x1, 2 mips: mip0 8 B @0,
+        // mip1 4 B @8).
+        runClear(64, 2, 1, 2, 1, f32col(1.0f, 0.5f, 0.25f, 0.75f), {{1, 1, 1, 0, 1}},
+                 subExpect(12, {0xFF,0x03,0x08,0x90}, {{8, 4}}));
+        // D16_UNORM (124) keeps the historical raw fill on the 64-bit
+        // path (the first bytes of the 16-byte pattern) and does not take
+        // the 32-bit path's named fallback -- the clear-color-layout
+        // naming lives in vk32ClearTexel; the counter pin below covers
+        // both statements.
+        runClear(124, 2, 1, 1, 1, u32col(0xAABBCCDDu, 0, 0, 0), {}, {0xDD,0xCC,0xBB,0xAA});
+        // No packed case may fall into the named raw fill.
+        assert(vk64BridgeUnsupportedCount("clear-color-layout") == fbBefore);
+        puts("PASS: Vulkan64 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT; subrange phase)");
+    }
     // ---- Entry points that used to be loud stubs: sizing from a create info,
     // shim-local answers (queue2, granularity, sparse, pipeline cache) and the
     // 64-bit vkDestroyBufferView.
