@@ -9764,6 +9764,52 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan12Properties, framebufferIntegerColorSampleCounts), (U32)VK_SAMPLE_COUNT_1_BIT);
                 break;
             }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
+                // Mirrors the 64-bit arm field for field. The stream-out
+                // limits stay zero and the capability bits stay FALSE (no
+                // stream-out can be served; the entry points are absent) --
+                // except transformFeedbackQueries, which the vkd3d-proton
+                // device-creation gate reads (vkd3d_init_device_caps: ERR +
+                // E_INVALIDARG when false). TF query pools themselves stay
+                // unservable and fail loudly on the query path. The
+                // vk32_w*f helpers' hostOff-8 rule is exact for this struct:
+                // its one u64 sits where host and i386 layouts coincide
+                // (compile-verified against vk32_guest.h, i686 gcc).
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreams), 0);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBuffers), 0);
+                vk32_w64f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferSize), 0);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackStreamDataSize), 0);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataSize), 0);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, maxTransformFeedbackBufferDataStride), 0);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackQueries), (U32)VK_TRUE);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackStreamsLinesTriangles), (U32)VK_FALSE);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceTransformFeedbackPropertiesEXT, transformFeedbackDraw), (U32)VK_FALSE);
+                break;
+            }
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES: {
+                // Mirrors the 64-bit arm's values. The writes use RAW guest
+                // offsets, NOT the vk32_w*f hostOff-8 rule: this struct's
+                // tail interleaves VkBool32 and VkDeviceSize, and the i386
+                // layout the bridge walks (the unix-side chain, 4-byte u64
+                // alignment) packs the uniform alignment at 180 where the
+                // host rule would write 184 -- into maxBufferSize. Guest
+                // offsets compile-verified with i686-linux-gnu-gcc against
+                // the canonical field list: minSubgroupSize 8,
+                // maxSubgroupSize 12, storageTexelBufferOffsetAlignmentBytes
+                // 168, storageTexelBufferOffsetSingleTexelAlignment 176,
+                // uniformTexelBufferOffsetAlignmentBytes 180,
+                // uniformTexelBufferOffsetSingleTexelAlignment 188,
+                // maxBufferSize 192, sizeof 200.
+                // vkd3d-proton single-texel gate (device.c): the
+                // SingleTexelAlignment bools satisfy it for both texel
+                // buffer kinds, as on the 64-bit arm.
+                wr32_32(cur + 8, 32);   // minSubgroupSize
+                wr32_32(cur + 12, 32);  // maxSubgroupSize
+                wr32_32(cur + 176, (U32)VK_TRUE);  // storageTexelBufferOffsetSingleTexelAlignment
+                wr32_32(cur + 188, (U32)VK_TRUE);  // uniformTexelBufferOffsetSingleTexelAlignment
+                wr64_32(cur + 192, 1ull << 30);    // maxBufferSize (as the 64-bit arm)
+                break;
+            }
             default:
                 vk64Unsupported("properties2-struct", ("sType=" + std::to_string(sType) + " not modeled, left as-is (32-bit)").c_str());
                 break;
@@ -12294,14 +12340,21 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         return VK_SUCCESS;
     }
     case VK64_fn_vkCreateComputePipelines: {
-        // Same disposition as the 64-bit handler: real pipeline objects so
-        // vkd3d device creation can proceed; dispatches drop loudly at
-        // submit (CMD_DISPATCH, "compute-dispatch"). The stage module is
-        // not recorded on this ABI yet (nothing consumes it: dispatches
-        // are dropped wholesale before any module lookup).
-        if (!args.a[4]) return VK_ERROR_INITIALIZATION_FAILED;
+        // Real pipeline objects so vkd3d device creation can proceed
+        // (it creates its internal clear/copy compute pipelines during
+        // D3D12CreateDevice and treats creation failure as device-fatal).
+        // The stage module is not recorded on this ABI yet, so dispatches
+        // drop loudly at submit under "compute-dispatch" (the emitter
+        // names exactly this case); serving them means recording the
+        // stage module/layout/spec here like the 64-bit handler does.
+        // Trap args (libvk32.c): a[3]=pCreateInfos, a[4]=pAllocator,
+        // a[5]=pPipelines. This handler previously validated and wrote
+        // a[4] -- the allocator, NULL for vkd3d -- so every creation
+        // returned VK_ERROR_INITIALIZATION_FAILED and 32-bit
+        // D3D12CreateDevice died in vkd3d_clear_uav_ops_init (vr -3).
+        if (!args.a[5]) return VK_ERROR_INITIALIZATION_FAILED;
         U32 count = (U32)args.a[2];
-        U32 outAddr = (U32)args.a[4];
+        U32 outAddr = (U32)args.a[5];
         for (U32 i = 0; i < count; i++) {
             U64 id = 0;
             createObj32<Pipeline>(K_PIPELINE, id);
