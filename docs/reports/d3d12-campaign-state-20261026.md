@@ -4456,3 +4456,163 @@ seed alone). This merge is therefore NOT gate-complete: the
 section-4.41 claims themselves (rb12 rendered-then-copied readback)
 stand as proven, but the merge is flagged to the coordinator for a
 fix-forward lane on the upload-then-shader-load flow (or a revert).
+
+## 4.42 spirvfix residue: point-builtin call-argument escape + name-less splice placement (2026-10-29, lane-spirvres)
+
+Closes items 1 and 3 of lane-rawscan's section-4.40-on-branch residue
+list -- the two spirvfix items its census classified but did not fix.
+Both fixes live in tools/spirvfix/spirvfix.mjs; the guard is
+web/tests/suite/unit/spirvfix-residue.test.mjs (6 tests) with fixtures
+in testdata/spirv/spirvres/.
+
+### Item 1 -- stripPointBuiltins escape coverage
+
+What the pass's per-decoration scan enumerated before this lane:
+direct PointSize stores (removed), direct loads of the variable
+(rewritten to a synthesized constant), and first-pointer-operand
+uses via OpAccessChain / OpInBoundsAccessChain / OpPtrAccessChain /
+OpArrayLength / OpInBoundsPtrAccessChain / OpCopyObject (the named
+decline, 'pointer is used outside direct loads/stores'). That is the
+whole derivation chain the check tracked: one pointer-derivation
+step, through OpCopyObject only.
+
+NOT enumerated: the pointer as an OpFunctionCall argument, and the
+pointer merged by OpSelect or OpPhi (a load through the merged value
+is neither a direct load of the variable nor any tracked derivation
+of it). Consequence, demonstrated on the fixture before the fix: the
+pass stripped the variable, its decoration and its entry-point
+interface entry, removed the direct store, and logged success --
+while the surviving call still named the deleted id. spirv-val on
+the produced module: 'ID 2 has not been defined -- OpFunctionCall
+%void %13 %2'. Silent at the rewrite layer; loud only downstream,
+where validation / naga reject the module.
+
+Expressibility note: under the logical addressing model the
+call-argument shape cannot be written at all (spirv-val: 'Invalid
+storage class for pointer operand'), so the carrier is a
+physically-addressed module -- the model the tier's D3D12 guests
+arrive in -- and the fixture
+(point-call-arg.spvasm, spirv-val clean) is built that way: a
+standalone PointSize output stored directly AND passed to a helper
+that stores through its parameter.
+
+Fix: one additional escape check in the same scan -- OpFunctionCall
+with the id among its argument words (words[3..]), OpSelect (169)
+with the id as either merged value, OpPhi (245) with the id as any
+incoming variable (even-index words from 2) -- all declining through
+the existing named log line. Select/Phi are beyond the brief's named
+fix (call arguments) but are the same dangling shape, so they take
+the same decline; the corpus proof below shows no served module
+depends on either. Guard: the call fixture declines with the named
+line and the variable + call survive and resolve; the control
+fixture (point-direct: direct store only) still strips. Sabotage:
+removing the added check re-trips exactly the call-argument test;
+the file was restored byte-identical (sha256-checked).
+
+### Item 3 -- splice placement for name-less modules
+
+For a module with no debug instructions, sections() reported
+lastDebug = -1, and lastDebug + 1 = 0: the split helper shared by R1
+(splitCombinedSamplers) and R12 (texelBuffersTo2D) spliced the
+synthesized bw_combined_* OpName at index 0, before OpCapability,
+and r15SpliceAdditions did the same for bw_arr_* / bw_root_* names.
+The R1/R12 annotation splice had the same -1-to-0 defect one section
+over: when the split dropped the module's only annotations (the
+combined variable's own decorations), the synthesized OpDecorate
+instructions landed at index 0 as well. Reproduced before the fix on
+four fixtures through all three consumers -- both R1 shapes, R12 on
+a name-stripped real texel module (the DXVK HUD vertex shader with
+every debug instruction removed), R15b on a name-stripped real
+root-CBV module: every produced module carried its synthesized OpName
+at index 0, and spirv-val's error is the one rawscan quoted, 'Name
+cannot appear before the memory model instruction'. Loud at
+translation, never silent; the served path was unaffected because
+glslang/DXVK modules carry names. dxbc-spirv output does not, so a
+name-less module reaching R1/R12/R15 converted into untranslatable
+output.
+
+Fix: sections() also tracks lastHeader -- the last prefix index of
+OpCapability (17), OpExtension (10), OpExtInstImport (11),
+OpMemoryModel (14), OpEntryPoint (15), OpExecutionMode (16) or
+OpExecutionModeId (331) -- and returns namePos = max(lastDebug,
+lastHeader) + 1 and annotPos = lastAnnot >= 0 ? lastAnnot + 1 :
+namePos; the three splice sites use the new positions. For any valid
+named module namePos = lastDebug + 1 and annotPos = lastAnnot + 1,
+so named output is byte-identical -- proven by the corpus gate
+below, not argued. (Raw numbers for 10/11 because the Op table's
+ExtInstImport entry holds OpExtension's number; its consumers pair
+the label with OpExtension string reads -- stripFloatControls even
+logs 'OpExtension(s)' -- so the label is a naming trap, not a defect
+in use. The header set needs the true import, 11, as well.)
+
+Audited, not changed: two more splice sites share the anchor shape
+but have no reachable -1/-1 input. flatIntegerVaryings splices at
+(lastAnnot >= 0 ? lastAnnot : lastDebug); the pass fires only on
+varyings already carrying a Location OpDecorate, so the annotation
+anchor is set on every served input. The R13 NonWritable splice
+((lastAnnot >= 0 ? lastAnnot : lastDebug) + 1) fires on uniform-block
+candidates, which carry DescriptorSet/Binding decorations by
+construction. Recorded so the census of the shape is complete.
+
+Guard: the four fixtures assert the SPIR-V 2.4 layout invariant on
+the produced modules (every synthesized OpName after OpMemoryModel
+and OpEntryPoint, before the first annotation; in the
+no-surviving-annotations case the synthesized annotations also land
+after the header, names before them) plus naga translation of the
+outputs -- except the Location-less-fragment-output fixture, where
+naga's own entry-point validation binds before layout is reached;
+validity there rests on the position assertions and spirv-val.
+Sabotage: restoring lastDebug + 1 / lastAnnot + 1 at the six splice
+expressions re-trips exactly the four item-3 tests; restored
+byte-identical.
+
+### Corpus, suites, register
+
+- Corpus: applySpirvFix output sha256 + applied-rewrite lists for
+  all 38 corpus modules byte-identical before and after both fixes
+  (including the three strip-point-builtins modules -- no
+  over-decline from the Select/Phi additions). tools/spirvfix/
+  gate.mjs: 34/38 convert, the base's standing count.
+- spirvfix battery: 128/0 across the 14 spirvfix test files,
+  including the new guard file's 6.
+- Full JS unit phase on the lane dist (Browser export verified):
+  323/0 files (322 at the base + the new guard file). Citations
+  0 DRIFT / 0 MISSING (228 MATCH / 14 MATCH-INHERITED / 97
+  UNCHECKABLE / 7 EXEMPT) after re-pinning two spirvfix.mjs
+  citations by the exact +38 line delta of the two fixes; one
+  untracked prose cite in the same row (createLayoutModel) was
+  corrected to its true line as well -- it had drifted earlier,
+  outside the audit's tracked set.
+- run-native.py: 31 PASS blocks end-to-end. The lane's changes are
+  JS-side; the native harness is untouched and green, shown by the
+  run, not assumed.
+- Browser phase: partial. 3 passed / 0 failed of the tests that
+  completed (audio-tone, boot32-vkboot, boot64-smoke -- the last
+  taking 199 s under load) before the phase was stopped by this
+  lane: celeste-boot had spent 740 s still booting under probe-lane
+  contention with the b2ifix gate, and its recorded FAIL is the
+  termination itself ('Target page, context or browser has been
+  closed'; the guest console shows it alive and progressing), not
+  a product verdict. The remaining browser tests were not run to
+  completion. The unit phase is the phase that exercises this
+  lane's code; the merge lane's full-suite re-run on the merged
+  dist is the browser-phase adjudication, per standing practice.
+- Register: NO disposition change. Both items widen correctness
+  inside rows already claimed (the strip's decline path; the three
+  rewrites' serving claims). The only register edits are the two
+  citation re-pins above.
+- No guest gate: the base carries the known b2i-merge uav12
+  regression (lane-b2ifix owns it); harness/unit evidence is this
+  lane's bar per its brief.
+
+### Residue
+
+- stripUnusedPhysicalStorageBuffer (R8) downgrades a
+  physically-addressed module to the logical model without checking
+  for pointer-valued function parameters. A module whose only
+  physical-addressing feature is passing an interface pointer to a
+  call -- the item-1 fixture's shape -- therefore leaves the full
+  pipeline with a call spirv-val rejects under the logical model.
+  The item-1 strip now declines correctly and hands R8 a valid
+  module; the downgrade census is R8's own gap, named here, not
+  fixed (outside this lane's two items).

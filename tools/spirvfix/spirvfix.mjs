@@ -196,13 +196,37 @@ function sections(mod) {
     if (ins.op === Op.Function && firstFunc < 0) firstFunc = idx;
   });
   const end = firstFunc < 0 ? mod.insns.length : firstFunc;
-  let lastDebug = -1, lastAnnot = -1;
+  let lastDebug = -1, lastAnnot = -1, lastHeader = -1;
   for (let idx = 0; idx < end; idx++) {
     const op = mod.insns[idx].op;
     if ((op >= 3 && op <= 10) || op === 12) lastDebug = idx;
     else if (op === Op.Decorate || op === Op.MemberDecorate) lastAnnot = idx;
+    // The header block the debug section must follow (SPIR-V 2.4):
+    // OpCapability (17), OpExtension (10), OpExtInstImport (11),
+    // OpMemoryModel (14), OpEntryPoint (15), OpExecutionMode (16),
+    // OpExecutionModeId (331). Raw numbers for 10/11: the Op table's
+    // ExtInstImport entry holds OpExtension's number, so the label
+    // cannot be trusted for the import (its consumers pair it with
+    // OpExtension string reads -- see stripFloatControls).
+    if (op === 17 || op === 10 || op === 11 || op === 14 ||
+        op === 15 || op === 16 || op === 331) lastHeader = idx;
   }
-  return { lastDebug, lastAnnot, firstFunc };
+  // Splice positions for synthesized instructions. namePos equals
+  // lastDebug + 1 whenever the module carries any debug instruction
+  // (a valid module's debug section already follows its header, so
+  // named modules convert byte-identically); for a name-less module
+  // lastDebug is -1 and lastDebug + 1 would splice an OpName at
+  // index 0, before OpCapability -- invalid SPIR-V that spirv-val
+  // and naga reject ('Name cannot appear before the memory model
+  // instruction'). The fallback is the earliest legal debug-section
+  // position: just after the header block.
+  const namePos = Math.max(lastDebug, lastHeader) + 1;
+  // Annotations follow the debug section; when no annotation
+  // survives, synthesized ones take the debug section's position
+  // (a name spliced later at the same index lands before them,
+  // which is the section order 2.4 requires).
+  const annotPos = lastAnnot >= 0 ? lastAnnot + 1 : namePos;
+  return { lastDebug, lastAnnot, firstFunc, namePos, annotPos };
 }
 // --- R1: split combined SampledImage uniforms -------------------------------
 // A UniformConstant variable of OpTypeSampledImage becomes an image uniform
@@ -306,11 +330,11 @@ export function splitCombinedSamplers(mod, log) {
   }
 
   const kept = mod.insns.filter((_, i) => !dropIdx.has(i));
-  const aPos = (() => { const s = sections({ insns: kept }); return s.lastAnnot + 1; })();
+  const aPos = (() => { const s = sections({ insns: kept }); return s.annotPos; })();
   kept.splice(Math.max(aPos, 0), 0, ...addAnnot);
   const tPos = (() => { const s = sections({ insns: kept }); return s.firstFunc < 0 ? kept.length : s.firstFunc; })();
   kept.splice(tPos, 0, ...addType.filter(i => i.op !== Op.Name));
-  const dPos = (() => { const s = sections({ insns: kept }); return s.lastDebug + 1; })();
+  const dPos = (() => { const s = sections({ insns: kept }); return s.namePos; })();
   kept.splice(Math.max(dPos, 0), 0, ...addType.filter(i => i.op === Op.Name));
   mod.insns = kept;
   byId.clear();
@@ -822,6 +846,20 @@ function stripPointBuiltins(mod, log) {
         rewrites.push({ ins, zero }); continue;
       }
       if ([65, 66, 67, 68, 70, 83].includes(ins.op) && ins.words[2] === id) {
+        log.push(`spirvfix: left point builtin %${id} unchanged (pointer is used outside direct loads/stores)`);
+        return false;
+      }
+      // Uses the operand walk above cannot see: the pointer handed
+      // to an OpFunctionCall as an argument (the callee loads and
+      // stores through its parameter), and the pointer merged by
+      // OpSelect (169) or OpPhi (245) -- a load through the merged
+      // value is neither a direct load of the variable nor a
+      // first-operand derivation the list above tracks. Stripping
+      // anyway would delete the variable and leave the call or the
+      // merge naming a dead id, so all three count as escapes.
+      if ((ins.op === Op.FunctionCall && ins.words.slice(3).includes(id)) ||
+          (ins.op === 169 && (ins.words[3] === id || ins.words[4] === id)) ||
+          (ins.op === 245 && ins.words.some((w, wi) => wi >= 2 && wi % 2 === 0 && w === id))) {
         log.push(`spirvfix: left point builtin %${id} unchanged (pointer is used outside direct loads/stores)`);
         return false;
       }
@@ -1680,11 +1718,11 @@ export function texelBuffersTo2D(mod, log) {
     addType.push({ op: Op.Constant, words: [sintTy, lodZero, 0], resultType: sintTy, resultId: lodZero });
   }
   const kept = mod.insns.filter((_, i) => !dropIdx.has(i));
-  const aPos = (() => { const s = sections({ insns: kept }); return s.lastAnnot + 1; })();
+  const aPos = (() => { const s = sections({ insns: kept }); return s.annotPos; })();
   kept.splice(Math.max(aPos, 0), 0, ...addAnnot);
   const tPos = (() => { const s = sections({ insns: kept }); return s.firstFunc < 0 ? kept.length : s.firstFunc; })();
   kept.splice(tPos, 0, ...addType.filter(i => i.op !== Op.Name));
-  const dPos = (() => { const s = sections({ insns: kept }); return s.lastDebug + 1; })();
+  const dPos = (() => { const s = sections({ insns: kept }); return s.namePos; })();
   kept.splice(Math.max(dPos, 0), 0, ...addType.filter(i => i.op === Op.Name));
   mod.insns = kept;
   byId.clear();
@@ -2995,7 +3033,7 @@ function r15EntryPointTail(ins) {
 function r15SpliceAdditions(mod, addAnnot, addTypes, addNames) {
   if (addAnnot.length) {
     const s = sections(mod);
-    mod.insns.splice(Math.max(s.lastAnnot + 1, 0), 0, ...addAnnot);
+    mod.insns.splice(Math.max(s.annotPos, 0), 0, ...addAnnot);
   }
   if (addTypes.length) {
     const s = sections(mod);
@@ -3003,7 +3041,7 @@ function r15SpliceAdditions(mod, addAnnot, addTypes, addNames) {
   }
   if (addNames.length) {
     const s = sections(mod);
-    mod.insns.splice(Math.max(s.lastDebug + 1, 0), 0, ...addNames);
+    mod.insns.splice(Math.max(s.namePos, 0), 0, ...addNames);
   }
 }
 
