@@ -7976,3 +7976,44 @@ byte-identical.
   The item-1 strip now declines correctly and hands R8 a valid
   module; the downgrade census is R8's own gap, named here, not
   fixed (outside this lane's two items).
+
+**Merge outcome — LIGHT MERGE COMPLETE (batched regime; batch
+gate #2 carries the guest probes): merge 0318599cc +
+citation fallout f8afde553. Full-diff accounting: the merged
+spirvfix.mjs delta is line-identical to the lane delta
+(+47/-9 content lines), so the opscan/rawscan regions are
+byte-identical to pre-merge; the 12 fixtures and the guard
+file landed exactly as written (fixtures in their own
+testdata/spirv/spirvres/ subdirectory -- no collision with
+rawscan's); the campaign section renumbered 4.42-on-branch
+-> 4.61 and appended after section 4.60, its rawscan
+cross-reference renumbered to section 4.57. Composition
+watch discharged: the point-call-arg fixture + guard text
+landed verbatim, ready for the r8downgrade merge (last in
+the queue) to compose against.
+
+Register: unchanged 378 = 78 IMPLEMENTED / 66
+REJECTED-LOUDLY / 234 NOT-A-GAP / 0 OPEN (row count and
+disposition census identical pre/post merge; the register
+file's only change is the citation fallout). Citations:
+audit 0 DRIFT / 0 MISSING (230 MATCH / 14 MATCH-INHERITED /
+98 UNCHECKABLE / 7 EXEMPT over 349 audited rows, identical
+distribution to the pre-merge baseline audited in a scratch
+worktree). The lane's insertions shift spirvfix.mjs by a
+uniform +38 below the edit sites: the two audited rows
+re-pinned by that exact delta (reg:344 auditBlockLayouts
+2563 -> 2601; reg:407 R15a marker 3355 -> 3393), plus the
+untracked createLayoutModel prose cite in reg:344 corrected
+1958 -> 2217 (stale from an earlier merge; the definition
+verified at 2217 on the merged tree, 2179 pre-merge).
+
+Suites on the merged tree: JS unit 332 passed / 0 failed
+(against the batch gate #1 dist; 331 + the new
+spirvfix-residue.test.mjs, and the whole spirvfix battery
+green across its 15 files); emulator native 648 OK / 0
+FAILED (binary summary "0 tests FAILED in 215s");
+run-native 47 PASS / 0 FAIL, unchanged (JS-side lane).
+Corpus gate: applySpirvFix output sha256 + applied lists
+byte-identical to the pre-merge tree for all 39 corpus
+modules; gate.mjs 34/39 convert, the standing by-design
+count.
