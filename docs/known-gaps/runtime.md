@@ -616,3 +616,48 @@ above. Remaining proof is unchanged in kind: an end-to-end media-playing
 guest program is a gate/browser item, as it was pre-split (the
 guest-visible filesystem union is identical; only the archive carrying the
 closure changed).
+
+
+### 32-bit sysroot regeneration (2026-10-28, sysroot32 lane)
+
+The one producer path the post-step elimination pass could not
+re-run: `apply-runtime-poststeps.sh`'s first step
+(`tools/rootfs32/stage-fonts.py`) reads its payload from
+`/home/ubuntu/wine32-stage/img386`, and that tree had been deleted;
+the closure producer (`closure32.sh`) survived only as an untracked
+copy in `/home/ubuntu/backups/wine32-stage-20261020/`. The path is
+rebuilt and scripted under `tools/rootfs32/`:
+
+- **`build-img386.sh`** rebuilds the img386-equivalent tree from
+  26 sha256-pinned packages (Debian bookworm i386 pools +
+  snapshot.debian.org for the two superseded versions + the Ubuntu
+  noble `libc6` overlay), hash-verified before extraction, and
+  fails closed if any consumer-named path is absent.
+- **`closure32.sh`** is the backup's closure producer restored
+  verbatim (IMG/OUT parameterized, historical defaults kept).
+- **`regen-glibc-rootfs32.sh`** runs the whole chain — img386,
+  closure, the two assembly adjustments the shipped artifact
+  proves (the noble glibc set replacing the closure's bookworm
+  glibc; six `/lib` libraries staged explicitly by SONAME), the
+  32-bit post-steps in finisher order — then verifies the result
+  member-by-member against the previously shipped zip and runs
+  the completeness checker.
+
+Byte provenance of the shipped zip, established this pass: the
+closure libraries are Debian bookworm i386 at pinned revisions;
+the font payload is bookworm (libfontconfig1 2.14.1-4,
+libexpat1 2.5.0-1+deb12u4); the glibc set is a hand swap of Ubuntu
+noble `libc6` 2.39-0ubuntu8's library directory, now scripted.
+Regeneration proof: 154 members, identical set, **150
+byte-identical**; checker **0 failures** (pristine-state skip
+profile); `bootstrap.py --check` green after the documented
+one-entry re-pin. Residue, named in
+`docs/reports/sysroot32-regeneration-20261028.md`: four glibc
+auxiliary members (`libanl.so.1`, `libnsl.so.1`, `libpcprofile.so`,
+`libthread_db.so.1`; 170,840 B) match no pinned source — the
+regen fails closed on exactly those unless
+`--allow-glibc-aux-diff` substitutes the noble-release bytes, and
+prints the difference either way. Also named there, out of scope:
+wine32.zip's base tree still has no committed producer (only its
+post-steps are scripted). Register stays **OPEN: 0**; no row
+changed disposition.
