@@ -164,3 +164,14 @@ used its fallback; the Oct-25 feature turned it on with a corrupted
 record format and creation events for files that already existed, and
 Chromium — the demo whose startup waits on directory-change
 notifications — never got its window again.
+
+## Addendum (post-verification maintenance)
+
+- The JS unit suite initially failed one test on this branch,
+  fs-directory-publication: it is a source-extraction test that pastes
+  the text of FsNode::loadChildren into a stub class, and the stub did
+  not declare the childrenLoadInProgress member the fsnode fix adds.
+  The stub now declares it (commit on this branch); full JS suite:
+  332 passed, 0 failed, run against this branch's own fresh dist
+  (export verified; wasm 879122b6, byte-identical to the build the
+  three passing site runs above used).
