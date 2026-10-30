@@ -4137,18 +4137,52 @@ void hopV2ToPage(const std::string& presentInfo = std::string()) {
 // ~50 ms/frame over Portal's ~15 MB of per-frame re-hashes. A splitmix64
 // finaliser restores avalanche the wider stride gives up, and the length is
 // mixed in so a word/tail split can never alias a different byte string.
+// Round 3 widens the hash to four interleaved chains (see fnv1a64).
 static U64 fnv1a64(const U8* data, size_t len) {
-    U64 h = 14695981039346656037ULL;
+    // Four interleaved FNV-1a chains over consecutive 8-byte words (portal-
+    // perf round 3): the single chain is one serial multiply dependency
+    // chain and runs latency-bound (~1.75 GB/s in wasm, ~9 ms of every
+    // Portal menu frame over ~15 MB of re-hashes). Four independent chains
+    // break the dependency; the combine + splitmix finaliser keep full
+    // avalanche, and the length is mixed in as before. The value is an
+    // opaque dedup token (see header comment), so the exact algorithm is
+    // free to change; it stays a deterministic, exact function of the bytes.
+    const U64 P = 1099511628211ULL;
+    U64 h0 = 14695981039346656037ULL;
+    U64 h1 = h0 ^ 0x9E3779B97F4A7C15ULL;
+    U64 h2 = h0 ^ 0xC2B2AE3D27D4EB4FULL;
+    U64 h3 = h0 ^ 0x165667B19E3779F9ULL;
     size_t i = 0;
-    for (; i + 8 <= len; i += 8) {
+    for (; i + 32 <= len; i += 32) {
+        U64 w0, w1, w2, w3;
+        memcpy(&w0, data + i, 8);
+        memcpy(&w1, data + i + 8, 8);
+        memcpy(&w2, data + i + 16, 8);
+        memcpy(&w3, data + i + 24, 8);
+        h0 ^= w0; h0 *= P;
+        h1 ^= w1; h1 *= P;
+        h2 ^= w2; h2 *= P;
+        h3 ^= w3; h3 *= P;
+    }
+    // Remaining words keep the round-robin chain assignment (word index).
+    U64 chainsArr[4] = { h0, h1, h2, h3 };
+    size_t wordIdx = i / 8;
+    for (; i + 8 <= len; i += 8, wordIdx++) {
         U64 w;
         memcpy(&w, data + i, 8);
-        h ^= w;
-        h *= 1099511628211ULL;
+        chainsArr[wordIdx & 3] ^= w;
+        chainsArr[wordIdx & 3] *= P;
     }
-    for (; i < len; i++) { h ^= (U64)data[i]; h *= 1099511628211ULL; }
+    for (; i < len; i++) {
+        chainsArr[wordIdx & 3] ^= (U64)data[i];
+        chainsArr[wordIdx & 3] *= P;
+    }
+    U64 h = chainsArr[0];
+    h ^= chainsArr[1]; h *= P;
+    h ^= chainsArr[2]; h *= P;
+    h ^= chainsArr[3]; h *= P;
     h ^= (U64)len;
-    h *= 1099511628211ULL;
+    h *= P;
     h ^= h >> 33;
     h *= 0xff51afd7ed558ccdULL;
     h ^= h >> 33;
