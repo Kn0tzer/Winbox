@@ -46,6 +46,16 @@ bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write)
 #define K64_PAGE_WRITE   0x02
 #define K64_PAGE_EXEC    0x04
 #define K64_PAGE_SHARED  0x08
+// Set only when a page's current permissions were imposed by mprotect at
+// the guest's own request (KMemory64::mprotect with guestImposed=true).
+// k64CheckGuestAccess denies writes only on ENFORCED pages: protections a
+// page is born with at mmap time stay advisory for writes, because the
+// loaders hand the guest images whose startup code legitimately writes
+// pages that already carry their final (read-only) protections, and the
+// write slow paths are commit-on-write and ignore flags by design. The
+// emulator's own ELF loader opts out for its RELRO pass for the same
+// reason (it protects before guest startup fixups have run).
+#define K64_PAGE_ENFORCED 0x10
 #define K64_PAGE_MAPPED  0x20
 // Set when getRamPtr handed out this page's host pointer (futex table / atomic
 // RMW hold it across a blocking wait). munmap/mprotect must not decommit a
@@ -191,7 +201,7 @@ public:
     // Returns the requested addr on success, (U64)-errno on failure (only
     // failure mode today is addr not page-aligned). Does NOT touch page
     // data. Used by the loader to honor PT_GNU_RELRO after relocations.
-    U64 mprotect(U64 addr, U64 len, U32 prot);
+    U64 mprotect(U64 addr, U64 len, U32 prot, bool guestImposed = true);
 
     // Unmap [addr, addr+len): remove the reservation and clear the mapped/
     // permission flags while retaining page buffers for Wine's stale lazy reads.

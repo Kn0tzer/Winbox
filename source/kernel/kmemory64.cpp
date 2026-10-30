@@ -48,7 +48,16 @@ bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write)
             flags = memory->getPageFlags(pageNum);
         const bool mapped = (flags & K64_PAGE_MAPPED) != 0;
         const U32 required = write ? K64_PAGE_WRITE : K64_PAGE_READ;
-        if (!mapped || (flags & required) == 0) {
+        // A write to a mapped page that lacks WRITE is denied only when the
+        // guest itself imposed the current permissions via mprotect
+        // (K64_PAGE_ENFORCED). Pages born read-only at mmap (PE section
+        // images, loader output) are written by normal Wine/loader startup,
+        // and everything downstream of this check writes commit-on-write
+        // ignoring flags; faulting those writes dead-starts session boot
+        // (regression from a835b2a65, which first added this check).
+        const bool denied = !mapped || ((flags & required) == 0 &&
+            (!write || (flags & K64_PAGE_ENFORCED) != 0));
+        if (denied) {
             cpu->recordGuestMemoryFault(current, write, mapped);
             return false;
         }
@@ -924,11 +933,12 @@ U64 KMemory64::mmapReserveAndMap(U64 length, U32 prot) {
     return addr;
 }
 
-U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot) {
+U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot, bool guestImposed) {
     if (addr & K64_PAGE_MASK) return (U64)-K_EINVAL;
     if (len == 0) return addr;
 
     U32 newFlags = K64_PAGE_MAPPED;
+    if (guestImposed) newFlags |= K64_PAGE_ENFORCED;
     if (prot & 0x1) newFlags |= K64_PAGE_READ;
     if (prot & 0x2) newFlags |= K64_PAGE_WRITE | K64_PAGE_READ; // write implies read
     if (prot & 0x4) newFlags |= K64_PAGE_EXEC;

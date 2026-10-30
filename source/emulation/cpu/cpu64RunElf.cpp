@@ -348,7 +348,7 @@ extern "C" int runX64RunElf(const char* path) {
     if (parsed.relro.present && parsed.relro.memsz) {
         U64 relroAddr = (parsed.relro.vaddr + reloc) & ~K64_PAGE_MASK;
         U64 relroEnd  = (parsed.relro.vaddr + reloc + parsed.relro.memsz + K64_PAGE_MASK) & ~K64_PAGE_MASK;
-        mem.mprotect(relroAddr, relroEnd - relroAddr, 0x1);
+        mem.mprotect(relroAddr, relroEnd - relroAddr, 0x1, false);
         printf("--x64-run-elf: PT_GNU_RELRO 0x%llx..0x%llx -> RO\n",
                (unsigned long long)relroAddr,
                (unsigned long long)relroEnd);
