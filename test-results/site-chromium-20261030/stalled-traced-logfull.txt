@@ -1,0 +1,191 @@
+
+Starting ...
+Command line arguments: "./this.program" "-root" "/root" "-zip" "bw64url:517854873;http://127.0.0.1:41193/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip|517854873" "-zip" "glibc-rootfs32.zip" "-zip" "bw64url:239760722;http://127.0.0.1:41193/runtime/wine32.zip|239760722" "-zip" "prefix32.zip" "-zip" "bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892" "-w" "/home/username/apps/" "-env" "HOME=/home/username" "-env" "WINEPREFIX=/home/username/.wine" "-env" "WINESERVER=/usr/lib/wine/wineserver32" "-env" "WINEDLLPATH=/opt/wine-stable/lib/wine" "-env" "WINE_D3D_CONFIG=csmt=0x0" "-env" "WINELOADERNOEXEC=1" "-env" "XDG_RUNTIME_DIR=/tmp" "-env" "WINEDEBUG=-all" "-env" "WINEDATADIR=/opt/wine-stable/share/wine" "-env" "TMPDIR=/home/username/tmp" "/opt/wine-stable/bin/wine" "Z:\home\username\apps\chrome.exe" "--no-sandbox" "--no-zygote" "--single-process" "--in-process-gpu" "--disable-gpu" "--disable-gpu-compositing" "--disable-software-rasterizer" "--use-gl=disabled" "--disable-features=CalculateNativeWinOcclusion,DirectComposition" "--disable-backgrounding-occluded-windows" "--disable-dev-shm-usage" "--no-first-run" "--no-default-browser-check" "--disable-extensions" "--disable-sync" "--disable-breakpad" "--disable-background-networking" "--window-size=1024,640" "about:blank"
+Using root directory: /root
+fszipurl: mounted 493 MB zip lazily (1 part(s), 2MB blocks)
+fszipurl: mounted 228 MB zip lazily (1 part(s), 2MB blocks)
+fszipurl: mounted 446 MB zip lazily (1 part(s), 2MB blocks)
+Using zip file system: bw64url:517854873;http://127.0.0.1:41193/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip|517854873
+Using zip file system: glibc-rootfs32.zip
+Using zip file system: bw64url:239760722;http://127.0.0.1:41193/runtime/wine32.zip|239760722
+Using zip file system: prefix32.zip
+Using zip file system: bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892
+Created root directory: /root
+Loaded bw64url:517854873;http://127.0.0.1:41193/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip|517854873 in 1135 ms
+Loaded glibc-rootfs32.zip in 72 ms
+Loaded bw64url:239760722;http://127.0.0.1:41193/runtime/wine32.zip|239760722 in 354 ms
+Loaded prefix32.zip in 17 ms
+Loaded bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892 in 21 ms
+Launching "/opt/wine-stable/bin/wine" "Z:\home\username\apps\chrome.exe" "--no-sandbox" "--no-zygote" "--single-process" "--in-process-gpu" "--disable-gpu" "--disable-gpu-compositing" "--disable-software-rasterizer" "--use-gl=disabled" "--disable-features=CalculateNativeWinOcclusion,DirectComposition" "--disable-backgrounding-occluded-windows" "--disable-dev-shm-usage" "--no-first-run" "--no-default-browser-check" "--disable-extensions" "--disable-sync" "--disable-breakpad" "--disable-background-networking" "--window-size=1024,640" "about:blank" 
+loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+setupThreadStack32: argc=21 envc=18 prog=wine
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEC00
+wine64session: context captured (cwd=/home/username/apps/ uid=1 bootPid=10)
+loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+setupThreadStack32: argc=1 envc=19 prog=wineserver32
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEDCC
+setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED40
+fszipurl: 16 MB fetched lazily so far
+fszipurl: 32 MB fetched lazily so far
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+FsZip: 64 entry streams opened, 15 MB decompressed, 7 MB served from cache, 0 backward reopens
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+fszipurl: 48 MB fetched lazily so far
+setupThreadStack32: argc=5 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED28
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+FsZip: 128 entry streams opened, 25 MB decompressed, 13 MB served from cache, 0 backward reopens
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+FsZip: 64 entry streams opened, 15 MB decompressed, 2 MB served from cache, 0 backward reopens
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+fszipurl: 64 MB fetched lazily so far
+fszipurl: 80 MB fetched lazily so far
+FsZip: 192 entry streams opened, 126 MB decompressed, 16 MB served from cache, 19 backward reopens
+setupThreadStack32: argc=12 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEBC0
+setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED3C
+[1030/042051.155:ERROR:registration_protocol_win.cc(135)] TransactNamedPipe: Broken pipe. (0x6D)
+fszipurl: 16 MB fetched lazily so far
+fszipurl: 32 MB fetched lazily so far
+fszipurl: 48 MB fetched lazily so far
+fszipurl: 64 MB fetched lazily so far
+fszipurl: 80 MB fetched lazily so far
+fszipurl: 96 MB fetched lazily so far
+fszipurl: 112 MB fetched lazily so far
+fszipurl: 128 MB fetched lazily so far
+fszipurl: 144 MB fetched lazily so far
+fszipurl: 160 MB fetched lazily so far
+fszipurl: 176 MB fetched lazily so far
+fszipurl: 96 MB fetched lazily so far
+FsZip: 256 entry streams opened, 139 MB decompressed, 22 MB served from cache, 19 backward reopens
+fszipurl: 112 MB fetched lazily so far
+setupThreadStack32: argc=4 envc=22 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED14
+XWireServer: accepted X11 client connection (now 1 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+fszipurl: 17 MB fetched lazily so far
+vk32: FIRST trap - 32-bit guest libvulkan.so.1 mapped (witness fnId=0)
+vk32: gipa HIT : vkCreateInstance
+vk32: trap vkCreateInstance
+vk32: vkCreateInstance ok instance=0x324b0100
+vk32: gipa HIT : vkDestroyInstance
+vk32: gipa HIT : vkEnumeratePhysicalDevices
+vk32: gipa HIT : vkGetPhysicalDeviceProperties2KHR
+vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties
+vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties2KHR
+vk32: trap vkEnumeratePhysicalDevices
+vk32: trap vkEnumeratePhysicalDevices
+vk32: trap vkGetPhysicalDeviceProperties2KHR
+vk32: trap vkGetPhysicalDeviceMemoryProperties
+XWireServer: accepted X11 client connection (now 2 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+XWireServer: accepted X11 client connection (now 3 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED4C
+FsZip: 320 entry streams opened, 151 MB decompressed, 27 MB served from cache, 22 backward reopens
+XWireServer: accepted X11 client connection (now 4 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+XWireServer: accepted X11 client connection (now 5 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+Xlib:  extension "SHAPE" missing on display ":0".
+[32:36:1030/042103.499:ERROR:network_change_notifier_win.cc(224)] WSALookupServiceBegin failed with: 0
+INOTIFYDBG init pid=16 flags=0 fd=260
+INOTIFYDBG add pid=16 fd=260 path=/proc/self/fd/258 mask=7C6 node=/opt/wine-stable/lib/wine/i386-windows wd=1
+INOTIFYDBG rm pid=16 fd=260 wd=1
+INOTIFYDBG init pid=16 flags=0 fd=260
+INOTIFYDBG add pid=16 fd=260 path=/proc/self/fd/258 mask=7C6 node=/home/username/.wine/drive_c/windows wd=1
+INOTIFYDBG add pid=16 fd=260 path=/proc/self/fd/266 mask=7C6 node=/opt/wine-stable/lib/wine/i386-windows wd=2
+INOTIFYDBG rm pid=16 fd=260 wd=2
