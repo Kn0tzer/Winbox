@@ -1257,7 +1257,7 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     // Deliver a synchronous, instruction-addressed fault. The test harness
     // has no attached thread or signal handlers, so an unhandled fault yields
     // at the faulting RIP; a guest handler instead receives the saved context.
-    auto faultAtInstruction = [&](U32 sig, U32 trapNo, U32 errorCode = 0) -> U32 {
+    auto faultAtInstruction = [&](U32 sig, U32 trapNo, U32 errorCode = 0, S32 siCode = 0) -> U32 {
         if (trapNo == 13 && std::getenv("BW64_UNIMPLDUMP")) {
             klog_fmt("CPU64: #GP at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
                      (unsigned long long)ipStart,
@@ -1267,7 +1267,7 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
                      fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
                      fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
         }
-        if (raiseSyncFault(sig, trapNo, 0, ipStart, errorCode)) return 0;
+        if (raiseSyncFault(sig, trapNo, siCode, ipStart, errorCode)) return 0;
         if (thread && thread->process) thread->process->signalProcess(sig);
         yield = true;
         return 0;
@@ -3387,17 +3387,21 @@ dsp_49:
         return opOff + 1;
     }
 
-    // INT3 (CC). Software-breakpoint. In user mode this raises SIGTRAP;
-    // without real signal delivery, klog the trap and yield so the guest
-    // exits cleanly instead of looping or corrupting host state. assert()
-    // failure paths and debugger-injected breakpoints emit this.
+    // INT3 (CC). Software breakpoint: #BP, delivered as SIGTRAP below.
+    // assert() failure paths and debugger-injected breakpoints emit this.
 dsp_50:
     if (op == 0xCC) {
-        klog_fmt("CPU64: INT3 at RIP=0x%llx — yielding (no SIGTRAP delivery yet)",
-                 (unsigned long long)rip);
-        yield = true;
-        rip += opOff + 1;
-        return opOff + 1;
+        // INT3 is #BP: Linux delivers SIGTRAP (trapno 3, si_code
+        // TRAP_BRKPT) with the saved context RIP already past the
+        // breakpoint byte, and Wine's trap handler converts exactly
+        // that frame into EXCEPTION_BREAKPOINT, backing the exception
+        // address up over the CC itself. Deliver it for real — the old
+        // log-and-yield parked any thread executing a deliberate
+        // breakpoint (debugger probes, assert paths) even when a
+        // handler was installed. With no handler the fallback below
+        // still yields, one byte past the CC, as before.
+        rip = ipStart + opOff + 1;
+        return faultAtInstruction(K_SIGTRAP, 3, 0, 1 /*TRAP_BRKPT*/);
     }
 
     // CLD (FC) / STD (FD). Direction flag for string ops.

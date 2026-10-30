@@ -88,6 +88,43 @@ void testOpcodeFault64Delivery() {
                  (unsigned long long)cpu.rip);
     }
 
+    // INT3 (0xCC) is #BP: it must deliver SIGTRAP (trapno 3) with the
+    // saved context RIP already past the breakpoint byte — Wine's trap
+    // handler backs the exception address up over the CC itself. The old
+    // behaviour logged and yielded without delivering anything, parking
+    // the thread even with a handler installed.
+    {
+        const U8 int3Opcode[] = {0xCC, 0x90};
+        memory->memcpyToGuest(codePage, int3Opcode, sizeof(int3Opcode));
+
+        CPU64 bpCpu(memory);
+        bpCpu.thread = nullptr;
+        bpCpu.rip = codePage;
+        bpCpu.reg[X64_RSP].setU64(stackPage + K64_PAGE_SIZE * 4 - 16);
+        auto& bpSa = bpCpu.sigActions[K_SIGTRAP];
+        bpSa.installed = true;
+        bpSa.handler = handlerAddress;
+        bpSa.restorer = handlerAddress;
+
+        bpCpu.runBounded(1);
+        if (bpCpu.rip != handlerAddress) {
+            testFail("INT3 did not deliver SIGTRAP to the guest handler (rip=0x%llx)",
+                     (unsigned long long)bpCpu.rip);
+        } else {
+            const U64 uctx = bpCpu.reg[X64_RDX].u64;
+            const U64 gregs = uctx + 40; // mcontext.gregs[] in the ucontext
+            if (bpCpu.reg[X64_RDI].u64 != K_SIGTRAP ||
+                memory->readq(gregs + 16 * 8) != codePage + 1 || // REG_RIP: past the CC
+                memory->readq(gregs + 19 * 8) != 0 || // REG_ERR
+                memory->readq(gregs + 20 * 8) != 3) { // REG_TRAPNO (#BP)
+                testFail("INT3 delivered wrong fault metadata "
+                         "(rip=0x%llx trapno=%llu)",
+                         (unsigned long long)memory->readq(gregs + 16 * 8),
+                         (unsigned long long)memory->readq(gregs + 20 * 8));
+            }
+        }
+    }
+
     // A user-mode INT imm8 is a #GP whose hardware error code names the
     // requested IDT vector: (vector << 3) | IDT. Wine's SIGSEGV handler
     // depends on that field to turn int 0x2d into EXCEPTION_BREAKPOINT
