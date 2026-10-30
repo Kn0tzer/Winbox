@@ -164,43 +164,20 @@ void testInotify64Syscalls() {
         ksyscall64(&cpu);
         return (S64)cpu.reg[X64_RAX].u64;
     };
-    // __NR_inotify_init1 = 294: unknown flag bits are rejected.
-    if (invoke(294, 0x40000000ULL, 0, 0) != -K_EINVAL) {
-        testFail("x64 inotify_init1 accepted unknown flags");
+    // __NR_inotify_init1 = 294. REJECTED-LOUDLY: the guest-visible entry
+    // point refuses with ENOSYS regardless of flags (see
+    // KProcess::inotify_init1); watch management is unreachable while the
+    // facility is refused.
+    if (invoke(294, 0x40000000ULL, 0, 0) != -K_ENOSYS) {
+        testFail("x64 inotify_init1 was not rejected with ENOSYS (bad flags)");
     }
-    // IN_NONBLOCK (0x800) | IN_CLOEXEC (0x80000)
-    S64 fd = invoke(294, 0x80800ULL, 0, 0);
-    if (fd < 0) {
-        testFail("x64 inotify_init1 failed: %lld", (long long)fd);
-        return;
+    if (invoke(294, 0x80800ULL, 0, 0) != -K_ENOSYS) {
+        testFail("x64 inotify_init1 was not rejected with ENOSYS");
     }
-    // __NR_inotify_init = 253 also works.
-    S64 fd2 = invoke(253, 0, 0, 0);
-    if (fd2 < 0) {
-        testFail("x64 inotify_init failed: %lld", (long long)fd2);
+    // __NR_inotify_init = 253 refuses the same way.
+    if (invoke(253, 0, 0, 0) != -K_ENOSYS) {
+        testFail("x64 inotify_init was not rejected with ENOSYS");
     }
-    // __NR_inotify_add_watch = 254: bad fd, then a real watch on "/".
-    if (invoke(254, 9999, pathAt, 0xfffULL) != -K_EBADF) {
-        testFail("x64 inotify_add_watch on a bad fd was not -EBADF");
-    }
-    S64 wd = invoke(254, (U64)fd, pathAt, 0xfffULL);
-    if (wd < 1) {
-        testFail("x64 inotify_add_watch(/) failed: %lld", (long long)wd);
-        return;
-    }
-    // Re-adding merges and returns the same wd.
-    if (invoke(254, (U64)fd, pathAt, 0x4ULL) != wd) {
-        testFail("x64 inotify_add_watch did not merge an existing watch");
-    }
-    // __NR_inotify_rm_watch = 255.
-    if (invoke(255, (U64)fd, (U64)wd, 0) != 0) {
-        testFail("x64 inotify_rm_watch failed");
-    }
-    if (invoke(255, (U64)fd, (U64)wd, 0) != -K_EINVAL) {
-        testFail("x64 inotify_rm_watch of a removed watch was not -EINVAL");
-    }
-    invoke(3, (U64)fd, 0, 0);  // close
-    if (fd2 >= 0) invoke(3, (U64)fd2, 0, 0);
 }
 
 void testSignalfd64Syscalls() {

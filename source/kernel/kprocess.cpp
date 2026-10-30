@@ -4060,6 +4060,20 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 }
 
 U32 KProcess::inotify_init1(U32 flags) {
+    // REJECTED-LOUDLY: the inotify implementation is not safe to expose to
+    // guests yet. As merged it (a) reported a nonzero len for nameless
+    // events, desynchronizing the reader's record walk (the guest
+    // wineserver dropped real change events after printing "no inode
+    // matches"), (b) reported IN_CREATE for files that already existed
+    // when a directory's children were first loaded, and (c) still parks
+    // a Wine process that waits on directory-change notifications during
+    // application startup even with (a) and (b) fixed, in a way the
+    // synthetic syscall tests do not reproduce. Guests that get ENOSYS
+    // here use their polling fallbacks, which is the behavior the site
+    // shipped with until 2026-10-25. The KInotify machinery stays in the
+    // tree for the day its event semantics are proven against a real
+    // consumer; the guest-visible entry point refuses until then.
+    return -K_ENOSYS;
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
     KInotify::registerInstance(o);
