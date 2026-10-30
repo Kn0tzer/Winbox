@@ -2127,11 +2127,7 @@ U32 KThread::modify_ldt(U32 func, U32 ptr, U32 count) {
         }
         return 16;
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.modify_ldt.unknown", "unsupported modify_ldt function; returned ENOSYS");
-            return -K_ENOSYS;
-        }
-        kpanic_fmt("syscall_modify_ldt unknown func: %d", func);
+        bw64RecoverLogOnce("syscall.modify_ldt.unknown", "unsupported modify_ldt function; returned ENOSYS");
         return -K_ENOSYS;
     }
 }
@@ -2146,11 +2142,8 @@ U32 KThread::nanoSleep(U64 nano) {
 
 U32 KThread::clockNanoSleep(U32 clock, U32 flags, U64 nano, U32 addressRemain) {
     if (flags) {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.clock_nanosleep.flags", "unsupported clock_nanosleep flags; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kpanic_fmt("clockNanoSleep flags (%x) does not equal 0: this has not been implemented yet", flags);
+        bw64RecoverLogOnce("syscall.clock_nanosleep.flags", "unsupported clock_nanosleep flags; returned EINVAL");
+        return -K_EINVAL;
     }
     return Platform::nanoSleep(nano);
 }
@@ -2223,11 +2216,8 @@ U32 KThread::sigprocmask(U32 how, U32 set, U32 oset, U32 sigsetSize) {
             this->sigMask = mask;
             //klog("syscall_sigprocmask set %X(%X)", set, thread->sigMask);
         } else {
-            if (bw64RecoverEnabled()) {
-                bw64RecoverLogOnce("syscall.sigprocmask.how", "unsupported sigprocmask operation; returned EINVAL");
-                return -K_EINVAL;
-            }
-            kpanic_fmt("sigprocmask how %d unsupported", how);
+            bw64RecoverLogOnce("syscall.sigprocmask.how", "unsupported sigprocmask operation; returned EINVAL");
+            return -K_EINVAL;
         }
     }
     return 0;
@@ -2242,11 +2232,8 @@ U32 KThread::sigtimedwait(U32 set, U32 info, U32 timeout, U32 sizeofSet, bool ti
     } else if (sizeofSet == 4) {
         mask = memory->readd(set);
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.sigtimedwait.sigsetsize", "unsupported sigtimedwait sigset size; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kpanic_fmt("KThread::sigtimedwait unhandled sigSetSize %d", sizeofSet);
+        bw64RecoverLogOnce("syscall.sigtimedwait.sigsetsize", "unsupported sigtimedwait sigset size; returned EINVAL");
+        return -K_EINVAL;
     }
 
     {

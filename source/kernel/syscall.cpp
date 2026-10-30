@@ -609,11 +609,8 @@ static U32 syscall_socketcall(CPU* cpu, U32 eipCount) {
             break;
         //case 18: // SYS_ACCEPT4
         default:
-            if (bw64RecoverEnabled()) {
-                bw64RecoverLogOnce("syscall.socketcall.unknown", "unsupported socketcall operation; returned ENOSYS");
-                return -K_ENOSYS;
-            }
-            kpanic_fmt("Unknown socket syscall: %d",ARG1);
+            bw64RecoverLogOnce("syscall.socketcall.unknown", "unsupported socketcall operation; returned ENOSYS");
+            return -K_ENOSYS;
     }
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -675,12 +672,8 @@ static U32 syscall_ipc(CPU* cpu, U32 eipCount) {
         SYS_LOG1(SYSCALL_SYSTEM|SYSCALL_MEMORY, cpu, "ipc: IPCOP_shmctl shmid=%d cmd=%d buf=%X", ARG2, ARG3, ARG5);
         result = KSystem::shmctl(cpu->thread, ARG2, ARG3, ARG5);
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.ipc.unknown", "unsupported IPC operation; returned ENOSYS");
-            return -K_ENOSYS;
-        }
-        kpanic_fmt("__NR_ipc op %d not implemented", ARG1);
-        result = 0;
+        bw64RecoverLogOnce("syscall.ipc.unknown", "unsupported IPC operation; returned ENOSYS");
+        return -K_ENOSYS;
     }
     SYS_LOG(SYSCALL_SYSTEM, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -962,12 +955,8 @@ static U32 syscall_mremap(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_vm86(CPU* cpu, U32 eipCount) {
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("syscall.vm86", "vm86 is unsupported; returned ENOSYS");
-        return -K_ENOSYS;
-    }
-    kpanic("Application tried to enter DOS mode (vm86).  BoxedWine does not support this.");
-    return 0;
+    bw64RecoverLogOnce("syscall.vm86", "vm86 is unsupported; returned ENOSYS");
+    return -K_ENOSYS;
 }
 
 static U32 syscall_poll(CPU* cpu, U32 eipCount) {
