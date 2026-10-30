@@ -95,6 +95,16 @@
         var cacheBytes = 0;
         var pending = new Map();
         var totals = new Map();
+        var prefetchFailureUrls = new Set();
+        function prefetchJob(url, start, end) {
+            block(url, start, end).catch(function (error) {
+                if (prefetchFailureUrls.has(url)) return;
+                prefetchFailureUrls.add(url);
+                var msg = "" + (error && error.message ? error.message : error);
+                console.warn("BW64-FAIL prefetch url=" + url + " range=" + start + "-" + end +
+                             " error=" + msg + "; continuing without this prefetch");
+            });
+        }
 
         function rangeOf(init) {
             try {
@@ -186,7 +196,7 @@
                 var nextEnd = nextStart + span - 1;
                 if (total && nextEnd >= total) break;
                 if (cache.has(url + "|" + nextStart + "|" + nextEnd) || pending.has(url + "|" + nextStart + "|" + nextEnd)) continue;
-                block(url, nextStart, nextEnd).catch(function () {});
+                prefetchJob(url, nextStart, nextEnd);
             }
         }
 
@@ -456,34 +466,54 @@
 
     function fetchBytes(url, label, onProgress, baseReceived, grandTotal) {
         baseReceived = baseReceived || 0;
-        return fetch(url, fetchOpts()).then(function (resp) {
-            if (!resp.ok) throw new Error("fetch " + url + " -> HTTP " + resp.status);
-            var partTotal = Number(resp.headers.get("Content-Length")) || 0;
-            var total = grandTotal || partTotal;
-            if (!resp.body || !partTotal) {
-                return resp.arrayBuffer().then(function (buf) {
-                    var b = new Uint8Array(buf);
-                    if (onProgress) onProgress(label, baseReceived + b.length, total);
-                    return b;
+        function attempt() {
+            return fetch(url, fetchOpts()).then(function (resp) {
+                if (!resp.ok) throw new Error("fetch " + url + " -> HTTP " + resp.status);
+                var partTotal = Number(resp.headers.get("Content-Length")) || 0;
+                var total = grandTotal || partTotal;
+                if (!resp.body || !partTotal) {
+                    return resp.arrayBuffer().then(function (buf) {
+                        var b = new Uint8Array(buf);
+                        if (onProgress) onProgress(label, baseReceived + b.length, total);
+                        return b;
+                    });
+                }
+                var reader = resp.body.getReader();
+                var chunks = [];
+                var received = 0;
+                return (function pump() {
+                    return reader.read().then(function (r) {
+                        if (r.done) {
+                            var out = new Uint8Array(received);
+                            var off = 0;
+                            chunks.forEach(function (c) { out.set(c, off); off += c.length; });
+                            return out;
+                        }
+                        chunks.push(r.value);
+                        received += r.value.length;
+                        if (onProgress) onProgress(label, baseReceived + received, total);
+                        return pump();
+                    });
+                })();
+            });
+        }
+        // A single transient network failure must not discard a large rootfs
+        // download and leave the page dead. Retry exactly once after a short
+        // delay. A 404 is definitive rather than transient, so preserve the
+        // caller's whole-file-to-chunked fallback by rethrowing it at once.
+        return attempt().catch(function (err) {
+            var msg = "" + (err && err.message ? err.message : err);
+            if (msg.indexOf("HTTP 404") !== -1) throw err;
+            console.warn("BW64-FAIL fetchBytes url=" + url + " label=" + label +
+                         " attempt=1 error=" + msg + "; retrying once");
+            return new Promise(function (resolve) { setTimeout(resolve, 1000); })
+                .then(attempt)
+                .catch(function (retryErr) {
+                    var retryMsg = "" + (retryErr && retryErr.message ? retryErr.message : retryErr);
+                    console.error("BW64-FAIL fetchBytes url=" + url + " label=" + label +
+                                  " attempt=2 error=" + retryMsg + "; giving up");
+                    throw retryErr;
                 });
-            }
-            var reader = resp.body.getReader();
-            var chunks = [];
-            var received = 0;
-            return (function pump() {
-                return reader.read().then(function (r) {
-                    if (r.done) {
-                        var out = new Uint8Array(received);
-                        var off = 0;
-                        chunks.forEach(function (c) { out.set(c, off); off += c.length; });
-                        return out;
-                    }
-                    chunks.push(r.value);
-                    received += r.value.length;
-                    if (onProgress) onProgress(label, baseReceived + received, total);
-                    return pump();
-                });
-            })();
         });
     }
 
@@ -645,7 +675,12 @@
                 if (!len) throw new Error("no length");
                 return "bw64url:" + len + ";" + abs(wholeUrl) + "|" + len;
             });
-        return probe.catch(function () {
+        return probe.catch(function (err) {
+            if (!CHUNKED) {
+                var msg = "" + (err && err.message ? err.message : err);
+                console.warn("BW64-FAIL lazy-rootfs whole-file probe url=" + wholeUrl +
+                             " error=" + msg + "; falling back to split-parts manifest");
+            }
             return fetch(BASE + WINE_ZIP + ".manifest.json", { cache: "no-cache" })
                 .then(function (r) { return r.json(); })
                 .then(function (mf) {
