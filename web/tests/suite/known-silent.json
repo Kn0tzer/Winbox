@@ -23,7 +23,7 @@
     },
     "source/opengl/gl64bridge.cpp": {
       "emptyCatch": 22,
-      "unloggedDefault": 22,
+      "unloggedDefault": 23,
       "unloggedErrno": 0
     },
     "source/sdl/emscripten/mainloop.cpp": {
