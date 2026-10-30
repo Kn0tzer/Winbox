@@ -218,6 +218,27 @@ inline void glOnMain(Fn&& fn) { fn(); }
 // Current drawable as the guest sees it (the X window id winex11 passed to
 // glXMakeCurrent). We present readback frames against this id.
 U32 g_currentDrawable = 0;
+U32 g_currentReadDrawable = 0;
+
+// GLX pbuffers: bridge-issued offscreen drawables. Wine's win32u requires
+// the pbuffer entry points to exist before it enables OpenGL at all; the
+// drawables themselves are bookkeeping only (rendering still targets the
+// one shared backing context, exactly as extra GLXContext ids do). Ids
+// come from a reserved band no X resource id can occupy, so a pbuffer id
+// can never be confused with a window.
+struct GlxPbufferInfo { U32 width; U32 height; };
+std::map<U32, GlxPbufferInfo> g_glxPbuffers;
+U32 g_nextGlxPbufferId = 0x60000000;
+// Event masks recorded by glXSelectEvent, keyed by the raw guest drawable.
+std::map<U32, U64> g_glxEventMasks;
+
+static bool glxDrawableIsPbuffer(U32 drawable) {
+    return g_glxPbuffers.find(drawable) != g_glxPbuffers.end();
+}
+static U32 resolveGlxDrawableWithPbuffers(U32 drawable) {
+    if (glxDrawableIsPbuffer(drawable)) return drawable;
+    return XWireServer::instance().resolveGlxDrawable(drawable);
+}
 int g_drawW = 640, g_drawH = 480;
 
 // Monotonic opaque ids handed back to the guest for GLXContext/XVisualInfo/
@@ -1887,8 +1908,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             // distinct from the underlying X window (glXCreateWindow). Resolve it to
             // a real mapped window so the present sink can find it (otherwise wined3d's
             // windowed present has no window to blit/read back against).
-            g_currentDrawable = XWireServer::instance().resolveGlxDrawable((U32)args.a[0]);
-            syncDrawableSize();
+            const bool drawIsPbuffer = glxDrawableIsPbuffer((U32)args.a[0]);
+            g_currentDrawable = resolveGlxDrawableWithPbuffers((U32)args.a[0]);
+            g_currentReadDrawable = (fnId == GL64_fn_glXMakeContextCurrent)
+                ? resolveGlxDrawableWithPbuffers((U32)args.a[1]) : g_currentDrawable;
+            if (!drawIsPbuffer) syncDrawableSize();
             // Claim the present slot for this GL app. Its readback frames are
             // tagged with this drawable id (not the X11 window it maps), so the
             // present sink's window filter needs to know the drawable belongs to
@@ -1896,7 +1920,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             // canvas stays stuck on the previous (GDI) app. A fresh glcube is
             // spawned on each switch-to-GL, so this re-claims correctly; switching
             // to a GDI app clears it again (see XWireServer GDI-adopt paths).
-            XWireServer::instance().glPresentDrawable = g_currentDrawable;
+            if (!drawIsPbuffer) XWireServer::instance().glPresentDrawable = g_currentDrawable;
 #ifndef __EMSCRIPTEN__
             SDL_GL_MakeCurrent(g_hiddenWindow, g_glContext);
 #endif
@@ -1909,6 +1933,12 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             return 1;
         }
         case GL64_fn_glXSwapBuffers: {
+            if (glxDrawableIsPbuffer(g_currentDrawable)) {
+                // Offscreen drawable: flush the shared context; there is no
+                // window to read back or present to.
+                if (g_glContext) glOnMain([&]{ glFlush(); });
+                return 0;
+            }
             // C8: report whether any draw happened since the previous swap.
             // Draws-without-swaps means the guest renders into buffers that
             // never present (the current Baldi state); swaps-without-draws
@@ -1933,6 +1963,93 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 klog_fmt("gl64 PHASE: destroy-context t=%.1fs", bridgeElapsedSec());
             flushPendingDeletes(); // free batched deletes before teardown
             return 0; // keep the single context alive for first light
+        case GL64_fn_glXCopyContext:
+            // glXCopyContext(src, dst, mask): copy GL state from src to dst.
+            // Every guest GLXContext here is an opaque id over ONE shared
+            // backing context: CreateContext ignores shareList and MakeCurrent
+            // never switches state between ids, so src and dst hold identical
+            // state at all times and the copy is satisfied by construction,
+            // for any mask. This is the same single-context model the rest of
+            // this GLX section already implements (cf. glXDestroyContext).
+            // Wine's win32u init requires this entry point to exist at all:
+            // without it, init_opengl fails and OpenGL is disabled for the
+            // whole guest process (wgl errors + SDL_CreateWindow returning
+            // NULL for FNA/SDL apps).
+            return 0;
+        case GL64_fn_glXCreatePbuffer: {
+            // (config, width, height, attribs*) -> a bridge-issued drawable
+            // id. The attrib list (GLX_PRESERVED_CONTENTS, GLX_LARGEST_PBUFFER,
+            // texture hints) does not change the bookkeeping: contents are
+            // always preserved by the shared backing context and the
+            // requested size is always honored in full.
+            U32 id = ++g_nextGlxPbufferId;
+            U32 w = (U32)args.a[1]; if (w == 0) w = 1;
+            U32 h = (U32)args.a[2]; if (h == 0) h = 1;
+            g_glxPbuffers[id] = { w, h };
+            return id;
+        }
+        case GL64_fn_glXDestroyPbuffer:
+            g_glxPbuffers.erase((U32)args.a[0]);
+            return 0;
+        case GL64_fn_glXQueryDrawable: {
+            // (drawable, attribute, out value*). Pbuffers answer from the
+            // registry; window drawables answer their live XWire size;
+            // GLX_EVENT_MASK answers whatever glXSelectEvent recorded.
+            U32 drawable = (U32)args.a[0];
+            U32 attr = (U32)args.a[1];
+            U64 valueAddr = args.a[2];
+            U32 v = 0;
+            auto pb = g_glxPbuffers.find(drawable);
+            if (pb != g_glxPbuffers.end()) {
+                switch (attr) {
+                    case 0x801D: v = pb->second.width; break;   // GLX_WIDTH
+                    case 0x801E: v = pb->second.height; break;  // GLX_HEIGHT
+                    case 0x801B: v = 1; break;  // GLX_PRESERVED_CONTENTS (always true here)
+                    case 0x801F: {              // GLX_EVENT_MASK
+                        auto m = g_glxEventMasks.find(drawable);
+                        v = (m == g_glxEventMasks.end()) ? 0 : (U32)m->second;
+                        break;
+                    }
+                    default: v = 0; break;
+                }
+            } else if (attr == 0x801D || attr == 0x801E) { // GLX_WIDTH / GLX_HEIGHT
+                auto& server = XWireServer::instance();
+                U32 resolved = server.resolveGlxDrawable(drawable);
+                std::lock_guard<std::mutex> lock(server.regMutex);
+                auto window = server.windows.find(resolved);
+                if (window != server.windows.end())
+                    v = (attr == 0x801D) ? window->second.width : window->second.height;
+            } else if (attr == 0x801F) { // GLX_EVENT_MASK
+                auto m = g_glxEventMasks.find(drawable);
+                v = (m == g_glxEventMasks.end()) ? 0 : (U32)m->second;
+            }
+            if (valueAddr) cpu->memory->writed(valueAddr, v);
+            return 0;
+        }
+        case GL64_fn_glXGetCurrentReadDrawable:
+            return g_currentReadDrawable;
+        case GL64_fn_glXQueryContext: {
+            // (ctx, attribute, out value*) -> Success (0). Same single-config
+            // fiction as glXGetFBConfigAttrib above.
+            U32 attr = (U32)args.a[1];
+            U64 valueAddr = args.a[2];
+            U32 v;
+            switch (attr) {
+                case 0x8013: v = 0x5100; break; // GLX_FBCONFIG_ID
+                case 0x8011: v = 0x8014; break; // GLX_RENDER_TYPE -> GLX_RGBA_TYPE
+                case 0x800C: v = 0; break;      // GLX_SCREEN
+                default: v = 0; break;
+            }
+            if (valueAddr) cpu->memory->writed(valueAddr, v);
+            return 0;
+        }
+        case GL64_fn_glXSelectEvent:
+            g_glxEventMasks[(U32)args.a[0]] = args.a[1];
+            return 0;
+        case GL64_fn_glXGetSelectedEvent: {
+            auto m = g_glxEventMasks.find((U32)args.a[0]);
+            return (m == g_glxEventMasks.end()) ? 0 : m->second;
+        }
         case GL64_fn_glXGetCurrentContext:
             return g_glContext ? g_nextOpaqueId : 0;
         case GL64_fn_glXGetCurrentDrawable:
