@@ -700,3 +700,48 @@ The regen extracts them from the currently shipped (pinned)
 archive and hash-verifies before use, fail-closed — the sysroot32
 residue discipline. If either source is ever identified, check its
 output against those pins and retire the extraction.
+
+
+## 2026-10-30 — Wine 8.0 x86_64 loader backports (lane-loadergaps, IMPLEMENTED)
+
+The x86_64 staged set is Debian bookworm Wine 8.0 while the i386 set is
+WineHQ wine-stable 10.0; every demo load failure measured by the PE census
+(tools/conformance/pe_census.py against the deployed runtime, build
+efa0189a1) traced to exports newer Wine added after 8.0. Three upstream
+backports to the pinned 8.0 source close them; the rebuilt DLLs are staged
+as hash-pinned payloads next to the winehq10 backports and gated by the
+completeness checker ("wine8 loader backports (source + shipped zip)").
+
+| gap | consumer | disposition |
+| --- | --- | --- |
+| user32 GetPointerPenInfo (+8 family members) absent in wine64 user32 | godot-squash SquashTheCreeps.exe (regular import; load fails before entry) | IMPLEMENTED — wine8-user32-pointer-family.patch: spec entries + FIXME stubs in dlls/user32/input.c (the family already returns FALSE throughout Wine 8.0; no pointer device exists here) |
+| kernelbase/kernel32 CopyFile2 absent in wine64 | mindustry steam_api64.dll (regular import, bundled file) | IMPLEMENTED — wine8-kernelbase-copyfile2.patch: upstream copy_file refactor + CopyFile2 in dlls/kernelbase/file.c; kernel32 -import forward |
+| iphlpapi GetAnycastIpAddressTable absent in wine64 | mindustry JRE net.dll (delay import) | IMPLEMENTED — wine8-iphlpapi-anycast-table.patch: upstream implementation (allocated empty table, NO_ERROR) + MIB_ANYCASTIPADDRESS_* types |
+
+Evidence: census before/after on identical closures — godot-squash 693
+imports, 0 missing (was 1); mindustry closure clean (was 2); the
+per-program missing-set diff across all 15 demos removes exactly these
+three items with zero new misses anywhere. Completeness checker, A/B on
+identical trees: the new pins FAIL against the pre-fix wine64.zip (teeth)
+and PASS with the fixed one; the only other failures in this lane's
+hand-assembled runtime (gstreamer staging, manifest drift) are identical
+with both zips and are satisfied by the pipeline's own staging. DLL pins + rebuild recipe:
+tools/rootfs64/wine8-backports-x86_64/README.md; patches:
+tools/buildWine/patches/wine8-*.patch; staging: stage-wine8-backports.sh
+(poststep in apply-runtime-poststeps.sh) + build-wine64-zip.sh preflight.
+
+Dispositions, not fixed:
+
+- gdi32 D3DKMT* (9): the staged vkd3d d3d12core.dll regular-imports them;
+  wine64 gdi32 exports only a 15-function D3DKMT subset. Self-check only —
+  no demo load path is affected (the D3D12 guest probes pass on the
+  shipped build). Refreshing gdi32 from WineHQ 10 is blocked: its D3DKMT
+  entries forward to win32u NtGdiDdDDI*, and Wine 8.0's win32u lacks
+  NtGdiDdDDIOpenResource2, leaving one import dangling (measured by
+  census on a scratch runtime). Revisit with a win32u backport or a Wine
+  vintage bump of the whole x86_64 set.
+- kernel32 GetDurationFormat: absent from every staged vintage including
+  WineHQ 10 (the specs carry only GetDurationFormatEx). Delay import of a
+  prefix-bundled tool (HxD), not a demo load path. NOT-A-GAP for demos.
+- i386 side: wine32 user32 also lacks GetPointerPenInfo, but no i386 demo
+  imports it (census); the same backport applies if one ever does.

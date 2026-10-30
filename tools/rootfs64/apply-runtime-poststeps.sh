@@ -57,6 +57,9 @@ fi
 # winehq10 backport DLLs into wine64.zip (web/runtime and dist/runtime);
 # the merge-script path for when the container build is unavailable.
 tools/rootfs64/stage-wine64-payloads.sh
+# wine8 loader backport DLLs (user32/kernelbase/kernel32/iphlpapi rebuilt
+# from the pinned wine-8.0 source) into wine64.zip; same merge-script path.
+tools/rootfs64/stage-wine8-backports.sh
 # vkd3d D3D12 payload (bw64 vulkan-1.dll shim + vkd3d-proton d3d12 pair)
 # into wine64.zip at system placement; same merge-script path.
 tools/rootfs64/stage-vkd3d-payloads.sh

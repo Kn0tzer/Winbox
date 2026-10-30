@@ -85,6 +85,19 @@ WINEHQ_PINS = {
     'msmpeg2vdec.dll': 'bbf91fc84f2bc66c70802e41e5ff1ee2e18335ef9cf07769957b0fb37484d046',
     'msvcp140_codecvt_ids.dll': '2215e3312bcc817c628669ec69baff3f050ec0bef91c099e0d12fd66f2c3d9b1',
 }
+# Wine 8.0 loader backports (tools/rootfs64/wine8-backports-x86_64): four
+# core DLLs rebuilt from the pinned wine-8.0 source with the three
+# wine8-*.patch backports in tools/buildWine/patches (the GetPointer*Info
+# family in user32, CopyFile2 in kernelbase/kernel32, GetAnycastIpAddress-
+# Table in iphlpapi). Re-pins are deliberate, as with the payloads above:
+# a rebuild that changes bytes fails here until the new bytes are reviewed
+# and pinned.
+WINE8_BACKPORT_PINS = {
+    'user32.dll': '5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219',
+    'kernelbase.dll': '344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85',
+    'kernel32.dll': 'e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793',
+    'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
+}
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
 # bw64vulkan.dll must be the bw64 PE shim (the vendored vkd3d-proton's
@@ -166,6 +179,18 @@ def t_vkd3d_payloads32():
     for name, pin in VKD3D32_PINS.items():
         assert name in members, f'{name} missing from shipped wine32.zip'
         assert sha(members[name]) == pin, f'{name} in wine32.zip != pinned vkd3d32 payload bytes'
+
+
+def t_wine8_backports_source_and_zip():
+    for name, pin in WINE8_BACKPORT_PINS.items():
+        src = ROOT / 'tools/rootfs64/wine8-backports-x86_64' / name
+        assert sha(src.read_bytes()) == pin, f'{name} source hash drifted from README pin'
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE8_BACKPORT_PINS.items():
+        hits = [n for n in members if n.endswith(name)]
+        assert hits, f'{name} missing from shipped wine64.zip'
+        assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned bytes'
 
 
 def t_winehq_source_and_zip():
@@ -430,6 +455,7 @@ def t_prefix64_built():
 
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
+    check('wine8 loader backports (source + shipped zip)', t_wine8_backports_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
