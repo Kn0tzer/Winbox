@@ -115,7 +115,8 @@ protected:
 
 private:
     const bool isDir;
-    bool hasLoadedChildrenFromFileSystem;    
+    bool hasLoadedChildrenFromFileSystem;
+    bool childrenLoadInProgress;    
 
     BHashTable<BString, std::shared_ptr<FsNode> > childrenByName;
     BOXEDWINE_MUTEX childrenByNameMutex;
