@@ -1,0 +1,1710 @@
+[
+ {
+  "t": 1793399774776,
+  "s": "Loading wine64 (WASM)..."
+ },
+ {
+  "t": 1793399774844,
+  "s": "Loading rootfs 21%"
+ },
+ {
+  "t": 1793399774880,
+  "s": "Loading rootfs 24%"
+ },
+ {
+  "t": 1793399774882,
+  "s": "Loading rootfs 30%"
+ },
+ {
+  "t": 1793399774884,
+  "s": "Loading rootfs 34%"
+ },
+ {
+  "t": 1793399774890,
+  "s": "Loading rootfs 42%"
+ },
+ {
+  "t": 1793399774890,
+  "s": "Loading rootfs 53%"
+ },
+ {
+  "t": 1793399774891,
+  "s": "Loading rootfs 56%"
+ },
+ {
+  "t": 1793399774891,
+  "s": "Loading rootfs 57%"
+ },
+ {
+  "t": 1793399774893,
+  "s": "Loading rootfs 63%"
+ },
+ {
+  "t": 1793399774894,
+  "s": "Loading rootfs 71%"
+ },
+ {
+  "t": 1793399774895,
+  "s": "Loading rootfs 73%"
+ },
+ {
+  "t": 1793399774895,
+  "s": "Loading rootfs 74%"
+ },
+ {
+  "t": 1793399774895,
+  "s": "Loading rootfs 75%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 78%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 27%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 29%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 29%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 31%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 31%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 32%"
+ },
+ {
+  "t": 1793399774933,
+  "s": "Loading rootfs 33%"
+ },
+ {
+  "t": 1793399774934,
+  "s": "Loading rootfs 34%"
+ },
+ {
+  "t": 1793399774990,
+  "s": "Loading rootfs 34%"
+ },
+ {
+  "t": 1793399775047,
+  "s": "Loading rootfs 35%"
+ },
+ {
+  "t": 1793399775047,
+  "s": "Loading rootfs 35%"
+ },
+ {
+  "t": 1793399775056,
+  "s": "Loading rootfs 36%"
+ },
+ {
+  "t": 1793399775089,
+  "s": "Loading rootfs 37%"
+ },
+ {
+  "t": 1793399775095,
+  "s": "Loading rootfs 38%"
+ },
+ {
+  "t": 1793399775096,
+  "s": "Loading rootfs 39%"
+ },
+ {
+  "t": 1793399775338,
+  "s": "Loading rootfs 41%"
+ },
+ {
+  "t": 1793399775338,
+  "s": "Loading rootfs 42%"
+ },
+ {
+  "t": 1793399775662,
+  "s": "Loading rootfs 49%"
+ },
+ {
+  "t": 1793399775662,
+  "s": "Loading rootfs 50%"
+ },
+ {
+  "t": 1793399775662,
+  "s": "Loading rootfs 51%"
+ },
+ {
+  "t": 1793399775729,
+  "s": "Loading rootfs 56%"
+ },
+ {
+  "t": 1793399775730,
+  "s": "Loading rootfs 59%"
+ },
+ {
+  "t": 1793399775754,
+  "s": "Loading rootfs 60%"
+ },
+ {
+  "t": 1793399775762,
+  "s": "Loading rootfs 60%"
+ },
+ {
+  "t": 1793399775802,
+  "s": "Loading rootfs 61%"
+ },
+ {
+  "t": 1793399775803,
+  "s": "Loading rootfs 62%"
+ },
+ {
+  "t": 1793399775831,
+  "s": "Loading rootfs 62%"
+ },
+ {
+  "t": 1793399776009,
+  "s": "Loading rootfs 63%"
+ },
+ {
+  "t": 1793399776009,
+  "s": "Loading rootfs 63%"
+ },
+ {
+  "t": 1793399776025,
+  "s": "Loading rootfs 70%"
+ },
+ {
+  "t": 1793399776026,
+  "s": "Loading rootfs 70%"
+ },
+ {
+  "t": 1793399776026,
+  "s": "Loading rootfs 74%"
+ },
+ {
+  "t": 1793399776471,
+  "s": "Loading rootfs 76%"
+ },
+ {
+  "t": 1793399776620,
+  "s": "Loading rootfs 77%"
+ },
+ {
+  "t": 1793399776637,
+  "s": "Loading rootfs 84%"
+ },
+ {
+  "t": 1793399776689,
+  "s": "Loading rootfs 85%"
+ },
+ {
+  "t": 1793399776691,
+  "s": "Loading rootfs 91%"
+ },
+ {
+  "t": 1793399776697,
+  "s": "Loading rootfs 92%"
+ },
+ {
+  "t": 1793399776774,
+  "s": "Loading rootfs 93%"
+ },
+ {
+  "t": 1793399776929,
+  "s": "Loading rootfs 97%"
+ },
+ {
+  "t": 1793399776931,
+  "s": "Loading rootfs 98%"
+ },
+ {
+  "t": 1793399776931,
+  "s": "Loading rootfs 99%"
+ },
+ {
+  "t": 1793399776932,
+  "s": "Loading rootfs 100%"
+ },
+ {
+  "t": 1793399776932,
+  "s": "Loading rootfs 100%"
+ },
+ {
+  "t": 1793399777007,
+  "s": "Starting Z:\\home\\username\\apps\\al-khaser.exe (pre-booted prefix)..."
+ },
+ {
+  "t": 1793399777026,
+  "s": "Running..."
+ },
+ {
+  "t": 1793399777048,
+  "s": "Starting ..."
+ },
+ {
+  "t": 1793399777059,
+  "s": "Command line arguments: \"./this.program\" \"-root\" \"/root\" \"-zip\" \"bw64url:517859589;http://127.0.0.1:8931/runtime/support-3f1268a546e0ec138f0d15c1502fa6eea7a397ed7beff318484f5d83cc2319e9.zip|517859589\" \"-zip\" \"glibc-rootfs64.zip\" \"-zip\" \"bw64url:209697213;http://127.0.0.1:8931/runtime/wine64.zip|209697213\" \"-zip\" \"prefix64.zip\" \"-zip\" \"bw64url:98952;https://kn0tzer.work.gd/games/alkhaser.zip|98952\" \"-w\" \"/home/username/apps/\" \"-env\" \"HOME=/home/username\" \"-env\" \"WINEPREFIX=/home/username/.wine\" \"-env\" \"WINESERVER=/usr/lib/wine/wineserver64\" \"-env\" \"WINEDLLPATH=/usr/lib/x86_64-linux-gnu/wine\" \"-env\" \"WINE_D3D_CONFIG=csmt=0x0\" \"-env\" \"WINELOADERNOEXEC=1\" \"-env\" \"XDG_RUNTIME_DIR=/tmp\" \"-env\" \"WINEDEBUG=-all\" \"/usr/lib/wine/wine64\" \"Z:\\home\\username\\apps\\al-khaser.exe\" \"--sleep\" \"5\""
+ },
+ {
+  "t": 1793399777073,
+  "s": "Using root directory: /root"
+ },
+ {
+  "t": 1793399777127,
+  "s": "fszipurl: mounted 493 MB zip lazily (1 part(s), 2MB blocks)"
+ },
+ {
+  "t": 1793399778074,
+  "s": "fszipurl: mounted 199 MB zip lazily (1 part(s), 2MB blocks)"
+ },
+ {
+  "t": 1793399778529,
+  "s": "fszipurl: mounted 0 MB zip lazily (1 part(s), 2MB blocks)"
+ },
+ {
+  "t": 1793399779665,
+  "s": "Using zip file system: bw64url:517859589;http://127.0.0.1:8931/runtime/support-3f1268a546e0ec138f0d15c1502fa6eea7a397ed7beff318484f5d83cc2319e9.zip|517859589"
+ },
+ {
+  "t": 1793399779670,
+  "s": "Using zip file system: glibc-rootfs64.zip"
+ },
+ {
+  "t": 1793399779678,
+  "s": "Using zip file system: bw64url:209697213;http://127.0.0.1:8931/runtime/wine64.zip|209697213"
+ },
+ {
+  "t": 1793399779682,
+  "s": "Using zip file system: prefix64.zip"
+ },
+ {
+  "t": 1793399779684,
+  "s": "Using zip file system: bw64url:98952;https://kn0tzer.work.gd/games/alkhaser.zip|98952"
+ },
+ {
+  "t": 1793399781574,
+  "s": "Loaded bw64url:517859589;http://127.0.0.1:8931/runtime/support-3f1268a546e0ec138f0d15c1502fa6eea7a397ed7beff318484f5d83cc2319e9.zip|517859589 in 1875 ms"
+ },
+ {
+  "t": 1793399781599,
+  "s": "Loaded glibc-rootfs64.zip in 23 ms"
+ },
+ {
+  "t": 1793399782015,
+  "s": "Loaded bw64url:209697213;http://127.0.0.1:8931/runtime/wine64.zip|209697213 in 417 ms"
+ },
+ {
+  "t": 1793399782096,
+  "s": "Loaded prefix64.zip in 79 ms"
+ },
+ {
+  "t": 1793399782099,
+  "s": "Loaded bw64url:98952;https://kn0tzer.work.gd/games/alkhaser.zip|98952 in 2 ms"
+ },
+ {
+  "t": 1793399782162,
+  "s": "Launching \"/usr/lib/wine/wine64\" \"Z:\\home\\username\\apps\\al-khaser.exe\" \"--sleep\" \"5\" "
+ },
+ {
+  "t": 1793399782177,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399782178,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399782179,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399782180,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399782181,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399782182,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399782182,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399782182,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399782184,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399782184,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399782184,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399782196,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399782197,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399782197,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399782197,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399782200,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399782200,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399782200,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399782201,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc60 argc=4 envc=16 auxc=16"
+ },
+ {
+  "t": 1793399782210,
+  "s": "wine64session: context captured (cwd=/home/username/apps/ uid=1 bootPid=10)"
+ },
+ {
+  "t": 1793399782581,
+  "s": "ksyscall64: unimplemented syscall #334 (rseq)"
+ },
+ {
+  "t": 1793399784103,
+  "s": "sys_execve64: bare wineserver spawn made persistent (-p) for boot reliability"
+ },
+ {
+  "t": 1793399784108,
+  "s": "sys_execve64: pid=12 path='/usr/lib/wine/wineserver' argv0='/usr/lib/wine/wineserver' argc=2 envc=17"
+ },
+ {
+  "t": 1793399784110,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399784113,
+  "s": "sys_execve64: bare wineserver spawn made persistent (-p) for boot reliability"
+ },
+ {
+  "t": 1793399784114,
+  "s": "sys_execve64: pid=12 path='/usr/lib/wine/wineserver64' argv0='/usr/lib/wine/wineserver64' argc=2 envc=17"
+ },
+ {
+  "t": 1793399784115,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399784224,
+  "s": "loadProgram64: entry=0x13c90 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=1"
+ },
+ {
+  "t": 1793399784231,
+  "s": "loadProgram64: load range [0x0, 0x98910) span=624912 bytes"
+ },
+ {
+  "t": 1793399784232,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x96de0 memsz=480"
+ },
+ {
+  "t": 1793399784233,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x400000000 len=0x13000 prot=0x1 filesz=0x120b0"
+ },
+ {
+  "t": 1793399784233,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x400013000 len=0x5d000 prot=0x5 filesz=0x5c749"
+ },
+ {
+  "t": 1793399784234,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x400070000 len=0x20000 prot=0x1 filesz=0x1fdc0"
+ },
+ {
+  "t": 1793399784234,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x400090000 len=0x9000 prot=0x3 filesz=0x72c0"
+ },
+ {
+  "t": 1793399784238,
+  "s": "loadProgram64[exe]: RELA table at 0x400001820, 2687 entries (entsize=24)"
+ },
+ {
+  "t": 1793399784239,
+  "s": "loadProgram64[exe]: applied 2680 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399784239,
+  "s": "loadProgram64: PT_GNU_RELRO 0x400090000..0x400097000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399784239,
+  "s": "loadProgram64: exe RIP=0x400013c90 (pages mapped: 153)"
+ },
+ {
+  "t": 1793399784258,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399784262,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399784262,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399784268,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399784268,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399784268,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399784268,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399784268,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc70 argc=2 envc=17 auxc=16"
+ },
+ {
+  "t": 1793399784433,
+  "s": "CPU64: exit_group syscall, status=0  pid=12 exe='/usr/lib/wine/wineserver64' cmd='/usr/lib/wine/wineserver64 -p'"
+ },
+ {
+  "t": 1793399784437,
+  "s": "CPU64: exit_group trace tid=13 rip=0x7000d4409 rsp=0x7fffffffdac8 ra=[0x400046c17,0x7070707000707070,0x800000007,0x400000003]"
+ },
+ {
+  "t": 1793399800189,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 26"
+ },
+ {
+  "t": 1793399801122,
+  "s": "CPU64: exit_group syscall, status=0  pid=16 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 Z:\\home\\username\\apps\\al-khaser.exe --sleep 5'"
+ },
+ {
+  "t": 1793399801130,
+  "s": "CPU64: exit_group trace tid=17 rip=0x7000d4409 rsp=0x7fffffffd028 ra=[0x700212439,0x1,0x20,0x0]"
+ },
+ {
+  "t": 1793399801142,
+  "s": "sys_execve64: pid=18 path='/usr/lib/wine/wine64-preloader' argv0='/usr/lib/wine/wine64-preloader' argc=4 envc=19"
+ },
+ {
+  "t": 1793399801147,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399801147,
+  "s": "sys_execve64: pid=18 path='/usr/lib/wine/wine64' argv0='/usr/lib/wine/wine64' argc=3 envc=19"
+ },
+ {
+  "t": 1793399801158,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399801160,
+  "s": "Showing Window"
+ },
+ {
+  "t": 1793399801216,
+  "s": "WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports"
+ },
+ {
+  "t": 1793399801300,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399801301,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399801302,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399801303,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399801304,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399801305,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399801305,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399801306,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399801309,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399801310,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399801310,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399801333,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399801334,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399801335,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399801336,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399801338,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399801339,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399801340,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399801343,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc00 argc=3 envc=19 auxc=16"
+ },
+ {
+  "t": 1793399802188,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 31"
+ },
+ {
+  "t": 1793399802193,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wineboot.exe' -> fd 31"
+ },
+ {
+  "t": 1793399803796,
+  "s": "fszipurl: 17 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399808687,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 26"
+ },
+ {
+  "t": 1793399809436,
+  "s": "CPU64: exit_group syscall, status=0  pid=20 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\wineboot.exe --init'"
+ },
+ {
+  "t": 1793399809437,
+  "s": "CPU64: exit_group trace tid=21 rip=0x7000d4409 rsp=0x31f838 ra=[0x700212439,0x1,0x700000020,0x0]"
+ },
+ {
+  "t": 1793399809438,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> ws2_32.dll+0x38f164409"
+ },
+ {
+  "t": 1793399809439,
+  "s": "CPU64: exit_group ra0=0x700212439 -> ws2_32.dll+0x38f2a2439"
+ },
+ {
+  "t": 1793399809441,
+  "s": "CPU64: exit_group ra1=0x1 -> ?+0x1"
+ },
+ {
+  "t": 1793399809443,
+  "s": "CPU64: exit_group ra2=0x700000020 -> ws2_32.dll+0x38f090020"
+ },
+ {
+  "t": 1793399809444,
+  "s": "CPU64: exit_group ra3=0x0 -> ?+0x0"
+ },
+ {
+  "t": 1793399809447,
+  "s": "sys_execve64: pid=22 path='/usr/lib/wine/wine64-preloader' argv0='/usr/lib/wine/wine64-preloader' argc=3 envc=19"
+ },
+ {
+  "t": 1793399809450,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399809481,
+  "s": "sys_execve64: pid=22 path='/usr/lib/wine/wine64' argv0='/usr/lib/wine/wine64' argc=2 envc=19"
+ },
+ {
+  "t": 1793399809482,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399809643,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399809643,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399809645,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399809646,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399809646,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399809646,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399809646,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399809648,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399809648,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399809648,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399809648,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399809657,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399809657,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399809659,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399809659,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399809659,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399809659,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399809661,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399809661,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc10 argc=2 envc=19 auxc=16"
+ },
+ {
+  "t": 1793399811800,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 52"
+ },
+ {
+  "t": 1793399811829,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/services.exe' -> fd 52"
+ },
+ {
+  "t": 1793399813153,
+  "s": "fszipurl: 33 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399842195,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 60"
+ },
+ {
+  "t": 1793399842236,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 60"
+ },
+ {
+  "t": 1793399843458,
+  "s": "CPU64: exit_group syscall, status=0  pid=25 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399843459,
+  "s": "CPU64: exit_group trace tid=26 rip=0x7000d4409 rsp=0x31f838 ra=[0x700212439,0x1,0x700000020,0x0]"
+ },
+ {
+  "t": 1793399843459,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> setupapi.dll+0x392874409"
+ },
+ {
+  "t": 1793399843460,
+  "s": "CPU64: exit_group ra0=0x700212439 -> setupapi.dll+0x3929b2439"
+ },
+ {
+  "t": 1793399843461,
+  "s": "CPU64: exit_group ra1=0x1 -> ?+0x1"
+ },
+ {
+  "t": 1793399843461,
+  "s": "CPU64: exit_group ra2=0x700000020 -> setupapi.dll+0x3927a0020"
+ },
+ {
+  "t": 1793399843461,
+  "s": "CPU64: exit_group ra3=0x0 -> ?+0x0"
+ },
+ {
+  "t": 1793399843557,
+  "s": "sys_execve64: pid=27 path='/usr/lib/wine/wine64-preloader' argv0='/usr/lib/wine/wine64-preloader' argc=3 envc=19"
+ },
+ {
+  "t": 1793399843706,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399843707,
+  "s": "sys_execve64: pid=27 path='/usr/lib/wine/wine64' argv0='/usr/lib/wine/wine64' argc=2 envc=19"
+ },
+ {
+  "t": 1793399843707,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399843861,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399843901,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399843902,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399843902,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399843903,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399843904,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399843982,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399843986,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399843986,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399843987,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399843990,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399844012,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399844015,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399844016,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399844017,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399844018,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399844018,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399844019,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399844020,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc10 argc=2 envc=19 auxc=16"
+ },
+ {
+  "t": 1793399846175,
+  "s": "FsZip: 64 entry streams opened, 31 MB decompressed, 52 MB served from cache, 0 backward reopens"
+ },
+ {
+  "t": 1793399872720,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 65"
+ },
+ {
+  "t": 1793399872736,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winedevice.exe' -> fd 65"
+ },
+ {
+  "t": 1793399873732,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 65"
+ },
+ {
+  "t": 1793399873741,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/ntoskrnl.exe' -> fd 65"
+ },
+ {
+  "t": 1793399877218,
+  "s": "fszipurl: 49 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399877704,
+  "s": "CPU64: exit syscall, status=0  pid=27 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\winedevice.exe'"
+ },
+ {
+  "t": 1793399877719,
+  "s": "CPU64: exit syscall, status=0  pid=27 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\winedevice.exe'"
+ },
+ {
+  "t": 1793399877773,
+  "s": "CPU64: exit_group syscall, status=0  pid=27 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\winedevice.exe'"
+ },
+ {
+  "t": 1793399877773,
+  "s": "CPU64: exit_group trace tid=28 rip=0x7000d4409 rsp=0x7fffffffd808 ra=[0x70003e522,0x1010103010082008,0x1810202808083000,0x2028103020202020]"
+ },
+ {
+  "t": 1793399877773,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> rpcrt4.dll+0x397cb4409"
+ },
+ {
+  "t": 1793399877775,
+  "s": "CPU64: exit syscall, status=0  pid=27 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\winedevice.exe'"
+ },
+ {
+  "t": 1793399877776,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399877790,
+  "s": "CPU64: exit_group ra0=0x70003e522 -> rpcrt4.dll+0x397c1e522"
+ },
+ {
+  "t": 1793399877795,
+  "s": "CPU64: exit_group ra1=0x1010103010082008 -> rpcrt4.dll+0x1010102ca7c62008"
+ },
+ {
+  "t": 1793399877795,
+  "s": "CPU64: exit_group ra2=0x1810202808083000 -> rpcrt4.dll+0x181020249fc63000"
+ },
+ {
+  "t": 1793399877807,
+  "s": "CPU64: exit_group ra3=0x2028103020202020 -> rpcrt4.dll+0x2028102cb7de2020"
+ },
+ {
+  "t": 1793399882391,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399882442,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399882453,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399883007,
+  "s": "FsZip: 128 entry streams opened, 55 MB decompressed, 84 MB served from cache, 2 backward reopens"
+ },
+ {
+  "t": 1793399887367,
+  "s": "FsZip: 192 entry streams opened, 56 MB decompressed, 85 MB served from cache, 2 backward reopens"
+ },
+ {
+  "t": 1793399895705,
+  "s": "CPU64: exit_group syscall, status=0  pid=18 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\wineboot.exe --init'"
+ },
+ {
+  "t": 1793399895711,
+  "s": "CPU64: exit_group trace tid=19 rip=0x7000d4409 rsp=0x7fffffffd7f8 ra=[0x70003e522,0x1010103010082008,0x1810202808083000,0x2028103020202020]"
+ },
+ {
+  "t": 1793399895711,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399895712,
+  "s": "CPU64: exit_group ra0=0x70003e522 -> imm32.dll+0x36c90e522"
+ },
+ {
+  "t": 1793399895712,
+  "s": "CPU64: exit_group ra1=0x1010103010082008 -> imm32.dll+0x1010102c7c952008"
+ },
+ {
+  "t": 1793399895732,
+  "s": "CPU64: exit_group ra2=0x1810202808083000 -> imm32.dll+0x1810202474953000"
+ },
+ {
+  "t": 1793399895733,
+  "s": "CPU64: exit_group ra3=0x2028103020202020 -> imm32.dll+0x2028102c8cad2020"
+ },
+ {
+  "t": 1793399895853,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/al-khaser.exe' -> fd 27"
+ },
+ {
+  "t": 1793399898085,
+  "s": "fszipurl: 65 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399898086,
+  "s": "FsZip: 256 entry streams opened, 93 MB decompressed, 128 MB served from cache, 4 backward reopens"
+ },
+ {
+  "t": 1793399901099,
+  "s": "fszipurl: 81 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399905939,
+  "s": "[al-khaser version 0.82]\r"
+ },
+ {
+  "t": 1793399905943,
+  "s": "-------------------------[Initialisation]-------------------------\r"
+ },
+ {
+  "t": 1793399906734,
+  "s": "\r"
+ },
+ {
+  "t": 1793399906735,
+  "s": "[*] You are running: Microsoft Windows Server 2008 R2 Standard Edition Service Pack 1 (build 7601) 64-bit\r"
+ },
+ {
+  "t": 1793399906736,
+  "s": "[*] Warning: API ntdll.dll!CsrGetProcessId was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399906738,
+  "s": "[*] Warning: API kernel32.dll!EnumProcessModulesEx was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399906739,
+  "s": "[*] Warning: API ntdll.dll!NtWow64QueryVirtualMemory64 was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399906741,
+  "s": "[*] Warning: API WUDFPlatform.dll!WudfIsAnyDebuggerPresent was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399906742,
+  "s": "[*] Warning: API WUDFPlatform.dll!WudfIsKernelDebuggerPresent was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399906743,
+  "s": "[*] Warning: API WUDFPlatform.dll!WudfIsUserDebuggerPresent was expected to exist but was not found.\r"
+ },
+ {
+  "t": 1793399907241,
+  "s": "\r"
+ },
+ {
+  "t": 1793399907241,
+  "s": "-------------------------[TLS Callbacks]-------------------------\r"
+ },
+ {
+  "t": 1793399907308,
+  "s": "[*] TLS process attach callback                                                                    [ GOOD ]\r"
+ },
+ {
+  "t": 1793399907505,
+  "s": "[*] TLS thread attach callback                                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399907536,
+  "s": "\r"
+ },
+ {
+  "t": 1793399907538,
+  "s": "-------------------------[Debugger Detection]-------------------------\r"
+ },
+ {
+  "t": 1793399907643,
+  "s": "[*] Checking IsDebuggerPresent API                                                                 [ GOOD ]\r"
+ },
+ {
+  "t": 1793399907688,
+  "s": "CPU64: exit syscall, status=0  pid=10 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 Z:\\home\\username\\apps\\al-khaser.exe --sleep 5'"
+ },
+ {
+  "t": 1793399907724,
+  "s": "[*] Checking PEB.BeingDebugged                                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399907817,
+  "s": "[*] Checking CheckRemoteDebuggerPresent API                                                        [ GOOD ]\r"
+ },
+ {
+  "t": 1793399907898,
+  "s": "[*] Checking PEB.NtGlobalFlag                                                                      [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908050,
+  "s": "[*] Checking ProcessHeap.Flags                                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908223,
+  "s": "[*] Checking ProcessHeap.ForceFlags                                                                [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908409,
+  "s": "[*] Checking Low Fragmentation Heap                                                                [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908455,
+  "s": "[*] Checking NtQueryInformationProcess with ProcessDebugPort                                       [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908496,
+  "s": "[*] Checking NtQueryInformationProcess with ProcessDebugFlags                                      [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908579,
+  "s": "[*] Checking NtQueryInformationProcess with ProcessDebugObject                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908628,
+  "s": "[*] Checking WudfIsAnyDebuggerPresent API                                                          [ GOOD ]\r"
+ },
+ {
+  "t": 1793399908710,
+  "s": "[*] Checking WudfIsKernelDebuggerPresent API                                                       [ GOOD ]\r"
+ },
+ {
+  "t": 1793399909117,
+  "s": "[*] Checking WudfIsUserDebuggerPresent API                                                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399909249,
+  "s": "[*] Checking NtSetInformationThread with ThreadHideFromDebugger                                    [ BAD  ]\r"
+ },
+ {
+  "t": 1793399909457,
+  "s": "[*] Checking CloseHandle with an invalide handle                                                   [ GOOD ]\r"
+ },
+ {
+  "t": 1793399909611,
+  "s": "[*] Checking NtSystemDebugControl                                                                  [ GOOD ]\r"
+ },
+ {
+  "t": 1793399909673,
+  "s": "[*] Checking UnhandledExcepFilterTest                                                              [ GOOD ]\r"
+ },
+ {
+  "t": 1793399909914,
+  "s": "[*] Checking OutputDebugString                                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910023,
+  "s": "[*] Checking Hardware Breakpoints                                                                  [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910105,
+  "s": "[*] Checking Software Breakpoints                                                                  [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910249,
+  "s": "[*] Checking Interupt 0x2d                                                                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910346,
+  "s": "[*] Checking Interupt 1                                                                            [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910488,
+  "s": "[*] Checking trap flag                                                                             [ BAD  ]\r"
+ },
+ {
+  "t": 1793399910857,
+  "s": "[*] Checking Memory Breakpoints PAGE GUARD                                                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910904,
+  "s": "[*] Checking If Parent Process is explorer.exe                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399910987,
+  "s": "[*] Checking SeDebugPrivilege                                                                      [ GOOD ]\r"
+ },
+ {
+  "t": 1793399911106,
+  "s": "[*] Checking NtQueryObject with ObjectTypeInformation                                              [ GOOD ]\r"
+ },
+ {
+  "t": 1793399911255,
+  "s": "[*] Checking NtQueryObject with ObjectAllTypesInformation                                          [ GOOD ]\r"
+ },
+ {
+  "t": 1793399911975,
+  "s": "[*] Checking NtYieldExecution                                                                      [ BAD  ]\r"
+ },
+ {
+  "t": 1793399912117,
+  "s": "[*] Checking CloseHandle protected handle trick                                                    [ GOOD ]\r"
+ },
+ {
+  "t": 1793399912201,
+  "s": "[*] Checking NtQuerySystemInformation with SystemKernelDebuggerInformation                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399912262,
+  "s": "[*] Checking SharedUserData->KdDebuggerEnabled                                                     [ GOOD ]\r"
+ },
+ {
+  "t": 1793399912313,
+  "s": "[*] Checking if process is in a job                                                                [ GOOD ]\r"
+ },
+ {
+  "t": 1793399912461,
+  "s": "[*] Checking VirtualAlloc write watch (buffer only)                                                [ BAD  ]\r"
+ },
+ {
+  "t": 1793399912667,
+  "s": "[*] Checking VirtualAlloc write watch (API calls)                                                  [ GOOD ]\r"
+ },
+ {
+  "t": 1793399912856,
+  "s": "[*] Checking VirtualAlloc write watch (IsDebuggerPresent)                                          [ BAD  ]\r"
+ },
+ {
+  "t": 1793399912964,
+  "s": "[*] Checking VirtualAlloc write watch (code write)                                                 [ GOOD ]\r"
+ },
+ {
+  "t": 1793399913507,
+  "s": "[*] Checking for page exception breakpoints                                                        [ GOOD ]\r"
+ },
+ {
+  "t": 1793399913666,
+  "s": "[*] Checking for API hooks outside module bounds                                                   [ GOOD ]\r"
+ },
+ {
+  "t": 1793399913723,
+  "s": "\r"
+ },
+ {
+  "t": 1793399913724,
+  "s": "-------------------------[DLL Injection Detection]-------------------------\r"
+ },
+ {
+  "t": 1793399913852,
+  "s": "[*] Enumerating modules with EnumProcessModulesEx [32-bit]                                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399914005,
+  "s": "[*] Enumerating modules with EnumProcessModulesEx [64-bit]                                         [ GOOD ]\r"
+ },
+ {
+  "t": 1793399914212,
+  "s": "[*] Enumerating modules with EnumProcessModulesEx [ALL]                                            [ GOOD ]\r"
+ },
+ {
+  "t": 1793399914408,
+  "s": "[*] Enumerating modules with ToolHelp32                                                            Failed to get snapshot. Last error: 5\r"
+ },
+ {
+  "t": 1793399914504,
+  "s": "[ GOOD ]\r"
+ },
+ {
+  "t": 1793399916177,
+  "s": "[*] Enumerating the process LDR via LdrEnumerateLoadedModules                                      [ BAD  ]\r"
+ },
+ {
+  "t": 1793399916236,
+  "s": "[*] Enumerating the process LDR directly                                                            [!] Error reading entry.\r"
+ },
+ {
+  "t": 1793399916242,
+  "s": "[guest fd=2 pid=10 wine64] wine: Unhandled page fault on read access to 0000000000000000 at address 000000014000D0F0 (thread 0024), starting debugger..."
+ },
+ {
+  "t": 1793399916242,
+  "s": ""
+ },
+ {
+  "t": 1793399916243,
+  "s": "wine: Unhandled page fault on read access to 0000000000000000 at address 000000014000D0F0 (thread 0024), starting debugger..."
+ },
+ {
+  "t": 1793399916259,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedbg.exe' -> fd 32"
+ },
+ {
+  "t": 1793399916318,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedbg.exe' -> fd 32"
+ },
+ {
+  "t": 1793399917601,
+  "s": "CPU64: exit_group syscall, status=0  pid=37 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 Z:\\home\\username\\apps\\al-khaser.exe --sleep 5'"
+ },
+ {
+  "t": 1793399917601,
+  "s": "sys_execve64: pid=39 path='/usr/lib/wine/wine64-preloader' argv0='/usr/lib/wine/wine64-preloader' argc=6 envc=19"
+ },
+ {
+  "t": 1793399917616,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399917617,
+  "s": "sys_execve64: pid=39 path='/usr/lib/wine/wine64' argv0='/usr/lib/wine/wine64' argc=5 envc=19"
+ },
+ {
+  "t": 1793399917627,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399917684,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399917685,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399917685,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399917688,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399917689,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399917701,
+  "s": "CPU64: exit_group trace tid=38 rip=0x7000d4409 rsp=0x21f838 ra=[0x700212439,0x1,0x700000020,0x0]"
+ },
+ {
+  "t": 1793399917705,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399917705,
+  "s": "CPU64: exit_group ra0=0x700212439 -> imm32.dll+0x36cae2439"
+ },
+ {
+  "t": 1793399917705,
+  "s": "CPU64: exit_group ra1=0x1 -> ?+0x1"
+ },
+ {
+  "t": 1793399917705,
+  "s": "CPU64: exit_group ra2=0x700000020 -> imm32.dll+0x36c8d0020"
+ },
+ {
+  "t": 1793399917705,
+  "s": "CPU64: exit_group ra3=0x0 -> ?+0x0"
+ },
+ {
+  "t": 1793399917706,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399917709,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399917710,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399917712,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399917725,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399917725,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399917725,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399917725,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc00 argc=5 envc=19 auxc=16"
+ },
+ {
+  "t": 1793399918431,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedbg.exe' -> fd 87"
+ },
+ {
+  "t": 1793399918437,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winedbg.exe' -> fd 87"
+ },
+ {
+  "t": 1793399923287,
+  "s": "Can't attach process 0020: error 5"
+ },
+ {
+  "t": 1793399923314,
+  "s": "CPU64: exit_group syscall, status=3221225477  pid=10 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 Z:\\home\\username\\apps\\al-khaser.exe --sleep 5'"
+ },
+ {
+  "t": 1793399923314,
+  "s": "CPU64: exit_group trace tid=11 rip=0x7000d4409 rsp=0x21fa38 ra=[0x70023ea08,0x21fbd0,0x7002125e5,0x0]"
+ },
+ {
+  "t": 1793399923325,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399923333,
+  "s": "CPU64: exit_group ra0=0x70023ea08 -> imm32.dll+0x36cb0ea08"
+ },
+ {
+  "t": 1793399923336,
+  "s": "CPU64: exit_group ra1=0x21fbd0 -> ?+0x21fbd0"
+ },
+ {
+  "t": 1793399923339,
+  "s": "CPU64: exit_group ra2=0x7002125e5 -> imm32.dll+0x36cae25e5"
+ },
+ {
+  "t": 1793399923344,
+  "s": "CPU64: exit_group ra3=0x0 -> ?+0x0"
+ },
+ {
+  "t": 1793399925775,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 21"
+ },
+ {
+  "t": 1793399926766,
+  "s": "CPU64: exit_group syscall, status=0  pid=41 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 winedbg --auto 32 120'"
+ },
+ {
+  "t": 1793399926768,
+  "s": "CPU64: exit_group trace tid=42 rip=0x7000d4409 rsp=0x31ed28 ra=[0x700212439,0x1,0x20,0x0]"
+ },
+ {
+  "t": 1793399926769,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399926769,
+  "s": "CPU64: exit_group ra0=0x700212439 -> imm32.dll+0x36cae2439"
+ },
+ {
+  "t": 1793399926769,
+  "s": "CPU64: exit_group ra1=0x1 -> ?+0x1"
+ },
+ {
+  "t": 1793399926769,
+  "s": "sys_execve64: pid=43 path='/usr/lib/wine/wine64-preloader' argv0='/usr/lib/wine/wine64-preloader' argc=4 envc=19"
+ },
+ {
+  "t": 1793399926769,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399926769,
+  "s": "sys_execve64: pid=43 path='/usr/lib/wine/wine64' argv0='/usr/lib/wine/wine64' argc=3 envc=19"
+ },
+ {
+  "t": 1793399926769,
+  "s": "CPU64: exit_group ra2=0x20 -> ?+0x20"
+ },
+ {
+  "t": 1793399926769,
+  "s": "sys_execve64:   env WINELOADER=/usr/lib/wine/wine64"
+ },
+ {
+  "t": 1793399926769,
+  "s": "CPU64: exit_group ra3=0x0 -> ?+0x0"
+ },
+ {
+  "t": 1793399926905,
+  "s": "loadProgram64: entry=0x7d001380 phoff=0x40 phnum=13 segments=4 interp=/lib64/ld-linux-x86-64.so.2 pie=0"
+ },
+ {
+  "t": 1793399926944,
+  "s": "loadProgram64: load range [0x7d000000, 0x7d0040d8) span=16600 bytes"
+ },
+ {
+  "t": 1793399926949,
+  "s": "loadProgram64: PT_DYNAMIC vaddr=0x7d003de0 memsz=480"
+ },
+ {
+  "t": 1793399926949,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d000000 len=0x1000 prot=0x1 filesz=0xc20"
+ },
+ {
+  "t": 1793399926950,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d001000 len=0x1000 prot=0x5 filesz=0x501"
+ },
+ {
+  "t": 1793399926951,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d002000 len=0x1000 prot=0x1 filesz=0x21c"
+ },
+ {
+  "t": 1793399926952,
+  "s": "loadProgram64[exe]:   mapped seg vaddr=0x7d003000 len=0x2000 prot=0x3 filesz=0x2d0"
+ },
+ {
+  "t": 1793399926965,
+  "s": "loadProgram64[exe]: RELA table at 0x7d000980, 10 entries (entsize=24)"
+ },
+ {
+  "t": 1793399926968,
+  "s": "loadProgram64[exe]: applied 3 RELATIVE relocs (deferred 7 symbol-bound)"
+ },
+ {
+  "t": 1793399926969,
+  "s": "loadProgram64: PT_GNU_RELRO 0x7d003000..0x7d004000 recorded (guest loader applies it)"
+ },
+ {
+  "t": 1793399926972,
+  "s": "loadProgram64: exe RIP=0x7d001380 (pages mapped: 5)"
+ },
+ {
+  "t": 1793399926996,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fce000 len=0x1000 prot=0x1 filesz=0xd58"
+ },
+ {
+  "t": 1793399926996,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fcf000 len=0x26000 prot=0x5 filesz=0x25111"
+ },
+ {
+  "t": 1793399926997,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7ff5000 len=0xa000 prot=0x1 filesz=0x9c7c"
+ },
+ {
+  "t": 1793399926998,
+  "s": "loadProgram64[interp]:   mapped seg vaddr=0x7ffff7fff000 len=0x4000 prot=0x3 filesz=0x2810"
+ },
+ {
+  "t": 1793399926998,
+  "s": "loadProgram64[interp]: RELA table at 0x7ffff7fcecc8, 1 entries (entsize=24)"
+ },
+ {
+  "t": 1793399926999,
+  "s": "loadProgram64[interp]: applied 0 RELATIVE relocs (deferred 1 symbol-bound)"
+ },
+ {
+  "t": 1793399926999,
+  "s": "loadProgram64: interp '/lib64/ld-linux-x86-64.so.2' mapped at base 0x7ffff7fce000, RIP=0x7ffff7fe8b70"
+ },
+ {
+  "t": 1793399927000,
+  "s": "loadProgram64: stack built, RSP=0x7fffffffdc00 argc=3 envc=19 auxc=16"
+ },
+ {
+  "t": 1793399928134,
+  "s": "FsZip: 320 entry streams opened, 123 MB decompressed, 187 MB served from cache, 4 backward reopens"
+ },
+ {
+  "t": 1793399928197,
+  "s": "sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 62"
+ },
+ {
+  "t": 1793399928210,
+  "s": "sys_openat64: OPENED '/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/explorer.exe' -> fd 62"
+ },
+ {
+  "t": 1793399936557,
+  "s": "XWireServer: accepted X11 client connection (now 1 open)"
+ },
+ {
+  "t": 1793399936590,
+  "s": "XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes"
+ },
+ {
+  "t": 1793399937546,
+  "s": "fszipurl: 97 MB fetched lazily so far"
+ },
+ {
+  "t": 1793399939249,
+  "s": "XWireServer: accepted X11 client connection (now 2 open)"
+ },
+ {
+  "t": 1793399939283,
+  "s": "XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes"
+ },
+ {
+  "t": 1793399940642,
+  "s": "CPU64: exit_group syscall, status=4294967295  pid=39 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 winedbg --auto 32 120'"
+ },
+ {
+  "t": 1793399940797,
+  "s": "CPU64: exit_group trace tid=40 rip=0x7000d4409 rsp=0x7fffffffd7f8 ra=[0x70003e522,0x1010103010082008,0x1810202808083000,0x2028103020202020]"
+ },
+ {
+  "t": 1793399940801,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399940801,
+  "s": "CPU64: exit_group ra0=0x70003e522 -> imm32.dll+0x36c90e522"
+ },
+ {
+  "t": 1793399940801,
+  "s": "CPU64: exit_group ra1=0x1010103010082008 -> imm32.dll+0x1010102c7c952008"
+ },
+ {
+  "t": 1793399940802,
+  "s": "CPU64: exit_group ra2=0x1810202808083000 -> imm32.dll+0x1810202474953000"
+ },
+ {
+  "t": 1793399940802,
+  "s": "CPU64: exit_group ra3=0x2028103020202020 -> imm32.dll+0x2028102c8cad2020"
+ },
+ {
+  "t": 1793399940985,
+  "s": "[guest fd=2 pid=43 wine64] Xlib:  extension \"SHAPE\" missing on display \":0\"."
+ },
+ {
+  "t": 1793399940989,
+  "s": ""
+ },
+ {
+  "t": 1793399940989,
+  "s": "Xlib:  extension \"SHAPE\" missing on display \":0\"."
+ },
+ {
+  "t": 1793399943410,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399943481,
+  "s": "FsZip: 64 entry streams opened, 22 MB decompressed, 42 MB served from cache, 0 backward reopens"
+ },
+ {
+  "t": 1793399943526,
+  "s": "CPU64: exit syscall, status=0  pid=43 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\explorer.exe /desktop'"
+ },
+ {
+  "t": 1793399943940,
+  "s": "CPU64: exit_group syscall, status=0  pid=43 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\explorer.exe /desktop'"
+ },
+ {
+  "t": 1793399943943,
+  "s": "CPU64: exit_group trace tid=44 rip=0x7000d4409 rsp=0x7fffffffd7f8 ra=[0x70003e522,0x1010103010082008,0x1810202808083000,0x2028103020202020]"
+ },
+ {
+  "t": 1793399943945,
+  "s": "CPU64: exit_group rip=0x7000d4409 -> imm32.dll+0x36c9a4409"
+ },
+ {
+  "t": 1793399943946,
+  "s": "CPU64: exit_group ra0=0x70003e522 -> imm32.dll+0x36c90e522"
+ },
+ {
+  "t": 1793399943953,
+  "s": "CPU64: exit_group ra1=0x1010103010082008 -> imm32.dll+0x1010102c7c952008"
+ },
+ {
+  "t": 1793399943955,
+  "s": "CPU64: exit_group ra2=0x1810202808083000 -> imm32.dll+0x1810202474953000"
+ },
+ {
+  "t": 1793399943956,
+  "s": "CPU64: exit_group ra3=0x2028103020202020 -> imm32.dll+0x2028102c8cad2020"
+ },
+ {
+  "t": 1793399943959,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ },
+ {
+  "t": 1793399948893,
+  "s": "CPU64: exit syscall, status=0  pid=22 exe='/usr/lib/wine/wine64' cmd='/usr/lib/wine/wine64 C:\\windows\\system32\\services.exe'"
+ }
+]
