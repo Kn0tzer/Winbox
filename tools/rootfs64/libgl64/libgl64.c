@@ -73,6 +73,13 @@ enum {
     GL64_fn_glXWaitX,
     GL64_fn_glXSwapIntervalEXT,
     GL64_fn_glXCopyContext = 24,
+    GL64_fn_glXCreatePbuffer = 25,
+    GL64_fn_glXDestroyPbuffer,
+    GL64_fn_glXQueryDrawable,
+    GL64_fn_glXGetCurrentReadDrawable,
+    GL64_fn_glXQueryContext,
+    GL64_fn_glXSelectEvent,
+    GL64_fn_glXGetSelectedEvent,
 
     GL64_fn_glClearColor = 200,
     GL64_fn_glClear,
@@ -462,6 +469,8 @@ typedef void* GLXContext;
 typedef void* GLXFBConfig;
 typedef unsigned long  XID;
 typedef XID            GLXDrawable;
+typedef XID            GLXWindow;
+typedef XID            GLXPixmap;
 typedef struct _XDisplay Display;
 typedef struct { void* visual; XID visualid; int screen; int depth; int c_class;
                  unsigned long red_mask, green_mask, blue_mask;
@@ -470,6 +479,11 @@ typedef struct { void* visual; XID visualid; int screen; int depth; int c_class;
 // ===========================================================================
 // GLX entry points
 // ===========================================================================
+// The Display* of the most recent context call, for glXGetCurrentDisplay.
+// The bridge ignores the display argument entirely (single display, single
+// shared context), so the shim only needs to hand back the same opaque
+// pointer the caller itself uses.
+static Display* g_currentDisplay;
 API int glXQueryVersion(Display* dpy, int* major, int* minor) {
     GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)major; a.a[1]=(uint64_t)(uintptr_t)minor;
     return (int)gl64_trap(GL64_fn_glXQueryVersion, &a);
@@ -510,6 +524,7 @@ API XVisualInfo* glXChooseVisual(Display* dpy, int screen, int* attribList) {
     return vi;
 }
 API GLXContext glXCreateContext(Display* dpy, XVisualInfo* vis, GLXContext share, int direct) {
+    g_currentDisplay = dpy;
     GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)vis; a.a[1]=(uint64_t)(uintptr_t)share; a.a[2]=(uint64_t)direct;
     return (GLXContext)(uintptr_t)gl64_trap(GL64_fn_glXCreateContext, &a);
 }
@@ -556,10 +571,12 @@ API int glXGetConfig(Display* dpy, XVisualInfo* vis, int attribute, int* value) 
     return (int)gl64_trap(GL64_fn_glXGetConfig, &a);
 }
 API GLboolean glXMakeCurrent(Display* dpy, GLXDrawable drawable, GLXContext ctx) {
+    g_currentDisplay = dpy;
     GL64Args a = {{0}}; a.a[0]=(uint64_t)drawable; a.a[1]=(uint64_t)(uintptr_t)ctx;
     return (GLboolean)gl64_trap(GL64_fn_glXMakeCurrent, &a);
 }
 API GLboolean glXMakeContextCurrent(Display* dpy, GLXDrawable draw, GLXDrawable read, GLXContext ctx) {
+    g_currentDisplay = dpy;
     GL64Args a = {{0}}; a.a[0]=(uint64_t)draw; a.a[1]=(uint64_t)read; a.a[2]=(uint64_t)(uintptr_t)ctx;
     return (GLboolean)gl64_trap(GL64_fn_glXMakeContextCurrent, &a);
 }
@@ -574,6 +591,69 @@ API void glXDestroyContext(Display* dpy, GLXContext ctx) {
 API void glXCopyContext(Display* dpy, GLXContext src, GLXContext dst, unsigned long mask) {
     GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)src; a.a[1]=(uint64_t)(uintptr_t)dst; a.a[2]=(uint64_t)mask;
     (void)gl64_trap(GL64_fn_glXCopyContext, &a);
+}
+API GLXDrawable glXCreatePbuffer(Display* dpy, GLXFBConfig config, unsigned int width, unsigned int height, const int* attribList) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)config; a.a[1]=(uint64_t)width; a.a[2]=(uint64_t)height; a.a[3]=(uint64_t)(uintptr_t)attribList;
+    return (GLXDrawable)gl64_trap(GL64_fn_glXCreatePbuffer, &a);
+}
+API void glXDestroyPbuffer(Display* dpy, GLXDrawable drawable) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)drawable;
+    (void)gl64_trap(GL64_fn_glXDestroyPbuffer, &a);
+}
+API void glXQueryDrawable(Display* dpy, GLXDrawable drawable, int attribute, unsigned int* value) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)drawable; a.a[1]=(uint64_t)attribute; a.a[2]=(uint64_t)(uintptr_t)value;
+    (void)gl64_trap(GL64_fn_glXQueryDrawable, &a);
+}
+// Window/pixmap drawables: this bridge's drawable namespace IS the XID space
+// (glXMakeCurrent receives raw window ids and resolves wrappers host-side),
+// so the GLX wrapper handle for a window or pixmap is the XID itself, and
+// destroying the wrapper is a no-op (the X object's lifetime is not GLX's).
+API GLXWindow glXCreateWindow(Display* dpy, GLXFBConfig config, XID window, const int* attribList) {
+    (void)dpy; (void)config; (void)attribList;
+    return (GLXWindow)window;
+}
+API void glXDestroyWindow(Display* dpy, GLXWindow window) { (void)dpy; (void)window; }
+API GLXPixmap glXCreatePixmap(Display* dpy, GLXFBConfig config, XID pixmap, const int* attribList) {
+    (void)dpy; (void)config; (void)attribList;
+    return (GLXPixmap)pixmap;
+}
+API void glXDestroyPixmap(Display* dpy, GLXPixmap pixmap) { (void)dpy; (void)pixmap; }
+API GLXPixmap glXCreateGLXPixmap(Display* dpy, XVisualInfo* vis, XID pixmap) {
+    (void)dpy; (void)vis;
+    return (GLXPixmap)pixmap;
+}
+API void glXDestroyGLXPixmap(Display* dpy, GLXPixmap pixmap) { (void)dpy; (void)pixmap; }
+API GLXDrawable glXGetCurrentReadDrawable(void) {
+    return (GLXDrawable)gl64_trap(GL64_fn_glXGetCurrentReadDrawable, 0);
+}
+API int glXQueryContext(Display* dpy, GLXContext ctx, int attribute, int* value) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)ctx; a.a[1]=(uint64_t)attribute; a.a[2]=(uint64_t)(uintptr_t)value;
+    return (int)gl64_trap(GL64_fn_glXQueryContext, &a);
+}
+API void glXSelectEvent(Display* dpy, GLXDrawable drawable, unsigned long mask) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)drawable; a.a[1]=(uint64_t)mask;
+    (void)gl64_trap(GL64_fn_glXSelectEvent, &a);
+}
+API void glXGetSelectedEvent(Display* dpy, GLXDrawable drawable, unsigned long* mask) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)drawable;
+    uint64_t m = gl64_trap(GL64_fn_glXGetSelectedEvent, &a);
+    if (mask) *mask = (unsigned long)m;
+}
+API void glXUseXFont(XID font, int first, int count, int listbase) {
+    // No X-font display-list machinery on the bridge; a no-op matches the
+    // local-stub precedent in this file (glLockArraysEXT).
+    (void)font; (void)first; (void)count; (void)listbase;
+}
+API Display* glXGetCurrentDisplay(void) {
+    return g_currentDisplay;
+}
+API void glXBindTexImageEXT(Display* dpy, GLXDrawable drawable, int buffer, const int* attribList) {
+    // Not advertised in the extension string; present so a direct
+    // glXGetProcAddressARB caller gets a callable no-op instead of NULL.
+    (void)dpy; (void)drawable; (void)buffer; (void)attribList;
+}
+API void glXReleaseTexImageEXT(Display* dpy, GLXDrawable drawable, int buffer) {
+    (void)dpy; (void)drawable; (void)buffer;
 }
 API GLboolean glXIsDirect(Display* dpy, GLXContext ctx) {
     return (GLboolean)gl64_trap(GL64_fn_glXIsDirect, 0);
@@ -1361,6 +1441,12 @@ static const struct procEntry g_procs[] = {
     E(glXGetVisualFromFBConfig), E(glXGetConfig), E(glXMakeCurrent),
     E(glXMakeContextCurrent), E(glXSwapBuffers), E(glXDestroyContext),
     E(glXCopyContext),
+    E(glXCreatePbuffer), E(glXDestroyPbuffer), E(glXQueryDrawable),
+    E(glXCreateWindow), E(glXDestroyWindow), E(glXCreatePixmap),
+    E(glXDestroyPixmap), E(glXCreateGLXPixmap), E(glXDestroyGLXPixmap),
+    E(glXGetCurrentReadDrawable), E(glXQueryContext), E(glXSelectEvent),
+    E(glXGetSelectedEvent), E(glXUseXFont), E(glXGetCurrentDisplay),
+    E(glXBindTexImageEXT), E(glXReleaseTexImageEXT),
     E(glXIsDirect), E(glXGetCurrentContext), E(glXGetCurrentDrawable),
     E(glXWaitGL), E(glXWaitX), E(glXSwapIntervalEXT), E(glXSwapIntervalMESA),
     E(glXSwapIntervalSGI),

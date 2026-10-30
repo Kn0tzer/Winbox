@@ -86,6 +86,13 @@ enum {
     GL64_fn_glXWaitX,                   // () -> void
     GL64_fn_glXSwapIntervalEXT,         // (drawable, interval) -> void
     GL64_fn_glXCopyContext = 24,        // (src, dst, mask) -> void
+    GL64_fn_glXCreatePbuffer = 25,      // (config, w, h, attribs*) -> GLXDrawable (bridge-issued offscreen id)
+    GL64_fn_glXDestroyPbuffer,          // (drawable) -> void
+    GL64_fn_glXQueryDrawable,           // (drawable, attribute, out value*) -> void
+    GL64_fn_glXGetCurrentReadDrawable,  // () -> GLXDrawable
+    GL64_fn_glXQueryContext,            // (ctx, attribute, out value*) -> int (Success)
+    GL64_fn_glXSelectEvent,             // (drawable, mask) -> void
+    GL64_fn_glXGetSelectedEvent,        // (drawable) -> mask (as return value; shim writes it)
 
     // --- core GL: state ------------------------------------------------
     GL64_fn_glClearColor = 200,         // (r,g,b,a : float)
