@@ -1249,12 +1249,14 @@
             print: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 observeSessionOutput(text);
+                observeSessionHealth(text);
                 console.log(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
             },
             printErr: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
+                observeSessionHealth(text);
                 console.error(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
@@ -1403,6 +1405,54 @@
     var sessionDesktopReady = !SESSION;
     function observeSessionOutput(text) {
         if (/deskpin: READY hwnd=0x[0-9a-f]+/i.test(text)) sessionDesktopReady = true;
+    }
+
+    // --- session boot self-healing -----------------------------------------
+    // Measured on the suite page path (the boot a user's browser takes;
+    // boot-rate harness, 2026-10-29): a session boot either comes up fully
+    // or dies during desktop initialization. The death is announced by the
+    // desktop pin's first window creation failing ("The explorer process
+    // failed to start"): 7 of 7 dead boots printed it, 0 of 5 successful
+    // boots did, and dead boots stalled at 2 of the 5 X11 connections a
+    // healthy boot makes. Once printed, the session never recovers from
+    // inside -- the pin's own retries never succeed, and freshly spawned
+    // pin/explorer processes fail the same way (three intervention boots,
+    // 300 s of observation each). A fresh boot is a fresh draw, so on that
+    // exact signal, before readiness, navigate to the same URL for a clean
+    // boot -- the reload this launcher already uses to switch apps when no
+    // live session exists. ?bwretry bounds the restarts so a systematically
+    // broken deployment cannot loop forever; after the bound the session is
+    // left exactly as it would have been without this watch.
+    var SESSION_BOOT_MAX_RESTARTS = 2;
+    var SESSION_DOOM_CONFIRM_MS = 20000;
+    var sessionDoomRestartScheduled = false;
+    function sessionBootAttempt() {
+        var n = parseInt(param("bwretry") || "0", 10);
+        return isFinite(n) && n > 0 ? n : 0;
+    }
+    function observeSessionHealth(text) {
+        if (!SESSION || sessionDoomRestartScheduled) return;
+        if (!/The explorer process failed to start/.test(text)) return;
+        if (sessionReady()) return;
+        sessionDoomRestartScheduled = true;
+        console.error("session: desktop initialization failed (boot attempt " +
+            (sessionBootAttempt() + 1) + "); scheduling a clean session restart");
+        setTimeout(restartSessionBoot, SESSION_DOOM_CONFIRM_MS);
+    }
+    function restartSessionBoot() {
+        if (!SESSION || sessionReady()) return;
+        if (sessionBootAttempt() >= SESSION_BOOT_MAX_RESTARTS) {
+            console.error("session: desktop initialization failed on the final boot attempt; not restarting again");
+            return;
+        }
+        try {
+            var url = new URL(window.location.href);
+            url.searchParams.set("bwretry", String(sessionBootAttempt() + 1));
+            console.log("session: restarting session boot (attempt " + (sessionBootAttempt() + 2) + ")");
+            window.location.replace(url.toString());
+        } catch (e) {
+            console.error("session: could not restart session boot: " + e);
+        }
     }
     function pidAlive(pid) {
         return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
