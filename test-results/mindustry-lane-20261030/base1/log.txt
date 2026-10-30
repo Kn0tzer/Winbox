@@ -1,0 +1,634 @@
+=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=47204 rip=0x19c660b jvm.dll+0x48560b
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=386 rip=0x700108ef3 (unmapped) @0x700108ef3
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=30593 rip=0x70005c51d (unmapped) @0x70005c51d
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=112785 rip=0x400066c1c (unmapped) @0x400066c1c
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=958 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=834 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=34245 rip=0x70005c631 (unmapped) @0x70005c631
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=110919 rip=0x400066c2c (unmapped) @0x400066c2c
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=114378 rip=0x700076b6b (unmapped) @0x700076b6b
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=36246 rip=0x400066c07 (unmapped) @0x400066c07
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+BW_THREAD_DUMP begin maxTid=56
+BW_THREAD_DUMP pid=10 tid=11 state=blocked syscall=read(#0) args=0x7,0x21f710,0x40,0x8,0x0,0x70016ea00 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=10 tid=11 fd=7 socket=0x4c66b28 peer=0x4c66dd8 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=10 tid=11 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=11 rip=0x17000dbe4 ntdll.dll+0xdbe4 rax=0x5e r10=0x0 rdx=0x80100000 r8=0x0 r9=0x0 rsi=0x11d7c0 rdi=0x11d7b0 rsp=0x11d748
+BW_THREAD_DUMP winstack pid=10 tid=11 rsp=0x21f4c0 winRsp=0x11d748 tib=[0x22000,0x120000)
+BW_THREAD_DUMP stack pid=10 tid=11 +0x0 ntdll.dll+0x2de87
+BW_THREAD_DUMP stack pid=10 tid=11 +0x170 ntdll.dll+0x2e30b
+BW_THREAD_DUMP stack pid=10 tid=11 +0x180 ntdll.dll+0x4fc39
+BW_THREAD_DUMP stack pid=10 tid=11 +0x200 ntdll.dll+0x2e98d
+BW_THREAD_DUMP stack pid=10 tid=11 +0x240 jvm.dll+0x47c9a8
+BW_THREAD_DUMP stack pid=10 tid=11 +0x340 ntdll.dll+0x33b85
+BW_THREAD_DUMP stack pid=10 tid=11 +0x380 ntdll.dll+0x4c1ba
+BW_THREAD_DUMP stack pid=10 tid=11 +0x3b0 ntdll.dll+0x23fea
+BW_THREAD_DUMP stack pid=10 tid=11 +0x420 ntdll.dll+0x2f7f4
+BW_THREAD_DUMP stack pid=10 tid=11 +0x4e0 ntdll.dll+0x34a8f
+BW_THREAD_DUMP stack pid=10 tid=11 +0x560 kernelbase.dll+0x21c32
+BW_THREAD_DUMP stack pid=10 tid=11 +0x590 ntdll.dll+0x4fa99
+BW_THREAD_DUMP stack pid=10 tid=11 +0x5d0 kernelbase.dll+0x2265b
+BW_THREAD_DUMP stack pid=10 tid=11 +0x620 kernelbase.dll+0x22777
+BW_THREAD_DUMP stack pid=10 tid=11 +0x630 jvm.dll+0x74c671
+BW_THREAD_DUMP stack pid=10 tid=11 +0x660 net.dll+0x7d53
+BW_THREAD_DUMP stack pid=10 tid=11 +0x710 net.dll+0x655d
+BW_THREAD_DUMP stack pid=10 tid=11 +0x780 net.dll+0x3797
+BW_THREAD_DUMP stack pid=10 tid=11 +0x7f0 jvm.dll+0x75199d
+BW_THREAD_DUMP stack pid=10 tid=11 +0xb80 jvm.dll+0x47c290
+BW_THREAD_DUMP stack pid=10 tid=11 +0xc50 jvm.dll+0x7a02af
+BW_THREAD_DUMP stack pid=10 tid=11 +0xc90 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=11 +0xcb0 jvm.dll+0x290c13
+BW_THREAD_DUMP stack pid=10 tid=11 +0xcc0 jvm.dll+0x47bdce
+BW_THREAD_DUMP stack pid=10 tid=11 +0xcd0 jvm.dll+0x45ca91
+BW_THREAD_DUMP stack pid=10 tid=11 +0xce0 jvm.dll+0x4615a7
+BW_THREAD_DUMP stack pid=10 tid=11 +0xd00 jvm.dll+0x45c49e
+BW_THREAD_DUMP stack pid=10 tid=11 +0xd90 ntdll.dll+0x64f23
+BW_THREAD_DUMP stack pid=10 tid=11 +0xdf0 jvm.dll+0x7a02af
+BW_THREAD_DUMP stack pid=10 tid=11 +0xe20 jvm.dll+0x9a2b58
+BW_THREAD_DUMP stack pid=10 tid=11 +0xe50 jvm.dll+0x4606f5
+BW_THREAD_DUMP stack pid=10 tid=11 +0xee0 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=11 +0xf40 jvm.dll+0x249331
+BW_THREAD_DUMP stack pid=10 tid=11 +0xf70 jvm.dll+0x45eedf
+BW_THREAD_DUMP stack pid=10 tid=11 +0xfa0 jvm.dll+0x39b808
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1040 jvm.dll+0x45ff08
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1070 jvm.dll+0x6967af
+BW_THREAD_DUMP stack pid=10 tid=11 +0x10f0 jvm.dll+0x2e4ca7
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1180 jvm.dll+0x2e4e13
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1190 jvm.dll+0x43a9b2
+BW_THREAD_DUMP stack pid=10 tid=11 +0x11c0 jvm.dll+0x69400d
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1200 jvm.dll+0x696869
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1280 jvm.dll+0x475efd
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1360 jvm.dll+0x475a54
+BW_THREAD_DUMP stack pid=10 tid=11 +0x13e0 jvm.dll+0x75199d
+BW_THREAD_DUMP stack pid=10 tid=11 +0x13f0 jvm.dll+0x7518d5
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1420 jvm.dll+0x74a9c5
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1470 jvm.dll+0x75199d
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1dd0 jvm.dll+0x47c290
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1ee0 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1f10 jvm.dll+0x47bdce
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1f50 jvm.dll+0x4fb245
+BW_THREAD_DUMP stack pid=10 tid=11 +0x1fe0 jvm.dll+0x4f9f81
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2060 jvm.dll+0x4efd86
+BW_THREAD_DUMP stack pid=10 tid=11 +0x20b0 Mindustry.exe+0xd216
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2120 Mindustry.exe+0xc550
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2150 Mindustry.exe+0xbb9c
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2190 ntdll.dll+0x28cc0
+BW_THREAD_DUMP stack pid=10 tid=11 +0x21b0 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2270 Mindustry.exe+0x4048
+BW_THREAD_DUMP stack pid=10 tid=11 +0x22d0 Mindustry.exe+0x50cf4
+BW_THREAD_DUMP stack pid=10 tid=11 +0x22f0 Mindustry.exe+0xbf01
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2300 Mindustry.exe+0x3460
+BW_THREAD_DUMP stack pid=10 tid=11 +0x2340 Mindustry.exe+0x11785
+BW_THREAD_DUMP pid=14 tid=15 state=running syscall=-(#0) args=0x81,0x400618bb0,0x1000,0x7fffffffd131,0x70019b4e0,0x78 rip=0x7000f8350 wait=-
+BW_THREAD_DUMP pid=22 tid=23 state=blocked syscall=read(#0) args=0x7,0x31f740,0x10,0x8,0x0,0x31f9a0 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=22 tid=23 fd=7 socket=0x14397850 peer=0x14397b00 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=22 tid=23 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=22 tid=23 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x21f9f0 r8=0x0 r9=0x0 rsi=0x21fc80 rdi=0x8 rsp=0x21f9a8
+BW_THREAD_DUMP syscallmem pid=22 tid=23 [rdx]=0000005c 00000000 010a0000 00000000 010a2df0 00000000 7002ae87 00000001
+BW_THREAD_DUMP winstack pid=22 tid=23 rsp=0x31f710 winRsp=0x21f9a8 tib=[0x22000,0x220000)
+BW_THREAD_DUMP stack pid=22 tid=23 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=22 tid=23 +0x20 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=22 tid=23 +0x60 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=22 tid=23 +0x70 setupapi.dll+0x350a9
+BW_THREAD_DUMP stack pid=22 tid=23 +0x80 ntdll.dll+0x28cc0
+BW_THREAD_DUMP stack pid=22 tid=23 +0xb0 kernelbase.dll+0x1d95c
+BW_THREAD_DUMP stack pid=22 tid=23 +0x100 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=22 tid=23 +0x120 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=22 tid=23 +0x140 ntdll.dll+0x28cc0
+BW_THREAD_DUMP stack pid=22 tid=23 +0x150 services.exe+0x3579
+BW_THREAD_DUMP stack pid=22 tid=23 +0x160 ntdll.dll+0x28cc0
+BW_THREAD_DUMP stack pid=22 tid=23 +0x1c0 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=22 tid=23 +0x1e0 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=22 tid=23 +0x1f0 services.exe+0x819d
+BW_THREAD_DUMP stack pid=22 tid=23 +0x290 kernelbase.dll+0x5db0e
+BW_THREAD_DUMP stack pid=22 tid=23 +0x2a0 kernelbase.dll+0x5e1f1
+BW_THREAD_DUMP stack pid=22 tid=23 +0x2d0 services.exe+0x18b26
+BW_THREAD_DUMP stack pid=22 tid=23 +0x400 ntdll.dll+0x5d777
+BW_THREAD_DUMP stack pid=22 tid=23 +0x450 services.exe+0x18131
+BW_THREAD_DUMP stack pid=22 tid=23 +0x470 ntdll.dll+0x5d9f6
+BW_THREAD_DUMP stack pid=22 tid=23 +0x490 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=22 tid=23 +0x568 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=22 tid=24 state=blocked syscall=read(#0) args=0xc,0x179e5c0,0x10,0x8,0x0,0x179e820 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=22 tid=24 fd=12 socket=0x16aafe30 peer=0x16a7b458 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=22 tid=24 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=22 tid=24 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x169fb10 r8=0x0 r9=0x0 rsi=0x10a2130 rdi=0x10 rsp=0x169fac8
+BW_THREAD_DUMP syscallmem pid=22 tid=24 [rdx]=00000040 00000000 00000058 00000000 00000000 00000000 00000000 00000000
+BW_THREAD_DUMP winstack pid=22 tid=24 rsp=0x179e590 winRsp=0x169fac8 tib=[0x14a2000,0x16a0000)
+BW_THREAD_DUMP stack pid=22 tid=24 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=22 tid=24 +0xe0 kernelbase.dll+0x611c9
+BW_THREAD_DUMP stack pid=22 tid=24 +0x120 ntdll.dll+0x2b75b
+BW_THREAD_DUMP stack pid=22 tid=24 +0x220 ucrtbase.dll+0x330b3
+BW_THREAD_DUMP stack pid=22 tid=24 +0x240 rpcrt4.dll+0x360fe
+BW_THREAD_DUMP stack pid=22 tid=24 +0x290 rpcrt4.dll+0x3f688
+BW_THREAD_DUMP stack pid=22 tid=24 +0x2f0 rpcrt4.dll+0x34496
+BW_THREAD_DUMP stack pid=22 tid=24 +0x370 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=22 tid=24 +0x448 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=44 state=blocked syscall=futex(#202) args=0x7896600e8,0x80,0x0,0x12a3e960,0x0,0x0 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=44 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=44 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x1293fc28 r8=0x0 r9=0x0 rsi=0x176ffaa0 rdi=0x31 rsp=0x1293fb08
+BW_THREAD_DUMP syscallmem pid=10 tid=44 [rdx]=fd050f80 ffffffff 01103e00 00000000 01ce733a 00000000 00000009 00000000
+BW_THREAD_DUMP winstack pid=10 tid=44 rsp=0x12a3e938 winRsp=0x1293fb08 tib=[0x12842000,0x12940000)
+BW_THREAD_DUMP stack pid=10 tid=44 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=44 +0x30 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=10 tid=44 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=44 +0xc0 ntdll.dll+0x255e5
+BW_THREAD_DUMP stack pid=10 tid=44 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=44 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=44 +0x150 jvm.dll+0x96b46e
+BW_THREAD_DUMP stack pid=10 tid=44 +0x160 jvm.dll+0x76f105
+BW_THREAD_DUMP stack pid=10 tid=44 +0x190 jvm.dll+0x78114b
+BW_THREAD_DUMP stack pid=10 tid=44 +0x1c0 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=44 +0x1e0 kernelbase.dll+0x3a020
+BW_THREAD_DUMP stack pid=10 tid=44 +0x220 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=44 +0x270 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=44 +0x2a0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=44 +0x330 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=44 +0x408 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=45 state=blocked syscall=futex(#202) args=0x7896600f0,0x80,0x0,0x0,0x0,0x0 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=45 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=45 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x0 r8=0x0 r9=0x0 rsi=0x11d820 rdi=0x69 rsp=0x12b3faa8
+BW_THREAD_DUMP winstack pid=10 tid=45 rsp=0x12c3e938 winRsp=0x12b3faa8 tib=[0x12a42000,0x12b40000)
+BW_THREAD_DUMP stack pid=10 tid=45 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=45 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=45 +0xb0 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=45 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=45 +0x100 ntdll.dll+0x64f23
+BW_THREAD_DUMP stack pid=10 tid=45 +0x120 jvm.dll+0x812c1a
+BW_THREAD_DUMP stack pid=10 tid=45 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=45 +0x160 jvm.dll+0x76f105
+BW_THREAD_DUMP stack pid=10 tid=45 +0x190 jvm.dll+0x9fff2d
+BW_THREAD_DUMP stack pid=10 tid=45 +0x210 jvm.dll+0xa00203
+BW_THREAD_DUMP stack pid=10 tid=45 +0x240 kernelbase.dll+0x3a020
+BW_THREAD_DUMP stack pid=10 tid=45 +0x270 jvm.dll+0x79f8ca
+BW_THREAD_DUMP stack pid=10 tid=45 +0x280 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=45 +0x2d0 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=45 +0x300 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=45 +0x390 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=45 +0x468 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=46 state=blocked syscall=futex(#202) args=0x7896600f8,0x80,0x0,0x0,0x0,0x0 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=46 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=46 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x0 r8=0x0 r9=0x0 rsi=0x170088238 rdi=0x51 rsp=0x12d3f4e8
+BW_THREAD_DUMP winstack pid=10 tid=46 rsp=0x12e3e938 winRsp=0x12d3f4e8 tib=[0x12c42000,0x12d40000)
+BW_THREAD_DUMP stack pid=10 tid=46 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=46 +0x40 jvm.dll+0x74c671
+BW_THREAD_DUMP stack pid=10 tid=46 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=46 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=46 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=46 +0x140 jvm.dll+0x7518d5
+BW_THREAD_DUMP stack pid=10 tid=46 +0x160 jvm.dll+0x76f069
+BW_THREAD_DUMP stack pid=10 tid=46 +0x180 jvm.dll+0x475605
+BW_THREAD_DUMP stack pid=10 tid=46 +0x1c0 jvm.dll+0x53077d
+BW_THREAD_DUMP stack pid=10 tid=46 +0x440 jvm.dll+0x47c290
+BW_THREAD_DUMP stack pid=10 tid=46 +0x550 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=46 +0x580 jvm.dll+0x47cd3c
+BW_THREAD_DUMP stack pid=10 tid=46 +0x650 jvm.dll+0x47cfc7
+BW_THREAD_DUMP stack pid=10 tid=46 +0x6a0 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=46 +0x720 jvm.dll+0x51b463
+BW_THREAD_DUMP stack pid=10 tid=46 +0x7b0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=46 +0x7e0 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=46 +0x840 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=46 +0x890 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=46 +0x8c0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=46 +0x950 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=46 +0xa28 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=47 state=blocked syscall=read(#0) args=0x1d,0x171fe5c0,0x10,0x8,0x0,0x171fe820 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=10 tid=47 fd=29 socket=0x456aad70 peer=0x456ab3c8 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=10 tid=47 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=47 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x170ff080 r8=0x0 r9=0x0 rsi=0x170ff310 rdi=0x8 rsp=0x170ff038
+BW_THREAD_DUMP syscallmem pid=10 tid=47 [rdx]=0000017c 00000000 00000278 00000000 00000001 00000000 00000278 00000000
+BW_THREAD_DUMP winstack pid=10 tid=47 rsp=0x171fe590 winRsp=0x170ff038 tib=[0x17002000,0x17100000)
+BW_THREAD_DUMP stack pid=10 tid=47 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=10 tid=47 +0x10 jvm.dll+0x471ed3
+BW_THREAD_DUMP stack pid=10 tid=47 +0x70 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=10 tid=47 +0xf0 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=10 tid=47 +0x110 jvm.dll+0x471335
+BW_THREAD_DUMP stack pid=10 tid=47 +0x1e0 ucrtbase.dll+0x3301a
+BW_THREAD_DUMP stack pid=10 tid=47 +0x200 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=47 +0x220 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=47 +0x230 jvm.dll+0xf60f6
+BW_THREAD_DUMP stack pid=10 tid=47 +0x290 kernelbase.dll+0x5db0e
+BW_THREAD_DUMP stack pid=10 tid=47 +0x2b0 jvm.dll+0x690b17
+BW_THREAD_DUMP stack pid=10 tid=47 +0x2c0 jvm.dll+0x7871e9
+BW_THREAD_DUMP stack pid=10 tid=47 +0x2d0 jvm.dll+0x7a41d5
+BW_THREAD_DUMP stack pid=10 tid=47 +0x300 jvm.dll+0x78ac2d
+BW_THREAD_DUMP stack pid=10 tid=47 +0x3e0 jvm.dll+0x6930d0
+BW_THREAD_DUMP stack pid=10 tid=47 +0x460 jvm.dll+0x692cce
+BW_THREAD_DUMP stack pid=10 tid=47 +0x4a0 jvm.dll+0x95ff51
+BW_THREAD_DUMP stack pid=10 tid=47 +0x4e0 jvm.dll+0x52d290
+BW_THREAD_DUMP stack pid=10 tid=47 +0x8f0 jvm.dll+0x47c290
+BW_THREAD_DUMP stack pid=10 tid=47 +0xa00 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=47 +0xa30 jvm.dll+0x47cd3c
+BW_THREAD_DUMP stack pid=10 tid=47 +0xb00 jvm.dll+0x47cfc7
+BW_THREAD_DUMP stack pid=10 tid=47 +0xb50 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=47 +0xbd0 jvm.dll+0x51b463
+BW_THREAD_DUMP stack pid=10 tid=47 +0xc60 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=47 +0xc90 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=47 +0xcf0 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=47 +0xd40 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=47 +0xd70 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=47 +0xe00 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=47 +0xed8 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=48 state=blocked syscall=read(#0) args=0x21,0x173fe5c0,0x10,0x8,0x0,0x173fe820 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=10 tid=48 fd=33 socket=0x458d1930 peer=0x458d1fe8 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=10 tid=48 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=48 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x172ff7c0 r8=0x0 r9=0x0 rsi=0x172ffa50 rdi=0x8 rsp=0x172ff778
+BW_THREAD_DUMP syscallmem pid=10 tid=48 [rdx]=000000a4 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+BW_THREAD_DUMP winstack pid=10 tid=48 rsp=0x173fe590 winRsp=0x172ff778 tib=[0x17202000,0x17300000)
+BW_THREAD_DUMP stack pid=10 tid=48 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=10 tid=48 +0x10 ntdll.dll+0x317ce
+BW_THREAD_DUMP stack pid=10 tid=48 +0xc0 ntdll.dll+0x5c727
+BW_THREAD_DUMP stack pid=10 tid=48 +0xd0 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=10 tid=48 +0x178 ntdll.dll+0x316bd
+BW_THREAD_DUMP stack pid=10 tid=48 +0x210 ntdll.dll+0x5d11b
+BW_THREAD_DUMP stack pid=10 tid=48 +0x230 ntdll.dll+0x5d1d0
+BW_THREAD_DUMP stack pid=10 tid=48 +0x290 kernelbase.dll+0x5db0e
+BW_THREAD_DUMP stack pid=10 tid=48 +0x2a0 ntdll.dll+0x5d2e4
+BW_THREAD_DUMP stack pid=10 tid=48 +0x2b0 kernelbase.dll+0x62115
+BW_THREAD_DUMP stack pid=10 tid=48 +0x2d0 jvm.dll+0x7a64af
+BW_THREAD_DUMP stack pid=10 tid=48 +0x2f0 jvm.dll+0x7a61c5
+BW_THREAD_DUMP stack pid=10 tid=48 +0x320 jvm.dll+0x79ad97
+BW_THREAD_DUMP stack pid=10 tid=48 +0x350 ntdll.dll+0x28cc0
+BW_THREAD_DUMP stack pid=10 tid=48 +0x3d0 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=10 tid=48 +0x410 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=48 +0x440 jvm.dll+0xf60f6
+BW_THREAD_DUMP stack pid=10 tid=48 +0x490 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=48 +0x4c0 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=48 +0x4e0 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=48 +0x520 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=48 +0x550 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=48 +0x5b0 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=48 +0x600 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=48 +0x630 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=48 +0x6c0 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=48 +0x798 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=49 state=blocked syscall=read(#0) args=0x25,0x175fe5c0,0x10,0x8,0x0,0x175fe820 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=10 tid=49 fd=37 socket=0x45a3b658 peer=0x45a3bd10 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=10 tid=49 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=49 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x174ff8a0 r8=0x0 r9=0x0 rsi=0x174ffb30 rdi=0x8 rsp=0x174ff858
+BW_THREAD_DUMP syscallmem pid=10 tid=49 [rdx]=000001e4 00000000 01181e10 00000000 174ff969 00000000 01ce8292 00000000
+BW_THREAD_DUMP winstack pid=10 tid=49 rsp=0x175fe590 winRsp=0x174ff858 tib=[0x17402000,0x17500000)
+BW_THREAD_DUMP stack pid=10 tid=49 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=10 tid=49 +0x60 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=49 +0x70 kernel32.dll+0x23765
+BW_THREAD_DUMP stack pid=10 tid=49 +0x90 jvm.dll+0x47c9a8
+BW_THREAD_DUMP stack pid=10 tid=49 +0x160 jvm.dll+0x47cc28
+BW_THREAD_DUMP stack pid=10 tid=49 +0x1d0 jvm.dll+0x482696
+BW_THREAD_DUMP stack pid=10 tid=49 +0x230 jvm.dll+0x197e7f
+BW_THREAD_DUMP stack pid=10 tid=49 +0x290 kernelbase.dll+0x5db0e
+BW_THREAD_DUMP stack pid=10 tid=49 +0x2d0 jvm.dll+0x19934c
+BW_THREAD_DUMP stack pid=10 tid=49 +0x2e0 jvm.dll+0x1988d7
+BW_THREAD_DUMP stack pid=10 tid=49 +0x310 jvm.dll+0x199292
+BW_THREAD_DUMP stack pid=10 tid=49 +0x340 jvm.dll+0x198976
+BW_THREAD_DUMP stack pid=10 tid=49 +0x3b0 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=49 +0x3e0 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=49 +0x400 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=49 +0x440 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=49 +0x470 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=49 +0x4d0 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=49 +0x520 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=49 +0x550 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=49 +0x5e0 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=49 +0x6b8 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=50 state=blocked syscall=futex(#202) args=0x789660118,0x80,0x0,0x177fe960,0x0,0x100000000 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=50 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=50 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x176ffb78 r8=0x0 r9=0x0 rsi=0x1293fb50 rdi=0x31 rsp=0x176ffa58
+BW_THREAD_DUMP syscallmem pid=10 tid=50 [rdx]=ff676980 ffffffff 01182aa0 00000000 01ce733a 00000000 00000000 00000000
+BW_THREAD_DUMP winstack pid=10 tid=50 rsp=0x177fe938 winRsp=0x176ffa58 tib=[0x17602000,0x17700000)
+BW_THREAD_DUMP stack pid=10 tid=50 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=50 +0x10 jvm.dll+0x7966a7
+BW_THREAD_DUMP stack pid=10 tid=50 +0x30 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=10 tid=50 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=50 +0xc0 ntdll.dll+0x255e5
+BW_THREAD_DUMP stack pid=10 tid=50 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=50 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=50 +0x150 jvm.dll+0x48f408
+BW_THREAD_DUMP stack pid=10 tid=50 +0x160 jvm.dll+0x76f105
+BW_THREAD_DUMP stack pid=10 tid=50 +0x190 jvm.dll+0x81a92f
+BW_THREAD_DUMP stack pid=10 tid=50 +0x1e0 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=50 +0x200 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=50 +0x240 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=50 +0x270 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=50 +0x2d0 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=50 +0x320 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=50 +0x350 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=50 +0x3e0 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=50 +0x4b8 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=51 state=blocked syscall=futex(#202) args=0x789660120,0x80,0x0,0x179fe960,0x0,0x100000000 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=51 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=51 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x178ffb18 r8=0x0 r9=0x0 rsi=0x170087e78 rdi=0x29 rsp=0x178ff9f8
+BW_THREAD_DUMP syscallmem pid=10 tid=51 [rdx]=ffd9da60 ffffffff 01184160 00000000 01ce733a 00000000 00000000 00000000
+BW_THREAD_DUMP winstack pid=10 tid=51 rsp=0x179fe938 winRsp=0x178ff9f8 tib=[0x17802000,0x17900000)
+BW_THREAD_DUMP stack pid=10 tid=51 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=51 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=51 +0xc0 ntdll.dll+0x255e5
+BW_THREAD_DUMP stack pid=10 tid=51 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=51 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=51 +0x150 jvm.dll+0x95ef4f
+BW_THREAD_DUMP stack pid=10 tid=51 +0x160 jvm.dll+0x76f105
+BW_THREAD_DUMP stack pid=10 tid=51 +0x190 jvm.dll+0x76594b
+BW_THREAD_DUMP stack pid=10 tid=51 +0x1c0 jvm.dll+0xf60f6
+BW_THREAD_DUMP stack pid=10 tid=51 +0x210 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=51 +0x240 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=51 +0x260 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=51 +0x2a0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=51 +0x2d0 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=51 +0x330 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=51 +0x380 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=51 +0x3b0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=51 +0x440 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=51 +0x518 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=52 state=blocked syscall=futex(#202) args=0x789660128,0x80,0x0,0x17bfe960,0x0,0x0 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=52 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=52 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x17aff9f8 r8=0x0 r9=0x0 rsi=0x17cff920 rdi=0xd1 rsp=0x17aff8d8
+BW_THREAD_DUMP syscallmem pid=10 tid=52 [rdx]=fd050f80 ffffffff 00000002 00000000 01ce733a 00000000 13124290 00000000
+BW_THREAD_DUMP winstack pid=10 tid=52 rsp=0x17bfe938 winRsp=0x17aff8d8 tib=[0x17a02000,0x17b00000)
+BW_THREAD_DUMP stack pid=10 tid=52 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=52 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=52 +0xc0 ntdll.dll+0x255e5
+BW_THREAD_DUMP stack pid=10 tid=52 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=52 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=52 +0x160 jvm.dll+0x76f069
+BW_THREAD_DUMP stack pid=10 tid=52 +0x1c0 jvm.dll+0x2cdcac
+BW_THREAD_DUMP stack pid=10 tid=52 +0x1e0 jvm.dll+0x2d2c67
+BW_THREAD_DUMP stack pid=10 tid=52 +0x240 jvm.dll+0x2cd518
+BW_THREAD_DUMP stack pid=10 tid=52 +0x270 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=10 tid=52 +0x330 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=52 +0x360 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=52 +0x380 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=52 +0x3c0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=52 +0x3f0 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=52 +0x450 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=52 +0x4a0 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=52 +0x4d0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=52 +0x560 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=52 +0x638 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=53 state=blocked syscall=futex(#202) args=0x789660130,0x80,0x0,0x17dfe960,0x0,0x0 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=53 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=53 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x17cff9f8 r8=0x0 r9=0x0 rsi=0x17aff920 rdi=0xd1 rsp=0x17cff8d8
+BW_THREAD_DUMP syscallmem pid=10 tid=53 [rdx]=fd050f80 ffffffff 00000002 00000000 01ce733a 00000000 13276dd0 00000000
+BW_THREAD_DUMP winstack pid=10 tid=53 rsp=0x17dfe938 winRsp=0x17cff8d8 tib=[0x17c02000,0x17d00000)
+BW_THREAD_DUMP stack pid=10 tid=53 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=53 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=53 +0xc0 ntdll.dll+0x255e5
+BW_THREAD_DUMP stack pid=10 tid=53 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=53 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=53 +0x160 jvm.dll+0x76f069
+BW_THREAD_DUMP stack pid=10 tid=53 +0x1c0 jvm.dll+0x2cdcac
+BW_THREAD_DUMP stack pid=10 tid=53 +0x240 jvm.dll+0x2cd518
+BW_THREAD_DUMP stack pid=10 tid=53 +0x270 ntdll.dll+0x2ae87
+BW_THREAD_DUMP stack pid=10 tid=53 +0x330 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=53 +0x360 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=53 +0x380 jvm.dll+0x8ca257
+BW_THREAD_DUMP stack pid=10 tid=53 +0x3c0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=53 +0x3f0 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=53 +0x450 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=53 +0x4a0 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=53 +0x4d0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=53 +0x560 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=53 +0x638 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=54 state=blocked syscall=futex(#202) args=0x789660138,0x80,0x0,0x0,0x0,0x100000000 rip=0x700101827 wait=futex
+BW_THREAD_DUMP rip pid=10 tid=54 unlisted rip=0x700101829 mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=54 rip=0x17000eb84 ntdll.dll+0xeb84 rax=0xdb r10=0x0 rdx=0x0 r8=0x0 r9=0x0 rsi=0x170087ff8 rdi=0x39 rsp=0x17effac8
+BW_THREAD_DUMP winstack pid=10 tid=54 rsp=0x17ffe938 winRsp=0x17effac8 tib=[0x17e02000,0x17f00000)
+BW_THREAD_DUMP stack pid=10 tid=54 +0x0 ntdll.dll+0x5c4d8
+BW_THREAD_DUMP stack pid=10 tid=54 +0xa0 ntdll.dll+0x5d324
+BW_THREAD_DUMP stack pid=10 tid=54 +0xc0 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=54 +0xf0 kernelbase.dll+0x5f11c
+BW_THREAD_DUMP stack pid=10 tid=54 +0x130 jvm.dll+0x7a733a
+BW_THREAD_DUMP stack pid=10 tid=54 +0x140 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=54 +0x160 jvm.dll+0x76f105
+BW_THREAD_DUMP stack pid=10 tid=54 +0x170 jvm.dll+0x7a62cf
+BW_THREAD_DUMP stack pid=10 tid=54 +0x190 jvm.dll+0x78163c
+BW_THREAD_DUMP stack pid=10 tid=54 +0x1d0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=54 +0x200 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=54 +0x260 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=54 +0x2b0 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=54 +0x2e0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=54 +0x370 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=54 +0x448 ntdll.dll+0x5dc67
+BW_THREAD_DUMP pid=10 tid=55 state=blocked syscall=read(#0) args=0x3d,0x181fe5c0,0x10,0x8,0x0,0x181fe820 rip=0x7000f82ea wait=KUnixSocketObject::lockCond
+BW_THREAD_DUMP socket_read pid=10 tid=55 fd=61 socket=0x46b86040 peer=0x46c75688 ownPending=0 peerPending=0 peerOwner=0/0 ownQueue=0/0:w0/0:r0/0:m0/0 peerQueue=0/0:w0/0:r0/0:m0/0 inClosed=0 outClosed=0
+BW_THREAD_DUMP rip pid=10 tid=55 unlisted rip=0x7000f82ec mapped=1 flags=0x25 nearestHdr=ELF@0x700000000
+BW_THREAD_DUMP syscallframe pid=10 tid=55 rip=0x17000ebe4 ntdll.dll+0xebe4 rax=0xde r10=0x0 rdx=0x180fef40 r8=0x0 r9=0x0 rsi=0x180ff1d0 rdi=0x8 rsp=0x180feef8
+BW_THREAD_DUMP syscallmem pid=10 tid=55 [rdx]=00000224 00000000 13000c70 00000000 012a3f70 00000000 01025ba0 00000000
+BW_THREAD_DUMP winstack pid=10 tid=55 rsp=0x181fe590 winRsp=0x180feef8 tib=[0x18002000,0x18100000)
+BW_THREAD_DUMP stack pid=10 tid=55 +0x0 kernelbase.dll+0x5da36
+BW_THREAD_DUMP stack pid=10 tid=55 +0x10 jvm.dll+0x698230
+BW_THREAD_DUMP stack pid=10 tid=55 +0xc0 ntdll.dll+0x5cee1
+BW_THREAD_DUMP stack pid=10 tid=55 +0xf0 ntdll.dll+0x29d88
+BW_THREAD_DUMP stack pid=10 tid=55 +0x120 jvm.dll+0x7f5c3d
+BW_THREAD_DUMP stack pid=10 tid=55 +0x1e0 ucrtbase.dll+0x3301a
+BW_THREAD_DUMP stack pid=10 tid=55 +0x220 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=55 +0x290 kernelbase.dll+0x5db0e
+BW_THREAD_DUMP stack pid=10 tid=55 +0x2a0 ucrtbase.dll+0x32fce
+BW_THREAD_DUMP stack pid=10 tid=55 +0x2b0 jvm.dll+0x48a415
+BW_THREAD_DUMP stack pid=10 tid=55 +0x2c0 jvm.dll+0x48a415
+BW_THREAD_DUMP stack pid=10 tid=55 +0x2d0 jvm.dll+0x7a403b
+BW_THREAD_DUMP stack pid=10 tid=55 +0x2f0 jvm.dll+0x48d825
+BW_THREAD_DUMP stack pid=10 tid=55 +0x320 jvm.dll+0x78ac79
+BW_THREAD_DUMP stack pid=10 tid=55 +0x400 jvm.dll+0x6930d0
+BW_THREAD_DUMP stack pid=10 tid=55 +0x480 jvm.dll+0x692b63
+BW_THREAD_DUMP stack pid=10 tid=55 +0x4c0 jvm.dll+0x95ff51
+BW_THREAD_DUMP stack pid=10 tid=55 +0x4f0 jvm.dll+0x7899be
+BW_THREAD_DUMP stack pid=10 tid=55 +0x500 jvm.dll+0x52d290
+BW_THREAD_DUMP stack pid=10 tid=55 +0x520 jvm.dll+0x69247b
+BW_THREAD_DUMP stack pid=10 tid=55 +0xa30 jvm.dll+0x47c290
+BW_THREAD_DUMP stack pid=10 tid=55 +0xb40 jvm.dll+0x7a8292
+BW_THREAD_DUMP stack pid=10 tid=55 +0xb70 jvm.dll+0x47cd3c
+BW_THREAD_DUMP stack pid=10 tid=55 +0xc40 jvm.dll+0x47cfc7
+BW_THREAD_DUMP stack pid=10 tid=55 +0xc90 jvm.dll+0x798a82
+BW_THREAD_DUMP stack pid=10 tid=55 +0xd10 jvm.dll+0x51b463
+BW_THREAD_DUMP stack pid=10 tid=55 +0xda0 jvm.dll+0x48f64e
+BW_THREAD_DUMP stack pid=10 tid=55 +0xdd0 jvm.dll+0x4d5515
+BW_THREAD_DUMP stack pid=10 tid=55 +0xe30 jvm.dll+0x99630d
+BW_THREAD_DUMP stack pid=10 tid=55 +0xe80 jvm.dll+0x996ae9
+BW_THREAD_DUMP stack pid=10 tid=55 +0xeb0 jvm.dll+0x7a6955
+BW_THREAD_DUMP stack pid=10 tid=55 +0xf40 kernel32.dll+0x255d6
+BW_THREAD_DUMP stack pid=10 tid=55 +0x1018 ntdll.dll+0x5dc67
+CRASHRING dump (thread-dump) — last 64 socket events, oldest first:
+  CR[0] W pid=14 fd=129 len=4096 e0=0 e1=0  [34 33 34 0a 40 3d 22 49 46 6f 6c 64 65 72 56 69]
+  CR[1] W pid=14 fd=129 len=4096 e0=0 e1=0  [5b 53 6f 66 74 77 61 72 65 5c 5c 43 6c 61 73 73]
+  CR[2] W pid=14 fd=129 len=4096 e0=0 e1=0  [73 65 73 5c 5c 49 6e 74 65 72 66 61 63 65 5c 5c]
+  CR[3] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 2d 43 30 30 30 2d 30 30 30 30 30 30 30 30]
+  CR[4] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 31 44 33 2d 38 39 42 39 2d 30 30 30 30 46 38]
+  CR[5] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 30 2d 30 30 30 30 30 30 30 30 30 30 34 36]
+  CR[6] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 38 2d 43 35 35 31 2d 31 31 44 33 2d 38 39 42]
+  CR[7] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 30 2d 34 42 38 37 2d 31 31 44 33 2d 41 39 37]
+  CR[8] W pid=14 fd=129 len=4096 e0=0 e1=0  [2d 31 31 44 33 2d 38 39 42 39 2d 30 30 30 30 46]
+  CR[9] W pid=14 fd=129 len=4096 e0=0 e1=0  [46 2d 39 38 42 35 2d 31 31 43 46 2d 42 42 38 32]
+  CR[10] W pid=14 fd=129 len=4096 e0=0 e1=0  [41 41 30 30 42 44 43 45 30 42 7d 5c 5c 50 72 6f]
+  CR[11] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 41 41 30 30 42 44 43 45 30 42 7d 5c 5c 54]
+  CR[12] W pid=14 fd=129 len=4096 e0=0 e1=0  [78 79 53 74 75 62 43 6c 73 69 64 5d 20 31 37 38]
+  CR[13] W pid=14 fd=129 len=4096 e0=0 e1=0  [43 46 2d 42 42 38 32 2d 30 30 41 41 30 30 42 44]
+  CR[14] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 41 41 30 30 42 44 43 45 30 42 7d 5c 5c 50 72]
+  CR[15] W pid=14 fd=129 len=4096 e0=0 e1=0  [33 62 31 35 61 34 0a 40 3d 22 49 54 69 6d 65 72]
+  CR[16] W pid=14 fd=129 len=4096 e0=0 e1=0  [74 75 62 43 6c 73 69 64 5d 20 31 37 38 30 33 37]
+  CR[17] W pid=14 fd=129 len=4096 e0=0 e1=0  [43 46 2d 42 42 38 32 2d 30 30 41 41 30 30 42 44]
+  CR[18] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 37 38 30 33 37 32 34 36 35 0a 23 74 69 6d 65]
+  CR[19] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 33 37 32 34 36 36 0a 23 74 69 6d 65 3d 31 64]
+  CR[20] W pid=14 fd=129 len=4096 e0=0 e1=0  [73 69 64 5d 20 31 37 38 30 33 37 32 34 36 36 0a]
+  CR[21] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 41 41 30 30 42 44 43 45 30 42 7d 5c 5c 54]
+  CR[22] W pid=14 fd=129 len=4096 e0=0 e1=0  [7d 5c 5c 50 72 6f 78 79 53 74 75 62 43 6c 73 69]
+  CR[23] W pid=14 fd=129 len=4096 e0=0 e1=0  [7b 33 30 35 30 46 35 32 42 2d 39 38 42 35 2d 31]
+  CR[24] W pid=14 fd=129 len=4096 e0=0 e1=0  [33 30 35 30 46 35 33 36 2d 39 38 42 35 2d 31 31]
+  CR[25] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 30 30 30 30 30 34 36 7d 22 0a 0a 5b 53 6f]
+  CR[26] W pid=14 fd=129 len=4096 e0=0 e1=0  [53 6f 66 74 77 61 72 65 5c 5c 43 6c 61 73 73 65]
+  CR[27] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 30 30 2d 43 30 30 30 2d 30 30 30 30 30 30]
+  CR[28] W pid=14 fd=129 len=4096 e0=0 e1=0  [6d 65 3d 31 64 63 66 32 34 33 38 31 36 31 63 30]
+  CR[29] W pid=14 fd=129 len=4096 e0=0 e1=0  [69 6d 65 3d 31 64 63 66 32 34 33 38 31 61 31 61]
+  CR[30] W pid=14 fd=129 len=4096 e0=0 e1=0  [37 38 30 33 37 32 34 36 36 0a 23 74 69 6d 65 3d]
+  CR[31] W pid=14 fd=129 len=4096 e0=0 e1=0  [32 34 36 36 0a 23 74 69 6d 65 3d 31 64 63 66 32]
+  CR[32] W pid=14 fd=129 len=4096 e0=0 e1=0  [0a 0a 5b 53 6f 66 74 77 61 72 65 5c 5c 43 6c 61]
+  CR[33] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 43 46 2d 42 42 38 32 2d 30 30 41 41 30 30 42]
+  CR[34] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 30 30 30 30 30 30 30 34 36 7d 22 0a 0a 5b]
+  CR[35] W pid=14 fd=129 len=4096 e0=0 e1=0  [38 32 2d 30 30 41 41 30 30 42 44 43 45 30 42 7d]
+  CR[36] W pid=14 fd=129 len=4096 e0=0 e1=0  [32 34 2d 30 30 30 30 2d 30 30 30 30 2d 43 30 30]
+  CR[37] W pid=14 fd=129 len=4096 e0=0 e1=0  [34 33 38 32 38 32 37 33 66 30 0a 40 3d 22 7b 33]
+  CR[38] W pid=14 fd=129 len=4096 e0=0 e1=0  [33 38 31 31 32 61 66 39 34 0a 40 3d 22 7b 30 30]
+  CR[39] W pid=14 fd=129 len=4096 e0=0 e1=0  [35 0a 23 74 69 6d 65 3d 31 64 63 66 32 34 33 38]
+  CR[40] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 2d 30 30 30 30 2d 43 30 30 30 2d 30 30 30]
+  CR[41] W pid=14 fd=129 len=4096 e0=0 e1=0  [42 35 2d 31 31 43 46 2d 42 42 38 32 2d 30 30 41]
+  CR[42] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 30 30 34 36 7d 22 0a 0a 5b 53 6f 66 74 77]
+  CR[43] W pid=14 fd=129 len=4096 e0=0 e1=0  [34 2e 30 22 0a 0a 5b 53 6f 66 74 77 61 72 65 5c]
+  CR[44] W pid=14 fd=129 len=4096 e0=0 e1=0  [7b 33 30 35 31 30 34 46 34 2d 39 38 42 35 2d 31]
+  CR[45] W pid=14 fd=129 len=4096 e0=0 e1=0  [22 3d 22 34 2e 30 22 0a 0a 5b 53 6f 66 74 77 61]
+  CR[46] W pid=14 fd=129 len=4096 e0=0 e1=0  [6c 61 73 73 65 73 5c 5c 49 6e 74 65 72 66 61 63]
+  CR[47] W pid=14 fd=129 len=4096 e0=0 e1=0  [77 61 72 65 5c 5c 43 6c 61 73 73 65 73 5c 5c 49]
+  CR[48] W pid=14 fd=129 len=4096 e0=0 e1=0  [5c 49 6e 74 65 72 66 61 63 65 5c 5c 7b 33 30 35]
+  CR[49] W pid=14 fd=129 len=4096 e0=0 e1=0  [56 65 72 73 69 6f 6e 22 3d 22 34 2e 30 22 0a 0a]
+  CR[50] W pid=14 fd=129 len=4096 e0=0 e1=0  [61 72 65 5c 5c 43 6c 61 73 73 65 73 5c 5c 49 6e]
+  CR[51] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 42 44 43 45 30 42 7d 22 0a 22 56 65 72 73]
+  CR[52] W pid=14 fd=129 len=4096 e0=0 e1=0  [31 64 63 66 32 34 33 38 63 65 35 39 66 61 63 0a]
+  CR[53] W pid=14 fd=129 len=4096 e0=0 e1=0  [64 5d 20 31 37 38 30 33 37 32 34 39 34 0a 23 74]
+  CR[54] W pid=14 fd=129 len=4096 e0=0 e1=0  [33 32 5d 20 31 37 38 30 33 37 32 34 38 37 0a 23]
+  CR[55] W pid=14 fd=129 len=4096 e0=0 e1=0  [32 34 33 37 38 66 34 36 39 34 32 0a 40 3d 22 7b]
+  CR[56] W pid=14 fd=129 len=4096 e0=0 e1=0  [23 74 69 6d 65 3d 31 64 63 66 32 34 33 37 30 66]
+  CR[57] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 30 2d 43 30 30 30 2d 30 30 30 30 30 30 30 30]
+  CR[58] W pid=14 fd=129 len=4096 e0=0 e1=0  [35 33 0a 23 74 69 6d 65 3d 31 64 63 66 32 34 33]
+  CR[59] W pid=14 fd=129 len=4096 e0=0 e1=0  [61 31 39 63 35 36 30 0a 40 3d 22 7b 33 45 45 46]
+  CR[60] W pid=14 fd=129 len=4096 e0=0 e1=0  [32 34 2d 30 30 30 30 2d 30 30 30 30 2d 43 30 30]
+  CR[61] W pid=14 fd=129 len=4096 e0=0 e1=0  [35 31 2d 31 31 44 33 2d 38 39 42 39 2d 30 30 30]
+  CR[62] W pid=14 fd=129 len=4096 e0=0 e1=0  [30 34 36 7d 22 0a 0a 5b 53 6f 66 74 77 61 72 65]
+  CR[63] W pid=14 fd=129 len=4096 e0=0 e1=0  [3d 22 31 2e 30 22 0a 0a 5b 53 6f 66 74 77 61 72]
+BW_THREAD_DUMP end dumped=16 skipped-lock=0
+RIPSAMPLE HB slot=0 pid=10 tid=11 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=1 pid=22 tid=24 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=2 pid=14 tid=15 dIns=39019 rip=0x70005daa0 (unmapped) @0x70005daa0
+RIPSAMPLE HB slot=3 pid=10 tid=44 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=4 pid=22 tid=23 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=5 pid=10 tid=45 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=6 pid=10 tid=46 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=7 pid=10 tid=47 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=8 pid=10 tid=48 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=9 pid=10 tid=49 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
+RIPSAMPLE HB slot=10 pid=10 tid=50 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=11 pid=10 tid=51 dIns=958 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=12 pid=10 tid=53 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=13 pid=10 tid=52 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=14 pid=10 tid=54 dIns=0 rip=0x700101829 libc.so.6+0xdb829
+RIPSAMPLE HB slot=15 pid=10 tid=55 dIns=0 rip=0x7000f82ec libc.so.6+0xd22ec
