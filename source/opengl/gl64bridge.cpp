@@ -1933,6 +1933,19 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 klog_fmt("gl64 PHASE: destroy-context t=%.1fs", bridgeElapsedSec());
             flushPendingDeletes(); // free batched deletes before teardown
             return 0; // keep the single context alive for first light
+        case GL64_fn_glXCopyContext:
+            // glXCopyContext(src, dst, mask): copy GL state from src to dst.
+            // Every guest GLXContext here is an opaque id over ONE shared
+            // backing context: CreateContext ignores shareList and MakeCurrent
+            // never switches state between ids, so src and dst hold identical
+            // state at all times and the copy is satisfied by construction,
+            // for any mask. This is the same single-context model the rest of
+            // this GLX section already implements (cf. glXDestroyContext).
+            // Wine's win32u init requires this entry point to exist at all:
+            // without it, init_opengl fails and OpenGL is disabled for the
+            // whole guest process (wgl errors + SDL_CreateWindow returning
+            // NULL for FNA/SDL apps).
+            return 0;
         case GL64_fn_glXGetCurrentContext:
             return g_glContext ? g_nextOpaqueId : 0;
         case GL64_fn_glXGetCurrentDrawable:

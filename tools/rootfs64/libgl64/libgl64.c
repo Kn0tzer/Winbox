@@ -72,6 +72,7 @@ enum {
     GL64_fn_glXWaitGL,
     GL64_fn_glXWaitX,
     GL64_fn_glXSwapIntervalEXT,
+    GL64_fn_glXCopyContext = 24,
 
     GL64_fn_glClearColor = 200,
     GL64_fn_glClear,
@@ -569,6 +570,10 @@ API void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
 API void glXDestroyContext(Display* dpy, GLXContext ctx) {
     GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)ctx;
     (void)gl64_trap(GL64_fn_glXDestroyContext, &a);
+}
+API void glXCopyContext(Display* dpy, GLXContext src, GLXContext dst, unsigned long mask) {
+    GL64Args a = {{0}}; a.a[0]=(uint64_t)(uintptr_t)src; a.a[1]=(uint64_t)(uintptr_t)dst; a.a[2]=(uint64_t)mask;
+    (void)gl64_trap(GL64_fn_glXCopyContext, &a);
 }
 API GLboolean glXIsDirect(Display* dpy, GLXContext ctx) {
     return (GLboolean)gl64_trap(GL64_fn_glXIsDirect, 0);
@@ -1355,6 +1360,7 @@ static const struct procEntry g_procs[] = {
     E(glXChooseFBConfig), E(glXGetFBConfigs), E(glXGetFBConfigAttrib),
     E(glXGetVisualFromFBConfig), E(glXGetConfig), E(glXMakeCurrent),
     E(glXMakeContextCurrent), E(glXSwapBuffers), E(glXDestroyContext),
+    E(glXCopyContext),
     E(glXIsDirect), E(glXGetCurrentContext), E(glXGetCurrentDrawable),
     E(glXWaitGL), E(glXWaitX), E(glXSwapIntervalEXT), E(glXSwapIntervalMESA),
     E(glXSwapIntervalSGI),

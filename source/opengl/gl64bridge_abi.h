@@ -85,6 +85,7 @@ enum {
     GL64_fn_glXWaitGL,                  // () -> void
     GL64_fn_glXWaitX,                   // () -> void
     GL64_fn_glXSwapIntervalEXT,         // (drawable, interval) -> void
+    GL64_fn_glXCopyContext = 24,        // (src, dst, mask) -> void
 
     // --- core GL: state ------------------------------------------------
     GL64_fn_glClearColor = 200,         // (r,g,b,a : float)
