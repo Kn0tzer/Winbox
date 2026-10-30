@@ -121,12 +121,15 @@ void testInotifyEvents() {
         testFail("timerfd_create filler failed: %lld", (long long)fillerFd);
         return;
     }
-    // __NR_inotify_init1 = 294
+    // __NR_inotify_init1 = 294. REJECTED-LOUDLY: the guest-visible entry
+    // point refuses with ENOSYS (see KProcess::inotify_init1). The event
+    // delivery flow below is preserved for a future re-enable but cannot
+    // run while the facility is refused.
     S64 fd = invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0);
-    if (fd < 0) {
-        testFail("inotify_init1 failed: %lld", (long long)fd);
-        return;
+    if (fd != -K_ENOSYS) {
+        testFail("inotify_init1 was not rejected with ENOSYS: %lld", (long long)fd);
     }
+    return;
     // __NR_inotify_add_watch = 254, watching the fixture root.
     writePath("/");
     S64 wd = invoke(254, (U64)fd, pathAt, IN_ALL_EVENTS, 0);
@@ -305,11 +308,12 @@ void testInotifyEventsProcessApi() {
     Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
     Fs::clearPathCache();
 
+    // REJECTED-LOUDLY: see testInotifyEvents.
     S32 fd = (S32)process->inotify_init1(0x800 /* K_O_NONBLOCK == IN_NONBLOCK */);
-    if (fd < 0) {
-        testFail("KProcess::inotify_init1 failed: %d", fd);
-        return;
+    if (fd != -K_ENOSYS) {
+        testFail("KProcess::inotify_init1 was not rejected with ENOSYS: %d", fd);
     }
+    return;
     KFileDescriptorPtr descriptor = process->getFileDescriptor(fd);
     if (!descriptor || !descriptor->kobject) {
         testFail("inotify_init1 returned an fd with no object");

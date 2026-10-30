@@ -139,7 +139,10 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
             U32 written = 0;
             while (!this->pendingEvents.empty()) {
                 const PendingEvent& event = this->pendingEvents.front();
-                U32 nameLen = (event.name.length() + 1 + 3) & ~3u;
+                // Linux gives events with no name a len of 0; reporting the padded
+                // length anyway desynchronizes the reader's record walk and
+                // corrupts every event queued behind it in the same read.
+                U32 nameLen = event.name.length() == 0 ? 0 : (U32)((event.name.length() + 1 + 3) & ~3u);
                 U32 recordSize = 16 + nameLen;
                 if (written + recordSize > len) {
                     if (written == 0) {

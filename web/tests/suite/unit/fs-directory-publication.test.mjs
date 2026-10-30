@@ -58,6 +58,7 @@ struct Platform {
 struct FsNode:std::enable_shared_from_this<FsNode>{
  std::recursive_mutex childrenByNameMutex;
  bool hasLoadedChildrenFromFileSystem=false;
+ bool childrenLoadInProgress=false;
  BString path="/tmp/server",nativePath="/tmp/server";
  std::vector<BString> children;
  void loadChildren();

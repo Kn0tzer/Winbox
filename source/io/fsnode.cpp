@@ -34,7 +34,7 @@ FsNode::FsNode(Type type, U32 id, U32 rdev, BString path, BString link, BString 
     childrenVersion(0),
     parent(parent),
     isDir(isDirectory),      
-    hasLoadedChildrenFromFileSystem(false),
+    hasLoadedChildrenFromFileSystem(false), childrenLoadInProgress(false),
     locksCS(std::make_shared<BoxedWineCondition>(B("FsNode.lockCS")))
  {   
 }
@@ -72,6 +72,11 @@ void FsNode::loadChildren() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(childrenByNameMutex);
     if (!this->hasLoadedChildrenFromFileSystem) {
         this->hasLoadedChildrenFromFileSystem = true;
+        // Children inserted by this load already exist on the host; they
+        // are not creations. addChild must not report them to inotify
+        // (Linux never reports pre-existing files), so the load loop runs
+        // with notifications suppressed for this directory.
+        this->childrenLoadInProgress = true;
         bool traceLink = getenv("BW64_LINKTRACE") && this->path.contains("dosdevices");
         if (this->nativePath.length()) {
             std::vector<Platform::ListNodeResult> results;
@@ -116,6 +121,7 @@ void FsNode::loadChildren() {
                 }
             }
         }
+        this->childrenLoadInProgress = false;
     }
 }
 
@@ -166,7 +172,9 @@ void FsNode::addChild(std::shared_ptr<FsNode> node) {
     node->removedFromParent.store(false, std::memory_order_release);
     this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 #ifdef BW64_HAS_KINOTIFY
-    KInotify::notifyChildAdded(this, node.get());
+    if (!this->childrenLoadInProgress) {
+        KInotify::notifyChildAdded(this, node.get());
+    }
 #endif
 }
 
