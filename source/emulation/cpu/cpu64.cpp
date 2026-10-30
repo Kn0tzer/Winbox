@@ -1257,7 +1257,7 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     // Deliver a synchronous, instruction-addressed fault. The test harness
     // has no attached thread or signal handlers, so an unhandled fault yields
     // at the faulting RIP; a guest handler instead receives the saved context.
-    auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+    auto faultAtInstruction = [&](U32 sig, U32 trapNo, U32 errorCode = 0) -> U32 {
         if (trapNo == 13 && std::getenv("BW64_UNIMPLDUMP")) {
             klog_fmt("CPU64: #GP at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
                      (unsigned long long)ipStart,
@@ -1267,7 +1267,7 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
                      fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
                      fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
         }
-        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        if (raiseSyncFault(sig, trapNo, 0, ipStart, errorCode)) return 0;
         if (thread && thread->process) thread->process->signalProcess(sig);
         yield = true;
         return 0;
@@ -1289,7 +1289,18 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
         if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
         return faultAtInstruction(K_SIGILL, 6);
     }
-    if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
+    if (op == 0xCD) {
+        // A user-mode INT imm8 reaches the #GP handler with an IDT error
+        // code naming the requested vector: selector index = vector, TI=0,
+        // IDT=1, EXT=0. Wine's SIGSEGV handler decodes exactly this field
+        // to recognize the architected software-interrupt exceptions
+        // (notably int 0x2d -> EXCEPTION_BREAKPOINT and int 0x29 ->
+        // __fastfail). Leaving it zero misreports every one of them as a
+        // privileged instruction.
+        U32 errorCode = ((U32)fetchByte(rip + opOff + 1) << 3) | 0x2;
+        return faultAtInstruction(K_SIGSEGV, 13, errorCode);
+    }
+    if (op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
         (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
         (op >= 0xEC && op <= 0xEF) || op == 0x9A || op == 0xEA ||
         op == 0xCA || op == 0xCB) {

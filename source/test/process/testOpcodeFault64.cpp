@@ -87,6 +87,47 @@ void testOpcodeFault64Delivery() {
         testFail("VEX-prefixed opcode did not deliver SIGILL (rip=0x%llx)",
                  (unsigned long long)cpu.rip);
     }
+
+    // A user-mode INT imm8 is a #GP whose hardware error code names the
+    // requested IDT vector: (vector << 3) | IDT. Wine's SIGSEGV handler
+    // depends on that field to turn int 0x2d into EXCEPTION_BREAKPOINT
+    // (and int 0x29 into __fastfail); an error code of zero instead makes
+    // it report a privileged instruction and the guest dies unhandled.
+    for (U32 interrupt : {0x29u, 0x2cu, 0x2du}) {
+        const U8 intOpcode[] = {0xCD, (U8)interrupt};
+        memory->memcpyToGuest(codePage, intOpcode, sizeof(intOpcode));
+
+        CPU64 intCpu(memory);
+        intCpu.thread = nullptr;
+        intCpu.rip = codePage;
+        intCpu.reg[X64_RSP].setU64(stackPage + K64_PAGE_SIZE * 4 - 16);
+        auto& intSa = intCpu.sigActions[K_SIGSEGV];
+        intSa.installed = true;
+        intSa.handler = handlerAddress;
+        intSa.restorer = handlerAddress;
+
+        intCpu.runBounded(1);
+        if (intCpu.rip != handlerAddress) {
+            testFail("INT 0x%02x did not deliver SIGSEGV to the guest handler (rip=0x%llx)",
+                     interrupt, (unsigned long long)intCpu.rip);
+            continue;
+        }
+        const U64 uctx = intCpu.reg[X64_RDX].u64;
+        const U64 gregs = uctx + 40; // mcontext.gregs[] in the ucontext
+        const U64 expectedError = ((U64)interrupt << 3) | 2;
+        if (intCpu.reg[X64_RDI].u64 != K_SIGSEGV ||
+            memory->readq(gregs + 16 * 8) != codePage || // REG_RIP
+            memory->readq(gregs + 19 * 8) != expectedError || // REG_ERR
+            memory->readq(gregs + 20 * 8) != 13 || // REG_TRAPNO (#GP)
+            memory->readq(intCpu.reg[X64_RSI].u64 + 16) != codePage) { // si_addr
+            testFail("INT 0x%02x delivered wrong fault metadata "
+                     "(err=0x%llx trapno=%llu rip=0x%llx)",
+                     interrupt,
+                     (unsigned long long)memory->readq(gregs + 19 * 8),
+                     (unsigned long long)memory->readq(gregs + 20 * 8),
+                     (unsigned long long)memory->readq(gregs + 16 * 8));
+        }
+    }
 }
 
 void testCpu64AvxCpuidMask() {
