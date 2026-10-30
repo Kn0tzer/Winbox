@@ -96,7 +96,13 @@ bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
 }
 
 void bw64RecoverLogOnce(const char* key, const char* message) {
-    if (!bw64RecoverEnabled() || !key || !message) return;
+    // Reporting is unconditional: this helper exists so an operation
+    // that cannot be served is REJECTED LOUDLY (once per key) instead of
+    // failing silently. Only recovery *actions* (skipping an instruction,
+    // falling back) are gated by bw64RecoverEnabled(); the fact that
+    // something could not be served must always leave a trace, or the
+    // next silent-failure hunt starts from zero evidence again.
+    if (!key || !message) return;
     {
         std::lock_guard<std::mutex> lock(g_recoverRipMutex);
         if (g_recoverLoggedOnceSet.find(key) != g_recoverLoggedOnceSet.end() ||
