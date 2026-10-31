@@ -144,6 +144,17 @@ EM_JS(int, jit64_wasm_instantiate_impl,
         wasmTable.set(slot, fn);
         return slot;
     } catch (e) {
+        // The reason (compile error vs link error vs OOM) exists only in
+        // this exception; the C++ caller sees just the -1. Log the reason
+        // here, counting-capped: if the engine rejects every module, this
+        // must not flood the console.
+        var bw64JitFailCount = (Module.bw64JitInstantiateFails =
+            (Module.bw64JitInstantiateFails || 0) + 1);
+        if (bw64JitFailCount <= 8 || bw64JitFailCount % 1024 === 0) {
+            console.error('BW64-FAIL jit-instantiate error=' +
+                (e && e.message ? e.message : String(e)) +
+                ' outcome=interpreter-fallback count=' + bw64JitFailCount);
+        }
         return -1;
     }
 });

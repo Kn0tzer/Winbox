@@ -8772,6 +8772,16 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     m_jit->instantiateTimeUs += jit64NowUs() - instantiateStart;
     if (index < 0) {
         m_jit->instantiateFailed++;
+        // The engine refused a module the emitter produced. That is never
+        // a guest property -- it is an emulator/environment problem -- and
+        // the interpreter fallback hides it completely, so give it the
+        // counting-capped BW64-FAIL line (the JS runtime logs the reason).
+        if (m_jit->instantiateFailed <= 64 ||
+            m_jit->instantiateFailed % 1024 == 0) {
+            klog_fmt("BW64-FAIL jit-instantiate rip=0x%llx module-bytes=%u outcome=interpreter-fallback count=%llu",
+                     (unsigned long long)r, (unsigned)module.size(),
+                     (unsigned long long)m_jit->instantiateFailed);
+        }
         m_jit->cache.invalidate(r);
         m_jit->negative.add(r, gen0);
         m_jit->insnsFallback++;
