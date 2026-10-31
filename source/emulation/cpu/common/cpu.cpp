@@ -249,61 +249,101 @@ void CPU::jmp(U32 big, U32 selector, U32 offset, U32 oldEip) {
 void CPU::prepareFpuException(int code, int error) {
     const KProcessPtr& process = this->thread->process;
 
-    // blocking signals, signalfd can't handle these
-    if (process->sigActions[K_SIGSEGV].handlerAndSigAction != K_SIG_IGN && process->sigActions[K_SIGSEGV].handlerAndSigAction != K_SIG_DFL) {
-        process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGFPE;
-        process->sigActions[K_SIGSEGV].sigInfo[1] = error; // always 0?
-        process->sigActions[K_SIGSEGV].sigInfo[2] = code;
-        process->sigActions[K_SIGSEGV].sigInfo[3] = 0; // address
-        process->sigActions[K_SIGSEGV].sigInfo[4] = 16; // trap #, TRAP_x86_ARITHTRAP
-        this->thread->runSignal(K_SIGSEGV, 13, error);
-    } else {
-        CPU* cpu = this;
-        this->walkStack(this->eip.u32, EBP, 2);
-        kpanic_fmt("unhandled exception: code=%d error=%d", code, error);
-    }
+    // Delivered via the SIGSEGV slot with an FPE code, as before; what
+    // changes is that delivery no longer depends on a guest handler
+    // existing. runSignal applies the default disposition itself (the
+    // guest process is killed) or ignores the signal, so an FPU fault
+    // in a handler-less guest ends that guest -- it used to kpanic and
+    // take the whole emulator down with it. (These are blocking
+    // signals, which signalfd can't handle; that part is unchanged.)
+    KSigAction* action = &process->sigActions[K_SIGSEGV];
+    const bool delivered = action->handlerAndSigAction != K_SIG_IGN && action->handlerAndSigAction != K_SIG_DFL;
+    action->sigInfo[0] = K_SIGFPE;
+    action->sigInfo[1] = error; // always 0?
+    action->sigInfo[2] = code;
+    action->sigInfo[3] = 0; // address
+    action->sigInfo[4] = 16; // trap #, TRAP_x86_ARITHTRAP
+    bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
+    this->thread->runSignal(K_SIGSEGV, 13, error);
 }
 
 void CPU::prepareException(int code, int error) {
     const KProcessPtr& process = this->thread->process;
 
-     // blocking signals, signalfd can't handle these
+    // Every recognized fault is delivered through runSignal, which
+    // applies the default disposition itself (the guest process is
+    // killed) when the guest has no handler, or ignores the signal when
+    // the guest asked for that. Delivery used to be conditional on a
+    // handler existing, with a kpanic -- an emulator-wide exit -- as
+    // the no-handler path; a guest fault must never take the emulator
+    // down. Only an unrecognized exception code (an internal bug, not
+    // guest input) still panics, after the stack walk. These are
+    // blocking signals, which signalfd can't handle.
     if (code==EXCEPTION_GP) {
-        process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
-        process->sigActions[K_SIGSEGV].sigInfo[1] = error;
-        process->sigActions[K_SIGSEGV].sigInfo[2] = 0;
-        process->sigActions[K_SIGSEGV].sigInfo[3] = 0; // address
-        process->sigActions[K_SIGSEGV].sigInfo[4] = 13; // trap #, TRAP_x86_PROTFLT
+        KSigAction* action = &process->sigActions[K_SIGSEGV];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGSEGV;
+        action->sigInfo[1] = error;
+        action->sigInfo[2] = 0;
+        action->sigInfo[3] = 0; // address
+        action->sigInfo[4] = 13; // trap #, TRAP_x86_PROTFLT
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
         this->thread->runSignal(K_SIGSEGV, 13, error);
-    } else if (code==EXCEPTION_DIVIDE && error == 0 && (process->sigActions[K_SIGFPE].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGFPE].handlerAndSigAction!=K_SIG_DFL)) {
-        process->sigActions[K_SIGFPE].sigInfo[0] = K_SIGFPE;		
-        process->sigActions[K_SIGFPE].sigInfo[1] = error;
-        process->sigActions[K_SIGFPE].sigInfo[2] = K_FPE_INTDIV;
-        process->sigActions[K_SIGFPE].sigInfo[3] = this->eip.u32; // address
-        process->sigActions[K_SIGFPE].sigInfo[4] = 0; // trap #, TRAP_x86_DIVIDE
+    } else if (code==EXCEPTION_DIVIDE && error == 0) {
+        KSigAction* action = &process->sigActions[K_SIGFPE];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGFPE;
+        action->sigInfo[1] = error;
+        action->sigInfo[2] = K_FPE_INTDIV;
+        action->sigInfo[3] = this->eip.u32; // address
+        action->sigInfo[4] = 0; // trap #, TRAP_x86_DIVIDE
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
         this->thread->runSignal(K_SIGFPE, 0, error);
-    } else if (code==EXCEPTION_DIVIDE && error == 1 && (process->sigActions[K_SIGFPE].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGFPE].handlerAndSigAction!=K_SIG_DFL)) {
-        process->sigActions[K_SIGFPE].sigInfo[0] = K_SIGFPE;
-        process->sigActions[K_SIGFPE].sigInfo[1] = 0;
-        process->sigActions[K_SIGFPE].sigInfo[2] = K_FPE_INTOVF;
-        process->sigActions[K_SIGFPE].sigInfo[3] = this->eip.u32; // address
-        process->sigActions[K_SIGFPE].sigInfo[4] = 4; // trap #, TRAP_x86_OFLOW
+    } else if (code==EXCEPTION_DIVIDE && error == 1) {
+        KSigAction* action = &process->sigActions[K_SIGFPE];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGFPE;
+        action->sigInfo[1] = 0;
+        action->sigInfo[2] = K_FPE_INTOVF;
+        action->sigInfo[3] = this->eip.u32; // address
+        action->sigInfo[4] = 4; // trap #, TRAP_x86_OFLOW
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
         this->thread->runSignal(K_SIGFPE, 4, error);
-    } else if (code==EXCEPTION_NP &&  (process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL)) {
-        process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
-        process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
-        process->sigActions[K_SIGSEGV].sigInfo[2] = 0;
-        process->sigActions[K_SIGSEGV].sigInfo[3] = this->eip.u32; // address
-        process->sigActions[K_SIGSEGV].sigInfo[4] = 11; // trap #, TRAP_x86_SEGNPFLT
+    } else if (code==EXCEPTION_NP) {
+        KSigAction* action = &process->sigActions[K_SIGSEGV];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGSEGV;
+        action->sigInfo[1] = 0;
+        action->sigInfo[2] = 0;
+        action->sigInfo[3] = this->eip.u32; // address
+        action->sigInfo[4] = 11; // trap #, TRAP_x86_SEGNPFLT
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
         this->thread->runSignal(K_SIGSEGV, 11, error);
-    } else if (code==EXCEPTION_SS &&  (process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL)) {
-        process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;		
-        process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
-        process->sigActions[K_SIGSEGV].sigInfo[2] = 0;
-        process->sigActions[K_SIGSEGV].sigInfo[3] = this->eip.u32; // address
-        process->sigActions[K_SIGSEGV].sigInfo[4] = 12; // trap #, TRAP_x86_SEGNPFLT
+    } else if (code==EXCEPTION_SS) {
+        KSigAction* action = &process->sigActions[K_SIGSEGV];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGSEGV;
+        action->sigInfo[1] = 0;
+        action->sigInfo[2] = 0;
+        action->sigInfo[3] = this->eip.u32; // address
+        action->sigInfo[4] = 12; // trap #, TRAP_x86_SEGNPFLT
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
         this->thread->runSignal(K_SIGSEGV, 12, error);
-    } else {        
+    } else if (code==EXCEPTION_BOUND) {
+        // #BR is a segment-class fault and is delivered as SIGSEGV like
+        // its siblings; it previously fell into the unhandled branch
+        // and panicked the emulator for an ordinary guest instruction.
+        KSigAction* action = &process->sigActions[K_SIGSEGV];
+        const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
+        action->sigInfo[0] = K_SIGSEGV;
+        action->sigInfo[1] = error;
+        action->sigInfo[2] = 0;
+        action->sigInfo[3] = this->eip.u32; // address
+        action->sigInfo[4] = 5; // trap #, TRAP_x86_BOUND
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
+        this->thread->runSignal(K_SIGSEGV, 5, error);
+    } else {
+        bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, false);
         CPU* cpu = this;
         this->walkStack(this->eip.u32, EBP, 2);
         kpanic_fmt("unhandled exception: code=%d error=%d", code, error);
