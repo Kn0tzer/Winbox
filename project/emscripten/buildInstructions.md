@@ -1,11 +1,18 @@
 # Emscripten Build
 
-There are 2 builds for the Web
-- Single Threaded. Target Release
-- Multi-Threaded. Target multiThreaded
+> The project's canonical build is `tools/bw64-build.sh` — see
+> `BUILD_PROTOCOL.md` at the repo root. This file documents the
+> underlying `project/emscripten` makefile targets the wrapper
+> drives (inherited from upstream Boxedwine), for working on the
+> targets directly.
 
-Plus a headless 64-bit core target for Node:
-- 64-bit guest self-test. Target wasm64-selftest (see below)
+There are 2 builds for the Web
+- Single Threaded. Target `release`
+- Multi-Threaded. Target `multiThreaded`
+
+Plus headless 64-bit core targets for Node, including the ones the
+shipped runtime is built from (`wasm64-mt`, `wasm64-mt-jit`):
+- 64-bit guest self-test. Target `wasm64-selftest` (see below)
 
 
 ## Build
