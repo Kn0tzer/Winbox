@@ -75,5 +75,32 @@ for d in "${DLLS[@]}"; do
     cp "$WORK/x64-build/dlls/$d/$d.dll" "$OUT/$d.dll"
     echo "--- built $d.dll ---"
 done
+
+# The mingw cross tree links these as plain PE files, but they ship as
+# Wine builtins: a full Wine build has winebuild stamp the 32-byte
+# "Wine builtin DLL" signature over the DOS stub at offset 64
+# (make_builtin_files in tools/winebuild/spec32.c), and both the
+# wineserver and the unix loader key the builtin treatment off that
+# signature -- for the syscall DLL (win32u) the loader only registers
+# its syscall table, and thereby user32 session initialization, when
+# the signature is present. An unstamped win32u.dll loads fine yet
+# every process's user32 initialization silently does nothing
+# (FD-40). Stamp every rebuilt DLL the same way winebuild does.
+python3 - "$OUT" "${DLLS[@]}" <<'PYEOF'
+import struct, sys
+out = sys.argv[1]
+sig = b"Wine builtin DLL" + b"\0" * 16
+assert len(sig) == 32
+for name in sys.argv[2:]:
+    path = out + "/" + name + ".dll"
+    with open(path, "r+b") as f:
+        head = f.read(64)
+        assert head[:2] == b"MZ", path
+        (e_lfanew,) = struct.unpack("<I", head[0x3C:0x40])
+        assert e_lfanew >= 64 + len(sig), (path, e_lfanew)
+        f.seek(64)
+        f.write(sig)
+    print("--- stamped Wine builtin signature: " + name + ".dll ---")
+PYEOF
 echo "=== sha256 (re-pin these in check_runtime_completeness.py + README.md) ==="
 sha256sum "$OUT"/*.dll

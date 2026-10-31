@@ -255,26 +255,101 @@ do not close the entry until they land.
   formats FD-15 named were fixed); it is mechanical to add
   with the same table. Evidence:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
-- **FD-40 — The 64-bit boot smoke test stalls before the
-  window station exists, on unmodified code too.** *(Low —
-  observed, cause unproven)* During the FD-15 lane's
-  regression checks, the project's `boot64-smoke` browser
-  probe failed three times with the identical signature:
-  the guest never reaches `create_winstation` (240 s watch
-  expires), an earlier `wineboot --init` process shows as
-  terminated, and guest threads sit waiting in
-  `KUnixSocketObject::lockCond`. An A/B run settles that this
-  is not an FD-15 effect: a baseline build of the unmodified
-  integ tip `c4bab5e07` fails the same way, while the
-  graphics-heavy Celeste boot probe passes on the fixed
-  build. Whether this is box load, a unix-socket wait defect,
-  or a relative of the known start stalls is unproven — it is
-  registered so the observation is not lost. Evidence:
-  `docs/reports/fd15-honest-gl-answers-20261031.md`
-  (regression section); failing-run artifacts in the lane
-  tree at `test-results/suite-boot64-smoke/` and
-  `test-results/baseline-c4bab5e07-boot64-smoke/` (the
-  baseline tree itself was a scratch tree, since removed).
+- **FD-40 — The 64-bit boot smoke test never reaches the
+  window station. FIXED ON BRANCH 2026-10-31
+  (`lane-fd40-fix`, commit `5e4bab8f2`) — awaiting merge.**
+  *(Characterized 2026-10-31 in
+  `docs/reports/fd40-boot-smoke-characterization-20261031.md`;
+  that record's mechanism is CORRECTED below — its
+  observations were accurate, its convicted mechanism was
+  not. Full fix record: `docs/reports/fd40-fix-20261031.md`.)*
+  The test's own workload completes: the booted program
+  prints its echo and exits with status 0. After the last
+  boot process terminates there is a ~16 s total guest
+  silence, then the boot thread (the one that created
+  `\KernelObjects\__wineboot_event`) opens the session's
+  named-object directory, creates `DBWinMutex`, and begins
+  reopening the section `DBWIN_BUFFER` on an exact ~30 s
+  cadence, getting `OBJECT_NAME_NOT_FOUND` every time. That
+  retry is thereafter the ONLY request the whole guest
+  issues (observed continuously for 570 s); the window
+  station is therefore never created and the test's 240 s
+  watch expires. `DBWIN_BUFFER` is the shared-memory half
+  of the Windows debug-output (DBWIN) protocol: by that
+  protocol it exists only while a debug listener (a
+  DebugView-class program) is running, and a sender whose
+  open fails is supposed to abandon the send. No component
+  of this session ever creates it — in every captured log,
+  passing or failing, the count of `DBWIN_BUFFER`
+  creations is zero — so once the boot thread enters this
+  wait it can never be satisfied, at any machine load, for
+  any length of time. Reproduced 5/5 in this environment
+  (the FD-15 lane's three captures across its fix build and
+  an unmodified `c4bab5e07` baseline, plus two fresh
+  instrumented runs on the FD-15-tip build, one started at
+  load 1.9); the one passing capture on record (2026-10-26,
+  older build) takes a different boot path entirely — the
+  window station is created during initialization and the
+  DBWIN objects are never touched. DISPROVEN: the original
+  unix-socket suspicion — the threads seen waiting in
+  `KUnixSocketObject::lockCond` are a service process in
+  its ordinary idle read, and the request stream accounts
+  for the non-progress completely without them; no socket
+  waiter is blocked on undelivered data. Machine load is
+  at most the trigger (a boot slow enough that the boot
+  thread reaches its report path — entry followed a ~16 s
+  silence in both instrumented runs), not the mechanism:
+  during the wait the guest issues nothing else for the
+  load to starve. STILL OPEN inside the mechanism: what
+  the boot thread was waiting for during the ~16 s silence
+  (its report was never delivered, so its content is
+  unknown), and whether taking this path is a regression
+  since 2026-10-26 or was always latent behind boot speed.
+  The fix lever is not the emulator's socket layer: it is
+  the staged Wine's debug-output path abandoning the send
+  when no listener exists (the documented behaviour), the
+  session providing a listener, or the boot wait that
+  times out at ~16 s being satisfied. Evidence: the
+  characterization record above; fresh captures in this
+  lane's tree at `test-results/fd40-run1/` and
+  `test-results/fd40-run2/`; the FD-15 lane's captures at
+  `wt-fd15/test-results/suite-boot64-smoke/` and
+  `wt-fd15/test-results/baseline-c4bab5e07-boot64-smoke/`;
+  the passing capture in the integration tree at
+  `test-results/suite-boot64-smoke/`.
+  CORRECTION AND CLOSURE (2026-10-31, `lane-fd40-fix`): the
+  DBWIN wait this entry convicted is not a wait and not the
+  boot thread. The ~30 s `DBWIN_BUFFER` reopens are the
+  session anchor's designed heartbeat (deskpin sleeps 30 s,
+  then calls `OutputDebugStringA`, forever; Wine's sender is
+  single-attempt and abandons the send when no listener
+  exists — the correct documented behaviour, unchanged by
+  the fix). The test fails on its fourth watch because
+  session initialization never runs in any process: the
+  staged win32u.dll is a from-source backport rebuild that
+  lacks the 32-byte "Wine builtin DLL" signature a full Wine
+  build stamps at file offset 64, so the wineserver does not
+  flag it as a builtin (image_flags 0x04, not 0x44) and its
+  syscall table is never registered; user32's
+  initialization syscall therefore reaches no implementation
+  and silently does nothing — no font load, no window
+  station, in any process, at any load. Three-arm A/B, one
+  file different: unstamped rebuild — no winstation ever;
+  stock Debian DLL — winstation at 106.4 s; the same rebuild
+  with only the signature stamped — winstation at 102.0 s.
+  Fix (commit `5e4bab8f2`): the backport build script now
+  stamps every rebuilt DLL the way winebuild does, the
+  shipped win32u.dll is stamped in place (sha256
+  `49b87438…`, code bytes untouched) and everything is
+  re-pinned (completeness checker 0 failures). Proof:
+  boot64-smoke passes through the project's own suite path
+  three times in a row (89 s, 82 s, 91 s); a new dbwin-echo
+  fixture + suite test proves the guest debug-output channel
+  still delivers `OutputDebugStringA` text to a real
+  listener (suite pass, 93 s). The other four backport DLLs
+  lack the signature too but are not syscall DLLs and show
+  no symptom; the build script stamps them on their next
+  rebuild.
 - **FD-16 — One class of shader still cannot build a pipeline:
   texel buffers reached through a descriptor-heap array.**
   *(High for the D3D12 class)* A guest's shader module whose
@@ -548,6 +623,27 @@ do not close the entry until they land.
   diagnostic path has no rate limit. Evidence:
   `docs/reports/fd06-portio-20261031.md`;
   `docs/reports/deploy-20261031.md`.
+- **FD-43 — The FD-01 desktop-wait fix is present in no
+  shipped binary; the measured first-visit improvement is
+  unattributed.** *(Medium — a closed fix's evidence chain)*
+  FD-01's patch edits `get_desktop_window` and
+  `load_desktop_driver`, functions that exist only in the
+  unix-side `win32u.so` — in neither PE win32u.dll, stock or
+  rebuilt (no strings, no 300 s constant). The shipped
+  `win32u.so` is byte-identical to the container staging
+  image's (sha256 `5dac58217e6b6203…`) and its single
+  `NtUserWaitForInputIdle` call site passes the stock 10 s
+  timeout, so the patch's code shipped nowhere. FD-01's live
+  measurements (0/4 → 6/6 first-attempt starts) stand as
+  measured, but the cause is not the patch as shipped; the
+  only win32u change in that build was the (independently
+  defective, see FD-40) unsigned PE rebuild. Because the
+  FD-40 fix restores win32u's builtin treatment — behaviour
+  closer to the pre-FD-01 stock DLL — FD-01's live
+  first-visit rate must be re-measured on the merged build
+  before the restart stopgap's retirement is treated as
+  settled. Evidence: `docs/reports/fd40-fix-20261031.md`
+  ("Found on the way").
 
 ---
 

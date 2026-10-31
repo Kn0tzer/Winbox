@@ -72,7 +72,7 @@ sha256 of these exact files, verified by
 | kernelbase.dll | 1588877 | 344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85 |
 | kernel32.dll | 859511 | e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793 |
 | iphlpapi.dll | 380852 | 2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86 |
-| win32u.dll | 354218 | a8ca5fbb6b0003397221cfe6140fc042a01abc444e8dfaf15bcf78abd7115f58 |
+| win32u.dll | 354218 | 49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708 |
 
 Staged into `wine64.zip` by `tools/rootfs64/build-wine64-zip.sh`
 (container path) and `tools/rootfs64/stage-wine8-backports.sh`
