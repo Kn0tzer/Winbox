@@ -2915,6 +2915,18 @@ export function auditBlockLayouts(bytes) {
 // reinterpreted texels. When no Unknown storage format remains, the 55/56
 // capability declarations are stripped (naga cannot consume them either).
 // Byte-identical passthrough when the option is absent or nothing applies.
+//
+// FD-49: one binding can carry several storage image TYPES (vkd3d's
+// descriptor heap places a float read array and an int write array at the
+// same set/binding), and their views can have different formats, so a
+// signature keyed by set:binding alone can never resolve such a module --
+// whichever view's format it carries, the other type stays Unknown.
+// Signature entries may therefore carry a type key,
+// "set:binding@<typeKey>=spvFormat", where <typeKey> is storageTypeKey():
+// the image type's identity apart from its format, computed identically
+// here and by storageImageVars (which reports it to the page tier). A
+// typed entry wins over a plain one for its type; the per-variable
+// agreement rule and the scalar-kind guard apply unchanged.
 const SPV_FORMAT_KIND = {
   // SPIR-V ImageFormat values (spirv-as/dis + vendored naga agree; verified
   // empirically per format name -- do not "fix" these from memory).
@@ -2931,6 +2943,27 @@ function scalarKindOf(byId, typeId) {
   if (t.op === 22) return 'f';                            // OpTypeFloat
   if (t.op === 23) return scalarKindOf(byId, t.words[1]); // OpTypeVector: component type
   return null;
+}
+
+function scalarWidthOf(byId, typeId) {
+  const t = byId.get(typeId);
+  if (!t) return null;
+  if (t.op === 21 || t.op === 22) return t.words[1];        // OpTypeInt / OpTypeFloat: width
+  if (t.op === 23) return scalarWidthOf(byId, t.words[1]);  // OpTypeVector: component type
+  return null;
+}
+
+// The identity of an OpTypeImage apart from its format operand: sampled
+// scalar kind and width, Dim, Depth, Arrayed, MS, and the access
+// qualifier when present. Two storage image types at one binding with
+// different keys are different resources as far as format resolution is
+// concerned (FD-49).
+function storageTypeKey(byId, img) {
+  const kind = scalarKindOf(byId, img.words[1]) || 'x';
+  const width = scalarWidthOf(byId, img.words[1]);
+  let key = 'k' + kind + (width == null ? '' : width) + 'd' + img.words[2] + 'x' + img.words[3] + img.words[4] + img.words[5];
+  if (img.words.length > 8) key += 'q' + img.words[8];
+  return key;
 }
 
 function storageDecorations(mod) {
@@ -2969,7 +3002,7 @@ export function storageImageVars(bytes) {
     const img = pointee;
     if (!img || img.op !== Op.TypeImage || img.words[6] !== 2) continue;
     const d = decorations.get(ins.resultId) || {};
-    const entry = { set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId };
+    const entry = { set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeKey: storageTypeKey(byId, img), typeId: img.resultId };
     // A runtime-array entry additionally carries the array's proven index
     // signature (filled in below): its format is the format of the element
     // the shader actually touches, which is not necessarily element 0.
@@ -2992,11 +3025,14 @@ export function storageImageVars(bytes) {
 function injectStorageImageFormats(mod, log, signature) {
   if (!signature) return false;
   const wanted = new Map();
+  const wantedTyped = new Map();
   for (const part of String(signature).split(';')) {
-    const m = /^(\d+):(\d+)=(\d+)$/.exec(part.trim());
-    if (m) wanted.set(m[1] + ':' + m[2], Number(m[3]));
+    const m = /^(\d+):(\d+)(?:@([a-z0-9]+))?=(\d+)$/.exec(part.trim());
+    if (!m) continue;
+    if (m[3]) wantedTyped.set(m[1] + ':' + m[2] + '@' + m[3], Number(m[4]));
+    else wanted.set(m[1] + ':' + m[2], Number(m[4]));
   }
-  if (!wanted.size) return false;
+  if (!wanted.size && !wantedTyped.size) return false;
   const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
   const decorations = storageDecorations(mod);
   const types = new Map();
@@ -3020,9 +3056,11 @@ function injectStorageImageFormats(mod, log, signature) {
   let changed = false;
   for (const t of types.values()) {
     if (t.ins.words[7] !== 0) continue; // already concrete
+    const tk = storageTypeKey(byId, t.ins);
     let fmt = null, ok = t.vars.length > 0;
     for (const v of t.vars) {
-      const f = wanted.get(v.set + ':' + v.binding);
+      const key = v.set + ':' + v.binding;
+      const f = wantedTyped.has(key + '@' + tk) ? wantedTyped.get(key + '@' + tk) : wanted.get(key);
       if (f == null || (fmt != null && f !== fmt)) { ok = false; break; }
       fmt = f;
     }
@@ -3928,6 +3966,142 @@ export function specializeDescriptorArrays(mod, log) {
   return true;
 }
 
+// R15a companion "specialized-binding-split" (FD-49): specialization can
+// leave TWO bw_arr_* clones at the same set/binding -- vkd3d's descriptor
+// heap declares several typed arrays at one binding (a float read array
+// and an int write array, say), and each accessed array specializes to
+// its own scalar clone. The translation stack cannot express that: naga
+// validation rejects two resources at one binding whose types differ
+// ("Bindings for [n] conflict with other resource"), and a WebGPU bind
+// group has one entry per binding. Clones past the first at a shared
+// binding therefore move to fresh binding numbers above the set's
+// highest used binding. A clone's NAME keeps its origin set/binding and
+// index signature (bw_arr_g<set>_b<originBinding>_...), and the page
+// tier's scanWgslResources records that origin as the declaration's
+// origBinding, so bind-time resolution still reads the guest's
+// descriptor entries for the origin binding and selects the clone's
+// element from its signature. Only clones move; an original variable is
+// never renumbered, and when a non-clone holds the binding the first
+// clone moves too. The split runs AFTER R14 in applySpirvFix: the R14
+// signature is keyed by the bindings the page tier saw in the original
+// module, so no renumbering may happen before injection has consumed
+// it.
+function splitSpecializedCloneBindings(mod, log) {
+  const nameOf = (ins) => {
+    const bytes = [];
+    for (let k = 1; k < ins.words.length; k++) {
+      let w = ins.words[k];
+      for (let b = 0; b < 4; b++) { const c = w & 0xff; if (!c) return String.fromCharCode(...bytes); bytes.push(c); w >>= 8; }
+    }
+    return String.fromCharCode(...bytes);
+  };
+  const clones = new Set();
+  for (const ins of mod.insns) if (ins.op === Op.Name && nameOf(ins).startsWith('bw_arr_')) clones.add(ins.words[0]);
+  if (!clones.size) return false;
+  const decorations = storageDecorations(mod);
+  const groups = new Map(); // "set:binding" -> [varIds in module order]
+  const setMax = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const d = decorations.get(ins.resultId);
+    if (!d || d.set == null || d.binding == null) continue;
+    const key = d.set + ':' + d.binding;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ins.resultId);
+    setMax.set(d.set, Math.max(setMax.get(d.set) ?? -1, d.binding));
+  }
+  let changed = false;
+  const nextFree = new Map();
+  for (const [key, ids] of groups) {
+    if (ids.length < 2) continue;
+    const set = Number(key.split(':')[0]);
+    const keeper = ids.find(id => !clones.has(id)) ?? ids[0];
+    for (const id of ids) {
+      if (id === keeper || !clones.has(id)) continue;
+      if (!nextFree.has(set)) nextFree.set(set, (setMax.get(set) ?? -1) + 1);
+      const nb = nextFree.get(set); nextFree.set(set, nb + 1);
+      for (const ins of mod.insns) {
+        if (ins.op === Op.Decorate && ins.words[0] === id && ins.words[1] === 33) ins.words[2] = nb;
+      }
+      log.push('spirvfix: moved specialized clone %' + id + ' in set ' + set + ' from binding ' + key.split(':')[1] + ' to binding ' + nb + ' (two specialized resources cannot share one binding in the translation stack; the clone name keeps the origin binding)');
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// R14 companion "prune-dead-storage-image-types" (FD-49): a storage image
+// type with Format Unknown that NOTHING references -- no variable, no
+// function, only its own (equally unreferenced) array/pointer wrapper
+// types -- still fails translation, because the translator processes
+// type declarations whether or not a variable uses them. vkd3d emits
+// such declarations as heap boilerplate on shaders that never touch
+// them (one captured module's entry point is a bare return). Removing a
+// declaration nothing can observe changes no behaviour; a type that IS
+// referenced stays, and if its format could not be resolved translation
+// keeps failing loudly exactly as before. Runs after R14, so a type the
+// signature could concretely format is never a candidate. Liveness
+// accounting mirrors the R15a orphan sweep: annotations do not keep a
+// type alive and header/directive words are not references.
+function pruneDeadStorageImageTypes(mod, log) {
+  const candidates = [];
+  for (const ins of mod.insns) {
+    if (ins.op === Op.TypeImage && ins.words[6] === 2 && ins.words[7] === 0) candidates.push(ins.resultId);
+  }
+  if (!candidates.length) return false;
+  const live = new Set();
+  const wrappers = new Map(); // wrapper type id -> wrapped (child) type id
+  for (const ins of mod.insns) {
+    if (ins.op === Op.TypePointer && ins.resultId != null) wrappers.set(ins.resultId, ins.words[2]);
+    else if ((ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) && ins.resultId != null) wrappers.set(ins.resultId, ins.words[1]);
+  }
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
+    if (ins.op === Op.SourceContinued || ins.op === Op.Source || ins.op === Op.SourceExtension ||
+        ins.op === Op.String || ins.op === Op.Extension || ins.op === Op.MemoryModel ||
+        ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
+    if (ins.op === Op.TypeImage || wrappers.has(ins.resultId ?? -1)) continue; // types are users only through the wrapper fixpoint below
+    if (ins.resultType != null) live.add(ins.words[0]);
+    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+    for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [id, child] of wrappers) {
+      if (live.has(id) && !live.has(child)) { live.add(child); grew = true; }
+    }
+  }
+  const dead = new Set(candidates.filter(id => !live.has(id)));
+  if (!dead.size) return false;
+  grew = true;
+  while (grew) {
+    grew = false;
+    for (const [id, child] of wrappers) {
+      if (!dead.has(id) && !live.has(id) && dead.has(child)) { dead.add(id); grew = true; }
+    }
+  }
+  const before = mod.insns.length;
+  mod.insns = mod.insns.filter(i => {
+    if (i.resultId != null && dead.has(i.resultId)) return false;
+    if ((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && dead.has(i.words[0])) return false;
+    return true;
+  });
+  if (mod.insns.length === before) return false;
+  log.push('spirvfix: pruned ' + dead.size + ' dead format-less storage image declaration(s) (storage image types no variable or instruction referenced, plus their unreferenced wrapper types)');
+  // The 55/56 capabilities license format-less storage access; when the
+  // prune removed the module's LAST format-less storage type they are
+  // stray declarations the translator cannot consume (R14 strips them
+  // under the same condition when it resolves the formats itself, but
+  // it runs before this prune and still saw the dead types).
+  if (!mod.insns.some(i => i.op === Op.TypeImage && i.words[6] === 2 && i.words[7] === 0)) {
+    const n = mod.insns.length;
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 55 || i.words[0] === 56)));
+    if (mod.insns.length !== n) log.push('spirvfix: stripped StorageImage{Read,Write}WithoutFormat capabilities (no format-less storage image remains)');
+  }
+  return true;
+}
+
 export function rewriteRootDescriptors(mod, log) {
   const analysis = analyzeRootDescriptors(mod);
   const { ctx } = analysis;
@@ -4179,6 +4353,12 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   try {
     if (injectStorageImageFormats(mod, log, storageFormats)) applied.push('storage-image-format');
   } catch (e) { log.push('R14 failed: ' + (e.message || e)); }
+  try {
+    if (splitSpecializedCloneBindings(mod, log)) applied.push('specialized-binding-split');
+  } catch (e) { log.push('R15a-split failed: ' + (e.message || e)); }
+  try {
+    if (pruneDeadStorageImageTypes(mod, log)) applied.push('prune-dead-storage-image-types');
+  } catch (e) { log.push('R14-prune failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -4187,4 +4367,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];
+export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];
