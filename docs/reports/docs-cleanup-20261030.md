@@ -23,7 +23,7 @@ none in the tracked tree.
 
 ## Changes (one commit each)
 
-1. `52f120c0e` — **rewrote `docs/WINBOX-STATUS.md`.** The file whose
+1. `2f649d419` — **rewrote `docs/WINBOX-STATUS.md`.** The file whose
    header says "keep updated; read this first" was a 2026-10-26
    snapshot: it named build 11 as live with the merged tree "NOT
    deployed yet" (the site has shipped several builds since, currently
