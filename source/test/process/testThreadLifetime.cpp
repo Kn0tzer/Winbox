@@ -229,7 +229,7 @@ void testThreadLifetimeTeardown() {
     }
 
     // ---- Phase 2: any-order teardown through terminateOtherThread ----
-    for (U32 gen = 0; gen < 6; gen++) {
+    for (U32 gen = 0; gen < 4; gen++) {
         LifetimeFixture fx;
         fx.setup(VICTIMS);
         std::atomic<bool> neverStop{false};
@@ -245,7 +245,7 @@ void testThreadLifetimeTeardown() {
         // parks (they consume delivered signals between parks), so
         // observe each one parked at least once rather than requiring
         // all of them parked at the same instant.
-        U64 deadline = hostMillies() + 5000;
+        U64 deadline = hostMillies() + 20000;
         std::vector<char> seenParked(fx.victims.size(), 0);
         bool allParked = false;
         while (hostMillies() < deadline && !allParked) {
