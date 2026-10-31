@@ -113,6 +113,9 @@ void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
 void testProcessVm64Syscalls();
 void testEpollPwait2Syscall();
+void testEpollPwaitSyscall();
+void testDup3Syscall();
+void testAccept4Syscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
@@ -174,6 +177,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
+    {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
+    {testDup3Syscall, "Test x64 dup3 syscall"},
+    {testAccept4Syscall, "Test x64 accept4 syscall"},
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},

@@ -308,6 +308,22 @@ U32 klisten(KThread* thread, U32 socket, U32 backlog) {
 }
 
 U32 kaccept(KThread* thread, U32 socket, U32 address, U32 len, U32 flags) {
+    // The flags arrive in the guest accept4 ABI encoding
+    // (SOCK_NONBLOCK == O_NONBLOCK, SOCK_CLOEXEC == O_CLOEXEC), while
+    // the socket implementations consume the internal encoding
+    // (K_O_NONBLOCK, and the descriptor flag as the FD_CLOEXEC bit).
+    // Validate and translate here, at the single entry point, so the
+    // 32-bit and 64-bit accept4 paths share one semantics. Before
+    // this translation existed, the implementations tested the
+    // FD_CLOEXEC bit (1) against the guest's O_CLOEXEC value
+    // (0x80000), so accept4's SOCK_CLOEXEC was silently dropped and
+    // the accepted descriptor leaked across exec. Plain accept
+    // passes flags == 0 and is unaffected.
+    if (flags & ~(K_O_NONBLOCK | K_O_CLOEXEC)) {
+        return -K_EINVAL;
+    }
+    const U32 internalFlags = (flags & K_O_NONBLOCK ? K_O_NONBLOCK : 0) |
+                              (flags & K_O_CLOEXEC ? FD_CLOEXEC : 0);
     KFileDescriptorPtr fd = thread->process->getFileDescriptor(socket);
 
     if (!fd) {
@@ -320,7 +336,7 @@ U32 kaccept(KThread* thread, U32 socket, U32 address, U32 len, U32 flags) {
     if (!s->listening) {
         return -K_EINVAL;
     }
-    return s->accept(thread, fd, address, len, flags);
+    return s->accept(thread, fd, address, len, internalFlags);
 }
 
 U32 kgetsockname(KThread* thread, U32 socket, U32 address, U32 plen) {
