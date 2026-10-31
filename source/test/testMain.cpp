@@ -86,6 +86,7 @@ void testGl64ClientArrayIndexRange();
 void testTimerfdCore();
 void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
+void testMemfdCreate();
 void testMemfdSeals();
 void testMemfdNodeOps();
 void testFsReadNativeFile();
@@ -152,6 +153,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
@@ -831,6 +833,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
