@@ -1,0 +1,81 @@
+; FD-16 real-module shape, distilled from captured Godot PSO module
+; 7ad22adecec4515c.spv (vkd3d-proton output): a SAMPLED texel buffer
+; reached through a descriptor-heap runtime array whose element is a
+; BARE OpTypeImage (loaded directly, OpImageFetch, no sampled-image
+; wrapper and no sampler), indexed from root constants at several
+; signatures -- member 0 +0/+1/+2, member 2 +0, member 1 +0 -- in a
+; SPIR-V 1.3 module whose entry point lists only its Input builtin.
+; A dummy UBO at set 2 binding 3 makes the set's max binding 3, so
+; specialized clones past the first must land on synthetic slots 4+.
+OpCapability Shader
+OpCapability SampledBuffer
+OpCapability RuntimeDescriptorArray
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpName %main "main"
+OpName %RootConstants "RootConstants"
+OpName %registers "registers"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpMemberDecorate %RootConstants 1 Offset 4
+OpMemberDecorate %RootConstants 2 Offset 8
+OpDecorate %heap DescriptorSet 2
+OpDecorate %heap Binding 0
+OpDecorate %Ubo Block
+OpMemberDecorate %Ubo 0 Offset 0
+OpDecorate %ubo DescriptorSet 2
+OpDecorate %ubo Binding 3
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%v3uint = OpTypeVector %uint 3
+%v4uint = OpTypeVector %uint 4
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%img = OpTypeImage %uint Buffer 0 0 0 1 Unknown
+%arr = OpTypeRuntimeArray %img
+%_ptr_UniformConstant_arr = OpTypePointer UniformConstant %arr
+%heap = OpVariable %_ptr_UniformConstant_arr UniformConstant
+%_ptr_UniformConstant_img = OpTypePointer UniformConstant %img
+%RootConstants = OpTypeStruct %uint %uint %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%Ubo = OpTypeStruct %uint
+%_ptr_Uniform_Ubo = OpTypePointer Uniform %Ubo
+%ubo = OpVariable %_ptr_Uniform_Ubo Uniform
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_2 = OpConstant %uint 2
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%pc0 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%i0 = OpLoad %uint %pc0
+%a0 = OpAccessChain %_ptr_UniformConstant_img %heap %i0
+%t0 = OpLoad %img %a0
+%f0 = OpImageFetch %v4uint %t0 %gx
+%i1 = OpIAdd %uint %i0 %uint_1
+%a1 = OpAccessChain %_ptr_UniformConstant_img %heap %i1
+%t1 = OpLoad %img %a1
+%f1 = OpImageFetch %v4uint %t1 %gx
+%i2 = OpIAdd %uint %i0 %uint_2
+%a2 = OpAccessChain %_ptr_UniformConstant_img %heap %i2
+%t2 = OpLoad %img %a2
+%f2 = OpImageFetch %v4uint %t2 %gx
+%pc2 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_2
+%i3 = OpLoad %uint %pc2
+%a3 = OpAccessChain %_ptr_UniformConstant_img %heap %i3
+%t3 = OpLoad %img %a3
+%f3 = OpImageFetch %v4uint %t3 %gx
+%pc1 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_1
+%i4 = OpLoad %uint %pc1
+%a4 = OpAccessChain %_ptr_UniformConstant_img %heap %i4
+%t4 = OpLoad %img %a4
+%f4 = OpImageFetch %v4uint %t4 %gx
+OpReturn
+OpFunctionEnd

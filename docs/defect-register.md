@@ -405,7 +405,8 @@ do not close the entry until they land.
   no symptom; the build script stamps them on their next
   rebuild.
 - **FD-16 — One class of shader still cannot build a pipeline:
-  texel buffers reached through a descriptor-heap array.**
+  texel buffers reached through a descriptor-heap array.
+  CLOSED 2026-10-31 — see CL-13.**
   *(High for the D3D12 class)* A guest's shader module whose
   texel buffer is reached through a descriptor-heap runtime
   array is rejected, because the serving classifiers cannot
@@ -925,6 +926,49 @@ do not close the entry until they land.
   (boot32-vkboot.log, boot32-vkboot2.log,
   vkboot-attempt1-artifacts/, d3d12-32.log) and
   `docs/reports/merge-batch3-20261031.md`.
+- **FD-50 — The native Vulkan bridge test harness aborts at
+  the pipeline-cache assertions, so every later section of
+  the harness never runs.** *(Medium, test harness)* Found
+  by the FD-16 lane (2026-10-31): `tools/vkd3d/tests/
+  run-native.py` aborts on the pristine integration tip —
+  the fn-921 `vkGetPipelineCacheData` test call makes the
+  bridge write through a guest address (`0xFFFF00000040`)
+  that the harness's bounded guest-memory model rejects
+  with an assertion, killing the process before the
+  sections after it (including the SPIR-V audit guards)
+  execute. The abort is identical on unmodified
+  `f3fd57d58`, so it is not a regression from any lane's
+  fix; with only the two fn-921/922 assertions skipped in
+  a scratch copy the full harness passes end to end
+  (52 PASS lines). Either the bridge's host-pointer
+  marshalling for the pipeline-cache functions must
+  respect the harness's memory model, or the harness must
+  give those calls guest memory they may legally write;
+  until one of those lands, `run-native.py` cannot serve
+  as a gate for anything past fn-921. Evidence:
+  `docs/reports/fd16-texel-heap-arrays-20261031.md`.
+  *(Numbered FD-48 on the lane branch; renumbered
+  FD-50 at integration — FD-48 was taken on the
+  integration branch by the restart-certification
+  entry above.)*
+- **FD-49 — A class of captured Godot shader modules fails
+  translation on format-less storage images.** *(Severity
+  unmeasured)* Found by the FD-16 lane (2026-10-31) while
+  replaying the modules the Godot demo submits: five
+  modules fail in the vendored translator with
+  `UnsupportedCapability(StorageImageReadWithoutFormat)`
+  and one with `InvalidStorageImageWithoutFormat` — storage
+  images used without a format qualifier, which WebGPU
+  cannot describe as-is. No sampled/image-buffer capability
+  is involved; this is a different class from FD-16, and it
+  is not what blocked the demo's first frame (the guest log
+  shows exactly one pipeline failure, the FD-16 one). It
+  will block whichever guest pipelines use those modules
+  once they are reached. Evidence: the module dumps and
+  per-module verdicts in `wt-fd16/test-results/fd16/
+  godot-capture/` (modules `21fc48e3`, `40b0cb95`,
+  `9347f1b2`, `ba9896b5`, `c9c003a7`, `e1ca507c`), recorded
+  in `docs/reports/fd16-texel-heap-arrays-20261031.md`.
 
 ---
 
@@ -1136,6 +1180,45 @@ dead-start fix and needs composition care.
   fault-looping leftover that drove the original floods
   no longer exists under test isolation. Record:
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+- **CL-13 — A texel buffer reached through a descriptor-heap
+  runtime array was rejected at shader creation (was
+  FD-16).** Fixed on branch `lane-fd16`, commits
+  `9d7b86428` (spirvfix, tier, fixtures) and `e7377591b`
+  (bridge audit mirror, native guards). The two serving
+  classifiers disagreed with the shape in two layers: the
+  translator specialized descriptor arrays only for a
+  single index signature and never re-ran its texel
+  conversion on the clones, and the bridge audit recognized
+  texel servability only on direct variables. Both sides
+  now serve the class in step: specialization produces one
+  scalar clone per classifiable index signature (the real
+  Godot heap uses five over one base; clones past the first
+  take synthetic slots in the same set and resolve against
+  the guest heap binding), the texel conversion — including
+  the bare-image form the real modules use — runs on the
+  clones, Coherent decorations that the translator rejects
+  on clones are dropped, pre-1.4 entry-point interfaces are
+  left untouched, and neither side's dead-type sweep counts
+  a constant's value as an id reference any more. Along the
+  way the lane also fixed three silent mis-translations in
+  the same machinery (array loads traced onto a direct
+  variable sharing the type; deferred texel variables split
+  as combined samplers; dangling names/copies for removed
+  variables). Proof: eight hand-authored fixtures in the
+  vkd3d-proton heap idiom pinned on both sides — the JS
+  suites (88 pass / 0 fail over the five SPIR-V suites,
+  sabotage-verified) and native audit guards over the same
+  fixture bytes (52 PASS via the FD-48 scratch method,
+  sabotage-verified); all five texel-heap modules captured
+  from the real Godot demo translate after the fix; and in
+  the product path itself the fixed dist runs the Godot
+  demo through the real launcher with zero capability
+  rejections and zero pipeline failures where the previous
+  build logged both rejections and the
+  `Create(Graphics)PipelineState failed 0x80004005` error,
+  vkd3d's pipeline cache flushing 100+ compiled pipelines
+  (`wt-fd16/test-results/fd16/godot-proof5/`). Record:
+  `docs/reports/fd16-texel-heap-arrays-20261031.md`.
 
 ---
 

@@ -335,6 +335,6 @@ test('SampledBuffer/ImageBuffer are named rejections with a texel-servable exemp
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   assert.ok(table.includes('case 46: return "SampledBuffer";'), 'SampledBuffer is a named rejection');
   assert.ok(table.includes('case 47: return "ImageBuffer";'), 'ImageBuffer is a named rejection');
-  assert.ok(audit.includes('const bool texelServable = vk64TexelBufferServable(w);'), 'audit computes the texel mirror classifier');
+  assert.ok(audit.includes('const bool texelServable = vk64TexelBufferServable(w, r15Arr.servableVars);'), 'audit computes the texel mirror classifier');
   assert.ok(audit.includes('if ((c == 46 || c == 47) && texelServable) continue;'), 'texel-servable shapes are exempted');
 });

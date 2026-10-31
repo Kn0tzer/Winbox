@@ -183,8 +183,12 @@ export function scanWgslResources(wgsl) {
     // re-rooted root descriptor carries its push byte offset (resolve the
     // buffer at bind time from the draw's ROOT_DESCS record).
     const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))_?$/.exec(decl.name);
-    if (arr && +arr[1] === decl.group && +arr[2] === decl.binding)
+    if (arr && +arr[1] === decl.group) {
       decl.arrSig = arr[3] !== undefined ? { kind: 'push', pushOff: +arr[3], add: +arr[4] } : { kind: 'const', value: +arr[5] };
+      // A clone past the first for its array sits on a synthetic slot;
+      // the name still carries the guest binding it resolves through.
+      if (+arr[2] !== decl.binding) decl.origBinding = +arr[2];
+    }
     const root = /^bw_root_p(\d+)_?$/.exec(decl.name);
     if (root) decl.rootOff = +root[1];
   }
