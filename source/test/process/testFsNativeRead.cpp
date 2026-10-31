@@ -10,6 +10,9 @@
 #include "boxedwine.h"
 #include "../../io/fs.h"
 #include "../../io/fszip.h"
+#include "../../io/fsfilenode.h"
+#include "../../io/fsfileopennode.h"
+#include <fcntl.h>
 #include "../cpu/testCPU.h"
 
 #include <cstdio>
@@ -249,6 +252,45 @@ void testFsZipExtractCorrupt() {
     rmdir(outDir);
     unlink(zipPath);
 #endif
+}
+
+// Host read/write failures on an open file node used to come back as a
+// 0xFFFFFFFF byte count (the -1 return cast to U32), which callers
+// trusted as a huge successful transfer. An invalid handle is the
+// deterministic host error: every read/write on it fails with EBADF.
+void testFsFileOpenNodeIoErrors() {
+    std::shared_ptr<FsFileNode> node = std::make_shared<FsFileNode>(0x3FFFFF01, 0, B("/host-io-test"), B(""), B(""), false, false, nullptr);
+    {
+        FsFileOpenNode bad(node, K_O_RDWR, 0xFFFFFFFF);
+        U8 buffer[8] = {};
+        if (bad.readNative(buffer, sizeof(buffer)) != 0) {
+            testFail("FsFileOpenNode::readNative on an invalid handle did not return 0");
+        }
+        if (bad.writeNative(buffer, sizeof(buffer)) != 0) {
+            testFail("FsFileOpenNode::writeNative on an invalid handle did not return 0");
+        }
+    }
+    // A real descriptor still reads and writes exactly.
+    char filePath[256];
+    snprintf(filePath, sizeof(filePath), "/tmp/bw64-hostio-file-%d", (int)getpid());
+    int f = ::open(filePath, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    if (f < 0) {
+        testFail("could not create temp file %s", filePath);
+        return;
+    }
+    {
+        FsFileOpenNode good(node, K_O_RDWR, (U32)f);
+        U8 out[3] = { 'x', 'y', 'z' };
+        if (good.writeNative(out, 3) != 3) {
+            testFail("FsFileOpenNode::writeNative on a real file did not write 3 bytes");
+        }
+        good.seek(0);
+        U8 in[3] = {};
+        if (good.readNative(in, 3) != 3 || memcmp(in, "xyz", 3) != 0) {
+            testFail("FsFileOpenNode::readNative on a real file did not return the written bytes");
+        }
+    }
+    unlink(filePath);
 }
 
 #endif

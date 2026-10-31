@@ -71,6 +71,18 @@ void FsFileNode::getTmpPath(BString& nativePath, BString& localPath) {
     }
 }
 
+namespace {
+// Host-open failures repeat (guests probe many paths), so report with
+// the counting-cap shape: first 64, then every 1024th, always count=.
+void logHostOpenFailure(const BString& path, const BString& nativePath, int err) {
+    static std::atomic<unsigned long long> failures{0};
+    unsigned long long n = ++failures;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-FAIL host-open path=%s native=%s errno=%d (%s) outcome=open refused count=%llu", path.c_str(), nativePath.c_str(), err, strerror(err), n);
+    }
+}
+}
+
 bool FsFileNode::remove() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->openNodesMutex);
     bool result = false;
@@ -117,7 +129,8 @@ bool FsFileNode::remove() {
         BString newNativePath = FsFileNode::getNativeTmpPath();
 
         if (::rename(nativePath.c_str(), newNativePath.c_str())!=0) {
-            klog_fmt("could not rename %s", nativePath.c_str());
+            int err = errno;
+            klog_fmt("BW64-FAIL fs-remove-rename path=%s native=%s dest=%s errno=%d (%s) outcome=file stays at old path; open handles keep the old location", this->path.c_str(), nativePath.c_str(), newNativePath.c_str(), err, strerror(err));
         }
 
         this->nativePath = newNativePath;
@@ -257,10 +270,19 @@ FsOpenNode* FsFileNode::open(U32 flags) {
 #endif
     f = ::open(this->nativePath.c_str(), openFlags, 0666);	
     if (f==0xFFFFFFFF) {
+        int openErr = errno;
 #ifdef BOXEDWINE_ZLIB
         if (this->zipNode && (flags & K_O_ACCMODE)==K_O_RDONLY)
             return this->zipNode->open(shared_from_this(), flags);
 #endif
+        // The caller turns errno into the guest error, so it must
+        // survive this function; but a failed host open used to leave
+        // no trace at all. ENOENT/ENOTDIR are routine guest probing
+        // (existence checks) and are not failures worth a line.
+        if (openErr != ENOENT && openErr != ENOTDIR) {
+            logHostOpenFailure(this->path, this->nativePath, openErr);
+        }
+        errno = openErr;
         return nullptr;
     }
     return new FsFileOpenNode(std::dynamic_pointer_cast<FsFileNode>(shared_from_this()), flags, f);
