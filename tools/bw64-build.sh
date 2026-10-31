@@ -287,5 +287,15 @@ cd "$REPO"
 # script reports BUILD COMPLETE for the new one.
 EXPORT_OUT="${WINE_BUILD_OUT:-dist}"
 [[ "$EXPORT_OUT" = /* ]] || EXPORT_OUT="$REPO/$EXPORT_OUT"
-node tools/browser/build.mjs && BW_TEST_DIST="$EXPORT_OUT" node tools/browser/verify-dist.mjs
+# A bare `cmd1 && cmd2` statement would swallow a failed export: the
+# && list consumes the exit status, so set -e never fires and BUILD
+# COMPLETE printed anyway (observed live 2026-10-30: stage-dependencies
+# died on a missing payload, build.mjs exited 1, BUILD COMPLETE still
+# printed). Both steps die loudly by name instead.
+if ! node tools/browser/build.mjs; then
+    die 'browser export failed (tools/browser/build.mjs exited non-zero); BUILD COMPLETE not claimed'
+fi
+if ! BW_TEST_DIST="$EXPORT_OUT" node tools/browser/verify-dist.mjs; then
+    die 'browser export verification failed (tools/browser/verify-dist.mjs exited non-zero); BUILD COMPLETE not claimed'
+fi
 log 'BUILD COMPLETE'
