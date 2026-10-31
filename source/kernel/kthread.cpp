@@ -62,6 +62,22 @@ KThread::~KThread() {
 #endif
 }
 
+void KThread::addRef() {
+    this->refCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void KThread::releaseRef() {
+    // FD-44: the last release destroys the thread. Destruction runs
+    // ~KThread (which deletes the owned CPU/CPU64) on whichever host
+    // thread drops the final reference; deleteThread has always run
+    // cleanup() first, so the destructor's second internalCleanup pass
+    // finds the memory-touching teardown already disarmed
+    // (clear_child_tid and robustList are zeroed by the first pass).
+    if (this->refCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        delete this;
+    }
+}
+
 void KThread::cleanup() {
     memory->threadCleanup(id);
     internalCleanup();

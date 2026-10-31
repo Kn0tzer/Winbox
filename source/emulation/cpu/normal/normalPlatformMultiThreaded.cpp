@@ -239,7 +239,9 @@ void scheduleThread(KThread* thread) {
 }
 
 void terminateOtherThread(const KProcessPtr& process, U32 threadId) {
-    KThread* thread = process->getThreadById(threadId);
+    // FD-44: hold a reference while marking and waking the target --
+    // it can retire (and release the table's reference) concurrently.
+    KThread* thread = process->getThreadByIdRef(threadId);
     if (thread) {
         thread->terminating = true;
 
@@ -251,6 +253,7 @@ void terminateOtherThread(const KProcessPtr& process, U32 threadId) {
             cond->signal();
             cond->unlock();
         }
+        thread->releaseRef();
     }
 
     while (true) {

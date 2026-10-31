@@ -4475,13 +4475,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
     klog_fmt("BW_THREAD_DUMP begin maxTid=%u", maxTid);
     for (U32 tid = 1; tid <= maxTid; ++tid) {
         bool lockBlocked = false;
-        KThread* thread = KSystem::tryGetThreadById(tid, lockBlocked);
+        // FD-44: reference-held across the dump reads below (the dump
+        // is best-effort and never blocks, hence the try-lock variant);
+        // released on every path out of this iteration.
+        KThread* thread = KSystem::tryGetThreadByIdRef(tid, lockBlocked);
         if (lockBlocked) {
             ++skippedLock;
             klog_fmt("BW_THREAD_DUMP unavailable tid=%u lock=processes/threads", tid);
             continue;
         }
-        if (!thread || !thread->process) continue;
+        if (!thread) continue;
+        if (!thread->process) { thread->releaseRef(); continue; }
         ++dumped;
         const U32 pid = thread->process->id;
         const bool blocked = thread->waitingCond != nullptr;
@@ -4527,6 +4531,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                 }
             }
             bwDumpGuestStack(c, pid, thread->id);
+            thread->releaseRef();
             continue;
         }
 #endif
@@ -4538,6 +4543,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                  c ? c->reg[2].u32 : 0, c ? c->reg[6].u32 : 0,
                  c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
                  c ? c->eip.u32 : 0, waitName);
+        thread->releaseRef();
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);
@@ -4757,9 +4763,11 @@ void ksyscall64(CPU64* cpu) {
                 std::memcpy(&infoCode, info + 8, sizeof(infoCode));
                 if (infoSignal != (S32)a2) { ret = (U64)-K_EINVAL; break; }
                 if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
-                KThread* targetThread = target->getThread();
+                // FD-44: reference-held (see KProcess::getThreadByIdRef).
+                KThread* targetThread = target->getThreadRef();
                 if (!targetThread) { ret = (U64)-K_ESRCH; break; }
                 ret = (U64)(S64)queueSiginfo64(targetThread, (U32)a2, info);
+                targetThread->releaseRef();
             } else if (a2 == 0) {
                 ret = 0;
             } else {
@@ -5071,16 +5079,18 @@ void ksyscall64(CPU64* cpu) {
             U32 sig       = (U32)(isTgkill ? a3 : a2);
             U64 ourTid    = cpu->thread ? (U64)cpu->thread->id : 1;
             if (targetTid != (U32)ourTid) {
-                KThread* target = KSystem::getThreadById(targetTid);
+                // FD-44: reference-held across the delivery below (see
+                // KProcess::getThreadByIdRef); released on every exit.
+                KThread* target = KSystem::getThreadByIdRef(targetTid);
                 if (!target) { ret = (U64)-K_ESRCH; break; }
-                if (sig == 0) { ret = 0; break; } // liveness probe — target exists
+                if (sig == 0) { target->releaseRef(); ret = 0; break; } // liveness probe — target exists
                 // Don't arm a pending signal on a thread that is already tearing
                 // down: it will never reach a normal scheduler slice to take it,
                 // and a thread parked in futex64's wait loop during exit would
                 // otherwise keep trying to deliver it mid-kill — a teardown
                 // deadlock. The caller still sees success (the thread is on its
                 // way out, which is what a signal would have accomplished).
-                if (target->terminating) { ret = 0; break; }
+                if (target->terminating) { target->releaseRef(); ret = 0; break; }
                 // Async cross-thread delivery: arm the target's pending-signal;
                 // the 64-bit scheduler delivers it (deliverSignalSync) at the
                 // target's next slice, before it runs guest code. We can't build
@@ -5106,6 +5116,7 @@ void ksyscall64(CPU64* cpu) {
                     }
                 }
 #endif
+                target->releaseRef();
                 ret = 0;
                 break;
             }
@@ -6168,7 +6179,8 @@ void ksyscall64(CPU64* cpu) {
                 ? cpu->thread->process : KSystem::getProcess((U32)tgid);
             if (!target) { ret = (U64)-K_ESRCH; break; }
             if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
-            KThread* targetThread = threadDirected ? target->getThreadById((U32)tid) : target->getThread();
+            // FD-44: reference-held (see KProcess::getThreadByIdRef).
+            KThread* targetThread = threadDirected ? target->getThreadByIdRef((U32)tid) : target->getThreadRef();
             if (!targetThread) { ret = (U64)-K_ESRCH; break; }
             if (!sys_rangeHasPermission64(cpu->memory, infoAddress, 128, K64_PAGE_READ)) {
                 ret = (U64)-K_EFAULT;
@@ -6182,6 +6194,7 @@ void ksyscall64(CPU64* cpu) {
             if (infoSignal != (S32)sig) { ret = (U64)-K_EINVAL; break; }
             if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
             ret = (U64)(S64)queueSiginfo64(targetThread, (U32)sig, info);
+            targetThread->releaseRef();
             break;
         }
         case X64_SYS_pause:

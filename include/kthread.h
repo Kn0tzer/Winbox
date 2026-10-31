@@ -19,6 +19,8 @@
 #ifndef __KTHREAD_H__
 #define __KTHREAD_H__
 
+#include <atomic>
+
 #define MAX_POLL_DATA 256
 
 #define TLS_ENTRIES 10
@@ -66,6 +68,21 @@ class KThread {
 public:
     KThread(U32 id, const KProcessPtr& process);
     ~KThread();
+
+    // FD-44: cross-thread lifetime references. The count starts at 1,
+    // owned by whoever created the thread (for table threads, the
+    // process thread table's teardown path). KProcess::deleteThread
+    // releases that reference instead of deleting the thread outright.
+    // Any host thread that fetches a KThread from a table and uses it
+    // beyond the lookup -- signal delivery (KThread::signal,
+    // KThread::runSignals), termination, siginfo queueing -- must hold
+    // a reference taken under the table lock (KProcess::getThreadByIdRef
+    // and friends), so the object, and the CPU it owns, cannot be freed
+    // underneath it. The last release deletes the object. Direct
+    // `delete` remains correct only for threads whose reference was
+    // never shared (never table-registered and never scheduled).
+    void addRef();
+    void releaseRef();
 
     static void runOnMainThread(std::function<void()> callback);
 
@@ -146,6 +163,8 @@ public:
     U64 userTime = 0;    
 #endif
     bool terminating = false;
+    // FD-44: see addRef/releaseRef above.
+    std::atomic<U32> refCount{1};
     U32 clear_child_tid = 0;
 #ifdef BOXEDWINE_GUEST_X64
     // 64-bit CLONE_CHILD_CLEARTID address (set_tid_address / clone tls arg).
