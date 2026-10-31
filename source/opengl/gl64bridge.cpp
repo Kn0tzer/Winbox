@@ -323,6 +323,25 @@ bool               g_inImmediate = false;   // between glBegin and glEnd
 GLenum             g_immMode     = 0;        // mode passed to glBegin
 std::vector<ImmOp> g_immOps;                 // recorded calls, replayed at glEnd
 
+// Emscripten's GL library in this build has NO glMultiTexCoord2f symbol
+// (the full build's link fails on it -- which is why the dispatcher case
+// used to compile the call out entirely on WASM). glemu expresses a
+// per-unit current texcoord through the client-active texture unit plus
+// glTexCoord2f, both of which do link. Restore the active unit to
+// GL_TEXTURE0 afterwards; the bridge's own pointer calls always select
+// their unit explicitly, so they are unaffected by the host unit state.
+inline void hostMultiTexCoord2f(GLenum target, GLfloat s, GLfloat t) {
+    U32 unit = target >= 0x84C0 ? (U32)(target - 0x84C0) : (U32)target;
+    if (unit > 1) {
+        if (gl64NoteOnce("multitexcoord-unit", target))
+            klog_fmt("BW64-FAIL gl-multitexcoord target=0x%x outcome=unit beyond the two modelled units dropped", (unsigned)target);
+        return;
+    }
+    glClientActiveTexture((GLenum)(0x84C0 + unit));
+    glTexCoord2f(s, t);
+    glClientActiveTexture((GLenum)0x84C0);
+}
+
 // Replay a recorded glBegin..glEnd block, re-emitting the CURRENT color (and
 // normal) immediately BEFORE every vertex.
 //
@@ -349,6 +368,9 @@ inline void replayImmBlock(const std::vector<ImmOp>& ops) {
     bool  haveColor = false, haveNormal = false;
     float col[4]  = {1, 1, 1, 1};
     float norm[3] = {0, 0, 1};
+    // Current texcoords per unit (FD-15: these used to be dropped here).
+    float tc[2][2] = {{0, 0}, {0, 0}};
+    bool  haveTc[2] = {false, false};
     for (const ImmOp& op : ops) {
         switch (op.fn) {
             case GL64_fn_glColor3f:
@@ -363,18 +385,32 @@ inline void replayImmBlock(const std::vector<ImmOp>& ops) {
                 norm[0] = op.f[0]; norm[1] = op.f[1]; norm[2] = op.f[2];
                 haveNormal = true;
                 break;
+            case GL64_fn_glMultiTexCoord2fARB: {
+                // f[0] carries the target (GL_TEXTURE0_ARB + unit, or a bare
+                // unit). Track it as current state, like color/normal, and
+                // re-assert it per vertex below (FD-15).
+                U32 unit = (U32)op.f[0] >= 0x84C0 ? (U32)op.f[0] - 0x84C0 : (U32)op.f[0];
+                if (unit < 2) {
+                    tc[unit][0] = op.f[1]; tc[unit][1] = op.f[2];
+                    haveTc[unit] = true;
+                } else if (gl64NoteOnce("imm-replay-tcunit", (U32)op.f[0])) {
+                    klog_fmt("BW64-FAIL gl-imm-replay target=0x%x outcome=texcoord unit beyond the two tracked units dropped", (unsigned)op.f[0]);
+                }
+                break;
+            }
             case GL64_fn_glVertex2f:
             case GL64_fn_glVertex3f:
                 // Re-assert the current attributes for THIS vertex so glemu sees
                 // one color (and normal) per vertex — a uniform interleaved layout.
                 if (haveColor)  glColor4f(col[0], col[1], col[2], col[3]);
                 if (haveNormal) glNormal3f(norm[0], norm[1], norm[2]);
+                for (int u = 0; u < 2; u++)
+                    if (haveTc[u]) hostMultiTexCoord2f((GLenum)(0x84C0 + u), tc[u][0], tc[u][1]);
                 if (op.fn == GL64_fn_glVertex2f) glVertex2f(op.f[0], op.f[1]);
                 else                             glVertex3f(op.f[0], op.f[1], op.f[2]);
                 break;
             default:
-                // A recorded op this replay does not re-emit (today:
-                // glMultiTexCoord2fARB, recorded on the WebGPU path) would
+                // A recorded op this replay does not re-emit would
                 // otherwise vanish with no trace; say so once per fn id.
                 if (gl64NoteOnce("imm-replay", op.fn))
                     klog_fmt("BW64-FAIL gl-imm-replay fn=%u outcome=recorded immediate-mode call dropped by block replay", (unsigned)op.fn);
@@ -868,13 +904,33 @@ size_t legacyTypeSize(GLenum type) {
         case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
         case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: return 4;
         case GL_DOUBLE: return 8;
+        case 0x140B: return 2; // GL_HALF_FLOAT (FD-15: was unmodelled)
+        case 0x140C: return 4; // GL_FIXED (FD-15: was unmodelled)
         default:
-            // Unknown array type: callers proceed with a 0 component size,
-            // which fabricates zeroed vertex data. Say so once per type.
+            // No size model for this array type. Returning 0 makes the
+            // copy helpers refuse, and the draw entry points consult
+            // legacyDrawUnmodelledType() and refuse the draw outright --
+            // no vertex data is fabricated (FD-15). Say so once per type.
             if (gl64NoteOnce("legacy-type-size", type))
-                klog_fmt("BW64-FAIL gl-legacy-type-size type=0x%x outcome=component size 0 (client array reads as zeros)", (unsigned)type);
+                klog_fmt("BW64-FAIL gl-legacy-type-size type=0x%x outcome=no size model; draws using this array are refused (no data fabricated)", (unsigned)type);
             return 0;
     }
+}
+
+// FD-15: true when any enabled client-memory array carries a type with no
+// size model. Such arrays cannot be copied, and drawing anyway would render
+// data that was never the guest's (the copies are the only source the draw
+// paths have for client-memory arrays). Buffer-backed arrays are excluded:
+// their types go to the host/JS layer, which validates them itself.
+bool legacyArrayTypeUnmodelled(const LegacyClientArray& array) {
+    return array.enabled && !array.bufferBacked && array.configured &&
+           legacyTypeSize(array.type) == 0;
+}
+bool legacyDrawUnmodelledType() {
+    return legacyArrayTypeUnmodelled(g_legacyVertexArray) ||
+           legacyArrayTypeUnmodelled(g_legacyColorArray) ||
+           legacyArrayTypeUnmodelled(g_legacyTexCoordArrays[0]) ||
+           legacyArrayTypeUnmodelled(g_legacyTexCoordArrays[1]);
 }
 
 bool copyLegacyArray(GLGuestCPU* cpu, const LegacyClientArray& array,
@@ -926,6 +982,29 @@ bool copyLegacyIndices(GLGuestCPU* cpu, GLenum type, GLsizei count, U64 pointer,
     return true;
 }
 
+float legacyHalfToFloat(U16 h) {
+    const U32 sign = (U32)(h & 0x8000) << 16;
+    U32 exp = (h >> 10) & 0x1F;
+    U32 frac = h & 0x3FF;
+    U32 bits;
+    if (exp == 0) {
+        if (!frac) {
+            bits = sign;
+        } else { // subnormal: normalize
+            exp = 1;
+            while (!(frac & 0x400)) { frac <<= 1; exp--; }
+            bits = sign | ((exp + 112) << 23) | ((frac & 0x3FF) << 13);
+        }
+    } else if (exp == 31) {
+        bits = sign | (0xFF << 23) | (frac << 13); // Inf / NaN
+    } else {
+        bits = sign | ((exp + 112) << 23) | (frac << 13);
+    }
+    float out;
+    std::memcpy(&out, &bits, sizeof(out));
+    return out;
+}
+
 double legacyVertexComponent(const std::vector<U8>& data, const LegacyClientArray& array,
                             U32 baseIndex, U32 vertexIndex, GLint componentIndex) {
     if (vertexIndex < baseIndex || componentIndex < 0 || componentIndex >= array.size) return 0.0;
@@ -944,6 +1023,8 @@ double legacyVertexComponent(const std::vector<U8>& data, const LegacyClientArra
         case GL_UNSIGNED_INT: { U32 value; std::memcpy(&value, source, sizeof(value)); return value; }
         case GL_FLOAT: { float value; std::memcpy(&value, source, sizeof(value)); return value; }
         case GL_DOUBLE: { double value; std::memcpy(&value, source, sizeof(value)); return value; }
+        case 0x140B: { U16 value; std::memcpy(&value, source, sizeof(value)); return legacyHalfToFloat(value); } // GL_HALF_FLOAT
+        case 0x140C: { S32 value; std::memcpy(&value, source, sizeof(value)); return value / 65536.0; } // GL_FIXED
         default: return 0.0;
     }
 }
@@ -1240,7 +1321,7 @@ bool texParamSupported(GLenum pname) {
             // rather than raising INVALID_ENUM in WebGL2. Log the drop once
             // per distinct pname so the degradation is visible.
             if (gl64NoteOnce("texparam-dropped", pname))
-                klog_fmt("BW64-FAIL gl-texparam pname=0x%x outcome=dropped (not supported by the GL backend)", (unsigned)pname);
+                klog_fmt("BW64-FAIL gl-texparam pname=0x%x outcome=dropped (no backend model; forwarding would poison the guest error state wined3d polls -- conflict recorded in FD-15)", (unsigned)pname);
             return false;   // GL_TEXTURE_LOD_BIAS, GENERATE_MIPMAP, BORDER_COLOR, …
     }
 }
@@ -1685,6 +1766,10 @@ void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>&
     switch (type) {
         case 0x8363: stride=2; components=3; bits[0]=5; bits[1]=6; bits[2]=5;
             shifts[0]=11; shifts[1]=5; break; // 5_6_5
+        case 0x8033: stride=2; bits[0]=bits[1]=bits[2]=bits[3]=4;
+            shifts[0]=12; shifts[1]=8; shifts[2]=4; break; // 4_4_4_4 (FD-15)
+        case 0x8034: stride=2; bits[0]=bits[1]=bits[2]=5; bits[3]=1;
+            shifts[0]=11; shifts[1]=6; shifts[2]=1; break; // 5_5_5_1 (FD-15)
         case 0x8035: stride=4; bits[0]=bits[1]=bits[2]=bits[3]=8;
             shifts[0]=24; shifts[1]=16; shifts[2]=8; break; // 8_8_8_8
         case 0x8367: stride=4; bits[0]=bits[1]=bits[2]=bits[3]=8;
@@ -1908,9 +1993,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x186a3: v = 0; break;  // GLX_SAMPLE_BUFFERS_ARB
                 case 0x186a4: v = 0; break;  // GLX_SAMPLES_ARB
                 default:
+                    // FD-15: an attribute the single config has no value
+                    // for is an error (GLX_BAD_ATTRIBUTE, the value
+                    // glcommon.cpp defines), not a fabricated 0. Guest
+                    // memory stays untouched.
                     if (gl64NoteOnce("glx-fbconfig-attrib", attr))
-                        klog_fmt("BW64-FAIL gl-glx-fbconfig-attrib attr=0x%x outcome=answered 0 (single-config fiction has no value for it)", (unsigned)attr);
-                    v = 0; break;
+                        klog_fmt("BW64-FAIL gl-glx-fbconfig-attrib attr=0x%x outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)", (unsigned)attr);
+                    return 2; // GLX_BAD_ATTRIBUTE
             }
             if (valueAddr) cpu->memory->writed(valueAddr, v);
             return 0; // Success
@@ -2021,21 +2110,26 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             U32 attr = (U32)args.a[1];
             U64 valueAddr = args.a[2];
             U32 v = 0;
+            // FD-15: glXQueryDrawable returns void, so for an attribute we
+            // have no value for, the honest answer is to leave the guest's
+            // output untouched -- writing 0 fabricates one.
+            bool known = false;
             auto pb = g_glxPbuffers.find(drawable);
             if (pb != g_glxPbuffers.end()) {
                 switch (attr) {
-                    case 0x801D: v = pb->second.width; break;   // GLX_WIDTH
-                    case 0x801E: v = pb->second.height; break;  // GLX_HEIGHT
-                    case 0x801B: v = 1; break;  // GLX_PRESERVED_CONTENTS (always true here)
+                    case 0x801D: v = pb->second.width; known = true; break;   // GLX_WIDTH
+                    case 0x801E: v = pb->second.height; known = true; break;  // GLX_HEIGHT
+                    case 0x801B: v = 1; known = true; break;  // GLX_PRESERVED_CONTENTS (always true here)
                     case 0x801F: {              // GLX_EVENT_MASK
                         auto m = g_glxEventMasks.find(drawable);
                         v = (m == g_glxEventMasks.end()) ? 0 : (U32)m->second;
+                        known = true;
                         break;
                     }
                     default:
                         if (gl64NoteOnce("glx-drawable-attrib", attr))
-                            klog_fmt("BW64-FAIL gl-glx-drawable-attrib attr=0x%x outcome=answered 0 for pbuffer drawable", (unsigned)attr);
-                        v = 0; break;
+                            klog_fmt("BW64-FAIL gl-glx-drawable-attrib attr=0x%x outcome=guest value untouched for pbuffer drawable (no fabricated 0)", (unsigned)attr);
+                        break;
                 }
             } else if (attr == 0x801D || attr == 0x801E) { // GLX_WIDTH / GLX_HEIGHT
                 auto& server = XWireServer::instance();
@@ -2044,11 +2138,16 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 auto window = server.windows.find(resolved);
                 if (window != server.windows.end())
                     v = (attr == 0x801D) ? window->second.width : window->second.height;
+                known = true;
             } else if (attr == 0x801F) { // GLX_EVENT_MASK
                 auto m = g_glxEventMasks.find(drawable);
                 v = (m == g_glxEventMasks.end()) ? 0 : (U32)m->second;
+                known = true;
+            } else {
+                if (gl64NoteOnce("glx-drawable-attrib", attr))
+                    klog_fmt("BW64-FAIL gl-glx-drawable-attrib attr=0x%x outcome=guest value untouched for window drawable (no fabricated 0)", (unsigned)attr);
             }
-            if (valueAddr) cpu->memory->writed(valueAddr, v);
+            if (valueAddr && known) cpu->memory->writed(valueAddr, v);
             return 0;
         }
         case GL64_fn_glXGetCurrentReadDrawable:
@@ -2064,9 +2163,11 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x8011: v = 0x8014; break; // GLX_RENDER_TYPE -> GLX_RGBA_TYPE
                 case 0x800C: v = 0; break;      // GLX_SCREEN
                 default:
+                    // FD-15: same disposition as glXGetFBConfigAttrib --
+                    // GLX_BAD_ATTRIBUTE, guest memory untouched.
                     if (gl64NoteOnce("glx-context-attrib", attr))
-                        klog_fmt("BW64-FAIL gl-glx-context-attrib attr=0x%x outcome=answered 0 (single-config fiction has no value for it)", (unsigned)attr);
-                    v = 0; break;
+                        klog_fmt("BW64-FAIL gl-glx-context-attrib attr=0x%x outcome=GLX_BAD_ATTRIBUTE returned (no fabricated 0)", (unsigned)attr);
+                    return 2; // GLX_BAD_ATTRIBUTE
             }
             if (valueAddr) cpu->memory->writed(valueAddr, v);
             return 0;
@@ -2596,7 +2697,17 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 return 0;
             }
 #endif
-#ifndef __EMSCRIPTEN__
+            // Non-WebGPU paths: record inside glBegin/glEnd for the block
+            // replay (which re-emits texcoords per vertex) and run directly
+            // outside it. Before FD-15 the WASM legacy-GL path compiled
+            // this case to a no-op, so the call vanished entirely there;
+            // the WASM form goes through hostMultiTexCoord2f because this
+            // build's Emscripten GL library has no glMultiTexCoord2f
+            // symbol to link against.
+#ifdef __EMSCRIPTEN__
+            if (g_glContext) RECORD_IMM(GL64_fn_glMultiTexCoord2fARB, (float)texture, s, t, 0,
+                                        hostMultiTexCoord2f(texture, s, t));
+#else
             if (g_glContext) RECORD_IMM(GL64_fn_glMultiTexCoord2fARB, (float)texture, s, t, 0,
                                         glMultiTexCoord2f(texture, s, t));
 #endif
@@ -3134,6 +3245,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                     copyLegacyArray(cpu, g_legacyColorArray, range.first, range.last, color) &&
                     copyLegacyArray(cpu, g_legacyTexCoordArrays[0], range.first, range.last, texCoord) &&
                     copyLegacyArray(cpu, g_legacyTexCoordArrays[1], range.first, range.last, texCoord1);
+                if (legacyDrawUnmodelledType()) return 0; // FD-15: refuse the draw (type already logged once)
                 traceLegacyClientDraw(mode, count, 0, g_legacyVertexArray, g_legacyColorArray,
                     g_legacyTexCoordArrays[0], range.first, range.last, rangeKnown, vertex, {}, 0);
                 glOnMain([&]{
@@ -3167,6 +3279,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         copyLegacyArray(cpu, g_legacyTexCoordArrays[0], firstIndex, lastIndex, texCoord) &&
                         copyLegacyArray(cpu, g_legacyTexCoordArrays[1], firstIndex, lastIndex, texCoord1);
                 }
+                if (legacyDrawUnmodelledType()) return 0; // FD-15: refuse the draw (type already logged once)
                 traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
                     g_legacyTexCoordArrays[0], firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
                 if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
@@ -3207,6 +3320,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         copyLegacyArray(cpu, g_legacyTexCoordArrays[0], firstIndex, lastIndex, texCoord) &&
                         copyLegacyArray(cpu, g_legacyTexCoordArrays[1], firstIndex, lastIndex, texCoord1);
                 }
+                if (legacyDrawUnmodelledType()) return 0; // FD-15: refuse the draw (type already logged once)
                 traceLegacyClientDraw(mode, count, type, g_legacyVertexArray, g_legacyColorArray,
                     g_legacyTexCoordArrays[0], firstIndex, lastIndex, rangeKnown, vertex, indexData, indexBytes);
                 if (rangeKnown && !gl64RebaseIndexData(indexData.data(), indexData.size(),
@@ -3323,6 +3437,9 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         // GL_TEXTURE_BORDER_COLOR, GL_DEPTH_TEXTURE_MODE, …) that raise
         // GL_INVALID_ENUM. Drop those (return success) so they don't pollute the GL
         // error state wined3d inspects during CreateDevice.
+        // FD-15: TEXTURE_MIN_LOD/MAX_LOD and TEXTURE_COMPARE_MODE/FUNC are NOT
+        // dropped -- both backends honor them (WebGL2 natively; the WebGPU
+        // sampler wires them from the stored texture params).
         case GL64_fn_glTexParameteri:
             if (g_glContext) {
                 GLenum pn = (GLenum)ai(args,1);
@@ -3485,9 +3602,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x9113 /*GL_SYNC_CONDITION*/: val = 0x9117 /*GL_SYNC_GPU_COMMANDS_COMPLETE*/; break;
                 case 0x9115 /*GL_SYNC_FLAGS*/:     val = 0; break;
                 default:
+                    // FD-15: an unmodelled pname is GL_INVALID_ENUM with
+                    // guest memory untouched (this file's query precedent),
+                    // not a fabricated 0 value.
                     if (gl64NoteOnce("sync-pname", pname))
-                        klog_fmt("BW64-FAIL gl-sync-pname pname=0x%x outcome=answered 0 (not modelled)", (unsigned)pname);
-                    val = 0; break;
+                        klog_fmt("BW64-FAIL gl-sync-pname pname=0x%x outcome=GL_INVALID_ENUM recorded (no fabricated 0)", (unsigned)pname);
+                    recordBridgeError(GL_INVALID_ENUM);
+                    return 0;
             }
             if (valAddr && bufSize >= 1) cpu->memory->writed(valAddr, val);
             if (lenAddr) cpu->memory->writed(lenAddr, (bufSize >= 1) ? 1 : 0);

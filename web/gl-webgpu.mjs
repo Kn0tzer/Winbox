@@ -3153,6 +3153,28 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       texture.samplerCache?.clear();
       return;
     }
+    // FD-15: LOD clamps and depth-compare state ARE honored by this
+    // backend (the sampler wires them in _samplerFor); they used to fall
+    // into the INVALID_ENUM default even though the bridge forwards them
+    // as supported pnames.
+    if (parameter === 0x813a || parameter === 0x813b) { // TEXTURE_MIN_LOD / MAX_LOD
+      if (!Number.isFinite(value) || value < 0) { this._recordError(GL.INVALID_VALUE); return; }
+      texture.params.set(parameter, value);
+      texture.samplerCache?.clear();
+      return;
+    }
+    if (parameter === 0x884c) { // TEXTURE_COMPARE_MODE
+      if (value !== 0x0000 && value !== 0x884e) { this._recordError(GL.INVALID_ENUM); return; }
+      texture.params.set(parameter, value);
+      texture.samplerCache?.clear();
+      return;
+    }
+    if (parameter === 0x884d) { // TEXTURE_COMPARE_FUNC
+      if (!Number.isInteger(value) || value < 0x0200 || value > 0x0207) { this._recordError(GL.INVALID_ENUM); return; }
+      texture.params.set(parameter, value);
+      texture.samplerCache?.clear();
+      return;
+    }
     const values = parameter === 0x2802 || parameter === 0x2803 || parameter === 0x8072 ? [0x812f, 0x2901, 0x8370]
       : parameter === 0x2800 ? [0x2600, 0x2601]
         : parameter === 0x2801 ? [0x2600, 0x2601, 0x2700, 0x2701, 0x2702, 0x2703, 0x2704, 0x2705]
@@ -3175,9 +3197,16 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     // Core WebGPU cannot filter rgba32float textures; sample them with
     // nearest filtering instead of failing pipeline validation at draw time.
     const float32Texture = texture.format === 'rgba32float';
+    // FD-15: honor the guest's LOD clamps, and for depth textures its
+    // compare mode/func (compare is only valid on depth samplers).
+    const lodMinClamp = Math.min(32, Math.max(0, texture.params.get(0x813a) ?? 0));
+    const lodMaxClamp = min === 0x2600 || min === 0x2601 ? 0 : Math.min(32, Math.max(lodMinClamp, texture.params.get(0x813b) ?? 32));
+    const compareFuncs = { 0x0200: 'never', 0x0201: 'less', 0x0202: 'equal', 0x0203: 'less-equal', 0x0204: 'greater', 0x0205: 'not-equal', 0x0206: 'greater-equal', 0x0207: 'always' };
+    const compare = typeof texture.format === 'string' && texture.format.startsWith('depth') && texture.params.get(0x884c) === 0x884e
+      ? (compareFuncs[texture.params.get(0x884d) ?? 0x0203] || 'less-equal') : undefined;
     const sampler = this._device.createSampler({ addressModeU: address(texture.params.get(0x2802)), addressModeV: address(texture.params.get(0x2803)), addressModeW: address(texture.params.get(0x8072)),
       magFilter: float32Texture ? 'nearest' : filter(mag), minFilter: float32Texture ? 'nearest' : filter(min === 0x2600 || min === 0x2601 ? min : min === 0x2700 || min === 0x2701 || min === 0x2702 ? 0x2600 : 0x2601),
-      mipmapFilter: float32Texture ? 'nearest' : min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp: 0, lodMaxClamp: min === 0x2600 || min === 0x2601 ? 0 : 32,
+      mipmapFilter: float32Texture ? 'nearest' : min === 0x2700 || min === 0x2702 || min === 0x2704 ? 'nearest' : 'linear', lodMinClamp, lodMaxClamp, compare,
       maxAnisotropy: mag === 0x2601 && ![0x2600, 0x2700, 0x2702, 0x2704].includes(min) ? maxAnisotropy : 1 });
     texture.samplerCache.set(cacheKey, sampler);
     return sampler;
