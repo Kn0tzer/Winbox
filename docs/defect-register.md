@@ -150,6 +150,19 @@ do not close the entry until they land.
   `docs/reports/fd01-unix-half-fix-20261031.md`;
   evidence: `test-results/fd01so-20261031/` (worktree
   `wt-fd01so`).
+  UPDATE (2026-10-31, final-batch merge): the remedy is
+  MERGED (integ `ca4166040`) and the merge term of the
+  re-closure conditions is discharged. At the merge gate
+  the composed tree's cold-start measurement at the
+  900 s window, fresh state, stopgap budget spent the
+  same way, certified 3 of 3 first-attempt starts on
+  x86-64 and 3 of 3 on x86 (handles `0x10048` / `0x10052`,
+  five X11 connections, explorer opened, every time;
+  two of the x86-64 starts began at box load 11-12).
+  Remaining terms: deploy, and the live first-visit
+  re-measurement through the public site. Gate evidence:
+  `test-results/merge-finalbatch-20261031/`; record:
+  `docs/reports/merge-finalbatch-20261031.md`.
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -833,7 +846,7 @@ do not close the entry until they land.
   `test-results/readygate-summary.json` and the per-boot
   `test-results/suite-readygate-<arm>-<i>/boot.json`.
 - **FD-44 — Guest platform threads can outlive the
-  thread state they execute on.** *(Medium, emulator
+  thread state they execute on. CLOSED 2026-10-31 — see CL-14.** *(Medium, emulator
   thread lifetime)* Characterized by the FD-41/FD-42 lane
   (2026-10-31), not fixed there: tests that leak guest
   threads leave host platform threads executing guest
@@ -1052,8 +1065,8 @@ do not close the entry until they land.
   `docs/reports/fd39-texparam-store-20261031.md`.
 - **FD-48 — After a stopgap session restart, a genuinely
   started session may never be certified by the hardened
-  readiness test. FIXED ON BRANCH lane-fd48-restart-cert
-  2026-10-31.** *(Medium — the FD-47 certification is
+  readiness test. CLOSED 2026-10-31 — see CL-15
+  (fixed on branch lane-fd48-restart-cert).** *(Medium — the FD-47 certification is
   fail-closed here: it withholds a true verdict rather
   than issuing a false one)* Found at the batch merge
   gate (lane-readygate + lane-fd39 + lane-fd23-syscalls,
@@ -1142,7 +1155,7 @@ do not close the entry until they land.
   integration branch by the restart-certification
   entry above.)*
 - **FD-49 — A class of captured Godot shader modules fails
-  translation on format-less storage images.** *(Severity
+  translation on format-less storage images. CLOSED 2026-10-31 — see CL-16.** *(Severity
   unmeasured)* Found by the FD-16 lane (2026-10-31) while
   replaying the modules the Godot demo submits: five
   modules fail in the vendored translator with
@@ -1186,6 +1199,40 @@ do not close the entry until they land.
   FD-54 at integration — FD-53 is assigned in this
   batch to the support-archive duplicate-library
   entry.)*
+- **FD-55 — The Godot demo presents no frame in the
+  browser path, although its graphics pipelines
+  compile.** *(Medium — one demo's rendering path;
+  uncharacterized)* Found by the final-batch merge gate
+  (2026-10-31) while discharging the presented-frame
+  confirmation the FD-16 merge owed. Through the
+  demo-matrix path the demo's session starts and the
+  emulator runs, but the presented-frame counter stays
+  at 0 across a full 387 s observation and the display
+  screenshot keeps its blank signature (non-dark
+  fraction 0.0044, ~1,450 distinct colors) — twice, at
+  box load ~5 and ~12. The guest stream through the
+  capture harness on the same build is healthy in the
+  FD-16 sense: the engine starts (Godot Engine v4.7.2
+  banner at 126 s), 56 shader modules are created, zero
+  capability rejections, zero 'failed' lines, and the
+  pipeline-library disk cache flushes. Whatever stops
+  the frame sits downstream of pipeline creation — this
+  program's present/swapchain path, the demo's own
+  startup sequence, or an observation gap: the capture
+  harness's final screenshot is the launcher page,
+  pixel-identical at 5 s and at 410 s, so it cannot
+  adjudicate presentation either. The D3D12 oracle
+  programs present and read back correctly on the same
+  build (both word sizes), so the present path is not
+  broken in general. Evidence:
+  `test-results/merge-finalbatch-20261031/`
+  (godot-demo-matrix.log, godot-demo-matrix2.log,
+  godot-capture/). Next step: one long run with
+  present-path logging and engine-start confirmation in
+  the same session, separating 'the guest never
+  presents' from 'it presents and the page never shows
+  it'.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -1396,6 +1443,44 @@ dead-start fix and needs composition care.
   fault-looping leftover that drove the original floods
   no longer exists under test isolation. Record:
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+- **CL-10 — The FD-01 "improvement" was a readiness false
+  positive and the fix shipped in no binary (was
+  FD-43).** Closed by its own named conditions being
+  met, not by a fix to the race: the hardened readiness
+  certification (FD-47 / CL-11) and the four-arm
+  measurement are delivered on `lane-readygate` — the
+  broken-dispatch control false-ready 10/10 under the
+  old certification against 0/10 under the new; true
+  first-attempt rates 0/10 stock, 0/10 stamped, 0/10
+  pre-rebuild baseline. FD-01 remains open on the race
+  itself. Record:
+  `docs/reports/readiness-hardening-20261031.md`.
+- **CL-11 — The readiness certification accepted an
+  NTSTATUS error value as a window handle (was
+  FD-47).** Fixed on `lane-readygate`: the launcher
+  requires the plausible-handle + five-connection X11 +
+  explorer handshake before certifying a session
+  started; NTSTATUS-shaped values are refused loudly.
+  Unit contract tests red/green; JS suite 340/0;
+  sabotage pair in the four-arm measurement (control
+  10/10 false-ready under the old rule, 0/10 under the
+  new, offline and in-page; genuine starts certify).
+  Record: `docs/reports/readiness-hardening-20261031.md`.
+
+- **CL-12 — `accept4`'s close-on-exec flag was silently
+  dropped (was FD-46).** Fixed in `98dee4d6f` on
+  `lane-fd23-syscalls`: `kaccept` validates the guest
+  flags (EINVAL for unknown bits, before any connection
+  is consumed) and translates them at the single entry
+  point both ABIs share; plain accept (flags 0) is
+  unaffected. The entry's own closing condition — the
+  branch lands and is re-proven at the merge gate — was
+  discharged at the batch gate (2026-10-31): the full
+  native gate ran on the merged tree (main flavour
+  661/661 serial; x64 flavour 61/61, including the new
+  dispatch-level `accept4` test). Record:
+  `docs/reports/fd23-syscall-census-20261031.md`; gate:
+  `docs/reports/merge-batch3-20261031.md`.
 - **CL-13 — A texel buffer reached through a descriptor-heap
   runtime array was rejected at shader creation (was
   FD-16).** Fixed on branch `lane-fd16`, commits
@@ -1437,45 +1522,82 @@ dead-start fix and needs composition care.
   `docs/reports/fd16-texel-heap-arrays-20261031.md`.
 
 ---
+- **CL-14 — Guest platform threads could outlive the
+  thread state they executed on (was FD-44).** Fixed in
+  `d52d839ac` on `lane-fd44` (tests `76407729e`,
+  `84d430548`, `03f259dc1`): `KThread` lifetime is
+  reference-counted — the object is destroyed when the
+  last reference drains, after `cleanup()` has disarmed
+  the memory-touching teardown — and every cross-thread
+  user takes the reference under the table lock. Proof
+  on the branch: an AddressSanitizer build fails pre-fix
+  with heap-use-after-free in `KThread::signal` on a
+  thread freed by `deleteThread`, and is clean post-fix
+  (x3); native 662/662 serial, x64-test 59/59. Re-proven
+  at the final-batch merge gate on the composed tree:
+  native main 662/662 full serial (246 s), x64 flavour
+  62/62; the JS source-model test for process-memory
+  release across concurrent exits was updated at
+  composition to model the reference surface and now
+  also pins thread destructions at exactly one per
+  thread (JS suite 344/344). Records:
+  `docs/reports/fd44-thread-lifetime-20261031.md`,
+  `docs/reports/merge-finalbatch-20261031.md`.
 
-- **CL-10 — The FD-01 "improvement" was a readiness false
-  positive and the fix shipped in no binary (was
-  FD-43).** Closed by its own named conditions being
-  met, not by a fix to the race: the hardened readiness
-  certification (FD-47 / CL-11) and the four-arm
-  measurement are delivered on `lane-readygate` — the
-  broken-dispatch control false-ready 10/10 under the
-  old certification against 0/10 under the new; true
-  first-attempt rates 0/10 stock, 0/10 stamped, 0/10
-  pre-rebuild baseline. FD-01 remains open on the race
-  itself. Record:
-  `docs/reports/readiness-hardening-20261031.md`.
-- **CL-11 — The readiness certification accepted an
-  NTSTATUS error value as a window handle (was
-  FD-47).** Fixed on `lane-readygate`: the launcher
-  requires the plausible-handle + five-connection X11 +
-  explorer handshake before certifying a session
-  started; NTSTATUS-shaped values are refused loudly.
-  Unit contract tests red/green; JS suite 340/0;
-  sabotage pair in the four-arm measurement (control
-  10/10 false-ready under the old rule, 0/10 under the
-  new, offline and in-page; genuine starts certify).
-  Record: `docs/reports/readiness-hardening-20261031.md`.
+- **CL-15 — No 32-bit session could ever be certified
+  started (was FD-48).** Fixed in `509c26752` on
+  `lane-fd48-restart-cert`: both 32-bit open paths emit
+  the process-spawn signal (`OPENED '<path>' -> fd <n>`)
+  that the FD-47 readiness handshake matches — the line
+  existed only on the 64-bit path, so the handshake's
+  explorer element had no counterpart in any 32-bit
+  session stream; no readiness rule was changed. Proof
+  on the branch: 18 classified boot32 runs (14
+  single-attempt certifications, 2 restart-shape
+  certifications — one after the full restart budget —
+  2 genuinely dead runs certified zero times, 0 false
+  certifications) and the sabotage pair in both
+  directions. Re-proven at the final-batch merge gate:
+  boot32-vkboot PASS with a certified start (handle
+  `0x10052`); the 32-bit D3D12 oracle — the run this
+  defect blocked at the batch-3 gate — VERDICT passed,
+  RESULT 0; cold-start measurement x86 3/3 certified at
+  the 900 s window. Correction carried in the FD-48
+  entry: the readiness lane's 'single-session 32-bit
+  boots certify' line is not supported by its own
+  preserved console. Records:
+  `docs/reports/fd48-restart-certification-20261031.md`,
+  `docs/reports/merge-finalbatch-20261031.md`.
 
-- **CL-12 — `accept4`'s close-on-exec flag was silently
-  dropped (was FD-46).** Fixed in `98dee4d6f` on
-  `lane-fd23-syscalls`: `kaccept` validates the guest
-  flags (EINVAL for unknown bits, before any connection
-  is consumed) and translates them at the single entry
-  point both ABIs share; plain accept (flags 0) is
-  unaffected. The entry's own closing condition — the
-  branch lands and is re-proven at the merge gate — was
-  discharged at the batch gate (2026-10-31): the full
-  native gate ran on the merged tree (main flavour
-  661/661 serial; x64 flavour 61/61, including the new
-  dispatch-level `accept4` test). Record:
-  `docs/reports/fd23-syscall-census-20261031.md`; gate:
-  `docs/reports/merge-batch3-20261031.md`.
+- **CL-16 — A class of captured Godot shader modules
+  failed translation on format-less storage images (was
+  FD-49).** Fixed in `df68b0d92` on `lane-fd49`:
+  per-type format signature entries for bindings whose
+  storage images carry more than one type, a
+  specialized-binding split so two clones no longer
+  collide at one binding, and pruning of unreferenced
+  format-less type declarations; live format-less types
+  still fail loudly. Proof: the new suite over the six
+  captured modules themselves translates all six
+  post-fix (fail-before on the pristine tree recorded:
+  5x `StorageImageReadWithoutFormat`, 1x
+  `InvalidStorageImageWithoutFormat`); sabotage set
+  holds; JS suite 344/344 at the merge gate; the merged
+  tree's Godot capture shows the same modules accepted
+  with zero translation rejections. Impact, corrected
+  at composition: the lane's 'the demo presented'
+  clause is NOT supported by the preserved evidence —
+  no presented frame of this demo has been verified by
+  any harness (that gap is registered as FD-55). The
+  supported statement is narrower: in the captured run
+  the guest accepted all six modules at creation and no
+  dispatch reached their translation, so the class was
+  latent. Records:
+  `docs/reports/fd49-storage-image-formats-20261031.md`,
+  `docs/reports/merge-finalbatch-20261031.md`.
+
+
+
 
 ## Appendix — examined and deliberately NOT registered
 
