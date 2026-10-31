@@ -518,29 +518,6 @@ do not close the entry until they land.
   `futex_waitv` (449, both ABIs; no observed asks). `io_uring`
   (425-427) is dispositioned ENOSYS-correct (a subsystem, not a
   call; guests probe and fall back by design).
-- **FD-46 — `accept4`'s close-on-exec flag was silently
-  dropped on the 32-bit side (and would have been on the
-  64-bit side).** *(Medium)* Found by the FD-23 lane while
-  implementing the missing 64-bit `accept4` (see section B).
-  Every socket accept implementation consumed the flags word
-  in an internal encoding — close-on-exec as the descriptor-flag
-  bit, value 1 — while the syscall layer passed the guest's
-  flags untranslated, and in the guest ABI `SOCK_CLOEXEC` is
-  value 0x80000. The test never matched, so `accept4` with
-  `SOCK_CLOEXEC` returned a descriptor that leaked across exec,
-  with no error anywhere — a confident wrong answer, the FD-15
-  shape, in the kernel. (Non-blocking worked only because the
-  two encodings coincide for that flag.) Fixed on
-  `lane-fd23-syscalls`: `kaccept` validates the guest flags and
-  translates them at the single entry point both ABIs share;
-  plain accept (flags 0) is unaffected. Proof: the new
-  dispatch-level `accept4` test fails before (the number was
-  unimplemented on 64-bit, and the flag assertion is the one
-  the 32-bit path violated) and passes after, including
-  unknown-flags refusal before the pending connection is
-  consumed; full record
-  `docs/reports/fd23-syscall-census-20261031.md`. Closes when
-  the branch lands and is re-proven at the merge gate.
 - **FD-24 — No game controller exists for guests.** *(Medium)*
   There is no guest joystick device at all: controller queries
   return "device not connected" for every slot. The entry
@@ -915,6 +892,40 @@ do not close the entry until they land.
   all) is unverified. FD-39's store covers the scalar path;
   this entry tracks the rest of the query surface. Evidence:
   `docs/reports/fd39-texparam-store-20261031.md`.
+- **FD-48 — After a stopgap session restart, a genuinely
+  started session may never be certified by the hardened
+  readiness test.** *(Medium — the FD-47 certification is
+  fail-closed here: it withholds a true verdict rather
+  than issuing a false one)* Found at the batch merge
+  gate (lane-readygate + lane-fd39 + lane-fd23-syscalls,
+  2026-10-31): when the FD-01 race kills the first boot
+  attempt and the restart stopgap starts a clean session,
+  the restarted session can reach the full handshake in
+  the guest stream — a plausible deskpin handle
+  (`0x10054`), the restarted session's five X11 accepts,
+  explorer running (server traces) — and still never be
+  certified: `boot32-vkboot` timed out inside bootGuest
+  at 600 s twice with identical anatomy, and the 32-bit
+  D3D12 oracle's session likewise never reported ready,
+  while the 64-bit shape certified in the same gate (the
+  64-bit oracle's SESSION READY). The one handshake
+  element with no counterpart in the persisted guest
+  stream of this shape is the explorer-open line the
+  observer matches; whether it is emitted before the
+  restarted observer consumes, or not emitted into the
+  observed stream in this shape after a reload, is not
+  decidable from the persisted artifacts (the in-page
+  observer's state is not logged). Single-session boots
+  certify (the readiness lane's own boot32-vkboot pass,
+  handle `0x10052`). The certification must not be
+  weakened to close this: the failure direction is a
+  withheld true verdict, surfaced loudly by every
+  consumer's timeout, never a false certification.
+  Evidence: `test-results/merge-batch3-20261031/`
+  (boot32-vkboot.log, boot32-vkboot2.log,
+  vkboot-attempt1-artifacts/, d3d12-32.log) and
+  `docs/reports/merge-batch3-20261031.md`.
+
 ---
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -1151,6 +1162,21 @@ dead-start fix and needs composition care.
   10/10 false-ready under the old rule, 0/10 under the
   new, offline and in-page; genuine starts certify).
   Record: `docs/reports/readiness-hardening-20261031.md`.
+
+- **CL-12 — `accept4`'s close-on-exec flag was silently
+  dropped (was FD-46).** Fixed in `98dee4d6f` on
+  `lane-fd23-syscalls`: `kaccept` validates the guest
+  flags (EINVAL for unknown bits, before any connection
+  is consumed) and translates them at the single entry
+  point both ABIs share; plain accept (flags 0) is
+  unaffected. The entry's own closing condition — the
+  branch lands and is re-proven at the merge gate — was
+  discharged at the batch gate (2026-10-31): the full
+  native gate ran on the merged tree (main flavour
+  661/661 serial; x64 flavour 61/61, including the new
+  dispatch-level `accept4` test). Record:
+  `docs/reports/fd23-syscall-census-20261031.md`; gate:
+  `docs/reports/merge-batch3-20261031.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
