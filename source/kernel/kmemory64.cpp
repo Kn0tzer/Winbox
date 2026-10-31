@@ -21,6 +21,21 @@
 #include <mutex>
 #include <atomic>
 
+namespace {
+// Counted BW64-FAIL reporting for guest-reachable memory failures in this
+// file (pattern: docs/failure-logging-and-recovery.md). The first 64
+// events log in full, then every 1024th, always with the cumulative
+// count: a guest looping on a denied request cannot flood the log, and
+// no denial is ever silent either.
+std::atomic<unsigned long long> g_memFailCount{0};
+unsigned long long memFailNextCount() {
+    return g_memFailCount.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+bool memFailLogDue(unsigned long long n) {
+    return n <= 64 || n % 1024 == 0;
+}
+} // namespace
+
 thread_local bool g_k64JitVerifyOverlayActive = false;
 thread_local CPU64* g_k64GuestAccessCPU = nullptr;
 
@@ -74,7 +89,7 @@ bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write)
 // updating its shared object/sequence section) is seen by all others, exactly
 // like a real shared mmap. Without this, the 64-bit file-mmap path handed each
 // process a private copy and wine's server shared-memory section desynced,
-// crashing wineserver with release_object refcount underflow. Mirrors the
+// crashing wineserver with release_object refcount underflow.
 // File identity distinguishes an unlinked file from a new file at the same
 // pathname; Wine reuses temporary mapping names. Pages live for the
 // life of the process (server section is tiny + long-lived); we never evict.
@@ -524,11 +539,29 @@ S64 KMemory64::lockRange(U64 addr, U64 len) {
     U64 newBytes = 0;
     for (U64 page = firstPage;; ++page) {
         const U32 flags = getPageFlags(page);
-        if (!(flags & K64_PAGE_MAPPED)) return -K_ENOMEM;
+        if (!(flags & K64_PAGE_MAPPED)) {
+            const unsigned long long n = memFailNextCount();
+            if (memFailLogDue(n)) {
+                klog_fmt("BW64-FAIL lockRange op=lock addr=0x%llx len=%llu page=%llu reason=unmapped outcome=-ENOMEM count=%llu",
+                         (unsigned long long)addr, (unsigned long long)len,
+                         (unsigned long long)page, n);
+            }
+            return -K_ENOMEM;
+        }
         if (!(flags & K64_PAGE_LOCKED)) newBytes += K64_PAGE_SIZE;
         if (page == lastPage) break;
     }
-    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) return -K_ENOMEM;
+    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL lockRange op=lock addr=0x%llx len=%llu reason=limit locked=%llu new=%llu limit=%llu outcome=-ENOMEM count=%llu",
+                     (unsigned long long)addr, (unsigned long long)len,
+                     (unsigned long long)process->memLockedBytes,
+                     (unsigned long long)newBytes,
+                     (unsigned long long)process->rlimMemlockCur, n);
+        }
+        return -K_ENOMEM;
+    }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
     U64 added = 0;
     for (U64 page = firstPage;; ++page) {
@@ -547,7 +580,15 @@ S64 KMemory64::unlockRange(U64 addr, U64 len) {
     const U64 firstPage = addr >> K64_PAGE_SHIFT;
     const U64 lastPage = (addr + len - 1) >> K64_PAGE_SHIFT;
     for (U64 page = firstPage;; ++page) {
-        if (!(getPageFlags(page) & K64_PAGE_MAPPED)) return -K_ENOMEM;
+        if (!(getPageFlags(page) & K64_PAGE_MAPPED)) {
+            const unsigned long long n = memFailNextCount();
+            if (memFailLogDue(n)) {
+                klog_fmt("BW64-FAIL unlockRange op=unlock addr=0x%llx len=%llu page=%llu reason=unmapped outcome=-ENOMEM count=%llu",
+                         (unsigned long long)addr, (unsigned long long)len,
+                         (unsigned long long)page, n);
+            }
+            return -K_ENOMEM;
+        }
         if (page == lastPage) break;
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
@@ -570,7 +611,16 @@ S64 KMemory64::lockAllCurrent() {
     for (const auto& kv : pages) {
         if ((kv.second->flags & K64_PAGE_MAPPED) && !(kv.second->flags & K64_PAGE_LOCKED)) newBytes += K64_PAGE_SIZE;
     }
-    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) return -K_ENOMEM;
+    if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL lockAllCurrent op=lock reason=limit locked=%llu new=%llu limit=%llu outcome=-ENOMEM count=%llu",
+                     (unsigned long long)process->memLockedBytes,
+                     (unsigned long long)newBytes,
+                     (unsigned long long)process->rlimMemlockCur, n);
+        }
+        return -K_ENOMEM;
+    }
     U64 added = 0;
     for (auto& kv : pages) {
         if ((kv.second->flags & K64_PAGE_MAPPED) && !(kv.second->flags & K64_PAGE_LOCKED)) {
@@ -676,8 +726,19 @@ S64 KMemory64::madvise(U64 addr, U64 len, U32 advice) {
         }
         return 0;
     }
-    default:
+    default: {
+        // Advice with no state in this layer (pure hints, KSM, hugepages):
+        // accepted as a no-op, but reported -- never silently. The syscall
+        // layer has already rejected values outside the known MADV_* set
+        // and implements DONTNEED itself, so reaching here means "known
+        // advice, not implemented in this layer".
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL madvise op=hint addr=0x%llx len=%llu advice=%u outcome=noop count=%llu",
+                     (unsigned long long)addr, (unsigned long long)len, advice, n);
+        }
         return 0;
+    }
     }
 }
 
@@ -946,13 +1007,24 @@ U64 KMemory64::mprotect(U64 addr, U64 len, U32 prot, bool guestImposed) {
     U64 pageStart = addr >> K64_PAGE_SHIFT;
     U64 pageCount = (len + K64_PAGE_SIZE - 1) >> K64_PAGE_SHIFT;
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
+    U64 skipped = 0;
     for (U64 i = 0; i < pageCount; i++) {
         // Preserve SHARED bit if it was set; everything else is replaced
-        // wholesale. Holes (no page) are skipped — see header comment.
+        // wholesale. Holes (no page) are skipped — see header comment —
+        // but counted and reported below: claiming full success over a
+        // partially-mapped range must not be silent.
         auto it = pages.find(pageStart + i);
-        if (it == pages.end() || !(it->second->flags & K64_PAGE_MAPPED)) continue;
+        if (it == pages.end() || !(it->second->flags & K64_PAGE_MAPPED)) { skipped++; continue; }
         U32 preserved = it->second->flags & (K64_PAGE_SHARED | K64_PAGE_PINNED | K64_PAGE_LOCKED | K64_PAGE_DONTFORK | K64_PAGE_WIPEONFORK);
         it->second->flags = newFlags | preserved;
+    }
+    if (skipped) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL mprotect op=protect addr=0x%llx len=%llu prot=%u skipped=%llu outcome=partial count=%llu",
+                     (unsigned long long)addr, (unsigned long long)len, prot,
+                     (unsigned long long)skipped, n);
+        }
     }
     k64DTlbInvalidateAll(); // refresh cached permission bits on the next access
     pageMapGenerationValue.fetch_add(1, std::memory_order_release);

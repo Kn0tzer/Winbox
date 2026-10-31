@@ -80,6 +80,10 @@ void testMremap32Syscall();
 void testMadvise32ForkInheritance();
 void testMremap32SharedFile();
 void testProcMaps32();
+void testMemoryPerformOnMemoryBadBuffer32();
+void testMemoryGetRamPtrCrossPage32();
+void testMemoryMemcpyOverflow32();
+void testMemoryMadviseLayer32();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -131,6 +135,7 @@ void testMremap64Syscall();
 void testSysinfo64Consistency();
 void testMadvise64Syscalls();
 void testMlock64Syscalls();
+void testMemoryMadviseLayer64();
 #endif
 
 namespace {
@@ -180,6 +185,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSysinfo64Consistency, "Test x64 sysinfo and meminfo consistency"},
     {testMadvise64Syscalls, "Test x64 madvise remove and fork advice"},
     {testMlock64Syscalls, "Test x64 mlock accounting and RLIMIT_MEMLOCK"},
+    {testMemoryMadviseLayer64, "Test x64 madvise layer dispositions"},
     {testSignalFp64Roundtrip, "Test x64 signal FP/SSE snapshot and edited return (K-M4)"},
     {testSignal64NestedAltstack, "Test x64 nested altstack signal frames"},
     {testSignal64BadFpFrame, "Test x64 invalid signal FP frame faults"},
@@ -817,6 +823,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testClone32Flags, "Test 32-bit clone flag dispositions"},
     {testClone3Abi32, "Test 32-bit clone3 ABI validation"},
     {testMremap32SharedFile, "Test 32-bit mremap shared file identity"},
+    {testMemoryPerformOnMemoryBadBuffer32, "Test 32-bit performOnMemory bad buffer degrades"},
+    {testMemoryGetRamPtrCrossPage32, "Test 32-bit getRamPtr cross-page request degrades"},
+    {testMemoryMemcpyOverflow32, "Test 32-bit guest memcpy overflow degrades"},
+    {testMemoryMadviseLayer32, "Test 32-bit madvise layer dispositions"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testGuestCpuTopology, "Test guest CPU topology consistency"},
     {testKObjectLockStubs, "Test KObject lock stub dispositions"},
