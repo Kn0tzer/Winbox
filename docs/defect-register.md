@@ -255,26 +255,65 @@ do not close the entry until they land.
   formats FD-15 named were fixed); it is mechanical to add
   with the same table. Evidence:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
-- **FD-40 — The 64-bit boot smoke test stalls before the
-  window station exists, on unmodified code too.** *(Low —
-  observed, cause unproven)* During the FD-15 lane's
-  regression checks, the project's `boot64-smoke` browser
-  probe failed three times with the identical signature:
-  the guest never reaches `create_winstation` (240 s watch
-  expires), an earlier `wineboot --init` process shows as
-  terminated, and guest threads sit waiting in
-  `KUnixSocketObject::lockCond`. An A/B run settles that this
-  is not an FD-15 effect: a baseline build of the unmodified
-  integ tip `c4bab5e07` fails the same way, while the
-  graphics-heavy Celeste boot probe passes on the fixed
-  build. Whether this is box load, a unix-socket wait defect,
-  or a relative of the known start stalls is unproven — it is
-  registered so the observation is not lost. Evidence:
-  `docs/reports/fd15-honest-gl-answers-20261031.md`
-  (regression section); failing-run artifacts in the lane
-  tree at `test-results/suite-boot64-smoke/` and
-  `test-results/baseline-c4bab5e07-boot64-smoke/` (the
-  baseline tree itself was a scratch tree, since removed).
+- **FD-40 — The 64-bit boot smoke test never reaches the
+  window station because a boot thread waits forever for a
+  debug-listener object no session component ever creates.**
+  *(Characterized 2026-10-31 — mechanism convicted;
+  `docs/reports/fd40-boot-smoke-characterization-20261031.md`)*
+  The test's own workload completes: the booted program
+  prints its echo and exits with status 0. After the last
+  boot process terminates there is a ~16 s total guest
+  silence, then the boot thread (the one that created
+  `\KernelObjects\__wineboot_event`) opens the session's
+  named-object directory, creates `DBWinMutex`, and begins
+  reopening the section `DBWIN_BUFFER` on an exact ~30 s
+  cadence, getting `OBJECT_NAME_NOT_FOUND` every time. That
+  retry is thereafter the ONLY request the whole guest
+  issues (observed continuously for 570 s); the window
+  station is therefore never created and the test's 240 s
+  watch expires. `DBWIN_BUFFER` is the shared-memory half
+  of the Windows debug-output (DBWIN) protocol: by that
+  protocol it exists only while a debug listener (a
+  DebugView-class program) is running, and a sender whose
+  open fails is supposed to abandon the send. No component
+  of this session ever creates it — in every captured log,
+  passing or failing, the count of `DBWIN_BUFFER`
+  creations is zero — so once the boot thread enters this
+  wait it can never be satisfied, at any machine load, for
+  any length of time. Reproduced 5/5 in this environment
+  (the FD-15 lane's three captures across its fix build and
+  an unmodified `c4bab5e07` baseline, plus two fresh
+  instrumented runs on the FD-15-tip build, one started at
+  load 1.9); the one passing capture on record (2026-10-26,
+  older build) takes a different boot path entirely — the
+  window station is created during initialization and the
+  DBWIN objects are never touched. DISPROVEN: the original
+  unix-socket suspicion — the threads seen waiting in
+  `KUnixSocketObject::lockCond` are a service process in
+  its ordinary idle read, and the request stream accounts
+  for the non-progress completely without them; no socket
+  waiter is blocked on undelivered data. Machine load is
+  at most the trigger (a boot slow enough that the boot
+  thread reaches its report path — entry followed a ~16 s
+  silence in both instrumented runs), not the mechanism:
+  during the wait the guest issues nothing else for the
+  load to starve. STILL OPEN inside the mechanism: what
+  the boot thread was waiting for during the ~16 s silence
+  (its report was never delivered, so its content is
+  unknown), and whether taking this path is a regression
+  since 2026-10-26 or was always latent behind boot speed.
+  The fix lever is not the emulator's socket layer: it is
+  the staged Wine's debug-output path abandoning the send
+  when no listener exists (the documented behaviour), the
+  session providing a listener, or the boot wait that
+  times out at ~16 s being satisfied. Evidence: the
+  characterization record above; fresh captures in this
+  lane's tree at `test-results/fd40-run1/` and
+  `test-results/fd40-run2/`; the FD-15 lane's captures at
+  `wt-fd15/test-results/suite-boot64-smoke/` and
+  `wt-fd15/test-results/baseline-c4bab5e07-boot64-smoke/`;
+  the passing capture in the integration tree at
+  `test-results/suite-boot64-smoke/`.
 - **FD-16 — One class of shader still cannot build a pipeline:
   texel buffers reached through a descriptor-heap array.**
   *(High for the D3D12 class)* A guest's shader module whose
