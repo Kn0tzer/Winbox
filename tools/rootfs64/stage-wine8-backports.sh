@@ -16,10 +16,15 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
+UNIX_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-unix"
 DLLS=(user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll)
 for dll in "${DLLS[@]}"; do
     [[ -f "$HERE/wine8-backports-x86_64/$dll" ]] || { echo "stage-wine8-backports: missing $HERE/wine8-backports-x86_64/$dll — run tools/rootfs64/build-wine8-backports.sh" >&2; exit 2; }
 done
+# The unix half of win32u ships with its PE half: the desktop-wait
+# patch (FD-01) lives in win32u.so, and staging the DLL alone ships
+# the fix in no binary (FD-43).
+[[ -f "$HERE/wine8-backports-x86_64/win32u.so" ]] || { echo "stage-wine8-backports: missing $HERE/wine8-backports-x86_64/win32u.so — run tools/rootfs64/build-wine8-backports.sh" >&2; exit 2; }
 
 stamp="$(date -u +%Y%m%d-%H%M%S)"
 for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
@@ -29,6 +34,16 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
     [[ -f "$archive" ]] || { echo "stage-wine8-backports: expected $archive" >&2; exit 2; }
     # Skip only when every member already carries the pinned bytes.
     current=1
+    so_hash="$(python3 - "$archive" "$UNIX_DIR/win32u.so" <<'EOF'
+import hashlib, sys, zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        print(hashlib.sha256(z.read(sys.argv[2])).hexdigest())
+except KeyError:
+    print("absent")
+EOF
+)"
+    [[ "$so_hash" == "$(sha256sum "$HERE/wine8-backports-x86_64/win32u.so" | awk '{print $1}')" ]] || current=0
     for dll in "${DLLS[@]}"; do
         member_hash="$(python3 - "$archive" "$WIN64_DIR/$dll" <<'EOF'
 import hashlib, sys, zipfile
@@ -50,10 +65,11 @@ EOF
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$runtime")-wine64.zip"
     TMP="$(mktemp -d)"
-    mkdir -p "$TMP/payload/$WIN64_DIR"
+    mkdir -p "$TMP/payload/$WIN64_DIR" "$TMP/payload/$UNIX_DIR"
     for dll in "${DLLS[@]}"; do
         cp "$HERE/wine8-backports-x86_64/$dll" "$TMP/payload/$WIN64_DIR/"
     done
+    cp "$HERE/wine8-backports-x86_64/win32u.so" "$TMP/payload/$UNIX_DIR/"
     ( cd "$TMP/payload" && zip -qry9 "$TMP/payload.zip" usr )
     python3 - "$archive" "$TMP/payload.zip" <<'EOF'
 import os, sys, zipfile
@@ -79,5 +95,12 @@ EOF
         want_hash="$(sha256sum "$HERE/wine8-backports-x86_64/$dll" | awk '{print $1}')"
         [[ "$member_hash" == "$want_hash" ]] || { echo "stage-wine8-backports: final verification failed for $dll in $archive" >&2; exit 2; }
     done
+    so_hash="$(python3 - "$archive" "$UNIX_DIR/win32u.so" <<'EOF'
+import hashlib, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    print(hashlib.sha256(z.read(sys.argv[2])).hexdigest())
+EOF
+)"
+    [[ "$so_hash" == "$(sha256sum "$HERE/wine8-backports-x86_64/win32u.so" | awk '{print $1}')" ]] || { echo "stage-wine8-backports: final verification failed for win32u.so in $archive" >&2; exit 2; }
     echo "stage-wine8-backports: backport DLLs staged in $archive (backup in $backup)"
 done
