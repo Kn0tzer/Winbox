@@ -2997,6 +2997,15 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     } else texture.levels.set(level, record);
     if (level === 0 && target === GL.TEXTURE_2D) texture.pixels = record.pixels;
     this._enqueue(() => this._ensureTextureGpu(texture));
+    // FD-39: GENERATE_MIPMAP is honored, not just stored: redefining the
+    // base level regenerates the chain with the same machinery (and
+    // format limits) as generateMipmap(). Cube maps regenerate only
+    // once every face has a base level, mirroring generateMipmap's own
+    // completeness requirement.
+    if (level === 0 && texture.params.get(0x8c55) && (texture.format === 'rgba8unorm' || texture.format === 'rgba8unorm-srgb')) {
+      if (target === GL.TEXTURE_2D) this.generateMipmap(GL.TEXTURE_2D);
+      else if (target >= 0x8515 && target <= 0x851a && [0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851a].every(face => texture.faceLevels.get(face)?.has(0))) this.generateMipmap(GL.TEXTURE_CUBE_MAP);
+    }
   }
   texSubImage2D(...args) {
     const [target, level, xoffset, yoffset, width, height, format, type, data] = args;
@@ -3175,7 +3184,34 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
       texture.samplerCache?.clear();
       return;
     }
-    const values = parameter === 0x2802 || parameter === 0x2803 || parameter === 0x8072 ? [0x812f, 0x2901, 0x8370]
+    // FD-39: desktop-only settings this backend used to INVALID_ENUM. A
+    // valid set must report the same success a desktop driver reports --
+    // wined3d polls the error slot while creating its device -- so these
+    // are validated and stored (the params map is the backend's state
+    // for them). GENERATE_MIPMAP is additionally honored in texImage2D;
+    // the rest have no sampler/shader effect WebGPU can express, and
+    // that effect-only residue is recorded on the register under FD-39
+    // rather than dropped silently.
+    if (parameter === 0x8501) { // TEXTURE_LOD_BIAS
+      if (!Number.isFinite(value)) { this._recordError(GL.INVALID_VALUE); return; }
+      texture.params.set(parameter, value);
+      return;
+    }
+    if (parameter === 0x8c55) { // GENERATE_MIPMAP
+      texture.params.set(parameter, value ? 1 : 0);
+      return;
+    }
+    if (parameter === 0x884b) { // DEPTH_TEXTURE_MODE: LUMINANCE / ALPHA / INTENSITY / RED
+      if (![0x1909, 0x1906, 0x8049, 0x1903].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+      texture.params.set(parameter, value);
+      return;
+    }
+    if (parameter >= 0x8e42 && parameter <= 0x8e45) { // TEXTURE_SWIZZLE_R/G/B/A
+      if (![0, 1, 0x1903, 0x1904, 0x1905, 0x1906].includes(value)) { this._recordError(GL.INVALID_ENUM); return; }
+      texture.params.set(parameter, value);
+      return;
+    }
+    const values = parameter === 0x2802 || parameter === 0x2803 || parameter === 0x8072 ? [0x812f, 0x2901, 0x8370, 0x812d]
       : parameter === 0x2800 ? [0x2600, 0x2601]
         : parameter === 0x2801 ? [0x2600, 0x2601, 0x2700, 0x2701, 0x2702, 0x2703, 0x2704, 0x2705]
           : parameter === 0x813c || parameter === 0x813d ? null : undefined;
@@ -3190,7 +3226,11 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     texture.samplerCache ||= new Map();
     const cacheKey = stateKey([...texture.params.entries()].sort((a, b) => a[0] - b[0]));
     if (texture.samplerCache.has(cacheKey)) return texture.samplerCache.get(cacheKey);
-    const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : 'clamp-to-edge';
+    // FD-39: CLAMP_TO_BORDER is accepted above and maps to WebGPU's
+    // clamp-to-border, whose border colour is fixed at transparent
+    // black -- exactly GL's default border colour. A guest-set
+    // non-default border colour remains stored state only (FD-39).
+    const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : value === 0x812d ? 'clamp-to-border' : 'clamp-to-edge';
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
     const maxAnisotropy = Math.max(1, Math.min(16, texture.params.get(0x84fe) || 1));

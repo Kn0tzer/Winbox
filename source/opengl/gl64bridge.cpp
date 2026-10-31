@@ -1317,12 +1317,14 @@ bool texParamSupported(GLenum pname) {
         case 0x884D /*GL_TEXTURE_COMPARE_FUNC*/:
             return true;
         default:
-            // Desktop-only pname: the caller drops the guest's setting
-            // rather than raising INVALID_ENUM in WebGL2. Log the drop once
-            // per distinct pname so the degradation is visible.
+            // Desktop-only pname outside both the forwarded set and the
+            // FD-39 stored set (texParamStored below): the caller drops
+            // the guest's setting rather than raising INVALID_ENUM in
+            // WebGL2. Log the drop once per distinct pname so the
+            // degradation is visible.
             if (gl64NoteOnce("texparam-dropped", pname))
-                klog_fmt("BW64-FAIL gl-texparam pname=0x%x outcome=dropped (no backend model; forwarding would poison the guest error state wined3d polls -- conflict recorded in FD-15)", (unsigned)pname);
-            return false;   // GL_TEXTURE_LOD_BIAS, GENERATE_MIPMAP, BORDER_COLOR, …
+                klog_fmt("BW64-FAIL gl-texparam pname=0x%x outcome=dropped (no backend model; forwarding would poison the guest error state wined3d polls -- conflict recorded in FD-39)", (unsigned)pname);
+            return false;
     }
 }
 
@@ -1412,6 +1414,110 @@ GLuint boundTexture(GLenum target) {
     else if (target == 0x9102 /*GL_TEXTURE_2D_MULTISAMPLE_ARRAY*/) binding = 0x9106 /*GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY*/;
     glGetIntegerv(binding, &id);
     return (GLuint)id;
+}
+
+
+// FD-39: texture parameters neither backend can put into a sampler
+// (LOD bias, the mipmap-generation hint, border colour, depth-texture
+// mode, texture swizzle). FD-15 left them dropped + once-logged because
+// the apparent alternatives were pretending (accept-and-drop) or
+// poisoning the GL error slot wined3d polls during CreateDevice with
+// INVALID_ENUM. The scoped third answer implemented here: the bridge
+// itself owns the state for exactly this closed pname set. Sets are
+// validated (an invalid VALUE records the standard error a real driver
+// raises; a valid value never touches the host error slot), stored per
+// (texture, target), and glGetTexParameteriv answers this set from the
+// store with spec defaults. Rendering effects no backend here can
+// express (bias in sampling, a non-default border colour -- WebGPU
+// samplers have no borderColor field, swizzle / depth-mode in shader
+// sampling) remain unmodelled; that residue stays on the register
+// under FD-39 as an effect-only gap, instead of the whole set being
+// silently dropped. The bridge ABI has no vector texparameter entry,
+// so a scalar set of a vector pname updates component 0 only.
+bool texParamStored(GLenum pname) {
+    return pname == 0x8501   // GL_TEXTURE_LOD_BIAS
+        || pname == 0x8c55   // GL_GENERATE_MIPMAP
+        || pname == 0x100d   // GL_TEXTURE_BORDER_COLOR
+        || pname == 0x884b   // GL_DEPTH_TEXTURE_MODE
+        || pname == 0x8e42   // GL_TEXTURE_SWIZZLE_R
+        || pname == 0x8e43   // GL_TEXTURE_SWIZZLE_G
+        || pname == 0x8e44   // GL_TEXTURE_SWIZZLE_B
+        || pname == 0x8e45   // GL_TEXTURE_SWIZZLE_A
+        || pname == 0x8e46;  // GL_TEXTURE_SWIZZLE_RGBA
+}
+
+struct StoredTexParam {
+    float f[4] = {0.f, 0.f, 0.f, 0.f};
+    GLint i[4] = {0, 0, 0, 0};
+    bool isFloat = false;
+};
+
+// Spec defaults for the stored set (GL texture-parameter defaults).
+void storedTexParamDefault(GLenum pname, StoredTexParam& out) {
+    out = StoredTexParam{};
+    switch (pname) {
+        case 0x8501: out.isFloat = true; break;                             // LOD_BIAS = 0.0
+        case 0x8c55: break;                                                 // GENERATE_MIPMAP = FALSE
+        case 0x100d: out.isFloat = true; break;                             // BORDER_COLOR = (0,0,0,0)
+        case 0x884b: out.i[0] = 0x1909; break;                              // DEPTH_TEXTURE_MODE = LUMINANCE
+        case 0x8e42: out.i[0] = 0x1903; break;                              // SWIZZLE_R = RED
+        case 0x8e43: out.i[0] = 0x1904; break;                              // SWIZZLE_G = GREEN
+        case 0x8e44: out.i[0] = 0x1905; break;                              // SWIZZLE_B = BLUE
+        case 0x8e45: out.i[0] = 0x1906; break;                              // SWIZZLE_A = ALPHA
+        case 0x8e46: out.i[0] = 0x1903; out.i[1] = 0x1904; out.i[2] = 0x1905; out.i[3] = 0x1906; break; // SWIZZLE_RGBA
+        default:
+            if (gl64NoteOnce("stored-texparam-default", pname))
+                klog_fmt("BW64-FAIL gl-texparam-store pname=0x%x outcome=no spec default recorded (zeros used)", (unsigned)pname);
+            break;
+    }
+}
+
+// GL-conformant validation for a scalar set of a stored pname: returns
+// GL_NO_ERROR or the error a desktop driver records for this value.
+GLenum validateStoredTexParam(GLenum pname, double value) {
+    switch (pname) {
+        case 0x8501: // LOD_BIAS: any bias value is legal
+        case 0x100d: // BORDER_COLOR component: any value is legal
+        case 0x8c55: // GENERATE_MIPMAP: boolean; drivers normalize
+            return GL_NO_ERROR;
+        case 0x884b: { // DEPTH_TEXTURE_MODE: LUMINANCE / ALPHA / INTENSITY / RED
+            GLint v = (GLint)value;
+            return (v == 0x1909 || v == 0x1906 || v == 0x8049 || v == 0x1903) ? GL_NO_ERROR : GL_INVALID_ENUM;
+        }
+        case 0x8e42: case 0x8e43: case 0x8e44: case 0x8e45: case 0x8e46: {
+            GLint v = (GLint)value;
+            return (v == 0 || v == 1 || v == 0x1903 || v == 0x1904 || v == 0x1905 || v == 0x1906) ? GL_NO_ERROR : GL_INVALID_ENUM;
+        }
+        default:
+            if (gl64NoteOnce("stored-texparam-validate", pname))
+                klog_fmt("BW64-FAIL gl-texparam-store pname=0x%x outcome=GL_INVALID_ENUM (pname outside the stored set)", (unsigned)pname);
+            return GL_INVALID_ENUM;
+    }
+}
+
+std::map<std::tuple<GLuint, GLenum, GLenum>, StoredTexParam> g_storedTexParams;
+
+// Runs on the GL-owning thread (callers hop), like the other state here.
+void setStoredTexParam(GLenum target, GLenum pname, double value) {
+    auto key = std::make_tuple(boundTexture(target), target, pname);
+    auto it = g_storedTexParams.find(key);
+    if (it == g_storedTexParams.end()) {
+        StoredTexParam d;
+        storedTexParamDefault(pname, d);
+        it = g_storedTexParams.emplace(key, d).first;
+    }
+    StoredTexParam& entry = it->second;
+    if (pname == 0x8501 || pname == 0x100d) { entry.f[0] = (float)value; entry.isFloat = true; }
+    else if (pname == 0x8c55) { entry.i[0] = value != 0.0 ? 1 : 0; }
+    else { entry.i[0] = (GLint)value; }
+}
+
+void getStoredTexParam(GLenum target, GLenum pname, GLint& out) {
+    StoredTexParam value;
+    storedTexParamDefault(pname, value);
+    auto it = g_storedTexParams.find(std::make_tuple(boundTexture(target), target, pname));
+    if (it != g_storedTexParams.end()) value = it->second;
+    out = value.isFloat ? (GLint)value.f[0] : value.i[0];
 }
 
 // Component bit widths of a sized internal format, for texture level queries
@@ -1766,6 +1872,8 @@ void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>&
     switch (type) {
         case 0x8363: stride=2; components=3; bits[0]=5; bits[1]=6; bits[2]=5;
             shifts[0]=11; shifts[1]=5; break; // 5_6_5
+        case 0x8364: stride=2; components=3; bits[0]=5; bits[1]=6; bits[2]=5;
+            shifts[1]=5; shifts[2]=11; break; // 5_6_5_REV (FD-39): _REV packs from the least significant bit (R at shift 0), the rule the existing _REV entries (4_4_4_4_REV, 1_5_5_5_REV, 8_8_8_8_REV) already follow
         case 0x8033: stride=2; bits[0]=bits[1]=bits[2]=bits[3]=4;
             shifts[0]=12; shifts[1]=8; shifts[2]=4; break; // 4_4_4_4 (FD-15)
         case 0x8034: stride=2; bits[0]=bits[1]=bits[2]=5; bits[3]=1;
@@ -3440,16 +3548,34 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
         // FD-15: TEXTURE_MIN_LOD/MAX_LOD and TEXTURE_COMPARE_MODE/FUNC are NOT
         // dropped -- both backends honor them (WebGL2 natively; the WebGPU
         // sampler wires them from the stored texture params).
+        // FD-39: the remaining desktop-only set is not dropped either -- the
+        // bridge validates and stores it itself (texParamStored) and answers
+        // queries from that store, so a valid set never touches the host
+        // error slot and never pretends to reach a sampler.
         case GL64_fn_glTexParameteri:
             if (g_glContext) {
                 GLenum pn = (GLenum)ai(args,1);
-                if (texParamSupported(pn)) GL_MT(glTexParameteri(hostTextureTarget((GLenum)ai(args,0)), pn, (GLint)ai(args,2)));
+                if (texParamStored(pn)) {
+                    GLenum tgt = (GLenum)ai(args,0);
+                    double value = (double)(GLint)ai(args,2);
+                    GLenum err = validateStoredTexParam(pn, value);
+                    if (err) recordBridgeError(err);
+                    else glOnMain([&]{ setStoredTexParam(tgt, pn, value); });
+                }
+                else if (texParamSupported(pn)) GL_MT(glTexParameteri(hostTextureTarget((GLenum)ai(args,0)), pn, (GLint)ai(args,2)));
             }
             return 0;
         case GL64_fn_glTexParameterf:
             if (g_glContext) {
                 GLenum pn = (GLenum)ai(args,1);
-                if (texParamSupported(pn)) GL_MT(glTexParameterf(hostTextureTarget((GLenum)ai(args,0)), pn, af(args,2)));
+                if (texParamStored(pn)) {
+                    GLenum tgt = (GLenum)ai(args,0);
+                    double value = (double)af(args,2);
+                    GLenum err = validateStoredTexParam(pn, value);
+                    if (err) recordBridgeError(err);
+                    else glOnMain([&]{ setStoredTexParam(tgt, pn, value); });
+                }
+                else if (texParamSupported(pn)) GL_MT(glTexParameterf(hostTextureTarget((GLenum)ai(args,0)), pn, af(args,2)));
             }
             return 0;
         case GL64_fn_glTexImage2D: {
@@ -4588,7 +4714,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
             if (g_glContext && args.a[2]) {
                 GLint v = 0;
                 GLenum tgt=(GLenum)ai(args,0); GLenum pn=(GLenum)ai(args,1); GLint* p=&v;
-                GL_MT(glGetTexParameteriv(hostTextureTarget(tgt), pn, p));
+                if (texParamStored(pn)) {
+                    // FD-39: answered from the bridge's own store; the host
+                    // never saw these sets, so it cannot answer for them.
+                    glOnMain([&]{ getStoredTexParam(tgt, pn, v); });
+                } else {
+                    GL_MT(glGetTexParameteriv(hostTextureTarget(tgt), pn, p));
+                }
                 cpu->memory->memcpyToGuest(args.a[2], &v, sizeof(GLint));
             }
             return 0;
