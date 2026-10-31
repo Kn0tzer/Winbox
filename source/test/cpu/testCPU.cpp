@@ -19,6 +19,14 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#if defined(__linux__) && defined(BOXEDWINE_POSIX) && !defined(__EMSCRIPTEN__)
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 extern void failed(const char* msg, ...);
 
@@ -276,7 +284,27 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
 
         context.failed = false;
         context.failures.clear();
-        entries[entryIndex].function();
+        // FD-41: a test must never take the whole suite down with it.
+        // The guest fault machinery unwinds with bare int throws, and
+        // kernel code under test can surface one on the harness thread
+        // (or a test can throw a std::exception of its own); uncaught,
+        // that called std::terminate and aborted the run mid-suite, so
+        // no final count was ever printed. Catch everything here, record
+        // the throw as THIS test's failure with its identity, and let
+        // the remaining tests run: a throwing test still fails, visibly,
+        // and the suite's final accounting stays trustworthy.
+        try {
+            entries[entryIndex].function();
+        } catch (int e) {
+            context.failed = true;
+            context.failures.push_back("test threw an uncaught int exception out of its body (code " + std::to_string(e) + ")");
+        } catch (const std::exception& e) {
+            context.failed = true;
+            context.failures.push_back(std::string("test threw an uncaught std::exception out of its body: ") + e.what());
+        } catch (...) {
+            context.failed = true;
+            context.failures.push_back("test threw an uncaught non-standard exception out of its body");
+        }
         {
             std::lock_guard<std::mutex> lock(printMutex);
             printf("%s", entries[entryIndex].name);
@@ -298,6 +326,75 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
 #ifdef BOXEDWINE_HOST_EXCEPTIONS
         // The JIT uses host faults to fall back for unaligned guest atomics.
         platformInitExceptionHandling();
+#endif
+#if defined(__linux__) && defined(BOXEDWINE_POSIX) && !defined(__EMSCRIPTEN__)
+        // FD-41 (harness isolation): run each test in a forked child of
+        // this process. Several tests deliberately leak guest processes
+        // and threads whose host platform threads keep executing guest
+        // code for the rest of the process lifetime; in one shared
+        // process those leftovers fault, retire, and free state
+        // underneath later tests, and the suite died mid-run in ways no
+        // single test reproduces standalone (uncaught unwinds, host
+        // faults in signal delivery on freed thread state, wedges in
+        // the tail). Forking per test gives every test the standalone
+        // environment it provably passes in -- same order, same code,
+        // same assertions, the pre-created context inherited
+        // copy-on-write -- while a child that crashes or throws can
+        // only fail itself: the parent records the verdict (exit code,
+        // or the killing signal by number) and the final count stays
+        // trustworthy. BW64_TEST_NO_FORK=1 restores the in-process
+        // path for bisection.
+        if (!getenv("BW64_TEST_NO_FORK")) {
+            fflush(stdout);
+            for (size_t i = 0; i < entryCount; ++i) {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    runEntry(0, i);
+                    fflush(stdout);
+                    fflush(stderr);
+                    _exit(currentContext && currentContext->failed ? 1 : 0);
+                }
+                if (pid < 0) {
+                    // No child to judge this test by: fail it loudly
+                    // rather than skipping it.
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    printf("%s ... FAILED\n  harness could not fork a child process for this test (%s)\n", entries[i].name, strerror(errno));
+                    fflush(stdout);
+                    failed("%s", entries[i].name);
+                    continue;
+                }
+                int status = 0;
+                pid_t waited;
+                do {
+                    waited = waitpid(pid, &status, 0);
+                } while (waited < 0 && errno == EINTR);
+                if (waited < 0) {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    printf("%s ... FAILED\n  harness lost track of this test's child process (%s)\n", entries[i].name, strerror(errno));
+                    fflush(stdout);
+                    failed("%s", entries[i].name);
+                } else if (WIFEXITED(status)) {
+                    // The child printed its own result line through
+                    // runEntry; the parent only keeps the count.
+                    if (WEXITSTATUS(status) != 0) {
+                        failed("%s", entries[i].name);
+                    }
+                } else if (WIFSIGNALED(status)) {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    printf("%s ... FAILED\n  test process died with signal %d before it could report a result\n", entries[i].name, WTERMSIG(status));
+                    fflush(stdout);
+                    failed("%s", entries[i].name);
+                } else {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    printf("%s ... FAILED\n  test process ended abnormally (wait status %d)\n", entries[i].name, status);
+                    fflush(stdout);
+                    failed("%s", entries[i].name);
+                }
+            }
+            runningParallelTest = false;
+            currentContext = nullptr;
+            return;
+        }
 #endif
         for (size_t i = 0; i < entryCount; ++i) {
             runEntry(0, i);

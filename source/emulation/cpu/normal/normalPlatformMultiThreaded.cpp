@@ -106,14 +106,46 @@ static void platformThread(CPU* cpu) {
 
     int ripSlot32 = ripSamplerAcquireSlot((int)cpu->thread->process->id, (int)cpu->thread->id);
     ripSamplerPublish32(ripSlot32, cpu);
-    cpu->nextOp = cpu->getNextOp();
-    if (!cpu->nextOp) {
-        cpu->thread->seg_mapper(cpu->getEipAddress(), true, false, false);
+    // FD-41: a guest thread whose first fetch faults fatally (entry page
+    // unmapped in its address space, no guest handler) unwinds out of the
+    // fault machinery with a bare throw. That unwind must never escape
+    // this function's frame: this is a std::thread entry point, and an
+    // exception leaving it calls std::terminate, taking the whole
+    // emulator (or the whole native test suite) down for one guest
+    // thread's fault. Contain it here: the fault machinery has already
+    // ended the guest process, so retire this thread below instead of
+    // entering a run loop that has no first instruction to run.
+    try {
         cpu->nextOp = cpu->getNextOp();
         if (!cpu->nextOp) {
-			kpanic_fmt("Failed to get first op for thread %d of process %d at address %x", cpu->thread->id, process->id, cpu->getEipAddress());
-		}
+            cpu->thread->seg_mapper(cpu->getEipAddress(), true, false, false);
+            cpu->nextOp = cpu->getNextOp();
+            if (!cpu->nextOp) {
+                kpanic_fmt("Failed to get first op for thread %d of process %d at address %x", cpu->thread->id, process->id, cpu->getEipAddress());
+            }
+        }
+    } catch (...) {
+        cpu->thread->terminating = true;
+        cpu->nextOp = nullptr;
     }
+    if (!cpu->nextOp) {
+        // No first instruction (fatal entry fault above): retire the
+        // thread exactly the way a finished thread retires, rather than
+        // dereferencing a null nextOp in the loop below.
+        ripSamplerReleaseSlot(ripSlot32);
+#ifdef __TEST
+        process->removeThread(cpu->thread);
+        return;
+#else
+        process->deleteThread(cpu->thread);
+        if (--platformThreadCount == 0) {
+            KSystem::shutingDown = true;
+            KNativeSystem::postQuit();
+        }
+        return;
+#endif
+    }
+
     while (true) {
         try {
             cpu->run();
@@ -130,6 +162,16 @@ static void platformThread(CPU* cpu) {
             }
         }
 #ifdef __TEST
+        if (!cpu->nextOp) {
+            // FD-41: the run above unwound and no next op could be
+            // decoded (the catch handler leaves nextOp null when it
+            // terminates the thread). Retire the thread like a TestEnd
+            // instead of dereferencing the null op in the check below,
+            // which faulted the host thread itself.
+            ripSamplerReleaseSlot(ripSlot32);
+            process->removeThread(cpu->thread);
+            return;
+        }
         if (cpu->nextOp->inst == TestEnd) {
             // The guest thread's program ended: unregister it from the
             // process's live-thread table before leaving. Without this,
