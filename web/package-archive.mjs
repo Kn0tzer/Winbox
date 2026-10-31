@@ -23,7 +23,12 @@ export async function prepareArchive(pkg, { onProgress = (received, total) => {}
       try {
         const cached = await (await directory.getFileHandle(key)).getFile();
         if (cached.size >= total + 22) return lease(cached);
-      } catch { /* first launch */ }
+      } catch (error) {
+        // NotFoundError is the normal first launch (no cached archive yet).
+        // Anything else means the cache could not be read; the rebuild
+        // below still runs, but the failure is on the record.
+        if (error?.name !== 'NotFoundError') console.warn('BW64-FAIL archive-cache-read key=' + key + ' error=' + (error?.message || error) + '; rebuilding the archive');
+      }
       handle = await directory.getFileHandle(key, { create: true });
       output = await handle.createWritable();
     } else {
@@ -44,8 +49,8 @@ export async function prepareArchive(pkg, { onProgress = (received, total) => {}
     onProgress(total, total);
     return lease(handle ? await handle.getFile() : blob);
   } finally {
-    if (!completed && writer) await writer.close().catch(() => {});
-    if (!completed && handle) await directory.removeEntry(key).catch(() => {});
+    if (!completed && writer) await writer.close().catch(error => console.warn('BW64-FAIL archive-cleanup op=writer-close error=' + (error?.message || error)));
+    if (!completed && handle) await directory.removeEntry(key).catch(error => console.warn('BW64-FAIL archive-cleanup op=remove-partial key=' + key + ' error=' + (error?.message || error) + '; a partial archive may remain in browser storage'));
   }
 }
 function lease(blob) {
@@ -54,7 +59,10 @@ function lease(blob) {
 }
 export async function removeArchive(pkg) {
   if (!navigator.storage?.getDirectory) return;
-  const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(directoryName).catch(() => null);
+  const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(directoryName).catch(error => {
+    if (error?.name !== 'NotFoundError') console.warn('BW64-FAIL archive-remove error=' + (error?.message || error) + '; stored archives could not be cleaned up');
+    return null;
+  });
   if (!directory) return;
   for await (const [name] of /** @type {any} */ (directory).entries()) if (name.startsWith(pkg.id + '-')) await directory.removeEntry(name);
 }

@@ -9,9 +9,9 @@ export async function replaceInstallation(previous, changes, saves) {
     await writeStored(next.id, saves, true);
     await replacePackage(previous, next);
   } catch (error) {
-    await deleteStored(next.id).catch(() => {});
+    await deleteStored(next.id).catch(error => console.warn('BW64-FAIL installation-cleanup id=' + next.id + ' error=' + (error?.message || error) + '; the staged save database could not be removed'));
     throw error;
   }
-  await deleteStored(previous.id).catch(() => {});
+  await deleteStored(previous.id).catch(error => console.warn('BW64-FAIL installation-cleanup id=' + previous.id + ' error=' + (error?.message || error) + '; the replaced save database could not be removed'));
   return next;
 }
