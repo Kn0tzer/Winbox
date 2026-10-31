@@ -26,6 +26,19 @@
 
 #include <cstring>
 
+namespace {
+// Zip stream failures repeat per read, so use the counting-cap shape
+// (first 64, then every 1024th, always with count=): a corrupt archive
+// stays visible without flooding the log.
+void logZipStreamFailure(const char* what, U64 offset, int zerr, const char* outcome) {
+    static std::atomic<unsigned long long> failures{0};
+    unsigned long long n = ++failures;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-FAIL zip-stream %s entry-offset=%llu zerr=%d outcome=%s count=%llu", what, (unsigned long long)offset, zerr, outcome, n);
+    }
+}
+}
+
 
 FsZipOpenNode::FsZipOpenNode(std::shared_ptr<FsNode> node, std::shared_ptr<FsZipNode>& zipNode, U32 flags, U64 offset) : FsOpenNode(node, flags), zipNode(zipNode), pos(0), offset(offset) {
 }
@@ -109,6 +122,11 @@ bool FsZipOpenNode::ensureStream() {
     }
     std::shared_ptr<FsZip> fsZip = this->zipNode->fsZip.lock();
     if (!fsZip) {
+        // The archive was released while this file is still open.
+        // readNative turns the failure into a 0 return, which the guest
+        // sees as EOF; without this line the truncation is invisible.
+        // (An open failure inside openEntryStream logs itself.)
+        bw64RecoverLogOnce("zipstream-zip-gone", "BW64-FAIL zip-stream outcome=reads return EOF (zip archive released while a file from it is still open)");
         return false;
     }
     this->stream = fsZip->openEntryStream(this->offset);
@@ -121,7 +139,15 @@ bool FsZipOpenNode::ensureStream() {
 
 void FsZipOpenNode::closeStream() {
     if (this->stream) {
-        unzCloseCurrentFile(this->stream);
+        // unzCloseCurrentFile is the only place this minizip reports a
+        // CRC mismatch, and only once the entry has been read to the
+        // end. The result used to be discarded, so corrupt data was
+        // served as good (this is the call that runs when a small entry
+        // finishes filling the read cache in readNative).
+        int result = unzCloseCurrentFile(this->stream);
+        if (result != UNZ_OK) {
+            logZipStreamFailure("close", this->offset, result, "entry CRC check failed; corrupt data may have been served");
+        }
         unzClose(this->stream);
         this->stream = nullptr;
     }
@@ -131,7 +157,13 @@ U32 FsZipOpenNode::readFromStream(U8* dst, U32 len) {
     U32 total = 0;
     while (total < len) {
         int got = unzReadCurrentFile(this->stream, dst + total, len - total);
-        if (got <= 0) {
+        if (got < 0) {
+            // A stream error is not EOF, but the caller only sees the
+            // short count, so the failure has to be reported here.
+            logZipStreamFailure("read", this->offset, got, "read returns short (looks like EOF to the guest)");
+            break;
+        }
+        if (got == 0) {
             break;
         }
         total += (U32)got;
@@ -156,7 +188,10 @@ void FsZipOpenNode::positionStream(U64 target) {
     if (target < this->streamPos) {
         // zlib cannot seek backward: reopen the entry and skip forward.
         unzCloseCurrentFile(this->stream);
-        unzOpenCurrentFile(this->stream);
+        int reopened = unzOpenCurrentFile(this->stream);
+        if (reopened != UNZ_OK) {
+            logZipStreamFailure("reopen", this->offset, reopened, "backward seek could not reopen the entry; following reads fail");
+        }
         this->streamPos = 0;
         std::shared_ptr<FsZip> fsZip = this->zipNode->fsZip.lock();
         if (fsZip) {
