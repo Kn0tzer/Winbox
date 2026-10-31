@@ -211,24 +211,62 @@ do not close the entry until they land.
 ### Graphics
 
 - **FD-15 — The OpenGL bridge gives five fabricated or dropped
-  answers.** *(Medium)* Each is now logged once per distinct
-  case (cleanup wave), but the answers themselves are unchanged
-  — recorded here as open defects, not settled items (project
-  decision 2026-10-31): (a) texture settings that only exist on
-  desktop OpenGL are silently dropped; (b) unknown display
-  (GLX) query attributes and unknown sync queries are answered
-  0; (c) an unknown legacy vertex-array data type is given
-  component size 0, which fabricates blank (zeroed) vertex
-  data; (d) two packed pixel formats (4_4_4_4 and 5_5_5_1)
-  have no unpack model and are uploaded still packed — the
-  layouts are mechanical to add; (e) one recorded
-  texture-coordinate call is dropped by the block replay on the
-  WebGPU path — re-emitting it per vertex is functional
-  graphics work. The honest end state per case: implement what
-  the backend can honor, return honest errors for the rest,
-  never fabricate data. Evidence:
-  `docs/reports/cleanup-bridges-20261030.md`
-  (branch `lane-cleanup-bridges`, §1 and follow-ups 2–3).
+  answers. CLOSED 2026-10-31 — see CL-07.** *(Was Medium)*
+  The five cases are fixed on branch `lane-fd15` (commit
+  `f8bedecdb`): the backend now honors the sampler settings it
+  claimed to accept, unknown display/sync queries refuse
+  instead of answering 0, two more legacy vertex-array types
+  have real decoders and unmodelled types refuse the draw
+  rather than fabricating blank geometry, the two packed
+  pixel formats unpack correctly, and the dropped
+  texture-coordinate call is recorded and replayed on every
+  path. One part of case (a) could not be made honest without
+  risking programs that work today; it stays open, recorded
+  as FD-39. Evidence: `docs/reports/cleanup-bridges-20261030.md`
+  (the original find) and
+  `docs/reports/fd15-honest-gl-answers-20261031.md` (the fix).
+- **FD-39 — Some desktop-only OpenGL texture settings still
+  have no honest answer (the FD-15 residue).** *(Medium)*
+  Settings such as texture LOD bias, mipmap-generation hints,
+  border color, depth-texture mode, and texture swizzle exist
+  on desktop OpenGL but have no model in either graphics
+  backend here (WebGPU or the legacy GL layer). Both available
+  answers are wrong in different ways: accepting the setting
+  and silently dropping it (what happens today, logged once
+  per case) pretends support that is not there; refusing it
+  with the standard error is also unsafe, because Wine's
+  Direct3D layer reads the GL error slot while creating its
+  device, so a stray refusal can fail device creation for
+  programs that start fine today. This is an explicit
+  honesty-vs-compatibility conflict, not a settled item: the
+  calls stay dropped and once-logged until a backend can
+  actually honor the settings, or the bridge's error reporting
+  can be scoped so a refusal reaches only the call that asked.
+  Found alongside by the same lane: the packed pixel format
+  5_6_5_REV (0x8364) likewise has no unpack model (the two
+  formats FD-15 named were fixed); it is mechanical to add
+  with the same table. Evidence:
+  `docs/reports/fd15-honest-gl-answers-20261031.md`.
+- **FD-40 — The 64-bit boot smoke test stalls before the
+  window station exists, on unmodified code too.** *(Low —
+  observed, cause unproven)* During the FD-15 lane's
+  regression checks, the project's `boot64-smoke` browser
+  probe failed three times with the identical signature:
+  the guest never reaches `create_winstation` (240 s watch
+  expires), an earlier `wineboot --init` process shows as
+  terminated, and guest threads sit waiting in
+  `KUnixSocketObject::lockCond`. An A/B run settles that this
+  is not an FD-15 effect: a baseline build of the unmodified
+  integ tip `c4bab5e07` fails the same way, while the
+  graphics-heavy Celeste boot probe passes on the fixed
+  build. Whether this is box load, a unix-socket wait defect,
+  or a relative of the known start stalls is unproven — it is
+  registered so the observation is not lost. Evidence:
+  `docs/reports/fd15-honest-gl-answers-20261031.md`
+  (regression section); failing-run artifacts in the lane
+  tree at `test-results/suite-boot64-smoke/` and
+  `test-results/baseline-c4bab5e07-boot64-smoke/` (the
+  baseline tree itself was a scratch tree, since removed).
 - **FD-16 — One class of shader still cannot build a pipeline:
   texel buffers reached through a descriptor-heap array.**
   *(High for the D3D12 class)* A guest's shader module whose
@@ -579,6 +617,40 @@ dead-start fix and needs composition care.
   on the previous live build was 0/4. Record:
   `docs/reports/deploy-20261031.md`. The 32-bit vintage of the
   same pair stays open as FD-02.
+
+- **CL-07 — The OpenGL bridge gave five fabricated or dropped
+  answers (was FD-15).** Fixed on branch `lane-fd15`, commit
+  `f8bedecdb`. Per case: (a) the four sampler settings the
+  bridge claimed to accept (minimum/maximum LOD, depth-compare
+  mode and function) were rejected by the WebGPU backend and
+  never reached its sampler — the backend now validates,
+  stores, and wires them into sampler creation; the rest of
+  the desktop-only set has no backend model and stays open as
+  FD-39 (a loud refusal would poison the error slot Wine's
+  Direct3D layer polls during device creation). (b) Unknown
+  GLX query attributes now return the GLX bad-attribute error
+  instead of 0; the drawable query, whose real form returns
+  nothing, leaves the caller's memory untouched; unknown sync
+  queries record the standard invalid-enum error and write
+  nothing. (c) Half-float and fixed-point legacy vertex-array
+  types gained real decoders; a genuinely unmodelled type now
+  refuses the draw instead of rendering fabricated zeroed
+  vertices. (d) The 4_4_4_4 and 5_5_5_1 packed pixel formats
+  unpack with correct layouts. (e) The texture-coordinate call
+  that vanished on the legacy-GL path is recorded on every
+  path and re-emitted per vertex by the block replay (through
+  the client-active-unit mechanism the WASM GL library can
+  actually link — it has no multi-texture entry point of its
+  own, which the lane's first full build proved at link time).
+  Proof: new tests fail on the old code (23 behavioral checks
+  across all five cases) and pass on the fix
+  (`web/tests/suite/unit/gl-fd15-honest-answers.test.mjs`,
+  `gl-fd15-texparams.test.mjs`); full build "Browser export
+  verified"; JS unit suite 340 passed / 0 failed against the
+  lane build; site-path regression probe on the same build —
+  Celeste boot PASS (the OpenGL program that works on the live
+  site still starts and draws). Record:
+  `docs/reports/fd15-honest-gl-answers-20261031.md`.
 
 ---
 
