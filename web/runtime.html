@@ -247,6 +247,7 @@ if (navigator.gpu) {
     window.bwVkTextureCompressionBC = adapter.features.has('texture-compression-bc');
     window.bwVkDepth32FloatStencil8 = adapter.features.has('depth32float-stencil8');
     window.bwVkMaxVertexBuffers = Math.min(16, adapter.limits?.maxVertexBuffers || 8);
+    window.bwVkSubgroups = adapter.features.has('subgroups');
   }).catch(() => { /* flags stay unset; the renderers publish on start */ });
 }
 window.bwVkFrame = recoverBridgeCall('runtime.vk-frame', json => send('vk', json), undefined);

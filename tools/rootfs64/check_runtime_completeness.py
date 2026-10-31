@@ -113,15 +113,15 @@ WINE8_BACKPORT_PINS = {
 # dxbc-spirv utof fix (the previous pins predated that rebuild and
 # uav12 UINT cases still failed PSO creation against them).
 VKD3D_PINS = {
-    'bw64vulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'bw64vulkan.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
     # vulkan-1.dll and winevulkan.dll carry the SAME shim bytes
     # (surface closure, 2026-10-27): Wine's dxgi creates D3D12
     # swapchain surfaces through a factory that loads winevulkan.dll
     # by name, native Vulkan apps and DXVK's dxgi load vulkan-1.dll,
     # and all three PE Vulkan names must resolve to one handle domain
     # (the bridge) or the surface call faults inside winevulkan.
-    'vulkan-1.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
-    'winevulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'vulkan-1.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
+    'winevulkan.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
     'd3d12.dll': 'a96b4e9d53ed0bed7c52a9610677e4b4ec4eb13fb5ad4f44a175c7a8da7242f1',
     'd3d12core.dll': '3d3bfe43cbec123fcdeb8f2b72ee2beaefb7a63eeaf37493bbace5c5ba54e790',
 }

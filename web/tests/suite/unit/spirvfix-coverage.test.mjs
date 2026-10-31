@@ -30,6 +30,8 @@ test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
     'texel-buffer-to-2d',
     'storage-texel-buffer-to-2d',
+    'strip-unused-texel-buffer-capabilities',
+    'quad-ops-to-shuffle',
     'split-combined-sampler',
     'fold-spec-constants',
     'strip-point-builtins',

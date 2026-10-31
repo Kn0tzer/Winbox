@@ -5,7 +5,7 @@
 // size queries must NOT be converted — the module passes through untouched.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applySpirvFix, parseSpirv } from '../../../../tools/spirvfix/spirvfix.mjs';
+import { applySpirvFix, parseSpirv, serializeSpirv } from '../../../../tools/spirvfix/spirvfix.mjs';
 import * as naga from '../../../../web/vendor/naga/node.js';
 
 await naga.init();
@@ -324,4 +324,41 @@ test('R12S: the same module without the atomic converts (the vetting is not over
   const out = parseSpirv(r.bytes);
   const img = out.insns.find(i => i.op === 25);
   assert.equal(img.words[2], 1, 'Dim Buffer -> 2D');
+});
+
+// R12X: a SampledBuffer/ImageBuffer declaration with NO Dim=Buffer image
+// type anywhere is a stray header artifact -- naga rejects the bare
+// capability, so the declaration is stripped. With a Dim=Buffer type
+// present the capability is R12/R12S territory and must survive untouched.
+const buildModule = (insns, bound = 100) => ({
+  header: { magic: 0x07230203, version: 0x00010600, generator: 0, bound, schema: 0 }, insns,
+});
+
+test('stray SampledBuffer/ImageBuffer declarations are stripped (no Dim=Buffer type)', () => {
+  const mod = buildModule([
+    { op: 17, words: [1] },
+    { op: 17, words: [46] },
+    { op: 17, words: [47] },
+    { op: 15, words: [4, 1, 0x6e69616d, 0] },
+  ]);
+  const r = applySpirvFix(serializeSpirv(mod));
+  assert.ok(r.applied.includes('strip-unused-texel-buffer-capabilities'), JSON.stringify(r.applied));
+  const out = parseSpirv(r.bytes);
+  assert.ok(!out.insns.some(i => i.op === 17 && (i.words[0] === 46 || i.words[0] === 47)),
+    'both stray capabilities must be gone');
+});
+
+test('SampledBuffer declaration survives when a Dim=Buffer image type exists', () => {
+  const mod = buildModule([
+    { op: 17, words: [1] },
+    { op: 17, words: [46] },
+    { op: 15, words: [4, 1, 0x6e69616d, 0] },
+    { op: 22, words: [10, 32] },                    // OpTypeFloat %10
+    { op: 25, words: [11, 10, 5, 0, 0, 0, 1, 0] },  // OpTypeImage %11: Dim=Buffer, Sampled=1
+  ]);
+  const r = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!r.applied.includes('strip-unused-texel-buffer-capabilities'), JSON.stringify(r.applied));
+  const out = parseSpirv(r.bytes);
+  assert.ok(out.insns.some(i => i.op === 17 && i.words[0] === 46),
+    'the capability must survive for the audit/naga to judge the real shape');
 });

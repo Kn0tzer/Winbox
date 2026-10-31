@@ -311,6 +311,12 @@ test('every bridge write into image memory bumps the generation signal (census)'
   // handlers route their ranged fills through. It writes the cleared
   // subresources' guest bytes, paired with the helper's per-subresource
   // vk64TouchMem (pinned in (a) above) and each handler's dirtyGen bump.
+  // 54 since the firstframe lane (2026-10-30): the 64-bit
+  // vkGetPipelineCacheData case writes the zero *pDataSize of the bridge's
+  // honest empty pipeline cache. It is a scalar out-param, not image or
+  // buffer memory, so no dirtyGen bump applies; it is dispositioned here
+  // as an exception, not a bump (the 32-bit case writes via wr32_32,
+  // which this census does not count).
   const writePrims = lines.filter((l) => /memcpyToGuest\(|writeGuestBytes\(/.test(l)).length;
-  assert.equal(writePrims, 53, 'pinned count of raw guest-write primitive lines');
+  assert.equal(writePrims, 54, 'pinned count of raw guest-write primitive lines');
 });

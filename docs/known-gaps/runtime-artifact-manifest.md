@@ -10,13 +10,13 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 209697213 | `b74765411050e214940c460431e033bf5278f67371ce77cd7ea90a47808f9612` | 1257 |
+| w64 | `web/runtime/wine64.zip` | 209688897 | `65cc80d757c4b282dbf94008bd683adb79ec363e1a93fc8cf6f1c82119c34807` | 1257 |
 | w32 | `web/runtime/wine32.zip` | 239760722 | `955cc41cf6d92a0dc7d98fcfccb76e4d6d70e4daa5ea744c2be1e735c3950f4c` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
-| support | `dist/runtime/support-3f1268a546e0ec138f0d15c1502fa6eea7a397ed7beff318484f5d83cc2319e9.zip` | 517859589 | `3f1268a546e0ec138f0d15c1502fa6eea7a397ed7beff318484f5d83cc2319e9` | 3543 |
+| support | `dist/runtime/support-de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35.zip` | 517859771 | `de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35` | 3543 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,

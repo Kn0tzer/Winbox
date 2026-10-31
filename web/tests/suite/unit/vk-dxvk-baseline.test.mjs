@@ -114,6 +114,18 @@ test('page-flag-gated DXVK baseline features are published before guest boot', (
     'runtime.html must publish bwVkTextureCompressionBC from the adapter before guest boot');
   assert.match(runtime, /bwVkDepth32FloatStencil8\s*=\s*adapter\.features\??\.has\('depth32float-stencil8'\)/,
     'runtime.html must publish bwVkDepth32FloatStencil8 from the adapter before guest boot');
+  // Same defect class, subgroup edition (firstframe lane, 2026-10-30):
+  // vk64bridge.cpp v2WebGpuSubgroupsSupported() reads
+  // globalThis.bwVkSubgroups, and vkd3d's shader-model 6.0 gate reads the
+  // subgroup operations mask at D3D12 device creation. When the flag was
+  // only published by the renderers at first frame, the mask read as 0 and
+  // every D3D12 device capped at shader model 5.1 (Godot: "No support for
+  // any of the suitable shader models (6.0-6.6)").
+  assert.match(runtime, /bwVkSubgroups\s*=\s*adapter\.features\??\.has\('subgroups'\)/,
+    'runtime.html must publish bwVkSubgroups from the adapter before guest boot');
+  const bridgeSrc = read('source/vulkan/vk64bridge.cpp');
+  assert.match(bridgeSrc, /subgroupSupportedOperations = vk64SubgroupSupportedOperations\(\)/,
+    'bridge subgroup fill must stay gated on vk64SubgroupSupportedOperations (chain premise of this guard)');
   const bridge = read('source/vulkan/vk64bridge.cpp');
   assert.match(bridge, /textureCompressionBC\s*=\s*v2WebGpuBcSupported\(\)/,
     'bridge BC fill must stay gated on v2WebGpuBcSupported (chain premise of this guard)');
