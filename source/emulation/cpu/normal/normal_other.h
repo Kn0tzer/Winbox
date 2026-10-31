@@ -299,7 +299,13 @@ void OPCALL normal_int80(CPU* cpu, DecodedOp* op) {
 void OPCALL normal_int99(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
     U32 index = cpu->peek32(0);
-    callOpenGL(cpu, index);
+    if (!callOpenGL(cpu, index)) {
+        // Unregistered index: callOpenGL delivered #GP, which
+        // redirected (or ended) this thread. Continue at the
+        // redirected EIP instead of falling through to the next op.
+        NEXT_DONE();
+        return;
+    }
     NEXT();
 }
 void OPCALL normal_int9A(CPU* cpu, DecodedOp* op) {
