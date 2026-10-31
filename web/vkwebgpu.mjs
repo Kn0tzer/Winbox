@@ -3778,9 +3778,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('readback-failed', e && e.message); /* still notify so the guest does not hang */ }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (The empty catch shape is
+      // pinned by the vk-silent-drop-guard source test.)
       try {
         if (buffer) buffer.destroy();
-      } catch (e) { /* teardown only: the readback outcome was already reported above; a failed destroy must not mask it */ }
+      } catch (e) {}
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, rb.flagPtr, 1), 0, 1);
@@ -3801,7 +3804,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }
-      try { if (buffer) buffer.destroy(); } catch (e) { /* teardown only: the readback outcome was already reported above; a failed destroy must not mask it */ }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (Empty-catch shape pinned
+      // by the vk-silent-drop-guard source test.)
+      try { if (buffer) buffer.destroy(); } catch (e) {}
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, brb.flagPtr, 1), 0, 1);
