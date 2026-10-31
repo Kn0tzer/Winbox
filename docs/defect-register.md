@@ -461,6 +461,50 @@ do not close the entry until they land.
   while its siblings are, and which common libraries issue.
   Evidence: `docs/reports/broad-conformance-analysis-20261030.md`
   §3; the census tool `tools/conformance/syscall_census.py`.
+  **Disposition pass done 2026-10-31 (lane `lane-fd23-syscalls`;
+  full record `docs/reports/fd23-syscall-census-20261031.md`).**
+  The census is now three-way (implemented / deliberately
+  stubbed with a logged -ENOSYS / absent) on both ABIs, and a
+  dynamic census mined the preserved run logs for what guests
+  actually issue: `rseq` dominates (273 processes asked; glibc
+  falls back cleanly every time), everything else undispatched
+  was asked for at most once, by a self-test that probes on
+  purpose. Implemented and proven on the branch: `epoll_pwait`
+  (281), `accept4` (288), `dup3` (292) on the 64-bit side —
+  absent count 168 -> 165. What remains open in this entry:
+  the per-number disposition of the long legacy tail;
+  `rseq` (a real implementation must first land abort-on-signal
+  handling in the 64-bit signal-delivery path — a pinned-cpu_id
+  registration without it would silently corrupt per-cpu data
+  on signal delivery, which is worse than the current loud
+  refusal); `select` (23; route: extract the `pselect6` core);
+  `pidfd_getfd` (438; one probe hit, no real consumer yet);
+  `futex_waitv` (449, both ABIs; no observed asks). `io_uring`
+  (425-427) is dispositioned ENOSYS-correct (a subsystem, not a
+  call; guests probe and fall back by design).
+- **FD-46 — `accept4`'s close-on-exec flag was silently
+  dropped on the 32-bit side (and would have been on the
+  64-bit side).** *(Medium)* Found by the FD-23 lane while
+  implementing the missing 64-bit `accept4` (see section B).
+  Every socket accept implementation consumed the flags word
+  in an internal encoding — close-on-exec as the descriptor-flag
+  bit, value 1 — while the syscall layer passed the guest's
+  flags untranslated, and in the guest ABI `SOCK_CLOEXEC` is
+  value 0x80000. The test never matched, so `accept4` with
+  `SOCK_CLOEXEC` returned a descriptor that leaked across exec,
+  with no error anywhere — a confident wrong answer, the FD-15
+  shape, in the kernel. (Non-blocking worked only because the
+  two encodings coincide for that flag.) Fixed on
+  `lane-fd23-syscalls`: `kaccept` validates the guest flags and
+  translates them at the single entry point both ABIs share;
+  plain accept (flags 0) is unaffected. Proof: the new
+  dispatch-level `accept4` test fails before (the number was
+  unimplemented on 64-bit, and the flag assertion is the one
+  the 32-bit path violated) and passes after, including
+  unknown-flags refusal before the pending connection is
+  consumed; full record
+  `docs/reports/fd23-syscall-census-20261031.md`. Closes when
+  the branch lands and is re-proven at the merge gate.
 - **FD-24 — No game controller exists for guests.** *(Medium)*
   There is no guest joystick device at all: controller queries
   return "device not connected" for every slot. The entry
@@ -762,6 +806,7 @@ is behavioural, is re-proven there.
 | `lane-fd06-portio` | FD-06: 32-bit port instructions and int 0x99 with an unregistered callback index now deliver #GP through the core's exception machinery, instead of the wrong fault (SIGILL) and an emulator-killing panic — the frontier review's D9 disposition, after settling that ioperm/iopl grant nothing | New testPortIoFault32 pins signal/trap/error for all six port forms, REP INSB, and int 0x99; sabotage-proven (port cases deliver SIGILL and the int 0x99 case kills the test binary with the old panic text on pre-fix code); native suite 661/661 accounted across the serial run and the standalone tail window |
 | `lane-alkhaser-int2d` | Interrupt-delivery class: software interrupts delivered with the wrong saved code so the guest ignored them; the breakpoint instruction was never delivered and parked the thread | Proven through the website path (the checker completes whole sections it previously died in) |
 | `lane-firstframe` | Six shared D3D12 first-frame walls (shader-capability dispositions, subgroup serving + advertisement timing, 23 shim-stubbed entry points, a second whitelist, 8-bit integer render targets) | JS 334/0; native 0 failed serial; the affected demo's D3D12 driver fully initializes through the website path |
+| `lane-fd23-syscalls` | FD-23 (in part): the undispatched-syscall disposition pass — three-way census tool, dynamic census of preserved run logs, and implementations of `epoll_pwait` (281), `accept4` (288), `dup3` (292) on the 64-bit side; FD-46: `accept4`'s `SOCK_CLOEXEC` silently dropped by a flag-encoding mismatch, fixed by validating/translating in `kaccept` for both ABIs | New dispatch-level tests fail before (logged -ENOSYS for 281/292; all three FAILED) and pass after; x64 suite 61/61, 0 FAILED, gate-standard serial mode; census re-run: implemented 193 -> 196, absent 168 -> 165. Main 661 suite NOT run on the branch (disk pressure; `kaccept` change is the identity for flags == 0) — merge gate must run the full native gate |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
