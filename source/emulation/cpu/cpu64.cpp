@@ -1296,8 +1296,28 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
                      fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
                      fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
         }
-        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        // A synchronous instruction fault must never be silent: before this
+        // line existed, a guest dying here left no trace at all (the same
+        // blind-spot class as the dead-start memory faults). Counting cap
+        // per docs/failure-logging-and-recovery.md; the fallback outcome
+        // (no guest handler, process signalled) always logs, because the
+        // delivery itself fell back.
+        static std::atomic<U64> insnFaultCount{0};
+        const U64 faultCount =
+            insnFaultCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const U32 faultPid = (thread && thread->process) ? thread->process->id : 0;
+        if (raiseSyncFault(sig, trapNo, 0, ipStart)) {
+            if (faultCount <= 64 || faultCount % 1024 == 0) {
+                klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u rip=0x%llx delivered=1 count=%llu",
+                         faultPid, sig, trapNo, (unsigned long long)ipStart,
+                         (unsigned long long)faultCount);
+            }
+            return 0;
+        }
         if (thread && thread->process) thread->process->signalProcess(sig);
+        klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u rip=0x%llx delivered=0 count=%llu",
+                 faultPid, sig, trapNo, (unsigned long long)ipStart,
+                 (unsigned long long)faultCount);
         yield = true;
         return 0;
     };
@@ -6945,18 +6965,12 @@ dsp_55:
             // MXCSR with reserved bits set raises #GP before any state is
             // touched (readFxrstorImage validates first).
             if (!readFxrstorImage(m.effAddr)) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
         } else if (aeMod != 3 && aeReg == 2) {
             U32 loadedMxcsr = memory->readd(m.effAddr);
             if (loadedMxcsr & 0xFFFF0000) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
             mxcsr = loadedMxcsr;
         } else if (aeMod != 3 && aeReg == 3) {
@@ -7800,7 +7814,7 @@ unhandled:
     const bool controlTrace = ripSamplerControlTraceEnabled();
     const bool traceDumped = reportControlTrace(
         "unimplemented-opcode", ipStart, std::getenv("BW64_UNIMPLDUMP") != nullptr);
-    if (!controlTrace || traceDumped) klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
+    if (!controlTrace || traceDumped) klog_fmt("BW64-FAIL CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
              (unsigned long long)ipStart,
              fetchByte(ipStart),
              fetchByte(ipStart + 1),
@@ -8786,6 +8800,16 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     m_jit->instantiateTimeUs += jit64NowUs() - instantiateStart;
     if (index < 0) {
         m_jit->instantiateFailed++;
+        // The engine refused a module the emitter produced. That is never
+        // a guest property -- it is an emulator/environment problem -- and
+        // the interpreter fallback hides it completely, so give it the
+        // counting-capped BW64-FAIL line (the JS runtime logs the reason).
+        if (m_jit->instantiateFailed <= 64 ||
+            m_jit->instantiateFailed % 1024 == 0) {
+            klog_fmt("BW64-FAIL jit-instantiate rip=0x%llx module-bytes=%u outcome=interpreter-fallback count=%llu",
+                     (unsigned long long)r, (unsigned)module.size(),
+                     (unsigned long long)m_jit->instantiateFailed);
+        }
         m_jit->cache.invalidate(r);
         m_jit->negative.add(r, gen0);
         m_jit->insnsFallback++;

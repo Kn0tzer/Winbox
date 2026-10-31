@@ -19,6 +19,7 @@
 #include "boxedwine.h"
 #include "decoder.h"
 #include "../../util/ptrpool.h"
+#include <atomic>
 
 #define G(rm) ((rm >> 3) & 7)
 #define E(rm) (rm & 7)
@@ -1688,6 +1689,24 @@ static void outE8(DecodedOp* op, BString& out) {
     out.append("]");
 }
 
+
+// A log-table entry whose operand width has no printer must degrade, never
+// panic: this code only formats trace text, and a formatter that kills the
+// emulator turns a diagnostic feature into a crash. (Live case: Cvtsd2si,
+// width 64, is routed to logRE, which prints 8/16/32 only.) Report with the
+// counting cap from docs/failure-logging-and-recovery.md and leave a
+// placeholder in the trace text; the register dump that follows the
+// instruction text in DecodedOp::log keeps the trace useful.
+static void logUnknownWidth(const LogInstruction* inst, const char* fn, BString& out) {
+    static std::atomic<U64> unknownWidthCount{0};
+    const U64 count = unknownWidthCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64 || count % 1024 == 0) {
+        klog_fmt("BW64-FAIL decoder-log fn=%s name=%s width=%d outcome=placeholder count=%llu",
+                 fn, inst->name, inst->width, (unsigned long long)count);
+    }
+    out.append(" <unknown-width>");
+}
+
 static void logRR(const LogInstruction* inst, DecodedOp* op, BString& out) {
     out.append(inst->name);
     out.append(" ");
@@ -1704,7 +1723,7 @@ static void logRR(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outR8(op->rm, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRR", inst->width);
+        logUnknownWidth(inst, "logRR", out);
     }
 }
 
@@ -1724,7 +1743,7 @@ static void logRE(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outE8(op, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRE", inst->width);
+        logUnknownWidth(inst, "logRE", out);
     }
 }
 
@@ -1744,7 +1763,7 @@ static void logER(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outR8(op->reg, out);
     } else {
-        kpanic_fmt("unknown width: %d in logER", inst->width);
+        logUnknownWidth(inst, "logER", out);
     }
 }
 
@@ -1764,7 +1783,7 @@ static void logRE8(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outE8(op, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRE8", inst->width);
+        logUnknownWidth(inst, "logRE8", out);
     }
 }
 
@@ -1784,7 +1803,7 @@ static void logRR8(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outR8(op->rm, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRR8", inst->width);
+        logUnknownWidth(inst, "logRR8", out);
     }
 }
 
@@ -1804,7 +1823,7 @@ static void logRE16(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outE16(op, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRE16", inst->width);
+        logUnknownWidth(inst, "logRE16", out);
     }
 }
 
@@ -1824,7 +1843,7 @@ static void logRR16(const LogInstruction* inst, DecodedOp* op, BString& out) {
         out.append(",");
         outR16(op->rm, out);
     } else {
-        kpanic_fmt("unknown width: %d in logRR16", inst->width);
+        logUnknownWidth(inst, "logRR16", out);
     }
 }
 
@@ -1838,7 +1857,7 @@ static void logR(const LogInstruction* inst, DecodedOp* op, BString& out) {
     } else if (inst->width==8) {
         outR8(op->reg, out);
     } else {
-        kpanic_fmt("unknown width: %d in logR", inst->width);
+        logUnknownWidth(inst, "logR", out);
     }
 }
 
@@ -1854,7 +1873,7 @@ static void logE(const LogInstruction* inst, DecodedOp* op, BString& out) {
     } else if (inst->width==64) {
         outE64(op, out);
     } else {
-        kpanic_fmt("unknown width: %d in logE", inst->width);
+        logUnknownWidth(inst, "logE", out);
     }
 }
 
