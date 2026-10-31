@@ -42,8 +42,8 @@ do not close the entry until they land.
 ### Product-facing
 
 - **FD-01 — First-time visitors could not reliably start a
-  program on the first attempt; the cause is now found and the
-  fix proven, but not yet merged or deployed.** *(Critical)*
+  program on the first attempt. CLOSED 2026-10-31 — see CL-06.**
+  *(Was Critical)*
   Two impatience defects in the staged Windows system files
   (Wine 8.0's desktop initialization), invisible on real
   hardware: (1) a process that asks for the desktop starts the
@@ -67,6 +67,13 @@ do not close the entry until they land.
   lane's tree. This entry stays open until the fix is merged,
   deployed, and the live first-visit rate is re-measured through
   the public site — only then can the restart stopgap retire.
+  Closure (2026-10-31): fix merged (merge commit d51fa408e),
+  deployed in build 14a82a302, and the live first-visit rate
+  re-measured through the public site with fresh profiles and
+  the restart budget exhausted: 6/6 first-attempt starts
+  (median ready 35.7 s), against 0/4 on the previous live build.
+  Record: `docs/reports/deploy-20261031.md`; evidence:
+  `test-results/deploy-20261031/live-boots-fresh/`.
   Evidence: `docs/reports/first-visit-start-reliability-20261031.md`
   (branch `lane-firstvisit`, fix commit `67f5fe1fd`); earlier
   measurements in `docs/reports/deploy-20261030-deadstart.md`
@@ -555,6 +562,23 @@ dead-start fix and needs composition care.
   `lane-cleanweb`). Proof: those lanes' records. They close
   fully when the branches merge.
 
+
+- **CL-06 — First-time visitors could not reliably start a
+  program on the first attempt (was FD-01).** Two impatience
+  defects in the staged Wine 8.0 desktop initialization: a
+  10-second desktop wait whose timeout fabricated a stand-in
+  desktop that poisoned the real one, and a check-once graphics
+  announcement latch that permanently installed the null driver
+  on any miss. Fixed by the win32u backport (wait and retry
+  horizons raised to ~300 s) in lane-firstvisit commits
+  `67f5fe1fd` + `5306152b6`, merged as `d51fa408e`, deployed in
+  build `14a82a302` (2026-10-31). Proof: live re-measurement
+  through the public site, fresh browser profile per boot,
+  restart budget exhausted — 6/6 first-attempt starts, median
+  ready 35.7 s, zero failure signatures; the same measurement
+  on the previous live build was 0/4. Record:
+  `docs/reports/deploy-20261031.md`. The 32-bit vintage of the
+  same pair stays open as FD-02.
 
 ---
 
