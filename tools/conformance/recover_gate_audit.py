@@ -27,25 +27,10 @@ import sys
 
 # (file name, LogOnce key) -> why this gated report is tolerated.
 EXEMPTIONS = {}
-# The 11 panic-default syscall sites: grace existed only behind the
-# switch, kpanic was the default. Lane-cleanlog commit 648241602
-# already converts exactly these (grace unconditional, panic
-# deleted), so this lane does not duplicate them and the merges stay
-# composable; once that lands, these exemptions should be removed.
-for _f, _k in [
-    ("ksystem.cpp", "syscall.ugetrlimit.resource"),
-    ("ksystem.cpp", "syscall.clock_gettime.clock"),
-    ("ksystem.cpp", "syscall.clock_gettime64.clock"),
-    ("ksystem.cpp", "syscall.prlimit64.resource"),
-    ("kthread.cpp", "syscall.modify_ldt.unknown"),
-    ("kthread.cpp", "syscall.clock_nanosleep.flags"),
-    ("kthread.cpp", "syscall.sigprocmask.how"),
-    ("kthread.cpp", "syscall.sigtimedwait.sigsetsize"),
-    ("syscall.cpp", "syscall.socketcall.unknown"),
-    ("syscall.cpp", "syscall.ipc.unknown"),
-    ("syscall.cpp", "syscall.vm86"),
-]:
-    EXEMPTIONS[(_f, _k)] = "panic-default site converted by lane-cleanlog 648241602"
+# The 11 panic-default syscall sites that were exempted pending
+# lane-cleanlog were converted by it (grace unconditional, panic
+# deleted); the pathfinder has landed, so the exemptions were
+# removed at merge time (frontier-review Part 1.1 / D4).
 EXEMPTIONS[("kthread.cpp", "syscall.futex.unknown")] = (
     "loud overall: with the switch off, an unsupported futex op "
     "reaches the dispatch tail, which kwarns with the op value; the "
