@@ -38,7 +38,7 @@ export function reportBridgeFailure(area, error, log = message => console.warn(m
   if (logged.has(key) || logged.size >= LOG_LIMIT) return false;
   logged.add(key);
   loggedCount++;
-  try { log(`bridge-recover: ${message}`); } catch {}
+  try { log(`bridge-recover: ${message}`); } catch { /* logging must never throw; the recovery itself was already counted above */ }
   return true;
 }
 

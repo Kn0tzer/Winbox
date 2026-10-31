@@ -406,8 +406,14 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog, device
   const appId = new URLSearchParams(globalThis.location?.search || '').get('installation') || 'unknown';
   if (persistentEnabled && device) {
     const warm = () => warmPersistentShaders(appId, device, (key, code) => { if (key.startsWith('spirv:')) wgsl.set(key.slice(6), code); });
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { warm().catch(() => {}); }, { timeout: 1500 });
-    else setTimeout(() => warm().catch(() => {}), 0);
+    // Warming is best-effort (a cold cache only costs translation time),
+    // and warmPersistentShaders reports its own per-entry failures -- but
+    // a rejection escaping it (store errors, scaffolding throws) must
+    // still leave a line. The bare .catch(() => {}) that was here hid
+    // exactly that; see docs/failure-logging-and-recovery.md.
+    const warmInBackground = () => { warm().catch(e => log(`BW64-FAIL shader-warm app=${appId} error=${(e && e.message) || e} outcome=warm aborted; shader cache stays cold`)); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmInBackground, { timeout: 1500 });
+    else setTimeout(warmInBackground, 0);
   }
   return {
     stats,
@@ -3774,7 +3780,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
       } catch (e) { noteUnsupported('readback-failed', e && e.message); /* still notify so the guest does not hang */ }
       try {
         if (buffer) buffer.destroy();
-      } catch (e) {}
+      } catch (e) { /* teardown only: the readback outcome was already reported above; a failed destroy must not mask it */ }
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, rb.flagPtr, 1), 0, 1);
@@ -3795,7 +3801,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }
-      try { if (buffer) buffer.destroy(); } catch (e) {}
+      try { if (buffer) buffer.destroy(); } catch (e) { /* teardown only: the readback outcome was already reported above; a failed destroy must not mask it */ }
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;
         if (heapBuf) Atomics.notify(new Int32Array(heapBuf, brb.flagPtr, 1), 0, 1);
