@@ -735,6 +735,89 @@ do not close the entry until they land.
   *(Numbered FD-43 on the lane branch; renumbered at
   integration — FD-43 was independently taken by the
   FD-40 fix lane's attribution entry above.)*
+  FIXED 2026-10-31 on branch `lane-fd44` (fix
+  `d52d839ac`; regression test `76407729e`, hardened by
+  `84d430548`/`03f259dc1`): thread lifetime in the
+  emulator is now reference counted. A `KThread` starts
+  with one reference owned by the process thread table;
+  `KProcess::deleteThread` releases it instead of
+  deleting the object, and the object (with the CPU it
+  owns) is destroyed when the last reference drains —
+  safe because `deleteThread` runs `cleanup()` first,
+  which disarms the memory-touching teardown. Every
+  table lookup that uses the thread beyond the lookup
+  itself now takes the reference under the table lock
+  (`KProcess::getThreadByIdRef`/`getThreadRef`/
+  `tryGetThreadByIdRef`, `KSystem::getThreadByIdRef`/
+  `tryGetThreadByIdRef`): the `signalProcess` iteration,
+  `KSystem::tgkill`, `terminateOtherThread`, the
+  syscall64 `tgkill`/`rt_tgsigqueueinfo`/
+  `pidfd_send_signal` queueing paths, and the
+  guest-thread dump; `signalProcess` also skips threads
+  already in teardown. Proof: new suite test
+  `testThreadLifetimeTeardown` — under an
+  AddressSanitizer build of the lifetime units it fails
+  pre-fix with heap-use-after-free in
+  `KThread::signal` (kthread.cpp:205) on a thread freed
+  by `deleteThread` (kprocess.cpp:410), and passes
+  post-fix with zero sanitizer reports; full native
+  suite serial 662/662, x64-test 59/59 on the branch.
+  The `removeThread` wedge in the original report was
+  not reproduced in any lane run and is consistent with
+  a downstream symptom of executing on freed state; if
+  it recurs on a tree carrying this fix it is an
+  independent defect. Two same-class residues found on
+  the way stay open below: FD-47 (sampler) and FD-48
+  (process lifetime under cross-thread delivery).
+  Evidence: `docs/reports/fd44-thread-lifetime-20261031.md`
+  (worktree `wt-fd44`, `test-results/fd44/`).
+- **FD-47 — The RIP sampler's background thread
+  dereferences published CPU state with no lifetime
+  hold.** *(Low–Medium, emulator thread lifetime; found
+  by the FD-44 lane, 2026-10-31.)* With `BW64_RIPSAMPLE`
+  set, a detached sampler thread
+  (`ripSamplerLoop`, `source/emulation/cpu/normal/
+  ripSampler.cpp`) walks slots holding raw `CPU*` /
+  `CPU64*` pointers published by the platform threads
+  and dereferences them: registers and instruction
+  counters for the spin detector, and in heartbeat mode
+  full traversals (`thread->process`, module lookups,
+  guest-memory reads). Owners free that state on
+  teardown (`~KThread` deletes the CPU; execve frees
+  the pre-exec CPU mid-run) — slot release at platform
+  exit and per-iteration republication narrow the
+  window but do not close it: a sample in flight during
+  a free reads torn-down state, the FD-44 class in a
+  diagnostic path. Diagnostic mode only (not enabled by
+  default). A fix publishes value samples (rip /
+  instruction count copied into slot atomics by the
+  owner) for the spin path and gives the heartbeat
+  traversal a lifetime hold (an FD-44 thread reference
+  plus a generation check) or drops the deep traversal.
+- **FD-48 — Cross-thread delivery pins the thread, not
+  the process: the shared guest memory can still be
+  freed under an in-flight frame build.** *(Low,
+  emulator thread lifetime; characterized by the FD-44
+  lane, 2026-10-31.)* FD-44's references keep the target
+  `KThread` and its CPU alive for the whole delivery,
+  but a frame build also writes through the process's
+  shared `KMemory`, whose lifetime is the process's:
+  the last thread's `deleteThread` frees it (and a
+  `KSystem`-level sender such as `KSystem::tgkill`
+  holds no `KProcessPtr` at all) while another host
+  thread's delivery against a thread of that process
+  can still be in flight. Not observed in the FD-44
+  lane's measurements (an ASan build with the memory
+  unit instrumented ran the teardown race clean, twice:
+  deliveries drain in microseconds and product process
+  teardown waits out thread removal, so the window is
+  narrow); recorded so the fix, if taken, starts from
+  the fact. Fix shape: the reference-taking lookups
+  also retain the process (the syscall64 sites already
+  hold the `KProcessPtr`), and the memory free in
+  `deleteThread` drains in-flight deliveries (a
+  per-process transient-reference count waited on under
+  `threadExitMutex`, which delivery paths never take).
 
 ---
 
