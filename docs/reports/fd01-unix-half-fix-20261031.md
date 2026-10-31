@@ -3,7 +3,7 @@
 Lane: `lane-fd01-so`, off integ `f3fd57d58`.
 Register: FD-01 updated (stays OPEN per its own re-closure terms —
 merge, deploy, and a live first-visit re-measurement remain);
-FD-45 opened (found along the way, not fixed).
+FD-53 opened (found along the way, not fixed).
 
 ## What was wrong
 
@@ -150,7 +150,7 @@ the public site.
 
 ## Found along the way
 
-- **FD-45 (registered, not fixed):** the shipped support
+- **FD-53 (registered, not fixed):** the shipped support
   archive contains `usr/lib/x86_64-linux-gnu/libvulkan.so.1`
   twice with different bytes (185,464 B / 457,224 B), so the
   Vulkan library a guest loads is not determined by the

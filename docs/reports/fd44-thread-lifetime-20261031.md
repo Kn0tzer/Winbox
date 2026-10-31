@@ -110,7 +110,7 @@ recycled-threads harness.
 
 ## Found on the way (registered, not fixed here)
 
-- **FD-47** — the RIP sampler's background thread dereferences raw
+- **FD-51** — the RIP sampler's background thread dereferences raw
   published `CPU`/`CPU64` pointers (registers, `thread->process`,
   guest memory) with no lifetime hold. Diagnostic mode only
   (`BW64_RIPSAMPLE`), same defect class.
@@ -124,7 +124,7 @@ recycled-threads harness.
 
 ## Residuals and limits
 
-- **FD-48** — cross-process delivery does not pin the target's `KProcess`: a
+- **FD-52** — cross-process delivery does not pin the target's `KProcess`: a
   delivery holds the `KThread` (and so its CPU), but a frame build
   also touches the process's shared `KMemory`, whose lifetime is the
   process's. No failure was observed from this window (deliveries
@@ -132,7 +132,7 @@ recycled-threads harness.
   removal — an ASan build with the memory unit instrumented ran the
   teardown race clean twice, `asan-kmem-run1/2.log`), and pinning
   process lifetime through every delivery path is a larger change;
-  registered as FD-48 so the next lane starts from the fact.
+  registered as FD-52 so the next lane starts from the fact.
 - With deferred destruction, `~KThread` (and its exit callbacks) can
   run on the last releasing host thread rather than the thread's own
   platform thread. No ordering assumption on the platform thread was

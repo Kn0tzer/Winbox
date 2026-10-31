@@ -2,7 +2,7 @@
 
 Lane: `lane-fd48-restart-cert`, off integ `51d0aff98`.
 Fix commit: `509c26752`. Register: FD-48 fixed on this branch;
-FD-53 opened (see below).
+FD-54 opened (see below).
 
 ## What was actually wrong
 
@@ -166,7 +166,7 @@ runtime artifact manifest regenerated (w64 row only).
 
 ## Found on the way (registered, not fixed)
 
-**FD-53** — the 64-bit spawn signal changes dialect under a
+**FD-54** — the 64-bit spawn signal changes dialect under a
 diagnostic flag: with `BW64_DLLTRACE` set, `sys_openat64`
 prints `DLLTRACE … OPEN '<path>'` for .exe opens *instead of*
 the default `OPENED` line (the default line is explicitly

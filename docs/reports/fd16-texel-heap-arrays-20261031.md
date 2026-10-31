@@ -3,8 +3,8 @@
 Lane `lane-fd16` (worktree `wt-fd16`), off integration tip
 `f3fd57d58`. Fix commits: `9d7b86428` (spirvfix + tier +
 fixtures/tests) and `e7377591b` (bridge audit mirror + native
-guards + citation re-pin). Register: FD-16 closed — see CL-12;
-FD-48 and FD-49 opened by this lane (below).
+guards + citation re-pin). Register: FD-16 closed — see CL-13;
+FD-50 and FD-49 opened by this lane (below).
 
 ## What was broken
 
@@ -147,7 +147,7 @@ tier's texture/sampler resolution already prefers.
   SampledBuffer/ImageBuffer/RuntimeDescriptorArray rejection
   counters unchanged; the query and bad-index modules must be
   refused with exactly the named counter increments. Run via
-  the FD-48 scratch method (see below): RC=0, 52 PASS lines
+  the FD-50 scratch method (see below): RC=0, 52 PASS lines
   including both FD-16 guards. Sabotage: with the bridge patch
   stashed, the guard fails at the first heap module.
 - **Full JS unit suite**: 340 passed / 1 failed, the failure
@@ -200,7 +200,7 @@ expect to re-pin once more.
 
 ## Registered by this lane, not fixed here
 
-- **FD-48** — the native test harness aborts at the fn-921
+- **FD-50** — the native test harness aborts at the fn-921
   `vkGetPipelineCacheData` assertions on the pristine
   integration tip (the bridge writes through a guest address
   the harness's bounded memory model rejects), so
