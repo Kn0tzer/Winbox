@@ -1,0 +1,74 @@
+{
+  "demo": "mindustry",
+  "jit": 0,
+  "build": {
+    "built_at_utc": "2026-10-30T20:03:12.712198+00:00",
+    "git_sha": "8ebb588c5c8aaa0dd27df326785312d8d41ab3b9",
+    "git_dirty_files": 0,
+    "wasm_sha256": "e297364adeca8b3ba86ee46ac20729ade247ce31d7f41814c1c3e1f4c57ab62c",
+    "wasm_bytes": 5519264,
+    "js_sha256": "d0e0763f454e5c7d96aa5a576a016baf575080f57e9f31be521f5b68b43bffbb",
+    "profiling": false,
+    "builder": "build:442117 (pid 442117)"
+  },
+  "tClick": 3.713,
+  "tMapped": null,
+  "clickToMappedSeconds": null,
+  "screenshots": [
+    {
+      "name": "timeout.png",
+      "atSeconds": 905.918,
+      "width": 1440,
+      "height": 892,
+      "lit": 10953,
+      "varied": 6646,
+      "redDominant": 3315,
+      "nonDarkPixelFraction": 0.008527186098654709,
+      "distinctColorCount": 1783,
+      "pixelMethod": "chromium-screenshot-png-display",
+      "pixelRegion": {
+        "x": 0,
+        "y": 64,
+        "width": 1440,
+        "height": 892
+      }
+    }
+  ],
+  "pageErrorCount": 0,
+  "consoleErrorCount": 67,
+  "framesPresented": 0,
+  "wasmMetricsLines": [],
+  "screenshotPixelMethod": "chromium-screenshot-png-display",
+  "lastMetricsSnapshot": null,
+  "lastJitStats": null,
+  "stage": "not-mapped",
+  "httpErrorCount": 0,
+  "audioAfterNoInput": {
+    "checkedAtMs": 1793393587555,
+    "crossOriginIsolated": true,
+    "contextState": "running",
+    "sdlContextState": null,
+    "launchContextState": "running",
+    "sdlUsesLaunchContext": false,
+    "iframeAllow": "cross-origin-isolated; fullscreen; autoplay",
+    "worklet": false,
+    "launcherGestureForwarded": false,
+    "frameActivation": {
+      "isActive": true,
+      "hasBeenActive": true
+    },
+    "parentActivation": {
+      "isActive": true,
+      "hasBeenActive": true
+    },
+    "audioOutputMetrics": []
+  },
+  "audioMetricEvents": 0,
+  "nonzeroOutputFrames": 0,
+  "autoplayPassed": false,
+  "threadDumpEnabled": true,
+  "threadDumpLauncherPatched": true,
+  "threadDumpRuntimeUrl": "http://127.0.0.1:36115/runtime/index.html?v=723de2610cda&installation=demo-mindustry&arch=x64&session=0&gpu=1&gltrace=0&winedbg=-all&exe=Mindustry.exe&args=%5B%5D&gamezip=https%3A%2F%2Fkn0tzer.work.gd%2Fgames%2Fmindustry.zip&gamezipsize=128595037&jit=0&shadercache=0&bw64diag=threads&guestdiag=45",
+  "threadDumpAttempts": 20,
+  "threadDumpInvocations": 20
+}
