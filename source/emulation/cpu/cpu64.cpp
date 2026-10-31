@@ -22,6 +22,7 @@
 #include "ripSampler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -460,7 +461,24 @@ bool CPU64::deliverGuestMemoryFault() {
     }
     yield = false;
     const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
-    if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error))
+    const bool delivered = raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error);
+    // A guest memory fault must never be silent: the dead-start regression
+    // (a835b2a65) killed Wine startup with exactly three of these and left
+    // no trace anywhere, which is why it took days to localize. One
+    // greppable line per fault, rate-limited so a fault-looping guest
+    // cannot flood the log; a fault whose delivery itself failed is the
+    // severe case and is always logged.
+    {
+        static std::atomic<unsigned long long> faultLogCount{0};
+        const unsigned long long n = faultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!delivered || n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL guest-memfault pid=%d addr=0x%llx rip=0x%llx err=%u si_code=%d delivered=%d count=%llu",
+                     (thread && thread->process) ? (int)thread->process->id : -1,
+                     (unsigned long long)address, (unsigned long long)faultRip,
+                     error, (int)siCode, delivered ? 1 : 0, n);
+        }
+    }
+    if (delivered)
         return true;
     if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
     yield = true;
@@ -499,7 +517,18 @@ bool CPU64::validateInstructionFetch() {
         const U32 errorCode = mapped ? PF_USER_INSTRUCTION_PROTECTION
                                      : PF_USER_INSTRUCTION_NOT_PRESENT;
         const S32 siCode = mapped ? SEGV_ACCERR : SEGV_MAPERR;
-        if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode)) {
+        const bool delivered = raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode);
+        {
+            static std::atomic<unsigned long long> fetchFaultLogCount{0};
+            const unsigned long long n = fetchFaultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (!delivered || n <= 64 || n % 1024 == 0) {
+                klog_fmt("BW64-FAIL guest-fetchfault pid=%d rip=0x%llx mapped=%d err=%u si_code=%d delivered=%d count=%llu",
+                         (thread && thread->process) ? (int)thread->process->id : -1,
+                         (unsigned long long)rip, mapped ? 1 : 0,
+                         errorCode, (int)siCode, delivered ? 1 : 0, n);
+            }
+        }
+        if (delivered) {
             return true;
         }
         if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
