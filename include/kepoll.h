@@ -60,6 +60,7 @@ private:
         bool enabled = true;
     };
     BHashTable<U32, Data*> data;
+    bool blocking = true;
 };
 
 #endif

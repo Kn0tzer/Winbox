@@ -44,6 +44,51 @@ std::mutex g_epollDataMutex;
 std::mutex g_epollWaitersMutex;
 std::unordered_map<const KEPoll*, std::vector<std::shared_ptr<KEPollWaiter>>> g_epollWaiters;
 std::unordered_map<const KEPoll*, std::unordered_map<FD, bool>> g_epollEdgeReady;
+// Conditions of threads blocked in poll()/select() on the epoll fd itself,
+// registered through KEPoll::waitForEvents. Guarded by g_epollWaitersMutex,
+// like the waiter registry.
+std::unordered_map<const KEPoll*, std::vector<std::pair<BOXEDWINE_CONDITION, U32>>> g_epollPollParents;
+
+// Linux refuses epoll nesting deeper than 5 levels (EPOLL_CTL_ADD fails
+// with ELOOP); this emulator's ctl does not check, so readiness and
+// wakeup forwarding use the same bound to keep a registration cycle from
+// recursing forever.
+thread_local int bw64EpollNestingDepth = 0;
+
+struct EpollNestingGuard {
+    bool entered = false;
+    EpollNestingGuard() {
+        if (bw64EpollNestingDepth < 5) {
+            bw64EpollNestingDepth++;
+            entered = true;
+        }
+    }
+    ~EpollNestingGuard() {
+        if (entered) bw64EpollNestingDepth--;
+    }
+};
+
+std::vector<std::pair<BOXEDWINE_CONDITION, U32>> epollPollParentsSnapshot(const KEPoll* epoll) {
+    std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
+    auto it = g_epollPollParents.find(epoll);
+    if (it == g_epollPollParents.end()) {
+        return {};
+    }
+    return it->second;
+}
+
+// One line per distinct ctl failure case, in every configuration: the
+// recovery log-once helper when recovery reporting is enabled, an
+// unconditional warning otherwise (the project's loud-in-both-modes idiom).
+void logEpollCtlFailure(const char* key, U32 op, FD fd, U32 events, const char* outcome) {
+    char message[160];
+    snprintf(message, sizeof(message), "BW64-FAIL epoll-ctl op=%u fd=%d events=0x%x outcome=%s", op, (int)fd, events, outcome);
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce(key, message);
+    } else {
+        kwarn_fmt("%s", message);
+    }
+}
 
 std::shared_ptr<KEPollWaiter> registerEpollWaiter(const KEPoll* epoll, KThread* thread) {
     std::shared_ptr<KEPollWaiter> waiter = std::make_shared<KEPollWaiter>(thread);
@@ -72,15 +117,26 @@ bool finishEpollWaiter(const KEPoll* epoll, const std::shared_ptr<KEPollWaiter>&
 }
 
 void wakeEpollWaiters(const KEPoll* epoll) {
-    std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
-    auto epollIt = g_epollWaiters.find(epoll);
-    if (epollIt == g_epollWaiters.end()) {
-        return;
+    std::vector<std::pair<BOXEDWINE_CONDITION, U32>> pollParents;
+    {
+        std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
+        auto epollIt = g_epollWaiters.find(epoll);
+        if (epollIt != g_epollWaiters.end()) {
+            for (const std::shared_ptr<KEPollWaiter>& waiter : epollIt->second) {
+                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waiter->thread->pollCond);
+                waiter->restart.store(true, std::memory_order_release);
+                BOXEDWINE_CONDITION_SIGNAL_ALL(waiter->thread->pollCond);
+            }
+        }
+        auto parentsIt = g_epollPollParents.find(epoll);
+        if (parentsIt != g_epollPollParents.end()) {
+            pollParents = parentsIt->second;
+        }
     }
-    for (const std::shared_ptr<KEPollWaiter>& waiter : epollIt->second) {
-        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waiter->thread->pollCond);
-        waiter->restart.store(true, std::memory_order_release);
-        BOXEDWINE_CONDITION_SIGNAL_ALL(waiter->thread->pollCond);
+    // A thread polling the epoll fd itself is not in the waiter registry;
+    // signal its condition so it re-checks readiness after this change.
+    for (auto& parent : pollParents) {
+        BOXEDWINE_CONDITION_SIGNAL_ALL(parent.first);
     }
 }
 }
@@ -89,6 +145,10 @@ KEPoll::KEPoll() : KObject(KTYPE_EPOLL) {
 }
 
 KEPoll::~KEPoll() {
+    {
+        std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
+        g_epollPollParents.erase(this);
+    }
     std::lock_guard<std::mutex> lock(g_epollDataMutex);
     g_epollEdgeReady.erase(this);
      for( const auto& n : this->data ) {
@@ -97,12 +157,14 @@ KEPoll::~KEPoll() {
 }
 
 void KEPoll::setBlocking(bool blocking) {
-    if (blocking)
-        kpanic("KEPoll::setBlocking not implemented yet");
+    // The flag is only reported back through fcntl (F_GETFL); how long
+    // epoll_wait blocks comes from its timeout argument, as on Linux.
+    // This used to kpanic when a guest cleared O_NONBLOCK on an epoll fd.
+    this->blocking = blocking;
 }
 
 bool KEPoll::isBlocking() {
-    return false;
+    return this->blocking;
 }
 
 void KEPoll::setAsync(bool isAsync) {
@@ -134,32 +196,148 @@ bool KEPoll::isOpen() {
 }
 
 void KEPoll::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
-    kpanic("KEPoll::waitForEvents not implemented yet");
+    // poll()/select() on the epoll fd itself: this object's readiness is
+    // its registrations' readiness, so the wakeup registration is
+    // forwarded to the registered objects, which signal the parent
+    // condition directly when their state changes. The parent is also
+    // recorded: ctl() forwards it to registrations added later, and
+    // every registration change signals it via wakeEpollWaiters. This
+    // used to kpanic, so polling a set that contained an epoll fd
+    // killed the emulator.
+    {
+        std::lock_guard<std::mutex> lock(g_epollWaitersMutex);
+        auto& parents = g_epollPollParents[this];
+        auto it = std::find_if(parents.begin(), parents.end(),
+                               [&](const std::pair<BOXEDWINE_CONDITION, U32>& entry) { return entry.first == parentCondition; });
+        if (events) {
+            if (it == parents.end()) {
+                parents.push_back(std::make_pair(parentCondition, events));
+            } else {
+                it->second = events;
+            }
+        } else if (it != parents.end()) {
+            parents.erase(it);
+            if (parents.empty()) {
+                g_epollPollParents.erase(this);
+            }
+        }
+    }
+    EpollNestingGuard guard;
+    if (!guard.entered) {
+        bw64RecoverLogOnce("epoll.nesting", "BW64-FAIL epoll-waitforwards outcome=nesting-depth-capped");
+        return;
+    }
+    KThread* thread = KThread::currentThread();
+    if (!thread || !thread->process) {
+        return;
+    }
+    std::vector<FD> fds;
+    {
+        std::lock_guard<std::mutex> lock(g_epollDataMutex);
+        for (const auto& n : this->data) {
+            if (n.value) {
+                fds.push_back((FD)n.value->fd);
+            }
+        }
+    }
+    // The forwarded mask is a superset wakeup hint; which parent is
+    // registered is the only state the children keep, and the polling
+    // loop re-checks real readiness after every wake.
+    const U32 forwardEvents = events ? (K_POLLIN | K_POLLOUT | K_POLLERR) : 0;
+    for (FD fd : fds) {
+        KFileDescriptorPtr target = thread->process->getFileDescriptor(fd);
+        if (target && target->kobject) {
+            target->kobject->waitForEvents(parentCondition, forwardEvents);
+        }
+    }
 }
 
 bool KEPoll::isReadReady() {
-    kpanic("KEPoll::isReadReady not implemented yet");
+    // An epoll fd is readable when waiting on it would report at least
+    // one event, so readiness is the registrations' readiness — the
+    // same inputs wait() reports on. This used to kpanic, so any poll
+    // set containing an epoll fd killed the emulator.
+    EpollNestingGuard guard;
+    if (!guard.entered) {
+        bw64RecoverLogOnce("epoll.nesting", "BW64-FAIL epoll-readiness outcome=nesting-depth-capped");
+        return false;
+    }
+    struct Registration {
+        FD fd;
+        U32 events;
+    };
+    std::vector<Registration> registrations;
+    {
+        std::lock_guard<std::mutex> lock(g_epollDataMutex);
+        for (const auto& n : this->data) {
+            if (n.value && n.value->enabled) {
+                registrations.push_back({(FD)n.value->fd, n.value->events});
+            }
+        }
+    }
+    KThread* thread = KThread::currentThread();
+    if (!thread || !thread->process) {
+        return false;
+    }
+    constexpr U32 EPOLLIN = 0x001, EPOLLPRI = 0x002, EPOLLOUT = 0x004;
+    for (const Registration& registration : registrations) {
+        KFileDescriptorPtr target = thread->process->getFileDescriptor(registration.fd);
+        if (!target || !target->kobject) {
+            continue;
+        }
+        KObject* object = target->kobject.get();
+        if (!object->isOpen()) {
+            return true; // wait() reports K_POLLHUP for closed targets
+        }
+        if ((registration.events & EPOLLIN) && object->isReadReady()) {
+            return true;
+        }
+        if ((registration.events & EPOLLPRI) && object->isPriorityReadReady()) {
+            return true;
+        }
+        if ((registration.events & EPOLLOUT) && object->isWriteReady()) {
+            return true;
+        }
+    }
     return false;
 }
 
 bool KEPoll::isWriteReady() {
-    kpanic("KEPoll::isWriteReady not implemented yet");
+    // An epoll fd is never write-ready, as on Linux.
     return false;
 }
 
 U32 KEPoll::writeNative(U8* buffer, U32 len) {
-    kpanic("KEPoll::writeNative not implemented yet");
-    return 0;
+    // Linux answers write() on an epoll fd with EINVAL; this used to
+    // kpanic and kill the emulator.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("epoll.write", "BW64-FAIL epoll-write outcome=returned-EINVAL");
+    } else {
+        kwarn_fmt("BW64-FAIL epoll-write len=%u outcome=returned-EINVAL", len);
+    }
+    return -K_EINVAL;
 }
 
 U32 KEPoll::readNative(U8* buffer, U32 len) {
-    kpanic("KEPoll::readNative not implemented yet");
-    return 0;
+    // Linux answers read() on an epoll fd with EINVAL; this used to
+    // kpanic and kill the emulator.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("epoll.read", "BW64-FAIL epoll-read outcome=returned-EINVAL");
+    } else {
+        kwarn_fmt("BW64-FAIL epoll-read len=%u outcome=returned-EINVAL", len);
+    }
+    return -K_EINVAL;
 }
 
 U32 KEPoll::stat(KProcess* process, U32 address, bool is64) {
-    kpanic("KEPoll::stat not implemented yet");
-    return 0;
+    // No stat is implemented for epoll fds (KTimer and KInotify answer
+    // the same way); fstat() used to kpanic here.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("epoll.stat", "BW64-FAIL epoll-stat outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL epoll-stat outcome=returned-ENOTSUP");
+    }
+    return -K_ENOTSUP;
 }
 
 U32 KEPoll::map(KThread* thread, U32 address, U32 len, S32 prot, S32 flags, U64 off) {
@@ -175,7 +353,9 @@ BString KEPoll::selfFd() {
 }
 
 S64 KEPoll::seek(S64 pos) {
-    return -K_ESPIPE; // :TODO: is this right?
+    // Verified: epoll fds are anon-inode files with no seek operation,
+    // and Linux answers llseek on them with ESPIPE.
+    return -K_ESPIPE;
 }
 
 S64 KEPoll::getPos() {
@@ -183,6 +363,8 @@ S64 KEPoll::getPos() {
 }
 
 U32 KEPoll::ioctl(KThread* thread, U32 request) {
+    // ENOTTY reporting for guest ioctls lives at the single dispatch
+    // point, KProcess::ioctl.
     return -K_ENOTTY;
 }
 
@@ -206,6 +388,7 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
     KFileDescriptorPtr targetFD = KThread::currentThread()->process->getFileDescriptor(fd);
 
     if (!targetFD) {
+        logEpollCtlFailure("epoll.ctl.badfd", op, fd, 0, "returned-EBADF");
         return -K_EBADF;
     }
 
@@ -223,15 +406,22 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
             constexpr U32 EPOLLONESHOT = 0x40000000;
             constexpr U32 allowed = EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLRDHUP |
                 EPOLLWAKEUP | EPOLLEXCLUSIVE | EPOLLET | EPOLLONESHOT;
-            if (requestedEvents & ~allowed) return -K_EINVAL;
+            if (requestedEvents & ~allowed) {
+                logEpollCtlFailure("epoll.ctl.einval", op, fd, requestedEvents, "returned-EINVAL-bad-events");
+                return -K_EINVAL;
+            }
             if ((requestedEvents & EPOLLEXCLUSIVE) &&
                 (op != K_EPOLL_CTL_ADD || !(requestedEvents & (EPOLLIN | EPOLLOUT)) ||
-                 (requestedEvents & (EPOLLONESHOT | EPOLLWAKEUP)))) return -K_EINVAL;
+                 (requestedEvents & (EPOLLONESHOT | EPOLLWAKEUP)))) {
+                logEpollCtlFailure("epoll.ctl.einval", op, fd, requestedEvents, "returned-EINVAL-bad-exclusive");
+                return -K_EINVAL;
+            }
         }
 
         switch (op) {
             case K_EPOLL_CTL_ADD:
                 if (existing) {
+                    logEpollCtlFailure("epoll.ctl.eexist", op, fd, requestedEvents, "returned-EEXIST");
                     return -K_EEXIST;
                 }
                 existing = new Data();
@@ -242,22 +432,43 @@ U32 KEPoll::ctl(KMemory* memory, U32 op, FD fd, U32 address) {
                 if (requestedEvents & 0x80000000u) g_epollEdgeReady[this][fd] = false;
                 break;
             case K_EPOLL_CTL_DEL:
-                if (!existing)
+                if (!existing) {
+                    logEpollCtlFailure("epoll.ctl.enoent", op, fd, 0, "returned-ENOENT");
                     return -K_ENOENT;
+                }
                 this->data.remove(fd);
                 delete existing;
                 g_epollEdgeReady[this].erase(fd);
                 break;
             case K_EPOLL_CTL_MOD:
-                if (!existing)
+                if (!existing) {
+                    logEpollCtlFailure("epoll.ctl.enoent", op, fd, requestedEvents, "returned-ENOENT");
                     return -K_ENOENT;
+                }
                 existing->events = requestedEvents;
                 existing->data = requestedData;
                 existing->enabled = true; // EPOLL_CTL_MOD rearms EPOLLONESHOT
                 g_epollEdgeReady[this][fd] = false;
                 break;
             default:
+                logEpollCtlFailure("epoll.ctl.einval", op, fd, requestedEvents, "returned-EINVAL-bad-op");
                 return -K_EINVAL;
+        }
+    }
+    if (targetFD && targetFD->kobject) {
+        // Keep wakeup registrations of threads polling this fd in sync
+        // with the registration set: a target added while such a poll is
+        // blocked still owes it a registration, and a removed target
+        // must stop waking it.
+        auto pollParents = epollPollParentsSnapshot(this);
+        if (op == K_EPOLL_CTL_ADD) {
+            for (auto& parent : pollParents) {
+                targetFD->kobject->waitForEvents(parent.first, K_POLLIN | K_POLLOUT | K_POLLERR);
+            }
+        } else if (op == K_EPOLL_CTL_DEL) {
+            for (auto& parent : pollParents) {
+                targetFD->kobject->waitForEvents(parent.first, 0);
+            }
         }
     }
     wakeEpollWaiters(this);

@@ -605,7 +605,12 @@ public:
     FsOpenNode* open(U32 flags) override {kwarn("unixsocket_open was called, this shouldn't happen.  syscall_open should detect we have a kobject already"); return nullptr;}
     U32 getType(bool checkForLink) override {return 12;} // DT_SOCK
     U32 getMode() override {return K__S_IREAD | K__S_IWRITE | K_S_IFSOCK;}
-    U32 removeDir() override {kpanic("UnixSocket::removeDir not implemented"); return 0;}
+    U32 removeDir() override {
+        // rmdir() on a socket file: Linux answers ENOTDIR, since the
+        // path is not a directory. This used to kpanic.
+        kwarn_fmt("BW64-FAIL unixsocket-removeDir outcome=returned-ENOTDIR");
+        return -K_ENOTDIR;
+    }
     U32 setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) override {klog("UnixSocket::setTimes not implemented"); return 0;}
 };
 
@@ -646,7 +651,15 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
 	}
     this->pid = thread->process->id;
     if (len>sizeof(this->destAddress.data)+2) {
-        kpanic("Socket address is too big");
+        // Guest-supplied address longer than a sockaddr_un: Linux
+        // answers ENAMETOOLONG for an over-long sun_path. This used
+        // to kpanic on the guest's addrlen.
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("unixsocket.connect.nametoolong", "BW64-FAIL unixsocket-connect outcome=returned-ENAMETOOLONG");
+        } else {
+            kwarn_fmt("BW64-FAIL unixsocket-connect addrlen=%u outcome=returned-ENAMETOOLONG", len);
+        }
+        return -K_ENAMETOOLONG;
     }
     this->destAddress.family = memory->readw(address);
     memory->memcpy(this->destAddress.data, address + 2, len - 2);
@@ -755,7 +768,12 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
                 return 0;
             }
         } else {
-            kpanic_fmt("connect not implemented for domain %d", this->domain);
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("unixsocket.connect.domain", "BW64-FAIL unixsocket-connect outcome=returned-EAFNOSUPPORT");
+            } else {
+                kwarn_fmt("BW64-FAIL unixsocket-connect domain=%d outcome=returned-EAFNOSUPPORT", this->domain);
+            }
+            return -K_EAFNOSUPPORT;
         }
     } else {
         kwarn_fmt("connect not implemented for type %d", this->type);
@@ -1121,8 +1139,15 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         if (this->type == K_SOCK_STREAM) {
             return -K_ENOTCONN;
         }
-        kpanic_fmt("KUnixSocketObject::sendmsg not implemented for type: %d", this->type);
-        return 0;
+        // Datagram sockets hold no connection to send on, and this
+        // implementation does not take a destination from the message
+        // header; Linux answers EDESTADDRREQ. This used to kpanic.
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("unixsocket.sendmsg.nodest", "BW64-FAIL unixsocket-sendmsg outcome=returned-EDESTADDRREQ");
+        } else {
+            kwarn_fmt("BW64-FAIL unixsocket-sendmsg type=%d outcome=returned-EDESTADDRREQ", this->type);
+        }
+        return -K_EDESTADDRREQ;
     }
     bool noSignal = (flags & K_MSG_NOSIGNAL) != 0;
     flags &= ~K_MSG_NOSIGNAL;
@@ -1145,11 +1170,26 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
 
         readCMsgHdr(thread, hdr.msg_control, &cmsg);
         if (cmsg.cmsg_level != K_SOL_SOCKET) {
-            kpanic_fmt("KUnixSocketObject::sendmsg control level %d not implemented", cmsg.cmsg_level);
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("unixsocket.sendmsg.cmsglevel", "BW64-FAIL unixsocket-sendmsg outcome=returned-EINVAL");
+            } else {
+                kwarn_fmt("BW64-FAIL unixsocket-sendmsg cmsg-level=%d outcome=returned-EINVAL", cmsg.cmsg_level);
+            }
+            return -K_EINVAL;
         } else if (cmsg.cmsg_type != K_SCM_RIGHTS) {
-            kpanic_fmt("KUnixSocketObject::sendmsg control type %d not implemented", cmsg.cmsg_type);
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("unixsocket.sendmsg.cmsgtype", "BW64-FAIL unixsocket-sendmsg outcome=returned-EINVAL");
+            } else {
+                kwarn_fmt("BW64-FAIL unixsocket-sendmsg cmsg-type=%d outcome=returned-EINVAL", cmsg.cmsg_type);
+            }
+            return -K_EINVAL;
         } else if ((cmsg.cmsg_len & 3) != 0) {
-            kpanic_fmt("KUnixSocketObject::sendmsg control len %d not implemented", cmsg.cmsg_len);
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("unixsocket.sendmsg.cmsglen", "BW64-FAIL unixsocket-sendmsg outcome=returned-EINVAL");
+            } else {
+                kwarn_fmt("BW64-FAIL unixsocket-sendmsg cmsg-len=%d outcome=returned-EINVAL", cmsg.cmsg_len);
+            }
+            return -K_EINVAL;
         }
 
         for (U32 i=0;i<hdr.msg_controllen/16;i++) {
@@ -1352,7 +1392,20 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         U32 dataLen = msg->data[pos] | (((U32)msg->data[pos + 1]) << 8) | (((U32)msg->data[pos + 2]) << 16) | (((U32)msg->data[pos + 3]) << 24);
         pos+=4;
         if (len<dataLen) {
-            kpanic("unhandled socket msg logic");
+            // The receive iov is smaller than the stored segment: copy
+            // what fits and drop the rest of the segment (datagram-style
+            // truncation) instead of the kpanic this used to be. The
+            // stored stream is length-prefixed per segment, so skipping
+            // the remainder keeps the walk in sync.
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("unixsocket.recvmsg.truncate", "BW64-FAIL unixsocket-recvmsg outcome=segment-truncated");
+            } else {
+                kwarn_fmt("BW64-FAIL unixsocket-recvmsg iovlen=%u segmentlen=%u outcome=segment-truncated", len, dataLen);
+            }
+            memory->memcpy(p, msg->data.data() + pos, len);
+            pos+=dataLen;
+            result+=len;
+            continue;
         }
         memory->memcpy(p, msg->data.data() + pos, dataLen);
         pos+=dataLen;
@@ -1365,12 +1418,53 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
 }
 
 U32 KUnixSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32 message, U32 length, U32 flags, U32 dest_addr, U32 dest_len) {
-    return 0;
+    if (dest_addr) {
+        // Destination addressing is not implemented for unix sockets
+        // (connect() plus a plain send covers the connected case).
+        // This used to report success without sending anything, which
+        // also made send() on a unix socket a silent no-op, since
+        // ksend routes through here.
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("unixsocket.sendto.dest", "BW64-FAIL unixsocket-sendto outcome=returned-EDESTADDRREQ");
+        } else {
+            kwarn_fmt("BW64-FAIL unixsocket-sendto destlen=%u outcome=returned-EDESTADDRREQ", dest_len);
+        }
+        return -K_EDESTADDRREQ;
+    }
+    if (flags & ~(K_MSG_NOSIGNAL | K_MSG_DONTWAIT)) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("unixsocket.sendto.flags", "BW64-FAIL unixsocket-sendto outcome=returned-EINVAL");
+        } else {
+            kwarn_fmt("BW64-FAIL unixsocket-sendto flags=0x%x outcome=returned-EINVAL", flags);
+        }
+        return -K_EINVAL;
+    }
+    // Connected send: the write path is the data path. MSG_NOSIGNAL is
+    // accepted but not honored (the write path applies write()'s
+    // SIGPIPE behavior), and MSG_DONTWAIT is accepted with the socket's
+    // own blocking flag governing, as with write().
+    return this->write(thread, message, length);
 }
 
 U32 KUnixSocketObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U32 buffer, U32 length, U32 flags, U32 address, U32 address_len) {
-    if (address == 0) {        
+    if (address == 0) {
         return read(thread, buffer, length, flags);
     }
-    return 0;
+    // The data path is the same as a plain read; only the source-address
+    // report is missing (peer naming is not tracked), so report an
+    // unnamed AF_UNIX address, as Linux does for unbound peers. This
+    // used to return 0 without reading anything, silently stalling the
+    // receiver.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("unixsocket.recvfrom.addr", "BW64-FAIL unixsocket-recvfrom outcome=unnamed-peer-address");
+    } else {
+        kwarn_fmt("BW64-FAIL unixsocket-recvfrom outcome=unnamed-peer-address");
+    }
+    U32 result = read(thread, buffer, length, flags);
+    if ((S32)result >= 0 && address_len) {
+        KMemory* memory = thread->memory;
+        memory->writew(address, K_AF_UNIX);
+        memory->writed(address_len, 2);
+    }
+    return result;
 }

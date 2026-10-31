@@ -299,6 +299,23 @@ U32 KNetLinkObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32 ad
     return -K_EOPNOTSUPP;
 }
 
+// A guest-supplied option length this implementation cannot honor gets
+// the graceful answer (EINVAL, logged once per option) instead of the
+// kpanic these checks used to be: guest input must not kill the emulator.
+static bool netlinkOptLenOk(const char* key, const char* what, U32 len, U32 expected) {
+    if (len == expected) {
+        return true;
+    }
+    char message[192];
+    snprintf(message, sizeof(message), "BW64-FAIL netlink-optlen what=%s len=%u expected=%u outcome=returned-EINVAL", what, len, expected);
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce(key, message);
+    } else {
+        kwarn_fmt("%s", message);
+    }
+    return false;
+}
+
 U32 KNetLinkObject::getsockname(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 plen) {
     KMemory* memory = thread->memory;
 
@@ -328,38 +345,43 @@ U32 KNetLinkObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
         switch (name) {
         case K_SO_RCVBUFFORCE:
         case K_SO_RCVBUF:
-            if (len != 4)
-                kpanic("KUnixSocketObject::setsockopt SO_RCVBUF expecting len of 4");
+            if (!netlinkOptLenOk("netlink.setsockopt.rcvbuf", "setsockopt SO_RCVBUF", len, 4))
+                return -K_EINVAL;
             this->recvLen = memory->readd(value);
             break;
         case K_SO_SNDBUFFORCE:
         case K_SO_SNDBUF:
-            if (len != 4)
-                kpanic("KUnixSocketObject::setsockopt SO_SNDBUF expecting len of 4");
+            if (!netlinkOptLenOk("netlink.setsockopt.sndbuf", "setsockopt SO_SNDBUF", len, 4))
+                return -K_EINVAL;
             this->sendLen = memory->readd(value);
             break;
         case K_SO_PASSCRED:
             break;
         case K_SO_PRIORITY:
-            if (len != 4)
-                kpanic("KNetLinkObject::setsockopt SO_PRIORITY expecting len of 4");
+            if (!netlinkOptLenOk("netlink.setsockopt.priority", "setsockopt SO_PRIORITY", len, 4))
+                return -K_EINVAL;
             setNetlinkPriority(this, memory->readd(value));
             break;
         case K_SO_ATTACH_FILTER:
             break;
         default:
+            // The graceful answer used to exist only when recovery was
+            // enabled; in the default configuration this fell through
+            // and reported success for an option that was not applied.
             if (bw64RecoverEnabled()) {
                 bw64RecoverLogOnce("socket.netlink.setsockopt", "unsupported netlink socket option; returned EINVAL");
-                return -K_EINVAL;
+            } else {
+                kwarn_fmt("KNetLinkObject::setsockopt name %d not implemented; returned EINVAL", name);
             }
-            kwarn_fmt("KNetLinkObject::setsockopt name %d not implemented", name);
+            return -K_EINVAL;
         }
     } else {
         if (bw64RecoverEnabled()) {
             bw64RecoverLogOnce("socket.netlink.setsockopt.level", "unsupported netlink socket option level; returned EINVAL");
-            return -K_EINVAL;
+        } else {
+            kwarn_fmt("KNetLinkObject::setsockopt level %d not implemented; returned EINVAL", level);
         }
-        kwarn_fmt("KNetLinkObject::setsockopt level %d not implemented", level);
+        return -K_EINVAL;
     }
     return 0;
 }
@@ -370,24 +392,24 @@ U32 KNetLinkObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
     U32 len = memory->readd(len_address);
     if (level == K_SOL_SOCKET) {
         if (name == K_SO_RCVBUF) {
-            if (len != 4)
-                kpanic("KNetLinkObject::getsockopt SO_RCVBUF expecting len of 4");
+            if (!netlinkOptLenOk("netlink.getsockopt.rcvbuf", "getsockopt SO_RCVBUF", len, 4))
+                return -K_EINVAL;
             memory->writed(value, this->recvLen);
         } else if (name == K_SO_SNDBUF) {
-            if (len != 4)
-                kpanic("KNetLinkObject::getsockopt SO_SNDBUF expecting len of 4");
+            if (!netlinkOptLenOk("netlink.getsockopt.sndbuf", "getsockopt SO_SNDBUF", len, 4))
+                return -K_EINVAL;
             memory->writed(value, this->sendLen);
         } else if (name == K_SO_ERROR) {
-            if (len != 4)
-                kpanic("KNetLinkObject::getsockopt SO_ERROR expecting len of 4");
+            if (!netlinkOptLenOk("netlink.getsockopt.error", "getsockopt SO_ERROR", len, 4))
+                return -K_EINVAL;
             memory->writed(value, this->error);
         } else if (name == K_SO_TYPE) {
-            if (len != 4)
-                kpanic("KNetLinkObject::getsockopt K_SO_TYPE expecting len of 4");
+            if (!netlinkOptLenOk("netlink.getsockopt.type", "getsockopt SO_TYPE", len, 4))
+                return -K_EINVAL;
             memory->writed(value, this->type);
         } else if (name == K_SO_PRIORITY) {
-            if (len != 4)
-                kpanic("KNetLinkObject::getsockopt SO_PRIORITY expecting len of 4");
+            if (!netlinkOptLenOk("netlink.getsockopt.priority", "getsockopt SO_PRIORITY", len, 4))
+                return -K_EINVAL;
             memory->writed(value, getNetlinkPriority(this));
             memory->writed(len_address, 4);
         } else {
@@ -404,8 +426,14 @@ U32 KNetLinkObject::getsockopt(KThread* thread, const KFileDescriptorPtr& fd, U3
 }
 
 U32 KNetLinkObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
-    kpanic("KNetLinkObject::sendmsg not implemented");
-    return 0;
+    // sendmsg is not implemented for netlink sockets (sendto is the
+    // supported send path); this used to kpanic and kill the emulator.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("netlink.sendmsg", "BW64-FAIL netlink-sendmsg outcome=returned-EOPNOTSUPP");
+    } else {
+        kwarn_fmt("BW64-FAIL netlink-sendmsg flags=0x%x outcome=returned-EOPNOTSUPP", flags);
+    }
+    return -K_EOPNOTSUPP;
 }
 
 U32 KNetLinkObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 flags) {
@@ -691,10 +719,25 @@ U32 KNetLinkObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32 me
 }
 
 U32 KNetLinkObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U32 buffer, U32 length, U32 flags, U32 address, U32 address_len) {
-    if (address == 0) {
-        if (flags) {
-            kpanic_fmt("KUnixSocketObject::recvfrom unhandled flags=%x", flags);
+    if (flags & ~(K_MSG_DONTWAIT | K_MSG_NOSIGNAL)) {
+        // Only MSG_DONTWAIT is honored (below) and MSG_NOSIGNAL is a
+        // no-op for receives; anything else (MSG_PEEK and friends)
+        // cannot be served by the consuming read path. Any nonzero
+        // flags value used to kpanic here.
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("netlink.recvfrom.flags", "BW64-FAIL netlink-recvfrom-flags outcome=returned-EINVAL");
+        } else {
+            kwarn_fmt("BW64-FAIL netlink-recvfrom flags=0x%x outcome=returned-EINVAL", flags);
         }
+        return -K_EINVAL;
+    }
+    if ((flags & K_MSG_DONTWAIT) && !this->inClosed) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
+        if (this->recvBuffer.size() == 0) {
+            return -K_EAGAIN;
+        }
+    }
+    if (address == 0) {
         return read(thread, buffer, length);
     }
     if (address) {
