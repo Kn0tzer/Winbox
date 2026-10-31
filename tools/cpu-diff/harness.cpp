@@ -56,7 +56,7 @@ thread_local KThread* KThread::runningThread = nullptr;
 void jit64ReleaseState(Jit64State* state) {
     if (state) throw DiffFault("unexpected JIT state in cpu-diff harness");
 }
-bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 /*siCode*/, U64 faultAddr) {
+bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 /*siCode*/, U64 faultAddr, U32 /*errorCode*/) {
     throw DiffFault("sync fault at guest addr", sig, trapNo, faultAddr);
 }
 bool CPU64::deliverPendingSignals() { return false; }
