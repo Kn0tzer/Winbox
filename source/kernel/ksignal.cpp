@@ -260,15 +260,17 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
         if (bw64RecoverEnabled()) {
             bw64RecoverLogOnce("syscall.signalfd4.flags", "unsupported signalfd4 flags; returned EINVAL");
             return -K_EINVAL;
+        } else {
+            kwarn_fmt("signalfd4: unsupported flags %x accepted (recovery switch off)", flags);
         }
-        kwarn_fmt("signalfd4: unsupported flags %x accepted (recovery switch off)", flags);
     }
     if (maskSize != 4 && maskSize != 8) {
         if (bw64RecoverEnabled()) {
             bw64RecoverLogOnce("syscall.signalfd4.mask_size", "unsupported signalfd4 mask size; returned EINVAL");
             return -K_EINVAL;
+        } else {
+            kwarn_fmt("signalfd4: unsupported mask size %d accepted (recovery switch off)", maskSize);
         }
-        kwarn_fmt("signalfd4: unsupported mask size %d accepted (recovery switch off)", maskSize);
     }
 
     if (fildes>=0) {
