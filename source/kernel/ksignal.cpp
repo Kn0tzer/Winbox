@@ -86,7 +86,14 @@ void KSignal::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
         BOXEDWINE_CONDITION_REMOVE_PARENT(this->lockCond, parentCondition);
     }
     if (events & K_POLLOUT) {
-        kpanic("waiting on a signal not implemented yet");
+        // A signalfd is never writable; polling for write readiness on
+        // one used to kpanic. Never register for it instead: the poll
+        // loop's readiness check (isWriteReady) always answers false.
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("signalfd.pollout", "BW64-FAIL signalfd-poll-write outcome=never-ready");
+        } else {
+            kwarn_fmt("BW64-FAIL signalfd-poll-write outcome=never-ready");
+        }
     }
 }
 
@@ -98,13 +105,20 @@ bool KSignal::isReadReady() {
 }
 
 bool KSignal::isWriteReady() {
-    kpanic("KSignal::isWriteReady not implemented yet");
+    // A signalfd is never writable, as on Linux. This used to kpanic,
+    // so any poll set containing a signalfd killed the emulator.
     return false;
 }
 
 U32 KSignal::writeNative(U8* buffer, U32 len) {
-    kpanic("KSignal::writeNative not implemented yet");
-    return 0;
+    // Linux answers write() on a signalfd with EINVAL; this used to
+    // kpanic and kill the emulator.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("signalfd.write", "BW64-FAIL signalfd-write outcome=returned-EINVAL");
+    } else {
+        kwarn_fmt("BW64-FAIL signalfd-write len=%u outcome=returned-EINVAL", len);
+    }
+    return -K_EINVAL;
 }
 
 void writeSignal(U8* buffer, U32 signal, U32 signalingPid, U32 signalingUid, KSigAction* action) {
@@ -211,8 +225,14 @@ U32 KSignal::readNative(U8* buffer, U32 len) {
 }
 
 U32 KSignal::stat(KProcess* process, U32 address, bool is64) {
-    kpanic("KSignal::stat not implemented yet");
-    return 0;
+    // No stat is implemented for signalfds (KTimer and KInotify answer
+    // the same way); fstat() used to kpanic here.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("signalfd.stat", "BW64-FAIL signalfd-stat outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL signalfd-stat outcome=returned-ENOTSUP");
+    }
+    return -K_ENOTSUP;
 }
 
 U32 KSignal::map(KThread* thread, U32 address, U32 len, S32 prot, S32 flags, U64 off) {
@@ -228,7 +248,9 @@ BString KSignal::selfFd() {
 }
 
 S64 KSignal::seek(S64 pos) {
-    return -K_ESPIPE; // :TODO: is this right?
+    // Verified: signalfds are anon-inode files with no seek operation,
+    // and Linux answers llseek on them with ESPIPE.
+    return -K_ESPIPE;
 }
 
 S64 KSignal::getPos() {
@@ -236,6 +258,11 @@ S64 KSignal::getPos() {
 }
 
 U32 KSignal::ioctl(KThread* thread, U32 request) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("signalfd.ioctl", "BW64-FAIL signalfd-ioctl outcome=returned-ENOTTY");
+    } else {
+        kwarn_fmt("BW64-FAIL signalfd-ioctl request=0x%x outcome=returned-ENOTTY", request);
+    }
     return -K_ENOTTY;
 }
 
@@ -251,11 +278,16 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
     KFileDescriptorPtr fd;
     KMemory* memory = thread->memory;
 
-    if (bw64RecoverEnabled() && (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK))) {
+    // These validations used to run only when recovery was enabled;
+    // in the default configuration bad flags were silently accepted
+    // and an unknown mask size reached the kpanic at the bottom of
+    // this function. Guest input must get the graceful answer in
+    // every configuration.
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) {
         bw64RecoverLogOnce("syscall.signalfd4.flags", "unsupported signalfd4 flags; returned EINVAL");
         return -K_EINVAL;
     }
-    if (bw64RecoverEnabled() && maskSize != 4 && maskSize != 8) {
+    if (maskSize != 4 && maskSize != 8) {
         bw64RecoverLogOnce("syscall.signalfd4.mask_size", "unsupported signalfd4 mask size; returned EINVAL");
         return -K_EINVAL;
     }
@@ -282,7 +314,11 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
     } else if (maskSize==8) {
         s->mask = memory->readq(mask);
     } else {
-        kpanic_fmt("syscall_signalfd4 unknown mask size: %d", maskSize);
+        // Unreachable while the validation above stands; an error
+        // return instead of the kpanic this used to be, so weakening
+        // that validation later degrades instead of killing the
+        // emulator.
+        return -K_EINVAL;
     }
     s->blocking = (fd->accessFlags & K_O_NONBLOCK) == 0;
     return fd->handle;
