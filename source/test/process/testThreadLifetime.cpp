@@ -168,6 +168,25 @@ void tgkillMain(KProcessPtr process, std::vector<U32> tids, std::atomic<bool>* s
 
 } // namespace
 
+// Phase 2's platform-thread role: park on a real condition wait (the
+// condition's wait primitive is what publishes waitingCond, the
+// condition terminateOtherThread kicks), re-parking after any wake
+// that is not the end, then retire through the product teardown entry
+// points when terminated.
+void phase2VictimMain(KProcessPtr process, KThread* thread, std::atomic<bool>* stop) {
+    KThread::setCurrentThread(thread);
+    std::shared_ptr<BoxedWineCondition> cond =
+        std::make_shared<BoxedWineCondition>(B("fd44 phase2 park"));
+    while (!stop->load(std::memory_order_acquire) && !thread->terminating) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(cond);
+        BOXEDWINE_CONDITION_WAIT(cond);
+    }
+    if (thread->terminating) {
+        terminateCurrentThread(thread);
+        process->deleteThread(thread);
+    }
+}
+
 void testThreadLifetimeTeardown() {
     std::mt19937 rng(0xFD44);
 
@@ -234,17 +253,12 @@ void testThreadLifetimeTeardown() {
         fx.setup(VICTIMS);
         std::atomic<bool> neverStop{false};
         std::vector<std::thread> victimThreads;
-        U32 vi = 0;
         for (KThread* t : fx.victims) {
-            victimThreads.emplace_back(victimMain, fx.process, t,
-                                       VICTIM_STACK_BASE + (vi + 1) * VICTIM_STACK_SIZE - 0x40,
-                                       0, &neverStop);
-            vi++;
+            victimThreads.emplace_back(phase2VictimMain, fx.process, t, &neverStop);
         }
-        // Give every victim time to park. Victims cycle through short
-        // parks (they consume delivered signals between parks), so
-        // observe each one parked at least once rather than requiring
-        // all of them parked at the same instant.
+        // Give every victim time to park on its condition wait
+        // (waitingCond set). A parked victim stays parked until
+        // kicked, so each one just needs to be observed once.
         U64 deadline = hostMillies() + 20000;
         std::vector<char> seenParked(fx.victims.size(), 0);
         bool allParked = false;
