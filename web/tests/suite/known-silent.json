@@ -37,12 +37,12 @@
       "unloggedErrno": 0
     },
     "web/app.mjs": {
-      "emptyCatch": 4,
+      "emptyCatch": 2,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     },
     "web/bridge-recovery.mjs": {
-      "emptyCatch": 1,
+      "emptyCatch": 2,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     },
@@ -62,7 +62,7 @@
       "unloggedErrno": 0
     },
     "web/package-archive.mjs": {
-      "emptyCatch": 1,
+      "emptyCatch": 0,
       "unloggedDefault": 0,
       "unloggedErrno": 0
     },
