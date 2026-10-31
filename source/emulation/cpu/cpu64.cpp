@@ -22,6 +22,7 @@
 #include "ripSampler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -1267,8 +1268,28 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
                      fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
                      fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
         }
-        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        // A synchronous instruction fault must never be silent: before this
+        // line existed, a guest dying here left no trace at all (the same
+        // blind-spot class as the dead-start memory faults). Counting cap
+        // per docs/failure-logging-and-recovery.md; the fallback outcome
+        // (no guest handler, process signalled) always logs, because the
+        // delivery itself fell back.
+        static std::atomic<U64> insnFaultCount{0};
+        const U64 faultCount =
+            insnFaultCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const U32 faultPid = (thread && thread->process) ? thread->process->id : 0;
+        if (raiseSyncFault(sig, trapNo, 0, ipStart)) {
+            if (faultCount <= 64 || faultCount % 1024 == 0) {
+                klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u rip=0x%llx delivered=1 count=%llu",
+                         faultPid, sig, trapNo, (unsigned long long)ipStart,
+                         (unsigned long long)faultCount);
+            }
+            return 0;
+        }
         if (thread && thread->process) thread->process->signalProcess(sig);
+        klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u rip=0x%llx delivered=0 count=%llu",
+                 faultPid, sig, trapNo, (unsigned long long)ipStart,
+                 (unsigned long long)faultCount);
         yield = true;
         return 0;
     };
@@ -6916,18 +6937,12 @@ dsp_55:
             // MXCSR with reserved bits set raises #GP before any state is
             // touched (readFxrstorImage validates first).
             if (!readFxrstorImage(m.effAddr)) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
         } else if (aeMod != 3 && aeReg == 2) {
             U32 loadedMxcsr = memory->readd(m.effAddr);
             if (loadedMxcsr & 0xFFFF0000) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
             mxcsr = loadedMxcsr;
         } else if (aeMod != 3 && aeReg == 3) {
