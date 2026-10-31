@@ -93,11 +93,18 @@ void put32(FILE* f, U32 value) {
 
 // Writes a minimal single-entry stored (uncompressed) zip holding
 // "a.txt" -> "hello", with the CRC field set to crcField.
+bool writeZipWithEntry(const char* path, U32 crcField, U16 method, const U8* payload, U32 payloadLen, U32 declaredUncompSize);
+
 bool writeStoredZip(const char* path, U32 crcField) {
+    return writeZipWithEntry(path, crcField, 0, (const U8*)"hello", 5, 5);
+}
+
+// Writes a minimal single-entry zip holding "a.txt", with the entry
+// payload, compression method and declared uncompressed size given.
+bool writeZipWithEntry(const char* path, U32 crcField, U16 method, const U8* payload, U32 payloadLen, U32 declaredUncompSize) {
     const char* name = "a.txt";
-    const U8 data[] = { 'h', 'e', 'l', 'l', 'o' };
     const U32 nameLen = 5;
-    const U32 dataLen = 5;
+    const U32 dataLen = payloadLen;
     const U32 cdOffset = 30 + nameLen + dataLen;
     const U32 cdSize = 46 + nameLen;
 
@@ -109,27 +116,27 @@ bool writeStoredZip(const char* path, U32 crcField) {
     put32(f, 0x04034b50);
     put16(f, 20);        // version needed
     put16(f, 0);         // flags
-    put16(f, 0);         // method: stored
+    put16(f, method);         // method
     put16(f, 0);         // mod time
     put16(f, 0x21);      // mod date
     put32(f, crcField);
     put32(f, dataLen);   // compressed size
-    put32(f, dataLen);   // uncompressed size
+    put32(f, declaredUncompSize);   // uncompressed size
     put16(f, nameLen);
     put16(f, 0);         // extra length
     fwrite(name, 1, nameLen, f);
-    fwrite(data, 1, dataLen, f);
+    fwrite(payload, 1, dataLen, f);
     // central directory header
     put32(f, 0x02014b50);
     put16(f, 20);        // version made by
     put16(f, 20);        // version needed
     put16(f, 0);         // flags
-    put16(f, 0);         // method
+    put16(f, method);         // method
     put16(f, 0);         // mod time
     put16(f, 0x21);      // mod date
     put32(f, crcField);
     put32(f, dataLen);
-    put32(f, dataLen);
+    put32(f, declaredUncompSize);
     put16(f, nameLen);
     put16(f, 0);         // extra length
     put16(f, 0);         // comment length
@@ -187,6 +194,60 @@ void testFsZipReadBadCrc() {
         testFail("FsZip::readFileFromZip accepted an entry with a bad CRC");
     }
     unlink(badPath);
+#endif
+}
+
+// An entry whose deflate stream is garbage makes unzReadCurrentFile
+// return a negative error code. The extraction loops used to store that
+// in a U32 and hand it to fwrite as a length; afterwards a partial file
+// could be left behind and unzip still reported success.
+void testFsZipExtractCorrupt() {
+#ifdef BOXEDWINE_ZLIB
+    // The test harness never runs Fs::init(); production sets the native
+    // path separator there. Without it, path splitting cannot work.
+    if (Fs::nativePathSeperator.isEmpty()) {
+        Fs::nativePathSeperator = B("/");
+    }
+    const U8 garbage[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+    char zipPath[256];
+    snprintf(zipPath, sizeof(zipPath), "/tmp/bw64-fszip-corrupt-%d.zip", (int)getpid());
+    if (!writeZipWithEntry(zipPath, 0, 8, garbage, sizeof(garbage), 100)) {
+        testFail("could not write corrupt-deflate test zip %s", zipPath);
+        return;
+    }
+
+    // extractFileFromZip's third argument is the destination directory.
+    char extractDir[256];
+    snprintf(extractDir, sizeof(extractDir), "/tmp/bw64-fszip-corrupt-xdir-%d", (int)getpid());
+    mkdir(extractDir, 0755);
+    if (FsZip::extractFileFromZip(B(zipPath), B("a.txt"), B(extractDir))) {
+        testFail("FsZip::extractFileFromZip accepted a corrupt deflate entry");
+    }
+    struct stat st;
+    char extractedPath[512];
+    snprintf(extractedPath, sizeof(extractedPath), "%s/a.txt", extractDir);
+    if (stat(extractedPath, &st) == 0) {
+        testFail("FsZip::extractFileFromZip left a partial file behind");
+        unlink(extractedPath);
+    }
+    rmdir(extractDir);
+
+    char outDir[256];
+    snprintf(outDir, sizeof(outDir), "/tmp/bw64-fszip-corrupt-dir-%d", (int)getpid());
+    mkdir(outDir, 0755);
+    BString error = FsZip::unzip(B(zipPath), B(outDir), [](U32, BString) {});
+    if (error.length() == 0) {
+        testFail("FsZip::unzip reported success for a corrupt deflate entry");
+    }
+    char extracted[512];
+    snprintf(extracted, sizeof(extracted), "%s/a.txt", outDir);
+    if (stat(extracted, &st) == 0) {
+        testFail("FsZip::unzip left a partial file behind");
+        unlink(extracted);
+    }
+    rmdir(outDir);
+    unlink(zipPath);
 #endif
 }
 
