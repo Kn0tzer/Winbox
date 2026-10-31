@@ -155,7 +155,13 @@ const id = query.get('installation');
 // The zip must contain home/username/apps/... paths (like prefix64.zip).
 const gameZipUrl = query.get('gamezip');
 const gameZipSize = Number(query.get('gamezipsize') || 0);
-const pkg = (!gameZipUrl && id && id !== 'demo' && !id.startsWith('demo-')) ? await getPackage(id) : null;
+let pkg = null;
+if (!gameZipUrl && id && id !== 'demo' && !id.startsWith('demo-')) {
+  try { pkg = await getPackage(id); } catch (error) {
+    send('error', 'Your saved folder could not be loaded from browser storage. ' + (error?.message || error));
+    throw error;
+  }
+}
 // The native ZIP reader proxies range requests onto this document's main
 // thread. Local archives are answered from original File slices by the shell;
 // all ordinary fetches retain the browser's standard behavior.
@@ -211,17 +217,31 @@ if (query.get('enhance') === '1') {
   };
 }
 if (query.get('network') === '1' && query.get('wisp') === '1') {
-  const [{ createWispBridge, installWispSockets }, { client }] = await Promise.all([import('../network.mjs'), import('../vendor/wisp/wisp-client.mjs')]);
-  const bridge = createWispBridge(client.ClientConnection, { onStatus: value => send('log', value) });
-  window.bwConfigureNetwork = (sockfs, dns) => installWispSockets(sockfs, dns, bridge);
-  addEventListener('pagehide', () => bridge.destroy(), { once: true });
+  try {
+    const [{ createWispBridge, installWispSockets }, { client }] = await Promise.all([import('../network.mjs'), import('../vendor/wisp/wisp-client.mjs')]);
+    const bridge = createWispBridge(client.ClientConnection, { onStatus: value => send('log', value) });
+    window.bwConfigureNetwork = (sockfs, dns) => installWispSockets(sockfs, dns, bridge);
+    addEventListener('pagehide', () => bridge.destroy(), { once: true });
+  } catch (error) {
+    // Degrade, loudly: the session runs without networking (the launcher
+    // guards the missing bwConfigureNetwork), but the loss is on the record.
+    reportBridgeFailure('runtime.network-load', new Error('networking unavailable; session continues without it: ' + (error?.message || error)), message => send('log', message));
+  }
 }
 window.bwRuntimeStatus = text => send('status', text);
 window.bwRuntimeLog = text => send('log', text);
 window.bwRuntimeError = text => send('error', text);
 // Every launch gets the same installed libraries. The guest's normal loaders
 // request Mono/graphics files lazily, regardless of demo, upload or EXE name.
-window.bwDependencySpec = await loadDependencies(new URL('dependencies.json?v=__RUNTIME_VERSION__', location.href));
+try {
+  window.bwDependencySpec = await loadDependencies(new URL('dependencies.json?v=__RUNTIME_VERSION__', location.href));
+} catch (error) {
+  // Without the spec the launcher boots the guest without its shared
+  // libraries and it fails later, obscurely. Fail here, loudly, instead.
+  const detail = error?.message || String(error);
+  send('error', detail.includes('Runtime dependencies') ? detail : 'Runtime dependencies could not be loaded. Reload the page to try again. (' + detail + ')');
+  throw error;
+}
 window.bwGpuFrame = recoverBridgeCall('runtime.gpu-frame', json => send('gpu', JSON.parse(json)), undefined);
 // vk64 page tier (tasks/p1-final.md §2.9): the Vulkan bridge hops ONE frame
 // manifest per present into window.bwVkFrame, which becomes a 'vk' message to
@@ -247,7 +267,7 @@ if (navigator.gpu) {
     window.bwVkTextureCompressionBC = adapter.features.has('texture-compression-bc');
     window.bwVkDepth32FloatStencil8 = adapter.features.has('depth32float-stencil8');
     window.bwVkMaxVertexBuffers = Math.min(16, adapter.limits?.maxVertexBuffers || 8);
-  }).catch(() => { /* flags stay unset; the renderers publish on start */ });
+  }).catch(error => { reportBridgeFailure('runtime.adapter-probe', error, message => send('log', message)); /* flags stay unset; the renderers publish device truth when they start */ });
 }
 window.bwVkFrame = recoverBridgeCall('runtime.vk-frame', json => send('vk', json), undefined);
 // Schema v2 (tasks/schema-v2.md): the bridge hops binary chunk bytes per
@@ -270,8 +290,9 @@ if (window.parent === window) window.addEventListener('message', e => {
   window.bwVkTierReady ||= import('../vkwebgpu.mjs')
     .then(m => (window.bwVkTier = m.installVkPageTier()))
     .catch(err => { window.bwVkTierReady = null; console.warn('vk64: page tier module load failed', err); window.bwRuntimeLog('vk64: page tier module load failed — ' + (err.message || err)); });
-  if (e.data.type === 'vk') window.bwVkTierReady.then(tier => tier.frame(e.data.data)).catch(() => {});
-  else window.bwVkTierReady.then(tier => tier.chunk(e.data.data.bytes, e.data.data.flags, e.data.data.guestPresent)).catch(() => {});
+  const applyTier = pending => pending.catch(error => reportBridgeFailure('runtime.vk-apply', error, message => send('log', message)));
+  if (e.data.type === 'vk') applyTier(window.bwVkTierReady.then(tier => tier.frame(e.data.data)));
+  else applyTier(window.bwVkTierReady.then(tier => tier.chunk(e.data.data.bytes, e.data.data.flags, e.data.data.guestPresent)));
 });
 // C1 naga observation lane (?naga=1, default OFF — contract /tmp/c1-contract.md):
 // wrap WebGL2RenderingContext.prototype.shaderSource to capture the post-bridge
