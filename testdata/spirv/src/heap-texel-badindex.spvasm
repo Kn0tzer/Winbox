@@ -1,0 +1,63 @@
+OpCapability Shader
+OpCapability SampledBuffer
+OpCapability RuntimeDescriptorArray
+OpCapability VulkanMemoryModel
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical Vulkan
+OpEntryPoint Fragment %main "main" %registers %heap %indices %SV_Position %SV_Target
+OpExecutionMode %main OriginUpperLeft
+OpName %main "main"
+OpName %RootConstants "RootConstants"
+OpName %registers "registers"
+OpName %heap "heap_texel"
+OpName %SV_Position "SV_Position"
+OpName %SV_Target "SV_Target"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpDecorate %heap DescriptorSet 2
+OpDecorate %Indices Block
+OpDecorate %indices DescriptorSet 1
+OpDecorate %indices Binding 0
+OpMemberDecorate %Indices 0 Offset 0
+OpDecorate %heap Binding 0
+OpDecorate %SV_Position BuiltIn FragCoord
+OpDecorate %SV_Target Location 0
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%RootConstants = OpTypeStruct %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%float = OpTypeFloat 32
+%11 = OpTypeImage %float Buffer 0 0 0 1 Unknown
+%12 = OpTypeSampledImage %11
+%_runtimearr_12 = OpTypeRuntimeArray %12
+%_ptr_UniformConstant__runtimearr_12 = OpTypePointer UniformConstant %_runtimearr_12
+%heap = OpVariable %_ptr_UniformConstant__runtimearr_12 UniformConstant
+%Indices = OpTypeStruct %uint
+%_ptr_Uniform_Indices = OpTypePointer Uniform %Indices
+%indices = OpVariable %_ptr_Uniform_Indices Uniform
+%_ptr_Uniform_uint = OpTypePointer Uniform %uint
+%v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%SV_Position = OpVariable %_ptr_Input_v4float Input
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+%SV_Target = OpVariable %_ptr_Output_v4float Output
+%uint_0 = OpConstant %uint 0
+%_ptr_UniformConstant_12 = OpTypePointer UniformConstant %12
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%32 = OpAccessChain %_ptr_Uniform_uint %indices %uint_0
+%idx = OpLoad %uint %32
+%30 = OpAccessChain %_ptr_UniformConstant_12 %heap %idx
+%34 = OpLoad %12 %30
+%35 = OpImage %11 %34
+%pos = OpLoad %v4float %SV_Position
+%fx = OpCompositeExtract %float %pos 0
+%ci = OpConvertFToS %int %fx
+%37 = OpImageFetch %v4float %35 %ci
+OpStore %SV_Target %37
+OpReturn
+OpFunctionEnd

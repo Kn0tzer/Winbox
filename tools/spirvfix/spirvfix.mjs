@@ -436,8 +436,17 @@ export function splitCombinedSamplers(mod, log) {
     const ptr = byId.get(ins.words[0]);
     if (!ptr || ptr.op !== Op.TypePointer) continue;
     const sampled = byId.get(ptr.words[2]);
-    if (sampled && sampled.op === Op.TypeSampledImage)
+    if (sampled && sampled.op === Op.TypeSampledImage) {
+      // Dim=Buffer (texel buffer) sampled images belong to R12's texel
+      // conversion, in whichever pass owns the type (FD-16: array-shared
+      // texel types convert only after R15a specialization, i.e. after
+      // this rule has run). Splitting one here as an ordinary combined
+      // sampler would keep the Buffer dimension naga rejects and steal
+      // the conversion's variable.
+      const imgTy = byId.get(sampled.words[1]);
+      if (imgTy && imgTy.op === Op.TypeImage && imgTy.words[2] === 5) continue;
       combined.push({ varIns: ins, sampledTy: sampled.resultId, imageTy: sampled.words[1] });
+    }
   }
   if (!combined.length) return false;
   const loads = mod.insns.filter(ins => {
@@ -534,6 +543,12 @@ export function splitCombinedSamplers(mod, log) {
   let n = 0;
   const first = pairs.values().next().value;
   for (const load of loads) {
+    // A texel-buffer load is not this rule's to rewrite (see the
+    // collection skip above): the first-pair fallback must never land
+    // it on another variable's couple.
+    const lSampled = byId.get(load.resultType);
+    const lImg = lSampled && byId.get(lSampled.words[1]);
+    if (lImg && lImg.op === Op.TypeImage && lImg.words[2] === 5) continue;
     // Load words are [result-type, result-id, pointer, ...]: the pointer is
     // words[2]. Fall back to the first pair when the source is a temporary.
     const pair = pairs.get(load.words[2]) ?? first;
@@ -1805,6 +1820,22 @@ function fragmentLayerToZero(mod, log) {
 }
 
 
+// The variable a pointer-typed value traces to, following OpCopyObject
+// hops (OpCopyObject is the identity on pointers: the copy carries exactly
+// the source's provenance). R15a specialization leaves loads in exactly
+// this form -- the access chain becomes an OpCopyObject of the scalar
+// clone variable -- so load-source attribution in R12/R12S resolves
+// through copies before deciding whether a source is known.
+function copyObjectRoot(byId, id) {
+  let cur = id;
+  for (let guard = 0; guard < 64; guard++) {
+    const def = byId.get(cur);
+    if (!def || def.op !== Op.CopyObject) return cur;
+    cur = def.words[2];
+  }
+  return cur;
+}
+
 // --- R12: texel-buffer images -> wrapped 2D sampled images -------------------
 // WebGPU has no texel buffers and naga rejects Dim=Buffer images outright
 // (UnsupportedCapability(SampledBuffer)) — which is what kills DXVK's HUD
@@ -1842,26 +1873,72 @@ export function texelBuffersTo2D(mod, log) {
   const convSampledTy = new Set();
   for (const ins of mod.insns)
     if (ins.op === Op.TypeSampledImage && convTy.has(ins.words[1])) convSampledTy.add(ins.resultId);
-  if (!convSampledTy.size) return false;
+  // Array-shared types are owned by the array (FD-16): a type that is an
+  // array element -- directly, or via its sampled-image wrapper -- is
+  // converted only after R15a specialization turns the array into a
+  // scalar variable (the post-specialization R12 pass in applySpirvFix).
+  // Converting it here would also trace the array's loads and rewrite
+  // their fetches onto a direct variable's texture through the
+  // single-variable fallback below: a silent wrong-resource translation
+  // for the mixed direct+heap shape.
+  const arrayElemTy = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) arrayElemTy.add(ins.words[1]);
+  if (arrayElemTy.size) {
+    // A sampled-image type is array-shared when it -- or the image it
+    // wraps -- is an array element; an image type is array-shared when
+    // it is an array element or any of its wrappers is. A bare-image
+    // type (no wrapper at all: the fetch-only form) is shared only by
+    // the direct test, never by a wrapper it does not have.
+    const sharedWrapper = new Set();
+    for (const t of convSampledTy)
+      if (arrayElemTy.has(t) || arrayElemTy.has(byId.get(t).words[1])) sharedWrapper.add(t);
+    for (const t of sharedWrapper) convSampledTy.delete(t);
+    if (sharedWrapper.size) {
+      const wrappersOf = new Map();
+      for (const ins of mod.insns)
+        if (ins.op === Op.TypeSampledImage) {
+          if (!wrappersOf.has(ins.words[1])) wrappersOf.set(ins.words[1], []);
+          wrappersOf.get(ins.words[1]).push(ins.resultId);
+        }
+      for (const t of [...convTy])
+        if ((wrappersOf.get(t) || []).some(w => sharedWrapper.has(w))) convTy.delete(t);
+    }
+    for (const t of [...convTy]) if (arrayElemTy.has(t)) convTy.delete(t);
+  }
+  if (!convTy.size) return false;
   const vars = [];
   for (const ins of mod.insns) {
     if (ins.op !== Op.Variable || ins.words[2] !== SC.UniformConstant) continue;
     const ptr = byId.get(ins.words[0]);
-    if (ptr && ptr.op === Op.TypePointer && convSampledTy.has(ptr.words[2]))
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    if (convSampledTy.has(ptr.words[2]))
       vars.push({ varIns: ins, sampledTy: ptr.words[2], imageTy: byId.get(ptr.words[2]).words[1] });
+    else if (convTy.has(ptr.words[2]))
+      vars.push({ varIns: ins, sampledTy: null, imageTy: ptr.words[2] });
   }
   if (!vars.length) return false;
   const varIds = new Set(vars.map(v => v.varIns.resultId));
+  const bareVarIds = new Set(vars.filter(v => v.sampledTy == null).map(v => v.varIns.resultId));
 
   // --- analysis (no mutation yet): trace converted values, vet consumers ---
   const tracedSampled = new Set(), tracedImage = new Set(), fetches = [];
+  const bareImageValues = new Set();
   for (const ins of mod.insns) {
     if ((ins.op === Op.Load || ins.op === Op.FunctionParameter) && convSampledTy.has(ins.resultType)) {
-      if (ins.op === Op.Load && !varIds.has(ins.words[2]) && vars.length > 1) {
+      if (ins.op === Op.Load && !varIds.has(copyObjectRoot(byId, ins.words[2])) && vars.length > 1) {
         log.push('spirvfix R12: sampled-image load from an unknown source; conversion refused');
         return false;
       }
       tracedSampled.add(ins.resultId);
+    }
+    if ((ins.op === Op.Load || ins.op === Op.FunctionParameter) && convTy.has(ins.resultType)) {
+      if (ins.op === Op.Load && !bareVarIds.has(copyObjectRoot(byId, ins.words[2])) && vars.length > 1) {
+        log.push('spirvfix R12: bare texel-image load from an unknown source; conversion refused');
+        return false;
+      }
+      tracedImage.add(ins.resultId);
+      bareImageValues.add(ins.resultId);
     }
   }
   const refuse = why => { log.push('spirvfix R12: ' + why + '; conversion refused'); return false; };
@@ -1887,6 +1964,30 @@ export function texelBuffersTo2D(mod, log) {
         if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
       for (const tid of tracedImage)
         if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
+    }
+  }
+  // Pointer copies of a converted variable: R15a specialization turns
+  // each array access chain into an OpCopyObject of the scalar clone, so
+  // a converted load's pointer may be a copy chain rooted at the
+  // variable (copyObjectRoot attributes it above). The split below
+  // removes the variable, so such a copy may feed only loads of the
+  // converted type -- which the split replaces wholesale -- or another
+  // such copy. Any other consumer would be left referencing a removed
+  // variable: refuse here instead of emitting an invalid module.
+  const ptrCopyRoot = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.CopyObject) continue;
+    const pt = byId.get(ins.resultType);
+    if (!pt || pt.op !== Op.TypePointer || !(convSampledTy.has(pt.words[2]) || convTy.has(pt.words[2]))) continue;
+    const root = copyObjectRoot(byId, ins.words[2]);
+    if (varIds.has(root)) ptrCopyRoot.set(ins.resultId, root);
+  }
+  for (const ins of mod.insns) {
+    for (const copyId of ptrCopyRoot.keys()) {
+      if (idOperandUseIndex(byId, ins, copyId) < 0) continue;
+      if (ins.op === Op.Load && (convSampledTy.has(ins.resultType) || convTy.has(ins.resultType))) continue;
+      if (ins.op === Op.CopyObject && ptrCopyRoot.has(ins.resultId)) continue;
+      return refuse('converted image pointer copy feeds opcode ' + ins.op);
     }
   }
   for (const f of fetches) {
@@ -1935,6 +2036,7 @@ export function texelBuffersTo2D(mod, log) {
   const pairs = new Map();
   const dropIdx = new Set();
   for (const c of vars) {
+    if (c.sampledTy == null) continue; // bare-image var: converts in place
     const varId = c.varIns.resultId;
     const set = setOf(varId), imgBind = bindOf(varId);
     const sampBind = (maxBind.get(set) ?? imgBind) + 1;
@@ -2014,7 +2116,7 @@ export function texelBuffersTo2D(mod, log) {
   const imgLoadOf = new Map();   // couple result id -> image load id
   let nLoads = 0;
   for (const load of loads) {
-    const pair = pairs.get(load.words[2]) ?? firstPair;
+    const pair = pairs.get(copyObjectRoot(byId, load.words[2])) ?? firstPair;
     if (!pair) continue;
     const imgLoad = newId(), sampLoad = newId();
     const idx = mod.insns.indexOf(load);
@@ -2026,10 +2128,34 @@ export function texelBuffersTo2D(mod, log) {
     imgLoadOf.set(load.resultId, imgLoad);
     nLoads++;
   }
+  // Sweep the pointer copies the replaced loads fed on: their root
+  // variable was removed by the split, and the analysis above proved
+  // their only consumers were those loads or each other, so every copy
+  // still present is dead. Names/decorations targeting a swept copy die
+  // with it (a name for a removed id is itself invalid).
+  if (ptrCopyRoot.size) {
+    const dead = new Set();
+    let grewCp = true;
+    while (grewCp) {
+      grewCp = false;
+      for (const ins of mod.insns) {
+        if (ins.op !== Op.CopyObject || !ptrCopyRoot.has(ins.resultId) || dead.has(ins)) continue;
+        const used = mod.insns.some(u => u !== ins && !dead.has(u) && idOperandUseIndex(byId, u, ins.resultId) >= 0);
+        if (!used) { dead.add(ins); grewCp = true; }
+      }
+    }
+    if (dead.size) {
+      const deadIds = new Set([...dead].map(i => i.resultId));
+      mod.insns = mod.insns.filter(i => !dead.has(i) && !((i.op === Op.Name || i.op === Op.Decorate) && deadIds.has(i.words[0])));
+      byId.clear();
+      for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+    }
+  }
 
   // --- widen fetch coordinates ------------------------------------------------
   const tracedS = new Set(), tracedI = new Set();
   for (const [coupleId, imgLoad] of imgLoadOf) { tracedS.add(coupleId); tracedI.add(imgLoad); }
+  for (const id of bareImageValues) tracedI.add(id);
   let nFetch = 0;
   for (let idx = 0; idx < mod.insns.length; idx++) {
     const ins = mod.insns[idx];
@@ -2092,6 +2218,11 @@ export function storageTexelBuffersTo2D(mod, log) {
   const convTy = new Set();
   for (const ins of mod.insns)
     if (ins.op === Op.TypeImage && ins.words[2] === 5 && ins.words[6] === 2) convTy.add(ins.resultId);
+  // Array-shared types are owned by the array (FD-16, as in R12): they
+  // convert in the post-specialization pass, once R15a has turned the
+  // array into a scalar variable.
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) convTy.delete(ins.words[1]);
   if (!convTy.size) return false;
   // Variables: UniformConstant pointers directly at a converted image type
   // (storage images are never OpTypeSampledImage-wrapped).
@@ -2106,7 +2237,7 @@ export function storageTexelBuffersTo2D(mod, log) {
   const traced = new Set();
   for (const ins of mod.insns) {
     if (ins.op === Op.Load && convTy.has(ins.resultType)) {
-      if (!varIds.has(ins.words[2])) return refuse('storage texel image load from an unknown source');
+      if (!varIds.has(copyObjectRoot(byId, ins.words[2]))) return refuse('storage texel image load from an unknown source');
       traced.add(ins.resultId);
     }
   }
@@ -3659,7 +3790,9 @@ export function analyzeDescriptorArrays(mod) {
     }
     if (bad) rec.reason = bad;
     else if (!rec.signatures.length) rec.reason = 'no accesses';
-    else if (sigKeys.size !== 1) rec.reason = sigKeys.size + ' distinct index signatures';
+    // Any number of distinct signatures is servable: each one gets its
+    // own scalar clone in specializeDescriptorArrays. What refuses the
+    // array is an access the classifier cannot name at all (bad above).
     else rec.servable = true;
     arrays.push(rec);
   }
@@ -3848,11 +3981,25 @@ export function specializeDescriptorArrays(mod, log) {
     if (!a.servable && a.signatures.length) log.push('spirvfix: left descriptor array %' + a.varId + ' unchanged (' + a.reason + ')');
   }
   if (!targets.length) return false;
+  // Highest Binding decoration per set across the whole module, for
+  // the synthetic clone slots below.
+  const maxBindBySet = new Map();
+  {
+    const setOf = new Map();
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Decorate) continue;
+      if (ins.words[1] === Dec.DescriptorSet) setOf.set(ins.words[0], ins.words[2]);
+    }
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Decorate || ins.words[1] !== Dec.Binding) continue;
+      const s = setOf.get(ins.words[0]) ?? 0;
+      if (ins.words[2] > (maxBindBySet.get(s) ?? -1)) maxBindBySet.set(s, ins.words[2]);
+    }
+  }
   const nextId = makeIdSource(mod);
   const addTypes = [], addAnnot = [], addNames = [];
   const drop = new Set();
   for (const a of targets) {
-    const sig = a.signatures[0].sig;
     let clonePtrId = null;
     for (const ins of mod.insns) {
       if (ins.op === Op.TypePointer && ins.words[1] === a.sc && ins.words[2] === a.elemTypeId) { clonePtrId = ins.resultId; break; }
@@ -3861,28 +4008,78 @@ export function specializeDescriptorArrays(mod, log) {
       clonePtrId = nextId();
       addTypes.push({ op: Op.TypePointer, words: [clonePtrId, a.sc, a.elemTypeId], resultType: null, resultId: clonePtrId });
     }
-    const cloneId = nextId();
-    addTypes.push({ op: Op.Variable, words: [clonePtrId, cloneId, a.sc], resultType: clonePtrId, resultId: cloneId });
-    const suffix = sig.kind === 'const' ? '_c' + sig.value : '_p' + sig.byteOff + '_a' + sig.add;
-    addNames.push({ op: Op.Name, words: [cloneId, ...strWords('bw_arr_g' + a.set + '_b' + a.binding + suffix)], resultType: null, resultId: null });
-    for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) {
-      addAnnot.push({ op: Op.Decorate, words: [cloneId, ...dins.words.slice(1)], resultType: null, resultId: null });
+    // One scalar clone per distinct index signature (see the analysis
+    // verdict): each access chain is rewritten to the clone carrying
+    // ITS signature, and the tier resolves every clone independently
+    // from the name-encoded signature.
+    const sigKeyOf = sig => sig.kind === 'const' ? 'c' + sig.value : 'p' + sig.byteOff + 'a' + sig.add;
+    const cloneByKey = new Map();
+    for (const s of a.signatures) {
+      const key = sigKeyOf(s.sig);
+      if (!cloneByKey.has(key)) cloneByKey.set(key, { sig: s.sig, cloneId: nextId() });
+    }
+    const cloneIds = [];
+    let cloneIndex = 0;
+    for (const { sig, cloneId } of cloneByKey.values()) {
+      cloneIds.push(cloneId);
+      addTypes.push({ op: Op.Variable, words: [clonePtrId, cloneId, a.sc], resultType: clonePtrId, resultId: cloneId });
+      const suffix = sig.kind === 'const' ? '_c' + sig.value : '_p' + sig.byteOff + '_a' + sig.add;
+      addNames.push({ op: Op.Name, words: [cloneId, ...strWords('bw_arr_g' + a.set + '_b' + a.binding + suffix)], resultType: null, resultId: null });
+      // Clones past the first share the array's guest descriptor but
+      // cannot share its binding slot in the translated module (one
+      // resource per (group, binding) in WGSL): they take fresh slots
+      // in the same set, allocated past every binding the module
+      // already uses there. The generated name keeps the guest
+      // set/binding; the tier resolves it through origBinding.
+      let slotBinding = a.binding;
+      if (cloneIndex > 0) {
+        slotBinding = (maxBindBySet.get(a.set) ?? a.binding) + 1;
+        maxBindBySet.set(a.set, slotBinding);
+      }
+      cloneIndex++;
+      for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) {
+        // Coherent (decoration 23) is not carried onto a clone: it is a
+        // memory-ordering hint with no WGSL counterpart, and naga
+        // rejects an image global that carries it (captured Godot
+        // compute module 187e3d67eb32e4ce: 'Global variable
+        // bw_arr_g4_b0_p32_a0 is invalid' until it is removed).
+        if (dins.words[1] === 23) continue;
+        if (dins.words[1] === Dec.Binding && slotBinding !== a.binding) {
+          addAnnot.push({ op: Op.Decorate, words: [cloneId, Dec.Binding, slotBinding], resultType: null, resultId: null });
+          continue;
+        }
+        addAnnot.push({ op: Op.Decorate, words: [cloneId, ...dins.words.slice(1)], resultType: null, resultId: null });
+      }
+      log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')' + (slotBinding !== a.binding ? ' at slot binding ' + slotBinding : '') + (a.writable ? ' (writable)' : ''));
     }
     for (const s of a.signatures) {
       const chain = ctx.byId.get(s.chainId);
       chain.op = Op.CopyObject;
-      chain.words = [chain.resultType, chain.resultId, cloneId];
+      chain.words = [chain.resultType, chain.resultId, cloneByKey.get(sigKeyOf(s.sig)).cloneId];
     }
-    for (const ins of mod.insns) {
-      if (ins.op !== Op.EntryPoint) continue;
-      const tail = r15EntryPointTail(ins);
-      let found = false;
-      for (let k = tail; k < ins.words.length; k++) if (ins.words[k] === a.varId) { ins.words[k] = cloneId; found = true; }
-      if (!found) ins.words.push(cloneId);
+    // Interface listing is version-bound: SPIR-V 1.4+ requires every
+    // used global in the entry point's interface (replace the array
+    // variable with its clones, appending when the variable was not
+    // listed); before 1.4 only Input/Output variables may be listed
+    // and descriptor globals are used unlisted -- exactly how the
+    // array variable itself appears -- so the list is left alone.
+    if ((mod.header?.version ?? 0) >= 0x00010400) {
+      for (const ins of mod.insns) {
+        if (ins.op !== Op.EntryPoint) continue;
+        const tail = r15EntryPointTail(ins);
+        let found = false;
+        for (let k = tail; k < ins.words.length; k++) {
+          if (ins.words[k] === a.varId) { ins.words.splice(k, 1, ...cloneIds); k += cloneIds.length - 1; found = true; }
+        }
+        if (!found) ins.words.push(...cloneIds);
+      }
     }
     drop.add(a.varIns);
     for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) drop.add(dins);
-    log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')' + (a.writable ? ' (writable)' : ''));
+    // The variable's OpName dies with it: a name targeting a removed id
+    // is invalid SPIR-V (spirv-val rejects the module), even though the
+    // name carries no semantics.
+    for (const ins of mod.insns) if (ins.op === Op.Name && ins.words[0] === a.varId) drop.add(ins);
   }
   mod.insns = mod.insns.filter(i => !drop.has(i));
   r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
@@ -3906,6 +4103,19 @@ export function specializeDescriptorArrays(mod, log) {
           ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
       // resultType (words[0]) is a use; the resultId word is a definition.
       if (ins.resultType != null) live.add(ins.words[0]);
+      // The constant family (OpConstantTrue/False, OpConstant,
+      // OpConstantComposite, OpConstantSampler, OpConstantNull and the
+      // OpSpecConstant* forms) carries literal values and constant ids
+      // in its operand words -- never type ids. Counting them as id
+      // references lets a constant whose value equals a dead type's id
+      // keep that type alive (captured Godot module 7ad22adece:
+      // OpConstant 16 vs OpTypeRuntimeArray %16), so their operand
+      // words do not contribute to liveness; the resultType word
+      // above still counts. Mirrored in the bridge audit's skip5302
+      // simulation.
+      if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+          ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 ||
+          ins.op === 52) continue;
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
       for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
     }
@@ -4173,6 +4383,21 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   try {
     if (rewriteRootDescriptors(mod, log)) applied.push('root-descriptor-bda');
   } catch (e) { log.push('R15b failed: ' + (e.message || e)); }
+  try {
+    // FD-16: a texel buffer reached through a descriptor-heap runtime
+    // array becomes a DIRECT texel variable only when R15a specializes
+    // the array into its scalar clone -- after the first R12 pass above
+    // has already run. Run the R12 family again so a specialized clone
+    // over a Dim=Buffer image receives exactly the conversion a direct
+    // variable receives (Dim flip, capability drop, fetch widening, the
+    // same refusals). A clone shape the conversion refuses stays
+    // unconverted and keeps failing loudly at translation, and the
+    // bridge audit admits the capability pair only under the mirror of
+    // this composition. No-ops when no Dim=Buffer type remains.
+    if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
+    if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
+    if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
+  } catch (e) { log.push('R12 post-specialize failed: ' + (e.message || e)); }
   try {
     if (uniformBlocksToStorage(mod, log)) applied.push('uniform-block-to-storage');
   } catch (e) { log.push('R13 failed: ' + (e.message || e)); }
