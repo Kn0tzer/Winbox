@@ -49,10 +49,11 @@ struct BString:std::string {
 std::atomic<bool> listing{false},releaseListing{false};
 struct Platform {
  struct ListNodeResult {BString name;bool isDirectory;};
- static void listNodes(const BString&,std::vector<ListNodeResult>& out){
+ static bool listNodes(const BString&,std::vector<ListNodeResult>& out){
   listing=true;
   while(!releaseListing)std::this_thread::yield();
   out.push_back({"lock",false});
+  return true;
  }
 };
 struct FsNode:std::enable_shared_from_this<FsNode>{
@@ -65,6 +66,7 @@ struct FsNode:std::enable_shared_from_this<FsNode>{
 };
 struct Fs {
  static void remoteNameToLocal(BString&){}
+ static bool doesNativePathExist(const BString&){return true;}
  static U32 readNativeFile(const BString&,U8*,U32){return 0;}
  static void addFileNode(const BString& path,const BString&,const BString&,bool,std::shared_ptr<FsNode> parent){parent->children.push_back(path);}
 };

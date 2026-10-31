@@ -34,6 +34,8 @@ test('native sendmsg snapshots descriptors and rejects overflowing or excessive 
 using U32=uint32_t;using U8=uint8_t;
 constexpr U32 K_SOL_SOCKET=1,K_SCM_RIGHTS=1,K_EMSGSIZE=90,K_EFAULT=14;
 #define kwarn_fmt(...)
+#define bw64RecoverEnabled() false
+#define bw64RecoverLogOnce(...)
 #define kwarn(...)
 struct MsgHdr {U32 msg_control=0,msg_controllen=0,msg_iov=256,msg_iovlen=2;};
 struct CMsgHdr {U32 cmsg_level=0,cmsg_type=0,cmsg_len=0;};
@@ -80,6 +82,9 @@ using U32=uint32_t;
 #define __EMSCRIPTEN__ 1
 #define BOXEDWINE_MULTI_THREADED 1
 #define kpanic_fmt(...) abort()
+#define kwarn_fmt(...)
+#define bw64RecoverEnabled() false
+#define bw64RecoverLogOnce(...)
 static int notifications=0;
 struct Condition{U32 parents=1;U32 parentsCount(){return parents;}U32 waitCount(){return parents;}};
 #define BOXEDWINE_CONDITION std::shared_ptr<Condition>
@@ -192,6 +197,8 @@ constexpr U32 K_MSG_PEEK=2,K_PAGE_SIZE=4096,K_SOCK_STREAM=1,K_EMSGSIZE=90,K_EFAU
 #define LOG_SOCK(...)
 static bool isGuestLoopbackAddress(U32 address){return address==0 || (address>>24)==127;}
 #define kwarn_fmt(...)
+#define bw64RecoverEnabled() false
+#define bw64RecoverLogOnce(...)
 struct MsgHdr{U32 msg_iov=256,msg_iovlen=2,msg_name=0,msg_namelen=0;};static MsgHdr fixture;
 struct KMemory{U32 lengths[2]={8192,4};std::array<U8,16384> bytes{};
  U32 readd(U32 address){U32 slot=(address-256)/8;return (address-256)%8 ? lengths[slot] : (slot ? 8192 : 0);}
