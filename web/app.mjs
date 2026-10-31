@@ -39,7 +39,7 @@ function applyMetricsVisibility() {
   if (metrics) metrics.setOpen(open);
 }
 const settings = { appearance: 'dark', jit: 'off', internet: 'off', enhancement: 'off', folderMode: 'copy', metrics: 'off', shadercache: 'off' };
-try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch {}
+try { Object.assign(settings, JSON.parse(localStorage.getItem('wine.launcher.settings.v1') || '{}')); } catch (error) { console.warn('BW64-FAIL settings-load error=' + (error?.message || error) + '; using default settings'); }
 // Graphics backend and sharpness are no longer user settings; drop values saved by older versions.
 delete settings.graphics; delete settings.sharpness;
 settings.jit = settings.jit === 'on' ? 'on' : 'off';
@@ -58,7 +58,17 @@ for (const name of ['jit', 'internet', 'enhancement']) {
 $('appearance').onchange = () => { settings.appearance = $('appearance').value; appearance(settings.appearance); persistSettings(); };
 $('shadercache').value = settings.shadercache;
 $('shadercache').onchange = () => { settings.shadercache = $('shadercache').value; persistSettings(); };
-function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch {} }
+function persistSettings() { try { localStorage.setItem('wine.launcher.settings.v1', JSON.stringify(settings)); } catch (error) { console.warn('BW64-FAIL settings-persist error=' + (error?.name || error) + '; settings will not survive a reload'); } }
+let persistentStorageRequested = false;
+function requestPersistentStorage() {
+  if (persistentStorageRequested) return;
+  persistentStorageRequested = true;
+  // If the browser refuses or the request fails, saved folders can be
+  // evicted under storage pressure — the visitor should know, once.
+  navigator.storage?.persist?.().then(granted => {
+    if (!granted) log('Storage persistence was not granted; the browser may clear saved folders when storage runs low.');
+  }).catch(error => log('Storage persistence request failed: ' + errorText(error)));
+}
 function folderMode() {
   if (!window.showDirectoryPicker && settings.folderMode === 'direct') {
     settings.folderMode = 'copy';
@@ -82,6 +92,12 @@ function message(value, error = false) {
 }
 function status(value) { $('status').textContent = value; }
 function log(value) { $('log').textContent = ($('log').textContent + '\n' + value).slice(-48000); }
+// Teardown and rollback deletions are best-effort, but a failed one leaks
+// browser storage the visitor cannot reclaim from the UI — report it in
+// the page log instead of swallowing it.
+async function forgetCleanup(promise, what) {
+  try { await promise; } catch (error) { log('Cleanup incomplete (' + what + '): ' + errorText(error)); }
+}
 function showPlayerError(value) {
   $('loading').hidden = false;
   $('loading').classList.add('error-screen');
@@ -141,7 +157,7 @@ async function closeRuntime() {
   try { const saved = snapshotRuntime(run.frame); run.frame.remove(); await saved; } catch (error) { saveError = error; }
   finally {
     run.enhancer?.destroy(); run.frame.remove(); run.archive?.release(); run.renderer?.destroy(); run.canvas?.remove();
-    const tier = await run.vkReady?.catch(() => null); await tier?.destroy();
+    const tier = await run.vkReady?.catch(error => { log('Graphics tier setup failed: ' + errorText(error)); return null; }); await tier?.destroy();
     delete window.bwVkTier; delete window.bwVkTierReady; delete window.wineGpu;
   }
   if (saveError) throw Error('The program stopped, but its latest saves could not be stored. ' + errorText(saveError));
@@ -280,18 +296,18 @@ async function importFolder(files, name, signal, directory = null) {
     const program = await detectProgram(files, { name }); signal.throwIfAborted();
     if (!directory) {
       status('Copying the folder into browser storage…');
-      navigator.storage?.persist?.().catch(() => {});
+      requestPersistentStorage();
       owned = await ownFiles(files, { signal, onProgress: (done, total) => status('Saving files: ' + formatBytes(done) + ' of ' + formatBytes(total)) });
     }
     pkg = { id: crypto.randomUUID(), name: name || program.exe.split('/').at(-1).replace(/\.exe$/i, ''), files: owned, mode: directory ? 'direct' : 'copy', directory, sourceDirectory: sourceDirectory(owned), program, created: new Date().toISOString() };
     if (directory || files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 ** 2 || files.length > limits.count) archive = await archiveFor(pkg, signal);
     signal.throwIfAborted(); status('Saving this folder on your device…'); await savePackage(pkg); saved = true; retainExtracted(owned);
     lastAction = nextSignal => runSaved(pkg.id, nextSignal);
-    navigator.storage?.persist?.().catch(() => {});
+    requestPersistentStorage();
     await refreshLibrary(); signal.throwIfAborted();
     await runPackage(pkg, signal, archive);
-  } catch (error) { archive?.release(); if (pkg && !saved) await removeArchive(pkg).catch(() => {}); throw error; }
-  finally { await cleanupExtracted(owned).catch(() => {}); if (owned !== files) await cleanupExtracted(files).catch(() => {}); }
+  } catch (error) { archive?.release(); if (pkg && !saved) await forgetCleanup(removeArchive(pkg), 'unsaved folder archive'); throw error; }
+  finally { await forgetCleanup(cleanupExtracted(owned), 'imported files'); if (owned !== files) await forgetCleanup(cleanupExtracted(files), 'imported files'); }
 }
 async function startDemo(demo, signal) {
   const launcherWindow = /** @type {Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext; bwLauncherAudioContext?: AudioContext; bwLauncherGesturePending?: boolean }} */ (window);
@@ -301,10 +317,10 @@ async function startDemo(demo, signal) {
       const context = new AudioContextCtor();
       launcherWindow.bwLauncherAudioContext = context;
       if (context.state === 'suspended') context.resume().catch(error => {
-        console.warn('Launcher audio context resume failed:', error?.name || 'failed');
+        console.warn('BW64-FAIL launcher-audio op=resume error=' + (error?.name || 'failed') + '; audio may stay silent until the next click or key press');
       });
     } catch (error) {
-      console.warn('Launcher audio context setup failed:', error?.name || 'failed');
+      console.warn('BW64-FAIL launcher-audio op=setup error=' + (error?.name || 'failed') + '; continuing without launcher-primed audio');
     }
   }
   await closeRuntime(); signal.throwIfAborted(); preparing(demo.title); status('Opening ' + demo.title + '…');
@@ -495,7 +511,7 @@ $('fullscreen').onclick = () => $('display').requestFullscreen().catch(error => 
 $('settingsButton').onclick = () => $('settingsDialog').showModal();
 $('clearShaderCache').onclick = async () => {
   try { const { persistentShaderCache } = await import('./shader-cache.mjs'); await persistentShaderCache.clear(); message('Shader cache cleared.'); }
-  catch { message('Unable to clear the shader cache.', true); }
+  catch (error) { message('Unable to clear the shader cache. ' + errorText(error), true); }
 };
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
 $('start').onclick = () => action(async signal => {
@@ -519,7 +535,7 @@ $('patchInput').onchange = () => action(async signal => {
   for (const file of await readSaveBlobs(patch, '/root/home/username/apps/')) saves.set(file.path, file);
   const previous = selected;
   selected = await replaceInstallation(previous, { files, program }, [...saves.values()]);
-  await removeArchive(previous).catch(() => {});
+  await forgetCleanup(removeArchive(previous), 'previous archive');
   await refreshLibrary(); $('patchInput').value = ''; $('folderDialog').close(); message('Patch applied. Open the folder to run it.');
 }, { retry: null });
 $('export').onclick = () => action(async () => {
@@ -533,7 +549,7 @@ $('export').onclick = () => action(async () => {
   const backup = { id: crypto.randomUUID(), created: new Date().toISOString(), files };
   const archive = await prepareArchive(backup, { prefix: '', onProgress: (done, total) => { $('folderInfo').hidden = false; $('folderInfo').textContent = 'Preparing backup: ' + formatBytes(done) + ' of ' + formatBytes(total); } });
   downloadUrl(archive.url, selected.name + '-backup.zip');
-  setTimeout(() => { archive.release(); removeArchive(backup).catch(() => {}); }, 60000);
+  setTimeout(() => { archive.release(); void forgetCleanup(removeArchive(backup), 'backup archive'); }, 60000);
   message('Backup downloaded, including files and local saves.');
 }, { retry: null });
 $('restore').onclick = () => $('restoreInput').click();
@@ -550,16 +566,16 @@ $('restoreInput').onchange = () => action(async signal => {
   await closeRuntime(); const previous = selected;
   selected = await replaceInstallation(previous, { files, program, mode: 'copy', directory: null, sourceDirectory: sourceDirectory(entries) }, saves);
   retainExtracted(entries);
-  await removeSource(previous).catch(() => {});
-  await removeArchive(previous).catch(() => {});
+  await forgetCleanup(removeSource(previous), 'previous folder files');
+  await forgetCleanup(removeArchive(previous), 'previous archive');
   await refreshLibrary(); $('restoreInput').value = ''; $('folderDialog').close(); message('Backup restored. Open the folder to run it.');
-  } finally { await cleanupExtracted(entries).catch(() => {}); }
+  } finally { await forgetCleanup(cleanupExtracted(entries), 'backup files'); }
 }, { retry: null });
 $('remove').onclick = () => action(async () => {
   if (!selected || !confirm('Delete this folder and its saves from this browser?')) return;
   await closeRuntime(); const pkg = selected;
   await new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase('bw64persist-wine-' + pkg.id); request.onsuccess = resolve; request.onerror = () => reject(request.error); request.onblocked = () => reject(Error('Close other tabs running this folder, then try again.')); });
-  await deletePackage(pkg.id); await removeArchive(pkg); await removeSource(pkg).catch(() => {}); selected = null;
+  await deletePackage(pkg.id); await removeArchive(pkg); await forgetCleanup(removeSource(pkg), 'folder files'); selected = null;
   await refreshLibrary(); $('folderDialog').close(); message('Folder deleted from this browser.');
 }, { retry: null });
 window.wineLibrary = { getPackage, listPackages };
@@ -569,6 +585,8 @@ window.bwReadLocalArchive = (url, start, end) => {
 };
 window.wineGames = { catalog: demos, install: id => action(signal => startDemo(demos.find(demo => demo.id === id), signal)) };
 renderDemos();
+window.__bwAppBooted = true;
+if (window.__bwBootWatchdogFired) message('');
 const supported = crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
 if (!supported) message('This browser needs cross-origin isolation to run programs. Reload the page, or open it in a current browser.', true);
 await refreshLibrary().catch(error => { $('library').replaceChildren(text('p', 'Saved folders could not be loaded. Reload to try again.', 'empty')); $('library').removeAttribute('aria-busy'); message(errorText(error), true); });

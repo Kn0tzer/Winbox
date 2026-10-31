@@ -95,7 +95,7 @@ export async function ownFiles(entries, { signal = undefined, onProgress = (done
     }
     extractedDirectories.set(result, { root, name, directory });
     return result;
-  } catch (error) { await root.removeEntry(name, { recursive: true }).catch(() => {}); throw error; }
+  } catch (error) { await root.removeEntry(name, { recursive: true }).catch(cleanupError => console.warn('BW64-FAIL files-cleanup dir=' + name + ' error=' + (cleanupError?.message || cleanupError) + '; imported files may remain in browser storage')); throw error; }
 }
 export async function cleanupExtracted(entries) {
   const directory = extractedDirectories.get(entries);
@@ -140,7 +140,7 @@ export async function fromZip(blob, { strip = true, budget = limits, stream = fa
     return result;
   } finally {
     await reader.close();
-    if (!successful && temporary) await temporary.root.removeEntry(temporary.name, { recursive: true }).catch(() => {});
+    if (!successful && temporary) await temporary.root.removeEntry(temporary.name, { recursive: true }).catch(cleanupError => console.warn('BW64-FAIL files-cleanup dir=' + temporary.name + ' error=' + (cleanupError?.message || cleanupError) + '; extracted files may remain in browser storage'));
   }
 }
 export async function makeZip(entries) {

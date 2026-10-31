@@ -42,8 +42,18 @@ export function createPersistentShaderCache({ indexedDB = globalThis.indexedDB, 
   let openedDb = null;
   const stats = { hits: 0, misses: 0, writes: 0, failures: 0, evictions: 0 };
   const db = () => dbPromise ||= openDb(indexedDB).then(database => (openedDb = database));
+  // Failures degrade to "no cache" by design, but they must not be invisible:
+  // a broken IndexedDB otherwise looks exactly like a cold cache forever.
+  // The first failure reports once; later ones are only counted in stats.
+  let failureReported = false;
+  const noteFailure = error => {
+    stats.failures++;
+    if (failureReported) return;
+    failureReported = true;
+    console.warn(`BW64-FAIL shader-cache error=${error?.message || error}; continuing without the persistent cache (further failures counted in stats only)`);
+  };
   const safe = async (fallback, operation) => {
-    try { return await operation(); } catch { stats.failures++; return fallback; }
+    try { return await operation(); } catch (error) { noteFailure(error); return fallback; }
   };
   return {
     stats,
@@ -55,7 +65,7 @@ export function createPersistentShaderCache({ indexedDB = globalThis.indexedDB, 
         if (!record) { stats.misses++; return null; }
         stats.hits++;
         record.lastUsed = now();
-        transact(database, STORE, 'readwrite', store => store.put(record)).catch(() => {});
+        transact(database, STORE, 'readwrite', store => store.put(record)).catch(noteFailure);
         return record;
       });
     },

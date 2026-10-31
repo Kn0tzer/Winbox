@@ -136,3 +136,20 @@ test('warm isolates a poisoned cache record, evicts it, and warms the rest', asy
   assert.equal(attempts.get('POISON-THROW'), 1);
   assert.equal(attempts.get('POISON-ERROR'), 1);
 });
+
+test('a failing cache reports its first failure once and counts the rest', async () => {
+  const cache = createPersistentShaderCache({ indexedDB: null });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    assert.equal(await cache.get('shader'), null);
+    assert.equal(await cache.put('shader', 'wgsl'), false);
+    assert.equal(await cache.remove('shader'), false);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(cache.stats.failures, 3);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /BW64-FAIL shader-cache error=IndexedDB unavailable/);
+});

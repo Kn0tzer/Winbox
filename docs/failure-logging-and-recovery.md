@@ -150,3 +150,78 @@ Deferred to the wave (verified present, not yet fixed):
   line; `kinotify`'s loud `ENOSYS` stance is the model to match.
 - Page-side `web/*.mjs`: audit catches and promise rejections for the
   same patterns as the launcher fixes.
+
+
+## Wave lane: page / launcher / loading layer (`lane-cleanweb`, 2026-10-30)
+
+Scope: `web/*.mjs`, `web/*.html`, and the page-side launcher scripts in
+`project/emscripten/`. Every fix below preserves success-path behavior;
+only reporting (and, where noted, containment) changed. Each fix carries
+a regression check that was sabotage-verified (reverting the fix makes
+the check fail).
+
+Fixed here:
+
+| Path | Was | Now |
+|---|---|---|
+| `web/runtime.html` saved-package + dependency-spec loads | bare top-level `await`s; a rejection surfaced only as an `unhandledrejection` log line while the visitor watched an endless spinner | both send a visitor-facing `error` and halt; the dependency failure message explains the consequence |
+| `web/runtime.html` networking module load | a failed dynamic import killed the module silently; the session later ran without networking and no trace | degrade + report via `reportBridgeFailure('runtime.network-load', ...)` (the launcher provably tolerates the missing hook) |
+| `web/runtime.html` self-host vk tier application | `.catch(() => {})` on every frame/chunk promise | rejections report via `reportBridgeFailure('runtime.vk-apply', ...)` |
+| `web/runtime.html` WebGPU adapter capability probe | `.catch(() => {})` with a comment; probe failure left the capability flags silently absent (the class of bug the first-picture lane hit) | rejection reports via `reportBridgeFailure('runtime.adapter-probe', ...)`; flags still honestly stay unset |
+| `web/index.html` + `web/app.mjs` boot | if the app module itself failed to load, the catalog sat empty forever | inline 20 s watchdog shows a page notice; `app.mjs` marks `__bwAppBooted` after first render and clears the notice if it merely booted slowly |
+| launcher `persistTick` (wine64-launcher.js) | walk error, transaction error, and database-open failure all swallowed — with a full/blocked IndexedDB, guest saves silently stopped persisting forever | first failure and every 64th log `BW64-FAIL persist area=<walk\|write\|open> ... count=N`; the 5 s tick remains the retry |
+| `web/shader-cache.mjs` `safe()` + lastUsed touch | every failure degraded to "no cache" with only a stats counter; the touch used a bare `.catch(() => {})` | first failure per cache logs one `BW64-FAIL shader-cache` line; the rest count in `stats.failures` as before |
+| `web/clipboard-bridge.mjs` copy/paste listeners | a throwing guest `ccall` escaped the listener as an uncaught page error; clipboard silently dead | contained per direction: first failure logs `BW64-FAIL clipboard-bridge`, event left to the browser default |
+| `web/bridge-recovery.mjs` distinct-failure cap | past 512 distinct logged failures, every new failure kind vanished entirely | overflow counted (`suppressed`, exposed in stats) with a summary line on the first overflow and every 1024th |
+| `web/app.mjs` settings load/persist | `catch {}` both ways — corrupt settings and failed writes invisible | both log a `BW64-FAIL settings-*` line; defaults / non-persistence remain the recovery |
+| `web/app.mjs` `navigator.storage.persist()` | `.catch(() => {})` at both call sites; refusal never mentioned | once-per-page helper; refusal or failure tells the visitor saved folders may be evicted |
+| `web/app.mjs` teardown/rollback deletions (7 sites) | `.catch(() => {})` — failed deletions leaked browser storage invisibly | shared `forgetCleanup` helper reports failures in the page log naming what could not be removed |
+| `web/app.mjs` vk tier teardown + audio priming + cache clear | vkReady rejection swallowed (`catch(() => null)`); audio warnings unprefixed; cache-clear error dropped its cause | all three report with the error included |
+| `web/files.mjs` import rollback cleanups (2 sites) | `.catch(() => {})` in the primary error's shadow | `BW64-FAIL files-cleanup` line naming the directory; the primary error still propagates |
+| `web/package-archive.mjs` cache probe + rollback cleanup + `removeArchive` | every cache-read error treated as "first launch"; partial-archive cleanup and archive-dir failures swallowed | non-`NotFoundError` read failures log `BW64-FAIL archive-cache-read` before the rebuild fallback; cleanup/removal failures log their own lines |
+| `web/installation.mjs` save-database cleanups | `.catch(() => {})` on both the rollback and post-switch deletions | `BW64-FAIL installation-cleanup` lines naming the database id |
+| `web/storage.mjs` `overlay()` | dead code: zero callers repo-wide; a second, weaker merge path next to `replaceInstallation` | deleted |
+
+Audited, deliberately no change (evidence in the lane's commits):
+
+- `web/startup.mjs` — the absence of a startup timeout is a documented,
+  argued design decision in the file (long silences are normal; the copy
+  never claims health). Terminal failures surface via `startupFailure`,
+  and the session-level dead-start case is owned by the launcher's
+  bounded restart watchdog. Not this lane's call to reverse.
+- Models already in the tree: `web/games.mjs` (stall watchdogs, loud
+  throws), `web/dependencies.mjs` (bounded timeouts, clear errors),
+  `web/shader.mjs` warm path (per-record log + count + evict — the
+  2026-10-24 silent-abort defect is gone), `web/network.mjs` (errors
+  routed to the guest-visible socket handlers), launcher
+  `zipDownloads[name].catch` (comment names the surfacing path),
+  launcher session-boot watchdog and COI reload (bounded, loud).
+- Control-flow idioms whose failure is the expected branch and whose
+  real errors surface at the next operation: `FS.lstat` existence probe
+  in `runtime.html`, cross-origin parent-access guards, `ctrl.abort()`
+  and unlink-before-write guards in the launcher, clipboard file polls.
+- Logging-must-never-throw guards (`web/vk-log.mjs`,
+  `bridge-recovery`'s own log call, gl-webgpu-bootstrap's warn): the
+  swallow protects the reporting path itself.
+- `project/emscripten/coi-serviceworker.js` — vendored upstream; its
+  fetch failure surfaces to the page as a network error and the
+  launcher's isolation poll reports loudly with a bounded retry.
+- `project/emscripten/boxedwine-shell.js` (legacy shell) — all four
+  catch sites already log with the error.
+
+Referred out of this lane's area:
+
+- Graphics bridge internals: `web/gl-webgpu.mjs` (17 catch sites),
+  `web/vkwebgpu.mjs` (48), `web/naga-rt.mjs` (14). Many are error-scope
+  and teardown guards; the per-site audit belongs with the graphics
+  lane that owns those files.
+- Launcher saves-download walk (`collectTopLevelFiles`/`collectFiles`
+  via `readFileSafe`): unreadable files are skipped by design, but no
+  count is reported — a downloaded saves zip can be silently
+  incomplete. Low severity; the fix is a counted summary at the
+  download call site.
+- `web/storage.mjs` `open()` has no `onblocked` handler; with the
+  schema version constant at 1, upgrade blocking is a corner case.
+- `web/runtime.html` gpu-capture interval polls every 100 ms with no
+  bound (gpu=1 only); it stops when the runtime readies or the frame
+  closes.
