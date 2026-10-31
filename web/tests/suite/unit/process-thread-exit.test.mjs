@@ -62,6 +62,14 @@ struct KThread {
   struct CpuFlags { bool yield = false; } flags;
   CpuFlags* cpu = &flags;
   void cleanup();
+  // FD-44: the process table's reference. deleteThread releases it
+  // instead of deleting the object; destruction runs when the last
+  // reference drains, so the model counts destructions and pins them
+  // at exactly one per thread, like the memory release below.
+  std::atomic<int> refCount{1};
+  static inline std::atomic<int> destructions{0};
+  ~KThread() { ++destructions; }
+  void releaseRef() { if (refCount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete this; }
 };
 void terminateCurrentThread(KThread*) {}
 struct KProcess {
@@ -117,11 +125,13 @@ int main() {
   first.join(); second.join();
   assert(process->cleanups == 1);
   assert(Memory::releases == 1);
+  assert(KThread::destructions == 2);
   assert(process->memory == nullptr);
   assert(platformThreadCount == 0 && quits == 1);
   ::operator delete(storage);
 
   Memory::releases = 0;
+  KThread::destructions = 0;
   platformThreadCount = 2; quits = 0;
   process = std::make_shared<KProcess>();
   process->terminated = false;
@@ -139,10 +149,12 @@ int main() {
   third.join(); fourth.join();
   assert(process->terminated && process->exitCode == 42);
   assert(Memory::releases == 1 && process->memory == nullptr);
+  assert(KThread::destructions == 2);
   assert(platformThreadCount == 0 && quits == 1);
   ::operator delete(storage);
 
   Memory::releases = 0;
+  KThread::destructions = 0;
   platformThreadCount = 2; quits = 0;
   process = std::make_shared<KProcess>();
   storage = process->memory;
@@ -162,6 +174,7 @@ int main() {
   sibling.join();
   assert(process->cleanups == 2); // early exit_group cleanup, then final release
   assert(Memory::releases == 1 && process->memory == nullptr);
+  assert(KThread::destructions == 2);
   assert(platformThreadCount == 0 && quits == 1);
   ::operator delete(storage);
 }
