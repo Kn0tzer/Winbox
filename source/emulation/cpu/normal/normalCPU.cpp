@@ -406,6 +406,8 @@ void OPCALL normal_intO(CPU* cpu, DecodedOp* op) {
         action->sigInfo[2] = 0;
         action->sigInfo[3] = cpu->eip.u32;
         action->sigInfo[4] = 4;
+        bw64LogGuestFault32("exception32", cpu->thread, 0, cpu->eip.u32, 4,
+                            action->handlerAndSigAction != K_SIG_IGN && action->handlerAndSigAction != K_SIG_DFL);
         cpu->thread->runSignal(K_SIGSEGV, 4, 0);
         NEXT_DONE();
         return;

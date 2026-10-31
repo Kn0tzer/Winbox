@@ -69,6 +69,7 @@ void testAtomicStress64();
 void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
+void testFaultDelivery32();
 void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
@@ -806,6 +807,7 @@ const TestEntry TEST_ENTRIES[] = {
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
+    {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
