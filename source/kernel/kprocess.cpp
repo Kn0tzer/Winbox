@@ -1712,7 +1712,9 @@ U32 KProcess::ioctl(KThread* thread, FD fildes, U32 request) {
         return -K_EBADF;
     }
     U32 result = fd->kobject->ioctl(thread, request);
-    if (bw64RecoverEnabled() && result == (U32)-K_ENOTTY) {
+    if (result == (U32)-K_ENOTTY) {
+        // Reporting is not gated by the recovery switch: ENOTTY is
+        // returned in both modes, so the fact is always logged (once).
         bw64RecoverLogOnce("ioctl.unsupported", "unsupported ioctl on file descriptor; returned ENOTTY");
     }
     return result;
