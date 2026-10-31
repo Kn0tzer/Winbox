@@ -523,31 +523,65 @@ do not close the entry until they land.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
 - **FD-41 — The native suite aborts mid-run in the clone
-  test group when the syscall-ABI tests run first.**
+  test group when the syscall-ABI tests run first.
+  CLOSED 2026-10-31 — see CL-08.** *(Was Medium)*
   *(Numbered FD-39 on the lane branch; renumbered at
   integration — FD-39 was independently taken by the
   FD-15 lane's texture-settings entry.)*
-  *(Medium, suite reliability)* Running tests 610-621 in one
-  process aborts with an uncaught `int` throw
-  (`terminate called`, rc 134) in the clone tests after the
-  syscall-ABI block; the identical window aborts on the
-  pristine base tip, and every test in the window passes
-  standalone. A preceding-test interaction, uncharacterized.
-  Evidence: `docs/reports/fd06-portio-20261031.md`.
+  Running tests 610-621 in one process aborted with an
+  uncaught `int` throw (`terminate called`, rc 134) in the
+  clone tests after the syscall-ABI block; the identical
+  window aborted on the pristine base tip, and every test
+  in the window passes standalone. Characterized and fixed
+  on branch `lane-fd41-fd42` (commit `dc5f96fa8`): the
+  abort was a guest thread's first-op fetch unwinding out
+  of a bare thread entry point with no handler, and the
+  broader mid-run instability (segfaults, a tail wedge)
+  was threads leaked by earlier tests acting underneath
+  later ones in the shared process — see CL-08. Evidence:
+  `docs/reports/fd06-portio-20261031.md`;
+  `docs/reports/fd41-fd42-suite-containment-20261031.md`.
 - **FD-42 — A suite run can flood gigabytes of crash
-  diagnostics in the tail tests.**
+  diagnostics in the tail tests. CLOSED 2026-10-31 — see
+  CL-09.** *(Was Medium)*
   *(Numbered FD-40 on the lane branch; renumbered at
   integration — FD-40 was independently taken by the
-  FD-15 lane's boot-smoke entry.)* *(Medium, suite
-  reliability)* After ~650 passes a full serial run can
-  enter an unbounded diagnostic loop ("probably about to
-  crash, could not find emulation instruction that caused
-  exception") and grow its log by gigabytes until killed;
-  the same flood aborted a deploy-gate attempt on the
-  shipped tree, and all tail tests pass standalone. The
-  diagnostic path has no rate limit. Evidence:
+  FD-15 lane's boot-smoke entry.)* After ~650 passes a
+  full serial run could enter an unbounded diagnostic
+  loop ("probably about to crash, could not find
+  emulation instruction that caused exception") and grow
+  its log by gigabytes until killed; the same flood
+  aborted a deploy-gate attempt on the shipped tree, and
+  all tail tests pass standalone. Fixed on branch
+  `lane-fd41-fd42` (commit `dc5f96fa8`): the diagnostic
+  now follows the project's counting-cap standard in both
+  host handlers — see CL-09. Evidence:
   `docs/reports/fd06-portio-20261031.md`;
-  `docs/reports/deploy-20261031.md`.
+  `docs/reports/deploy-20261031.md`;
+  `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+- **FD-43 — Guest platform threads can outlive the
+  thread state they execute on.** *(Medium, emulator
+  thread lifetime)* Characterized by the FD-41/FD-42 lane
+  (2026-10-31), not fixed there: tests that leak guest
+  threads leave host platform threads executing guest
+  code indefinitely, and those threads fault, deliver
+  signals, and retire on state other threads are freeing
+  — a core dump shows a platform thread dying inside
+  guest-signal delivery (`KThread::runSignal` ->
+  `CPU::fillFlags`) on concurrently torn-down state, and
+  a full run wedged with a leaked thread blocked in
+  `KProcess::removeThread` while the main thread spun in
+  a later test's JIT code. The suite now isolates tests
+  so this cannot hurt a run, but the product has no such
+  boundary: a long-running guest that clones and exits
+  threads aggressively exercises the same lifetime
+  hazards. Evidence:
+  `docs/reports/fd41-fd42-suite-containment-20261031.md`
+  (worktree `wt-fd41fd42`, `test-results/fd41fd42/`,
+  incl. the captured core + debugger stacks). *Numbering
+  note: the FD-40 fix lane independently registered an
+  FD-43 on its own branch; renumber one entry when the
+  branches compose.*
 
 ---
 
@@ -686,6 +720,66 @@ dead-start fix and needs composition care.
   Celeste boot PASS (the OpenGL program that works on the live
   site still starts and draws). Record:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
+
+- **CL-08 — The native suite aborted mid-run in the clone
+  test group (was FD-41).** Fixed on branch
+  `lane-fd41-fd42`, commit `dc5f96fa8`. Mechanism, found
+  by reproduction on the pristine base (the registered
+  window aborted 3 of 10 runs, rc 134): a guest thread's
+  platform thread fetched its first decoded instruction
+  before the run loop, in a segment with no exception
+  handler, so the segment mapper's cannot-start unwind
+  escaped a bare thread entry point into
+  `std::terminate` — the trigger was a cloned child's
+  first fetch faulting on its shared spin page. Two
+  sibling holes: the test-mode completion check
+  dereferenced a next-op the run loop's handler had just
+  cleared, and the harness invoked test bodies with no
+  containment at all. Beyond the abort, full runs died
+  three other ways (host segfault in guest-signal
+  delivery on freed thread state, a wedge behind a leaked
+  thread's mutex, an occasional clean pass) because
+  threads leaked by earlier tests keep executing
+  underneath later ones in the shared process. Fix:
+  the first-op fetch is contained and a thread that
+  cannot start retires through normal end-of-thread
+  accounting; the harness catches any throw out of a
+  test body and records that one test FAILED with its
+  diagnostic; serial runs execute each test in a forked
+  child (same order, code, and assertions; the
+  pre-created context inherited copy-on-write), so a
+  crashing child fails only itself — named by its killing
+  signal — and leaked threads die with the child's
+  address space. `BW64_TEST_NO_FORK=1` keeps the
+  in-process path for bisection. Proof: the repro window
+  completed 20/20 post-fix with the exact child fault
+  firing (and contained) in 9 of the 20 logs; a sabotage
+  test throwing out of its body is reported FAILED with
+  its diagnostic while the suite continues; three
+  consecutive full serial runs each executed all 661
+  tests, 0 failed, exit code 0, ~25 KB logs. The
+  underlying thread-lifetime defect the isolation exposed
+  stays open as FD-43. Record:
+  `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+- **CL-09 — A suite run could flood gigabytes of crash
+  diagnostics (was FD-42).** Fixed on branch
+  `lane-fd41-fd42`, commit `dc5f96fa8`. The host
+  exception handler's "could not find emulation
+  instruction that caused exception" line was an uncapped
+  plain log call in both host handlers (armv8 and
+  x86-64); any fault-looping thread wrote it without
+  limit. It now follows the project's counting-cap
+  standard: a `BW64-FAIL` line, the first 64 occurrences
+  in full, then every 1024th, always with the cumulative
+  count — the first occurrence is always reported in
+  full, repetitions are counted and summarized, never
+  unbounded, never silently dropped. Proof: the capped
+  line observed firing with its count in a real run, and
+  the three consecutive full-suite proof runs for CL-08
+  produced ~25 KB logs each with no flood; the
+  fault-looping leftover that drove the original floods
+  no longer exists under test isolation. Record:
+  `docs/reports/fd41-fd42-suite-containment-20261031.md`.
 
 ---
 
