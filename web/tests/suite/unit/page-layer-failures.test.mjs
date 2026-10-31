@@ -41,3 +41,11 @@ test('cleanup failures are reported with what could not be removed', () => {
 test('graphics tier setup failure during teardown is reported', () => {
   assert.ok(app.includes("log('Graphics tier setup failed: '"), 'a rejected vk tier promise must not be swallowed during closeRuntime');
 });
+
+test('a launcher that cannot load its own module says so on the page', () => {
+  const index = read('index.html');
+  assert.ok(index.includes('__bwBootWatchdogFired'), 'index.html carries the boot watchdog');
+  assert.ok(index.includes('The launcher is taking a long time to load'), 'the watchdog leaves a visitor-visible message');
+  assert.ok(app.includes('window.__bwAppBooted = true'), 'app.mjs marks a successful boot');
+  assert.ok(app.includes('__bwBootWatchdogFired'), 'app.mjs clears the watchdog notice when it boots late');
+});

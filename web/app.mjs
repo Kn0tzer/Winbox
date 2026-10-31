@@ -585,6 +585,8 @@ window.bwReadLocalArchive = (url, start, end) => {
 };
 window.wineGames = { catalog: demos, install: id => action(signal => startDemo(demos.find(demo => demo.id === id), signal)) };
 renderDemos();
+window.__bwAppBooted = true;
+if (window.__bwBootWatchdogFired) message('');
 const supported = crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
 if (!supported) message('This browser needs cross-origin isolation to run programs. Reload the page, or open it in a current browser.', true);
 await refreshLibrary().catch(error => { $('library').replaceChildren(text('p', 'Saved folders could not be loaded. Reload to try again.', 'empty')); $('library').removeAttribute('aria-busy'); message(errorText(error), true); });
