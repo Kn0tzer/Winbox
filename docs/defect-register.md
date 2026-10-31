@@ -273,6 +273,29 @@ do not close the entry until they land.
   formats FD-15 named were fixed); it is mechanical to add
   with the same table. Evidence:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
+  RESOLVED IN PART 2026-10-31 on branch `lane-fd39` (commit
+  `ad93c01ea`): the silent drop is gone. The bridge now owns the
+  state for this closed set (LOD bias, GENERATE_MIPMAP,
+  border color, depth-texture mode, texture swizzle): sets
+  are validated -- an invalid value records the standard
+  error a real driver raises, a valid value never touches
+  the error slot Wine's Direct3D layer polls -- stored per
+  texture, and queries answer from the store with spec
+  defaults. The WebGPU backend validates and stores the same
+  set, GENERATE_MIPMAP actually regenerates the mip chain
+  when the base level is redefined, and the CLAMP_TO_BORDER
+  wrap reaches the sampler as WebGPU clamp-to-border.
+  5_6_5_REV gained its unpack model in the same table.
+  REMAINING (effect-only residue, still open): no backend
+  here can express the *rendering effects* of LOD bias in
+  sampling, a non-default border color (WebGPU samplers
+  have no borderColor field), or texture swizzle /
+  depth-texture mode in shader sampling. Those values are
+  now honest state -- set, validated, queryable -- whose
+  sampling effect is not yet modelled; closing the residue
+  needs sampler/shader support in a backend, not a
+  different answer at the API surface. Evidence:
+  `docs/reports/fd39-texparam-store-20261031.md`.
 - **FD-40 — The 64-bit boot smoke test never reaches the
   window station. FIXED 2026-10-31 (commit `5e4bab8f2`,
   merged into the integration tree as `6b9c834d7`).**
@@ -776,6 +799,20 @@ dead-start fix and needs composition care.
 ---
 
 ## C. Closed — fixed (or disproven) with proof
+
+- **FD-45 — Texture-parameter queries have no answer on the
+  vector entry points or the WebGPU path (found by the FD-39
+  lane, uncharacterized).** *(Low)* The bridge ABI traps only
+  the scalar texture-parameter entry points (glTexParameteri /
+  glTexParameterf in, glGetTexParameteriv out), so vector-form
+  calls (glTexParameterfv / glTexParameteriv /
+  glGetTexParameterfv -- the form that carries a full border
+  color) never reach the bridge; and the WebGPU GL backend
+  implements no texture-parameter query at all, so how a guest
+  query is answered on that path (host-side tracking or not at
+  all) is unverified. FD-39's store covers the scalar path;
+  this entry tracks the rest of the query surface. Evidence:
+  `docs/reports/fd39-texparam-store-20261031.md`.
 
 - **CL-01 — The dead-start defect that killed program starts
   outright.** A change to guest page permissions turned three
