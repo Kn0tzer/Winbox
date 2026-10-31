@@ -12,9 +12,13 @@
 #
 # Verification is fail-closed: ANY member difference vs the shipped
 # zip (name set, size, or sha256) aborts before the gate, naming the
-# members. There is no allow-list — the two preserved members are
-# extracted FROM the shipped zip by the base build, so a faithful
-# regeneration is member-identical, not merely gate-green. (The
+# members. The single sanctioned difference is the FD-02 win32u
+# backport: the four win32u .so members must carry the committed
+# backport bytes (tools/rootfs32/wine10-backports-i386/win32u.so,
+# hash-checked at the pin), and everything else must be
+# member-identical — the two preserved members are extracted FROM
+# the shipped zip by the base build, so a faithful regeneration is
+# identical apart from those four, not merely gate-green. (The
 # whole-archive sha256 still differs: staged archives carry
 # wall-clock member timestamps and are not byte-reproducible — the
 # standing staged-archive invariant. Publishing a regeneration is
@@ -126,23 +130,33 @@ shutil.move(tmp, archive)
 print("vkd3d32 payload applied to scratch zip")
 PYEOF
 echo "=== [4/5] member-by-member verification vs the shipped zip ==="
-python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" <<'EOF'
+BACKPORT32_SHA="$(sha256sum "$HERE/wine10-backports-i386/win32u.so" | cut -d' ' -f1)"
+python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" "$BACKPORT32_SHA" <<'EOF'
 import hashlib, sys, zipfile
 def census(path):
     with zipfile.ZipFile(path) as z:
         return {i.filename: (i.file_size, None if i.filename.endswith("/") else hashlib.sha256(z.read(i.filename)).hexdigest())
                 for i in z.infolist()}
 old, new = census(sys.argv[1]), census(sys.argv[2])
+pin = sys.argv[3]
+backport = {
+    "opt/wine-stable/lib/wine/i386-unix/win32u.so",
+    "opt/wine-stable/lib/wine/i386-unix/win32u.dll.so",
+    "usr/lib/i386-linux-gnu/wine/win32u.so",
+    "usr/lib/i386-linux-gnu/wine/win32u.dll.so",
+}
 only_old = sorted(set(old) - set(new))
 only_new = sorted(set(new) - set(old))
-diff = sorted(k for k in set(old) & set(new) if old[k] != new[k])
+diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport)
+bad = sorted(k for k in backport if k not in new or new[k][1] != pin)
 print(f"shipped {len(old)} members, regenerated {len(new)} members")
 for k in only_old: print(f"  MISSING in regen: {k}")
 for k in only_new: print(f"  EXTRA in regen:   {k}")
 for k in diff: print(f"  DIFFERS:          {k} shipped={old[k]} regen={new[k]}")
-if only_old or only_new or diff:
+for k in bad: print(f"  BACKPORT MEMBER NOT AT PIN: {k} regen={new.get(k)} expected sha256={pin}")
+if only_old or only_new or diff or bad:
     raise SystemExit("regen-wine32-zip: member verification FAILED (see above)")
-print("member verification: IDENTICAL member set, sizes and sha256")
+print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin")
 EOF
 
 echo "=== [5/5] completeness gate (in-tree, scratch web/runtime set) ==="

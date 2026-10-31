@@ -71,6 +71,12 @@
 #      identified, check its output against the pins and retire the
 #      extraction.
 #
+# Additionally, win32u.so is substituted with the committed backport
+# build (wine10-backports-i386/, the FD-02 desktop-init patience fix)
+# right after the deb tree is copied in, so the .dll.so duplicate and
+# both usr/ copies inherit the fixed bytes; the PE win32u.dll is the
+# deb's, untouched. See the substitution step in the body.
+#
 # The base tree this script produces is the shipped zip MINUS its two
 # scripted post-steps, which regen-wine32-zip.sh applies afterwards
 # with the in-tree staging scripts:
@@ -207,6 +213,25 @@ mkdir -p "$OUT/opt" "$OUT/usr/lib/wine" "$OUT/usr/lib/i386-linux-gnu/wine" \
 echo "=== extracting WineHQ noble i386 deb ==="
 dpkg-deb -x "$CACHE/wine-stable-i386_10.0.0.0~noble-1_i386.deb" "$OUT/.extract/winehq"
 cp -a "$OUT/.extract/winehq/opt/wine-stable" "$OUT/opt/"
+echo "=== win32u backport substitution (FD-02) ==="
+# The shipped win32u.so is NOT the deb's module: it is the committed
+# in-tree backport build (tools/rootfs32/wine10-backports-i386/,
+# produced by build-wine10-win32u.sh from the pinned wine-10.0 source
+# plus the desktop-wait patch), carrying the desktop-initialization
+# patience fix (defect register FD-02). Substituting here -- before
+# the patchelf step, the .dll.so duplication and the usr/ re-layout --
+# makes every shipped copy carry the fixed bytes. Fail-closed on the
+# pin, like the preserved members below. (The backport carries no
+# undefined __isoc23_* symbols, so it does not enter the injection
+# set derived in the patchelf step; the build script asserts that.)
+BACKPORT32="$HERE/wine10-backports-i386/win32u.so"
+BACKPORT32_SHA="b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760"
+[ -f "$BACKPORT32" ] || { echo "build-wine32-base: win32u backport missing: $BACKPORT32 (build it with tools/rootfs32/build-wine10-win32u.sh)" >&2; exit 2; }
+got="$(sha256sum "$BACKPORT32" | cut -d' ' -f1)"
+[ "$got" = "$BACKPORT32_SHA" ] || { echo "build-wine32-base: win32u backport hash mismatch: $got != $BACKPORT32_SHA" >&2; exit 1; }
+cp "$BACKPORT32" "$OUT/opt/wine-stable/lib/wine/i386-unix/win32u.so"
+echo "win32u backport substituted: sha256 verified"
+
 
 echo "=== extracting the two preserved members from the shipped zip ==="
 python3 - "$SHIPPED" "$OUT/.extract" <<'EOF'

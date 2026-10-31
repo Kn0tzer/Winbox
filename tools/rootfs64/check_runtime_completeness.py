@@ -186,6 +186,39 @@ def t_vkd3d_payloads32():
         assert sha(members[name]) == pin, f'{name} in wine32.zip != pinned vkd3d32 payload bytes'
 
 
+# The 32-bit win32u unix module (tools/rootfs32/wine10-backports-i386):
+# Wine 10.0's win32u.so rebuilt from the pinned wine-10.0 source tarball
+# with the desktop-init patience patch
+# (tools/buildWine/patches/wine10-win32u-desktop-wait.patch; FD-02 --
+# the 32-bit twin of the FD-01 fix in the Wine 8 set). The base build
+# (tools/rootfs32/build-wine32-base.sh) substitutes it for the WineHQ
+# deb's module before the .dll.so duplication and the usr/ re-layout,
+# so all four shipped copies carry these bytes; the PE half
+# (win32u.dll) ships untouched from the deb -- the patch's functions
+# live in the unix half. Built WITH freetype/fontconfig compiled in
+# (the stock module dlopens both libraries and the guest ships both).
+# Re-pins are deliberate, as with the backports above.
+WINE10_BACKPORT32_SHA = 'b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760'
+WINE10_BACKPORT32_MEMBERS = (
+    'opt/wine-stable/lib/wine/i386-unix/win32u.so',
+    'opt/wine-stable/lib/wine/i386-unix/win32u.dll.so',
+    'usr/lib/i386-linux-gnu/wine/win32u.so',
+    'usr/lib/i386-linux-gnu/wine/win32u.dll.so',
+)
+
+
+def t_wine10_backport32_source_and_zip():
+    src = ROOT / 'tools/rootfs32/wine10-backports-i386' / 'win32u.so'
+    assert sha(src.read_bytes()) == WINE10_BACKPORT32_SHA, \
+        'win32u.so (32-bit backport) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name in WINE10_BACKPORT32_MEMBERS:
+        assert name in members, f'{name} missing from shipped wine32.zip'
+        assert sha(members[name]) == WINE10_BACKPORT32_SHA, \
+            f'{name} in wine32.zip != pinned 32-bit win32u backport bytes'
+
+
 def t_wine8_backports_source_and_zip():
     for name, pin in WINE8_BACKPORT_PINS.items():
         src = ROOT / 'tools/rootfs64/wine8-backports-x86_64' / name
@@ -461,6 +494,7 @@ def t_prefix64_built():
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
     check('wine8 loader backports (source + shipped zip)', t_wine8_backports_source_and_zip)
+    check('wine10 win32u backport 32-bit (source + shipped zip)', t_wine10_backport32_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
