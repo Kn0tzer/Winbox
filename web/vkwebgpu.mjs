@@ -16,6 +16,7 @@ import {
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
   parseStorageTextureAccessRejection,
   resolveStorageVarFormat,
+  buildStorageSignature,
   planGroupRemap, rewriteGuestGroupDeclWGSL,
   rewriteReadOnlyStorageToSampled,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
@@ -2097,7 +2098,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     for (const h of holders) h.code = rewriteBindings(h.code);
     for (const d of decls) {
       const nb = bindingRemap.get(d.group + ':' + d.binding);
-      if (nb !== undefined) { d.origBinding = d.binding; d.binding = nb; }
+      if (nb !== undefined) { d.origBinding = d.origBinding ?? d.binding; d.binding = nb; }
     }
   }
   const byGroup = new Map();
@@ -2498,18 +2499,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   function storageSignatureFor(code, sets, pushBlock = null) {
     const vars = storageImageVars(code);
     if (!vars || !vars.length) return '';
-    const parts = [];
-    for (const v of vars) {
-      if (v.format !== 0) { parts.push(v.set + ':' + v.binding + '=' + v.format); continue; }
+    // The format is the bound view's format at the element the shader
+    // touches: descriptor-array variables carry their proven index
+    // signature and resolve against the entry covering that element
+    // (the draw's push block evaluates push-indexed signatures), never
+    // element 0 by default. See wgsl-utils.mjs resolveStorageVarFormat
+    // for the proof rules; unproven formats are omitted, not guessed.
+    // buildStorageSignature groups the resolutions into the R14
+    // signature, per storage image TYPE where one binding carries
+    // several (FD-49).
+    return buildStorageSignature(vars, (v) => {
       const set = sets?.get(v.set);
-      if (!set) continue;
-      // The format is the bound view's format at the element the shader
-      // touches: descriptor-array variables carry their proven index
-      // signature and resolve against the entry covering that element
-      // (the draw's push block evaluates push-indexed signatures), never
-      // element 0 by default. See wgsl-utils.mjs resolveStorageVarFormat
-      // for the proof rules; unproven formats are omitted, not guessed.
-      const spv = resolveStorageVarFormat(set.bindings || [], v, pushBlock, (obj) => {
+      if (!set) return null;
+      return resolveStorageVarFormat(set.bindings || [], v, pushBlock, (obj) => {
         const imgHex = F.views.get(obj);
         const img = imgHex && imageForView(obj, imgHex);
         const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
@@ -2521,9 +2523,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const bentry = bv ? V2_STORAGE_FORMAT[bv.format] : null;
         return bentry ? bentry.spv : null;
       });
-      if (spv != null) parts.push(v.set + ':' + v.binding + '=' + spv);
-    }
-    return parts.join(';');
+    });
   }
 
   function samplerIdForDecl(sets, group, d, st) {

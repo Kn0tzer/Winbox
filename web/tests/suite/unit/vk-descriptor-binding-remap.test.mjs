@@ -111,6 +111,6 @@ test('binding remap machinery is present and fail-closed over the cap', () => {
   assert.ok(tier.includes('const maxBinding = device.limits?.maxBindingsPerBindGroup || 1000;'), 'the binding cap comes from the device limit');
   assert.ok(tier.includes("noteUnsupported('binding-count-limit'"), 'a group needing more bindings than the cap fails loudly');
   assert.ok(tier.includes("return fail('binding-count-limit')"), 'an over-cap group fails the pipeline');
-  assert.ok(tier.includes('d.origBinding = d.binding;'), 'remapped decls keep their original binding for set lookups');
+  assert.ok(tier.includes('d.origBinding = d.origBinding ?? d.binding;'), 'remapped decls keep their original binding for set lookups (and never overwrite an origin recorded earlier, e.g. the guest binding of a split clone)');
   assert.ok(tier.includes('bindingForElement(bindings, d.origBinding ?? d.binding, declElement(st, d, k))'), 'draw-time lookups use the original binding');
 });

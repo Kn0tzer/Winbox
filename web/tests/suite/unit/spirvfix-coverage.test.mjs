@@ -50,6 +50,8 @@ test('REWRITES exports every rule', () => {
     'descriptor-array-specialize',
     'root-descriptor-bda',
     'strip-dead-undefs',
+    'specialized-binding-split',
+    'prune-dead-storage-image-types',
   ]);
 });
 
@@ -183,5 +185,5 @@ test('R14 NEGATIVE: variables of one type disagreeing on format are refused', ()
 
 test('R14 reflection: storageImageVars reports set/binding/format/kind', () => {
   const vars = storageImageVars(serializeSpirv(storageModule()));
-  assert.deepEqual(vars, [{ set: 0, binding: 2, dim: 1, format: 0, kind: 'f', typeId: 11 }]);
+  assert.deepEqual(vars, [{ set: 0, binding: 2, dim: 1, format: 0, kind: 'f', typeKey: 'kf32d1x000', typeId: 11 }]);
 });

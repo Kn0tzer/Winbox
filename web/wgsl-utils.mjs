@@ -185,9 +185,11 @@ export function scanWgslResources(wgsl) {
     const arr = /^bw_arr_g(\d+)_b(\d+)_(?:p(\d+)_a(-?\d+)|c(-?\d+))_?$/.exec(decl.name);
     if (arr && +arr[1] === decl.group) {
       decl.arrSig = arr[3] !== undefined ? { kind: 'push', pushOff: +arr[3], add: +arr[4] } : { kind: 'const', value: +arr[5] };
-      // A clone past the first for its array sits on a synthetic slot;
-      // the name still carries the guest binding it resolves through.
-      if (+arr[2] !== decl.binding) decl.origBinding = +arr[2];
+      // A clone past the first for its array sits on a synthetic
+      // slot (FD-16) or was split off its origin binding because a
+      // sibling clone holds it (FD-49); the name still carries the
+      // guest binding it resolves through.
+      if (+arr[2] !== decl.binding && decl.origBinding == null) decl.origBinding = +arr[2];
     }
     const root = /^bw_root_p(\d+)_?$/.exec(decl.name);
     if (root) decl.rootOff = +root[1];
@@ -234,6 +236,59 @@ export function scanWgslResources(wgsl) {
 // number (already view-format-resolved) or null when unmappable.
 // `texelFormatOf(obj)`, when supplied, does the same for a bound
 // storage-texel-buffer (kind 6) view id.
+// Build the spirvfix R14 signature ("set:binding=spvFormat;...") from
+// storageImageVars() reflection entries and a per-variable resolver
+// (resolveOne(v) -> SPIR-V Image Format number or null). A variable whose
+// module-declared format is already concrete echoes it, exactly as the
+// tier has always emitted. When every variable at a binding shares ONE
+// storage image type, entries stay in that plain form. When one binding
+// carries SEVERAL storage image types (a descriptor heap's typed arrays:
+// FD-49), a plain entry cannot say which type it formats -- whichever
+// view it names, the other type stays Unknown and translation fails --
+// so each type instead gets a typed entry "set:binding@<typeKey>=fmt",
+// emitted only when every format-less variable of that type resolves to
+// the SAME format; disagreement or an unproven variable omits the type
+// (it stays Unknown and fails loudly, never a guess). No plain entries
+// are emitted for a multi-type binding: a plain entry would be a
+// fallback for every type at the binding, including types it was never
+// resolved for.
+export function buildStorageSignature(vars, resolveOne) {
+  const resolved = (vars || []).map((v) => ({ v, fmt: v.format !== 0 ? v.format : resolveOne(v) }));
+  const groups = new Map(); // "set:binding" -> resolved entries
+  for (const r of resolved) {
+    const k = r.v.set + ':' + r.v.binding;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  const parts = [];
+  for (const [key, entries] of groups) {
+    const typeKeys = new Set(entries.map((r) => r.v.typeKey));
+    if (typeKeys.size <= 1) {
+      for (const r of entries) if (r.fmt != null) parts.push(key + '=' + r.fmt);
+      continue;
+    }
+    const byType = new Map();
+    for (const r of entries) {
+      if (!byType.has(r.v.typeKey)) byType.set(r.v.typeKey, []);
+      byType.get(r.v.typeKey).push(r);
+    }
+    for (const [tk, rs] of byType) {
+      const unknown = rs.filter((r) => r.v.format === 0);
+      if (!unknown.length) continue; // type already concrete in the module
+      // The format is a property of the TYPE: a variable that resolves
+      // proves it, a variable that cannot resolve (an unaccessed heap
+      // alias the rewriter prunes before injection) abstains. Two
+      // variables that resolve DIFFERENTLY leave the type unproven.
+      const proven = unknown.filter((r) => r.fmt != null);
+      if (!proven.length) continue;
+      const fmt = proven[0].fmt;
+      if (proven.some((r) => r.fmt !== fmt)) continue;
+      parts.push(key + '@' + tk + '=' + fmt);
+    }
+  }
+  return parts.join(';');
+}
+
 export function resolveStorageVarFormat(bindings, v, pushBlock, viewFormatOf, texelFormatOf = null) {
   const list = (bindings || []).filter((b) => b.binding === v.binding);
   // kind 2 = image view; kind 6 = storage texel buffer view. spirvfix
