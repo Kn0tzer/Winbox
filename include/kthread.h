@@ -259,6 +259,12 @@ void OPCALL onExitSignal(CPU* cpu, DecodedOp* op);
 
 void common_signalIllegalInstruction(CPU* cpu, int code);
 
+// One greppable BW64-FAIL line per 32-bit guest fault delivery (defined
+// in kthread.cpp; see KThread::seg_mapper). kind names the fault class
+// (memfault32 / exception32 / trap32 / ill32); delivered is false when no
+// guest handler received the fault and the default disposition applied.
+void bw64LogGuestFault32(const char* kind, KThread* thread, U32 address, U32 eip, U32 error, bool delivered);
+
 #if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
 // Wait on `cond`, but let a 64-bit guest thread wake every 200 ms so that a
 // signal armed between its pendingSignals check and the wait (tgkill can only

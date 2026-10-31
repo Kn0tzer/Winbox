@@ -1389,10 +1389,13 @@ void KThread::exitRobustList()
 
 void KThread::signalTrap(U32 code) {
     KSigAction* action = &this->process->sigActions[K_SIGTRAP];
-    if (action->handlerAndSigAction == K_SIG_DFL) {
-        DecodedOp* op = cpu->getNextOp();
-        kpanic_fmt("%s tid=%04X eip=%08X Illegal instruction but no signal handler set up for it: %s (%X)", process->name.c_str(), cpu->thread->id, cpu->eip.u32, op->name(), op->inst);
-    }
+    // A trap with no guest handler is fatal to the guest process, never
+    // to the emulator: runSignal below applies the default disposition.
+    // This used to kpanic in that case, after calling getNextOp() —
+    // which can itself throw from inside fault handling — under a
+    // message that named the wrong instruction class.
+    const bool delivered = action->handlerAndSigAction != K_SIG_DFL && action->handlerAndSigAction != K_SIG_IGN;
+    bw64LogGuestFault32("trap32", this, 0, cpu->eip.u32, code, delivered);
     memset(this->process->sigActions[K_SIGTRAP].sigInfo, 0, sizeof(this->process->sigActions[K_SIGTRAP].sigInfo));
     this->process->sigActions[K_SIGTRAP].sigInfo[0] = K_SIGTRAP;
     this->process->sigActions[K_SIGTRAP].sigInfo[2] = code;
@@ -1401,6 +1404,9 @@ void KThread::signalTrap(U32 code) {
 }
 
 void KThread::signalIllegalInstruction(int code) {
+    KSigAction* action = &this->process->sigActions[K_SIGILL];
+    const bool delivered = action->handlerAndSigAction != K_SIG_DFL && action->handlerAndSigAction != K_SIG_IGN;
+    bw64LogGuestFault32("ill32", this, 0, cpu->eip.u32, (U32)code, delivered);
     memset(this->process->sigActions[K_SIGILL].sigInfo, 0, sizeof(this->process->sigActions[K_SIGILL].sigInfo));
     this->process->sigActions[K_SIGILL].sigInfo[0] = K_SIGILL;
     this->process->sigActions[K_SIGILL].sigInfo[2] = code;
@@ -1959,75 +1965,26 @@ void KThread::runSignal(U32 signal, U32 trapNo, U32 errorNo) {
 // bit 3 - 0 = n/a, 1 = use of reserved bit detected
 // bit 4 - 0 = n/a, 1 = fault was an instruction fetch
 
-void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException) {
-    // Bug #5 instrumentation: log faulting EIP. logPageFault() only runs when there's
-    // NO signal handler; with a handler (Wine has one), the throw escapes without EIP.
-    static int segMapperLogCount = 0;
-    if (segMapperLogCount < 10) {
-        segMapperLogCount++;
-        if (this->cpu) {
-            klog_fmt("SEG_MAPPER #%d fault addr=%.8X EIP=%.8X", segMapperLogCount, address,
-                     this->cpu->seg[CS].address + this->cpu->eip.u32);
-        } else {
-            klog_fmt("SEG_MAPPER #%d fault addr=%.8X (no cpu)", segMapperLogCount, address);
-        }
-        if (this->cpu) {
-            // Portal load crash (addr=0x10 at ntdll-range EIP): with a SIGSEGV handler
-            // installed (Wine), logPageFault never runs, so capture the full fault
-            // state here: registers, segment bases, EIP module, instruction bytes,
-            // and (first fault only) the module map + stack walk.
-            CPU* cpu = this->cpu;
-            U32 eip = cpu->seg[CS].address + cpu->eip.u32;
-            klog_fmt("SEG_STATE #%d tid=%d pid=%d EAX=%.8X ECX=%.8X EDX=%.8X EBX=%.8X ESP=%.8X EBP=%.8X ESI=%.8X EDI=%.8X",
-                     segMapperLogCount, this->id, this->process->id,
-                     cpu->reg[0].u32, cpu->reg[1].u32, cpu->reg[2].u32, cpu->reg[3].u32,
-                     cpu->reg[4].u32, cpu->reg[5].u32, cpu->reg[6].u32, cpu->reg[7].u32);
-            klog_fmt("SEG_SEGS #%d CS=%.4X:%.8X SS=%.4X:%.8X DS=%.4X:%.8X ES=%.4X:%.8X FS=%.4X:%.8X GS=%.4X:%.8X",
-                     segMapperLogCount,
-                     cpu->seg[CS].value, cpu->seg[CS].address,
-                     cpu->seg[SS].value, cpu->seg[SS].address,
-                     cpu->seg[DS].value, cpu->seg[DS].address,
-                     cpu->seg[ES].value, cpu->seg[ES].address,
-                     cpu->seg[FS].value, cpu->seg[FS].address,
-                     cpu->seg[GS].value, cpu->seg[GS].address);
-            if (this->memory->isPageAllocated(eip >> 12)) {
-                klog_fmt("SEG_MOD #%d module=%s +%.8X bytes=%.8X %.8X %.8X %.8X",
-                         segMapperLogCount,
-                         this->process->getModuleName(eip).c_str(), this->process->getModuleEip(eip),
-                         cpu->memory->readd(eip), cpu->memory->readd(eip + 4),
-                         cpu->memory->readd(eip + 8), cpu->memory->readd(eip + 12));
-            }
-            if (segMapperLogCount == 1) {
-                // Raw stack + TEB dump: the EBP chain proved unreliable across
-                // optimized guest code (bogus return addresses), so capture the
-                // raw stack window for an offline scan against the module map.
-                U32 esp = cpu->reg[4].u32;
-                U32 fsbase = cpu->seg[FS].address;
-                if (fsbase && this->memory->isPageAllocated(fsbase >> 12)) {
-                    klog_fmt("SEG_TEB #%d FS=%.8X exc=%.8X stackBase=%.8X stackLimit=%.8X self=%.8X peb=%.8X",
-                             segMapperLogCount, fsbase,
-                             cpu->memory->readd(fsbase + 0x00), cpu->memory->readd(fsbase + 0x04),
-                             cpu->memory->readd(fsbase + 0x08), cpu->memory->readd(fsbase + 0x18),
-                             cpu->memory->readd(fsbase + 0x30));
-                }
-                if (this->memory->isPageAllocated(esp >> 12)) {
-                    for (U32 row = 0; row < 12; row++) {
-                        U32 a = esp - 0x10 + row * 0x20;
-                        klog_fmt("SEG_STACK #%d %.8X: %.8X %.8X %.8X %.8X %.8X %.8X %.8X %.8X",
-                                 segMapperLogCount, a,
-                                 cpu->memory->readd(a), cpu->memory->readd(a + 4),
-                                 cpu->memory->readd(a + 8), cpu->memory->readd(a + 12),
-                                 cpu->memory->readd(a + 16), cpu->memory->readd(a + 20),
-                                 cpu->memory->readd(a + 24), cpu->memory->readd(a + 28));
-                    }
-                }
-                this->process->printMappedFiles();
-                if (this->memory->isPageAllocated(cpu->reg[5].u32 >> 12)) {
-                    cpu->walkStack(cpu->eip.u32, cpu->reg[5].u32, 2);
-                }
-            }
-        }
+
+// One greppable line per 32-bit guest fault delivery — the same standard
+// the 64-bit side follows (the cleanup campaign's failure-logging and
+// recovery patterns): what faulted, where, with what values, and whether
+// a guest handler received it. Counting cap (first 64, then every
+// 1024th) so a fault-looping guest cannot flood the log; a fault that no
+// guest handler received is the severe case and always logs.
+void bw64LogGuestFault32(const char* kind, KThread* thread, U32 address, U32 eip, U32 error, bool delivered) {
+    static std::atomic<unsigned long long> faultLogCount{0};
+    const unsigned long long n = faultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (!delivered || n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-FAIL guest-%s pid=%d tid=%d addr=0x%x eip=0x%x err=%u delivered=%d count=%llu",
+                 kind,
+                 (thread && thread->process) ? (int)thread->process->id : -1,
+                 thread ? (int)thread->id : -1,
+                 address, eip, error, delivered ? 1 : 0, n);
     }
+}
+
+void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException) {
     // On-demand mapping for 32-bit Wine syscall_frame
     if (!this->process->is64Bit && address >= 0x76f000 && address < 0x770000) {
         U32 pageAddr = address & ~0xFFF;
@@ -2046,40 +2003,44 @@ void KThread::seg_mapper(U32 address, bool readFault, bool writeFault, bool thro
         this->process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
         this->process->sigActions[K_SIGSEGV].sigInfo[2] = 1; // SEGV_MAPERR
         this->process->sigActions[K_SIGSEGV].sigInfo[3] = address;
+        bw64LogGuestFault32("memfault32", this, address, this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0, (writeFault?2:0), true);
         this->runSignal(K_SIGSEGV, EXCEPTION_PAGE_FAULT, (writeFault?2:0));
         if (throwException) {
             throw 2;
         }
     } else {
+        bw64LogGuestFault32("memfault32", this, address, this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0, (writeFault?2:0), false);
         this->memory->logPageFault(this, address);
+        // No guest handler: the fault is fatal to the guest process, not
+        // to the emulator. End the process (the disposition runSignal
+        // applies to a default SIGSEGV) and unwind this thread, instead
+        // of the emulator-wide exit logPageFault's trailing kpanic used
+        // to cause in the default configuration.
+        this->process->signal(K_SIGKILL);
+        throw 1;
     }
 }
 
 // motorhead demo installer, tomb raider 3 demo will trigger this
 void KThread::seg_access(U32 address, bool readFault, bool writeFault, bool throwException) {
-    // Bug #5 instrumentation: seg_mapper didn't fire, try seg_access
-    static int segAccessLogCount = 0;
-    if (segAccessLogCount < 10) {
-        segAccessLogCount++;
-        if (this->cpu) {
-            klog_fmt("SEG_ACCESS #%d fault addr=%.8X EIP=%.8X", segAccessLogCount, address,
-                     this->cpu->seg[CS].address + this->cpu->eip.u32);
-        } else {
-            klog_fmt("SEG_ACCESS #%d fault addr=%.8X (no cpu)", segAccessLogCount, address);
-        }
-    }
     if (this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_IGN && this->process->sigActions[K_SIGSEGV].handlerAndSigAction!=K_SIG_DFL) {
 
         this->process->sigActions[K_SIGSEGV].sigInfo[0] = K_SIGSEGV;
         this->process->sigActions[K_SIGSEGV].sigInfo[1] = 0;
         this->process->sigActions[K_SIGSEGV].sigInfo[2] = 2; // SEGV_ACCERR
         this->process->sigActions[K_SIGSEGV].sigInfo[3] = address;
+        bw64LogGuestFault32("memfault32", this, address, this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0, 1 | (writeFault?2:0), true);
         this->runSignal(K_SIGSEGV, EXCEPTION_PAGE_FAULT, 1 | (writeFault?2:0));
         if (throwException) {
             throw 1;
         }
     } else {
+        bw64LogGuestFault32("memfault32", this, address, this->cpu ? (this->cpu->seg[CS].address + this->cpu->eip.u32) : 0, 1 | (writeFault?2:0), false);
         this->memory->logPageFault(this, address);
+        // No guest handler: fatal to the guest process, not the emulator
+        // (see seg_mapper).
+        this->process->signal(K_SIGKILL);
+        throw 1;
     }
 }
 

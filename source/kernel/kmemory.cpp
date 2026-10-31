@@ -1132,7 +1132,10 @@ void KMemory::logPageFault(KThread* thread, U32 address) {
     klog("Mapped Files:");
     process->printMappedFiles();
     cpu->walkStack(cpu->eip.u32, EBP, 2);
-    kpanic("pf");
+    // No kpanic: this dump is the post-mortem for a guest page fault,
+    // and a guest fault is fatal to the guest process, not to the
+    // emulator. The callers (KThread::seg_mapper / seg_access) log the
+    // fault in the standard BW64-FAIL form and end the guest process.
 }
 
 void KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function<bool(U8* ram, U32 len)> callback) {
