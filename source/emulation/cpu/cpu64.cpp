@@ -7786,7 +7786,7 @@ unhandled:
     const bool controlTrace = ripSamplerControlTraceEnabled();
     const bool traceDumped = reportControlTrace(
         "unimplemented-opcode", ipStart, std::getenv("BW64_UNIMPLDUMP") != nullptr);
-    if (!controlTrace || traceDumped) klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
+    if (!controlTrace || traceDumped) klog_fmt("BW64-FAIL CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
              (unsigned long long)ipStart,
              fetchByte(ipStart),
              fetchByte(ipStart + 1),
