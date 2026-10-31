@@ -10,7 +10,7 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 209670021 | `94357c3c7f5ed782a4bc19e52fac36262530f8825ff5b56f5ee2df3a49def704` | 1257 |
+| w64 | `web/runtime/wine64.zip` | 209670021 | `78dde7c20fc2275866ba76b9144d00b8af86d98b2ffe967ca538d23dd9821bd2` | 1257 |
 | w32 | `web/runtime/wine32.zip` | 239760722 | `955cc41cf6d92a0dc7d98fcfccb76e4d6d70e4daa5ea744c2be1e735c3950f4c` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
