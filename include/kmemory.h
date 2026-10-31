@@ -156,8 +156,15 @@ public:
     // caller is responsible for making sure the address+len is valid
     void iteratePages(U32 address, U32 len, std::function<bool(U32 page)> callback);
 
-    // caller is responsible for making sure the address+len is valid
-    void performOnMemory(U32 address, U32 len, bool readOnly, std::function<bool(U8* ram, U32 len)> callback);
+    // Runs the callback over each page-sized chunk of [address, address+len).
+    // Returns false when a chunk's page has no host RAM (unmapped/invalid
+    // page): the copy stops there, the failure is reported as a BW64-FAIL
+    // line, and the caller degrades to a short/empty result. A callback
+    // returning false stops the walk early and is not a failure (returns
+    // true). This must never panic: the address and length come from guest
+    // syscall buffers, so a bad guest pointer would otherwise kill the
+    // whole emulator in the default configuration.
+    bool performOnMemory(U32 address, U32 len, bool readOnly, std::function<bool(U8* ram, U32 len)> callback);
     
     void logPageFault(KThread* thread, U32 address);
     
