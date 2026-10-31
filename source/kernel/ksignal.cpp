@@ -251,13 +251,24 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
     KFileDescriptorPtr fd;
     KMemory* memory = thread->memory;
 
-    if (bw64RecoverEnabled() && (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK))) {
-        bw64RecoverLogOnce("syscall.signalfd4.flags", "unsupported signalfd4 flags; returned EINVAL");
-        return -K_EINVAL;
+    // The EINVAL rejection stays a recovery action behind the switch,
+    // but the fact that an unsupported argument arrived is reported in
+    // both modes (same if/else shape as the fcntl/ioctl precedents):
+    // with the switch on it is logged once via bw64RecoverLogOnce,
+    // with it off a kwarn names the offending value and the outcome.
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.signalfd4.flags", "unsupported signalfd4 flags; returned EINVAL");
+            return -K_EINVAL;
+        }
+        kwarn_fmt("signalfd4: unsupported flags %x accepted (recovery switch off)", flags);
     }
-    if (bw64RecoverEnabled() && maskSize != 4 && maskSize != 8) {
-        bw64RecoverLogOnce("syscall.signalfd4.mask_size", "unsupported signalfd4 mask size; returned EINVAL");
-        return -K_EINVAL;
+    if (maskSize != 4 && maskSize != 8) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("syscall.signalfd4.mask_size", "unsupported signalfd4 mask size; returned EINVAL");
+            return -K_EINVAL;
+        }
+        kwarn_fmt("signalfd4: unsupported mask size %d accepted (recovery switch off)", maskSize);
     }
 
     if (fildes>=0) {
