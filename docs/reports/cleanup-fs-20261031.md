@@ -70,7 +70,7 @@ always `count=`) or once-per-case.
   with every cleanup lane building. It passes in both full runs
   below at ordinary load; recorded as contention flakiness, not a
   code signal.
-- After commits 1–7 (above numbering 1–6 at the time): full serial
+- After items 1-7 above: full serial
   run 653/653.
 - Final tree: full serial run **654/654** (648 baseline entries +
   5 new tests + the newly registered testMemfdCreate).
