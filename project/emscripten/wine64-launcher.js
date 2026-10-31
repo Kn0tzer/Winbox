@@ -1438,7 +1438,7 @@
     }
     var sessionPinsReady = !SESSION;
     var sessionDesktopReady = !SESSION;
-    // --- desktop readiness is a handshake, not one line (FD-44) ------------
+    // --- desktop readiness is a handshake, not one line (FD-47) ------------
     // Until 2026-10-31 this observer certified the desktop from the pin's
     // READY line alone, accepting any hex value as a window handle. On a
     // build whose win32u.dll lacks the Wine builtin signature (FD-40) the

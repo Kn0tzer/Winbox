@@ -1,7 +1,7 @@
 # Readiness certification hardened + four-arm start measurement — 2026-10-31
 
 Lane: `lane-readygate`, off integ `0dc6c2961`.
-Register: FD-43 closed (CL-10); FD-44 opened and fixed on
+Register: FD-43 closed (CL-10); FD-47 opened and fixed on
 this branch (CL-11); FD-01 updated, stays open.
 
 ## What was wrong
@@ -256,12 +256,11 @@ Via `WINE_DIST_DIR=/home/ubuntu/readygate-arms/B`:
   2026-10-31 (CL-10) — closed by its own named conditions
   (hardened certification + four-arm measurement), not by
   a fix to the race.
-- FD-44: new entry — the certification defect itself,
-  fixed on this branch (CL-11). Note for the merge lane:
-  the FD-41/FD-42 lane independently used the number
-  FD-44 on its branch for its underlying thread-lifetime
-  defect; the merge composition owns renumbering, as with
-  FD-43 before.
+- FD-47: new entry — the certification defect itself,
+  fixed on this branch (CL-11). (Numbered FD-44 on this
+  branch; renumbered FD-47 at integration — FD-44 on the
+  integration branch is the FD-41/FD-42 lane's
+  thread-lifetime entry.)
 - FD-01: UPDATE appended — prerequisites met, true rates
   recorded, entry stays OPEN pending the unix-side fix.
 - Section B row for `lane-readygate`; CL-10 and CL-11

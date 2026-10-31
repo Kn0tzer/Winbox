@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // tools/browser/startup-measurement.mjs — first-attempt session-start
-// measurement with dual readiness classification (FD-43 / FD-44).
+// measurement with dual readiness classification (FD-43 / FD-47).
 //
 // Why this exists. Until 2026-10-31 every start measurement in this
 // project certified a session from one console line — the desktop
@@ -17,10 +17,10 @@
 // measured), captures the full console stream, and classifies the
 // boot twice from the same evidence:
 //
-//   OLD certification — the pre-FD-44 rule: a deskpin READY line
+//   OLD certification — the pre-FD-47 rule: a deskpin READY line
 //     with any hex value certifies the start.
 //   NEW certification — the hardened rule the launcher implements
-//     (FD-44): the READY value is a plausible window handle
+//     (FD-47): the READY value is a plausible window handle
 //     (nonzero, top bit clear — NTSTATUS values have the top bits
 //     set), the X wire server accepted at least <x11-min> clients
 //     (a healthy boot makes five; dead boots stall at two), and

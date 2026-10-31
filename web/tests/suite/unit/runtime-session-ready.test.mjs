@@ -22,7 +22,7 @@ test('a persistent session waits for a working desktop after its pin spawns', ()
   assert.equal(ready(true, true, true), false);
   assert.equal(ready(true, true, true, true), true);
 });
-// FD-44: desktop readiness is the whole startup handshake, not the
+// FD-47: desktop readiness is the whole startup handshake, not the
 // pin's READY line alone. Until 2026-10-31 the observer accepted any
 // hex value as a window handle; on a build whose win32u syscalls are
 // never dispatched (FD-40) the pin's window creation "returns" the

@@ -902,6 +902,19 @@ do not close the entry until they land.
   above.)*
 
 
+- **FD-45 — Texture-parameter queries have no answer on the
+  vector entry points or the WebGPU path (found by the FD-39
+  lane, uncharacterized).** *(Low)* The bridge ABI traps only
+  the scalar texture-parameter entry points (glTexParameteri /
+  glTexParameterf in, glGetTexParameteriv out), so vector-form
+  calls (glTexParameterfv / glTexParameteriv /
+  glGetTexParameterfv -- the form that carries a full border
+  color) never reach the bridge; and the WebGPU GL backend
+  implements no texture-parameter query at all, so how a guest
+  query is answered on that path (host-side tracking or not at
+  all) is unverified. FD-39's store covers the scalar path;
+  this entry tracks the rest of the query surface. Evidence:
+  `docs/reports/fd39-texparam-store-20261031.md`.
 ---
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -944,20 +957,6 @@ dead-start fix and needs composition care.
 ---
 
 ## C. Closed — fixed (or disproven) with proof
-
-- **FD-45 — Texture-parameter queries have no answer on the
-  vector entry points or the WebGPU path (found by the FD-39
-  lane, uncharacterized).** *(Low)* The bridge ABI traps only
-  the scalar texture-parameter entry points (glTexParameteri /
-  glTexParameterf in, glGetTexParameteriv out), so vector-form
-  calls (glTexParameterfv / glTexParameteriv /
-  glGetTexParameterfv -- the form that carries a full border
-  color) never reach the bridge; and the WebGPU GL backend
-  implements no texture-parameter query at all, so how a guest
-  query is answered on that path (host-side tracking or not at
-  all) is unverified. FD-39's store covers the scalar path;
-  this entry tracks the rest of the query surface. Evidence:
-  `docs/reports/fd39-texparam-store-20261031.md`.
 
 - **CL-01 — The dead-start defect that killed program starts
   outright.** A change to guest page permissions turned three

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Four-arm alternating start measurement (FD-43/FD-44). One boot per
+# Four-arm alternating start measurement (FD-43/FD-47). One boot per
 # driver invocation; each boot takes and releases a probe slot, so
 # other lanes interleave fairly. Rounds x arms, load logged per boot
 # by the driver itself (boot.json loadStart/loadEnd).
