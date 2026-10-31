@@ -83,3 +83,22 @@ ran it (an incomplete user32 pointer-input family), and the syscall
 census counted the unexamined kernel surface for the first time
 (x86-64: 168 of 363 named syscalls undispatched; i386: 223 null slots
 in the table plus 22 numbers beyond it).
+
+## recover_gate_audit.py
+
+Checks the logging invariant from
+`docs/failure-logging-and-recovery.md`: the recovery switch
+(`bw64RecoverEnabled()`) may gate recovery *actions*, never the
+*reporting* of a fact. The audit scans the emulator sources for
+`bw64RecoverLogOnce` reports inside a switch-gated `if` and fails
+unless the same if/else reports in both branches (the loud-pair
+shape) or the (file, key) pair carries a written exemption in the
+script. Run from the repo root:
+
+```sh
+python3 tools/conformance/recover_gate_audit.py
+```
+
+Exit 0 means the invariant holds. A new gated report with a new
+key fails the check until it is ungated, reshaped into a loud
+pair, or exempted with a justification.
