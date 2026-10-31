@@ -256,10 +256,13 @@ do not close the entry until they land.
   with the same table. Evidence:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
 - **FD-40 — The 64-bit boot smoke test never reaches the
-  window station because a boot thread waits forever for a
-  debug-listener object no session component ever creates.**
-  *(Characterized 2026-10-31 — mechanism convicted;
-  `docs/reports/fd40-boot-smoke-characterization-20261031.md`)*
+  window station. FIXED ON BRANCH 2026-10-31
+  (`lane-fd40-fix`, commit `5e4bab8f2`) — awaiting merge.**
+  *(Characterized 2026-10-31 in
+  `docs/reports/fd40-boot-smoke-characterization-20261031.md`;
+  that record's mechanism is CORRECTED below — its
+  observations were accurate, its convicted mechanism was
+  not. Full fix record: `docs/reports/fd40-fix-20261031.md`.)*
   The test's own workload completes: the booted program
   prints its echo and exits with status 0. After the last
   boot process terminates there is a ~16 s total guest
@@ -314,6 +317,39 @@ do not close the entry until they land.
   `wt-fd15/test-results/baseline-c4bab5e07-boot64-smoke/`;
   the passing capture in the integration tree at
   `test-results/suite-boot64-smoke/`.
+  CORRECTION AND CLOSURE (2026-10-31, `lane-fd40-fix`): the
+  DBWIN wait this entry convicted is not a wait and not the
+  boot thread. The ~30 s `DBWIN_BUFFER` reopens are the
+  session anchor's designed heartbeat (deskpin sleeps 30 s,
+  then calls `OutputDebugStringA`, forever; Wine's sender is
+  single-attempt and abandons the send when no listener
+  exists — the correct documented behaviour, unchanged by
+  the fix). The test fails on its fourth watch because
+  session initialization never runs in any process: the
+  staged win32u.dll is a from-source backport rebuild that
+  lacks the 32-byte "Wine builtin DLL" signature a full Wine
+  build stamps at file offset 64, so the wineserver does not
+  flag it as a builtin (image_flags 0x04, not 0x44) and its
+  syscall table is never registered; user32's
+  initialization syscall therefore reaches no implementation
+  and silently does nothing — no font load, no window
+  station, in any process, at any load. Three-arm A/B, one
+  file different: unstamped rebuild — no winstation ever;
+  stock Debian DLL — winstation at 106.4 s; the same rebuild
+  with only the signature stamped — winstation at 102.0 s.
+  Fix (commit `5e4bab8f2`): the backport build script now
+  stamps every rebuilt DLL the way winebuild does, the
+  shipped win32u.dll is stamped in place (sha256
+  `49b87438…`, code bytes untouched) and everything is
+  re-pinned (completeness checker 0 failures). Proof:
+  boot64-smoke passes through the project's own suite path
+  three times in a row (89 s, 82 s, 91 s); a new dbwin-echo
+  fixture + suite test proves the guest debug-output channel
+  still delivers `OutputDebugStringA` text to a real
+  listener (suite pass, 93 s). The other four backport DLLs
+  lack the signature too but are not syscall DLLs and show
+  no symptom; the build script stamps them on their next
+  rebuild.
 - **FD-16 — One class of shader still cannot build a pipeline:
   texel buffers reached through a descriptor-heap array.**
   *(High for the D3D12 class)* A guest's shader module whose
@@ -587,6 +623,27 @@ do not close the entry until they land.
   diagnostic path has no rate limit. Evidence:
   `docs/reports/fd06-portio-20261031.md`;
   `docs/reports/deploy-20261031.md`.
+- **FD-43 — The FD-01 desktop-wait fix is present in no
+  shipped binary; the measured first-visit improvement is
+  unattributed.** *(Medium — a closed fix's evidence chain)*
+  FD-01's patch edits `get_desktop_window` and
+  `load_desktop_driver`, functions that exist only in the
+  unix-side `win32u.so` — in neither PE win32u.dll, stock or
+  rebuilt (no strings, no 300 s constant). The shipped
+  `win32u.so` is byte-identical to the container staging
+  image's (sha256 `5dac58217e6b6203…`) and its single
+  `NtUserWaitForInputIdle` call site passes the stock 10 s
+  timeout, so the patch's code shipped nowhere. FD-01's live
+  measurements (0/4 → 6/6 first-attempt starts) stand as
+  measured, but the cause is not the patch as shipped; the
+  only win32u change in that build was the (independently
+  defective, see FD-40) unsigned PE rebuild. Because the
+  FD-40 fix restores win32u's builtin treatment — behaviour
+  closer to the pre-FD-01 stock DLL — FD-01's live
+  first-visit rate must be re-measured on the merged build
+  before the restart stopgap's retirement is treated as
+  settled. Evidence: `docs/reports/fd40-fix-20261031.md`
+  ("Found on the way").
 
 ---
 
