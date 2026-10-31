@@ -1317,7 +1317,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
     return out;
 }
 
-struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; };
+struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; std::set<U32> servableVars; };
 inline ArrayVerdict analyzeArrays(const Module& m) {
     ArrayVerdict out;
     struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; };
@@ -1358,9 +1358,10 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
                     if (cu.writes > 0 || !cu.escapes.empty()) { bad = true; break; }
                 } else bad = true;
             }
-            if (!bad && nAcc > 0 && sigs.size() == 1) a.servable = true;
+            if (!bad && nAcc > 0) a.servable = true; // any number of distinct signatures: one clone each (spirvfix R15a)
         }
         arrs.push_back(a);
+        if (a.servable) out.servableVars.insert(in.resultId);
     }
     if (!out.hasDescriptorArrays) return out;
     out.servable = true;
@@ -1386,6 +1387,14 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             if (in.op == 2 || in.op == 3 || in.op == 4 || in.op == 7 || in.op == 10 ||
                 in.op == 14 || in.op == 15 || in.op == 16 || in.op == 17) continue;
             if (in.resultType) live.insert(in.w[0]);
+            // The constant family (41-46, 50-52) carries literal values
+            // and constant ids in its operand words -- never type ids;
+            // counting them lets a constant whose value equals a dead
+            // type's id keep that type alive (mirrors the spirvfix
+            // orphan sweep).
+            if (in.op == 41 || in.op == 42 || in.op == 43 || in.op == 44 ||
+                in.op == 45 || in.op == 46 || in.op == 50 || in.op == 51 ||
+                in.op == 52) continue;
             for (U32 k = in.fv; k < in.n; k++) live.insert(in.w[k]);
         }
         for (const Insn& in : m.insns) {
@@ -1476,29 +1485,98 @@ static bool vk64RawIsInt32(const Vk64RawModule& m, U32 typeId) {
     const Vk64RawInsn* t = vk64RawOf(m, typeId);
     return t && t->op == 21 && t->n >= 2 && t->w[1] == 32;
 }
+// Follow OpCopyObject (op 83) operands to the value a pointer traces to
+// (mirrors spirvfix's copyObjectRoot: OpCopyObject is the identity on
+// pointers, so the copy carries exactly the source's provenance).
+static U32 vk64RawCopyRoot(const Vk64RawModule& m, U32 id) {
+    U32 cur = id;
+    for (int guard = 0; guard < 64; guard++) {
+        const Vk64RawInsn* def = vk64RawOf(m, cur);
+        if (!def || def->op != 83 || def->n < 3) return cur;
+        cur = def->w[2];
+    }
+    return cur;
+}
+// True when `id` is a single-index access chain rooted at one of the
+// given array variables -- the pre-specialization form of a load
+// through an R15a scalar clone.
+static bool vk64RawChainOver(const Vk64RawModule& m, U32 id, const std::set<U32>& arrayVars) {
+    const Vk64RawInsn* c = vk64RawOf(m, id);
+    if (!c || (c->op != 65 && c->op != 66)) return false; // AccessChain / InBoundsAccessChain
+    if (c->n != c->fv + 2) return false;
+    return arrayVars.count(c->w[c->fv]) > 0;
+}
+// The UniformConstant variables whose pointee is an array (fixed or
+// runtime) over one of the given element types.
+static std::set<U32> vk64RawArrayVarsOver(const Vk64RawModule& m, const std::set<U32>& elemTys) {
+    std::set<U32> out;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op != 59 || in.n < 3 || in.w[2] != 0) continue; // OpVariable, UniformConstant
+        const Vk64RawInsn* ptr = vk64RawOf(m, in.resultType);
+        if (!ptr || ptr->op != 32 || ptr->n < 3) continue;
+        const Vk64RawInsn* arr = vk64RawOf(m, ptr->w[2]);
+        if (arr && (arr->op == 28 || arr->op == 29) && arr->n >= 2 && elemTys.count(arr->w[1])) out.insert(in.resultId);
+    }
+    return out;
+}
 // R12 mirror: every UniformConstant sampled-image variable over a
 // Dim=Buffer/Sampled=1 image type, and every value traced from those loads,
 // is consumed only by OpSampledImage / OpImage / OpCopyObject / OpImageFetch
 // (with a 32-bit integer coordinate and an extendable operand mask).
-static bool vk64TexelUniformServable(const Vk64RawModule& m) {
+static bool vk64TexelUniformServable(const Vk64RawModule& m, const std::set<U32>& servableArrayVars) {
     std::set<U32> convTy, convSampledTy, varIds;
     for (const Vk64RawInsn& in : m.insns)
         if (in.op == 25 && in.n >= 7 && in.w[2] == 5 && in.w[6] == 1) convTy.insert(in.resultId);
     if (convTy.empty()) return false;
     for (const Vk64RawInsn& in : m.insns)
         if (in.op == 27 && in.n >= 2 && convTy.count(in.w[1])) convSampledTy.insert(in.resultId);
-    if (convSampledTy.empty()) return false;
+    std::set<U32> bareVarIds;
     for (const Vk64RawInsn& in : m.insns) {
         if (in.op != 59 || in.n < 3 || in.w[2] != 0) continue; // OpVariable, UniformConstant
         const Vk64RawInsn* ptr = vk64RawOf(m, in.resultType);
-        if (ptr && ptr->op == 32 && ptr->n >= 3 && convSampledTy.count(ptr->w[2])) varIds.insert(in.resultId);
+        if (!ptr || ptr->op != 32 || ptr->n < 3) continue;
+        if (convSampledTy.count(ptr->w[2])) varIds.insert(in.resultId);
+        else if (convTy.count(ptr->w[2])) bareVarIds.insert(in.resultId);
     }
-    if (varIds.empty()) return false;
+    // FD-16 composed form: a converted type may also be reached through
+    // descriptor-heap runtime arrays. spirvfix converts it in the
+    // post-specialization pass, once R15a has turned each servable array
+    // into a scalar clone variable; an array over the type that R15a
+    // cannot specialize (or a fixed array) keeps the type unconverted.
+    std::set<U32> arrayVarIds = vk64RawArrayVarsOver(m, convSampledTy);
+    {
+        const std::set<U32> bareArrayVarIds = vk64RawArrayVarsOver(m, convTy);
+        arrayVarIds.insert(bareArrayVarIds.begin(), bareArrayVarIds.end());
+    }
+    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v)) return false;
+    if (varIds.empty() && bareVarIds.empty() && arrayVarIds.empty()) return false;
     std::set<U32> tracedSampled, tracedImage;
     for (const Vk64RawInsn& in : m.insns) {
         if ((in.op == 61 || in.op == 55) && convSampledTy.count(in.resultType)) {
-            if (in.op == 61 && varIds.size() > 1 && (in.n < 3 || !varIds.count(in.w[2]))) return false;
+            if (in.op == 61) {
+                if (in.n < 3) return false;
+                // Attributed when the load's pointer traces (through
+                // OpCopyObject hops, the form specialization leaves) to
+                // a converted variable, or is a single-index chain over
+                // a servable converted array. An unattributed load
+                // refuses only when more than one variable could own it
+                // (spirvfix's single-variable fallback otherwise).
+                const U32 root = vk64RawCopyRoot(m, in.w[2]);
+                const bool attributed = varIds.count(root) || vk64RawChainOver(m, root, arrayVarIds);
+                if (!attributed && varIds.size() + arrayVarIds.size() > 1) return false;
+            }
             tracedSampled.insert(in.resultId);
+        }
+    }
+    for (const Vk64RawInsn& in : m.insns) {
+        if ((in.op == 61 || in.op == 55) && convTy.count(in.resultType)) {
+            if (in.op == 61) {
+                if (in.n < 3) return false;
+                const U32 root = vk64RawCopyRoot(m, in.w[2]);
+                const bool attributed = bareVarIds.count(root) || vk64RawChainOver(m, root, arrayVarIds);
+                if (!attributed && varIds.size() + bareVarIds.size() + arrayVarIds.size() > 1) return false;
+            }
+            tracedImage.insert(in.resultId);
         }
     }
     for (const Vk64RawInsn& in : m.insns) {
@@ -1524,13 +1602,36 @@ static bool vk64TexelUniformServable(const Vk64RawModule& m) {
             for (U32 tid : tracedImage) if (vk64RawIdUse(in, tid)) return false;
         }
     }
+    // Pointer copies of a converted variable -- or of a servable array
+    // chain, the pre-specialization form of the clone copies R15a
+    // leaves -- may feed only converted loads or further such copies:
+    // spirvfix's split removes the variable, so any other consumer
+    // would dangle, and its conversion refuses (mirrored here).
+    {
+        std::set<U32> ptrCopies;
+        for (const Vk64RawInsn& in : m.insns) {
+            if (in.op != 83 || in.n < 3) continue;
+            const Vk64RawInsn* pt = vk64RawOf(m, in.resultType);
+            if (!pt || pt->op != 32 || pt->n < 3 || !(convSampledTy.count(pt->w[2]) || convTy.count(pt->w[2]))) continue;
+            const U32 root = vk64RawCopyRoot(m, in.w[2]);
+            if (varIds.count(root) || bareVarIds.count(root) || vk64RawChainOver(m, root, arrayVarIds)) ptrCopies.insert(in.resultId);
+        }
+        for (const Vk64RawInsn& in : m.insns) {
+            for (U32 cid : ptrCopies) {
+                if (!vk64RawIdUse(in, cid)) continue;
+                if (in.op == 61 && (convSampledTy.count(in.resultType) || convTy.count(in.resultType))) continue;
+                if (in.op == 83 && ptrCopies.count(in.resultId)) continue;
+                return false;
+            }
+        }
+    }
     return true;
 }
 // R12S mirror: every UniformConstant variable over a Dim=Buffer/Sampled=2
 // image type is consumed only through OpLoad; every traced image value is
 // consumed only by OpImageRead / OpImageWrite with a 32-bit integer scalar
 // coordinate and flag-only (id-less) image operands.
-static bool vk64TexelStorageServable(const Vk64RawModule& m) {
+static bool vk64TexelStorageServable(const Vk64RawModule& m, const std::set<U32>& servableArrayVars) {
     std::set<U32> convTy, varIds;
     for (const Vk64RawInsn& in : m.insns)
         if (in.op == 25 && in.n >= 7 && in.w[2] == 5 && in.w[6] == 2) convTy.insert(in.resultId);
@@ -1540,11 +1641,22 @@ static bool vk64TexelStorageServable(const Vk64RawModule& m) {
         const Vk64RawInsn* ptr = vk64RawOf(m, in.resultType);
         if (ptr && ptr->op == 32 && ptr->n >= 3 && convTy.count(ptr->w[2])) varIds.insert(in.resultId);
     }
-    if (varIds.empty()) return false;
+    // FD-16 composed form, as in the uniform mirror above: arrays over
+    // a converted storage type must be R15a-servable (their element uses
+    // are already proven by the R15 classifier: chains only, load-only
+    // pointer uses); anything else keeps the type unconverted.
+    const std::set<U32> arrayVarIds = vk64RawArrayVarsOver(m, convTy);
+    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v)) return false;
+    if (varIds.empty() && arrayVarIds.empty()) return false;
     std::set<U32> traced;
     for (const Vk64RawInsn& in : m.insns) {
         if (in.op == 61 && convTy.count(in.resultType)) {
-            if (in.n < 3 || !varIds.count(in.w[2])) return false; // load from an unknown source
+            if (in.n < 3) return false;
+            // Attributed to a converted variable (through OpCopyObject
+            // hops) or to a single-index chain over a servable
+            // converted array; anything else is an unknown source.
+            const U32 root = vk64RawCopyRoot(m, in.w[2]);
+            if (!varIds.count(root) && !vk64RawChainOver(m, root, arrayVarIds)) return false;
             traced.insert(in.resultId);
         }
     }
@@ -1594,8 +1706,19 @@ static bool vk64TexelStorageServable(const Vk64RawModule& m) {
 }
 // Admission for capabilities 46/47: the stray form (no Dim=Buffer image
 // type at all -- spirvfix R12X strips the declarations), or every
-// Dim=Buffer type in a shape R12 / R12S convert.
-static bool vk64TexelBufferServable(const std::vector<U32>& words) {
+// Dim=Buffer type in a shape R12 / R12S convert. FD-16: the conversion
+// is the COMPOSED pipeline (R12 pass, R15a specialization, R12 pass
+// again): a texel type reached through descriptor-heap runtime arrays
+// converts in the second pass once R15a proves each array servable, so
+// these classifiers take the R15 verdict's servable-array set and
+// attribute loads through the arrays' access chains (and the
+// OpCopyObject hops specialization leaves) exactly as spirvfix does.
+// One divergence is deliberate and loud-only: spirvfix's array-sharing
+// exclusion also counts array TYPES no variable uses, while this
+// mirror counts array variables; for that dead-type shape the mirror
+// may admit a module spirvfix then leaves unconverted, which still
+// fails loudly at translation -- never silently.
+static bool vk64TexelBufferServable(const std::vector<U32>& words, const std::set<U32>& servableArrayVars) {
     Vk64RawModule m;
     if (!vk64ParseRawModule(words, m)) return false;
     bool anyBuffer = false, hasUniform = false, hasStorage = false, hasOther = false;
@@ -1608,8 +1731,8 @@ static bool vk64TexelBufferServable(const std::vector<U32>& words) {
     }
     if (!anyBuffer) return true;
     if (hasOther) return false;
-    if (hasUniform && !vk64TexelUniformServable(m)) return false;
-    if (hasStorage && !vk64TexelStorageServable(m)) return false;
+    if (hasUniform && !vk64TexelUniformServable(m, servableArrayVars)) return false;
+    if (hasStorage && !vk64TexelStorageServable(m, servableArrayVars)) return false;
     return true;
 }
 // R5 replace mirror: every OpDecorate BuiltIn BaseVertex / BaseInstance /
@@ -1804,7 +1927,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             }
         }
     }
-    const bool texelServable = vk64TexelBufferServable(w);
+    const bool texelServable = vk64TexelBufferServable(w, r15Arr.servableVars);
     const bool drawServable = vk64DrawParametersServable(w);
     const bool quadServable = vk64QuadServable(w);
     if (texelServable && storageImage) {
