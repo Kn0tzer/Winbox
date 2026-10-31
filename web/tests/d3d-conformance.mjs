@@ -12,7 +12,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { parseV2Chunk, V2FrameAssembler, decodeV2Frame } from "../vkwebgpu.mjs";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
+import { acquireProbeSlot } from './probe-slots.mjs';
 
 const tag = process.env.TAG || `d3dconf-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error("TAG must contain only letters, numbers, _, . or -");
@@ -259,6 +259,27 @@ try {
   await writeFile(`${dir}/console-full.log`, allLogs.join("\n"));
   await writeFile(`${dir}/results.json`, JSON.stringify(results, null, 2));
   console.log("RESULTS WRITTEN", dir);
+  // Verdict: this harness previously exited 0 no matter what happened —
+  // suite errors were caught into results.json and op FAILs were just
+  // data — so any caller keying on the exit code (a gate) recorded
+  // success for a run in which every suite failed. Name the failures and
+  // exit nonzero instead; results.json keeps the full detail either way.
+  const suiteFailures = [];
+  for (const [id, r] of Object.entries(results)) {
+    if (id === "runnerError") continue;
+    const failOps = (r.ops || []).filter(o => o.result === "FAIL").map(o => o.name);
+    if (r.error) suiteFailures.push(`${id}: error ${r.error}`);
+    else if (!r.done) suiteFailures.push(`${id}: guest never printed DONE`);
+    else if (!r.ops?.length) suiteFailures.push(`${id}: no ops recorded (vacuous run)`);
+    else if (failOps.length) suiteFailures.push(`${id}: FAIL ops ${failOps.join(",")}`);
+  }
+  if (results.runnerError) suiteFailures.push(`runner: ${results.runnerError}`);
+  if (suiteFailures.length) {
+    console.log("BW64-FAIL d3d-conformance: " + suiteFailures.join("; "));
+    process.exitCode = 1;
+  } else {
+    console.log("D3D CONFORMANCE PASS", JSON.stringify(Object.fromEntries(Object.entries(results).map(([id, r]) => [id, `${r.ops.length} ops`]))));
+  }
   await slot.release();
   await browser.close();
   server.close();

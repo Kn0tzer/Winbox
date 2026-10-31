@@ -19,7 +19,9 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { parseV2Chunk, V2FrameAssembler, decodeV2Frame } from "../vkwebgpu.mjs";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
+import { acquireProbeSlot } from './probe-slots.mjs';
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const tag = process.env.TAG || `d3d12-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error("TAG must contain only letters, numbers, _, . or -");
@@ -120,7 +122,40 @@ function drawPixels(png) {
     center: at(Math.floor(width / 2), Math.floor(height / 2)) };
 }
 
-const server = await serve(process.env.WINE_DIST_DIR || "dist");
+// Preflight: the uploaded assets are read from this tree and the d3d12 pair
+// must resolve from the served dist's wine32.zip system placement. When any
+// of those inputs is missing, the failure otherwise surfaces only after a
+// full session boot, as a guest-side death in the spawn path (c0000135-class)
+// that reads as a guest failure. Fail here, in seconds, naming the missing
+// input and the remedy instead.
+const distDir = process.env.WINE_DIST_DIR || "dist";
+function zipMissing(zipPath, wanted) {
+  const out = execFileSync("python3", ["-c",
+    "import json,sys,zipfile\n" +
+    "names=set(zipfile.ZipFile(sys.argv[1]).namelist())\n" +
+    "print(json.dumps([w for w in json.loads(sys.argv[2]) if w not in names]))",
+    zipPath, JSON.stringify(wanted)], { encoding: "utf8" });
+  return JSON.parse(out);
+}
+{
+  const runtimeDir = `${distDir}/runtime`;
+  for (const name of ["prefix32.zip", "wine32.zip", "BUILD_INFO.json"]) {
+    if (!existsSync(`${runtimeDir}/${name}`))
+      throw new Error(`BW64-FAIL d3d12-32-system preflight: ${runtimeDir}/${name} missing — build the dist first (tools/bw64-build.sh) or set WINE_DIST_DIR to a built dist`);
+  }
+  for (const path of [triExePath, "tools/rootfs64/libvk32/libvulkan.so.1"]) {
+    if (!existsSync(path))
+      throw new Error(`BW64-FAIL d3d12-32-system preflight: upload asset ${path} missing from this tree — the probe would die mid-run with an unnamed file error; restore the asset before running`);
+  }
+  const missingDlls = zipMissing(`${runtimeDir}/wine32.zip`, [
+    "opt/wine-stable/lib/wine/i386-windows/d3d12.dll",
+    "opt/wine-stable/lib/wine/i386-windows/d3d12core.dll"]);
+  if (missingDlls.length)
+    throw new Error(`BW64-FAIL d3d12-32-system preflight: system-placement DLLs missing from ${runtimeDir}/wine32.zip: ${missingDlls.join(", ")} — the guest would die with STATUS_DLL_NOT_FOUND (c0000135); restage the vkd3d payloads and rebuild the dist`);
+  console.log("PREFLIGHT OK", JSON.stringify({ dist: distDir, exe: triExeName }));
+}
+
+const server = await serve(distDir);
 const slot = await acquireProbeSlot();
 console.log("PROBE SLOT ACQUIRED");
 const browser = await chromium.launch({
@@ -262,6 +297,8 @@ try {
   await page.screenshot({ path: `${dir}/final-page.png` }).catch(() => {});
   await writeFile(`${dir}/summary.json`, JSON.stringify(summary, null, 2));
   await writeFile(`${dir}/chunks.json`, JSON.stringify(chunkFiles));
+  if (/c0000135/i.test(logs.join("\n")))
+    console.log("BW64-FAIL d3d12-32-system: guest died with c0000135 (STATUS_DLL_NOT_FOUND) — a DLL the guest imports did not resolve; check the preflight members and the spawn overrides before treating this as a guest-code failure");
   console.log("D3D12 VERDICT", JSON.stringify(summary));
   await slot.release().catch(() => {}); console.log("PROBE SLOT RELEASED");
   await browser.close(); server.close();
