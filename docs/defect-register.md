@@ -42,8 +42,10 @@ do not close the entry until they land.
 ### Product-facing
 
 - **FD-01 — First-time visitors could not reliably start a
-  program on the first attempt. CLOSED 2026-10-31 — see CL-06.**
-  *(Was Critical)*
+  program on the first attempt. CLOSED 2026-10-31 (CL-06),
+  REOPENED the same day — the closure's measurements are
+  void (see FD-43 and the reopening note closing this
+  entry).** *(Critical)*
   Two impatience defects in the staged Windows system files
   (Wine 8.0's desktop initialization), invisible on real
   hardware: (1) a process that asks for the desktop starts the
@@ -80,6 +82,22 @@ do not close the entry until they land.
   and its addendum (integration tree); corroborated by the
   intermittent window-creation failures in
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`.
+  REOPENING (2026-10-31): the closure paragraph above
+  does not stand. The 6/6 measurements it rests on — the
+  lane's "after" arm and the live re-measurement — were
+  false positives of the readiness test: on every build
+  carrying the win32u backport the session had no desktop
+  at all, and an NTSTATUS error value was certified as a
+  window handle (FD-43, attributed). The backport patch
+  itself shipped in no binary — its functions live in the
+  unix-side win32u.so, which was never rebuilt — so the
+  two impatience defects described in this entry remain
+  UNFIXED in the stock unix-side file and are in play
+  again with builtin treatment restored by the FD-40
+  fix. This defect is OPEN. Re-closure requires the
+  hardened readiness test and the four-arm measurement
+  named in FD-43. The restart stopgap stays in the
+  launcher.
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -90,8 +108,8 @@ do not close the entry until they land.
   FD-01 fix builds only the 64-bit set, so the 32-bit side
   needs its own route (a backport build for the newer vintage,
   or a binary-level approach). Until then, cold starts of
-  32-bit programs face the same race the 64-bit side just had
-  fixed. Evidence:
+  32-bit programs face the same race as the 64-bit side
+  (FD-01, reopened 2026-10-31 — see FD-43). Evidence:
   `docs/reports/first-visit-start-reliability-20261031.md`
   (branch `lane-firstvisit`, "Residuals, stated plainly").
   Related: FD-35 (the vintage split itself).
@@ -256,8 +274,8 @@ do not close the entry until they land.
   with the same table. Evidence:
   `docs/reports/fd15-honest-gl-answers-20261031.md`.
 - **FD-40 — The 64-bit boot smoke test never reaches the
-  window station. FIXED ON BRANCH 2026-10-31
-  (`lane-fd40-fix`, commit `5e4bab8f2`) — awaiting merge.**
+  window station. FIXED 2026-10-31 (commit `5e4bab8f2`,
+  merged into the integration tree as `6b9c834d7`).**
   *(Characterized 2026-10-31 in
   `docs/reports/fd40-boot-smoke-characterization-20261031.md`;
   that record's mechanism is CORRECTED below — its
@@ -624,8 +642,8 @@ do not close the entry until they land.
   `docs/reports/fd06-portio-20261031.md`;
   `docs/reports/deploy-20261031.md`.
 - **FD-43 — The FD-01 desktop-wait fix is present in no
-  shipped binary; the measured first-visit improvement is
-  unattributed.** *(Medium — a closed fix's evidence chain)*
+  shipped binary; the measured first-visit "improvement"
+  was a readiness false positive — ATTRIBUTED 2026-10-31.** *(Medium — a closed fix's evidence chain)*
   FD-01's patch edits `get_desktop_window` and
   `load_desktop_driver`, functions that exist only in the
   unix-side `win32u.so` — in neither PE win32u.dll, stock or
@@ -637,13 +655,52 @@ do not close the entry until they land.
   measurements (0/4 → 6/6 first-attempt starts) stand as
   measured, but the cause is not the patch as shipped; the
   only win32u change in that build was the (independently
-  defective, see FD-40) unsigned PE rebuild. Because the
-  FD-40 fix restores win32u's builtin treatment — behaviour
-  closer to the pre-FD-01 stock DLL — FD-01's live
-  first-visit rate must be re-measured on the merged build
-  before the restart stopgap's retirement is treated as
-  settled. Evidence: `docs/reports/fd40-fix-20261031.md`
-  ("Found on the way").
+  defective, see FD-40) unsigned PE rebuild.
+  ATTRIBUTION (2026-10-31, frontier review + independent
+  spot-checks:
+  `test-results/fd43-attribution-review-20261031/REVIEW.md`):
+  without the builtin signature the rebuild's syscalls are
+  never dispatched and return the NTSTATUS error
+  `0xC000000D`; the session anchor's window creation
+  "returns" that error value in place of a handle, its
+  non-NULL check passes, it prints READY, and the
+  launcher's readiness test accepts any hex value — so
+  sessions were certified started with no desktop at all
+  (the desktop process never launches; zero X11 clients
+  connect). Every start measurement taken on a build
+  carrying the unsigned DLL is VOID as a start
+  measurement: the first-visit lane's "after" 6/6, the
+  live 6/6 behind CL-06, the merge/deploy gate boots, and
+  the FD-15/FD-06 deploy's live 6/6 all carry the same
+  fingerprint (`hwnd=0xc000000d`, 0 X11 connections).
+  Scope, stated plainly: proven for the anchor-based
+  harness session shape those measurements used; a
+  full-Wine session on the same class of build
+  demonstrably runs a real GUI (the Celeste boot test:
+  5 X11 connections, a pixel-verified frame), so there is
+  no evidence the live site's real demos are broken —
+  what is void is the anchor-based start measurement,
+  not the site. CONSEQUENCE: CL-06 rests on void
+  measurements and FD-01 is REOPENED (see its entry and
+  the annotation on CL-06); the impatience defects in the
+  stock unix-side win32u.so were never fixed and are in
+  play again now that the FD-40 fix restores builtin
+  treatment. The restart stopgap stays in the launcher;
+  it is inert on the current live build, because the
+  failure line it watches for is printed by unix-side
+  code that never runs there. Before any build carrying
+  the FD-40 fix is deployed, or FD-01 is closed again,
+  the readiness test must be hardened (reject
+  NTSTATUS-shaped handles; require the X11/desktop
+  handshake) and the review's four-arm measurement
+  (stock / stamped / unsigned control / pre-merge
+  baseline, under the corrected criterion) must be run;
+  this entry stays open until that measurement re-earns
+  a start-reliability verdict. Evidence: the review
+  above (claims L1–L12 spot-checked on the box; the
+  Celeste qualification is the reviewing lane's);
+  `docs/reports/fd40-fix-20261031.md` ("Found on the
+  way").
 
 ---
 
@@ -733,7 +790,9 @@ dead-start fix and needs composition care.
 
 
 - **CL-06 — First-time visitors could not reliably start a
-  program on the first attempt (was FD-01).** Two impatience
+  program on the first attempt (was FD-01). VOID —
+  REOPENED 2026-10-31 (see FD-43); retained as the record
+  of what was believed.** Two impatience
   defects in the staged Wine 8.0 desktop initialization: a
   10-second desktop wait whose timeout fabricated a stand-in
   desktop that poisoned the real one, and a check-once graphics
@@ -748,6 +807,15 @@ dead-start fix and needs composition care.
   on the previous live build was 0/4. Record:
   `docs/reports/deploy-20261031.md`. The 32-bit vintage of the
   same pair stays open as FD-02.
+  VOID ANNOTATION (2026-10-31): the proof above does not
+  stand. The six live boots it cites each carry the
+  readiness false positive convicted in FD-43 — an
+  NTSTATUS error value (`0xc000000d`) accepted as the
+  desktop window handle, no desktop process launched,
+  zero X11 connections: the sessions certified as started
+  had no desktop. FD-01 is reopened in Section A. This
+  entry is retained unrewritten as the record of what was
+  believed, and why, on the evidence then available.
 
 - **CL-07 — The OpenGL bridge gave five fabricated or dropped
   answers (was FD-15).** Fixed on branch `lane-fd15`, commit
