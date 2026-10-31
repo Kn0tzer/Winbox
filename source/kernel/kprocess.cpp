@@ -46,7 +46,6 @@
 
 std::atomic_int KProcess::nextMappedFileIndex = 1;
 
-#define MAX_ARG_COUNT 1024
 
 bool KProcessTimer::run() {
     bool result = false;
@@ -658,8 +657,13 @@ static void pushThreadStack(KThread* thread, CPU* cpu, int argc, U32* a, int env
 }
 
 static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, const std::vector<BString>& args, const std::vector<BString>& env) {
-    U32 a[MAX_ARG_COUNT] = {};
-    U32 e[MAX_ARG_COUNT] = {};
+    // The argv/envp pointer arrays used to be fixed-size stack arrays
+    // with a kpanic past 1024 entries, so an execve with a large (but
+    // perfectly legal) argument or environment list killed the
+    // emulator. Sized vectors remove the arbitrary cap; the guest
+    // stack itself remains the real limit, as on Linux.
+    std::vector<U32> a(args.size());
+    std::vector<U32> e(env.size());
     klog_fmt("setupThreadStack32: argc=%u envc=%u prog=%s", (U32)args.size(), (U32)env.size(), programName.c_str());
     for (U32 i = 0; i < env.size() && i < 5; i++) {
         klog_fmt("setupThreadStack32: env[%u]=%s", i, env[i].c_str());
@@ -669,10 +673,6 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
     cpu->push32(0);
     cpu->push32(0);	
     writeStackString(thread, cpu, programName.c_str());
-    if (args.size()>MAX_ARG_COUNT)
-        kpanic_fmt("Too many args: %d is max", MAX_ARG_COUNT);
-    if (env.size()>MAX_ARG_COUNT)
-        kpanic_fmt("Too many env: %d is max", MAX_ARG_COUNT);
     //klog("env");
     for (size_t i=0;i<env.size();i++) {
         writeStackString(thread, cpu, env[i].c_str());
@@ -687,7 +687,7 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
         a[i]=ESP;
     }
 
-    pushThreadStack(thread, cpu, (U32)args.size(), a, (U32)env.size(), e, args.size() ? a[0] : 0);
+    pushThreadStack(thread, cpu, (U32)args.size(), a.data(), (U32)env.size(), e.data(), args.size() ? a[0] : 0);
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
@@ -1257,7 +1257,16 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
 
     if (!ElfLoader::loadProgram(thread, openNode, &thread->cpu->eip.u32)) {
         // :TODO: maybe alloc a new memory object and keep the old one until we know we are loaded
-        kpanic("program failed to load, but memory was already reset");
+        // The old image is already gone (memory was reset above), so
+        // this exec can neither succeed nor report an error back to a
+        // live caller image. Fail at the smallest scope instead of
+        // kpanic, which kills the whole emulator: this process exits
+        // loudly. exitgroup also releases a vfork parent, exactly as
+        // a child that exits without exec'ing would.
+        kwarn_fmt("BW64-FAIL exec-load prog=%s outcome=process-exited", this->name.c_str());
+        openNode->close();
+        delete openNode;
+        return this->exitgroup(thread, 128 + K_SIGABRT);
     }
     // must come after loadProgram because of process->phdr.
     // 64-bit processes already had their SysV stack built by loadProgram64.
@@ -1712,8 +1721,14 @@ U32 KProcess::ioctl(KThread* thread, FD fildes, U32 request) {
         return -K_EBADF;
     }
     U32 result = fd->kobject->ioctl(thread, request);
-    if (bw64RecoverEnabled() && result == (U32)-K_ENOTTY) {
-        bw64RecoverLogOnce("ioctl.unsupported", "unsupported ioctl on file descriptor; returned ENOTTY");
+    if (result == (U32)-K_ENOTTY) {
+        // Reporting only, so it is never gated behind the recovery
+        // flag (the graceful ENOTTY answer itself was never gated).
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("ioctl.unsupported", "unsupported ioctl on file descriptor; returned ENOTTY");
+        } else {
+            kwarn_fmt("BW64-FAIL ioctl fd=%d request=0x%x outcome=returned-ENOTTY", (int)fildes, request);
+        }
     }
     return result;
 }
@@ -1736,7 +1751,13 @@ U32 KProcess::dup2(FD fildes, FD fildes2) {
     KFileDescriptorPtr fd2 = this->getFileDescriptor(fildes2);
     if (fd2) {        
         if (fd2.use_count()>2) { // 1 in this->fds and 1 for fd2
-            kpanic_fmt("Not sure what to do on a dup2 where the refcount is %d", fd2.use_count());
+            // Another holder (typically a thread blocked in a call on
+            // this descriptor) still references the old descriptor.
+            // That is safe: dup2 replaces the table entry below, and
+            // the shared_ptr keeps the old descriptor alive until the
+            // last holder drops it — the same lifetime rule as every
+            // other table removal. This used to kpanic.
+            kwarn_fmt("BW64-FAIL dup2 fd=%d refs=%ld outcome=replaced-table-entry", (int)fildes2, (long)fd2.use_count());
         }
         clearFdHandle(fd2->handle);
     } 

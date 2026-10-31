@@ -148,11 +148,8 @@ S64 KEvent::getPos() {
 }
 
 U32 KEvent::ioctl(KThread* thread, U32 request) {
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("eventfd.ioctl", "BW64-FAIL eventfd-ioctl outcome=returned-ENOTTY");
-    } else {
-        kwarn_fmt("BW64-FAIL eventfd-ioctl request=0x%x outcome=returned-ENOTTY", request);
-    }
+    // ENOTTY reporting for guest ioctls lives at the single dispatch
+    // point, KProcess::ioctl.
     return -K_ENOTTY;
 }
 

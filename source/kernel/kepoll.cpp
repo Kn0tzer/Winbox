@@ -363,11 +363,8 @@ S64 KEPoll::getPos() {
 }
 
 U32 KEPoll::ioctl(KThread* thread, U32 request) {
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("epoll.ioctl", "BW64-FAIL epoll-ioctl outcome=returned-ENOTTY");
-    } else {
-        kwarn_fmt("BW64-FAIL epoll-ioctl request=0x%x outcome=returned-ENOTTY", request);
-    }
+    // ENOTTY reporting for guest ioctls lives at the single dispatch
+    // point, KProcess::ioctl.
     return -K_ENOTTY;
 }
 
