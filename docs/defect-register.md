@@ -522,8 +522,11 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
-- **FD-39 — The native suite aborts mid-run in the clone
+- **FD-41 — The native suite aborts mid-run in the clone
   test group when the syscall-ABI tests run first.**
+  *(Numbered FD-39 on the lane branch; renumbered at
+  integration — FD-39 was independently taken by the
+  FD-15 lane's texture-settings entry.)*
   *(Medium, suite reliability)* Running tests 610-621 in one
   process aborts with an uncaught `int` throw
   (`terminate called`, rc 134) in the clone tests after the
@@ -531,8 +534,11 @@ do not close the entry until they land.
   pristine base tip, and every test in the window passes
   standalone. A preceding-test interaction, uncharacterized.
   Evidence: `docs/reports/fd06-portio-20261031.md`.
-- **FD-40 — A suite run can flood gigabytes of crash
-  diagnostics in the tail tests.** *(Medium, suite
+- **FD-42 — A suite run can flood gigabytes of crash
+  diagnostics in the tail tests.**
+  *(Numbered FD-40 on the lane branch; renumbered at
+  integration — FD-40 was independently taken by the
+  FD-15 lane's boot-smoke entry.)* *(Medium, suite
   reliability)* After ~650 passes a full serial run can
   enter an unbounded diagnostic loop ("probably about to
   crash, could not find emulation instruction that caused
