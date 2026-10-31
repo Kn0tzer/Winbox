@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Merge the Wine 8.0 loader-backport DLLs (tools/rootfs64/
-# wine8-backports-x86_64/: user32, kernelbase, kernel32, iphlpapi —
+# wine8-backports-x86_64/: user32, kernelbase, kernel32, iphlpapi, win32u —
 # rebuilt from the pinned wine-8.0 source with the wine8-*.patch
 # backports) into the shipped wine64.zip archives, REPLACING the Debian
 # wine 8.0 members, WITHOUT a full rootfs rebuild.
@@ -16,7 +16,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
-DLLS=(user32.dll kernelbase.dll kernel32.dll iphlpapi.dll)
+DLLS=(user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll)
 for dll in "${DLLS[@]}"; do
     [[ -f "$HERE/wine8-backports-x86_64/$dll" ]] || { echo "stage-wine8-backports: missing $HERE/wine8-backports-x86_64/$dll — run tools/rootfs64/build-wine8-backports.sh" >&2; exit 2; }
 done

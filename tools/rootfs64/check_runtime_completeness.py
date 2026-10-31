@@ -97,6 +97,7 @@ WINE8_BACKPORT_PINS = {
     'kernelbase.dll': '344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85',
     'kernel32.dll': 'e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793',
     'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
+    'win32u.dll': 'a8ca5fbb6b0003397221cfe6140fc042a01abc444e8dfaf15bcf78abd7115f58',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):

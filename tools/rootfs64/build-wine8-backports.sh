@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Rebuild the four Wine 8.0 loader-backport DLLs in
+# Rebuild the Wine 8.0 backport DLLs in
 # tools/rootfs64/wine8-backports-x86_64/ from the pinned wine-8.0 source
-# tag plus the three backport patches in tools/buildWine/patches/.
+# tag plus the backport patches in tools/buildWine/patches/.
 # See wine8-backports-x86_64/README.md for why these exist.
 #
 # Build shape: two out-of-tree builds sharing one patched source tree.
@@ -23,8 +23,9 @@ PATCHES=(
     wine8-user32-pointer-family.patch
     wine8-kernelbase-copyfile2.patch
     wine8-iphlpapi-anycast-table.patch
+    wine8-win32u-desktop-wait.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi)
+DLLS=(user32 kernelbase kernel32 iphlpapi win32u)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
