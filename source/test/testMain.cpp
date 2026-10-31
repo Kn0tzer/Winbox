@@ -61,6 +61,7 @@ void testBStringContains();
 void testBStringJoin();
 void testBStringIndexOf();
 void testCondStartWaitTime();
+void testThreadLifetimeTeardown();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
 void testKObjectLockStubs();
@@ -158,6 +159,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
+    {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
@@ -821,6 +823,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testBStringJoin, "Test BString join delimiter lengths"},
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
+    {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
