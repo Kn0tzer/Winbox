@@ -287,6 +287,20 @@ struct GLQueryStatus { GLenum target = 0; bool generated = false; bool active = 
 static std::map<GLuint, GLQueryStatus> g_glQueryStatus;
 static std::map<GLenum, GLuint> g_glActiveQueries;
 
+// BW64-FAIL once-per-(site, value) gate for this bridge's degraded answers:
+// a guest request that cannot be honoured exactly (a dropped texture
+// parameter, an unknown query attribute answered 0, an unmodelled type
+// treated as size 0) leaves one greppable line the first time each distinct
+// case occurs -- never one line per call (these paths can run per object),
+// and never silence. See docs/failure-logging-and-recovery.md. Returns true
+// exactly once per (site, value) pair.
+static bool gl64NoteOnce(const char* site, U32 value) {
+    static std::mutex noteMutex;
+    static std::set<std::pair<std::string, U32>> noted;
+    std::lock_guard<std::mutex> lock(noteMutex);
+    return noted.insert(std::make_pair(std::string(site), value)).second;
+}
+
 #ifdef __EMSCRIPTEN__
 // --- immediate-mode batching ------------------------------------------------
 // Every gl* call normally hops to the GL-owning thread via glOnMain (a blocking
@@ -308,22 +322,6 @@ struct ImmOp {
 bool               g_inImmediate = false;   // between glBegin and glEnd
 GLenum             g_immMode     = 0;        // mode passed to glBegin
 std::vector<ImmOp> g_immOps;                 // recorded calls, replayed at glEnd
-
-// Replay one recorded immediate-mode op on the GL thread (called inside the
-// single glEnd glOnMain hop). Mirrors the per-case GL calls below.
-inline void replayImmOp(const ImmOp& op) {
-    switch (op.fn) {
-        case GL64_fn_glColor3f:  glColor3f(op.f[0], op.f[1], op.f[2]); break;
-        case GL64_fn_glColor4f:  glColor4f(op.f[0], op.f[1], op.f[2], op.f[3]); break;
-        case GL64_fn_glNormal3f: glNormal3f(op.f[0], op.f[1], op.f[2]); break;
-#ifndef __EMSCRIPTEN__
-        case GL64_fn_glMultiTexCoord2fARB: glMultiTexCoord2f((GLenum)op.f[0], op.f[1], op.f[2]); break;
-#endif
-        case GL64_fn_glVertex2f: glVertex2f(op.f[0], op.f[1]); break;
-        case GL64_fn_glVertex3f: glVertex3f(op.f[0], op.f[1], op.f[2]); break;
-        default: break;
-    }
-}
 
 // Replay a recorded glBegin..glEnd block, re-emitting the CURRENT color (and
 // normal) immediately BEFORE every vertex.
@@ -375,6 +373,11 @@ inline void replayImmBlock(const std::vector<ImmOp>& ops) {
                 else                             glVertex3f(op.f[0], op.f[1], op.f[2]);
                 break;
             default:
+                // A recorded op this replay does not re-emit (today:
+                // glMultiTexCoord2fARB, recorded on the WebGPU path) would
+                // otherwise vanish with no trace; say so once per fn id.
+                if (gl64NoteOnce("imm-replay", op.fn))
+                    klog_fmt("BW64-FAIL gl-imm-replay fn=%u outcome=recorded immediate-mode call dropped by block replay", (unsigned)op.fn);
                 break;
         }
     }
@@ -503,7 +506,7 @@ bool ensureContext() {
                     context.GLctx = fallback;
                     GLctx = fallback;
                 }
-                try { console.warn('gl-webgpu: restored WebGL2 after device failure', error); } catch (_) {}
+                try { console.warn('gl-webgpu: restored WebGL2 after device failure', error); } catch (_) { /* the warn IS the report; if it throws there is no second channel, and the restore already happened */ }
             };
             return 1;
         }, g_emCtx, g_emFbo, requestWebGpu);
@@ -865,7 +868,12 @@ size_t legacyTypeSize(GLenum type) {
         case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
         case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: return 4;
         case GL_DOUBLE: return 8;
-        default: return 0;
+        default:
+            // Unknown array type: callers proceed with a 0 component size,
+            // which fabricates zeroed vertex data. Say so once per type.
+            if (gl64NoteOnce("legacy-type-size", type))
+                klog_fmt("BW64-FAIL gl-legacy-type-size type=0x%x outcome=component size 0 (client array reads as zeros)", (unsigned)type);
+            return 0;
     }
 }
 
@@ -1228,6 +1236,11 @@ bool texParamSupported(GLenum pname) {
         case 0x884D /*GL_TEXTURE_COMPARE_FUNC*/:
             return true;
         default:
+            // Desktop-only pname: the caller drops the guest's setting
+            // rather than raising INVALID_ENUM in WebGL2. Log the drop once
+            // per distinct pname so the degradation is visible.
+            if (gl64NoteOnce("texparam-dropped", pname))
+                klog_fmt("BW64-FAIL gl-texparam pname=0x%x outcome=dropped (not supported by the GL backend)", (unsigned)pname);
             return false;   // GL_TEXTURE_LOD_BIAS, GENERATE_MIPMAP, BORDER_COLOR, …
     }
 }
@@ -1686,7 +1699,13 @@ void glesTexFormatFixup(GLint& ifmt, GLenum& fmt, GLenum& type, std::vector<U8>&
             shifts[1]=5; shifts[2]=10; shifts[3]=15; break; // 1_5_5_5_REV
         case 0x8032: stride=1; components=3; bits[0]=3; bits[1]=3; bits[2]=2;
             shifts[0]=5; shifts[1]=2; break; // 3_3_2
-        default: return;
+        default:
+            // Unmodelled packed pixel type: the upload proceeds with the
+            // pixels still packed, which renders as garbage. Log once per
+            // distinct type instead of failing silently.
+            if (gl64NoteOnce("packed-type", type))
+                klog_fmt("BW64-FAIL gl-packed-type type=0x%x outcome=upload not unpacked (no packed layout model)", (unsigned)type);
+            return;
     }
     bool rgbStorage = ifmt == 0x8050 /*RGB5*/ || ifmt == 0x8051 /*RGB8*/ ||
                       ifmt == 0x804F /*RGB4*/ || ifmt == 0x2A10 /*R3_G3_B2*/ || ifmt == 0x8C41;
@@ -1888,7 +1907,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x8016: v = 1; break;   // GLX_MAX_PBUFFER_WIDTH-ish (sane nonzero)
                 case 0x186a3: v = 0; break;  // GLX_SAMPLE_BUFFERS_ARB
                 case 0x186a4: v = 0; break;  // GLX_SAMPLES_ARB
-                default: v = 0; break;
+                default:
+                    if (gl64NoteOnce("glx-fbconfig-attrib", attr))
+                        klog_fmt("BW64-FAIL gl-glx-fbconfig-attrib attr=0x%x outcome=answered 0 (single-config fiction has no value for it)", (unsigned)attr);
+                    v = 0; break;
             }
             if (valueAddr) cpu->memory->writed(valueAddr, v);
             return 0; // Success
@@ -2010,7 +2032,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         v = (m == g_glxEventMasks.end()) ? 0 : (U32)m->second;
                         break;
                     }
-                    default: v = 0; break;
+                    default:
+                        if (gl64NoteOnce("glx-drawable-attrib", attr))
+                            klog_fmt("BW64-FAIL gl-glx-drawable-attrib attr=0x%x outcome=answered 0 for pbuffer drawable", (unsigned)attr);
+                        v = 0; break;
                 }
             } else if (attr == 0x801D || attr == 0x801E) { // GLX_WIDTH / GLX_HEIGHT
                 auto& server = XWireServer::instance();
@@ -2038,7 +2063,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x8013: v = 0x5100; break; // GLX_FBCONFIG_ID
                 case 0x8011: v = 0x8014; break; // GLX_RENDER_TYPE -> GLX_RGBA_TYPE
                 case 0x800C: v = 0; break;      // GLX_SCREEN
-                default: v = 0; break;
+                default:
+                    if (gl64NoteOnce("glx-context-attrib", attr))
+                        klog_fmt("BW64-FAIL gl-glx-context-attrib attr=0x%x outcome=answered 0 (single-config fiction has no value for it)", (unsigned)attr);
+                    v = 0; break;
             }
             if (valueAddr) cpu->memory->writed(valueAddr, v);
             return 0;
@@ -3456,7 +3484,10 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                 case 0x9112 /*GL_OBJECT_TYPE*/:    val = 0x9116 /*GL_SYNC_FENCE*/; break;
                 case 0x9113 /*GL_SYNC_CONDITION*/: val = 0x9117 /*GL_SYNC_GPU_COMMANDS_COMPLETE*/; break;
                 case 0x9115 /*GL_SYNC_FLAGS*/:     val = 0; break;
-                default: val = 0; break;
+                default:
+                    if (gl64NoteOnce("sync-pname", pname))
+                        klog_fmt("BW64-FAIL gl-sync-pname pname=0x%x outcome=answered 0 (not modelled)", (unsigned)pname);
+                    val = 0; break;
             }
             if (valAddr && bufSize >= 1) cpu->memory->writed(valAddr, val);
             if (lenAddr) cpu->memory->writed(lenAddr, (bufSize >= 1) ? 1 : 0);
@@ -4486,7 +4517,13 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                             found = true;
                             break;
                         }
-                        default: err = GL_INVALID_ENUM; break;
+                        default:
+                            // GL_INVALID_ENUM goes back to the guest below
+                            // (the honest error); leave the once-per-pname
+                            // line as well, per the recovery standard.
+                            if (gl64NoteOnce("texlevel-pname", pname))
+                                klog_fmt("BW64-FAIL gl-texlevel-pname pname=0x%x outcome=GL_INVALID_ENUM returned to guest", (unsigned)pname);
+                            err = GL_INVALID_ENUM; break;
                     }
                     if (getenv("BW64_GLTRACE")) klog_fmt("gl64 TEXQUERY: target=0x%x lvl=%d pname=0x%x -> %d%s", target, level, pname, v, bits ? "" : " (unknown-bits)");
                 });
