@@ -53,11 +53,19 @@ KInotify::~KInotify() {
 }
 
 U32 KInotify::ioctl(KThread* thread, U32 request) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.ioctl", "BW64-FAIL inotify-ioctl outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-ioctl request=0x%x outcome=returned-ENOTSUP", request);
+    }
     return -K_ENOTSUP;
 }
 
 S64 KInotify::seek(S64 pos) {
-    return 0;
+    // inotify fds are anon-inode files with no seek operation; Linux
+    // answers llseek on them with ESPIPE. This used to report success,
+    // which told the guest a seek happened when none did.
+    return -K_ESPIPE;
 }
 
 S64 KInotify::length() {
@@ -81,6 +89,10 @@ KFileLock* KInotify::getLock(KFileLock* lock) {
 }
 
 U32 KInotify::setLock(KFileLock* lock, bool wait) {
+    // Non-lockable object (supportsLocks()==false gates fcntl lock
+    // commands before they reach this), but a direct caller gets a
+    // real errno, and the refusal is on the record.
+    kwarn_fmt("kobject: KInotify::setLock on a non-lockable object; returned ENOTSUP");
     return -K_ENOTSUP;
 }
 
@@ -113,10 +125,20 @@ void KInotify::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
 }
 
 U32 KInotify::write(KThread* thread, U32 buffer, U32 len) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.write", "BW64-FAIL inotify-write outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-write len=%u outcome=returned-ENOTSUP", len);
+    }
     return -K_ENOTSUP;
 }
 
 U32 KInotify::writeNative(U8* buffer, U32 len) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.write", "BW64-FAIL inotify-write outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-write len=%u outcome=returned-ENOTSUP", len);
+    }
     return -K_ENOTSUP;
 }
 
@@ -185,6 +207,11 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
 }
 
 U32 KInotify::stat(KProcess* process, U32 address, bool is64) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.stat", "BW64-FAIL inotify-stat outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-stat outcome=returned-ENOTSUP");
+    }
     return -K_ENOTSUP;
 }
 
@@ -202,6 +229,11 @@ BString KInotify::selfFd() {
 
 S32 KInotify::addWatch(const std::shared_ptr<FsNode>& node, U32 mask) {
     if ((mask & K_IN_ONLYDIR) && !node->isDirectory()) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("inotify.addwatch.enotdir", "BW64-FAIL inotify-addwatch outcome=returned-ENOTDIR");
+        } else {
+            kwarn_fmt("BW64-FAIL inotify-addwatch mask=0x%x outcome=returned-ENOTDIR", mask);
+        }
         return -K_ENOTDIR;
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
@@ -209,6 +241,11 @@ S32 KInotify::addWatch(const std::shared_ptr<FsNode>& node, U32 mask) {
         std::shared_ptr<FsNode> watched = entry.second.node.lock();
         if (watched && watched.get() == node.get()) {
             if (mask & K_IN_MASK_CREATE) {
+                if (bw64RecoverEnabled()) {
+                    bw64RecoverLogOnce("inotify.addwatch.eexist", "BW64-FAIL inotify-addwatch outcome=returned-EEXIST");
+                } else {
+                    kwarn_fmt("BW64-FAIL inotify-addwatch mask=0x%x outcome=returned-EEXIST", mask);
+                }
                 return -K_EEXIST;
             }
             entry.second.mask |= mask; // re-adding merges, as on Linux
@@ -227,6 +264,11 @@ S32 KInotify::removeWatch(U32 wd) {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
     auto it = this->watches.find(wd);
     if (it == this->watches.end()) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("inotify.rmwatch.einval", "BW64-FAIL inotify-rmwatch outcome=returned-EINVAL");
+        } else {
+            kwarn_fmt("BW64-FAIL inotify-rmwatch wd=%u outcome=returned-EINVAL", wd);
+        }
         return -K_EINVAL;
     }
     this->watches.erase(it);
