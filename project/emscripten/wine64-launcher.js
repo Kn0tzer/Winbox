@@ -1438,8 +1438,49 @@
     }
     var sessionPinsReady = !SESSION;
     var sessionDesktopReady = !SESSION;
+    // --- desktop readiness is a handshake, not one line (FD-44) ------------
+    // Until 2026-10-31 this observer certified the desktop from the pin's
+    // READY line alone, accepting any hex value as a window handle. On a
+    // build whose win32u.dll lacks the Wine builtin signature (FD-40) the
+    // win32u syscalls are never dispatched: the pin's first window creation
+    // "returns" the NTSTATUS error 0xC000000D, the pin (whose own check is
+    // only for NULL) prints it as a handle, and every such session was
+    // certified as started with no desktop at all -- no explorer, no X11
+    // clients, and the failure signature unprintable because the code that
+    // prints it never runs (FD-43; every start measurement taken that way
+    // is void). Certification now requires the whole handshake a genuine
+    // boot performs, in any order:
+    //   - the pin's READY carries a plausible handle: nonzero, top bit
+    //     clear (NTSTATUS values carry the severity in the top bits --
+    //     0x8....... is the warning class, 0xC....... the error class; a
+    //     real user handle in this system is a small value like 0x10048);
+    //     an implausible value is reported loudly, once per distinct
+    //     value, and never certifies;
+    //   - the X wire server accepted the healthy boot's five X11 clients
+    //     (boots that die in desktop initialization stall at two);
+    //   - explorer.exe was actually opened (the shell actually launched).
+    var sessionDesktopHwndOk = false;
+    var sessionX11Accepts = 0;
+    var sessionExplorerOpened = false;
+    var sessionHwndRejected = {};
     function observeSessionOutput(text) {
-        if (/deskpin: READY hwnd=0x[0-9a-f]+/i.test(text)) sessionDesktopReady = true;
+        var m = /deskpin: READY hwnd=0x([0-9a-f]+)/i.exec(text);
+        if (m) {
+            var hwndValue = parseInt(m[1], 16);
+            if (hwndValue > 0 && hwndValue < 0x80000000) {
+                sessionDesktopHwndOk = true;
+            } else if (!sessionHwndRejected[m[1].toLowerCase()]) {
+                sessionHwndRejected[m[1].toLowerCase()] = true;
+                console.error("BW64-FAIL component=launcher.session reason=deskpin-hwnd-not-a-handle hwnd=0x" +
+                    m[1] + " detail=READY carried an NTSTATUS-shaped value, not a window handle; not certifying desktop readiness");
+            }
+        }
+        var accepts = text.match(/XWireServer: accepted X11 client connection/g);
+        if (accepts) sessionX11Accepts += accepts.length;
+        if (/OPENED '[^']*explorer\.exe'/i.test(text)) sessionExplorerOpened = true;
+        if (sessionDesktopHwndOk && sessionX11Accepts >= 5 && sessionExplorerOpened) {
+            sessionDesktopReady = true;
+        }
     }
 
     // --- session boot self-healing -----------------------------------------
