@@ -75,3 +75,18 @@ attempt (evidence: test-results/deadstart-deploy-20261030/live-boots*):
   the public path tonight was 6/18. Stated plainly: the regression is
   fixed and shipped; the pre-existing start race is not yet extinct
   and is the named follow-up.
+
+## Addendum (same night) — fresh-profile control
+A fourth live run with a brand-new browser profile per boot (the
+first-time-visitor shape; evidence live-boots-fresh): 0/4 started at
+loads 2.8-7.6, all four fault-free 2-handshake stalls. Combined fault
+census across all 22 live boots tonight: zero guest memory-fault lines
+anywhere. So through the public path, cold starts are currently the
+worst case by a wide margin — plausibly the cold asset fetch through
+the public route stretching the page-side startup until the guest
+parade loses its race — while warm/local starts on the identical build
+measured 6/6. For a real first-time visitor the live restart
+workaround still fires after a failed first attempt (cache warm by
+then); first-attempt cold reliability is the sharpest remaining edge
+of the session-start problem and belongs at the top of the follow-up
+work, alongside the parade stall itself.
