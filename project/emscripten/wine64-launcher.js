@@ -1832,12 +1832,27 @@
     // One incremental sync of HOME into IndexedDB (changed/new files written,
     // deleted files removed). Cheap when nothing changed: a stat walk + map diff.
     var persistBusy = false;
+    // Save-sync failures used to vanish completely: a failed walk skipped
+    // the tick, a failed transaction just reset the busy flag, and a failed
+    // database open was swallowed -- so with a full or blocked IndexedDB
+    // the user's saves silently stopped persisting while the session ran
+    // on. The 5-second tick is the recovery (it retries); this is the
+    // reporting: first failure, then every 64th, with the cumulative count.
+    var persistFailureCount = 0;
+    function reportPersistFailure(area, error) {
+        persistFailureCount++;
+        if (persistFailureCount === 1 || persistFailureCount % 64 === 0) {
+            console.error("BW64-FAIL persist area=" + area + " error=" +
+                (error && error.message ? error.message : error) +
+                " count=" + persistFailureCount + "; sync retries on the next tick");
+        }
+    }
     function persistTick() {
         if (persistBusy || !PERSIST || window.bwFilesystemReady !== true) return;
         var FS = getFS();
         if (!FS) return;
         var now = {};
-        try { persistWalk(FS, HOME_IN_MEMFS, now); } catch (e) { return; }
+        try { persistWalk(FS, HOME_IN_MEMFS, now); } catch (e) { reportPersistFailure("walk", e); return; }
         var puts = [], dels = [];
         for (var p in now) if (now[p] !== persistManifest[p]) puts.push(p);
         for (var q2 in persistManifest) if (!(q2 in now)) dels.push(q2);
@@ -1858,8 +1873,8 @@
                 console.log("persist: synced " + puts.length + " changed, " + dels.length + " removed");
                 db.close(); persistBusy = false;
             };
-            tx.onerror = function () { db.close(); persistBusy = false; };
-        }).catch(function () { persistBusy = false; });
+            tx.onerror = function () { reportPersistFailure("write", tx.error); db.close(); persistBusy = false; };
+        }).catch(function (e) { reportPersistFailure("open", e); persistBusy = false; });
     }
     function startPersistLoop() {
         if (!PERSIST || typeof indexedDB === "undefined") return;
