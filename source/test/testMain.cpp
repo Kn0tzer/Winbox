@@ -88,6 +88,8 @@ void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
 void testMemfdSeals();
 void testMemfdNodeOps();
+void testFsReadNativeFile();
+void testFsZipReadBadCrc();
 void testEventfdFlags();
 void testDevInputJoystick();
 void testTimerfdProcessAbiProbes();
@@ -150,6 +152,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
@@ -825,6 +829,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},

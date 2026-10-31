@@ -600,9 +600,13 @@ void Fs::splitPath(const BString& path, std::vector<BString>& parts) {
 U32 Fs::readNativeFile(const BString& nativePath, U8* buffer, U32 bufferLen) {
     int f = ::open(nativePath.c_str(), O_RDONLY | O_BINARY);
     if (f>=0) {
-        U32 result = (U32)::read(f, buffer, bufferLen);
+        // ::read returns -1 on error; casting that to U32 hands the caller a
+        // huge length (one caller writes buffer[result] = 0 with it). 0 is
+        // already this function's "nothing read" answer for open failure,
+        // so use it for read failure too.
+        S64 result = (S64)::read(f, buffer, bufferLen);
         ::close(f);
-        return result;
+        return result > 0 ? (U32)result : 0;
     }
     return 0;
 }
