@@ -141,7 +141,17 @@ void updateWaitingList() {
         bool errorSet = false;
 #ifndef BOXEDWINE_MSVC
         if (s->nativeSocket>=FD_SETSIZE) {
-            kpanic_fmt("updateWaitingList %s socket is too large to select on", s->nativeSocket);
+            // A host fd beyond the select limit (the host process has
+            // many files open) cannot be monitored; skip it — its
+            // readiness degrades to the poll timeouts — instead of
+            // killing the emulator. (The panic message also passed the
+            // fd to a %s conversion.)
+            if (bw64RecoverEnabled()) {
+                bw64RecoverLogOnce("native.monitor.fdsize", "BW64-FAIL native-socket-monitor outcome=skipped-unmonitorable-socket");
+            } else {
+                kwarn_fmt("BW64-FAIL native-socket-monitor fd=%d outcome=skipped-unmonitorable-socket", s->nativeSocket);
+            }
+            continue;
         }
 #endif
         if (s->readingCond->parentsCount()) {
@@ -242,13 +252,18 @@ void startNativeSocketsThread() {
         // Leaving the zero-initialized pair in place repeatedly polls stdin
         // and skips every real socket's readiness notification.
         if (::pipe(nativeSocketPipe) != 0) {
-            kpanic("Failed to create native socket monitor pipe");
+            // Without the wakeup pipe the monitor thread cannot run;
+            // native-socket readiness degrades to the poll timeouts
+            // instead of the emulator dying here.
+            kwarn_fmt("BW64-FAIL native-socket-monitor pipe-errno=%d outcome=monitor-not-started", errno);
+            return;
         }
         if (nativeSocketPipe[0] >= FD_SETSIZE) {
             ::close(nativeSocketPipe[0]);
             ::close(nativeSocketPipe[1]);
             nativeSocketPipe[0] = nativeSocketPipe[1] = -1;
-            kpanic("Native socket monitor pipe exceeds select descriptor limit");
+            kwarn_fmt("BW64-FAIL native-socket-monitor outcome=monitor-not-started pipe-fd-beyond-select-limit");
+            return;
         }
 #else
         Platform::nativeSocketPair(nativeSocketPipe);
@@ -2053,6 +2068,23 @@ U32 KNativeSocketObject::shutdown(KThread* thread, const KFileDescriptorPtr& fd,
     return -1;
 }
 
+// A guest-supplied option length this implementation cannot honor gets
+// the graceful answer (EINVAL, logged once per option) instead of the
+// kpanic these checks used to be: guest input must not kill the
+// emulator. Returns the value the caller should return.
+static U32 nativeOptLenFail(const char* op, const char* name, U32 len, U32 expected) {
+    char key[128];
+    snprintf(key, sizeof(key), "socket.native.optlen.%s.%s", op, name);
+    char message[224];
+    snprintf(message, sizeof(message), "BW64-FAIL native-optlen op=%s name=%s len=%u expected=%u outcome=returned-EINVAL", op, name, len, expected);
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce(key, message);
+    } else {
+        kwarn_fmt("%s", message);
+    }
+    return (U32)-K_EINVAL;
+}
+
 U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& fd, U32 level, U32 name, U32 value, U32 len) {
     if (this->loopbackDatagram) {
         if (level != K_SOL_SOCKET && level != K_IPPROTO_IP) return -K_ENOPROTOOPT;
@@ -2099,7 +2131,7 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         switch (name) {
         case K_IP_MTU_DISCOVER:
             if (len != 4)
-                kpanic("KNativeSocketObject::setsockopt K_IP_MULTICAST_TTL expecting len of 4");
+                return nativeOptLenFail("setsockopt", "K_IP_MTU_DISCOVER", len, 4);
             v = memory->readd(value);
 #if defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DO) && defined(IP_PMTUDISC_DONT)
             ::setsockopt(this->nativeSocket, IPPROTO_IP, IP_MTU_DISCOVER, (const char*)&v, 4);
@@ -2107,19 +2139,19 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
             break;
         case K_IP_TOS: 
             if (len != 4)
-                kpanic("KNativeSocketObject::setsockopt K_IP_TOS expecting len of 4");
+                return nativeOptLenFail("setsockopt", "K_IP_TOS", len, 4);
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_IP, IP_TOS, (const char*)&v, 4);
             break;
         case K_IP_RECVTOS:
             if (len != 4)
-                kpanic("KNativeSocketObject::setsockopt K_IP_RECVTOS expecting len of 4");
+                return nativeOptLenFail("setsockopt", "K_IP_RECVTOS", len, 4);
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_IP, IP_RECVTOS, (const char*)&v, 4);
             break;
         case K_IP_RECVERR:
             if (len != 4)
-                kpanic("KNativeSocketObject::setsockopt K_IP_RECVERR expecting len of 4");
+                return nativeOptLenFail("setsockopt", "K_IP_RECVERR", len, 4);
             v = memory->readd(value);
 #ifdef IP_RECVERR
             ::setsockopt(this->nativeSocket, IPPROTO_IP, IP_RECVERR, (const char*)&v, 4);
@@ -2136,21 +2168,21 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         switch (name) {
         case K_TCP_NODELAY:
             if (len != 4) {
-                kpanic("KNativeSocketObject::setsockopt TCP_NODELAY expecting len of 4");
+                return nativeOptLenFail("setsockopt", "TCP_NODELAY", len, 4);
             }
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_TCP, TCP_NODELAY, (const char*)&v, 4);
             break;
         case K_TCP_KEEPIDLE:
             if (len != 4) {
-                kpanic("KNativeSocketObject::setsockopt TCP_KEEPIDLE expecting len of 4");
+                return nativeOptLenFail("setsockopt", "TCP_KEEPIDLE", len, 4);
             }
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_TCP, TCP_KEEPIDLE, (const char*)&v, 4);
             break;
         case K_TCP_KEEPINTVL:
             if (len != 4) {
-                kpanic("KNativeSocketObject::setsockopt TCP_KEEPINTVL expecting len of 4");
+                return nativeOptLenFail("setsockopt", "TCP_KEEPINTVL", len, 4);
             }
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_TCP, TCP_KEEPINTVL, (const char*)&v, 4);
@@ -2158,7 +2190,7 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         case K_TCP_SYNCNT:
 #ifdef TCP_SYNCNT
             if (len != 4) {
-                kpanic("KNativeSocketObject::setsockopt TCP_SYNCNT expecting len of 4");
+                return nativeOptLenFail("setsockopt", "TCP_SYNCNT", len, 4);
             }
             v = memory->readd(value);
             ::setsockopt(this->nativeSocket, IPPROTO_TCP, TCP_SYNCNT, (const char*)&v, 4);
@@ -2174,19 +2206,19 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
         switch (name) {
             case K_SO_RCVBUF:
                 if (len!=4)
-                    kpanic("KNativeSocketObject::setsockopt SO_RCVBUF expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_RCVBUF", len, 4);
                 this->recvLen = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_RCVBUF, (const char*)&this->recvLen, 4);
                 break;
             case K_SO_SNDBUF:
                 if (len != 4)
-                    kpanic("KNativeSocketObject::setsockopt SO_SNDBUF expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_SNDBUF", len, 4);
                 this->sendLen = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_SNDBUF, (const char*)&this->sendLen, 4);
                 break;
             case K_SO_PRIORITY:
                 if (len != 4)
-                    kpanic("KNativeSocketObject::setsockopt SO_PRIORITY expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_PRIORITY", len, 4);
                 v = memory->readd(value);
                 setNativeSocketPriority(this, v);
 #ifdef SO_PRIORITY
@@ -2196,7 +2228,7 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
                 break;
             case K_SO_SNDTIMEO:            
                 if (len != 8) {
-                    kpanic("KNativeSocketObject::setsockopt SO_SNDTIMEO expecting len of 8");
+                    return nativeOptLenFail("setsockopt", "SO_SNDTIMEO", len, 8);
                 }
                 {
 #ifdef BOXEDWINE_MSVC
@@ -2215,7 +2247,7 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
                 break;
             case K_SO_RCVTIMEO:
                 if (len != 8) {
-                    kpanic("KNativeSocketObject::setsockopt SO_RCVTIMEO expecting len of 8");
+                    return nativeOptLenFail("setsockopt", "SO_RCVTIMEO", len, 8);
                 }
                 {
 #ifdef BOXEDWINE_MSVC
@@ -2236,26 +2268,26 @@ U32 KNativeSocketObject::setsockopt(KThread* thread, const KFileDescriptorPtr& f
                 break;
             case K_SO_KEEPALIVE:
                 if (len != 4)
-                    kpanic("KNativeSocketObject::setsockopt SO_KEEPALIVE expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_KEEPALIVE", len, 4);
                 v = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_KEEPALIVE, (const char*)&v, 4);
                 break;
             case K_SO_BROADCAST:
                 if (len != 4)
-                    kpanic("KNativeSocketObject::setsockopt SO_BROADCAST expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_BROADCAST", len, 4);
                 v = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_BROADCAST, (const char*)&v, 4);
                 break;
             case K_SO_REUSEADDR:
                 if (len != 4) {
-                    kpanic("KNativeSocketObject::setsockopt SO_REUSEADDR expecting len of 4");
+                    return nativeOptLenFail("setsockopt", "SO_REUSEADDR", len, 4);
                 }
                 v = memory->readd(value);
                 ::setsockopt(this->nativeSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&v, 4);
                 break;
             case K_SO_LINGER: // steam installer triggered this
                 if (len != 8) {
-                    kpanic("KNativeSocketObject::setsockopt SO_LINGER expecting len of 8");
+                    return nativeOptLenFail("setsockopt", "SO_LINGER", len, 8);
                 }
                 {
                     struct linger l;
@@ -2359,21 +2391,21 @@ native_getsockopt:
     if (level == K_SOL_SOCKET) {
         if (name == K_SO_RCVBUF) {
             if (len!=4)
-                kpanic("KNativeSocketObject::getsockopt SO_RCVBUF expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_RCVBUF", len, 4);
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_RCVBUF, (char*)&retrievedValue, &len);
             if (!result) {
                 memory->writed(value, retrievedValue);
             }
         } else if (name == K_SO_SNDBUF) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_SNDBUF expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_SNDBUF", len, 4);
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_SNDBUF, (char*)&retrievedValue, &len);
             if (!result) {
                 memory->writed(value, retrievedValue);
             }
         } else if (name == K_SO_ERROR) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_ERROR expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_ERROR", len, 4);
             int nativeError = 0;
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_ERROR, (char*)&nativeError, &len);
             if (!result) {
@@ -2388,25 +2420,25 @@ native_getsockopt:
             }
         } else if (name == K_SO_TYPE) { 
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt K_SO_TYPE expecting len of 4");
+                return nativeOptLenFail("getsockopt", "K_SO_TYPE", len, 4);
             memory->writed(value, this->type);
             retrievedValue = this->type;
         } else if (name == K_SO_PRIORITY) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_PRIORITY expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_PRIORITY", len, 4);
             retrievedValue = getNativeSocketPriority(this);
             memory->writed(value, retrievedValue);
             memory->writed(len_address, 4);
         } else if (name == K_SO_OOBINLINE) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_OOBINLINE expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_OOBINLINE", len, 4);
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_OOBINLINE, (char*)&retrievedValue, &len);
             if (!result) {
                 memory->writed(value, retrievedValue);
             }
         } else if (name == K_SO_BROADCAST) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_BROADCAST expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_BROADCAST", len, 4);
             U32 result = 0;
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_BROADCAST, (char*)&retrievedValue, &len);
             if (!result) {
@@ -2414,7 +2446,7 @@ native_getsockopt:
             }
         } else if (name == K_SO_RCVTIMEO) {
             if (len != 8)
-                kpanic("KNativeSocketObject::getsockopt SO_RCVTIMEO expecting len of 8");            
+                return nativeOptLenFail("getsockopt", "SO_RCVTIMEO", len, 8);            
 #ifdef BOXEDWINE_MSVC            
             len = 4;
             DWORD v = 0;
@@ -2437,7 +2469,7 @@ native_getsockopt:
             }
         } else if (name == K_SO_SNDTIMEO) {
             if (len != 8)
-                kpanic("KNativeSocketObject::getsockopt SO_SNDTIMEO expecting len of 8");
+                return nativeOptLenFail("getsockopt", "SO_SNDTIMEO", len, 8);
 #ifdef BOXEDWINE_MSVC            
             len = 4;
             DWORD v = 0;
@@ -2460,27 +2492,27 @@ native_getsockopt:
             }
         } else if (name == K_SO_BROADCAST) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_BROADCAST expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_BROADCAST", len, 4);
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_BROADCAST, (char*)&retrievedValue, &len);
             if (!result) {
                 memory->writed(value, retrievedValue);
             }
         } else if (name == K_SO_ACCEPTCONN) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_ACCEPTCONN expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_ACCEPTCONN", len, 4);
             result = ::getsockopt(this->nativeSocket, SOL_SOCKET, SO_ACCEPTCONN, (char*)&retrievedValue, &len);
             if (!result) {
                 memory->writed(value, retrievedValue);
             }
         } else if (name == K_SO_PROTOCOL) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_PROTOCOL expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_PROTOCOL", len, 4);
             if (!result) {
                 memory->writed(value, protocol);
             }
         } else if (name == K_SO_TYPE) {
             if (len != 4)
-                kpanic("KNativeSocketObject::getsockopt SO_TYPE expecting len of 4");
+                return nativeOptLenFail("getsockopt", "SO_TYPE", len, 4);
             if (!result) {
                 memory->writed(value, type);
             }
