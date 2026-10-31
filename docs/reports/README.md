@@ -23,6 +23,37 @@ a fresh run of the current checkout. For what is true now, see
 - [Loader gaps](loader-gaps-20261030.md): a class of missing Windows
   entry points found by census and fixed as a class.
 
+## Cleanup campaign and merge wave (2026-10-31)
+
+- [Merge wave record](merge-wave-20261031.md): all sixteen cleanup /
+  demo-class branches composed into the integration branch — every
+  composition decision, the packaging re-pin, and the gate results on
+  the merged tree.
+- The pattern standard: `docs/failure-logging-and-recovery.md`
+  (pathfinder lane). Lane reports: kernel subsystems
+  ([cleanlog-ksubsys](cleanlog-ksubsys-20261030.md)), kernel gate
+  census ([cleanwave-kernelgate](cleanwave-kernelgate-20261030.md)),
+  32-bit fault logging ([cleanup-fault32](cleanup-fault32-20261030.md)),
+  guest memory ([cleanmem](cleanmem-guest-memory-20261030.md)),
+  filesystem ([cleanup-fs](cleanup-fs-20261031.md)), CPU core
+  ([cleanup-cpu-core](cleanup-cpu-core-20261030.md)), graphics bridges
+  ([cleanup-bridges](cleanup-bridges-20261030.md)), tooling honesty
+  ([tooling-honesty](tooling-honesty-20261030.md)), documentation
+  ([docs-cleanup](docs-cleanup-20261030.md)).
+- [First-visit start reliability](first-visit-start-reliability-20261031.md):
+  the win32u impatience pair, its backport fix, and the before/after
+  start measurements. Merged; deploys with the next release.
+- Demo-class records: Al-Khaser INT 2D
+  (`test-results/alkhaser-int2d/REPORT.md`), first-frame D3D12 walls
+  (lane report in `wt-firstframe/test-results/firstframe-20261030/REPORT.md`;
+  outcome summarized in the merge wave record),
+  [Mindustry JVM stall](mindustry-jvm-stall-20261030.md) (record-only).
+- Independent frontier review of the composition:
+  `test-results/frontier-review-20261031/REVIEW.md`.
+- Open defects found by all of the above live in one register:
+  `docs/defect-register.md` (FD-01…FD-38); its header carries the
+  maintenance rule.
+
 ## Preserved investigation reports
 
 The 2026-10-13 maintenance preserved a batch of reports from

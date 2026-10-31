@@ -56,6 +56,31 @@ https://kn0tzer.work.gd/winbox
   killing the program wherever honestly possible; where recovery is
   impossible, fail loudly and immediately.
 
+## Update (2026-10-31) — cleanup merge wave landed on integ
+
+- The cleanup / logging / error-recovery campaign is **merged**: all
+  sixteen lane branches (the pathfinder standard, every cleanup lane,
+  the tooling-honesty lane, and the demo-class branches for Al-Khaser,
+  the D3D12 first-frame walls, Mindustry's record, the defect
+  register, and the docs cleanup) are composed on the integration
+  branch. Full record: `docs/reports/merge-wave-20261031.md`. Gates on
+  the merged tree: native serial suite 660 tests / 0 failed; JS suite
+  338 / 0; dist build export verified. **Not deployed yet** — the live
+  site still serves the 2026-10-30 dead-start build.
+- The first-visit start fix (win32u impatience backport) is in the
+  merged tree, so the "separate, older startup failure" named above
+  has a fix awaiting deploy; FD-01 in `docs/defect-register.md` stays
+  open until a deploy + live re-measure shows the launcher's
+  automatic-restart safety net rescuing zero starts.
+- Demo fixes named above as "on unmerged lane branches" (Al-Khaser's
+  crash class; Godot's D3D12 startup class) are now merged, pending
+  the same deploy.
+- Known pre-existing breakage the wave did not fix (evidence in the
+  merge record): the x64-test flavour's run still segfaults partway,
+  and the native suite's 4-worker parallel mode still floods and
+  hangs — both reproduce identically on the pre-merge tree. The
+  serial native run remains the trusted gate.
+
 ## Paused and parked (user's orders)
 
 - Phase-2 solo gates, the register-settlement remainder, and the
