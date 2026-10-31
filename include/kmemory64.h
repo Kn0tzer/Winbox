@@ -193,10 +193,11 @@ public:
     // Change page permissions on already-mapped pages. addr must be page-
     // aligned. prot bits follow K_PROT_READ/WRITE/EXEC (0x1/0x2/0x4) — same
     // convention as mmapAnonymousFixed. Pages within [addr, addr+len) that
-    // are NOT mapped are silently skipped (matches the Linux semantics
-    // where partial mprotect on holes returns -ENOMEM, but our v1 callers
-    // only invoke this against fully-mapped ranges — RELRO enforcement on
-    // the GOT, and eventually JIT page-write tracking).
+    // are NOT mapped are skipped, and the skip is counted and reported
+    // (Linux would return -ENOMEM for partial mprotect on holes, but our
+    // v1 callers only invoke this against fully-mapped ranges — RELRO
+    // enforcement on the GOT, and eventually JIT page-write tracking —
+    // so the behaviour stays, but it is never silent).
     //
     // Returns the requested addr on success, (U64)-errno on failure (only
     // failure mode today is addr not page-aligned). Does NOT touch page
