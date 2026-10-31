@@ -87,6 +87,7 @@ void testTimerfdCore();
 void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
 void testMemfdSeals();
+void testMemfdNodeOps();
 void testEventfdFlags();
 void testDevInputJoystick();
 void testTimerfdProcessAbiProbes();
@@ -148,6 +149,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
@@ -822,6 +824,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
