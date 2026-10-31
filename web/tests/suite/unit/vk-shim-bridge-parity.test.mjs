@@ -77,7 +77,10 @@ for (const arch of [64, 32]) {
 
   test(`libvk${arch}: shim-local S() entries are real wrappers the bridge does not already own`, () => {
     const local = [...code.matchAll(/^\s*S\((\w+)\),/gm)].map((m) => m[1]);
-    assert.ok(local.length >= 14, 'S() entries parsed');
+    // Floor was 14 until 2026-10-30, when vkGetPipelineCacheData and
+    // vkMergePipelineCaches moved from S() to the trapping table (the
+    // bridge took ownership of both, ABI 921/922), leaving 12 per shim.
+    assert.ok(local.length >= 12, 'S() entries parsed');
     const defined = new Set([...code.matchAll(/^API [^\n(]*?\b(vk\w+)\(/gm)].map((m) => m[1]));
     assert.deepEqual(local.filter((n) => !defined.has(n)), [], 'S() entry without a wrapper');
     assert.deepEqual(local.filter((n) => tails.includes(n)), [], 'S() entry also declared TAIL');

@@ -651,13 +651,14 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   drvInitPageStep(log, 'adapter', drvInitAdapterDetail(adapter));
   // The adapter's own feature set (not the v2 renderer's preference list) decides
   // whether genuine GPU timing is possible on this legacy path.
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'readonly-and-readwrite-storage-textures'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'subgroups', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   globalThis.bwVkDepth32FloatStencil8 = device.features?.has('depth32float-stencil8') === true;
   globalThis.bwVkMaxVertexBuffers = Math.min(16, device.limits?.maxVertexBuffers || 8);
-  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers}`);
+  globalThis.bwVkSubgroups = device.features?.has('subgroups') === true;
+  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers} subgroups=${globalThis.bwVkSubgroups}`);
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
@@ -1209,8 +1210,8 @@ export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
   93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
 ]);
 export const V2_COLOR_ATTACHMENT_FORMATS = Object.freeze([
-  2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
-  98, 99, 100, 103, 109,
+  2, 3, 5, 7, 8, 9, 13, 14, 16, 20, 21, 37, 41, 42, 43, 44, 50, 64, 70,
+  76, 77, 83, 91, 97, 98, 99, 100, 103, 109,
 ]);
 export const V2_COLOR_ATTACHMENT_BLEND_FORMATS = Object.freeze([
   2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
@@ -1305,7 +1306,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
   drvInitPageStep(log, 'adapter', drvInitAdapterDetail(adapter));
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16', 'readonly-and-readwrite-storage-textures'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16', 'subgroups', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   // The bridge advertises Vulkan limits independently of the adapter (see
   // fillLimits in vk64bridge.cpp), so ask for everything this adapter has
@@ -1317,7 +1318,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   globalThis.bwVkDepth32FloatStencil8 = device.features?.has('depth32float-stencil8') === true;
   globalThis.bwVkMaxVertexBuffers = Math.min(16, device.limits?.maxVertexBuffers || 8);
-  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers}`);
+  globalThis.bwVkSubgroups = device.features?.has('subgroups') === true;
+  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers} subgroups=${globalThis.bwVkSubgroups}`);
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);

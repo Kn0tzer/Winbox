@@ -77,3 +77,35 @@ test('the runtime completeness pins match the built shim sha256', () => {
       `${name} pin drifted from the built shim (re-pin deliberately)`);
   }
 });
+
+test('exports.txt traps the query, event, dynamic-state and pipeline-cache families at the ABI ids', () => {
+  // 2026-10-30 (firstframe lane): exports.txt carried the fnId-1
+  // unimplemented stub for 23 names whose bridge traps and unix-shim
+  // wrappers were implemented all along -- the whole query family (Godot's
+  // D3D12 query heaps died at vkCreateQueryPool through the PE shim), the
+  // whole event family, three dynamic-state commands, descriptor-set
+  // free/layout-support, and the pipeline-cache pair (bridge handlers
+  // added the same day; the unix shim answers those two locally).
+  const abi = txt('source/vulkan/vk64bridge_abi.h');
+  assert.match(abi, /VK64_fn_vkCreateQueryPool = 849|VK64_fn_vkCreateQueryPool,/);
+  assert.match(abi, /VK64_fn_vkGetPipelineCacheData = 921/);
+  assert.match(abi, /VK64_fn_vkMergePipelineCaches = 922/);
+  for (const [name, fnid, argc] of [
+    ['vkCreateQueryPool', 849, 4], ['vkDestroyQueryPool', 850, 3],
+    ['vkGetQueryPoolResults', 852, 8], ['vkCmdResetQueryPool', 853, 4],
+    ['vkCmdBeginQuery', 854, 4], ['vkCmdEndQuery', 855, 3],
+    ['vkCreateEvent', 841, 4], ['vkDestroyEvent', 842, 3],
+    ['vkSetEvent', 843, 2], ['vkResetEvent', 844, 2], ['vkGetEventStatus', 845, 2],
+    ['vkCmdSetEvent', 846, 3], ['vkCmdResetEvent', 847, 3], ['vkCmdWaitEvents', 848, 11],
+    ['vkCmdSetStencilReference', 903, 3], ['vkCmdSetDepthBias', 905, 4],
+    ['vkCmdWriteTimestamp', 910, 4], ['vkCmdSetDepthBounds', 911, 3],
+    ['vkFreeDescriptorSets', 913, 4], ['vkGetDescriptorSetLayoutSupport', 916, 3],
+    ['vkCmdNextSubpass', 920, 2],
+    ['vkGetPipelineCacheData', 921, 4], ['vkMergePipelineCaches', 922, 4],
+  ]) {
+    const e = exportEntry(name);
+    assert.ok(e, `${name} missing from exports.txt: vkGetDeviceProcAddr would benign-stub it`);
+    assert.equal(e.fnid, fnid, `${name} must trap ${fnid}, not the fnId-1 stub`);
+    assert.equal(e.argc, argc, `${name} arg count`);
+  }
+});

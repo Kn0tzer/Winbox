@@ -1405,8 +1405,13 @@ function replaceDrawParameterBuiltins(mod, log) {
     }
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !variables.has(id)));
   }
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
-  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  // Synthesized constants belong at the END of the global section, just
+  // before the first function (the placement R12 documents): glslang layouts
+  // interleave type declarations with variables, so splicing before the first
+  // OpVariable can put a constant ahead of the OpTypeInt it references and
+  // emit invalid SPIR-V (the draw-used corpus module's layout).
+  const firstFunc = sections(mod).firstFunc;
+  mod.insns.splice(firstFunc < 0 ? mod.insns.length : firstFunc, 0, ...constants);
   log.push(`spirvfix: replaced ${loads.length} BaseVertex/BaseInstance/DrawIndex load(s) with zero`);
   return true;
 }
@@ -2252,6 +2257,165 @@ export function storageTexelBuffersTo2D(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
+// --- R12X: strip-unused-texel-buffer-capabilities ----------------------------
+// Naga rejects OpCapability SampledBuffer (46) and ImageBuffer (47) outright,
+// even when a module declares one without any Dim=Buffer image type for it to
+// gate (verified against the vendored naga with hand-built stray modules).
+// R12/R12S drop the pair when they convert a real buffer image; this rule
+// removes the stray declaration when no Dim=Buffer OpTypeImage exists at all,
+// so the capability cannot gate anything. A module that DOES carry a
+// Dim=Buffer type is left untouched: R12/R12S either converted it (and dropped
+// the capabilities themselves) or refused it, and the declaration must then
+// keep failing loudly at naga.
+function stripUnusedTexelBufferCapabilities(mod, log) {
+  const found = mod.insns.some(i => i.op === Op.Capability && (i.words[0] === 46 || i.words[0] === 47));
+  if (!found) return false;
+  if (mod.insns.some(i => i.op === Op.TypeImage && i.words[2] === 5)) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 46 || i.words[0] === 47)));
+  log.push('spirvfix: stripped stray SampledBuffer/ImageBuffer capability declaration(s) (no Dim=Buffer image type)');
+  return true;
+}
+
+// --- R17: quad-ops-to-shuffle --------------------------------------------------
+// Naga rejects capability GroupNonUniformQuad (68) outright, but the two quad
+// data-movement ops lower exactly onto subgroup shuffle ops -- quads are
+// aligned groups of four consecutive subgroup lanes:
+//   QuadSwap(v, 0|1|2)    -> ShuffleXor(v, 1|2|3)   (across X / Y / diagonal)
+//   QuadBroadcast(v, i<4) -> Shuffle(v, (SubgroupLocalInvocationId & ~3) + i)
+// Only the constant-direction / constant-index, Subgroup-scope forms are
+// lowered; anything else is left untouched for the bridge audit to reject by
+// name. A module that declares 68 without using a quad op has the stray
+// declaration stripped (naga rejects the bare capability; the R12X pattern).
+// Lowering declares capabilities 61/65 when missing and drops 68.
+const OP_SHUFFLE = 345, OP_SHUFFLE_XOR = 346, OP_QUAD_BROADCAST = 365, OP_QUAD_SWAP = 366;
+const OP_IADD = 128, OP_BITWISE_AND = 199;
+function quadOpsToShuffle(mod, log) {
+  if (!mod.insns.some(i => i.op === Op.Capability && i.words[0] === 68)) return false;
+  const quadInsns = mod.insns.filter(i => i.op === OP_QUAD_BROADCAST || i.op === OP_QUAD_SWAP);
+  if (!quadInsns.length) {
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 68));
+    log.push('spirvfix: stripped stray GroupNonUniformQuad capability (declared, never used)');
+    return true;
+  }
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const constOf = (id) => { const d = byId.get(id); return d && d.op === Op.Constant ? d : null; };
+  // Phase 1: validate every quad op (fail closed -- leave the module untouched).
+  const plans = [];
+  for (const ins of quadInsns) {
+    const scope = constOf(ins.words[2]), param = constOf(ins.words[4]);
+    if (!scope || scope.words[2] !== 3 || !param) {
+      log.push('spirvfix: left GroupNonUniformQuad op unchanged (scope or parameter is not a constant)');
+      return false;
+    }
+    if (ins.op === OP_QUAD_SWAP) {
+      if (![0, 1, 2].includes(param.words[2])) {
+        log.push('spirvfix: left GroupNonUniformQuad op unchanged (swap direction is not 0, 1 or 2)');
+        return false;
+      }
+      plans.push({ ins, kind: 'swap', mask: [1, 2, 3][param.words[2]] });
+    } else {
+      if (![0, 1, 2, 3].includes(param.words[2])) {
+        log.push('spirvfix: left GroupNonUniformQuad op unchanged (broadcast index is not 0..3)');
+        return false;
+      }
+      plans.push({ ins, kind: 'broadcast', index: param.words[2] });
+    }
+  }
+  // Phase 2: synthesize the shared pieces (uint type, constants, the
+  // SubgroupLocalInvocationId variable when a broadcast needs it).
+  const fresh = makeIdSource(mod);
+  const newGlobals = [], newAnnots = [];
+  let uintTy = null;
+  for (const i of mod.insns) if (i.op === Op.TypeInt && i.words[1] === 32 && i.words[2] === 0) { uintTy = i.resultId; break; }
+  if (!uintTy) {
+    uintTy = fresh();
+    newGlobals.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy });
+  }
+  const constFor = (val) => {
+    const found = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === val)
+      || newGlobals.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === val);
+    if (found) return found.resultId;
+    const id = fresh();
+    newGlobals.push({ op: Op.Constant, words: [uintTy, id, val], resultType: uintTy, resultId: id });
+    return id;
+  };
+  // Pre-create every constant the rewrites need -- constFor appends to
+  // newGlobals, which phase 3 splices; a constant requested later would
+  // never reach the module.
+  for (const plan of plans) {
+    if (plan.kind === 'swap') plan.maskId = constFor(plan.mask);
+    else { plan.andMaskId = constFor(0xFFFFFFFC); plan.indexId = constFor(plan.index); }
+  }
+  let invVar = null;
+  if (plans.some(p => p.kind === 'broadcast')) {
+    const decorated = new Set(mod.insns
+      .filter(i => i.op === Op.Decorate && i.words[1] === 11 && i.words[2] === 41)
+      .map(i => i.words[0]));
+    for (const i of mod.insns) {
+      if (i.op !== Op.Variable || i.words[2] !== 1 || !decorated.has(i.resultId)) continue;
+      const ptr = byId.get(i.resultType);
+      if (ptr && ptr.op === Op.TypePointer && ptr.words[1] === 1 && ptr.words[2] === uintTy) { invVar = i.resultId; break; }
+    }
+    if (!invVar) {
+      let ptrTy = null;
+      for (const i of mod.insns) if (i.op === Op.TypePointer && i.words[1] === 1 && i.words[2] === uintTy) { ptrTy = i.resultId; break; }
+      if (!ptrTy) {
+        ptrTy = fresh();
+        newGlobals.push({ op: Op.TypePointer, words: [ptrTy, 1, uintTy], resultType: null, resultId: ptrTy });
+      }
+      invVar = fresh();
+      newGlobals.push({ op: Op.Variable, words: [ptrTy, invVar, 1], resultType: ptrTy, resultId: invVar });
+      newAnnots.push({ op: Op.Decorate, words: [invVar, 11, 41], resultType: null, resultId: null });
+    }
+  }
+  if (invVar) {
+    // The invocation-id variable is now statically used: every entry point
+    // must list it as an interface variable (spirv-val enforces this even
+    // though naga tolerates the omission).
+    for (const ep of mod.insns) {
+      if (ep.op !== Op.EntryPoint) continue;
+      let wi = 2;
+      while (wi < ep.words.length) {
+        const w = ep.words[wi++];
+        if (!(w & 0xff) || !((w >> 8) & 0xff) || !((w >> 16) & 0xff) || !((w >> 24) & 0xff)) break;
+      }
+      if (!ep.words.slice(wi).includes(invVar)) ep.words.push(invVar);
+    }
+  }
+  // Phase 3: splice capabilities first (header), then annotations, then
+  // globals -- each splice recomputes the section anchors it invalidates.
+  const haveCaps = new Set(mod.insns.filter(i => i.op === Op.Capability).map(i => i.words[0]));
+  const newCaps = [61, 65].filter(c => !haveCaps.has(c));
+  if (newCaps.length) {
+    let lastCap = -1;
+    mod.insns.forEach((i, idx) => { if (i.op === Op.Capability) lastCap = idx; });
+    mod.insns.splice(lastCap + 1, 0, ...newCaps.map(c => ({ op: Op.Capability, words: [c], resultType: null, resultId: null })));
+  }
+  if (newAnnots.length) mod.insns.splice(sections(mod).annotPos, 0, ...newAnnots);
+  if (newGlobals.length) mod.insns.splice(sections(mod).firstFunc, 0, ...newGlobals);
+  // Phase 4: rewrite the ops in place (setup instructions go immediately
+  // before their broadcast; indices are re-located by identity).
+  for (const plan of plans) {
+    const ins = plan.ins;
+    if (plan.kind === 'swap') {
+      ins.op = OP_SHUFFLE_XOR;
+      ins.words[4] = plan.maskId;
+    } else {
+      const loadId = fresh(), andId = fresh(), addId = fresh();
+      ins.op = OP_SHUFFLE;
+      ins.words[4] = addId;
+      const at = mod.insns.indexOf(ins);
+      mod.insns.splice(at, 0,
+        { op: Op.Load, words: [uintTy, loadId, invVar], resultType: uintTy, resultId: loadId },
+        { op: OP_BITWISE_AND, words: [uintTy, andId, loadId, plan.andMaskId], resultType: uintTy, resultId: andId },
+        { op: OP_IADD, words: [uintTy, addId, andId, plan.indexId], resultType: uintTy, resultId: addId });
+    }
+  }
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 68));
+  log.push('spirvfix: lowered GroupNonUniformQuad ops to subgroup shuffle ops');
+  return true;
+}
+
 // --- R13: uniform-block-to-storage -------------------------------------------
 // The bridge advertises VK_KHR_uniform_buffer_standard_layout (the honest
 // half of vkd3d's shader-model 6.0 gate): a uniform block may carry std430
@@ -3937,6 +4101,8 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   try {
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
     if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
+    if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
+    if (quadOpsToShuffle(mod, log)) applied.push('quad-ops-to-shuffle');
   } catch (e) {
     log.push('R12 failed: ' + (e.message || e));
   }
@@ -4021,4 +4187,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];
+export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];

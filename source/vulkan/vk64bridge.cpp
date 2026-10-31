@@ -318,6 +318,8 @@ const size_t kManifestLogCap = 64 * 1024;
     X(VK64_fn_vkCmdResetQueryPool,                 "vkCmdResetQueryPool") \
     X(VK64_fn_vkCmdBeginQuery,                     "vkCmdBeginQuery")     \
     X(VK64_fn_vkCmdEndQuery,                       "vkCmdEndQuery")       \
+    X(VK64_fn_vkGetPipelineCacheData,              "vkGetPipelineCacheData") \
+    X(VK64_fn_vkMergePipelineCaches,               "vkMergePipelineCaches") \
     X(VK64_fn_vkResetCommandPool,                   "vkResetCommandPool")  \
     X(VK64_fn_vkQueueWaitIdle,                      "vkQueueWaitIdle")     \
     X(VK64_fn_vkCreateHeadlessSurfaceEXT,           "vkCreateHeadlessSurfaceEXT") \
@@ -533,6 +535,8 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
                                                // in the pipeline audit below.
         case 39: return "Int8";               case 41: return "SparseResidency";
         case 42: return "MinLod";             case 43: return nullptr; // Sampled1D: core; the page tier serves 1D textures
+        case 46: return "SampledBuffer";      // named: passes in the loop when the texel mirror proves the module servable (spirvfix R12/R12S convert its Dim=Buffer shapes; R12X strips the stray declaration)
+        case 47: return "ImageBuffer";        // named: same used-conditioned pass as 46 (storage half: spirvfix R12S)
         case 49: return "StorageImageExtendedFormats";
         case 50: return nullptr;             case 51: return nullptr; // ImageQuery, DerivativeControl: core; naga translates both
         case 52: return "InterpolationFunction";
@@ -550,8 +554,9 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 4448: return "StorageBuffer8BitAccess";
         case 4449: return "UniformAndStorageBuffer8BitAccess";
         case 4450: return "StoragePushConstant8";
-        case 68: return nullptr;   // ShaderLayer (core form): advertised via fillVulkan12Features
-        case 69: return nullptr;   // ShaderViewportIndex (core form): same disposition as 5345 below
+        case 68: return "GroupNonUniformQuad"; // (Mislabeled ShaderLayer until 2026-10-30: ShaderLayer is 69. Naga rejects the quad capability outright, stray or used -- verified against the vendored naga.)
+        case 69: return nullptr;   // ShaderLayer: fragment Layer reads are rewritten to zero by spirvfix R11; the declaration is admitted and any unservable use fails loudly at translation.
+        case 70: return "ShaderViewportIndex"; // naga rejects the capability outright and no spirvfix rule serves viewport-index writes (was spirv-capability-unknown:70)
         case 4464: return nullptr;            // DenormPreserve: SPV_KHR_float_controls FP-behaviour declarations;
         case 4465: return nullptr;            // DenormFlushToZero: the DXBC compiler emits this one (with its
         case 4466: return nullptr;            // SignedZeroInfNanPreserve: execution mode) to state D3D FP semantics;
@@ -563,6 +568,13 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 5345: return nullptr;             // VulkanMemoryModel(KHR): the memory-model declaration the DXBC compiler puts on every module; naga requires/accepts it. (Mislabeled ShaderViewportIndexLayerEXT until 2026-10-26; that capability is 5254.) The vkd3d meta VS path depends on it; single-layer serving is the page tier's, layered use rejects loudly there.
         case 5379: return nullptr; // DemoteToHelperInvocationEXT: shaderDemoteToHelperInvocation advertised; naga translates it
         case 5301: return nullptr;            // ShaderNonUniform: harmless on its own
+        case 61: return nullptr;   // GroupNonUniform family (61-66: basic, vote, arithmetic, ballot,
+        case 62: return nullptr;   // shuffle, shuffle-relative): naga translates every one of these to
+        case 63: return nullptr;   // WGSL subgroup builtins (verified against the vendored naga on
+        case 64: return nullptr;   // compiled modules), and the bridge advertises the matching Vulkan
+        case 65: return nullptr;   // subgroup operations only when the page device carries the WebGPU
+        case 66: return nullptr;   // subgroups feature (see vk64SubgroupSupportedOperations).
+        case 67: return "GroupNonUniformClustered"; // naga rejects the capability outright (verified)
         // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
         // per binding number, so runtime indexing into a resource array cannot be
         // honoured; the loud half of the "exception" rows in vk-capabilities.json.
@@ -1389,6 +1401,276 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
 
 } // namespace r15
 
+// ---------------------------------------------------------------------------
+// Texel-buffer / draw-parameter servability classifiers: the bridge-side
+// mirrors of spirvfix's R12 (texel-buffer-to-2d), R12S
+// (storage-texel-buffer-to-2d), R12X (stray SampledBuffer/ImageBuffer strip)
+// and R5 (replace-draw-parameters). vk64AuditSpirv admits capability 46
+// (SampledBuffer) / 47 (ImageBuffer) and the USED form of 4427
+// (DrawParameters) exactly when one of these classifiers proves the page
+// tier converts the module; every other shape keeps the named rejection.
+// The classifiers re-parse the same word stream the audit already scanned.
+// Where spirvfix vets a use through its grammar-exact operand index, the
+// mirror scans each instruction's value-operand region with the metadata
+// family skipped (capabilities, entry points, execution modes, debug and
+// annotation records carry literals that can numerically equal a traced id
+// -- the collision R12S's own scan documents) and the literal-tail
+// instructions (OpCompositeExtract / OpCompositeInsert / OpVectorShuffle)
+// checked only at their object operands. Any residual disagreement fails
+// closed: spirvfix declines and naga rejects the pipeline loudly; nothing
+// is ever silently mistranslated.
+// ---------------------------------------------------------------------------
+struct Vk64RawInsn {
+    U32 op = 0;
+    const U32* w = nullptr; // operand words, result type/id words included
+    U32 n = 0;              // operand word count
+    U32 resultType = 0, resultId = 0, fv = 0;
+};
+struct Vk64RawModule {
+    std::vector<Vk64RawInsn> insns;
+    std::unordered_map<U32, size_t> byId;
+    size_t firstFunc = 0; // insn index of the first OpFunction; insns.size() when none
+    bool parsed = false;
+};
+static bool vk64ParseRawModule(const std::vector<U32>& w, Vk64RawModule& m) {
+    if (w.size() < 5 || w[0] != 0x07230203u) return false;
+    bool seenFunc = false;
+    for (size_t i = 5; i < w.size();) {
+        U32 op = w[i] & 0xFFFF, len = w[i] >> 16;
+        if (!len || i + len > w.size()) return false;
+        Vk64RawInsn in; in.op = op; in.w = &w[i + 1]; in.n = len - 1;
+        if (r15::hasTypeId(op) && in.n >= 2) { in.resultType = in.w[0]; in.resultId = in.w[1]; in.fv = 2; }
+        else if (r15::hasIdOnly(op) && in.n >= 1) { in.resultId = in.w[0]; in.fv = 1; }
+        m.insns.push_back(in);
+        i += len;
+    }
+    for (size_t i = 0; i < m.insns.size(); i++) {
+        const Vk64RawInsn& in = m.insns[i];
+        if (in.resultId) m.byId[in.resultId] = i;
+        if (in.op == 54 && !seenFunc) { m.firstFunc = i; seenFunc = true; }
+    }
+    if (!seenFunc) m.firstFunc = m.insns.size();
+    m.parsed = true;
+    return true;
+}
+static const Vk64RawInsn* vk64RawOf(const Vk64RawModule& m, U32 id) {
+    auto it = m.byId.find(id);
+    return it == m.byId.end() ? nullptr : &m.insns[it->second];
+}
+static bool vk64RawIsMetadata(U32 op) {
+    return op == 2 || op == 3 || op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 10 ||
+           op == 11 || op == 14 || op == 15 || op == 16 || op == 17 || op == 71 || op == 72 ||
+           op == 73 || op == 74 || op == 75;
+}
+// True when `id` appears in a value-operand position of `in`.
+static bool vk64RawIdUse(const Vk64RawInsn& in, U32 id) {
+    if (vk64RawIsMetadata(in.op)) return false;
+    if (in.op == 81) // OpCompositeExtract: composite operand only; the rest are literal indices
+        return in.n > in.fv && in.w[in.fv] == id;
+    if (in.op == 82 || in.op == 79) // OpCompositeInsert / OpVectorShuffle: two object operands, then literals
+        return (in.n > in.fv && in.w[in.fv] == id) || (in.n > in.fv + 1 && in.w[in.fv + 1] == id);
+    for (U32 k = in.fv; k < in.n; k++) if (in.w[k] == id) return true;
+    return false;
+}
+static bool vk64RawIsInt32(const Vk64RawModule& m, U32 typeId) {
+    const Vk64RawInsn* t = vk64RawOf(m, typeId);
+    return t && t->op == 21 && t->n >= 2 && t->w[1] == 32;
+}
+// R12 mirror: every UniformConstant sampled-image variable over a
+// Dim=Buffer/Sampled=1 image type, and every value traced from those loads,
+// is consumed only by OpSampledImage / OpImage / OpCopyObject / OpImageFetch
+// (with a 32-bit integer coordinate and an extendable operand mask).
+static bool vk64TexelUniformServable(const Vk64RawModule& m) {
+    std::set<U32> convTy, convSampledTy, varIds;
+    for (const Vk64RawInsn& in : m.insns)
+        if (in.op == 25 && in.n >= 7 && in.w[2] == 5 && in.w[6] == 1) convTy.insert(in.resultId);
+    if (convTy.empty()) return false;
+    for (const Vk64RawInsn& in : m.insns)
+        if (in.op == 27 && in.n >= 2 && convTy.count(in.w[1])) convSampledTy.insert(in.resultId);
+    if (convSampledTy.empty()) return false;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op != 59 || in.n < 3 || in.w[2] != 0) continue; // OpVariable, UniformConstant
+        const Vk64RawInsn* ptr = vk64RawOf(m, in.resultType);
+        if (ptr && ptr->op == 32 && ptr->n >= 3 && convSampledTy.count(ptr->w[2])) varIds.insert(in.resultId);
+    }
+    if (varIds.empty()) return false;
+    std::set<U32> tracedSampled, tracedImage;
+    for (const Vk64RawInsn& in : m.insns) {
+        if ((in.op == 61 || in.op == 55) && convSampledTy.count(in.resultType)) {
+            if (in.op == 61 && varIds.size() > 1 && (in.n < 3 || !varIds.count(in.w[2]))) return false;
+            tracedSampled.insert(in.resultId);
+        }
+    }
+    for (const Vk64RawInsn& in : m.insns) {
+        const U32* w = in.w;
+        if (in.op == 86) { // OpSampledImage
+            if (in.n < 4) return false;
+            if (tracedSampled.count(w[2])) tracedSampled.insert(in.resultId);
+            else if (tracedImage.count(w[2]) || tracedSampled.count(w[3])) return false;
+        } else if (in.op == 100) { // OpImage
+            if (in.n >= 3 && tracedSampled.count(w[2])) tracedImage.insert(in.resultId);
+        } else if (in.op == 83) { // OpCopyObject
+            if (in.n >= 3 && tracedSampled.count(w[2])) tracedSampled.insert(in.resultId);
+            else if (in.n >= 3 && tracedImage.count(w[2])) tracedImage.insert(in.resultId);
+        } else if (in.op == 95) { // OpImageFetch
+            if (in.n >= 3 && (tracedImage.count(w[2]) || tracedSampled.count(w[2]))) {
+                if (in.n < 4) return false;
+                const Vk64RawInsn* def = vk64RawOf(m, w[3]);
+                if (!def || !vk64RawIsInt32(m, def->resultType)) return false;
+                if (in.n > 4 && (w[4] & ~0x172u)) return false; // operand mask R12 cannot extend
+            }
+        } else {
+            for (U32 tid : tracedSampled) if (vk64RawIdUse(in, tid)) return false;
+            for (U32 tid : tracedImage) if (vk64RawIdUse(in, tid)) return false;
+        }
+    }
+    return true;
+}
+// R12S mirror: every UniformConstant variable over a Dim=Buffer/Sampled=2
+// image type is consumed only through OpLoad; every traced image value is
+// consumed only by OpImageRead / OpImageWrite with a 32-bit integer scalar
+// coordinate and flag-only (id-less) image operands.
+static bool vk64TexelStorageServable(const Vk64RawModule& m) {
+    std::set<U32> convTy, varIds;
+    for (const Vk64RawInsn& in : m.insns)
+        if (in.op == 25 && in.n >= 7 && in.w[2] == 5 && in.w[6] == 2) convTy.insert(in.resultId);
+    if (convTy.empty()) return false;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op != 59 || in.n < 3 || in.w[2] != 0) continue;
+        const Vk64RawInsn* ptr = vk64RawOf(m, in.resultType);
+        if (ptr && ptr->op == 32 && ptr->n >= 3 && convTy.count(ptr->w[2])) varIds.insert(in.resultId);
+    }
+    if (varIds.empty()) return false;
+    std::set<U32> traced;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op == 61 && convTy.count(in.resultType)) {
+            if (in.n < 3 || !varIds.count(in.w[2])) return false; // load from an unknown source
+            traced.insert(in.resultId);
+        }
+    }
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const Vk64RawInsn& in : m.insns)
+            if (in.op == 83 && in.n >= 3 && traced.count(in.w[2]) && !traced.count(in.resultId)) {
+                traced.insert(in.resultId); grew = true;
+            }
+    }
+    if (traced.empty()) return false;
+    // The variable itself may only be consumed by OpLoad inside function
+    // bodies (OpImageTexelPointer / atomics on it are not wrappable).
+    for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++) {
+        const Vk64RawInsn& in = m.insns[ix];
+        if (in.op == 61 || in.op == 83 || in.op == 59) continue;
+        switch (in.op) { case 2: case 3: case 4: case 7: case 8: case 10: case 14: case 73: case 75: continue; }
+        for (U32 k = in.fv; k < in.n; k++) if (varIds.count(in.w[k])) return false;
+    }
+    std::vector<const Vk64RawInsn*> writes, reads;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op == 99) { if (in.n >= 1 && traced.count(in.w[0])) writes.push_back(&in); continue; }
+        if (in.op == 98) { if (in.n >= 3 && traced.count(in.w[2])) reads.push_back(&in); continue; }
+        if (in.op == 61 || in.op == 83 || in.op == 59 || vk64RawIsMetadata(in.op)) continue;
+        for (U32 tid : traced) if (vk64RawIdUse(in, tid)) return false;
+    }
+    if (writes.empty() && reads.empty()) return false;
+    static const U32 kOperandIdBits[][2] = {{0,1},{1,1},{2,2},{3,1},{4,1},{5,1},{6,1},{7,1},{8,1},{9,1},{16,1}};
+    auto operandIds = [](U32 mask) {
+        U32 total = 0;
+        for (const auto& bit : kOperandIdBits) if (mask & (1u << bit[0])) total += bit[1];
+        return total;
+    };
+    for (const Vk64RawInsn* ins : writes) {
+        if (ins->n == 3) { /* bare: image, coordinate, texel */ }
+        else if (ins->n != 4 || operandIds(ins->w[3]) != 0) return false;
+        const Vk64RawInsn* def = vk64RawOf(m, ins->w[1]);
+        if (!def || !vk64RawIsInt32(m, def->resultType)) return false;
+    }
+    for (const Vk64RawInsn* ins : reads) {
+        if (ins->n == 4) { /* bare: result type/id, image, coordinate */ }
+        else if (ins->n != 5 || operandIds(ins->w[4]) != 0) return false;
+        const Vk64RawInsn* def = vk64RawOf(m, ins->w[3]);
+        if (!def || !vk64RawIsInt32(m, def->resultType)) return false;
+    }
+    return true;
+}
+// Admission for capabilities 46/47: the stray form (no Dim=Buffer image
+// type at all -- spirvfix R12X strips the declarations), or every
+// Dim=Buffer type in a shape R12 / R12S convert.
+static bool vk64TexelBufferServable(const std::vector<U32>& words) {
+    Vk64RawModule m;
+    if (!vk64ParseRawModule(words, m)) return false;
+    bool anyBuffer = false, hasUniform = false, hasStorage = false, hasOther = false;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op != 25 || in.n < 7 || in.w[2] != 5) continue;
+        anyBuffer = true;
+        if (in.w[6] == 1) hasUniform = true;
+        else if (in.w[6] == 2) hasStorage = true;
+        else hasOther = true;
+    }
+    if (!anyBuffer) return true;
+    if (hasOther) return false;
+    if (hasUniform && !vk64TexelUniformServable(m)) return false;
+    if (hasStorage && !vk64TexelStorageServable(m)) return false;
+    return true;
+}
+// R5 replace mirror: every OpDecorate BuiltIn BaseVertex / BaseInstance /
+// DrawIndex variable is an Input variable whose only uses are direct
+// 32-bit integer OpLoads inside functions. Struct-member (OpMemberDecorate)
+// draw builtins are NOT covered by the rewrite, so their presence refuses.
+static bool vk64DrawParametersServable(const std::vector<U32>& words) {
+    Vk64RawModule m;
+    if (!vk64ParseRawModule(words, m)) return false;
+    std::set<U32> builtinVars;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op == 72 && in.n >= 4 && in.w[2] == 11 && in.w[3] >= 4424 && in.w[3] <= 4426) return false;
+        if (in.op == 71 && in.n >= 3 && in.w[1] == 11 && in.w[2] >= 4424 && in.w[2] <= 4426) builtinVars.insert(in.w[0]);
+    }
+    if (builtinVars.empty()) return false;
+    for (U32 varId : builtinVars) {
+        const Vk64RawInsn* var = vk64RawOf(m, varId);
+        if (!var || var->op != 59 || var->n < 3 || var->w[2] != 1) return false; // Input storage class
+        const Vk64RawInsn* ptr = vk64RawOf(m, var->resultType);
+        if (!ptr || ptr->op != 32 || ptr->n < 3 || ptr->w[1] != 1) return false;
+        const U32 pointee = ptr->w[2];
+        if (!vk64RawIsInt32(m, pointee)) return false;
+        for (size_t ix = 0; ix < m.insns.size(); ix++) {
+            const Vk64RawInsn& in = m.insns[ix];
+            if (in.op == 15) continue; // OpEntryPoint interface list (mirrors spirvfix)
+            if (in.op == 61 && in.n >= 3 && in.w[2] == varId) {
+                if (in.resultType != pointee) return false;
+                if (ix < m.firstFunc) return false; // loads must be inside a function
+                continue;
+            }
+            if (vk64RawIdUse(in, varId)) return false;
+        }
+    }
+    return true;
+}
+
+// R17 mirror: capability 68 (GroupNonUniformQuad) is servable when every
+// quad op in the module is one spirvfix lowers to a subgroup shuffle:
+// OpGroupNonUniformQuadBroadcast / OpGroupNonUniformQuadSwap with a
+// constant Subgroup scope and a constant index (0..3) / direction (0..2).
+// A module that declares the capability without any quad op is the stray
+// form R17 strips.
+static bool vk64QuadServable(const std::vector<U32>& words) {
+    Vk64RawModule m;
+    if (!vk64ParseRawModule(words, m)) return false;
+    bool anyQuad = false;
+    for (const Vk64RawInsn& in : m.insns) {
+        if (in.op != 365 && in.op != 366) continue;
+        anyQuad = true;
+        if (in.n < 5) return false;
+        const Vk64RawInsn* scope = vk64RawOf(m, in.w[2]);
+        const Vk64RawInsn* param = vk64RawOf(m, in.w[4]);
+        if (!scope || scope->op != 43 || scope->n < 3 || scope->w[2] != 3) return false;
+        if (!param || param->op != 43 || param->n < 3) return false;
+        if (in.op == 366) { if (param->w[2] > 2) return false; }
+        else if (param->w[2] > 3 || !vk64RawIsInt32(m, param->resultType)) return false;
+    }
+    (void)anyQuad; // both the stray form and the all-lowered form are admitted
+    return true;
+}
+
 static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     if (code.size() < 20 || (code.size() & 3)) { vk64Unsupported("spirv-malformed", "invalid shader module; VK_ERROR_INVALID_SHADER_NV"); return VK_ERROR_INVALID_SHADER_NV; }
     const size_t nw = code.size() / 4;
@@ -1407,6 +1689,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     bool storageImageWrite = false, imageWriteOpcode = false;
     bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349, or by the R8 downgrade census further down
     std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
+    std::unordered_map<U32, U32> imageDims;          // OpTypeImage id -> Dim (for the texel-servable storage-write scoping below)
     std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
     std::unordered_map<U32, Var*> varById;
     std::vector<U32> texelPtrImages;                 // OpImageTexelPointer image operands (load-resolved), typed after the scan
@@ -1422,7 +1705,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 30: if (len >= 2) structMembers[w[i + 1]] = len - 2; break;           // OpTypeStruct
             case 28: case 29: if (len >= 3) arrays[w[i + 1]] = w[i + 2]; break;        // OpTypeArray/RuntimeArray
             case 32: if (len >= 4) { ptrs[w[i + 1]] = {w[i + 2], w[i + 3]}; if (w[i + 2] == 5349) physicalBufferUsed = true; } break; // OpTypePointer (storage class 5349 = PhysicalStorageBuffer)
-            case 25:
+            case 25: if (len >= 4) imageDims[w[i + 1]] = w[i + 3];
                 if (len >= 9 && w[i + 3] == 6) inputAttachment = true;                // OpTypeImage, DimSubpassData
                 if (len >= 9 && w[i + 7] == 2) { storageImage = true; storageImageTypes.insert(w[i + 1]); } // OpTypeImage, Sampled==2
                 break;
@@ -1521,9 +1804,26 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             }
         }
     }
+    const bool texelServable = vk64TexelBufferServable(w);
+    const bool drawServable = vk64DrawParametersServable(w);
+    const bool quadServable = vk64QuadServable(w);
+    if (texelServable && storageImage) {
+        // Every storage image in the module is a Dim=Buffer image R12S
+        // converts: its writes land on the tier's materialised texture and
+        // are read back, not the unserved generic storage-image write.
+        bool nonBufferStorage = false;
+        for (U32 t : storageImageTypes) {
+            auto dit = imageDims.find(t);
+            if (dit == imageDims.end() || dit->second != 5) nonBufferStorage = true;
+        }
+        if (!nonBufferStorage) storageImageWrite = false;
+    }
     for (U32 c : caps) {
         if (c == 33 && !cullUsed) continue;   // CullDistance declared but unused (DXVK emits it unconditionally): converts as-is
         if (c == 4427 && !drawUsed) continue; // DrawParameters likewise; spirvfix R5 strips the unused declaration
+        if (c == 4427 && drawServable) continue; // Used form in the shape spirvfix R5 replace serves: Input builtin variables read only by direct 32-bit loads (rewritten to zero; WebGPU vertex/instance indices already include the base values)
+        if ((c == 46 || c == 47) && texelServable) continue; // SampledBuffer/ImageBuffer in a shape spirvfix R12/R12S converts (or the stray declaration R12X strips)
+        if (c == 68 && quadServable) continue; // R17 lowers the constant quad forms to shuffles (or strips the stray declaration)
         if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
         if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue; // PhysicalStorageBufferAddresses declared but unused (vkd3d module-wide header artifact): spirvfix R8 strips exactly this case in the tier. The used form falls through to spirv-capability-unknown:<n> below.
         if ((c == 5346 || c == 5347) && r15Root.servable) continue; // R15b: every physical pointer in the module is a read-only root descriptor spirvfix re-roots at a synthesized binding; the bridge resolves its VA per draw (ROOT_DESCS).
@@ -1532,7 +1832,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
-        } else if (c != 0 && c != 1 && c != 2 && c != 5301 && c != 32 && c != 35 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 68 && c != 69 && c != 4464 && c != 4465 && c != 4466 && c != 4467 && c != 4468 && c != 5345) { // Matrix, Shader, Geometry, ShaderNonUniform, the page-tier-translated caps, the Vulkan memory model, the shaderOutputLayer/ViewportIndex family (68/69/5345, advertised in fillVulkan12Features), and the float-controls FP-behaviour declarations (nullptr cases above) are harmless here. 2 (Geometry) and 35 (SampleRateShading) are gated at pipeline/submit/translation, not module creation.
+        } else if (c != 0 && c != 1 && c != 2 && c != 5301 && c != 32 && c != 35 && c != 43 && c != 50 && c != 51 && c != 5379 && c != 69 && c != 4464 && c != 4465 && c != 4466 && c != 4467 && c != 4468 && c != 5345 && c != 61 && c != 62 && c != 63 && c != 64 && c != 65 && c != 66) { // Matrix, Shader, Geometry, ShaderNonUniform, the page-tier-translated caps, the Vulkan memory model, the shaderOutputLayer/ViewportIndex family (69/5345; 68 is GroupNonUniformQuad, a named rejection since 2026-10-30), the float-controls FP-behaviour declarations (nullptr cases above), and the GroupNonUniform family 61-66 (naga translates them to WGSL subgroup builtins; the name table above admits them, and this list is the loop's second gate -- it lacked the numbers until 2026-10-31, so ballot/arithmetic modules still rejected as spirv-capability-unknown:<n>) are harmless here. 2 (Geometry) and 35 (SampleRateShading) are gated at pipeline/submit/translation, not module creation.
             vk64Unsupported(("spirv-capability-unknown:" + std::to_string(c)).c_str(), "unknown capability; VK_ERROR_FEATURE_NOT_PRESENT");
             unsupported = true;
         }
@@ -4254,8 +4554,8 @@ static const U32 kV2SupportedVertexFormats[] = {
     93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109
 };
 static const U32 kV2ColorAttachmentFormats[] = {
-    2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
-    98, 99, 100, 103, 109
+    2, 3, 5, 7, 8, 9, 13, 14, 16, 20, 21, 37, 41, 42, 43, 44, 50, 64, 70,
+    76, 77, 83, 91, 97, 98, 99, 100, 103, 109
 };
 static const U32 kV2ColorAttachmentBlendFormats[] = {
     2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97
@@ -4288,6 +4588,36 @@ static bool v2WebGpuBcSupported() {
 #else
     return false;
 #endif
+}
+static bool v2WebGpuSubgroupsSupported() {
+#ifdef __EMSCRIPTEN__
+    return MAIN_THREAD_EM_ASM_INT({ return globalThis.bwVkSubgroups === true ? 1 : 0; }) != 0;
+#else
+    return false;
+#endif
+}
+// The subgroup operations the page tier verifiably executes: naga translates
+// the basic / vote / arithmetic / ballot / shuffle / shuffle-relative
+// families to WGSL subgroup builtins, and spirvfix R17 lowers the constant
+// quad forms onto subgroup shuffles, so QUAD is advertised too; clustered
+// operations are NOT served (no lowering, naga rejects the capability) and
+// are never advertised. WGSL subgroup builtins exist only in fragment and
+// compute stages, so those are the only stages claimed. The whole mask is
+// gated on bwVkSubgroups, which runtime.html publishes from the ADAPTER
+// before the guest boots (the renderers re-publish the device value when
+// they start): a guest queries these properties at device creation, long
+// before the first frame would start a renderer.
+static U32 vk64SubgroupSupportedOperations() {
+    return v2WebGpuSubgroupsSupported()
+        ? (VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT |
+           VK_SUBGROUP_FEATURE_ARITHMETIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT |
+           VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT |
+           VK_SUBGROUP_FEATURE_QUAD_BIT) // constant quad forms are lowered by spirvfix R17; other quad shapes reject by name at the audit
+        : 0;
+}
+static U32 vk64SubgroupSupportedStages() {
+    return v2WebGpuSubgroupsSupported()
+        ? (VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT) : 0;
 }
 static bool v2WebGpuDepth32FloatStencil8Supported() {
 #ifdef __EMSCRIPTEN__
@@ -6623,9 +6953,9 @@ void walkProperties2(U64 pNextAddr) {
                 VkPhysicalDeviceSubgroupProperties p = {};
                 g_mem->memcpyFromGuest(&p, cur, sizeof(p));
                 p.subgroupSize = 32;          /* warp-shaped, like every real ICD */
-                p.supportedStages = 0xffffffffu;
-                p.supportedOperations = 0xffffffffu;
-                p.quadOperationsInAllStages = VK_TRUE;
+                p.supportedStages = vk64SubgroupSupportedStages();
+                p.supportedOperations = vk64SubgroupSupportedOperations();
+                p.quadOperationsInAllStages = VK_FALSE; // naga rejects GroupNonUniformQuad outright
                 g_mem->memcpyToGuest(cur, &p, sizeof(p));
                 break;
             }
@@ -6714,9 +7044,9 @@ void walkProperties2(U64 pNextAddr) {
                 memcpy(p.deviceUUID, uuid, VK_UUID_SIZE);
                 p.deviceNodeMask = 1;
                 p.subgroupSize = 32;
-                p.subgroupSupportedStages = 0xffffffffu;
-                p.subgroupSupportedOperations = 0xffffffffu;
-                p.subgroupQuadOperationsInAllStages = VK_TRUE;
+                p.subgroupSupportedStages = vk64SubgroupSupportedStages();
+                p.subgroupSupportedOperations = vk64SubgroupSupportedOperations();
+                p.subgroupQuadOperationsInAllStages = VK_FALSE;
                 p.pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
                 p.maxMultiviewViewCount = 6;
                 p.maxMultiviewInstanceIndex = 0xFFFFFFFFu;
@@ -7446,6 +7776,16 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     }
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
+    case VK64_fn_vkGetPipelineCacheData: {
+        // The bridge compiles pipelines on demand and keeps no persistent
+        // cache blob, so the honest answer is an empty cache: *pDataSize = 0
+        // and VK_SUCCESS. Both shim families trap here (the ELF shims moved
+        // from local answers to wrappers when the bridge took ownership).
+        if (args.a[2]) { U64 zero = 0; g_mem->memcpyToGuest(args.a[2], &zero, sizeof(zero)); }
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkMergePipelineCaches:
+        return VK_SUCCESS; // every cache is empty; merging is a no-op
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo64Local ci = {};
         if (!args.a[3] || !readStruct(args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;
@@ -10707,9 +11047,9 @@ void vk32_walkProperties2(U32 pNextAddr) {
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, subgroupSize), 32);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedStages), 0xffffffffu);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedOperations), 0xffffffffu);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, quadOperationsInAllStages), (U32)VK_TRUE);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedStages), vk64SubgroupSupportedStages());
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, supportedOperations), vk64SubgroupSupportedOperations());
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceSubgroupProperties, quadOperationsInAllStages), (U32)VK_FALSE);
                 break;
             }
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES: {
@@ -10783,9 +11123,9 @@ void vk32_walkProperties2(U32 pNextAddr) {
                 for (int i = 0; i < 16; i++) g_mem32->writeb(cur + 8 + i, uuid[i]);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, deviceNodeMask), 1);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSize), 32);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedStages), 0xffffffffu);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedOperations), 0xffffffffu);
-                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupQuadOperationsInAllStages), (U32)VK_TRUE);
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedStages), vk64SubgroupSupportedStages());
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupSupportedOperations), vk64SubgroupSupportedOperations());
+                vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, subgroupQuadOperationsInAllStages), (U32)VK_FALSE);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewViewCount), 6);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, maxMultiviewInstanceIndex), 0xFFFFFFFFu);
                 vk32_w32f(cur, offsetof(VkPhysicalDeviceVulkan11Properties, pointClippingBehavior), (U32)VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES);
@@ -11435,6 +11775,13 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     }
     case VK64_fn_vkCmdWaitEvents:
         return VK_SUCCESS; // immediate execution: nothing to wait for
+    case VK64_fn_vkGetPipelineCacheData: {
+        // See the 64-bit case: empty cache, *pDataSize (a 32-bit size_t) = 0.
+        if (args.a[2]) wr32_32((U32)args.a[2], 0);
+        return VK_SUCCESS;
+    }
+    case VK64_fn_vkMergePipelineCaches:
+        return VK_SUCCESS; // every cache is empty; merging is a no-op
     case VK64_fn_vkCreateQueryPool: {
         QueryPoolCreateInfo32Local ci = {};
         if (!args.a[3] || !readStruct32((U32)args.a[1], ci)) return VK_ERROR_INITIALIZATION_FAILED;

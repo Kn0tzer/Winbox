@@ -298,6 +298,8 @@ enum {
     VK64_fn_vkCmdSetExtendedDynamicState = 918,
     VK64_fn_vkCreateRenderPass2 = 919,
     VK64_fn_vkCmdNextSubpass = 920,
+    VK64_fn_vkGetPipelineCacheData = 921,     // (device, cache, pDataSize*, pData*) -> SUCCESS with size 0 (the bridge keeps no persistent pipeline cache blob)
+    VK64_fn_vkMergePipelineCaches = 922,      // (device, dstCache, srcCacheCount, pSrcCaches*) -> SUCCESS (merging empty caches is a no-op)
     VK64_fn__MAX
 };
 
@@ -548,6 +550,15 @@ API VkResult vkGetEventStatus(VkDevice dev, VkEvent e) {
 API VkResult vkCreateQueryPool(VkDevice dev, const void* ci, const void* alloc, VkQueryPool* out) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = P(ci); a.a[2] = P(alloc); a.a[3] = P(out);
     return (VkResult)vk64_trap(VK64_fn_vkCreateQueryPool, &a);
+}
+
+API VkResult vkGetPipelineCacheData(VkDevice dev, uint64_t cache, uintptr_t* size, void* data) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = cache; a.a[2] = P(size); a.a[3] = P(data);
+    return (VkResult)vk64_trap(VK64_fn_vkGetPipelineCacheData, &a);
+}
+API VkResult vkMergePipelineCaches(VkDevice dev, uint64_t dst, uint32_t count, const uint64_t* src) {
+    VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = dst; a.a[2] = count; a.a[3] = P(src);
+    return (VkResult)vk64_trap(VK64_fn_vkMergePipelineCaches, &a);
 }
 API void vkDestroyQueryPool(VkDevice dev, VkQueryPool q, const void* alloc) {
     VK64Args a = {{0}}; a.a[0] = dev; a.a[1] = q; a.a[2] = P(alloc);
@@ -1552,17 +1563,6 @@ API void vkCmdSetLineWidth(VkCommandBuffer cb, float width) { (void)cb; (void)wi
 /* A hint to return pool memory to the system; command pools here hold no recyclable memory. */
 API void vkTrimCommandPool(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
 API void vkTrimCommandPoolKHR(VkDevice dev, uint64_t pool, uint32_t flags) { (void)dev; (void)pool; (void)flags; }
-/* Pipeline caches are accepted and empty: pipelines are rebuilt by the WebGPU layer, so there is
- * no driver blob to export. A zero-size blob is a valid answer; creating a cache from it is a no-op. */
-API VkResult vkGetPipelineCacheData(VkDevice dev, uint64_t cache, uintptr_t* size, void* data) {
-    (void)dev; (void)cache; (void)data;
-    *size = 0;
-    return 0;     /* VK_SUCCESS */
-}
-API VkResult vkMergePipelineCaches(VkDevice dev, uint64_t dst, uint32_t count, const uint64_t* src) {
-    (void)dev; (void)dst; (void)count; (void)src;
-    return 0;     /* VK_SUCCESS */
-}
 
 // ===========================================================================
 // vkGetInstanceProcAddr / vkGetDeviceProcAddr — resolved GUEST-side, never trap
@@ -1590,8 +1590,8 @@ static const struct procEntry g_procs[] = {
     S(vkCmdSetLineWidth),
     S(vkTrimCommandPool),
     S(vkTrimCommandPoolKHR),
-    S(vkGetPipelineCacheData),
-    S(vkMergePipelineCaches),
+    E(vkGetPipelineCacheData, VK64_fn_vkGetPipelineCacheData),
+    E(vkMergePipelineCaches, VK64_fn_vkMergePipelineCaches),
     E(vkGetDeviceImageMemoryRequirements, VK64_fn_vkGetDeviceImageMemoryRequirements),
     E(vkCmdSetPrimitiveTopology, VK64_fn_vkCmdSetExtendedDynamicState),
     E(vkCmdSetPrimitiveTopologyEXT, VK64_fn_vkCmdSetExtendedDynamicState),
