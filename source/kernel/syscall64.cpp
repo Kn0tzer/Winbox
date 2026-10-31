@@ -142,6 +142,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_socket            41
 #define X64_SYS_connect           42
 #define X64_SYS_accept            43
+#define X64_SYS_accept4           288
 #define X64_SYS_bind              49
 #define X64_SYS_listen            50
 #define X64_SYS_getsockname       51
@@ -190,6 +191,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_rt_sigreturn      15
 #define X64_SYS_dup               32
 #define X64_SYS_dup2              33
+#define X64_SYS_dup3              292
 #define X64_SYS_getcwd            79
 #define X64_SYS_chdir             80
 #define X64_SYS_fcntl             72
@@ -247,6 +249,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_epoll_create      213
 #define X64_SYS_epoll_ctl         233
 #define X64_SYS_epoll_wait        232
+#define X64_SYS_epoll_pwait       281
 #define X64_SYS_pwrite64          18
 #define X64_SYS_readv             19
 #define X64_SYS_select            23
@@ -4962,6 +4965,25 @@ void ksyscall64(CPU64* cpu) {
                 ret = (U64)-K_ENOSYS;
             }
             break;
+        case X64_SYS_dup3: {
+            // dup3(oldfd, newfd, flags) — dup2 plus O_CLOEXEC control.
+            // The differences from dup2: oldfd == newfd is EINVAL (dup2
+            // is a no-op there), and any flag bit other than O_CLOEXEC
+            // is EINVAL. KProcess::dup2 already creates the new
+            // descriptor with its descriptor flags cleared, so the
+            // O_CLOEXEC bit is applied to the fresh descriptor here.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (a3 & ~(U64)K_O_CLOEXEC) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
+            if (a1 == a2) { ret = (U64)-K_EINVAL; break; }
+            U32 newFd = cpu->thread->process->dup2((FD)a1, (FD)a2);
+            if ((S32)newFd >= 0 && (a3 & K_O_CLOEXEC)) {
+                KFileDescriptorPtr dupFd = cpu->thread->process->getFileDescriptor((FD)a2);
+                if (dupFd) dupFd->descriptorFlags |= FD_CLOEXEC;
+            }
+            ret = (S32)newFd < 0 ? (U64)(S64)(S32)newFd : (U64)newFd;
+            break;
+        }
         case X64_SYS_getcwd: {
             // getcwd(buf, size) — copy current directory string out. Returns
             // the byte count including NUL on success (the libc wrapper
@@ -5471,6 +5493,18 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)kaccept(cpu->thread, (U32)a1, s32, lenSlot, 0);
             // (peer sockaddr writeback omitted — AF_UNIX accept returns an empty
             // name; wine doesn't rely on it for the server connection.)
+            break;
+        }
+        case X64_SYS_accept4: {
+            // accept4(sockfd, addr, addrlen, flags) — accept plus
+            // SOCK_NONBLOCK / SOCK_CLOEXEC applied to the accepted
+            // descriptor. Flag validation and the guest->internal flag
+            // translation live in kaccept, shared with the 32-bit
+            // accept4 entry point. Same sockaddr treatment as accept.
+            if (!cpu->thread) { ret = (U64)-K_ENOSYS; break; }
+            U32 lenSlot = 0;
+            U32 s32 = a2 ? bounceSockaddrTo32(cpu, 0, 256, &lenSlot) : 0;
+            ret = (U64)(S64)(S32)kaccept(cpu->thread, (U32)a1, s32, lenSlot, (U32)a4);
             break;
         }
         case X64_SYS_getsockname:
@@ -6409,11 +6443,22 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)rc;
             break;
         }
+        case X64_SYS_epoll_pwait: // epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask*, sigsetsize)
         case 441: { // epoll_pwait2(epfd, events, maxevents, timeout*, sigmask*, sigsetsize)
+            // The two calls differ only in the timeout argument:
+            // epoll_pwait takes a plain millisecond count, epoll_pwait2
+            // a timespec pointer. Everything else — sigset-size
+            // validation, the signal-mask swap scoped to the wait, the
+            // event bounce — is shared, so both numbers run this body.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
             if (!a2 || !a3 || a3 > 64) { ret = (U64)-K_EINVAL; break; }
             U32 timeoutMs = 0xffffffffu;
-            if (a4) {
+            if (nr == X64_SYS_epoll_pwait) {
+                // Negative waits forever (the 0xffffffff convention
+                // epollwait uses); finite values clamp like the
+                // timespec path below.
+                timeoutMs = (S32)a4 < 0 ? 0xffffffffu : std::min<U32>((U32)a4, 0xfffffffeu);
+            } else if (a4) {
                 const S64 sec = (S64)cpu->memory->readq(a4);
                 const S64 nsec = (S64)cpu->memory->readq(a4 + 8);
                 if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }

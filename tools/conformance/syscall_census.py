@@ -17,6 +17,21 @@ A syscall with no implementation is surface a guest process can call
 that the kernel answers with ENOSYS. The census says nothing about
 whether Wine/glibc actually call it; it measures the unexamined surface.
 
+Three-way classification (added for the FD-23 disposition pass):
+
+- x86-64: a dispatch case whose whole body is the central
+  unimplementedSyscall64() call is a "stub" — the number is recognised
+  and deliberately refused with a logged -ENOSYS (e.g. select, rseq).
+  A case that reaches unimplementedSyscall64() only on a fallback path
+  is "implemented" but also listed under "conditional_enosys".
+  Everything else with a case is "implemented"; named numbers with no
+  case at all are "missing" (they reach the same -ENOSYS fallback via
+  the switch default, which the dispatch-guard test pins).
+- i386: a table slot naming a handler whose whole body returns
+  -K_ENOSYS is a "stub" (e.g. clone3); a nullptr slot is "missing";
+  numbers past the end of the table are "beyond_table" (the caller
+  bounds-checks and answers -ENOSYS).
+
 Usage: syscall_census.py --source-dir DIR --unistd32 PATH --out DIR
 """
 import argparse
@@ -41,6 +56,16 @@ def brace_body(text, brace_index):
     return text[brace_index:]
 
 
+def case_bodies(switch_body):
+    """Yield (labels, body) for each case in a switch body."""
+    parts = re.split(r"(case\s+[^:]+:)", switch_body)
+    # parts[0] is the prelude; then alternating label/body chunks.
+    for i in range(1, len(parts) - 1, 2):
+        label = parts[i]
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        yield label, body
+
+
 def census_x64(path):
     text = open(path).read()
     # spec: name table
@@ -55,21 +80,47 @@ def census_x64(path):
         defines[dm.group(1)] = int(dm.group(2))
     # dispatch: the switch(nr) whose body references X64_SYS_
     dispatched = set()
+    stubbed = set()
+    conditional = set()
     for sm in re.finditer(r"switch \(nr\) \{", text):
         b = brace_body(text, sm.start() + len("switch (nr) "))
         if "X64_SYS_" not in b:
             continue
-        for cm in re.finditer(r"case\s+X64_SYS_(\w+)\s*:", b):
-            if cm.group(1) in defines:
-                dispatched.add(defines[cm.group(1)])
-        for cm in re.finditer(r"case\s+(\d+)\s*:", b):
-            dispatched.add(int(cm.group(1)))
+        # Group consecutive labels that share one body (case A: case B: body).
+        pending = []
+        for label, body in case_bodies(b):
+            nums = []
+            for cm in re.finditer(r"case\s+X64_SYS_(\w+)\s*:", label):
+                if cm.group(1) in defines:
+                    nums.append(defines[cm.group(1)])
+            for cm in re.finditer(r"case\s+(\d+)\s*:", label):
+                nums.append(int(cm.group(1)))
+            pending.extend(nums)
+            if not body.strip():
+                continue  # shared-body label; numbers stay pending
+            code = re.sub(r"//[^\n]*", "", body)
+            code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+            for nr in pending:
+                dispatched.add(nr)
+                if "unimplementedSyscall64" in code:
+                    if re.fullmatch(r"\s*ret\s*=\s*unimplementedSyscall64\(nr\);\s*break;\s*", code):
+                        stubbed.add(nr)
+                    else:
+                        conditional.add(nr)
+            pending = []
+    stubbed &= dispatched
+    conditional &= dispatched
+    implemented = dispatched - stubbed
     missing = {nr: names[nr] for nr in sorted(names) if nr not in dispatched}
     return {
         "file": "source/kernel/syscall64.cpp",
         "spec_source": "x64SyscallName table (Linux v6.12, in-file)",
         "named_syscalls": len(names),
-        "dispatched": len([nr for nr in names if nr in dispatched]),
+        "dispatched": len([nr for nr in names if nr in implemented]),
+        "implemented_count": len([nr for nr in names if nr in implemented]),
+        "stubbed_count": len([nr for nr in names if nr in stubbed]),
+        "stubbed": {nr: names[nr] for nr in sorted(names) if nr in stubbed},
+        "conditional_enosys": {nr: names[nr] for nr in sorted(names) if nr in conditional},
         "missing_count": len(missing),
         "missing": missing,
     }
@@ -103,6 +154,7 @@ def census_i386(path, unistd32):
     if cur.strip():
         entries.append(cur)
     implemented = set()
+    handler_of = {}
     for idx, e in enumerate(entries):
         e = e.strip()
         if not e:
@@ -110,7 +162,22 @@ def census_i386(path, unistd32):
         handler = e.split("//")[0].strip()
         if handler and handler != "nullptr":
             implemented.add(idx)
-    missing = {nr: spec[nr] for nr in sorted(spec) if nr not in implemented and nr < len(entries)}
+            handler_of[idx] = handler
+    # A named handler whose whole body is `return -K_ENOSYS;` is a stub:
+    # recognised and deliberately refused, not an implementation.
+    stubbed = set()
+    for idx, handler in handler_of.items():
+        hm = re.search(r"(?:^|\n)\s*(?:static\s+)?U32\s+" + re.escape(handler) +
+                       r"\s*\(CPU\* cpu, U32 eipCount\)\s*\{", text)
+        if not hm:
+            continue
+        hbody = brace_body(text, hm.end() - 1)
+        hcode = re.sub(r"//[^\n]*", "", hbody)
+        hcode = re.sub(r"/\*.*?\*/", "", hcode, flags=re.S)
+        if re.fullmatch(r"\{\s*return\s+-K_ENOSYS;\s*\}?", hcode.strip()):
+            stubbed.add(idx)
+    implemented -= stubbed
+    missing = {nr: spec[nr] for nr in sorted(spec) if nr not in implemented and nr not in stubbed and nr < len(entries)}
     beyond = {nr: spec[nr] for nr in sorted(spec) if nr >= len(entries)}
     return {
         "file": "source/kernel/syscall.cpp",
@@ -118,6 +185,9 @@ def census_i386(path, unistd32):
         "named_syscalls": len(spec),
         "table_slots": len(entries),
         "dispatched": len([nr for nr in spec if nr in implemented]),
+        "implemented_count": len([nr for nr in spec if nr in implemented]),
+        "stubbed_count": len([nr for nr in spec if nr in stubbed]),
+        "stubbed": {nr: spec[nr] for nr in sorted(spec) if nr in stubbed},
         "missing_count": len(missing),
         "missing": missing,
         "beyond_table_count": len(beyond),
