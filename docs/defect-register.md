@@ -894,7 +894,8 @@ do not close the entry until they land.
   `docs/reports/fd39-texparam-store-20261031.md`.
 - **FD-48 — After a stopgap session restart, a genuinely
   started session may never be certified by the hardened
-  readiness test.** *(Medium — the FD-47 certification is
+  readiness test. FIXED ON BRANCH lane-fd48-restart-cert
+  2026-10-31.** *(Medium — the FD-47 certification is
   fail-closed here: it withholds a true verdict rather
   than issuing a false one)* Found at the batch merge
   gate (lane-readygate + lane-fd39 + lane-fd23-syscalls,
@@ -925,7 +926,59 @@ do not close the entry until they land.
   (boot32-vkboot.log, boot32-vkboot2.log,
   vkboot-attempt1-artifacts/, d3d12-32.log) and
   `docs/reports/merge-batch3-20261031.md`.
+  RESOLUTION (lane-fd48-restart-cert, fix `509c26752`): the
+  undecidable point is settled — the explorer-open line the
+  observer matches is the 64-bit kernel's process-spawn signal
+  (`sys_openat64: OPENED '<path>' -> fd <n>`, printed on every
+  successful .exe open), and the 32-bit open paths
+  (`syscall_open` / `syscall_openat` in
+  `source/kernel/syscall.cpp`) never emitted an equivalent
+  line, so the handshake's explorer element had no counterpart
+  in ANY 32-bit session stream, single-session or restarted.
+  (The readiness lane's preserved single-session console
+  contains the full boot and zero such lines; how that run's
+  in-page `ready()` returned true cannot be reconstructed
+  from the preserved artifacts.) The fix emits the same signal
+  from both 32-bit open entry points, successful opens only,
+  in the same format after the syscall name. No readiness
+  rule was changed — the launcher and observer are
+  byte-identical to the integrated tree; the fix is entirely
+  on the evidence side. Proof on the branch's dist (Browser
+  export verified): 18 boot32-vkboot runs — 14 single-attempt
+  certifications; TWO restart-shape certifications (run 10:
+  dead first attempt, restarted session handle `0x10054`, 5
+  X11, explorer OPENED, suite PASS; run 18: two dead attempts
+  spending the full restart budget, third session certified
+  the same way); two genuinely dead restart runs (both
+  attempts killed by the FD-01 race) certified zero times in
+  the full 600 s budget although the explorer signal fired on
+  every attempt. Sabotage control on this branch's dist
+  (unsigned win32u member): the pin printed `0xc000000d`, the
+  old certification fires, the hardened certification refused
+  in-page for the whole window (0 X11, no explorer). JS unit
+  342/0; completeness 0 failures / 1 skip. Record:
+  `docs/reports/fd48-restart-certification-20261031.md`.
 
+- **FD-53 — With `BW64_DLLTRACE` set, the 64-bit
+  process-spawn signal changes dialect and 64-bit session
+  certification can never complete.** *(Low — behind a
+  diagnostic environment variable no session harness
+  currently sets; found by the FD-48 lane)* In
+  `sys_openat64` (`source/kernel/syscall64.cpp`) the default
+  spawn-signal line (`OPENED '<path>' -> fd <n>` on a
+  successful .exe open) is explicitly suppressed when
+  `BW64_DLLTRACE` is set, replaced by a `DLLTRACE … OPEN
+  '<path>'` line. The readiness observer matches the default
+  line, so in that configuration a 64-bit session's explorer
+  launch leaves no matching trace and the FD-47 handshake
+  can never complete — the same withheld-true-verdict shape
+  as FD-48, behind a flag. Fix direction (for its own lane,
+  since it touches the 64-bit path): emit the spawn signal in
+  the matched format regardless of the trace flag, or keep
+  the `OPENED` token in the trace line. Evidence: the
+  `sys_openat64` source itself (the `!getenv("BW64_DLLTRACE")`
+  condition on the default line) and
+  `docs/reports/fd48-restart-certification-20261031.md`.
 ---
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -954,6 +1007,7 @@ is behavioural, is re-proven there.
 | `lane-firstframe` | Six shared D3D12 first-frame walls (shader-capability dispositions, subgroup serving + advertisement timing, 23 shim-stubbed entry points, a second whitelist, 8-bit integer render targets) | JS 334/0; native 0 failed serial; the affected demo's D3D12 driver fully initializes through the website path |
 | `lane-fd23-syscalls` | FD-23 (in part): the undispatched-syscall disposition pass — three-way census tool, dynamic census of preserved run logs, and implementations of `epoll_pwait` (281), `accept4` (288), `dup3` (292) on the 64-bit side; FD-46: `accept4`'s `SOCK_CLOEXEC` silently dropped by a flag-encoding mismatch, fixed by validating/translating in `kaccept` for both ABIs | New dispatch-level tests fail before (logged -ENOSYS for 281/292; all three FAILED) and pass after; x64 suite 61/61, 0 FAILED, gate-standard serial mode; census re-run: implemented 193 -> 196, absent 168 -> 165. Main 661 suite NOT run on the branch (disk pressure; `kaccept` change is the identity for flags == 0) — merge gate must run the full native gate |
 | `lane-readygate` | FD-47: readiness certification hardened (plausible handle + five-X11 handshake + explorer launch); FD-43 closed by the four-arm measurement it demanded (CL-10/CL-11) | Sabotage pair: broken-dispatch control false-ready 10/10 under the old certification, 0/10 under the new (offline + in-page); genuine starts certify on the stamped arm (boot32-vkboot, celeste-boot, boot64-smoke pass); readiness unit tests red/green; JS 340/0; four-arm true rates A 0/10, B 0/10, D 0/10 |
+| `lane-fd48-restart-cert` | FD-48: the 32-bit open paths now emit the process-spawn signal (`OPENED '<path>' -> fd <n>` on successful .exe opens) that the FD-47 handshake's explorer element matches — the line existed only on the 64-bit path, so no 32-bit session could ever be certified; FD-53 registered (DLLTRACE dialect) | boot32-vkboot x18 on the branch dist: 14 single-attempt certifications, 2 restart-shape certifications (one after the full restart budget), 2 genuinely dead runs certified zero times; unsigned-control sabotage boot: old cert fires on `0xc000000d`, new cert 0, page cert 0; JS 342/0; no readiness rule changed |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
