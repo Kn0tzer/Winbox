@@ -98,6 +98,19 @@ do not close the entry until they land.
   hardened readiness test and the four-arm measurement
   named in FD-43. The restart stopgap stays in the
   launcher.
+  UPDATE (2026-10-31, lane-readygate): both prerequisites
+  are now met — the readiness test is hardened (FD-47)
+  and the four-arm measurement has run (FD-43, closed
+  CL-10). In the anchor-harness shape with the stopgap's
+  budget exhausted, the true first-attempt start rate is
+  0/10 on the stock build, 0/10 on the FD-40-stamped
+  build, and 0/10 on the pre-rebuild baseline build
+  (692875bd8): the race is exactly as alive as the
+  pre-rebuild baselines measured, and the merge wave did
+  not change it. This defect remains OPEN — re-closure
+  still requires the unix-side fix itself, merged,
+  deployed, and re-measured live. Record:
+  `docs/reports/readiness-hardening-20261031.md`.
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -721,7 +734,7 @@ do not close the entry until they land.
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
 - **FD-43 — The FD-01 desktop-wait fix is present in no
   shipped binary; the measured first-visit "improvement"
-  was a readiness false positive — ATTRIBUTED 2026-10-31.** *(Medium — a closed fix's evidence chain)*
+  was a readiness false positive — ATTRIBUTED 2026-10-31; CLOSED 2026-10-31 (CL-10) once the hardening and the four-arm measurement it demanded were delivered (FD-47, lane-readygate).** *(Medium — a closed fix's evidence chain)*
   FD-01's patch edits `get_desktop_window` and
   `load_desktop_driver`, functions that exist only in the
   unix-side `win32u.so` — in neither PE win32u.dll, stock or
@@ -779,6 +792,29 @@ do not close the entry until they land.
   Celeste qualification is the reviewing lane's);
   `docs/reports/fd40-fix-20261031.md` ("Found on the
   way").
+  RESOLUTION (2026-10-31, lane-readygate): the two things
+  this entry demanded now exist. The readiness
+  certification is hardened (FD-47): an NTSTATUS-shaped
+  handle is rejected loudly, and certification requires
+  the five-connection X11 handshake and the explorer
+  launch. The four-arm measurement has run under the
+  hardened certification — 10 boots per arm, alternating,
+  fresh profile each, machine load logged per boot,
+  verdicts classified offline from the complete console
+  stream: stock 0/10 first-attempt starts, stamped
+  (FD-40 fix) 0/10, pre-rebuild baseline (692875bd8)
+  0/10, and the unsigned control false-ready 10/10 under
+  the old certification against 0/10 under the new,
+  offline and in-page alike. The true first-attempt rate
+  in the anchor-harness shape is at the floor on every
+  healthy build; the merge wave changed nothing (the
+  question this entry's review left undecidable is
+  answered: the baseline arm matches the merged arms);
+  the race's remedy remains the unix-side win32u.so
+  backport build. CLOSED — see CL-10. Record:
+  `docs/reports/readiness-hardening-20261031.md`; data:
+  `test-results/readygate-summary.json` and the per-boot
+  `test-results/suite-readygate-<arm>-<i>/boot.json`.
 - **FD-44 — Guest platform threads can outlive the
   thread state they execute on.** *(Medium, emulator
   thread lifetime)* Characterized by the FD-41/FD-42 lane
@@ -802,6 +838,69 @@ do not close the entry until they land.
   *(Numbered FD-43 on the lane branch; renumbered at
   integration — FD-43 was independently taken by the
   FD-40 fix lane's attribution entry above.)*
+- **FD-47 — The session-readiness certification accepted
+  any hex value as a window handle, certifying sessions
+  with no desktop as started. FIXED ON BRANCH
+  lane-readygate 2026-10-31 — see CL-11.** *(High — it
+  silently voided every start measurement taken on a
+  build carrying the unsigned win32u.dll since 14a82a302,
+  including a closure of FD-01)*
+  The launcher's session observer
+  (`project/emscripten/wine64-launcher.js`,
+  `observeSessionOutput`) set desktop readiness from the
+  desktop pin's `deskpin: READY hwnd=0x...` line alone,
+  accepting any hex value. On a build whose win32u
+  syscalls are never dispatched (FD-40), the pin's window
+  creation "returns" the NTSTATUS error `0xC000000D`; the
+  pin's own NULL-only check passes it through, and the
+  launcher certified the session started with no desktop
+  at all — no explorer, zero X11 connections, and the
+  failure signature unprintable because the code that
+  prints it never runs (attribution: FD-43). Every
+  consumer of `bwRuntime.ready()` inherited the false
+  verdict: the suite's `bootGuest`,
+  `web/tests/boot-rate.mjs`'s "started" class, and
+  `web/tests/boot-diag.mjs`. The fix: certification now
+  requires the whole startup handshake, in any order —
+  a plausible handle (nonzero, top bit clear; the
+  NTSTATUS warning/error classes `0x8.......` /
+  `0xC.......` are rejected and logged loudly, once per
+  distinct value, as `BW64-FAIL
+  component=launcher.session`), at least five accepted
+  X11 client connections (a healthy boot makes exactly
+  five on both arches; dead boots stall at two), and
+  explorer.exe actually opened. The §4.68 restart
+  watcher is untouched. `boot64-smoke` never used the
+  flag (it asserts server-stream evidence) and is
+  unaffected; `boot-rate.mjs`'s own pin-line signal is
+  negative-only (it can withhold a "race-failed" label,
+  never certify a start). Proof: the readiness unit
+  contract tests are red/green — four new scenarios fail
+  against the old launcher, all pass against the new;
+  full JS unit suite 340/0. The four-arm measurement
+  (FD-43 resolution) is the sabotage pair: the
+  broken-dispatch control is false-ready 10/10 under the
+  old certification and certified 0/10 under the new —
+  offline, and in-page through the hardened launcher in
+  the control's own dist — while genuine starts certify
+  under the new rule on the stamped arm's dist (the
+  suite's boot32-vkboot passes through the hardened
+  predicate: handle `0x10052`, five X11 connections,
+  winstation reached; celeste-boot passes with a
+  pixel-verified frame; boot64-smoke passes; a genuine
+  32-bit start also certified in calibration on the live
+  dist, handle `0x1004c`). The pin fixture itself still
+  prints whatever non-NULL value creation returns;
+  hardening the consumer rather than the canary is the
+  fix — rebuilding the committed pin blobs to change
+  their printout would court exactly the source/binary
+  divergence FD-40 was. Record:
+  `docs/reports/readiness-hardening-20261031.md`.
+  *(Numbered FD-44 on the lane branch; renumbered
+  FD-47 at integration — FD-44 was already taken on
+  the integration branch by the thread-lifetime entry
+  above.)*
+
 
 ---
 
@@ -830,6 +929,7 @@ is behavioural, is re-proven there.
 | `lane-alkhaser-int2d` | Interrupt-delivery class: software interrupts delivered with the wrong saved code so the guest ignored them; the breakpoint instruction was never delivered and parked the thread | Proven through the website path (the checker completes whole sections it previously died in) |
 | `lane-firstframe` | Six shared D3D12 first-frame walls (shader-capability dispositions, subgroup serving + advertisement timing, 23 shim-stubbed entry points, a second whitelist, 8-bit integer render targets) | JS 334/0; native 0 failed serial; the affected demo's D3D12 driver fully initializes through the website path |
 | `lane-fd23-syscalls` | FD-23 (in part): the undispatched-syscall disposition pass — three-way census tool, dynamic census of preserved run logs, and implementations of `epoll_pwait` (281), `accept4` (288), `dup3` (292) on the 64-bit side; FD-46: `accept4`'s `SOCK_CLOEXEC` silently dropped by a flag-encoding mismatch, fixed by validating/translating in `kaccept` for both ABIs | New dispatch-level tests fail before (logged -ENOSYS for 281/292; all three FAILED) and pass after; x64 suite 61/61, 0 FAILED, gate-standard serial mode; census re-run: implemented 193 -> 196, absent 168 -> 165. Main 661 suite NOT run on the branch (disk pressure; `kaccept` change is the identity for flags == 0) — merge gate must run the full native gate |
+| `lane-readygate` | FD-47: readiness certification hardened (plausible handle + five-X11 handshake + explorer launch); FD-43 closed by the four-arm measurement it demanded (CL-10/CL-11) | Sabotage pair: broken-dispatch control false-ready 10/10 under the old certification, 0/10 under the new (offline + in-page); genuine starts certify on the stamped arm (boot32-vkboot, celeste-boot, boot64-smoke pass); readiness unit tests red/green; JS 340/0; four-arm true rates A 0/10, B 0/10, D 0/10 |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -1028,6 +1128,30 @@ dead-start fix and needs composition care.
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
 
 ---
+
+- **CL-10 — The FD-01 "improvement" was a readiness false
+  positive and the fix shipped in no binary (was
+  FD-43).** Closed by its own named conditions being
+  met, not by a fix to the race: the hardened readiness
+  certification (FD-47 / CL-11) and the four-arm
+  measurement are delivered on `lane-readygate` — the
+  broken-dispatch control false-ready 10/10 under the
+  old certification against 0/10 under the new; true
+  first-attempt rates 0/10 stock, 0/10 stamped, 0/10
+  pre-rebuild baseline. FD-01 remains open on the race
+  itself. Record:
+  `docs/reports/readiness-hardening-20261031.md`.
+- **CL-11 — The readiness certification accepted an
+  NTSTATUS error value as a window handle (was
+  FD-47).** Fixed on `lane-readygate`: the launcher
+  requires the plausible-handle + five-connection X11 +
+  explorer handshake before certifying a session
+  started; NTSTATUS-shaped values are refused loudly.
+  Unit contract tests red/green; JS suite 340/0;
+  sabotage pair in the four-arm measurement (control
+  10/10 false-ready under the old rule, 0/10 under the
+  new, offline and in-page; genuine starts certify).
+  Record: `docs/reports/readiness-hardening-20261031.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
