@@ -113,10 +113,31 @@ static U32 syscall_write(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+// Process-spawn signal (FD-48): the 64-bit open path logs every successful
+// .exe open by default ("sys_openat64: OPENED '<path>' -> fd <n>", see
+// sys_openat64 in syscall64.cpp) because program spawns are rare -- one per
+// process -- and the launcher's session-readiness handshake detects the
+// shell's launch from that line. The 32-bit open paths never emitted it, so
+// in a 32-bit session the handshake's explorer-launch element had no
+// counterpart in the guest stream at all: a session that demonstrably
+// reached a real desktop (plausible deskpin handle, five X11 connections,
+// explorer running in the server traces) could never be certified, most
+// visibly after the boot stopgap's restart, where the merge gate caught it
+// (FD-48). Emit the same signal here, in the same format after the syscall
+// name, so the evidence means exactly the same thing on both architectures:
+// a successful open of an .exe image, nothing more and nothing less. Failed
+// opens (negative errno results) never produce the line.
+static void logExeSpawnSignal(const char* syscallName, const BString& name, U32 result) {
+    if ((S32)result >= 0 && strstr(name.c_str(), ".exe")) {
+        klog_fmt("%s: OPENED '%s' -> fd %d", syscallName, name.c_str(), (int)result);
+    }
+}
+
 static U32 syscall_open(CPU* cpu, U32 eipCount) {
     BString name = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "open: name=%s flags=%x", name.c_str(), ARG2);
     U32 result = cpu->thread->process->open(name, ARG2);
+    logExeSpawnSignal("sys_open", name, result);
 #ifdef _DEBUG
     if (result>1000) {
         printf("open: name=%s flags=%x result=%X\n", name.c_str(), ARG2, result);
@@ -1611,6 +1632,7 @@ static U32 syscall_openat(CPU* cpu, U32 eipCount) {
     }
 #endif
     U32 result = cpu->thread->process->openat(ARG1, name, ARG3);
+    logExeSpawnSignal("sys_openat", name, result);
 #ifdef _DEBUG
     if (result>1000 && !name.contains("font") && !name.startsWith("/sys")) {
         printf("openat: dirfd=%d name=%s flags=%x result=%x\n", (int)ARG1, name.c_str(), ARG3, result);
