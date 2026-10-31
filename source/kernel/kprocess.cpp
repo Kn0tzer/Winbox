@@ -371,6 +371,49 @@ KThread* KProcess::getThreadById(U32 tid) {
     return this->threads[tid];
 }
 
+KThread* KProcess::tryGetThreadByIdRef(U32 tid, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<BOXEDWINE_MUTEX> lock(threadsMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    KThread* thread = this->threads[tid];
+    if (thread) {
+        thread->addRef();
+    }
+    return thread;
+#else
+    return getThreadByIdRef(tid);
+#endif
+}
+
+KThread* KProcess::getThreadByIdRef(U32 tid) {
+    // FD-44: the reference is taken while the table lock is held, so
+    // the thread cannot be freed between the lookup and the addRef --
+    // removal from the table (which precedes any free) needs the same
+    // lock, and deleteThread only releases the table's reference.
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+    KThread* thread = this->threads[tid];
+    if (thread) {
+        thread->addRef();
+    }
+    return thread;
+}
+
+KThread* KProcess::getThreadRef() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+    if (this->threads.size() == 0) {
+        return nullptr;
+    }
+    KThread* thread = this->threads.begin()->value;
+    if (thread) {
+        thread->addRef();
+    }
+    return thread;
+}
+
 KThread* KProcess::tryGetThreadById(U32 tid, bool& lockBlocked) {
     lockBlocked = false;
 #ifdef BOXEDWINE_MULTI_THREADED
@@ -407,7 +450,12 @@ void KProcess::deleteThread(KThread* thread) {
                 delete this->memory; // this might call KThread::currentThread, so don't delete thread before this
                 this->memory = nullptr;
             }
-            delete thread;
+            // FD-44: release the table's reference instead of deleting
+            // outright. A cross-thread delivery (signal, tgkill,
+            // siginfo queue) may still hold a reference taken at its
+            // table lookup; the object is destroyed when the last
+            // reference drains, never underneath an in-flight user.
+            thread->releaseRef();
         }
     }
     if (needsExitGroup) {
@@ -1298,6 +1346,13 @@ void KProcess::signalProcess(U32 signal) {
     // give each thread a chance to run a signal, some or all of them might have the signal masked off.  
     // In that case when the user unmasks the signal with sigprocmask it will be caught then
     iterateThreads([](KThread* thread) {
+        // FD-44: a thread in teardown takes no new process-directed
+        // deliveries (the same rule the tgkill path applies). It is
+        // already on its way out; running its signal machinery from
+        // here would race its deleteThread.
+        if (thread->terminating) {
+            return true;
+        }
         if (thread->waitingCond) {
             BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->waitingCondSync);
             if (thread->waitingCond) {
@@ -4299,9 +4354,17 @@ void KProcess::iterateThreads(std::function<bool(KThread*)> callback) {
         }
     }
     for (auto& id : threadIds) {
-        KThread* thread = getThreadById(id);
-        if (thread && !callback(thread)) {
-            return;
+        // FD-44: hold a reference across the callback. The callback
+        // runs the target's signal machinery (signalProcess), which is
+        // exactly the delivery that used to race the target's
+        // teardown free.
+        KThread* thread = getThreadByIdRef(id);
+        if (thread) {
+            bool keepGoing = callback(thread);
+            thread->releaseRef();
+            if (!keepGoing) {
+                return;
+            }
         }
     }
 }
