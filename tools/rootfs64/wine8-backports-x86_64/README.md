@@ -35,7 +35,11 @@ The DLLs in this directory are **the same Wine 8.0 code the rest of
 the tree ships**, rebuilt from the pinned `wine-8.0` source tag with
 small backport patches. The first three add exactly the missing
 exports above, mirroring how upstream Wine later implemented them;
-the fourth changes no export surface at all:
+the fourth changes no export surface at all. The fourth patch's code
+lives in the unix half of its module, so `win32u.so` is rebuilt and
+shipped alongside `win32u.dll` from the same patched source tree —
+until 2026-10-31 only the PE half was rebuilt, and the patch shipped
+in no binary at all (FD-01, reopened per FD-43):
 
 | patch | change |
 | --- | --- |
@@ -58,7 +62,9 @@ It clones the `wine-8.0` tag, applies the patches, cross-builds
 the PE DLLs with the host's mingw toolchain (native build tools
 tree + `--host=x86_64-w64-mingw32` tree; no emulated container — the
 linux/amd64 container's QEMU layer is unreliable on this ARM64 host),
-and copies the DLLs here, printing their sha256 for re-pinning.
+and copies the DLLs here, printing their sha256 for re-pinning. A
+third tree (--host=x86_64-linux-gnu) builds the unix half of win32u
+(`win32u.so`) from the same patched source and copies it here too.
 
 ## Packaging integrity
 
@@ -73,6 +79,7 @@ sha256 of these exact files, verified by
 | kernel32.dll | 859511 | e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793 |
 | iphlpapi.dll | 380852 | 2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86 |
 | win32u.dll | 354218 | 49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708 |
+| win32u.so | 1428136 | bffd9036f5c6149e02fe54720b0429acaecc9eb5a7725103a1579615ca8e7fc3 |
 
 Staged into `wine64.zip` by `tools/rootfs64/build-wine64-zip.sh`
 (container path) and `tools/rootfs64/stage-wine8-backports.sh`

@@ -98,6 +98,10 @@ WINE8_BACKPORT_PINS = {
     'kernel32.dll': 'e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793',
     'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
     'win32u.dll': '49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708',
+    # The unix half of win32u (FD-01): the desktop-wait patch lives in
+    # this module; pinning only the DLL is what let the patch ship in
+    # no binary (FD-43).
+    'win32u.so': 'bffd9036f5c6149e02fe54720b0429acaecc9eb5a7725103a1579615ca8e7fc3',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):

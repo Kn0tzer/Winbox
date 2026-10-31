@@ -4,9 +4,13 @@
 # tag plus the backport patches in tools/buildWine/patches/.
 # See wine8-backports-x86_64/README.md for why these exist.
 #
-# Build shape: two out-of-tree builds sharing one patched source tree.
+# Build shape: three out-of-tree builds sharing one patched source tree.
 #   1. a native tools tree (winebuild/widl/wrc/wmc/winegcc for the host),
-#   2. a --host=x86_64-w64-mingw32 tree that emits only PE binaries.
+#   2. a --host=x86_64-w64-mingw32 tree that emits only PE binaries,
+#   3. a --host=x86_64-linux-gnu tree that emits the unix half of win32u
+#      (win32u.so). The desktop-wait patch's functions live in the unix
+#      half: a win32u.dll rebuilt without its win32u.so ships the patch
+#      in no binary at all (FD-01, reopened 2026-10-31 per FD-43).
 # Everything compiles with the host's native toolchain — deliberately NOT
 # in the linux/amd64 container, whose binfmt/QEMU layer crashes on this
 # ARM64 host (see stage-wine64-payloads.sh's header).
@@ -27,7 +31,7 @@ PATCHES=(
 )
 DLLS=(user32 kernelbase kernel32 iphlpapi win32u)
 
-for tool in git make flex bison x86_64-w64-mingw32-gcc; do
+for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
 done
 
@@ -102,5 +106,24 @@ for name in sys.argv[2:]:
         f.write(sig)
     print("--- stamped Wine builtin signature: " + name + ".dll ---")
 PYEOF
+# 3. x86_64-linux-gnu cross tree (ELF unix modules only): build the
+# unix half of win32u from the same patched source tree as the PE half
+# above, so the two halves of the desktop-wait fix can never drift.
+mkdir -p "$WORK/x64linux-build"
+cd "$WORK/x64linux-build"
+if [ ! -f Makefile ]; then
+    CFLAGS="-O1" "$WORK/wine/configure" --host=x86_64-linux-gnu --enable-win64 \
+        --with-wine-tools="$WORK/tools-build" --disable-tests \
+        --without-freetype --without-fontconfig --without-gnutls \
+        --without-gstreamer --without-dbus --without-sdl --without-vulkan \
+        --without-opengl --without-osmesa --without-alsa --without-pulse \
+        --without-cups --without-udev --without-usb --without-sane \
+        --without-gphoto --without-krb5 --without-ldap --without-openal \
+        --without-pcap --without-v4l2 --without-x > configure.log 2>&1
+fi
+make -j"$(nproc)" dlls/win32u/win32u.so > make-unix.log 2>&1
+cp "$WORK/x64linux-build/dlls/win32u/win32u.so" "$OUT/win32u.so"
+echo "--- built win32u.so (unix half) ---"
+
 echo "=== sha256 (re-pin these in check_runtime_completeness.py + README.md) ==="
-sha256sum "$OUT"/*.dll
+sha256sum "$OUT"/*.dll "$OUT"/win32u.so
