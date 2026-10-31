@@ -88,6 +88,7 @@ void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
 void testMemfdSeals();
 void testEventfdFlags();
+void testKernelGrace();
 void testDevInputJoystick();
 void testTimerfdProcessAbiProbes();
 void testSetitimerProbes();
@@ -149,6 +150,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testKernelGrace, "Test kernel object graceful error answers"},
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
@@ -823,6 +825,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
     {testMemfdSeals, "Test memfd seal enforcement"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testKernelGrace, "Test kernel object graceful error answers"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
     {testSetitimerProbes, "Test setitimer expiration probes"},
