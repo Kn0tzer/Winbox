@@ -80,7 +80,19 @@ void FsNode::loadChildren() {
         bool traceLink = getenv("BW64_LINKTRACE") && this->path.contains("dosdevices");
         if (this->nativePath.length()) {
             std::vector<Platform::ListNodeResult> results;
-            Platform::listNodes(nativePath, results);
+            bool listed = Platform::listNodes(nativePath, results);
+            if (!listed && Fs::doesNativePathExist(nativePath)) {
+                // The host path exists but could not be listed, so the
+                // guest is about to see an empty directory that is not
+                // empty. (Zip-backed nodes legitimately have no
+                // materialized native path; those do not reach this
+                // line because the existence check fails first.)
+                static std::atomic<unsigned long long> listFailures{0};
+                unsigned long long n = ++listFailures;
+                if (n <= 64 || n % 1024 == 0) {
+                    klog_fmt("BW64-FAIL dir-list path=%s native=%s outcome=directory presented as empty count=%llu", this->path.c_str(), nativePath.c_str(), n);
+                }
+            }
             if (traceLink) {
                 klog_fmt("LINKTRACE loadChildren path='%s' native='%s' found %d entries",
                          this->path.c_str(), this->nativePath.c_str(), (int)results.size());

@@ -83,7 +83,7 @@ unsigned long long int Platform::getMicroCounter()
 }
 #endif
 
-void Platform::listNodes(BString nativePath, std::vector<ListNodeResult>& results) {
+bool Platform::listNodes(BString nativePath, std::vector<ListNodeResult>& results) {
 	DIR *dp = NULL;
 	struct dirent *dptr = NULL;
 
@@ -95,7 +95,12 @@ void Platform::listNodes(BString nativePath, std::vector<ListNodeResult>& result
 			}
         }
         closedir(dp);
+        return true;
     }
+    // Callers that care can now tell "could not read this directory"
+    // apart from "this directory is empty"; the two used to be the
+    // same empty result.
+    return false;
 }
 
 #ifndef __MACH__

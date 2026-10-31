@@ -33,9 +33,22 @@ bool FsZipNode::moveToFileSystem(std::shared_ptr<FsNode> node) {
     if (node->isDirectory())
         return false;
     if (node->isLink()) {
+        // The old code never checked this open: on failure it wrote to and
+        // closed an invalid handle and still reported success, so the
+        // caller believed the link existed on the host when nothing had
+        // been written.
         U32 to = ::open((node->nativePath+EXT_LINK).c_str(), O_WRONLY | O_CREAT | O_BINARY, 0666);
-        ::write(to, node->link.c_str(), node->link.length());
+        if (to == 0xFFFFFFFF) {
+            klog_fmt("BW64-FAIL zip-extract entry=%s dest=%s errno=%d outcome=link not written", node->path.c_str(), (node->nativePath+EXT_LINK).c_str(), errno);
+            return false;
+        }
+        bool wrote = ::write(to, node->link.c_str(), node->link.length()) == (int)node->link.length();
         ::close(to);
+        if (!wrote) {
+            klog_fmt("BW64-FAIL zip-extract entry=%s dest=%s errno=%d outcome=partial link removed", node->path.c_str(), (node->nativePath+EXT_LINK).c_str(), errno);
+            unlink((node->nativePath+EXT_LINK).c_str());
+            return false;
+        }
         return true;
     }
 
@@ -44,21 +57,36 @@ bool FsZipNode::moveToFileSystem(std::shared_ptr<FsNode> node) {
     U32 to = ::open(node->nativePath.c_str(), O_WRONLY | O_CREAT | O_BINARY, 0666);
     if (to != 0xFFFFFFFF) {
         U8 buffer[4096];
+        U64 copied = 0;
+        bool writeFailed = false;
         U32 read = from->readNative(buffer, 4096);
         while (read) {
-            if (::write(to, buffer, read) != (int)read)
-                return false;
+            if (::write(to, buffer, read) != (int)read) {
+                writeFailed = true;
+                break;
+            }
+            copied += read;
             read = from->readNative(buffer, 4096);
         }
         ::close(to);
+        if (writeFailed || copied != this->zipInfo.length) {
+            // A partial extraction left at nativePath is served as the real
+            // file from now on (the node checks existence, not length), so
+            // remove it and let a later open retry from the zip instead.
+            // The old code also leaked `to` on the write-failure path.
+            klog_fmt("BW64-FAIL zip-extract entry=%s dest=%s copied=%llu expected=%llu outcome=partial file removed", node->path.c_str(), node->nativePath.c_str(), (unsigned long long)copied, (unsigned long long)this->zipInfo.length);
+            unlink(node->nativePath.c_str());
+        } else {
+            struct utimbuf settime = { 0, 0 };
 
-        struct utimbuf settime = { 0, 0 };
+            settime.actime = this->zipInfo.lastModified / 1000;
+            settime.modtime = this->zipInfo.lastModified / 1000;
+            utime(node->nativePath.c_str(), &settime);
 
-        settime.actime = this->zipInfo.lastModified / 1000;
-        settime.modtime = this->zipInfo.lastModified / 1000;
-        utime(node->nativePath.c_str(), &settime);
-
-        result = true;
+            result = true;
+        }
+    } else {
+        klog_fmt("BW64-FAIL zip-extract entry=%s dest=%s errno=%d outcome=file not extracted", node->path.c_str(), node->nativePath.c_str(), errno);
     }
     from->close();
     return result;

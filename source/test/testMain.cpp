@@ -91,7 +91,13 @@ void testGl64ClientArrayIndexRange();
 void testTimerfdCore();
 void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
+void testMemfdCreate();
 void testMemfdSeals();
+void testMemfdNodeOps();
+void testFsReadNativeFile();
+void testFsZipReadBadCrc();
+void testFsZipExtractCorrupt();
+void testFsFileOpenNodeIoErrors();
 void testEventfdFlags();
 void testKernelGrace();
 void testDevInputJoystick();
@@ -154,7 +160,13 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
+    {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testKernelGrace, "Test kernel object graceful error answers"},
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
@@ -835,7 +847,13 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
+    {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
     {testKernelGrace, "Test kernel object graceful error answers"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},

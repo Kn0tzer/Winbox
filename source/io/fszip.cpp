@@ -164,8 +164,18 @@ bool FsZip::init(BString zipPath, BString mount) {
                 zipInfo[i].isLink = true;
                 unzSetOffset64(zipfile, zipInfo[i].offset);
                 unzOpenCurrentFile(zipfile);
-                U32 read = unzReadCurrentFile(this->zipfile, tmp, MAX_FILEPATH_LEN);
-                tmp[read] = 0;
+                // unzReadCurrentFile returns a negative error code on failure;
+                // the old code stored it in a U32 and wrote tmp[read] = 0 at
+                // that huge offset (and a full-length read overflowed tmp by
+                // the terminator byte). Read one byte short so the
+                // terminator always fits, and degrade a failed read to an
+                // empty link with a trace.
+                int linkRead = unzReadCurrentFile(this->zipfile, tmp, MAX_FILEPATH_LEN - 1);
+                if (linkRead < 0) {
+                    klog_fmt("BW64-FAIL zip-link entry=%s zerr=%d outcome=link treated as empty", zipInfo[i].filename.c_str(), linkRead);
+                    linkRead = 0;
+                }
+                tmp[linkRead] = 0;
                 zipInfo[i].link = BString::copy(tmp);
                 unzCloseCurrentFile(this->zipfile);
             }
@@ -268,10 +278,29 @@ bool FsZip::readFileFromZip(BString zipFile, BString file, BString& result) {
         
         if (file == tmp) {
             char* buffer = new char[file_info.uncompressed_size+1];
-            unzOpenCurrentFile(z);            
-            U32 read = unzReadCurrentFile(z, buffer, (unsigned)file_info.uncompressed_size);
+            unzOpenCurrentFile(z);
+            // A negative return is an error code, not a length: the old code
+            // stored it in a U32 and wrote buffer[read] = 0 at that offset.
+            // A short read was silently returned as the file's contents.
+            int read = unzReadCurrentFile(z, buffer, (unsigned)file_info.uncompressed_size);
+            if (read < 0 || (U32)read != file_info.uncompressed_size) {
+                klog_fmt("BW64-FAIL zip-readfile entry=%s read=%d expected=%u outcome=read refused", tmp, read, (U32)file_info.uncompressed_size);
+                delete[] buffer;
+                unzCloseCurrentFile(z);
+                unzClose(z);
+                return false;
+            }
             buffer[read]=0;
-            unzCloseCurrentFile(z);
+            // A CRC mismatch is only reported by unzCloseCurrentFile in
+            // this minizip, and its result used to be discarded, so a
+            // corrupted entry was served as good data.
+            int closeResult = unzCloseCurrentFile(z);
+            if (closeResult != UNZ_OK) {
+                klog_fmt("BW64-FAIL zip-readfile entry=%s zerr=%d outcome=corrupt entry refused", tmp, closeResult);
+                delete[] buffer;
+                unzClose(z);
+                return false;
+            }
             unzClose(z);
             result = BString::copy(buffer);
             delete[] buffer;
@@ -314,8 +343,14 @@ bool FsZip::extractFileFromZip(BString zipFile, BString file, BString path) {
                 U8 buffer[4096] = {};
 
                 while (totalRead<file_info.uncompressed_size) {
-                    U32 read = unzReadCurrentFile(z, buffer, sizeof(buffer));
-                    if (!read) {
+                    // unzReadCurrentFile returns a negative error code on
+                    // failure; stored in a U32 it looked like a huge read
+                    // and was handed to fwrite as a length.
+                    int read = unzReadCurrentFile(z, buffer, sizeof(buffer));
+                    if (read <= 0) {
+                        if (read < 0) {
+                            klog_fmt("BW64-FAIL zip-extract entry=%s zerr=%d read=%u of %u outcome=extraction failed", tmp, read, totalRead, (U32)file_info.uncompressed_size);
+                        }
                         break;
                     }
                     totalRead += read;
@@ -324,7 +359,14 @@ bool FsZip::extractFileFromZip(BString zipFile, BString file, BString path) {
                 fclose(f);
                 unzCloseCurrentFile(z);
                 unzClose(z);
-                return totalRead==file_info.uncompressed_size;
+                if (totalRead != file_info.uncompressed_size) {
+                    // Do not leave a truncated file behind to be served as
+                    // the real one; the caller retries or reports.
+                    klog_fmt("BW64-FAIL zip-extract entry=%s read=%u of %u outcome=partial file removed", tmp, totalRead, (U32)file_info.uncompressed_size);
+                    unlink(outPath.c_str());
+                    return false;
+                }
+                return true;
             } else {
                 unzCloseCurrentFile(z);
                 unzClose(z);
@@ -453,8 +495,11 @@ BString FsZip::unzip(BString zipFile, BString path, std::function<void(U32, BStr
             U8 buffer[4096] = {};
 
             while (totalRead < file_info.uncompressed_size) {
-                U32 read = unzReadCurrentFile(z, buffer, sizeof(buffer));
-                if (!read) {
+                // Negative returns are error codes, not lengths (see
+                // extractFileFromZip); a short read used to be closed and
+                // reported to the caller as a successful extraction.
+                int read = unzReadCurrentFile(z, buffer, sizeof(buffer));
+                if (read <= 0) {
                     break;
                 }
                 totalRead += read;
@@ -462,7 +507,13 @@ BString FsZip::unzip(BString zipFile, BString path, std::function<void(U32, BStr
             }
             fclose(f);
             unzCloseCurrentFile(z);
-            compressedFileSizeProcessed += file_info.compressed_size;            
+            if (totalRead != file_info.uncompressed_size) {
+                klog_fmt("BW64-FAIL zip-unzip entry=%s read=%u of %u outcome=partial file removed, extraction failed", tmp, totalRead, (U32)file_info.uncompressed_size);
+                unlink(outPath.c_str());
+                unzClose(z);
+                return "Could not extract file from zip file: " + fileName;
+            }
+            compressedFileSizeProcessed += file_info.compressed_size;
         } else {
             unzCloseCurrentFile(z);
             unzClose(z);
