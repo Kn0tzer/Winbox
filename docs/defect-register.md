@@ -130,7 +130,8 @@ do not close the entry until they land.
   Evidence: `docs/reports/cleanlog-ksubsys-20261030.md`
   (branch `lane-cleanlog-ksubsys`, "deliberately left alone").
 - **FD-06 — 32-bit port-IO instructions panic and kill the whole
-  emulator.** *(High)* The twelve INS-string handlers in the
+  emulator. FIXED 2026-10-31 on branch `lane-fd06-portio`
+  (commit `d88fdc61a`) — see Section B.** *(Was High)* The twelve INS-string handlers in the
   32-bit interpreter are bare panics on unimplemented port IO, and
   `int99` panics on an unregistered callback index — both
   reachable by ordinary guest execution. No graceful answer was
@@ -138,7 +139,14 @@ do not close the entry until they land.
   to degrade to (0xFF-fill vs fault delivery is a design decision
   that lane must make). Evidence:
   `docs/reports/cleanup-cpu-core-20261030.md`
-  (branch `lane-clean-cpu`, "handed off").
+  (branch `lane-clean-cpu`, "handed off"). Correction
+  (2026-10-31): the panics named above live in
+  `source/emulation/cpu/ops.h`, which no translation unit in
+  the tree includes; the live sites were the interpreter's
+  missing port-op handlers (SIGILL delivered instead of #GP)
+  and `callOpenGL`'s panic on an unregistered int 0x99 index.
+  The fix landed at the live sites. Record:
+  `docs/reports/fd06-portio-20261031.md`.
 - **FD-07 — K-M2: in interpreter mode, control flow can reach
   data on multiple threads.** *(High)* Observed as thousands of
   unimplemented-opcode faults inside a mapped image plus
@@ -514,6 +522,26 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
+- **FD-39 — The native suite aborts mid-run in the clone
+  test group when the syscall-ABI tests run first.**
+  *(Medium, suite reliability)* Running tests 610-621 in one
+  process aborts with an uncaught `int` throw
+  (`terminate called`, rc 134) in the clone tests after the
+  syscall-ABI block; the identical window aborts on the
+  pristine base tip, and every test in the window passes
+  standalone. A preceding-test interaction, uncharacterized.
+  Evidence: `docs/reports/fd06-portio-20261031.md`.
+- **FD-40 — A suite run can flood gigabytes of crash
+  diagnostics in the tail tests.** *(Medium, suite
+  reliability)* After ~650 passes a full serial run can
+  enter an unbounded diagnostic loop ("probably about to
+  crash, could not find emulation instruction that caused
+  exception") and grow its log by gigabytes until killed;
+  the same flood aborted a deploy-gate attempt on the
+  shipped tree, and all tail tests pass standalone. The
+  diagnostic path has no rate limit. Evidence:
+  `docs/reports/fd06-portio-20261031.md`;
+  `docs/reports/deploy-20261031.md`.
 
 ---
 
@@ -538,6 +566,7 @@ is behavioural, is re-proven there.
 | `lane-cleanfs` | Filesystem: a repeated error-code-as-length bug shape (one case could corrupt memory); discarded zip integrity verdicts; partial extractions served forever; a test that existed but was never registered | Native 654/654 serial; sabotage-proven |
 | `lane-tooling-honesty` | The build script printed success on a failed export (mechanism found and fixed); harnesses that failed silently now refuse loudly or return real verdicts; the marshal-generator panic referred by the bridges lane, fixed in the generator | JS 333/0 with own-tree build; the previously "broken" oracle ran green end-to-end (CL-03) |
 | `lane-docsclean` | Status and compatibility documents rewritten from current measurements (several rows had been inverted); disused planning files deleted with disuse proven | Link check: zero new breakage |
+| `lane-fd06-portio` | FD-06: 32-bit port instructions and int 0x99 with an unregistered callback index now deliver #GP through the core's exception machinery, instead of the wrong fault (SIGILL) and an emulator-killing panic — the frontier review's D9 disposition, after settling that ioperm/iopl grant nothing | New testPortIoFault32 pins signal/trap/error for all six port forms, REP INSB, and int 0x99; sabotage-proven (port cases deliver SIGILL and the int 0x99 case kills the test binary with the old panic text on pre-fix code); native suite 661/661 accounted across the serial run and the standalone tail window |
 | `lane-alkhaser-int2d` | Interrupt-delivery class: software interrupts delivered with the wrong saved code so the guest ignored them; the breakpoint instruction was never delivered and parked the thread | Proven through the website path (the checker completes whole sections it previously died in) |
 | `lane-firstframe` | Six shared D3D12 first-frame walls (shader-capability dispositions, subgroup serving + advertisement timing, 23 shim-stubbed entry points, a second whitelist, 8-bit integer render targets) | JS 334/0; native 0 failed serial; the affected demo's D3D12 driver fully initializes through the website path |
 

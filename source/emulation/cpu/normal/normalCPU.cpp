@@ -397,6 +397,18 @@ void OPCALL normal_privilegedFault(CPU* cpu, DecodedOp* op) {
     NEXT_DONE();
 }
 
+void OPCALL normal_portIoFault(CPU* cpu, DecodedOp* op) {
+    START_OP(cpu, op);
+    // Unimplemented port IO. The permission calls (ioperm/iopl)
+    // return success while granting nothing, so no port access is
+    // ever permitted in this emulator; hardware answers an
+    // unpermitted port access with #GP(0). Deliver exactly that,
+    // through the same machinery as every other guest fault, rather
+    // than the invalid-opcode path (defect register FD-06).
+    cpu->prepareException(EXCEPTION_GP, 0);
+    NEXT_DONE();
+}
+
 void OPCALL normal_intO(CPU* cpu, DecodedOp* op) {
     START_OP(cpu, op);
     if (cpu->getOF()) {
@@ -731,6 +743,12 @@ static void OPCALL normalDispatch(CPU* cpu, DecodedOp* op) {
         case LMSWRreg:
         case LMSW:
         case INVLPG:   MUSTTAIL return normal_privilegedFault(cpu, op);
+        case Insb:
+        case Insw:
+        case Insd:
+        case Outsb:
+        case Outsw:
+        case Outsd:    MUSTTAIL return normal_portIoFault(cpu, op);
         case IntO:     MUSTTAIL return normal_intO(cpu, op);
         case Callback: MUSTTAIL return onExitSignal(cpu, op);
         case TestEnd:  MUSTTAIL return onTestEnd(cpu, op);
@@ -781,6 +799,12 @@ static void initNormalOps() {
     normalOps[LMSWRreg] = normal_privilegedFault;
     normalOps[LMSW] = normal_privilegedFault;
     normalOps[INVLPG] = normal_privilegedFault;
+    normalOps[Insb] = normal_portIoFault;
+    normalOps[Insw] = normal_portIoFault;
+    normalOps[Insd] = normal_portIoFault;
+    normalOps[Outsb] = normal_portIoFault;
+    normalOps[Outsw] = normal_portIoFault;
+    normalOps[Outsd] = normal_portIoFault;
     normalOps[IntO] = normal_intO;
     normalOps[Callback] = onExitSignal;
     normalOps[TestEnd] = onTestEnd;
