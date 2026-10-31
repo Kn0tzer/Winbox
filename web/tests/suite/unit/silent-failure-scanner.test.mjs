@@ -25,3 +25,13 @@ test('nested switch defaults and multiline returns are scanned', () => {
   assert.equal(scanSilentSource(source, file).unloggedDefault, 2);
   assert.equal(scanSilentSource(source, file).unloggedErrno, 1);
 });
+
+test('vk64Unsupported counts as a log call in the vk bridge', () => {
+  // vk64Unsupported is vk64bridge.cpp's counted loud-rejection logger
+  // (klog_fmt under the hood, first hits + powers of two per feature).
+  // A default branch that calls it is loud; the same branch without it
+  // must still be counted, so this test fails if the recognition is lost.
+  const vkFile = 'source/vulkan/vk64bridge.cpp';
+  assert.equal(scanSilentSource('switch (n) { default: vk64Unsupported("feat", "detail"); return 0; }', vkFile).unloggedDefault, 0);
+  assert.equal(scanSilentSource('switch (n) { default: return 0; }', vkFile).unloggedDefault, 1);
+});
