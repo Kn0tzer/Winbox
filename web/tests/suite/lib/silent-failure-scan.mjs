@@ -8,7 +8,7 @@ const silentBranchFiles = [
   'source/opengl/gl64bridge.cpp',
   'source/kernel/syscall64.cpp',
 ];
-const logCall = /\b(?:klog(?:_fmt)?|vk64DropLog|bwLog(?:Rl)?|noteUnsupported|log(?:ger)?|warn(?:ing)?|printf|fprintf)\s*\(/i;
+const logCall = /\b(?:klog(?:_fmt)?|vk64DropLog|vk64Unsupported|bwLog(?:Rl)?|noteUnsupported|log(?:ger)?|warn(?:ing)?|printf|fprintf)\s*\(/i;
 
 // Match literals before comments so URLs and comment-looking text in strings
 // cannot hide following code. Preserve offsets for branch slicing.

@@ -406,8 +406,14 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog, device
   const appId = new URLSearchParams(globalThis.location?.search || '').get('installation') || 'unknown';
   if (persistentEnabled && device) {
     const warm = () => warmPersistentShaders(appId, device, (key, code) => { if (key.startsWith('spirv:')) wgsl.set(key.slice(6), code); });
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { warm().catch(() => {}); }, { timeout: 1500 });
-    else setTimeout(() => warm().catch(() => {}), 0);
+    // Warming is best-effort (a cold cache only costs translation time),
+    // and warmPersistentShaders reports its own per-entry failures -- but
+    // a rejection escaping it (store errors, scaffolding throws) must
+    // still leave a line. The bare .catch(() => {}) that was here hid
+    // exactly that; see docs/failure-logging-and-recovery.md.
+    const warmInBackground = () => { warm().catch(e => log(`BW64-FAIL shader-warm app=${appId} error=${(e && e.message) || e} outcome=warm aborted; shader cache stays cold`)); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmInBackground, { timeout: 1500 });
+    else setTimeout(warmInBackground, 0);
   }
   return {
     stats,
@@ -3772,6 +3778,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('readback-failed', e && e.message); /* still notify so the guest does not hang */ }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (The empty catch shape is
+      // pinned by the vk-silent-drop-guard source test.)
       try {
         if (buffer) buffer.destroy();
       } catch (e) {}
@@ -3795,6 +3804,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (Empty-catch shape pinned
+      // by the vk-silent-drop-guard source test.)
       try { if (buffer) buffer.destroy(); } catch (e) {}
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;

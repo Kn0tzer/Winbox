@@ -49,7 +49,7 @@ export function reportBridgeFailure(area, error, log = message => console.warn(m
   }
   logged.add(key);
   loggedCount++;
-  try { log(`bridge-recover: ${message}`); } catch {}
+  try { log(`bridge-recover: ${message}`); } catch { /* logging must never throw; the recovery itself was already counted above */ }
   return true;
 }
 

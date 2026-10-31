@@ -22,8 +22,8 @@
       "unloggedErrno": 112
     },
     "source/opengl/gl64bridge.cpp": {
-      "emptyCatch": 22,
-      "unloggedDefault": 23,
+      "emptyCatch": 1,
+      "unloggedDefault": 13,
       "unloggedErrno": 0
     },
     "source/sdl/emscripten/mainloop.cpp": {
@@ -32,8 +32,8 @@
       "unloggedErrno": 0
     },
     "source/vulkan/vk64bridge.cpp": {
-      "emptyCatch": 2,
-      "unloggedDefault": 20,
+      "emptyCatch": 0,
+      "unloggedDefault": 10,
       "unloggedErrno": 0
     },
     "web/app.mjs": {

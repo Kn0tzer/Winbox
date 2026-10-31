@@ -787,13 +787,13 @@ export class WebGPUGL {
 
   _reportFailure(error) {
     const first = reportBridgeFailure('gl-webgpu', error, this._log);
-    if (first) try { this.onFailure?.(error); } catch {}
+    if (first) try { this.onFailure?.(error); } catch { /* the failure was already reported by reportBridgeFailure above; a throwing onFailure consumer must not break the op queue */ }
   }
 
   _rejectUnsupported(feature, error = GL.INVALID_OPERATION) {
     if (!this._unsupportedWarnings.has(feature)) {
       this._unsupportedWarnings.add(feature);
-      try { this._log?.(`gl-webgpu: unsupported ${feature}`); } catch {}
+      try { this._log?.(`gl-webgpu: unsupported ${feature}`); } catch { /* logging must never throw; the error is still recorded by _recordError below */ }
     }
     this._recordError(error);
   }
