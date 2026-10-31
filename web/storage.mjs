@@ -34,11 +34,3 @@ export async function replacePackage(previous, next) {
   if (previous.id === next.id) throw Error('Replacement needs a new installation ID');
   await operation('readwrite', store => { store.delete(previous.id); return store.put(packageRecord(next)); });
 }
-export async function overlay(pkg, patch) {
-  checkEntries(patch);
-  const merged = new Map(pkg.files.map(f => [f.path.toLowerCase(), f]));
-  for (const file of patch) merged.set(file.path.toLowerCase(), file);
-  const next = { ...pkg, files: [...merged.values()], patched: new Date().toISOString() };
-  await savePackage(next); // The old package remains intact if the transaction fails.
-  return next;
-}
