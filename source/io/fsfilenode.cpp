@@ -59,6 +59,13 @@ void FsFileNode::getTmpPath(BString& nativePath, BString& localPath) {
     BOXEDWINE_CRITICAL_SECTION;
     Fs::makeLocalDirs(B("/tmp/del"));
     std::shared_ptr<FsNode> delDir = Fs::getNodeFromLocalPath(B(""), B("/tmp/del"), true);
+    if (!delDir) {
+        // The old code dereferenced the null node on the next line.
+        klog_fmt("BW64-FAIL fs-tmp-path outcome=no /tmp/del node; tmp path left empty");
+        nativePath = BString::empty;
+        localPath = BString::empty;
+        return;
+    }
 
     for (;nextTmpId<100000000;nextTmpId++) {
         BString name = "del"+BString::valueOf(nextTmpId)+".tmp";
@@ -66,9 +73,15 @@ void FsFileNode::getTmpPath(BString& nativePath, BString& localPath) {
         nativePath = delDir->nativePath.stringByApppendingPath(name);
         if (!Fs::doesNativePathExist(nativePath)) {
             localPath = "/tmp/del/"+name;
-            break;
+            return;
         }
     }
+    // Every tmp id is taken. The old loop fell out with nativePath still
+    // holding the last (existing) candidate, and the caller renamed the
+    // file being deleted onto that live path.
+    klog_fmt("BW64-FAIL fs-tmp-path outcome=tmp id space exhausted; tmp path left empty");
+    nativePath = BString::empty;
+    localPath = BString::empty;
 }
 
 namespace {
@@ -498,6 +511,19 @@ U32 FsFileNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastMod
     if (lastModifiedTime) {
         settime.modtime = lastModifiedTime;
     }       
-    utime(this->nativePath.c_str(),&settime);
-    return 0; // no error checking, we don't care if this fails
+    if (utime(this->nativePath.c_str(), &settime) != 0) {
+        // The syscall callers return this value to the guest, so a
+        // failed utime used to be reported as success. Be honest, and
+        // leave a trace: a guest that sets times on every file it
+        // extracts would otherwise have no way to know none of them
+        // stuck.
+        int err = errno;
+        static std::atomic<unsigned long long> failures{0};
+        unsigned long long n = ++failures;
+        if (n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL fs-settimes path=%s native=%s errno=%d (%s) outcome=guest told the truth count=%llu", this->path.c_str(), this->nativePath.c_str(), err, strerror(err), n);
+        }
+        return -translateErr(err);
+    }
+    return 0;
 }

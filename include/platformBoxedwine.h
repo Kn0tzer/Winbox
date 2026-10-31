@@ -156,7 +156,7 @@ public:
         bool isDirectory;
     };
     static void init();
-    static void listNodes(BString nativePath, std::vector<ListNodeResult>& results);    
+    static bool listNodes(BString nativePath, std::vector<ListNodeResult>& results);    
     static int nativeSocketPair(S32 socks[2]);
     static U32 getCpuFreqMHz();
     static U32 getCpuCurScalingFreqMHz(U32 cpuIndex);

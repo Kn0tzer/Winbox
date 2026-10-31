@@ -563,7 +563,9 @@ U32 Fs::makeLocalDirs(const BString& path) {
         if (!Fs::doesNativePathExist(nodePart->nativePath)) {
             U32 result = MKDIR(nodePart->nativePath.c_str());
             if (result) {
-                return -translateErr(errno);
+                int err = errno;
+                klog_fmt("BW64-FAIL mkdir native=%s errno=%d (%s) outcome=makeLocalDirs failed for %s", nodePart->nativePath.c_str(), err, strerror(err), path.c_str());
+                return -translateErr(err);
             }
         }
     }
@@ -580,7 +582,9 @@ U32 Fs::makeLocalDirs(const BString& path) {
             nativePath = node->nativePath.stringByApppendingPath(nativePath);
             U32 result = MKDIR(nativePath.c_str());
             if (result) {
-                return -translateErr(errno);
+                int err = errno;
+                klog_fmt("BW64-FAIL mkdir native=%s errno=%d (%s) outcome=makeLocalDirs failed for %s", nativePath.c_str(), err, strerror(err), path.c_str());
+                return -translateErr(err);
             }
             std::shared_ptr<FsNode> childNode = Fs::addFileNode(base, B(""), nativePath, true, node);
         }
@@ -623,6 +627,13 @@ BString Fs::getNativePathFromParentAndLocalFilename(const std::shared_ptr<FsNode
 bool Fs::makeNativeDirs(const BString& path) {
     std::vector<BString> parts;
 
+    if (Fs::nativePathSeperator.isEmpty() || path.isEmpty()) {
+        // Splitting on an empty separator never terminates inside
+        // BString::split, and an empty path has no parts to index;
+        // both used to hang or read out of bounds instead of failing.
+        klog_fmt("BW64-FAIL mkdir native=%s outcome=makeNativeDirs refused (empty path or uninitialized separator)", path.c_str());
+        return false;
+    }
     BString tmp;
     if (path.startsWith(Fs::nativePathSeperator)) {
         path.substr(1).split(Fs::nativePathSeperator, parts);
@@ -638,6 +649,8 @@ bool Fs::makeNativeDirs(const BString& path) {
         if (!Fs::doesNativePathExist(tmp)) {
             U32 result = MKDIR(tmp.c_str());
             if (result!=0) {
+                int err = errno;
+                klog_fmt("BW64-FAIL mkdir native=%s errno=%d (%s) outcome=makeNativeDirs failed for %s", tmp.c_str(), err, strerror(err), path.c_str());
                 return false;
             }
         }
@@ -656,7 +669,18 @@ U32 Fs::deleteNativeDirAndAllFilesInDir(const BString& path) {
 
 U32 Fs::iterateAllNativeFiles(const BString& path, bool recursive, bool includeDirs, std::function<U32(BString, bool isDir)> f) {
     std::vector<Platform::ListNodeResult> results;
-    Platform::listNodes(path, results);
+    bool listed = Platform::listNodes(path, results);
+    if (!listed && Fs::doesNativePathExist(path)) {
+        // Probes built on this walk (isNativeDirectoryEmpty,
+        // getNativeDirectorySize) would otherwise act on a wrong
+        // "empty" answer for a directory that exists but cannot be
+        // read.
+        static std::atomic<unsigned long long> listFailures{0};
+        unsigned long long n = ++listFailures;
+        if (n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL dir-list native=%s outcome=native walk sees an unreadable directory as empty count=%llu", path.c_str(), n);
+        }
+    }
     for (auto& n : results) {
         if (recursive && n.isDirectory) {
             U32 result = iterateAllNativeFiles(path.stringByApppendingPath(n.name), true, includeDirs, f);
@@ -712,6 +736,10 @@ void Fs::setDosAttrib(const std::shared_ptr<FsNode>& file, const BString& attrib
     BWriteFile w(file->nativePath + EXT_DOSATTRIB, true);
     if (w.isOpen()) {
         w.write(attrib);
+    } else {
+        // The guest asked for attributes (readonly/hidden/...) that
+        // will silently not stick; getDosAttrib will report none.
+        bw64RecoverLogOnce("fs-setdosattrib-open", "BW64-FAIL fs-dosattrib outcome=attribute file could not be opened; guest attributes not stored");
     }
 }
 
