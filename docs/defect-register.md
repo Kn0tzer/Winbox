@@ -98,6 +98,45 @@ do not close the entry until they land.
   hardened readiness test and the four-arm measurement
   named in FD-43. The restart stopgap stays in the
   launcher.
+  UPDATE (2026-10-31, branch `lane-fd01-so`): the remedy
+  FD-43 named is built and proven on the branch. The
+  backport pipeline now builds the unix half of win32u
+  (a third, x86_64-linux-gnu tree producing `win32u.so`
+  from the same patched wine-8.0 source as the PE half)
+  and both staging paths ship it next to `win32u.dll`;
+  the completeness checker pins its bytes. Staged
+  container member audit against the live base: exactly
+  two content differences in 1,257 members — `win32u.dll`
+  (unsigned -> stamped backport) and `win32u.so` (stock
+  `5dac5821...` -> patched `bffd9036...`); against the
+  container currently pinned on integration the only
+  difference is `win32u.so`. Cold-start measurement
+  through the project's probe harness (fresh profile
+  each boot, restart-stopgap budget exhausted, verdicts
+  classified offline under the hardened FD-43 rules —
+  plausible handle + five X11 connections + explorer
+  opened): with a 900 s observation window the fixed
+  build certified **5 of 5** first-attempt starts (real
+  handle `0x10048` every time); the pre-fix build
+  (identical dist, `win32u.so` member swapped back to
+  stock) certified **0 of 5** across both windows —
+  four of its five boots died with this defect's own
+  signature printed, the fifth never started anything.
+  At the four-arm measurement's 360 s window the fixed
+  build certified 0 of 3 but every boot was still
+  advancing when the window closed (X11 connections
+  3/3/1, explorer opened, workload ran, no failure
+  signature) at box load 13-19: the fix's own 300 s
+  waits plus the desktop parade exceed 360 s of wall
+  time on a loaded box, while the longer window does
+  not revive the pre-fix build at all (0 of 2, both
+  signature deaths). This entry stays OPEN per its own
+  re-closure terms: merge, deploy, and a live
+  first-visit re-measurement through the public site
+  remain. Record:
+  `docs/reports/fd01-unix-half-fix-20261031.md`;
+  evidence: `test-results/fd01so-20261031/` (worktree
+  `wt-fd01so`).
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -735,6 +774,29 @@ do not close the entry until they land.
   *(Numbered FD-43 on the lane branch; renumbered at
   integration — FD-43 was independently taken by the
   FD-40 fix lane's attribution entry above.)*
+- **FD-45 — The shipped support runtime archive contains
+  two different files under one member name.** *(Medium)*
+  The support archive produced by the dependency staging
+  step — byte-identical at every recent merge/deploy
+  gate (sha256 prefix `de592964f772`) — contains
+  `usr/lib/x86_64-linux-gnu/libvulkan.so.1` twice, with
+  different bytes (185,464 B, sha256 `60b89e5afc7c...`;
+  457,224 B, sha256 `91dd2cb10ee4...`). Which copy a
+  reader gets depends on how that reader resolves
+  duplicate zip entries (Python's zipfile returns the
+  last one; other extractors differ), so the Vulkan
+  library the guest actually loads is not determined by
+  the pinned archive hash alone. Found 2026-10-31 by
+  branch `lane-fd01-so` from the staging step's
+  duplicate-name warning during its dist build;
+  pre-existing (the archive is the canonical one every
+  recent gate verified) and NOT fixed there. Next step:
+  find which staging input writes the second copy,
+  decide which bytes are the intended ones, and make
+  the staging step fail loudly on any duplicate member
+  name. Evidence:
+  `docs/reports/fd01-unix-half-fix-20261031.md`
+  (section "Found along the way").
 
 ---
 
