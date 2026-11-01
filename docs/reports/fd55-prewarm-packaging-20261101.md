@@ -23,7 +23,8 @@ D3D12 graphics pipeline-state creation fails with error 0x80004005
 pipeline is ever created, no swapchain is ever created, and no frame can
 be presented at any cache warmth. FD-55 stays open with its cause
 narrowed to that defect; the raw-startup-speed truth is registered
-separately as FD-67.
+separately as FD-71 (provisionally FD-67 on this branch;
+renumbered at composition, FD-67/FD-68 being taken on integ).
 
 ## What was built (commits 2fa876399, 3241b04c0)
 
@@ -119,7 +120,7 @@ demo after a first frame). Re-running would re-confirm, not measure.
   window: the cacheable portion of startup (66 shader files + the
   translation layer's pipeline cache) is paid once at packaging time,
   and the seeded cache phase completes in ~213 s.
-- Raw startup speed remains honestly open as FD-67: cold, the engine
+- Raw startup speed remains honestly open as FD-71: cold, the engine
   was still working through shader compilation at 1,738 s in the
   sibling lane's characterization and at 3,322 s here — but every
   cold measurement so far is confounded by the pipeline defect, so

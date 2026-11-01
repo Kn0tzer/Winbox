@@ -169,7 +169,8 @@ Godot demo's first blocker, not a side case.
   on those closing terms.
 - FD-62: annotated — its captured module is now measured as
   the demo's first pipeline-creation blocker.
-- FD-70 (provisional): the late-wave class — non-specializable
+- FD-70: the late-wave class — non-specializable (filed
+  provisionally as FD-70; confirmed at composition)
   descriptor runtime array plus used-form physical addressing.
 
 ## What closing FD-55 now requires
