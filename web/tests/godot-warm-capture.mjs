@@ -179,7 +179,11 @@ async function main() {
 
   const baseUrl = process.env.BW_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}/`;
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await applyJitSetting(page, '0');
+  // Captures are packaging tooling, not the check: WARM_JIT=1 runs the guest
+  // under the JIT to bank cache state faster. Cache files are data produced
+  // by the guest's own compiler either way; the demo check itself always
+  // runs the standard configuration. Default stays '0' (the standard one).
+  await applyJitSetting(page, process.env.WARM_JIT === '1' ? '1' : '0');
   await launchDemoGame(page, 'godot-squash', { mappedTimeout: 1200 });
   note('launchReturned');
 
