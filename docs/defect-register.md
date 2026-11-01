@@ -1989,7 +1989,13 @@ do not close the entry until they land.
   colliding and twin fixtures, keeps the unservable
   negative's named refusal; the harness aborts at
   the guard with the bridge fix reverted); full JS
-  suite 354/0; run-native 56 PASS; corpus
+  unit suite 348/348 entries (347 baseline + this
+  lane's test file), with the 51 citations in
+  `docs/known-gaps/vulkan.md` that the bridge
+  edit's +17 lines drifted re-pinned on this
+  branch (citation audit back to its baseline
+  profile: 352 rows, 232 MATCH, 0 DRIFT);
+  run-native 56 PASS; corpus
   byte-check over all 145 pre-existing
   `testdata/spirv` fixtures -- only this pair's
   spirvfix output changed. In vivo on the fixed

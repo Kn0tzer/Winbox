@@ -127,7 +127,18 @@ pair's output changed.
   guard's first assertion (`module(alignedLiteralSweep) ==
   VK_SUCCESS`); with the fix, `run-native.py` completes at 56 PASS
   (the previous 55 plus this guard).
-- Full JS unit suite on the lane tree: 354/354 (347 baseline + 7).
+- Full JS unit suite on the lane tree: 348/348 entries (the 347
+  baseline entries plus this lane's test file; its 7 cases also pass
+  standalone, and 5/7 go red with the spirvfix fix reverted). The
+  first post-fix suite run read 347/348 from its preserved log: the
+  bridge edit's +17 lines had drifted 51 mechanically checked
+  citations in `docs/known-gaps/vulkan.md` and the citation guard
+  failed on exactly that. All 51 citations are re-pinned on this
+  branch (33 by the audit tool's `--fix`, 18 hand-pinned to the
+  constructs' true lines); the citation audit is back to its exact
+  baseline profile (352 rows, 232 MATCH, 14 inherited, 0 DRIFT),
+  and the final suite run is green end to end with dist present
+  (evidence `test-results/fd70/js-unit-final2.log`).
 - Dist rebuild: "Browser export verified", dependency archive
   `c4dbe35986a5` verified, wasm `16f43514`.
 
