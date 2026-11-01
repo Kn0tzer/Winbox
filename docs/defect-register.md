@@ -1687,10 +1687,12 @@ do not close the entry until they land.
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
   pointers, although its own classifiers record them
-  as refused and the JS mirror refuses them by name.**
+  as refused and the JS mirror refuses them by name.
+  CLOSED 2026-11-01 — see CL-22.**
   *(High — graphics correctness / mirror divergence;
-  open. Found by the FD-50+FD-55+FD-62 merge lane's
-  gate, 2026-11-01.)* FD-62's hardening taught both
+  FIXED on lane-fd67fix, awaiting composition. Found
+  by the FD-50+FD-55+FD-62 merge lane's gate,
+  2026-11-01.)* FD-62's hardening taught both
   descriptor-array audit mirrors to follow
   OpImageTexelPointer and to record, per array
   variable, the texel-pointer uses the translation
@@ -1791,6 +1793,8 @@ do not close the entry until they land.
   change. This entry stays open until that guard
   correction lands and the harness completes.
   Record: `docs/reports/fd67-guard-attribution-20261101.md`.
+  That correction landed on `lane-fd67fix` and the
+  harness completes end to end there — see CL-22.
 
 - **FD-68 — A module that declares
   RuntimeDescriptorArray but carries only
@@ -1812,8 +1816,10 @@ do not close the entry until they land.
   guard fixture is a compute module, so its
   bridge-level assertions pass through the
   compute-accept path instead of the R15a admission
-  they narrate.** *(Low — test attribution; open.
-  Found by the FD-67 lane, 2026-11-01.)* The FD-16
+  they narrate. CLOSED 2026-11-01 — see CL-23.**
+  *(Low — test attribution; FIXED on lane-fd67fix,
+  awaiting composition. Found by the FD-67 lane,
+  2026-11-01.)* The FD-16
   guard's multi-signature fixture
   (`heapTexelMultisig` in
   `tools/vkd3d/tests/vk64_native_test.cpp`) declares
@@ -1834,7 +1840,18 @@ do not close the entry until they land.
   same guard-correction pass that closes FD-67,
   and the guard then passes with the audit's R15
   section demonstrably reached. Evidence:
-  `test-results/fd67/`.
+  `test-results/fd67/`. Same-pass find (FD-67
+  guard-correction lane, 2026-11-01): the FD-16
+  section's storage fixture (`heapTexelStorage`,
+  likewise distilled from a compute shader) carried
+  the identical vacuity — its admission assertion
+  was satisfied through the compute-accept return
+  (instrumented run: `spirv-compute-entry`, no R15
+  verdict). Re-authored as a Fragment module in the
+  same pass, it reaches the R15 section, classifies
+  servable, and is admitted through R15a with the
+  guard's assertions untouched, so CL-23 covers
+  both fixtures.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -2391,3 +2408,67 @@ its lane and is not a defect, for the stated reason:
   instance) is registered as FD-68 and stays open.
   Evidence: `test-results/fd55/`,
   `test-results/merge-fd50-fd55-fd62-20261101/`.
+
+- **CL-22 — FD-62's native audit guard aborted the
+  native harness because its fixtures were compute
+  modules, not graphics modules (was FD-67).**
+  Fixed in `5e3d1e2c7` on `lane-fd67fix` (built on
+  the FD-67 investigation branch `lane-fd67`, whose
+  register correction is preserved verbatim):
+  the guard's three fixtures (`heapTexelAtomic`,
+  `heapTexelAtomicCopy`, `heapTexelAtomicTwo` in
+  `tools/vkd3d/tests/vk64_native_test.cpp`) are
+  re-authored with a Fragment entry point — one
+  word each, entry model 5 -> 4 — matching the
+  stage of the captured module they stand for
+  (`testdata/spirv/godot-fs-atomic-texel-heap.spv`,
+  model 4). No assertion, bridge code, or JS file
+  changed. Proof: on the unmodified composed tree
+  `run-native.py` dies with SIGABRT at the guard's
+  first bridge-level assertion
+  (`vk64_native_test.cpp:3481`); on this branch it
+  runs to completion end to end — exit 0, 53 PASS
+  lines, including the guard's own PASS line (each
+  module refused with
+  VK_ERROR_FEATURE_NOT_PRESENT, the
+  RuntimeDescriptorArray counter advancing exactly
+  +1 per module, the two-array per-array attribution
+  intact). An instrumented scratch build (since
+  reverted) shows each fixture's create-module call
+  now reaching the audit's R15 section
+  (`skip5302=0`, `arrServable=0`) instead of
+  returning through the compute-accept path. The
+  bridge requires no change: on the graphics path
+  the texel class refuses at creation by name, as
+  the FD-67 lane's probe measured. Composition
+  into integ pending. Evidence:
+  `test-results/fd67fix/` (`run-native-before.log`,
+  `run-native-final.log`, `run-native-diag.log`),
+  record
+  `docs/reports/fd67-guard-correction-20261101.md`.
+
+- **CL-23 — FD-16 native guard fixtures whose
+  admission assertions were satisfied through the
+  compute-accept return instead of the R15a
+  admission they narrate (was FD-69).** Fixed in
+  `5e3d1e2c7` (`heapTexelMultisig`) and `8cc080568`
+  (`heapTexelStorage`, the same-pass find recorded
+  in FD-69's entry) on `lane-fd67fix`: both
+  fixtures re-authored with a Fragment entry point,
+  one word each; assertions untouched. Proof: an
+  instrumented scratch build (since reverted) shows
+  both create-module calls previously returning
+  through `spirv-compute-entry` with no R15 verdict,
+  and after the correction reaching the audit's R15
+  section and classifying servable (multisig:
+  nw=309, storage: nw=213; both `skip5302=1`,
+  `arrServable=1`), admitted with the
+  SampledBuffer / RuntimeDescriptorArray rejection
+  counters unchanged — inside the completed harness
+  run named in CL-22 (exit 0, 53 PASS lines). No
+  product code changed. Composition into integ
+  pending. Evidence: `test-results/fd67fix/`
+  (`run-native-diag.log`,
+  `storage-flip-probe.log`, `run-native-final.log`),
+  record
+  `docs/reports/fd67-guard-correction-20261101.md`.
