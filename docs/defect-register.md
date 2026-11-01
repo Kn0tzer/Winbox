@@ -1540,6 +1540,28 @@ do not close the entry until they land.
   now FD-62's closing condition, plus FD-70's class. Record:
   docs/reports/fd55-pipeline-creation-20261101.md.
 
+  **Update 2026-11-01 (FD-62 serving lane):** FD-62 is
+  CLOSED — see CL-25. In vivo on the warmed archive
+  (build 2e890f315, wasm a2e1059d): the byte-identified
+  module (5,704 B, djb2 0b3b4d8cc939485a) was created
+  twice with no refusal; across 254 vkCreateShaderModule
+  calls there were zero audit refusals and zero
+  CreateGraphicsPipelineState E_FAILs (the two baseline
+  runs had five E_FAILs each, each in the same second
+  as this module's refusal). The guest completed its
+  PSO warm-up and reached vkQueueSubmit2. The demo
+  still presented nothing (0 guest presents at the
+  1,500 s deadline): no swapchain was created,
+  submissions dropped at the bridge's
+  `!view || !view->image` guard (8,386 drops, logged),
+  FD-70's two modules were never submitted this run
+  (status untested in vivo), and FD-72's
+  HelperInvocation blocker still stands in front of
+  any actual draw using this module. This entry stays
+  open on FD-70 + FD-72 and that downstream behavior.
+  Record: `docs/reports/fd62-texel-serving-20261101.md`;
+  evidence `test-results/fd62serve/warm-20261101-110605/`.
+
 - **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
   because buffer-content runtime arrays survived its
@@ -1657,7 +1679,7 @@ do not close the entry until they land.
   pointers; the refusal now rests on the true, named
   blocker, but the modules remain unserved because the
   translation stack rejects OpImageTexelPointer
-  outright.** *(Medium — the affected pipelines fail
+  outright. CLOSED 2026-11-01 — see CL-25.** *(Medium — the affected pipelines fail
   creation outright; measured in the FD-55 proof run
   as two 0x80004005 pipeline failures from the captured
   Godot module)* Found by the FD-55 lane (2026-11-01;
@@ -1979,6 +2001,70 @@ do not close the entry until they land.
   arrive without a warmed archive. Evidence:
   `test-results/fd55prewarm/`; record:
   `docs/reports/fd55-prewarm-packaging-20261101.md`.
+
+- **FD-72 — The vendored shader translator cannot
+  ingest a BuiltIn HelperInvocation variable in any
+  spelling, which blocks the captured Godot fragment
+  module one step past its (now served) texel
+  class.** *(Medium — the module's remaining
+  translation blocker; found by the FD-62 serving
+  lane, 2026-11-01)* The captured module
+  (`testdata/spirv/godot-fs-atomic-texel-heap.spv`)
+  loads the HelperInvocation builtin (BuiltIn 23) at
+  two sites: a ballot election
+  (`laneId == broadcastFirst && !helper`) and
+  `select(helper, 0, bit)`, masking helper lanes out
+  of the second texel atomic's OR value. Measured
+  against the vendored translator (naga 30.0.1): a
+  BuiltIn HelperInvocation variable fails with
+  `UnsupportedBuiltIn(23)`; `OpIsHelperInvocationEXT`
+  with its capability fails with
+  `UnsupportedCapability(DemoteToHelperInvocation)`;
+  the EXT opcode without the capability is invalid
+  SPIR-V and is rejected as an unsupported
+  extension. Substituting a constant for the helper
+  flag would change the atomics' input bits — the
+  wrong-data outcome — so no honest local rewrite
+  exists today. It is the only corpus module
+  carrying the builtin. Closing this entry requires
+  translator support for helper invocation (a WGSL
+  is-helper-invocation path, or a demote-based
+  lowering whose masked-atomic semantics are
+  proven), after which the captured module should
+  translate end to end. FD-55 stays open on this
+  entry and FD-70. (Numbering per the merge lane's
+  settled audit on integration: FD-70 confirmed,
+  the pre-warm speed entry is FD-71; this entry is
+  the next free number there and is filed on this
+  branch for the composing merge to place.)
+
+- **FD-73 — The pinned runtime-assets release
+  archive disagrees with the manifest's file pins
+  for both Wine archives, so a fresh checkout
+  cannot bootstrap.** *(Low — masked in every tree
+  that already carries the files; found by the
+  FD-62 serving lane, 2026-11-01, during its
+  worktree bootstrap)* `tools/browser/bootstrap.py
+  --local` against the pinned archive (sha256
+  `9978166f…`, matching the manifest's archive pin)
+  fails: the archive's `web/runtime/wine64.zip`
+  hashes to `b7476541…` against a file pin of
+  `53d77f33…`, and its `web/runtime/wine32.zip` to
+  `955cc41c…` against `7f2209cf…`; the other eleven
+  files match their pins. Trees that already carry
+  the pinned files pass `bootstrap.py --check`
+  without ever reading the archive, which is how
+  the disagreement survived a full merge gate. A
+  fresh worktree must currently restage from a
+  verified tree instead (this lane did, per-file
+  sha256 against the manifest). Closing this entry
+  requires the release archive to be regenerated
+  from the pinned files and re-uploaded (a
+  user-gated release action), or the manifest
+  re-pinned to the archive with a completeness
+  proof of the older Wine builds — the former,
+  since the file pins are what shipped builds
+  verify against.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -2448,6 +2534,66 @@ dead-start fix and needs composition care.
 
 
 
+
+- **CL-25 — Shader modules performing atomics
+  through image texel pointers are served by
+  rewriting the texel variable to a storage buffer
+  (was FD-62).** Fixed in `24becdb53` on
+  `lane-fd62serve`: spirvfix gains R12A
+  (`texelPointersToStorageBuffers`) — a Dim=Buffer
+  storage image is guest buffer memory, so a
+  variable whose every derived value flows only
+  into OpImageTexelPointer formations, and whose
+  texel pointers reach only loads, stores and
+  WGSL-expressible integer atomics, becomes a
+  storage buffer of texels at the same
+  set/binding, each formation becoming an
+  OpAccessChain into it. One cone analysis
+  (`analyzeTexelCone`) is shared by the rewrite,
+  the JS classifier and both bridge mirrors
+  (r15::analyzeArrays; vk64TexelStorageServable's
+  R12A coverage), so the audit admits exactly what
+  the rewrite converts, in both directions. The
+  page tier completes the serving: a storage texel
+  view record (kind 6) at a storage-buffer
+  declaration binds the view's buffer range itself
+  (`texelBufferBind`), registered for readback
+  with its binding batch — it previously fell
+  through to a zero dummy buffer, which would have
+  silently swallowed the shader's writes. Served
+  class, in exact terms: 32-bit-component texel
+  formats (R32f/R32i/R32ui scalar for atomics;
+  2/4-component forms for loads/stores), atomics
+  Load/Store/Exchange/CompareExchange/IIncrement/
+  IDecrement/IAdd/ISub/SMin/UMin/SMax/UMax/And/Or/
+  Xor. Still refusing by name:
+  OpAtomicCompareExchangeWeak (the translator
+  rejects the opcode itself), sub-word/packed and
+  64-bit texel formats, mixed image/buffer use of
+  one element, any texel-pointer escape, and texel
+  forms through root-descriptor slots (unchanged).
+  The same work closes the FD-62 hardening's blind
+  spot: VALUE-form formations (through an OpLoad
+  of the element) were invisible to the uses
+  analysis and classified servable by accident —
+  they are now attributed and genuinely served.
+  Proof: the captured module's transformed output
+  is spirv-val clean, carries both atomics as
+  buffer atomics, and its translation stops only
+  at FD-72's HelperInvocation blocker; the JS
+  suite pins served and refused shapes in both
+  directions; the native guards flip to VK_SUCCESS
+  with per-array attribution and gain boundary
+  guards (value form served; weak/R8ui/R64ui/
+  mixed/escape refuse); page-tier tests pin the
+  buffer binding and readback arbitration; the
+  in-vivo demo-path result is recorded in the lane
+  record. Record:
+  `docs/reports/fd62-texel-serving-20261101.md`.
+  (Composition note: on integration this closure
+  follows FD-53's CL-24; this branch's register
+  predates that merge, so the composing merge
+  places CL-25 after CL-24.)
 
 ## Appendix — examined and deliberately NOT registered
 
