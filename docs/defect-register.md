@@ -1527,7 +1527,7 @@ do not close the entry until they land.
   Composition (2026-11-01, merge lane): landed as
   `7c3fc661b`. On the composed tree the new unit suite
   `spirvfix-r15-buffer-arrays` passes inside the full
-  JS unit suite (349 passed, 0 failed), the vulkan
+  JS unit suite (346 passed, 0 failed), the vulkan
   citation audit reports 0 drift on the re-pinned
   composed bridge, the dist build verifies, and
   packaging completeness reports 0 failures. The
@@ -2297,7 +2297,7 @@ its lane and is not a defect, for the stated reason:
   with capability rejections 3 -> 2 and both modules
   creating) plus the composed tree's gate — the new
   unit suite `spirvfix-r15-buffer-arrays` passes
-  inside the full JS unit suite (349 passed, 0
+  inside the full JS unit suite (346 passed, 0
   failed), the vulkan citation audit reports 0 drift
   against the composed bridge, the dist build
   verifies ('Browser export verified', support
