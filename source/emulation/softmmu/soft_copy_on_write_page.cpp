@@ -19,6 +19,7 @@
 #include "boxedwine.h"
 
 #include "soft_copy_on_write_page.h"
+#include "faultstage.h"
 #include "soft_ram.h"
 #include "kmemory_soft.h"
 #include "soft_mmu.h"
@@ -55,13 +56,16 @@ U8* CopyOnWritePage::getRamPtr(MMU* mmu, U32 page, bool write, bool force, U32 o
 
 void CopyOnWritePage::onDemmand(MMU* mmu, U32 pageIndex) {
     KMemory* memory = KThread::currentThread()->memory;
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+    // FD-77: stage-marked demand path (see faultstage.h).
+    FaultStageScope demandStage(KThread::currentThread(), FS_DEMAND, pageIndex);
+    MemoryDemandLock memLock(memory);
 
     if (mmu->getPageType() != PageType::CopyOnWrite) {
         return;
     }
 
     if (!memory->mapShared(pageIndex) && ramPageUseCount((RamPage)mmu->ramIndex) > 1) {
+        FaultStageScope allocStage(KThread::currentThread(), FS_RAM_ALLOC);
         RamPage ramIndex = ramPageAlloc();
         RamPage currentRamPage = mmu->getRamPageIndex();
 

@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "faultstage.h"
 #include "kinotify.h"
 
 KFile::KFile(FsOpenNode* openFile) : KObject(KTYPE_FILE) {
@@ -204,7 +205,14 @@ U32 KFile::pwrite(KThread* thread, U32 buffer, S64 offset, U32 len) {
 }
 
 U32 KFile::preadNative(U8* buffer, S64 offset, U32 len) {
+    // FD-77: stage-marked so the guest thread dump can separate a
+    // thread queued on this file's position mutex from one inside the
+    // backing read itself (see faultstage.h). The demand path records
+    // which file it is reading on the thread before calling here.
+    KThread* thread = KThread::currentThread();
+    FaultStageScope posStage(thread, FS_FILEPOS_LOCK);
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(filePosMutex);
+    FaultStageScope readStage(thread, FS_BACKING_READ);
     S64 previousOffset = this->openFile->getFilePointer();
     this->openFile->seek(offset);
     U32 result = this->openFile->readNative(buffer, len);
