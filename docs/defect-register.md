@@ -862,6 +862,28 @@ do not close the entry until they land.
   name but no link-count IN_ATTRIB on the source. Found by
   the FD-38 lane, 2026-10-31 (kprocess.cpp `KProcess::link`).
 
+- **FD-64 — Five legacy-suite subtests fail against the
+  current V2 protocol fixtures.** *(Low, test-suite health.
+  Surfaced by the FD-02+FD-38 merge gate, 2026-11-01;
+  proven pre-existing — the identical failures reproduce
+  on the pre-batch tree `fe4cfc265`, so this batch did not
+  cause them.)* The legacy group of `tools/run-tests.mjs`
+  (`node --test web/tests/*.test.mjs`) fails 5 subtests:
+  four in `web/tests/vkwebgpu-v2.test.mjs` throw
+  `vk64: v2 DESC_SET has 132 trailing bytes` from the
+  protocol reader, and the corpus-conversion subtest in
+  `web/tests/spirvfix.test.mjs` fails. The gate-standard
+  unit suite is unaffected (344/0 on this batch). Either
+  the legacy fixtures predate a bridge protocol change
+  (the descriptor-set encoding grew during the FD-16 /
+  FD-49 work) or the bridge writes bytes the reader
+  rightly rejects; a lane must determine which side is
+  authoritative before anything is edited — neither side
+  may be "fixed" by weakening the other. *(Numbered
+  FD-64: FD-61/62/63 are already taken by parallel lanes'
+  branch records not yet composed.)* Evidence:
+  `test-results/merge-fd02-fd38-20261031/js-suite.log`.
+
 - **FD-41 — The native suite aborts mid-run in the clone
   test group when the syscall-ABI tests run first.
   CLOSED 2026-10-31 — see CL-08.** *(Was Medium)*
