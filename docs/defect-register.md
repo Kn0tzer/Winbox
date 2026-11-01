@@ -178,6 +178,42 @@ do not close the entry until they land.
   `docs/reports/first-visit-start-reliability-20261031.md`
   (branch `lane-firstvisit`, "Residuals, stated plainly").
   Related: FD-35 (the vintage split itself).
+  **Status 2026-10-31 (lane-fd02): FIXED ON BRANCH, proof
+  below; entry stays OPEN under the same re-closure terms as
+  FD-01 (merge -> deploy -> live re-measurement).** Fix commit
+  `6f3d440ef`: the 32-bit side got its own pipeline route -
+  `tools/rootfs32/build-wine10-win32u.sh` builds win32u.so
+  from the pinned Wine 10.0 source with
+  `tools/buildWine/patches/wine10-win32u-desktop-wait.patch`
+  (10 s fuse -> 300 s; check-once latch -> 500 ms retries for
+  ~300 s, preserving Wine 10's null-GUID fallback and callback
+  convention), and the base build substitutes the committed
+  module (sha256 `b2d9d135...`, hash-pinned, fail-closed) so
+  all four shipped copies carry it. The regenerated wine32.zip
+  (239,672,753 B, sha256 `7170f3cc...`) is member-identical to
+  the shipped one except exactly those four members; the
+  completeness checker pins the backport in source and zip.
+  Proof (hardened rules, fresh state, 900 s windows, one boot
+  per run, `tools/browser/startup-measurement.mjs --arch=x86`,
+  evidence `test-results/fd02-20261031/`): fixed arm (FD-48
+  signal fix composed + fixed payload) **5/5 certified**,
+  median ready 74 s, under the heaviest mean load of the three
+  arms; shipped-state arm (unmodified integ + stock payload)
+  **0/3 certified** - all three boots were in fact healthy
+  starts (plausible handle, 5 X11 connections, no doom line)
+  that could not be certified because the FD-48 spawn signal
+  was never emitted on the 32-bit paths, so the baseline zero
+  is two stacked defects, stated as such; isolation arm
+  (signal fix + stock payload) **3/3 certified** - at this
+  harness/load profile the stock Wine-10 pair did not bite in
+  three boots (Wine 10's null-GUID fallback, preserved by the
+  patch, plausibly masks part of the latch's failure space;
+  the 10 s fuse and the remaining latch paths are live code in
+  the stock module regardless), so no B1->F rate delta is
+  claimed. The FD-48 fix rides this branch as cherry-pick
+  `23c87ec6c` for measurement only - drop it at composition;
+  it lands via `lane-fd48-restart-cert`. Record:
+  `docs/reports/fd02-win32u32-fix-20261031.md`.
 - **FD-03 — The emulated machine is far smaller than modern
   programs expect, and no GPU-compute API exists.** *(High, class
   of programs)* Four independent floor failures, none of them a
