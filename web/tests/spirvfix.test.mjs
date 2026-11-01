@@ -81,6 +81,9 @@ const EXPECTED = {
   'dxvk-live/tri9.frag.spv': ["fold-spec-constants", "strip-point-builtins", "tail-demote-to-kill"],
   'dxvk-live/tri9.vert.spv': ["fold-spec-constants", "strip-point-builtins"],
   'dxvk-live/tropics-dxbc.vert.spv': ["strip-point-builtins", "strip-draw-parameters", "strip-float-controls"],
+  'fd70-aligned-literal-negative.spv': [],
+  'fd70-aligned-literal-sweep.spv': ["descriptor-array-specialize"],
+  'fd70-aligned-literal-twin.spv': ["descriptor-array-specialize"],
   'godot-cs-21fc48e37911e9a5.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
   'godot-cs-40b0cb95dde9567e.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
   'godot-cs-9347f1b2426929e0.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
@@ -88,6 +91,8 @@ const EXPECTED = {
   'godot-cs-c9c003a7487b6126.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split", "prune-dead-storage-image-types"],
   'godot-cs-e1ca507c951cf536.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "prune-dead-storage-image-types"],
   'godot-fs-atomic-texel-heap.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'godot-vs-4000ddfd359efb05.spv': ["replace-draw-parameters", "descriptor-array-specialize", "texel-buffer-to-2d"],
+  'godot-vs-ebac7e2d70a20d62.spv': ["replace-draw-parameters", "descriptor-array-specialize", "texel-buffer-to-2d"],
   'godot-vs-heap-plus-cbv-heap.spv': ["replace-draw-parameters", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-buffer-to-2d"],
   'godot-vs-heap-plus-ssbo-offsets.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-buffer-to-2d"],
   'p1-vkcube.frag.spv': ["split-combined-sampler"],
@@ -134,6 +139,18 @@ const REFUSED = {
   'godot-cs-ba9896b53ac1c77f.spv': /StorageImageReadWithoutFormat/,
   'godot-cs-c9c003a7487b6126.spv': /StorageImageReadWithoutFormat/,
   'godot-fs-atomic-texel-heap.spv': /UnsupportedBuiltIn\(23\)/,
+  // FD-70 lane fixtures (enrolled at composition, merge-fd70): the
+  // synthetic sweep fixtures exist for the creation/audit contract;
+  // on the translation side their root load carries an Aligned
+  // operand on an ordinary pointer, which the translator rejects by
+  // name (the FD-70 lane record's closing observation). The captured
+  // godot-vs pair is FD-70's restated boundary: served by the
+  // pre-pass, refused by the translator for the used capability.
+  'fd70-aligned-literal-negative.spv': /InvalidOperandCount\(Load, 6\)/,
+  'fd70-aligned-literal-sweep.spv': /InvalidOperandCount\(Load, 6\)/,
+  'fd70-aligned-literal-twin.spv': /InvalidOperandCount\(Load, 6\)/,
+  'godot-vs-4000ddfd359efb05.spv': /PhysicalStorageBufferAddresses/,
+  'godot-vs-ebac7e2d70a20d62.spv': /PhysicalStorageBufferAddresses/,
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
