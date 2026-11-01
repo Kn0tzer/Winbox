@@ -1917,6 +1917,65 @@ do not close the entry until they land.
   guard's assertions untouched, so CL-23 covers
   both fixtures.
 
+  **Update (2026-11-01, `lane-fd55prewarm`): the cause is
+  narrowed, and this entry's title claim is corrected.**
+  Three full captures through the standard demo path
+  (3,322 s cold; 3,330 s and 4,227 s with a pre-warmed
+  demo archive) all present zero frames, and the guest's
+  own engine log shows why: every D3D12 graphics
+  pipeline-state creation fails with error 0x80004005
+  (E_FAIL) inside the guest translation layer
+  (`Create(Graphics)PipelineState failed`,
+  `rendering_device_driver_d3d12.cpp:5360`); the engine
+  continues with null pipelines
+  (`scene_shader_forward_clustered.cpp:506`) and can
+  never draw. The bridge census agrees: 239 shader
+  modules and ~1,100 pipeline layouts created, zero
+  `vkCreateGraphicsPipelines`, zero swapchains, zero VK
+  presents. So the pipelines do NOT compile — their
+  creation is refused — and the block sits inside
+  pipeline-state creation: not downstream in the present
+  path, not an observation gap, and not startup cost.
+  The entry stays open on that defect; closing needs the
+  pipeline-creation failure fixed and a presented frame
+  proven. The same lane built the repeatable pre-warm
+  packaging step (`tools/demo-packaging/`, capture driver
+  `web/tests/godot-warm-capture.mjs`); the demo entry now
+  names the warmed archive it produces, and the cacheable
+  part of startup is paid at packaging time (66 engine
+  shader-cache files, stable across captures; the seeded
+  cache phase completes in ~213 s) — which is what will
+  let the demo fit the standard window once pipeline
+  creation works. Raw cold startup speed is registered
+  separately as FD-67. Record:
+  `docs/reports/fd55-prewarm-packaging-20261101.md`;
+  evidence: `test-results/fd55prewarm/`.
+
+- **FD-67 — The Godot demo's raw cold first-run startup
+  is far too slow to fit the standard demo window.**
+  *(Medium — first-visit experience for cache-heavy
+  D3D12 programs)* Registered by `lane-fd55prewarm`
+  (2026-11-01) to hold the startup-speed truth separately
+  from FD-55's pipeline-creation defect. Measured: cold,
+  the engine is still compiling built-in shaders well
+  past 1,700 s (the sibling characterization lane saw
+  new shader hashes at 1,738 s), and a full 3,322 s cold
+  capture on this lane never reached a first frame. The
+  cacheable portion is now known and bounded: 66 engine
+  shader-cache files plus the translation layer's
+  pipeline cache (~2.6 MB in total), and with that state
+  seeded the cache phase completes in ~213 s. What
+  cannot yet be measured is true cold time-to-first
+  frame: every cold run is also blocked by FD-55's
+  pipeline-creation failure, so this entry can only be
+  sized — and closed — after that defect is fixed. The
+  pre-warm packaging step (`tools/demo-packaging/`) is
+  the standing mitigation for the demo itself; this
+  entry tracks the underlying speed for programs that
+  arrive without a warmed archive. Evidence:
+  `test-results/fd55prewarm/`; record:
+  `docs/reports/fd55-prewarm-packaging-20261101.md`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
