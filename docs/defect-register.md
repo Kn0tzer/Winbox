@@ -1339,7 +1339,7 @@ do not close the entry until they land.
   `docs/reports/fd48-restart-certification-20261031.md`.
 - **FD-50 — The native Vulkan bridge test harness aborts at
   the pipeline-cache assertions, so every later section of
-  the harness never runs.** *(Medium, test harness)* Found
+  the harness never runs. CLOSED 2026-11-01 — see CL-20.** *(Medium, test harness)* Found
   by the FD-16 lane (2026-10-31): `tools/vkd3d/tests/
   run-native.py` aborts on the pristine integration tip —
   the fn-921 `vkGetPipelineCacheData` test call makes the
@@ -1371,6 +1371,19 @@ do not close the entry until they land.
   guards sit behind this abort in the harness and were
   proven via a scratch classifier harness; they run in
   the standard harness once this entry lands.
+  Composition (2026-11-01, merge lane): the fix landed
+  as `165a1308f`. In the composed tree the harness now
+  passes the pipeline-cache section (`PASS: former
+  stubs (device image sizing, queue2, granularity,
+  sparse, pipeline cache, buffer-view destroy)`) and
+  executes 43 sections, including FD-16's SPIR-V audit
+  guards, before stopping at FD-62's native guard — a
+  separate, later defect registered as FD-67, which
+  this abort had masked. End-to-end completion is
+  FD-67's closing term, not this entry's; this entry's
+  defect — the fn-921 abort and the silent skipping of
+  every later section — is discharged. Evidence:
+  `test-results/merge-fd50-fd55-fd62-20261101/`.
 - **FD-49 — A class of captured Godot shader modules fails
   translation on format-less storage images. CLOSED 2026-10-31 — see CL-16.** *(Severity
   unmeasured)* Found by the FD-16 lane (2026-10-31) while
@@ -1472,7 +1485,7 @@ do not close the entry until they land.
 - **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
   because buffer-content runtime arrays survived its
-  specialization sweep.** *(Medium — graphics
+  specialization sweep. CLOSED 2026-11-01 — see CL-21.** *(Medium — graphics
   correctness; FIXED on lane-fd55, awaiting merge.
   Numbered FD-56 on the lane's register;
   renumbered FD-61 in the composed numbering (the
@@ -1511,6 +1524,17 @@ do not close the entry until they land.
   captured instance exists. Evidence:
   `test-results/fd55/` (cap1 vs cap2 consoles),
   fixtures `testdata/spirv/godot-vs-heap-plus-*.spv`.
+  Composition (2026-11-01, merge lane): landed as
+  `7c3fc661b`. On the composed tree the new unit suite
+  `spirvfix-r15-buffer-arrays` passes inside the full
+  JS unit suite (349 passed, 0 failed), the vulkan
+  citation audit reports 0 drift on the re-pinned
+  composed bridge, the dist build verifies, and
+  packaging completeness reports 0 failures. The
+  bounded residue above (the capability declared with
+  only buffer-content arrays) is registered as FD-68
+  so it stays tracked. Evidence:
+  `test-results/merge-fd50-fd55-fd62-20261101/`.
 
 - **FD-63 — The emulator's periodic METRICS emission
   stops a few minutes into a session, freezing the
@@ -1644,6 +1668,90 @@ do not close the entry until they land.
   Until then the named refusal is the correct end
   state. Record:
   `docs/reports/fd62-texel-pointer-atomics-20261101.md`.
+  Composition correction (2026-11-01, merge lane):
+  with FD-50 landed, this entry's native guard now
+  executes in the standard harness — and fails at its
+  first bridge-level assertion: the bridge admits the
+  guard's texel-atomic heap module at
+  vkCreateShaderModule (VK_SUCCESS) instead of
+  refusing it. The classifiers record the texel
+  refusal in the array verdict, but the audit's
+  admission path never consults it, so the two
+  mirrors disagree (the JS mirror refuses the class
+  by name). Registered as FD-67; the lane record's
+  claim of a completed standard-harness run including
+  this guard is not reproducible from the committed
+  tree and is superseded by FD-67's evidence. This
+  entry stays open on its original terms.
+
+- **FD-67 — The bridge's shader audit admits modules
+  whose descriptor-heap array elements form texel
+  pointers, although its own classifiers record them
+  as refused and the JS mirror refuses them by name.**
+  *(High — graphics correctness / mirror divergence;
+  open. Found by the FD-50+FD-55+FD-62 merge lane's
+  gate, 2026-11-01.)* FD-62's hardening taught both
+  descriptor-array audit mirrors to follow
+  OpImageTexelPointer and to record, per array
+  variable, the texel-pointer uses the translation
+  stack cannot serve (`texelAtomicByVar` in the array
+  verdict). On the JS side the refusal takes effect:
+  spirvfix refuses the class with the named reason
+  ('the translation stack rejects OpImageTexelPointer').
+  On the bridge side nothing consumes the recorded
+  verdict: `vk64AuditSpirv` consults the array verdict
+  only for texel-buffer servability and the
+  RuntimeDescriptorArray capability strip, so
+  `vkCreateShaderModule` returns VK_SUCCESS for a
+  module in the refused class (measured directly on a
+  diagnostic build: verdict 0, and no capability
+  rejection is counted for it). The failure surfaces
+  exactly where FD-50's fix lets the standard native
+  harness reach FD-62's guard: `run-native.py`
+  executes 43 sections — including the pipeline-cache
+  section FD-50 repaired and FD-16's guards — then
+  aborts at the guard's first bridge-level assertion
+  (`vk64_native_test.cpp:3481`: the module must come
+  back VK_ERROR_FEATURE_NOT_PRESENT). Proven not to
+  be a composition interaction: the identical abort
+  occurs with FD-61's bridge delta reverted (FD-62's
+  own bridge in an isolated harness build), and
+  FD-62's lane tree cannot reach the guard at all
+  (its harness still dies at FD-50's fn-921 call).
+  The FD-62 lane record's claim of a completed
+  standard-harness run (53 PASS lines including this
+  guard, exit 0) is not reproducible from the
+  committed tree, and its cited evidence directory is
+  absent from that tree; the register's Section B row
+  for the lane correctly described the guard's proof
+  as a scratch harness. Closing terms: the bridge
+  audit refuses the recorded texel class at
+  shader-module creation, by name, mirroring the JS
+  verdict (or the sweep simulation becomes texel-aware
+  so the capability path refuses); FD-62's native
+  guard then passes as written, or is corrected to
+  the implemented attribution with the correction
+  recorded here; and `run-native.py` runs to
+  completion end to end. Evidence:
+  `test-results/merge-fd50-fd55-fd62-20261101/`
+  (`run-native.log`,
+  `run-native-direct-unmodified.log`).
+
+- **FD-68 — A module that declares
+  RuntimeDescriptorArray but carries only
+  buffer-content runtime arrays is still rejected by
+  the shader audit.** *(Low — graphics correctness;
+  no captured instance; open. Recorded by the FD-55
+  lane as FD-61's bounded residue; numbered at
+  FD-61's closure so it stays tracked.)* FD-61's fix
+  counts a surviving runtime array against the
+  capability only when it is a descriptor array type;
+  a module whose arrays are all buffer content and
+  which declares the capability still rejects, and no
+  captured module is known to hit the case. Closing
+  terms: a captured instance, or an audit change that
+  admits the case with the mirror updated in step and
+  a unit fixture proving it.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -2142,3 +2250,61 @@ its lane and is not a defect, for the stated reason:
   "cannot prove" answer makes the audit reject, predicates
   whose false is correct, an honest "UNKNOWN" string).
   (`lane-cleanup-bridges` record.)
+
+- **CL-20 — The native Vulkan bridge test harness
+  aborted at the pipeline-cache assertions, so every
+  later section never ran (was FD-50).** Fixed in
+  `bb8d3bf72` on `lane-fd50` (composed into integ as
+  `165a1308f`): the fn-921/922 pipeline-cache test
+  calls now pass a guest-memory size slot to the
+  trapping wrapper, pin that the call actually trapped
+  to the bridge, and read the answer back from guest
+  memory, instead of handing the bridge a host pointer
+  it wrote through as a guest address. Proof: on a
+  tree whose base predates the fix the harness still
+  dies inside the pipeline-cache section (re-verified
+  2026-11-01 on `wt-fd57` — the fixture's
+  bounds-checked memory assertion fires before that
+  section's PASS line; the FD-50 and FD-62 records
+  carry the gdb backtrace to the bridge's fn-921
+  write); on the composed tree the same section
+  passes (`PASS: former stubs (device image sizing,
+  queue2, granularity, sparse, pipeline cache,
+  buffer-view destroy)`) and the harness executes 43
+  sections, including FD-16's SPIR-V audit guards,
+  before stopping at FD-62's guard — a separate
+  defect registered as FD-67 that this abort had
+  masked. The closure covers FD-50's defect (the
+  fn-921 abort and the silent skipping of later
+  sections); end-to-end harness completion is
+  FD-67's closing term. Evidence:
+  `test-results/merge-fd50-fd55-fd62-20261101/`,
+  record `docs/reports/merge-fd50-fd55-fd62-20261101.md`.
+
+- **CL-21 — The shader-capability audit rejected
+  servable modules because buffer-content runtime
+  arrays survived its specialization sweep (was
+  FD-61).** Fixed in `b8508856a` on `lane-fd55`
+  (composed into integ as `7c3fc661b`): the sweep's
+  verdict counts a surviving runtime array against
+  the RuntimeDescriptorArray capability only when it
+  is a descriptor array type (the direct pointee of a
+  UniformConstant pointer); buffer-content arrays are
+  served as ordinary buffers. Proof: branch evidence
+  (the extracted classifier flips both captured Godot
+  modules from reject to admit while a genuinely
+  unservable module stays rejected; in-vivo demo run
+  with capability rejections 3 -> 2 and both modules
+  creating) plus the composed tree's gate — the new
+  unit suite `spirvfix-r15-buffer-arrays` passes
+  inside the full JS unit suite (349 passed, 0
+  failed), the vulkan citation audit reports 0 drift
+  against the composed bridge, the dist build
+  verifies ('Browser export verified', support
+  archive `de592964f772`), and packaging completeness
+  reports 0 failures. The entry's bounded residue (a
+  module declaring the capability with only
+  buffer-content arrays still rejects; no captured
+  instance) is registered as FD-68 and stays open.
+  Evidence: `test-results/fd55/`,
+  `test-results/merge-fd50-fd55-fd62-20261101/`.
