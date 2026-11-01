@@ -38,7 +38,6 @@
 #include "kmemory64.h"
 #endif
 
-#include UNISTD
 #include <stdlib.h>
 #include <unordered_set>
 #include <string.h>
@@ -1686,8 +1685,8 @@ U32 KProcess::link(BString from, BString to) {
         // sidecar so the new name is a symlink to the same target.
         toNativePath += EXT_LINK;
     }
-    if (::link(fromNode->nativePath.c_str(), toNativePath.c_str()) != 0) {
-        int err = errno;
+    int err = 0;
+    if (!Fs::createHostHardLink(fromNode->nativePath, toNativePath, err)) {
         kwarn_fmt("BW64-FAIL hard-link from=%s to=%s errno=%d outcome=link refused instead of copied", fromNode->nativePath.c_str(), toNativePath.c_str(), err);
         return -translateErr((U32)err);
     }

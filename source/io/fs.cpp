@@ -457,6 +457,14 @@ std::shared_ptr<FsFileNode> Fs::addFileNodeWithSharedId(const BString& path, con
     return result;
 }
 
+bool Fs::createHostHardLink(const BString& fromNativePath, const BString& toNativePath, int& outErrno) {
+    if (::link(fromNativePath.c_str(), toNativePath.c_str()) != 0) {
+        outErrno = errno;
+        return false;
+    }
+    return true;
+}
+
 
 std::shared_ptr<FsNode> Fs::addRootDirectoryNode(const BString& path, const BString& nativePath, const std::shared_ptr<FsNode>& parent) {
     std::shared_ptr<FsFileNode> result = std::make_shared<FsFileNode>(Fs::nextNodeId++, 0, path, B(""), nativePath, true, false, parent);
