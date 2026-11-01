@@ -172,6 +172,22 @@ GSTREAMER = {
     'i386': 'gstreamer32',
 }
 
+# FD-53: the amd64 closure's libvulkan1 deb ships the distro Vulkan
+# loader (libvulkan.so.1.3.239 plus its libvulkan.so.1 soname link). The
+# loader must not ride this archive under either name: the guest's
+# Vulkan library at that soname is the project shim staged explicitly
+# below from tools/rootfs64/libvk<bits> (its digest is the 'vulkan'
+# provenance entry), and the guest carries no ICD manifests a distro
+# loader could use. When the closure walk added the loader under the
+# soname anyway, the archive held two different files under one member
+# name, and which bytes a reader got depended on that reader's
+# duplicate handling. The closure's DT_NEEDED on the libvulkan.so.1
+# soname is satisfied by the shim.
+GSTREAMER_ARCHIVE_EXCLUDES = {
+    'usr/lib/x86_64-linux-gnu/libvulkan.so.1',
+    'usr/lib/x86_64-linux-gnu/libvulkan.so.1.3.239',
+}
+
 
 def ensure_gstreamer():
     result = {}
@@ -268,7 +284,16 @@ def stage(destination):
         pending = Path(temporary.name)
     try:
         with zipfile.ZipFile(pending, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            seen = set()
+
             def add(name, data):
+                # FD-53: a second file under an existing member name
+                # makes the archive's contents reader-dependent; the
+                # staging step refuses it instead of warning.
+                if name in seen:
+                    raise SystemExit(
+                        f'duplicate member name in support archive: {name}')
+                seen.add(name)
                 entry = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
                 entry.compress_type = zipfile.ZIP_DEFLATED
                 entry.external_attr = 0o100644 << 16
@@ -319,6 +344,8 @@ def stage(destination):
             for entry in gstreamer.values():
                 for path in entry['files']:
                     name = path.relative_to(entry['root']).as_posix()
+                    if name in GSTREAMER_ARCHIVE_EXCLUDES:
+                        continue
                     gst_names.append(name)
                     add(name, path.read_bytes())
             add('winbox-runtime.json', (json.dumps(provenance, indent=2) + '\n').encode())

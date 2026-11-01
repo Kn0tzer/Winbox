@@ -14,6 +14,9 @@ artifacts and the *source* payloads, offline:
      boot zip, every member is in the retained support pack with the
      tree digests dependencies.json records, and prepare-gstreamer.py
      --check re-verifies the closure against the post-split boot zips.
+  2c. The support pack's member names are unique, and its four
+     libvulkan.so.1 members are the project shims whose digests
+     dependencies.json records as the 'vulkan' provenance (FD-53).
   3. The DirectX redist sets the register calls complete are complete in
      both wine zips (d3dx9_24..43, d3dx10_33..43, d3dcompiler_33..47,
      xaudio2_0..2_9, xinput1_1..1_4), and the d3dcompiler numbers the
@@ -52,6 +55,7 @@ import os
 import subprocess
 import sys
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -292,7 +296,7 @@ def t_gstreamer_split():
         root = ROOT / 'tools/rootfs64' / stage_name
         paths = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
         assert paths, f'{stage_name}: staged tree is empty'
-        missing = paths - support_names
+        missing = (paths - module.GSTREAMER_ARCHIVE_EXCLUDES) - support_names
         assert not missing, (f'{stage_name}: {len(missing)} closure members missing '
                              f'from the support pack, e.g. {sorted(missing)[:3]}')
         with zipfile.ZipFile(RUNTIME / boot) as z:
@@ -309,6 +313,39 @@ def t_gstreamer_split():
         capture_output=True, text=True)
     assert result.returncode == 0, \
         f'prepare-gstreamer.py --check failed: {result.stdout} {result.stderr}'
+
+
+def t_support_pack_member_uniqueness():
+    # FD-53: the shipped support pack once carried two different files
+    # under usr/lib/x86_64-linux-gnu/libvulkan.so.1 (the project shim,
+    # staged deliberately, and the media closure's distro loader,
+    # staged incidentally), so the Vulkan library the guest loaded
+    # depended on the reader's duplicate handling rather than on the
+    # pinned archive hash. Member names must be unique archive-wide,
+    # and the Vulkan members must be the shims the manifest pins.
+    if not support_pack_ready():
+        skip('support pack member uniqueness (FD-53)',
+             'no support pack built yet (dependencies.json absent); '
+             'the build.mjs / apply-runtime-poststeps gates run this '
+             'check against the freshly built pack')
+        return
+    deps = json.loads((support_dir() / 'dependencies.json').read_text())
+    vulkan = deps.get('vulkan')
+    assert vulkan, 'dependencies.json lacks the vulkan provenance section'
+    with zipfile.ZipFile(support_zip_path()) as z:
+        names = z.namelist()
+        duplicates = sorted(n for n, c in Counter(names).items() if c > 1)
+        assert not duplicates, \
+            f'support pack has duplicate member names: {duplicates[:5]}'
+        for arch in ('i386', 'x86_64'):
+            for prefix in ('lib', 'usr/lib'):
+                member = f'{prefix}/{arch}-linux-gnu/libvulkan.so.1'
+                assert names.count(member) == 1, \
+                    f'support pack must carry {member} exactly once'
+                actual = sha(z.read(member))
+                assert actual == vulkan[arch], \
+                    (f'{member}: sha256 {actual[:12]}... is not the pinned '
+                     f'project shim {vulkan[arch][:12]}...')
 
 
 def t_directx_sets():
@@ -499,6 +536,7 @@ if __name__ == '__main__':
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
+    check('support pack member uniqueness + Vulkan shim pins (FD-53)', t_support_pack_member_uniqueness)
     check('DirectX redist sets complete (both zips)', t_directx_sets)
     check('VC++ runtime sets (both zips, asymmetries pinned)', t_vcpp_sets)
     check('wineserver dispatch is ELF (no /bin/sh script)', t_wineserver_dispatch)

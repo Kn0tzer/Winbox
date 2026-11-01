@@ -16,7 +16,7 @@ from the artifacts, so the register rows citing it stay honest.
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
-| support | `dist/runtime/support-de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35.zip` | 517859771 | `de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35` | 3543 |
+| support | `dist/runtime/support-c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f.zip` | 517564189 | `c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f` | 3542 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,
@@ -393,7 +393,8 @@ Labels match the register legend in `runtime.md`
 
 ## GStreamer closure placement (lazy support pack)
 
-- gstreamer64 closure: 262 staged members; in w64: 0 (must be 0); in support: 262 (373443728 bytes)
+- gstreamer64 closure: 262 staged members; in w64: 0 (must be 0); in support: 261 (372714744 bytes)
+  - MISSING from support: `usr/lib/x86_64-linux-gnu/libvulkan.so.1.3.239`
 - gstreamer32 closure: 247 staged members; in w32: 0 (must be 0); in support: 247 (351488608 bytes)
 
 ## Audio / graphics / networking / TLS / fonts set
