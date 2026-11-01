@@ -1441,6 +1441,45 @@ do not close the entry until they land.
   presents' from 'it presents and the page never shows
   it'.
 
+- **FD-61 — The native bridge harness's sanitizer flavour
+  cannot finish clean: readback blocks the fixture leaves
+  pending are reported as leaks, and the bridge drops
+  pending readbacks without freeing them.** *(Low —
+  developer-only verification debt, plus a latent bridge
+  sharp edge no production path currently reaches)* Found
+  by the FD-50 lane (2026-11-01) once the harness could
+  run to completion: under
+  `VK64_TEST_SANITIZERS=address,undefined` every section
+  executes and passes and no memory or undefined-behaviour
+  error is reported, but LeakSanitizer reports 1,132 bytes
+  in 5 allocations at exit, all from the bridge's
+  `setupReadbacks` (`source/vulkan/vk64bridge.cpp` — the
+  image-readback and buffer-readback mallocs). Three
+  harness sections call `setupReadbacks` directly to
+  check readback planning and never call
+  `completeReadbacks`; the production submit paths always
+  pair the two, and `completeReadbacks` frees every
+  block, so no production leak is proven. The latent
+  half: `setupReadbacks` opens by clearing both pending
+  vectors without freeing any blocks still pending, so a
+  second setup after an unpaired first one loses the
+  blocks silently — today reachable only from the
+  fixture. Either the fixture completes the pairing after
+  its planning checks, or setup learns to free what it
+  discards; until one lands, the sanitizer flavour cannot
+  serve as a clean gate. Measured alongside: the
+  instrumented suite needs ~35 s wall on a loaded box,
+  over the runner's 30 s execution cap, so through the
+  runner it currently ends as a timeout rather than the
+  leak report. Evidence:
+  `test-results/fd50/run-san-manual.log`,
+  `test-results/fd50/run-san-noleakcheck.log` (control:
+  leak check off, all 52 sections pass, exit 0), and
+  `docs/reports/fd50-native-harness-completion-20261101.md`.
+  *(Numbered FD-61 on this lane branch; the FD-55/FD-57
+  lane branches carry FD-61/FD-62/FD-63 for unrelated
+  items — the merge lane renumbers one set.)*
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -1469,6 +1508,7 @@ is behavioural, is re-proven there.
 | `lane-readygate` | FD-47: readiness certification hardened (plausible handle + five-X11 handshake + explorer launch); FD-43 closed by the four-arm measurement it demanded (CL-10/CL-11) | Sabotage pair: broken-dispatch control false-ready 10/10 under the old certification, 0/10 under the new (offline + in-page); genuine starts certify on the stamped arm (boot32-vkboot, celeste-boot, boot64-smoke pass); readiness unit tests red/green; JS 340/0; four-arm true rates A 0/10, B 0/10, D 0/10 |
 | `lane-fd48-restart-cert` | FD-48: the 32-bit open paths now emit the process-spawn signal (`OPENED '<path>' -> fd <n>` on successful .exe opens) that the FD-47 handshake's explorer element matches — the line existed only on the 64-bit path, so no 32-bit session could ever be certified; FD-54 registered (DLLTRACE dialect) | boot32-vkboot x18 on the branch dist: 14 single-attempt certifications, 2 restart-shape certifications (one after the full restart budget), 2 genuinely dead runs certified zero times; unsigned-control sabotage boot: old cert fires on `0xc000000d`, new cert 0, page cert 0; JS 342/0; no readiness rule changed |
 | `lane-fd49` | FD-49: format-less storage images at multi-type heap bindings — six captured Godot compute modules failed translation (the R14 signature keyed one format per binding while two storage image types share it; specialized clones of both types then collide at one binding in the translator; one empty shader poisoned by unreferenced format-less type declarations). Fixed in `df68b0d92`: per-type signature entries (`set:binding@typeKey=fmt`), specialized-binding-split (surplus clones move to fresh bindings, origin kept in the clone name and honoured as `origBinding`), and prune-dead-storage-image-types for the unreferenced declarations; every refusal left in place stays fail-closed | New suite `vk-storage-format-multi-type.test.mjs` (10 tests) over the six captured modules themselves through the tier path: all translate post-fix (fail-before on the pristine tree: `UnsupportedCapability(StorageImageReadWithoutFormat)` x5, `InvalidStorageImageWithoutFormat` x1), sabotage set holds (legacy/partial/kind-swapped signatures still rejected; live types never pruned). Full JS unit suite 339 passed / 4 failed: provenance-artifacts + runtime-completeness are dist-less-worktree audits (this lane builds no dist); vk-descriptor-binding-remap + vk-register-citations were broken by the change (source pin, citation drift) and fixed in the same commit, re-verified green standalone. Measured impact: in the captured Godot run nothing user-visible was blocked (modules accepted at creation, demo presented; no dispatch reached translation of them) — the class is latent: the first dispatch building a pipeline on one would have dropped its work silently. Record: `docs/reports/fd49-storage-image-formats-20261031.md`. NOTE for the merge lane: FD-49's open entry lives in this register on `lane-fd16`'s branch; this row is the fixing half — compose A->C at merge |
+| `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-61. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
