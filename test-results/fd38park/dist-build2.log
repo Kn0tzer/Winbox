@@ -1,0 +1,77 @@
+[bw64-build] lock acquired (pid=3380696)
+Runtime assets verified (13 files).
+make: Entering directory '/home/ubuntu/wt-fd38park/project/emscripten'
+MAKEFLAGS is -j2
+make[1]: Entering directory '/home/ubuntu/wt-fd38park/project/emscripten'
+MAKEFLAGS 
+/home/ubuntu/wt-fd38park/platform/sdl/knativeinputSDL.cpp:47:5: warning: lambda capture 'this' is not used [-Wunused-lambda-capture]
+   47 |     DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-fd38park/platform/sdl/sdlcallback.h:38:63: note: expanded from macro 'DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN'
+   38 | #define DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN sdlDispatch([=, this]() -> U32 {
+      |                                                               ^~~~
+1 warning generated.
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:651:74: warning: lambda capture 'newRsp' is not required to be captured for this use [-Wunused-lambda-capture]
+  651 |         runAndCheck(r, "iretq restores rip/rflags/rsp", withExit(code), [newRsp](CPU64& c) {
+      |                                                                          ^~~~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:3424:32: warning: lambda capture 'spec' is not used [-Wunused-lambda-capture]
+ 3424 |                 }, [=, &insn, &spec](CPU64& c) {
+      |                             ~~~^~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:4215:30: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4215 |                     }, [item,data](CPU64& c) {
+      |                             ~^~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:4321:20: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4321 |                 },[data](CPU64& c) {
+      |                    ^~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:4335:20: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4335 |                 },[data](CPU64& c) {
+      |                    ^~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:4448:20: warning: lambda capture 'input' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4448 |                 },[input](CPU64& c) {
+      |                    ^~~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:4468:20: warning: lambda capture 'input' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4468 |                 },[input](CPU64& c) {
+      |                    ^~~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:5132:80: warning: lambda capture 'dst' is not required to be captured for this use [-Wunused-lambda-capture]
+ 5132 |         runAndCheck(r, "futex WAKE_OP applies SET operation", withExit(code), [dst](CPU64& c) {
+      |                                                                                ^~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:6645:18: warning: lambda capture 'sRBX' is not required to be captured for this use [-Wunused-lambda-capture]
+ 6645 |                 [sRBX](CPU64& c) {
+      |                  ^~~~
+/home/ubuntu/wt-fd38park/source/emulation/cpu/cpu64SelfTest.cpp:8099:96: warning: lambda capture 'SENTINEL' is not required to be captured for this use [-Wunused-lambda-capture]
+ 8099 |         runAndCheck(r, "FXSAVE/FXRSTOR preserves XMM0 (PLT-resolver FP arg)", withExit(code), [SENTINEL](CPU64& c) {
+      |                                                                                                ^~~~~~~~
+10 warnings generated.
+em++: warning: -pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly, see https://github.com/WebAssembly/design/issues/1271 [-Wpthreads-mem-growth]
+make[1]: Leaving directory '/home/ubuntu/wt-fd38park/project/emscripten'
+make: Leaving directory '/home/ubuntu/wt-fd38park/project/emscripten'
+Optional local game archives not staged; launcher demos use the hosted catalog.
+Wine Mono 7.4.0: complete runtime verified (/home/ubuntu/wt-fd38park/tools/rootfs64/mono32)
+libvk32: source and binary verified
+libvk64: source and binary verified
+libgl64: committed libGL.so.1 matches a fresh build of libgl64.c
+libgl32: generated source and binary match a fresh build
+/usr/lib/python3.12/zipfile/__init__.py:1620: UserWarning: Duplicate name: 'usr/lib/x86_64-linux-gnu/libvulkan.so.1'
+  return self._open_to_write(zinfo, force_zip64=force_zip64)
+Shared runtime: 517,859,771 bytes (de592964f772)
+Removed 1 winemenubuilder RunServices value(s) from /home/ubuntu/wt-fd38park/dist/runtime/prefix32.zip.
+Removed 0 winemenubuilder RunServices value(s) from /home/ubuntu/wt-fd38park/dist/runtime/prefix64.zip.
+PASS winehq backports (source + shipped zip)
+PASS wine8 loader backports (source + shipped zip)
+PASS vkd3d payloads (source + shipped zip)
+PASS vkd3d payloads 32-bit (shipped zip)
+PASS validate_service_runtime (shipped pairs)
+PASS gstreamer closure rides the support pack (absent from boot zips)
+PASS DirectX redist sets complete (both zips)
+PASS VC++ runtime sets (both zips, asymmetries pinned)
+PASS wineserver dispatch is ELF (no /bin/sh script)
+PASS manifest matches shipped zips
+PASS ALSA-to-OSS bridge members (staging-tree anchored, both arches)
+PASS fonts32 faces (source + shipped zip)
+PASS CJK font pin
+SKIP prefix64 built artifact: build-prefix64.sh output not present
+PASS prefix64 built artifact sections
+0 failures, 1 skips
+Browser export: /home/ubuntu/wt-fd38park/dist
+Browser export verified: 34 .mjs syntax files; runtime version substituted; dependency archive de592964f772 verified; host header expectations documented.
+[bw64-build] BUILD COMPLETE

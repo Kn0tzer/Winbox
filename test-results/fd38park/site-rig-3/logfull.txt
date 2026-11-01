@@ -1,0 +1,315 @@
+
+Starting ...
+Command line arguments: "./this.program" "-root" "/root" "-zip" "bw64url:517859771;http://127.0.0.1:36029/runtime/support-de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35.zip|517859771" "-zip" "glibc-rootfs32.zip" "-zip" "bw64url:239760722;http://127.0.0.1:36029/runtime/wine32.zip|239760722" "-zip" "prefix32.zip" "-zip" "bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892" "-w" "/home/username/apps/" "-env" "HOME=/home/username" "-env" "WINEPREFIX=/home/username/.wine" "-env" "WINESERVER=/usr/lib/wine/wineserver32" "-env" "WINEDLLPATH=/opt/wine-stable/lib/wine" "-env" "WINE_D3D_CONFIG=csmt=0x0" "-env" "WINELOADERNOEXEC=1" "-env" "XDG_RUNTIME_DIR=/tmp" "-env" "WINEDEBUG=-all" "-env" "WINEDATADIR=/opt/wine-stable/share/wine" "-env" "TMPDIR=/home/username/tmp" "/opt/wine-stable/bin/wine" "Z:\home\username\apps\chrome.exe" "--no-sandbox" "--no-zygote" "--single-process" "--in-process-gpu" "--disable-gpu" "--disable-gpu-compositing" "--disable-software-rasterizer" "--use-gl=disabled" "--disable-features=CalculateNativeWinOcclusion,DirectComposition" "--disable-backgrounding-occluded-windows" "--disable-dev-shm-usage" "--no-first-run" "--no-default-browser-check" "--disable-extensions" "--disable-sync" "--disable-breakpad" "--disable-background-networking" "--window-size=1024,640" "about:blank"
+Using root directory: /root
+fszipurl: mounted 493 MB zip lazily (1 part(s), 2MB blocks)
+fszipurl: mounted 228 MB zip lazily (1 part(s), 2MB blocks)
+fszipurl: mounted 446 MB zip lazily (1 part(s), 2MB blocks)
+Using zip file system: bw64url:517859771;http://127.0.0.1:36029/runtime/support-de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35.zip|517859771
+Using zip file system: glibc-rootfs32.zip
+Using zip file system: bw64url:239760722;http://127.0.0.1:36029/runtime/wine32.zip|239760722
+Using zip file system: prefix32.zip
+Using zip file system: bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892
+Created root directory: /root
+Loaded bw64url:517859771;http://127.0.0.1:36029/runtime/support-de592964f7724f72363d6583807ff6c8500483c4137fbef8f46b3af7bd76ed35.zip|517859771 in 1141 ms
+Loaded glibc-rootfs32.zip in 63 ms
+Loaded bw64url:239760722;http://127.0.0.1:36029/runtime/wine32.zip|239760722 in 374 ms
+Loaded prefix32.zip in 21 ms
+Loaded bw64url:468348892;https://kn0tzer.work.gd/games/chromium.zip|468348892 in 31 ms
+Launching "/opt/wine-stable/bin/wine" "Z:\home\username\apps\chrome.exe" "--no-sandbox" "--no-zygote" "--single-process" "--in-process-gpu" "--disable-gpu" "--disable-gpu-compositing" "--disable-software-rasterizer" "--use-gl=disabled" "--disable-features=CalculateNativeWinOcclusion,DirectComposition" "--disable-backgrounding-occluded-windows" "--disable-dev-shm-usage" "--no-first-run" "--no-default-browser-check" "--disable-extensions" "--disable-sync" "--disable-breakpad" "--disable-background-networking" "--window-size=1024,640" "about:blank" 
+loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+setupThreadStack32: argc=21 envc=18 prog=wine
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEC00
+wine64session: context captured (cwd=/home/username/apps/ uid=1 bootPid=10)
+loadProgram: PT_INTERP '/lib/ld-linux.so.2', loading dynamic linker
+loadProgram: interpreter mapped at 0xb0000000, entry 0xb001abd0
+setupThreadStack32: argc=1 envc=19 prog=wineserver32
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEDCC
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 26
+setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED40
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wineboot.exe' -> fd 31
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/wineboot.exe' -> fd 31
+fszipurl: 16 MB fetched lazily so far
+fszipurl: 32 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 26
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/services.exe' -> fd 52
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/services.exe' -> fd 52
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 59
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+FsZip: 64 entry streams opened, 15 MB decompressed, 7 MB served from cache, 0 backward reopens
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 64
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 64
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 64
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 64
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 88
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 88
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/plugplay.exe' -> fd 61
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/plugplay.exe' -> fd 61
+fszipurl: 48 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 83
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 83
+setupThreadStack32: argc=5 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED28
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/svchost.exe' -> fd 96
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/svchost.exe' -> fd 96
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 107
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 107
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 112
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 112
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 112
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 112
+FsZip: 128 entry streams opened, 25 MB decompressed, 13 MB served from cache, 0 backward reopens
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 127
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 127
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 109
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 109
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 111
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 111
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 125
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 116
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 111
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 111
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 113
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 113
+FsZip: 64 entry streams opened, 15 MB decompressed, 2 MB served from cache, 0 backward reopens
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 127
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 127
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED48
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winedevice.exe' -> fd 109
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winedevice.exe' -> fd 109
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/ntoskrnl.exe' -> fd 111
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/ntoskrnl.exe' -> fd 111
+fszipurl: 64 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/chrome.exe' -> fd 27
+fszipurl: 80 MB fetched lazily so far
+FsZip: 192 entry streams opened, 126 MB decompressed, 16 MB served from cache, 19 backward reopens
+sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/chrome.exe' -> fd 31
+setupThreadStack32: argc=16 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEB00
+sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/chrome.exe' -> fd 117
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 123
+sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/chrome.exe' -> fd 124
+setupThreadStack32: argc=4 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED3C
+setupThreadStack32: argc=13 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FEBB0
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 134
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/explorer.exe' -> fd 134
+sys_openat: OPENED '/home/username/.wine/dosdevices/z:/home/username/apps/chrome.exe' -> fd 134
+FsZip: 256 entry streams opened, 130 MB decompressed, 19 MB served from cache, 19 backward reopens
+[1101/022043.963:ERROR:registration_protocol_win.cc(135)] TransactNamedPipe: Broken pipe. (0x6D)
+XWireServer: accepted X11 client connection (now 1 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+fszipurl: 16 MB fetched lazily so far
+vk32: FIRST trap - 32-bit guest libvulkan.so.1 mapped (witness fnId=0)
+vk32: gipa HIT : vkCreateInstance
+vk32: trap vkCreateInstance
+vk32: vkCreateInstance ok instance=0x324b0100
+vk32: gipa HIT : vkDestroyInstance
+vk32: gipa HIT : vkEnumeratePhysicalDevices
+vk32: gipa HIT : vkGetPhysicalDeviceProperties2KHR
+vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties
+vk32: gipa HIT : vkGetPhysicalDeviceMemoryProperties2KHR
+vk32: trap vkEnumeratePhysicalDevices
+vk32: trap vkEnumeratePhysicalDevices
+vk32: trap vkGetPhysicalDeviceProperties2KHR
+vk32: trap vkGetPhysicalDeviceMemoryProperties
+fszipurl: 32 MB fetched lazily so far
+fszipurl: 48 MB fetched lazily so far
+XWireServer: accepted X11 client connection (now 2 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+fszipurl: 64 MB fetched lazily so far
+fszipurl: 80 MB fetched lazily so far
+fszipurl: 96 MB fetched lazily so far
+XWireServer: accepted X11 client connection (now 3 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+fszipurl: 112 MB fetched lazily so far
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+fszipurl: 128 MB fetched lazily so far
+fszipurl: 144 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 137
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 137
+fszipurl: 160 MB fetched lazily so far
+setupThreadStack32: argc=3 envc=21 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED4C
+fszipurl: 176 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/rpcss.exe' -> fd 143
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/rpcss.exe' -> fd 143
+fszipurl: 96 MB fetched lazily so far
+fszipurl: 112 MB fetched lazily so far
+fszipurl: 17 MB fetched lazily so far
+FsZip: 320 entry streams opened, 149 MB decompressed, 26 MB served from cache, 22 backward reopens
+XWireServer: accepted X11 client connection (now 4 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+FsZip: 128 entry streams opened, 19 MB decompressed, 2 MB served from cache, 0 backward reopens
+XWireServer: accepted X11 client connection (now 5 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+Xlib:  extension "SHAPE" missing on display ":0".
+[32:36:1101/022054.781:ERROR:network_change_notifier_win.cc(224)] WSALookupServiceBegin failed with: 0
+syscall __NR_futex op 135 not implemented
+fszipurl: 128 MB fetched lazily so far
+[32:36:1101/022056.402:ERROR:system_network_context_manager.cc(743)] Cannot use V8 Proxy resolver in single process mode.
+[32:36:1101/022057.239:ERROR:system_network_context_manager.cc(743)] Cannot use V8 Proxy resolver in single process mode.
+Xlib:  extension "SHAPE" missing on display ":0".
+[32:36:1101/022058.472:ERROR:system_network_context_manager.cc(743)] Cannot use V8 Proxy resolver in single process mode.
+fszipurl: 192 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winemenubuilder.exe' -> fd 405
+Xlib:  extension "SHAPE" missing on display ":0".
+setupThreadStack32: argc=4 envc=22 prog=wine-preloader
+setupThreadStack32: env[0]=HOME=/home/username
+setupThreadStack32: env[1]=WINEPREFIX=/home/username/.wine
+setupThreadStack32: env[2]=WINESERVER=/usr/lib/wine/wineserver32
+setupThreadStack32: env[3]=WINEDLLPATH=/opt/wine-stable/lib/wine
+setupThreadStack32: env[4]=WINE_D3D_CONFIG=csmt=0x0
+setupThreadStack32: AT_EXECFN=103FED14
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winemenubuilder.exe' -> fd 425
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winemenubuilder.exe' -> fd 425
+Xlib:  extension "MIT-SHM" missing on display ":0".
+XWire: first window mapped (present sink=SDL)
+Showing Window
+XWire SDL: host screen sized to 1024x640 (BoxedWine screen)
+WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+FsZip: 384 entry streams opened, 160 MB decompressed, 30 MB served from cache, 30 backward reopens
+Xlib:  extension "SHAPE" missing on display ":0".
+XWireServer: accepted X11 client connection (now 6 open)
+XWire: handshake complete (vendor=Boxedwine root=0x260 visual=0x21), 124 body bytes
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "SHAPE" missing on display ":0".
+Xlib:  extension "MIT-SHM" missing on display ":0".
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 470
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 470
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winhlp32.exe' -> fd 484
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 477
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 477
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/winhlp32.exe' -> fd 488
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 486
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/winhlp32.exe' -> fd 486
+guest socket failed: domain=10 type=0x80002 protocol=0 errno=97 exe=/opt/wine-stable/bin/wine
+guest socket failed: domain=10 type=0x1 protocol=6 errno=97 exe=/usr/lib/wine/wineserver32
+[32:448:1101/022110.089:ERROR:tcp_socket_win.cc(282)] CreatePlatformSocket() returned an error: Error (0x13D) while retrieving error. (0x273F)
+[32:448:1101/022110.118:ERROR:tcp_socket_win.cc(861)] connect failed: 10065
+[32:500:1101/022110.360:ERROR:network_interfaces_win.cc(251)] GetAdaptersAddresses failed: 2
+[32:448:1101/022110.682:ERROR:tcp_socket_win.cc(282)] CreatePlatformSocket() returned an error: Error (0x13D) while retrieving error. (0x273F)
+[32:448:1101/022110.700:ERROR:tcp_socket_win.cc(861)] connect failed: 10065
+[32:448:1101/022111.526:ERROR:tcp_socket_win.cc(282)] CreatePlatformSocket() returned an error: Error (0x13D) while retrieving error. (0x273F)
+[32:448:1101/022111.540:ERROR:tcp_socket_win.cc(861)] connect failed: 10065
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+fszipurl: 144 MB fetched lazily so far
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/msiexec.exe' -> fd 544
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/msiexec.exe' -> fd 544
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/msiexec.exe' -> fd 544
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/msiexec.exe' -> fd 545
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/msiexec.exe' -> fd 542
+[32:364:1101/022114.885:ERROR:network_interfaces_win.cc(251)] GetAdaptersAddresses failed: 2
+[32:448:1101/022115.181:ERROR:tcp_socket_win.cc(282)] CreatePlatformSocket() returned an error: Error (0x13D) while retrieving error. (0x273F)
+[32:448:1101/022115.215:ERROR:tcp_socket_win.cc(861)] connect failed: 10065
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 586
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 586
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/wscript.exe' -> fd 590
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 590
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 586
+sys_openat: OPENED '/opt/wine-stable/lib/wine/i386-windows/wscript.exe' -> fd 541
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 587
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 587
+sys_openat: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/wscript.exe' -> fd 586

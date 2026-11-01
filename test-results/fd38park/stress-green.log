@@ -1,0 +1,4 @@
+Running 2 Test tests with 1 threads starting at 647
+Test inotify event delivery through the KProcess API ... OK
+Test inotify poll/notify lock composition under stress ... OK
+0 tests FAILED in 0s

@@ -604,10 +604,11 @@ do not close the entry until they land.
   `docs/reports/frame-floor-investigation-20261027.md`;
   `docs/reports/portal-perf-profile-baseline-20261026.md`.
 
-- **FD-38 — Directory-notification (inotify) delivery stays
-  disabled: the event semantics are fixed and pinned, but
-  enabling delivery parks the consumer for a reason now
-  isolated to enablement itself.** *(Medium)*
+- **FD-38 — Directory-notification (inotify) delivery:
+  semantics fixed, the enablement park found (a poll/sweep
+  lock-order deadlock) and removed at its source, delivery
+  enabled end-to-end. CLOSED 2026-10-31 — see CL-18.**
+  *(Medium)*
   FD-38 lane, 2026-10-31 (branch `lane-fd38`): the semantics
   remainder is isolated and fixed — the name field is padded
   to a multiple of 16; a plain re-add replaces the watch mask
@@ -634,13 +635,31 @@ do not close the entry until they land.
   events total, both rm_watch IN_IGNORED, read back correctly);
   per the Wine 8 server source, the directory waits the server
   registers pend identically under the refusal, whose dnotify
-  fallback this emulator also does not implement. The open
-  remainder is the mechanism by which the wineserver's
-  possession of a working inotify fd interacts with the
-  emulator's process/fd machinery. The entry point keeps
-  refusing loudly (ENOSYS; guests fall back to polling — the
-  shipped behavior) and must not be reopened without the
-  site-rig consumer proof passing. Evidence:
+  fallback this emulator also does not implement. That
+  remainder is now resolved (lane `lane-fd38park`,
+  2026-10-31): the mechanism was an ABBA lock-order
+  deadlock — the poll scan probes readiness while holding
+  the polling thread's poll condition and
+  KInotify::isReadReady took the instance wait condition
+  (pollCond -> waitCond), while the notify sweep holds
+  that wait condition and signals parent poll conditions
+  at its end (waitCond -> pollCond). Merely possessing a
+  working inotify fd put the wineserver's poll scan inside
+  the cycle; any other process's file churn could close
+  it, and the instance lock held by the wedged sweep then
+  froze guest file activity session-wide at ~0 CPU — the
+  frozen-log signature. Proven by a minimal stress
+  composition that wedges pre-fix with the two worker
+  stacks crossed in KInotify::isReadReady and
+  KInotify::sweep -> BoxedWineCondition::signalAll (gdb
+  capture preserved with the lane evidence). Fixed in
+  `1e8151d2a` by making isReadReady lock-free over an
+  atomic mirror of the queue state (the unix socket
+  object's established pattern); the entry point is
+  enabled, and the site-rig consumer proof the gate
+  demanded passes 3/3 (fresh-profile Chromium sessions,
+  window-mapped+frame, delivery live). Evidence:
+  `docs/reports/fd38-enablement-park-20261031.md`;
   `docs/reports/fd38-inotify-semantics-20261031.md`; preserved
   rig runs under `test-results/fd38/` on the lane branch;
   original disposition `c9259ec42`, integration tree
@@ -1655,6 +1674,42 @@ dead-start fix and needs composition care.
   latent. Records:
   `docs/reports/fd49-storage-image-formats-20261031.md`,
   `docs/reports/merge-finalbatch-20261031.md`.
+
+- **CL-18 — Directory-notification (inotify) delivery
+  disabled: enabling it parked the consumer session (was
+  FD-38's open remainder).** Fixed in `1e8151d2a` on
+  `lane-fd38park`: the park was an ABBA lock-order
+  deadlock between the poll scan (which holds the polling
+  thread's poll condition while probing readiness) and
+  the inotify notify sweep (which holds the instance wait
+  condition while signaling parent poll conditions);
+  KInotify::isReadReady taking the instance wait
+  condition was the edge that closed the cycle.
+  isReadReady is now lock-free over an atomic mirror of
+  the queue state, maintained at every queue mutation —
+  the unix socket object's established pattern — and
+  KProcess::inotify_init1's ENOSYS refusal is removed,
+  its implementation live. Proof: the new
+  testInotifyPollNotifyStress wedges pre-fix (gdb
+  capture: one worker blocked in KInotify::isReadReady,
+  the other in BoxedWineCondition::signalAll under
+  KInotify::sweep) and completes post-fix; the three pins
+  that asserted the refusal now assert the enabled
+  contract (EINVAL for invalid flags, working
+  descriptors, add_watch through the KProcess path);
+  native suites 663/663 + 62/62 full serial, JS 344/344,
+  dist verified (completeness 0 failures); the site-rig
+  consumer proof — fresh-profile Chromium sessions
+  through the real website path with delivery live —
+  passes 3/3 window-mapped+frame, against the FD-38
+  bisect's park on every enablement form. The semantics
+  half of FD-38 was fixed on `lane-fd38` (`0ddb6f31a`,
+  carried here as cherry-pick `04b32c1ac`; the merge lane
+  drops one copy at composition). Numbering note: CL-17
+  is reserved for FD-01's closure row, assigned to the
+  next merge batch by the deploy record. Records:
+  `docs/reports/fd38-enablement-park-20261031.md`,
+  `docs/reports/fd38-inotify-semantics-20261031.md`.
 
 
 

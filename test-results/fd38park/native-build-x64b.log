@@ -1,0 +1,5 @@
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-fd38park/project/linux'
+MAKEFLAGS 
+make[1]: *** [makefile:157: Build/X64Test//home/ubuntu/wt-fd38park/source/test/process/testInotify.cpp.o] Terminated
+make: *** [makefile:42: x64-test] Terminated
