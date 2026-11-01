@@ -234,6 +234,21 @@ do not close the entry until they land.
   `23c87ec6c` for measurement only - drop it at composition;
   it lands via `lane-fd48-restart-cert`. Record:
   `docs/reports/fd02-win32u32-fix-20261031.md`.
+  **Status 2026-11-01 (deploy): MERGED in the
+  FD-02+FD-38 batch (integ `02bffb14a`) and DEPLOYED
+  the same day (live build `02bffb14a`, wasm
+  `c332d20a`); the shipped wine32.zip differs from the
+  previous live one in exactly the four win32u members
+  (member audit in the deploy record). Live
+  re-measurement through the public route under the
+  hardened rules (fresh profile per boot, restart
+  budget pre-exhausted, 900 s window): x86 5/5
+  certified, handle 0x10052 on every boot, median
+  certified-ready 26.6 s, zero restarts, zero
+  false-ready; the x64 control arm certified 3/3 on
+  the same build. The merge -> deploy -> live
+  re-measurement terms are discharged. This defect is
+  CLOSED — see CL-19.**
 - **FD-03 — The emulated machine is far smaller than modern
   programs expect, and no GPU-compute API exists.** *(High, class
   of programs)* Four independent floor failures, none of them a
@@ -555,6 +570,40 @@ do not close the entry until they land.
   latent asymmetry, not a proven failure. Evidence:
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`
   ("also observed, not a blocker").
+
+- **FD-65 — Wine Gecko aborts with "unable to find a usable
+  font (serif)"; the MSHTML fixture never reports.**
+  *(Medium — embedded-HTML rendering class: any guest
+  program that renders through Wine's Gecko engine.
+  Surfaced by the FD-02+FD-38 deploy gate, 2026-11-01;
+  proven pre-existing — the identical failure, including
+  the Gecko abort line and the fixture's wedged stack
+  signature, reproduces against the previous live build
+  `fe4cfc265`, and this batch's inputs to the path (x64
+  payloads, fonts, support archive) are byte-identical,
+  so the batch did not cause it.)* In the
+  common-dependencies browser test the guest boots
+  cleanly and `mshtml-document.exe` spawns, but Wine
+  Gecko 2.47.3 aborts at startup —
+  `###!!! ABORT: unable to find a usable font (serif):
+  file /build/wine-gecko-2.47.3/gfx/thebes/gfxTextRun.cpp,
+  line 1875` — and the fixture exits without ever
+  printing `MSHTML: RESULT 0` (the test's 180 s wait
+  expires; a second fixture process exits with status
+  0xC0000005). Gecko's font enumeration is finding no
+  usable serif font in the guest at that moment; whether
+  the guest font set is genuinely absent on this path
+  or enumeration races first-boot font-cache generation
+  is not yet characterized — that determination is the
+  entry's first step, and neither the test's wait nor
+  its assertions may be loosened to pass it.
+  *(Numbered FD-65 on integ: the FD-50 lane's branch
+  record earmarked this number for its readback-leak
+  entry; that entry renumbers to FD-66 at its
+  composition.)* Evidence:
+  `test-results/deploy-fd02-fd38-20261101/js-commondep-rerun.log`,
+  `test-results/deploy-fd02-fd38-20261101/js-commondep-live-baseline.log`,
+  `test-results/suite-common-dependencies/console.log`.
 
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
@@ -1819,6 +1868,41 @@ dead-start fix and needs composition care.
   Records:
   `docs/reports/fd38-enablement-park-20261031.md`,
   `docs/reports/fd38-inotify-semantics-20261031.md`.
+
+- **CL-19 — The 32-bit staged system files carried the
+  same two impatience defects as the 64-bit set, and
+  the fix pipeline could not reach them (was FD-02).**
+  Fixed in `6f3d440ef` on `lane-fd02` (composed into
+  integ as `dc225bd93`): the 32-bit side got its own
+  pipeline route — `tools/rootfs32/build-wine10-win32u.sh`
+  builds the unix half from the pinned Wine 10.0 source
+  with `wine10-win32u-desktop-wait.patch` (the 10 s
+  input-idle fuse becomes 300 s; the check-once
+  graphics-driver latch becomes 500 ms retries for
+  ~300 s, preserving Wine 10's null-GUID fallback), and
+  the base build substitutes the committed module
+  (sha256 `b2d9d135...`, hash-pinned, fail-closed) into
+  all four shipped copies. Deployed 2026-11-01 in build
+  `02bffb14a` (deploy record
+  `docs/reports/deploy-fd02-fd38-20261101.md`): the
+  shipped wine32.zip differs from the previous live
+  archive in exactly those four members (1,926 members,
+  name set identical). Proof: branch measurement under
+  the hardened rules 5/5 certified (median 74 s);
+  merged-tree measurement 3/3 certified (median
+  58.2 s); live re-measurement through the public
+  route after the deploy — x86 5/5 certified, handle
+  0x10052 on every boot, certified-ready 25.5–27.0 s
+  (median 26.6 s), zero restarts, zero false-ready,
+  zero readiness rejections — with the x64 control arm
+  3/3 certified on the same build. The stock Wine-10
+  pair's defect presence was proven at source level on
+  the branch; no stock-vs-fixed rate delta is claimed
+  (the isolation arm certified 3/3 — the fallback masks
+  part of the latch's failure space at this profile),
+  so the closure rests on the fix being present in the
+  shipped bytes and the fixed build certifying live,
+  the same terms as FD-01's closure (CL-17).
 
 
 
