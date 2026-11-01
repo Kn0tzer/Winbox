@@ -38,6 +38,7 @@
 #include "kmemory64.h"
 #endif
 
+#include UNISTD
 #include <stdlib.h>
 #include <unordered_set>
 #include <string.h>
