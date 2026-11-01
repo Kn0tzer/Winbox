@@ -1483,6 +1483,28 @@ do not close the entry until they land.
   servable modules — fixed on this lane's branch) and
   FD-62 (a genuinely unservable writable-image array
   shape, still open).
+  Pipeline-creation lane annotation (2026-11-01, branch
+  lane-fd55pipe): on the composed tree (FD-61 and the FD-62
+  hardening landed) this entry's blocker is pipeline creation,
+  proven directly. Two full standard-path captures with the warmed
+  archive (1,863 s and 1,923 s; evidence
+  test-results/fd55pipe/diag1 and diag2) show the engine reaching
+  pipeline creation and being refused there: the FD-61-fixed
+  vertex module (fixture godot-vs-heap-plus-cbv-heap.spv, bridge
+  djb2 a61ba068136e1191) now creates successfully, and its
+  fragment partner — FD-62's captured module, byte-identified by
+  the bridge's new refusal logging (5,704 bytes, djb2
+  0b3b4d8cc939485a, the godot-fs-atomic-texel-heap.spv fixture) —
+  is refused at creation for ImageBuffer and
+  RuntimeDescriptorArray, each refusal landing in the same second
+  as the guest translation layer's hresult_from_vk_result(-8) and
+  the engine's Create(Graphics)PipelineState 0x80004005. Five such
+  failures per run; zero vkCreateGraphicsPipelines, surface,
+  swapchain or present calls reach the bridge in either run. A
+  second, later wave of refusals (three creations at ~1,881 s) is
+  filed as FD-70. This entry stays open: its closing condition is
+  now FD-62's closing condition, plus FD-70's class. Record:
+  docs/reports/fd55-pipeline-creation-20261101.md.
 
 - **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
@@ -1685,6 +1707,48 @@ do not close the entry until they land.
   this guard is not reproducible from the committed
   tree and is superseded by FD-67's evidence. This
   entry stays open on its original terms.
+  Demo impact measured (2026-11-01, FD-55 pipeline-creation lane):
+  this entry's captured module is the Godot demo's FIRST
+  pipeline-creation blocker on the composed tree — the first two
+  of five 0x80004005 failures in each of two full standard-path
+  captures, byte-identified in vivo through the bridge's refusal
+  logging (see the FD-55 annotation and
+  docs/reports/fd55-pipeline-creation-20261101.md). Closing terms
+  unchanged.
+
+- **FD-70 — A second class of real Godot shader modules
+  is refused at creation: a descriptor runtime array that
+  specialization cannot remove, combined with
+  physical-storage-buffer addressing in its USED form. *(Medium —
+  the affected pipelines fail creation outright; three of the five
+  0x80004005 failures in each FD-55 pipeline-creation capture, in
+  a late wave at ~1,819 s (diag1) and ~1,881 s (diag2). Filed
+  provisionally as FD-70 by the FD-55 pipeline-creation lane,
+  2026-11-01; final numbering is the composition lane's.)* In the
+  diag2 capture (build 72360dda5; evidence
+  test-results/fd55pipe/diag2) the engine's scene-shader retries
+  hit two further modules the bridge audit refuses with
+  VK_ERROR_FEATURE_NOT_PRESENT: 23,440 bytes (djb2
+  28a2394720432fda, one creation) and 16,304 bytes (djb2
+  3eccbc1e60e9f7a4, two creations), refused for
+  spirv-capability:RuntimeDescriptorArray (the descriptor array is
+  not specializable, so the R15a exemption does not apply) and
+  spirv-capability-unknown:5347 (PhysicalStorageBufferAddresses in
+  its used form — neither the unused-declaration exemption nor R15
+  root-descriptor servability applies). The second 16,304-byte
+  creation's log shows only the 5347 reason; whether the aggregate
+  refusal logger coalesced the repeated array reason or the two
+  creations differ below the djb2 hash was not chased — the
+  verdict and the layer are the same either way. No fixtures exist
+  for these modules yet (nothing in testdata/spirv/ matches their
+  sizes); the bridge's refusal logging (lane-fd55pipe 72360dda5)
+  now names size+hash for every refused module, so a future
+  capture can be matched against fixtures byte-for-byte once they
+  are taken. Closing this entry requires the descriptor-heap
+  serving path to serve non-specializable descriptor arrays with
+  used physical addressing, or proof — once FD-62's first wave is
+  served — that these modules are never reached on the demo path.
+  Record: docs/reports/fd55-pipeline-creation-20261101.md.
 
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
