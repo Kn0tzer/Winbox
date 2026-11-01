@@ -3134,6 +3134,34 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-malformed") == badBefore + 1);
         puts("PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule");
 
+        // GUARD (FD-72, helper-invocation reads): a fragment module that
+        // reads the helper-invocation state -- a BuiltIn HelperInvocation
+        // variable or OpIsHelperInvocationEXT -- is refused by name at
+        // vkCreateShaderModule. The page tier's translator rejects the
+        // builtin on the decoration's mere presence and WGSL has no
+        // helper-invocation query, so admitting the module only deferred
+        // the failure to pipeline creation, where its draws were dropped
+        // after the guest had been told creation succeeded. A neighbouring
+        // builtin (FragCoord) is not refused.
+        const U32 hiBefore = vk64BridgeUnsupportedCount("spirv-builtin-helper-invocation");
+        // %1 = OpTypeBool; %2 = OpTypePointer Input %1; %3 = OpVariable %2 Input;
+        // OpDecorate %3 BuiltIn HelperInvocation(23) -- the captured Godot
+        // module's shape (declared and loaded; the translator also rejects
+        // the declared-but-never-loaded form, so the decoration is the gate).
+        assert(module({(2u << 16) | 21u, 1u, (4u << 16) | 32u, 2u, 1u, 1u, (4u << 16) | 59u, 2u, 3u, 1u,
+                       (4u << 16) | 71u, 3u, 11u, 23u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-builtin-helper-invocation") == hiBefore + 1);
+        // The EXT spelling: OpCapability DemoteToHelperInvocation (capability
+        // 5379 stays admitted for the demote WRITE the tier serves) beside an
+        // OpIsHelperInvocationEXT instruction (op 5381) -- the read refuses.
+        assert(module({(2u << 16) | 17u, 5379u, (3u << 16) | 5381u, 1u, 2u}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-builtin-helper-invocation") == hiBefore + 2);
+        // Neighbouring builtin, same variable shape: BuiltIn FragCoord(15) admits.
+        assert(module({(2u << 16) | 21u, 1u, (4u << 16) | 32u, 2u, 1u, 1u, (4u << 16) | 59u, 2u, 3u, 1u,
+                       (4u << 16) | 71u, 3u, 11u, 15u}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-builtin-helper-invocation") == hiBefore + 2);
+        puts("PASS: GUARD helper-invocation reads (BuiltIn 23 / OpIsHelperInvocationEXT) are refused by name at vkCreateShaderModule (FD-72)");
+
         // GUARD (FD-16, descriptor-heap texel arrays): a texel buffer
         // reached through an R15a-servable descriptor-heap runtime array
         // is admitted exactly like a direct texel variable -- spirvfix

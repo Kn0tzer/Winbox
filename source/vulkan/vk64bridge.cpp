@@ -2159,6 +2159,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     bool storageImage = false, inputAttachment = false, compute = false, graphicsEntry = false, cullUsed = false, drawUsed = false;
     bool storageImageWrite = false, imageWriteOpcode = false;
     bool physicalBufferUsed = false; // Route 0 used-test (mirrors spirvfix R8): set by op 120/121 or an OpTypePointer with storage class 5349, or by the R8 downgrade census further down
+    bool helperInvocation = false; // FD-72: set by an OpDecorate BuiltIn 23 (HelperInvocation) or an OpIsHelperInvocationEXT instruction; refused by name below
     std::set<U32> storageImageTypes;                 // OpTypeImage ids with Sampled==2
     std::unordered_map<U32, U32> imageDims;          // OpTypeImage id -> Dim (for the texel-servable storage-write scoping below)
     std::unordered_map<U32, U32> loadPtr;            // OpLoad result id -> pointer operand id
@@ -2183,6 +2184,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 61: if (len >= 4) loadPtr[w[i + 2]] = w[i + 3]; break;              // OpLoad: result -> pointer
             case 99: imageWriteOpcode = true; break;                                 // OpImageWrite (valid only on storage images)
             case 120: case 121: physicalBufferUsed = true; break;                    // OpConvertUToPtr / OpConvertPtrToU: a physical pointer is materialized
+            case 5381: helperInvocation = true; break;                               // OpIsHelperInvocationEXT: the EXT spelling of the same read (FD-72)
             case 60: if (len >= 4) {                                                 // OpImageTexelPointer: candidate write (stores/atomics go through texel pointers); typed after the scan when varById exists
                 U32 img = w[i + 3];
                 auto lp = loadPtr.find(img); if (lp != loadPtr.end()) img = lp->second;
@@ -2192,7 +2194,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
             case 71: if (len >= 3) {                                                   // OpDecorate
                 if (w[i + 2] == 24) nonWritable.insert(w[i + 1]);
                 if (w[i + 2] == 3) bufferBlock.insert(w[i + 1]);
-                if (w[i + 2] == 11) { if (w[i + 3] == 4) cullUsed = true; if (w[i + 3] >= 4424 && w[i + 3] <= 4426) drawUsed = true; } // BuiltIn CullDistance / BaseVertex,BaseInstance,DrawIndex
+                if (w[i + 2] == 11) { if (w[i + 3] == 4) cullUsed = true; if (w[i + 3] >= 4424 && w[i + 3] <= 4426) drawUsed = true; if (len >= 4 && w[i + 3] == 23) helperInvocation = true; } // BuiltIn CullDistance / BaseVertex,BaseInstance,DrawIndex / HelperInvocation (FD-72)
             } break;
             case 72: if (len >= 4) { if (w[i + 3] == 24) memberNonWritable[w[i + 1]].insert(w[i + 2]); if (w[i + 3] == 11) { if (w[i + 4] == 4) cullUsed = true; if (w[i + 4] >= 4424 && w[i + 4] <= 4426) drawUsed = true; } } break; // OpMemberDecorate
             default: break;
@@ -2311,6 +2313,19 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
     if (compute) { vk64Unsupported("spirv-compute-entry", "compute entry point; no compute path in the V2 protocol; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     if (storageImageWrite) { vk64Unsupported("spirv-storage-image-write", "shader writes a storage image (OpImageWrite / storage texel pointer); the page tier binds storage textures for typed reads only; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     if (inputAttachment) { vk64Unsupported("spirv-input-attachment", "input attachments have no WebGPU subpass-input mapping; VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
+    // FD-72: a fragment helper-invocation read (a BuiltIn HelperInvocation
+    // variable, or OpIsHelperInvocationEXT) cannot cross the page tier: the
+    // vendored translator rejects BuiltIn 23 in its SPIR-V frontend on the
+    // decoration's mere presence (measured, including the declared-but-
+    // never-loaded form), and WGSL has no helper-invocation query to
+    // translate it to -- helper invocations there may even take part in
+    // subgroup operations, so no predicate-free rewrite is sound for a
+    // module that branches on the value to gate atomics. Both markers are
+    // fragment-only shapes, so this sits with the graphics-path refusals;
+    // compute-only modules are gated at the page tier by the V2 contract
+    // above. Refuse here, where the refusal is named and counted, instead
+    // of admitting the module and dropping its draws at pipeline time.
+    if (helperInvocation) { vk64Unsupported("spirv-builtin-helper-invocation", "shader reads the fragment helper-invocation state (BuiltIn HelperInvocation / OpIsHelperInvocationEXT); the page-tier translator rejects the builtin and WGSL has no helper-invocation query (FD-72); VK_ERROR_FEATURE_NOT_PRESENT"); unsupported = true; }
     for (const Var& v : vars) {
         auto pt = ptrs.find(v.type);
         if (pt == ptrs.end()) continue;
