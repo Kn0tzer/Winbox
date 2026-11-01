@@ -62,6 +62,7 @@ void testBStringJoin();
 void testBStringIndexOf();
 void testCondStartWaitTime();
 void testFutex32WakeRace();
+void testMsyncLockOrder();
 void testThreadLifetimeTeardown();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
@@ -167,6 +168,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
@@ -837,6 +839,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
