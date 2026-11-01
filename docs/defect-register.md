@@ -2456,18 +2456,17 @@ do not close the entry until they land.
   lane, 2026-11-01; numbered FD-75 at composition
   on 2026-11-01 — the number was free on integ.)
 
-- **FD-78 (provisional) — The orphan sweep's
+- **FD-78 — The orphan sweep's
   literal-reference defect class is fixed only at
   the operand positions proven on a captured
   module; the same raw-word liveness idiom survives
   at sibling positions and in sibling sweeps.
   *(Low — no captured module is known to be gated
   by the unfixed positions; filed by the FD-70
-  lane, 2026-11-01. Numbered FD-78 provisionally:
-  FD-76/FD-77 were taken on integration by the
-  FD-12 composition after this branch forked;
-  renumber at composition if the number has
-  moved.)* FD-70's fix teaches the descriptor-array
+  lane, 2026-11-01. Numbered FD-78 at composition on
+  2026-11-01 — FD-76/FD-77 were taken on integration by the
+  FD-12 composition after this branch forked, as
+  filed; the number had not moved.)* FD-70's fix teaches the descriptor-array
   orphan sweep (spirvfix) and its bridge-audit
   mirror to bound the MemoryAccess operand group
   and to skip OpTypeInt / OpTypeFloat literal words
