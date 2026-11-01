@@ -423,6 +423,14 @@ void KInotify::notifyNodeRemoved(FsNode* parent, FsNode* node) {
     // reports that as IN_ATTRIB on the node itself, ahead of
     // IN_DELETE_SELF.
     sweepAll(nullptr, node, 0, B(""), false, K_IN_ATTRIB, 0);
+    // FD-60: unlinking one name drops the shared link count, which
+    // Linux reports as IN_ATTRIB on the file - visible through a
+    // watch placed on any surviving name too.
+    for (auto& m : node->linkGroupMembers()) {
+        if (m.get() != node) {
+            sweepAll(nullptr, m.get(), 0, B(""), false, K_IN_ATTRIB, 0);
+        }
+    }
     sweepAll(parent, node, parent ? K_IN_DELETE : 0, node->name, node->isDirectory(), K_IN_DELETE_SELF, 0);
 }
 
@@ -443,10 +451,12 @@ void KInotify::notifyRenamed(FsNode* fromParent, const BString& fromName, FsNode
 // File-level events (modify/open/close/attrib) are reported both to
 // watches on the file itself (empty name) and to watches on its parent
 // directory (with the file's name), per inotify(7).
-void KInotify::fileEventForNode(FsNode* node, U32 type) {
-    std::shared_ptr<FsNode> parent = node->getParent().lock();
-    if (parent) {
-        sweepAll(parent.get(), nullptr, type, node->name, node->isDirectory(), 0, 0);
+void KInotify::fileEventForNode(FsNode* node, U32 type, bool includeParent) {
+    if (includeParent) {
+        std::shared_ptr<FsNode> parent = node->getParent().lock();
+        if (parent) {
+            sweepAll(parent.get(), nullptr, type, node->name, node->isDirectory(), 0, 0);
+        }
     }
     sweepAll(nullptr, node, 0, B(""), false, type, 0);
 }
@@ -455,17 +465,19 @@ void KInotify::fileEvent(FsNode* node, U32 type) {
     if (!node) {
         return;
     }
-    // FD-60: hard-linked names are one file on Linux, so a watch on
-    // any name receives the file's events. Deliver through every
-    // member of the node's link group (a lone node has a group of
-    // one: itself).
+    // FD-60: hard-linked names are one file (one inode) on Linux,
+    // so a watch placed on any name receives the file's events.
+    // The originating name also sweeps its parent directory (with
+    // its own name, as Linux reports the name used); the other
+    // members receive only the file-level sweep - their parents
+    // see nothing, exactly as on Linux.
     std::vector<std::shared_ptr<FsNode>> members = node->linkGroupMembers();
     if (members.size() <= 1) {
-        fileEventForNode(node, type);
+        fileEventForNode(node, type, true);
         return;
     }
     for (auto& m : members) {
-        fileEventForNode(m.get(), type);
+        fileEventForNode(m.get(), type, m.get() == node);
     }
 }
 

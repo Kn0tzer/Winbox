@@ -920,6 +920,23 @@ void testChmodAccessHardLink() {
     if ((S32)process->link(B("/missing.txt"), B("/c.txt")) != -K_ENOENT) {
         testFail("link of a missing source must return -ENOENT");
     }
+    // Unlinking a third name reports the link-count change on the
+    // surviving names' watches too (one inode on Linux).
+    if ((S32)process->link(B("/a.txt"), B("/c.txt")) != 0) {
+        testFail("hard link to /c.txt failed");
+        return;
+    }
+    drainEvents();
+    if ((S32)process->unlinkFile(B("/c.txt")) != 0) {
+        testFail("unlinkFile of /c.txt failed");
+        return;
+    }
+    {
+        auto events = drainEvents();
+        if (!hasEvent(events, wdFile, 0x4, "")) {
+            testFail("unlink of /c.txt produced no IN_ATTRIB on the /a.txt watch");
+        }
+    }
     // Unlinking one name drops the count and keeps the content.
     if ((S32)process->unlinkFile(B("/a.txt")) != 0) {
         testFail("unlinkFile of /a.txt failed");

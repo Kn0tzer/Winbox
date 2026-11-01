@@ -121,7 +121,7 @@ private:
 
     void sweep(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie);
     static void fileEvent(FsNode* node, U32 type);
-    static void fileEventForNode(FsNode* node, U32 type);
+    static void fileEventForNode(FsNode* node, U32 type, bool includeParent);
     static void sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie);
     void queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name);
 
