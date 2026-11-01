@@ -1562,6 +1562,22 @@ do not close the entry until they land.
   Record: `docs/reports/fd62-texel-serving-20261101.md`;
   evidence `test-results/fd62serve/warm-20261101-110605/`.
 
+  FD-72 lane update, 2026-11-01: FD-72's boundary
+  is proven (its entry now states the exact terms:
+  no WGSL helper-invocation query exists, helper
+  subgroup participation is implementation-defined
+  there, and upstream naga's IR has no variant for
+  the builtin — closing waits on the translation
+  stack, not on a local fix). This demo's FD-72
+  module no longer reaches pipeline translation:
+  the bridge audit refuses it at module creation
+  by name (FD-75), so its in-vivo failure shape
+  changes from dropped draws to a named creation
+  refusal the guest can see. FD-74 (SampleMask)
+  waits behind FD-72 for the same module. This
+  entry stays open on FD-70 + FD-72 and the
+  downstream submit/swapchain behaviour.
+
 - **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
   because buffer-content runtime arrays survived its
@@ -2011,32 +2027,85 @@ do not close the entry until they land.
   lane, 2026-11-01)* The captured module
   (`testdata/spirv/godot-fs-atomic-texel-heap.spv`)
   loads the HelperInvocation builtin (BuiltIn 23) at
-  two sites: a ballot election
-  (`laneId == broadcastFirst && !helper`) and
-  `select(helper, 0, bit)`, masking helper lanes out
-  of the second texel atomic's OR value. Measured
-  against the vendored translator (naga 30.0.1): a
-  BuiltIn HelperInvocation variable fails with
-  `UnsupportedBuiltIn(23)`; `OpIsHelperInvocationEXT`
-  with its capability fails with
+  exactly two sites, both feeding subgroup
+  collectives whose results steer the atomics: a
+  ballot built from
+  `laneId == broadcastFirst && !helper`, observed
+  only through its popcount (== 0 tests) gating the
+  second atomic region; and
+  `select(helper, 0, bit)`, subgroup-reduced (OR)
+  into the second atomic's value operand. Helper
+  lanes must contribute nothing at either site, or
+  the atomics fire on wrong bits. It is the only
+  corpus module carrying the builtin.
+
+  **STILL OPEN — the boundary is now proven, in
+  these exact terms (FD-72 lane, 2026-11-01; full
+  evidence in
+  `docs/reports/fd72-helper-invocation-boundary-20261101.md`).**
+  (1) *The vendored translator rejects the builtin
+  at its SPIR-V frontend, on the decoration's mere
+  presence.* Measured against the vendored naga
+  30.0.1, called exactly as production calls it:
+  the captured module (post-FD-62 form) fails with
+  `UnsupportedBuiltIn(23)` on every backend
+  (wgsl/glsl/hlsl/msl). Minimal modules prove the
+  gate is presence, not use: a BuiltIn 23 variable
+  declared but never loaded fails identically, as
+  do load-and-use forms. The EXT spellings fail
+  too: `OpIsHelperInvocationEXT` with its
+  capability →
   `UnsupportedCapability(DemoteToHelperInvocation)`;
-  the EXT opcode without the capability is invalid
-  SPIR-V and is rejected as an unsupported
-  extension. Substituting a constant for the helper
-  flag would change the atomics' input bits — the
-  wrong-data outcome — so no honest local rewrite
-  exists today. It is the only corpus module
-  carrying the builtin. Closing this entry requires
-  translator support for helper invocation (a WGSL
-  is-helper-invocation path, or a demote-based
-  lowering whose masked-atomic semantics are
-  proven), after which the captured module should
-  translate end to end. FD-55 stays open on this
-  entry and FD-70. (Numbering per the merge lane's
-  settled audit on integration: FD-70 confirmed,
-  the pre-warm speed entry is FD-71; this entry is
-  the next free number there and is filed on this
-  branch for the composing merge to place.)
+  without the capability →
+  `UnsupportedExtension("SPV_EXT_demote_to_helper_invocation")`.
+  Replacing both loads with a constant still fails
+  (the declaration alone blocks); only deleting the
+  decoration, the variable and its interface entry
+  clears the frontend — and the module then stops
+  at FD-74 (SampleMask), not at anything
+  helper-shaped.
+  (2) *The target language has no value to
+  translate the builtin to, and its semantics
+  forbid the predicate-free rewrites.* The current
+  WGSL specification contains no
+  helper-invocation query — no `@builtin` value
+  and no function (full-text check, 2026-11-01) —
+  and its §15.5 states helper invocations "may
+  participate in subgroup operations" on some
+  devices and not on others, warning that assuming
+  either "will yield non-portable results". Both
+  of the captured module's uses are exactly the
+  poisoned shape: on a spec-permitted
+  implementation where helpers DO participate,
+  constant substitution, dropping the `!helper`
+  ballot term, or dropping the select each change
+  the ballot/reduce inputs and so the atomics'
+  behaviour — silently wrong data, the one outcome
+  worse than refusal.
+  (3) *Upgrading the translator does not change
+  this today:* the current upstream naga's IR
+  `BuiltIn` enum (50 variants, checked 2026-11-01)
+  has no HelperInvocation variant at all — the IR
+  cannot represent the value, and its WGSL writer
+  would have nothing legal to emit regardless.
+
+  **What changing the translation stack would
+  entail, in dependency order:** a WGSL
+  helper-invocation query (specification change,
+  then implementation in the browser's WGSL
+  compiler); naga IR + SPIR-V frontend + WGSL
+  writer support built on that query; then
+  re-vendoring naga here and re-proving the
+  corpus. None of the three exists today, and the
+  first is outside this project. **Closing this
+  entry requires that chain (or an equivalent
+  serving stack) to exist, and the captured module
+  to translate end to end through it** — noting
+  FD-74 waits immediately behind it for the same
+  module. Until then the module is refused by
+  name at creation (FD-75), not dropped at
+  pipeline time. FD-55 stays open on this entry
+  and FD-70.
 
 - **FD-73 — The pinned runtime-assets release
   archive disagrees with the manifest's file pins
@@ -2066,6 +2135,102 @@ do not close the entry until they land.
   proof of the older Wine builds — the former,
   since the file pins are what shipped builds
   verify against.
+
+- **FD-74 — The vendored shader translator's
+  validator rejects fragment SampleMask builtins,
+  which blocks the captured Godot module one step
+  past FD-72 and any fragment shader that reads or
+  writes the sample mask.** *(Medium — blocks a
+  shader class (SV_SampleMask / gl_SampleMask
+  users); found by the FD-72 lane, 2026-11-01)*
+  With the HelperInvocation declaration removed,
+  the captured Godot module's next translator
+  failure is `Built-in type for SampleMask is
+  invalid. Found Array {…, size: Constant(1),
+  stride: 4}`: the vendored naga's validator
+  insists the fragment SampleMask entry-point
+  argument have a shape SPIR-V cannot legally give
+  it (the builtin is specified as an array).
+  Measured general, not module-specific (vendored
+  naga 30.0.1, production call shape): three
+  minimal hand-written modules (access-chain load;
+  the same with Flat; whole-array load + extract)
+  all fail identically, and so does a textbook
+  glslangValidator-compiled GLSL fragment shader
+  reading `gl_SampleMaskIn[0]` — with and without
+  the SampleRateShading capability. The write
+  direction fails too, with a different validator
+  error (`Initializer doesn't match the variable
+  type`, on a glslang module writing
+  `gl_SampleMask`). The captured module is the
+  only corpus module carrying a SampleMask input.
+  No spirvfix rewrite can change the variable's
+  spec-mandated type, and no other SPIR-V source
+  for the mask exists, so there is no honest local
+  fix; closing requires translator-stack movement
+  (a validator/frontend fix in naga and a
+  re-vendor) — the same dependency family as
+  FD-72 but a distinct mechanism. Evidence:
+  `docs/reports/fd72-helper-invocation-boundary-20261101.md`.
+  (Numbered provisionally as FD-74 by the FD-72
+  lane; the composing merge settles numbering.)
+
+- **FD-75 — The bridge's SPIR-V audit admitted
+  helper-invocation modules that the page tier
+  could never translate, so their draws were
+  dropped at pipeline time after the guest had
+  been told module creation succeeded. FIXED on
+  `lane-fd72`, awaiting merge.** *(Medium — a
+  silent-failure / mirror-discipline gap of the
+  FD-49/FD-67 shape; found by the FD-72 lane,
+  2026-11-01)* `vk64AuditSpirv` had no rule for
+  BuiltIn 23 or OpIsHelperInvocationEXT, so a
+  module carrying either was admitted at
+  `vkCreateShaderModule`; the failure surfaced
+  later, per pipeline, as `vk64: page tier cannot
+  translate the fragment SPIR-V module (…) — frame
+  skipped` in the page tier, with the guest
+  believing creation had succeeded (the Godot
+  demo's FD-72 module took exactly this path in
+  the FD-62 lane's run). The fix makes the audit
+  refuse any module that declares a BuiltIn
+  HelperInvocation variable or contains an
+  OpIsHelperInvocationEXT instruction, at
+  creation, by name (`spirv-builtin-helper-invocation`,
+  counted like every audit refusal, and the
+  creation path's refusal log names the module's
+  size + djb2 hash), returning
+  `VK_ERROR_FEATURE_NOT_PRESENT` — the boundary
+  is presence-based because the translator's
+  rejection is (FD-72 evidence item 1). The
+  demote WRITE side is untouched (capability 5379
+  stays admitted; only the read refuses). Proof:
+  native GUARD in `vk64_native_test.cpp` (both
+  spellings refuse + counter; a FragCoord
+  neighbour module admits; sabotage-verified —
+  with the audit triggers neutered the guard
+  aborts at its own first assertion); full native
+  run green; JS unit suite at the integration
+  baseline; legacy suite 110/4 (the standing
+  vkwebgpu set); citation audit zero drift after
+  re-pinning through the change's line map; a new
+  REJECTED-LOUDLY row in
+  `docs/known-gaps/vulkan.md`. In vivo (warmed
+  archive, standard demo path, lane build
+  `69bb72126` / wasm `04e73f59`): of 256
+  `vkCreateShaderModule` calls the only 2 refusals
+  are the byte-identified Godot module (5,704 B,
+  djb2 `0b3b4d8cc939485a`), each logged by name
+  (`spirv-builtin-helper-invocation`) + size +
+  hash with `result=-8`; zero `page tier cannot
+  translate` lines in the run; the guest reached
+  `vkQueueSubmit2` with 0 pipeline-creation
+  E_FAILs; the demo still presented nothing
+  (FD-55's downstream blockers unchanged).
+  Record:
+  `docs/reports/fd72-helper-invocation-boundary-20261101.md`.
+  (Numbered provisionally as FD-75 by the FD-72
+  lane; the composing merge settles numbering.)
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -2098,6 +2263,8 @@ is behavioural, is re-proven there.
 | `lane-fd49` | FD-49: format-less storage images at multi-type heap bindings — six captured Godot compute modules failed translation (the R14 signature keyed one format per binding while two storage image types share it; specialized clones of both types then collide at one binding in the translator; one empty shader poisoned by unreferenced format-less type declarations). Fixed in `df68b0d92`: per-type signature entries (`set:binding@typeKey=fmt`), specialized-binding-split (surplus clones move to fresh bindings, origin kept in the clone name and honoured as `origBinding`), and prune-dead-storage-image-types for the unreferenced declarations; every refusal left in place stays fail-closed | New suite `vk-storage-format-multi-type.test.mjs` (10 tests) over the six captured modules themselves through the tier path: all translate post-fix (fail-before on the pristine tree: `UnsupportedCapability(StorageImageReadWithoutFormat)` x5, `InvalidStorageImageWithoutFormat` x1), sabotage set holds (legacy/partial/kind-swapped signatures still rejected; live types never pruned). Full JS unit suite 339 passed / 4 failed: provenance-artifacts + runtime-completeness are dist-less-worktree audits (this lane builds no dist); vk-descriptor-binding-remap + vk-register-citations were broken by the change (source pin, citation drift) and fixed in the same commit, re-verified green standalone. Measured impact: in the captured Godot run nothing user-visible was blocked (modules accepted at creation, demo presented; no dispatch reached translation of them) — the class is latent: the first dispatch building a pipeline on one would have dropped its work silently. Record: `docs/reports/fd49-storage-image-formats-20261031.md`. NOTE for the merge lane: FD-49's open entry lives in this register on `lane-fd16`'s branch; this row is the fixing half — compose A->C at merge |
 | `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-66. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
 | `lane-fd57` | FD-62 audit hardening (the defect itself stays OPEN in Section A — this row is the classification half awaiting merge): both descriptor-array audit mirrors now audit through OpImageTexelPointer and refuse texel-pointer forms through an array element with a named reason naming the true blocker (the translation stack rejects OpImageTexelPointer), instead of an incidental generic pointer escape; zero modules change verdict | JS suite `spirvfix-texel-pointer-arrays.test.mjs` 5/5 (red 5/5 pre-fix) over the captured Godot module + reduction/copy-sabotage/attribution/escape fixtures; native classifier guard proven via a scratch harness (the standard harness is blocked by FD-50's abort, re-confirmed by this lane); full JS unit suite green except the dist-state audits of an unbuilt lane tree; vulkan citation register re-pinned through the exact diff line map (citations suite green, incl. the pre-existing reg:410 dual-cite drift). Record: `docs/reports/fd62-texel-pointer-atomics-20261101.md` |
+
+| `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
