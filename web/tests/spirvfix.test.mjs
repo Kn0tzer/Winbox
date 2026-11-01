@@ -37,19 +37,103 @@ const bytesOf = f => new Uint8Array(readFileSync(join(corpusDir, f)));
 const stageOf = f => (f.includes('.vert.') ? 'vertex' : 'fragment');
 
 // Expected rewrites per module, from tools/spirvfix/gate.mjs.
+// Expected rewrites per module, measured against the pre-pass (the table
+// is regenerated whenever a lane changes a corpus member's contract;
+// FD-62/CL-25 re-baselined it in full).
 const EXPECTED = {
-  'p1-vkcube.frag.spv': ['split-combined-sampler'],
-  'p4-speconst.vert.spv': ['fold-spec-constants'],
-  'p4-speconst.frag.spv': ['split-combined-sampler', 'fold-spec-constants'],
-  'p5-pushconst.frag.spv': ['split-combined-sampler'],
-  'p6-multitex.frag.spv': ['split-combined-sampler'],
-  'p7-shadow.frag.spv': ['split-combined-sampler'],
-  'p8-lighting.frag.spv': ['split-combined-sampler'],
-  'p10-drawparams-unused.vert.spv': ['strip-draw-parameters'],
-  'dxvk-live/tri9.vert.spv': ['fold-spec-constants', 'strip-point-builtins'],
-  'dxvk-live/tri9.frag.spv': ['fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill'],
-  'dxvk-live/present.frag.spv': ['split-combined-sampler', 'fold-spec-constants'],
-  'dxvk-live/tropics-dxbc.vert.spv': ['strip-point-builtins', 'strip-draw-parameters', 'strip-float-controls'],
+  'atomic-texel-direct.spv': ["texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities", "strip-unused-physical-storage-buffer"],
+  'atomic-texel-heap-copy.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'atomic-texel-heap-escape.spv': [],
+  'atomic-texel-heap-mixed.spv': ["strip-unused-physical-storage-buffer"],
+  'atomic-texel-heap-r64ui.spv': ["strip-unused-physical-storage-buffer"],
+  'atomic-texel-heap-r8ui.spv': ["strip-unused-physical-storage-buffer"],
+  'atomic-texel-heap-store.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'atomic-texel-heap-twoarrays.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "storage-texel-buffer-to-2d"],
+  'atomic-texel-heap-valueform.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'atomic-texel-heap-weak.spv': ["strip-unused-physical-storage-buffer"],
+  'atomic-texel-heap.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'd3d12-cs-texel-heap-multisig.spv': ["descriptor-array-specialize", "texel-buffer-to-2d"],
+  'd3d12-cs-texel-heap-storage-coherent.spv': ["descriptor-array-specialize", "storage-texel-buffer-to-2d"],
+  'd3d12-cs-texel-heap-storage.spv': ["descriptor-array-specialize", "storage-texel-buffer-to-2d"],
+  'd3d12-cs-uav-heap-write-unknown-pass1.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-cs-uav-heap-write-unknown-pass2.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-ps-root-cbv.spv': ["strip-float-controls", "root-descriptor-bda"],
+  'd3d12-ps-root-srv.spv': ["strip-float-controls", "root-descriptor-bda"],
+  'd3d12-ps-root-uav.spv': ["strip-float-controls", "strip-dead-undefs", "root-descriptor-bda"],
+  'd3d12-ps-texel-heap-array.spv': ["descriptor-array-specialize", "texel-buffer-to-2d"],
+  'd3d12-ps-texel-heap-badindex.spv': [],
+  'd3d12-ps-texel-heap-mixed.spv': ["descriptor-array-specialize", "texel-buffer-to-2d"],
+  'd3d12-ps-texel-heap-query.spv': ["descriptor-array-specialize"],
+  'd3d12-ps-texel-heap-two.spv': ["descriptor-array-specialize", "texel-buffer-to-2d"],
+  'd3d12-ps-uav-5347-unused.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-ps-uav-heap-array-int64.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-ps-uav-heap-array-smallid.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-ps-uav-heap-array-write.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'd3d12-ps-uav-heap-array.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
+  'dxvk-live/dxvk-fullscreen.vert.spv': ["flat-integer-varyings"],
+  'dxvk-live/dxvk-meta-blit-2d.frag.spv': ["split-combined-sampler", "fragment-layer-to-zero"],
+  'dxvk-live/dxvk-meta-copy-color-1d.frag.spv': ["fragment-layer-to-zero"],
+  'dxvk-live/dxvk-meta-copy-color-2d.frag.spv': ["fragment-layer-to-zero"],
+  'dxvk-live/dxvk-meta-copy-color-ms.frag.spv': ["fragment-layer-to-zero"],
+  'dxvk-live/dxvk-meta-resolve-f.frag.spv': ["fold-spec-constants", "fragment-layer-to-zero"],
+  'dxvk-live/present.frag.spv': ["split-combined-sampler", "fold-spec-constants"],
+  'dxvk-live/present.vert.spv': [],
+  'dxvk-live/tri9.frag.spv': ["fold-spec-constants", "strip-point-builtins", "tail-demote-to-kill"],
+  'dxvk-live/tri9.vert.spv': ["fold-spec-constants", "strip-point-builtins"],
+  'dxvk-live/tropics-dxbc.vert.spv': ["strip-point-builtins", "strip-draw-parameters", "strip-float-controls"],
+  'godot-cs-21fc48e37911e9a5.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-40b0cb95dde9567e.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-9347f1b2426929e0.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-ba9896b53ac1c77f.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-c9c003a7487b6126.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split", "prune-dead-storage-image-types"],
+  'godot-cs-e1ca507c951cf536.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "prune-dead-storage-image-types"],
+  'godot-fs-atomic-texel-heap.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'godot-vs-heap-plus-cbv-heap.spv': ["replace-draw-parameters", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-buffer-to-2d"],
+  'godot-vs-heap-plus-ssbo-offsets.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-buffer-to-2d"],
+  'p1-vkcube.frag.spv': ["split-combined-sampler"],
+  'p1-vkcube.vert.spv': [],
+  'p10-drawparams-unused.vert.spv': ["strip-draw-parameters"],
+  'p2-separate.frag.spv': [],
+  'p2-separate.vert.spv': [],
+  'p3-explicit.frag.spv': [],
+  'p3-explicit.vert.spv': [],
+  'p4-speconst.frag.spv': ["split-combined-sampler", "fold-spec-constants"],
+  'p4-speconst.vert.spv': ["fold-spec-constants"],
+  'p5-pushconst.frag.spv': ["split-combined-sampler"],
+  'p5-pushconst.vert.spv': [],
+  'p6-multitex.frag.spv': ["split-combined-sampler"],
+  'p6-multitex.vert.spv': [],
+  'p7-shadow.frag.spv': ["split-combined-sampler"],
+  'p7-shadow.vert.spv': [],
+  'p8-lighting.frag.spv': ["split-combined-sampler"],
+  'p8-lighting.vert.spv': [],
+  'p9-cull-unused.vert.spv': [],
+};
+
+// Corpus members the pre-pass must NOT make convertible: each belongs to
+// a refused class and conversion must keep throwing, with the reason
+// named. (The texel-atomic members are FD-62's boundary; the
+// unknown-format storage-image and sampled-buffer members are other
+// standing refused classes, pinned here as measured.)
+const REFUSED = {
+  'atomic-texel-heap-escape.spv': /ImageBuffer/,
+  'atomic-texel-heap-mixed.spv': /ImageBuffer/,
+  'atomic-texel-heap-r64ui.spv': /Int64/,
+  'atomic-texel-heap-r8ui.spv': /ImageBuffer/,
+  'atomic-texel-heap-weak.spv': /ImageBuffer/,
+  'd3d12-cs-uav-heap-write-unknown-pass1.spv': /StorageImageWriteWithoutFormat/,
+  'd3d12-cs-uav-heap-write-unknown-pass2.spv': /StorageImageWriteWithoutFormat/,
+  'd3d12-ps-texel-heap-badindex.spv': /SampledBuffer/,
+  'd3d12-ps-texel-heap-query.spv': /SampledBuffer/,
+  'd3d12-ps-uav-heap-array-int64.spv': /StorageImageReadWithoutFormat/,
+  'd3d12-ps-uav-heap-array-smallid.spv': /StorageImageReadWithoutFormat/,
+  'd3d12-ps-uav-heap-array.spv': /StorageImageReadWithoutFormat/,
+  'godot-cs-21fc48e37911e9a5.spv': /StorageImageReadWithoutFormat/,
+  'godot-cs-40b0cb95dde9567e.spv': /StorageImageReadWithoutFormat/,
+  'godot-cs-9347f1b2426929e0.spv': /StorageImageReadWithoutFormat/,
+  'godot-cs-ba9896b53ac1c77f.spv': /StorageImageReadWithoutFormat/,
+  'godot-cs-c9c003a7487b6126.spv': /StorageImageReadWithoutFormat/,
+  'godot-fs-atomic-texel-heap.spv': /UnsupportedBuiltIn\(23\)/,
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
@@ -77,10 +161,14 @@ test('every corpus module converts through toWGSL(spirv) with the pre-pass', asy
       seen.add(a);
     }
     assert.deepEqual(applied, EXPECTED[f] ?? [], `${f}: unexpected rewrite set`);
+    if (REFUSED[f]) {
+      await assert.rejects(() => toWGSL('spirv', bytesOf(f), stageOf(f)), REFUSED[f], `${f}: refused class must keep throwing`);
+      continue;
+    }
     const wgsl = await toWGSL('spirv', bytesOf(f), stageOf(f));
     assert.ok(typeof wgsl === 'string' && wgsl.length > 0, `${f}: empty WGSL`);
   }
-  assert.deepEqual([...seen].sort(), ['fold-spec-constants', 'split-combined-sampler', 'strip-draw-parameters', 'strip-float-controls', 'strip-point-builtins', 'tail-demote-to-kill']);
+  assert.deepEqual([...seen].sort(), ["descriptor-array-specialize", "flat-integer-varyings", "fold-spec-constants", "fragment-layer-to-zero", "prune-dead-storage-image-types", "prune-specialized-aliases", "replace-draw-parameters", "root-descriptor-bda", "specialized-binding-split", "split-combined-sampler", "storage-texel-buffer-to-2d", "strip-dead-undefs", "strip-draw-parameters", "strip-float-controls", "strip-point-builtins", "strip-unused-physical-storage-buffer", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "texel-buffer-to-2d", "texel-pointer-to-storage-buffer"]);
 });
 
 test('pre-pass is idempotent; clean modules pass through byte-identical', () => {
