@@ -517,12 +517,9 @@ static U32 syscall_ftruncate(CPU* cpu, U32 eipCount) {
     return result;
 }
 
-static U32 syscall_fchmod(CPU* cpu, U32 eipCount) {	
-#ifdef _DEBUG
-    klog("fchmod not implemented");
-#endif
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_FILE, cpu, "fchmod: fd=%X mod=%X result=%d(0x%X) IGNORED\n", ARG1, ARG2, result, result);
+static U32 syscall_fchmod(CPU* cpu, U32 eipCount) {
+    U32 result = cpu->thread->process->fchmod((FD)ARG1, ARG2);
+    SYS_LOG1(SYSCALL_FILE, cpu, "fchmod: fd=%X mod=%X result=%d(0x%X)\n", ARG1, ARG2, result, result);
     return result;
 }
 
@@ -1698,8 +1695,8 @@ static U32 syscall_readlinkat(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_fchmodat(CPU* cpu, U32 eipCount) {
     BString pathname = cpu->memory->readString(ARG2);
-    U32 result = 0;
-    SYS_LOG1(SYSCALL_FILE, cpu, "fchmodat pathname=%X(%s) mode=%X flags=%X result=%d(0x%X) IGNORED\n", ARG2, pathname.c_str(), ARG3, ARG4, result, result);
+    U32 result = cpu->thread->process->fchmodat((FD)ARG1, pathname, ARG3, ARG4);
+    SYS_LOG1(SYSCALL_FILE, cpu, "fchmodat dirfd=%X pathname=%X(%s) mode=%X flags=%X result=%d(0x%X)\n", ARG1, ARG2, pathname.c_str(), ARG3, ARG4, result, result);
     return result;
 }
 

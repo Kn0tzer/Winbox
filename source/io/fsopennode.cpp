@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 #include "ksignal.h"
 #include <atomic>
 
@@ -44,14 +45,22 @@ U32 FsOpenNode::internalRead(KThread* thread, U32 address, U32 len) {
 }
 
 U32 FsOpenNode::read(KThread* thread, U32 address, U32 len) {
+    U32 result;
     BOXEDWINE_MUTEX* mutex = getReadMutex();
     if (mutex) {
         // this will reduce thashing in the zip file
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(*mutex);
-        return internalRead(thread, address, len);
+        result = internalRead(thread, address, len);
     } else {
-        return internalRead(thread, address, len);
+        result = internalRead(thread, address, len);
     }
+    // FD-59: a completed read that delivered bytes is an access.
+    // notifyAccessed fast-outs when no inotify instance exists, and
+    // its own queue work never runs under the read mutex.
+    if ((S32)result > 0 && this->node) {
+        KInotify::notifyAccessed(this->node.get());
+    }
+    return result;
 }
 
 U32 FsOpenNode::write(KThread* thread, U32 address, U32 len) {

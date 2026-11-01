@@ -265,6 +265,9 @@ public:
     U32 brk(KThread* thread, U32 address);
     U32 chdir(BString path);
     U32 chmod(BString path, U32 mode);
+    U32 chmodNode(const std::shared_ptr<FsNode>& node, U32 mode);
+    U32 fchmod(FD fildes, U32 mode);
+    U32 fchmodat(FD dirfd, BString path, U32 mode, U32 flags);
     U32 clone3(KThread* thread, U32 args, U32 size);
     U32 clone(KThread* thread, U32 flags, U32 child_stack, U32 ptid, U32 tls, U32 ctid, bool clearSighand = false);
 #ifdef BOXEDWINE_GUEST_X64

@@ -32,11 +32,23 @@
 // events coalesce; the queue is bounded at 16384 records with a single
 // IN_Q_OVERFLOW record when it fills.
 //
-// Documented gaps: IN_ACCESS is not generated (no read-path hook; reads
-// vastly outnumber the other operations and taxing every read for a
-// rarely used event is not justified), and writes through a memory
-// mapping do not produce IN_MODIFY (the mapping write path has no
-// per-write funnel either). Children materialized by a directory's
+// FD-59 dispositions (measured against the host kernel,
+// 6.17.0-1020-oracle, with dedicated reference programs):
+// IN_ACCESS is generated for completed guest reads that delivered
+// at least one byte (KObject-layer reads, the 64-bit read/readv
+// path, pread64, and directory enumeration); a read that returns 0
+// generates nothing, and guest page-fault fills for memory-mapped
+// files are not reads and generate nothing - matching the host,
+// where an mmap read fault produces no IN_ACCESS either. Writes
+// through a memory mapping do not produce IN_MODIFY: that is NOT
+// a gap. On the host kernel a MAP_SHARED mapping written and then
+// msync'd (sync and async), fsync'd, sync'd, unmapped and closed
+// produces no IN_MODIFY at any point - only IN_OPEN and
+// IN_CLOSE_WRITE - and the emulator matches by generating none.
+// One residual difference is recorded on the defect register: the
+// host defers IN_CLOSE_WRITE until munmap when a writable mapping
+// outlives its fd; the emulator reports the close at fd close.
+// Children materialized by a directory's
 // first load are pre-existing, not creations: FsNode::loadChildren
 // suppresses notification for the load (see childrenLoadInProgress),
 // matching Linux, which never reports pre-existing files.
@@ -366,9 +378,12 @@ void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BStri
     }
 }
 
+std::atomic<bool> KInotify::anyInstance{false};
+
 void KInotify::registerInstance(const std::shared_ptr<KInotify>& instance) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(instancesMutex);
     instances.push_back(instance);
+    anyInstance.store(true, std::memory_order_release);
 }
 
 void KInotify::sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie) {
@@ -383,6 +398,9 @@ void KInotify::sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BS
             } else {
                 it = instances.erase(it);
             }
+        }
+        if (live.empty()) {
+            anyInstance.store(false, std::memory_order_release);
         }
     }
     for (auto& instance : live) {
@@ -405,6 +423,14 @@ void KInotify::notifyNodeRemoved(FsNode* parent, FsNode* node) {
     // reports that as IN_ATTRIB on the node itself, ahead of
     // IN_DELETE_SELF.
     sweepAll(nullptr, node, 0, B(""), false, K_IN_ATTRIB, 0);
+    // FD-60: unlinking one name drops the shared link count, which
+    // Linux reports as IN_ATTRIB on the file - visible through a
+    // watch placed on any surviving name too.
+    for (auto& m : node->linkGroupMembers()) {
+        if (m.get() != node) {
+            sweepAll(nullptr, m.get(), 0, B(""), false, K_IN_ATTRIB, 0);
+        }
+    }
     sweepAll(parent, node, parent ? K_IN_DELETE : 0, node->name, node->isDirectory(), K_IN_DELETE_SELF, 0);
 }
 
@@ -425,15 +451,34 @@ void KInotify::notifyRenamed(FsNode* fromParent, const BString& fromName, FsNode
 // File-level events (modify/open/close/attrib) are reported both to
 // watches on the file itself (empty name) and to watches on its parent
 // directory (with the file's name), per inotify(7).
+void KInotify::fileEventForNode(FsNode* node, U32 type, bool includeParent) {
+    if (includeParent) {
+        std::shared_ptr<FsNode> parent = node->getParent().lock();
+        if (parent) {
+            sweepAll(parent.get(), nullptr, type, node->name, node->isDirectory(), 0, 0);
+        }
+    }
+    sweepAll(nullptr, node, 0, B(""), false, type, 0);
+}
+
 void KInotify::fileEvent(FsNode* node, U32 type) {
     if (!node) {
         return;
     }
-    std::shared_ptr<FsNode> parent = node->getParent().lock();
-    if (parent) {
-        sweepAll(parent.get(), nullptr, type, node->name, node->isDirectory(), 0, 0);
+    // FD-60: hard-linked names are one file (one inode) on Linux,
+    // so a watch placed on any name receives the file's events.
+    // The originating name also sweeps its parent directory (with
+    // its own name, as Linux reports the name used); the other
+    // members receive only the file-level sweep - their parents
+    // see nothing, exactly as on Linux.
+    std::vector<std::shared_ptr<FsNode>> members = node->linkGroupMembers();
+    if (members.size() <= 1) {
+        fileEventForNode(node, type, true);
+        return;
     }
-    sweepAll(nullptr, node, 0, B(""), false, type, 0);
+    for (auto& m : members) {
+        fileEventForNode(m.get(), type, m.get() == node);
+    }
 }
 
 void KInotify::notifyModified(FsNode* node) {
@@ -450,4 +495,11 @@ void KInotify::notifyClosed(FsNode* node, bool wasWrite) {
 
 void KInotify::notifyAttrib(FsNode* node) {
     fileEvent(node, K_IN_ATTRIB);
+}
+
+void KInotify::notifyAccessed(FsNode* node) {
+    if (!node || !anyInstance.load(std::memory_order_acquire)) {
+        return;
+    }
+    fileEvent(node, K_IN_ACCESS);
 }

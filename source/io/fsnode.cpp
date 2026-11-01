@@ -39,6 +39,72 @@ FsNode::FsNode(Type type, U32 id, U32 rdev, BString path, BString link, BString 
  {   
 }
 
+namespace {
+BOXEDWINE_MUTEX bw64LinkGroupMutex;
+}
+
+U32 FsNode::getHardLinkCount() {
+    if (this->linkGroup) {
+        U32 n = (U32)this->linkGroupMembers().size();
+        return n ? n : 1;
+    }
+    return this->hardLinkCount;
+}
+
+std::vector<std::shared_ptr<FsNode>> FsNode::linkGroupMembers() {
+    std::vector<std::shared_ptr<FsNode>> result;
+    if (!this->linkGroup) {
+        result.push_back(shared_from_this());
+        return result;
+    }
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->linkGroup->mutex);
+    auto& members = this->linkGroup->members;
+    for (auto it = members.begin(); it != members.end();) {
+        if (std::shared_ptr<FsNode> m = it->lock()) {
+            result.push_back(m);
+            ++it;
+        } else {
+            it = members.erase(it);
+        }
+    }
+    return result;
+}
+
+void FsNode::joinLinkGroup(const std::shared_ptr<FsNode>& other) {
+    // One file-scope mutex serializes group formation and merging;
+    // membership is then read under each group's own mutex. Lock
+    // order is always bw64LinkGroupMutex before a group's mutex.
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(bw64LinkGroupMutex);
+    if (!this->linkGroup && !other->linkGroup) {
+        this->linkGroup = std::make_shared<FsNodeLinkGroup>();
+        other->linkGroup = this->linkGroup;
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->linkGroup->mutex);
+        this->linkGroup->members.push_back(shared_from_this());
+        this->linkGroup->members.push_back(other);
+    } else if (this->linkGroup && !other->linkGroup) {
+        other->linkGroup = this->linkGroup;
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->linkGroup->mutex);
+        this->linkGroup->members.push_back(other);
+    } else if (!this->linkGroup && other->linkGroup) {
+        this->linkGroup = other->linkGroup;
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->linkGroup->mutex);
+        this->linkGroup->members.push_back(shared_from_this());
+    } else if (this->linkGroup != other->linkGroup) {
+        std::vector<std::shared_ptr<FsNode>> others = other->linkGroupMembers();
+        for (auto& m : others) {
+            m->linkGroup = this->linkGroup;
+        }
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->linkGroup->mutex);
+        for (auto& m : others) {
+            this->linkGroup->members.push_back(m);
+        }
+    }
+    std::vector<std::shared_ptr<FsNode>> members = this->linkGroupMembers();
+    for (auto& m : members) {
+        m->hardLinkCount = (U32)members.size();
+    }
+}
+
 void FsNode::removeOpenNode(FsOpenNode* node) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->openNodesMutex);
     node->listNode.remove();

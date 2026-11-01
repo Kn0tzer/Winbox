@@ -8,6 +8,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 #include "drvinittrace.h"
 
 #ifdef BOXEDWINE_GUEST_X64
@@ -1823,6 +1824,9 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
         got = readFully();
     }
     if (got < 0) return (U64)got;
+    if (got > 0 && pkfile && pkfile->openFile && pkfile->openFile->node) {
+        KInotify::notifyAccessed(pkfile->openFile->node.get());
+    }
     if (got > 0) {
         cpu->memory->memcpyToGuest(buf, tmp.data(), (U64)got);
         // PE DLL section bodies arrive here too (the loader preads whole sections
@@ -1963,7 +1967,7 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
 
     if (!mask) mask = STATX_BASIC_STATS;
     U32 returnedMask = (U32)mask & SUPPORTED;
-    U32 mode = node->getMode();
+    U32 mode = node->getStatMode();
     if (node->isLink()) mode |= K__S_IFLNK;
     U64 size = node->length();
     U64 modified = node->lastModified();
@@ -2005,7 +2009,7 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     }
     if (!node) return (U64)-2; // -ENOENT
     U64 size  = node->length();
-    U32 mode  = node->getMode();
+    U32 mode  = node->getStatMode();
     U64 ino   = node->id;
     U64 mtime = node->lastModified() / 1000; // ms → seconds
     writeStatBuf64(cpu->memory, statbuf, size, mode, ino, 1000, 1000, mtime, node->rdev);
@@ -2057,7 +2061,7 @@ static U64 sys_fstat64(CPU64* cpu, U64 fd, U64 statbuf) {
     if (kfile && kfile->openFile) {
         size = (U64)kfile->openFile->length();
         if (kfile->openFile->node) {
-            mode  = kfile->openFile->node->getMode();
+            mode  = kfile->openFile->node->getStatMode();
             ino   = kfile->openFile->node->id;
             mtime = (U64)kfile->openFile->node->lastModified() / 1000; // ms -> Linux seconds
         }
@@ -6613,14 +6617,19 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_select:
             ret = unimplementedSyscall64(nr);
             break;
-        case X64_SYS_chmod:
-        case X64_SYS_fchmod:
-            // No-op success: rootfs is effectively read-only for our purpose
-            // and glibc's installer paths frequently call chmod on temp
-            // files. Returning 0 avoids spurious install-time failures
-            // without actually touching anything.
-            ret = 0;
+        case X64_SYS_chmod: {  // chmod(path, mode)
+            BString path = readGuestString64(cpu, a1);
+            ret = (U64)(S64)(S32)cpu->thread->process->chmod(path, (U32)a2);
             break;
+        }
+        case X64_SYS_fchmod:   // fchmod(fd, mode)
+            ret = (U64)(S64)(S32)cpu->thread->process->fchmod((FD)a1, (U32)a2);
+            break;
+        case 268: {            // fchmodat(dirfd, path, mode, flags)
+            BString path = readGuestString64(cpu, a2);
+            ret = (U64)(S64)(S32)cpu->thread->process->fchmodat((FD)a1, path, (U32)a3, (U32)a4);
+            break;
+        }
         case X64_SYS_gettimeofday: {
             // struct timeval { U64 sec; U64 usec; }
             if (a1) {

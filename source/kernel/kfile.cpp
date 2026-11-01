@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "kinotify.h"
 
 KFile::KFile(FsOpenNode* openFile) : KObject(KTYPE_FILE) {
     this->openFile = openFile;
@@ -131,7 +132,13 @@ U32 KFile::read(KThread* thread, U32 buffer, U32 len) {
 
 U32 KFile::readNative(U8* buffer, U32 len) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(filePosMutex);
-    return this->openFile->readNative(buffer, len);
+    U32 result = this->openFile->readNative(buffer, len);
+    // FD-59: the 64-bit read/readv paths complete here; a read that
+    // delivered bytes is an access (IN_ACCESS).
+    if ((S32)result > 0 && this->openFile->node) {
+        KInotify::notifyAccessed(this->openFile->node.get());
+    }
+    return result;
 }
 
 U32 KFile::stat(KProcess* process, U32 address, bool is64) {
@@ -139,7 +146,7 @@ U32 KFile::stat(KProcess* process, U32 address, bool is64) {
     std::shared_ptr<FsNode> node = openNode->node;
     U64 len = (U64)openNode->length();
 
-    KSystem::writeStat(process, node->path, address, is64, 1, node->id, node->getMode(), node->rdev, len, FS_BLOCK_SIZE, (len+FS_BLOCK_SIZE-1)/FS_BLOCK_SIZE, node->lastModified(), node->getHardLinkCount());
+    KSystem::writeStat(process, node->path, address, is64, 1, node->id, node->getStatMode(), node->rdev, len, FS_BLOCK_SIZE, (len+FS_BLOCK_SIZE-1)/FS_BLOCK_SIZE, node->lastModified(), node->getHardLinkCount());
     return 0;
 }
 

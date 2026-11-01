@@ -923,7 +923,7 @@ do not close the entry until they land.
 
 - **FD-59 — Two inotify event kinds are never generated:
   IN_ACCESS, and IN_MODIFY for writes through memory
-  mappings.** *(Low. Filed provisionally as FD-56 on the
+  mappings. CLOSED 2026-11-01 — see CL-32.** *(Low. Filed provisionally as FD-56 on the
   FD-38 lane branch; renumbered at this composition.)*
   No read-path hook generates IN_ACCESS (deliberate: the read
   path is too hot for per-read event sweeps), and writes
@@ -1042,7 +1042,7 @@ do not close the entry until they land.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
 - **FD-58 — chmod reports success without changing
-  anything.** *(Medium. Filed provisionally as FD-55 on
+  anything. CLOSED 2026-11-01 — see CL-30.** *(Medium. Filed provisionally as FD-55 on
   the FD-38 lane branch; renumbered at this composition —
   FD-55 on integration is the Godot presentation entry.)* `KProcess::chmod` resolves the node and returns 0
   without applying any mode change; the 32-bit fchmod path
@@ -1054,7 +1054,7 @@ do not close the entry until they land.
   `syscall_fchmod`).
 
 - **FD-60 — link() copies file content instead of creating
-  a hard link.** *(Low. Filed provisionally as FD-57 on
+  a hard link. CLOSED 2026-11-01 — see CL-31.** *(Low. Filed provisionally as FD-57 on
   the FD-38 lane branch; renumbered at this composition.)* `KProcess::link` creates a new node holding a copy
   of the content (its own debug line says "Hard link not
   implemented"), so inode identity and link counts observably
@@ -2565,6 +2565,35 @@ do not close the entry until they land.
   no module shape can align it with a swept type
   id. Evidence: `docs/reports/fd70-second-wave-20261101.md`;
   `test-results/fd70/` (keeper census).
+
+- **FD-79 — IN_CLOSE_WRITE is reported at fd close even
+  when a writable mapping of the file is still open; the
+  host defers it until the mapping is unmapped.** *(Low.
+  Filed as FD-79 on the FD-58..60 lane branch,
+  2026-11-01; the number was verified free on the
+  integration register and settled at composition.)* Measured on the host kernel
+  (6.17.0-1020-oracle) by the FD-59 reference programs:
+  a file closed while a MAP_SHARED writable mapping of
+  it is still open produces no IN_CLOSE_WRITE at close;
+  the event arrives at munmap. The emulator's
+  notifyClosed fires from the open node's close path
+  with no mapping-liveness input, so it reports the
+  close at fd close in that case. Found by the
+  FD-58..60 lane, 2026-11-01. Evidence:
+  `test-results/fd58-60/` (host reference programs and
+  outputs).
+
+- **FD-80 — The 64-bit dispatcher's preadv (295) and
+  preadv2 (327) have name-table entries but no dispatch
+  case, so they return ENOSYS.** *(Low. Filed
+  as FD-80 on the FD-58..60 lane branch, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition.)*
+  pread64 itself is implemented on the 64-bit side;
+  only the vectored positioned reads are missing.
+  Found by inspection during the FD-59 read-path work,
+  2026-11-01 (syscall64.cpp name table vs dispatch
+  switch).
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -2597,6 +2626,7 @@ is behavioural, is re-proven there.
 | `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-66. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
 | `lane-fd57` | FD-62 audit hardening (the defect itself stays OPEN in Section A — this row is the classification half awaiting merge): both descriptor-array audit mirrors now audit through OpImageTexelPointer and refuse texel-pointer forms through an array element with a named reason naming the true blocker (the translation stack rejects OpImageTexelPointer), instead of an incidental generic pointer escape; zero modules change verdict | JS suite `spirvfix-texel-pointer-arrays.test.mjs` 5/5 (red 5/5 pre-fix) over the captured Godot module + reduction/copy-sabotage/attribution/escape fixtures; native classifier guard proven via a scratch harness (the standard harness is blocked by FD-50's abort, re-confirmed by this lane); full JS unit suite green except the dist-state audits of an unbuilt lane tree; vulkan citation register re-pinned through the exact diff line map (citations suite green, incl. the pre-existing reg:410 dual-cite drift). Record: `docs/reports/fd62-texel-pointer-atomics-20261101.md` |
 
+| `lane-fd58-60` | FD-58: chmod/fchmod/fchmodat apply the mode (stored on the node, reported by every stat writer, IN_ATTRIB on success; fchmodat NOFOLLOW on a symlink returns ENOTSUP as the host does); FD-59: IN_ACCESS generated for completed reads (mmap-write IN_MODIFY disproven against host references — the host generates none either); FD-60: link() creates a true hard link (host ::link between native paths, shared inode id, link group for counts and event fan-out); FD-79 and FD-80 filed | New test testChmodAccessHardLink in both suites: RED on the base (13 main / 18 x64 assertions failing), GREEN with the fix; host-kernel reference programs measured first (chmod/link/read/inotify matrices); full native suites serial: main 665/665 and x64 64/64, 0 FAILED; JS unit: the fs-dynamic-link-cache test that compiles the changed C++ passes standalone and in the runner (the lane tree is un-bootstrapped: 272 passed / 76 failed overall, every sampled failure a missing generated web/vendor file - the full JS run belongs to the merge gate). Record: `docs/reports/fd58-fd60-kernel-semantics-20261101.md`; evidence `test-results/fd58-60/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 
 Merge-composition notes that belong with this table: the
@@ -3440,3 +3470,110 @@ its lane and is not a defect, for the stated reason:
   consumer-diag-1/` (healthy dumps) and
   `test-results/fd12/consumer-hunt-4/` (parked dumps),
   record `docs/reports/fd12-park-lane-20261101.md`.
+
+- **CL-30 — chmod applies the mode (FD-58).** *(Filed
+  as CL-30 on lane-fd58-60, 2026-11-01; the number
+  was verified free on the integration register and
+  settled at composition.)*
+  Fixed on branch `lane-fd58-60` in `81681e834`:
+  `KProcess::chmod` resolved the node and returned 0
+  without applying anything; 32-bit fchmod/fchmodat
+  returned 0 marked IGNORED; 64-bit chmod/fchmod
+  returned 0 as an inline no-op and fchmodat had no
+  dispatch case (ENOSYS). The mode is now stored on
+  the node (permission bits 0..07777 — setuid, setgid
+  and sticky preserved verbatim, as the host stores
+  them) and every stat writer reports it (stat64,
+  lstat64, fstat64, statx, fstatat64 on both
+  dispatchers, KFile::stat); a successful change
+  fires IN_ATTRIB on the file watch and the parent
+  watch. New `KProcess::fchmod` / `fchmodat` share
+  the same core; fchmodat with AT_SYMLINK_NOFOLLOW on
+  a symlink returns ENOTSUP and leaves the target
+  untouched — the host's measured answer (kernel
+  6.17.0-1020-oracle reference program). Proof:
+  testChmodAccessHardLink (registered in both
+  suites) — RED on the base with the reported mode
+  stuck at the synthetic default, GREEN with the
+  fix; evidence `test-results/fd58-60/`
+  (`red-window-main.log`, `red-window-x64.log`,
+  `green-window-main.log`, `green-window-x64.log`,
+  `ref3.out`). Stated boundary: the stored mode is
+  guest-visible state — the emulator's own access
+  checks (canRead/canWrite) still use the synthetic
+  mode, so a chmod does not change what the emulator
+  itself allows; a zip-backed file accepts the mode
+  as session state, as link counts already were.
+
+- **CL-31 — link() creates a true hard link
+  (FD-60).** *(Filed as CL-31 on lane-fd58-60, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition.)*
+  Fixed on branch `lane-fd58-60` in `81681e834`
+  (event fan-out refined in `8c7c34ba8`):
+  `KProcess::link` copied the content into a new
+  node and incremented a counter on both nodes, so
+  inode identity, shared content and counts were
+  all observably wrong. The new name is now a
+  second node carrying the source's node id, the
+  two join a link group, and the content identity
+  is a host `::link()` between the two native
+  paths — writes through either name land in the
+  same host file and unlinking one name leaves the
+  other's data intact. Link counts come from the
+  group's live membership, or from the host
+  st_nlink for host-file nodes (exact by
+  construction, since the guest's names are
+  mirrored by host links); file-level inotify
+  events fan out to every group member, and the
+  source's IN_ATTRIB precedes the new name's
+  IN_CREATE — the host's queue order, measured
+  first with a reference program. A symlink source
+  links its sidecar file, so the new name is a
+  symlink to the same target. Sources that are not
+  host files are refused with EPERM and a BW64-FAIL
+  line instead of being silently copied. Proof:
+  testChmodAccessHardLink — RED (distinct inodes,
+  write through one name invisible through the
+  other, counts wrong after unlink), GREEN;
+  evidence `test-results/fd58-60/` (`ref3.out` for
+  the host behaviour). Residuals, stated not
+  hidden: the group-liveness count for a non-file
+  node can lag while an unlinked name's node is
+  still open (host-file nodes are exact);
+  path-derived synthetic modes can differ between
+  two names of one file in path-special cases; hard
+  links already present on disk in a scanned tree
+  still load as separate nodes, as before.
+
+- **CL-32 — IN_ACCESS generated; mmap-write
+  IN_MODIFY disproven (FD-59).** *(Filed
+  as CL-32 on lane-fd58-60, 2026-11-01; the number
+  was verified free on the integration register and
+  settled at composition.)*
+  Fixed/disproven on branch `lane-fd58-60` in
+  `81681e834`. (1) IN_ACCESS was never generated:
+  completed guest reads that deliver at least one
+  byte now fire it — KObject-layer reads, the
+  64-bit read/readv path, pread64, and directory
+  enumeration via getdents — on the file watch and
+  on the parent watch with the name used. A read
+  returning 0 fires nothing and guest page-fault
+  fills are not reads and fire nothing, both
+  matching host measurements; a registration
+  fast-out keeps the read hot path at one atomic
+  load when no inotify instance exists. (2)
+  IN_MODIFY for mmap writes is NOT-A-GAP: host
+  reference programs (kernel 6.17.0-1020-oracle)
+  wrote through MAP_SHARED and MAP_PRIVATE
+  mappings and tried msync (MS_SYNC and MS_ASYNC),
+  fsync, sync, munmap and close in every order —
+  no IN_MODIFY at any point, only IN_OPEN and
+  IN_CLOSE_WRITE. The emulator matches by
+  generating none; no code change for this half.
+  Proof: testChmodAccessHardLink pins the IN_ACCESS
+  half (RED → GREEN in both suites); reference
+  sources and outputs in `test-results/fd58-60/`
+  (`ref_inotify.c/.out`, `ref2.c/.out`,
+  `ref3.c/.out`). One adjacent difference the same
+  references found is filed separately as FD-79.

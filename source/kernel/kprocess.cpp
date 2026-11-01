@@ -1574,7 +1574,49 @@ U32 KProcess::chmod(BString path, U32 mode) {
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
+    return this->chmodNode(node, mode);
+}
+
+U32 KProcess::chmodNode(const std::shared_ptr<FsNode>& node, U32 mode) {
+    // FD-58: the mode change is real guest-visible state now (stored
+    // on the node; see FsNode::chmodMode). Linux reports a successful
+    // chmod as IN_ATTRIB on the file and its parent directory.
+    node->applyChmodMode(mode);
+    KInotify::notifyAttrib(node.get());
     return 0;
+}
+
+U32 KProcess::fchmod(FD fildes, U32 mode) {
+    KFileDescriptorPtr fd = this->getFileDescriptor(fildes);
+    if (!fd) {
+        return -K_EBADF;
+    }
+    std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+    if (!file || !file->openFile || !file->openFile->node) {
+        return -K_EINVAL;
+    }
+    return this->chmodNode(file->openFile->node, mode);
+}
+
+U32 KProcess::fchmodat(FD dirfd, BString path, U32 mode, U32 flags) {
+    BString dir;
+    U32 result = 0;
+    if (path.charAt(0) != '/')
+        result = getCurrentDirectoryFromDirFD(dirfd, dir);
+    if (result)
+        return result;
+    bool noFollow = (flags & 0x100) != 0; // AT_SYMLINK_NOFOLLOW
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, !noFollow);
+    if (!node) {
+        return -K_ENOENT;
+    }
+    if (noFollow && node->isLink()) {
+        // Host truth (measured on the host kernel): fchmodat with
+        // AT_SYMLINK_NOFOLLOW on a symlink fails with ENOTSUP and the
+        // target is untouched.
+        return -K_ENOTSUP;
+    }
+    return this->chmodNode(node, mode);
 }
 
 U32 KProcess::chdir(BString path) {
@@ -1614,41 +1656,45 @@ U32 KProcess::link(BString from, BString to) {
     if (!fromNode) {
         return -K_ENOENT;
     }
-
     if (toNode) {
         return -K_EEXIST;
     }
     if (fromNode->isDirectory()) {
         return -K_EPERM;
     }
-
-    FsOpenNode* fromOpenNode = fromNode->open(K_O_RDONLY);
-    if (!fromOpenNode)
-        return -K_EIO;
-
+    // FD-60: a hard link is a second name for the same file, not a
+    // copy. Guest-visible identity is one shared node id plus a
+    // shared link group (link counts and file-level inotify events);
+    // content identity is a host hard link between the two native
+    // paths, so writes through either name land in the same host
+    // file and unlinking one name leaves the other's data intact.
+    // Sources that are not host files cannot be hard-linked this way
+    // and are refused with EPERM instead of being silently copied.
+    std::shared_ptr<FsFileNode> fromFile = std::dynamic_pointer_cast<FsFileNode>(fromNode);
+    if (!fromFile) {
+        return -K_EPERM;
+    }
     std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
-    if (!toParentNode)
+    if (!toParentNode) {
         return -K_ENOENT;
-
-    toNode = Fs::addFileNode(to, B(""), Fs::getNativePathFromParentAndLocalFilename(toParentNode, Fs::getFileNameFromPath(to)), false, toParentNode);
-    FsOpenNode* toOpenNode = toNode->open(K_O_WRONLY|K_O_CREAT);
-    if (!toOpenNode) {
-        fromOpenNode->close();
-        return -K_EIO;
     }
-
-    while (1) {
-        U8 buffer[K_PAGE_SIZE];
-        U32 r = fromOpenNode->readNative(buffer, K_PAGE_SIZE);	
-        toOpenNode->writeNative(buffer, r);
-        if (r<K_PAGE_SIZE)
-            break;
+    fromFile->ensurePathIsLocal(true);
+    BString toNativePath = Fs::getNativePathFromParentAndLocalFilename(toParentNode, Fs::getFileNameFromPath(to));
+    if (fromNode->isLink()) {
+        // A symlink node lives in its .link sidecar file; link the
+        // sidecar so the new name is a symlink to the same target.
+        toNativePath += EXT_LINK;
     }
-    toOpenNode->close();
-    fromOpenNode->close();
-    toNode->hardLinkCount++;
-    fromNode->hardLinkCount++;
-    kdebug("Hard link not implemented");
+    int err = 0;
+    if (!Fs::createHostHardLink(fromNode->nativePath, toNativePath, err)) {
+        kwarn_fmt("BW64-FAIL hard-link from=%s to=%s errno=%d outcome=link refused instead of copied", fromNode->nativePath.c_str(), toNativePath.c_str(), err);
+        return -translateErr((U32)err);
+    }
+    // Host order: the source's IN_ATTRIB precedes the new name's
+    // IN_CREATE (the latter fires from addChild inside addFileNode*).
+    KInotify::notifyAttrib(fromNode.get());
+    std::shared_ptr<FsNode> newNode = Fs::addFileNodeWithSharedId(to, fromNode->link, toNativePath, false, toParentNode, fromNode->id);
+    fromNode->joinLinkGroup(newNode);
     return 0;
 }
 
@@ -3029,10 +3075,16 @@ U32 KProcess::getdents(FD fildes, U32 dirp, U32 count, bool is64) {
             len+=recordLen;
             openNode->seek(i+1);
         } else if (recordLen == 0) {
+            if (len > 0) {
+                KInotify::notifyAccessed(node.get());
+            }
             return len;
         } else {
             return (U32)recordLen;
         }
+    }
+    if (len > 0) {
+        KInotify::notifyAccessed(node.get());
     }
     return len;
 }
@@ -3489,7 +3541,7 @@ U32 KProcess::stat64(BString path, U32 buffer) {
         return -K_ENOENT;
     }
     U64 len = node->length();
-    KSystem::writeStat(this, node->path, buffer, true, 1, node->id, node->getMode(), node->rdev, len, 4096, (len + 4095) / 4096, node->lastModified(), node->getHardLinkCount());
+    KSystem::writeStat(this, node->path, buffer, true, 1, node->id, node->getStatMode(), node->rdev, len, 4096, (len + 4095) / 4096, node->lastModified(), node->getHardLinkCount());
     return 0;
 }
 
@@ -3508,7 +3560,7 @@ U32 KProcess::lstat64(BString path, U32 buffer) {
         mode = K__S_IFLNK | (node->getMode() & 0xFFF);
     } else {
         len = node->length();
-        mode = node->getMode();
+        mode = node->getStatMode();
     }
     KSystem::writeStat(this, node->path, buffer, true, 1, node->id, mode, node->rdev, len, 4096, (len + 4095) / 4096, node->lastModified(), node->getHardLinkCount());
     return 0;
@@ -3950,7 +4002,7 @@ U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
     }
 
     U64 len = node->length();
-    U32 mode = node->getMode();
+    U32 mode = node->getStatMode();
     if (node->isLink() || isLink) {
         mode |= K__S_IFLNK;
     }
@@ -3980,7 +4032,7 @@ U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
     }
 
     U64 len = node->length();
-    U32 mode = node->getMode();
+    U32 mode = node->getStatMode();
     if (node->isLink() || isLink) {
         mode|=K__S_IFLNK;
     }

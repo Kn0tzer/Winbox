@@ -73,6 +73,13 @@ public:
     static bool initFileSystem(const BString& rootPath);
     static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, bool followLink, bool* isLink=nullptr);    
     static std::shared_ptr<FsFileNode> addFileNode(const BString& path, const BString& link, const BString& nativePath, bool isDirectory, const std::shared_ptr<FsNode>& parent);
+    // FD-60: like addFileNode, but the new node carries an existing
+    // node's id, so two names report one inode (hard-link identity).
+    static std::shared_ptr<FsFileNode> addFileNodeWithSharedId(const BString& path, const BString& link, const BString& nativePath, bool isDirectory, const std::shared_ptr<FsNode>& parent, U32 id);
+    // FD-60: the host hard-link itself lives in this layer (fs.cpp owns
+    // the UNISTD include; kprocess.cpp cannot take it — musl's unistd.h
+    // renames that file's pread64/pwrite64/ftruncate64 members by macro).
+    static bool createHostHardLink(const BString& fromNativePath, const BString& toNativePath, int& outErrno);
     static std::shared_ptr<FsNode> addVirtualFile(const BString& path, std::function<FsOpenNode*(const std::shared_ptr<FsNode>& node, U32 flags, U32 data)> func, U32 mode, U32 rdev, const std::shared_ptr<FsNode>& parent, U32 data=0);
     static std::shared_ptr<FsNode> addVirtualFile(const BString& path, U32 mode, U32 rdev, const std::shared_ptr<FsNode>& parent, const BString& value);
     static std::shared_ptr<FsNode> addDynamicLinkFile(const BString& path, U32 rdev, const std::shared_ptr<FsNode>& parent, bool isDirectory, std::function<BString(void)> fnGetLink);
