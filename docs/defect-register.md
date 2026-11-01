@@ -2173,14 +2173,15 @@ do not close the entry until they land.
   FD-72 but a distinct mechanism. Evidence:
   `docs/reports/fd72-helper-invocation-boundary-20261101.md`.
   (Numbered provisionally as FD-74 by the FD-72
-  lane; the composing merge settles numbering.)
+  lane, 2026-11-01; numbered FD-74 at composition
+  on 2026-11-01 — the number was free on integ.)
 
 - **FD-75 — The bridge's SPIR-V audit admitted
   helper-invocation modules that the page tier
   could never translate, so their draws were
   dropped at pipeline time after the guest had
-  been told module creation succeeded. FIXED on
-  `lane-fd72`, awaiting merge.** *(Medium — a
+  been told module creation succeeded. CLOSED
+  2026-11-01 — see CL-27.** *(Medium — a
   silent-failure / mirror-discipline gap of the
   FD-49/FD-67 shape; found by the FD-72 lane,
   2026-11-01)* `vk64AuditSpirv` had no rule for
@@ -2230,7 +2231,8 @@ do not close the entry until they land.
   Record:
   `docs/reports/fd72-helper-invocation-boundary-20261101.md`.
   (Numbered provisionally as FD-75 by the FD-72
-  lane; the composing merge settles numbering.)
+  lane, 2026-11-01; numbered FD-75 at composition
+  on 2026-11-01 — the number was free on integ.)
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3004,3 +3006,64 @@ its lane and is not a defect, for the stated reason:
   `cleanroom-local.log`, `cleanroom-check.log`),
   record
   `docs/reports/fd73-runtime-assets-archive-20261101.md`.
+
+- **CL-27 — The bridge's SPIR-V audit admitted
+  helper-invocation modules the page tier could
+  never translate, so their draws were dropped at
+  pipeline time after the guest had been told
+  module creation succeeded (was FD-75).** Fixed
+  in `69bb72126` on `lane-fd72` (composed into
+  integ as `c1b0c34b4`): `vk64AuditSpirv` had no
+  rule for BuiltIn 23 or OpIsHelperInvocationEXT,
+  so such a module was admitted at
+  `vkCreateShaderModule` and failed later, per
+  pipeline, in the page tier (`page tier cannot
+  translate the fragment SPIR-V module (…) — frame
+  skipped`) — the FD-49/FD-67 silent-drop shape.
+  The audit now refuses any module that declares
+  a BuiltIn HelperInvocation variable or contains
+  an OpIsHelperInvocationEXT instruction, at
+  creation, by name
+  (`spirv-builtin-helper-invocation`, counted like
+  every audit refusal; the creation refusal log
+  names the module's size + djb2 hash), returning
+  `VK_ERROR_FEATURE_NOT_PRESENT`. The boundary is
+  presence-based because the translator's
+  rejection is (FD-72 evidence item 1); the
+  demote WRITE side is untouched (capability 5379
+  stays admitted; only the read refuses).
+  `docs/known-gaps/vulkan.md` gained the matching
+  REJECTED-LOUDLY row, its vk64bridge.cpp
+  citations re-pinned through the change's exact
+  line map. Proof: a native guard in
+  `tools/vkd3d/tests/vk64_native_test.cpp` (both
+  spellings refuse + counter; a FragCoord
+  neighbour module admits), sabotage-verified on
+  the branch (with the audit triggers neutered
+  the harness aborts at the guard's first
+  assertion); on the composed tree
+  `run-native.py` completes with the guard among
+  its passes (55 PASS sections — the previous
+  gate's 54 plus this guard) and the citation
+  audit reads 352 rows, zero drift. In vivo on
+  the branch (warmed archive, standard demo
+  path, lane build `69bb72126` / wasm
+  `04e73f59`): of 256 `vkCreateShaderModule`
+  calls the only 2 refusals are the
+  byte-identified Godot module (5,704 B, djb2
+  `0b3b4d8cc939485a`), each logged by name + size
+  + hash with `result=-8`; zero `page tier
+  cannot translate` lines in the run — the
+  silent-drop path this module took in the
+  FD-62 lane's run no longer exists for it; the
+  guest reached `vkQueueSubmit2` with 0
+  pipeline-creation E_FAILs. FD-72 itself stays
+  OPEN: this closure covers only the audit's
+  mirror-discipline gap; serving the class waits
+  on the translation stack, on the terms FD-72's
+  rewritten entry states. Evidence:
+  `test-results/fd72/` (branch),
+  `test-results/merge-fd72-20261101/` (this
+  gate); records
+  `docs/reports/fd72-helper-invocation-boundary-20261101.md`,
+  `docs/reports/merge-fd72-20261101.md`.
