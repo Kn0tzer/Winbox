@@ -1311,9 +1311,21 @@ int main() {
         assert(committed == 0);
         U32 peer = 9; vkGetDeviceGroupPeerMemoryFeatures(deviceId, 0, 0, 1, &peer);
         assert(peer == 0);
-        size_t cacheSize = 77;
-        assert(vkGetPipelineCacheData(deviceId, 1, &cacheSize, nullptr) == VK_SUCCESS && cacheSize == 0);
+        // fn-921/922 trap to the bridge, which owns the pipeline-cache
+        // answers (the ELF shims no longer answer these locally), so --
+        // like every other trapping call in this fixture -- the size slot
+        // is guest memory the bridge may legally write, read back from
+        // guest memory. Passing a host pointer here made the bridge write
+        // through a host stack address as a guest address; the memory
+        // model rejected it and the abort skipped every later section
+        // of the harness (FD-50).
+        U64 cacheSizeAddr = memory.mmapReserveAndMap(sizeof(U64), 3);
+        memory.writeq(cacheSizeAddr, 77);
+        assert(vkGetPipelineCacheData(deviceId, 1, (size_t*)cacheSizeAddr, nullptr) == VK_SUCCESS);
+        assert(lastTrap == VK64_fn_vkGetPipelineCacheData);
+        assert(memory.readq(cacheSizeAddr) == 0);
         assert(vkMergePipelineCaches(deviceId, 1, 0, nullptr) == VK_SUCCESS);
+        assert(lastTrap == VK64_fn_vkMergePipelineCaches);
         // 64-bit vkDestroyBufferView drops the view handle (was a -8 stub that leaked it).
         U64 viewId; createObj<BufferView>(K_BUFFERVIEW, viewId);
         assert(findObj(viewId, K_BUFFERVIEW));
