@@ -129,7 +129,12 @@ demo after a first frame). Re-running would re-confirm, not measure.
 ## Tests
 
 - JS unit suite in this worktree: **344 passed, 0 failed** (the
-  campaign baseline figure). The legacy group result is recorded in
+  campaign baseline figure). The legacy group was started in the
+  same run but its runner exited mid-group without producing results
+  (the log ends at the group header; no failure list exists to
+  compare against FD-64's known pre-existing set), so no legacy
+  figure is claimed for this branch; the composed-tree gate re-runs
+  the full suite in any case. Log:
   `test-results/fd55prewarm/unit-suite.log`.
 - Native suite not run: this branch changes no emulator or product
   source — only the demo catalog entry, a capture tool under
