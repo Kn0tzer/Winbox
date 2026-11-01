@@ -343,16 +343,27 @@ do not close the entry until they land.
   util layer. Evidence: `docs/reports/cleanup-fs-20261031.md`
   (branch `lane-cleanfs`, "found outside this layer").
 - **FD-12 — A 32-bit futex lost-wakeup flaw is proven, its fix
-  is unmerged, and a related park is unconvicted.** *(Medium)*
-  A deterministic native test proves the lost-wakeup flaw; the
-  fix exists on the unmerged branch `lane-wake32`
-  (commit `c66a35684`). Separately, demo builds in a certain
-  range repeatedly (not always) map a window and then park
-  before the first frame; this flaw is the documented suspect
-  with a matching stall signature, but the park was never
-  isolated and may have another cause. Evidence: integration
-  tree `test-results/site-chromium-20261030/REPORT.md`
-  ("the post-window park").
+  is unmerged, and a related park is unconvicted. CLOSED
+  2026-11-01 (the flaw) — see CL-26; the park is split out as
+  FD-75.** *(Was Medium)*
+  The flaw half is fixed on branch `lane-fd12` in `e8644f814`:
+  the 32-bit futex now carries the lost-wakeup protections the
+  64-bit path already had — wakes flag registered slots
+  unconditionally under the pending-wake lock, and a wake that
+  lands before its waiter registers is recorded and consumed
+  by the waiter's first check, the case Wine's
+  alert-by-thread-id futex (whose word never changes) could
+  never recover from. Proof: the deterministic native test
+  ported with it (`72114f9ea`) fails on the unfixed code (the
+  deterministic scenario times out at the full 400 ms; the
+  race scenario loses 1 of 120 wakes) and passes on the fixed
+  code; full native suite 664/664, x64 suite 63/63. The demo
+  park that made this flaw the documented suspect was
+  reproduced and captured separately; it is not this flaw's
+  closing proof and is tracked, with its own mechanism, as
+  FD-75. Evidence: `docs/reports/fd12-park-lane-20261101.md`;
+  integration tree `test-results/site-chromium-20261030/
+  REPORT.md` (the original suspicion).
 - **FD-13 — Two small socket behaviours deviate from the
   contract.** *(Low)* On unix sockets, `MSG_NOSIGNAL` is
   accepted through the write path but not honored (no SIGPIPE
@@ -369,6 +380,76 @@ do not close the entry until they land.
   64-bit ones were not confirmed in their own context.
   Evidence: `docs/reports/cleanup-cpu-core-20261030.md`
   (branch `lane-clean-cpu`, "handed off").
+
+- **FD-74 — The guest-thread dump silently covered nothing
+  in 32-bit sessions. CLOSED 2026-11-01 — see CL-27.**
+  *(Was Medium)* `bw64_dump_guest_threads()` enumerated
+  threads up to a bound only ever raised on the 64-bit
+  syscall path, so in a 32-bit session every dump reported
+  maxTid=0 / dumped=0 while dozens of guest threads were
+  running — a successful-looking empty diagnostic, hit live
+  when this lane's baseline reproductions of the FD-75 park
+  each carried 20 such vacuous dumps. Fixed on `lane-fd12` in
+  `80062923f` (the tid note is now shared by both syscall
+  dispatchers); 32-bit dumps now enumerate the real threads
+  with state, syscall, args and wait condition, which is how
+  the FD-75 capture was taken. Evidence:
+  `docs/reports/fd12-park-lane-20261101.md`.
+
+- **FD-75 — A fully booted session can still freeze solid
+  before its first window and never say why; the freeze
+  amplifier is fixed, the stall behind it is not.**
+  *(High)* *(Numbering provisional: the integration
+  register already uses FD-74/FD-75 for other items; the
+  merge lane owns final numbering.)* Split from FD-12 —
+  the futex flaw that was the documented suspect is
+  closed separately (CL-26). Signature, identical across
+  every capture: the session boots completely (desktop,
+  display connections, the guest browser fetching its
+  archive lazily), reaches a late fetch milestone
+  (192 MB in most captures, 112 MB in one), and falls
+  totally silent at ~76-78 s — no window, no error, no
+  BW64-FAIL — and never recovers. A parked-state thread
+  capture exists (`test-results/fd12/consumer-hunt-4/`,
+  taken with the FD-74-fixed dump): over 90+ seconds
+  every one of the 69 guest-thread states is
+  byte-identical; threads sit in ordinary waits
+  (wineserver-socket reads, per-thread alert futexes,
+  one timed poll) except ten threads of the main
+  process frozen at guest faulting instructions with
+  no wait condition at all. The amplifier is proven in
+  code: `FilePage::onDemmand` performed the backing
+  read — for a lazily fetched archive a network fetch
+  proxied to the browser main thread — while holding
+  the per-process memory mutex, so one unsettled fetch
+  stranded every thread that faulted or needed that
+  mutex. That half is FIXED on `lane-fd12` in
+  `6ddd9cdd9` (read outside the critical section,
+  re-validated on re-entry; native 664/664 + 63/63
+  serial, JS 346/0; consumer runs on that build:
+  5 mapped / 1 parked in 6, against 1 mapped / 3
+  parked in 4 uninstrumented on the futex-only-fixed
+  build). What remains open: a fetch sometimes never
+  settles — no stall-watchdog line, no retry, no
+  failure logged in any parked run although the fetch
+  layer's documented worst case is ~3-4 minutes
+  (60 s stall window, retries, 240 s waiter deadline),
+  so the guest thread never entered the retry loop:
+  it was stuck before or inside the proxied fetch
+  call whose main-thread service never arrived. Which
+  sub-mechanism of that service path fails
+  (proxy-queue servicing on the runtime main thread
+  vs the fetch promise vs the watchdog timer) cannot
+  be separated from outside the page. Next capture:
+  the armed dump configuration (FD-74's fix) against
+  a fault-path-fixed build that parks — the dumps
+  will show whether the frozen constellation changed
+  (one stranded fetcher: the service itself) or
+  persisted (a further blocker). Evidence:
+  `docs/reports/fd12-park-lane-20261101.md`,
+  `test-results/fd12/consumer-hunt-4/`,
+  `test-results/fd12/consumer-verify-*/`,
+  `test-results/fd12/consumer-posthunt-*/`.
 
 ### Graphics
 
@@ -3067,3 +3148,41 @@ its lane and is not a defect, for the stated reason:
   gate); records
   `docs/reports/fd72-helper-invocation-boundary-20261101.md`,
   `docs/reports/merge-fd72-20261101.md`.
+- **CL-26 — The 32-bit futex lost-wakeup flaw (FD-12's flaw
+  half).** *(Numbering provisional: CL-25 is used on
+  lane-fd62serve; the merge lane owns final numbering.)*
+  Fixed on branch `lane-fd12` in `e8644f814`, applying the
+  unmerged `lane-wake32` fix (`c66a35684`) verbatim — the
+  32-bit regions had not drifted. FUTEX_WAKE now flags
+  registered slots unconditionally and holds the
+  pending-wake lock across its scan; a plain FUTEX_WAKE that
+  wakes nobody records a pending wake; a fresh FUTEX_WAIT
+  word-checks, then under the same lock either consumes a
+  pending wake (a spurious EWOULDBLOCK, always legal) or
+  registers its slot. Proof: the ported deterministic test
+  (`72114f9ea`, harness entry 605) is red on the unfixed
+  code (deterministic scenario -ETIMEDOUT at the full
+  400 ms; race scenario 1 of 120 wakes lost) and green on
+  the fixed code, 6/6 runs; full native suite 664/664
+  (663 baseline + the new test), x64 suite 63/63, JS unit
+  suite 346/0 against the fixed dist build. Evidence:
+  `test-results/fd12/` (`native-test-RED-unfixed.log`,
+  `native-test-GREEN-fixed.log`, `native-full-fixed.log`,
+  `native-x64-fixed.log`, `js-unit-fixed.log`), record
+  `docs/reports/fd12-park-lane-20261101.md`.
+- **CL-27 — The guest-thread dump's silent 32-bit blindness
+  (FD-74).** *(Numbering provisional: see CL-26.)*
+  Fixed on branch `lane-fd12` in `80062923f`: the
+  enumeration bound the dump walks is now raised by a
+  shared helper (`bwNoteThreadDumpTid`) called from both
+  the 32-bit and 64-bit syscall dispatchers under the same
+  Emscripten guard as before; the dump's existing 32-bit
+  reporting branch is finally reached. Proof: dumps in a
+  live 32-bit Chromium session enumerate the real threads
+  (maxTid=191 observed, per-thread state / syscall / args /
+  wait condition), where every dump before reported
+  maxTid=0 / dumped=0; the same instrument then captured
+  the FD-75 parked state. Evidence: `test-results/fd12/
+  consumer-diag-1/` (healthy dumps) and
+  `test-results/fd12/consumer-hunt-4/` (parked dumps),
+  record `docs/reports/fd12-park-lane-20261101.md`.
