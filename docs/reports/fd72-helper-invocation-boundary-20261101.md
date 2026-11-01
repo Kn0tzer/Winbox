@@ -218,7 +218,8 @@ build. The failure shape is what changed, exactly as intended:
   (support) archive is byte-identical to integration's
   (`c4dbe35986a5`).
 - Native: `tools/vkd3d/tests/run-native.py` completes, exit 0
-  (911 PASS lines), including the new FD-72 guard.
+  (55 PASS sections — the integration gate's 54 plus the new
+  FD-72 guard), including the new FD-72 guard.
 - JS unit suite: at the integration baseline before the build
   (347 passed; the only failures the two dist-state audits,
   `provenance-artifacts` and `runtime-completeness`, which require
