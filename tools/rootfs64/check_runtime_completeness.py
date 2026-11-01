@@ -17,6 +17,16 @@ artifacts and the *source* payloads, offline:
   2c. The support pack's member names are unique, and its four
      libvulkan.so.1 members are the project shims whose digests
      dependencies.json records as the 'vulkan' provenance (FD-53).
+  2d. The retained local runtime-assets release archive agrees with
+     tools/browser/runtime-assets.json end to end: the archive's own
+     size/SHA256 matches the manifest's archive pin, its member set is
+     exactly the pinned file set, and every member's size/SHA256
+     matches its file pin (FD-73). Resolves the retained archive via
+     BW64_ASSETS_ARCHIVE, defaulting to the box's retained copy under
+     /home/ubuntu/backups/winbox-runtime-assets-*/ named by the
+     manifest itself; skips loudly when no retained copy exists (the
+     download / --local restore path verifies the same agreement at
+     restore time).
   3. The DirectX redist sets the register calls complete are complete in
      both wine zips (d3dx9_24..43, d3dx10_33..43, d3dcompiler_33..47,
      xaudio2_0..2_9, xinput1_1..1_4), and the d3dcompiler numbers the
@@ -54,6 +64,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -348,6 +359,73 @@ def t_support_pack_member_uniqueness():
                      f'project shim {vulkan[arch][:12]}...')
 
 
+def assets_archive_path():
+    # The retained local copy of the pinned runtime-assets release
+    # archive. BW64_ASSETS_ARCHIVE points at an archive directly (the
+    # BW64_SUPPORT_DIR pattern); the default is the box's retained
+    # copy, found by the manifest's own archive name under
+    # /home/ubuntu/backups/winbox-runtime-assets-*/ so a re-pinned
+    # generation is located without editing this checker.
+    override = os.environ.get('BW64_ASSETS_ARCHIVE')
+    if override:
+        return Path(override)
+    manifest = json.loads(
+        (ROOT / 'tools/browser/runtime-assets.json').read_text())
+    found = sorted(Path('/home/ubuntu/backups').glob(
+        f'winbox-runtime-assets-*/{manifest["archive"]["name"]}'))
+    return found[-1] if found else None
+
+
+def t_assets_archive():
+    # FD-73: the retained archive once disagreed with the manifest's
+    # file pins for both Wine archives — it had been built before the
+    # FD-40/FD-01/FD-02 payload fixes landed and was never rebuilt as
+    # their file pins moved — so bootstrap.py --local failed on a
+    # fresh checkout while --check passed on every tree already
+    # carrying the pinned files: no verification path ever read the
+    # archive. Verify the retained archive against the manifest end
+    # to end (its own pin, its member set, every member's bytes), so
+    # a future re-pin that leaves the archive stale fails here
+    # instead of at the next fresh checkout.
+    archive = assets_archive_path()
+    if archive is None:
+        skip('retained runtime-assets archive agrees with the file pins (FD-73)',
+             'no retained archive found under /home/ubuntu/backups; '
+             'bootstrap.py verifies the same agreement at restore time '
+             'on the download / --local path')
+        return
+    assert archive.is_file(), f'retained archive does not exist: {archive}'
+    manifest = json.loads(
+        (ROOT / 'tools/browser/runtime-assets.json').read_text())
+    pin = manifest['archive']
+    digest = hashlib.sha256()
+    with archive.open('rb') as source:
+        for chunk in iter(lambda: source.read(1 << 22), b''):
+            digest.update(chunk)
+    assert archive.stat().st_size == pin['bytes'] \
+        and digest.hexdigest() == pin['sha256'], \
+        f'{archive.name}: size/SHA256 mismatch against the manifest archive pin'
+    expected = {entry['path']: entry for entry in manifest['files']}
+    with tarfile.open(archive, 'r:') as bundle:
+        members = [m for m in bundle.getmembers() if m.isfile()]
+        names = [m.name for m in members]
+        assert len(names) == len(expected) and set(names) == set(expected), \
+            'archive entries differ from the pinned manifest'
+        for member in members:
+            entry = expected[member.name]
+            digest = hashlib.sha256()
+            size = 0
+            with bundle.extractfile(member) as source:
+                for chunk in iter(lambda: source.read(1 << 22), b''):
+                    digest.update(chunk)
+                    size += len(chunk)
+            assert size == entry['bytes'] \
+                and digest.hexdigest() == entry['sha256'], \
+                (f'{member.name}: archive carries size/SHA256 {size}/'
+                 f'{digest.hexdigest()[:12]}... but the file pin is '
+                 f'{entry["bytes"]}/{entry["sha256"][:12]}...')
+
+
 def t_directx_sets():
     # d3dcompiler set is exact, not a range: 44/45 exist in NEITHER pinned
     # upstream build (Debian wine 8.0 amd64 and WineHQ wine-stable 10.0
@@ -537,6 +615,7 @@ if __name__ == '__main__':
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('support pack member uniqueness + Vulkan shim pins (FD-53)', t_support_pack_member_uniqueness)
+    check('retained runtime-assets archive agrees with the file pins (FD-73)', t_assets_archive)
     check('DirectX redist sets complete (both zips)', t_directx_sets)
     check('VC++ runtime sets (both zips, asymmetries pinned)', t_vcpp_sets)
     check('wineserver dispatch is ELF (no /bin/sh script)', t_wineserver_dispatch)
