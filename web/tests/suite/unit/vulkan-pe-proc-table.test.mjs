@@ -23,6 +23,10 @@ test('PE Vulkan resolver exposes final dispatch entries and ICD loader exports',
       assert(vkGetInstanceProcAddr(0,"vk_icdGetPhysicalDeviceProcAddr") == (void*)vk_icdGetPhysicalDeviceProcAddr);
       assert(vkGetInstanceProcAddr(0,"vk_icdNegotiateLoaderICDInterfaceVersion") == (void*)vk_icdNegotiateLoaderICDInterfaceVersion);
       assert(vkWaitSemaphores(0,0,0)==711);
+      assert(vkGetDeviceProcAddr(0,"vkCreateQueryPool") == (void*)vkCreateQueryPool);
+      assert(vkCreateQueryPool(0,0,0,0)==849);
+      assert(vkCreateEvent(0,0,0,0)==841);
+      assert(vkGetPipelineCacheData(0,0,0,0)==921);
       vkCmdSetViewportWithCount(0x1234,1,0x700010200ULL);
       assert(captured[0]==0x1234 && captured[1]==0 && captured[2]==1 && captured[3]==0x700010200ULL);
       vkCmdSetViewportWithCountEXT(0x1234,2,0x700010200ULL);

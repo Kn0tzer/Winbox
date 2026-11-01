@@ -127,5 +127,22 @@
   <input id="patchInput" type="file" accept=".zip" hidden>
   <input id="restoreInput" type="file" accept=".zip" hidden>
   <script type="module" src="app.mjs"></script>
+  <script>
+    // If the app module itself cannot load (network failure, a stale
+    // cached page, a bad deploy), the catalog would sit empty forever
+    // with no trace anywhere. app.mjs sets __bwAppBooted once it has
+    // rendered; if that has not happened in time, say so on the page.
+    // A slow-but-working load clears this notice when the app boots.
+    setTimeout(() => {
+      if (window.__bwAppBooted) return;
+      const notice = document.getElementById('notice');
+      const noticeText = document.getElementById('noticeText');
+      if (!notice || !noticeText) return;
+      window.__bwBootWatchdogFired = true;
+      notice.hidden = false;
+      notice.classList.add('error');
+      noticeText.textContent = 'The launcher is taking a long time to load. If nothing appears, check your connection and reload the page.';
+    }, 20000);
+  </script>
 </body>
 </html>

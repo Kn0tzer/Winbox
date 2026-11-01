@@ -28,8 +28,11 @@ const entryPoint = (model, id) => ({ op: 15, words: [model, id, 0x6E69616D, 0] }
 // Rule-specific coverage also lives in the specialization and corpus tests.
 test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
+    'texel-pointer-to-storage-buffer',
     'texel-buffer-to-2d',
     'storage-texel-buffer-to-2d',
+    'strip-unused-texel-buffer-capabilities',
+    'quad-ops-to-shuffle',
     'split-combined-sampler',
     'fold-spec-constants',
     'strip-point-builtins',
@@ -48,6 +51,8 @@ test('REWRITES exports every rule', () => {
     'descriptor-array-specialize',
     'root-descriptor-bda',
     'strip-dead-undefs',
+    'specialized-binding-split',
+    'prune-dead-storage-image-types',
   ]);
 });
 
@@ -181,5 +186,5 @@ test('R14 NEGATIVE: variables of one type disagreeing on format are refused', ()
 
 test('R14 reflection: storageImageVars reports set/binding/format/kind', () => {
   const vars = storageImageVars(serializeSpirv(storageModule()));
-  assert.deepEqual(vars, [{ set: 0, binding: 2, dim: 1, format: 0, kind: 'f', typeId: 11 }]);
+  assert.deepEqual(vars, [{ set: 0, binding: 2, dim: 1, format: 0, kind: 'f', typeKey: 'kf32d1x000', typeId: 11 }]);
 });

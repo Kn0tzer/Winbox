@@ -1,0 +1,26 @@
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-fd38park/project/linux'
+MAKEFLAGS 
+In file included from ../../include/platformBoxedwine.h:194,
+                 from ../../include/boxedwine.h:93,
+                 from /home/ubuntu/wt-fd38park/source/io/fsfilenode.cpp:19:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-fd38park/source/io/fsfilenode.cpp:65:17:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from ../../include/boxedwine.h:93,
+                 from /home/ubuntu/wt-fd38park/source/kernel/kinotify.cpp:19:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-fd38park/source/kernel/kinotify.cpp:94:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make[1]: Leaving directory '/home/ubuntu/wt-fd38park/project/linux'

@@ -142,6 +142,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_socket            41
 #define X64_SYS_connect           42
 #define X64_SYS_accept            43
+#define X64_SYS_accept4           288
 #define X64_SYS_bind              49
 #define X64_SYS_listen            50
 #define X64_SYS_getsockname       51
@@ -190,6 +191,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_rt_sigreturn      15
 #define X64_SYS_dup               32
 #define X64_SYS_dup2              33
+#define X64_SYS_dup3              292
 #define X64_SYS_getcwd            79
 #define X64_SYS_chdir             80
 #define X64_SYS_fcntl             72
@@ -247,6 +249,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_epoll_create      213
 #define X64_SYS_epoll_ctl         233
 #define X64_SYS_epoll_wait        232
+#define X64_SYS_epoll_pwait       281
 #define X64_SYS_pwrite64          18
 #define X64_SYS_readv             19
 #define X64_SYS_select            23
@@ -4282,6 +4285,12 @@ static inline bool bwThreadDumpEnabled() {
     return enabled;
 }
 
+void bwNoteThreadDumpTid(U32 tid) {
+    U32 seen = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
+    while (seen < tid && !bwThreadDumpMaxTid.compare_exchange_weak(
+               seen, tid, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
+
 // Best-effort guest stack walk for BW_THREAD_DUMP. Scans the qwords above the
 // guest RSP for values that fall inside a PE image in the PEB loader list
 // (candidate return addresses) and prints module+RVA. It is a heuristic scan
@@ -4475,13 +4484,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
     klog_fmt("BW_THREAD_DUMP begin maxTid=%u", maxTid);
     for (U32 tid = 1; tid <= maxTid; ++tid) {
         bool lockBlocked = false;
-        KThread* thread = KSystem::tryGetThreadById(tid, lockBlocked);
+        // FD-44: reference-held across the dump reads below (the dump
+        // is best-effort and never blocks, hence the try-lock variant);
+        // released on every path out of this iteration.
+        KThread* thread = KSystem::tryGetThreadByIdRef(tid, lockBlocked);
         if (lockBlocked) {
             ++skippedLock;
             klog_fmt("BW_THREAD_DUMP unavailable tid=%u lock=processes/threads", tid);
             continue;
         }
-        if (!thread || !thread->process) continue;
+        if (!thread) continue;
+        if (!thread->process) { thread->releaseRef(); continue; }
         ++dumped;
         const U32 pid = thread->process->id;
         const bool blocked = thread->waitingCond != nullptr;
@@ -4527,6 +4540,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                 }
             }
             bwDumpGuestStack(c, pid, thread->id);
+            thread->releaseRef();
             continue;
         }
 #endif
@@ -4538,6 +4552,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                  c ? c->reg[2].u32 : 0, c ? c->reg[6].u32 : 0,
                  c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
                  c ? c->eip.u32 : 0, waitName);
+        thread->releaseRef();
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);
@@ -4549,12 +4564,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 void ksyscall64(CPU64* cpu) {
     if (!cpu) return;
 #ifdef __EMSCRIPTEN__
-    if (cpu->thread) {
-        U32 tid = cpu->thread->id;
-        U32 seen = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
-        while (seen < tid && !bwThreadDumpMaxTid.compare_exchange_weak(
-                   seen, tid, std::memory_order_relaxed, std::memory_order_relaxed)) {}
-    }
+    if (cpu->thread) bwNoteThreadDumpTid(cpu->thread->id);
 #endif
     U64 nr   = cpu->reg[X64_RAX].u64;
     U64 a1   = cpu->reg[X64_RDI].u64;
@@ -4757,9 +4767,11 @@ void ksyscall64(CPU64* cpu) {
                 std::memcpy(&infoCode, info + 8, sizeof(infoCode));
                 if (infoSignal != (S32)a2) { ret = (U64)-K_EINVAL; break; }
                 if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
-                KThread* targetThread = target->getThread();
+                // FD-44: reference-held (see KProcess::getThreadByIdRef).
+                KThread* targetThread = target->getThreadRef();
                 if (!targetThread) { ret = (U64)-K_ESRCH; break; }
                 ret = (U64)(S64)queueSiginfo64(targetThread, (U32)a2, info);
+                targetThread->releaseRef();
             } else if (a2 == 0) {
                 ret = 0;
             } else {
@@ -4962,6 +4974,25 @@ void ksyscall64(CPU64* cpu) {
                 ret = (U64)-K_ENOSYS;
             }
             break;
+        case X64_SYS_dup3: {
+            // dup3(oldfd, newfd, flags) — dup2 plus O_CLOEXEC control.
+            // The differences from dup2: oldfd == newfd is EINVAL (dup2
+            // is a no-op there), and any flag bit other than O_CLOEXEC
+            // is EINVAL. KProcess::dup2 already creates the new
+            // descriptor with its descriptor flags cleared, so the
+            // O_CLOEXEC bit is applied to the fresh descriptor here.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (a3 & ~(U64)K_O_CLOEXEC) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
+            if (a1 == a2) { ret = (U64)-K_EINVAL; break; }
+            U32 newFd = cpu->thread->process->dup2((FD)a1, (FD)a2);
+            if ((S32)newFd >= 0 && (a3 & K_O_CLOEXEC)) {
+                KFileDescriptorPtr dupFd = cpu->thread->process->getFileDescriptor((FD)a2);
+                if (dupFd) dupFd->descriptorFlags |= FD_CLOEXEC;
+            }
+            ret = (S32)newFd < 0 ? (U64)(S64)(S32)newFd : (U64)newFd;
+            break;
+        }
         case X64_SYS_getcwd: {
             // getcwd(buf, size) — copy current directory string out. Returns
             // the byte count including NUL on success (the libc wrapper
@@ -5071,16 +5102,18 @@ void ksyscall64(CPU64* cpu) {
             U32 sig       = (U32)(isTgkill ? a3 : a2);
             U64 ourTid    = cpu->thread ? (U64)cpu->thread->id : 1;
             if (targetTid != (U32)ourTid) {
-                KThread* target = KSystem::getThreadById(targetTid);
+                // FD-44: reference-held across the delivery below (see
+                // KProcess::getThreadByIdRef); released on every exit.
+                KThread* target = KSystem::getThreadByIdRef(targetTid);
                 if (!target) { ret = (U64)-K_ESRCH; break; }
-                if (sig == 0) { ret = 0; break; } // liveness probe — target exists
+                if (sig == 0) { target->releaseRef(); ret = 0; break; } // liveness probe — target exists
                 // Don't arm a pending signal on a thread that is already tearing
                 // down: it will never reach a normal scheduler slice to take it,
                 // and a thread parked in futex64's wait loop during exit would
                 // otherwise keep trying to deliver it mid-kill — a teardown
                 // deadlock. The caller still sees success (the thread is on its
                 // way out, which is what a signal would have accomplished).
-                if (target->terminating) { ret = 0; break; }
+                if (target->terminating) { target->releaseRef(); ret = 0; break; }
                 // Async cross-thread delivery: arm the target's pending-signal;
                 // the 64-bit scheduler delivers it (deliverSignalSync) at the
                 // target's next slice, before it runs guest code. We can't build
@@ -5106,6 +5139,7 @@ void ksyscall64(CPU64* cpu) {
                     }
                 }
 #endif
+                target->releaseRef();
                 ret = 0;
                 break;
             }
@@ -5471,6 +5505,18 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)kaccept(cpu->thread, (U32)a1, s32, lenSlot, 0);
             // (peer sockaddr writeback omitted — AF_UNIX accept returns an empty
             // name; wine doesn't rely on it for the server connection.)
+            break;
+        }
+        case X64_SYS_accept4: {
+            // accept4(sockfd, addr, addrlen, flags) — accept plus
+            // SOCK_NONBLOCK / SOCK_CLOEXEC applied to the accepted
+            // descriptor. Flag validation and the guest->internal flag
+            // translation live in kaccept, shared with the 32-bit
+            // accept4 entry point. Same sockaddr treatment as accept.
+            if (!cpu->thread) { ret = (U64)-K_ENOSYS; break; }
+            U32 lenSlot = 0;
+            U32 s32 = a2 ? bounceSockaddrTo32(cpu, 0, 256, &lenSlot) : 0;
+            ret = (U64)(S64)(S32)kaccept(cpu->thread, (U32)a1, s32, lenSlot, (U32)a4);
             break;
         }
         case X64_SYS_getsockname:
@@ -6168,7 +6214,8 @@ void ksyscall64(CPU64* cpu) {
                 ? cpu->thread->process : KSystem::getProcess((U32)tgid);
             if (!target) { ret = (U64)-K_ESRCH; break; }
             if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
-            KThread* targetThread = threadDirected ? target->getThreadById((U32)tid) : target->getThread();
+            // FD-44: reference-held (see KProcess::getThreadByIdRef).
+            KThread* targetThread = threadDirected ? target->getThreadByIdRef((U32)tid) : target->getThreadRef();
             if (!targetThread) { ret = (U64)-K_ESRCH; break; }
             if (!sys_rangeHasPermission64(cpu->memory, infoAddress, 128, K64_PAGE_READ)) {
                 ret = (U64)-K_EFAULT;
@@ -6182,6 +6229,7 @@ void ksyscall64(CPU64* cpu) {
             if (infoSignal != (S32)sig) { ret = (U64)-K_EINVAL; break; }
             if (infoCode >= 0) { ret = (U64)-K_EPERM; break; }
             ret = (U64)(S64)queueSiginfo64(targetThread, (U32)sig, info);
+            targetThread->releaseRef();
             break;
         }
         case X64_SYS_pause:
@@ -6409,11 +6457,22 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)rc;
             break;
         }
+        case X64_SYS_epoll_pwait: // epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask*, sigsetsize)
         case 441: { // epoll_pwait2(epfd, events, maxevents, timeout*, sigmask*, sigsetsize)
+            // The two calls differ only in the timeout argument:
+            // epoll_pwait takes a plain millisecond count, epoll_pwait2
+            // a timespec pointer. Everything else — sigset-size
+            // validation, the signal-mask swap scoped to the wait, the
+            // event bounce — is shared, so both numbers run this body.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
             if (!a2 || !a3 || a3 > 64) { ret = (U64)-K_EINVAL; break; }
             U32 timeoutMs = 0xffffffffu;
-            if (a4) {
+            if (nr == X64_SYS_epoll_pwait) {
+                // Negative waits forever (the 0xffffffff convention
+                // epollwait uses); finite values clamp like the
+                // timespec path below.
+                timeoutMs = (S32)a4 < 0 ? 0xffffffffu : std::min<U32>((U32)a4, 0xfffffffeu);
+            } else if (a4) {
                 const S64 sec = (S64)cpu->memory->readq(a4);
                 const S64 nsec = (S64)cpu->memory->readq(a4 + 8);
                 if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }

@@ -115,8 +115,14 @@ U32 KEvent::readNative(U8* buffer, U32 len) {
 }
 
 U32 KEvent::stat(KProcess* process, U32 address, bool is64) {
-    kpanic("KEvent::stat not implemented yet");
-    return 0;
+    // No stat is implemented for eventfds (KTimer and KInotify answer
+    // the same way); fstat() used to kpanic here.
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("eventfd.stat", "BW64-FAIL eventfd-stat outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL eventfd-stat outcome=returned-ENOTSUP");
+    }
+    return -K_ENOTSUP;
 }
 
 U32 KEvent::map(KThread* thread, U32 address, U32 len, S32 prot, S32 flags, U64 off) {
@@ -132,7 +138,9 @@ BString KEvent::selfFd() {
 }
 
 S64 KEvent::seek(S64 pos) {
-    return -K_ESPIPE; // :TODO: is this right?
+    // Verified: eventfds are anon-inode files with no seek operation,
+    // and Linux answers llseek on them with ESPIPE.
+    return -K_ESPIPE;
 }
 
 S64 KEvent::getPos() {
@@ -140,6 +148,8 @@ S64 KEvent::getPos() {
 }
 
 U32 KEvent::ioctl(KThread* thread, U32 request) {
+    // ENOTTY reporting for guest ioctls lives at the single dispatch
+    // point, KProcess::ioctl.
     return -K_ENOTTY;
 }
 
@@ -153,7 +163,14 @@ S64 KEvent::length() {
 
 U32 syscall_eventfd2(KThread* thread, U32 initialValue, U32 flags) {
     if (!thread || !thread->process) return (U32)-K_ESRCH;
-    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return (U32)-K_EINVAL;
+    if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("eventfd2.flags", "BW64-FAIL eventfd2-flags outcome=returned-EINVAL");
+        } else {
+            kwarn_fmt("BW64-FAIL eventfd2-flags flags=0x%x outcome=returned-EINVAL", flags);
+        }
+        return (U32)-K_EINVAL;
+    }
     KFileDescriptorPtr fd;
 
     std::shared_ptr<KEvent> o = std::make_shared<KEvent>();

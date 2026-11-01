@@ -203,8 +203,20 @@ public:
     KThread* createThread();
     void removeThread(KThread* thread);
     KThread* getThreadById(U32 tid);
+    // FD-44: like getThreadById, but the caller receives a KThread
+    // reference (KThread::addRef) taken under the table lock; the
+    // caller must releaseRef() when done. Required for any use of the
+    // pointer beyond the lookup itself (signal delivery, termination,
+    // siginfo queueing): the owning thread may retire and its
+    // deleteThread may free the object at any time otherwise.
+    KThread* getThreadByIdRef(U32 tid);
+    // FD-44: same, for the process's first (main) thread.
+    KThread* getThreadRef();
     // Thread-dump variant: never blocks (see KSystem::tryGetThreadById).
     KThread* tryGetThreadById(U32 tid, bool& lockBlocked);
+    // FD-44: try-lock variant of getThreadByIdRef (never blocks; the
+    // reference is taken only when the table try-lock succeeds).
+    KThread* tryGetThreadByIdRef(U32 tid, bool& lockBlocked);
     U32 getThreadCount();
 	void deleteThread(KThread* thread);
     void killAllThreads(KThread* exceptThisOne = nullptr);

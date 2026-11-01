@@ -10,13 +10,13 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 213105632 | `1fc1e0ad8aca6db99b1f09eadbc070e8deb37164b8619764103ce9f38f734623` | 1257 |
-| w32 | `web/runtime/wine32.zip` | 239760722 | `955cc41cf6d92a0dc7d98fcfccb76e4d6d70e4daa5ea744c2be1e735c3950f4c` | 1926 |
+| w64 | `web/runtime/wine64.zip` | 209611866 | `53d77f337544e7132672c1fd52ada5491243a21a10b1b7f6f7ab07b57808a986` | 1257 |
+| w32 | `web/runtime/wine32.zip` | 239672753 | `7f2209cff5ffe7998a4432392c9087126cf5afc0e9b32d7886e72b08222f67a4` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19066440 | `b34385c655b6aa798978518d51286052b2c267d65596299bad93f536bbaf169c` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 9959020 | `d71d48f9a41877f359f60cb4529a0b65ff55f17cedb286a058b2b613ed031c73` | 93 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
-| support | `dist/runtime/support-bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b.zip` | 517854873 | `bbc583c6e657b5bae4eed9aed920a5b8856241a046ab23ddce9a000afb24f19b` | 3543 |
+| support | `dist/runtime/support-c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f.zip` | 517564189 | `c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f` | 3542 |
 
 Labels match the register legend in `runtime.md`
 (`w64` = wine64.zip, `w32` = wine32.zip, `p64`/`p32` = prefix zips,
@@ -393,7 +393,8 @@ Labels match the register legend in `runtime.md`
 
 ## GStreamer closure placement (lazy support pack)
 
-- gstreamer64 closure: 262 staged members; in w64: 0 (must be 0); in support: 262 (373443728 bytes)
+- gstreamer64 closure: 262 staged members; in w64: 0 (must be 0); in support: 261 (372714744 bytes)
+  - MISSING from support: `usr/lib/x86_64-linux-gnu/libvulkan.so.1.3.239`
 - gstreamer32 closure: 247 staged members; in w32: 0 (must be 0); in support: 247 (351488608 bytes)
 
 ## Audio / graphics / networking / TLS / fonts set

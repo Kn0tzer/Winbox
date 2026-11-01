@@ -14,6 +14,19 @@ artifacts and the *source* payloads, offline:
      boot zip, every member is in the retained support pack with the
      tree digests dependencies.json records, and prepare-gstreamer.py
      --check re-verifies the closure against the post-split boot zips.
+  2c. The support pack's member names are unique, and its four
+     libvulkan.so.1 members are the project shims whose digests
+     dependencies.json records as the 'vulkan' provenance (FD-53).
+  2d. The retained local runtime-assets release archive agrees with
+     tools/browser/runtime-assets.json end to end: the archive's own
+     size/SHA256 matches the manifest's archive pin, its member set is
+     exactly the pinned file set, and every member's size/SHA256
+     matches its file pin (FD-73). Resolves the retained archive via
+     BW64_ASSETS_ARCHIVE, defaulting to the box's retained copy under
+     /home/ubuntu/backups/winbox-runtime-assets-*/ named by the
+     manifest itself; skips loudly when no retained copy exists (the
+     download / --local restore path verifies the same agreement at
+     restore time).
   3. The DirectX redist sets the register calls complete are complete in
      both wine zips (d3dx9_24..43, d3dx10_33..43, d3dcompiler_33..47,
      xaudio2_0..2_9, xinput1_1..1_4), and the d3dcompiler numbers the
@@ -51,7 +64,9 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +100,24 @@ WINEHQ_PINS = {
     'msmpeg2vdec.dll': 'bbf91fc84f2bc66c70802e41e5ff1ee2e18335ef9cf07769957b0fb37484d046',
     'msvcp140_codecvt_ids.dll': '2215e3312bcc817c628669ec69baff3f050ec0bef91c099e0d12fd66f2c3d9b1',
 }
+# Wine 8.0 loader backports (tools/rootfs64/wine8-backports-x86_64): four
+# core DLLs rebuilt from the pinned wine-8.0 source with the three
+# wine8-*.patch backports in tools/buildWine/patches (the GetPointer*Info
+# family in user32, CopyFile2 in kernelbase/kernel32, GetAnycastIpAddress-
+# Table in iphlpapi). Re-pins are deliberate, as with the payloads above:
+# a rebuild that changes bytes fails here until the new bytes are reviewed
+# and pinned.
+WINE8_BACKPORT_PINS = {
+    'user32.dll': '5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219',
+    'kernelbase.dll': '344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85',
+    'kernel32.dll': 'e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793',
+    'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
+    'win32u.dll': '49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708',
+    # The unix half of win32u (FD-01): the desktop-wait patch lives in
+    # this module; pinning only the DLL is what let the patch ship in
+    # no binary (FD-43).
+    'win32u.so': 'bffd9036f5c6149e02fe54720b0429acaecc9eb5a7725103a1579615ca8e7fc3',
+}
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
 # bw64vulkan.dll must be the bw64 PE shim (the vendored vkd3d-proton's
@@ -100,15 +133,15 @@ WINEHQ_PINS = {
 # dxbc-spirv utof fix (the previous pins predated that rebuild and
 # uav12 UINT cases still failed PSO creation against them).
 VKD3D_PINS = {
-    'bw64vulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'bw64vulkan.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
     # vulkan-1.dll and winevulkan.dll carry the SAME shim bytes
     # (surface closure, 2026-10-27): Wine's dxgi creates D3D12
     # swapchain surfaces through a factory that loads winevulkan.dll
     # by name, native Vulkan apps and DXVK's dxgi load vulkan-1.dll,
     # and all three PE Vulkan names must resolve to one handle domain
     # (the bridge) or the surface call faults inside winevulkan.
-    'vulkan-1.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
-    'winevulkan.dll': 'ae96105b161f436711f5c7781263a4751c4893bef19c12a4078b42e0615a8c89',
+    'vulkan-1.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
+    'winevulkan.dll': '03edc142351a1079a2563ad456b8012c10faebf815f8ee8f77e73bf722df7eab',
     'd3d12.dll': 'a96b4e9d53ed0bed7c52a9610677e4b4ec4eb13fb5ad4f44a175c7a8da7242f1',
     'd3d12core.dll': '3d3bfe43cbec123fcdeb8f2b72ee2beaefb7a63eeaf37493bbace5c5ba54e790',
 }
@@ -166,6 +199,51 @@ def t_vkd3d_payloads32():
     for name, pin in VKD3D32_PINS.items():
         assert name in members, f'{name} missing from shipped wine32.zip'
         assert sha(members[name]) == pin, f'{name} in wine32.zip != pinned vkd3d32 payload bytes'
+
+
+# The 32-bit win32u unix module (tools/rootfs32/wine10-backports-i386):
+# Wine 10.0's win32u.so rebuilt from the pinned wine-10.0 source tarball
+# with the desktop-init patience patch
+# (tools/buildWine/patches/wine10-win32u-desktop-wait.patch; FD-02 --
+# the 32-bit twin of the FD-01 fix in the Wine 8 set). The base build
+# (tools/rootfs32/build-wine32-base.sh) substitutes it for the WineHQ
+# deb's module before the .dll.so duplication and the usr/ re-layout,
+# so all four shipped copies carry these bytes; the PE half
+# (win32u.dll) ships untouched from the deb -- the patch's functions
+# live in the unix half. Built WITH freetype/fontconfig compiled in
+# (the stock module dlopens both libraries and the guest ships both).
+# Re-pins are deliberate, as with the backports above.
+WINE10_BACKPORT32_SHA = 'b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760'
+WINE10_BACKPORT32_MEMBERS = (
+    'opt/wine-stable/lib/wine/i386-unix/win32u.so',
+    'opt/wine-stable/lib/wine/i386-unix/win32u.dll.so',
+    'usr/lib/i386-linux-gnu/wine/win32u.so',
+    'usr/lib/i386-linux-gnu/wine/win32u.dll.so',
+)
+
+
+def t_wine10_backport32_source_and_zip():
+    src = ROOT / 'tools/rootfs32/wine10-backports-i386' / 'win32u.so'
+    assert sha(src.read_bytes()) == WINE10_BACKPORT32_SHA, \
+        'win32u.so (32-bit backport) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name in WINE10_BACKPORT32_MEMBERS:
+        assert name in members, f'{name} missing from shipped wine32.zip'
+        assert sha(members[name]) == WINE10_BACKPORT32_SHA, \
+            f'{name} in wine32.zip != pinned 32-bit win32u backport bytes'
+
+
+def t_wine8_backports_source_and_zip():
+    for name, pin in WINE8_BACKPORT_PINS.items():
+        src = ROOT / 'tools/rootfs64/wine8-backports-x86_64' / name
+        assert sha(src.read_bytes()) == pin, f'{name} source hash drifted from README pin'
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE8_BACKPORT_PINS.items():
+        hits = [n for n in members if n.endswith(name)]
+        assert hits, f'{name} missing from shipped wine64.zip'
+        assert sha(members[hits[0]]) == pin, f'{name} in wine64.zip != pinned bytes'
 
 
 def t_winehq_source_and_zip():
@@ -229,7 +307,7 @@ def t_gstreamer_split():
         root = ROOT / 'tools/rootfs64' / stage_name
         paths = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
         assert paths, f'{stage_name}: staged tree is empty'
-        missing = paths - support_names
+        missing = (paths - module.GSTREAMER_ARCHIVE_EXCLUDES) - support_names
         assert not missing, (f'{stage_name}: {len(missing)} closure members missing '
                              f'from the support pack, e.g. {sorted(missing)[:3]}')
         with zipfile.ZipFile(RUNTIME / boot) as z:
@@ -246,6 +324,106 @@ def t_gstreamer_split():
         capture_output=True, text=True)
     assert result.returncode == 0, \
         f'prepare-gstreamer.py --check failed: {result.stdout} {result.stderr}'
+
+
+def t_support_pack_member_uniqueness():
+    # FD-53: the shipped support pack once carried two different files
+    # under usr/lib/x86_64-linux-gnu/libvulkan.so.1 (the project shim,
+    # staged deliberately, and the media closure's distro loader,
+    # staged incidentally), so the Vulkan library the guest loaded
+    # depended on the reader's duplicate handling rather than on the
+    # pinned archive hash. Member names must be unique archive-wide,
+    # and the Vulkan members must be the shims the manifest pins.
+    if not support_pack_ready():
+        skip('support pack member uniqueness (FD-53)',
+             'no support pack built yet (dependencies.json absent); '
+             'the build.mjs / apply-runtime-poststeps gates run this '
+             'check against the freshly built pack')
+        return
+    deps = json.loads((support_dir() / 'dependencies.json').read_text())
+    vulkan = deps.get('vulkan')
+    assert vulkan, 'dependencies.json lacks the vulkan provenance section'
+    with zipfile.ZipFile(support_zip_path()) as z:
+        names = z.namelist()
+        duplicates = sorted(n for n, c in Counter(names).items() if c > 1)
+        assert not duplicates, \
+            f'support pack has duplicate member names: {duplicates[:5]}'
+        for arch in ('i386', 'x86_64'):
+            for prefix in ('lib', 'usr/lib'):
+                member = f'{prefix}/{arch}-linux-gnu/libvulkan.so.1'
+                assert names.count(member) == 1, \
+                    f'support pack must carry {member} exactly once'
+                actual = sha(z.read(member))
+                assert actual == vulkan[arch], \
+                    (f'{member}: sha256 {actual[:12]}... is not the pinned '
+                     f'project shim {vulkan[arch][:12]}...')
+
+
+def assets_archive_path():
+    # The retained local copy of the pinned runtime-assets release
+    # archive. BW64_ASSETS_ARCHIVE points at an archive directly (the
+    # BW64_SUPPORT_DIR pattern); the default is the box's retained
+    # copy, found by the manifest's own archive name under
+    # /home/ubuntu/backups/winbox-runtime-assets-*/ so a re-pinned
+    # generation is located without editing this checker.
+    override = os.environ.get('BW64_ASSETS_ARCHIVE')
+    if override:
+        return Path(override)
+    manifest = json.loads(
+        (ROOT / 'tools/browser/runtime-assets.json').read_text())
+    found = sorted(Path('/home/ubuntu/backups').glob(
+        f'winbox-runtime-assets-*/{manifest["archive"]["name"]}'))
+    return found[-1] if found else None
+
+
+def t_assets_archive():
+    # FD-73: the retained archive once disagreed with the manifest's
+    # file pins for both Wine archives — it had been built before the
+    # FD-40/FD-01/FD-02 payload fixes landed and was never rebuilt as
+    # their file pins moved — so bootstrap.py --local failed on a
+    # fresh checkout while --check passed on every tree already
+    # carrying the pinned files: no verification path ever read the
+    # archive. Verify the retained archive against the manifest end
+    # to end (its own pin, its member set, every member's bytes), so
+    # a future re-pin that leaves the archive stale fails here
+    # instead of at the next fresh checkout.
+    archive = assets_archive_path()
+    if archive is None:
+        skip('retained runtime-assets archive agrees with the file pins (FD-73)',
+             'no retained archive found under /home/ubuntu/backups; '
+             'bootstrap.py verifies the same agreement at restore time '
+             'on the download / --local path')
+        return
+    assert archive.is_file(), f'retained archive does not exist: {archive}'
+    manifest = json.loads(
+        (ROOT / 'tools/browser/runtime-assets.json').read_text())
+    pin = manifest['archive']
+    digest = hashlib.sha256()
+    with archive.open('rb') as source:
+        for chunk in iter(lambda: source.read(1 << 22), b''):
+            digest.update(chunk)
+    assert archive.stat().st_size == pin['bytes'] \
+        and digest.hexdigest() == pin['sha256'], \
+        f'{archive.name}: size/SHA256 mismatch against the manifest archive pin'
+    expected = {entry['path']: entry for entry in manifest['files']}
+    with tarfile.open(archive, 'r:') as bundle:
+        members = [m for m in bundle.getmembers() if m.isfile()]
+        names = [m.name for m in members]
+        assert len(names) == len(expected) and set(names) == set(expected), \
+            'archive entries differ from the pinned manifest'
+        for member in members:
+            entry = expected[member.name]
+            digest = hashlib.sha256()
+            size = 0
+            with bundle.extractfile(member) as source:
+                for chunk in iter(lambda: source.read(1 << 22), b''):
+                    digest.update(chunk)
+                    size += len(chunk)
+            assert size == entry['bytes'] \
+                and digest.hexdigest() == entry['sha256'], \
+                (f'{member.name}: archive carries size/SHA256 {size}/'
+                 f'{digest.hexdigest()[:12]}... but the file pin is '
+                 f'{entry["bytes"]}/{entry["sha256"][:12]}...')
 
 
 def t_directx_sets():
@@ -430,10 +608,14 @@ def t_prefix64_built():
 
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
+    check('wine8 loader backports (source + shipped zip)', t_wine8_backports_source_and_zip)
+    check('wine10 win32u backport 32-bit (source + shipped zip)', t_wine10_backport32_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
+    check('support pack member uniqueness + Vulkan shim pins (FD-53)', t_support_pack_member_uniqueness)
+    check('retained runtime-assets archive agrees with the file pins (FD-73)', t_assets_archive)
     check('DirectX redist sets complete (both zips)', t_directx_sets)
     check('VC++ runtime sets (both zips, asymmetries pinned)', t_vcpp_sets)
     check('wineserver dispatch is ELF (no /bin/sh script)', t_wineserver_dispatch)

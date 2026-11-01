@@ -1,0 +1,66 @@
+; FD-62 attribution fixture: TWO writable storage-image runtime arrays.
+; Array A (set 2) is benign: its element is loaded and written with
+; OpImageWrite on the loaded image object -- servable. Array B (set 4)
+; is written through an OpImageTexelPointer + OpAtomicOr -- refused
+; with the named texel-pointer reason. The verdicts must be attributed
+; per array: a module-global texel count would refuse or mislabel A.
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability RuntimeDescriptorArray
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %registers %heapA %heapB %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpName %main "main"
+OpName %RootConstants "RootConstants"
+OpName %registers "registers"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpMemberDecorate %RootConstants 1 Offset 4
+OpDecorate %heapA DescriptorSet 2
+OpDecorate %heapA Binding 0
+OpDecorate %heapB DescriptorSet 4
+OpDecorate %heapB Binding 0
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%v4uint = OpTypeVector %uint 4
+%RootConstants = OpTypeStruct %uint %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%11 = OpTypeImage %uint Buffer 0 0 0 2 R32ui
+%_runtimearr_11 = OpTypeRuntimeArray %11
+%_ptr_UniformConstant__runtimearr_11 = OpTypePointer UniformConstant %_runtimearr_11
+%heapA = OpVariable %_ptr_UniformConstant__runtimearr_11 UniformConstant
+%heapB = OpVariable %_ptr_UniformConstant__runtimearr_11 UniformConstant
+%v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%_ptr_UniformConstant_11 = OpTypePointer UniformConstant %11
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%_ptr_Image_uint = OpTypePointer Image %uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%ci = OpBitcast %int %gx
+%tex = OpCompositeConstruct %v4uint %gx %gx %gx %gx
+%pa = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%idxA = OpLoad %uint %pa
+%ca = OpAccessChain %_ptr_UniformConstant_11 %heapA %idxA
+%imgA = OpLoad %11 %ca
+OpImageWrite %imgA %ci %tex
+%pb = OpAccessChain %_ptr_PushConstant_uint %registers %uint_1
+%idxB = OpLoad %uint %pb
+%cb = OpAccessChain %_ptr_UniformConstant_11 %heapB %idxB
+%imgB = OpLoad %11 %cb
+%tp = OpImageTexelPointer %_ptr_Image_uint %cb %ci %uint_0
+%r = OpAtomicOr %uint %tp %uint_1 %uint_0 %uint_1
+OpReturn
+OpFunctionEnd

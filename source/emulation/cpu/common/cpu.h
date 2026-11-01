@@ -37,7 +37,7 @@
 
 typedef void (*Int99Callback)(CPU* cpu);
 extern Int99Callback* int99Callback;
-void callOpenGL(CPU* cpu, U32 index);
+bool callOpenGL(CPU* cpu, U32 index);
 void callVulkan(CPU* cpu, U32 index);
 void callX11(CPU* cpu, U32 index);
 extern U32 lastGlCallTime;

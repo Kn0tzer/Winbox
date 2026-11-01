@@ -76,6 +76,18 @@ bool FsFileOpenNode::isOpen() {
     return this->handle!=0xFFFFFFFF;
 }
 
+namespace {
+// Host read/write failures on an open file repeat per call, so report
+// with the counting-cap shape: first 64, then every 1024th, count=.
+void logHostIoFailure(const char* op, const BString& nativePath, int err) {
+    static std::atomic<unsigned long long> failures{0};
+    unsigned long long n = ++failures;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-FAIL host-%s native=%s errno=%d (%s) outcome=call reports failure count=%llu", op, nativePath.c_str(), err, strerror(err), n);
+    }
+}
+}
+
 void FsFileOpenNode::reopen() {
     int openFlags = O_BINARY;
     int flags = this->flags;
@@ -92,6 +104,12 @@ void FsFileOpenNode::reopen() {
     }
 
     this->handle = ::open(this->fileNode->nativePath.c_str(), openFlags, 0666);
+    if (this->handle < 0) {
+        // The handle stays invalid and every later read/write on this
+        // open node fails against it; that used to happen silently.
+        int err = errno;
+        klog_fmt("BW64-FAIL host-reopen native=%s errno=%d (%s) outcome=open handle is invalid; reads/writes on it will fail", this->fileNode->nativePath.c_str(), err, strerror(err));
+    }
     this->invalidateReadBuffer();
     this->expectedPos = 0;
 }
@@ -134,13 +152,35 @@ bool FsFileOpenNode::canMap() {
 }
 
 U32 FsFileOpenNode::readNative(U8* buffer, U32 len) {
-    return (U32)::read(this->handle, buffer, len);
+    // ::read returns -1 on error; the old code cast it to U32 and
+    // handed callers a 0xFFFFFFFF byte count. 0 is the EOF answer, so
+    // it is the honest error answer too -- with a trace that separates
+    // the two.
+    S64 result = (S64)::read(this->handle, buffer, len);
+    if (result < 0) {
+        int err = errno;
+        if (this->fileNode) {
+            logHostIoFailure("read", this->fileNode->nativePath, err);
+        }
+        return 0;
+    }
+    return (U32)result;
 }
 
 U32 FsFileOpenNode::writeNative(U8* buffer, U32 len) {
     this->invalidateReadBuffer();
-    U32 result = (U32)::write(this->handle, buffer, len);
-    if ((S32)result > 0) {
+    // Same cast hazard as readNative: a -1 error (ENOSPC, EBADF, ...)
+    // became a huge success count, and position tracking believed it.
+    S64 written = (S64)::write(this->handle, buffer, len);
+    if (written < 0) {
+        int err = errno;
+        if (this->fileNode) {
+            logHostIoFailure("write", this->fileNode->nativePath, err);
+        }
+        return 0;
+    }
+    U32 result = (U32)written;
+    if (result > 0) {
         this->expectedPos += result;
         KInotify::notifyModified(this->node.get());
     }
@@ -184,7 +224,7 @@ U32 FsFileOpenNode::internalRead(KThread* thread, U32 address, U32 len) {
         this->invalidateReadBuffer();
         U32 n = this->readNative(this->readBuffer, READ_BUFFER_SIZE);
         if ((S32)n <= 0) {
-            return false; // EOF or error
+            return false; // EOF, or a host error (logged by readNative)
         }
         this->readBufferPos = actualPos;
         this->readBufferLen = n;

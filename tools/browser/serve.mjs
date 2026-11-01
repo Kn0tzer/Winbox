@@ -4,6 +4,12 @@ import { stat } from 'node:fs/promises';
 import { resolve,extname,sep } from 'node:path';
 export async function serve(root,port=0){
   root=resolve(root);
+  // Fail loudly and immediately when the dist root is missing: without this
+  // check the server starts happily and 404s every asset, so a probe against
+  // an unbuilt or stripped dist burns its whole boot timeout and reports a
+  // misleading guest failure instead of naming the real problem.
+  const rootInfo=await stat(root).catch(()=>null);
+  if(!rootInfo||!rootInfo.isDirectory())throw new Error(`BW64-FAIL serve: dist root does not exist or is not a directory: ${root} (build it first with tools/bw64-build.sh, or point WINE_DIST_DIR at a built dist)`);
   const types={'.svg':'image/svg+xml','.mjs':'text/javascript','.js':'text/javascript','.html':'text/html','.css':'text/css','.wasm':'application/wasm','.zip':'application/zip','.json':'application/json'};
   const server=createServer(async(req,res)=>{
     try{

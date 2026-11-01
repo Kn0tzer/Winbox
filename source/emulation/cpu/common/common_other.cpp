@@ -36,9 +36,9 @@ U32 common_bound32(CPU* cpu, U32 reg, U32 address){
         return 1;
     }
 }
-void common_int99(CPU* cpu){
+bool common_int99(CPU* cpu){
     U32 index = cpu->peek32(0);
-    callOpenGL(cpu, index);    
+    return callOpenGL(cpu, index);
 }
 void common_int9A(CPU* cpu) {
 #ifdef BOXEDWINE_VULKAN

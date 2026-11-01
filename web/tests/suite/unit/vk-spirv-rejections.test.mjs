@@ -90,9 +90,9 @@ test('page-tier-translated capabilities are whitelisted in the audit', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   const exempt = [...audit.matchAll(/c != (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 68, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
-    'the audit loop exemption set is exactly {Matrix, Shader, Geometry, ShaderNonUniform, ClipDistance, Sampled1D, SampleRateShading, ImageQuery, DerivativeControl, ShaderLayer, ShaderViewportIndex, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT} (union of the integ and vkd3d sets; 5254 ShaderViewportIndexLayerEXT stays a named rejection and is absent by design)');
-  for (const cap of [2, 32, 35, 43, 50, 51, 68, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379]) {
+  assert.deepEqual(exempt, [0, 1, 2, 32, 35, 43, 50, 51, 61, 62, 63, 64, 65, 66, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379],
+    'the audit loop exemption set is exactly {Matrix, Shader, Geometry, ShaderNonUniform, ClipDistance, Sampled1D, SampleRateShading, ImageQuery, DerivativeControl, ShaderLayer (69; 68 was GroupNonUniformQuad, mislabeled as ShaderLayer until 2026-10-30 and now a named rejection), the subgroup family 61-66, the float-controls family, ShaderNonUniform indexing, VulkanMemoryModel, DemoteToHelperInvocationEXT} (union of the integ and vkd3d sets; 5254 ShaderViewportIndexLayerEXT stays a named rejection and is absent by design)');
+  for (const cap of [2, 32, 35, 43, 50, 51, 61, 62, 63, 64, 65, 66, 69, 4464, 4465, 4466, 4467, 4468, 5301, 5345, 5379]) {
     assert.ok(table.includes(`case ${cap}: return nullptr;`),
       `cap ${cap} must be a nullptr (non-rejecting) case in vk64SpirvCapabilityName`);
   }
@@ -104,13 +104,15 @@ test('page-tier-translated capabilities are whitelisted in the audit', () => {
 // an unused DrawParameters declaration), so the audit exempts them ONLY when
 // no matching BuiltIn variable is present; the used forms stay named
 // rejections (see the corpus test below for why they must stay rejected).
-test('CullDistance and DrawParameters reject only when actually used', () => {
+test('CullDistance rejects when used; DrawParameters rejects only outside the servable shapes', () => {
   const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
   const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
   assert.ok(table.includes('case 33: return "CullDistance";'), 'CullDistance stays a named rejection for the used form');
   assert.ok(table.includes('case 4427: return "DrawParameters";'), 'DrawParameters stays a named rejection for the used form');
   assert.ok(audit.includes('if (c == 33 && !cullUsed) continue;'), 'declared-but-unused CullDistance is exempted');
   assert.ok(audit.includes('if (c == 4427 && !drawUsed) continue;'), 'declared-but-unused DrawParameters is exempted');
+  assert.ok(audit.includes('if (c == 4427 && drawServable) continue;'), 'the R5-replace-servable used form is exempted');
+  assert.ok(audit.includes('const bool drawServable = vk64DrawParametersServable(w);'), 'audit computes the draw-parameters mirror classifier');
   assert.match(audit, /w\[i \+ 3\] == 4\) cullUsed = true/, 'OpDecorate BuiltIn CullDistance sets cullUsed');
   assert.match(audit, /w\[i \+ 4\] == 4\) cullUsed = true/, 'OpMemberDecorate BuiltIn CullDistance sets cullUsed');
   assert.match(audit, /w\[i \+ 3\] >= 4424 && w\[i \+ 3\] <= 4426\) drawUsed = true/, 'OpDecorate BuiltIn BaseVertex/BaseInstance/DrawIndex sets drawUsed');
@@ -166,22 +168,27 @@ test('float-controls and VulkanMemoryModel are whitelisted; 5254 is the real vie
     'capability 5345 (VulkanMemoryModel) must not be mislabeled ShaderViewportIndexLayerEXT');
 });
 
-// The used forms stay rejected at the bridge because the page tier cannot
-// translate them today (testdata/spirv/rejected/README.md). If a future
-// spirvfix/naga fix makes either module convert, this test goes red on
-// purpose: the audit's used-form rejection must then be re-dispositioned in
-// docs/known-gaps/vulkan.md instead of silently staying rejected.
-test('used CullDistance / DrawParameters shapes remain untranslatable', () => {
+// The used CullDistance form stays rejected at the bridge because the page
+// tier cannot translate it today (testdata/spirv/rejected/README.md). The
+// used DrawParameters form WAS in that class until 2026-10-30: the R5
+// replace emitted invalid SPIR-V for the glslang layout, so the audit
+// rejected every used form. The placement fix below makes the module
+// convert, and the audit was re-dispositioned in the same change (the
+// drawServable exemption above) instead of silently staying rejected.
+test('used CullDistance remains untranslatable; the draw-parameters layout now converts', () => {
   const cull = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/rejected/cull-used.vert.spv', import.meta.url)));
   assert.throws(
     () => naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(cull).bytes }),
     /CullDistance/,
     'a module that writes BuiltIn CullDistance must still fail translation');
   const draw = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/rejected/draw-used.vert.spv', import.meta.url)));
-  assert.throws(
-    () => naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(draw).bytes }),
-    undefined,
-    'a module that loads the draw builtins must still fail translation (spirvfix R5 replace emits invalid SPIR-V for this layout)');
+  // The R5 replace used to emit invalid SPIR-V for this glslang layout (its
+  // synthesized zero constants were spliced before the first OpVariable,
+  // ahead of the OpTypeInt they reference). With the constants placed at the
+  // end of the global section the module converts end to end, and the audit
+  // admits the used form for exactly this shape (see the drawServable pins).
+  const drawWgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(draw).bytes }));
+  assert.ok(drawWgsl.length > 0, 'the draw-builtin module must now convert through spirvfix + naga');
 });
 
 // Route 0 (descriptor-addressing research, 2026-10-27): vkd3d-proton switches
@@ -267,4 +274,67 @@ test('used physical pointers are left alone by R8 (sabotage pair for Route 0)', 
   const outMod = parseSpirv(result.bytes);
   assert.ok(outMod.insns.some((i) => i.op === 17 && i.words[0] === 5347),
     'capability preserved for the used form');
+});
+
+// Subgroup capability family (2026-10-30): naga translates 61-66 (basic,
+// vote, arithmetic, ballot, shuffle, shuffle-relative) to WGSL subgroup
+// builtins -- proven below on compiled fixtures -- so the audit admits
+// them and the bridge advertises exactly those operations, only when the
+// page device carries the WebGPU subgroups feature. Clustered (67) and
+// quad (68) reject by name: naga rejects both capabilities outright.
+// Capability 68 was mislabeled "ShaderLayer" in the audit table until this
+// change (ShaderLayer is 69); 70 (ShaderViewportIndex) was an unnamed
+// spirv-capability-unknown rejection.
+const auditQuadPin = () => body(bridge, 'static VkResult vk64AuditSpirv(')
+  .includes('if (c == 68 && quadServable) continue;');
+
+test('subgroup capabilities 61-66 translate; 67 rejects by name; 68 lowers or rejects', () => {
+  const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
+  for (const cap of [61, 62, 63, 64, 65, 66]) {
+    assert.ok(table.includes(`case ${cap}: return nullptr;`), `cap ${cap} must be whitelisted`);
+  }
+  assert.ok(table.includes('case 67: return "GroupNonUniformClustered";'), 'clustered rejects by name');
+  assert.ok(table.includes('case 68: return "GroupNonUniformQuad";'), 'quad rejects by name under its correct number');
+  assert.ok(auditQuadPin(), 'quad forms R17 cannot lower reject by name; the servable forms are exempted');
+  // The audit loop has a SECOND gate behind the name table: a hard-coded
+  // harmless list in the fallthrough. It lacked 61-66 until 2026-10-31,
+  // so modules declaring ballot/arithmetic still rejected as
+  // spirv-capability-unknown:<n> (Godot D3D12 pipeline creation). Pin
+  // the numbers here so the table and the list cannot drift again.
+  const loop = body(bridge, 'static VkResult vk64AuditSpirv(');
+  for (const c of [61, 62, 63, 64, 65, 66])
+    assert.ok(loop.includes(`c != ${c}`), `audit fallthrough whitelist must admit capability ${c}`);
+  assert.ok(table.includes('case 70: return "ShaderViewportIndex";'), 'viewport index rejects by name');
+  for (const rel of ['ballot', 'shuffle', 'shuffledown', 'arith', 'vote']) {
+    const bytes = new Uint8Array(readFileSync(new URL(`../../../../testdata/spirv/subgroup/${rel}.frag.spv`, import.meta.url)));
+    const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(bytes).bytes }));
+    assert.match(wgsl, /subgroup/, `${rel} must emit WGSL subgroup builtins`);
+  }
+  // Quad is lowered by spirvfix R17 (constant index/direction forms) onto
+  // subgroup shuffles; clustered has no lowering and stays untranslatable.
+  const quadBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/subgroup/quad.frag.spv', import.meta.url)));
+  const quadWgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(quadBytes).bytes }));
+  assert.match(quadWgsl, /subgroupShuffle\(/, 'quad broadcast must lower to subgroupShuffle');
+  const swapBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/subgroup/quadswap.frag.spv', import.meta.url)));
+  const swapWgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(swapBytes).bytes }));
+  assert.match(swapWgsl, /subgroupShuffleXor/, 'quad swap must lower to subgroupShuffleXor');
+  const clusteredBytes = new Uint8Array(readFileSync(new URL('../../../../testdata/spirv/subgroup/clustered.frag.spv', import.meta.url)));
+  assert.throws(
+    () => naga.translate({ from: 'spirv', to: 'wgsl', source: applySpirvFix(clusteredBytes).bytes }),
+    /GroupNonUniform/,
+    'clustered must stay untranslatable at the tier');
+});
+
+// SampledBuffer (46) / ImageBuffer (47): the tier serves texel buffers
+// (spirvfix R12/R12S convert them; R12X strips the stray declaration), so
+// the audit admits the caps exactly when its mirror classifiers prove the
+// shape, and names them otherwise -- they were spirv-capability-unknown
+// rejections that killed D3D12 texel-buffer SRV/UAV shaders at creation.
+test('SampledBuffer/ImageBuffer are named rejections with a texel-servable exemption', () => {
+  const table = body(bridge, 'static const char* vk64SpirvCapabilityName(');
+  const audit = body(bridge, 'static VkResult vk64AuditSpirv(');
+  assert.ok(table.includes('case 46: return "SampledBuffer";'), 'SampledBuffer is a named rejection');
+  assert.ok(table.includes('case 47: return "ImageBuffer";'), 'ImageBuffer is a named rejection');
+  assert.ok(audit.includes('const bool texelServable = vk64TexelBufferServable(w, r15Arr.servableVars);'), 'audit computes the texel mirror classifier');
+  assert.ok(audit.includes('if ((c == 46 || c == 47) && texelServable) continue;'), 'texel-servable shapes are exempted');
 });

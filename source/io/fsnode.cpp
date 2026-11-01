@@ -34,7 +34,7 @@ FsNode::FsNode(Type type, U32 id, U32 rdev, BString path, BString link, BString 
     childrenVersion(0),
     parent(parent),
     isDir(isDirectory),      
-    hasLoadedChildrenFromFileSystem(false),
+    hasLoadedChildrenFromFileSystem(false), childrenLoadInProgress(false),
     locksCS(std::make_shared<BoxedWineCondition>(B("FsNode.lockCS")))
  {   
 }
@@ -52,7 +52,7 @@ bool FsNode::canWrite() {
     return (getMode() & K__S_IWRITE)!=0;
 }
 
-void FsNode::removeNodeFromParent() {
+void FsNode::removeNodeFromParent(bool notify) {
     this->removedFromParent.store(true, std::memory_order_release);
     BString oldPath = this->path;
     std::shared_ptr<FsNode> parent = this->getParent().lock();
@@ -63,7 +63,9 @@ void FsNode::removeNodeFromParent() {
     }
     // Invalidate this path and any descendant paths (no node lock held here).
     Fs::invalidatePathCachePrefix(oldPath);
-    KInotify::notifyNodeRemoved(parent.get(), this);
+    if (notify) {
+        KInotify::notifyNodeRemoved(parent.get(), this);
+    }
 }
 
 void FsNode::loadChildren() {
@@ -72,10 +74,27 @@ void FsNode::loadChildren() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(childrenByNameMutex);
     if (!this->hasLoadedChildrenFromFileSystem) {
         this->hasLoadedChildrenFromFileSystem = true;
+        // Children inserted by this load already exist on the host; they
+        // are not creations. addChild must not report them to inotify
+        // (Linux never reports pre-existing files), so the load loop runs
+        // with notifications suppressed for this directory.
+        this->childrenLoadInProgress = true;
         bool traceLink = getenv("BW64_LINKTRACE") && this->path.contains("dosdevices");
         if (this->nativePath.length()) {
             std::vector<Platform::ListNodeResult> results;
-            Platform::listNodes(nativePath, results);
+            bool listed = Platform::listNodes(nativePath, results);
+            if (!listed && Fs::doesNativePathExist(nativePath)) {
+                // The host path exists but could not be listed, so the
+                // guest is about to see an empty directory that is not
+                // empty. (Zip-backed nodes legitimately have no
+                // materialized native path; those do not reach this
+                // line because the existence check fails first.)
+                static std::atomic<unsigned long long> listFailures{0};
+                unsigned long long n = ++listFailures;
+                if (n <= 64 || n % 1024 == 0) {
+                    klog_fmt("BW64-FAIL dir-list path=%s native=%s outcome=directory presented as empty count=%llu", this->path.c_str(), nativePath.c_str(), n);
+                }
+            }
             if (traceLink) {
                 klog_fmt("LINKTRACE loadChildren path='%s' native='%s' found %d entries",
                          this->path.c_str(), this->nativePath.c_str(), (int)results.size());
@@ -116,6 +135,7 @@ void FsNode::loadChildren() {
                 }
             }
         }
+        this->childrenLoadInProgress = false;
     }
 }
 
@@ -159,14 +179,16 @@ U32 FsNode::getChildCount() {
     return (U32)this->childrenByName.size();
 }
 
-void FsNode::addChild(std::shared_ptr<FsNode> node) {
+void FsNode::addChild(std::shared_ptr<FsNode> node, bool notify) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
     this->childrenByName.set(node->name, node);
     node->removedFromParent.store(false, std::memory_order_release);
     this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 #ifdef BW64_HAS_KINOTIFY
-    KInotify::notifyChildAdded(this, node.get());
+    if (notify && !this->childrenLoadInProgress) {
+        KInotify::notifyChildAdded(this, node.get());
+    }
 #endif
 }
 

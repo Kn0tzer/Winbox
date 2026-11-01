@@ -95,6 +95,16 @@
         var cacheBytes = 0;
         var pending = new Map();
         var totals = new Map();
+        var prefetchFailureUrls = new Set();
+        function prefetchJob(url, start, end) {
+            block(url, start, end).catch(function (error) {
+                if (prefetchFailureUrls.has(url)) return;
+                prefetchFailureUrls.add(url);
+                var msg = "" + (error && error.message ? error.message : error);
+                console.warn("BW64-FAIL prefetch url=" + url + " range=" + start + "-" + end +
+                             " error=" + msg + "; continuing without this prefetch");
+            });
+        }
 
         function rangeOf(init) {
             try {
@@ -186,7 +196,7 @@
                 var nextEnd = nextStart + span - 1;
                 if (total && nextEnd >= total) break;
                 if (cache.has(url + "|" + nextStart + "|" + nextEnd) || pending.has(url + "|" + nextStart + "|" + nextEnd)) continue;
-                block(url, nextStart, nextEnd).catch(function () {});
+                prefetchJob(url, nextStart, nextEnd);
             }
         }
 
@@ -456,34 +466,54 @@
 
     function fetchBytes(url, label, onProgress, baseReceived, grandTotal) {
         baseReceived = baseReceived || 0;
-        return fetch(url, fetchOpts()).then(function (resp) {
-            if (!resp.ok) throw new Error("fetch " + url + " -> HTTP " + resp.status);
-            var partTotal = Number(resp.headers.get("Content-Length")) || 0;
-            var total = grandTotal || partTotal;
-            if (!resp.body || !partTotal) {
-                return resp.arrayBuffer().then(function (buf) {
-                    var b = new Uint8Array(buf);
-                    if (onProgress) onProgress(label, baseReceived + b.length, total);
-                    return b;
+        function attempt() {
+            return fetch(url, fetchOpts()).then(function (resp) {
+                if (!resp.ok) throw new Error("fetch " + url + " -> HTTP " + resp.status);
+                var partTotal = Number(resp.headers.get("Content-Length")) || 0;
+                var total = grandTotal || partTotal;
+                if (!resp.body || !partTotal) {
+                    return resp.arrayBuffer().then(function (buf) {
+                        var b = new Uint8Array(buf);
+                        if (onProgress) onProgress(label, baseReceived + b.length, total);
+                        return b;
+                    });
+                }
+                var reader = resp.body.getReader();
+                var chunks = [];
+                var received = 0;
+                return (function pump() {
+                    return reader.read().then(function (r) {
+                        if (r.done) {
+                            var out = new Uint8Array(received);
+                            var off = 0;
+                            chunks.forEach(function (c) { out.set(c, off); off += c.length; });
+                            return out;
+                        }
+                        chunks.push(r.value);
+                        received += r.value.length;
+                        if (onProgress) onProgress(label, baseReceived + received, total);
+                        return pump();
+                    });
+                })();
+            });
+        }
+        // A single transient network failure must not discard a large rootfs
+        // download and leave the page dead. Retry exactly once after a short
+        // delay. A 404 is definitive rather than transient, so preserve the
+        // caller's whole-file-to-chunked fallback by rethrowing it at once.
+        return attempt().catch(function (err) {
+            var msg = "" + (err && err.message ? err.message : err);
+            if (msg.indexOf("HTTP 404") !== -1) throw err;
+            console.warn("BW64-FAIL fetchBytes url=" + url + " label=" + label +
+                         " attempt=1 error=" + msg + "; retrying once");
+            return new Promise(function (resolve) { setTimeout(resolve, 1000); })
+                .then(attempt)
+                .catch(function (retryErr) {
+                    var retryMsg = "" + (retryErr && retryErr.message ? retryErr.message : retryErr);
+                    console.error("BW64-FAIL fetchBytes url=" + url + " label=" + label +
+                                  " attempt=2 error=" + retryMsg + "; giving up");
+                    throw retryErr;
                 });
-            }
-            var reader = resp.body.getReader();
-            var chunks = [];
-            var received = 0;
-            return (function pump() {
-                return reader.read().then(function (r) {
-                    if (r.done) {
-                        var out = new Uint8Array(received);
-                        var off = 0;
-                        chunks.forEach(function (c) { out.set(c, off); off += c.length; });
-                        return out;
-                    }
-                    chunks.push(r.value);
-                    received += r.value.length;
-                    if (onProgress) onProgress(label, baseReceived + received, total);
-                    return pump();
-                });
-            })();
         });
     }
 
@@ -645,7 +675,12 @@
                 if (!len) throw new Error("no length");
                 return "bw64url:" + len + ";" + abs(wholeUrl) + "|" + len;
             });
-        return probe.catch(function () {
+        return probe.catch(function (err) {
+            if (!CHUNKED) {
+                var msg = "" + (err && err.message ? err.message : err);
+                console.warn("BW64-FAIL lazy-rootfs whole-file probe url=" + wholeUrl +
+                             " error=" + msg + "; falling back to split-parts manifest");
+            }
             return fetch(BASE + WINE_ZIP + ".manifest.json", { cache: "no-cache" })
                 .then(function (r) { return r.json(); })
                 .then(function (mf) {
@@ -1249,12 +1284,14 @@
             print: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 observeSessionOutput(text);
+                observeSessionHealth(text);
                 console.log(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
             },
             printErr: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
+                observeSessionHealth(text);
                 console.error(text);
                 if (window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
@@ -1401,8 +1438,97 @@
     }
     var sessionPinsReady = !SESSION;
     var sessionDesktopReady = !SESSION;
+    // --- desktop readiness is a handshake, not one line (FD-47) ------------
+    // Until 2026-10-31 this observer certified the desktop from the pin's
+    // READY line alone, accepting any hex value as a window handle. On a
+    // build whose win32u.dll lacks the Wine builtin signature (FD-40) the
+    // win32u syscalls are never dispatched: the pin's first window creation
+    // "returns" the NTSTATUS error 0xC000000D, the pin (whose own check is
+    // only for NULL) prints it as a handle, and every such session was
+    // certified as started with no desktop at all -- no explorer, no X11
+    // clients, and the failure signature unprintable because the code that
+    // prints it never runs (FD-43; every start measurement taken that way
+    // is void). Certification now requires the whole handshake a genuine
+    // boot performs, in any order:
+    //   - the pin's READY carries a plausible handle: nonzero, top bit
+    //     clear (NTSTATUS values carry the severity in the top bits --
+    //     0x8....... is the warning class, 0xC....... the error class; a
+    //     real user handle in this system is a small value like 0x10048);
+    //     an implausible value is reported loudly, once per distinct
+    //     value, and never certifies;
+    //   - the X wire server accepted the healthy boot's five X11 clients
+    //     (boots that die in desktop initialization stall at two);
+    //   - explorer.exe was actually opened (the shell actually launched).
+    var sessionDesktopHwndOk = false;
+    var sessionX11Accepts = 0;
+    var sessionExplorerOpened = false;
+    var sessionHwndRejected = {};
     function observeSessionOutput(text) {
-        if (/deskpin: READY hwnd=0x[0-9a-f]+/i.test(text)) sessionDesktopReady = true;
+        var m = /deskpin: READY hwnd=0x([0-9a-f]+)/i.exec(text);
+        if (m) {
+            var hwndValue = parseInt(m[1], 16);
+            if (hwndValue > 0 && hwndValue < 0x80000000) {
+                sessionDesktopHwndOk = true;
+            } else if (!sessionHwndRejected[m[1].toLowerCase()]) {
+                sessionHwndRejected[m[1].toLowerCase()] = true;
+                console.error("BW64-FAIL component=launcher.session reason=deskpin-hwnd-not-a-handle hwnd=0x" +
+                    m[1] + " detail=READY carried an NTSTATUS-shaped value, not a window handle; not certifying desktop readiness");
+            }
+        }
+        var accepts = text.match(/XWireServer: accepted X11 client connection/g);
+        if (accepts) sessionX11Accepts += accepts.length;
+        if (/OPENED '[^']*explorer\.exe'/i.test(text)) sessionExplorerOpened = true;
+        if (sessionDesktopHwndOk && sessionX11Accepts >= 5 && sessionExplorerOpened) {
+            sessionDesktopReady = true;
+        }
+    }
+
+    // --- session boot self-healing -----------------------------------------
+    // Measured on the suite page path (the boot a user's browser takes;
+    // boot-rate harness, 2026-10-29): a session boot either comes up fully
+    // or dies during desktop initialization. The death is announced by the
+    // desktop pin's first window creation failing ("The explorer process
+    // failed to start"): 7 of 7 dead boots printed it, 0 of 5 successful
+    // boots did, and dead boots stalled at 2 of the 5 X11 connections a
+    // healthy boot makes. Once printed, the session never recovers from
+    // inside -- the pin's own retries never succeed, and freshly spawned
+    // pin/explorer processes fail the same way (three intervention boots,
+    // 300 s of observation each). A fresh boot is a fresh draw, so on that
+    // exact signal, before readiness, navigate to the same URL for a clean
+    // boot -- the reload this launcher already uses to switch apps when no
+    // live session exists. ?bwretry bounds the restarts so a systematically
+    // broken deployment cannot loop forever; after the bound the session is
+    // left exactly as it would have been without this watch.
+    var SESSION_BOOT_MAX_RESTARTS = 2;
+    var SESSION_DOOM_CONFIRM_MS = 20000;
+    var sessionDoomRestartScheduled = false;
+    function sessionBootAttempt() {
+        var n = parseInt(param("bwretry") || "0", 10);
+        return isFinite(n) && n > 0 ? n : 0;
+    }
+    function observeSessionHealth(text) {
+        if (!SESSION || sessionDoomRestartScheduled) return;
+        if (!/The explorer process failed to start/.test(text)) return;
+        if (sessionReady()) return;
+        sessionDoomRestartScheduled = true;
+        console.error("session: desktop initialization failed (boot attempt " +
+            (sessionBootAttempt() + 1) + "); scheduling a clean session restart");
+        setTimeout(restartSessionBoot, SESSION_DOOM_CONFIRM_MS);
+    }
+    function restartSessionBoot() {
+        if (!SESSION || sessionReady()) return;
+        if (sessionBootAttempt() >= SESSION_BOOT_MAX_RESTARTS) {
+            console.error("session: desktop initialization failed on the final boot attempt; not restarting again");
+            return;
+        }
+        try {
+            var url = new URL(window.location.href);
+            url.searchParams.set("bwretry", String(sessionBootAttempt() + 1));
+            console.log("session: restarting session boot (attempt " + (sessionBootAttempt() + 2) + ")");
+            window.location.replace(url.toString());
+        } catch (e) {
+            console.error("session: could not restart session boot: " + e);
+        }
     }
     function pidAlive(pid) {
         return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
@@ -1747,12 +1873,27 @@
     // One incremental sync of HOME into IndexedDB (changed/new files written,
     // deleted files removed). Cheap when nothing changed: a stat walk + map diff.
     var persistBusy = false;
+    // Save-sync failures used to vanish completely: a failed walk skipped
+    // the tick, a failed transaction just reset the busy flag, and a failed
+    // database open was swallowed -- so with a full or blocked IndexedDB
+    // the user's saves silently stopped persisting while the session ran
+    // on. The 5-second tick is the recovery (it retries); this is the
+    // reporting: first failure, then every 64th, with the cumulative count.
+    var persistFailureCount = 0;
+    function reportPersistFailure(area, error) {
+        persistFailureCount++;
+        if (persistFailureCount === 1 || persistFailureCount % 64 === 0) {
+            console.error("BW64-FAIL persist area=" + area + " error=" +
+                (error && error.message ? error.message : error) +
+                " count=" + persistFailureCount + "; sync retries on the next tick");
+        }
+    }
     function persistTick() {
         if (persistBusy || !PERSIST || window.bwFilesystemReady !== true) return;
         var FS = getFS();
         if (!FS) return;
         var now = {};
-        try { persistWalk(FS, HOME_IN_MEMFS, now); } catch (e) { return; }
+        try { persistWalk(FS, HOME_IN_MEMFS, now); } catch (e) { reportPersistFailure("walk", e); return; }
         var puts = [], dels = [];
         for (var p in now) if (now[p] !== persistManifest[p]) puts.push(p);
         for (var q2 in persistManifest) if (!(q2 in now)) dels.push(q2);
@@ -1773,8 +1914,8 @@
                 console.log("persist: synced " + puts.length + " changed, " + dels.length + " removed");
                 db.close(); persistBusy = false;
             };
-            tx.onerror = function () { db.close(); persistBusy = false; };
-        }).catch(function () { persistBusy = false; });
+            tx.onerror = function () { reportPersistFailure("write", tx.error); db.close(); persistBusy = false; };
+        }).catch(function (e) { reportPersistFailure("open", e); persistBusy = false; });
     }
     function startPersistLoop() {
         if (!PERSIST || typeof indexedDB === "undefined") return;

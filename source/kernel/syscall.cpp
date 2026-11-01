@@ -113,10 +113,31 @@ static U32 syscall_write(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+// Process-spawn signal (FD-48): the 64-bit open path logs every successful
+// .exe open by default ("sys_openat64: OPENED '<path>' -> fd <n>", see
+// sys_openat64 in syscall64.cpp) because program spawns are rare -- one per
+// process -- and the launcher's session-readiness handshake detects the
+// shell's launch from that line. The 32-bit open paths never emitted it, so
+// in a 32-bit session the handshake's explorer-launch element had no
+// counterpart in the guest stream at all: a session that demonstrably
+// reached a real desktop (plausible deskpin handle, five X11 connections,
+// explorer running in the server traces) could never be certified, most
+// visibly after the boot stopgap's restart, where the merge gate caught it
+// (FD-48). Emit the same signal here, in the same format after the syscall
+// name, so the evidence means exactly the same thing on both architectures:
+// a successful open of an .exe image, nothing more and nothing less. Failed
+// opens (negative errno results) never produce the line.
+static void logExeSpawnSignal(const char* syscallName, const BString& name, U32 result) {
+    if ((S32)result >= 0 && strstr(name.c_str(), ".exe")) {
+        klog_fmt("%s: OPENED '%s' -> fd %d", syscallName, name.c_str(), (int)result);
+    }
+}
+
 static U32 syscall_open(CPU* cpu, U32 eipCount) {
     BString name = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "open: name=%s flags=%x", name.c_str(), ARG2);
     U32 result = cpu->thread->process->open(name, ARG2);
+    logExeSpawnSignal("sys_open", name, result);
 #ifdef _DEBUG
     if (result>1000) {
         printf("open: name=%s flags=%x result=%X\n", name.c_str(), ARG2, result);
@@ -609,11 +630,8 @@ static U32 syscall_socketcall(CPU* cpu, U32 eipCount) {
             break;
         //case 18: // SYS_ACCEPT4
         default:
-            if (bw64RecoverEnabled()) {
-                bw64RecoverLogOnce("syscall.socketcall.unknown", "unsupported socketcall operation; returned ENOSYS");
-                return -K_ENOSYS;
-            }
-            kpanic_fmt("Unknown socket syscall: %d",ARG1);
+            bw64RecoverLogOnce("syscall.socketcall.unknown", "unsupported socketcall operation; returned ENOSYS");
+            return -K_ENOSYS;
     }
     SYS_LOG(SYSCALL_SOCKET, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -675,12 +693,8 @@ static U32 syscall_ipc(CPU* cpu, U32 eipCount) {
         SYS_LOG1(SYSCALL_SYSTEM|SYSCALL_MEMORY, cpu, "ipc: IPCOP_shmctl shmid=%d cmd=%d buf=%X", ARG2, ARG3, ARG5);
         result = KSystem::shmctl(cpu->thread, ARG2, ARG3, ARG5);
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.ipc.unknown", "unsupported IPC operation; returned ENOSYS");
-            return -K_ENOSYS;
-        }
-        kpanic_fmt("__NR_ipc op %d not implemented", ARG1);
-        result = 0;
+        bw64RecoverLogOnce("syscall.ipc.unknown", "unsupported IPC operation; returned ENOSYS");
+        return -K_ENOSYS;
     }
     SYS_LOG(SYSCALL_SYSTEM, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -962,12 +976,8 @@ static U32 syscall_mremap(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_vm86(CPU* cpu, U32 eipCount) {
-    if (bw64RecoverEnabled()) {
-        bw64RecoverLogOnce("syscall.vm86", "vm86 is unsupported; returned ENOSYS");
-        return -K_ENOSYS;
-    }
-    kpanic("Application tried to enter DOS mode (vm86).  BoxedWine does not support this.");
-    return 0;
+    bw64RecoverLogOnce("syscall.vm86", "vm86 is unsupported; returned ENOSYS");
+    return -K_ENOSYS;
 }
 
 static U32 syscall_poll(CPU* cpu, U32 eipCount) {
@@ -1622,6 +1632,7 @@ static U32 syscall_openat(CPU* cpu, U32 eipCount) {
     }
 #endif
     U32 result = cpu->thread->process->openat(ARG1, name, ARG3);
+    logExeSpawnSignal("sys_openat", name, result);
 #ifdef _DEBUG
     if (result>1000 && !name.contains("font") && !name.startsWith("/sys")) {
         printf("openat: dirfd=%d name=%s flags=%x result=%x\n", (int)ARG1, name.c_str(), ARG3, result);
@@ -2544,6 +2555,9 @@ static const SyscallFunc syscallFunc[] = {
 extern S32 contextTime; // about the # instruction per 10 ms
 #endif
 void ksyscall(CPU* cpu, U32 eipCount) {
+#ifdef __EMSCRIPTEN__
+    if (cpu->thread) bwNoteThreadDumpTid(cpu->thread->id);
+#endif
     U32 result = -K_ENOSYS;
     U64 startTime = KSystem::getMicroCounter();
 #ifdef BOXEDWINE_MULTI_THREADED 

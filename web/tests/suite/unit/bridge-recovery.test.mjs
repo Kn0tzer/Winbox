@@ -48,3 +48,17 @@ test('recover=0 keeps bridge calls strict', () => {
     setBridgeRecoveryEnabled(true);
   }
 });
+
+test('distinct failures past the log cap still surface as a counted summary', () => {
+  const messages = [];
+  const log = message => messages.push(message);
+  // The module caps individually logged distinct failures (512); earlier
+  // tests in this file consumed a few slots. Drive well past the cap.
+  for (let i = 0; i < 1200; i++) reportBridgeFailure('cap-probe', new Error('kind-' + i), log);
+  const individual = messages.filter(m => m.includes('kind-'));
+  const summaries = messages.filter(m => m.includes('counted only'));
+  assert.ok(individual.length <= 512, `individual lines must stay capped, got ${individual.length}`);
+  assert.equal(summaries.length, 1);
+  assert.match(summaries[0], /suppressed=1 caught=\d+/);
+  assert.ok(bridgeRecoveryStats().suppressed > 0);
+});

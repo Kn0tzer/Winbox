@@ -1,0 +1,3 @@
+Running 1 Test tests with 1 threads starting at 649
+Test AF_INET UDP loopback socket ... OK
+0 tests FAILED in 0s

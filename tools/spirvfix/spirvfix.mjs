@@ -84,7 +84,7 @@ const Op = {
   SpecConstantTrue: 48, SpecConstantFalse: 49, SpecConstant: 50,
   SpecConstantComposite: 51, SpecConstantOp: 52,
   Function: 54, FunctionParameter: 55, FunctionEnd: 56, FunctionCall: 57,
-  Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, PtrAccessChain: 67,
+  Variable: 59, ImageTexelPointer: 60, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, PtrAccessChain: 67,
   Decorate: 71, MemberDecorate: 72, GroupDecorate: 74,
   SampledImage: 86,
   Capability: 17, ImageFetch: 95, Image: 100, Bitcast: 124, UDiv: 134, UMod: 137,
@@ -436,8 +436,17 @@ export function splitCombinedSamplers(mod, log) {
     const ptr = byId.get(ins.words[0]);
     if (!ptr || ptr.op !== Op.TypePointer) continue;
     const sampled = byId.get(ptr.words[2]);
-    if (sampled && sampled.op === Op.TypeSampledImage)
+    if (sampled && sampled.op === Op.TypeSampledImage) {
+      // Dim=Buffer (texel buffer) sampled images belong to R12's texel
+      // conversion, in whichever pass owns the type (FD-16: array-shared
+      // texel types convert only after R15a specialization, i.e. after
+      // this rule has run). Splitting one here as an ordinary combined
+      // sampler would keep the Buffer dimension naga rejects and steal
+      // the conversion's variable.
+      const imgTy = byId.get(sampled.words[1]);
+      if (imgTy && imgTy.op === Op.TypeImage && imgTy.words[2] === 5) continue;
       combined.push({ varIns: ins, sampledTy: sampled.resultId, imageTy: sampled.words[1] });
+    }
   }
   if (!combined.length) return false;
   const loads = mod.insns.filter(ins => {
@@ -534,6 +543,12 @@ export function splitCombinedSamplers(mod, log) {
   let n = 0;
   const first = pairs.values().next().value;
   for (const load of loads) {
+    // A texel-buffer load is not this rule's to rewrite (see the
+    // collection skip above): the first-pair fallback must never land
+    // it on another variable's couple.
+    const lSampled = byId.get(load.resultType);
+    const lImg = lSampled && byId.get(lSampled.words[1]);
+    if (lImg && lImg.op === Op.TypeImage && lImg.words[2] === 5) continue;
     // Load words are [result-type, result-id, pointer, ...]: the pointer is
     // words[2]. Fall back to the first pair when the source is a temporary.
     const pair = pairs.get(load.words[2]) ?? first;
@@ -1405,8 +1420,13 @@ function replaceDrawParameterBuiltins(mod, log) {
     }
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !variables.has(id)));
   }
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable);
-  mod.insns.splice(firstVariable < 0 ? sections(mod).firstFunc : firstVariable, 0, ...constants);
+  // Synthesized constants belong at the END of the global section, just
+  // before the first function (the placement R12 documents): glslang layouts
+  // interleave type declarations with variables, so splicing before the first
+  // OpVariable can put a constant ahead of the OpTypeInt it references and
+  // emit invalid SPIR-V (the draw-used corpus module's layout).
+  const firstFunc = sections(mod).firstFunc;
+  mod.insns.splice(firstFunc < 0 ? mod.insns.length : firstFunc, 0, ...constants);
   log.push(`spirvfix: replaced ${loads.length} BaseVertex/BaseInstance/DrawIndex load(s) with zero`);
   return true;
 }
@@ -1800,6 +1820,22 @@ function fragmentLayerToZero(mod, log) {
 }
 
 
+// The variable a pointer-typed value traces to, following OpCopyObject
+// hops (OpCopyObject is the identity on pointers: the copy carries exactly
+// the source's provenance). R15a specialization leaves loads in exactly
+// this form -- the access chain becomes an OpCopyObject of the scalar
+// clone variable -- so load-source attribution in R12/R12S resolves
+// through copies before deciding whether a source is known.
+function copyObjectRoot(byId, id) {
+  let cur = id;
+  for (let guard = 0; guard < 64; guard++) {
+    const def = byId.get(cur);
+    if (!def || def.op !== Op.CopyObject) return cur;
+    cur = def.words[2];
+  }
+  return cur;
+}
+
 // --- R12: texel-buffer images -> wrapped 2D sampled images -------------------
 // WebGPU has no texel buffers and naga rejects Dim=Buffer images outright
 // (UnsupportedCapability(SampledBuffer)) — which is what kills DXVK's HUD
@@ -1837,26 +1873,72 @@ export function texelBuffersTo2D(mod, log) {
   const convSampledTy = new Set();
   for (const ins of mod.insns)
     if (ins.op === Op.TypeSampledImage && convTy.has(ins.words[1])) convSampledTy.add(ins.resultId);
-  if (!convSampledTy.size) return false;
+  // Array-shared types are owned by the array (FD-16): a type that is an
+  // array element -- directly, or via its sampled-image wrapper -- is
+  // converted only after R15a specialization turns the array into a
+  // scalar variable (the post-specialization R12 pass in applySpirvFix).
+  // Converting it here would also trace the array's loads and rewrite
+  // their fetches onto a direct variable's texture through the
+  // single-variable fallback below: a silent wrong-resource translation
+  // for the mixed direct+heap shape.
+  const arrayElemTy = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) arrayElemTy.add(ins.words[1]);
+  if (arrayElemTy.size) {
+    // A sampled-image type is array-shared when it -- or the image it
+    // wraps -- is an array element; an image type is array-shared when
+    // it is an array element or any of its wrappers is. A bare-image
+    // type (no wrapper at all: the fetch-only form) is shared only by
+    // the direct test, never by a wrapper it does not have.
+    const sharedWrapper = new Set();
+    for (const t of convSampledTy)
+      if (arrayElemTy.has(t) || arrayElemTy.has(byId.get(t).words[1])) sharedWrapper.add(t);
+    for (const t of sharedWrapper) convSampledTy.delete(t);
+    if (sharedWrapper.size) {
+      const wrappersOf = new Map();
+      for (const ins of mod.insns)
+        if (ins.op === Op.TypeSampledImage) {
+          if (!wrappersOf.has(ins.words[1])) wrappersOf.set(ins.words[1], []);
+          wrappersOf.get(ins.words[1]).push(ins.resultId);
+        }
+      for (const t of [...convTy])
+        if ((wrappersOf.get(t) || []).some(w => sharedWrapper.has(w))) convTy.delete(t);
+    }
+    for (const t of [...convTy]) if (arrayElemTy.has(t)) convTy.delete(t);
+  }
+  if (!convTy.size) return false;
   const vars = [];
   for (const ins of mod.insns) {
     if (ins.op !== Op.Variable || ins.words[2] !== SC.UniformConstant) continue;
     const ptr = byId.get(ins.words[0]);
-    if (ptr && ptr.op === Op.TypePointer && convSampledTy.has(ptr.words[2]))
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    if (convSampledTy.has(ptr.words[2]))
       vars.push({ varIns: ins, sampledTy: ptr.words[2], imageTy: byId.get(ptr.words[2]).words[1] });
+    else if (convTy.has(ptr.words[2]))
+      vars.push({ varIns: ins, sampledTy: null, imageTy: ptr.words[2] });
   }
   if (!vars.length) return false;
   const varIds = new Set(vars.map(v => v.varIns.resultId));
+  const bareVarIds = new Set(vars.filter(v => v.sampledTy == null).map(v => v.varIns.resultId));
 
   // --- analysis (no mutation yet): trace converted values, vet consumers ---
   const tracedSampled = new Set(), tracedImage = new Set(), fetches = [];
+  const bareImageValues = new Set();
   for (const ins of mod.insns) {
     if ((ins.op === Op.Load || ins.op === Op.FunctionParameter) && convSampledTy.has(ins.resultType)) {
-      if (ins.op === Op.Load && !varIds.has(ins.words[2]) && vars.length > 1) {
+      if (ins.op === Op.Load && !varIds.has(copyObjectRoot(byId, ins.words[2])) && vars.length > 1) {
         log.push('spirvfix R12: sampled-image load from an unknown source; conversion refused');
         return false;
       }
       tracedSampled.add(ins.resultId);
+    }
+    if ((ins.op === Op.Load || ins.op === Op.FunctionParameter) && convTy.has(ins.resultType)) {
+      if (ins.op === Op.Load && !bareVarIds.has(copyObjectRoot(byId, ins.words[2])) && vars.length > 1) {
+        log.push('spirvfix R12: bare texel-image load from an unknown source; conversion refused');
+        return false;
+      }
+      tracedImage.add(ins.resultId);
+      bareImageValues.add(ins.resultId);
     }
   }
   const refuse = why => { log.push('spirvfix R12: ' + why + '; conversion refused'); return false; };
@@ -1882,6 +1964,30 @@ export function texelBuffersTo2D(mod, log) {
         if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
       for (const tid of tracedImage)
         if (idOperandUseIndex(byId, ins, tid) >= 0) return refuse('converted image value feeds opcode ' + ins.op);
+    }
+  }
+  // Pointer copies of a converted variable: R15a specialization turns
+  // each array access chain into an OpCopyObject of the scalar clone, so
+  // a converted load's pointer may be a copy chain rooted at the
+  // variable (copyObjectRoot attributes it above). The split below
+  // removes the variable, so such a copy may feed only loads of the
+  // converted type -- which the split replaces wholesale -- or another
+  // such copy. Any other consumer would be left referencing a removed
+  // variable: refuse here instead of emitting an invalid module.
+  const ptrCopyRoot = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.CopyObject) continue;
+    const pt = byId.get(ins.resultType);
+    if (!pt || pt.op !== Op.TypePointer || !(convSampledTy.has(pt.words[2]) || convTy.has(pt.words[2]))) continue;
+    const root = copyObjectRoot(byId, ins.words[2]);
+    if (varIds.has(root)) ptrCopyRoot.set(ins.resultId, root);
+  }
+  for (const ins of mod.insns) {
+    for (const copyId of ptrCopyRoot.keys()) {
+      if (idOperandUseIndex(byId, ins, copyId) < 0) continue;
+      if (ins.op === Op.Load && (convSampledTy.has(ins.resultType) || convTy.has(ins.resultType))) continue;
+      if (ins.op === Op.CopyObject && ptrCopyRoot.has(ins.resultId)) continue;
+      return refuse('converted image pointer copy feeds opcode ' + ins.op);
     }
   }
   for (const f of fetches) {
@@ -1930,6 +2036,7 @@ export function texelBuffersTo2D(mod, log) {
   const pairs = new Map();
   const dropIdx = new Set();
   for (const c of vars) {
+    if (c.sampledTy == null) continue; // bare-image var: converts in place
     const varId = c.varIns.resultId;
     const set = setOf(varId), imgBind = bindOf(varId);
     const sampBind = (maxBind.get(set) ?? imgBind) + 1;
@@ -2009,7 +2116,7 @@ export function texelBuffersTo2D(mod, log) {
   const imgLoadOf = new Map();   // couple result id -> image load id
   let nLoads = 0;
   for (const load of loads) {
-    const pair = pairs.get(load.words[2]) ?? firstPair;
+    const pair = pairs.get(copyObjectRoot(byId, load.words[2])) ?? firstPair;
     if (!pair) continue;
     const imgLoad = newId(), sampLoad = newId();
     const idx = mod.insns.indexOf(load);
@@ -2021,10 +2128,34 @@ export function texelBuffersTo2D(mod, log) {
     imgLoadOf.set(load.resultId, imgLoad);
     nLoads++;
   }
+  // Sweep the pointer copies the replaced loads fed on: their root
+  // variable was removed by the split, and the analysis above proved
+  // their only consumers were those loads or each other, so every copy
+  // still present is dead. Names/decorations targeting a swept copy die
+  // with it (a name for a removed id is itself invalid).
+  if (ptrCopyRoot.size) {
+    const dead = new Set();
+    let grewCp = true;
+    while (grewCp) {
+      grewCp = false;
+      for (const ins of mod.insns) {
+        if (ins.op !== Op.CopyObject || !ptrCopyRoot.has(ins.resultId) || dead.has(ins)) continue;
+        const used = mod.insns.some(u => u !== ins && !dead.has(u) && idOperandUseIndex(byId, u, ins.resultId) >= 0);
+        if (!used) { dead.add(ins); grewCp = true; }
+      }
+    }
+    if (dead.size) {
+      const deadIds = new Set([...dead].map(i => i.resultId));
+      mod.insns = mod.insns.filter(i => !dead.has(i) && !((i.op === Op.Name || i.op === Op.Decorate) && deadIds.has(i.words[0])));
+      byId.clear();
+      for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+    }
+  }
 
   // --- widen fetch coordinates ------------------------------------------------
   const tracedS = new Set(), tracedI = new Set();
   for (const [coupleId, imgLoad] of imgLoadOf) { tracedS.add(coupleId); tracedI.add(imgLoad); }
+  for (const id of bareImageValues) tracedI.add(id);
   let nFetch = 0;
   for (let idx = 0; idx < mod.insns.length; idx++) {
     const ins = mod.insns[idx];
@@ -2087,6 +2218,11 @@ export function storageTexelBuffersTo2D(mod, log) {
   const convTy = new Set();
   for (const ins of mod.insns)
     if (ins.op === Op.TypeImage && ins.words[2] === 5 && ins.words[6] === 2) convTy.add(ins.resultId);
+  // Array-shared types are owned by the array (FD-16, as in R12): they
+  // convert in the post-specialization pass, once R15a has turned the
+  // array into a scalar variable.
+  for (const ins of mod.insns)
+    if (ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) convTy.delete(ins.words[1]);
   if (!convTy.size) return false;
   // Variables: UniformConstant pointers directly at a converted image type
   // (storage images are never OpTypeSampledImage-wrapped).
@@ -2101,7 +2237,7 @@ export function storageTexelBuffersTo2D(mod, log) {
   const traced = new Set();
   for (const ins of mod.insns) {
     if (ins.op === Op.Load && convTy.has(ins.resultType)) {
-      if (!varIds.has(ins.words[2])) return refuse('storage texel image load from an unknown source');
+      if (!varIds.has(copyObjectRoot(byId, ins.words[2]))) return refuse('storage texel image load from an unknown source');
       traced.add(ins.resultId);
     }
   }
@@ -2252,6 +2388,563 @@ export function storageTexelBuffersTo2D(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
+// --- R12A: texel-pointer storage texel buffers -> storage buffers ----------
+// OpImageTexelPointer has no serving path through the translation stack at
+// all: naga rejects every module containing one (the Image pointer storage
+// class is unsupported on every backend, and a Dim=Buffer image fails even
+// earlier with UnsupportedCapability(ImageBuffer)). But a Dim=Buffer storage
+// image is not a picture: it is a range of guest buffer memory whose texel i
+// sits at byte offset i * texelSize in the bound buffer view, and a variable
+// whose every use flows through texel pointers (loads, stores, and the
+// integer atomics WGSL expresses) is therefore exactly a storage buffer of
+// texels. This rewrite serves that class by eliminating the texel pointers:
+//
+//   * the UniformConstant image variable becomes a StorageBuffer variable
+//     over struct { runtime array of texel } at the same set and binding,
+//     with ArrayStride = the texel byte size, so element i of the array is
+//     texel i of the view, byte for byte;
+//   * each OpImageTexelPointer (pointer form, or value form through an
+//     OpLoad of the image) becomes an OpAccessChain (member 0, coordinate)
+//     into the new variable, keeping the formation's result id -- every
+//     load / store / atomic that consumed the texel pointer keeps its own
+//     instruction, operands and result id, and now lands on the buffer;
+//   * the image loads that fed value-form formations (and the dead image
+//     loads vkd3d emits beside pointer-form formations) are deleted with
+//     the rest of the dead pointer cone.
+//
+// The page tier completes the serving: a shader binding in the storage
+// address space whose guest descriptor is a storage texel buffer view
+// (wire kind 6) binds the view's buffer range as a GPUBuffer and registers
+// it for readback, so the atomics land on the view's bytes in guest
+// memory, never on a texture copy or a dummy buffer.
+//
+// The soundness boundary (the bridge audit mirrors it exactly, in
+// vk64TexelBufferServable / r15::analyzeArrays; anything outside keeps
+// refusing by name):
+//   * the image format's texel is 1, 2 or 4 plain 32-bit components
+//     (R32 / Rg32 / Rgba32 in float / signed / unsigned) -- sub-word and
+//     packed formats have no byte-exact buffer element;
+//   * atomics only on scalar integer texels, and only the ops WGSL
+//     expresses (OpAtomicCompareExchangeWeak is excluded: naga rejects
+//     the opcode itself; float atomics have no WGSL form at all);
+//   * the loaded image value is never consumed except by formations and
+//     dead loads -- a variable that also reads/writes the image as an
+//     image (OpImageRead / OpImageWrite / queries) has two irreconcilable
+//     representations and stays with R12S's refusal;
+//   * the texel pointer never escapes: not stored as a value, not passed
+//     to a call, not selected / phi-merged, not chained further;
+//   * the sample operand is absent or the constant zero (Dim=Buffer is
+//     never multisampled).
+const TEXEL_BUFFER_FORMATS = new Map([
+  [1, 4],   // Rgba32f
+  [3, 1],   // R32f
+  [6, 2],   // Rg32f
+  [21, 4],  // Rgba32i
+  [24, 1],  // R32i
+  [25, 2],  // Rg32i
+  [30, 4],  // Rgba32ui
+  [33, 1],  // R32ui
+  [35, 2],  // Rg32ui
+]);
+const TEXEL_ATOMIC_OPS = new Set([227, 228, 229, 230, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242]);
+// OpTypeImage words: [id, SampledType, Dim, Depth, Arrayed, MS, Sampled,
+// ImageFormat]. Returns the buffer-element shape for a servable storage
+// texel type, or null.
+function texelElementInfo(byId, imageIns) {
+  if (!imageIns || imageIns.op !== Op.TypeImage) return null;
+  if (imageIns.words[2] !== 5 || imageIns.words[6] !== 2) return null; // Dim=Buffer, Sampled=2
+  const channels = TEXEL_BUFFER_FORMATS.get(imageIns.words[7]);
+  if (channels == null) return null;
+  const st = byId.get(imageIns.words[1]);
+  if (!st || (st.op !== Op.TypeInt && st.op !== Op.TypeFloat) || st.words[1] !== 32) return null;
+  return { sampledType: imageIns.words[1], sampledIsInt: st.op === Op.TypeInt, channels, bytes: channels * 4 };
+}
+
+// The texel cone under one root pointer id (a descriptor variable, a
+// specialized clone variable, or one access chain into a descriptor
+// array): every value derived from the root -- image pointers (loads of
+// the image), image values (the loads' results), texel pointers
+// (formations) -- and every use of those values, classified. Shared by
+// the R12A rewrite (root = variable), analyzeDescriptorArrays (root =
+// access chain) and, in mirror, the bridge audit. Formations reached
+// through an image load (value form) are counted separately: the uses
+// analysis in r15PointerUses cannot see them, and before this analysis
+// existed a value-form module classified servable by accident and failed
+// later, quieter, inside the translator.
+export function analyzeTexelCone(mod, byId, rootPtrId, imageTypeId, firstFunc) {
+  const out = {
+    ok: false, reason: null, info: null, formations: 0, valueFormations: 0,
+    atomicWrites: 0, valueAtomicWrites: 0, storeWrites: 0, valueStoreWrites: 0, loads: 0,
+    ptrIds: new Set([rootPtrId]), imgVals: new Set(), texPtrs: new Set(),
+    formationInsns: [], coneInsns: new Set(),
+  };
+  const info = texelElementInfo(byId, byId.get(imageTypeId));
+  if (!info) { out.reason = 'not a 32-bit-component storage texel image type'; return out; }
+  out.info = info;
+  const texForm = new Map(); // texel pointer id -> 'pointer' | 'value' (formation origin)
+  const kindOf = id => out.ptrIds.has(id) ? 'ptr' : out.imgVals.has(id) ? 'img' : out.texPtrs.has(id) ? 'tex' : null;
+  const checkFormation = ins => {
+    const ptTy = byId.get(ins.resultType);
+    if (!ptTy || ptTy.op !== Op.TypePointer) return 'texel pointer result type is not a pointer type';
+    const pointee = ptTy.words[2];
+    if (info.channels === 1) {
+      if (pointee !== info.sampledType) return 'texel pointer pointee is not the image sampled type';
+    } else {
+      const vt = byId.get(pointee);
+      if (!vt || vt.op !== Op.TypeVector || vt.words[1] !== info.sampledType || vt.words[2] !== info.channels)
+        return 'texel pointer pointee is not the format texel vector';
+    }
+    const coordDef = byId.get(ins.words[3]);
+    const coordTy = coordDef && byId.get(coordDef.resultType);
+    if (!coordTy || coordTy.op !== Op.TypeInt || coordTy.words[1] !== 32)
+      return 'texel coordinate is not a 32-bit integer scalar';
+    if (ins.words.length > 4) {
+      const sDef = byId.get(ins.words[4]);
+      if (!sDef || sDef.op !== Op.Constant || sDef.words[2] !== 0)
+        return 'texel sample operand is not the constant zero';
+    }
+    return null;
+  };
+  const bodyStart = firstFunc >= 0 ? firstFunc : mod.insns.length;
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (let ix = bodyStart; ix < mod.insns.length; ix++) {
+      const ins = mod.insns[ix];
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      const tracked = [...out.ptrIds, ...out.imgVals, ...out.texPtrs];
+      for (const id of tracked) {
+        const hit = idOperandUseIndex(byId, ins, id);
+        if (hit < 0) continue;
+        const kind = kindOf(id);
+        if (kind === 'ptr') {
+          if (ins.op === Op.Load && hit === start) {
+            if (ins.resultType !== imageTypeId) { out.reason = 'cone load result is not the texel image type'; return out; }
+            if (!out.imgVals.has(ins.resultId)) { out.imgVals.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          if (ins.op === Op.ImageTexelPointer && hit === start) {
+            const e = checkFormation(ins); if (e) { out.reason = e; return out; }
+            if (!out.texPtrs.has(ins.resultId)) {
+              out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, 'pointer');
+              out.formations++; out.formationInsns.push(ins); out.coneInsns.add(ins); grew = true;
+            }
+            continue;
+          }
+          if (ins.op === Op.CopyObject && hit === start) {
+            if (!out.ptrIds.has(ins.resultId)) { out.ptrIds.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+            if (!out.ptrIds.has(ins.resultId)) { out.ptrIds.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          out.reason = 'image pointer consumed by op ' + ins.op; return out;
+        }
+        if (kind === 'img') {
+          if (ins.op === Op.ImageTexelPointer && hit === start) {
+            const e = checkFormation(ins); if (e) { out.reason = e; return out; }
+            if (!out.texPtrs.has(ins.resultId)) {
+              out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, 'value');
+              out.formations++; out.valueFormations++; out.formationInsns.push(ins); out.coneInsns.add(ins); grew = true;
+            }
+            continue;
+          }
+          if (ins.op === Op.CopyObject && hit === start) {
+            if (!out.imgVals.has(ins.resultId)) { out.imgVals.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          out.reason = 'image value consumed by op ' + ins.op; return out;
+        }
+        // kind === 'tex'
+        if (ins.op === Op.Load && hit === start) { out.loads++; out.coneInsns.add(ins); continue; }
+        if (ins.op === Op.Store) {
+          if (hit !== start) { out.reason = 'texel pointer stored as a value'; return out; }
+          if (!out.coneInsns.has(ins)) {
+            out.coneInsns.add(ins);
+            if (texForm.get(id) === 'value') out.valueStoreWrites++; else out.storeWrites++;
+          }
+          continue;
+        }
+        if (ins.op >= 227 && ins.op <= 244 && hit === start) {
+          if (!TEXEL_ATOMIC_OPS.has(ins.op)) { out.reason = 'atomic op ' + ins.op + ' through a texel pointer is not served'; return out; }
+          if (info.channels !== 1) { out.reason = 'atomic through a multi-component texel pointer'; return out; }
+          if (!info.sampledIsInt) { out.reason = 'atomic through a non-integer texel pointer'; return out; }
+          if (!out.coneInsns.has(ins)) {
+            out.coneInsns.add(ins);
+            if (ins.op === 227) out.loads++;
+            else if (texForm.get(id) === 'value') out.valueAtomicWrites++; else out.atomicWrites++;
+          }
+          continue;
+        }
+        if (ins.op === Op.CopyObject && hit === start) {
+          if (!out.texPtrs.has(ins.resultId)) {
+            out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, texForm.get(id));
+            out.coneInsns.add(ins); grew = true;
+          }
+          continue;
+        }
+        out.reason = 'texel pointer consumed by op ' + ins.op; return out;
+      }
+    }
+  }
+  out.ok = true;
+  return out;
+}
+
+// Orphan sweep for R12A, scoped to what its conversions orphaned: the
+// image types themselves, the texel pointer types the formations
+// carried, and the pointer / array types the cascade strands (a
+// specialized clone's UniformConstant pointer type, the heap's
+// runtime-array type). A Dim=Buffer image type -- or an
+// Image-storage-class pointer type -- that the translator cannot
+// ingest must not survive merely because its declaration does.
+// References from inside the candidate closure do not keep a member
+// alive; a reference from anything outside it (a surviving variable, a
+// function body) does, and the module's refusal stands.
+function sweepTexelOrphans(mod, converted) {
+  const closure = new Set();
+  for (const c of converted) {
+    closure.add(c.imageTypeId);
+    for (const t of c.texPtrTypes) closure.add(t);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const t of mod.insns) {
+      if (t.resultId == null || closure.has(t.resultId)) continue;
+      if (t.op !== Op.TypePointer && t.op !== Op.TypeArray && t.op !== Op.TypeRuntimeArray && t.op !== Op.TypeSampledImage) continue;
+      if (t.words.some(w => closure.has(w))) { closure.add(t.resultId); grew = true; }
+    }
+  }
+  // The R15a orphan sweep's reference discipline: decorations and
+  // names do not reference, header/directive words are literals or
+  // enums, and the constant family's operand words are literal values
+  // (its resultType word still counts).
+  const referencedOutside = id => {
+    for (const ins of mod.insns) {
+      if (ins.resultId != null && closure.has(ins.resultId)) continue;
+      if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
+      if (ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 10 ||
+          ins.op === 14 || ins.op === 15 || ins.op === 16 || ins.op === 17) continue;
+      if (ins.resultType === id) return true;
+      if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+          ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 || ins.op === 52) continue;
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === id) return true;
+    }
+    return false;
+  };
+  let pass = true;
+  while (pass) {
+    pass = false;
+    for (const ins of [...mod.insns]) {
+      if (ins.resultId == null || !closure.has(ins.resultId)) continue;
+      if (referencedOutside(ins.resultId)) continue;
+      const sweptId = ins.resultId;
+      mod.insns = mod.insns.filter(i => i !== ins &&
+        !((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && i.words[0] === sweptId));
+      pass = true;
+    }
+  }
+}
+
+export function texelPointersToStorageBuffers(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const firstFunc = sections(mod).firstFunc;
+  const cands = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== 0) continue; // UniformConstant
+    const ptr = byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const img = byId.get(ptr.words[2]);
+    if (!img || img.op !== Op.TypeImage) continue;
+    if (!texelElementInfo(byId, img)) continue;
+    cands.push({ varIns: ins, varId: ins.resultId, imageTypeId: img.resultId });
+  }
+  if (!cands.length) return false;
+  const newId = makeIdSource(mod);
+  const findType = (op, eq) => mod.insns.find(i => i.op === op && eq(i))?.resultId ?? null;
+  const addTypes = [], addAnnot = [], addNames = [];
+  let uintTy = findType(Op.TypeInt, i => i.words[1] === 32 && i.words[2] === 0);
+  if (uintTy == null) { uintTy = newId(); addTypes.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy }); }
+  let zeroC = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === 0)?.resultId ?? null;
+  if (zeroC == null) { zeroC = newId(); addTypes.push({ op: Op.Constant, words: [uintTy, zeroC, 0], resultType: uintTy, resultId: zeroC }); }
+  const converted = []; // { cone, varId, newVarId, imageTypeId, info }
+  const drop = new Set();
+  for (const cand of cands) {
+    const cone = analyzeTexelCone(mod, byId, cand.varId, cand.imageTypeId, firstFunc);
+    if (!cone.formations) continue; // no texel pointers under this variable: R12S's shape, or nobody's
+    if (!cone.ok) { log.push('spirvfix R12A: storage texel variable %' + cand.varId + ' left unconverted (' + cone.reason + ')'); continue; }
+    const info = cone.info;
+    // Element type: the sampled scalar, or its vector for multi-channel formats.
+    let elemTy = info.sampledType;
+    if (info.channels > 1) {
+      elemTy = findType(Op.TypeVector, i => i.words[1] === info.sampledType && i.words[2] === info.channels);
+      if (elemTy == null) { elemTy = newId(); addTypes.push({ op: Op.TypeVector, words: [elemTy, info.sampledType, info.channels], resultType: null, resultId: elemTy }); }
+    }
+    let raTy = findType(Op.TypeRuntimeArray, i => i.words[1] === elemTy);
+    if (raTy == null) {
+      raTy = newId();
+      addTypes.push({ op: Op.TypeRuntimeArray, words: [raTy, elemTy], resultType: null, resultId: raTy });
+      addAnnot.push({ op: Op.Decorate, words: [raTy, 6, info.bytes], resultType: null, resultId: null }); // ArrayStride
+    }
+    const structTy = newId(), ptrStructTy = newId(), ptrElemTy = newId(), newVarId = newId();
+    addTypes.push({ op: Op.TypeStruct, words: [structTy, raTy], resultType: null, resultId: structTy });
+    addTypes.push({ op: Op.TypePointer, words: [ptrStructTy, 12, structTy], resultType: null, resultId: ptrStructTy }); // StorageBuffer
+    addTypes.push({ op: Op.TypePointer, words: [ptrElemTy, 12, elemTy], resultType: null, resultId: ptrElemTy });
+    // Block (2), not BufferBlock: the variable is in the StorageBuffer
+    // class, whose structs are Block-decorated at every SPIR-V version
+    // this tier ingests (VUID-StandaloneSpirv-OpTypeRuntimeArray-04680;
+    // BufferBlock is the Uniform-class form and invalid past 1.3).
+    addAnnot.push({ op: Op.Decorate, words: [structTy, 2], resultType: null, resultId: null }); // Block
+    addAnnot.push({ op: Op.MemberDecorate, words: [structTy, 0, 35, 0], resultType: null, resultId: null }); // member 0 Offset 0
+    // The new variable takes the old one's decorations (DescriptorSet,
+    // Binding, NonWritable, ...) verbatim, except Coherent: WGSL storage
+    // has no coherence qualifier to express, and naga rejects the
+    // decoration on a global it cannot place (the R15a clone rule).
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Decorate && ins.words[0] === cand.varId) {
+        drop.add(ins);
+        if (ins.words[1] === 23) continue; // Coherent
+        addAnnot.push({ op: Op.Decorate, words: [newVarId, ...ins.words.slice(1)], resultType: null, resultId: null });
+      }
+      if (ins.op === Op.Name && ins.words[0] === cand.varId) {
+        drop.add(ins);
+        addNames.push({ op: Op.Name, words: [newVarId, ...ins.words.slice(1)], resultType: null, resultId: null });
+      }
+    }
+    // Formations become access chains (member 0, texel coordinate).
+    const texPtrTypes = new Set();
+    for (const f of cone.formationInsns) {
+      texPtrTypes.add(f.resultType);
+      const coord = f.words[3];
+      f.op = Op.AccessChain;
+      f.words = [ptrElemTy, f.resultId, newVarId, zeroC, coord];
+      f.resultType = ptrElemTy;
+    }
+    // Copies of a texel pointer keep their result id; their type follows.
+    for (const ins of mod.insns)
+      if (ins.op === Op.CopyObject && cone.texPtrs.has(ins.resultId)) { ins.words[0] = ptrElemTy; ins.resultType = ptrElemTy; }
+    // The variable is replaced in place (globals follow all types in a
+    // valid module, and the new types splice in just before the first
+    // global variable below).
+    const at = mod.insns.indexOf(cand.varIns);
+    mod.insns[at] = { op: Op.Variable, words: [ptrStructTy, newVarId, 12], resultType: ptrStructTy, resultId: newVarId };
+    converted.push({ cone, varId: cand.varId, newVarId, imageTypeId: cand.imageTypeId, info, texPtrTypes });
+    log.push('spirvfix R12A: rewrote storage texel variable %' + cand.varId + ' as storage buffer %' + newVarId +
+      ' (' + cone.formations + ' texel-pointer formation(s) eliminated, ' + (cone.atomicWrites + cone.valueAtomicWrites) +
+      ' atomic(s), texel ' + info.bytes + ' B)');
+  }
+  if (!converted.length) return false;
+  // Dead cone sweep: image loads whose value only fed formations (or
+  // nothing), and the pointer copies / chains behind them, are
+  // unreferenced now. Only instructions the converted cones own are
+  // eligible, and only the pointer/value plumbing ops among them; the
+  // loads, stores and atomics that consumed texel pointers stay.
+  const deadCand = new Set();
+  for (const c of converted) for (const ins of c.cone.coneInsns) {
+    if (ins.resultId == null || c.cone.texPtrs.has(ins.resultId)) continue;
+    if (ins.op === Op.Load || ins.op === Op.CopyObject || ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) deadCand.add(ins);
+  }
+  let swept = true;
+  while (swept) {
+    swept = false;
+    const live = new Map();
+    const byIdNow = new Map();
+    for (const ins of mod.insns) if (ins.resultId != null) byIdNow.set(ins.resultId, ins);
+    for (const ins of mod.insns) {
+      if (drop.has(ins)) continue;
+      for (const id of deadCand) {
+        if (!live.get(id.resultId) && id !== ins && idOperandUseIndex(byIdNow, ins, id.resultId) >= 0) live.set(id.resultId, true);
+      }
+    }
+    for (const ins of [...deadCand]) {
+      if (!live.get(ins.resultId)) { drop.add(ins); deadCand.delete(ins); swept = true; }
+    }
+  }
+  // Interface listing is version-bound, as in R15a: SPIR-V 1.4+ lists
+  // every used global; swap the variable for its replacement.
+  if ((mod.header?.version ?? 0) >= 0x00010400) {
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      const tail = r15EntryPointTail(ins);
+      for (let k = tail; k < ins.words.length; k++) {
+        const c = converted.find(c => c.varId === ins.words[k]);
+        if (c) ins.words[k] = c.newVarId;
+      }
+    }
+  }
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  if (addTypes.length) {
+    const atVar = mod.insns.findIndex(i => i.op === Op.Variable);
+    mod.insns.splice(atVar < 0 ? mod.insns.length : atVar, 0, ...addTypes);
+  }
+  r15SpliceAdditions(mod, addAnnot, [], addNames);
+  sweepTexelOrphans(mod, converted);
+  return true;
+}
+
+// --- R12X: strip-unused-texel-buffer-capabilities ----------------------------
+// Naga rejects OpCapability SampledBuffer (46) and ImageBuffer (47) outright,
+// even when a module declares one without any Dim=Buffer image type for it to
+// gate (verified against the vendored naga with hand-built stray modules).
+// R12/R12S drop the pair when they convert a real buffer image; this rule
+// removes the stray declaration when no Dim=Buffer OpTypeImage exists at all,
+// so the capability cannot gate anything. A module that DOES carry a
+// Dim=Buffer type is left untouched: R12/R12S either converted it (and dropped
+// the capabilities themselves) or refused it, and the declaration must then
+// keep failing loudly at naga.
+function stripUnusedTexelBufferCapabilities(mod, log) {
+  const found = mod.insns.some(i => i.op === Op.Capability && (i.words[0] === 46 || i.words[0] === 47));
+  if (!found) return false;
+  if (mod.insns.some(i => i.op === Op.TypeImage && i.words[2] === 5)) return false;
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 46 || i.words[0] === 47)));
+  log.push('spirvfix: stripped stray SampledBuffer/ImageBuffer capability declaration(s) (no Dim=Buffer image type)');
+  return true;
+}
+
+// --- R17: quad-ops-to-shuffle --------------------------------------------------
+// Naga rejects capability GroupNonUniformQuad (68) outright, but the two quad
+// data-movement ops lower exactly onto subgroup shuffle ops -- quads are
+// aligned groups of four consecutive subgroup lanes:
+//   QuadSwap(v, 0|1|2)    -> ShuffleXor(v, 1|2|3)   (across X / Y / diagonal)
+//   QuadBroadcast(v, i<4) -> Shuffle(v, (SubgroupLocalInvocationId & ~3) + i)
+// Only the constant-direction / constant-index, Subgroup-scope forms are
+// lowered; anything else is left untouched for the bridge audit to reject by
+// name. A module that declares 68 without using a quad op has the stray
+// declaration stripped (naga rejects the bare capability; the R12X pattern).
+// Lowering declares capabilities 61/65 when missing and drops 68.
+const OP_SHUFFLE = 345, OP_SHUFFLE_XOR = 346, OP_QUAD_BROADCAST = 365, OP_QUAD_SWAP = 366;
+const OP_IADD = 128, OP_BITWISE_AND = 199;
+function quadOpsToShuffle(mod, log) {
+  if (!mod.insns.some(i => i.op === Op.Capability && i.words[0] === 68)) return false;
+  const quadInsns = mod.insns.filter(i => i.op === OP_QUAD_BROADCAST || i.op === OP_QUAD_SWAP);
+  if (!quadInsns.length) {
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 68));
+    log.push('spirvfix: stripped stray GroupNonUniformQuad capability (declared, never used)');
+    return true;
+  }
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
+  const constOf = (id) => { const d = byId.get(id); return d && d.op === Op.Constant ? d : null; };
+  // Phase 1: validate every quad op (fail closed -- leave the module untouched).
+  const plans = [];
+  for (const ins of quadInsns) {
+    const scope = constOf(ins.words[2]), param = constOf(ins.words[4]);
+    if (!scope || scope.words[2] !== 3 || !param) {
+      log.push('spirvfix: left GroupNonUniformQuad op unchanged (scope or parameter is not a constant)');
+      return false;
+    }
+    if (ins.op === OP_QUAD_SWAP) {
+      if (![0, 1, 2].includes(param.words[2])) {
+        log.push('spirvfix: left GroupNonUniformQuad op unchanged (swap direction is not 0, 1 or 2)');
+        return false;
+      }
+      plans.push({ ins, kind: 'swap', mask: [1, 2, 3][param.words[2]] });
+    } else {
+      if (![0, 1, 2, 3].includes(param.words[2])) {
+        log.push('spirvfix: left GroupNonUniformQuad op unchanged (broadcast index is not 0..3)');
+        return false;
+      }
+      plans.push({ ins, kind: 'broadcast', index: param.words[2] });
+    }
+  }
+  // Phase 2: synthesize the shared pieces (uint type, constants, the
+  // SubgroupLocalInvocationId variable when a broadcast needs it).
+  const fresh = makeIdSource(mod);
+  const newGlobals = [], newAnnots = [];
+  let uintTy = null;
+  for (const i of mod.insns) if (i.op === Op.TypeInt && i.words[1] === 32 && i.words[2] === 0) { uintTy = i.resultId; break; }
+  if (!uintTy) {
+    uintTy = fresh();
+    newGlobals.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy });
+  }
+  const constFor = (val) => {
+    const found = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === val)
+      || newGlobals.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === val);
+    if (found) return found.resultId;
+    const id = fresh();
+    newGlobals.push({ op: Op.Constant, words: [uintTy, id, val], resultType: uintTy, resultId: id });
+    return id;
+  };
+  // Pre-create every constant the rewrites need -- constFor appends to
+  // newGlobals, which phase 3 splices; a constant requested later would
+  // never reach the module.
+  for (const plan of plans) {
+    if (plan.kind === 'swap') plan.maskId = constFor(plan.mask);
+    else { plan.andMaskId = constFor(0xFFFFFFFC); plan.indexId = constFor(plan.index); }
+  }
+  let invVar = null;
+  if (plans.some(p => p.kind === 'broadcast')) {
+    const decorated = new Set(mod.insns
+      .filter(i => i.op === Op.Decorate && i.words[1] === 11 && i.words[2] === 41)
+      .map(i => i.words[0]));
+    for (const i of mod.insns) {
+      if (i.op !== Op.Variable || i.words[2] !== 1 || !decorated.has(i.resultId)) continue;
+      const ptr = byId.get(i.resultType);
+      if (ptr && ptr.op === Op.TypePointer && ptr.words[1] === 1 && ptr.words[2] === uintTy) { invVar = i.resultId; break; }
+    }
+    if (!invVar) {
+      let ptrTy = null;
+      for (const i of mod.insns) if (i.op === Op.TypePointer && i.words[1] === 1 && i.words[2] === uintTy) { ptrTy = i.resultId; break; }
+      if (!ptrTy) {
+        ptrTy = fresh();
+        newGlobals.push({ op: Op.TypePointer, words: [ptrTy, 1, uintTy], resultType: null, resultId: ptrTy });
+      }
+      invVar = fresh();
+      newGlobals.push({ op: Op.Variable, words: [ptrTy, invVar, 1], resultType: ptrTy, resultId: invVar });
+      newAnnots.push({ op: Op.Decorate, words: [invVar, 11, 41], resultType: null, resultId: null });
+    }
+  }
+  if (invVar) {
+    // The invocation-id variable is now statically used: every entry point
+    // must list it as an interface variable (spirv-val enforces this even
+    // though naga tolerates the omission).
+    for (const ep of mod.insns) {
+      if (ep.op !== Op.EntryPoint) continue;
+      let wi = 2;
+      while (wi < ep.words.length) {
+        const w = ep.words[wi++];
+        if (!(w & 0xff) || !((w >> 8) & 0xff) || !((w >> 16) & 0xff) || !((w >> 24) & 0xff)) break;
+      }
+      if (!ep.words.slice(wi).includes(invVar)) ep.words.push(invVar);
+    }
+  }
+  // Phase 3: splice capabilities first (header), then annotations, then
+  // globals -- each splice recomputes the section anchors it invalidates.
+  const haveCaps = new Set(mod.insns.filter(i => i.op === Op.Capability).map(i => i.words[0]));
+  const newCaps = [61, 65].filter(c => !haveCaps.has(c));
+  if (newCaps.length) {
+    let lastCap = -1;
+    mod.insns.forEach((i, idx) => { if (i.op === Op.Capability) lastCap = idx; });
+    mod.insns.splice(lastCap + 1, 0, ...newCaps.map(c => ({ op: Op.Capability, words: [c], resultType: null, resultId: null })));
+  }
+  if (newAnnots.length) mod.insns.splice(sections(mod).annotPos, 0, ...newAnnots);
+  if (newGlobals.length) mod.insns.splice(sections(mod).firstFunc, 0, ...newGlobals);
+  // Phase 4: rewrite the ops in place (setup instructions go immediately
+  // before their broadcast; indices are re-located by identity).
+  for (const plan of plans) {
+    const ins = plan.ins;
+    if (plan.kind === 'swap') {
+      ins.op = OP_SHUFFLE_XOR;
+      ins.words[4] = plan.maskId;
+    } else {
+      const loadId = fresh(), andId = fresh(), addId = fresh();
+      ins.op = OP_SHUFFLE;
+      ins.words[4] = addId;
+      const at = mod.insns.indexOf(ins);
+      mod.insns.splice(at, 0,
+        { op: Op.Load, words: [uintTy, loadId, invVar], resultType: uintTy, resultId: loadId },
+        { op: OP_BITWISE_AND, words: [uintTy, andId, loadId, plan.andMaskId], resultType: uintTy, resultId: andId },
+        { op: OP_IADD, words: [uintTy, addId, andId, plan.indexId], resultType: uintTy, resultId: addId });
+    }
+  }
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 68));
+  log.push('spirvfix: lowered GroupNonUniformQuad ops to subgroup shuffle ops');
+  return true;
+}
+
 // --- R13: uniform-block-to-storage -------------------------------------------
 // The bridge advertises VK_KHR_uniform_buffer_standard_layout (the honest
 // half of vkd3d's shader-model 6.0 gate): a uniform block may carry std430
@@ -2751,6 +3444,18 @@ export function auditBlockLayouts(bytes) {
 // reinterpreted texels. When no Unknown storage format remains, the 55/56
 // capability declarations are stripped (naga cannot consume them either).
 // Byte-identical passthrough when the option is absent or nothing applies.
+//
+// FD-49: one binding can carry several storage image TYPES (vkd3d's
+// descriptor heap places a float read array and an int write array at the
+// same set/binding), and their views can have different formats, so a
+// signature keyed by set:binding alone can never resolve such a module --
+// whichever view's format it carries, the other type stays Unknown.
+// Signature entries may therefore carry a type key,
+// "set:binding@<typeKey>=spvFormat", where <typeKey> is storageTypeKey():
+// the image type's identity apart from its format, computed identically
+// here and by storageImageVars (which reports it to the page tier). A
+// typed entry wins over a plain one for its type; the per-variable
+// agreement rule and the scalar-kind guard apply unchanged.
 const SPV_FORMAT_KIND = {
   // SPIR-V ImageFormat values (spirv-as/dis + vendored naga agree; verified
   // empirically per format name -- do not "fix" these from memory).
@@ -2767,6 +3472,27 @@ function scalarKindOf(byId, typeId) {
   if (t.op === 22) return 'f';                            // OpTypeFloat
   if (t.op === 23) return scalarKindOf(byId, t.words[1]); // OpTypeVector: component type
   return null;
+}
+
+function scalarWidthOf(byId, typeId) {
+  const t = byId.get(typeId);
+  if (!t) return null;
+  if (t.op === 21 || t.op === 22) return t.words[1];        // OpTypeInt / OpTypeFloat: width
+  if (t.op === 23) return scalarWidthOf(byId, t.words[1]);  // OpTypeVector: component type
+  return null;
+}
+
+// The identity of an OpTypeImage apart from its format operand: sampled
+// scalar kind and width, Dim, Depth, Arrayed, MS, and the access
+// qualifier when present. Two storage image types at one binding with
+// different keys are different resources as far as format resolution is
+// concerned (FD-49).
+function storageTypeKey(byId, img) {
+  const kind = scalarKindOf(byId, img.words[1]) || 'x';
+  const width = scalarWidthOf(byId, img.words[1]);
+  let key = 'k' + kind + (width == null ? '' : width) + 'd' + img.words[2] + 'x' + img.words[3] + img.words[4] + img.words[5];
+  if (img.words.length > 8) key += 'q' + img.words[8];
+  return key;
 }
 
 function storageDecorations(mod) {
@@ -2805,7 +3531,7 @@ export function storageImageVars(bytes) {
     const img = pointee;
     if (!img || img.op !== Op.TypeImage || img.words[6] !== 2) continue;
     const d = decorations.get(ins.resultId) || {};
-    const entry = { set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeId: img.resultId };
+    const entry = { set: d.set ?? 0, binding: d.binding ?? 0, dim: img.words[2], format: img.words[7], kind: scalarKindOf(byId, img.words[1]), typeKey: storageTypeKey(byId, img), typeId: img.resultId };
     // A runtime-array entry additionally carries the array's proven index
     // signature (filled in below): its format is the format of the element
     // the shader actually touches, which is not necessarily element 0.
@@ -2828,11 +3554,14 @@ export function storageImageVars(bytes) {
 function injectStorageImageFormats(mod, log, signature) {
   if (!signature) return false;
   const wanted = new Map();
+  const wantedTyped = new Map();
   for (const part of String(signature).split(';')) {
-    const m = /^(\d+):(\d+)=(\d+)$/.exec(part.trim());
-    if (m) wanted.set(m[1] + ':' + m[2], Number(m[3]));
+    const m = /^(\d+):(\d+)(?:@([a-z0-9]+))?=(\d+)$/.exec(part.trim());
+    if (!m) continue;
+    if (m[3]) wantedTyped.set(m[1] + ':' + m[2] + '@' + m[3], Number(m[4]));
+    else wanted.set(m[1] + ':' + m[2], Number(m[4]));
   }
-  if (!wanted.size) return false;
+  if (!wanted.size && !wantedTyped.size) return false;
   const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
   const decorations = storageDecorations(mod);
   const types = new Map();
@@ -2856,9 +3585,11 @@ function injectStorageImageFormats(mod, log, signature) {
   let changed = false;
   for (const t of types.values()) {
     if (t.ins.words[7] !== 0) continue; // already concrete
+    const tk = storageTypeKey(byId, t.ins);
     let fmt = null, ok = t.vars.length > 0;
     for (const v of t.vars) {
-      const f = wanted.get(v.set + ':' + v.binding);
+      const key = v.set + ':' + v.binding;
+      const f = wantedTyped.has(key + '@' + tk) ? wantedTyped.get(key + '@' + tk) : wanted.get(key);
       if (f == null || (fmt != null && f !== fmt)) { ok = false; break; }
       fmt = f;
     }
@@ -3336,10 +4067,26 @@ export function r15IdUseIndex(ctx, ins, id) {
 // it or through chains/copies rooted at it), writes (Store / atomic RMW),
 // escapes (anything not positively classified). Also collects the cone of
 // access-chain instructions rooted at the pointer.
+//
+// A tracked id consumed as the Image operand of OpImageTexelPointer is
+// followed THROUGH the texel pointer (FD-62): the texel pointer's own
+// loads / stores / atomics are reads and writes of the image CONTENT,
+// counted separately (texelWrites / texelStoreWrites / texelAtomicWrites)
+// from writes to the tracked slot itself -- an OpStore through a texel
+// pointer rewrites a texel, not the descriptor slot. The texel pointer
+// value itself escaping (stored as a value, passed on, chained further,
+// or forming a second texel pointer) stays an escape, as does any other
+// unclassified use. Callers decide what the texel counts mean: the
+// descriptor-array classifier refuses on any texel formation through an
+// element, because the translation stack rejects OpImageTexelPointer
+// outright (the vendored translator refuses the Image pointer storage
+// class for every backend, measured 2026-11-01) -- the classification
+// names the true blocker instead of reporting a generic pointer escape
+// for what is in fact an examined, understood use.
 function r15PointerUses(ctx, rootId) {
-  const out = { reads: 0, writes: 0, storeWrites: 0, atomicWrites: 0, escapes: [], cone: [] };
+  const out = { reads: 0, writes: 0, storeWrites: 0, atomicWrites: 0, texelFormed: 0, texelWrites: 0, texelStoreWrites: 0, texelAtomicWrites: 0, escapes: [], cone: [] };
   const seen = new Set();
-  const visit = (pid, depth) => {
+  const visit = (pid, depth, texel) => {
     if (depth > 16 || seen.has(pid)) return;
     seen.add(pid);
     for (let ii = ctx.firstFunc; ii < ctx.mod.insns.length; ii++) {
@@ -3347,23 +4094,31 @@ function r15PointerUses(ctx, rootId) {
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
       const hit = r15IdUseIndex(ctx, ins, pid);
       if (hit < 0) continue;
-      if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
-        out.cone.push(ins); visit(ins.resultId, depth + 1); continue;
+      if (!texel && (ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+        out.cone.push(ins); visit(ins.resultId, depth + 1, false); continue;
       }
-      if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1); continue; }
+      if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1, texel); continue; }
+      if (!texel && ins.op === Op.ImageTexelPointer && hit === start) {
+        out.texelFormed++; visit(ins.resultId, depth + 1, true); continue;
+      }
       if (ins.op === Op.Load && hit === start) { out.reads++; continue; }
       if (ins.op === Op.Store) {
-        if (hit === start) { out.writes++; out.storeWrites++; } else out.escapes.push('pointer stored as a value');
+        if (hit === start) {
+          if (texel) { out.texelWrites++; out.texelStoreWrites++; }
+          else { out.writes++; out.storeWrites++; }
+        } else out.escapes.push('pointer stored as a value');
         continue;
       }
       if (ins.op >= 227 && ins.op <= 245 && hit === start) {
-        if (ins.op === R15_OP.AtomicLoad) out.reads++; else { out.writes++; out.atomicWrites++; }
+        if (ins.op === R15_OP.AtomicLoad) out.reads++;
+        else if (texel) { out.texelWrites++; out.texelAtomicWrites++; }
+        else { out.writes++; out.atomicWrites++; }
         continue;
       }
       out.escapes.push('op' + ins.op);
     }
   };
-  visit(rootId, 0);
+  visit(rootId, 0, false);
   return out;
 }
 
@@ -3460,6 +4215,7 @@ export function analyzeDescriptorArrays(mod) {
       varId: ins.resultId, varIns: ins, set: d.set ?? 0, binding: d.binding ?? 0,
       elemTypeId: pointee.words[1], elemKind, sc: ptr.words[1],
       signatures: [], servable: false, reason: null, writable: false,
+      texelFormed: 0, texelAtomicWrites: 0, texelStoreWrites: 0,
     };
     if (!elemKind) { rec.reason = 'array element is not a descriptor type'; arrays.push(rec); continue; }
     // Writability only exists for storage images (Sampled==2); sampled
@@ -3470,7 +4226,9 @@ export function analyzeDescriptorArrays(mod) {
     // object) translate to a storage-texture store on the scalar clone.
     // Recorded on the rec for the census/tests; the per-chain uses
     // analysis below still fails closed on pointer-level stores, atomics
-    // and escapes (texel-pointer forms included).
+    // and escapes, and the cone analysis decides texel-pointer forms:
+    // the class R12A serves is admitted, the rest refuse with a named
+    // reason below (FD-62).
     rec.writable = elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable;
     const sigKeys = new Map();
     let bad = null;
@@ -3486,8 +4244,41 @@ export function analyzeDescriptorArrays(mod) {
         const key = sig.kind === 'const' ? 'c' + sig.value : 'p' + sig.byteOff + 'a' + sig.add;
         sigKeys.set(key, sig);
         const cu = r15PointerUses(ctx, u.resultId);
+        rec.texelFormed += cu.texelFormed;
+        rec.texelAtomicWrites += cu.texelAtomicWrites;
+        rec.texelStoreWrites += cu.texelStoreWrites;
         if (cu.writes > 0) { bad = 'store through an array element'; break; }
         if (cu.escapes.length) { bad = 'array element pointer escape (' + cu.escapes[0] + ')'; break; }
+        // Texel-pointer forms through the element (FD-62): the cone
+        // analysis decides. A cone the R12A rewrite serves -- formations
+        // reaching only loads / stores / WGSL-expressible atomics on a
+        // 32-bit-component storage texel -- makes the chain servable:
+        // specialization turns the chain into a scalar clone and the
+        // post-specialization R12A pass rewrites the clone exactly as
+        // it rewrites a direct variable. Any other cone refuses with
+        // the named texel-pointer reason. The cone analysis also sees
+        // VALUE-form formations (through an OpLoad of the element),
+        // which r15PointerUses cannot trace: those classified servable
+        // here by accident before, and failed inside the translator.
+        let texBad = cu.texelFormed > 0, vAtomic = 0, vStore = 0;
+        if (elemKind === 'image' && elem.words[2] === 5 && elem.words[6] === 2) {
+          const cone = analyzeTexelCone(mod, ctx.byId, u.resultId, rec.elemTypeId, ctx.firstFunc);
+          if (cone.formations > 0) {
+            rec.texelFormed += cone.valueFormations;
+            rec.texelAtomicWrites += cone.valueAtomicWrites;
+            rec.texelStoreWrites += cone.valueStoreWrites;
+            vAtomic = cone.valueAtomicWrites; vStore = cone.valueStoreWrites;
+            texBad = !cone.ok;
+          }
+        }
+        if (texBad) {
+          bad = cu.texelAtomicWrites + vAtomic > 0
+            ? 'texel-pointer atomic write through an array element is not served (the translation stack rejects OpImageTexelPointer)'
+            : cu.texelStoreWrites + vStore > 0
+              ? 'texel-pointer store through an array element is not served (the translation stack rejects OpImageTexelPointer)'
+              : 'texel-pointer use through an array element is not served (the translation stack rejects OpImageTexelPointer)';
+          break;
+        }
         rec.signatures.push({ sig, chainId: u.resultId });
       } else {
         bad = 'array variable use op' + u.op;
@@ -3495,7 +4286,9 @@ export function analyzeDescriptorArrays(mod) {
     }
     if (bad) rec.reason = bad;
     else if (!rec.signatures.length) rec.reason = 'no accesses';
-    else if (sigKeys.size !== 1) rec.reason = sigKeys.size + ' distinct index signatures';
+    // Any number of distinct signatures is servable: each one gets its
+    // own scalar clone in specializeDescriptorArrays. What refuses the
+    // array is an access the classifier cannot name at all (bad above).
     else rec.servable = true;
     arrays.push(rec);
   }
@@ -3541,6 +4334,7 @@ export function analyzeRootDescriptors(mod) {
     s.mats.push(m);
     if (m.uses.writes > 0) s.writable = true;
     s.atomicWrites += m.uses.atomicWrites || 0;
+    s.texelWrites = (s.texelWrites || 0) + (m.uses.texelWrites || 0);
     s.escapes.push(...m.uses.escapes);
     s.pointees.add(m.pointeeId);
     for (const c of m.uses.cone) s.coneTypes.add(c.resultType);
@@ -3574,6 +4368,7 @@ export function analyzeRootDescriptors(mod) {
   const flip = new Set();
   for (const s of out.slots) {
     if (s.atomicWrites > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through an atomic operation (atomics not served)'; return out; }
+    if ((s.texelWrites || 0) > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through a texel pointer (not served)'; return out; }
     if (s.escapes.length) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointer escapes (' + s.escapes[0] + ')'; return out; }
     if (s.pointees.size !== 1) { out.rejectReason = 'root slot push@' + s.byteOff + ' has ' + s.pointees.size + ' distinct pointee types'; return out; }
     const pointeeId = [...s.pointees][0];
@@ -3684,11 +4479,25 @@ export function specializeDescriptorArrays(mod, log) {
     if (!a.servable && a.signatures.length) log.push('spirvfix: left descriptor array %' + a.varId + ' unchanged (' + a.reason + ')');
   }
   if (!targets.length) return false;
+  // Highest Binding decoration per set across the whole module, for
+  // the synthetic clone slots below.
+  const maxBindBySet = new Map();
+  {
+    const setOf = new Map();
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Decorate) continue;
+      if (ins.words[1] === Dec.DescriptorSet) setOf.set(ins.words[0], ins.words[2]);
+    }
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.Decorate || ins.words[1] !== Dec.Binding) continue;
+      const s = setOf.get(ins.words[0]) ?? 0;
+      if (ins.words[2] > (maxBindBySet.get(s) ?? -1)) maxBindBySet.set(s, ins.words[2]);
+    }
+  }
   const nextId = makeIdSource(mod);
   const addTypes = [], addAnnot = [], addNames = [];
   const drop = new Set();
   for (const a of targets) {
-    const sig = a.signatures[0].sig;
     let clonePtrId = null;
     for (const ins of mod.insns) {
       if (ins.op === Op.TypePointer && ins.words[1] === a.sc && ins.words[2] === a.elemTypeId) { clonePtrId = ins.resultId; break; }
@@ -3697,36 +4506,90 @@ export function specializeDescriptorArrays(mod, log) {
       clonePtrId = nextId();
       addTypes.push({ op: Op.TypePointer, words: [clonePtrId, a.sc, a.elemTypeId], resultType: null, resultId: clonePtrId });
     }
-    const cloneId = nextId();
-    addTypes.push({ op: Op.Variable, words: [clonePtrId, cloneId, a.sc], resultType: clonePtrId, resultId: cloneId });
-    const suffix = sig.kind === 'const' ? '_c' + sig.value : '_p' + sig.byteOff + '_a' + sig.add;
-    addNames.push({ op: Op.Name, words: [cloneId, ...strWords('bw_arr_g' + a.set + '_b' + a.binding + suffix)], resultType: null, resultId: null });
-    for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) {
-      addAnnot.push({ op: Op.Decorate, words: [cloneId, ...dins.words.slice(1)], resultType: null, resultId: null });
+    // One scalar clone per distinct index signature (see the analysis
+    // verdict): each access chain is rewritten to the clone carrying
+    // ITS signature, and the tier resolves every clone independently
+    // from the name-encoded signature.
+    const sigKeyOf = sig => sig.kind === 'const' ? 'c' + sig.value : 'p' + sig.byteOff + 'a' + sig.add;
+    const cloneByKey = new Map();
+    for (const s of a.signatures) {
+      const key = sigKeyOf(s.sig);
+      if (!cloneByKey.has(key)) cloneByKey.set(key, { sig: s.sig, cloneId: nextId() });
+    }
+    const cloneIds = [];
+    let cloneIndex = 0;
+    for (const { sig, cloneId } of cloneByKey.values()) {
+      cloneIds.push(cloneId);
+      addTypes.push({ op: Op.Variable, words: [clonePtrId, cloneId, a.sc], resultType: clonePtrId, resultId: cloneId });
+      const suffix = sig.kind === 'const' ? '_c' + sig.value : '_p' + sig.byteOff + '_a' + sig.add;
+      addNames.push({ op: Op.Name, words: [cloneId, ...strWords('bw_arr_g' + a.set + '_b' + a.binding + suffix)], resultType: null, resultId: null });
+      // Clones past the first share the array's guest descriptor but
+      // cannot share its binding slot in the translated module (one
+      // resource per (group, binding) in WGSL): they take fresh slots
+      // in the same set, allocated past every binding the module
+      // already uses there. The generated name keeps the guest
+      // set/binding; the tier resolves it through origBinding.
+      let slotBinding = a.binding;
+      if (cloneIndex > 0) {
+        slotBinding = (maxBindBySet.get(a.set) ?? a.binding) + 1;
+        maxBindBySet.set(a.set, slotBinding);
+      }
+      cloneIndex++;
+      for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) {
+        // Coherent (decoration 23) is not carried onto a clone: it is a
+        // memory-ordering hint with no WGSL counterpart, and naga
+        // rejects an image global that carries it (captured Godot
+        // compute module 187e3d67eb32e4ce: 'Global variable
+        // bw_arr_g4_b0_p32_a0 is invalid' until it is removed).
+        if (dins.words[1] === 23) continue;
+        if (dins.words[1] === Dec.Binding && slotBinding !== a.binding) {
+          addAnnot.push({ op: Op.Decorate, words: [cloneId, Dec.Binding, slotBinding], resultType: null, resultId: null });
+          continue;
+        }
+        addAnnot.push({ op: Op.Decorate, words: [cloneId, ...dins.words.slice(1)], resultType: null, resultId: null });
+      }
+      log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')' + (slotBinding !== a.binding ? ' at slot binding ' + slotBinding : '') + (a.writable ? ' (writable)' : ''));
     }
     for (const s of a.signatures) {
       const chain = ctx.byId.get(s.chainId);
       chain.op = Op.CopyObject;
-      chain.words = [chain.resultType, chain.resultId, cloneId];
+      chain.words = [chain.resultType, chain.resultId, cloneByKey.get(sigKeyOf(s.sig)).cloneId];
     }
-    for (const ins of mod.insns) {
-      if (ins.op !== Op.EntryPoint) continue;
-      const tail = r15EntryPointTail(ins);
-      let found = false;
-      for (let k = tail; k < ins.words.length; k++) if (ins.words[k] === a.varId) { ins.words[k] = cloneId; found = true; }
-      if (!found) ins.words.push(cloneId);
+    // Interface listing is version-bound: SPIR-V 1.4+ requires every
+    // used global in the entry point's interface (replace the array
+    // variable with its clones, appending when the variable was not
+    // listed); before 1.4 only Input/Output variables may be listed
+    // and descriptor globals are used unlisted -- exactly how the
+    // array variable itself appears -- so the list is left alone.
+    if ((mod.header?.version ?? 0) >= 0x00010400) {
+      for (const ins of mod.insns) {
+        if (ins.op !== Op.EntryPoint) continue;
+        const tail = r15EntryPointTail(ins);
+        let found = false;
+        for (let k = tail; k < ins.words.length; k++) {
+          if (ins.words[k] === a.varId) { ins.words.splice(k, 1, ...cloneIds); k += cloneIds.length - 1; found = true; }
+        }
+        if (!found) ins.words.push(...cloneIds);
+      }
     }
     drop.add(a.varIns);
     for (const dins of (ctx.varDeco.get(a.varId) || {}).decos || []) drop.add(dins);
-    log.push('spirvfix: specialized descriptor array %' + a.varId + ' (set ' + a.set + ' binding ' + a.binding + ') to scalar clone %' + cloneId + ' (bw_arr' + suffix + ')' + (a.writable ? ' (writable)' : ''));
+    // The variable's OpName dies with it: a name targeting a removed id
+    // is invalid SPIR-V (spirv-val rejects the module), even though the
+    // name carries no semantics.
+    for (const ins of mod.insns) if (ins.op === Op.Name && ins.words[0] === a.varId) drop.add(ins);
   }
   mod.insns = mod.insns.filter(i => !drop.has(i));
   r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
   // Orphan sweep: delete array / runtime-array / pointer TYPE declarations
   // the specialization left unreferenced (references from decorations and
   // names do not count; their decorations die with them). If no runtime
-  // array type survives, the RuntimeDescriptorArray capability goes too --
-  // the audit mirror admits cap 5302 under exactly this condition.
+  // array type survives, the RuntimeDescriptorArray capability goes too.
+  // The bridge audit mirror admits cap 5302 under a wider condition: every
+  // descriptor (UniformConstant) runtime array specialized away. When only
+  // buffer-content runtime arrays survive (vkd3d's SSBO-offsets block, its
+  // CBV heap array), the capability declaration is retained here and naga
+  // accepts the module; the audit's skip5302 simulation mirrors that.
   let swept = true;
   while (swept) {
     swept = false;
@@ -3742,8 +4605,44 @@ export function specializeDescriptorArrays(mod, log) {
           ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
       // resultType (words[0]) is a use; the resultId word is a definition.
       if (ins.resultType != null) live.add(ins.words[0]);
+      // The constant family (OpConstantTrue/False, OpConstant,
+      // OpConstantComposite, OpConstantSampler, OpConstantNull and the
+      // OpSpecConstant* forms) carries literal values and constant ids
+      // in its operand words -- never type ids. Counting them as id
+      // references lets a constant whose value equals a dead type's id
+      // keep that type alive (captured Godot module 7ad22adece:
+      // OpConstant 16 vs OpTypeRuntimeArray %16), so their operand
+      // words do not contribute to liveness; the resultType word
+      // above still counts. Mirrored in the bridge audit's skip5302
+      // simulation.
+      if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+          ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 ||
+          ins.op === 52) continue;
+      // OpTypeInt / OpTypeFloat carry only literals (width, signedness)
+      // after their result id -- never references, for the same reason.
+      if (ins.op === 21 || ins.op === 22) continue;
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+      // The memory-access family (OpLoad / OpStore / OpCopyMemory /
+      // OpCopyMemorySized) appends a MemoryAccess operand group -- a
+      // literal mask word, an Aligned literal, scope ids -- after its
+      // pointer/object/size ids. Those trailing words are not type
+      // references either: counting them lets an Aligned literal equal
+      // to a dead type's id keep that type alive, the same failure
+      // shape as the constant family above (captured Godot modules
+      // godot-vs-4000ddfd359efb05 and godot-vs-ebac7e2d70a20d62: an
+      // OpLoad Aligned 16 through a root-descriptor pointer kept the
+      // specialized-away descriptor runtime-array type %16 alive, so
+      // the capability strip never ran and the post-specialization
+      // texel conversion still saw the image type as array-owned).
+      // The group's scope ids name constants, never the array /
+      // pointer types this sweep deletes, so bounding the scan at the
+      // group start loses no real reference. Mirrored in the bridge
+      // audit's skip5302 simulation.
+      let end = ins.words.length;
+      if (ins.op === Op.Load) end = Math.min(end, start + 1);
+      else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
+      else if (ins.op === 64) end = Math.min(end, start + 3);
+      for (let k = start; k < end; k++) live.add(ins.words[k]);
     }
     const dead = new Set();
     for (const ins of mod.insns) {
@@ -3760,6 +4659,142 @@ export function specializeDescriptorArrays(mod, log) {
   }
   if (!mod.insns.some(i => i.op === Op.TypeRuntimeArray)) {
     mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 5302));
+  }
+  return true;
+}
+
+// R15a companion "specialized-binding-split" (FD-49): specialization can
+// leave TWO bw_arr_* clones at the same set/binding -- vkd3d's descriptor
+// heap declares several typed arrays at one binding (a float read array
+// and an int write array, say), and each accessed array specializes to
+// its own scalar clone. The translation stack cannot express that: naga
+// validation rejects two resources at one binding whose types differ
+// ("Bindings for [n] conflict with other resource"), and a WebGPU bind
+// group has one entry per binding. Clones past the first at a shared
+// binding therefore move to fresh binding numbers above the set's
+// highest used binding. A clone's NAME keeps its origin set/binding and
+// index signature (bw_arr_g<set>_b<originBinding>_...), and the page
+// tier's scanWgslResources records that origin as the declaration's
+// origBinding, so bind-time resolution still reads the guest's
+// descriptor entries for the origin binding and selects the clone's
+// element from its signature. Only clones move; an original variable is
+// never renumbered, and when a non-clone holds the binding the first
+// clone moves too. The split runs AFTER R14 in applySpirvFix: the R14
+// signature is keyed by the bindings the page tier saw in the original
+// module, so no renumbering may happen before injection has consumed
+// it.
+function splitSpecializedCloneBindings(mod, log) {
+  const nameOf = (ins) => {
+    const bytes = [];
+    for (let k = 1; k < ins.words.length; k++) {
+      let w = ins.words[k];
+      for (let b = 0; b < 4; b++) { const c = w & 0xff; if (!c) return String.fromCharCode(...bytes); bytes.push(c); w >>= 8; }
+    }
+    return String.fromCharCode(...bytes);
+  };
+  const clones = new Set();
+  for (const ins of mod.insns) if (ins.op === Op.Name && nameOf(ins).startsWith('bw_arr_')) clones.add(ins.words[0]);
+  if (!clones.size) return false;
+  const decorations = storageDecorations(mod);
+  const groups = new Map(); // "set:binding" -> [varIds in module order]
+  const setMax = new Map();
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable) continue;
+    const d = decorations.get(ins.resultId);
+    if (!d || d.set == null || d.binding == null) continue;
+    const key = d.set + ':' + d.binding;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ins.resultId);
+    setMax.set(d.set, Math.max(setMax.get(d.set) ?? -1, d.binding));
+  }
+  let changed = false;
+  const nextFree = new Map();
+  for (const [key, ids] of groups) {
+    if (ids.length < 2) continue;
+    const set = Number(key.split(':')[0]);
+    const keeper = ids.find(id => !clones.has(id)) ?? ids[0];
+    for (const id of ids) {
+      if (id === keeper || !clones.has(id)) continue;
+      if (!nextFree.has(set)) nextFree.set(set, (setMax.get(set) ?? -1) + 1);
+      const nb = nextFree.get(set); nextFree.set(set, nb + 1);
+      for (const ins of mod.insns) {
+        if (ins.op === Op.Decorate && ins.words[0] === id && ins.words[1] === 33) ins.words[2] = nb;
+      }
+      log.push('spirvfix: moved specialized clone %' + id + ' in set ' + set + ' from binding ' + key.split(':')[1] + ' to binding ' + nb + ' (two specialized resources cannot share one binding in the translation stack; the clone name keeps the origin binding)');
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// R14 companion "prune-dead-storage-image-types" (FD-49): a storage image
+// type with Format Unknown that NOTHING references -- no variable, no
+// function, only its own (equally unreferenced) array/pointer wrapper
+// types -- still fails translation, because the translator processes
+// type declarations whether or not a variable uses them. vkd3d emits
+// such declarations as heap boilerplate on shaders that never touch
+// them (one captured module's entry point is a bare return). Removing a
+// declaration nothing can observe changes no behaviour; a type that IS
+// referenced stays, and if its format could not be resolved translation
+// keeps failing loudly exactly as before. Runs after R14, so a type the
+// signature could concretely format is never a candidate. Liveness
+// accounting mirrors the R15a orphan sweep: annotations do not keep a
+// type alive and header/directive words are not references.
+function pruneDeadStorageImageTypes(mod, log) {
+  const candidates = [];
+  for (const ins of mod.insns) {
+    if (ins.op === Op.TypeImage && ins.words[6] === 2 && ins.words[7] === 0) candidates.push(ins.resultId);
+  }
+  if (!candidates.length) return false;
+  const live = new Set();
+  const wrappers = new Map(); // wrapper type id -> wrapped (child) type id
+  for (const ins of mod.insns) {
+    if (ins.op === Op.TypePointer && ins.resultId != null) wrappers.set(ins.resultId, ins.words[2]);
+    else if ((ins.op === Op.TypeArray || ins.op === Op.TypeRuntimeArray) && ins.resultId != null) wrappers.set(ins.resultId, ins.words[1]);
+  }
+  for (const ins of mod.insns) {
+    if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
+    if (ins.op === Op.SourceContinued || ins.op === Op.Source || ins.op === Op.SourceExtension ||
+        ins.op === Op.String || ins.op === Op.Extension || ins.op === Op.MemoryModel ||
+        ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
+    if (ins.op === Op.TypeImage || wrappers.has(ins.resultId ?? -1)) continue; // types are users only through the wrapper fixpoint below
+    if (ins.resultType != null) live.add(ins.words[0]);
+    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+    for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [id, child] of wrappers) {
+      if (live.has(id) && !live.has(child)) { live.add(child); grew = true; }
+    }
+  }
+  const dead = new Set(candidates.filter(id => !live.has(id)));
+  if (!dead.size) return false;
+  grew = true;
+  while (grew) {
+    grew = false;
+    for (const [id, child] of wrappers) {
+      if (!dead.has(id) && !live.has(id) && dead.has(child)) { dead.add(id); grew = true; }
+    }
+  }
+  const before = mod.insns.length;
+  mod.insns = mod.insns.filter(i => {
+    if (i.resultId != null && dead.has(i.resultId)) return false;
+    if ((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && dead.has(i.words[0])) return false;
+    return true;
+  });
+  if (mod.insns.length === before) return false;
+  log.push('spirvfix: pruned ' + dead.size + ' dead format-less storage image declaration(s) (storage image types no variable or instruction referenced, plus their unreferenced wrapper types)');
+  // The 55/56 capabilities license format-less storage access; when the
+  // prune removed the module's LAST format-less storage type they are
+  // stray declarations the translator cannot consume (R14 strips them
+  // under the same condition when it resolves the formats itself, but
+  // it runs before this prune and still saw the dead types).
+  if (!mod.insns.some(i => i.op === Op.TypeImage && i.words[6] === 2 && i.words[7] === 0)) {
+    const n = mod.insns.length;
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && (i.words[0] === 55 || i.words[0] === 56)));
+    if (mod.insns.length !== n) log.push('spirvfix: stripped StorageImage{Read,Write}WithoutFormat capabilities (no format-less storage image remains)');
   }
   return true;
 }
@@ -3935,8 +4970,11 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     return { bytes: u8, applied, log: ['parse failed: ' + (e.message || e)] };
   }
   try {
+    if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
     if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
+    if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
+    if (quadOpsToShuffle(mod, log)) applied.push('quad-ops-to-shuffle');
   } catch (e) {
     log.push('R12 failed: ' + (e.message || e));
   }
@@ -4008,11 +5046,33 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     if (rewriteRootDescriptors(mod, log)) applied.push('root-descriptor-bda');
   } catch (e) { log.push('R15b failed: ' + (e.message || e)); }
   try {
+    // FD-16: a texel buffer reached through a descriptor-heap runtime
+    // array becomes a DIRECT texel variable only when R15a specializes
+    // the array into its scalar clone -- after the first R12 pass above
+    // has already run. Run the R12 family again so a specialized clone
+    // over a Dim=Buffer image receives exactly the conversion a direct
+    // variable receives (Dim flip, capability drop, fetch widening, the
+    // same refusals). A clone shape the conversion refuses stays
+    // unconverted and keeps failing loudly at translation, and the
+    // bridge audit admits the capability pair only under the mirror of
+    // this composition. No-ops when no Dim=Buffer type remains.
+    if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
+    if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
+    if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
+    if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
+  } catch (e) { log.push('R12 post-specialize failed: ' + (e.message || e)); }
+  try {
     if (uniformBlocksToStorage(mod, log)) applied.push('uniform-block-to-storage');
   } catch (e) { log.push('R13 failed: ' + (e.message || e)); }
   try {
     if (injectStorageImageFormats(mod, log, storageFormats)) applied.push('storage-image-format');
   } catch (e) { log.push('R14 failed: ' + (e.message || e)); }
+  try {
+    if (splitSpecializedCloneBindings(mod, log)) applied.push('specialized-binding-split');
+  } catch (e) { log.push('R15a-split failed: ' + (e.message || e)); }
+  try {
+    if (pruneDeadStorageImageTypes(mod, log)) applied.push('prune-dead-storage-image-types');
+  } catch (e) { log.push('R14-prune failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
   try {
     return { bytes: serializeSpirv(mod), applied, log };
@@ -4021,4 +5081,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs'];
+export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];

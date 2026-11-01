@@ -36,11 +36,10 @@
 // vastly outnumber the other operations and taxing every read for a
 // rarely used event is not justified), and writes through a memory
 // mapping do not produce IN_MODIFY (the mapping write path has no
-// per-write funnel either). IN_CREATE can also fire for pre-existing
-// children when a directory's children are first loaded from the host
-// (FsNode::loadChildren funnels through addChild); watches registered
-// after that load, or on directories whose children are already loaded,
-// see only real creations.
+// per-write funnel either). Children materialized by a directory's
+// first load are pre-existing, not creations: FsNode::loadChildren
+// suppresses notification for the load (see childrenLoadInProgress),
+// matching Linux, which never reports pre-existing files.
 
 std::vector<std::weak_ptr<KInotify>> KInotify::instances;
 BOXEDWINE_MUTEX KInotify::instancesMutex;
@@ -53,11 +52,19 @@ KInotify::~KInotify() {
 }
 
 U32 KInotify::ioctl(KThread* thread, U32 request) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.ioctl", "BW64-FAIL inotify-ioctl outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-ioctl request=0x%x outcome=returned-ENOTSUP", request);
+    }
     return -K_ENOTSUP;
 }
 
 S64 KInotify::seek(S64 pos) {
-    return 0;
+    // inotify fds are anon-inode files with no seek operation; Linux
+    // answers llseek on them with ESPIPE. This used to report success,
+    // which told the guest a seek happened when none did.
+    return -K_ESPIPE;
 }
 
 S64 KInotify::length() {
@@ -81,6 +88,10 @@ KFileLock* KInotify::getLock(KFileLock* lock) {
 }
 
 U32 KInotify::setLock(KFileLock* lock, bool wait) {
+    // Non-lockable object (supportsLocks()==false gates fcntl lock
+    // commands before they reach this), but a direct caller gets a
+    // real errno, and the refusal is on the record.
+    kwarn_fmt("kobject: KInotify::setLock on a non-lockable object; returned ENOTSUP");
     return -K_ENOTSUP;
 }
 
@@ -96,8 +107,17 @@ bool KInotify::isOpen() {
 }
 
 bool KInotify::isReadReady() {
-    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
-    return !this->pendingEvents.empty();
+    // Deliberately lock-free, like the unix socket object's readiness
+    // probe: poll scans call this while holding the polling thread's
+    // poll condition mutex, and the notify sweep in this class signals
+    // poll conditions while holding waitCond. Taking waitCond here
+    // closes an ABBA cycle (pollCond -> waitCond in the scan against
+    // waitCond -> pollCond in the sweep) that deadlocked any session
+    // whose server polled an inotify descriptor while other processes
+    // churned files -- the FD-38 enablement park. The atomic mirror is
+    // maintained at every queue mutation, so this returns exactly what
+    // the locked version returned.
+    return this->pendingNonEmpty.load(std::memory_order_acquire);
 }
 
 bool KInotify::isWriteReady() {
@@ -113,10 +133,20 @@ void KInotify::waitForEvents(BOXEDWINE_CONDITION& parentCondition, U32 events) {
 }
 
 U32 KInotify::write(KThread* thread, U32 buffer, U32 len) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.write", "BW64-FAIL inotify-write outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-write len=%u outcome=returned-ENOTSUP", len);
+    }
     return -K_ENOTSUP;
 }
 
 U32 KInotify::writeNative(U8* buffer, U32 len) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.write", "BW64-FAIL inotify-write outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-write len=%u outcome=returned-ENOTSUP", len);
+    }
     return -K_ENOTSUP;
 }
 
@@ -139,7 +169,11 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
             U32 written = 0;
             while (!this->pendingEvents.empty()) {
                 const PendingEvent& event = this->pendingEvents.front();
-                U32 nameLen = (event.name.length() + 1 + 3) & ~3u;
+                // Linux gives events with no name a len of 0; reporting the padded
+                // length anyway desynchronizes the reader's record walk and
+                // corrupts every event queued behind it in the same read.
+                // Linux pads the name field up to a multiple of 16 bytes.
+                U32 nameLen = event.name.length() == 0 ? 0 : (U32)((event.name.length() + 1 + 15) & ~15u);
                 U32 recordSize = 16 + nameLen;
                 if (written + recordSize > len) {
                     if (written == 0) {
@@ -161,6 +195,7 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
             }
             if (this->pendingEvents.empty()) {
                 this->overflowPending = false;
+                this->pendingNonEmpty.store(false, std::memory_order_release);
             }
             return written;
         }
@@ -182,6 +217,11 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
 }
 
 U32 KInotify::stat(KProcess* process, U32 address, bool is64) {
+    if (bw64RecoverEnabled()) {
+        bw64RecoverLogOnce("inotify.stat", "BW64-FAIL inotify-stat outcome=returned-ENOTSUP");
+    } else {
+        kwarn_fmt("BW64-FAIL inotify-stat outcome=returned-ENOTSUP");
+    }
     return -K_ENOTSUP;
 }
 
@@ -199,6 +239,11 @@ BString KInotify::selfFd() {
 
 S32 KInotify::addWatch(const std::shared_ptr<FsNode>& node, U32 mask) {
     if ((mask & K_IN_ONLYDIR) && !node->isDirectory()) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("inotify.addwatch.enotdir", "BW64-FAIL inotify-addwatch outcome=returned-ENOTDIR");
+        } else {
+            kwarn_fmt("BW64-FAIL inotify-addwatch mask=0x%x outcome=returned-ENOTDIR", mask);
+        }
         return -K_ENOTDIR;
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
@@ -206,9 +251,20 @@ S32 KInotify::addWatch(const std::shared_ptr<FsNode>& node, U32 mask) {
         std::shared_ptr<FsNode> watched = entry.second.node.lock();
         if (watched && watched.get() == node.get()) {
             if (mask & K_IN_MASK_CREATE) {
+                if (bw64RecoverEnabled()) {
+                    bw64RecoverLogOnce("inotify.addwatch.eexist", "BW64-FAIL inotify-addwatch outcome=returned-EEXIST");
+                } else {
+                    kwarn_fmt("BW64-FAIL inotify-addwatch mask=0x%x outcome=returned-EEXIST", mask);
+                }
                 return -K_EEXIST;
             }
-            entry.second.mask |= mask; // re-adding merges, as on Linux
+            if (mask & K_IN_MASK_ADD) {
+                entry.second.mask |= mask;
+            } else {
+                // A plain re-add replaces the mask, as on Linux: events
+                // the new mask no longer names stop being delivered.
+                entry.second.mask = mask;
+            }
             return (S32)entry.first;
         }
     }
@@ -224,6 +280,11 @@ S32 KInotify::removeWatch(U32 wd) {
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
     auto it = this->watches.find(wd);
     if (it == this->watches.end()) {
+        if (bw64RecoverEnabled()) {
+            bw64RecoverLogOnce("inotify.rmwatch.einval", "BW64-FAIL inotify-rmwatch outcome=returned-EINVAL");
+        } else {
+            kwarn_fmt("BW64-FAIL inotify-rmwatch wd=%u outcome=returned-EINVAL", wd);
+        }
         return -K_EINVAL;
     }
     this->watches.erase(it);
@@ -247,6 +308,7 @@ void KInotify::queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name) {
             overflow.mask = K_IN_Q_OVERFLOW;
             overflow.cookie = 0;
             this->pendingEvents.push_back(overflow);
+            this->pendingNonEmpty.store(true, std::memory_order_release);
         }
         return;
     }
@@ -256,6 +318,7 @@ void KInotify::queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name) {
     event.cookie = cookie;
     event.name = name;
     this->pendingEvents.push_back(event);
+    this->pendingNonEmpty.store(true, std::memory_order_release);
 }
 
 void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie) {
@@ -278,7 +341,12 @@ void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BStri
             }
             if (subject && selfType && watched.get() == subject) {
                 if (watch.mask & selfType) {
-                    this->queueLocked((S32)entry.first, selfType | (watched->isDirectory() ? K_IN_ISDIR : 0), cookie, B(""));
+                    // Linux sets IN_ISDIR on self events for a directory
+                    // subject except IN_DELETE_SELF and IN_MOVE_SELF,
+                    // which are reported without it (measured on the host
+                    // kernel).
+                    bool selfIsDir = watched->isDirectory() && selfType != K_IN_DELETE_SELF && selfType != K_IN_MOVE_SELF;
+                    this->queueLocked((S32)entry.first, selfType | (selfIsDir ? K_IN_ISDIR : 0), cookie, B(""));
                     if (watch.mask & K_IN_ONESHOT) {
                         dropWds.push_back(entry.first);
                     }
@@ -333,6 +401,10 @@ void KInotify::notifyNodeRemoved(FsNode* parent, FsNode* node) {
     if (!node) {
         return;
     }
+    // The unlink drops the node's link count before it goes away; Linux
+    // reports that as IN_ATTRIB on the node itself, ahead of
+    // IN_DELETE_SELF.
+    sweepAll(nullptr, node, 0, B(""), false, K_IN_ATTRIB, 0);
     sweepAll(parent, node, parent ? K_IN_DELETE : 0, node->name, node->isDirectory(), K_IN_DELETE_SELF, 0);
 }
 

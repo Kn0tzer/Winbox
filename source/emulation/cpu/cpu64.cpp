@@ -22,6 +22,7 @@
 #include "ripSampler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -460,7 +461,24 @@ bool CPU64::deliverGuestMemoryFault() {
     }
     yield = false;
     const S32 siCode = (error & 1) ? 2 /*SEGV_ACCERR*/ : 1 /*SEGV_MAPERR*/;
-    if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error))
+    const bool delivered = raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, address, error);
+    // A guest memory fault must never be silent: the dead-start regression
+    // (a835b2a65) killed Wine startup with exactly three of these and left
+    // no trace anywhere, which is why it took days to localize. One
+    // greppable line per fault, rate-limited so a fault-looping guest
+    // cannot flood the log; a fault whose delivery itself failed is the
+    // severe case and is always logged.
+    {
+        static std::atomic<unsigned long long> faultLogCount{0};
+        const unsigned long long n = faultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!delivered || n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL guest-memfault pid=%d addr=0x%llx rip=0x%llx err=%u si_code=%d delivered=%d count=%llu",
+                     (thread && thread->process) ? (int)thread->process->id : -1,
+                     (unsigned long long)address, (unsigned long long)faultRip,
+                     error, (int)siCode, delivered ? 1 : 0, n);
+        }
+    }
+    if (delivered)
         return true;
     if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
     yield = true;
@@ -499,7 +517,18 @@ bool CPU64::validateInstructionFetch() {
         const U32 errorCode = mapped ? PF_USER_INSTRUCTION_PROTECTION
                                      : PF_USER_INSTRUCTION_NOT_PRESENT;
         const S32 siCode = mapped ? SEGV_ACCERR : SEGV_MAPERR;
-        if (raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode)) {
+        const bool delivered = raiseSyncFault(K_SIGSEGV, /*trapNo #PF*/14, siCode, rip, errorCode);
+        {
+            static std::atomic<unsigned long long> fetchFaultLogCount{0};
+            const unsigned long long n = fetchFaultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (!delivered || n <= 64 || n % 1024 == 0) {
+                klog_fmt("BW64-FAIL guest-fetchfault pid=%d rip=0x%llx mapped=%d err=%u si_code=%d delivered=%d count=%llu",
+                         (thread && thread->process) ? (int)thread->process->id : -1,
+                         (unsigned long long)rip, mapped ? 1 : 0,
+                         errorCode, (int)siCode, delivered ? 1 : 0, n);
+            }
+        }
+        if (delivered) {
             return true;
         }
         if (thread && thread->process) thread->process->signalProcess(K_SIGSEGV);
@@ -1257,7 +1286,7 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
     // Deliver a synchronous, instruction-addressed fault. The test harness
     // has no attached thread or signal handlers, so an unhandled fault yields
     // at the faulting RIP; a guest handler instead receives the saved context.
-    auto faultAtInstruction = [&](U32 sig, U32 trapNo) -> U32 {
+    auto faultAtInstruction = [&](U32 sig, U32 trapNo, U32 errorCode = 0, S32 siCode = 0) -> U32 {
         if (trapNo == 13 && std::getenv("BW64_UNIMPLDUMP")) {
             klog_fmt("CPU64: #GP at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
                      (unsigned long long)ipStart,
@@ -1267,8 +1296,33 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
                      fetchByte(ipStart + 9), fetchByte(ipStart + 10), fetchByte(ipStart + 11),
                      fetchByte(ipStart + 12), fetchByte(ipStart + 13), fetchByte(ipStart + 14));
         }
-        if (raiseSyncFault(sig, trapNo, 0, ipStart)) return 0;
+        // A synchronous instruction fault must never be silent: before this
+        // line existed, a guest dying here left no trace at all (the same
+        // blind-spot class as the dead-start memory faults). Counting cap
+        // per docs/failure-logging-and-recovery.md; the fallback outcome
+        // (no guest handler, process signalled) always logs, because the
+        // delivery itself fell back. siCode/errorCode pass through from
+        // the fault site (merge composition, frontier-review Part 1.4):
+        // for INT imm8 the error code is what names the requested vector,
+        // so it belongs in the log line too.
+        static std::atomic<U64> insnFaultCount{0};
+        const U64 faultCount =
+            insnFaultCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const U32 faultPid = (thread && thread->process) ? thread->process->id : 0;
+        if (raiseSyncFault(sig, trapNo, siCode, ipStart, errorCode)) {
+            if (faultCount <= 64 || faultCount % 1024 == 0) {
+                klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u err=0x%x code=%d rip=0x%llx delivered=1 count=%llu",
+                         faultPid, sig, trapNo, errorCode, siCode,
+                         (unsigned long long)ipStart,
+                         (unsigned long long)faultCount);
+            }
+            return 0;
+        }
         if (thread && thread->process) thread->process->signalProcess(sig);
+        klog_fmt("BW64-FAIL guest-insnfault pid=%u sig=%u trap=%u err=0x%x code=%d rip=0x%llx delivered=0 count=%llu",
+                 faultPid, sig, trapNo, errorCode, siCode,
+                 (unsigned long long)ipStart,
+                 (unsigned long long)faultCount);
         yield = true;
         return 0;
     };
@@ -1289,7 +1343,18 @@ U32 CPU64::step(bool trackJitBlockBoundary) {
         if (bw64RecoverEnabled()) bw64RecoverNoteSigillFallback();
         return faultAtInstruction(K_SIGILL, 6);
     }
-    if (op == 0xCD || op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
+    if (op == 0xCD) {
+        // A user-mode INT imm8 reaches the #GP handler with an IDT error
+        // code naming the requested vector: selector index = vector, TI=0,
+        // IDT=1, EXT=0. Wine's SIGSEGV handler decodes exactly this field
+        // to recognize the architected software-interrupt exceptions
+        // (notably int 0x2d -> EXCEPTION_BREAKPOINT and int 0x29 ->
+        // __fastfail). Leaving it zero misreports every one of them as a
+        // privileged instruction.
+        U32 errorCode = ((U32)fetchByte(rip + opOff + 1) << 3) | 0x2;
+        return faultAtInstruction(K_SIGSEGV, 13, errorCode);
+    }
+    if (op == 0xF1 || op == 0xF4 || op == 0xFA || op == 0xFB ||
         (op >= 0x6C && op <= 0x6F) || (op >= 0xE4 && op <= 0xE7) ||
         (op >= 0xEC && op <= 0xEF) || op == 0x9A || op == 0xEA ||
         op == 0xCA || op == 0xCB) {
@@ -3376,17 +3441,21 @@ dsp_49:
         return opOff + 1;
     }
 
-    // INT3 (CC). Software-breakpoint. In user mode this raises SIGTRAP;
-    // without real signal delivery, klog the trap and yield so the guest
-    // exits cleanly instead of looping or corrupting host state. assert()
-    // failure paths and debugger-injected breakpoints emit this.
+    // INT3 (CC). Software breakpoint: #BP, delivered as SIGTRAP below.
+    // assert() failure paths and debugger-injected breakpoints emit this.
 dsp_50:
     if (op == 0xCC) {
-        klog_fmt("CPU64: INT3 at RIP=0x%llx — yielding (no SIGTRAP delivery yet)",
-                 (unsigned long long)rip);
-        yield = true;
-        rip += opOff + 1;
-        return opOff + 1;
+        // INT3 is #BP: Linux delivers SIGTRAP (trapno 3, si_code
+        // TRAP_BRKPT) with the saved context RIP already past the
+        // breakpoint byte, and Wine's trap handler converts exactly
+        // that frame into EXCEPTION_BREAKPOINT, backing the exception
+        // address up over the CC itself. Deliver it for real — the old
+        // log-and-yield parked any thread executing a deliberate
+        // breakpoint (debugger probes, assert paths) even when a
+        // handler was installed. With no handler the fallback below
+        // still yields, one byte past the CC, as before.
+        rip = ipStart + opOff + 1;
+        return faultAtInstruction(K_SIGTRAP, 3, 0, 1 /*TRAP_BRKPT*/);
     }
 
     // CLD (FC) / STD (FD). Direction flag for string ops.
@@ -6916,18 +6985,12 @@ dsp_55:
             // MXCSR with reserved bits set raises #GP before any state is
             // touched (readFxrstorImage validates first).
             if (!readFxrstorImage(m.effAddr)) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
         } else if (aeMod != 3 && aeReg == 2) {
             U32 loadedMxcsr = memory->readd(m.effAddr);
             if (loadedMxcsr & 0xFFFF0000) {
-                if (raiseSyncFault(K_SIGSEGV, /*trapNo #GP*/13, 0, rip)) return 0;
-                if (thread) thread->process->signalProcess(K_SIGSEGV);
-                yield = true;
-                return 0;
+                return faultAtInstruction(K_SIGSEGV, 13); // #GP
             }
             mxcsr = loadedMxcsr;
         } else if (aeMod != 3 && aeReg == 3) {
@@ -7771,7 +7834,7 @@ unhandled:
     const bool controlTrace = ripSamplerControlTraceEnabled();
     const bool traceDumped = reportControlTrace(
         "unimplemented-opcode", ipStart, std::getenv("BW64_UNIMPLDUMP") != nullptr);
-    if (!controlTrace || traceDumped) klog_fmt("CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
+    if (!controlTrace || traceDumped) klog_fmt("BW64-FAIL CPU64: unimpl opcode at RIP=0x%llx bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (rex=0x%02x osz=%d asz=%d seg=%02x rep=%02x)",
              (unsigned long long)ipStart,
              fetchByte(ipStart),
              fetchByte(ipStart + 1),
@@ -8757,6 +8820,16 @@ U32 CPU64::tryWasmExec(U64 maxInsn) {
     m_jit->instantiateTimeUs += jit64NowUs() - instantiateStart;
     if (index < 0) {
         m_jit->instantiateFailed++;
+        // The engine refused a module the emitter produced. That is never
+        // a guest property -- it is an emulator/environment problem -- and
+        // the interpreter fallback hides it completely, so give it the
+        // counting-capped BW64-FAIL line (the JS runtime logs the reason).
+        if (m_jit->instantiateFailed <= 64 ||
+            m_jit->instantiateFailed % 1024 == 0) {
+            klog_fmt("BW64-FAIL jit-instantiate rip=0x%llx module-bytes=%u outcome=interpreter-fallback count=%llu",
+                     (unsigned long long)r, (unsigned)module.size(),
+                     (unsigned long long)m_jit->instantiateFailed);
+        }
         m_jit->cache.invalidate(r);
         m_jit->negative.add(r, gen0);
         m_jit->insnsFallback++;

@@ -25,7 +25,9 @@ FsDynamicLinkNode::FsDynamicLinkNode(U32 id, U32 rdev, BString path, std::shared
 }
 
 U32 FsDynamicLinkNode::rename(BString path) {
-    return -1;
+    // A dynamic link has no directory entry of its own to move.
+    bw64RecoverLogOnce("dynlink-rename", "BW64-FAIL fs-dynlink op=rename outcome=refused errno=EPERM (dynamic link has no directory entry)");
+    return -K_EPERM;
 }
 
 bool FsDynamicLinkNode::remove() {
@@ -57,7 +59,8 @@ U32 FsDynamicLinkNode::getMode() {
 }
 
 U32 FsDynamicLinkNode::removeDir() {
-    return -1;
+    bw64RecoverLogOnce("dynlink-removedir", "BW64-FAIL fs-dynlink op=removeDir outcome=refused errno=EPERM (dynamic link is not a directory)");
+    return -K_EPERM;
 }
 
 U32 FsDynamicLinkNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastModifiedTime, U32 lastModifiedTimeNano) {

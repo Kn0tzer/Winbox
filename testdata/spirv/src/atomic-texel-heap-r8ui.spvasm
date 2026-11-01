@@ -1,0 +1,57 @@
+; FD-62 refusal fixture: an atomic through a texel pointer on an
+; R8ui storage texel buffer. A sub-word texel has no byte-exact
+; storage-buffer element (four texels share one 32-bit word, and a
+; plain buffer atomic would hit the neighbours), so the class
+; boundary excludes every sub-word and packed format: the array
+; keeps the named texel-pointer refusal.
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability StorageImageExtendedFormats
+OpCapability RuntimeDescriptorArray
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %registers %heap %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpName %main "main"
+OpName %RootConstants "RootConstants"
+OpName %registers "registers"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpMemberDecorate %RootConstants 1 Offset 4
+OpDecorate %heap DescriptorSet 2
+OpDecorate %heap Binding 0
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%RootConstants = OpTypeStruct %uint %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%11 = OpTypeImage %uint Buffer 0 0 0 2 R8ui
+%_runtimearr_11 = OpTypeRuntimeArray %11
+%_ptr_UniformConstant__runtimearr_11 = OpTypePointer UniformConstant %_runtimearr_11
+%heap = OpVariable %_ptr_UniformConstant__runtimearr_11 UniformConstant
+%v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%_ptr_UniformConstant_11 = OpTypePointer UniformConstant %11
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%_ptr_Image_uint = OpTypePointer Image %uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%32 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%idx = OpLoad %uint %32
+%30 = OpAccessChain %_ptr_UniformConstant_11 %heap %idx
+%34 = OpLoad %11 %30
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%ci = OpBitcast %int %gx
+%tp = OpImageTexelPointer %_ptr_Image_uint %30 %ci %uint_0
+%r = OpAtomicOr %uint %tp %uint_1 %uint_0 %uint_1
+OpReturn
+OpFunctionEnd

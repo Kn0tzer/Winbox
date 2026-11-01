@@ -34,3 +34,26 @@ test('clipboard bridge leaves events untouched when no runtime module or clipboa
   listeners.get('paste')({ clipboardData: { getData: () => '' }, preventDefault: () => { prevented = true; } });
   assert.equal(prevented, false);
 });
+
+test('a throwing guest call is contained, reported once per direction, and leaves the event alone', () => {
+  const listeners = new Map();
+  const document = { addEventListener: (name, callback) => listeners.set(name, callback) };
+  const module = { ccall: () => { throw Error('runtime gone'); } };
+  connectRuntimeClipboard(document, () => module);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  let prevented = 0;
+  try {
+    const copyEvent = { clipboardData: { setData() { throw Error('must not write'); } }, preventDefault: () => { prevented++; } };
+    listeners.get('copy')(copyEvent);
+    listeners.get('copy')(copyEvent);
+    listeners.get('paste')({ clipboardData: { getData: () => 'host text' }, preventDefault: () => { prevented++; } });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(prevented, 0);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /BW64-FAIL clipboard-bridge op=get error=runtime gone/);
+  assert.match(warnings[1], /BW64-FAIL clipboard-bridge op=set error=runtime gone/);
+});

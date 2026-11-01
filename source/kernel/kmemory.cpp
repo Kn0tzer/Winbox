@@ -28,6 +28,23 @@
 #include "../emulation/cpu/jit/jitCodeLifecycle.h"
 #endif
 
+#include <atomic>
+
+namespace {
+// Counted BW64-FAIL reporting for guest-reachable memory failures in this
+// file (pattern: docs/failure-logging-and-recovery.md). The first 64
+// events log in full, then every 1024th, always with the cumulative
+// count: a guest looping on a bad buffer cannot flood the log, and no
+// failure is ever silent either.
+std::atomic<unsigned long long> g_memFailCount{0};
+unsigned long long memFailNextCount() {
+    return g_memFailCount.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+bool memFailLogDue(unsigned long long n) {
+    return n <= 64 || n % 1024 == 0;
+}
+} // namespace
+
 MappedFileCache::~MappedFileCache() {
     for (RamPage& page : data) {
         ramPageRelease(page);
@@ -115,12 +132,24 @@ U32 KMemory::mlock(U32 addr, U32 len) {
     U32 newPages = 0;
     for (U32 page = firstPage;; ++page) {
         if (!isPageMapped(page)) {
+            const unsigned long long n = memFailNextCount();
+            if (memFailLogDue(n)) {
+                klog_fmt("BW64-FAIL mlock op=lock addr=0x%X len=%u page=0x%X reason=unmapped outcome=-ENOMEM count=%llu",
+                         addr, len, page, n);
+            }
             return -K_ENOMEM;
         }
         if (!(getPageState(page) & K_PAGE_STATE_LOCKED)) newPages++;
         if (page == lastPage) break;
     }
     if (process && process->memLockedBytes + (U64)newPages * K_PAGE_SIZE > process->rlimMemlockCur) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL mlock op=lock addr=0x%X len=%u reason=limit locked=%llu new=%llu limit=%llu outcome=-ENOMEM count=%llu",
+                     addr, len, (unsigned long long)process->memLockedBytes,
+                     (unsigned long long)newPages * K_PAGE_SIZE,
+                     (unsigned long long)process->rlimMemlockCur, n);
+        }
         return -K_ENOMEM;
     }
     for (U32 page = firstPage;; ++page) {
@@ -141,6 +170,11 @@ U32 KMemory::munlock(U32 addr, U32 len) {
     const U32 lastPage = (U32)(((U64)addr + len - 1) >> K_PAGE_SHIFT);
     for (U32 page = firstPage;; ++page) {
         if (!isPageMapped(page)) {
+            const unsigned long long n = memFailNextCount();
+            if (memFailLogDue(n)) {
+                klog_fmt("BW64-FAIL munlock op=unlock addr=0x%X len=%u page=0x%X reason=unmapped outcome=-ENOMEM count=%llu",
+                         addr, len, page, n);
+            }
             return -K_ENOMEM;
         }
         if (page == lastPage) break;
@@ -158,6 +192,13 @@ U32 KMemory::mlockAll() {
         if (isPageMapped(page) && !(getPageState(page) & K_PAGE_STATE_LOCKED)) newBytes += K_PAGE_SIZE;
     }
     if (process && process->memLockedBytes + newBytes > process->rlimMemlockCur) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL mlockall op=lock reason=limit locked=%llu new=%llu limit=%llu outcome=-ENOMEM count=%llu",
+                     (unsigned long long)process->memLockedBytes,
+                     (unsigned long long)newBytes,
+                     (unsigned long long)process->rlimMemlockCur, n);
+        }
         return -K_ENOMEM;
     }
     for (U32 page = 0; page < K_NUMBER_OF_PAGES; ++page) {
@@ -233,8 +274,18 @@ S32 KMemory::madvise(U32 address, U32 len, S32 advice) {
             if (page == lastPage) break;
         }
         return 0;
-    default:
+    default: {
+        // Advice with no state in this layer (pure hints, KSM, hugepages):
+        // accepted as a no-op, but reported -- never silently. The syscall
+        // layer has already rejected values outside the known MADV_* set,
+        // so reaching here means "known advice, not implemented here".
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL madvise op=hint addr=0x%X len=%u advice=%d outcome=noop count=%llu",
+                     address, len, advice, n);
+        }
         return 0;
+    }
     }
 }
 
@@ -802,7 +853,15 @@ void KMemory::memcpy(U32 address, const void* p, U32 len) {
 
 void KMemory::memcpy(U32 dest, U32 src, U32 len) {
     if (dest + len < dest || src + len < src) {
-        kpanic("integer overflow in memcpy");
+        // Guest-controlled addresses: a wrapping range is a guest bug, not
+        // an emulator invariant. Report it and skip the copy instead of
+        // kpanic-ing, which exits the whole emulator by default.
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL memcpy op=guest-copy dest=0x%X src=0x%X len=%u outcome=skipped-overflow count=%llu",
+                     dest, src, len, n);
+        }
+        return;
 	}
 	if (dest < src) {
         for (U32 i = 0; i < len; i++, src++, dest++) {
@@ -1132,13 +1191,33 @@ void KMemory::logPageFault(KThread* thread, U32 address) {
     klog("Mapped Files:");
     process->printMappedFiles();
     cpu->walkStack(cpu->eip.u32, EBP, 2);
-    kpanic("pf");
+    // No kpanic: this dump is the post-mortem for a guest page fault,
+    // and a guest fault is fatal to the guest process, not to the
+    // emulator. The callers (KThread::seg_mapper / seg_access) log the
+    // fault in the standard BW64-FAIL form and end the guest process.
 }
 
-void KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function<bool(U8* ram, U32 len)> callback) {
+bool KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function<bool(U8* ram, U32 len)> callback) {
     if (!len) {
-        return;
+        return true;
     }
+    // The address/length come from guest syscall buffers (file and socket
+    // I/O copy through here), so a page with no host RAM is a guest bug,
+    // not an emulator invariant: report it and stop the copy -- the caller
+    // degrades to a short/empty result. This used to kpanic, which exits
+    // the whole emulator in the default configuration.
+    const U32 startAddress = address;
+    const U32 startLen = len;
+    auto reportNoRam = [&](U32 failedPage) {
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            KThread* ct = KThread::currentThread();
+            klog_fmt("BW64-FAIL performOnMemory op=copy addr=0x%X len=%u page=0x%X readOnly=%d tid=%d pid=%d outcome=stopped count=%llu",
+                     startAddress, startLen, failedPage, readOnly ? 1 : 0,
+                     ct ? (int)ct->id : -1,
+                     ct && ct->process ? (int)ct->process->id : -1, n);
+        }
+    };
     U32 pageIndex = address >> K_PAGE_SHIFT;
     Page* page = data->getPage(pageIndex);
     U32 offset = address & K_PAGE_MASK;
@@ -1149,14 +1228,11 @@ void KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function
 
     U8* ram = page->getRamPtr(&data->mmu[pageIndex], pageIndex, !readOnly, true, offset, todo);
     if (!ram) {
-        KThread* ct = KThread::currentThread();
-        kpanic_fmt("KMemory::performOnMemory failed to get ram addr=0x%X len=%d page=0x%X tid=%d pid=%d is64=%d",
-                   address, len, pageIndex, ct ? ct->id : -1,
-                   ct && ct->process ? (int)ct->process->id : -1,
-                   ct && ct->process ? (int)ct->process->is64Bit : -1);
+        reportNoRam(pageIndex);
+        return false;
     }
     if (!callback(ram, todo)) {
-        return;
+        return true;
     }
     address += todo;
     len -= todo;
@@ -1166,10 +1242,11 @@ void KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function
         page = data->getPage(pageIndex);
         ram = page->getRamPtr(&data->mmu[pageIndex], pageIndex, !readOnly, true, 0, K_PAGE_SIZE);
         if (!ram) {
-            kpanic("KMemory::performOnMemory failed to get ram");
+            reportNoRam(pageIndex);
+            return false;
         }
         if (!callback(ram, K_PAGE_SIZE)) {
-            return;
+            return true;
         }
         address += K_PAGE_SIZE;
         len -= K_PAGE_SIZE;
@@ -1180,10 +1257,12 @@ void KMemory::performOnMemory(U32 address, U32 len, bool readOnly, std::function
         page = data->getPage(pageIndex);
         ram = page->getRamPtr(&data->mmu[pageIndex], pageIndex, !readOnly, true, 0, len);
         if (!ram) {
-            kpanic("KMemory::performOnMemory failed to get ram");
+            reportNoRam(pageIndex);
+            return false;
         }
         callback(ram, len);
     }
+    return true;
 }
 
 // This doesn't mean the data can't be changed by another thread, it just means the pointer will stay valid
@@ -1413,7 +1492,17 @@ U8* KMemory::getRamPtr(U32 address, U32 len, bool write, bool futex) {
     U32 offset = address & K_PAGE_MASK;
 
     if (len + offset > K_PAGE_SIZE) {
-        kpanic("KMemory::getRamPtr");
+        // A cross-page span has no contiguous host pointer. Callers pass
+        // guest addresses with computed lengths (the X11 handlers), so
+        // this is guest-reachable and must not kpanic: report and refuse,
+        // exactly like the 64-bit sibling (KMemory64::getRamPtr returns
+        // nullptr for the identical request).
+        const unsigned long long n = memFailNextCount();
+        if (memFailLogDue(n)) {
+            klog_fmt("BW64-FAIL getRamPtr op=hostptr addr=0x%X len=%u write=%d outcome=null count=%llu",
+                     address, len, write ? 1 : 0, n);
+        }
+        return nullptr;
     }
     U8* result = data->mmu[index].getPage()->getRamPtr(&data->mmu[index], index, write, true, offset, len);
     if (result && futex) {

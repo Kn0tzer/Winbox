@@ -13,6 +13,7 @@ const fixtures = {
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
+  'dbwin-echo': ['tools/guest-fixtures/dbwin-echo.c', '-lkernel32'],
   // Deterministic 64-bit integer/branch/memory workload with a checksum. The
   // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
   // syscalls) share the same source and print the same checksum for the same

@@ -315,11 +315,8 @@ U32 KSystem::ugetrlimit(KThread * thread, U32 resource, U32 rlim) {
             memory->writed(rlim + 4, MAX_ADDRESS_SPACE);
             break;
         default:
-            if (bw64RecoverEnabled()) {
-                bw64RecoverLogOnce("syscall.ugetrlimit.resource", "unsupported ugetrlimit resource; returned EINVAL");
-                return -K_EINVAL;
-            }
-            kpanic_fmt("ugetrlimit resource %d not implemented", resource);
+            bw64RecoverLogOnce("syscall.ugetrlimit.resource", "unsupported ugetrlimit resource; returned EINVAL");
+            return -K_EINVAL;
     }
     return 0;
 }
@@ -336,11 +333,8 @@ U32 KSystem::clock_gettime(KThread* thread, U32 clock_id, U32 tp) {
         memory->writed(tp, (U32)(diff / 1000000l));
         memory->writed(tp + 4, (U32)(diff % 1000000l) * 1000);
     } else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.clock_gettime.clock", "unsupported clock_gettime clock id; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kpanic_fmt("Unknown clock id for clock_gettime: %d",clock_id);
+        bw64RecoverLogOnce("syscall.clock_gettime.clock", "unsupported clock_gettime clock id; returned EINVAL");
+        return -K_EINVAL;
     }
     return 0;
 }
@@ -359,11 +353,8 @@ U32 KSystem::clock_gettime64(KThread* thread, U32 clock_id, U32 tp) {
         memory->writed(tp + 8, (U32)(diff % 1000000l) * 1000);
     }
     else {
-        if (bw64RecoverEnabled()) {
-            bw64RecoverLogOnce("syscall.clock_gettime64.clock", "unsupported clock_gettime64 clock id; returned EINVAL");
-            return -K_EINVAL;
-        }
-        kpanic_fmt("Unknown clock id for clock_gettime64: %d", clock_id);
+        bw64RecoverLogOnce("syscall.clock_gettime64.clock", "unsupported clock_gettime64 clock id; returned EINVAL");
+        return -K_EINVAL;
     }
     return 0;
 }
@@ -400,6 +391,22 @@ KThread* KSystem::getThreadById(U32 threadId) {
     return result;
 }
 
+KThread* KSystem::getThreadByIdRef(U32 threadId) {
+    KThread* result = nullptr;
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
+
+    for (auto& p : processes) {
+        const KProcessPtr& process = p.value;
+        if (process) {
+            result = process->getThreadByIdRef(threadId);
+        }
+        if (result) {
+            break;
+        }
+    }
+    return result;
+}
+
 KThread* KSystem::tryGetThreadById(U32 threadId, bool& lockBlocked) {
     lockBlocked = false;
 #ifdef BOXEDWINE_MULTI_THREADED
@@ -428,16 +435,49 @@ KThread* KSystem::tryGetThreadById(U32 threadId, bool& lockBlocked) {
 #endif
 }
 
+KThread* KSystem::tryGetThreadByIdRef(U32 threadId, bool& lockBlocked) {
+    lockBlocked = false;
+#ifdef BOXEDWINE_MULTI_THREADED
+    std::unique_lock<std::mutex> lock(processesCond->m, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        lockBlocked = true;
+        return nullptr;
+    }
+    for (auto& p : processes) {
+        const KProcessPtr& process = p.value;
+        if (process) {
+            bool innerBlocked = false;
+            KThread* result = process->tryGetThreadByIdRef(threadId, innerBlocked);
+            if (result) {
+                return result;
+            }
+            if (innerBlocked) {
+                lockBlocked = true;
+                return nullptr;
+            }
+        }
+    }
+    return nullptr;
+#else
+    return getThreadByIdRef(threadId);
+#endif
+}
+
 U32 KSystem::tgkill(U32 threadGroupId, U32 threadId, U32 signal) {
-    KThread* result = KSystem::getThreadById(threadId);
+    // FD-44: hold a reference across the delivery -- signal() can wait
+    // up to a second on the target's conditions, and the target's own
+    // teardown used to free it in the middle of that wait.
+    KThread* result = KSystem::getThreadByIdRef(threadId);
 
     if (!result) {
         return -K_ESRCH;;
     }
     // these signals should be asychronous, but either there is a bug in boxedwine in the kernel/syscall code or there is a race condition in wine,
-    // either way, blocking on SIGQUIT which is sent by wineserver seems to stop a server protocol error during shutdown.  I saw this frequently 
+    // either way, blocking on SIGQUIT which is sent by wineserver seems to stop a server protocol error during shutdown.  I saw this frequently
     // starting in Wine 6.23 when closing notepad
-    return result->signal(signal, signal == 3);
+    U32 rc = result->signal(signal, signal == 3);
+    result->releaseRef();
+    return rc;
 }
 
 /*
@@ -1127,11 +1167,8 @@ U32 KSystem::prlimit64(KThread* thread, U32 pid, U32 resource, U32 newlimit, U32
 #endif
             break;
         default:
-            if (bw64RecoverEnabled()) {
-                bw64RecoverLogOnce("syscall.prlimit64.resource", "unsupported prlimit64 resource; returned EINVAL");
-                return -K_EINVAL;
-            }
-            kpanic_fmt("prlimit64 resource %d not handled", resource);
+            bw64RecoverLogOnce("syscall.prlimit64.resource", "unsupported prlimit64 resource; returned EINVAL");
+            return -K_EINVAL;
     }
     return 0;
 }

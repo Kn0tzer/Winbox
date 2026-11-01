@@ -253,7 +253,7 @@ disposition now:
 | `tools/rootfs64/stage-wine64-payloads.sh` (winehq10 backports, merge-script path used when the container build is unavailable) | `wine64.zip` (web + dist) | Run by `apply-runtime-poststeps.sh`; pinned by checker test `winehq backports (source + shipped zip)` |
 | Copying `tools/rootfs64/dist/*.zip` (from `build-wine64-zip.sh`) into `web/runtime` | `wine64.zip`, `glibc-rootfs64.zip` | Still a manual copy, but no longer blessable incomplete: `bootstrap.py --check` and the `build.mjs` gate (below) both refuse an incomplete set, and `build-wine64-zip.sh` now hard-fails (was: warn-and-continue) when the ALSA tree or a winehq10 backport DLL is missing, since the checker requires those members in its output |
 | Regenerating `docs/known-gaps/runtime-artifact-manifest.md` after any zip change | the manifest | Run by `apply-runtime-poststeps.sh` from the final zip bytes; drift fails checker test `manifest matches shipped zips` |
-| Re-pinning `tools/browser/runtime-assets.json` + rebuilding the retained archive after zip changes | the pins | Still manual (it is the act of publishing new canonical bytes), but `bootstrap.py --check` now runs the completeness checker after the pin comparison, so re-pinning an incomplete set fails verification instead of blessing it |
+| Re-pinning `tools/browser/runtime-assets.json` + rebuilding the retained archive after zip changes | the pins | Still manual (it is the act of publishing new canonical bytes), but `bootstrap.py --check` now runs the completeness checker after the pin comparison, so re-pinning an incomplete set fails verification instead of blessing it; since FD-73 the checker also verifies the retained archive against the file pins, so re-pinning the files without rebuilding the archive fails verification too |
 | `tools/browser/stage-wine32-fonts.py` (prefix font aliases) | exported `dist/runtime` prefixes only | Already automated: `build.mjs` runs it on every export; it never touches the canonical set, so it is deliberately not part of the finisher |
 
 Mechanisms, smallest change per choke point:
@@ -587,6 +587,55 @@ publishing; nothing here was pushed or published by this lane):
    asset; until this release exists, clean builds restore offline
    via `--local` with the retained box archive above).
 
+
+### FD-73 addendum (2026-11-01, runtime-assets archive lane)
+
+The `runtime-assets-20261026` retained archive (513,013,760 bytes,
+sha256 `9978166f…`) matched the manifest's archive pin but not its
+file pins for the two Wine archives: it had been built on
+2026-10-30, before the FD-40/FD-01/FD-02 payload fixes landed, and
+was never rebuilt as their compositions re-pinned the files — so
+`bootstrap.py --local` failed on a fresh checkout while `--check`
+passed on every tree already carrying the pinned files. Member
+census (name sets identical: 1,257 / 1,926 members): the archive's
+wine64.zip differs from the pinned zip in exactly five members —
+stock `win32u.so` `5dac5821…` vs the FD-01 patch `bffd9036…`,
+`win32u.dll` `643b7623…` vs the FD-40 stamp `49b87438…`, and the
+pre-restage Vulkan shim `ae96105b…` vs `03edc142…` under its three
+names; its wine32.zip differs in exactly the four win32u copies —
+pre-backport `ca5dd9c5…` vs the FD-02 patch `b2d9d135…`. The pins
+are the shipped bytes (the live tree and the rollback tree carry
+them bit-identically), so the archive was regenerated from the
+pinned files, not the manifest re-pinned to the archive.
+
+`runtime-assets.json` now describes release
+`runtime-assets-20261101`: the file pins are unchanged; the archive
+pin is the regenerated archive `browser-runtime-20261101.tar`
+(512,829,440 bytes, sha256
+`23e8c8614f20e3ae3531e4dd795222bdb6e0c7ddac7858f0eda44946dfdf6416`),
+built deterministically (manifest member order, zeroed tar
+metadata) from staged files each verified against its file pin,
+and retained at `/home/ubuntu/backups/winbox-runtime-assets-20261101/`
+(the 20261026 archive is untouched). The GitHub release upload
+remains user-gated, as with the previous generations; the local
+consistency this entry required is complete.
+
+Guard: `check_runtime_completeness.py` now verifies the retained
+archive against the manifest end to end (archive pin, member set,
+every member's size/SHA256) as the check `retained runtime-assets
+archive agrees with the file pins (FD-73)`, resolving the archive
+via `BW64_ASSETS_ARCHIVE` or by the manifest's own archive name
+under `/home/ubuntu/backups/winbox-runtime-assets-*/`, skipping
+loudly when no retained copy exists. It runs inside
+`bootstrap.py --check` and the `build.mjs` gate like every other
+completeness check. Negative proof: under the previous manifest
+the check fails naming `web/runtime/wine64.zip` (archive carries
+`209697213/b7476541…`, the file pin is `209611866/53d77f33…`).
+Clean-room proof: in a fresh worktree with none of the 13 files
+present, `--local` from the regenerated archive restores and
+verifies all 13 assets and `--check` then passes with the
+completeness checker at 0 failures.
+
 ## GStreamer split finish (2026-10-25, split audit/finish lane)
 
 A cancelled lane had left this split half-landed: staging scripts edited,
@@ -700,3 +749,48 @@ The regen extracts them from the currently shipped (pinned)
 archive and hash-verifies before use, fail-closed — the sysroot32
 residue discipline. If either source is ever identified, check its
 output against those pins and retire the extraction.
+
+
+## 2026-10-30 — Wine 8.0 x86_64 loader backports (lane-loadergaps, IMPLEMENTED)
+
+The x86_64 staged set is Debian bookworm Wine 8.0 while the i386 set is
+WineHQ wine-stable 10.0; every demo load failure measured by the PE census
+(tools/conformance/pe_census.py against the deployed runtime, build
+efa0189a1) traced to exports newer Wine added after 8.0. Three upstream
+backports to the pinned 8.0 source close them; the rebuilt DLLs are staged
+as hash-pinned payloads next to the winehq10 backports and gated by the
+completeness checker ("wine8 loader backports (source + shipped zip)").
+
+| gap | consumer | disposition |
+| --- | --- | --- |
+| user32 GetPointerPenInfo (+8 family members) absent in wine64 user32 | godot-squash SquashTheCreeps.exe (regular import; load fails before entry) | IMPLEMENTED — wine8-user32-pointer-family.patch: spec entries + FIXME stubs in dlls/user32/input.c (the family already returns FALSE throughout Wine 8.0; no pointer device exists here) |
+| kernelbase/kernel32 CopyFile2 absent in wine64 | mindustry steam_api64.dll (regular import, bundled file) | IMPLEMENTED — wine8-kernelbase-copyfile2.patch: upstream copy_file refactor + CopyFile2 in dlls/kernelbase/file.c; kernel32 -import forward |
+| iphlpapi GetAnycastIpAddressTable absent in wine64 | mindustry JRE net.dll (delay import) | IMPLEMENTED — wine8-iphlpapi-anycast-table.patch: upstream implementation (allocated empty table, NO_ERROR) + MIB_ANYCASTIPADDRESS_* types |
+
+Evidence: census before/after on identical closures — godot-squash 693
+imports, 0 missing (was 1); mindustry closure clean (was 2); the
+per-program missing-set diff across all 15 demos removes exactly these
+three items with zero new misses anywhere. Completeness checker, A/B on
+identical trees: the new pins FAIL against the pre-fix wine64.zip (teeth)
+and PASS with the fixed one; the only other failures in this lane's
+hand-assembled runtime (gstreamer staging, manifest drift) are identical
+with both zips and are satisfied by the pipeline's own staging. DLL pins + rebuild recipe:
+tools/rootfs64/wine8-backports-x86_64/README.md; patches:
+tools/buildWine/patches/wine8-*.patch; staging: stage-wine8-backports.sh
+(poststep in apply-runtime-poststeps.sh) + build-wine64-zip.sh preflight.
+
+Dispositions, not fixed:
+
+- gdi32 D3DKMT* (9): the staged vkd3d d3d12core.dll regular-imports them;
+  wine64 gdi32 exports only a 15-function D3DKMT subset. Self-check only —
+  no demo load path is affected (the D3D12 guest probes pass on the
+  shipped build). Refreshing gdi32 from WineHQ 10 is blocked: its D3DKMT
+  entries forward to win32u NtGdiDdDDI*, and Wine 8.0's win32u lacks
+  NtGdiDdDDIOpenResource2, leaving one import dangling (measured by
+  census on a scratch runtime). Revisit with a win32u backport or a Wine
+  vintage bump of the whole x86_64 set.
+- kernel32 GetDurationFormat: absent from every staged vintage including
+  WineHQ 10 (the specs carry only GetDurationFormatEx). Delay import of a
+  prefix-bundled tool (HxD), not a demo load path. NOT-A-GAP for demos.
+- i386 side: wine32 user32 also lacks GetPointerPenInfo, but no i386 demo
+  imports it (census); the same backport applies if one ever does.

@@ -113,21 +113,37 @@ test('R15a sweep precision: a capability number equal to the array type id keeps
   assert.ok(!out.insns.some(i => i.op === 29), 'no OpTypeRuntimeArray may survive');
 });
 
-test('R15a fail-closed: a second, different index signature defeats specialization', () => {
+test('R15a: a second, different index signature gets its own scalar clone (FD-16)', () => {
   const mod = parseSpirv(uavBytes);
   mod.header.bound = 300;
   const ret = mod.insns.findIndex(i => i.op === 253); // OpReturn
   assert.ok(ret > 0);
   // A second access chain on the array var (%14) with a CONSTANT index
-  // (%50 == 3) beside the existing push@0 one: two signatures.
+  // (%50 == 3) beside the existing push@0 one: two signatures, each
+  // classifiable, so each is specialized to its own clone -- the shape
+  // real descriptor heaps use (one base, several offsets).
   mod.insns.splice(ret, 0,
     { op: 65, words: [29, 91, 14, 50], resultType: 29, resultId: 91 },
     { op: 61, words: [11, 92, 91], resultType: 11, resultId: 92 });
   const { arrays } = analyzeDescriptorArrays(mod);
-  assert.equal(arrays[0].servable, false);
-  assert.match(arrays[0].reason, /distinct index signatures/);
+  assert.equal(arrays[0].servable, true, arrays[0].reason || '');
+  assert.equal(arrays[0].signatures.length, 2);
   const fixed = applySpirvFix(serializeSpirv(mod));
-  assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
+  assert.ok(fixed.applied.includes('descriptor-array-specialize'));
+  const out = parseSpirv(fixed.bytes);
+  const names = namesOf(out);
+  const pushClone = [...names.entries()].find(([, n]) => n === 'bw_arr_g5_b0_p0_a0');
+  const constClone = [...names.entries()].find(([, n]) => n === 'bw_arr_g5_b0_c3');
+  assert.ok(pushClone, 'the push-index clone exists');
+  assert.ok(constClone, 'the constant-index clone exists');
+  const chain91 = out.insns.find(i => i.resultId === 91);
+  assert.equal(chain91.op, 83, 'the constant-index chain became a copy of the constant clone');
+  assert.equal(chain91.words[2], constClone[0]);
+  const decosOf = id => out.insns.filter(i => i.op === 71 && i.words[0] === id);
+  assert.ok(decosOf(pushClone[0]).some(d => d.words[1] === 33 && d.words[2] === 0), 'first clone keeps the guest binding');
+  assert.ok(decosOf(constClone[0]).some(d => d.words[1] === 33 && d.words[2] !== 0), 'second clone sits on a synthetic slot binding (its name keeps the guest binding)');
+  assert.ok(!capsOf(out).has(5302), 'cap 5302 stripped once no descriptor array survives');
+  assert.ok(!out.insns.some(i => i.op === 29 && i.words[1] === 11), 'the descriptor runtime-array type is swept');
 });
 
 test('R15a variant: push index plus a constant addend stays servable (signature +1)', () => {
@@ -185,7 +201,7 @@ test('R15a naga: the specialized write module converts to a read_write storage t
   assert.ok(wgsl.includes('textureStore'), 'the image write survives translation as textureStore');
 });
 
-test('R15a fail-closed: a writable array with a second index signature is left unchanged', () => {
+test('R15a: a writable array with a second index signature specializes per signature (FD-16)', () => {
   const mod = parseSpirv(uavWriteBytes);
   mod.header.bound = 300;
   const ret = mod.insns.findIndex(i => i.op === 253); // OpReturn
@@ -195,10 +211,18 @@ test('R15a fail-closed: a writable array with a second index signature is left u
     { op: 61, words: [11, 92, 91], resultType: 11, resultId: 92 });
   const { arrays } = analyzeDescriptorArrays(mod);
   assert.equal(arrays[0].writable, true);
-  assert.equal(arrays[0].servable, false);
-  assert.match(arrays[0].reason, /distinct index signatures/);
+  assert.equal(arrays[0].servable, true, arrays[0].reason || '');
   const fixed = applySpirvFix(serializeSpirv(mod));
-  assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
+  assert.ok(fixed.applied.includes('descriptor-array-specialize'));
+  const out = parseSpirv(fixed.bytes);
+  const names = namesOf(out);
+  assert.ok([...names.values()].includes('bw_arr_g5_b0_p0_a0'), 'push clone exists');
+  assert.ok([...names.values()].includes('bw_arr_g5_b0_c3'), 'constant clone exists');
+  for (const [, n] of [...names.entries()].filter(([, n]) => n.startsWith('bw_arr'))) {
+    const id = [...names.entries()].find(([, nm]) => nm === n)[0];
+    assert.ok(!out.insns.some(i => i.op === 71 && i.words[0] === id && i.words[1] === 24), 'no clone gains NonWritable: both stay writable');
+  }
+  assert.ok(out.insns.some(i => i.op === 99), 'the OpImageWrite survives specialization');
 });
 
 test('R15a fail-closed: a store through the element pointer defeats specialization', () => {
@@ -214,17 +238,22 @@ test('R15a fail-closed: a store through the element pointer defeats specializati
   assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
 });
 
-test('R15a fail-closed: a texel-pointer use of the element is an escape', () => {
+test('R15a fail-closed: a texel-pointer formed on the element defeats specialization', () => {
   const mod = parseSpirv(uavWriteBytes);
   mod.header.bound = 300;
   const ret = mod.insns.findIndex(i => i.op === 253);
   assert.ok(ret > 0);
   // OpImageTexelPointer(resultType %29, id %93, image = chain %30, coord %38, sample %37):
-  // the element pointer escapes into a texel pointer -- no WGSL equivalent.
+  // forming a texel pointer on the element refuses the array -- the
+  // translation stack rejects OpImageTexelPointer outright. Since
+  // FD-62 the uses analysis classifies the formation explicitly and
+  // the refusal names it, instead of the former generic pointer
+  // escape (op60); the fail-closed verdict is unchanged.
   mod.insns.splice(ret, 0, { op: 60, words: [29, 93, 30, 38, 37], resultType: 29, resultId: 93 });
   const { arrays } = analyzeDescriptorArrays(mod);
   assert.equal(arrays[0].servable, false);
-  assert.match(arrays[0].reason, /escape \(op60\)/);
+  assert.match(arrays[0].reason, /texel-pointer use through an array element is not served/);
+  assert.equal(arrays[0].texelFormed, 1);
   const fixed = applySpirvFix(serializeSpirv(mod));
   assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
 });

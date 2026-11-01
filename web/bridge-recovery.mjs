@@ -4,6 +4,7 @@ const LOG_LIMIT = 512;
 const logged = new Set();
 let caught = 0;
 let loggedCount = 0;
+let suppressed = 0;
 let recoveryEnabled = (() => {
   try { return new URLSearchParams(globalThis.location?.search || '').get('recover') !== '0'; }
   catch { return true; }
@@ -24,7 +25,7 @@ export function safeBridgeDefault(method) {
 }
 
 export function bridgeRecoveryStats() {
-  return { enabled: recoveryEnabled, caught, logged: loggedCount };
+  return { enabled: recoveryEnabled, caught, logged: loggedCount, suppressed };
 }
 
 export function setBridgeRecoveryEnabled(enabled) {
@@ -35,10 +36,20 @@ export function reportBridgeFailure(area, error, log = message => console.warn(m
   caught++;
   const message = `${area}: ${errorText(error)}`;
   const key = message;
-  if (logged.has(key) || logged.size >= LOG_LIMIT) return false;
+  if (logged.has(key)) return false;
+  if (logged.size >= LOG_LIMIT) {
+    // The distinct-message cap keeps the log readable, but past it every new
+    // failure kind used to vanish entirely. Keep a counted summary instead:
+    // the first overflow and every 1024th (the standard's counting-cap shape).
+    suppressed++;
+    if (suppressed === 1 || suppressed % 1024 === 0) {
+      try { log(`bridge-recover: distinct-failure log cap reached; further distinct failures counted only suppressed=${suppressed} caught=${caught}`); } catch {}
+    }
+    return false;
+  }
   logged.add(key);
   loggedCount++;
-  try { log(`bridge-recover: ${message}`); } catch {}
+  try { log(`bridge-recover: ${message}`); } catch { /* logging must never throw; the recovery itself was already counted above */ }
   return true;
 }
 

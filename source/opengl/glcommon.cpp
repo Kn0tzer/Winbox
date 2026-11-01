@@ -1522,16 +1522,22 @@ void gl_init() {
 }
 #endif
 
-void callOpenGL(CPU* cpu, U32 index) {
+bool callOpenGL(CPU* cpu, U32 index) {
 #ifdef BOXEDWINE_OPENGL
     //KNativeWindow::getNativeWindow()->preOpenGLCall(index);
     if (index < int99CallbackSize && int99Callback[index]) {
         cpu->thread->marshalIndex = 0;
         lastGlCallTime = KSystem::getMilliesSinceStart();
         int99Callback[index](cpu);
-    } else 
-#endif
-{
-        kpanic_fmt("Uknown int 99 call: %d", index);
+        return true;
     }
+#endif
+    // An unregistered callback index is guest-reachable -- a guest
+    // can execute int 0x99 with any index on its stack -- so it must
+    // never panic the emulator. Deliver #GP carrying the
+    // software-interrupt error-code shape guest exception handlers
+    // recognise, (vector<<3)|2 for vector 0x99: the disposition the
+    // frontier review chose for this case (defect register FD-06).
+    cpu->prepareException(EXCEPTION_GP, (0x99<<3)|2);
+    return false;
 }

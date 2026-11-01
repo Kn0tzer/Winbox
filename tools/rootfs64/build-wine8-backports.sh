@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Rebuild the Wine 8.0 backport DLLs in
+# tools/rootfs64/wine8-backports-x86_64/ from the pinned wine-8.0 source
+# tag plus the backport patches in tools/buildWine/patches/.
+# See wine8-backports-x86_64/README.md for why these exist.
+#
+# Build shape: three out-of-tree builds sharing one patched source tree.
+#   1. a native tools tree (winebuild/widl/wrc/wmc/winegcc for the host),
+#   2. a --host=x86_64-w64-mingw32 tree that emits only PE binaries,
+#   3. a --host=x86_64-linux-gnu tree that emits the unix half of win32u
+#      (win32u.so). The desktop-wait patch's functions live in the unix
+#      half: a win32u.dll rebuilt without its win32u.so ships the patch
+#      in no binary at all (FD-01, reopened 2026-10-31 per FD-43).
+# Everything compiles with the host's native toolchain — deliberately NOT
+# in the linux/amd64 container, whose binfmt/QEMU layer crashes on this
+# ARM64 host (see stage-wine64-payloads.sh's header).
+#
+# After it runs, re-pin the new sha256 in
+# tools/rootfs64/check_runtime_completeness.py (WINE8_BACKPORT_PINS) and
+# in wine8-backports-x86_64/README.md.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+OUT="$HERE/wine8-backports-x86_64"
+WORK="${BW8_WORK:-/tmp/wine8-backports-build}"
+PATCHES=(
+    wine8-user32-pointer-family.patch
+    wine8-kernelbase-copyfile2.patch
+    wine8-iphlpapi-anycast-table.patch
+    wine8-win32u-desktop-wait.patch
+)
+DLLS=(user32 kernelbase kernel32 iphlpapi win32u)
+
+for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
+done
+
+mkdir -p "$WORK"
+if [ ! -d "$WORK/wine" ]; then
+    git clone --depth 1 --branch wine-8.0 https://github.com/wine-mirror/wine.git "$WORK/wine"
+fi
+cd "$WORK/wine"
+git checkout -- .  # pristine tag state before (re)applying the patches
+for p in "${PATCHES[@]}"; do
+    git apply "$REPO/tools/buildWine/patches/$p"
+    echo "--- applied $p ---"
+done
+
+# 1. native tools tree
+mkdir -p "$WORK/tools-build"
+cd "$WORK/tools-build"
+if [ ! -f Makefile ]; then
+    "$WORK/wine/configure" --disable-tests --without-x --without-freetype \
+        --without-fontconfig --without-dbus --without-gnutls --without-udev \
+        --without-sdl --without-vulkan --without-opengl > configure.log 2>&1
+fi
+make -j"$(nproc)" tools/winebuild/winebuild tools/widl/widl tools/wrc/wrc \
+    tools/wmc/wmc tools/winegcc/winegcc > make.log 2>&1
+echo "--- native build tools ready ---"
+
+# 2. mingw cross tree (PE binaries only)
+mkdir -p "$WORK/x64-build"
+cd "$WORK/x64-build"
+if [ ! -f Makefile ]; then
+    CFLAGS="-O1" "$WORK/wine/configure" --host=x86_64-w64-mingw32 \
+        --with-wine-tools="$WORK/tools-build" --disable-tests \
+        --without-freetype --without-fontconfig --without-gnutls \
+        --without-gstreamer --without-dbus --without-sdl --without-vulkan \
+        --without-opengl --without-osmesa --without-alsa --without-pulse \
+        --without-cups --without-udev --without-usb --without-sane \
+        --without-gphoto --without-krb5 --without-ldap --without-openal \
+        --without-pcap --without-v4l2 --without-x > configure.log 2>&1
+fi
+targets=(); for d in "${DLLS[@]}"; do targets+=("dlls/$d/$d.dll"); done
+make -j"$(nproc)" "${targets[@]}" > make.log 2>&1
+
+mkdir -p "$OUT"
+for d in "${DLLS[@]}"; do
+    cp "$WORK/x64-build/dlls/$d/$d.dll" "$OUT/$d.dll"
+    echo "--- built $d.dll ---"
+done
+
+# The mingw cross tree links these as plain PE files, but they ship as
+# Wine builtins: a full Wine build has winebuild stamp the 32-byte
+# "Wine builtin DLL" signature over the DOS stub at offset 64
+# (make_builtin_files in tools/winebuild/spec32.c), and both the
+# wineserver and the unix loader key the builtin treatment off that
+# signature -- for the syscall DLL (win32u) the loader only registers
+# its syscall table, and thereby user32 session initialization, when
+# the signature is present. An unstamped win32u.dll loads fine yet
+# every process's user32 initialization silently does nothing
+# (FD-40). Stamp every rebuilt DLL the same way winebuild does.
+python3 - "$OUT" "${DLLS[@]}" <<'PYEOF'
+import struct, sys
+out = sys.argv[1]
+sig = b"Wine builtin DLL" + b"\0" * 16
+assert len(sig) == 32
+for name in sys.argv[2:]:
+    path = out + "/" + name + ".dll"
+    with open(path, "r+b") as f:
+        head = f.read(64)
+        assert head[:2] == b"MZ", path
+        (e_lfanew,) = struct.unpack("<I", head[0x3C:0x40])
+        assert e_lfanew >= 64 + len(sig), (path, e_lfanew)
+        f.seek(64)
+        f.write(sig)
+    print("--- stamped Wine builtin signature: " + name + ".dll ---")
+PYEOF
+# 3. x86_64-linux-gnu cross tree (ELF unix modules only): build the
+# unix half of win32u from the same patched source tree as the PE half
+# above, so the two halves of the desktop-wait fix can never drift.
+mkdir -p "$WORK/x64linux-build"
+cd "$WORK/x64linux-build"
+if [ ! -f Makefile ]; then
+    CFLAGS="-O1" "$WORK/wine/configure" --host=x86_64-linux-gnu --enable-win64 \
+        --with-wine-tools="$WORK/tools-build" --disable-tests \
+        --without-freetype --without-fontconfig --without-gnutls \
+        --without-gstreamer --without-dbus --without-sdl --without-vulkan \
+        --without-opengl --without-osmesa --without-alsa --without-pulse \
+        --without-cups --without-udev --without-usb --without-sane \
+        --without-gphoto --without-krb5 --without-ldap --without-openal \
+        --without-pcap --without-v4l2 --without-x > configure.log 2>&1
+fi
+make -j"$(nproc)" dlls/win32u/win32u.so > make-unix.log 2>&1
+cp "$WORK/x64linux-build/dlls/win32u/win32u.so" "$OUT/win32u.so"
+echo "--- built win32u.so (unix half) ---"
+
+echo "=== sha256 (re-pin these in check_runtime_completeness.py + README.md) ==="
+sha256sum "$OUT"/*.dll "$OUT"/win32u.so

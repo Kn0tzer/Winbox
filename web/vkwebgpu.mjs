@@ -16,6 +16,7 @@ import {
   matchFragmentInputsToVertexOutputs, rewriteMultisampledTextures, scanWgslResources, stripNagaFragmentDepth, stripNagaYNegation, wgslTextureViewDimension, wgslUniformSizes,
   parseStorageTextureAccessRejection,
   resolveStorageVarFormat,
+  buildStorageSignature,
   planGroupRemap, rewriteGuestGroupDeclWGSL,
   rewriteReadOnlyStorageToSampled,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
@@ -406,8 +407,14 @@ export function createShaderCache({ translate = toWGSL, log = defaultLog, device
   const appId = new URLSearchParams(globalThis.location?.search || '').get('installation') || 'unknown';
   if (persistentEnabled && device) {
     const warm = () => warmPersistentShaders(appId, device, (key, code) => { if (key.startsWith('spirv:')) wgsl.set(key.slice(6), code); });
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { warm().catch(() => {}); }, { timeout: 1500 });
-    else setTimeout(() => warm().catch(() => {}), 0);
+    // Warming is best-effort (a cold cache only costs translation time),
+    // and warmPersistentShaders reports its own per-entry failures -- but
+    // a rejection escaping it (store errors, scaffolding throws) must
+    // still leave a line. The bare .catch(() => {}) that was here hid
+    // exactly that; see docs/failure-logging-and-recovery.md.
+    const warmInBackground = () => { warm().catch(e => log(`BW64-FAIL shader-warm app=${appId} error=${(e && e.message) || e} outcome=warm aborted; shader cache stays cold`)); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmInBackground, { timeout: 1500 });
+    else setTimeout(warmInBackground, 0);
   }
   return {
     stats,
@@ -645,13 +652,14 @@ export async function createVkRenderer(canvas, { translate, log = defaultLog } =
   drvInitPageStep(log, 'adapter', drvInitAdapterDetail(adapter));
   // The adapter's own feature set (not the v2 renderer's preference list) decides
   // whether genuine GPU timing is possible on this legacy path.
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'readonly-and-readwrite-storage-textures'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'subgroups', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   const device = await adapter.requestDevice({ requiredFeatures });
   globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   globalThis.bwVkDepth32FloatStencil8 = device.features?.has('depth32float-stencil8') === true;
   globalThis.bwVkMaxVertexBuffers = Math.min(16, device.limits?.maxVertexBuffers || 8);
-  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers}`);
+  globalThis.bwVkSubgroups = device.features?.has('subgroups') === true;
+  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers} subgroups=${globalThis.bwVkSubgroups}`);
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
@@ -1203,8 +1211,8 @@ export const V2_SUPPORTED_VERTEX_FORMATS = Object.freeze([
   93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
 ]);
 export const V2_COLOR_ATTACHMENT_FORMATS = Object.freeze([
-  2, 3, 5, 7, 8, 9, 16, 37, 41, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
-  98, 99, 100, 103, 109,
+  2, 3, 5, 7, 8, 9, 13, 14, 16, 20, 21, 37, 41, 42, 43, 44, 50, 64, 70,
+  76, 77, 83, 91, 97, 98, 99, 100, 103, 109,
 ]);
 export const V2_COLOR_ATTACHMENT_BLEND_FORMATS = Object.freeze([
   2, 3, 5, 7, 8, 9, 16, 37, 43, 44, 50, 64, 70, 76, 77, 83, 91, 97,
@@ -1299,7 +1307,7 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('No WebGPU adapter');
   drvInitPageStep(log, 'adapter', drvInitAdapterDetail(adapter));
-  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16', 'readonly-and-readwrite-storage-textures'])
+  const requiredFeatures = /** @type {GPUFeatureName[]} */ (['texture-compression-bc', 'depth32float-stencil8', 'float32-filterable', 'clip-distances', 'timestamp-query', 'depth-clip-control', 'texture-formats-tier1', 'norm16', 'subgroups', 'readonly-and-readwrite-storage-textures'])
     .filter(feature => adapter.features.has(feature));
   // The bridge advertises Vulkan limits independently of the adapter (see
   // fillLimits in vk64bridge.cpp), so ask for everything this adapter has
@@ -1311,7 +1319,8 @@ export async function createVkRenderer2(canvas, { translate, log = defaultLog, o
   globalThis.bwVkTextureCompressionBC = device.features?.has('texture-compression-bc') === true;
   globalThis.bwVkDepth32FloatStencil8 = device.features?.has('depth32float-stencil8') === true;
   globalThis.bwVkMaxVertexBuffers = Math.min(16, device.limits?.maxVertexBuffers || 8);
-  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers}`);
+  globalThis.bwVkSubgroups = device.features?.has('subgroups') === true;
+  drvInitPageStep(log, 'device', `bc=${globalThis.bwVkTextureCompressionBC} d32s8=${globalThis.bwVkDepth32FloatStencil8} maxVertexBuffers=${globalThis.bwVkMaxVertexBuffers} subgroups=${globalThis.bwVkSubgroups}`);
   const errors = [];
   device.addEventListener('uncapturederror', e => {
     const message = 'WebGPU validation error: ' + (e.error?.message || e.error);
@@ -1865,6 +1874,43 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return st;
   }
 
+  // Resolve a STORAGE texel buffer view (wire kind 6) to a GPUBuffer
+  // for a binding the shader declares in the storage address space --
+  // the spirvfix R12A shape (FD-62): the shader's texel-pointer
+  // variable was rewritten to a storage buffer of texels, so the
+  // view's buffer range IS the binding's backing store, byte for byte
+  // (element i at byte i * texelSize, exactly the guest layout). The
+  // buffer comes from the same content-keyed cache as every other
+  // buffer, is registered in storageBufferRegistry for
+  // V2_BUFFER_READBACK (the shader's writes must reach guest memory),
+  // and carries the batch it was bound in so readback arbitration can
+  // rank it against a texture materialisation of the same range.
+  // Like storageTexelBind, this is called from BOTH the bind-group
+  // fingerprint and bindGroupEntries, so a cache-hit bind still
+  // registers and still observes re-uploads. Returns { gpu, key } or
+  // null when the view cannot be served; the caller drops the bind
+  // loudly -- never a dummy buffer, whose writes would silently
+  // vanish (the worst outcome this tier has).
+  function texelBufferBind(viewHex) {
+    const view = F.bufferViews?.get(viewHex);
+    if (!view) return null;
+    const entry = V2_STORAGE_FORMAT[view.format];
+    if (!entry) { noteUnsupported('storage-texel-format-page', view.format); return null; }
+    const viewLen = Number(view.len);
+    if (!(viewLen > 0)) return null;
+    const qkey = view.bufferId + ':' + view.absOff;
+    const bytes = F.buffers.get(qkey);
+    if (!bytes || bytes.length < viewLen) return null; // the binding's bytes must cover the whole view
+    const hash = F.bufHashes ? F.bufHashes.get(qkey) : undefined;
+    const preHash = hash !== undefined ? hash : null;
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    const bufId0 = 'texview:' + viewHex + ':' + viewLen;
+    const gpu = gpuBufferFor(bufId0, bytes.subarray(0, viewLen), usage, preHash);
+    if (!gpu) return null;
+    storageBufferRegistry.set('texview:' + viewHex, { buffer: gpu, bufId: view.bufferId, baseOff: BigInt(view.absOff), texelView: viewHex, boundSeq: stexelBatchSeq });
+    return { gpu, key: bufferKey(bufId0, bytes.subarray(0, viewLen), usage, 0, preHash) };
+  }
+
   // Readback resolution over the texel directory (finding 2): among
   // the states covering the readback range, the freshest binding wins.
   // Several DISTINCT textures tied at the freshest batch are genuinely
@@ -2089,7 +2135,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     for (const h of holders) h.code = rewriteBindings(h.code);
     for (const d of decls) {
       const nb = bindingRemap.get(d.group + ':' + d.binding);
-      if (nb !== undefined) { d.origBinding = d.binding; d.binding = nb; }
+      if (nb !== undefined) { d.origBinding = d.origBinding ?? d.binding; d.binding = nb; }
     }
   }
   const byGroup = new Map();
@@ -2490,18 +2536,19 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
   function storageSignatureFor(code, sets, pushBlock = null) {
     const vars = storageImageVars(code);
     if (!vars || !vars.length) return '';
-    const parts = [];
-    for (const v of vars) {
-      if (v.format !== 0) { parts.push(v.set + ':' + v.binding + '=' + v.format); continue; }
+    // The format is the bound view's format at the element the shader
+    // touches: descriptor-array variables carry their proven index
+    // signature and resolve against the entry covering that element
+    // (the draw's push block evaluates push-indexed signatures), never
+    // element 0 by default. See wgsl-utils.mjs resolveStorageVarFormat
+    // for the proof rules; unproven formats are omitted, not guessed.
+    // buildStorageSignature groups the resolutions into the R14
+    // signature, per storage image TYPE where one binding carries
+    // several (FD-49).
+    return buildStorageSignature(vars, (v) => {
       const set = sets?.get(v.set);
-      if (!set) continue;
-      // The format is the bound view's format at the element the shader
-      // touches: descriptor-array variables carry their proven index
-      // signature and resolve against the entry covering that element
-      // (the draw's push block evaluates push-indexed signatures), never
-      // element 0 by default. See wgsl-utils.mjs resolveStorageVarFormat
-      // for the proof rules; unproven formats are omitted, not guessed.
-      const spv = resolveStorageVarFormat(set.bindings || [], v, pushBlock, (obj) => {
+      if (!set) return null;
+      return resolveStorageVarFormat(set.bindings || [], v, pushBlock, (obj) => {
         const imgHex = F.views.get(obj);
         const img = imgHex && imageForView(obj, imgHex);
         const entry = img ? V2_STORAGE_FORMAT[img.format] : null;
@@ -2513,9 +2560,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         const bentry = bv ? V2_STORAGE_FORMAT[bv.format] : null;
         return bentry ? bentry.spv : null;
       });
-      if (spv != null) parts.push(v.set + ':' + v.binding + '=' + spv);
-    }
-    return parts.join(';');
+    });
   }
 
   function samplerIdForDecl(sets, group, d, st) {
@@ -2675,6 +2720,21 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
+          else if (b && b.kind === 6) {
+            // A storage texel buffer view bound to a buffer declaration
+            // (spirvfix R12A, FD-62): resolving through texelBufferBind,
+            // not just keying, keeps cache-hit binds registered for
+            // readback and alert to re-uploads -- on a fingerprint hit
+            // bindGroupEntries never runs (frontier review finding 2,
+            // as for storageTexelBind in the texture branch below).
+            if (!isStorage) { parts.push('b' + d.binding + ':' + k + ':texbuf-uniform:' + b.obj); continue; }
+            if (b.obj === '0000000000000000') { bufHex = 'zero:' + group + ':' + d.binding + ':' + k; bytes = ZERO4096; }
+            else {
+              const tb = texelBufferBind(b.obj);
+              parts.push('b' + d.binding + ':' + k + ':' + (tb ? tb.key : 'texbuf-missing:' + b.obj));
+              continue;
+            }
+          }
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
           // The size suffix must not depend on whether this frame carried the
           // bytes: a byte-less (deduped) record has no length to compare, but
@@ -2718,6 +2778,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   function bindGroupEntries(prec, sets, inlineMap, group, st) {
     const entries = [];
+    const BIND_DROP = {}; // mk() returns this to fail the whole bind group loudly
     const srcGroup = prec.groupMap ? (prec.groupMap[group] ?? group) : group;
     const set = sets.get(srcGroup);
     const bindings = set ? set.bindings : [];
@@ -2819,6 +2880,25 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
+          else if (b && b.kind === 6) {
+            // A storage texel buffer view bound to a buffer declaration.
+            // spirvfix R12A rewrote the shader's texel-pointer variable
+            // into a storage buffer of texels, so under a storage
+            // declaration the view's buffer range IS the binding
+            // (texelBufferBind). A VK_NULL_HANDLE view falls through to
+            // the zero fallback below (nullDescriptor semantics: reads
+            // zero, writes discarded). A real view that cannot be
+            // served -- or a view record arriving under a uniform
+            // declaration, which no rewrite produces -- drops the whole
+            // bind group loudly: never a dummy buffer a write could
+            // silently vanish into.
+            if (!isStorage) { noteDrop('bind-group-texel-buffer-uniform-decl', b.obj); return BIND_DROP; }
+            if (b.obj !== '0000000000000000') {
+              const tb = texelBufferBind(b.obj);
+              if (!tb) { noteDrop('bind-group-texel-buffer-unavailable', b.obj); return BIND_DROP; }
+              return { buffer: tb.gpu };
+            }
+          }
           // Missing uniform data: substitute a zero buffer large enough for any
           // practical uniform block (WebGPU validates against the shader's struct).
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
@@ -2854,10 +2934,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         };
         if (d.arrayCount > 1) {
           const arr = [];
-          for (let k = 0; k < d.arrayCount; k++) arr.push(mk(k));
+          for (let k = 0; k < d.arrayCount; k++) { const r = mk(k); if (r === BIND_DROP) return null; arr.push(r); }
           entries.push({ binding: d.binding, resource: arr });
         } else {
-          entries.push({ binding: d.binding, resource: mk(0) });
+          const r = mk(0);
+          if (r === BIND_DROP) return null;
+          entries.push({ binding: d.binding, resource: r });
         }
       } else if (t.startsWith('texture_storage')) {
         const dimension = wgslTextureViewDimension(t) || '2d';
@@ -3592,9 +3674,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           v2bufreadbacks.push({ brb, buffer: null, ok: false });
           continue;
         }
-        if (freshPick) { serveTexel(freshPick); continue; }
-        let ent = null;
+        // FD-62 (R12A): a kind-6 view bound in THIS batch as a storage
+        // BUFFER (texelBufferBind) holds its writes in a GPUBuffer, not
+        // in a texture materialisation, so it takes the buffer path
+        // below -- with the same freshness rule freshPick applies: if
+        // the range was ALSO bound as a texture this batch, the
+        // written bytes are genuinely split between two GPU objects
+        // and neither is the truth, so decline loudly rather than
+        // serve either copy.
+        let freshBuf = null;
         for (const cand of storageBufferRegistry.values()) {
+          if (!cand.texelView || cand.boundSeq !== stexelBatchSeq) continue;
+          if (cand.bufId !== brb.srcBuffer) continue;
+          if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { freshBuf = cand; break; }
+        }
+        if (freshBuf && freshPick) {
+          noteUnsupported('buffer-readback-representation-ambiguous', 'a storage texel view over buffer ' + brb.srcBuffer + ' was bound both as a texture and as a buffer this batch; guest receives zeros');
+          v2bufreadbacks.push({ brb, buffer: null, ok: false });
+          continue;
+        }
+        if (freshPick) { serveTexel(freshPick); continue; }
+        let ent = freshBuf;
+        if (!ent) for (const cand of storageBufferRegistry.values()) {
           if (cand.bufId !== brb.srcBuffer) continue;
           if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { ent = cand; break; }
         }
@@ -3772,6 +3873,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('readback-failed', e && e.message); /* still notify so the guest does not hang */ }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (The empty catch shape is
+      // pinned by the vk-silent-drop-guard source test.)
       try {
         if (buffer) buffer.destroy();
       } catch (e) {}
@@ -3795,6 +3899,9 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           buffer.unmap();
         }
       } catch (e) { noteUnsupported('buffer-readback-failed', e && e.message); }
+      // Teardown only: the readback outcome was already reported above,
+      // and a failed destroy must not mask it. (Empty-catch shape pinned
+      // by the vk-silent-drop-guard source test.)
       try { if (buffer) buffer.destroy(); } catch (e) {}
       try {
         const heapBuf = globalThis.bwVkHeapBuffer;

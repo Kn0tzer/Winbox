@@ -1,0 +1,110 @@
+{
+  "n": 6,
+  "started": 6,
+  "rescues": 0,
+  "medianReadyMs": 35719,
+  "results": [
+    {
+      "boot": 1,
+      "started": true,
+      "readyMs": 32901,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        2.31,
+        2.13,
+        2.45
+      ],
+      "loadEnd": [
+        3.72,
+        2.48,
+        2.55
+      ]
+    },
+    {
+      "boot": 2,
+      "started": true,
+      "readyMs": 35719,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        3.72,
+        2.48,
+        2.55
+      ],
+      "loadEnd": [
+        4.95,
+        2.89,
+        2.69
+      ]
+    },
+    {
+      "boot": 3,
+      "started": true,
+      "readyMs": 35533,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        4.95,
+        2.89,
+        2.69
+      ],
+      "loadEnd": [
+        5.31,
+        3.26,
+        2.82
+      ]
+    },
+    {
+      "boot": 4,
+      "started": true,
+      "readyMs": 34382,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        5.31,
+        3.26,
+        2.82
+      ],
+      "loadEnd": [
+        5.18,
+        3.43,
+        2.89
+      ]
+    },
+    {
+      "boot": 5,
+      "started": true,
+      "readyMs": 35777,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        5.18,
+        3.43,
+        2.89
+      ],
+      "loadEnd": [
+        5.04,
+        3.55,
+        2.95
+      ]
+    },
+    {
+      "boot": 6,
+      "started": true,
+      "readyMs": 35915,
+      "restarts": 0,
+      "explorerFailSignature": false,
+      "loadStart": [
+        5.04,
+        3.55,
+        2.95
+      ],
+      "loadEnd": [
+        5.09,
+        3.69,
+        3.02
+      ]
+    }
+  ]
+}

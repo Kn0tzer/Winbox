@@ -13,7 +13,9 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { parseV2Chunk, V2FrameAssembler, decodeV2Frame } from "../vkwebgpu.mjs";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
+import { acquireProbeSlot } from './probe-slots.mjs';
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const tag = process.env.TAG || `d3d12-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error("TAG must contain only letters, numbers, _, . or -");
@@ -114,7 +116,41 @@ function drawPixels(png) {
     center: at(Math.floor(width / 2), Math.floor(height / 2)) };
 }
 
-const server = await serve(process.env.WINE_DIST_DIR || "dist");
+// Preflight: this probe uploads NOTHING — the guest exe must already be
+// staged in the served dist's prefix64.zip and the d3d12 pair must resolve
+// from wine64.zip system placement. When either is missing (the state of
+// every freshly built dist until tools/vkd3d/stage-vkd3d.sh is run), the
+// guest dies in the spawn path (c0000135-class) and the probe burns its
+// whole timeout reporting a misleading guest failure. Fail here, in
+// seconds, naming the missing member and the remedy instead.
+const distDir = process.env.WINE_DIST_DIR || "dist";
+function zipMissing(zipPath, wanted) {
+  const out = execFileSync("python3", ["-c",
+    "import json,sys,zipfile\n" +
+    "names=set(zipfile.ZipFile(sys.argv[1]).namelist())\n" +
+    "print(json.dumps([w for w in json.loads(sys.argv[2]) if w not in names]))",
+    zipPath, JSON.stringify(wanted)], { encoding: "utf8" });
+  return JSON.parse(out);
+}
+{
+  const runtimeDir = `${distDir}/runtime`;
+  for (const name of ["prefix64.zip", "wine64.zip", "BUILD_INFO.json"]) {
+    if (!existsSync(`${runtimeDir}/${name}`))
+      throw new Error(`BW64-FAIL d3d12-system preflight: ${runtimeDir}/${name} missing — build the dist first (tools/bw64-build.sh) or set WINE_DIST_DIR to a built dist`);
+  }
+  const missingExe = zipMissing(`${runtimeDir}/prefix64.zip`, [`home/username/${triExeName}`]);
+  if (missingExe.length)
+    throw new Error(`BW64-FAIL d3d12-system preflight: ${missingExe.join(", ")} not staged in ${runtimeDir}/prefix64.zip — run tools/vkd3d/stage-vkd3d.sh ${runtimeDir}/prefix64.zip after building the dist; without it the guest dies in the spawn path and this probe would report a false guest failure`);
+  const missingDlls = zipMissing(`${runtimeDir}/wine64.zip`, [
+    "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12.dll",
+    "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d12core.dll",
+    "usr/lib/x86_64-linux-gnu/wine/x86_64-windows/vulkan-1.dll"]);
+  if (missingDlls.length)
+    throw new Error(`BW64-FAIL d3d12-system preflight: system-placement DLLs missing from ${runtimeDir}/wine64.zip: ${missingDlls.join(", ")} — the guest would die with STATUS_DLL_NOT_FOUND (c0000135); restage the vkd3d payloads (tools/rootfs64/stage-vkd3d-payloads.sh) and rebuild the dist`);
+  console.log("PREFLIGHT OK", JSON.stringify({ dist: distDir, exe: triExeName }));
+}
+
+const server = await serve(distDir);
 const slot = await acquireProbeSlot();
 console.log("PROBE SLOT ACQUIRED");
 const browser = await chromium.launch({
@@ -240,6 +276,8 @@ try {
   await page.screenshot({ path: `${dir}/final-page.png` }).catch(() => {});
   await writeFile(`${dir}/summary.json`, JSON.stringify(summary, null, 2));
   await writeFile(`${dir}/chunks.json`, JSON.stringify(chunkFiles));
+  if (/c0000135/i.test(logs.join("\n")))
+    console.log("BW64-FAIL d3d12-system: guest died with c0000135 (STATUS_DLL_NOT_FOUND) — a DLL the guest imports did not resolve; check the preflight members and the spawn overrides before treating this as a guest-code failure");
   console.log("D3D12 VERDICT", JSON.stringify(summary));
   await slot.release().catch(() => {}); console.log("PROBE SLOT RELEASED");
   await browser.close(); server.close();

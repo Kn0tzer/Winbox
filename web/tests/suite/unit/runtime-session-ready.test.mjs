@@ -22,14 +22,90 @@ test('a persistent session waits for a working desktop after its pin spawns', ()
   assert.equal(ready(true, true, true), false);
   assert.equal(ready(true, true, true, true), true);
 });
-test('only the desktop helper window acknowledgement opens its readiness gate', () => {
-  const observer = source.match(/function observeSessionOutput\(text\) \{[\s\S]*?\n    \}/)?.[0];
-  assert.ok(observer);
-  const state = { sessionDesktopReady: false };
-  runInNewContext(observer + '; observeSessionOutput("wine64session: spawned pid=14")', state);
-  assert.equal(state.sessionDesktopReady, false);
-  runInNewContext(observer + '; observeSessionOutput("[guest fd=1 pid=14] deskpin: READY hwnd=0x10040")', state);
-  assert.equal(state.sessionDesktopReady, true);
+// FD-47: desktop readiness is the whole startup handshake, not the
+// pin's READY line alone. Until 2026-10-31 the observer accepted any
+// hex value as a window handle; on a build whose win32u syscalls are
+// never dispatched (FD-40) the pin's window creation "returns" the
+// NTSTATUS error 0xC000000D, and sessions with no desktop at all were
+// certified as started (FD-43).
+const observerSource = source.match(/function observeSessionOutput\(text\) \{[\s\S]*?\n    \}/)?.[0];
+assert.ok(observerSource, 'Session output observer must exist');
+function observerHarness() {
+  const errors = [];
+  const state = {
+    sessionDesktopReady: false, sessionDesktopHwndOk: false,
+    sessionX11Accepts: 0, sessionExplorerOpened: false, sessionHwndRejected: {},
+    console: { error: text => errors.push(text), log() {}, warn() {} },
+  };
+  return {
+    state, errors,
+    feed(text) { runInNewContext(observerSource + `; observeSessionOutput(${JSON.stringify(text)})`, state); },
+    feedX11(n) {
+      for (let i = 0; i < n; i++) {
+        this.x11fed = (this.x11fed || 0) + 1;
+        this.feed(`log: XWireServer: accepted X11 client connection (now ${this.x11fed} open)`);
+      }
+    },
+    feedExplorer() {
+      this.feed("log: sys_openat64: OPENED '/home/username/.wine/dosdevices/c:/windows/system32/explorer.exe' -> fd 67");
+    },
+  };
+}
+
+test('an NTSTATUS error value in place of a handle never certifies the desktop', () => {
+  const h = observerHarness();
+  h.feed('[guest fd=1 pid=14] deskpin: READY hwnd=0xc000000d');
+  assert.equal(h.state.sessionDesktopReady, false);
+  assert.equal(h.state.sessionDesktopHwndOk, false);
+  assert.equal(h.errors.length, 1);
+  assert.match(h.errors[0], /BW64-FAIL/);
+  // Even with the rest of the handshake present, the error value
+  // itself must not become the certifying handle.
+  h.feedX11(5);
+  h.feedExplorer();
+  assert.equal(h.state.sessionDesktopReady, false);
+});
+
+test('zero and warning-class values are not handles either', () => {
+  for (const bad of ['0x0', '0x80000003']) {
+    const h = observerHarness();
+    h.feed(`deskpin: READY hwnd=${bad}`);
+    h.feedX11(5);
+    h.feedExplorer();
+    assert.equal(h.state.sessionDesktopReady, false, `${bad} must not certify`);
+    assert.equal(h.errors.length, 1);
+  }
+});
+
+test('a real handle alone does not certify: the X11 and explorer handshake is required', () => {
+  const h = observerHarness();
+  h.feed('wine64session: spawned pid=14');
+  assert.equal(h.state.sessionDesktopReady, false);
+  h.feed('[guest fd=1 pid=14] deskpin: READY hwnd=0x10040');
+  assert.equal(h.state.sessionDesktopReady, false);
+  h.feedExplorer();
+  h.feedX11(4);
+  assert.equal(h.state.sessionDesktopReady, false);
+  h.feedX11(1);
+  assert.equal(h.state.sessionDesktopReady, true);
+});
+
+test('without the explorer launch the desktop is not certified either', () => {
+  const h = observerHarness();
+  h.feed('[guest fd=1 pid=14] deskpin: READY hwnd=0x10040');
+  h.feedX11(5);
+  assert.equal(h.state.sessionDesktopReady, false);
+  h.feedExplorer();
+  assert.equal(h.state.sessionDesktopReady, true);
+});
+
+test('the handshake evidences may arrive in any order', () => {
+  const h = observerHarness();
+  h.feedExplorer();
+  h.feedX11(5);
+  assert.equal(h.state.sessionDesktopReady, false);
+  h.feed('[guest fd=1 pid=14] deskpin: READY hwnd=0x10048');
+  assert.equal(h.state.sessionDesktopReady, true);
 });
 
 const pinFunction = source.slice(source.indexOf('    function pinSessionServerWhenReady()'),

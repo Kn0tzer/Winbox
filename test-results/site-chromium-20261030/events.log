@@ -1,0 +1,9 @@
+[2026-10-30T05:05:20.469Z] target url: http://127.0.0.1:33361/ demo: chromium
+[2026-10-30T05:22:55.595Z] slot acquired
+[2026-10-30T05:23:00.004Z] catalog loaded; crossOriginIsolated = true
+[2026-10-30T05:23:03.280Z] clicked demo chromium
+[2026-10-30T05:23:11.343Z] STATUS: Wine is starting the program and its background services. Waiting for a window and the first frame.
+[2026-10-30T05:24:00.463Z] STATUS: The program is running. Large games can take several minutes to show their first frame.
+[2026-10-30T05:24:00.492Z] WINDOW MAPPED at t= 58 s
+[2026-10-30T05:24:12.004Z] OUTCOME: window-mapped+frame
+[2026-10-30T05:24:12.534Z] slot released

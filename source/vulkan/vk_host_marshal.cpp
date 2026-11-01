@@ -12916,8 +12916,15 @@ void MarshalVkPerformanceValueINTEL::read(BoxedVulkanInfo* pBoxedInfo, KMemory* 
         s->data.valueString = new char[len + 1];
         memory->memcpy((U8*)s->data.valueString, strAddress, len + 1);
         break; }
-    default:
-        kpanic_fmt("MarshalVkPerformanceValueINTEL::read unknown s->type %d", s->type);
+    default: {
+        // s->type is guest-controlled: an unknown value must not kill
+        // the emulator. Log once and skip the payload; the union slot
+        // is fixed-stride (address += 8 below), and the value is zeroed
+        // so no uninitialised data flows to the host call.
+        static bool shownUnknownType;
+        if (!shownUnknownType) { shownUnknownType = true; klog_fmt("BW64-FAIL MarshalVkPerformanceValueINTEL::read unknown s->type %d; payload skipped, value zeroed", s->type); }
+        s->data.value64 = 0;
+        break; }
     }
     address += 8;
 }
@@ -12938,11 +12945,20 @@ void MarshalVkPerformanceValueINTEL::write(BoxedVulkanInfo* pBoxedInfo, KMemory*
     case VK_PERFORMANCE_VALUE_TYPE_BOOL_INTEL:
         memory->writed(address, s->data.valueBool);
         break;
-    case VK_PERFORMANCE_VALUE_TYPE_STRING_INTEL:
-        kpanic("MarshalVkPerformanceValueINTEL::write unhandled types: VK_PERFORMANCE_VALUE_TYPE_STRING_INTEL");
-        break;
-    default:
-        kpanic_fmt("MarshalVkPerformanceValueINTEL::write unknown s->type %d", s->type);
+    case VK_PERFORMANCE_VALUE_TYPE_STRING_INTEL: {
+        // A host string has no guest address to write back; panicking
+        // killed the emulator for a guest-reachable value. Log once
+        // and skip the payload (the type field is already written).
+        static bool shownStringType;
+        if (!shownStringType) { shownStringType = true; klog_fmt("BW64-FAIL MarshalVkPerformanceValueINTEL::write VK_PERFORMANCE_VALUE_TYPE_STRING_INTEL has no guest writeback; payload skipped"); }
+        break; }
+    default: {
+        // s->type is guest-controlled: log once and skip the payload
+        // instead of panicking; the union slot is fixed-stride
+        // (address += 8 below), so the guest layout stays consistent.
+        static bool shownUnknownType;
+        if (!shownUnknownType) { shownUnknownType = true; klog_fmt("BW64-FAIL MarshalVkPerformanceValueINTEL::write unknown s->type %d; payload skipped", s->type); }
+        break; }
     }
     address += 8;
 }

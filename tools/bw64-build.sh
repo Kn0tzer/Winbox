@@ -72,7 +72,11 @@ fi
 # scan under the lock shows no live probe.
 acquire_lock() {
     local started_wait=$SECONDS
+    local waited_logged=0
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
+        # A queued build must say so: waiting silently for up to
+        # BW64_BUILD_WAIT_SECONDS reads as a hung build.
+        if (( waited_logged == 0 )); then log 'waiting for build lock'; waited_logged=1; fi
         # A live owner remains authoritative regardless of lock age. Missing info
         # can be the mkdir-to-write interval of a new owner: fail closed and wait.
         if read_owner && ! pid_alive "$lock_pid"; then
@@ -170,6 +174,7 @@ else
     lock_deadline=$(( SECONDS + WAIT_SECONDS ))
     slipped=0
     drain_logged=0
+    lock_logged=0
     while :; do
         claim_build_pending
         if probes_busy && (( drain_budget > 0 )); then
@@ -210,6 +215,12 @@ else
             log 'probe activity slipped in during lock acquisition; releasing lock to drain again'
             release_lock
             continue
+        fi
+        # Same duty as the drain message above: a build queued behind
+        # another build logs that fact once instead of sitting silent.
+        if (( lock_logged == 0 )) && lock_contended; then
+            if read_owner; then log "waiting for build lock (owner=$lock_owner pid=$lock_pid)"; else log 'waiting for build lock (owner still initializing)'; fi
+            lock_logged=1
         fi
         if (( SECONDS >= lock_deadline )); then die "build lock busy or invalid: $LOCKDIR"; fi
         sleep 1
@@ -270,5 +281,21 @@ PYCODE
 mkdir -p "$REPO/web/runtime"
 for asset in boxedwine64.wasm boxedwine64.js BUILD_INFO.json; do cp "$BUILD_OUT/$asset" "$REPO/web/runtime/$asset"; done
 cd "$REPO"
-node tools/browser/build.mjs && node tools/browser/verify-dist.mjs
+# Pin the verifier to the tree this run just exported. verify-dist.mjs
+# otherwise resolves BW_TEST_DIST first — an env var the test suites use
+# for a different purpose — and would verify a stale dist while this
+# script reports BUILD COMPLETE for the new one.
+EXPORT_OUT="${WINE_BUILD_OUT:-dist}"
+[[ "$EXPORT_OUT" = /* ]] || EXPORT_OUT="$REPO/$EXPORT_OUT"
+# A bare `cmd1 && cmd2` statement would swallow a failed export: the
+# && list consumes the exit status, so set -e never fires and BUILD
+# COMPLETE printed anyway (observed live 2026-10-30: stage-dependencies
+# died on a missing payload, build.mjs exited 1, BUILD COMPLETE still
+# printed). Both steps die loudly by name instead.
+if ! node tools/browser/build.mjs; then
+    die 'browser export failed (tools/browser/build.mjs exited non-zero); BUILD COMPLETE not claimed'
+fi
+if ! BW_TEST_DIST="$EXPORT_OUT" node tools/browser/verify-dist.mjs; then
+    die 'browser export verification failed (tools/browser/verify-dist.mjs exited non-zero); BUILD COMPLETE not claimed'
+fi
 log 'BUILD COMPLETE'

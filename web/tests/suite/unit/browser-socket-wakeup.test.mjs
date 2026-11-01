@@ -33,6 +33,7 @@ using S32=int32_t;
 #define BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(m)
 #define B(s) s
 #define kpanic(s) throw std::runtime_error(s)
+#define kwarn_fmt(...)
 static S32 nativeSocketPipe[2];
 static bool checkWaitingNativeSocketsThreadDone;
 static int checkWaitingNativeSocketsThreadMutex;
@@ -58,8 +59,10 @@ int main(){
  startNativeSocketsThread();stopNativeSocketsThread();
  std::vector<int> extra;int highest=-1;
  while(highest<FD_SETSIZE){highest=open("/dev/null",O_RDONLY);assert(highest>=0);extra.push_back(highest);}
- bool rejected=false;try{startNativeSocketsThread();}catch(const std::runtime_error&){rejected=true;}
- assert(rejected && checkWaitingNativeSocketsThread==nullptr);
+ // Contract updated for the cleanup campaign: an unusable wakeup pipe
+ // now degrades (BW64-FAIL log, monitor not started) instead of panicking.
+ startNativeSocketsThread();
+ assert(checkWaitingNativeSocketsThread==nullptr);
  assert(nativeSocketPipe[0]==-1 && nativeSocketPipe[1]==-1);
  for(int fd:extra)close(fd);
 }

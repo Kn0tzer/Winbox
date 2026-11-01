@@ -61,6 +61,8 @@ void testBStringContains();
 void testBStringJoin();
 void testBStringIndexOf();
 void testCondStartWaitTime();
+void testFutex32WakeRace();
+void testThreadLifetimeTeardown();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
 void testKObjectLockStubs();
@@ -69,6 +71,8 @@ void testAtomicStress64();
 void testFutex64DispatchGuard();
 #ifndef BOXEDWINE_GUEST_X64
 void testMadvise32Syscall();
+void testFaultDelivery32();
+void testPortIoFault32();
 void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
@@ -79,6 +83,10 @@ void testMremap32Syscall();
 void testMadvise32ForkInheritance();
 void testMremap32SharedFile();
 void testProcMaps32();
+void testMemoryPerformOnMemoryBadBuffer32();
+void testMemoryGetRamPtrCrossPage32();
+void testMemoryMemcpyOverflow32();
+void testMemoryMadviseLayer32();
 #endif
 void testInetDatagramLoopback();
 void testInetStreamLoopback();
@@ -86,8 +94,15 @@ void testGl64ClientArrayIndexRange();
 void testTimerfdCore();
 void testUnixSocketOptions();
 void testEpollOneShotAndFlags();
+void testMemfdCreate();
 void testMemfdSeals();
+void testMemfdNodeOps();
+void testFsReadNativeFile();
+void testFsZipReadBadCrc();
+void testFsZipExtractCorrupt();
+void testFsFileOpenNodeIoErrors();
 void testEventfdFlags();
+void testKernelGrace();
 void testDevInputJoystick();
 void testTimerfdProcessAbiProbes();
 void testSetitimerProbes();
@@ -95,11 +110,15 @@ void testAsyncSigio();
 void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
+void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
 void testProcessVm64Syscalls();
 void testEpollPwait2Syscall();
+void testEpollPwaitSyscall();
+void testDup3Syscall();
+void testAccept4Syscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
@@ -129,6 +148,7 @@ void testMremap64Syscall();
 void testSysinfo64Consistency();
 void testMadvise64Syscalls();
 void testMlock64Syscalls();
+void testMemoryMadviseLayer64();
 #endif
 
 namespace {
@@ -144,15 +164,27 @@ const TestEntry TEST_ENTRIES[] = {
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
+    {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
+    {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testKernelGrace, "Test kernel object graceful error answers"},
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
+    {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
+    {testDup3Syscall, "Test x64 dup3 syscall"},
+    {testAccept4Syscall, "Test x64 accept4 syscall"},
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
@@ -177,6 +209,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSysinfo64Consistency, "Test x64 sysinfo and meminfo consistency"},
     {testMadvise64Syscalls, "Test x64 madvise remove and fork advice"},
     {testMlock64Syscalls, "Test x64 mlock accounting and RLIMIT_MEMLOCK"},
+    {testMemoryMadviseLayer64, "Test x64 madvise layer dispositions"},
     {testSignalFp64Roundtrip, "Test x64 signal FP/SSE snapshot and edited return (K-M4)"},
     {testSignal64NestedAltstack, "Test x64 nested altstack signal frames"},
     {testSignal64BadFpFrame, "Test x64 invalid signal FP frame faults"},
@@ -799,11 +832,15 @@ const TestEntry TEST_ENTRIES[] = {
     {testBStringJoin, "Test BString join delimiter lengths"},
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
+    {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
 #endif
     {testWaitPid, "Test waitpid child selection"},
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
+    {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
+    {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
@@ -813,6 +850,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testClone32Flags, "Test 32-bit clone flag dispositions"},
     {testClone3Abi32, "Test 32-bit clone3 ABI validation"},
     {testMremap32SharedFile, "Test 32-bit mremap shared file identity"},
+    {testMemoryPerformOnMemoryBadBuffer32, "Test 32-bit performOnMemory bad buffer degrades"},
+    {testMemoryGetRamPtrCrossPage32, "Test 32-bit getRamPtr cross-page request degrades"},
+    {testMemoryMemcpyOverflow32, "Test 32-bit guest memcpy overflow degrades"},
+    {testMemoryMadviseLayer32, "Test 32-bit madvise layer dispositions"},
     {testSyscall64DispatchGuard, "Test x64 syscall fallback guard"},
     {testGuestCpuTopology, "Test guest CPU topology consistency"},
     {testKObjectLockStubs, "Test KObject lock stub dispositions"},
@@ -821,8 +862,15 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
     {testEpollOneShotAndFlags, "Test epoll one-shot and exclusive flags"},
+    {testMemfdCreate, "Test memfd create flag and mode validation"},
     {testMemfdSeals, "Test memfd seal enforcement"},
+    {testMemfdNodeOps, "Test memfd node operation refusals"},
+    {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
+    {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
+    {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
+    {testKernelGrace, "Test kernel object graceful error answers"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
     {testSetitimerProbes, "Test setitimer expiration probes"},
@@ -830,6 +878,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
+    {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},

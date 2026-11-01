@@ -62,6 +62,7 @@ fi
 LIBGL_PREBUILT="$HERE/libgl64/libGL.so.1"
 VK_PREBUILT="$HERE/libvk64/libvulkan.so.1"
 WINEHQ64="$HERE/winehq10-x86_64"
+WINE8BP64="$HERE/wine8-backports-x86_64"
 ALSA_PREBUILT="$HERE/alsa"
 OMIT_GL=0
 OMIT_VK=0
@@ -93,6 +94,16 @@ for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll; do
+    if [ ! -f "$WINE8BP64/$dll" ]; then
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
+        exit 1
+    fi
+done
+if [ ! -f "$WINE8BP64/win32u.so" ]; then
+    echo "ERROR: $WINE8BP64/win32u.so missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
+    exit 1
+fi
 VKSHIM_PREBUILT="$REPO/tools/vkd3d/probe/bw64vulkan.dll"
 D3D12_PREBUILT="$REPO/tools/vkd3d/build.w64/libs/d3d12/d3d12.dll"
 D3D12CORE_PREBUILT="$REPO/tools/vkd3d/build.w64/libs/d3d12core/d3d12core.dll"
@@ -327,6 +338,41 @@ for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
+
+# Backport four DLLs rebuilt from the pinned Wine 8.0 source with three
+# small upstream-mirroring patches (tools/buildWine/patches/wine8-*.patch):
+# Debian's wine 8.0 module set is missing exports that real programs import
+# at load time — user32's GetPointer*Info family (a demo executable fails
+# to load without GetPointerPenInfo), kernelbase/kernel32's CopyFile2, and
+# iphlpapi's GetAnycastIpAddressTable. The rebuilt DLLs are the same Wine
+# 8.0 code as the rest of the tree plus those exports, so there is no
+# version skew against the tree's unix side. See
+# wine8-backports-x86_64/README.md for provenance and the pinned hashes;
+# check_runtime_completeness.py enforces them. Hard failure, not a
+# warning, for the same reason as the winehq10 backports above.
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll; do
+    if [ -f "$WINE8BP64/$dll" ]; then
+        cp "$WINE8BP64/$dll" \
+            "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
+        echo "--- staging $dll (wine8 loader backport) ---"
+    else
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh;" \
+             "refusing to build a wine64.zip that lacks the module." >&2
+        exit 1
+    fi
+done
+
+# The unix half of win32u stages with its PE half: the desktop-wait
+# patch (FD-01) lives in win32u.so, so a container build that stages
+# only the DLL ships the fix in no binary (FD-43).
+if [ -f "$WINE8BP64/win32u.so" ]; then
+    cp "$WINE8BP64/win32u.so" \
+        "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-unix/win32u.so"
+    echo "--- staging win32u.so (wine8 backport, unix half) ---"
+else
+    echo "ERROR: $WINE8BP64/win32u.so missing; refusing to build a wine64.zip that lacks the module." >&2
+    exit 1
+fi
 
 # Stage the D3D12 payload at system placement in the wine tree (the
 # prefix's system32 is a .link into this tree, so this is where every

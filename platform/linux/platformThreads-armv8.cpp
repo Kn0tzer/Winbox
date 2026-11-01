@@ -18,6 +18,8 @@
 
 #include "boxedwine.h"
 
+#include <atomic>
+
 #if defined(BOXEDWINE_JIT_ARMV8) && defined(BOXEDWINE_HOST_EXCEPTIONS)
 #include "ksignal.h"
 #include "../../source/emulation/softmmu/kmemory_soft.h"
@@ -177,7 +179,19 @@ void signalHandler(CPU* cpu) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(cpu->memory->mutex); // jitCache needs this
         U32 eip = 0;
         if (!getMemData(cpu->memory)->findOpFromJitAddress((U8*)cpu->exceptionIp, eip)) {
-            klog("probably about to crash, could not find emulation instruction that caused exception");
+            // FD-42: this diagnostic sits on the host-exception path, where
+            // a guest faulting repeatedly on an unmapped JIT address
+            // re-enters for every fault; as a plain klog it grew suite logs
+            // by gigabytes. Counting cap in the failure-logging standard's
+            // shape: the first 64 occurrences in full, then every 1024th,
+            // always with the cumulative count= in the line. The fact is
+            // never dropped; only the repetition is bounded.
+            static std::atomic<unsigned long long> unmappedJitExceptionCount{0};
+            const unsigned long long n = unmappedJitExceptionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 64 || n % 1024 == 0) {
+                klog_fmt("BW64-FAIL host-exception unmapped-jit sig=%d ip=0x%llx count=%llu: probably about to crash, could not find emulation instruction that caused exception",
+                         cpu->exceptionSigNo, (unsigned long long)cpu->exceptionIp, n);
+            }
             cpu->returnHostAddress = cpu->thread->process->blockExit;
         } else {
             cpu->eip.u32 = eip;

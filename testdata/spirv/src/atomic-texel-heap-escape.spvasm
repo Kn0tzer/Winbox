@@ -1,0 +1,50 @@
+; FD-62 escape fixture: the texel pointer itself is STORED as a value
+; (into a Function variable) instead of being consumed by an atomic.
+; Forming the pointer is auditable; the pointer value escaping is not
+; classifiable as an image-content access and must refuse through the
+; escape classification, not the texel-serving reason.
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability RuntimeDescriptorArray
+OpCapability VariablePointers
+OpCapability VulkanMemoryModel
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %registers %heap %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpDecorate %heap DescriptorSet 2
+OpDecorate %heap Binding 0
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%RootConstants = OpTypeStruct %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%11 = OpTypeImage %uint Buffer 0 0 0 2 R32ui
+%_runtimearr_11 = OpTypeRuntimeArray %11
+%_ptr_UniformConstant__runtimearr_11 = OpTypePointer UniformConstant %_runtimearr_11
+%heap = OpVariable %_ptr_UniformConstant__runtimearr_11 UniformConstant
+%v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%uint_0 = OpConstant %uint 0
+%_ptr_UniformConstant_11 = OpTypePointer UniformConstant %11
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%_ptr_Image_uint = OpTypePointer Image %uint
+%_ptr_Function__ptr_Image_uint = OpTypePointer Function %_ptr_Image_uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%slot = OpVariable %_ptr_Function__ptr_Image_uint Function
+%32 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%idx = OpLoad %uint %32
+%30 = OpAccessChain %_ptr_UniformConstant_11 %heap %idx
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%ci = OpBitcast %int %gx
+%tp = OpImageTexelPointer %_ptr_Image_uint %30 %ci %uint_0
+OpStore %slot %tp
+OpReturn
+OpFunctionEnd

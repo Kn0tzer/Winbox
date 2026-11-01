@@ -9,6 +9,7 @@
 
 #include "boxedwine.h"
 #include "../../io/fsfilenode.h"
+#include "../../io/fsmemnode.h"
 
 #ifdef __TEST
 
@@ -156,6 +157,66 @@ void testMemfdCreate() {
     }
     memory->unmap(mappedAddress, K_PAGE_SIZE);
     process->close(fd);
+}
+
+// The FsNode vtable slots that act on directory entries (rename, remove,
+// removeDir, setTimes, open-by-path) cannot be served for a memfd node: it
+// has no directory entry. They used to kpanic, which would turn a guest
+// rename/unlink/open attempt into an emulator death if any path ever
+// resolved to this node type. They must refuse with EPERM (nullptr for
+// open) and the process must stay alive; this test calls them directly,
+// so on the pre-fix code it dies inside the first call instead of
+// reporting a failure.
+void testMemfdNodeOps() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    if (!process->fdNode) {
+        process->fdNode = std::make_shared<FsFileNode>(0x3FFFFFFF, 0, B("/proc/test/fd"), B(""), B(""), true, false, nullptr);
+    }
+
+    U32 fd = process->memfd_create(B("test-memfd-nodeops"), 0);
+    if ((S32)fd < 0) {
+        testFail("memfd_create for node-ops test failed: %d", (S32)fd);
+        return;
+    }
+    KFileDescriptorPtr descriptor = process->getFileDescriptor(fd);
+    std::shared_ptr<KFile> file = descriptor ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+    std::shared_ptr<FsNode> node = file ? file->openFile->node : nullptr;
+    FsMemNode* memNode = node ? dynamic_cast<FsMemNode*>(node.get()) : nullptr;
+    if (!memNode) {
+        testFail("memfd descriptor does not resolve to an FsMemNode");
+        process->close(fd);
+        return;
+    }
+
+    if ((S32)memNode->rename(B("/elsewhere")) != -K_EPERM) {
+        testFail("FsMemNode::rename did not refuse with EPERM");
+    }
+    if (memNode->remove()) {
+        testFail("FsMemNode::remove did not refuse");
+    }
+    if ((S32)memNode->removeDir() != -K_EPERM) {
+        testFail("FsMemNode::removeDir did not refuse with EPERM");
+    }
+    if ((S32)memNode->setTimes(0, 0, 0, 0) != -K_EPERM) {
+        testFail("FsMemNode::setTimes did not refuse with EPERM");
+    }
+    if (memNode->open(K_O_RDONLY) != nullptr) {
+        testFail("FsMemNode::open did not refuse with nullptr");
+    }
+    // Queries stay served by the attached open node.
+    if (memNode->length() != 0 || memNode->lastModified() == 0) {
+        testFail("FsMemNode length/lastModified broken: len=%lld", (long long)memNode->length());
+    }
+    process->close(fd);
+
+    // A node whose open node was never attached must answer queries with 0,
+    // not dereference a null pointer.
+    FsMemNode bare(0x3FFFFF00, 1, B("bare"));
+    if (bare.length() != 0 || bare.lastModified() != 0) {
+        testFail("FsMemNode without an open node did not answer 0");
+    }
 }
 
 #endif

@@ -28,6 +28,7 @@
 #include MKDIR_INCLUDE
 
 #include "fsfilenode.h"
+#include "kinotify.h"
 #include "fsdiropennode.h"
 #include "fsfileopennode.h"
 #include "kstat.h"
@@ -59,6 +60,13 @@ void FsFileNode::getTmpPath(BString& nativePath, BString& localPath) {
     BOXEDWINE_CRITICAL_SECTION;
     Fs::makeLocalDirs(B("/tmp/del"));
     std::shared_ptr<FsNode> delDir = Fs::getNodeFromLocalPath(B(""), B("/tmp/del"), true);
+    if (!delDir) {
+        // The old code dereferenced the null node on the next line.
+        klog_fmt("BW64-FAIL fs-tmp-path outcome=no /tmp/del node; tmp path left empty");
+        nativePath = BString::empty;
+        localPath = BString::empty;
+        return;
+    }
 
     for (;nextTmpId<100000000;nextTmpId++) {
         BString name = "del"+BString::valueOf(nextTmpId)+".tmp";
@@ -66,9 +74,27 @@ void FsFileNode::getTmpPath(BString& nativePath, BString& localPath) {
         nativePath = delDir->nativePath.stringByApppendingPath(name);
         if (!Fs::doesNativePathExist(nativePath)) {
             localPath = "/tmp/del/"+name;
-            break;
+            return;
         }
     }
+    // Every tmp id is taken. The old loop fell out with nativePath still
+    // holding the last (existing) candidate, and the caller renamed the
+    // file being deleted onto that live path.
+    klog_fmt("BW64-FAIL fs-tmp-path outcome=tmp id space exhausted; tmp path left empty");
+    nativePath = BString::empty;
+    localPath = BString::empty;
+}
+
+namespace {
+// Host-open failures repeat (guests probe many paths), so report with
+// the counting-cap shape: first 64, then every 1024th, always count=.
+void logHostOpenFailure(const BString& path, const BString& nativePath, int err) {
+    static std::atomic<unsigned long long> failures{0};
+    unsigned long long n = ++failures;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-FAIL host-open path=%s native=%s errno=%d (%s) outcome=open refused count=%llu", path.c_str(), nativePath.c_str(), err, strerror(err), n);
+    }
+}
 }
 
 bool FsFileNode::remove() {
@@ -117,7 +143,8 @@ bool FsFileNode::remove() {
         BString newNativePath = FsFileNode::getNativeTmpPath();
 
         if (::rename(nativePath.c_str(), newNativePath.c_str())!=0) {
-            klog_fmt("could not rename %s", nativePath.c_str());
+            int err = errno;
+            klog_fmt("BW64-FAIL fs-remove-rename path=%s native=%s dest=%s errno=%d (%s) outcome=file stays at old path; open handles keep the old location", this->path.c_str(), nativePath.c_str(), newNativePath.c_str(), err, strerror(err));
         }
 
         this->nativePath = newNativePath;
@@ -257,10 +284,19 @@ FsOpenNode* FsFileNode::open(U32 flags) {
 #endif
     f = ::open(this->nativePath.c_str(), openFlags, 0666);	
     if (f==0xFFFFFFFF) {
+        int openErr = errno;
 #ifdef BOXEDWINE_ZLIB
         if (this->zipNode && (flags & K_O_ACCMODE)==K_O_RDONLY)
             return this->zipNode->open(shared_from_this(), flags);
 #endif
+        // The caller turns errno into the guest error, so it must
+        // survive this function; but a failed host open used to leave
+        // no trace at all. ENOENT/ENOTDIR are routine guest probing
+        // (existence checks) and are not failures worth a line.
+        if (openErr != ENOENT && openErr != ENOTDIR) {
+            logHostOpenFailure(this->path, this->nativePath, openErr);
+        }
+        errno = openErr;
         return nullptr;
     }
     return new FsFileOpenNode(std::dynamic_pointer_cast<FsFileNode>(shared_from_this()), flags, f);
@@ -407,7 +443,7 @@ U32 FsFileNode::rename(BString path) {
                 BString dosAttribDst = nativePath + EXT_DOSATTRIB;
                 ::rename(dosAttrib.c_str(), dosAttribDst.c_str());
             }
-            this->removeNodeFromParent();
+            this->removeNodeFromParent(false);
 #ifdef BOXEDWINE_ZLIB
             if (zipNode) {
                 std::shared_ptr<FsZip> fsZip = zipNode->fsZip.lock();
@@ -422,7 +458,7 @@ U32 FsFileNode::rename(BString path) {
             this->name = Fs::getFileNameFromPath(path);
             BString parentPath = Fs::getParentPath(path);
             std::shared_ptr<FsNode> parentNode = Fs::getNodeFromLocalPath(B(""), parentPath, false);
-            parentNode->addChild(shared_from_this());
+            parentNode->addChild(shared_from_this(), false);
             this->parent = parentNode;            
         } else {
             result = -translateErr(errno);
@@ -476,6 +512,20 @@ U32 FsFileNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastMod
     if (lastModifiedTime) {
         settime.modtime = lastModifiedTime;
     }       
-    utime(this->nativePath.c_str(),&settime);
-    return 0; // no error checking, we don't care if this fails
+    if (utime(this->nativePath.c_str(), &settime) != 0) {
+        // The syscall callers return this value to the guest, so a
+        // failed utime used to be reported as success. Be honest, and
+        // leave a trace: a guest that sets times on every file it
+        // extracts would otherwise have no way to know none of them
+        // stuck.
+        int err = errno;
+        static std::atomic<unsigned long long> failures{0};
+        unsigned long long n = ++failures;
+        if (n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL fs-settimes path=%s native=%s errno=%d (%s) outcome=guest told the truth count=%llu", this->path.c_str(), this->nativePath.c_str(), err, strerror(err), n);
+        }
+        return -translateErr(err);
+    }
+    KInotify::notifyAttrib(this);
+    return 0;
 }
