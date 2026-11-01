@@ -8589,6 +8589,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         m->hash = blob_hash(m->code.data(), m->code.size());
         VkResult auditResult = vk64AuditSpirv(m->code);
         if (auditResult != VK_SUCCESS) {
+            // Name the refused module: the success path below logs size+hash
+            // for every admitted module, and a refusal that cannot be
+            // attributed to its module bytes forces whole-session captures
+            // to identify what was refused (FD-55 pipeline-creation lane).
+            klog_fmt("vk64: vkCreateShaderModule REFUSED %llu bytes (hash %016llx) result=%d",
+                     (unsigned long long)ci.codeSize, (unsigned long long)m->hash, (int)auditResult);
             dropObj(id);
             wr64(args.a[3], 0);
             return auditResult;
@@ -12193,6 +12199,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             m->hash = blob_hash(m->code.data(), m->code.size());
             VkResult auditResult = vk64AuditSpirv(m->code);
             if (auditResult != VK_SUCCESS) {
+                klog_fmt("vk64: vkCreateShaderModule REFUSED %llu bytes (hash %016llx) result=%d",
+                         (unsigned long long)ci.codeSize, (unsigned long long)m->hash, (int)auditResult);
                 dropObj(id);
                 wr64_32((U32)args.a[3], 0);
                 return auditResult;
