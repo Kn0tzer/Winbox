@@ -27,6 +27,8 @@
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
+#include <atomic>
+#include <thread>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -125,11 +127,20 @@ void testInotifyEvents() {
         testFail("timerfd_create filler failed: %lld", (long long)fillerFd);
         return;
     }
-    // __NR_inotify_init1 = 294. Guest-visible contract while the FD-38
-    // enablement park is open: the syscall refuses loudly with ENOSYS
-    // and guests fall back to polling.
-    if (invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0) != -K_ENOSYS) {
-        testFail("inotify_init1 did not refuse with ENOSYS while the FD-38 gate is closed");
+    // __NR_inotify_init1 = 294. Guest-visible contract with the FD-38
+    // gate open: invalid flags are refused with EINVAL, valid flags
+    // hand back a working descriptor.
+    if (invoke(294, 0x40000000, 0, 0, 0) != -K_EINVAL) {
+        testFail("inotify_init1 did not refuse invalid flags with EINVAL");
+        return;
+    }
+    S64 initFd = invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0);
+    if (initFd < 0) {
+        testFail("inotify_init1 did not return a descriptor: %lld", (long long)initFd);
+        return;
+    }
+    if (invoke(3, (U64)initFd, 0, 0, 0) != 0) {
+        testFail("close of the inotify_init1 descriptor failed");
         return;
     }
     // The delivery machinery itself is exercised in full below: each
@@ -480,12 +491,19 @@ void testInotifyEventsProcessApi() {
     Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
     Fs::clearPathCache();
 
-    // Guest-visible gate pin: init1 refuses loudly while the FD-38
-    // enablement park is open.
-    if ((S32)process->inotify_init1(0) != -K_ENOSYS) {
-        testFail("KProcess::inotify_init1 did not refuse with ENOSYS while the FD-38 gate is closed");
+    // Guest-visible gate pin: init1 is enabled (the FD-38 enablement
+    // park is fixed) and hands out a descriptor that takes watches
+    // through the same KProcess path the syscall layers forward to.
+    S32 initFd = (S32)process->inotify_init1(0);
+    if (initFd < 0) {
+        testFail("KProcess::inotify_init1 did not return a descriptor with the FD-38 gate open: %d", initFd);
         return;
     }
+    if ((S32)process->inotify_add_watch(initFd, B("/"), 0xfff) < 1) {
+        testFail("inotify_add_watch on the inotify_init1 descriptor failed");
+        return;
+    }
+    process->close(initFd);
     // The machinery itself is exercised directly: build the instance
     // the way inotify_init1 would (0x800 == K_O_NONBLOCK, so
     // non-blocking) and register it; everything below then drives the
@@ -577,6 +595,79 @@ void testInotifyEventsProcessApi() {
     if (!sawIgnored) {
         testFail("rm_watch produced no IN_IGNORED through the KProcess API");
     }
+    process->close(fd);
+}
+
+void testInotifyPollNotifyStress() {
+    // FD-38 enablement-park mechanism pin. A poll scan holds the polling
+    // thread's poll condition mutex while it registers on every object in
+    // its set and probes each one for readiness (internal_poll_impl in
+    // kpoll.cpp does exactly this, in this order). The inotify notify
+    // sweep, which runs on file open/close funnels in every process once
+    // any instance exists, queues the event and signals the instance's
+    // parents while holding the instance wait condition (KInotify::sweep).
+    // If the readiness probe also takes the instance wait condition, the
+    // two paths lock in opposite orders (poll cond -> instance cond vs
+    // instance cond -> poll cond) and a session whose server polls an
+    // inotify descriptor while other processes churn files deadlocks
+    // outright: that is the Chromium session park that kept
+    // inotify_init1 behind ENOSYS. This test runs both real lock paths
+    // concurrently at high frequency; it passes only by completing, and
+    // on the pre-fix code it wedges (observed as a hang, not a failure
+    // line -- a wedged run IS the red result).
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64kinotifystressXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for inotify poll/notify stress test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+    std::shared_ptr<FsNode> rootNode = Fs::rootNode;
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr descriptor = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!descriptor || !descriptor->kobject) {
+        testFail("allocFileDescriptor for the inotify stress instance failed");
+        return;
+    }
+    S32 fd = (S32)descriptor->handle;
+    if ((S32)process->inotify_add_watch(fd, B("/"), 0xfff) < 1) {
+        testFail("inotify_add_watch failed for the stress instance");
+        return;
+    }
+
+    const int iterations = 200000;
+    BOXEDWINE_CONDITION pollCond = context.thread->pollCond;
+    std::thread poller([&]() {
+        for (int i = 0; i < iterations; i++) {
+            // The internal_poll_impl scan sequence, lock for lock: hold
+            // the poll condition's mutex, register as a wait parent on
+            // the object, probe readiness.
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(pollCond);
+            inotify->waitForEvents(pollCond, K_POLLIN);
+            (void)inotify->isReadReady();
+        }
+        inotify->waitForEvents(pollCond, 0);
+    });
+    std::thread sweeper([&]() {
+        for (int i = 0; i < iterations; i++) {
+            // The exact notify funnels every guest file open and close
+            // call once an inotify instance exists.
+            KInotify::notifyOpened(rootNode.get());
+            KInotify::notifyClosed(rootNode.get(), true);
+        }
+    });
+    poller.join();
+    sweeper.join();
     process->close(fd);
 }
 #endif

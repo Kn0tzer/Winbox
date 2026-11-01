@@ -4132,26 +4132,20 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 }
 
 U32 KProcess::inotify_init1(U32 flags) {
-    // REJECTED-LOUDLY, still: the event semantics that motivated the
-    // original 2026-10-30 refusal are fixed and pinned by the inotify
-    // tests (record padding, mask replace vs IN_MASK_ADD, rename move
-    // pair without phantom delete/create, watched-file move/unlink
-    // sequences, IN_ISDIR on directory self events, guest utimensat
-    // generating IN_ATTRIB, IN_DONT_FOLLOW honored). The gate stays
-    // closed for a different, isolated reason: with a working inotify
-    // the guest wineserver's Chromium session parks during startup.
-    // Bisection on the site rig (2026-10-31, FD-38 lane) showed the
-    // park reproduces with enablement alone on the pristine machinery
-    // and is not an event-delivery failure: the watched directories
-    // generate no events during the boot, no queued event is lost,
-    // and the directory waits the server registers pend identically
-    // under this refusal (its fallback is dnotify, whose fcntl the
-    // emulator also does not implement). The remaining mechanism is
-    // tracked as the narrowed FD-38 register entry. Guests that get
-    // ENOSYS here use their polling fallbacks, which is the behavior
-    // the site ships. Do not reopen this gate without re-running the
-    // site-rig consumer proof recorded with FD-38.
-    return -K_ENOSYS;
+    // ENABLED (FD-38): the event semantics are fixed and pinned by
+    // the inotify tests, and the enablement park that kept this gate
+    // closed is fixed at its source. The park was a lock-order
+    // deadlock, not an event problem: a poll scan probes readiness
+    // while holding the polling thread's poll condition, and the
+    // inotify notify sweep signals poll conditions while holding the
+    // instance wait condition, so the readiness probe must not take
+    // the instance wait condition -- KInotify::isReadReady is
+    // lock-free over an atomic mirror of the queue state, and
+    // testInotifyPollNotifyStress pins the composition under stress
+    // (its pre-fix run wedges with the two stacks crossed in
+    // KInotify::sweep / KInotify::isReadReady). The site-rig consumer
+    // proof for this enablement -- the Chromium session starting and
+    // presenting with delivery live -- is recorded with FD-38.
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
     KInotify::registerInstance(o);

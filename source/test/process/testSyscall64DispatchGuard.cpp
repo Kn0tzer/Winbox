@@ -164,19 +164,20 @@ void testInotify64Syscalls() {
         ksyscall64(&cpu);
         return (S64)cpu.reg[X64_RAX].u64;
     };
-    // __NR_inotify_init1 = 294 and __NR_inotify_init = 253: while the
-    // FD-38 enablement park is open, the guest-visible contract is the
-    // loud refusal -- every init attempt returns ENOSYS (the refusal
-    // precedes flag validation). Delivery semantics are pinned by the
-    // testInotify tests, which drive the machinery directly.
-    if (invoke(294, 0x40000000ULL, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init1 did not refuse with ENOSYS");
+    // __NR_inotify_init1 = 294 and __NR_inotify_init = 253: with the
+    // FD-38 gate open, the guest-visible contract is a working
+    // descriptor for valid flags and EINVAL for invalid ones (flag
+    // validation is part of the enabled implementation, so it now
+    // runs where the refusal used to precede it). Delivery semantics
+    // are pinned by the testInotify tests.
+    if (invoke(294, 0x40000000ULL, 0, 0) != -K_EINVAL) {
+        testFail("x64 inotify_init1 did not refuse invalid flags with EINVAL");
     }
-    if (invoke(294, 0x80800ULL, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init1 did not refuse with ENOSYS");
+    if (invoke(294, 0x80800ULL, 0, 0) < 0) {
+        testFail("x64 inotify_init1 did not return a descriptor");
     }
-    if (invoke(253, 0, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init did not refuse with ENOSYS");
+    if (invoke(253, 0, 0, 0) < 0) {
+        testFail("x64 inotify_init did not return a descriptor");
     }
 }
 

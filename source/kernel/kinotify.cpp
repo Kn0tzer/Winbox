@@ -107,8 +107,17 @@ bool KInotify::isOpen() {
 }
 
 bool KInotify::isReadReady() {
-    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
-    return !this->pendingEvents.empty();
+    // Deliberately lock-free, like the unix socket object's readiness
+    // probe: poll scans call this while holding the polling thread's
+    // poll condition mutex, and the notify sweep in this class signals
+    // poll conditions while holding waitCond. Taking waitCond here
+    // closes an ABBA cycle (pollCond -> waitCond in the scan against
+    // waitCond -> pollCond in the sweep) that deadlocked any session
+    // whose server polled an inotify descriptor while other processes
+    // churned files -- the FD-38 enablement park. The atomic mirror is
+    // maintained at every queue mutation, so this returns exactly what
+    // the locked version returned.
+    return this->pendingNonEmpty.load(std::memory_order_acquire);
 }
 
 bool KInotify::isWriteReady() {
@@ -186,6 +195,7 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
             }
             if (this->pendingEvents.empty()) {
                 this->overflowPending = false;
+                this->pendingNonEmpty.store(false, std::memory_order_release);
             }
             return written;
         }
@@ -298,6 +308,7 @@ void KInotify::queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name) {
             overflow.mask = K_IN_Q_OVERFLOW;
             overflow.cookie = 0;
             this->pendingEvents.push_back(overflow);
+            this->pendingNonEmpty.store(true, std::memory_order_release);
         }
         return;
     }
@@ -307,6 +318,7 @@ void KInotify::queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name) {
     event.cookie = cookie;
     event.name = name;
     this->pendingEvents.push_back(event);
+    this->pendingNonEmpty.store(true, std::memory_order_release);
 }
 
 void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie) {
