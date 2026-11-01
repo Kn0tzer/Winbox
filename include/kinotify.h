@@ -62,7 +62,9 @@ class FsNode;
 // inotify (kernel round 3B): watches bind to FsNodes and the emulator's
 // filesystem mutation funnels report into every live instance through
 // the static notify entry points below. See kinotify.cpp for the exact
-// coverage and the documented gaps (IN_ACCESS, mmap-write IN_MODIFY).
+// coverage, IN_ACCESS on completed reads (FD-59), and the one
+// remaining documented gap (IN_CLOSE_WRITE deferral for mappings that
+// outlive their fd).
 class KInotify : public KObject {
 public:
     explicit KInotify(bool blocking);
@@ -103,6 +105,7 @@ public:
     static void notifyOpened(FsNode* node);
     static void notifyClosed(FsNode* node, bool wasWrite);
     static void notifyAttrib(FsNode* node);
+    static void notifyAccessed(FsNode* node);
 
 private:
     struct Watch {
@@ -118,6 +121,7 @@ private:
 
     void sweep(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie);
     static void fileEvent(FsNode* node, U32 type);
+    static void fileEventForNode(FsNode* node, U32 type);
     static void sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie);
     void queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name);
 
@@ -135,6 +139,11 @@ private:
     std::atomic<bool> pendingNonEmpty{false};
 
     static std::vector<std::weak_ptr<KInotify>> instances;
+    // Fast-out for notifyAccessed, which sits on the read hot path:
+    // true while at least one instance is registered. Set by
+    // registerInstance; cleared by sweepAll when its pruning finds
+    // no live instance left.
+    static std::atomic<bool> anyInstance;
     static BOXEDWINE_MUTEX instancesMutex;
 };
 

@@ -43,6 +43,10 @@ public:
     FsOpenNode* open(U32 flags) override;
     U32 getType(bool checkForLink) override;
     U32 getMode() override;
+    U32 getHardLinkCount() override;
+    // Public: KProcess::link must materialize a zip-backed file
+    // before it can be hard-linked on the host.
+    void ensurePathIsLocal(bool prepareForWrite);
     U32 removeDir() override;
     BString getLink() override;
 
@@ -54,7 +58,6 @@ private:
     friend class FsDirOpenNode;
     friend class Platform;
 
-    void ensurePathIsLocal(bool prepareForWrite);
 #ifdef BOXEDWINE_ZLIB
     friend class FsZip;
     friend class FsZipNode;    

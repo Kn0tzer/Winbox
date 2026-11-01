@@ -445,6 +445,12 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
     return node;
 }
 
+std::shared_ptr<FsFileNode> Fs::addFileNodeWithSharedId(const BString& path, const BString& link, const BString& nativePath, bool isDirectory, const std::shared_ptr<FsNode>& parent, U32 id) {
+    std::shared_ptr<FsFileNode> result = std::make_shared<FsFileNode>(id, 0, path, link, nativePath, isDirectory, false, parent);
+    parent->addChild(result);
+    return result;
+}
+
 std::shared_ptr<FsFileNode> Fs::addFileNode(const BString& path, const BString& link, const BString& nativePath, bool isDirectory, const std::shared_ptr<FsNode>& parent) {
     std::shared_ptr<FsFileNode> result = std::make_shared<FsFileNode>(Fs::nextNodeId++, 0, path, link, nativePath, isDirectory, false, parent);
     parent->addChild(result);

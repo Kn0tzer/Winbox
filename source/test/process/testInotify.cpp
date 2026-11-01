@@ -598,6 +598,367 @@ void testInotifyEventsProcessApi() {
     process->close(fd);
 }
 
+// FD-58 / FD-59 / FD-60 kernel semantics, driven through the KProcess
+// API (plus the x64 syscall layer for fchmod/fchmodat, whose 64-bit
+// handlers used to answer success without doing anything). Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with dedicated
+// reference programs, preserved under test-results/fd58-60/):
+//  - chmod stores the mode verbatim, setuid/setgid/sticky bits
+//    included; fchmod does the same by descriptor; chmod generates
+//    IN_ATTRIB on the file's watchers; fchmodat with
+//    AT_SYMLINK_NOFOLLOW on a symlink fails with ENOTSUP.
+//  - read/pread/readv and getdents generate IN_ACCESS (a read that
+//    returns 0 bytes does not); writes through memory mappings
+//    generate no IN_MODIFY at write, msync, fsync, munmap, or close.
+//  - link() gives both names one inode and one link count, generates
+//    IN_ATTRIB on the source and IN_CREATE in the target directory,
+//    and a write through one name is visible through the other;
+//    unlinking one name drops the count to 1 and keeps the content.
+void testChmodAccessHardLink() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64kchmodXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for chmod/access/link test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr descriptor = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!descriptor || !descriptor->kobject) {
+        testFail("allocFileDescriptor for the inotify instance failed");
+        return;
+    }
+    S32 ifd = (S32)descriptor->handle;
+    S32 wdDir = (S32)process->inotify_add_watch(ifd, B("/"), 0xfff);
+    if (wdDir < 1) {
+        testFail("inotify_add_watch on / failed: %d", wdDir);
+        return;
+    }
+
+    struct Ev { S32 wd; U32 mask; BString name; };
+    auto drainEvents = [&]() {
+        std::vector<Ev> events;
+        U8 buffer[8192];
+        S32 total = (S32)descriptor->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            Ev e;
+            U32 nameLen;
+            memcpy(&e.wd, buffer + offset, 4);
+            memcpy(&e.mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            if (nameLen) {
+                e.name = BString::copy((const char*)(buffer + offset + 16), (S32)nameLen);
+                // names are NUL-padded to the record length
+                while (e.name.length() && e.name.charAt(e.name.length() - 1) == 0) {
+                    e.name = e.name.substr(0, e.name.length() - 1);
+                }
+            }
+            events.push_back(e);
+            offset += 16 + (S32)nameLen;
+        }
+        return events;
+    };
+    auto hasEvent = [](const std::vector<Ev>& events, S32 wd, U32 bit, const char* name) {
+        for (auto& e : events) {
+            if (e.wd == wd && (e.mask & bit) && e.name == name) return true;
+        }
+        return false;
+    };
+
+    // struct stat64 (i386 large-file layout written by KSystem::writeStat
+    // with is64=true): ino @12 (also @88), mode @16, nlink @20.
+    constexpr U32 statAt = TEST_HEAP_ADDRESS + 0x400;
+    struct StatInfo { U32 mode; U32 ino; U32 nlink; };
+    auto statOf = [&](const char* path, StatInfo& out) -> bool {
+        if ((S32)process->stat64(B(path), statAt) < 0) return false;
+        out.ino = context.thread->memory->readd(statAt + 12);
+        out.mode = context.thread->memory->readd(statAt + 16);
+        out.nlink = context.thread->memory->readd(statAt + 20);
+        return true;
+    };
+
+    // Create /a.txt with known content.
+    KFileDescriptorPtr created;
+    U32 result = process->openFile(B("/"), B("/a.txt"), K_O_RDWR | K_O_CREAT, created);
+    if ((S32)result < 0 || !created) {
+        testFail("openFile(O_CREAT) for /a.txt failed: %d", (S32)result);
+        return;
+    }
+    std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(created->kobject);
+    const char* text = "hello";
+    U32 textAt = TEST_HEAP_ADDRESS + 0x200;
+    context.thread->memory->memcpy(textAt, (void*)text, 5);
+    file->write(context.thread, textAt, 5);
+    S32 fileFd = (S32)created->handle;
+
+    StatInfo st;
+    if (!statOf("/a.txt", st)) {
+        testFail("stat64 of /a.txt failed");
+        return;
+    }
+    const U32 inoA = st.ino;
+    if (st.nlink != 1) {
+        testFail("fresh file must have nlink 1, got %d", st.nlink);
+    }
+
+    // ---- FD-58: chmod applies the mode, verbatim including suid.
+    if ((S32)process->chmod(B("/a.txt"), 0600) != 0) {
+        testFail("KProcess::chmod returned an error");
+        return;
+    }
+    if (!statOf("/a.txt", st) || (st.mode & 07777) != 0600) {
+        testFail("chmod 0600 did not change the reported mode (now %04o)", st.mode & 07777);
+    }
+    process->chmod(B("/a.txt"), 04755);
+    if (!statOf("/a.txt", st) || (st.mode & 07777) != 04755) {
+        testFail("chmod 04755 did not preserve the setuid bit (now %04o)", st.mode & 07777);
+    }
+    if ((S32)process->chmod(B("/missing.txt"), 0600) != -K_ENOENT) {
+        testFail("chmod on a missing path must return -ENOENT");
+    }
+
+    // Watch the file itself; everything below is measured from a clean queue.
+    S32 wdFile = (S32)process->inotify_add_watch(ifd, B("/a.txt"), 0xfff);
+    if (wdFile < 1) {
+        testFail("inotify_add_watch on /a.txt failed: %d", wdFile);
+        return;
+    }
+    drainEvents();
+    // A chmod after the watch exists must surface as IN_ATTRIB on
+    // both watches (also exercised through fchmod/fchmodat below on
+    // the 64-bit layer).
+    process->chmod(B("/a.txt"), 0644);
+
+#ifdef BOXEDWINE_GUEST_X64
+    // ---- FD-58: fchmod / fchmodat through the real x64 syscall layer.
+    {
+        if (!process->memory64) process->memory64 = new KMemory64(process.get());
+        KMemory64* memory64 = process->memory64;
+        constexpr U64 page = 0x77000000ULL;
+        if (!memory64->getPageFlags(page >> K64_PAGE_SHIFT) &&
+            memory64->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+            testFail("fchmod fixture could not map its page");
+            return;
+        }
+        CPU64 cpu(memory64);
+        cpu.thread = context.thread;
+        auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+            cpu.reg[X64_RAX].setU64(nr);
+            cpu.reg[X64_RDI].setU64(a1);
+            cpu.reg[X64_RSI].setU64(a2);
+            cpu.reg[X64_RDX].setU64(a3);
+            cpu.reg[X64_R10].setU64(a4);
+            ksyscall64(&cpu);
+            return (S64)cpu.reg[X64_RAX].u64;
+        };
+        if (invoke(91, (U64)(U32)fileFd, 0640, 0, 0) != 0) {
+            testFail("x64 fchmod syscall did not return 0");
+        }
+        if (!statOf("/a.txt", st) || (st.mode & 07777) != 0640) {
+            testFail("fchmod 0640 did not change the reported mode (now %04o)", st.mode & 07777);
+        }
+        const char* rel = "a.txt";
+        memory64->memcpyToGuest(page, rel, 6);
+        constexpr U64 AT_FDCWD = (U64)-100;
+        if (invoke(268, AT_FDCWD, page, 0604, 0) != 0) {
+            testFail("x64 fchmodat syscall did not return 0");
+        }
+        if (!statOf("/a.txt", st) || (st.mode & 07777) != 0604) {
+            testFail("fchmodat 0604 did not change the reported mode (now %04o)", st.mode & 07777);
+        }
+        // fchmodat AT_SYMLINK_NOFOLLOW on a symlink: ENOTSUP on the host.
+        process->symlink(B("/a.txt"), B("/l.txt"));
+        const char* lname = "l.txt";
+        memory64->memcpyToGuest(page, lname, 6);
+        S64 rc = invoke(268, AT_FDCWD, page, 0600, 0x100);
+        if (rc != -K_ENOTSUP) {
+            testFail("fchmodat AT_SYMLINK_NOFOLLOW on a symlink must return -ENOTSUP, got %lld", (long long)rc);
+        }
+        if (!statOf("/a.txt", st) || (st.mode & 07777) != 0604) {
+            testFail("the NOFOLLOW fchmodat must not have touched the target (now %04o)", st.mode & 07777);
+        }
+        process->unlinkFile(B("/l.txt"));
+    }
+#endif
+
+    // ---- FD-58: chmod/fchmod generated IN_ATTRIB (host: yes, both).
+    {
+        auto events = drainEvents();
+        if (!hasEvent(events, wdFile, 0x4, "")) {
+            testFail("chmod/fchmod produced no IN_ATTRIB on the file watch");
+        }
+        if (!hasEvent(events, wdDir, 0x4, "a.txt")) {
+            testFail("chmod/fchmod produced no IN_ATTRIB on the parent watch");
+        }
+    }
+
+    // ---- FD-59: read and pread generate IN_ACCESS; an EOF read does not.
+    file->seek(0);
+    U32 bufAt = TEST_HEAP_ADDRESS + 0x300;
+    if ((S32)process->read(context.thread, fileFd, bufAt, 5) != 5) {
+        testFail("process read of /a.txt did not return 5");
+        return;
+    }
+    {
+        auto events = drainEvents();
+        if (!hasEvent(events, wdFile, 0x1, "")) {
+            testFail("read produced no IN_ACCESS on the file watch");
+        }
+        if (!hasEvent(events, wdDir, 0x1, "a.txt")) {
+            testFail("read produced no IN_ACCESS on the parent watch");
+        }
+    }
+    if ((S32)process->pread64(context.thread, fileFd, bufAt, 5, 0) != 5) {
+        testFail("process pread of /a.txt did not return 5");
+        return;
+    }
+    {
+        auto events = drainEvents();
+        if (!hasEvent(events, wdFile, 0x1, "")) {
+            testFail("pread produced no IN_ACCESS on the file watch");
+        }
+    }
+    file->seek(5);
+    if ((S32)process->read(context.thread, fileFd, bufAt, 5) != 0) {
+        testFail("read at EOF must return 0");
+        return;
+    }
+    {
+        auto events = drainEvents();
+        if (hasEvent(events, wdFile, 0x1, "")) {
+            testFail("a read returning 0 bytes must not generate IN_ACCESS");
+        }
+    }
+
+    // ---- FD-59: getdents generates IN_ACCESS on the directory.
+    {
+        KFileDescriptorPtr dirDesc;
+        U32 r = process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc);
+        if ((S32)r < 0 || !dirDesc) {
+            testFail("openFile of / failed: %d", (S32)r);
+            return;
+        }
+        drainEvents();
+        U32 n = process->getdents((FD)dirDesc->handle, TEST_HEAP_ADDRESS + 0x600, 4096, false);
+        if ((S32)n <= 0) {
+            testFail("getdents returned no entries: %d", (S32)n);
+        }
+        auto events = drainEvents();
+        if (!hasEvent(events, wdDir, 0x1, "")) {
+            testFail("getdents produced no IN_ACCESS on the directory watch");
+        }
+        process->close(dirDesc->handle);
+    }
+
+    // ---- FD-60: link() creates a true hard link.
+    drainEvents();
+    if ((S32)process->link(B("/a.txt"), B("/b.txt")) != 0) {
+        testFail("KProcess::link returned an error");
+        return;
+    }
+    StatInfo stb;
+    if (!statOf("/b.txt", stb)) {
+        testFail("stat64 of /b.txt failed");
+        return;
+    }
+    if (stb.ino != inoA) {
+        testFail("hard link must share the inode (a=%d b=%d)", inoA, stb.ino);
+    }
+    if (stb.nlink != 2) {
+        testFail("hard link target must report nlink 2, got %d", stb.nlink);
+    }
+    if (!statOf("/a.txt", st) || st.nlink != 2) {
+        testFail("hard link source must report nlink 2, got %d", st.nlink);
+    }
+    {
+        auto events = drainEvents();
+        if (!hasEvent(events, wdDir, 0x100, "b.txt")) {
+            testFail("link produced no IN_CREATE for the new name");
+        }
+        if (!hasEvent(events, wdFile, 0x4, "")) {
+            testFail("link produced no IN_ATTRIB on the source watch");
+        }
+    }
+    // A write through one name is visible through the other.
+    {
+        KFileDescriptorPtr bDesc;
+        U32 r = process->openFile(B("/"), B("/b.txt"), K_O_RDWR, bDesc);
+        if ((S32)r < 0 || !bDesc) {
+            testFail("openFile of /b.txt failed: %d", (S32)r);
+            return;
+        }
+        std::shared_ptr<KFile> bFile = std::dynamic_pointer_cast<KFile>(bDesc->kobject);
+        const char* repl = "HELLO";
+        context.thread->memory->memcpy(textAt, (void*)repl, 5);
+        bFile->write(context.thread, textAt, 5);
+        process->close(bDesc->handle);
+        file->seek(0);
+        U32 got = process->read(context.thread, fileFd, bufAt, 5);
+        U32 word = context.thread->memory->readd(bufAt);
+        if (got != 5 || word != (U32)('H' | ('E' << 8) | ('L' << 16) | ('L' << 24)) ||
+            context.thread->memory->readb(bufAt + 4) != 'O') {
+            testFail("write through /b.txt is not visible through /a.txt");
+        }
+    }
+    if ((S32)process->link(B("/a.txt"), B("/b.txt")) != -K_EEXIST) {
+        testFail("link onto an existing name must return -EEXIST");
+    }
+    if ((S32)process->link(B("/"), B("/c.txt")) != -K_EPERM) {
+        testFail("link of a directory must return -EPERM");
+    }
+    if ((S32)process->link(B("/missing.txt"), B("/c.txt")) != -K_ENOENT) {
+        testFail("link of a missing source must return -ENOENT");
+    }
+    // Unlinking one name drops the count and keeps the content.
+    if ((S32)process->unlinkFile(B("/a.txt")) != 0) {
+        testFail("unlinkFile of /a.txt failed");
+        return;
+    }
+    if (!statOf("/b.txt", stb) || stb.nlink != 1 || stb.ino != inoA) {
+        testFail("after unlinking one name: nlink=%d ino=%d (expected 1 and %d)", stb.nlink, stb.ino, inoA);
+    }
+    {
+        KFileDescriptorPtr bDesc;
+        U32 r = process->openFile(B("/"), B("/b.txt"), K_O_RDONLY, bDesc);
+        if ((S32)r < 0 || !bDesc) {
+            testFail("openFile of surviving /b.txt failed: %d", (S32)r);
+            return;
+        }
+        std::shared_ptr<KFile> bFile = std::dynamic_pointer_cast<KFile>(bDesc->kobject);
+        U8 out[8] = {};
+        U32 got = bFile->readNative(out, 5);
+        if (got != 5 || memcmp(out, "HELLO", 5) != 0) {
+            testFail("content did not survive unlinking the other name");
+        }
+        process->close(bDesc->handle);
+    }
+    // A hard link to a symlink is a second name for the symlink itself.
+    process->symlink(B("/some-target"), B("/s.txt"));
+    if ((S32)process->link(B("/s.txt"), B("/s2.txt")) != 0) {
+        testFail("link of a symlink returned an error");
+    } else {
+        std::shared_ptr<FsNode> s2 = Fs::getNodeFromLocalPath(B("/"), B("/s2.txt"), false);
+        if (!s2 || !s2->isLink() || s2->getLink() != B("/some-target")) {
+            testFail("hard link of a symlink must itself be a symlink to the same target");
+        }
+    }
+
+    process->close(fileFd);
+    process->close(ifd);
+}
+
+
 void testInotifyPollNotifyStress() {
     // FD-38 enablement-park mechanism pin. A poll scan holds the polling
     // thread's poll condition mutex while it registers on every object in

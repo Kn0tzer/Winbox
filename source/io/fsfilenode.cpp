@@ -310,6 +310,29 @@ U32 FsFileNode::getType(bool checkForLink) {
     return 8; // DT_REG
 }
 
+U32 FsFileNode::getHardLinkCount() {
+    if (this->linkGroup) {
+        // FD-60: the guest's names are mirrored by host hard links
+        // (see KProcess::link), so the host link count is the truth -
+        // including right after an unlink drops a name while this
+        // node stays alive through an open descriptor.
+        PLATFORM_STAT_STRUCT buf;
+        if (PLATFORM_STAT(this->nativePath.c_str(), &buf) == 0) {
+            return (U32)buf.st_nlink;
+        }
+        // Own host path is gone (this name was unlinked while open):
+        // count the surviving names.
+        U32 n = 0;
+        for (auto& m : this->linkGroupMembers()) {
+            if (m.get() != this && Fs::doesNativePathExist(m->nativePath)) {
+                n++;
+            }
+        }
+        return n;
+    }
+    return FsNode::getHardLinkCount();
+}
+
 U32 FsFileNode::getMode() {
     U32 result = K__S_IREAD | (FsFileNode::getType(false) << 12);
     if (this->path == "/etc/sudoers") {

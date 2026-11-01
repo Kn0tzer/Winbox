@@ -30,6 +30,14 @@
 
 class FsOpenNode;
 class KProcess;
+
+// One hard-link group (FD-60): every FsNode created by link() from one
+// source shares a group. Membership is by weak pointer, so a name whose
+// node is destroyed drops out of the group.
+struct FsNodeLinkGroup {
+    BOXEDWINE_MUTEX mutex;
+    std::vector<std::weak_ptr<FsNode>> members;
+};
 class KThread;
 class KObject;
 
@@ -66,7 +74,26 @@ public:
     // The path cache never caches walks that traverse these.
     virtual bool isDynamicLink() { return false; }
 
-    U32 getHardLinkCount() {return this->hardLinkCount;}    
+    virtual U32 getHardLinkCount();
+    // FD-58: a successful chmod/fchmod stores the guest-visible
+    // permission bits here (0..07777); -1 means no chmod has happened
+    // and the node's synthetic getMode() answer stands. Stat writers
+    // report getStatMode(); access checks (canRead/canWrite) keep
+    // using getMode(), so a chmod never changes what the emulator
+    // itself allows - exactly the boundary the FD-58 record states.
+    std::atomic<S32> chmodMode{-1};
+    void applyChmodMode(U32 mode) { this->chmodMode.store((S32)(mode & 07777), std::memory_order_relaxed); }
+    U32 getStatMode() {
+        S32 c = this->chmodMode.load(std::memory_order_relaxed);
+        U32 m = this->getMode();
+        return c >= 0 ? (m & ~0xFFFu) | (U32)c : m;
+    }
+    // FD-60 hard-link group (see FsNodeLinkGroup above). Members
+    // report the group's live size as their link count and receive
+    // the group's file-level inotify events, as Linux delivers them.
+    std::shared_ptr<FsNodeLinkGroup> linkGroup;
+    std::vector<std::shared_ptr<FsNode>> linkGroupMembers();
+    void joinLinkGroup(const std::shared_ptr<FsNode>& other);    
     bool isDirectory() {return this->isDir;}
     std::weak_ptr<FsNode> getParent() {return this->parent;}
 
