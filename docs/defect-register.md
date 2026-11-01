@@ -1690,8 +1690,7 @@ do not close the entry until they land.
   as refused and the JS mirror refuses them by name.
   CLOSED 2026-11-01 — see CL-22.**
   *(High — graphics correctness / mirror divergence;
-  FIXED on lane-fd67fix, awaiting composition. Found
-  by the FD-50+FD-55+FD-62 merge lane's gate,
+  FIXED on lane-fd67fix; composed into integ on 2026-11-01 by the FD-67 guard-correction merge. Found by the FD-50+FD-55+FD-62 merge lane's gate,
   2026-11-01.)* FD-62's hardening taught both
   descriptor-array audit mirrors to follow
   OpImageTexelPointer and to record, per array
@@ -1817,8 +1816,7 @@ do not close the entry until they land.
   bridge-level assertions pass through the
   compute-accept path instead of the R15a admission
   they narrate. CLOSED 2026-11-01 — see CL-23.**
-  *(Low — test attribution; FIXED on lane-fd67fix,
-  awaiting composition. Found by the FD-67 lane,
+  *(Low — test attribution; FIXED on lane-fd67fix; composed into integ on 2026-11-01 by the FD-67 guard-correction merge. Found by the FD-67 lane,
   2026-11-01.)* The FD-16
   guard's multi-signature fixture
   (`heapTexelMultisig` in
@@ -2440,8 +2438,7 @@ its lane and is not a defect, for the stated reason:
   returning through the compute-accept path. The
   bridge requires no change: on the graphics path
   the texel class refuses at creation by name, as
-  the FD-67 lane's probe measured. Composition
-  into integ pending. Evidence:
+  the FD-67 lane's probe measured. Composed into integ on 2026-11-01 by the FD-67 guard-correction merge — see docs/reports/merge-fd67-20261101.md. Evidence:
   `test-results/fd67fix/` (`run-native-before.log`,
   `run-native-final.log`, `run-native-diag.log`),
   record
@@ -2466,8 +2463,7 @@ its lane and is not a defect, for the stated reason:
   SampledBuffer / RuntimeDescriptorArray rejection
   counters unchanged — inside the completed harness
   run named in CL-22 (exit 0, 53 PASS lines). No
-  product code changed. Composition into integ
-  pending. Evidence: `test-results/fd67fix/`
+  product code changed. Composed into integ on 2026-11-01 by the FD-67 guard-correction merge — see docs/reports/merge-fd67-20261101.md. Evidence: `test-results/fd67fix/`
   (`run-native-diag.log`,
   `storage-flip-probe.log`, `run-native-final.log`),
   record
