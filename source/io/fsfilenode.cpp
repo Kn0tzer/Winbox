@@ -28,6 +28,7 @@
 #include MKDIR_INCLUDE
 
 #include "fsfilenode.h"
+#include "kinotify.h"
 #include "fsdiropennode.h"
 #include "fsfileopennode.h"
 #include "kstat.h"
@@ -442,7 +443,7 @@ U32 FsFileNode::rename(BString path) {
                 BString dosAttribDst = nativePath + EXT_DOSATTRIB;
                 ::rename(dosAttrib.c_str(), dosAttribDst.c_str());
             }
-            this->removeNodeFromParent();
+            this->removeNodeFromParent(false);
 #ifdef BOXEDWINE_ZLIB
             if (zipNode) {
                 std::shared_ptr<FsZip> fsZip = zipNode->fsZip.lock();
@@ -457,7 +458,7 @@ U32 FsFileNode::rename(BString path) {
             this->name = Fs::getFileNameFromPath(path);
             BString parentPath = Fs::getParentPath(path);
             std::shared_ptr<FsNode> parentNode = Fs::getNodeFromLocalPath(B(""), parentPath, false);
-            parentNode->addChild(shared_from_this());
+            parentNode->addChild(shared_from_this(), false);
             this->parent = parentNode;            
         } else {
             result = -translateErr(errno);
@@ -525,5 +526,6 @@ U32 FsFileNode::setTimes(U64 lastAccessTime, U32 lastAccessTimeNano, U64 lastMod
         }
         return -translateErr(err);
     }
+    KInotify::notifyAttrib(this);
     return 0;
 }

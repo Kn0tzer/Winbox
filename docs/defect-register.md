@@ -604,19 +604,59 @@ do not close the entry until they land.
   `docs/reports/frame-floor-investigation-20261027.md`;
   `docs/reports/portal-perf-profile-baseline-20261026.md`.
 
-- **FD-38 — Directory-notification (inotify) real delivery is
-  disabled because one semantics defect was never isolated.**
-  *(Medium)* With the two CL-02 defects fixed, a real consumer
-  still parks at the same startup point; the remaining
-  incompatibility sits somewhere in event-generation/coverage
-  semantics and is not reproduced by the feature's synthetic
-  tests (which all passed while the product was broken). The
-  entry point currently refuses loudly and guests fall back to
-  polling — honest, but the feature does not exist until the
-  remainder is found and delivery is proven against a real
-  consumer. Evidence: integration tree
-  `test-results/site-chromium-20261030/REPORT.md`
-  ("unisolated remainder"; disposition commit `c9259ec42`).
+- **FD-38 — Directory-notification (inotify) delivery stays
+  disabled: the event semantics are fixed and pinned, but
+  enabling delivery parks the consumer for a reason now
+  isolated to enablement itself.** *(Medium)*
+  FD-38 lane, 2026-10-31 (branch `lane-fd38`): the semantics
+  remainder is isolated and fixed — the name field is padded
+  to a multiple of 16; a plain re-add replaces the watch mask
+  (IN_MASK_ADD merges); a guest rename emits exactly the move
+  pair plus IN_MOVE_SELF (it previously also emitted a phantom
+  delete+create pair and destroyed any watch on the renamed
+  node); unlinking a watched file reports IN_ATTRIB before
+  IN_DELETE_SELF; IN_ISDIR is set on directory self events
+  except IN_DELETE_SELF and IN_MOVE_SELF; guest utimensat
+  generates IN_ATTRIB; inotify_add_watch honors IN_DONT_FOLLOW.
+  Each behavior was measured against the host kernel first and
+  is pinned by the inotify native tests, which now construct
+  their instances directly (the guest-visible gate below stays
+  closed) and drive the same machinery through the syscall and
+  KProcess paths. Enabling delivery still parks the Chromium
+  site session at the same startup point, and the lane's site-
+  rig bisection isolates the park to enablement itself, not to
+  any event semantics: the pristine base with the refusal
+  passes (window mapped + frame, control run 2026-10-31);
+  enablement alone on the pristine machinery parks; forcing
+  instances non-blocking parks; the full semantics fix parks.
+  In the traced run the watched directories generated no
+  events during the boot and no queued event was lost (two
+  events total, both rm_watch IN_IGNORED, read back correctly);
+  per the Wine 8 server source, the directory waits the server
+  registers pend identically under the refusal, whose dnotify
+  fallback this emulator also does not implement. The open
+  remainder is the mechanism by which the wineserver's
+  possession of a working inotify fd interacts with the
+  emulator's process/fd machinery. The entry point keeps
+  refusing loudly (ENOSYS; guests fall back to polling — the
+  shipped behavior) and must not be reopened without the
+  site-rig consumer proof passing. Evidence:
+  `docs/reports/fd38-inotify-semantics-20261031.md`; preserved
+  rig runs under `test-results/fd38/` on the lane branch;
+  original disposition `c9259ec42`, integration tree
+  `test-results/site-chromium-20261030/REPORT.md`.
+
+- **FD-56 — Two inotify event kinds are never generated:
+  IN_ACCESS, and IN_MODIFY for writes through memory
+  mappings.** *(Low; provisional number — renumber at merge.)*
+  No read-path hook generates IN_ACCESS (deliberate: the read
+  path is too hot for per-read event sweeps), and writes
+  through memory mappings have no per-write funnel that could
+  generate IN_MODIFY. Both are documented at the KInotify
+  implementation. add_watch cannot refuse individual kinds
+  without breaking IN_ALL_EVENTS consumers, so the honest
+  treatment is the header documentation plus this entry.
+  Found by the FD-38 lane, 2026-10-31.
 
 ### Tooling, build, and records
 
@@ -725,6 +765,26 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
+- **FD-55 — chmod reports success without changing
+  anything.** *(Medium; provisional number — renumber at
+  merge.)* `KProcess::chmod` resolves the node and returns 0
+  without applying any mode change; the 32-bit fchmod path
+  logs "fchmod not implemented" and marks the call IGNORED. A
+  guest is told a metadata change happened when none did (and
+  no IN_ATTRIB can be generated for a change that never
+  occurred). Found by the FD-38 lane's funnel audit,
+  2026-10-31 (kprocess.cpp `KProcess::chmod`; syscall.cpp
+  `syscall_fchmod`).
+
+- **FD-57 — link() copies file content instead of creating
+  a hard link.** *(Low; provisional number — renumber at
+  merge.)* `KProcess::link` creates a new node holding a copy
+  of the content (its own debug line says "Hard link not
+  implemented"), so inode identity and link counts observably
+  differ from Linux, and inotify sees a creation for the new
+  name but no link-count IN_ATTRIB on the source. Found by
+  the FD-38 lane, 2026-10-31 (kprocess.cpp `KProcess::link`).
+
 - **FD-41 — The native suite aborts mid-run in the clone
   test group when the syscall-ABI tests run first.
   CLOSED 2026-10-31 — see CL-08.** *(Was Medium)*

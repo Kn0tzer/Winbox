@@ -4132,19 +4132,25 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 }
 
 U32 KProcess::inotify_init1(U32 flags) {
-    // REJECTED-LOUDLY: the inotify implementation is not safe to expose to
-    // guests yet. As merged it (a) reported a nonzero len for nameless
-    // events, desynchronizing the reader's record walk (the guest
-    // wineserver dropped real change events after printing "no inode
-    // matches"), (b) reported IN_CREATE for files that already existed
-    // when a directory's children were first loaded, and (c) still parks
-    // a Wine process that waits on directory-change notifications during
-    // application startup even with (a) and (b) fixed, in a way the
-    // synthetic syscall tests do not reproduce. Guests that get ENOSYS
-    // here use their polling fallbacks, which is the behavior the site
-    // shipped with until 2026-10-25. The KInotify machinery stays in the
-    // tree for the day its event semantics are proven against a real
-    // consumer; the guest-visible entry point refuses until then.
+    // REJECTED-LOUDLY, still: the event semantics that motivated the
+    // original 2026-10-30 refusal are fixed and pinned by the inotify
+    // tests (record padding, mask replace vs IN_MASK_ADD, rename move
+    // pair without phantom delete/create, watched-file move/unlink
+    // sequences, IN_ISDIR on directory self events, guest utimensat
+    // generating IN_ATTRIB, IN_DONT_FOLLOW honored). The gate stays
+    // closed for a different, isolated reason: with a working inotify
+    // the guest wineserver's Chromium session parks during startup.
+    // Bisection on the site rig (2026-10-31, FD-38 lane) showed the
+    // park reproduces with enablement alone on the pristine machinery
+    // and is not an event-delivery failure: the watched directories
+    // generate no events during the boot, no queued event is lost,
+    // and the directory waits the server registers pend identically
+    // under this refusal (its fallback is dnotify, whose fcntl the
+    // emulator also does not implement). The remaining mechanism is
+    // tracked as the narrowed FD-38 register entry. Guests that get
+    // ENOSYS here use their polling fallbacks, which is the behavior
+    // the site ships. Do not reopen this gate without re-running the
+    // site-rig consumer proof recorded with FD-38.
     return -K_ENOSYS;
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
@@ -4165,7 +4171,7 @@ U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
         return -K_EBADF;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, (mask & K_IN_DONT_FOLLOW) == 0);
     if (!node) {
         return -K_ENOENT;
     }

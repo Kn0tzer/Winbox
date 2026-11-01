@@ -21,12 +21,14 @@
 #ifdef __TEST
 
 #include "kerror.h"
+#include "kinotify.h"
 #include "../../io/fs.h"
 #include "../../io/fsfilenode.h"
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #ifdef BOXEDWINE_GUEST_X64
 
@@ -59,11 +61,13 @@ constexpr U32 IN_ISDIR = 0x40000000;
 constexpr U32 IN_ALL_EVENTS = 0x00000fff;
 constexpr U32 IN_NONBLOCK = 0x00000800;
 constexpr U32 IN_CLOEXEC = 0x00080000;
+constexpr U32 IN_MASK_ADD = 0x20000000;
 
 struct ParsedEvent {
     S32 wd;
     U32 mask;
     U32 cookie;
+    U32 len;
     BString name;
 };
 }
@@ -121,15 +125,28 @@ void testInotifyEvents() {
         testFail("timerfd_create filler failed: %lld", (long long)fillerFd);
         return;
     }
-    // __NR_inotify_init1 = 294. REJECTED-LOUDLY: the guest-visible entry
-    // point refuses with ENOSYS (see KProcess::inotify_init1). The event
-    // delivery flow below is preserved for a future re-enable but cannot
-    // run while the facility is refused.
-    S64 fd = invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0);
-    if (fd != -K_ENOSYS) {
-        testFail("inotify_init1 was not rejected with ENOSYS: %lld", (long long)fd);
+    // __NR_inotify_init1 = 294. Guest-visible contract while the FD-38
+    // enablement park is open: the syscall refuses loudly with ENOSYS
+    // and guests fall back to polling.
+    if (invoke(294, IN_NONBLOCK | IN_CLOEXEC, 0, 0, 0) != -K_ENOSYS) {
+        testFail("inotify_init1 did not refuse with ENOSYS while the FD-38 gate is closed");
+        return;
     }
-    return;
+    // The delivery machinery itself is exercised in full below: each
+    // instance is built the way inotify_init1 would build it and
+    // registered, and every watch/read then goes through the real
+    // syscall path (add_watch = 254, rm_watch = 255, read = 0).
+    auto makeInotifyFd = [&]() -> S64 {
+        std::shared_ptr<KInotify> inst = std::make_shared<KInotify>(false);
+        KInotify::registerInstance(inst);
+        KFileDescriptorPtr desc = context.process->allocFileDescriptor(inst, K_O_RDONLY, 0, -1, 0);
+        return desc ? (S64)desc->handle : -1;
+    };
+    S64 fd = makeInotifyFd();
+    if (fd < 0) {
+        testFail("inotify fd creation failed: %lld", (long long)fd);
+        return;
+    }
     // __NR_inotify_add_watch = 254, watching the fixture root.
     writePath("/");
     S64 wd = invoke(254, (U64)fd, pathAt, IN_ALL_EVENTS, 0);
@@ -137,16 +154,16 @@ void testInotifyEvents() {
         testFail("inotify_add_watch(/) failed: %lld", (long long)wd);
         return;
     }
-    // A second watch on the same path returns the same descriptor with the
-    // merged mask.
-    S64 wdAgain = invoke(254, (U64)fd, pathAt, IN_ATTRIB, 0);
+    // A second watch on the same path returns the same descriptor; with
+    // IN_MASK_ADD the masks merge.
+    S64 wdAgain = invoke(254, (U64)fd, pathAt, IN_ATTRIB | IN_MASK_ADD, 0);
     if (wdAgain != wd) {
         testFail("re-adding a watch returned wd %lld, expected %lld", (long long)wdAgain, (long long)wd);
     }
 
-    auto readEvents = [&](std::vector<ParsedEvent>& out) -> S64 {
+    auto readEventsOn = [&](S64 whichFd, std::vector<ParsedEvent>& out) -> S64 {
         // __NR_read = 0
-        S64 result = invoke(0, (U64)fd, eventsAt, 4096, 0);
+        S64 result = invoke(0, (U64)whichFd, eventsAt, 4096, 0);
         out.clear();
         if (result <= 0) return result;
         U64 pos = 0;
@@ -156,6 +173,7 @@ void testInotifyEvents() {
             event.mask = memory->readd(eventsAt + pos + 4);
             event.cookie = memory->readd(eventsAt + pos + 8);
             U32 len = memory->readd(eventsAt + pos + 12);
+            event.len = len;
             if (len) {
                 char nameBuffer[256];
                 memset(nameBuffer, 0, sizeof(nameBuffer));
@@ -168,6 +186,9 @@ void testInotifyEvents() {
             pos += 16 + len;
         }
         return result;
+    };
+    auto readEvents = [&](std::vector<ParsedEvent>& out) -> S64 {
+        return readEventsOn(fd, out);
     };
     auto hasEvent = [&](const std::vector<ParsedEvent>& events, U32 mask, const char* name) {
         for (const ParsedEvent& event : events) {
@@ -194,6 +215,11 @@ void testInotifyEvents() {
     S32 fileFd = createdDesc->handle;
     if (readEvents(events) <= 0 || !hasEvent(events, IN_CREATE, "k3bfile.txt")) {
         testFail("no IN_CREATE for the created file");
+    }
+    for (const ParsedEvent& event : events) {
+        if ((event.mask & IN_CREATE) && event.name == "k3bfile.txt" && event.len != 16) {
+            testFail("IN_CREATE name field is %u bytes; Linux pads it to a multiple of 16 (expected 16)", event.len);
+        }
     }
     if (!hasEvent(events, IN_ISDIR, nullptr)) {
         // a plain file must not be flagged as a directory event
@@ -231,6 +257,12 @@ void testInotifyEvents() {
     if (!fromFound || !toFound) {
         testFail("rename did not deliver a cookie-matched IN_MOVED_FROM/IN_MOVED_TO pair");
     }
+    // A rename is a move, not a delete plus a create: the structural
+    // detach/attach inside FsFileNode::rename must stay silent, or
+    // watchers see a phantom IN_DELETE and IN_CREATE around the pair.
+    if (hasEvent(events, IN_DELETE, "k3bfile.txt") || hasEvent(events, IN_CREATE, "k3brenamed.txt")) {
+        testFail("rename produced a phantom IN_DELETE/IN_CREATE alongside the move pair");
+    }
 
     // Unlink: IN_DELETE.
     if (process->unlinkFile(B("/k3brenamed.txt")) != 0) {
@@ -243,7 +275,7 @@ void testInotifyEvents() {
     // Mask filtering: a watch that only asked for IN_ATTRIB must not see
     // creates. Use a second fd so the first watch's IN_ALL_EVENTS does not
     // mask the check.
-    S64 fd2 = invoke(294, IN_NONBLOCK, 0, 0, 0);
+    S64 fd2 = makeInotifyFd();
     writePath("/");
     S64 wd2 = invoke(254, (U64)fd2, pathAt, IN_ATTRIB, 0);
     if (wd2 < 1) {
@@ -266,6 +298,146 @@ void testInotifyEvents() {
             testFail("IN_ATTRIB-only watch received events for a create (read=%lld)", (long long)quiet);
         }
         process->unlinkFile(B("/k3bquiet.txt"));
+    }
+
+    // A plain re-add replaces the mask (Linux semantics): after the
+    // watch is narrowed to IN_ATTRIB alone, creates and deletes in the
+    // directory deliver nothing, while a timestamp change still does.
+    {
+        S64 fd3 = makeInotifyFd();
+        if (fd3 < 0) {
+            testFail("inotify_init1 for the mask-replace section failed: %lld", (long long)fd3);
+        } else {
+            writePath("/");
+            S64 wdR = invoke(254, (U64)fd3, pathAt, IN_CREATE | IN_DELETE | IN_ATTRIB, 0);
+            if (wdR < 1) {
+                testFail("mask-replace section add_watch failed: %lld", (long long)wdR);
+            } else {
+                KFileDescriptorPtr probeDesc;
+                if (process->openFile(B("/"), B("/probe1.txt"), K_O_WRONLY | K_O_CREAT | K_O_TRUNC, probeDesc) == 0 && probeDesc) {
+                    process->close(probeDesc->handle);
+                    probeDesc.reset();
+                }
+                if (readEventsOn(fd3, events) <= 0 || !hasEvent(events, IN_CREATE, "probe1.txt")) {
+                    testFail("mask-replace section: sanity IN_CREATE missing before the re-add");
+                }
+                writePath("/");
+                if (invoke(254, (U64)fd3, pathAt, IN_ATTRIB, 0) != wdR) {
+                    testFail("mask-replace section: re-add did not return the same wd");
+                }
+                if (process->openFile(B("/"), B("/probe2.txt"), K_O_WRONLY | K_O_CREAT | K_O_TRUNC, probeDesc) == 0 && probeDesc) {
+                    process->close(probeDesc->handle);
+                    probeDesc.reset();
+                }
+                process->unlinkFile(B("/probe1.txt"));
+                if (readEventsOn(fd3, events) != -K_EAGAIN) {
+                    testFail("mask-replace section: events arrived for kinds the replaced mask no longer names");
+                }
+                std::shared_ptr<FsNode> probe2 = Fs::getNodeFromLocalPath(B(""), B("/probe2.txt"), true);
+                if (!probe2 || probe2->setTimes(1700000000, 0, 1700000000, 0) != 0) {
+                    testFail("mask-replace section: setTimes on probe2 failed");
+                } else if (readEventsOn(fd3, events) <= 0 || !hasEvent(events, IN_ATTRIB, "probe2.txt")) {
+                    testFail("setTimes produced no IN_ATTRIB for the watched directory");
+                }
+                process->unlinkFile(B("/probe2.txt"));
+            }
+            invoke(3, (U64)fd3, 0, 0, 0);
+        }
+    }
+
+    // A watch on a file itself: renaming it reports IN_MOVE_SELF and the
+    // watch follows the file; unlinking it reports IN_ATTRIB (the link
+    // count drops), then IN_DELETE_SELF, then IN_IGNORED.
+    {
+        KFileDescriptorPtr victimDesc;
+        if (process->openFile(B("/"), B("/victim.txt"), K_O_WRONLY | K_O_CREAT | K_O_TRUNC, victimDesc) == 0 && victimDesc) {
+            process->close(victimDesc->handle);
+            victimDesc.reset();
+        }
+        S64 fd4 = makeInotifyFd();
+        writePath("/victim.txt");
+        S64 wdV = fd4 < 0 ? -1 : invoke(254, (U64)fd4, pathAt, IN_ALL_EVENTS, 0);
+        if (wdV < 1) {
+            testFail("file-watch section: add_watch on a file failed");
+        } else {
+            if (process->rename(B("/victim.txt"), B("/victim2.txt")) != 0) {
+                testFail("file-watch section: rename failed");
+            }
+            if (readEventsOn(fd4, events) <= 0 || events.size() != 1 ||
+                !(events[0].mask & IN_MOVE_SELF) || events[0].wd != wdV || events[0].len != 0) {
+                testFail("file-watch section: rename of a watched file did not deliver exactly one IN_MOVE_SELF");
+            }
+            KFileDescriptorPtr writeDesc;
+            if (process->openFile(B("/"), B("/victim2.txt"), K_O_WRONLY, writeDesc) == 0 && writeDesc) {
+                std::shared_ptr<KFile> wfile = std::dynamic_pointer_cast<KFile>(writeDesc->kobject);
+                constexpr U32 textAt2 = TEST_HEAP_ADDRESS + 0xd00;
+                context.memory->memcpy(textAt2, (const U8*)"x", 1);
+                wfile->write(context.thread, textAt2, 1);
+                process->close(writeDesc->handle);
+                wfile.reset();
+                writeDesc.reset();
+            }
+            if (readEventsOn(fd4, events) <= 0 || !hasEvent(events, IN_MODIFY, nullptr) ||
+                !hasEvent(events, IN_CLOSE_WRITE, nullptr)) {
+                testFail("file-watch section: the watch did not follow the renamed file");
+            }
+            for (const ParsedEvent& event : events) {
+                if (event.wd != wdV) {
+                    testFail("file-watch section: event on unexpected wd %d", event.wd);
+                }
+            }
+            if (process->unlinkFile(B("/victim2.txt")) != 0) {
+                testFail("file-watch section: unlink failed");
+            }
+            readEventsOn(fd4, events);
+            if (events.size() != 3 ||
+                !(events[0].mask & IN_ATTRIB) || events[0].len != 0 ||
+                !(events[1].mask & IN_DELETE_SELF) ||
+                !(events[2].mask & IN_IGNORED)) {
+                testFail("file-watch section: unlink of a watched file did not deliver IN_ATTRIB, IN_DELETE_SELF, IN_IGNORED in order");
+            }
+        }
+        if (fd4 >= 0) invoke(3, (U64)fd4, 0, 0, 0);
+    }
+
+    // A watch on a directory itself: a metadata change reports
+    // IN_ATTRIB with IN_ISDIR set, but a rename reports IN_MOVE_SELF
+    // without IN_ISDIR (both measured on the host kernel).
+    {
+        writePath("/watchdir");
+        // __NR_mkdir = 83: create the directory through the guest so it
+        // exists in the VFS (a host-side mkdir would be invisible once
+        // the root's children are loaded).
+        if (invoke(83, pathAt, 0755, 0, 0) != 0) {
+            testFail("dir-self section: guest mkdir failed");
+        } else {
+            S64 fd5 = makeInotifyFd();
+            writePath("/watchdir");
+            S64 wdD = fd5 < 0 ? -1 : invoke(254, (U64)fd5, pathAt, IN_ALL_EVENTS, 0);
+            if (wdD < 1) {
+                testFail("dir-self section: add_watch on a directory failed");
+            } else {
+                std::vector<ParsedEvent> dEvents;
+                std::shared_ptr<FsNode> dirNode = Fs::getNodeFromLocalPath(B(""), B("/watchdir"), true);
+                if (!dirNode || dirNode->setTimes(1700000000, 0, 1700000000, 0) != 0) {
+                    testFail("dir-self section: setTimes on the watched directory failed");
+                } else {
+                    readEventsOn(fd5, dEvents);
+                    if (dEvents.size() != 1 || !(dEvents[0].mask & IN_ATTRIB) || !(dEvents[0].mask & IN_ISDIR) || dEvents[0].len != 0) {
+                        testFail("dir-self section: setTimes on a watched directory did not deliver IN_ATTRIB with IN_ISDIR");
+                    }
+                }
+                if (process->rename(B("/watchdir"), B("/watchdir2")) != 0) {
+                    testFail("dir-self section: rename of the watched directory failed");
+                } else {
+                    readEventsOn(fd5, dEvents);
+                    if (dEvents.size() != 1 || !(dEvents[0].mask & IN_MOVE_SELF) || (dEvents[0].mask & IN_ISDIR) || dEvents[0].len != 0) {
+                        testFail("dir-self section: rename of a watched directory did not deliver IN_MOVE_SELF without IN_ISDIR");
+                    }
+                }
+            }
+            if (fd5 >= 0) invoke(3, (U64)fd5, 0, 0, 0);
+        }
     }
 
     // rm_watch: __NR_inotify_rm_watch = 255; the watch dies with IN_IGNORED.
@@ -308,17 +480,24 @@ void testInotifyEventsProcessApi() {
     Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
     Fs::clearPathCache();
 
-    // REJECTED-LOUDLY: see testInotifyEvents.
-    S32 fd = (S32)process->inotify_init1(0x800 /* K_O_NONBLOCK == IN_NONBLOCK */);
-    if (fd != -K_ENOSYS) {
-        testFail("KProcess::inotify_init1 was not rejected with ENOSYS: %d", fd);
-    }
-    return;
-    KFileDescriptorPtr descriptor = process->getFileDescriptor(fd);
-    if (!descriptor || !descriptor->kobject) {
-        testFail("inotify_init1 returned an fd with no object");
+    // Guest-visible gate pin: init1 refuses loudly while the FD-38
+    // enablement park is open.
+    if ((S32)process->inotify_init1(0) != -K_ENOSYS) {
+        testFail("KProcess::inotify_init1 did not refuse with ENOSYS while the FD-38 gate is closed");
         return;
     }
+    // The machinery itself is exercised directly: build the instance
+    // the way inotify_init1 would (0x800 == K_O_NONBLOCK, so
+    // non-blocking) and register it; everything below then drives the
+    // real KInotify add/read path.
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr descriptor = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!descriptor || !descriptor->kobject) {
+        testFail("allocFileDescriptor for the inotify instance failed");
+        return;
+    }
+    S32 fd = (S32)descriptor->handle;
     S32 wd = (S32)process->inotify_add_watch(fd, B("/"), 0xfff /* IN_ALL_EVENTS */);
     if (wd < 1) {
         testFail("KProcess::inotify_add_watch failed: %d", wd);

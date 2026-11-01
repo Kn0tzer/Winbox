@@ -164,19 +164,19 @@ void testInotify64Syscalls() {
         ksyscall64(&cpu);
         return (S64)cpu.reg[X64_RAX].u64;
     };
-    // __NR_inotify_init1 = 294. REJECTED-LOUDLY: the guest-visible entry
-    // point refuses with ENOSYS regardless of flags (see
-    // KProcess::inotify_init1); watch management is unreachable while the
-    // facility is refused.
+    // __NR_inotify_init1 = 294 and __NR_inotify_init = 253: while the
+    // FD-38 enablement park is open, the guest-visible contract is the
+    // loud refusal -- every init attempt returns ENOSYS (the refusal
+    // precedes flag validation). Delivery semantics are pinned by the
+    // testInotify tests, which drive the machinery directly.
     if (invoke(294, 0x40000000ULL, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init1 was not rejected with ENOSYS (bad flags)");
+        testFail("x64 inotify_init1 did not refuse with ENOSYS");
     }
     if (invoke(294, 0x80800ULL, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init1 was not rejected with ENOSYS");
+        testFail("x64 inotify_init1 did not refuse with ENOSYS");
     }
-    // __NR_inotify_init = 253 refuses the same way.
     if (invoke(253, 0, 0, 0) != -K_ENOSYS) {
-        testFail("x64 inotify_init was not rejected with ENOSYS");
+        testFail("x64 inotify_init did not refuse with ENOSYS");
     }
 }
 

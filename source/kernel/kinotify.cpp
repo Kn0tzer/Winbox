@@ -36,11 +36,10 @@
 // vastly outnumber the other operations and taxing every read for a
 // rarely used event is not justified), and writes through a memory
 // mapping do not produce IN_MODIFY (the mapping write path has no
-// per-write funnel either). IN_CREATE can also fire for pre-existing
-// children when a directory's children are first loaded from the host
-// (FsNode::loadChildren funnels through addChild); watches registered
-// after that load, or on directories whose children are already loaded,
-// see only real creations.
+// per-write funnel either). Children materialized by a directory's
+// first load are pre-existing, not creations: FsNode::loadChildren
+// suppresses notification for the load (see childrenLoadInProgress),
+// matching Linux, which never reports pre-existing files.
 
 std::vector<std::weak_ptr<KInotify>> KInotify::instances;
 BOXEDWINE_MUTEX KInotify::instancesMutex;
@@ -164,7 +163,8 @@ U32 KInotify::readNative(U8* buffer, U32 len) {
                 // Linux gives events with no name a len of 0; reporting the padded
                 // length anyway desynchronizes the reader's record walk and
                 // corrupts every event queued behind it in the same read.
-                U32 nameLen = event.name.length() == 0 ? 0 : (U32)((event.name.length() + 1 + 3) & ~3u);
+                // Linux pads the name field up to a multiple of 16 bytes.
+                U32 nameLen = event.name.length() == 0 ? 0 : (U32)((event.name.length() + 1 + 15) & ~15u);
                 U32 recordSize = 16 + nameLen;
                 if (written + recordSize > len) {
                     if (written == 0) {
@@ -248,7 +248,13 @@ S32 KInotify::addWatch(const std::shared_ptr<FsNode>& node, U32 mask) {
                 }
                 return -K_EEXIST;
             }
-            entry.second.mask |= mask; // re-adding merges, as on Linux
+            if (mask & K_IN_MASK_ADD) {
+                entry.second.mask |= mask;
+            } else {
+                // A plain re-add replaces the mask, as on Linux: events
+                // the new mask no longer names stop being delivered.
+                entry.second.mask = mask;
+            }
             return (S32)entry.first;
         }
     }
@@ -323,7 +329,12 @@ void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BStri
             }
             if (subject && selfType && watched.get() == subject) {
                 if (watch.mask & selfType) {
-                    this->queueLocked((S32)entry.first, selfType | (watched->isDirectory() ? K_IN_ISDIR : 0), cookie, B(""));
+                    // Linux sets IN_ISDIR on self events for a directory
+                    // subject except IN_DELETE_SELF and IN_MOVE_SELF,
+                    // which are reported without it (measured on the host
+                    // kernel).
+                    bool selfIsDir = watched->isDirectory() && selfType != K_IN_DELETE_SELF && selfType != K_IN_MOVE_SELF;
+                    this->queueLocked((S32)entry.first, selfType | (selfIsDir ? K_IN_ISDIR : 0), cookie, B(""));
                     if (watch.mask & K_IN_ONESHOT) {
                         dropWds.push_back(entry.first);
                     }
@@ -378,6 +389,10 @@ void KInotify::notifyNodeRemoved(FsNode* parent, FsNode* node) {
     if (!node) {
         return;
     }
+    // The unlink drops the node's link count before it goes away; Linux
+    // reports that as IN_ATTRIB on the node itself, ahead of
+    // IN_DELETE_SELF.
+    sweepAll(nullptr, node, 0, B(""), false, K_IN_ATTRIB, 0);
     sweepAll(parent, node, parent ? K_IN_DELETE : 0, node->name, node->isDirectory(), K_IN_DELETE_SELF, 0);
 }
 
