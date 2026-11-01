@@ -2,7 +2,7 @@
 
 Lane: `lane-fd50` (worktree `wt-fd50`), off integration tip `306190757`.
 Register: FD-50 stays in Section A until this branch lands (a Section B
-row records this fix); FD-61 opened for the readback-leak finding the
+row records this fix); FD-66 opened for the readback-leak finding the
 completed run exposed. Evidence: `test-results/fd50/` in this worktree.
 
 ## The defect as found
@@ -88,13 +88,13 @@ one. No product code is touched.
   sections with every assertion passing and zero memory or
   undefined-behaviour reports (control run with only the leak
   check off: exit 0, 52 PASS — `run-san-noleakcheck.log`). Its one
-  finding is registered as FD-61, below. Through the runner, the
+  finding is registered as FD-66, below. Through the runner, the
   instrumented suite also exceeds the runner's 30 s execution cap
   on a loaded box (~35 s wall at load ~16), so the runner reports
   a timeout instead of the leak report (`run-sanitizers.log`);
   the binary was therefore run directly for the flavour proof.
 
-## What the completed run exposed — FD-61
+## What the completed run exposed — FD-66
 
 LeakSanitizer reports 1,132 bytes in 5 allocations at exit, all
 from the bridge's `setupReadbacks` mallocs
@@ -106,14 +106,14 @@ leak is proven. The latent half is in the bridge:
 `setupReadbacks` opens by clearing both pending vectors without
 freeing blocks still pending, so an unpaired setup followed by
 another setup loses the first round's blocks silently — today
-reachable only from the fixture. Registered as FD-61 with both
+reachable only from the fixture. Registered as FD-66 with both
 candidate fix directions; not fixed here, per the register's rule
 that a lane registers what it finds beyond its own defect.
 
 ## Merge notes
 
 Composition is trivial: one test file, the register (Section B row
-+ FD-61), and this record. FD-61's number collides with the
++ FD-66), and this record. FD-66's number was FD-61 on the branch, colliding with the
 FD-61/FD-62/FD-63 the FD-55/FD-57 branches carry for unrelated
 items — the merge lane renumbers one set. Nothing pushed, nothing
 deployed; master and the live site untouched.

@@ -1461,22 +1461,22 @@ do not close the entry until they land.
   weakened to accommodate the wait. Caveat for future
   investigators: late-session emulator METRICS
   snapshots in these runs are a frozen instrument —
-  see FD-58. Evidence: `test-results/fd55/` (char1,
+  see FD-63. Evidence: `test-results/fd55/` (char1,
   long1, verb1, cap1, cap2 — consoles, thread dumps,
   extracted guest shader dumps). Two sub-defects were
-  found on the way: FD-56 (a shader-audit rejection of
+  found on the way: FD-61 (a shader-audit rejection of
   servable modules — fixed on this lane's branch) and
-  FD-57 (a genuinely unservable writable-image array
+  FD-62 (a genuinely unservable writable-image array
   shape, still open).
 
-- **FD-56 — The shader-capability audit rejected
+- **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
   because buffer-content runtime arrays survived its
   specialization sweep.** *(Medium — graphics
   correctness; FIXED on lane-fd55, awaiting merge.
-  Provisional number: the FD-38 lane also used FD-56
-  provisionally for an unrelated item; the merge lane
-  renumbers.)* The bridge audit admitted the
+  Numbered FD-56 on the lane's register;
+  renumbered FD-61 in the composed numbering (the
+  FD-38 lane's provisional FD-56 is FD-59).)* The bridge audit admitted the
   RuntimeDescriptorArray capability only when its
   simulation of the spirvfix orphan sweep left NO
   OpTypeRuntimeArray alive. vkd3d-proton emits, in the
@@ -1505,43 +1505,19 @@ do not close the entry until they land.
   sabotage-checked); in-vivo demo run on the fixed
   build — capability rejections 3 → 2 and both
   modules now create successfully (the remaining
-  failures are FD-57). Bounded residue: a module
+  failures are FD-62). Bounded residue: a module
   declaring the capability with ONLY buffer-content
   arrays and no descriptor array still rejects; no
   captured instance exists. Evidence:
   `test-results/fd55/` (cap1 vs cap2 consoles),
   fixtures `testdata/spirv/godot-vs-heap-plus-*.spv`.
 
-- **FD-57 — Writable storage-image descriptor arrays
-  whose element pointers form texel pointers are
-  declined by the R15a servability classifiers, so
-  those pipelines fail.** *(Medium — graphics
-  correctness; open. Provisional number; the merge
-  lane renumbers.)* Found by the FD-55 lane
-  (2026-11-01) in the first demo run after FD-56's
-  fix: fragment module 6f52b154d73c804f (captured in
-  `test-results/fd55/cap2/dumps/`) indexes a writable
-  image heap array (set 4, binding 0) and runs
-  OpAtomicOr through OpImageTexelPointer on the
-  elements. Both classifier mirrors treat forming a
-  texel pointer from an array element as a pointer
-  escape ('array element pointer escape (op60)') and
-  decline the array, so the module is rejected and
-  the Godot pipeline fails (0x80004005) — twice in the
-  proof run. Fix shape, for a future lane: teach the
-  pointer-use analysis in both mirrors to audit
-  THROUGH OpImageTexelPointer (its own uses —
-  atomics, loads, stores — are the writes/reads to
-  classify; storing or passing the texel pointer
-  itself stays an escape), with the captured module
-  as the regression fixture. Until then the rejection
-  is loud and honest, never a silent mis-serve.
-
-- **FD-58 — The emulator's periodic METRICS emission
+- **FD-63 — The emulator's periodic METRICS emission
   stops a few minutes into a session, freezing the
   metrics snapshot for the rest of the run.** *(Low —
-  developer observability; open. Provisional number;
-  the merge lane renumbers.)* Found by the FD-55 lane
+  developer observability; open. Numbered FD-58 on
+  the lane's register; renumbered FD-63 in the
+  composed numbering.)* Found by the FD-55 lane
   (2026-11-01): in a 1,752 s demo run the console
   carries exactly three `bw64: METRICS` lines (226.9 s,
   227.4 s, 228.4 s) and none after, while the session
@@ -1554,7 +1530,7 @@ do not close the entry until they land.
   `test-results/fd55/long1/` (console.txt,
   metrics.jsonl).
 
-- **FD-61 — The native bridge harness's sanitizer flavour
+- **FD-66 — The native bridge harness's sanitizer flavour
   cannot finish clean: readback blocks the fixture leaves
   pending are reported as leaks, and the bridge drops
   pending readbacks without freeing them.** *(Low —
@@ -1589,9 +1565,11 @@ do not close the entry until they land.
   `test-results/fd50/run-san-noleakcheck.log` (control:
   leak check off, all 52 sections pass, exit 0), and
   `docs/reports/fd50-native-harness-completion-20261101.md`.
-  *(Numbered FD-61 on this lane branch; the FD-55/FD-57
-  lane branches carry FD-61/FD-62/FD-63 for unrelated
-  items — the merge lane renumbers one set.)*
+  *(Numbered FD-61 on this lane branch; renumbered
+  FD-66 in the composed numbering — FD-61/FD-62/FD-63
+  belong to the FD-55/FD-57 lanes' items, and FD-64
+  and FD-65 were taken on the integration branch
+  meanwhile.)*
 - **FD-62 — A class of real shader modules is refused
   over atomic operations performed through image texel
   pointers; the refusal now rests on the true, named
@@ -1677,7 +1655,7 @@ is behavioural, is re-proven there.
 | Branch | What it fixes | Proof on the branch |
 | --- | --- | --- |
 | `lane-firstvisit` | FD-01: the desktop-initialization impatience defects (Wine win32u backport — wait raised, announcement check retries) | Fresh-profile before 0/6 → after 6/6; JS 333/0; native 648/0; completeness 0 failures |
-| `lane-fd55` | FD-56: the shader-capability audit's specialization sweep counted buffer-content runtime arrays against the RuntimeDescriptorArray capability and rejected servable modules (fix in the bridge audit + mirror comments; vulkan register citations re-pinned) | Standalone C++ classifier on the captured modules: both flip admit 0→1, a genuinely unservable module stays 0; new unit test spirvfix-r15-buffer-arrays 3/3 (sabotage-checked); in-vivo demo run: capability rejections 3 → 2 and both modules now create (the 2 remaining failures are FD-57); dist 'Browser export verified', completeness 0 failures; JS suite 345/0 |
+| `lane-fd55` | FD-61: the shader-capability audit's specialization sweep counted buffer-content runtime arrays against the RuntimeDescriptorArray capability and rejected servable modules (fix in the bridge audit + mirror comments; vulkan register citations re-pinned) | Standalone C++ classifier on the captured modules: both flip admit 0→1, a genuinely unservable module stays 0; new unit test spirvfix-r15-buffer-arrays 3/3 (sabotage-checked); in-vivo demo run: capability rejections 3 → 2 and both modules now create (the 2 remaining failures are FD-62); dist 'Browser export verified', completeness 0 failures; JS suite 345/0 |
 | `lane-cleanlog` (pathfinder) | The campaign pattern standard; guest memory faults were logged nowhere; 11 system calls panicked on unsupported arguments by default; launcher downloads did not retry | Native 648/0 serial |
 | `lane-cleanweb` | Page-layer silent failures: session-start load failures left visitors on an endless spinner; save-sync, shader-cache, and clipboard failures vanished | JS suite accounted 333/4 (all four classified) |
 | `lane-cleanup-bridges` | Graphics-bridge fabricated/dropped answers were invisible (now logged once per case — the answers themselves are FD-15); shader warming could fail silently; the silent-failure scanner miscounted loud rejections | Guard tests 16/16; graphics subset 47/47 |
@@ -1696,7 +1674,7 @@ is behavioural, is re-proven there.
 | `lane-readygate` | FD-47: readiness certification hardened (plausible handle + five-X11 handshake + explorer launch); FD-43 closed by the four-arm measurement it demanded (CL-10/CL-11) | Sabotage pair: broken-dispatch control false-ready 10/10 under the old certification, 0/10 under the new (offline + in-page); genuine starts certify on the stamped arm (boot32-vkboot, celeste-boot, boot64-smoke pass); readiness unit tests red/green; JS 340/0; four-arm true rates A 0/10, B 0/10, D 0/10 |
 | `lane-fd48-restart-cert` | FD-48: the 32-bit open paths now emit the process-spawn signal (`OPENED '<path>' -> fd <n>` on successful .exe opens) that the FD-47 handshake's explorer element matches — the line existed only on the 64-bit path, so no 32-bit session could ever be certified; FD-54 registered (DLLTRACE dialect) | boot32-vkboot x18 on the branch dist: 14 single-attempt certifications, 2 restart-shape certifications (one after the full restart budget), 2 genuinely dead runs certified zero times; unsigned-control sabotage boot: old cert fires on `0xc000000d`, new cert 0, page cert 0; JS 342/0; no readiness rule changed |
 | `lane-fd49` | FD-49: format-less storage images at multi-type heap bindings — six captured Godot compute modules failed translation (the R14 signature keyed one format per binding while two storage image types share it; specialized clones of both types then collide at one binding in the translator; one empty shader poisoned by unreferenced format-less type declarations). Fixed in `df68b0d92`: per-type signature entries (`set:binding@typeKey=fmt`), specialized-binding-split (surplus clones move to fresh bindings, origin kept in the clone name and honoured as `origBinding`), and prune-dead-storage-image-types for the unreferenced declarations; every refusal left in place stays fail-closed | New suite `vk-storage-format-multi-type.test.mjs` (10 tests) over the six captured modules themselves through the tier path: all translate post-fix (fail-before on the pristine tree: `UnsupportedCapability(StorageImageReadWithoutFormat)` x5, `InvalidStorageImageWithoutFormat` x1), sabotage set holds (legacy/partial/kind-swapped signatures still rejected; live types never pruned). Full JS unit suite 339 passed / 4 failed: provenance-artifacts + runtime-completeness are dist-less-worktree audits (this lane builds no dist); vk-descriptor-binding-remap + vk-register-citations were broken by the change (source pin, citation drift) and fixed in the same commit, re-verified green standalone. Measured impact: in the captured Godot run nothing user-visible was blocked (modules accepted at creation, demo presented; no dispatch reached translation of them) — the class is latent: the first dispatch building a pipeline on one would have dropped its work silently. Record: `docs/reports/fd49-storage-image-formats-20261031.md`. NOTE for the merge lane: FD-49's open entry lives in this register on `lane-fd16`'s branch; this row is the fixing half — compose A->C at merge |
-| `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-61. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
+| `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-66. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
 | `lane-fd57` | FD-62 audit hardening (the defect itself stays OPEN in Section A — this row is the classification half awaiting merge): both descriptor-array audit mirrors now audit through OpImageTexelPointer and refuse texel-pointer forms through an array element with a named reason naming the true blocker (the translation stack rejects OpImageTexelPointer), instead of an incidental generic pointer escape; zero modules change verdict | JS suite `spirvfix-texel-pointer-arrays.test.mjs` 5/5 (red 5/5 pre-fix) over the captured Godot module + reduction/copy-sabotage/attribution/escape fixtures; native classifier guard proven via a scratch harness (the standard harness is blocked by FD-50's abort, re-confirmed by this lane); full JS unit suite green except the dist-state audits of an unbuilt lane tree; vulkan citation register re-pinned through the exact diff line map (citations suite green, incl. the pre-existing reg:410 dual-cite drift). Record: `docs/reports/fd62-texel-pointer-atomics-20261101.md` |
 
 Merge-composition notes that belong with this table: the

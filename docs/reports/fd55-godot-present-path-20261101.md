@@ -56,14 +56,14 @@ needs the initialization workload to finish inside a demo window
 in guest execution speed) — product-level decisions, not a fix-lane change.
 The demo check was not weakened in any way; all five runs fail it honestly.
 
-## Found and fixed on this branch: FD-56 (shader-audit false rejections)
+## Found and fixed on this branch: FD-61 (shader-audit false rejections)
 
 The runs also showed three shader-capability rejections, each killing a
 Godot pipeline (Create(Graphics)PipelineState failed, 0x80004005). With a
 purpose-built capture harness variant (demo-matrix + guest-home extraction
 through the runtime VFS), the rejected modules were identified by dump
 adjacency and captured: vkd3d dumps 480d68cc811ceb30 and 29caf5794322da20
-(vertex shaders), plus 6f52b154d73c804f after the fix (see FD-57).
+(vertex shaders), plus 6f52b154d73c804f after the fix (see FD-62).
 
 Root cause for the first two (proven with the bridge's own classifier,
 extracted verbatim from vk64bridge.cpp and compiled standalone): the
@@ -95,9 +95,9 @@ Proof:
 - Full dist rebuild: 'Browser export verified', completeness 0 failures,
   wasm e40a762d….
 
-## Found, not fixed: FD-57 and FD-58 (registered)
+## Found, not fixed: FD-62 and FD-63 (registered)
 
-- FD-57: after FD-56, the remaining rejections are fragment module
+- FD-62: after FD-61, the remaining rejections are fragment module
   6f52b154d73c804f — a writable image heap array whose elements feed
   OpImageTexelPointer + OpAtomicOr. Both classifier mirrors treat
   texel-pointer formation as a pointer escape and decline. The register
@@ -105,7 +105,7 @@ Proof:
   mirrors). Not attempted here: it is FD-16-class shader-semantics work,
   and a hasty version risks silently serving atomics to the wrong image —
   worse than the current loud rejection.
-- FD-58: the emulator's periodic METRICS emission stops ~228 s into a
+- FD-63: the emulator's periodic METRICS emission stops ~228 s into a
   session (three lines total in long1's 1,752 s), freezing metrics.jsonl.
   Any late-session metrics analysis is reading a frozen instrument.
 
