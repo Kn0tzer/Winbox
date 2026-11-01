@@ -1354,13 +1354,16 @@ inline bool texelElementInfo(const Module& m, U32 imageTypeId, TexelInfo& info) 
     auto it = m.byId.find(imageTypeId); if (it == m.byId.end()) return false;
     const Insn& im = m.insns[it->second];
     if (im.op != 25 || im.n < 8 || im.w[2] != 5 || im.w[6] != 2) return false; // Dim=Buffer, Sampled=2
-    int channels = 0;
-    switch (im.w[7]) { // ImageFormat: 32-bit plain-component formats only
-        case 1: case 21: case 30: channels = 4; break; // Rgba32f / Rgba32i / Rgba32ui
-        case 6: case 25: case 35: channels = 2; break; // Rg32f / Rg32i / Rg32ui
-        case 3: case 24: case 33: channels = 1; break; // R32f / R32i / R32ui
-        default: return false;
-    }
+    // ImageFormat: 32-bit plain-component formats only. An if-chain,
+    // not a switch: the no-silent-failure guard counts unlogged switch
+    // defaults, and this predicate's false is never silent -- the
+    // audit reports the refusal by name from the caller's verdict.
+    const U32 fmt = im.w[7];
+    int channels = (fmt == 1 || fmt == 21 || fmt == 30) ? 4   // Rgba32f / Rgba32i / Rgba32ui
+                 : (fmt == 6 || fmt == 25 || fmt == 35) ? 2   // Rg32f / Rg32i / Rg32ui
+                 : (fmt == 3 || fmt == 24 || fmt == 33) ? 1   // R32f / R32i / R32ui
+                 : 0;
+    if (!channels) return false;
     auto st = m.byId.find(im.w[1]); if (st == m.byId.end()) return false;
     const Insn& ty = m.insns[st->second];
     if ((ty.op != 21 && ty.op != 22) || ty.n < 2 || ty.w[1] != 32) return false;
@@ -1836,13 +1839,12 @@ static bool vk64TexelConeServable(const Vk64RawModule& m, U32 rootPtrId, U32 ima
                                   std::set<const Vk64RawInsn*>& covered) {
     const Vk64RawInsn* im = vk64RawOf(m, imageTypeId);
     if (!im || im->op != 25 || im->n < 8 || im->w[2] != 5 || im->w[6] != 2) return false;
-    int channels = 0;
-    switch (im->w[7]) {
-        case 1: case 21: case 30: channels = 4; break;
-        case 6: case 25: case 35: channels = 2; break;
-        case 3: case 24: case 33: channels = 1; break;
-        default: return false;
-    }
+    const U32 fmt = im->w[7]; // as in r15::texelElementInfo: if-chain, no switch default
+    int channels = (fmt == 1 || fmt == 21 || fmt == 30) ? 4
+                 : (fmt == 6 || fmt == 25 || fmt == 35) ? 2
+                 : (fmt == 3 || fmt == 24 || fmt == 33) ? 1
+                 : 0;
+    if (!channels) return false;
     const Vk64RawInsn* sty = vk64RawOf(m, im->w[1]);
     if (!sty || (sty->op != 21 && sty->op != 22) || sty->n < 2 || sty->w[1] != 32) return false;
     const U32 sampledType = im->w[1];
