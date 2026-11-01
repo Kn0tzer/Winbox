@@ -2569,9 +2569,9 @@ do not close the entry until they land.
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
   host defers it until the mapping is unmapped.** *(Low.
-  Filed provisionally as FD-79 on the FD-58..60 lane
-  branch, 2026-11-01; the merge lane re-audits the
-  number.)* Measured on the host kernel
+  Filed as FD-79 on the FD-58..60 lane branch,
+  2026-11-01; the number was verified free on the
+  integration register and settled at composition.)* Measured on the host kernel
   (6.17.0-1020-oracle) by the FD-59 reference programs:
   a file closed while a MAP_SHARED writable mapping of
   it is still open produces no IN_CLOSE_WRITE at close;
@@ -2586,8 +2586,9 @@ do not close the entry until they land.
 - **FD-80 — The 64-bit dispatcher's preadv (295) and
   preadv2 (327) have name-table entries but no dispatch
   case, so they return ENOSYS.** *(Low. Filed
-  provisionally as FD-80 on the FD-58..60 lane branch,
-  2026-11-01; the merge lane re-audits the number.)*
+  as FD-80 on the FD-58..60 lane branch, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition.)*
   pread64 itself is implemented on the 64-bit side;
   only the vectored positioned reads are missing.
   Found by inspection during the FD-59 read-path work,
@@ -3471,8 +3472,9 @@ its lane and is not a defect, for the stated reason:
   record `docs/reports/fd12-park-lane-20261101.md`.
 
 - **CL-30 — chmod applies the mode (FD-58).** *(Filed
-  provisionally as CL-30 on lane-fd58-60, 2026-11-01;
-  the merge lane re-audits the number.)*
+  as CL-30 on lane-fd58-60, 2026-11-01; the number
+  was verified free on the integration register and
+  settled at composition.)*
   Fixed on branch `lane-fd58-60` in `81681e834`:
   `KProcess::chmod` resolved the node and returned 0
   without applying anything; 32-bit fchmod/fchmodat
@@ -3504,9 +3506,9 @@ its lane and is not a defect, for the stated reason:
   as session state, as link counts already were.
 
 - **CL-31 — link() creates a true hard link
-  (FD-60).** *(Filed provisionally as CL-31 on
-  lane-fd58-60, 2026-11-01; the merge lane
-  re-audits the number.)*
+  (FD-60).** *(Filed as CL-31 on lane-fd58-60, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition.)*
   Fixed on branch `lane-fd58-60` in `81681e834`
   (event fan-out refined in `8c7c34ba8`):
   `KProcess::link` copied the content into a new
@@ -3546,9 +3548,9 @@ its lane and is not a defect, for the stated reason:
 
 - **CL-32 — IN_ACCESS generated; mmap-write
   IN_MODIFY disproven (FD-59).** *(Filed
-  provisionally as CL-32 on lane-fd58-60,
-  2026-11-01; the merge lane re-audits the
-  number.)*
+  as CL-32 on lane-fd58-60, 2026-11-01; the number
+  was verified free on the integration register and
+  settled at composition.)*
   Fixed/disproven on branch `lane-fd58-60` in
   `81681e834`. (1) IN_ACCESS was never generated:
   completed guest reads that deliver at least one
