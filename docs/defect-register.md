@@ -1230,7 +1230,8 @@ do not close the entry until they land.
   the integration branch by the thread-lifetime entry
   above.)*
 - **FD-53 — The shipped support runtime archive contains
-  two different files under one member name.** *(Medium)*
+  two different files under one member name.
+  CLOSED 2026-11-01 — see CL-24.** *(Medium)*
   The support archive produced by the dependency staging
   step — byte-identical at every recent merge/deploy
   gate (sha256 prefix `de592964f772`) — contains
@@ -1256,6 +1257,7 @@ do not close the entry until they land.
   FD-53 at integration — FD-45 was taken on the
   integration branch by the texture-parameter
   entry.)*
+  Fixed on lane-fd53 in `1e228a7ed` — see CL-24.
 
 
 - **FD-45 — Texture-parameter queries have no answer on the
@@ -2468,3 +2470,45 @@ its lane and is not a defect, for the stated reason:
   `storage-flip-probe.log`, `run-native-final.log`),
   record
   `docs/reports/fd67-guard-correction-20261101.md`.
+
+- **CL-24 — The shipped support archive contained
+  two different files under
+  `usr/lib/x86_64-linux-gnu/libvulkan.so.1` (was
+  FD-53).** Fixed in `1e228a7ed` on `lane-fd53`.
+  The second copy was the distro Vulkan loader
+  1.3.239 (457,224 B, `91dd2cb10ee4...`) riding the
+  amd64 GStreamer closure through the `libvulkan1`
+  deb; the intended copy is the project shim
+  (185,464 B, `60b89e5afc7c...`) the staging step
+  adds deliberately with its digest recorded as
+  the `vulkan` provenance — the pack holds no ICD
+  manifests a distro loader could use, and
+  wine64.zip carries no library at that path at
+  all. The staging walk now excludes the loader
+  under both its names, `add()` refuses any
+  duplicate member name with `SystemExit` instead
+  of a zipfile warning, and a new completeness
+  check pins member-name uniqueness archive-wide
+  plus the four `libvulkan.so.1` members hashing
+  to the provenance digests; the runtime-artifact
+  manifest was regenerated for the new pack.
+  Proof: the new check fails on the previously
+  shipped pack (duplicate named) and on a sabotage
+  pack carrying the loader's bytes once under the
+  soname (hash-pin mismatch); staging with the
+  exclusion disabled fails loudly with the
+  duplicate-name `SystemExit`. Standalone staging
+  and two standard builds produce the
+  byte-identical pack `support-c4dbe35986a5...`
+  (517,564,189 B, 3,542 members, zero duplicates);
+  the second build completes (`Browser export
+  verified` / `BUILD COMPLETE`) with the gate at
+  0 failures, and a member-level audit against
+  the old pack shows the only name removed is
+  `libvulkan.so.1.3.239` and the only member whose
+  effective bytes changed is the formerly
+  duplicated soname, now always the pinned shim.
+  Evidence: `test-results/fd53-20261101/`
+  (`archive-audit.txt`, `build1-gate-manifest-drift.log`,
+  `build2-complete.log`), record
+  `docs/reports/fd53-support-archive-libvulkan-20261101.md`.
