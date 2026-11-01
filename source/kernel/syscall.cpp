@@ -2555,6 +2555,9 @@ static const SyscallFunc syscallFunc[] = {
 extern S32 contextTime; // about the # instruction per 10 ms
 #endif
 void ksyscall(CPU* cpu, U32 eipCount) {
+#ifdef __EMSCRIPTEN__
+    if (cpu->thread) bwNoteThreadDumpTid(cpu->thread->id);
+#endif
     U32 result = -K_ENOSYS;
     U64 startTime = KSystem::getMicroCounter();
 #ifdef BOXEDWINE_MULTI_THREADED 

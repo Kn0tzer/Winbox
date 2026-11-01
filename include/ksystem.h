@@ -239,5 +239,11 @@ private:
 
 void runThreadSlice(KThread* thread);
 void ksyscall(CPU* cpu, U32 eipCount);
+// Raises the BW_THREAD_DUMP enumeration bound (defined in syscall64.cpp,
+// Emscripten builds only). Both syscall dispatchers note every tid they
+// serve so the guest-thread dump covers 32-bit sessions too; before this,
+// the bound was only raised on the 64-bit path, so a dump taken during a
+// 32-bit session silently enumerated zero threads.
+void bwNoteThreadDumpTid(U32 tid);
 
 #endif

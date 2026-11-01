@@ -4285,6 +4285,12 @@ static inline bool bwThreadDumpEnabled() {
     return enabled;
 }
 
+void bwNoteThreadDumpTid(U32 tid) {
+    U32 seen = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
+    while (seen < tid && !bwThreadDumpMaxTid.compare_exchange_weak(
+               seen, tid, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
+
 // Best-effort guest stack walk for BW_THREAD_DUMP. Scans the qwords above the
 // guest RSP for values that fall inside a PE image in the PEB loader list
 // (candidate return addresses) and prints module+RVA. It is a heuristic scan
@@ -4558,12 +4564,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 void ksyscall64(CPU64* cpu) {
     if (!cpu) return;
 #ifdef __EMSCRIPTEN__
-    if (cpu->thread) {
-        U32 tid = cpu->thread->id;
-        U32 seen = bwThreadDumpMaxTid.load(std::memory_order_relaxed);
-        while (seen < tid && !bwThreadDumpMaxTid.compare_exchange_weak(
-                   seen, tid, std::memory_order_relaxed, std::memory_order_relaxed)) {}
-    }
+    if (cpu->thread) bwNoteThreadDumpTid(cpu->thread->id);
 #endif
     U64 nr   = cpu->reg[X64_RAX].u64;
     U64 a1   = cpu->reg[X64_RDI].u64;
