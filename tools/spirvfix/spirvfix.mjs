@@ -4164,8 +4164,12 @@ export function specializeDescriptorArrays(mod, log) {
   // Orphan sweep: delete array / runtime-array / pointer TYPE declarations
   // the specialization left unreferenced (references from decorations and
   // names do not count; their decorations die with them). If no runtime
-  // array type survives, the RuntimeDescriptorArray capability goes too --
-  // the audit mirror admits cap 5302 under exactly this condition.
+  // array type survives, the RuntimeDescriptorArray capability goes too.
+  // The bridge audit mirror admits cap 5302 under a wider condition: every
+  // descriptor (UniformConstant) runtime array specialized away. When only
+  // buffer-content runtime arrays survive (vkd3d's SSBO-offsets block, its
+  // CBV heap array), the capability declaration is retained here and naga
+  // accepts the module; the audit's skip5302 simulation mirrors that.
   let swept = true;
   while (swept) {
     swept = false;

@@ -1417,38 +1417,142 @@ do not close the entry until they land.
   batch to the support-archive duplicate-library
   entry.)*
 - **FD-55 — The Godot demo presents no frame in the
-  browser path, although its graphics pipelines
-  compile.** *(Medium — one demo's rendering path;
-  uncharacterized)* Found by the final-batch merge gate
-  (2026-10-31) while discharging the presented-frame
-  confirmation the FD-16 merge owed. Through the
-  demo-matrix path the demo's session starts and the
-  emulator runs, but the presented-frame counter stays
-  at 0 across a full 387 s observation and the display
-  screenshot keeps its blank signature (non-dark
-  fraction 0.0044, ~1,450 distinct colors) — twice, at
-  box load ~5 and ~12. The guest stream through the
-  capture harness on the same build is healthy in the
-  FD-16 sense: the engine starts (Godot Engine v4.7.2
-  banner at 126 s), 56 shader modules are created, zero
-  capability rejections, zero 'failed' lines, and the
-  pipeline-library disk cache flushes. Whatever stops
-  the frame sits downstream of pipeline creation — this
-  program's present/swapchain path, the demo's own
-  startup sequence, or an observation gap: the capture
-  harness's final screenshot is the launcher page,
-  pixel-identical at 5 s and at 410 s, so it cannot
-  adjudicate presentation either. The D3D12 oracle
-  programs present and read back correctly on the same
-  build (both word sizes), so the present path is not
-  broken in general. Evidence:
-  `test-results/merge-finalbatch-20261031/`
-  (godot-demo-matrix.log, godot-demo-matrix2.log,
-  godot-capture/). Next step: one long run with
-  present-path logging and engine-start confirmation in
-  the same session, separating 'the guest never
-  presents' from 'it presents and the page never shows
-  it'.
+  browser path: the guest never reaches its first
+  frame. Its startup is still inside engine
+  initialization — in-engine shader compilation — when
+  every observation window ends, and no surface or
+  swapchain is ever requested.** *(Medium — one demo's
+  rendering path; CHARACTERIZED 2026-11-01 by the
+  FD-55 lane; the present path itself is not
+  convicted)* The merge gate's question — 'the guest
+  never presents' vs 'it presents and the page never
+  shows it' — is answered: the guest never presents,
+  because it never gets there. Across five
+  instrumented runs on the merged build (vktrace +
+  drvinit milestones + guest thread dumps + shader
+  dumps, the longest a full 1,752 s), the bridge —
+  whose surface, swapchain and present handlers all
+  log unconditionally — records ZERO vkCreateWin32
+  SurfaceKHR, ZERO vkCreateSwapchainKHR, ZERO
+  vkAcquireNextImage and ZERO vkQueuePresentKHR. The
+  work that does flow is startup work: resource
+  uploads only (61 buffer-to-image copies, zero draws,
+  zero render passes in the longest run), ~213
+  pipeline-layout pairs and ~94 shader modules created
+  at a decelerating rate, the guest's main thread
+  parked on a futex hand-off while exactly one worker
+  thread runs engine code — the classic shape of
+  Godot compiling its built-in shader set on a worker
+  while the main thread waits, at interpreter speed.
+  A --verbose run's engine output stops advancing
+  after the D3D12 device line (155 s): no scene-load
+  lines ever appear. The work is finite and
+  deterministic (distinct module hashes, new ones
+  still arriving at 1,738 s) but exceeds the demo
+  window by an order of magnitude; nothing in the
+  emulator's present stack is implicated (the D3D12
+  oracle programs present and read back on the same
+  build, both word sizes). What could close this
+  entry: the initialization workload finishing inside
+  a demo window — a pre-warmed shader/pipeline cache
+  shipped for the demo, or a step change in guest
+  execution speed. Both are product-level decisions
+  outside a fix lane; the demo check must not be
+  weakened to accommodate the wait. Caveat for future
+  investigators: late-session emulator METRICS
+  snapshots in these runs are a frozen instrument —
+  see FD-58. Evidence: `test-results/fd55/` (char1,
+  long1, verb1, cap1, cap2 — consoles, thread dumps,
+  extracted guest shader dumps). Two sub-defects were
+  found on the way: FD-56 (a shader-audit rejection of
+  servable modules — fixed on this lane's branch) and
+  FD-57 (a genuinely unservable writable-image array
+  shape, still open).
+
+- **FD-56 — The shader-capability audit rejected
+  modules whose descriptor arrays are servable,
+  because buffer-content runtime arrays survived its
+  specialization sweep.** *(Medium — graphics
+  correctness; FIXED on lane-fd55, awaiting merge.
+  Provisional number: the FD-38 lane also used FD-56
+  provisionally for an unrelated item; the merge lane
+  renumbers.)* The bridge audit admitted the
+  RuntimeDescriptorArray capability only when its
+  simulation of the spirvfix orphan sweep left NO
+  OpTypeRuntimeArray alive. vkd3d-proton emits, in the
+  same modules, runtime arrays that are buffer
+  CONTENT — its SSBO-offsets block (a runtime array
+  inside a storage-buffer struct) and its CBV heap (a
+  bare storage-buffer variable of runtime-array-of-
+  struct type). Specialization correctly leaves those
+  in place (the tier serves them as ordinary buffers,
+  and naga accepts the retained capability declaration
+  above them), so the audit vetoed modules the tier
+  demonstrably serves. Two real Godot vertex modules
+  (vkd3d dumps 480d68cc811ceb30, 29caf5794322da20)
+  were rejected at creation with
+  VK_ERROR_FEATURE_NOT_PRESENT in every demo run,
+  each killing a Godot pipeline (0x80004005). Fix
+  (lane-fd55): the sweep's verdict now counts a
+  surviving runtime array against the capability only
+  when it is a descriptor array type — the direct
+  pointee of a UniformConstant pointer; comments in
+  both mirrors aligned; register citations re-pinned
+  (+14 lines). Proof: the extracted C++ classifier on
+  the captured modules flips both from skip to admit
+  while a genuinely unservable module stays rejected;
+  new unit test `spirvfix-r15-buffer-arrays` (3/3,
+  sabotage-checked); in-vivo demo run on the fixed
+  build — capability rejections 3 → 2 and both
+  modules now create successfully (the remaining
+  failures are FD-57). Bounded residue: a module
+  declaring the capability with ONLY buffer-content
+  arrays and no descriptor array still rejects; no
+  captured instance exists. Evidence:
+  `test-results/fd55/` (cap1 vs cap2 consoles),
+  fixtures `testdata/spirv/godot-vs-heap-plus-*.spv`.
+
+- **FD-57 — Writable storage-image descriptor arrays
+  whose element pointers form texel pointers are
+  declined by the R15a servability classifiers, so
+  those pipelines fail.** *(Medium — graphics
+  correctness; open. Provisional number; the merge
+  lane renumbers.)* Found by the FD-55 lane
+  (2026-11-01) in the first demo run after FD-56's
+  fix: fragment module 6f52b154d73c804f (captured in
+  `test-results/fd55/cap2/dumps/`) indexes a writable
+  image heap array (set 4, binding 0) and runs
+  OpAtomicOr through OpImageTexelPointer on the
+  elements. Both classifier mirrors treat forming a
+  texel pointer from an array element as a pointer
+  escape ('array element pointer escape (op60)') and
+  decline the array, so the module is rejected and
+  the Godot pipeline fails (0x80004005) — twice in the
+  proof run. Fix shape, for a future lane: teach the
+  pointer-use analysis in both mirrors to audit
+  THROUGH OpImageTexelPointer (its own uses —
+  atomics, loads, stores — are the writes/reads to
+  classify; storing or passing the texel pointer
+  itself stays an escape), with the captured module
+  as the regression fixture. Until then the rejection
+  is loud and honest, never a silent mis-serve.
+
+- **FD-58 — The emulator's periodic METRICS emission
+  stops a few minutes into a session, freezing the
+  metrics snapshot for the rest of the run.** *(Low —
+  developer observability; open. Provisional number;
+  the merge lane renumbers.)* Found by the FD-55 lane
+  (2026-11-01): in a 1,752 s demo run the console
+  carries exactly three `bw64: METRICS` lines (226.9 s,
+  227.4 s, 228.4 s) and none after, while the session
+  runs on for another ~1,500 s; the harness's
+  metrics.jsonl rows repeat identical counters
+  (syscall calls=239, ms=46108.4 in every row).
+  Anything computed from late-session metrics
+  snapshots — stage timings, present counts — is
+  reading a frozen instrument. Evidence:
+  `test-results/fd55/long1/` (console.txt,
+  metrics.jsonl).
 
 - **FD-61 — The native bridge harness's sanitizer flavour
   cannot finish clean: readback blocks the fixture leaves
@@ -1573,6 +1677,7 @@ is behavioural, is re-proven there.
 | Branch | What it fixes | Proof on the branch |
 | --- | --- | --- |
 | `lane-firstvisit` | FD-01: the desktop-initialization impatience defects (Wine win32u backport — wait raised, announcement check retries) | Fresh-profile before 0/6 → after 6/6; JS 333/0; native 648/0; completeness 0 failures |
+| `lane-fd55` | FD-56: the shader-capability audit's specialization sweep counted buffer-content runtime arrays against the RuntimeDescriptorArray capability and rejected servable modules (fix in the bridge audit + mirror comments; vulkan register citations re-pinned) | Standalone C++ classifier on the captured modules: both flip admit 0→1, a genuinely unservable module stays 0; new unit test spirvfix-r15-buffer-arrays 3/3 (sabotage-checked); in-vivo demo run: capability rejections 3 → 2 and both modules now create (the 2 remaining failures are FD-57); dist 'Browser export verified', completeness 0 failures; JS suite 345/0 |
 | `lane-cleanlog` (pathfinder) | The campaign pattern standard; guest memory faults were logged nowhere; 11 system calls panicked on unsupported arguments by default; launcher downloads did not retry | Native 648/0 serial |
 | `lane-cleanweb` | Page-layer silent failures: session-start load failures left visitors on an endless spinner; save-sync, shader-cache, and clipboard failures vanished | JS suite accounted 333/4 (all four classified) |
 | `lane-cleanup-bridges` | Graphics-bridge fabricated/dropped answers were invisible (now logged once per case — the answers themselves are FD-15); shader warming could fail silently; the silent-failure scanner miscounted loud rejections | Guard tests 16/16; graphics subset 47/47 |

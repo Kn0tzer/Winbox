@@ -1419,9 +1419,23 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             if ((in.op == 28 || in.op == 29 || in.op == 32) && in.resultId && !live.count(in.resultId)) { dead.insert(&in); grew = true; }
         }
     }
+    // A runtime-array type that survives the sweep blocks the capability
+    // strip only when it is a DESCRIPTOR array type: the direct pointee of
+    // a UniformConstant pointer (storage class 0). Runtime arrays that
+    // live inside buffer blocks (vkd3d's SSBO-offsets block) or as bare
+    // StorageBuffer variables (vkd3d's CBV heap array) are buffer CONTENT,
+    // not descriptors: spirvfix specialization leaves them in place, the
+    // tier serves them through the standard buffer path, and naga accepts
+    // the retained capability declaration above them (the captured Godot
+    // modules 480d68cc811ceb30 and 29caf5794322da20 specialize and
+    // translate cleanly). Counting them here rejected servable modules at
+    // creation with VK_ERROR_FEATURE_NOT_PRESENT (FD-55 lane, 2026-11-01).
+    std::unordered_set<U32> descArrayTypes;
+    for (const Insn& in : m.insns)
+        if (in.op == 32 && in.n >= 3 && in.w[1] == 0) descArrayTypes.insert(in.w[2]);
     out.skip5302 = true;
     for (const Insn& in : m.insns)
-        if (in.op == 29 && !dead.count(&in)) { out.skip5302 = false; break; }
+        if (in.op == 29 && !dead.count(&in) && descArrayTypes.count(in.resultId)) { out.skip5302 = false; break; }
     return out;
 }
 
@@ -1967,7 +1981,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
         if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue; // PhysicalStorageBufferAddresses declared but unused (vkd3d module-wide header artifact): spirvfix R8 strips exactly this case in the tier. The used form falls through to spirv-capability-unknown:<n> below.
         if ((c == 5346 || c == 5347) && r15Root.servable) continue; // R15b: every physical pointer in the module is a read-only root descriptor spirvfix re-roots at a synthesized binding; the bridge resolves its VA per draw (ROOT_DESCS).
-        if (c == 5302 && r15Arr.skip5302) continue; // R15a: every runtime array in the module is specialized away by spirvfix (single provable index signature each) and the capability declaration is stripped with them.
+        if (c == 5302 && r15Arr.skip5302) continue; // R15a: every DESCRIPTOR runtime array in the module is specialized away by spirvfix (single provable index signature each). Buffer-content runtime arrays (inside buffer blocks, or bare buffer variables) survive specialization by design and are served through the standard buffer path; they do not gate this capability.
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {
             vk64Unsupported(("spirv-capability:" + std::string(name)).c_str(), "shader declares a capability the WebGPU tier lacks; VK_ERROR_FEATURE_NOT_PRESENT");
