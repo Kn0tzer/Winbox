@@ -65,7 +65,7 @@ that enablement mechanism.
 Also corrected: the kinotify.cpp header's stale claim that load-time
 IN_CREATE suppression does not exist (it does, via
 `childrenLoadInProgress`); the two documented non-deliveries
-(IN_ACCESS, mmap-write IN_MODIFY) are registered as FD-56.
+(IN_ACCESS, mmap-write IN_MODIFY) are registered as FD-59.
 
 ## Test evidence
 
@@ -172,9 +172,9 @@ still computes to `de592964f772`.
 
 - FD-38: rewritten in place — semantics portion fixed (this record),
   entry stays open narrowed to the enablement park.
-- FD-55 (new, provisional): `KProcess::chmod` returns success without
+- FD-58 (filed provisionally as FD-55; renumbered at merge): `KProcess::chmod` returns success without
   changing anything; 32-bit fchmod logs IGNORED.
-- FD-56 (new, provisional): IN_ACCESS and mmap-write IN_MODIFY are
+- FD-59 (filed provisionally as FD-56; renumbered at merge): IN_ACCESS and mmap-write IN_MODIFY are
   never generated (documented non-deliveries).
-- FD-57 (new, provisional): `KProcess::link` copies content instead
+- FD-60 (filed provisionally as FD-57; renumbered at merge): `KProcess::link` copies content instead
   of creating a hard link.

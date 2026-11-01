@@ -45,7 +45,7 @@ do not close the entry until they land.
   program on the first attempt. CLOSED 2026-10-31 (CL-06),
   REOPENED the same day — the closure's measurements are
   void (see FD-43 and the reopening note closing this
-  entry).** *(Critical)*
+  entry). CLOSED AGAIN 2026-10-31 — see CL-17.** *(Critical)*
   Two impatience defects in the staged Windows system files
   (Wine 8.0's desktop initialization), invisible on real
   hardware: (1) a process that asks for the desktop starts the
@@ -163,6 +163,26 @@ do not close the entry until they land.
   re-measurement through the public site. Gate evidence:
   `test-results/merge-finalbatch-20261031/`; record:
   `docs/reports/merge-finalbatch-20261031.md`.
+  UPDATE (2026-10-31, deploy + closure decision): the
+  remedy is DEPLOYED (build `fe4cfc265`; record:
+  `docs/reports/deploy-finalbatch-20261031.md`) and the
+  live first-visit rate is re-measured through the public
+  site under the hardened FD-47 rules (fresh profile per
+  boot, restart budget pre-exhausted, 900 s window,
+  offline classification): the previous live build
+  certified 0 of 6 (its own page rule said ready 6 of 6 —
+  false-ready on every boot, deskpin value `0xC000000D`,
+  explorer never opened); the deployed build certified
+  6 of 6 on x86-64 (handle `0x10048`, median ready
+  102.9 s, zero restarts, zero failure signatures) and
+  3 of 3 on x86 (handle `0x10052`, median ready 31.2 s).
+  Every re-closure term is now discharged; the
+  coordinator's closure decision is recorded with the
+  deploy record. This defect is CLOSED — see CL-17. The
+  §4.68 restart stopgap remains in the shipped launcher
+  by separate decision: it was needed zero times in the
+  live measurement, but retiring it is its own case and
+  is not part of this closure.
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -701,9 +721,10 @@ do not close the entry until they land.
   original disposition `c9259ec42`, integration tree
   `test-results/site-chromium-20261030/REPORT.md`.
 
-- **FD-56 — Two inotify event kinds are never generated:
+- **FD-59 — Two inotify event kinds are never generated:
   IN_ACCESS, and IN_MODIFY for writes through memory
-  mappings.** *(Low; provisional number — renumber at merge.)*
+  mappings.** *(Low. Filed provisionally as FD-56 on the
+  FD-38 lane branch; renumbered at this composition.)*
   No read-path hook generates IN_ACCESS (deliberate: the read
   path is too hot for per-read event sweeps), and writes
   through memory mappings have no per-write funnel that could
@@ -820,9 +841,10 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
-- **FD-55 — chmod reports success without changing
-  anything.** *(Medium; provisional number — renumber at
-  merge.)* `KProcess::chmod` resolves the node and returns 0
+- **FD-58 — chmod reports success without changing
+  anything.** *(Medium. Filed provisionally as FD-55 on
+  the FD-38 lane branch; renumbered at this composition —
+  FD-55 on integration is the Godot presentation entry.)* `KProcess::chmod` resolves the node and returns 0
   without applying any mode change; the 32-bit fchmod path
   logs "fchmod not implemented" and marks the call IGNORED. A
   guest is told a metadata change happened when none did (and
@@ -831,9 +853,9 @@ do not close the entry until they land.
   2026-10-31 (kprocess.cpp `KProcess::chmod`; syscall.cpp
   `syscall_fchmod`).
 
-- **FD-57 — link() copies file content instead of creating
-  a hard link.** *(Low; provisional number — renumber at
-  merge.)* `KProcess::link` creates a new node holding a copy
+- **FD-60 — link() copies file content instead of creating
+  a hard link.** *(Low. Filed provisionally as FD-57 on
+  the FD-38 lane branch; renumbered at this composition.)* `KProcess::link` creates a new node holding a copy
   of the content (its own debug line says "Hard link not
   implemented"), so inode identity and link counts observably
   differ from Linux, and inotify sees a creation for the new
@@ -1711,6 +1733,34 @@ dead-start fix and needs composition care.
   `docs/reports/fd49-storage-image-formats-20261031.md`,
   `docs/reports/merge-finalbatch-20261031.md`.
 
+- **CL-17 — First-time visitors could not reliably start
+  a program on the first attempt (was FD-01).** Fixed in
+  `7cbbb3e2d` on `lane-fd01-so`: the backport pipeline
+  now builds the unix half of win32u (`win32u.so`, the
+  patched 300 s desktop waits) from the same patched
+  wine-8.0 source as the PE half, both staging paths
+  ship it, and the completeness checker pins its bytes.
+  The earlier closure (CL-06) was void: its measurements
+  were readiness false positives (FD-43) and the patch
+  then shipped in no binary. Proof: branch measurement
+  5/5 certified vs 0/5 pre-fix at the 900 s window under
+  the hardened FD-47 rules; merged at the final batch
+  (`ca4166040`; gate cold-start measurement x64 3/3 and
+  x86 3/3 certified); deployed as build `fe4cfc265` and
+  live re-measured through the public route (deploy
+  record `06571b2b8`): the previous live build certified
+  0/6 (false-ready 6/6 under its own page rule), the
+  deployed build certified x64 6/6 (handle `0x10048`,
+  median ready 102.9 s, zero restarts) and x86 3/3
+  (handle `0x10052`). Closure decision recorded by the
+  coordinator, 2026-10-31; this row was written at the
+  following merge batch's composition. The §4.68 restart
+  stopgap remains in the shipped launcher by separate
+  decision. Records:
+  `docs/reports/fd01-unix-half-fix-20261031.md`,
+  `docs/reports/merge-finalbatch-20261031.md`,
+  `docs/reports/deploy-finalbatch-20261031.md`.
+
 - **CL-18 — Directory-notification (inotify) delivery
   disabled: enabling it parked the consumer session (was
   FD-38's open remainder).** Fixed in `1e8151d2a` on
@@ -1742,8 +1792,9 @@ dead-start fix and needs composition care.
   half of FD-38 was fixed on `lane-fd38` (`0ddb6f31a`,
   carried here as cherry-pick `04b32c1ac`; the merge lane
   drops one copy at composition). Numbering note: CL-17
-  is reserved for FD-01's closure row, assigned to the
-  next merge batch by the deploy record. Records:
+  (FD-01's closure row) was assigned at the following
+  merge batch's composition, per the deploy record.
+  Records:
   `docs/reports/fd38-enablement-park-20261031.md`,
   `docs/reports/fd38-inotify-semantics-20261031.md`.
 
