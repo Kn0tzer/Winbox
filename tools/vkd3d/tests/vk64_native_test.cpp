@@ -3240,10 +3240,14 @@ int main() {
             0x00000021u, 0x00050081u, 0x00000012u, 0x00000027u, 0x00000022u, 0x00000026u, 0x0003003eu, 0x00000006u,
             0x00000027u, 0x000100fdu, 0x00010038u,
         };
+        // Authored with a Fragment entry point like the rest of
+        // this section: as a compute module its admission below
+        // was satisfied by the compute-accept return, not the
+        // R15a admission the section measures (FD-69).
         const std::vector<U32> heapTexelStorage = {
             0x00020011u, 0x00000001u, 0x00020011u, 0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u,
             0x0008000au, 0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u,
-            0x0003000eu, 0x00000000u, 0x00000003u, 0x0008000fu, 0x00000005u, 0x00000001u, 0x6e69616du, 0x00000000u,
+            0x0003000eu, 0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u,
             0x00000002u, 0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u,
             0x00000001u, 0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u,
             0x736e6f43u, 0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u,
