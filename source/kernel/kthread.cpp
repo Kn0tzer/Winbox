@@ -545,7 +545,30 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
         f = getFutex(this, ramAddress);
 
         if (!f) {
-            f = allocFutex(this, ramAddress, expireTime);
+            // Fresh WAIT. Mirror the serialization the 64-bit futex path
+            // already uses (791c6e59 / 5b25df22 / cbf36b367), which the
+            // 32-bit path never received: check the word first, then --
+            // under gPendingWakeMutex, the bucket lock the WAKE side holds
+            // across its whole scan and record -- either consume a pending
+            // wake a racing WAKE recorded when it found nobody registered,
+            // or register our slot so a later WAKE is guaranteed to see it.
+            // The pending bridge is what saves the no-word-change alert
+            // futex (Wine's NtWaitForAlertByThreadId: the word is 0 on both
+            // the WAIT and WAKE side, so neither the word recheck below nor
+            // a wake-flag can ever fire for a wake that lands before the
+            // waiter parks; without it the thread hangs forever). Consuming
+            // yields a spurious EWOULDBLOCK, which is always legal: the
+            // caller re-checks its own state and waits again if needed.
+            if (memory->readd(addr) != value) {
+                return -K_EWOULDBLOCK;
+            }
+            {
+                std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+                if (consumePendingWakeLocked(this->process->id, ramAddress)) {
+                    return -K_EWOULDBLOCK;
+                }
+                f = allocFutex(this, ramAddress, expireTime);
+            }
             if (cmd == FUTEX_WAIT_BITSET) {
                 f->mask = val3;
             }
@@ -608,6 +631,12 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
         U32 count = 0;
         //klog_fmt("%x/%x futux wake addr=%x op=%x val=%x ram=%x", id, process->id, addr, op, value, (U32)ramAddress);
         {
+            // Hold the pending-wake bucket lock across the whole scan and
+            // the woke-nobody record so it is atomic against a racing fresh
+            // WAIT (which holds the same lock across consume-pending + slot
+            // registration). Lock order is gPendingWakeMutex -> per-slot
+            // cond, matching the WAIT side and the 64-bit futex path.
+            std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
             for (int i = 0; i < MAX_FUTEXES && count < value; i++) {
                 if (!system_futex[i].thread) {
                     continue;
@@ -619,16 +648,33 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
                 bool processCheck = (!isPrivate || system_futex[i].thread->process->id == this->process->id);
                 bool addressCheck = system_futex[i].address == ramAddress;
                 bool maskCheck = ((cmd != FUTEX_WAKE_BITSET) || (system_futex[i].mask & val3));
-                bool waiting = system_futex[i].waiting; // there is a small gap when waiting on a futex between creating the futex and getting the lock for this to be false
                 if (processCheck && addressCheck && !system_futex[i].wake &&
                 !system_futex[i].piWaiter && !system_futex[i].requeuePiWaiter && maskCheck) {
-                    if (!waiting) {
-                        continue;
-                    }
+                    // A registered slot is a live waiter even when its
+                    // `waiting` flag is still false: the flag is only set
+                    // after the WAIT path re-takes this cond to park. The
+                    // old code skipped such slots, losing the wake -- the
+                    // waiter then re-checked the (unchanged) word, parked,
+                    // and never woke (the 32-bit startup hang). Flag it
+                    // unconditionally, as the 64-bit path does; the WAIT
+                    // path re-checks `wake` under this same cond before
+                    // blocking, and the signal is a harmless no-op if
+                    // nobody is on the condition yet.
                     system_futex[i].wake = true;
                     BOXEDWINE_CONDITION_SIGNAL(system_futex[i].cond);
                     count++;
                 }
+            }
+            // Woke nobody: if this was a no-word-change alert WAKE racing
+            // ahead of its waiter, the signal would be lost. Remember it so
+            // the imminent WAIT consumes it instead of parking (see
+            // consumePendingWakeLocked / pendingWake above). Only a plain
+            // FUTEX_WAKE qualifies -- BITSET wakes carry a mask the simple
+            // pending record cannot represent. Still under pendingLk, so
+            // this record cannot slip past a concurrent WAIT's
+            // consume + register.
+            if (count == 0 && cmd == FUTEX_WAKE) {
+                recordPendingWakeLocked(this->process->id, ramAddress);
             }
         }
         //klog_fmt("    %x/%x futux wake finished addr=%x op=%x val=%x ram=%x count=%d", id, process->id, addr, op, value, (U32)ramAddress, count);
