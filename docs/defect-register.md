@@ -1737,6 +1737,61 @@ do not close the entry until they land.
   (`run-native.log`,
   `run-native-direct-unmodified.log`).
 
+  Correction (2026-11-01, FD-67 lane, branch
+  `lane-fd67`): the mechanism above is not the
+  operative cause of the harness abort, measured on
+  the unmodified composed tree (evidence:
+  `test-results/fd67/`). The guard's three fixtures
+  (`heapTexelAtomic`, `heapTexelAtomicCopy`,
+  `heapTexelAtomicTwo` in
+  `tools/vkd3d/tests/vk64_native_test.cpp`) — and
+  the hand-authored JS fixtures they transcribe
+  (`testdata/spirv/atomic-texel-heap{,-copy,-twoarrays}.spv`)
+  — declare an `OpEntryPoint` of GLCompute
+  (model 5). `vk64AuditSpirv` accepts compute-only
+  modules at creation by deliberate, documented
+  policy (the capability and storage checks protect
+  the graphics translation path; a compute module
+  the tier cannot serve fails later at pipeline
+  translation, permanently and counted) and returns
+  before the R15 section is reached: an instrumented
+  build shows no audit verdict at all for the
+  guard's first module call, and the acceptance is
+  counted as `spirv-compute-entry` — matching this
+  entry's "verdict 0, no capability rejection
+  counted" measurement. On the graphics path the
+  recorded class IS refused at creation by name
+  today, with no bridge change: a probe through the
+  harness's own create-module path on the pristine
+  tree returns VK_ERROR_FEATURE_NOT_PRESENT with
+  `spirv-capability:RuntimeDescriptorArray` +1 for
+  (a) the captured module itself
+  (`testdata/spirv/godot-fs-atomic-texel-heap.spv`,
+  entry model 4 — the FD-62 instance is a fragment
+  module), and (b) each hand-authored fixture with
+  its entry-model word flipped 5 -> 4, the only word
+  changed; as authored (model 5) each returns
+  VK_SUCCESS. The refusal runs through the
+  capability path: texel formation fails the
+  per-chain servability check closed, so no array is
+  servable, the 5302 strip does not apply, and the
+  capability is refused by name; no consultation of
+  `texelAtomicByVar` is needed for the graphics
+  outcome, and refusing the class on the compute
+  path as well would override the compute-accept
+  policy and change verdicts FD-62's hardening
+  promised to leave unchanged. Disposition: this
+  entry's closing terms reduce to their second
+  branch — FD-62's native guard is corrected to the
+  implemented attribution (its bridge-level fixtures
+  authored as graphics modules, as FD-16's refusal
+  fixtures already are: entry model 4), after which
+  the guard passes as written and `run-native.py`
+  completes end to end; the bridge requires no
+  change. This entry stays open until that guard
+  correction lands and the harness completes.
+  Record: `docs/reports/fd67-guard-attribution-20261101.md`.
+
 - **FD-68 — A module that declares
   RuntimeDescriptorArray but carries only
   buffer-content runtime arrays is still rejected by
@@ -1752,6 +1807,34 @@ do not close the entry until they land.
   terms: a captured instance, or an audit change that
   admits the case with the mirror updated in step and
   a unit fixture proving it.
+
+- **FD-69 (provisional number) — One FD-16 native
+  guard fixture is a compute module, so its
+  bridge-level assertions pass through the
+  compute-accept path instead of the R15a admission
+  they narrate.** *(Low — test attribution; open.
+  Found by the FD-67 lane, 2026-11-01.)* The FD-16
+  guard's multi-signature fixture
+  (`heapTexelMultisig` in
+  `tools/vkd3d/tests/vk64_native_test.cpp`) declares
+  an `OpEntryPoint` of GLCompute (model 5); its
+  assertions (module admitted, SampledBuffer and
+  RuntimeDescriptorArray counts unchanged) are
+  satisfied by `vk64AuditSpirv`'s compute-accept
+  return, not by the R15a specialization admission
+  its PASS line describes. The class's servability
+  is genuinely proven on the JS mirror
+  (`spirvfix-texel-heap` suite) and by the bridge
+  classifier over the guard's graphics fixtures, so
+  no product behaviour is mis-stated — only the
+  native guard's attribution for this one fixture
+  is vacuous. Closing terms: the fixture is
+  re-authored as a graphics module (or the guard's
+  claim narrowed to the classifier level) in the
+  same guard-correction pass that closes FD-67,
+  and the guard then passes with the audit's R15
+  section demonstrably reached. Evidence:
+  `test-results/fd67/`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
