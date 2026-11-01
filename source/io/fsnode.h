@@ -71,7 +71,11 @@ public:
     std::weak_ptr<FsNode> getParent() {return this->parent;}
 
     void removeOpenNode(FsOpenNode* node);
-    void removeNodeFromParent();
+    // notify=false detaches silently: a rename moves a node between
+    // parents without deleting it, and the only notifications a rename
+    // may produce are the move pair (and IN_MOVE_SELF) that
+    // KInotify::notifyRenamed issues.
+    void removeNodeFromParent(bool notify = true);
 
     BString path; 
     BString nativePath;
@@ -95,7 +99,7 @@ public:
     std::shared_ptr<FsNode> getChildByNameIgnoreCase(BString name);
 
     U32 getChildCount();
-    void addChild(std::shared_ptr<FsNode> node);
+    void addChild(std::shared_ptr<FsNode> node, bool notify = true);
     void removeChildByName(BString name);
     void getAllChildren(std::vector<std::shared_ptr<FsNode> > & results);
 

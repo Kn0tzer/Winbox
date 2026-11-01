@@ -4132,20 +4132,20 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 }
 
 U32 KProcess::inotify_init1(U32 flags) {
-    // REJECTED-LOUDLY: the inotify implementation is not safe to expose to
-    // guests yet. As merged it (a) reported a nonzero len for nameless
-    // events, desynchronizing the reader's record walk (the guest
-    // wineserver dropped real change events after printing "no inode
-    // matches"), (b) reported IN_CREATE for files that already existed
-    // when a directory's children were first loaded, and (c) still parks
-    // a Wine process that waits on directory-change notifications during
-    // application startup even with (a) and (b) fixed, in a way the
-    // synthetic syscall tests do not reproduce. Guests that get ENOSYS
-    // here use their polling fallbacks, which is the behavior the site
-    // shipped with until 2026-10-25. The KInotify machinery stays in the
-    // tree for the day its event semantics are proven against a real
-    // consumer; the guest-visible entry point refuses until then.
-    return -K_ENOSYS;
+    // ENABLED (FD-38): the event semantics are fixed and pinned by
+    // the inotify tests, and the enablement park that kept this gate
+    // closed is fixed at its source. The park was a lock-order
+    // deadlock, not an event problem: a poll scan probes readiness
+    // while holding the polling thread's poll condition, and the
+    // inotify notify sweep signals poll conditions while holding the
+    // instance wait condition, so the readiness probe must not take
+    // the instance wait condition -- KInotify::isReadReady is
+    // lock-free over an atomic mirror of the queue state, and
+    // testInotifyPollNotifyStress pins the composition under stress
+    // (its pre-fix run wedges with the two stacks crossed in
+    // KInotify::sweep / KInotify::isReadReady). The site-rig consumer
+    // proof for this enablement -- the Chromium session starting and
+    // presenting with delivery live -- is recorded with FD-38.
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
     KInotify::registerInstance(o);
@@ -4165,7 +4165,7 @@ U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
         return -K_EBADF;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, (mask & K_IN_DONT_FOLLOW) == 0);
     if (!node) {
         return -K_ENOENT;
     }

@@ -1,0 +1,47 @@
+[New LWP 3317033]
+[New LWP 3317032]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+0x0000e51670431d6c in __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=3317032, futex_word=0xe5166d7d6e30) at ./nptl/futex-internal.c:57
+
+warning: 57	./nptl/futex-internal.c: No such file or directory
+
+Thread 3 (Thread 0xe5166d7d6d60 (LWP 3317032) "boxedwine"):
+#0  futex_wait (private=0, expected=2, futex_word=0xc5840261fbd8) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0xc5840261fbd8, private=private@entry=0) at ./nptl/lowlevellock.c:49
+#2  0x0000e51670438b44 in lll_mutex_lock_optimized (mutex=0xc5840261fbd8) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0xc5840261fbd8) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000c583c46f9cf0 in KInotify::isReadReady() ()
+#5  0x0000c583c44aaf14 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<testInotifyPollNotifyStress()::{lambda()#1}> > >::_M_run() ()
+#6  0x0000e51670881ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000e5167043582c in start_thread (arg=0xe51670a65760) at ./nptl/pthread_create.c:447
+#8  0x0000e5167049bb4c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 2 (Thread 0xe5166cfc6d60 (LWP 3317033) "boxedwine"):
+#0  futex_wait (private=0, expected=2, futex_word=0xc5840261d788) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0xc5840261d788, private=private@entry=0) at ./nptl/lowlevellock.c:49
+#2  0x0000e51670438b44 in lll_mutex_lock_optimized (mutex=0xc5840261d788) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0xc5840261d788) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000c583c47b7c78 in BoxedWineCondition::signalAll() ()
+#5  0x0000c583c46fba84 in KInotify::sweep(FsNode*, FsNode*, unsigned int, BString const&, bool, unsigned int, unsigned int) ()
+#6  0x0000c583c46fc4b4 in KInotify::sweepAll(FsNode*, FsNode*, unsigned int, BString const&, bool, unsigned int, unsigned int) ()
+#7  0x0000c583c46fcc08 in KInotify::fileEvent(FsNode*, unsigned int) ()
+#8  0x0000c583c44aae84 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<testInotifyPollNotifyStress()::{lambda()#2}> > >::_M_run() ()
+#9  0x0000e51670881ae0 in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#10 0x0000e5167043582c in start_thread (arg=0xe51670a65760) at ./nptl/pthread_create.c:447
+#11 0x0000e5167049bb4c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone3.S:76
+
+Thread 1 (Thread 0xe51670a65020 (LWP 3317031) "boxedwine"):
+#0  0x0000e51670431d6c in __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=3317032, futex_word=0xe5166d7d6e30) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=128, abstime=0x0, clockid=0, expected=3317032, futex_word=0xe5166d7d6e30) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xe5166d7d6e30, expected=3317032, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#3  0x0000e51670437218 in __pthread_clockjoin_ex (threadid=251884488977760, thread_return=0x0, clockid=0, abstime=0x0, block=<optimized out>) at ./nptl/pthread_join_common.c:102
+#4  0x0000e51670881bc4 in std::thread::join() () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#5  0x0000c583c44ac9bc in testInotifyPollNotifyStress() ()
+#6  0x0000c583c445f558 in testRunParallel(TestEntry const*, unsigned long, unsigned int)::{lambda(unsigned int, unsigned long)#1}::operator()(unsigned int, unsigned long) const ()
+#7  0x0000c583c445feb0 in testRunParallel(TestEntry const*, unsigned long, unsigned int) ()
+#8  0x0000c583c44590a0 in runTestTests(unsigned long, unsigned long, unsigned int) ()
+#9  0x0000e516703d84c4 in __libc_start_call_main (main=main@entry=0xc583c440a400 <main>, argc=argc@entry=4, argv=argv@entry=0xfffff156c858) at ../sysdeps/nptl/libc_start_call_main.h:58
+#10 0x0000e516703d8598 in __libc_start_main_impl (main=0xc583c440a400 <main>, argc=4, argv=0xfffff156c858, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=<optimized out>) at ../csu/libc-start.c:360
+#11 0x0000c583c44104b0 in _start ()
+[Inferior 1 (process 3317031) detached]

@@ -109,6 +109,7 @@ void testAsyncSigio();
 void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
+void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
 void testCopyFileRange64Syscall();
@@ -874,6 +875,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
+    {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},

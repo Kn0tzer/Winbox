@@ -29,6 +29,8 @@
 
 #include "kobject.h"
 
+#include <atomic>
+
 class FsNode;
 
 // inotify event mask bits (Linux values; the record layout struct
@@ -125,6 +127,12 @@ private:
     U32 nextWatchDescriptor = 1;
     std::deque<PendingEvent> pendingEvents;
     bool overflowPending = false;
+    // Lock-free mirror of !pendingEvents.empty() for
+    // isReadReady(); maintained under waitCond at every queue
+    // mutation (set in queueLocked, cleared when readNative
+    // drains the queue). See isReadReady() in kinotify.cpp
+    // for the lock-order reason it exists.
+    std::atomic<bool> pendingNonEmpty{false};
 
     static std::vector<std::weak_ptr<KInotify>> instances;
     static BOXEDWINE_MUTEX instancesMutex;

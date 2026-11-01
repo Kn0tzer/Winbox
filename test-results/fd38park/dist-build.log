@@ -1,0 +1,4 @@
+[bw64-build] waiting for probes to drain (build lock not held)
+[bw64-build] lock acquired (pid=3361078)
+Downloading pinned runtime assets: https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261026/browser-runtime-20261026.tar
+Runtime asset download failed (404): https://github.com/Kn0tzer/Boxedwine64/releases/download/runtime-assets-20261026/browser-runtime-20261026.tar; use --local for an archived copy

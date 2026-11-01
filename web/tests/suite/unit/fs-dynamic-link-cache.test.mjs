@@ -68,7 +68,7 @@ struct FsNode:std::enable_shared_from_this<FsNode>{
  bool isLink(){return dynamic||!link.empty();}
  BString getLink(){return link;}
  std::shared_ptr<FsNode> getChildByName(const BString& name){return childrenByName[name];}
- void addChild(std::shared_ptr<FsNode> node);
+ void addChild(std::shared_ptr<FsNode> node, bool notify = true);
  void removeChildByName(BString name);
 };
 struct Fs {

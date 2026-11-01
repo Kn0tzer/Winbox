@@ -52,7 +52,7 @@ bool FsNode::canWrite() {
     return (getMode() & K__S_IWRITE)!=0;
 }
 
-void FsNode::removeNodeFromParent() {
+void FsNode::removeNodeFromParent(bool notify) {
     this->removedFromParent.store(true, std::memory_order_release);
     BString oldPath = this->path;
     std::shared_ptr<FsNode> parent = this->getParent().lock();
@@ -63,7 +63,9 @@ void FsNode::removeNodeFromParent() {
     }
     // Invalidate this path and any descendant paths (no node lock held here).
     Fs::invalidatePathCachePrefix(oldPath);
-    KInotify::notifyNodeRemoved(parent.get(), this);
+    if (notify) {
+        KInotify::notifyNodeRemoved(parent.get(), this);
+    }
 }
 
 void FsNode::loadChildren() {
@@ -177,14 +179,14 @@ U32 FsNode::getChildCount() {
     return (U32)this->childrenByName.size();
 }
 
-void FsNode::addChild(std::shared_ptr<FsNode> node) {
+void FsNode::addChild(std::shared_ptr<FsNode> node, bool notify) {
     this->loadChildren();
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
     this->childrenByName.set(node->name, node);
     node->removedFromParent.store(false, std::memory_order_release);
     this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 #ifdef BW64_HAS_KINOTIFY
-    if (!this->childrenLoadInProgress) {
+    if (notify && !this->childrenLoadInProgress) {
         KInotify::notifyChildAdded(this, node.get());
     }
 #endif
