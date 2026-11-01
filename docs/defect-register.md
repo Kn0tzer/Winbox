@@ -2041,7 +2041,8 @@ do not close the entry until they land.
 - **FD-73 — The pinned runtime-assets release
   archive disagrees with the manifest's file pins
   for both Wine archives, so a fresh checkout
-  cannot bootstrap.** *(Low — masked in every tree
+  cannot bootstrap. CLOSED 2026-11-01 — see
+  CL-26.** *(Low — masked in every tree
   that already carries the files; found by the
   FD-62 serving lane, 2026-11-01, during its
   worktree bootstrap)* `tools/browser/bootstrap.py
@@ -2782,3 +2783,57 @@ its lane and is not a defect, for the stated reason:
   follows FD-53's CL-24; this branch's register
   predates that merge, so the composing merge
   places CL-25 after CL-24.)
+
+- **CL-26 — The pinned runtime-assets release
+  archive disagreed with the manifest's file pins
+  for both Wine archives, so a fresh checkout
+  could not bootstrap (was FD-73).** Fixed in
+  `cc2e3a220` on `lane-fd73`. The retained archive
+  (built 2026-10-30) matched the manifest's archive
+  pin but carried the pre-FD-40/FD-01/FD-02 Wine
+  builds while the compositions re-pinned the
+  files — member census: its wine64.zip differs
+  from the pinned zip in exactly five members
+  (stock `win32u.so` `5dac5821...` vs the FD-01
+  patch `bffd9036...`; `win32u.dll` `643b7623...`
+  vs the FD-40 stamp `49b87438...`; the
+  pre-restage Vulkan shim `ae96105b...` vs
+  `03edc142...` under its three names) and its
+  wine32.zip in exactly the four win32u copies
+  (`ca5dd9c5...` vs the FD-02 patch
+  `b2d9d135...`). The pins are the shipped bytes
+  (live and rollback trees carry them
+  bit-identically), so the archive was regenerated
+  from the pinned files rather than the manifest
+  re-pinned to the archive: every staged file was
+  verified against its file pin before packing,
+  and the new archive
+  `browser-runtime-20261101.tar` (512,829,440 B,
+  sha256 `23e8c861...`) is retained under
+  `/home/ubuntu/backups/winbox-runtime-assets-20261101/`
+  (the 20261026 archive untouched).
+  `runtime-assets.json` now describes release
+  `runtime-assets-20261101` with the 13 file pins
+  unchanged; the GitHub upload remains user-gated.
+  A new completeness check — `retained
+  runtime-assets archive agrees with the file pins
+  (FD-73)` — verifies the retained archive end to
+  end (its own pin, member set, every member's
+  size/SHA256) inside `bootstrap.py --check` and
+  the `build.mjs` gate, so a future re-pin that
+  leaves the archive stale fails the standard
+  verification. Proof: the defect reproduces from
+  a clean worktree (`--local` fails on
+  `web/runtime/wine64.zip`, nothing installed);
+  the new check fails under the previous manifest
+  naming that member's drift and passes on the
+  regenerated archive; in a fresh worktree with
+  none of the 13 files present, `--local` restores
+  and verifies all 13 and `--check` passes with
+  the completeness checker at 0 failures.
+  Evidence: `test-results/fd73-20261101/`
+  (`archive-audit-old.txt`, `wine-census-diff.txt`,
+  `negative-check-old-manifest.txt`,
+  `cleanroom-local.log`, `cleanroom-check.log`),
+  record
+  `docs/reports/fd73-runtime-assets-archive-20261101.md`.
