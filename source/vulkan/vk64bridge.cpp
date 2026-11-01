@@ -1582,7 +1582,24 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             if (in.op == 41 || in.op == 42 || in.op == 43 || in.op == 44 ||
                 in.op == 45 || in.op == 46 || in.op == 50 || in.op == 51 ||
                 in.op == 52) continue;
-            for (U32 k = in.fv; k < in.n; k++) live.insert(in.w[k]);
+            // OpTypeInt / OpTypeFloat carry only literals (width,
+            // signedness) after their result id -- never references.
+            if (in.op == 21 || in.op == 22) continue;
+            // The memory-access family (OpLoad / OpStore / OpCopyMemory /
+            // OpCopyMemorySized) appends a MemoryAccess operand group --
+            // a literal mask word, an Aligned literal, scope ids -- after
+            // its pointer/object/size ids; those trailing words are not
+            // type references (mirrors the spirvfix orphan sweep: an
+            // OpLoad Aligned 16 kept a specialized-away descriptor
+            // runtime-array type alive in the captured Godot modules
+            // godot-vs-4000ddfd359efb05 / godot-vs-ebac7e2d70a20d62).
+            // The group's scope ids name constants, never the array /
+            // pointer types this sweep deletes.
+            U32 kend = in.n;
+            if (in.op == 61) kend = std::min(kend, in.fv + 1);
+            else if (in.op == 62 || in.op == 63) kend = std::min(kend, in.fv + 2);
+            else if (in.op == 64) kend = std::min(kend, in.fv + 3);
+            for (U32 k = in.fv; k < kend; k++) live.insert(in.w[k]);
         }
         for (const Insn& in : m.insns) {
             if (removed.count(&in) || dead.count(&in)) continue;

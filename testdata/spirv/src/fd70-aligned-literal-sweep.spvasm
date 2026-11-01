@@ -1,0 +1,94 @@
+; FD-70 regression fixture: a servable descriptor runtime array (sampled
+; images, one push-constant index signature) in a module that also loads
+; a storage-buffer float with an OpLoad Aligned literal NUMERICALLY EQUAL
+; to the runtime-array type's id (%_runtimearr below is id 32, and the
+; load carries Aligned 32; the %pad constants exist only to land the
+; array type on that id). The descriptor-array orphan sweep must not
+; count the MemoryAccess operand group's words (mask, Aligned literal,
+; scope ids) as id references: doing so kept the specialized-away array
+; type alive in the captured Godot modules godot-vs-4000ddfd359efb05 and
+; godot-vs-ebac7e2d70a20d62, blocked the RuntimeDescriptorArray
+; capability strip in spirvfix, and made the bridge audit refuse the
+; capability for a module whose only real blocker was elsewhere.
+OpCapability Shader
+OpCapability RuntimeDescriptorArray
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %outColor
+OpExecutionMode %main OriginUpperLeft
+OpName %main "main"
+OpName %registers "registers"
+OpName %RootConstants "RootConstants"
+OpName %heap "heap"
+OpName %data "data"
+OpName %DataBlock "DataBlock"
+OpName %sampler "sampler"
+OpName %outColor "outColor"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpDecorate %heap DescriptorSet 0
+OpDecorate %heap Binding 0
+OpDecorate %DataBlock Block
+OpMemberDecorate %DataBlock 0 Offset 0
+OpDecorate %data DescriptorSet 0
+OpDecorate %data Binding 1
+OpDecorate %data NonWritable
+OpDecorate %sampler DescriptorSet 0
+OpDecorate %sampler Binding 2
+OpDecorate %outColor Location 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%uint = OpTypeInt 32 0
+%v4float = OpTypeVector %float 4
+%image = OpTypeImage %float 2D 0 0 0 1 Unknown
+%sampled = OpTypeSampledImage %image
+%samplerTy = OpTypeSampler
+%RootConstants = OpTypeStruct %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%DataBlock = OpTypeStruct %float
+%_ptr_StorageBuffer_DataBlock = OpTypePointer StorageBuffer %DataBlock
+%data = OpVariable %_ptr_StorageBuffer_DataBlock StorageBuffer
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+%pad0 = OpConstant %uint 100
+%pad1 = OpConstant %uint 101
+%pad2 = OpConstant %uint 102
+%pad3 = OpConstant %uint 103
+%pad4 = OpConstant %uint 104
+%pad5 = OpConstant %uint 105
+%pad6 = OpConstant %uint 106
+%pad7 = OpConstant %uint 107
+%pad8 = OpConstant %uint 108
+%pad9 = OpConstant %uint 109
+%pad10 = OpConstant %uint 110
+%pad11 = OpConstant %uint 111
+%_runtimearr = OpTypeRuntimeArray %image
+%_ptr_UniformConstant__runtimearr = OpTypePointer UniformConstant %_runtimearr
+%heap = OpVariable %_ptr_UniformConstant__runtimearr UniformConstant
+%_ptr_UniformConstant_image = OpTypePointer UniformConstant %image
+%_ptr_UniformConstant_samplerTy = OpTypePointer UniformConstant %samplerTy
+%sampler = OpVariable %_ptr_UniformConstant_samplerTy UniformConstant
+%outColor = OpVariable %_ptr_Output_v4float Output
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%_ptr_StorageBuffer_float = OpTypePointer StorageBuffer %float
+%float_0 = OpConstant %float 0
+%uint_0 = OpConstant %uint 0
+%coord = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%idxp = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%idx = OpLoad %uint %idxp
+%elem = OpAccessChain %_ptr_UniformConstant_image %heap %idx
+%img = OpLoad %image %elem
+%smp = OpLoad %samplerTy %sampler
+%simg = OpSampledImage %sampled %img %smp
+%tex = OpImageSampleImplicitLod %v4float %simg %coord
+%dp = OpAccessChain %_ptr_StorageBuffer_float %data %uint_0
+%dv = OpLoad %float %dp Aligned 32
+%tx = OpCompositeExtract %float %tex 0
+%sum = OpFAdd %float %tx %dv
+%res = OpCompositeInsert %v4float %sum %tex 0
+OpStore %outColor %res
+OpReturn
+OpFunctionEnd

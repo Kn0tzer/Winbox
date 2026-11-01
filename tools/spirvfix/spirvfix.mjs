@@ -4618,8 +4618,31 @@ export function specializeDescriptorArrays(mod, log) {
       if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
           ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 ||
           ins.op === 52) continue;
+      // OpTypeInt / OpTypeFloat carry only literals (width, signedness)
+      // after their result id -- never references, for the same reason.
+      if (ins.op === 21 || ins.op === 22) continue;
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+      // The memory-access family (OpLoad / OpStore / OpCopyMemory /
+      // OpCopyMemorySized) appends a MemoryAccess operand group -- a
+      // literal mask word, an Aligned literal, scope ids -- after its
+      // pointer/object/size ids. Those trailing words are not type
+      // references either: counting them lets an Aligned literal equal
+      // to a dead type's id keep that type alive, the same failure
+      // shape as the constant family above (captured Godot modules
+      // godot-vs-4000ddfd359efb05 and godot-vs-ebac7e2d70a20d62: an
+      // OpLoad Aligned 16 through a root-descriptor pointer kept the
+      // specialized-away descriptor runtime-array type %16 alive, so
+      // the capability strip never ran and the post-specialization
+      // texel conversion still saw the image type as array-owned).
+      // The group's scope ids name constants, never the array /
+      // pointer types this sweep deletes, so bounding the scan at the
+      // group start loses no real reference. Mirrored in the bridge
+      // audit's skip5302 simulation.
+      let end = ins.words.length;
+      if (ins.op === Op.Load) end = Math.min(end, start + 1);
+      else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
+      else if (ins.op === 64) end = Math.min(end, start + 3);
+      for (let k = start; k < end; k++) live.add(ins.words[k]);
     }
     const dead = new Set();
     for (const ins of mod.insns) {

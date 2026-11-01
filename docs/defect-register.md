@@ -1663,6 +1663,20 @@ do not close the entry until they land.
   entry stays open on FD-70 + FD-72 and the
   downstream submit/swapchain behaviour.
 
+  FD-70 lane update, 2026-11-01: FD-70's pair is
+  proven genuinely demanded on the current build
+  (its absence from the FD-62/FD-75 runs was their
+  1,500 s deadlines, not renderer state); two of
+  its refusal layers were a sweep literal-reference
+  defect, fixed on lane-fd70 with guards in both
+  mirrors (the pair's RuntimeDescriptorArray
+  refusals: 3 -> 0 in vivo). FD-70 stays open on
+  its restated term (used-form physical addressing
+  with data-dependent integer offsets -- see its
+  entry). This entry stays open on FD-70 + FD-72
+  and the downstream submit/swapchain behaviour.
+  Record: `docs/reports/fd70-second-wave-20261101.md`.
+
 - **FD-61 — The shader-capability audit rejected
   modules whose descriptor arrays are servable,
   because buffer-content runtime arrays survived its
@@ -1907,6 +1921,123 @@ do not close the entry until they land.
   used physical addressing, or proof — once FD-62's first wave is
   served — that these modules are never reached on the demo path.
   Record: docs/reports/fd55-pipeline-creation-20261101.md.
+
+  **Update 2026-11-01 (FD-70 lane, branch
+  `lane-fd70`): the pair is genuinely demanded; two
+  of its three refusal layers were a sweep defect,
+  now fixed; the entry stays open on the restated
+  physical-addressing term.** The artifact
+  hypothesis is disproven in vivo: on the current
+  integration build (38085a142, wasm 04e73f59 -- the
+  live bytes), with FD-62 served and FD-75's
+  creation refusal active, a standard demo-path run
+  submitted both modules and saw them refused --
+  the 23,440-byte module at 2,556.7 s, the
+  16,304-byte module at 2,557.6 s and 2,558.5 s,
+  five Create(Graphics)PipelineState 0x80004005 in
+  total (two for FD-72's module, three for this
+  pair), diag2's exact shape (evidence
+  `test-results/fd70/cap-long1/`). The pair's
+  absence from the FD-62/FD-75 runs is explained by
+  those runs' 1,500 s deadlines ending before the
+  engine's scene-shader wave arrives, not by
+  renderer state. Fixtures:
+  `testdata/spirv/godot-vs-4000ddfd359efb05.spv`
+  (23,440 B, djb2 28a2394720432fda) and
+  `testdata/spirv/godot-vs-ebac7e2d70a20d62.spv`
+  (16,304 B, djb2 3eccbc1e60e9f7a4), harvested from
+  the run's vkd3d dumps and re-verified against the
+  refusal log's size+hash.
+
+  The filed decomposition was wrong about which
+  array gates the capability. The descriptor image
+  array (set 2 / binding 0) IS R15a-servable in
+  both modules (one load signature each) and
+  spirvfix specializes it. The
+  RuntimeDescriptorArray co-refusal came from the
+  descriptor-array orphan sweep's liveness scan, in
+  both mirrors: the scan counts every non-constant
+  operand word as an id reference, and each module
+  carries exactly one root-pointer OpLoad whose
+  MemoryAccess group holds the Aligned literal 16
+  -- numerically the descriptor array type's id
+  (%16). The literal kept the specialized-away
+  type, and through it its pointer type, alive
+  forever, so the sweep never collected it:
+  spirvfix kept capability 5302 over the module,
+  and the bridge audit's skip5302 simulation
+  refused the module for it. The same false
+  survival gated the SampledBuffer layer: the
+  post-specialization texel pass saw the image type
+  as still array-owned and declined its clone, so
+  the tier kept SampledBuffer and the translator
+  rejected that capability first. Proven by a
+  keeper census run under the sweeps' exact rules:
+  the only words keeping %16 alive are its pointer
+  type's definition and the load's Aligned word;
+  three control modules show no such keeper.
+
+  Fix (this branch, both mirrors): the sweeps'
+  liveness scans now bound the MemoryAccess operand
+  group (OpLoad / OpStore / OpCopyMemory /
+  OpCopyMemorySized -- group contents name
+  constants, never the types the sweep deletes) and
+  skip the literal-only OpTypeInt / OpTypeFloat
+  words. Proof: JS unit `spirvfix-fd70.test.mjs`
+  (7/7; 5/7 red with the JS fix reverted), native
+  guard in `vk64_native_test.cpp` (admits the
+  colliding and twin fixtures, keeps the unservable
+  negative's named refusal; the harness aborts at
+  the guard with the bridge fix reverted); full JS
+  suite 354/0; run-native 56 PASS; corpus
+  byte-check over all 145 pre-existing
+  `testdata/spirv` fixtures -- only this pair's
+  spirvfix output changed. In vivo on the fixed
+  build (wasm 16f43514; evidence
+  `test-results/fd70/cap-long2/`): the pair was
+  refused again at 2,088.3 s / 2,089.3 s /
+  2,090.4 s with `spirv-capability-unknown:5347` as
+  the ONLY reason -- RuntimeDescriptorArray refusal
+  count 3 -> 0; FD-72's module refused twice by
+  name as before; five E_FAILs, unchanged.
+
+  What remains, stated exactly: capability 5347 in
+  its used form, over root-descriptor loads whose
+  addresses are computed in integer space --
+  push-constant base VA plus a data-dependent
+  offset (instance-derived index x element stride +
+  field offset, via OpIAddCarry), bitcast to a
+  physical pointer for a single load. R15b's root
+  cone admits only a zero-addend push-block root
+  with the element index in the access chain and
+  declines this form by name (`moduleServable`
+  false on both fixtures); one of each module's
+  address materializations does match the R15b
+  form, but the verdict is per-module and the
+  majority do not. With the false layers removed,
+  spirvfix serves everything else in the modules
+  (the served outputs pass spirv-val under
+  vulkan1.1), and the vendored translator's
+  remaining rejection of the served outputs is the
+  capability itself:
+  `UnsupportedCapability(PhysicalStorageBufferAddresses)`
+  -- the same shape as FD-72's boundary. No local
+  rewrite is sound: serving this form means
+  re-rooting a data-dependent byte offset as typed
+  accesses over a byte view of the resolved root
+  buffer, a new serving design across the fixup
+  layer, the bridge's binding form, and the
+  readback story; a partial version would compute
+  on wrong data silently, which is worse than the
+  loud refusal. FD-70 therefore STAYS OPEN.
+  Closing terms, restated: the integer-offset
+  root-addressing serving design (the two fixtures
+  above are its specification), proven on the
+  fixtures through translation in both mirrors and
+  in vivo with the pair's creations succeeding; or
+  an upstream translator change that accepts the
+  capability, re-vendored. Record:
+  `docs/reports/fd70-second-wave-20261101.md`.
 
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
@@ -2319,6 +2450,50 @@ do not close the entry until they land.
   lane, 2026-11-01; numbered FD-75 at composition
   on 2026-11-01 — the number was free on integ.)
 
+- **FD-78 (provisional) — The orphan sweep's
+  literal-reference defect class is fixed only at
+  the operand positions proven on a captured
+  module; the same raw-word liveness idiom survives
+  at sibling positions and in sibling sweeps.
+  *(Low — no captured module is known to be gated
+  by the unfixed positions; filed by the FD-70
+  lane, 2026-11-01. Numbered FD-78 provisionally:
+  FD-76/FD-77 were taken on integration by the
+  FD-12 composition after this branch forked;
+  renumber at composition if the number has
+  moved.)* FD-70's fix teaches the descriptor-array
+  orphan sweep (spirvfix) and its bridge-audit
+  mirror to bound the MemoryAccess operand group
+  and to skip OpTypeInt / OpTypeFloat literal words
+  when scanning for id references. The scan idiom
+  itself — every non-constant operand word counts
+  as a reference — survives unchanged in two
+  sibling sweeps in the fixup layer (the
+  storage-image type prune and the R15b root-cone
+  sweep), and other literal operand positions the
+  operand-aware walker already documents remain
+  unhandled by the fixed sweeps: the ExtInst
+  instruction number, VectorShuffle components,
+  CompositeExtract / CompositeInsert indices,
+  OpSwitch case literals, OpLine words, the leading
+  literals of OpFunction / OpVariable, and the
+  OpArrayLength structure index. The class is
+  proven live in the small: FD-70's first synthetic
+  guard fixture was defeated by the type-width
+  position alone (a width literal 32 equal to the
+  swept type's id) before that position was fixed.
+  Any of the remaining positions can, in a module
+  whose ids align, keep a swept type alive and
+  reproduce FD-70's failure shape — a refusal one
+  layer earlier than the true blocker, or a
+  silently retained capability. Closing terms:
+  route the sweeps' liveness through operand-aware
+  positions (an enumerating sibling of the existing
+  per-op walker) in both mirrors, with a guard
+  fixture per position; or prove per position that
+  no module shape can align it with a swept type
+  id. Evidence: `docs/reports/fd70-second-wave-20261101.md`;
+  `test-results/fd70/` (keeper census).
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
