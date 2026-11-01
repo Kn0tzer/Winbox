@@ -2388,6 +2388,404 @@ export function storageTexelBuffersTo2D(mod, log) {
 
 // --- entry point -------------------------------------------------------------
 /** @param {Uint8Array} bytes @param {{rasterTopology?: number, specOverrides?: {constantID: number, value: Uint8Array}[]}} [options] */
+// --- R12A: texel-pointer storage texel buffers -> storage buffers ----------
+// OpImageTexelPointer has no serving path through the translation stack at
+// all: naga rejects every module containing one (the Image pointer storage
+// class is unsupported on every backend, and a Dim=Buffer image fails even
+// earlier with UnsupportedCapability(ImageBuffer)). But a Dim=Buffer storage
+// image is not a picture: it is a range of guest buffer memory whose texel i
+// sits at byte offset i * texelSize in the bound buffer view, and a variable
+// whose every use flows through texel pointers (loads, stores, and the
+// integer atomics WGSL expresses) is therefore exactly a storage buffer of
+// texels. This rewrite serves that class by eliminating the texel pointers:
+//
+//   * the UniformConstant image variable becomes a StorageBuffer variable
+//     over struct { runtime array of texel } at the same set and binding,
+//     with ArrayStride = the texel byte size, so element i of the array is
+//     texel i of the view, byte for byte;
+//   * each OpImageTexelPointer (pointer form, or value form through an
+//     OpLoad of the image) becomes an OpAccessChain (member 0, coordinate)
+//     into the new variable, keeping the formation's result id -- every
+//     load / store / atomic that consumed the texel pointer keeps its own
+//     instruction, operands and result id, and now lands on the buffer;
+//   * the image loads that fed value-form formations (and the dead image
+//     loads vkd3d emits beside pointer-form formations) are deleted with
+//     the rest of the dead pointer cone.
+//
+// The page tier completes the serving: a shader binding in the storage
+// address space whose guest descriptor is a storage texel buffer view
+// (wire kind 6) binds the view's buffer range as a GPUBuffer and registers
+// it for readback, so the atomics land on the view's bytes in guest
+// memory, never on a texture copy or a dummy buffer.
+//
+// The soundness boundary (the bridge audit mirrors it exactly, in
+// vk64TexelBufferServable / r15::analyzeArrays; anything outside keeps
+// refusing by name):
+//   * the image format's texel is 1, 2 or 4 plain 32-bit components
+//     (R32 / Rg32 / Rgba32 in float / signed / unsigned) -- sub-word and
+//     packed formats have no byte-exact buffer element;
+//   * atomics only on scalar integer texels, and only the ops WGSL
+//     expresses (OpAtomicCompareExchangeWeak is excluded: naga rejects
+//     the opcode itself; float atomics have no WGSL form at all);
+//   * the loaded image value is never consumed except by formations and
+//     dead loads -- a variable that also reads/writes the image as an
+//     image (OpImageRead / OpImageWrite / queries) has two irreconcilable
+//     representations and stays with R12S's refusal;
+//   * the texel pointer never escapes: not stored as a value, not passed
+//     to a call, not selected / phi-merged, not chained further;
+//   * the sample operand is absent or the constant zero (Dim=Buffer is
+//     never multisampled).
+const TEXEL_BUFFER_FORMATS = new Map([
+  [1, 4],   // Rgba32f
+  [3, 1],   // R32f
+  [6, 2],   // Rg32f
+  [21, 4],  // Rgba32i
+  [24, 1],  // R32i
+  [25, 2],  // Rg32i
+  [30, 4],  // Rgba32ui
+  [33, 1],  // R32ui
+  [35, 2],  // Rg32ui
+]);
+const TEXEL_ATOMIC_OPS = new Set([227, 228, 229, 230, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242]);
+// OpTypeImage words: [id, SampledType, Dim, Depth, Arrayed, MS, Sampled,
+// ImageFormat]. Returns the buffer-element shape for a servable storage
+// texel type, or null.
+function texelElementInfo(byId, imageIns) {
+  if (!imageIns || imageIns.op !== Op.TypeImage) return null;
+  if (imageIns.words[2] !== 5 || imageIns.words[6] !== 2) return null; // Dim=Buffer, Sampled=2
+  const channels = TEXEL_BUFFER_FORMATS.get(imageIns.words[7]);
+  if (channels == null) return null;
+  const st = byId.get(imageIns.words[1]);
+  if (!st || (st.op !== Op.TypeInt && st.op !== Op.TypeFloat) || st.words[1] !== 32) return null;
+  return { sampledType: imageIns.words[1], sampledIsInt: st.op === Op.TypeInt, channels, bytes: channels * 4 };
+}
+
+// The texel cone under one root pointer id (a descriptor variable, a
+// specialized clone variable, or one access chain into a descriptor
+// array): every value derived from the root -- image pointers (loads of
+// the image), image values (the loads' results), texel pointers
+// (formations) -- and every use of those values, classified. Shared by
+// the R12A rewrite (root = variable), analyzeDescriptorArrays (root =
+// access chain) and, in mirror, the bridge audit. Formations reached
+// through an image load (value form) are counted separately: the uses
+// analysis in r15PointerUses cannot see them, and before this analysis
+// existed a value-form module classified servable by accident and failed
+// later, quieter, inside the translator.
+export function analyzeTexelCone(mod, byId, rootPtrId, imageTypeId, firstFunc) {
+  const out = {
+    ok: false, reason: null, info: null, formations: 0, valueFormations: 0,
+    atomicWrites: 0, valueAtomicWrites: 0, storeWrites: 0, valueStoreWrites: 0, loads: 0,
+    ptrIds: new Set([rootPtrId]), imgVals: new Set(), texPtrs: new Set(),
+    formationInsns: [], coneInsns: new Set(),
+  };
+  const info = texelElementInfo(byId, byId.get(imageTypeId));
+  if (!info) { out.reason = 'not a 32-bit-component storage texel image type'; return out; }
+  out.info = info;
+  const texForm = new Map(); // texel pointer id -> 'pointer' | 'value' (formation origin)
+  const kindOf = id => out.ptrIds.has(id) ? 'ptr' : out.imgVals.has(id) ? 'img' : out.texPtrs.has(id) ? 'tex' : null;
+  const checkFormation = ins => {
+    const ptTy = byId.get(ins.resultType);
+    if (!ptTy || ptTy.op !== Op.TypePointer) return 'texel pointer result type is not a pointer type';
+    const pointee = ptTy.words[2];
+    if (info.channels === 1) {
+      if (pointee !== info.sampledType) return 'texel pointer pointee is not the image sampled type';
+    } else {
+      const vt = byId.get(pointee);
+      if (!vt || vt.op !== Op.TypeVector || vt.words[1] !== info.sampledType || vt.words[2] !== info.channels)
+        return 'texel pointer pointee is not the format texel vector';
+    }
+    const coordDef = byId.get(ins.words[3]);
+    const coordTy = coordDef && byId.get(coordDef.resultType);
+    if (!coordTy || coordTy.op !== Op.TypeInt || coordTy.words[1] !== 32)
+      return 'texel coordinate is not a 32-bit integer scalar';
+    if (ins.words.length > 4) {
+      const sDef = byId.get(ins.words[4]);
+      if (!sDef || sDef.op !== Op.Constant || sDef.words[2] !== 0)
+        return 'texel sample operand is not the constant zero';
+    }
+    return null;
+  };
+  const bodyStart = firstFunc >= 0 ? firstFunc : mod.insns.length;
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (let ix = bodyStart; ix < mod.insns.length; ix++) {
+      const ins = mod.insns[ix];
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      const tracked = [...out.ptrIds, ...out.imgVals, ...out.texPtrs];
+      for (const id of tracked) {
+        const hit = idOperandUseIndex(byId, ins, id);
+        if (hit < 0) continue;
+        const kind = kindOf(id);
+        if (kind === 'ptr') {
+          if (ins.op === Op.Load && hit === start) {
+            if (ins.resultType !== imageTypeId) { out.reason = 'cone load result is not the texel image type'; return out; }
+            if (!out.imgVals.has(ins.resultId)) { out.imgVals.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          if (ins.op === Op.ImageTexelPointer && hit === start) {
+            const e = checkFormation(ins); if (e) { out.reason = e; return out; }
+            if (!out.texPtrs.has(ins.resultId)) {
+              out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, 'pointer');
+              out.formations++; out.formationInsns.push(ins); out.coneInsns.add(ins); grew = true;
+            }
+            continue;
+          }
+          if (ins.op === Op.CopyObject && hit === start) {
+            if (!out.ptrIds.has(ins.resultId)) { out.ptrIds.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+            if (!out.ptrIds.has(ins.resultId)) { out.ptrIds.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          out.reason = 'image pointer consumed by op ' + ins.op; return out;
+        }
+        if (kind === 'img') {
+          if (ins.op === Op.ImageTexelPointer && hit === start) {
+            const e = checkFormation(ins); if (e) { out.reason = e; return out; }
+            if (!out.texPtrs.has(ins.resultId)) {
+              out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, 'value');
+              out.formations++; out.valueFormations++; out.formationInsns.push(ins); out.coneInsns.add(ins); grew = true;
+            }
+            continue;
+          }
+          if (ins.op === Op.CopyObject && hit === start) {
+            if (!out.imgVals.has(ins.resultId)) { out.imgVals.add(ins.resultId); out.coneInsns.add(ins); grew = true; }
+            continue;
+          }
+          out.reason = 'image value consumed by op ' + ins.op; return out;
+        }
+        // kind === 'tex'
+        if (ins.op === Op.Load && hit === start) { out.loads++; out.coneInsns.add(ins); continue; }
+        if (ins.op === Op.Store) {
+          if (hit !== start) { out.reason = 'texel pointer stored as a value'; return out; }
+          if (!out.coneInsns.has(ins)) {
+            out.coneInsns.add(ins);
+            if (texForm.get(id) === 'value') out.valueStoreWrites++; else out.storeWrites++;
+          }
+          continue;
+        }
+        if (ins.op >= 227 && ins.op <= 244 && hit === start) {
+          if (!TEXEL_ATOMIC_OPS.has(ins.op)) { out.reason = 'atomic op ' + ins.op + ' through a texel pointer is not served'; return out; }
+          if (info.channels !== 1) { out.reason = 'atomic through a multi-component texel pointer'; return out; }
+          if (!info.sampledIsInt) { out.reason = 'atomic through a non-integer texel pointer'; return out; }
+          if (!out.coneInsns.has(ins)) {
+            out.coneInsns.add(ins);
+            if (ins.op === 227) out.loads++;
+            else if (texForm.get(id) === 'value') out.valueAtomicWrites++; else out.atomicWrites++;
+          }
+          continue;
+        }
+        if (ins.op === Op.CopyObject && hit === start) {
+          if (!out.texPtrs.has(ins.resultId)) {
+            out.texPtrs.add(ins.resultId); texForm.set(ins.resultId, texForm.get(id));
+            out.coneInsns.add(ins); grew = true;
+          }
+          continue;
+        }
+        out.reason = 'texel pointer consumed by op ' + ins.op; return out;
+      }
+    }
+  }
+  out.ok = true;
+  return out;
+}
+
+// Orphan sweep for R12A, scoped to what its conversions orphaned: the
+// image types themselves, the texel pointer types the formations
+// carried, and the pointer / array types the cascade strands (a
+// specialized clone's UniformConstant pointer type, the heap's
+// runtime-array type). A Dim=Buffer image type -- or an
+// Image-storage-class pointer type -- that the translator cannot
+// ingest must not survive merely because its declaration does.
+// References from inside the candidate closure do not keep a member
+// alive; a reference from anything outside it (a surviving variable, a
+// function body) does, and the module's refusal stands.
+function sweepTexelOrphans(mod, converted) {
+  const closure = new Set();
+  for (const c of converted) {
+    closure.add(c.imageTypeId);
+    for (const t of c.texPtrTypes) closure.add(t);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const t of mod.insns) {
+      if (t.resultId == null || closure.has(t.resultId)) continue;
+      if (t.op !== Op.TypePointer && t.op !== Op.TypeArray && t.op !== Op.TypeRuntimeArray && t.op !== Op.TypeSampledImage) continue;
+      if (t.words.some(w => closure.has(w))) { closure.add(t.resultId); grew = true; }
+    }
+  }
+  // The R15a orphan sweep's reference discipline: decorations and
+  // names do not reference, header/directive words are literals or
+  // enums, and the constant family's operand words are literal values
+  // (its resultType word still counts).
+  const referencedOutside = id => {
+    for (const ins of mod.insns) {
+      if (ins.resultId != null && closure.has(ins.resultId)) continue;
+      if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
+      if (ins.op === 2 || ins.op === 3 || ins.op === 4 || ins.op === 7 || ins.op === 10 ||
+          ins.op === 14 || ins.op === 15 || ins.op === 16 || ins.op === 17) continue;
+      if (ins.resultType === id) return true;
+      if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+          ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 || ins.op === 52) continue;
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === id) return true;
+    }
+    return false;
+  };
+  let pass = true;
+  while (pass) {
+    pass = false;
+    for (const ins of [...mod.insns]) {
+      if (ins.resultId == null || !closure.has(ins.resultId)) continue;
+      if (referencedOutside(ins.resultId)) continue;
+      const sweptId = ins.resultId;
+      mod.insns = mod.insns.filter(i => i !== ins &&
+        !((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && i.words[0] === sweptId));
+      pass = true;
+    }
+  }
+}
+
+export function texelPointersToStorageBuffers(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const firstFunc = sections(mod).firstFunc;
+  const cands = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || ins.words[2] !== 0) continue; // UniformConstant
+    const ptr = byId.get(ins.words[0]);
+    if (!ptr || ptr.op !== Op.TypePointer) continue;
+    const img = byId.get(ptr.words[2]);
+    if (!img || img.op !== Op.TypeImage) continue;
+    if (!texelElementInfo(byId, img)) continue;
+    cands.push({ varIns: ins, varId: ins.resultId, imageTypeId: img.resultId });
+  }
+  if (!cands.length) return false;
+  const newId = makeIdSource(mod);
+  const findType = (op, eq) => mod.insns.find(i => i.op === op && eq(i))?.resultId ?? null;
+  const addTypes = [], addAnnot = [], addNames = [];
+  let uintTy = findType(Op.TypeInt, i => i.words[1] === 32 && i.words[2] === 0);
+  if (uintTy == null) { uintTy = newId(); addTypes.push({ op: Op.TypeInt, words: [uintTy, 32, 0], resultType: null, resultId: uintTy }); }
+  let zeroC = mod.insns.find(i => i.op === Op.Constant && i.resultType === uintTy && i.words[2] === 0)?.resultId ?? null;
+  if (zeroC == null) { zeroC = newId(); addTypes.push({ op: Op.Constant, words: [uintTy, zeroC, 0], resultType: uintTy, resultId: zeroC }); }
+  const converted = []; // { cone, varId, newVarId, imageTypeId, info }
+  const drop = new Set();
+  for (const cand of cands) {
+    const cone = analyzeTexelCone(mod, byId, cand.varId, cand.imageTypeId, firstFunc);
+    if (!cone.formations) continue; // no texel pointers under this variable: R12S's shape, or nobody's
+    if (!cone.ok) { log.push('spirvfix R12A: storage texel variable %' + cand.varId + ' left unconverted (' + cone.reason + ')'); continue; }
+    const info = cone.info;
+    // Element type: the sampled scalar, or its vector for multi-channel formats.
+    let elemTy = info.sampledType;
+    if (info.channels > 1) {
+      elemTy = findType(Op.TypeVector, i => i.words[1] === info.sampledType && i.words[2] === info.channels);
+      if (elemTy == null) { elemTy = newId(); addTypes.push({ op: Op.TypeVector, words: [elemTy, info.sampledType, info.channels], resultType: null, resultId: elemTy }); }
+    }
+    let raTy = findType(Op.TypeRuntimeArray, i => i.words[1] === elemTy);
+    if (raTy == null) {
+      raTy = newId();
+      addTypes.push({ op: Op.TypeRuntimeArray, words: [raTy, elemTy], resultType: null, resultId: raTy });
+      addAnnot.push({ op: Op.Decorate, words: [raTy, 6, info.bytes], resultType: null, resultId: null }); // ArrayStride
+    }
+    const structTy = newId(), ptrStructTy = newId(), ptrElemTy = newId(), newVarId = newId();
+    addTypes.push({ op: Op.TypeStruct, words: [structTy, raTy], resultType: null, resultId: structTy });
+    addTypes.push({ op: Op.TypePointer, words: [ptrStructTy, 12, structTy], resultType: null, resultId: ptrStructTy }); // StorageBuffer
+    addTypes.push({ op: Op.TypePointer, words: [ptrElemTy, 12, elemTy], resultType: null, resultId: ptrElemTy });
+    // Block (2), not BufferBlock: the variable is in the StorageBuffer
+    // class, whose structs are Block-decorated at every SPIR-V version
+    // this tier ingests (VUID-StandaloneSpirv-OpTypeRuntimeArray-04680;
+    // BufferBlock is the Uniform-class form and invalid past 1.3).
+    addAnnot.push({ op: Op.Decorate, words: [structTy, 2], resultType: null, resultId: null }); // Block
+    addAnnot.push({ op: Op.MemberDecorate, words: [structTy, 0, 35, 0], resultType: null, resultId: null }); // member 0 Offset 0
+    // The new variable takes the old one's decorations (DescriptorSet,
+    // Binding, NonWritable, ...) verbatim, except Coherent: WGSL storage
+    // has no coherence qualifier to express, and naga rejects the
+    // decoration on a global it cannot place (the R15a clone rule).
+    for (const ins of mod.insns) {
+      if (ins.op === Op.Decorate && ins.words[0] === cand.varId) {
+        drop.add(ins);
+        if (ins.words[1] === 23) continue; // Coherent
+        addAnnot.push({ op: Op.Decorate, words: [newVarId, ...ins.words.slice(1)], resultType: null, resultId: null });
+      }
+      if (ins.op === Op.Name && ins.words[0] === cand.varId) {
+        drop.add(ins);
+        addNames.push({ op: Op.Name, words: [newVarId, ...ins.words.slice(1)], resultType: null, resultId: null });
+      }
+    }
+    // Formations become access chains (member 0, texel coordinate).
+    const texPtrTypes = new Set();
+    for (const f of cone.formationInsns) {
+      texPtrTypes.add(f.resultType);
+      const coord = f.words[3];
+      f.op = Op.AccessChain;
+      f.words = [ptrElemTy, f.resultId, newVarId, zeroC, coord];
+      f.resultType = ptrElemTy;
+    }
+    // Copies of a texel pointer keep their result id; their type follows.
+    for (const ins of mod.insns)
+      if (ins.op === Op.CopyObject && cone.texPtrs.has(ins.resultId)) { ins.words[0] = ptrElemTy; ins.resultType = ptrElemTy; }
+    // The variable is replaced in place (globals follow all types in a
+    // valid module, and the new types splice in just before the first
+    // global variable below).
+    const at = mod.insns.indexOf(cand.varIns);
+    mod.insns[at] = { op: Op.Variable, words: [ptrStructTy, newVarId, 12], resultType: ptrStructTy, resultId: newVarId };
+    converted.push({ cone, varId: cand.varId, newVarId, imageTypeId: cand.imageTypeId, info, texPtrTypes });
+    log.push('spirvfix R12A: rewrote storage texel variable %' + cand.varId + ' as storage buffer %' + newVarId +
+      ' (' + cone.formations + ' texel-pointer formation(s) eliminated, ' + (cone.atomicWrites + cone.valueAtomicWrites) +
+      ' atomic(s), texel ' + info.bytes + ' B)');
+  }
+  if (!converted.length) return false;
+  // Dead cone sweep: image loads whose value only fed formations (or
+  // nothing), and the pointer copies / chains behind them, are
+  // unreferenced now. Only instructions the converted cones own are
+  // eligible, and only the pointer/value plumbing ops among them; the
+  // loads, stores and atomics that consumed texel pointers stay.
+  const deadCand = new Set();
+  for (const c of converted) for (const ins of c.cone.coneInsns) {
+    if (ins.resultId == null || c.cone.texPtrs.has(ins.resultId)) continue;
+    if (ins.op === Op.Load || ins.op === Op.CopyObject || ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) deadCand.add(ins);
+  }
+  let swept = true;
+  while (swept) {
+    swept = false;
+    const live = new Map();
+    const byIdNow = new Map();
+    for (const ins of mod.insns) if (ins.resultId != null) byIdNow.set(ins.resultId, ins);
+    for (const ins of mod.insns) {
+      if (drop.has(ins)) continue;
+      for (const id of deadCand) {
+        if (!live.get(id.resultId) && id !== ins && idOperandUseIndex(byIdNow, ins, id.resultId) >= 0) live.set(id.resultId, true);
+      }
+    }
+    for (const ins of [...deadCand]) {
+      if (!live.get(ins.resultId)) { drop.add(ins); deadCand.delete(ins); swept = true; }
+    }
+  }
+  // Interface listing is version-bound, as in R15a: SPIR-V 1.4+ lists
+  // every used global; swap the variable for its replacement.
+  if ((mod.header?.version ?? 0) >= 0x00010400) {
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      const tail = r15EntryPointTail(ins);
+      for (let k = tail; k < ins.words.length; k++) {
+        const c = converted.find(c => c.varId === ins.words[k]);
+        if (c) ins.words[k] = c.newVarId;
+      }
+    }
+  }
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  if (addTypes.length) {
+    const atVar = mod.insns.findIndex(i => i.op === Op.Variable);
+    mod.insns.splice(atVar < 0 ? mod.insns.length : atVar, 0, ...addTypes);
+  }
+  r15SpliceAdditions(mod, addAnnot, [], addNames);
+  sweepTexelOrphans(mod, converted);
+  return true;
+}
+
 // --- R12X: strip-unused-texel-buffer-capabilities ----------------------------
 // Naga rejects OpCapability SampledBuffer (46) and ImageBuffer (47) outright,
 // even when a module declares one without any Dim=Buffer image type for it to
@@ -3828,9 +4226,9 @@ export function analyzeDescriptorArrays(mod) {
     // object) translate to a storage-texture store on the scalar clone.
     // Recorded on the rec for the census/tests; the per-chain uses
     // analysis below still fails closed on pointer-level stores, atomics
-    // and escapes, and on texel-pointer forms, which the uses analysis
-    // now classifies explicitly (FD-62) and this classifier refuses
-    // with a named reason below.
+    // and escapes, and the cone analysis decides texel-pointer forms:
+    // the class R12A serves is admitted, the rest refuse with a named
+    // reason below (FD-62).
     rec.writable = elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable;
     const sigKeys = new Map();
     let bad = null;
@@ -3851,10 +4249,32 @@ export function analyzeDescriptorArrays(mod) {
         rec.texelStoreWrites += cu.texelStoreWrites;
         if (cu.writes > 0) { bad = 'store through an array element'; break; }
         if (cu.escapes.length) { bad = 'array element pointer escape (' + cu.escapes[0] + ')'; break; }
-        if (cu.texelFormed > 0) {
-          bad = cu.texelAtomicWrites > 0
+        // Texel-pointer forms through the element (FD-62): the cone
+        // analysis decides. A cone the R12A rewrite serves -- formations
+        // reaching only loads / stores / WGSL-expressible atomics on a
+        // 32-bit-component storage texel -- makes the chain servable:
+        // specialization turns the chain into a scalar clone and the
+        // post-specialization R12A pass rewrites the clone exactly as
+        // it rewrites a direct variable. Any other cone refuses with
+        // the named texel-pointer reason. The cone analysis also sees
+        // VALUE-form formations (through an OpLoad of the element),
+        // which r15PointerUses cannot trace: those classified servable
+        // here by accident before, and failed inside the translator.
+        let texBad = cu.texelFormed > 0, vAtomic = 0, vStore = 0;
+        if (elemKind === 'image' && elem.words[2] === 5 && elem.words[6] === 2) {
+          const cone = analyzeTexelCone(mod, ctx.byId, u.resultId, rec.elemTypeId, ctx.firstFunc);
+          if (cone.formations > 0) {
+            rec.texelFormed += cone.valueFormations;
+            rec.texelAtomicWrites += cone.valueAtomicWrites;
+            rec.texelStoreWrites += cone.valueStoreWrites;
+            vAtomic = cone.valueAtomicWrites; vStore = cone.valueStoreWrites;
+            texBad = !cone.ok;
+          }
+        }
+        if (texBad) {
+          bad = cu.texelAtomicWrites + vAtomic > 0
             ? 'texel-pointer atomic write through an array element is not served (the translation stack rejects OpImageTexelPointer)'
-            : cu.texelStoreWrites > 0
+            : cu.texelStoreWrites + vStore > 0
               ? 'texel-pointer store through an array element is not served (the translation stack rejects OpImageTexelPointer)'
               : 'texel-pointer use through an array element is not served (the translation stack rejects OpImageTexelPointer)';
           break;
@@ -4527,6 +4947,7 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     return { bytes: u8, applied, log: ['parse failed: ' + (e.message || e)] };
   }
   try {
+    if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
     if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
     if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
@@ -4612,6 +5033,7 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     // unconverted and keeps failing loudly at translation, and the
     // bridge audit admits the capability pair only under the mirror of
     // this composition. No-ops when no Dim=Buffer type remains.
+    if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
     if (storageTexelBuffersTo2D(mod, log)) applied.push('storage-texel-buffer-to-2d');
     if (stripUnusedTexelBufferCapabilities(mod, log)) applied.push('strip-unused-texel-buffer-capabilities');
@@ -4636,4 +5058,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];
+export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];

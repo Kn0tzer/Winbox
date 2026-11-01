@@ -28,6 +28,7 @@ const entryPoint = (model, id) => ({ op: 15, words: [model, id, 0x6E69616D, 0] }
 // Rule-specific coverage also lives in the specialization and corpus tests.
 test('REWRITES exports every rule', () => {
   assert.deepEqual(REWRITES, [
+    'texel-pointer-to-storage-buffer',
     'texel-buffer-to-2d',
     'storage-texel-buffer-to-2d',
     'strip-unused-texel-buffer-capabilities',

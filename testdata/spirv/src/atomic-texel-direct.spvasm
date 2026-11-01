@@ -1,0 +1,41 @@
+; FD-62 serving fixture: a DIRECT storage texel buffer variable (no
+; descriptor array) consumed through an OpImageTexelPointer +
+; OpAtomicOr -- the shape of translator-generated buffer clears and
+; updates (an InterlockedOr on an RWBuffer). The R12A rewrite serves
+; direct variables in its pre-specialization position, exactly like
+; specialized clones in the post-specialization one.
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %buf %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpName %main "main"
+OpName %buf "buf"
+OpDecorate %buf DescriptorSet 2
+OpDecorate %buf Binding 0
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%11 = OpTypeImage %uint Buffer 0 0 0 2 R32ui
+%_ptr_UniformConstant_11 = OpTypePointer UniformConstant %11
+%buf = OpVariable %_ptr_UniformConstant_11 UniformConstant
+%v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%_ptr_Image_uint = OpTypePointer Image %uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%34 = OpLoad %11 %buf
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%ci = OpBitcast %int %gx
+%tp = OpImageTexelPointer %_ptr_Image_uint %buf %ci %uint_0
+%r = OpAtomicOr %uint %tp %uint_1 %uint_0 %uint_1
+OpReturn
+OpFunctionEnd

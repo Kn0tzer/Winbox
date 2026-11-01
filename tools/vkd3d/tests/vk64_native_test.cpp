@@ -3355,26 +3355,26 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaCapBefore + 1);
         puts("PASS: GUARD descriptor-heap texel arrays are admitted when R15a-servable and refused by name otherwise (FD-16)");
 
-        // GUARD (FD-62): a writable storage-image heap array written
-        // through an OpImageTexelPointer + OpAtomicOr -- the captured
-        // Godot fragment module's shape, reduced in
+        // GUARD (FD-62, serving): a writable storage-image heap array
+        // written through an OpImageTexelPointer + OpAtomicOr -- the
+        // captured Godot fragment module's shape, reduced in
         // testdata/spirv/src/atomic-texel-heap.spvasm (the captured
         // bytes themselves are pinned on the JS side in
         // web/tests/suite/unit/spirvfix-texel-pointer-arrays.test.mjs).
-        // pointerUses audits THROUGH the texel pointer: the array
-        // refuses, the refusal is attributed to the texel atomic in
-        // texelAtomicByVar, and the audit reports
-        // RuntimeDescriptorArray by name. The OpCopyObject twin
-        // refuses identically -- a classifier that only audits a texel
-        // pointer formed directly on the chain id would admit it while
-        // the atomic writes the element unexamined. In the two-array
-        // module the benign OpImageWrite array stays servable: the
-        // texel verdict is attributed per array, never module-global.
+        // The texel cone (analyzeTexelCone, mirroring spirvfix's R12A
+        // rewrite) SERVES the class: the array is servable, the module
+        // is admitted, and the texel atomic stays attributed in
+        // texelAtomicByVar. The OpCopyObject twin is served
+        // identically -- a classifier that only audits a texel pointer
+        // formed directly on the chain id would miss the copy's
+        // provenance. In the two-array module BOTH arrays are servable:
+        // the benign OpImageWrite array through R12S, the texel array
+        // through R12A, attributed per array, never module-global.
         // The fixtures declare a Fragment entry point, matching
         // the captured module's stage: a compute-only module is
         // accepted at creation by policy (and refused at pipeline
         // translation), so only a graphics fixture exercises the
-        // bridge-level refusal below (FD-67).
+        // bridge-level verdicts below (FD-67).
         const std::vector<U32> heapTexelAtomic = {
             0x07230203u, 0x00010600u, 0x00070000u, 0x0000001fu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
             0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
@@ -3471,29 +3471,267 @@ int main() {
         {
             r15::Module m; assert(r15::parse(heapTexelAtomic, m));
             r15::ArrayVerdict av = r15::analyzeArrays(m);
-            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.hasDescriptorArrays && av.servable && av.servableVars.size() == 1);
             assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
         }
         {
             r15::Module m; assert(r15::parse(heapTexelAtomicCopy, m));
             r15::ArrayVerdict av = r15::analyzeArrays(m);
-            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.hasDescriptorArrays && av.servable && av.servableVars.size() == 1);
             assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
         }
         {
             r15::Module m; assert(r15::parse(heapTexelAtomicTwo, m));
             r15::ArrayVerdict av = r15::analyzeArrays(m);
-            assert(av.hasDescriptorArrays && !av.servable);
-            assert(av.servableVars.size() == 1 && av.servableVars.count(3));
+            assert(av.hasDescriptorArrays && av.servable);
+            assert(av.servableVars.size() == 2 && av.servableVars.count(3) && av.servableVars.count(4));
             assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.count(4) && av.texelAtomicByVar.at(4) == 1);
         }
-        assert(module({heapTexelAtomic.begin() + 5, heapTexelAtomic.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
-        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62Before + 1);
-        assert(module({heapTexelAtomicCopy.begin() + 5, heapTexelAtomicCopy.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
-        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62Before + 2);
-        assert(module({heapTexelAtomicTwo.begin() + 5, heapTexelAtomicTwo.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
-        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62Before + 3);
-        puts("PASS: GUARD texel-pointer atomics through a descriptor-heap array refuse by name, attributed per array (FD-62)");
+        assert(module({heapTexelAtomic.begin() + 5, heapTexelAtomic.end()}) == VK_SUCCESS);
+        assert(module({heapTexelAtomicCopy.begin() + 5, heapTexelAtomicCopy.end()}) == VK_SUCCESS);
+        assert(module({heapTexelAtomicTwo.begin() + 5, heapTexelAtomicTwo.end()}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62Before);
+        puts("PASS: GUARD texel-pointer atomics through a descriptor-heap array are served, attributed per array (FD-62)");
+
+        // GUARD (FD-62, boundaries): the cone's edge cases refuse by
+        // name, in agreement with the JS classifier. The value-form
+        // module (formation through an OpLoad of the element -- the
+        // shape pointerUses cannot trace, which classified servable by
+        // accident before the cone existed) is ADMITTED with its
+        // atomic attributed. OpAtomicCompareExchangeWeak (the
+        // translator rejects the opcode itself), a sub-word texel
+        // format (R8ui: a packed-word atomic would touch neighbouring
+        // texels), a 64-bit format (R64ui), an element used both as an
+        // image and through a texel pointer (two irreconcilable
+        // representations), and a texel pointer stored as a value (an
+        // escape) all keep the refusal.
+        const std::vector<U32> heapTexelAtomicValueForm = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x0000001fu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0003000eu,
+            0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+            0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u,
+            0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u, 0x736e6f43u,
+            0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00030047u,
+            0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
+            0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000002u,
+            0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u, 0x0000000bu, 0x0000001cu,
+            0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u, 0x00000008u, 0x00000020u,
+            0x00000000u, 0x00040015u, 0x00000009u, 0x00000020u, 0x00000001u, 0x0004001eu, 0x00000005u, 0x00000008u,
+            0x00000008u, 0x00040020u, 0x0000000au, 0x00000009u, 0x00000005u, 0x0004003bu, 0x0000000au, 0x00000002u,
+            0x00000009u, 0x00090019u, 0x0000000bu, 0x00000008u, 0x00000005u, 0x00000000u, 0x00000000u, 0x00000000u,
+            0x00000002u, 0x00000021u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du, 0x00000000u,
+            0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000eu, 0x00000008u,
+            0x00000003u, 0x00040020u, 0x0000000fu, 0x00000001u, 0x0000000eu, 0x0004003bu, 0x0000000fu, 0x00000004u,
+            0x00000001u, 0x0004002bu, 0x00000008u, 0x00000010u, 0x00000000u, 0x0004002bu, 0x00000008u, 0x00000011u,
+            0x00000001u, 0x00040020u, 0x00000012u, 0x00000000u, 0x0000000bu, 0x00040020u, 0x00000013u, 0x00000009u,
+            0x00000008u, 0x00040020u, 0x00000014u, 0x0000000bu, 0x00000008u, 0x00050036u, 0x00000006u, 0x00000001u,
+            0x00000000u, 0x00000007u, 0x000200f8u, 0x00000015u, 0x00050041u, 0x00000013u, 0x00000016u, 0x00000002u,
+            0x00000010u, 0x0004003du, 0x00000008u, 0x00000017u, 0x00000016u, 0x00050041u, 0x00000012u, 0x00000018u,
+            0x00000003u, 0x00000017u, 0x0004003du, 0x0000000bu, 0x00000019u, 0x00000018u, 0x0004003du, 0x0000000eu,
+            0x0000001au, 0x00000004u, 0x00050051u, 0x00000008u, 0x0000001bu, 0x0000001au, 0x00000000u, 0x0004007cu,
+            0x00000009u, 0x0000001cu, 0x0000001bu, 0x0006003cu, 0x00000014u, 0x0000001du, 0x00000019u, 0x0000001cu,
+            0x00000010u, 0x000700f1u, 0x00000008u, 0x0000001eu, 0x0000001du, 0x00000011u, 0x00000010u, 0x00000011u,
+            0x000100fdu, 0x00010038u,
+        };
+        const std::vector<U32> heapTexelAtomicWeak = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x0000001fu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0003000eu,
+            0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+            0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u,
+            0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u, 0x736e6f43u,
+            0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00030047u,
+            0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
+            0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000002u,
+            0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u, 0x0000000bu, 0x0000001cu,
+            0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u, 0x00000008u, 0x00000020u,
+            0x00000000u, 0x00040015u, 0x00000009u, 0x00000020u, 0x00000001u, 0x0004001eu, 0x00000005u, 0x00000008u,
+            0x00000008u, 0x00040020u, 0x0000000au, 0x00000009u, 0x00000005u, 0x0004003bu, 0x0000000au, 0x00000002u,
+            0x00000009u, 0x00090019u, 0x0000000bu, 0x00000008u, 0x00000005u, 0x00000000u, 0x00000000u, 0x00000000u,
+            0x00000002u, 0x00000021u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du, 0x00000000u,
+            0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000eu, 0x00000008u,
+            0x00000003u, 0x00040020u, 0x0000000fu, 0x00000001u, 0x0000000eu, 0x0004003bu, 0x0000000fu, 0x00000004u,
+            0x00000001u, 0x0004002bu, 0x00000008u, 0x00000010u, 0x00000000u, 0x0004002bu, 0x00000008u, 0x00000011u,
+            0x00000001u, 0x00040020u, 0x00000012u, 0x00000000u, 0x0000000bu, 0x00040020u, 0x00000013u, 0x00000009u,
+            0x00000008u, 0x00040020u, 0x00000014u, 0x0000000bu, 0x00000008u, 0x00050036u, 0x00000006u, 0x00000001u,
+            0x00000000u, 0x00000007u, 0x000200f8u, 0x00000015u, 0x00050041u, 0x00000013u, 0x00000016u, 0x00000002u,
+            0x00000010u, 0x0004003du, 0x00000008u, 0x00000017u, 0x00000016u, 0x00050041u, 0x00000012u, 0x00000018u,
+            0x00000003u, 0x00000017u, 0x0004003du, 0x0000000bu, 0x00000019u, 0x00000018u, 0x0004003du, 0x0000000eu,
+            0x0000001au, 0x00000004u, 0x00050051u, 0x00000008u, 0x0000001bu, 0x0000001au, 0x00000000u, 0x0004007cu,
+            0x00000009u, 0x0000001cu, 0x0000001bu, 0x0006003cu, 0x00000014u, 0x0000001du, 0x00000018u, 0x0000001cu,
+            0x00000010u, 0x000900e7u, 0x00000008u, 0x0000001eu, 0x0000001du, 0x00000011u, 0x00000010u, 0x00000010u,
+            0x00000011u, 0x00000010u, 0x000100fdu, 0x00010038u,
+        };
+        const std::vector<U32> heapTexelAtomicR8ui = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x0000001fu, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x00000031u, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u,
+            0x000014e2u, 0x0008000au, 0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu,
+            0x00676e69u, 0x0003000eu, 0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du,
+            0x00000000u, 0x00000002u, 0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u,
+            0x00000001u, 0x00000001u, 0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u,
+            0x746f6f52u, 0x736e6f43u, 0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u,
+            0x00000073u, 0x00030047u, 0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u,
+            0x00000000u, 0x00050048u, 0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u,
+            0x00000022u, 0x00000002u, 0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u,
+            0x0000000bu, 0x0000001cu, 0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u,
+            0x00000008u, 0x00000020u, 0x00000000u, 0x00040015u, 0x00000009u, 0x00000020u, 0x00000001u, 0x0004001eu,
+            0x00000005u, 0x00000008u, 0x00000008u, 0x00040020u, 0x0000000au, 0x00000009u, 0x00000005u, 0x0004003bu,
+            0x0000000au, 0x00000002u, 0x00000009u, 0x00090019u, 0x0000000bu, 0x00000008u, 0x00000005u, 0x00000000u,
+            0x00000000u, 0x00000000u, 0x00000002u, 0x00000027u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u,
+            0x0000000du, 0x00000000u, 0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u,
+            0x0000000eu, 0x00000008u, 0x00000003u, 0x00040020u, 0x0000000fu, 0x00000001u, 0x0000000eu, 0x0004003bu,
+            0x0000000fu, 0x00000004u, 0x00000001u, 0x0004002bu, 0x00000008u, 0x00000010u, 0x00000000u, 0x0004002bu,
+            0x00000008u, 0x00000011u, 0x00000001u, 0x00040020u, 0x00000012u, 0x00000000u, 0x0000000bu, 0x00040020u,
+            0x00000013u, 0x00000009u, 0x00000008u, 0x00040020u, 0x00000014u, 0x0000000bu, 0x00000008u, 0x00050036u,
+            0x00000006u, 0x00000001u, 0x00000000u, 0x00000007u, 0x000200f8u, 0x00000015u, 0x00050041u, 0x00000013u,
+            0x00000016u, 0x00000002u, 0x00000010u, 0x0004003du, 0x00000008u, 0x00000017u, 0x00000016u, 0x00050041u,
+            0x00000012u, 0x00000018u, 0x00000003u, 0x00000017u, 0x0004003du, 0x0000000bu, 0x00000019u, 0x00000018u,
+            0x0004003du, 0x0000000eu, 0x0000001au, 0x00000004u, 0x00050051u, 0x00000008u, 0x0000001bu, 0x0000001au,
+            0x00000000u, 0x0004007cu, 0x00000009u, 0x0000001cu, 0x0000001bu, 0x0006003cu, 0x00000014u, 0x0000001du,
+            0x00000018u, 0x0000001cu, 0x00000010u, 0x000700f1u, 0x00000008u, 0x0000001eu, 0x0000001du, 0x00000011u,
+            0x00000010u, 0x00000011u, 0x000100fdu, 0x00010038u,
+        };
+        const std::vector<U32> heapTexelAtomicR64ui = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x00000021u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000000bu, 0x00020011u, 0x00001398u, 0x00020011u, 0x0000000cu, 0x00020011u, 0x00000031u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x64616873u, 0x695f7265u, 0x6567616du, 0x746e695fu, 0x00003436u, 0x0003000eu,
+            0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+            0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u,
+            0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u, 0x736e6f43u,
+            0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00030047u,
+            0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
+            0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000002u,
+            0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u, 0x0000000bu, 0x0000001cu,
+            0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u, 0x00000008u, 0x00000020u,
+            0x00000000u, 0x00040015u, 0x00000009u, 0x00000040u, 0x00000000u, 0x00040015u, 0x0000000au, 0x00000020u,
+            0x00000001u, 0x0004001eu, 0x00000005u, 0x00000008u, 0x00000008u, 0x00040020u, 0x0000000bu, 0x00000009u,
+            0x00000005u, 0x0004003bu, 0x0000000bu, 0x00000002u, 0x00000009u, 0x00090019u, 0x0000000cu, 0x00000009u,
+            0x00000005u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000002u, 0x00000028u, 0x0003001du, 0x0000000du,
+            0x0000000cu, 0x00040020u, 0x0000000eu, 0x00000000u, 0x0000000du, 0x0004003bu, 0x0000000eu, 0x00000003u,
+            0x00000000u, 0x00040017u, 0x0000000fu, 0x00000008u, 0x00000003u, 0x00040020u, 0x00000010u, 0x00000001u,
+            0x0000000fu, 0x0004003bu, 0x00000010u, 0x00000004u, 0x00000001u, 0x0004002bu, 0x00000008u, 0x00000011u,
+            0x00000000u, 0x0004002bu, 0x00000008u, 0x00000012u, 0x00000001u, 0x0005002bu, 0x00000009u, 0x00000013u,
+            0x00000001u, 0x00000000u, 0x00040020u, 0x00000014u, 0x00000000u, 0x0000000cu, 0x00040020u, 0x00000015u,
+            0x00000009u, 0x00000008u, 0x00040020u, 0x00000016u, 0x0000000bu, 0x00000009u, 0x00050036u, 0x00000006u,
+            0x00000001u, 0x00000000u, 0x00000007u, 0x000200f8u, 0x00000017u, 0x00050041u, 0x00000015u, 0x00000018u,
+            0x00000002u, 0x00000011u, 0x0004003du, 0x00000008u, 0x00000019u, 0x00000018u, 0x00050041u, 0x00000014u,
+            0x0000001au, 0x00000003u, 0x00000019u, 0x0004003du, 0x0000000cu, 0x0000001bu, 0x0000001au, 0x0004003du,
+            0x0000000fu, 0x0000001cu, 0x00000004u, 0x00050051u, 0x00000008u, 0x0000001du, 0x0000001cu, 0x00000000u,
+            0x0004007cu, 0x0000000au, 0x0000001eu, 0x0000001du, 0x0006003cu, 0x00000016u, 0x0000001fu, 0x0000001au,
+            0x0000001eu, 0x00000011u, 0x000700f1u, 0x00000009u, 0x00000020u, 0x0000001fu, 0x00000012u, 0x00000011u,
+            0x00000013u, 0x000100fdu, 0x00010038u,
+        };
+        const std::vector<U32> heapTexelAtomicMixed = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x00000021u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0003000eu,
+            0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+            0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u,
+            0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u, 0x736e6f43u,
+            0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00030047u,
+            0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
+            0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000002u,
+            0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u, 0x0000000bu, 0x0000001cu,
+            0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u, 0x00000008u, 0x00000020u,
+            0x00000000u, 0x00040015u, 0x00000009u, 0x00000020u, 0x00000001u, 0x0004001eu, 0x00000005u, 0x00000008u,
+            0x00000008u, 0x00040020u, 0x0000000au, 0x00000009u, 0x00000005u, 0x0004003bu, 0x0000000au, 0x00000002u,
+            0x00000009u, 0x00090019u, 0x0000000bu, 0x00000008u, 0x00000005u, 0x00000000u, 0x00000000u, 0x00000000u,
+            0x00000002u, 0x00000021u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du, 0x00000000u,
+            0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000eu, 0x00000008u,
+            0x00000003u, 0x00040017u, 0x0000000fu, 0x00000008u, 0x00000004u, 0x00040020u, 0x00000010u, 0x00000001u,
+            0x0000000eu, 0x0004003bu, 0x00000010u, 0x00000004u, 0x00000001u, 0x0004002bu, 0x00000008u, 0x00000011u,
+            0x00000000u, 0x0004002bu, 0x00000008u, 0x00000012u, 0x00000001u, 0x00040020u, 0x00000013u, 0x00000000u,
+            0x0000000bu, 0x00040020u, 0x00000014u, 0x00000009u, 0x00000008u, 0x00040020u, 0x00000015u, 0x0000000bu,
+            0x00000008u, 0x00050036u, 0x00000006u, 0x00000001u, 0x00000000u, 0x00000007u, 0x000200f8u, 0x00000016u,
+            0x00050041u, 0x00000014u, 0x00000017u, 0x00000002u, 0x00000011u, 0x0004003du, 0x00000008u, 0x00000018u,
+            0x00000017u, 0x00050041u, 0x00000013u, 0x00000019u, 0x00000003u, 0x00000018u, 0x0004003du, 0x0000000bu,
+            0x0000001au, 0x00000019u, 0x0004003du, 0x0000000eu, 0x0000001bu, 0x00000004u, 0x00050051u, 0x00000008u,
+            0x0000001cu, 0x0000001bu, 0x00000000u, 0x0004007cu, 0x00000009u, 0x0000001du, 0x0000001cu, 0x0006003cu,
+            0x00000015u, 0x0000001eu, 0x00000019u, 0x0000001du, 0x00000011u, 0x000700f1u, 0x00000008u, 0x0000001fu,
+            0x0000001eu, 0x00000012u, 0x00000011u, 0x00000012u, 0x00070050u, 0x0000000fu, 0x00000020u, 0x00000012u,
+            0x00000012u, 0x00000012u, 0x00000012u, 0x00040063u, 0x0000001au, 0x0000001du, 0x00000020u, 0x000100fdu,
+            0x00010038u,
+        };
+        const std::vector<U32> heapTexelAtomicEscape = {
+            0x07230203u, 0x00010600u, 0x00070000u, 0x00000022u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+            0x0000002fu, 0x00020011u, 0x000014b6u, 0x00020011u, 0x000014e1u, 0x00020011u, 0x000014e2u, 0x0008000au,
+            0x5f565053u, 0x5f545845u, 0x63736564u, 0x74706972u, 0x695f726fu, 0x7865646eu, 0x00676e69u, 0x0003000eu,
+            0x00000000u, 0x00000003u, 0x0008000fu, 0x00000004u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+            0x00000003u, 0x00000004u, 0x00060010u, 0x00000001u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u,
+            0x00040005u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00060005u, 0x00000005u, 0x746f6f52u, 0x736e6f43u,
+            0x746e6174u, 0x00000073u, 0x00050005u, 0x00000002u, 0x69676572u, 0x72657473u, 0x00000073u, 0x00030047u,
+            0x00000005u, 0x00000002u, 0x00050048u, 0x00000005u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
+            0x00000005u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000002u,
+            0x00040047u, 0x00000003u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000004u, 0x0000000bu, 0x0000001cu,
+            0x00020013u, 0x00000006u, 0x00030021u, 0x00000007u, 0x00000006u, 0x00040015u, 0x00000008u, 0x00000020u,
+            0x00000000u, 0x00040015u, 0x00000009u, 0x00000020u, 0x00000001u, 0x0004001eu, 0x00000005u, 0x00000008u,
+            0x00000008u, 0x00040020u, 0x0000000au, 0x00000009u, 0x00000005u, 0x0004003bu, 0x0000000au, 0x00000002u,
+            0x00000009u, 0x00090019u, 0x0000000bu, 0x00000008u, 0x00000005u, 0x00000000u, 0x00000000u, 0x00000000u,
+            0x00000002u, 0x00000021u, 0x0003001du, 0x0000000cu, 0x0000000bu, 0x00040020u, 0x0000000du, 0x00000000u,
+            0x0000000cu, 0x0004003bu, 0x0000000du, 0x00000003u, 0x00000000u, 0x00040017u, 0x0000000eu, 0x00000008u,
+            0x00000003u, 0x00040020u, 0x0000000fu, 0x00000001u, 0x0000000eu, 0x0004003bu, 0x0000000fu, 0x00000004u,
+            0x00000001u, 0x0004002bu, 0x00000008u, 0x00000010u, 0x00000000u, 0x0004002bu, 0x00000008u, 0x00000011u,
+            0x00000001u, 0x00040020u, 0x00000012u, 0x00000000u, 0x0000000bu, 0x00040020u, 0x00000013u, 0x00000009u,
+            0x00000008u, 0x00040020u, 0x00000014u, 0x0000000bu, 0x00000008u, 0x00040020u, 0x00000015u, 0x00000007u,
+            0x00000014u, 0x00050036u, 0x00000006u, 0x00000001u, 0x00000000u, 0x00000007u, 0x000200f8u, 0x00000016u,
+            0x0004003bu, 0x00000015u, 0x00000017u, 0x00000007u, 0x00050041u, 0x00000013u, 0x00000018u, 0x00000002u,
+            0x00000010u, 0x0004003du, 0x00000008u, 0x00000019u, 0x00000018u, 0x00050041u, 0x00000012u, 0x0000001au,
+            0x00000003u, 0x00000019u, 0x0004003du, 0x0000000bu, 0x0000001bu, 0x0000001au, 0x0004003du, 0x0000000eu,
+            0x0000001cu, 0x00000004u, 0x00050051u, 0x00000008u, 0x0000001du, 0x0000001cu, 0x00000000u, 0x0004007cu,
+            0x00000009u, 0x0000001eu, 0x0000001du, 0x0006003cu, 0x00000014u, 0x0000001fu, 0x0000001au, 0x0000001eu,
+            0x00000010u, 0x0003003eu, 0x00000017u, 0x0000001fu, 0x0004003du, 0x00000014u, 0x00000020u, 0x00000017u,
+            0x000700f1u, 0x00000008u, 0x00000021u, 0x00000020u, 0x00000011u, 0x00000010u, 0x00000011u, 0x000100fdu,
+            0x00010038u,
+        };
+        const U32 rda62bBefore = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicValueForm, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && av.servable && av.servableVars.size() == 1);
+            assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
+        }
+        assert(module({heapTexelAtomicValueForm.begin() + 5, heapTexelAtomicValueForm.end()}) == VK_SUCCESS);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62bBefore);
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicWeak, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
+        }
+        assert(module({heapTexelAtomicWeak.begin() + 5, heapTexelAtomicWeak.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda62bBefore + 1);
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicR8ui, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
+        }
+        assert(module({heapTexelAtomicR8ui.begin() + 5, heapTexelAtomicR8ui.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicR64ui, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
+        }
+        assert(module({heapTexelAtomicR64ui.begin() + 5, heapTexelAtomicR64ui.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicMixed, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.texelAtomicByVar.size() == 1 && av.texelAtomicByVar.begin()->second == 1);
+        }
+        assert(module({heapTexelAtomicMixed.begin() + 5, heapTexelAtomicMixed.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        {
+            r15::Module m; assert(r15::parse(heapTexelAtomicEscape, m));
+            r15::ArrayVerdict av = r15::analyzeArrays(m);
+            assert(av.hasDescriptorArrays && !av.servable && av.servableVars.empty());
+            assert(av.texelAtomicByVar.empty());
+        }
+        assert(module({heapTexelAtomicEscape.begin() + 5, heapTexelAtomicEscape.end()}) == VK_ERROR_FEATURE_NOT_PRESENT);
+        puts("PASS: GUARD texel cone boundaries: value form served, weak/sub-word/64-bit/mixed/escape refuse by name (FD-62)");
 
         // GUARD (FD-16 layer 2): the multi-signature bare-image heap --
         // one descriptor-heap base indexed at five root-constant

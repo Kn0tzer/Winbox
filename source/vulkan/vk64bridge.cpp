@@ -1328,6 +1328,161 @@ inline RootVerdict analyzeRoot(const Module& m) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// FD-62 serving: the texel cone. Mirror of analyzeTexelCone in
+// tools/spirvfix/spirvfix.mjs -- the classifier and the R12A rewrite
+// share one definition of the served class, so the audit admits exactly
+// what spirvfix converts. A Dim=Buffer storage image is guest buffer
+// memory; a variable (or array access chain) whose every derived value
+// flows only into OpImageTexelPointer formations, and whose texel
+// pointers reach only loads, stores and WGSL-expressible integer
+// atomics, is rewritten by R12A into a storage buffer of texels at the
+// same set/binding -- the formations becoming access chains into it --
+// so every classified instruction keeps its meaning on the view's
+// bytes. Anything outside the cone keeps the refusal: the image value
+// consumed as an image, the texel pointer escaping, a formation whose
+// pointee / coordinate / sample is not the validated shape, an atomic
+// the translator cannot express (OpAtomicCompareExchangeWeak among
+// them), a sub-word, packed or 64-bit texel format. Formations reached
+// through an OpLoad of the image (value form) are counted separately:
+// pointerUses cannot trace them, and before this analysis existed a
+// value-form module classified servable by accident and failed later,
+// quieter, inside the translator.
+// ---------------------------------------------------------------------------
+struct TexelInfo { U32 sampledType = 0; bool sampledIsInt = false; int channels = 0; };
+inline bool texelElementInfo(const Module& m, U32 imageTypeId, TexelInfo& info) {
+    auto it = m.byId.find(imageTypeId); if (it == m.byId.end()) return false;
+    const Insn& im = m.insns[it->second];
+    if (im.op != 25 || im.n < 8 || im.w[2] != 5 || im.w[6] != 2) return false; // Dim=Buffer, Sampled=2
+    int channels = 0;
+    switch (im.w[7]) { // ImageFormat: 32-bit plain-component formats only
+        case 1: case 21: case 30: channels = 4; break; // Rgba32f / Rgba32i / Rgba32ui
+        case 6: case 25: case 35: channels = 2; break; // Rg32f / Rg32i / Rg32ui
+        case 3: case 24: case 33: channels = 1; break; // R32f / R32i / R32ui
+        default: return false;
+    }
+    auto st = m.byId.find(im.w[1]); if (st == m.byId.end()) return false;
+    const Insn& ty = m.insns[st->second];
+    if ((ty.op != 21 && ty.op != 22) || ty.n < 2 || ty.w[1] != 32) return false;
+    info.sampledType = im.w[1]; info.sampledIsInt = ty.op == 21; info.channels = channels;
+    return true;
+}
+struct TexelCone {
+    bool ok = false;
+    int formations = 0, valueFormations = 0;
+    int atomicWrites = 0, valueAtomicWrites = 0;
+    int storeWrites = 0, valueStoreWrites = 0, loads = 0;
+    std::unordered_set<const Insn*> coneInsns; // instructions the cone owns
+};
+inline bool texelAtomicOpServed(U32 op) {
+    switch (op) { case 227: case 228: case 229: case 230: case 232: case 233: case 234: case 235:
+                  case 236: case 237: case 238: case 239: case 240: case 241: case 242: return true; }
+    return false;
+}
+inline TexelCone analyzeTexelCone(const Module& m, U32 rootPtrId, U32 imageTypeId) {
+    TexelCone out;
+    TexelInfo info;
+    if (!texelElementInfo(m, imageTypeId, info)) return out;
+    auto checkFormation = [&](const Insn& ins) -> bool {
+        auto pt = m.byId.find(ins.resultType); if (pt == m.byId.end()) return false;
+        const Insn& ptTy = m.insns[pt->second];
+        if (ptTy.op != 32 || ptTy.n < 3) return false;
+        U32 pointee = ptTy.w[2];
+        if (info.channels == 1) { if (pointee != info.sampledType) return false; }
+        else {
+            auto vt = m.byId.find(pointee); if (vt == m.byId.end()) return false;
+            const Insn& v = m.insns[vt->second];
+            if (v.op != 23 || v.n < 3 || v.w[1] != info.sampledType || (int)v.w[2] != info.channels) return false;
+        }
+        if (ins.n < 4) return false;
+        auto cd = m.byId.find(ins.w[3]); if (cd == m.byId.end()) return false;
+        const Insn& coordDef = m.insns[cd->second];
+        if (!coordDef.resultType) return false;
+        auto ct = m.byId.find(coordDef.resultType); if (ct == m.byId.end()) return false;
+        const Insn& coordTy = m.insns[ct->second];
+        if (coordTy.op != 21 || coordTy.n < 2 || coordTy.w[1] != 32) return false;
+        if (ins.n > 4) {
+            auto sd = m.byId.find(ins.w[4]); if (sd == m.byId.end()) return false;
+            const Insn& sDef = m.insns[sd->second];
+            if (sDef.op != 43 || sDef.n < 3 || sDef.w[2] != 0) return false;
+        }
+        return true;
+    };
+    std::unordered_set<U32> ptrIds, imgVals, texPtrs;
+    ptrIds.insert(rootPtrId);
+    std::unordered_map<U32, bool> texIsValue; // texel pointer id -> formed through an image load
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++) {
+            const Insn& ins = m.insns[ix];
+            int start = (int)ins.fv;
+            std::vector<U32> tracked;
+            tracked.reserve(ptrIds.size() + imgVals.size() + texPtrs.size());
+            for (U32 id : ptrIds) tracked.push_back(id);
+            for (U32 id : imgVals) tracked.push_back(id);
+            for (U32 id : texPtrs) tracked.push_back(id);
+            for (U32 id : tracked) {
+                int hit = findIdUse(m, ins, id);
+                if (hit < 0) continue;
+                int kind = ptrIds.count(id) ? 0 : imgVals.count(id) ? 1 : 2;
+                if (kind == 0) {
+                    if (ins.op == 61 && hit == start) {
+                        if (ins.resultType != imageTypeId) return out;
+                        if (imgVals.insert(ins.resultId).second) { out.coneInsns.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if (ins.op == 60 && hit == start) {
+                        if (!checkFormation(ins)) return out;
+                        if (texPtrs.insert(ins.resultId).second) { texIsValue[ins.resultId] = false; out.formations++; out.coneInsns.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if ((ins.op == 83 || ins.op == 65 || ins.op == 66) && hit == start) {
+                        if (ptrIds.insert(ins.resultId).second) { out.coneInsns.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    return out;
+                }
+                if (kind == 1) {
+                    if (ins.op == 60 && hit == start) {
+                        if (!checkFormation(ins)) return out;
+                        if (texPtrs.insert(ins.resultId).second) { texIsValue[ins.resultId] = true; out.formations++; out.valueFormations++; out.coneInsns.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if (ins.op == 83 && hit == start) {
+                        if (imgVals.insert(ins.resultId).second) { out.coneInsns.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    return out;
+                }
+                // kind == 2: a use of a texel pointer.
+                if (ins.op == 61 && hit == start) { out.loads++; out.coneInsns.insert(&ins); continue; }
+                if (ins.op == 62) {
+                    if (hit != start) return out; // the pointer stored as a value: an escape
+                    if (out.coneInsns.insert(&ins).second) { if (texIsValue[id]) out.valueStoreWrites++; else out.storeWrites++; }
+                    continue;
+                }
+                if (ins.op >= 227 && ins.op <= 244 && hit == start) {
+                    if (!texelAtomicOpServed(ins.op)) return out;
+                    if (info.channels != 1 || !info.sampledIsInt) return out;
+                    if (out.coneInsns.insert(&ins).second) {
+                        if (ins.op == 227) out.loads++;
+                        else if (texIsValue[id]) out.valueAtomicWrites++; else out.atomicWrites++;
+                    }
+                    continue;
+                }
+                if (ins.op == 83 && hit == start) {
+                    if (texPtrs.insert(ins.resultId).second) { texIsValue[ins.resultId] = texIsValue[id]; out.coneInsns.insert(&ins); grew = true; }
+                    continue;
+                }
+                return out;
+            }
+        }
+    }
+    out.ok = true;
+    return out;
+}
+
 struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; std::set<U32> servableVars; std::map<U32, U32> texelAtomicByVar; };
 inline ArrayVerdict analyzeArrays(const Module& m) {
     ArrayVerdict out;
@@ -1353,10 +1508,10 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
         // analyzeDescriptorArrays in spirvfix.mjs (rec.writable). The
         // module-level spirv-storage-image-write rejection for graphics
         // modules is a separate check below and stands unchanged.
-        // Texel-pointer forms through an element refuse the array
-        // (FD-62): pointerUses classifies them explicitly and the
-        // per-chain check below fails closed on any formation, because
-        // the translation stack rejects OpImageTexelPointer outright.
+        // Texel-pointer forms through an element (FD-62): the cone
+        // analysis below decides, mirroring analyzeDescriptorArrays --
+        // a cone the R12A rewrite serves admits the chain, any other
+        // cone refuses it.
         {
             std::set<std::string> sigs; bool bad = false; int nAcc = 0;
             for (size_t ii = m.firstFunc; ii < m.insns.size() && !bad; ii++) {
@@ -1371,7 +1526,19 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
                     nAcc++;
                     Uses cu; pointerUses(m, u.resultId, cu);
                     a.texelAtomicWrites += (U32)cu.texelAtomicWrites;
-                    if (cu.writes > 0 || !cu.escapes.empty() || cu.texelFormed > 0) { bad = true; break; }
+                    if (cu.writes > 0 || !cu.escapes.empty()) { bad = true; break; }
+                    if (cu.texelFormed > 0 || (e.op == 25 && e.n >= 8 && e.w[2] == 5 && e.w[6] == 2)) {
+                        // The cone also sees VALUE-form formations
+                        // (through an OpLoad of the element), which
+                        // pointerUses cannot trace, so a storage texel
+                        // element is cone-checked even when
+                        // pointerUses saw no formation.
+                        TexelCone cone = analyzeTexelCone(m, u.resultId, ra.w[1]);
+                        if (cone.formations > 0) {
+                            a.texelAtomicWrites += (U32)cone.valueAtomicWrites;
+                            if (!cone.ok) { bad = true; break; }
+                        } else if (cu.texelFormed > 0) { bad = true; break; }
+                    }
                 } else bad = true;
             }
             if (!bad && nAcc > 0) a.servable = true; // any number of distinct signatures: one clone each (spirvfix R15a)
@@ -1658,6 +1825,121 @@ static bool vk64TexelUniformServable(const Vk64RawModule& m, const std::set<U32>
     }
     return true;
 }
+// R12A mirror: the texel cone over the raw word stream -- the same
+// predicate as r15::analyzeTexelCone / spirvfix's analyzeTexelCone,
+// evaluated here because vk64TexelStorageServable must know which
+// instructions R12A converts before R12S runs, so it can exclude them
+// from its own vetting. On success `covered` gains every instruction
+// the cone owns (formations, the image loads feeding them, the texel
+// loads / stores / atomics, and the copies and chains between).
+static bool vk64TexelConeServable(const Vk64RawModule& m, U32 rootPtrId, U32 imageTypeId,
+                                  std::set<const Vk64RawInsn*>& covered) {
+    const Vk64RawInsn* im = vk64RawOf(m, imageTypeId);
+    if (!im || im->op != 25 || im->n < 8 || im->w[2] != 5 || im->w[6] != 2) return false;
+    int channels = 0;
+    switch (im->w[7]) {
+        case 1: case 21: case 30: channels = 4; break;
+        case 6: case 25: case 35: channels = 2; break;
+        case 3: case 24: case 33: channels = 1; break;
+        default: return false;
+    }
+    const Vk64RawInsn* sty = vk64RawOf(m, im->w[1]);
+    if (!sty || (sty->op != 21 && sty->op != 22) || sty->n < 2 || sty->w[1] != 32) return false;
+    const U32 sampledType = im->w[1];
+    const bool sampledIsInt = sty->op == 21;
+    auto checkFormation = [&](const Vk64RawInsn& ins) -> bool {
+        const Vk64RawInsn* ptTy = vk64RawOf(m, ins.resultType);
+        if (!ptTy || ptTy->op != 32 || ptTy->n < 3) return false;
+        U32 pointee = ptTy->w[2];
+        if (channels == 1) { if (pointee != sampledType) return false; }
+        else {
+            const Vk64RawInsn* v = vk64RawOf(m, pointee);
+            if (!v || v->op != 23 || v->n < 3 || v->w[1] != sampledType || (int)v->w[2] != channels) return false;
+        }
+        if (ins.n < 4) return false;
+        const Vk64RawInsn* coordDef = vk64RawOf(m, ins.w[3]);
+        if (!coordDef || !coordDef->resultType) return false;
+        const Vk64RawInsn* coordTy = vk64RawOf(m, coordDef->resultType);
+        if (!coordTy || coordTy->op != 21 || coordTy->n < 2 || coordTy->w[1] != 32) return false;
+        if (ins.n > 4) {
+            const Vk64RawInsn* sDef = vk64RawOf(m, ins.w[4]);
+            if (!sDef || sDef->op != 43 || sDef->n < 3 || sDef->w[2] != 0) return false;
+        }
+        return true;
+    };
+    std::set<U32> ptrIds, imgVals, texPtrs;
+    ptrIds.insert(rootPtrId);
+    std::set<const Vk64RawInsn*> mine;
+    int formations = 0;
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++) {
+            const Vk64RawInsn& ins = m.insns[ix];
+            const int start = (int)ins.fv;
+            std::vector<U32> tracked;
+            tracked.reserve(ptrIds.size() + imgVals.size() + texPtrs.size());
+            for (U32 id : ptrIds) tracked.push_back(id);
+            for (U32 id : imgVals) tracked.push_back(id);
+            for (U32 id : texPtrs) tracked.push_back(id);
+            for (U32 id : tracked) {
+                if (!vk64RawIdUse(ins, id)) continue;
+                // vk64RawIdUse reports presence, not position; the cone
+                // positions below are the grammar-fixed operand slots,
+                // verified directly (the raw mirror's standing
+                // discipline).
+                int kind = ptrIds.count(id) ? 0 : imgVals.count(id) ? 1 : 2;
+                if (kind == 0) {
+                    if (ins.op == 61 && ins.n > (U32)start && ins.w[start] == id) {
+                        if (ins.resultType != imageTypeId) return false;
+                        if (imgVals.insert(ins.resultId).second) { mine.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if (ins.op == 60 && ins.n > (U32)start && ins.w[start] == id) {
+                        if (!checkFormation(ins)) return false;
+                        if (texPtrs.insert(ins.resultId).second) { formations++; mine.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if ((ins.op == 83 || ins.op == 65 || ins.op == 66) && ins.n > (U32)start && ins.w[start] == id) {
+                        if (ptrIds.insert(ins.resultId).second) { mine.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    return false;
+                }
+                if (kind == 1) {
+                    if (ins.op == 60 && ins.n > (U32)start && ins.w[start] == id) {
+                        if (!checkFormation(ins)) return false;
+                        if (texPtrs.insert(ins.resultId).second) { formations++; mine.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    if (ins.op == 83 && ins.n > (U32)start && ins.w[start] == id) {
+                        if (imgVals.insert(ins.resultId).second) { mine.insert(&ins); grew = true; }
+                        continue;
+                    }
+                    return false;
+                }
+                if (ins.op == 61 && ins.n > (U32)start && ins.w[start] == id) { mine.insert(&ins); continue; }
+                if (ins.op == 62 && ins.n >= 1) {
+                    if (ins.w[0] != id) return false; // the pointer stored as a value: an escape
+                    mine.insert(&ins); continue;
+                }
+                if (ins.op >= 227 && ins.op <= 244 && ins.n > (U32)start && ins.w[start] == id) {
+                    if (!r15::texelAtomicOpServed(ins.op)) return false;
+                    if (channels != 1 || !sampledIsInt) return false;
+                    mine.insert(&ins); continue;
+                }
+                if (ins.op == 83 && ins.n > (U32)start && ins.w[start] == id) {
+                    if (texPtrs.insert(ins.resultId).second) { mine.insert(&ins); grew = true; }
+                    continue;
+                }
+                return false;
+            }
+        }
+    }
+    if (formations == 0) return false;
+    covered.insert(mine.begin(), mine.end());
+    return true;
+}
 // R12S mirror: every UniformConstant variable over a Dim=Buffer/Sampled=2
 // image type is consumed only through OpLoad; every traced image value is
 // consumed only by OpImageRead / OpImageWrite with a 32-bit integer scalar
@@ -1679,14 +1961,41 @@ static bool vk64TexelStorageServable(const Vk64RawModule& m, const std::set<U32>
     const std::set<U32> arrayVarIds = vk64RawArrayVarsOver(m, convTy);
     for (U32 v : arrayVarIds) if (!servableArrayVars.count(v)) return false;
     if (varIds.empty() && arrayVarIds.empty()) return false;
+    // FD-62 (R12A): direct variables and array access chains whose
+    // texel cone the R12A rewrite serves are converted before R12S
+    // runs (direct variables in the first R12 pass, R15a clones in the
+    // second), so their instructions are excluded from the R12S
+    // vetting below: the loads R12S would trace, the
+    // OpImageTexelPointer formations naming the variable, and the
+    // texel-pointer uses are R12A's input, not R12S's.
+    std::set<U32> r12aVars;
+    std::set<const Vk64RawInsn*> covered;
+    bool anyCoveredChain = false;
+    for (U32 v : varIds) {
+        const Vk64RawInsn* varInsn = vk64RawOf(m, v);
+        const Vk64RawInsn* ptr = varInsn ? vk64RawOf(m, varInsn->resultType) : nullptr;
+        if (ptr && ptr->n >= 3 && vk64TexelConeServable(m, v, ptr->w[2], covered)) r12aVars.insert(v);
+    }
+    for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++) {
+        const Vk64RawInsn& in = m.insns[ix];
+        if (in.op != 65 && in.op != 66) continue;
+        if (!arrayVarIds.count(vk64RawCopyRoot(m, in.w[in.fv]))) continue;
+        const Vk64RawInsn* arrVar = vk64RawOf(m, vk64RawCopyRoot(m, in.w[in.fv]));
+        const Vk64RawInsn* ptr = arrVar ? vk64RawOf(m, arrVar->resultType) : nullptr;
+        const Vk64RawInsn* arr = ptr && ptr->n >= 3 ? vk64RawOf(m, ptr->w[2]) : nullptr;
+        if (arr && arr->n >= 2 && vk64TexelConeServable(m, in.resultId, arr->w[1], covered)) anyCoveredChain = true;
+    }
+    (void)anyCoveredChain; // chain coverage feeds `covered`; the tail verdict needs only the exclusions
     std::set<U32> traced;
     for (const Vk64RawInsn& in : m.insns) {
         if (in.op == 61 && convTy.count(in.resultType)) {
             if (in.n < 3) return false;
+            if (covered.count(&in)) continue; // an R12A cone load: dead, or a formation's image source
             // Attributed to a converted variable (through OpCopyObject
             // hops) or to a single-index chain over a servable
             // converted array; anything else is an unknown source.
             const U32 root = vk64RawCopyRoot(m, in.w[2]);
+            if (r12aVars.count(root)) continue; // R12A converts this variable; R12S never sees its loads
             if (!varIds.count(root) && !vk64RawChainOver(m, root, arrayVarIds)) return false;
             traced.insert(in.resultId);
         }
@@ -1698,17 +2007,23 @@ static bool vk64TexelStorageServable(const Vk64RawModule& m, const std::set<U32>
                 traced.insert(in.resultId); grew = true;
             }
     }
-    if (traced.empty()) return false;
+    // Nothing traced for R12S: servable exactly when R12A covers every
+    // direct variable (array chains R12S would serve always leave a
+    // traced load, so a chain-only remainder cannot reach this line
+    // with an unserved array unexamined -- its loads were vetted above).
+    if (traced.empty()) return r12aVars.size() == varIds.size() && (!varIds.empty() || !covered.empty());
     // The variable itself may only be consumed by OpLoad inside function
     // bodies (OpImageTexelPointer / atomics on it are not wrappable).
     for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++) {
         const Vk64RawInsn& in = m.insns[ix];
+        if (covered.count(&in)) continue; // R12A cone instructions (formations name the variable)
         if (in.op == 61 || in.op == 83 || in.op == 59) continue;
         switch (in.op) { case 2: case 3: case 4: case 7: case 8: case 10: case 14: case 73: case 75: continue; }
         for (U32 k = in.fv; k < in.n; k++) if (varIds.count(in.w[k])) return false;
     }
     std::vector<const Vk64RawInsn*> writes, reads;
     for (const Vk64RawInsn& in : m.insns) {
+        if (covered.count(&in)) continue; // R12A cone instructions consume only cone-owned values
         if (in.op == 99) { if (in.n >= 1 && traced.count(in.w[0])) writes.push_back(&in); continue; }
         if (in.op == 98) { if (in.n >= 3 && traced.count(in.w[2])) reads.push_back(&in); continue; }
         if (in.op == 61 || in.op == 83 || in.op == 59 || vk64RawIsMetadata(in.op)) continue;

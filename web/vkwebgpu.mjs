@@ -1874,6 +1874,43 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     return st;
   }
 
+  // Resolve a STORAGE texel buffer view (wire kind 6) to a GPUBuffer
+  // for a binding the shader declares in the storage address space --
+  // the spirvfix R12A shape (FD-62): the shader's texel-pointer
+  // variable was rewritten to a storage buffer of texels, so the
+  // view's buffer range IS the binding's backing store, byte for byte
+  // (element i at byte i * texelSize, exactly the guest layout). The
+  // buffer comes from the same content-keyed cache as every other
+  // buffer, is registered in storageBufferRegistry for
+  // V2_BUFFER_READBACK (the shader's writes must reach guest memory),
+  // and carries the batch it was bound in so readback arbitration can
+  // rank it against a texture materialisation of the same range.
+  // Like storageTexelBind, this is called from BOTH the bind-group
+  // fingerprint and bindGroupEntries, so a cache-hit bind still
+  // registers and still observes re-uploads. Returns { gpu, key } or
+  // null when the view cannot be served; the caller drops the bind
+  // loudly -- never a dummy buffer, whose writes would silently
+  // vanish (the worst outcome this tier has).
+  function texelBufferBind(viewHex) {
+    const view = F.bufferViews?.get(viewHex);
+    if (!view) return null;
+    const entry = V2_STORAGE_FORMAT[view.format];
+    if (!entry) { noteUnsupported('storage-texel-format-page', view.format); return null; }
+    const viewLen = Number(view.len);
+    if (!(viewLen > 0)) return null;
+    const qkey = view.bufferId + ':' + view.absOff;
+    const bytes = F.buffers.get(qkey);
+    if (!bytes || bytes.length < viewLen) return null; // the binding's bytes must cover the whole view
+    const hash = F.bufHashes ? F.bufHashes.get(qkey) : undefined;
+    const preHash = hash !== undefined ? hash : null;
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    const bufId0 = 'texview:' + viewHex + ':' + viewLen;
+    const gpu = gpuBufferFor(bufId0, bytes.subarray(0, viewLen), usage, preHash);
+    if (!gpu) return null;
+    storageBufferRegistry.set('texview:' + viewHex, { buffer: gpu, bufId: view.bufferId, baseOff: BigInt(view.absOff), texelView: viewHex, boundSeq: stexelBatchSeq });
+    return { gpu, key: bufferKey(bufId0, bytes.subarray(0, viewLen), usage, 0, preHash) };
+  }
+
   // Readback resolution over the texel directory (finding 2): among
   // the states covering the readback range, the freshest binding wins.
   // Several DISTINCT textures tied at the freshest batch are genuinely
@@ -2683,6 +2720,21 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
+          else if (b && b.kind === 6) {
+            // A storage texel buffer view bound to a buffer declaration
+            // (spirvfix R12A, FD-62): resolving through texelBufferBind,
+            // not just keying, keeps cache-hit binds registered for
+            // readback and alert to re-uploads -- on a fingerprint hit
+            // bindGroupEntries never runs (frontier review finding 2,
+            // as for storageTexelBind in the texture branch below).
+            if (!isStorage) { parts.push('b' + d.binding + ':' + k + ':texbuf-uniform:' + b.obj); continue; }
+            if (b.obj === '0000000000000000') { bufHex = 'zero:' + group + ':' + d.binding + ':' + k; bytes = ZERO4096; }
+            else {
+              const tb = texelBufferBind(b.obj);
+              parts.push('b' + d.binding + ':' + k + ':' + (tb ? tb.key : 'texbuf-missing:' + b.obj));
+              continue;
+            }
+          }
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
           // The size suffix must not depend on whether this frame carried the
           // bytes: a byte-less (deduped) record has no length to compare, but
@@ -2726,6 +2778,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
 
   function bindGroupEntries(prec, sets, inlineMap, group, st) {
     const entries = [];
+    const BIND_DROP = {}; // mk() returns this to fail the whole bind group loudly
     const srcGroup = prec.groupMap ? (prec.groupMap[group] ?? group) : group;
     const set = sets.get(srcGroup);
     const bindings = set ? set.bindings : [];
@@ -2827,6 +2880,25 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
             }
           }
           else if (b && b.kind === 4) { bufHex = 'inline:' + group + ':' + d.binding + ':' + k; bytes = inlineMap.get(group + ':' + d.binding); }
+          else if (b && b.kind === 6) {
+            // A storage texel buffer view bound to a buffer declaration.
+            // spirvfix R12A rewrote the shader's texel-pointer variable
+            // into a storage buffer of texels, so under a storage
+            // declaration the view's buffer range IS the binding
+            // (texelBufferBind). A VK_NULL_HANDLE view falls through to
+            // the zero fallback below (nullDescriptor semantics: reads
+            // zero, writes discarded). A real view that cannot be
+            // served -- or a view record arriving under a uniform
+            // declaration, which no rewrite produces -- drops the whole
+            // bind group loudly: never a dummy buffer a write could
+            // silently vanish into.
+            if (!isStorage) { noteDrop('bind-group-texel-buffer-uniform-decl', b.obj); return BIND_DROP; }
+            if (b.obj !== '0000000000000000') {
+              const tb = texelBufferBind(b.obj);
+              if (!tb) { noteDrop('bind-group-texel-buffer-unavailable', b.obj); return BIND_DROP; }
+              return { buffer: tb.gpu };
+            }
+          }
           // Missing uniform data: substitute a zero buffer large enough for any
           // practical uniform block (WebGPU validates against the shader's struct).
           if (!bytes && !preHash) { bytes = ZERO4096; bufHex = 'zero:' + group + ':' + d.binding + ':' + k; }
@@ -2862,10 +2934,12 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         };
         if (d.arrayCount > 1) {
           const arr = [];
-          for (let k = 0; k < d.arrayCount; k++) arr.push(mk(k));
+          for (let k = 0; k < d.arrayCount; k++) { const r = mk(k); if (r === BIND_DROP) return null; arr.push(r); }
           entries.push({ binding: d.binding, resource: arr });
         } else {
-          entries.push({ binding: d.binding, resource: mk(0) });
+          const r = mk(0);
+          if (r === BIND_DROP) return null;
+          entries.push({ binding: d.binding, resource: r });
         }
       } else if (t.startsWith('texture_storage')) {
         const dimension = wgslTextureViewDimension(t) || '2d';
@@ -3600,9 +3674,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
           v2bufreadbacks.push({ brb, buffer: null, ok: false });
           continue;
         }
-        if (freshPick) { serveTexel(freshPick); continue; }
-        let ent = null;
+        // FD-62 (R12A): a kind-6 view bound in THIS batch as a storage
+        // BUFFER (texelBufferBind) holds its writes in a GPUBuffer, not
+        // in a texture materialisation, so it takes the buffer path
+        // below -- with the same freshness rule freshPick applies: if
+        // the range was ALSO bound as a texture this batch, the
+        // written bytes are genuinely split between two GPU objects
+        // and neither is the truth, so decline loudly rather than
+        // serve either copy.
+        let freshBuf = null;
         for (const cand of storageBufferRegistry.values()) {
+          if (!cand.texelView || cand.boundSeq !== stexelBatchSeq) continue;
+          if (cand.bufId !== brb.srcBuffer) continue;
+          if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { freshBuf = cand; break; }
+        }
+        if (freshBuf && freshPick) {
+          noteUnsupported('buffer-readback-representation-ambiguous', 'a storage texel view over buffer ' + brb.srcBuffer + ' was bound both as a texture and as a buffer this batch; guest receives zeros');
+          v2bufreadbacks.push({ brb, buffer: null, ok: false });
+          continue;
+        }
+        if (freshPick) { serveTexel(freshPick); continue; }
+        let ent = freshBuf;
+        if (!ent) for (const cand of storageBufferRegistry.values()) {
           if (cand.bufId !== brb.srcBuffer) continue;
           if (cand.baseOff <= brb.srcAbsOff && brb.srcAbsOff + brb.size <= cand.baseOff + BigInt(cand.buffer.size)) { ent = cand; break; }
         }
