@@ -1,0 +1,58 @@
+; FD-62 regression fixture: the SABOTAGE twin of atomic-texel-heap.spvasm: the access
+; chain result is copied (OpCopyObject) before the texel pointer is
+; formed on the copy. A classifier that only audits a texel pointer
+; formed directly on the chain id would admit this module while the
+; atomic writes the element unexamined; it must refuse identically. The descriptor-array classifier must
+; refuse it with the named texel-pointer reason: the translation stack
+; rejects OpImageTexelPointer outright.
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability RuntimeDescriptorArray
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %registers %heap %gid
+OpExecutionMode %main LocalSize 1 1 1
+OpName %main "main"
+OpName %RootConstants "RootConstants"
+OpName %registers "registers"
+OpDecorate %RootConstants Block
+OpMemberDecorate %RootConstants 0 Offset 0
+OpMemberDecorate %RootConstants 1 Offset 4
+OpDecorate %heap DescriptorSet 2
+OpDecorate %heap Binding 0
+OpDecorate %gid BuiltIn GlobalInvocationId
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%RootConstants = OpTypeStruct %uint %uint
+%_ptr_PushConstant_RootConstants = OpTypePointer PushConstant %RootConstants
+%registers = OpVariable %_ptr_PushConstant_RootConstants PushConstant
+%11 = OpTypeImage %uint Buffer 0 0 0 2 R32ui
+%_runtimearr_11 = OpTypeRuntimeArray %11
+%_ptr_UniformConstant__runtimearr_11 = OpTypePointer UniformConstant %_runtimearr_11
+%heap = OpVariable %_ptr_UniformConstant__runtimearr_11 UniformConstant
+%v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gid = OpVariable %_ptr_Input_v3uint Input
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%_ptr_UniformConstant_11 = OpTypePointer UniformConstant %11
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+%_ptr_Image_uint = OpTypePointer Image %uint
+%main = OpFunction %void None %3
+%5 = OpLabel
+%32 = OpAccessChain %_ptr_PushConstant_uint %registers %uint_0
+%idx = OpLoad %uint %32
+%30 = OpAccessChain %_ptr_UniformConstant_11 %heap %idx
+%34 = OpLoad %11 %30
+%gv = OpLoad %v3uint %gid
+%gx = OpCompositeExtract %uint %gv 0
+%ci = OpBitcast %int %gx
+%cp = OpCopyObject %_ptr_UniformConstant_11 %30
+%tp = OpImageTexelPointer %_ptr_Image_uint %cp %ci %uint_0
+%r = OpAtomicOr %uint %tp %uint_1 %uint_0 %uint_1
+OpReturn
+OpFunctionEnd

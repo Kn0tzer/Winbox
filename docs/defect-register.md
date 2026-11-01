@@ -1362,6 +1362,15 @@ do not close the entry until they land.
   FD-50 at integration — FD-48 was taken on the
   integration branch by the restart-certification
   entry above.)*
+  Re-confirmed 2026-11-01 by the FD-62 lane, on this
+  register's base and on the then-current integration
+  tip: the standard harness aborts identically (the
+  fn-921 handler writing 8 bytes through a
+  host-pointer-range value as a guest address; gdb
+  backtrace in the FD-62 record). The FD-62 native
+  guards sit behind this abort in the harness and were
+  proven via a scratch classifier harness; they run in
+  the standard harness once this entry lands.
 - **FD-49 — A class of captured Godot shader modules fails
   translation on format-less storage images. CLOSED 2026-10-31 — see CL-16.** *(Severity
   unmeasured)* Found by the FD-16 lane (2026-10-31) while
@@ -1479,6 +1488,80 @@ do not close the entry until they land.
   *(Numbered FD-61 on this lane branch; the FD-55/FD-57
   lane branches carry FD-61/FD-62/FD-63 for unrelated
   items — the merge lane renumbers one set.)*
+- **FD-62 — A class of real shader modules is refused
+  over atomic operations performed through image texel
+  pointers; the refusal now rests on the true, named
+  blocker, but the modules remain unserved because the
+  translation stack rejects OpImageTexelPointer
+  outright.** *(Medium — the affected pipelines fail
+  creation outright; measured in the FD-55 proof run
+  as two 0x80004005 pipeline failures from the captured
+  Godot module)* Found by the FD-55 lane (2026-11-01;
+  numbered FD-57 on that lane's register, renumbered
+  FD-62 in the composed numbering). The captured
+  fragment module `6f52b154d73c804f` (fixture:
+  `testdata/spirv/godot-fs-atomic-texel-heap.spv`)
+  indexes a writable storage-image heap array (set 4,
+  binding 0) and runs `OpAtomicOr` through
+  `OpImageTexelPointer` on the elements. Both audit
+  mirrors (spirvfix `r15PointerUses`, bridge
+  `r15::pointerUses`) treated forming a texel pointer
+  from an array element as a generic pointer escape
+  (`array element pointer escape (op60)`) and never
+  audited the pointer's uses — the refusal was correct
+  only by accident, and this register's originally
+  suggested fix (follow the pointer and admit its
+  uses) would have flipped the modules to served at
+  the audit while the translation stack cannot serve
+  them: measured 2026-11-01 against the vendored
+  translator (naga 30.0.1), ANY module containing an
+  OpImageTexelPointer fails translation
+  (UnsupportedStorageClass(Image) for 2D storage
+  images on every backend; Buffer-dim images fail
+  earlier with UnsupportedCapability(ImageBuffer)) —
+  admission would have moved the failure later and
+  quieter, the FD-49 failure shape. The FD-62 lane
+  (branch `lane-fd57`) hardened the audit instead, in
+  both mirrors, instruction-for-instruction: the uses
+  analysis now audits THROUGH OpImageTexelPointer —
+  the texel pointer's loads, stores and atomics
+  classify as image-content reads/writes, counted
+  separately from writes to the descriptor slot
+  itself; the texel pointer VALUE escaping (stored,
+  passed on) stays an escape; the array classifier
+  refuses any texel formation through an element with
+  a named reason (`texel-pointer atomic write through
+  an array element is not served (the translation
+  stack rejects OpImageTexelPointer)`, with store/use
+  variants); the root-descriptor mirrors account
+  texel writes as rejections on the same terms. Net
+  behaviour change: zero modules change verdict —
+  every module served today stays served, every
+  refused module stays refused; only the
+  classification content and the refusal reasons
+  changed. Proof: JS suite
+  `spirvfix-texel-pointer-arrays.test.mjs` (5 tests
+  over the captured module itself plus three
+  hand-authored fixtures — minimal reduction,
+  OpCopyObject sabotage twin, two-array attribution,
+  stored-pointer escape) fails 5/5 before the change
+  and passes after; the native mirror guard in
+  `tools/vkd3d/tests/vk64_native_test.cpp` is proven
+  via a scratch classifier harness (the standard
+  harness cannot reach it until FD-50 lands); one
+  pre-existing r15 test pin moved from the old escape
+  wording to the named reason, its refusal assertions
+  kept and strengthened. Closing this entry requires
+  a translation stack that ingests OpImageTexelPointer
+  (translator support for the Image pointer storage
+  class and Buffer-dim storage images), or a sound
+  pre-translation rewrite eliminating texel pointers
+  (loads/stores have image read/write equivalents;
+  atomics through texel pointers have no WGSL
+  equivalent and need a different serving strategy).
+  Until then the named refusal is the correct end
+  state. Record:
+  `docs/reports/fd62-texel-pointer-atomics-20261101.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -1509,6 +1592,7 @@ is behavioural, is re-proven there.
 | `lane-fd48-restart-cert` | FD-48: the 32-bit open paths now emit the process-spawn signal (`OPENED '<path>' -> fd <n>` on successful .exe opens) that the FD-47 handshake's explorer element matches — the line existed only on the 64-bit path, so no 32-bit session could ever be certified; FD-54 registered (DLLTRACE dialect) | boot32-vkboot x18 on the branch dist: 14 single-attempt certifications, 2 restart-shape certifications (one after the full restart budget), 2 genuinely dead runs certified zero times; unsigned-control sabotage boot: old cert fires on `0xc000000d`, new cert 0, page cert 0; JS 342/0; no readiness rule changed |
 | `lane-fd49` | FD-49: format-less storage images at multi-type heap bindings — six captured Godot compute modules failed translation (the R14 signature keyed one format per binding while two storage image types share it; specialized clones of both types then collide at one binding in the translator; one empty shader poisoned by unreferenced format-less type declarations). Fixed in `df68b0d92`: per-type signature entries (`set:binding@typeKey=fmt`), specialized-binding-split (surplus clones move to fresh bindings, origin kept in the clone name and honoured as `origBinding`), and prune-dead-storage-image-types for the unreferenced declarations; every refusal left in place stays fail-closed | New suite `vk-storage-format-multi-type.test.mjs` (10 tests) over the six captured modules themselves through the tier path: all translate post-fix (fail-before on the pristine tree: `UnsupportedCapability(StorageImageReadWithoutFormat)` x5, `InvalidStorageImageWithoutFormat` x1), sabotage set holds (legacy/partial/kind-swapped signatures still rejected; live types never pruned). Full JS unit suite 339 passed / 4 failed: provenance-artifacts + runtime-completeness are dist-less-worktree audits (this lane builds no dist); vk-descriptor-binding-remap + vk-register-citations were broken by the change (source pin, citation drift) and fixed in the same commit, re-verified green standalone. Measured impact: in the captured Godot run nothing user-visible was blocked (modules accepted at creation, demo presented; no dispatch reached translation of them) — the class is latent: the first dispatch building a pipeline on one would have dropped its work silently. Record: `docs/reports/fd49-storage-image-formats-20261031.md`. NOTE for the merge lane: FD-49's open entry lives in this register on `lane-fd16`'s branch; this row is the fixing half — compose A->C at merge |
 | `lane-fd50` | FD-50: the native bridge harness aborted at the fn-921 pipeline-cache assertions — the test called the trapping wrapper with a host pointer, so the bridge wrote its answer through a host stack address as a guest address and the fixture's bounds-checked memory model killed the process, silently skipping every later section (including the FD-16 SPIR-V audit guards). The call now follows the fixture's own convention for trapping wrappers: the size slot is guest memory, the result is read back from guest memory, and the trap target is pinned | Pristine base: SIGABRT at the fn-921 call (gdb backtrace to the bridge's cache-data write, vk64bridge.cpp fn-921 case); fixed: `run-native.py` runs to completion, 52 PASS lines, exit 0; sabotage (the bridge's fn-921 write withheld) aborts at the new read-back assertion; sanitizer flavour: all 52 sections execute and pass, the only finding is the readback-leak report registered as FD-61. Record: `docs/reports/fd50-native-harness-completion-20261101.md` |
+| `lane-fd57` | FD-62 audit hardening (the defect itself stays OPEN in Section A — this row is the classification half awaiting merge): both descriptor-array audit mirrors now audit through OpImageTexelPointer and refuse texel-pointer forms through an array element with a named reason naming the true blocker (the translation stack rejects OpImageTexelPointer), instead of an incidental generic pointer escape; zero modules change verdict | JS suite `spirvfix-texel-pointer-arrays.test.mjs` 5/5 (red 5/5 pre-fix) over the captured Godot module + reduction/copy-sabotage/attribution/escape fixtures; native classifier guard proven via a scratch harness (the standard harness is blocked by FD-50's abort, re-confirmed by this lane); full JS unit suite green except the dist-state audits of an unbuilt lane tree; vulkan citation register re-pinned through the exact diff line map (citations suite green, incl. the pre-existing reg:410 dual-cite drift). Record: `docs/reports/fd62-texel-pointer-atomics-20261101.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call

@@ -84,7 +84,7 @@ const Op = {
   SpecConstantTrue: 48, SpecConstantFalse: 49, SpecConstant: 50,
   SpecConstantComposite: 51, SpecConstantOp: 52,
   Function: 54, FunctionParameter: 55, FunctionEnd: 56, FunctionCall: 57,
-  Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, PtrAccessChain: 67,
+  Variable: 59, ImageTexelPointer: 60, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, PtrAccessChain: 67,
   Decorate: 71, MemberDecorate: 72, GroupDecorate: 74,
   SampledImage: 86,
   Capability: 17, ImageFetch: 95, Image: 100, Bitcast: 124, UDiv: 134, UMod: 137,
@@ -3669,10 +3669,26 @@ export function r15IdUseIndex(ctx, ins, id) {
 // it or through chains/copies rooted at it), writes (Store / atomic RMW),
 // escapes (anything not positively classified). Also collects the cone of
 // access-chain instructions rooted at the pointer.
+//
+// A tracked id consumed as the Image operand of OpImageTexelPointer is
+// followed THROUGH the texel pointer (FD-62): the texel pointer's own
+// loads / stores / atomics are reads and writes of the image CONTENT,
+// counted separately (texelWrites / texelStoreWrites / texelAtomicWrites)
+// from writes to the tracked slot itself -- an OpStore through a texel
+// pointer rewrites a texel, not the descriptor slot. The texel pointer
+// value itself escaping (stored as a value, passed on, chained further,
+// or forming a second texel pointer) stays an escape, as does any other
+// unclassified use. Callers decide what the texel counts mean: the
+// descriptor-array classifier refuses on any texel formation through an
+// element, because the translation stack rejects OpImageTexelPointer
+// outright (the vendored translator refuses the Image pointer storage
+// class for every backend, measured 2026-11-01) -- the classification
+// names the true blocker instead of reporting a generic pointer escape
+// for what is in fact an examined, understood use.
 function r15PointerUses(ctx, rootId) {
-  const out = { reads: 0, writes: 0, storeWrites: 0, atomicWrites: 0, escapes: [], cone: [] };
+  const out = { reads: 0, writes: 0, storeWrites: 0, atomicWrites: 0, texelFormed: 0, texelWrites: 0, texelStoreWrites: 0, texelAtomicWrites: 0, escapes: [], cone: [] };
   const seen = new Set();
-  const visit = (pid, depth) => {
+  const visit = (pid, depth, texel) => {
     if (depth > 16 || seen.has(pid)) return;
     seen.add(pid);
     for (let ii = ctx.firstFunc; ii < ctx.mod.insns.length; ii++) {
@@ -3680,23 +3696,31 @@ function r15PointerUses(ctx, rootId) {
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
       const hit = r15IdUseIndex(ctx, ins, pid);
       if (hit < 0) continue;
-      if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
-        out.cone.push(ins); visit(ins.resultId, depth + 1); continue;
+      if (!texel && (ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+        out.cone.push(ins); visit(ins.resultId, depth + 1, false); continue;
       }
-      if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1); continue; }
+      if (ins.op === Op.CopyObject && hit === start) { visit(ins.resultId, depth + 1, texel); continue; }
+      if (!texel && ins.op === Op.ImageTexelPointer && hit === start) {
+        out.texelFormed++; visit(ins.resultId, depth + 1, true); continue;
+      }
       if (ins.op === Op.Load && hit === start) { out.reads++; continue; }
       if (ins.op === Op.Store) {
-        if (hit === start) { out.writes++; out.storeWrites++; } else out.escapes.push('pointer stored as a value');
+        if (hit === start) {
+          if (texel) { out.texelWrites++; out.texelStoreWrites++; }
+          else { out.writes++; out.storeWrites++; }
+        } else out.escapes.push('pointer stored as a value');
         continue;
       }
       if (ins.op >= 227 && ins.op <= 245 && hit === start) {
-        if (ins.op === R15_OP.AtomicLoad) out.reads++; else { out.writes++; out.atomicWrites++; }
+        if (ins.op === R15_OP.AtomicLoad) out.reads++;
+        else if (texel) { out.texelWrites++; out.texelAtomicWrites++; }
+        else { out.writes++; out.atomicWrites++; }
         continue;
       }
       out.escapes.push('op' + ins.op);
     }
   };
-  visit(rootId, 0);
+  visit(rootId, 0, false);
   return out;
 }
 
@@ -3793,6 +3817,7 @@ export function analyzeDescriptorArrays(mod) {
       varId: ins.resultId, varIns: ins, set: d.set ?? 0, binding: d.binding ?? 0,
       elemTypeId: pointee.words[1], elemKind, sc: ptr.words[1],
       signatures: [], servable: false, reason: null, writable: false,
+      texelFormed: 0, texelAtomicWrites: 0, texelStoreWrites: 0,
     };
     if (!elemKind) { rec.reason = 'array element is not a descriptor type'; arrays.push(rec); continue; }
     // Writability only exists for storage images (Sampled==2); sampled
@@ -3803,7 +3828,9 @@ export function analyzeDescriptorArrays(mod) {
     // object) translate to a storage-texture store on the scalar clone.
     // Recorded on the rec for the census/tests; the per-chain uses
     // analysis below still fails closed on pointer-level stores, atomics
-    // and escapes (texel-pointer forms included).
+    // and escapes, and on texel-pointer forms, which the uses analysis
+    // now classifies explicitly (FD-62) and this classifier refuses
+    // with a named reason below.
     rec.writable = elemKind === 'image' && elem.words[6] === 2 && !d.nonWritable;
     const sigKeys = new Map();
     let bad = null;
@@ -3819,8 +3846,19 @@ export function analyzeDescriptorArrays(mod) {
         const key = sig.kind === 'const' ? 'c' + sig.value : 'p' + sig.byteOff + 'a' + sig.add;
         sigKeys.set(key, sig);
         const cu = r15PointerUses(ctx, u.resultId);
+        rec.texelFormed += cu.texelFormed;
+        rec.texelAtomicWrites += cu.texelAtomicWrites;
+        rec.texelStoreWrites += cu.texelStoreWrites;
         if (cu.writes > 0) { bad = 'store through an array element'; break; }
         if (cu.escapes.length) { bad = 'array element pointer escape (' + cu.escapes[0] + ')'; break; }
+        if (cu.texelFormed > 0) {
+          bad = cu.texelAtomicWrites > 0
+            ? 'texel-pointer atomic write through an array element is not served (the translation stack rejects OpImageTexelPointer)'
+            : cu.texelStoreWrites > 0
+              ? 'texel-pointer store through an array element is not served (the translation stack rejects OpImageTexelPointer)'
+              : 'texel-pointer use through an array element is not served (the translation stack rejects OpImageTexelPointer)';
+          break;
+        }
         rec.signatures.push({ sig, chainId: u.resultId });
       } else {
         bad = 'array variable use op' + u.op;
@@ -3876,6 +3914,7 @@ export function analyzeRootDescriptors(mod) {
     s.mats.push(m);
     if (m.uses.writes > 0) s.writable = true;
     s.atomicWrites += m.uses.atomicWrites || 0;
+    s.texelWrites = (s.texelWrites || 0) + (m.uses.texelWrites || 0);
     s.escapes.push(...m.uses.escapes);
     s.pointees.add(m.pointeeId);
     for (const c of m.uses.cone) s.coneTypes.add(c.resultType);
@@ -3909,6 +3948,7 @@ export function analyzeRootDescriptors(mod) {
   const flip = new Set();
   for (const s of out.slots) {
     if (s.atomicWrites > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through an atomic operation (atomics not served)'; return out; }
+    if ((s.texelWrites || 0) > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through a texel pointer (not served)'; return out; }
     if (s.escapes.length) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointer escapes (' + s.escapes[0] + ')'; return out; }
     if (s.pointees.size !== 1) { out.rejectReason = 'root slot push@' + s.byteOff + ' has ' + s.pointees.size + ' distinct pointee types'; return out; }
     const pointeeId = [...s.pointees][0];

@@ -921,28 +921,38 @@ inline int findIdUse(const Module& m, const Insn& in, U32 id) {
     return scanIds(start, n);
 }
 
-struct Uses { int reads = 0, writes = 0, storeWrites = 0, atomicWrites = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
+struct Uses { int reads = 0, writes = 0, storeWrites = 0, atomicWrites = 0; int texelFormed = 0, texelWrites = 0, texelStoreWrites = 0, texelAtomicWrites = 0; std::vector<std::string> escapes; std::vector<U32> coneTypes; };
 inline void pointerUses(const Module& m, U32 rootId, Uses& out) {
+    // FD-62: a tracked id consumed as the Image operand of
+    // OpImageTexelPointer (op 60) is followed THROUGH the texel pointer:
+    // the texel pointer's loads / stores / atomics are reads and writes
+    // of the image CONTENT, counted separately (texelWrites /
+    // texelStoreWrites / texelAtomicWrites) from writes to the tracked
+    // slot itself. The texel pointer value itself escaping (stored as a
+    // value, passed on, chained further, a second texel pointer) stays
+    // an escape. Mirrors r15PointerUses in spirvfix.mjs.
+    struct Frame { U32 id; int depth; bool texel; };
     std::unordered_set<U32> seen;
-    std::vector<std::pair<U32, int>> stack;
-    stack.push_back({rootId, 0});
+    std::vector<Frame> stack;
+    stack.push_back({rootId, 0, false});
     while (!stack.empty()) {
-        auto [pid, depth] = stack.back(); stack.pop_back();
+        auto [pid, depth, texel] = stack.back(); stack.pop_back();
         if (depth > 16 || seen.count(pid)) continue;
         seen.insert(pid);
         for (size_t ii = m.firstFunc; ii < m.insns.size(); ii++) {
             const Insn& in = m.insns[ii];
             int hit = findIdUse(m, in, pid);
             if (hit < 0) continue;
-            if ((in.op == 65 || in.op == 66) && hit == (int)in.fv) { out.coneTypes.push_back(in.resultType); stack.push_back({in.resultId, depth + 1}); continue; }
-            if (in.op == 83 && hit == (int)in.fv) { stack.push_back({in.resultId, depth + 1}); continue; }
+            if ((in.op == 65 || in.op == 66) && !texel && hit == (int)in.fv) { out.coneTypes.push_back(in.resultType); stack.push_back({in.resultId, depth + 1, false}); continue; }
+            if (in.op == 83 && hit == (int)in.fv) { stack.push_back({in.resultId, depth + 1, texel}); continue; }
+            if (in.op == 60 && !texel && hit == (int)in.fv) { out.texelFormed++; stack.push_back({in.resultId, depth + 1, true}); continue; }
             if (in.op == 61 && hit == (int)in.fv) { out.reads++; continue; }
             if (in.op == 62) {
-                if (hit == (int)in.fv) { out.writes++; out.storeWrites++; } else out.escapes.push_back("pointer stored as a value");
+                if (hit == (int)in.fv) { if (texel) { out.texelWrites++; out.texelStoreWrites++; } else { out.writes++; out.storeWrites++; } } else out.escapes.push_back("pointer stored as a value");
                 continue;
             }
             if (in.op >= 227 && in.op <= 245 && hit == (int)in.fv) {
-                if (in.op == 227) out.reads++; else { out.writes++; out.atomicWrites++; }
+                if (in.op == 227) out.reads++; else if (texel) { out.texelWrites++; out.texelAtomicWrites++; } else { out.writes++; out.atomicWrites++; }
                 continue;
             }
             out.escapes.push_back("op" + std::to_string(in.op));
@@ -1270,6 +1280,7 @@ inline RootVerdict analyzeRoot(const Module& m) {
         bool slotWritable = false;
         for (const Mat* mt : kv.second) {
             if (mt->uses.atomicWrites > 0) return out;
+            if (mt->uses.texelWrites > 0) return out;
             if (mt->uses.storeWrites > 0) slotWritable = true;
             if (!mt->uses.escapes.empty()) return out;
             pointees.insert(mt->pointeeId);
@@ -1317,10 +1328,10 @@ inline RootVerdict analyzeRoot(const Module& m) {
     return out;
 }
 
-struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; std::set<U32> servableVars; };
+struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; std::set<U32> servableVars; std::map<U32, U32> texelAtomicByVar; };
 inline ArrayVerdict analyzeArrays(const Module& m) {
     ArrayVerdict out;
-    struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; };
+    struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; U32 texelAtomicWrites = 0; };
     std::vector<Arr> arrs;
     for (const Insn& in : m.insns) {
         if (in.op != 59) continue;
@@ -1342,6 +1353,10 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
         // analyzeDescriptorArrays in spirvfix.mjs (rec.writable). The
         // module-level spirv-storage-image-write rejection for graphics
         // modules is a separate check below and stands unchanged.
+        // Texel-pointer forms through an element refuse the array
+        // (FD-62): pointerUses classifies them explicitly and the
+        // per-chain check below fails closed on any formation, because
+        // the translation stack rejects OpImageTexelPointer outright.
         {
             std::set<std::string> sigs; bool bad = false; int nAcc = 0;
             for (size_t ii = m.firstFunc; ii < m.insns.size() && !bad; ii++) {
@@ -1355,13 +1370,15 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
                                            : ("p" + std::to_string(ex.byteOff) + "a" + std::to_string(ex.add)));
                     nAcc++;
                     Uses cu; pointerUses(m, u.resultId, cu);
-                    if (cu.writes > 0 || !cu.escapes.empty()) { bad = true; break; }
+                    a.texelAtomicWrites += (U32)cu.texelAtomicWrites;
+                    if (cu.writes > 0 || !cu.escapes.empty() || cu.texelFormed > 0) { bad = true; break; }
                 } else bad = true;
             }
             if (!bad && nAcc > 0) a.servable = true; // any number of distinct signatures: one clone each (spirvfix R15a)
         }
         arrs.push_back(a);
         if (a.servable) out.servableVars.insert(in.resultId);
+        if (a.texelAtomicWrites > 0) out.texelAtomicByVar[in.resultId] = a.texelAtomicWrites;
     }
     if (!out.hasDescriptorArrays) return out;
     out.servable = true;

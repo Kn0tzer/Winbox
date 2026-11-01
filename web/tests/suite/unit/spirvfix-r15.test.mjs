@@ -238,17 +238,22 @@ test('R15a fail-closed: a store through the element pointer defeats specializati
   assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
 });
 
-test('R15a fail-closed: a texel-pointer use of the element is an escape', () => {
+test('R15a fail-closed: a texel-pointer formed on the element defeats specialization', () => {
   const mod = parseSpirv(uavWriteBytes);
   mod.header.bound = 300;
   const ret = mod.insns.findIndex(i => i.op === 253);
   assert.ok(ret > 0);
   // OpImageTexelPointer(resultType %29, id %93, image = chain %30, coord %38, sample %37):
-  // the element pointer escapes into a texel pointer -- no WGSL equivalent.
+  // forming a texel pointer on the element refuses the array -- the
+  // translation stack rejects OpImageTexelPointer outright. Since
+  // FD-62 the uses analysis classifies the formation explicitly and
+  // the refusal names it, instead of the former generic pointer
+  // escape (op60); the fail-closed verdict is unchanged.
   mod.insns.splice(ret, 0, { op: 60, words: [29, 93, 30, 38, 37], resultType: 29, resultId: 93 });
   const { arrays } = analyzeDescriptorArrays(mod);
   assert.equal(arrays[0].servable, false);
-  assert.match(arrays[0].reason, /escape \(op60\)/);
+  assert.match(arrays[0].reason, /texel-pointer use through an array element is not served/);
+  assert.equal(arrays[0].texelFormed, 1);
   const fixed = applySpirvFix(serializeSpirv(mod));
   assert.ok(!fixed.applied.includes('descriptor-array-specialize'));
 });
