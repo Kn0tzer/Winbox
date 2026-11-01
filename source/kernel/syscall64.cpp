@@ -4445,6 +4445,74 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
     mem->unlockPages();
 }
 
+// FD-77: no-progress tracking for the thread dump. A thread the dump
+// calls "running" (no guest wait condition) can be executing guest code,
+// waiting inside a host-side path the dump cannot see (a browser-proxied
+// call it is blocked in, a wait inside a syscall implementation), or
+// genuinely stuck; the old line could not tell these apart, and register
+// snapshots do not either (healthy sessions park whole thread pools at
+// byte-identical snapshots for minutes). The discriminator is the CPU's
+// executed-op counter (blockInstructionCount on the 32-bit core,
+// instructionCount on the 64-bit core): it advances only while the
+// thread's own host thread runs guest ops. The dump remembers each
+// running thread's counter across dumps and reports how long it has not
+// moved (noprogress_ms), plus a per-process minimum. A parked session
+// (FD-77) is then machine-readable in the capture: every running thread
+// of the main process at a large noprogress_ms while nothing presents.
+// The bookkeeping lives in dump-private statics guarded by a mutex only
+// this function ever takes (the dump runs on the browser main thread),
+// so the dump's never-block-on-an-emulator-lock contract is preserved.
+#include <map>
+#include <mutex>
+#include <set>
+
+int bw64FsZipUrlProxyStats(U32* oldestTid, U64* oldestAgeMs);
+
+namespace {
+struct BwStallRec {
+    U64 counter = 0;
+    U64 sinceMs = 0;
+};
+std::map<U64, BwStallRec> bwStallHistory;
+std::mutex bwStallMutex;
+
+struct BwProcStallAgg {
+    U32 running = 0;
+    U64 minNoprogress = ~0ULL;
+};
+
+// Observes one thread for this dump. Returns the thread's no-progress
+// age in ms: 0 when it executed ops since the previous dump, is blocked
+// on a guest wait condition, or is seen for the first time.
+U64 bwStallObserve(U32 pid, U32 tid, U64 counter, bool running, U64 nowMs,
+                   std::set<U64>& seen) {
+    const U64 key = ((U64)pid << 32) | tid;
+    std::lock_guard<std::mutex> guard(bwStallMutex);
+    seen.insert(key);
+    auto it = bwStallHistory.find(key);
+    if (!running) {
+        if (it != bwStallHistory.end()) bwStallHistory.erase(it);
+        return 0;
+    }
+    if (it == bwStallHistory.end() || it->second.counter != counter) {
+        BwStallRec rec;
+        rec.counter = counter;
+        rec.sinceMs = nowMs;
+        bwStallHistory[key] = rec;
+        return 0;
+    }
+    return nowMs - it->second.sinceMs;
+}
+
+void bwStallSweep(const std::set<U64>& seen) {
+    std::lock_guard<std::mutex> guard(bwStallMutex);
+    for (auto it = bwStallHistory.begin(); it != bwStallHistory.end();) {
+        if (!seen.count(it->first)) it = bwStallHistory.erase(it);
+        else ++it;
+    }
+}
+} // namespace
+
 // Called by the demo diagnostic timer only when the runtime URL opts in with
 // ?bw64diag=threads. The wrapper maps that URL flag to BW_THREAD_DUMP before
 // Emscripten caches ENV, so normal launches do not emit these snapshots.
@@ -4482,6 +4550,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
     U32 dumped = 0;
     U32 skippedLock = 0;
     klog_fmt("BW_THREAD_DUMP begin maxTid=%u", maxTid);
+    const U64 dumpNowMs = (U64)(KSystem::getMicroCounter() / 1000);
+    U32 proxyOldestTid = 0;
+    U64 proxyOldestMs = 0;
+    const int proxyInFlight = bw64FsZipUrlProxyStats(&proxyOldestTid, &proxyOldestMs);
+    std::set<U64> stallSeen;
+    std::map<U32, BwProcStallAgg> procAgg;
     for (U32 tid = 1; tid <= maxTid; ++tid) {
         bool lockBlocked = false;
         // FD-44: reference-held across the dump reads below (the dump
@@ -4505,7 +4579,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
             CPU64* c = thread->cpu64;
             const U64 nr = c->reg[X64_RAX].u64;
             const U64 rip = blocked ? c->syscallRip : c->rip;
-            klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%llu) args=0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx rip=0x%llx wait=%s",
+            const U64 stallMs = bwStallObserve(pid, thread->id, c->instructionCount,
+                                               !blocked, dumpNowMs, stallSeen);
+            if (!blocked) {
+                BwProcStallAgg& agg = procAgg[pid];
+                agg.running++;
+                if (stallMs < agg.minNoprogress) agg.minNoprogress = stallMs;
+            }
+            klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%llu) args=0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx rip=0x%llx wait=%s noprogress_ms=%llu",
                      pid, thread->id, state,
                      blocked ? x64SyscallName(nr) : "-",
                      (unsigned long long)(blocked ? nr : 0),
@@ -4515,7 +4596,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                      (unsigned long long)c->reg[X64_R10].u64,
                      (unsigned long long)c->reg[X64_R8].u64,
                      (unsigned long long)c->reg[X64_R9].u64,
-                     (unsigned long long)rip, waitName);
+                     (unsigned long long)rip, waitName, (unsigned long long)stallMs);
             if (blocked && thread->process &&
                 (nr == X64_SYS_read || nr == X64_SYS_readv || nr == X64_SYS_recvfrom || nr == X64_SYS_recvmsg)) {
                 bool fdBlocked = false;
@@ -4546,13 +4627,33 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 #endif
         CPU* c = thread->cpu;
         const U32 nr = c ? c->reg[0].u32 : 0;
-        klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%u) args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x rip=0x%x wait=%s",
+        const U64 stallMs = c ? bwStallObserve(pid, thread->id,
+                                               (U64)c->blockInstructionCount,
+                                               !blocked, dumpNowMs, stallSeen)
+                              : 0;
+        if (c && !blocked) {
+            BwProcStallAgg& agg = procAgg[pid];
+            agg.running++;
+            if (stallMs < agg.minNoprogress) agg.minNoprogress = stallMs;
+        }
+        klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%u) args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x rip=0x%x wait=%s eax=0x%x noprogress_ms=%llu",
                  pid, thread->id, state, blocked ? "x86" : "-", blocked ? nr : 0,
                  c ? c->reg[3].u32 : 0, c ? c->reg[1].u32 : 0,
                  c ? c->reg[2].u32 : 0, c ? c->reg[6].u32 : 0,
                  c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
-                 c ? c->eip.u32 : 0, waitName);
+                 c ? c->eip.u32 : 0, waitName, c ? c->reg[0].u32 : 0,
+                 (unsigned long long)stallMs);
         thread->releaseRef();
+    }
+    bwStallSweep(stallSeen);
+    for (const auto& kv : procAgg) {
+        klog_fmt("BW_THREAD_DUMP proc pid=%u running=%u min_noprogress_ms=%llu",
+                 kv.first, kv.second.running,
+                 (unsigned long long)kv.second.minNoprogress);
+    }
+    if (proxyInFlight >= 0) {
+        klog_fmt("BW_THREAD_DUMP proxyfetch inflight=%d oldest_tid=%u oldest_ms=%llu",
+                 proxyInFlight, proxyOldestTid, (unsigned long long)proxyOldestMs);
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);

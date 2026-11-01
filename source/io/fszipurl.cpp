@@ -146,6 +146,68 @@ EM_JS(void, bw64StartFetch, (double ctxAddr, double jobAddr, const char* url, do
     });
 });
 
+// FD-77: occupancy of the synchronous proxy call below. A caller blocked
+// in emscripten_proxy_sync_with_ctx holds no guest wait condition, so the
+// guest thread dump calls it "running"; and if the main thread never runs
+// the queued task, the JS stall watchdog inside bw64StartFetch never arms
+// either -- the wait is silent from every pre-existing instrument. Track
+// in-flight calls (keyed by (pid, tid) of the calling guest thread) so
+// the dump can name them. Atomics only; no locks, no allocation.
+static std::atomic<int> g_syncFetchProxyInFlight{0};
+struct SyncFetchProxySlot {
+    std::atomic<U64> key{0}; // ((pid << 32) | tid); 1 = caller unknown
+    std::atomic<U64> sinceMs{0};
+};
+static SyncFetchProxySlot g_syncFetchProxySlots[64];
+
+class SyncFetchProxyGuard {
+public:
+    SyncFetchProxyGuard() {
+        U64 key = 1;
+        if (KThread* t = KThread::currentThread()) {
+            key = ((U64)t->process->id << 32) | (U64)t->id;
+        }
+        g_syncFetchProxyInFlight.fetch_add(1, std::memory_order_relaxed);
+        for (auto& slot : g_syncFetchProxySlots) {
+            U64 expected = 0;
+            if (slot.key.compare_exchange_strong(expected, key)) {
+                slot.sinceMs.store((U64)emscripten_get_now(),
+                                   std::memory_order_relaxed);
+                claimed = &slot;
+                break;
+            }
+        }
+    }
+    ~SyncFetchProxyGuard() {
+        if (claimed) {
+            claimed->sinceMs.store(0, std::memory_order_relaxed);
+            claimed->key.store(0, std::memory_order_relaxed);
+        }
+        g_syncFetchProxyInFlight.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+private:
+    SyncFetchProxySlot* claimed = nullptr;
+};
+
+int bw64FsZipUrlProxyStats(U32* oldestTid, U64* oldestAgeMs) {
+    const U64 now = (U64)emscripten_get_now();
+    U64 oldest = 0;
+    U32 oldestT = 0;
+    for (auto& slot : g_syncFetchProxySlots) {
+        const U64 key = slot.key.load(std::memory_order_relaxed);
+        if (!key) continue;
+        const U64 since = slot.sinceMs.load(std::memory_order_relaxed);
+        if (since && now >= since && now - since > oldest) {
+            oldest = now - since;
+            oldestT = (U32)(key & 0xFFFFFFFFu);
+        }
+    }
+    if (oldestTid) *oldestTid = oldestT;
+    if (oldestAgeMs) *oldestAgeMs = oldest;
+    return g_syncFetchProxyInFlight.load(std::memory_order_relaxed);
+}
+
 static EMSCRIPTEN_KEEPALIVE void bw64FetchOnMain(em_proxying_ctx* ctx, void* arg) {
     FetchJob* job = (FetchJob*)arg;
     bw64StartFetch((double)(uintptr_t)ctx, (double)(uintptr_t)job, job->url,
@@ -162,6 +224,7 @@ static int bw64SyncFetchRange(const char* url, double start, double endIncl, U8*
     job.dst = dst;
     job.want = want;
     job.result = -1;
+    SyncFetchProxyGuard proxyGuard;
     if (!emscripten_proxy_sync_with_ctx(emscripten_proxy_get_system_queue(),
                                         emscripten_main_runtime_thread_id(),
                                         bw64FetchOnMain, &job)) {
@@ -541,4 +604,12 @@ unzFile fsZipUrlOpen(BString spec) {
     return nullptr;
 }
 
+#endif
+
+#if !defined(BOXEDWINE_ZLIB) || !defined(__EMSCRIPTEN__)
+int bw64FsZipUrlProxyStats(U32* oldestTid, U64* oldestAgeMs) {
+    if (oldestTid) *oldestTid = 0;
+    if (oldestAgeMs) *oldestAgeMs = 0;
+    return -1;
+}
 #endif
