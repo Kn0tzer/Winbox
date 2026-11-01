@@ -454,6 +454,72 @@ do not close the entry until they land.
   `test-results/fd12/consumer-hunt-4/`,
   `test-results/fd12/consumer-verify-*/`,
   `test-results/fd12/consumer-posthunt-*/`.
+  **Update (FD-77 follow-up lane, 2026-11-01; record
+  `docs/reports/fd77-frozen-constellation-20261101.md`;
+  evidence `test-results/fd77/`):** the specified capture
+  was taken on the shipped FD-12 build through the public
+  route (deploy lane, `test-results/deploy-fd12-20261101/
+  chromium-consumer-b1/`): the constellation PERSISTED —
+  13 main-process threads running with no wait condition,
+  byte-identical from the second dump (123.6 s) through
+  the fifteenth (903.6 s); it did not collapse to a single
+  stranded fetcher. This lane then resolved what those
+  threads are, and taught the dump to see the rest. Three
+  parked captures (hunt-4, b1, and this lane's
+  loader-traced park) freeze the SAME guest threads at
+  the SAME guest addresses; with chrome.dll's base
+  measured at 0x6EA80000 the frozen instruction pointers
+  are basic-block entries in chrome.dll's text (two are
+  exact function prologues; none is a wait, a syscall, or
+  a spin loop), the main thread's is in user32.dll, one
+  is in shell32.dll, and one sits at the Wine syscall
+  stub — and in b1 three threads were seen joining the
+  frozen set after completing wineserver round-trips,
+  i.e. each thread froze at the next block it entered.
+  Two corrections to how such captures may be read, both
+  proven by this lane's healthy control run (mapped
+  41.8 s, input completed): byte-identical "running"
+  snapshots are NOT park-specific (the healthy session
+  holds 24 threads, 16 of them at the same syscall stub,
+  at identical snapshots for 300 s — a normal thread-pool
+  wait the dump cannot see into), so register stillness
+  convicts nothing. The dump now measures executed work
+  instead (this lane's commits): each running thread
+  reports `noprogress_ms` from its CPU's executed-op
+  counter, each dump prints a per-process
+  `min_noprogress_ms`, the x86 line no longer masks EAX
+  for running threads, and the lazy-fetch proxy call
+  counts its in-flight callers into every dump footer
+  (`proxyfetch inflight/oldest`) — the step the fetch
+  layer's "settles within 60 s" assumption never
+  watched. On the instrumented build the demo parked
+  again (`test-results/fd77/run-instr-3/`, 30 dumps) and
+  the new instruments closed the two questions they were
+  built for: `proxyfetch inflight=0` at every dump of
+  the freeze — NO thread was inside the lazy-fetch proxy
+  call, and with zero STALL lines ever logged the whole
+  fetch layer (proxy, watchdog, waiter deadline) is
+  cleared by measurement; and all 9 running threads of
+  the main process sat at `noprogress_ms` growing to
+  810–870 s — ZERO guest ops executed for the whole
+  freeze, so the frozen threads are host-asleep in a
+  wait, not spinning in guest code. FD-77 STAYS OPEN on
+  the narrowed remainder: the wait sits in the
+  demand/fault path AROUND the fetch machinery — the
+  per-process memory mutex (a plain recursive mutex;
+  held across a remaining slow section, or the frozen
+  set piled behind one holder), the RAM-page allocator's
+  mutex, or a proxied filesystem call on a non-archive
+  backing file. Specified next step, small: a per-thread
+  fault-stage marker in the demand path (memory-mutex
+  acquire / alloc / backing read / install) printed by
+  the dump, plus an owner field on the memory mutex so a
+  pile-up names its holder — one parked capture then
+  separates the three. Still owed after that: the
+  launcher treating "booted, no window, no guest output"
+  as a reported failure in the default session instead
+  of an endless quiet page (specified in the lane
+  record, not built there).
 
 ### Graphics
 
