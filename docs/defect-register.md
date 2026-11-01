@@ -2532,69 +2532,6 @@ dead-start fix and needs composition care.
   shipped bytes and the fixed build certifying live,
   the same terms as FD-01's closure (CL-17).
 
-
-
-
-- **CL-25 — Shader modules performing atomics
-  through image texel pointers are served by
-  rewriting the texel variable to a storage buffer
-  (was FD-62).** Fixed in `24becdb53` on
-  `lane-fd62serve`: spirvfix gains R12A
-  (`texelPointersToStorageBuffers`) — a Dim=Buffer
-  storage image is guest buffer memory, so a
-  variable whose every derived value flows only
-  into OpImageTexelPointer formations, and whose
-  texel pointers reach only loads, stores and
-  WGSL-expressible integer atomics, becomes a
-  storage buffer of texels at the same
-  set/binding, each formation becoming an
-  OpAccessChain into it. One cone analysis
-  (`analyzeTexelCone`) is shared by the rewrite,
-  the JS classifier and both bridge mirrors
-  (r15::analyzeArrays; vk64TexelStorageServable's
-  R12A coverage), so the audit admits exactly what
-  the rewrite converts, in both directions. The
-  page tier completes the serving: a storage texel
-  view record (kind 6) at a storage-buffer
-  declaration binds the view's buffer range itself
-  (`texelBufferBind`), registered for readback
-  with its binding batch — it previously fell
-  through to a zero dummy buffer, which would have
-  silently swallowed the shader's writes. Served
-  class, in exact terms: 32-bit-component texel
-  formats (R32f/R32i/R32ui scalar for atomics;
-  2/4-component forms for loads/stores), atomics
-  Load/Store/Exchange/CompareExchange/IIncrement/
-  IDecrement/IAdd/ISub/SMin/UMin/SMax/UMax/And/Or/
-  Xor. Still refusing by name:
-  OpAtomicCompareExchangeWeak (the translator
-  rejects the opcode itself), sub-word/packed and
-  64-bit texel formats, mixed image/buffer use of
-  one element, any texel-pointer escape, and texel
-  forms through root-descriptor slots (unchanged).
-  The same work closes the FD-62 hardening's blind
-  spot: VALUE-form formations (through an OpLoad
-  of the element) were invisible to the uses
-  analysis and classified servable by accident —
-  they are now attributed and genuinely served.
-  Proof: the captured module's transformed output
-  is spirv-val clean, carries both atomics as
-  buffer atomics, and its translation stops only
-  at FD-72's HelperInvocation blocker; the JS
-  suite pins served and refused shapes in both
-  directions; the native guards flip to VK_SUCCESS
-  with per-array attribution and gain boundary
-  guards (value form served; weak/R8ui/R64ui/
-  mixed/escape refuse); page-tier tests pin the
-  buffer binding and readback arbitration; the
-  in-vivo demo-path result is recorded in the lane
-  record. Record:
-  `docs/reports/fd62-texel-serving-20261101.md`.
-  (Composition note: on integration this closure
-  follows FD-53's CL-24; this branch's register
-  predates that merge, so the composing merge
-  places CL-25 after CL-24.)
-
 ## Appendix — examined and deliberately NOT registered
 
 Recorded so the examination is not lost; each was audited by
@@ -2785,3 +2722,63 @@ its lane and is not a defect, for the stated reason:
   (`archive-audit.txt`, `build1-gate-manifest-drift.log`,
   `build2-complete.log`), record
   `docs/reports/fd53-support-archive-libvulkan-20261101.md`.
+
+- **CL-25 — Shader modules performing atomics
+  through image texel pointers are served by
+  rewriting the texel variable to a storage buffer
+  (was FD-62).** Fixed in `24becdb53` on
+  `lane-fd62serve`: spirvfix gains R12A
+  (`texelPointersToStorageBuffers`) — a Dim=Buffer
+  storage image is guest buffer memory, so a
+  variable whose every derived value flows only
+  into OpImageTexelPointer formations, and whose
+  texel pointers reach only loads, stores and
+  WGSL-expressible integer atomics, becomes a
+  storage buffer of texels at the same
+  set/binding, each formation becoming an
+  OpAccessChain into it. One cone analysis
+  (`analyzeTexelCone`) is shared by the rewrite,
+  the JS classifier and both bridge mirrors
+  (r15::analyzeArrays; vk64TexelStorageServable's
+  R12A coverage), so the audit admits exactly what
+  the rewrite converts, in both directions. The
+  page tier completes the serving: a storage texel
+  view record (kind 6) at a storage-buffer
+  declaration binds the view's buffer range itself
+  (`texelBufferBind`), registered for readback
+  with its binding batch — it previously fell
+  through to a zero dummy buffer, which would have
+  silently swallowed the shader's writes. Served
+  class, in exact terms: 32-bit-component texel
+  formats (R32f/R32i/R32ui scalar for atomics;
+  2/4-component forms for loads/stores), atomics
+  Load/Store/Exchange/CompareExchange/IIncrement/
+  IDecrement/IAdd/ISub/SMin/UMin/SMax/UMax/And/Or/
+  Xor. Still refusing by name:
+  OpAtomicCompareExchangeWeak (the translator
+  rejects the opcode itself), sub-word/packed and
+  64-bit texel formats, mixed image/buffer use of
+  one element, any texel-pointer escape, and texel
+  forms through root-descriptor slots (unchanged).
+  The same work closes the FD-62 hardening's blind
+  spot: VALUE-form formations (through an OpLoad
+  of the element) were invisible to the uses
+  analysis and classified servable by accident —
+  they are now attributed and genuinely served.
+  Proof: the captured module's transformed output
+  is spirv-val clean, carries both atomics as
+  buffer atomics, and its translation stops only
+  at FD-72's HelperInvocation blocker; the JS
+  suite pins served and refused shapes in both
+  directions; the native guards flip to VK_SUCCESS
+  with per-array attribution and gain boundary
+  guards (value form served; weak/R8ui/R64ui/
+  mixed/escape refuse); page-tier tests pin the
+  buffer binding and readback arbitration; the
+  in-vivo demo-path result is recorded in the lane
+  record. Record:
+  `docs/reports/fd62-texel-serving-20261101.md`.
+  (Composition note: on integration this closure
+  follows FD-53's CL-24; this branch's register
+  predates that merge, so the composing merge
+  places CL-25 after CL-24.)
