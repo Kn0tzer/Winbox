@@ -2137,7 +2137,7 @@ do not close the entry until they land.
   cannot finish clean: readback blocks the fixture leaves
   pending are reported as leaks, and the bridge drops
   pending readbacks without freeing them. CLOSED
-  2026-11-01 — see CL-38.** *(Low —
+  2026-11-01 — see CL-40.** *(Low —
   developer-only verification debt, plus a latent bridge
   sharp edge no production path currently reaches)* Found
   by the FD-50 lane (2026-11-01) once the harness could
@@ -2175,7 +2175,7 @@ do not close the entry until they land.
   and FD-65 were taken on the integration branch
   meanwhile.)*
   **Update (2026-11-01, `lane-fd66`): CLOSED — see
-  CL-38.** A census of every mention of the two pending
+  CL-40.** A census of every mention of the two pending
   vectors confirms the filed reachability exactly: the
   only exits for a pending entry are `completeReadbacks`
   (which frees every block) and `setupReadbacks`' own
@@ -3160,7 +3160,7 @@ do not close the entry until they land.
   FD-79/80 lane, 2026-11-01; the number was verified
   free against the register at filing and is
   provisional until the merge lane's audit.)* The
-  demand-paged path is exact after CL-36; closing
+  demand-paged path is exact after CL-38; closing
   this entry needs per-description mapping accounting
   on the 64-bit path or an equivalent liveness input
   to its close path. Evidence:
@@ -3200,8 +3200,12 @@ do not close the entry until they land.
   `test-results/fd79-80/` (host reference programs
   and outputs).
 
-- **FD-82 — The launcher UI test's demo-card count no
-  longer matches the demo catalog.** *(Low)* `web/demos.mjs`
+- **FD-102 — The launcher UI test's demo-card count no
+  longer matches the demo catalog.** *(Low. Filed as
+  FD-82 on `lane-fd77-stall-surface`, 2026-11-01;
+  renumbered FD-102 at composition — FD-82 on the
+  composed register is the FD-79/80 lane's
+  close-event entry.)* `web/demos.mjs`
   lists 15 demos and `web/app.mjs` `renderDemos()` renders
   one `[data-game]` card per demo unconditionally, while
   `web/tests/launcher-ui.mjs` asserts exactly 8 cards
@@ -4495,15 +4499,19 @@ its lane and is not a defect, for the stated reason:
   668/668 and x64 68/68, 0 FAILED. Record:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
   evidence `test-results/fd79-80/`.
-- **CL-38 — A readback plan a setup discards is freed
+- **CL-40 — A readback plan a setup discards is freed
   with it, and the sanitizer flavour finishes clean
   (FD-66).** *(Filed as CL-38 on `lane-fd66`,
-  2026-11-01 — CL-35, CL-36 and CL-37 stand filed
-  provisionally on the `lane-fd54`, `lane-fd63` and
-  `lane-fd70int` branches; the composing merge verifies
-  the numbering by audit.)*
+  2026-11-01; renumbered CL-40 at composition —
+  CL-38 and CL-39 were settled on the integration
+  register by FD-79's and FD-80's closures in the
+  FD-54 batch; the text is preserved apart from the
+  number and the citation note below.)*
   Fixed on branch `lane-fd66` in `7d3f4ff31`
-  (citations re-pinned in `eaf03b285`).
+  (citations re-pinned at composition on the
+  composed tree; the branch's own re-pin,
+  `eaf03b285`, was made against the pre-batch
+  bridge file and did not survive composition).
   `setupReadbacks` replans through
   `freePendingReadbacks()`, the only unpaired exit for
   a pending readback, so a plan that is never completed
