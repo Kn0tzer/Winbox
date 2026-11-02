@@ -3016,6 +3016,78 @@ do not close the entry until they land.
   pipeline time. FD-55 stays open on this entry
   and FD-70.
 
+  **Re-measured link by link on the current
+  base, 2026-11-02 (lane `lane-fd72b`, base
+  `cc1d89ab3`; record
+  `docs/reports/fd72b-helper-invocation-recheck-20261102.md`;
+  evidence `test-results/fd72b/`). STILL OPEN —
+  the boundary above stands.** The blocker is
+  one component: the vendored translator's
+  SPIR-V frontend. Called in stages on this
+  base, its parse stage fails with
+  `UnsupportedBuiltIn(23)` — for the captured
+  module (post-pre-pass), for a minimal module
+  that declares the variable but never loads
+  it, for a load-and-use minimal, and for a
+  glslangValidator-compiled textbook
+  `gl_HelperInvocation` module — identically
+  for the wgsl/glsl/hlsl/msl targets, so the
+  failure precedes every writer. With ONLY the
+  HelperInvocation decoration, variable and
+  interface entry removed from the captured
+  module (its two loads replaced by a constant;
+  a measurement probe, not a serving
+  candidate), the frontend ingests the whole
+  real module; its next failure is the
+  validator's SampleMask error — FD-74, a
+  different stage of the same component.
+  Every other link measured ready on this
+  base: the pre-pass applies the captured
+  module's four standing rewrites and passes
+  the decoration through untouched (no rule
+  rewrites the BuiltIn-variable form); the
+  creation audit refuses both spellings by
+  name, neighbouring FragCoord admitted
+  (native guard green in a 57-PASS run);
+  downstream, the twin module's production
+  WGSL compiles in the probe browser with zero
+  errors and renders its required value at
+  every pixel, a subgroup-ballot WGSL module
+  compiles and renders its required value
+  likewise, and the browser's WGSL compiler
+  rejects both conceivable helper-query
+  spellings in its own words (its builtin list
+  has no helper entry; `isHelperInvocation`
+  is an unresolved call target). Upstream has
+  not moved: the WGSL specification (TR and
+  living draft, fetched 2026-11-02) still has
+  no helper-invocation query and still carries
+  the subgroup-participation non-portability
+  warning verbatim; the newest published naga
+  is 30.0.1 — the vendored version — and its
+  published source contains `HelperInvocation`
+  nowhere (IR `BuiltIn` enum: 49 variants,
+  none for it), so no re-vendor changes the
+  verdict. One refinement of (1): the EXT
+  opcode spelling IS translated translator-
+  side on this base — the pre-pass's discard
+  lowering (in the tree since 2026-10-20)
+  rewrites each `OpIsHelperInvocationEXT` read
+  into a load of a private flag that only the
+  module's own demote / lowered-discard sites
+  set. That value is the self-demotion
+  component of helper state only;
+  rasterization helper state is unrepresented
+  (a module with no demote sites emits WGSL
+  reading a constant false, measured rendering
+  accordingly). The guest path still refuses
+  the spelling at creation (FD-75), and
+  admitting it on the flag's terms would serve
+  exactly the collective-steering uses (2)
+  shows are poisoned — so it is not a serving
+  of this class, and this entry's closing
+  terms are unchanged.
+
 - **FD-73 — The pinned runtime-assets release
   archive disagrees with the manifest's file pins
   for both Wine archives, so a fresh checkout
