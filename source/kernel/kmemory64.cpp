@@ -348,6 +348,18 @@ void KMemory64::noteGuestWriteRange(U64 addr, U64 len) {
 
 KMemory64::KMemory64(KProcess* process) : process(process) {}
 KMemory64::~KMemory64() {
+    // FD-82: every file mapping of this address space dies with it
+    // (exec replaces the object; teardown drops it). Report the deaths
+    // so a close event they were deferring is delivered here, at the
+    // mapping's true end, rather than left to the open node's
+    // destructor backstop.
+    if (!fileMappings.empty()) {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
+        while (!fileMappings.empty()) {
+            auto it = fileMappings.begin();
+            releaseFileMappingsLocked(it->first, it->second.pageCount);
+        }
+    }
     // Page buffers die with the object — invalidate every thread's data TLB
     // (execve gives the process a fresh KMemory64; a later allocation could
     // also reuse this heap address as a tag).
@@ -399,6 +411,12 @@ void KMemory64::cloneFrom(const KMemory64* from) {
 #endif
     mmapNext = from->mmapNext;
     ranges = from->ranges;
+    // FD-82: the child inherits the file mappings themselves, so it
+    // inherits the table too. Births are NOT counted again: the
+    // description's live count already includes these pages once, and
+    // either twin's unmaps report deaths against it (the release side
+    // saturates at zero), exactly the FD-79 fork model.
+    fileMappings = from->fileMappings;
     pages.clear();
     pages.reserve(from->pages.size());
     std::vector<U64> dontForkPages;
@@ -427,6 +445,11 @@ void KMemory64::cloneFrom(const KMemory64* from) {
     }
     for (U64 page : dontForkPages) {
         rangeRemoveLocked(page, 1);
+        // FD-82: a DONTFORK page is not inherited, so the child's
+        // table must not carry it -- but nothing is released: the
+        // parent's page is still live and still counted.
+        std::vector<std::pair<std::shared_ptr<KFile>, U64>> notInherited;
+        detachFileMappingsLocked(page, 1, notInherited);
     }
     if (!dontForkPages.empty()) {
         k64DTlbInvalidateAll();
@@ -820,6 +843,9 @@ U64 KMemory64::mmapAnonymousFixed(U64 addr, U64 len, U32 prot) {
     if (prot & 0x2) flags |= K64_PAGE_WRITE | K64_PAGE_READ; // x86: write implies read
     if (prot & 0x4) flags |= K64_PAGE_EXEC;
 
+    // FD-82: a file-backed mapping in the target range dies here, by
+    // replacement -- report its pages before the new mapping lands.
+    releaseFileMappingsLocked(pageStart, pageCount);
     U64 lockedOverwritten = 0;
     for (U64 i = 0; i < pageCount; i++) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
@@ -876,6 +902,9 @@ U64 KMemory64::mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, con
     if (prot & 0x2) flags |= K64_PAGE_WRITE | K64_PAGE_READ;
     if (prot & 0x4) flags |= K64_PAGE_EXEC;
 
+    // FD-82: a file-backed mapping in the target range dies here, by
+    // replacement -- report its pages before the shared pages land.
+    releaseFileMappingsLocked(pageStart, pageCount);
     std::string p(path);
     for (U64 i = 0; i < pageCount; i++) {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
@@ -953,6 +982,81 @@ void KMemory64::rangeRemoveLocked(U64 startPage, U64 pageCount) {
         it = ranges.erase(it);
         if (r0 < hole0) ranges[r0] = MMapRange{ r0, hole0 - r0, prot, kind };
         if (r1 > hole1) ranges[hole1] = MMapRange{ hole1, r1 - hole1, prot, kind };
+    }
+}
+
+// FD-82: file-mapping accounting for the 64-bit path. The table
+// (fileMappings) mirrors the demand-paged path's MappedFile table:
+// births are counted at the open description, deaths are reported
+// before the pages are invalidated or replaced, and a description
+// whose count reaches zero with a close pending delivers its close
+// event at that moment (FsOpenNode::noteMappedPagesReleased).
+void KMemory64::detachFileMappingsLocked(U64 pageStart, U64 pageCount,
+                                         std::vector<std::pair<std::shared_ptr<KFile>, U64>>& detached) {
+    if (pageCount == 0) return;
+    U64 hole0 = pageStart;
+    U64 hole1 = pageStart + pageCount; // exclusive
+    auto it = fileMappings.upper_bound(hole0);
+    if (it != fileMappings.begin()) --it;
+    while (it != fileMappings.end() && it->first < hole1) {
+        U64 r0 = it->first;
+        U64 r1 = r0 + it->second.pageCount; // exclusive
+        if (r1 <= hole0) { ++it; continue; } // entirely before the hole
+        U64 dead0 = std::max(r0, hole0);
+        U64 dead1 = std::min(r1, hole1);
+        std::shared_ptr<KFile> file = it->second.file;
+        it = fileMappings.erase(it);
+        if (r0 < hole0) fileMappings[r0] = FileMapping64{ hole0 - r0, file };
+        if (r1 > hole1) fileMappings[hole1] = FileMapping64{ r1 - hole1, file };
+        if (dead1 > dead0 && file) detached.push_back({ file, dead1 - dead0 });
+    }
+}
+
+void KMemory64::releaseFileMappingsLocked(U64 pageStart, U64 pageCount) {
+    std::vector<std::pair<std::shared_ptr<KFile>, U64>> detached;
+    detachFileMappingsLocked(pageStart, pageCount, detached);
+    for (auto& d : detached) {
+        d.first->openFile->noteMappedPagesReleased((U32)d.second);
+    }
+}
+
+bool KMemory64::fileMappingCoverLocked(U64 pageStart, U64 pageCount, std::shared_ptr<KFile>& out) {
+    if (pageCount == 0) return false;
+    U64 cursor = pageStart;
+    U64 end = pageStart + pageCount; // exclusive
+    std::shared_ptr<KFile> desc;
+    auto it = fileMappings.upper_bound(cursor);
+    if (it != fileMappings.begin()) --it;
+    for (; it != fileMappings.end() && it->first < end; ++it) {
+        U64 r0 = it->first;
+        U64 r1 = r0 + it->second.pageCount; // exclusive
+        if (r1 <= cursor) continue;
+        if (r0 > cursor) return false; // a gap before this entry
+        if (!desc) desc = it->second.file;
+        else if (desc != it->second.file) return false;
+        cursor = r1;
+        if (cursor >= end) { out = desc; return true; }
+    }
+    return false;
+}
+
+void KMemory64::noteFileMapping(U64 addr, U64 len, const std::shared_ptr<KFile>& file) {
+    if (!file || !file->openFile || len == 0) return;
+    U64 pageStart = addr >> K64_PAGE_SHIFT;
+    U64 pageCount = (len + K64_PAGE_MASK) >> K64_PAGE_SHIFT;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
+    // Clear the range first (splitting neighbours), count the birth,
+    // and only then release whatever the new mapping replaced: when
+    // the replacement is a mapping of the SAME description (an mremap
+    // move/grow re-noting its range), the live total must not dip
+    // through zero mid-operation or a pending close event would be
+    // delivered while the mapping is still live.
+    std::vector<std::pair<std::shared_ptr<KFile>, U64>> detached;
+    detachFileMappingsLocked(pageStart, pageCount, detached);
+    fileMappings[pageStart] = FileMapping64{ pageCount, file };
+    file->openFile->noteMappedPagesAdded((U32)pageCount);
+    for (auto& d : detached) {
+        d.first->openFile->noteMappedPagesReleased((U32)d.second);
     }
 }
 
@@ -1053,6 +1157,9 @@ U64 KMemory64::munmap(U64 addr, U64 len) {
     // keeps essentially all the benefit with none of the breakage.
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
     rangeRemoveLocked(pageStart, pageCount);
+    // FD-82: file mappings in the range die at this unmap; report
+    // their pages so a deferred close event is delivered here.
+    releaseFileMappingsLocked(pageStart, pageCount);
     U64 lockedRemoved = 0;
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(pagesMutex);
@@ -1121,6 +1228,17 @@ U64 KMemory64::mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAdd
                 noteGuestWrite((destination >> K64_PAGE_SHIFT) + i);
             }
         }
+        {
+            // FD-82: if the duplicated pages are a file mapping, the
+            // alias is a second live mapping of the same description.
+            std::shared_ptr<KFile> dupDesc;
+            bool dupIsFile = false;
+            {
+                BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
+                dupIsFile = fileMappingCoverLocked(oldAddr >> K64_PAGE_SHIFT, pageCount, dupDesc);
+            }
+            if (dupIsFile) noteFileMapping(destination, newRounded, dupDesc);
+        }
         k64DTlbInvalidateAll();
         pageMapGenerationValue.fetch_add(1, std::memory_order_release);
         return destination;
@@ -1142,6 +1260,16 @@ U64 KMemory64::mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAdd
             return (U64)-K_EFAULT;
         }
     }
+    // FD-82: if the whole source range is one file-backed mapping,
+    // its description association travels with the mremap (grow and
+    // move paths below re-note the resulting range; the shrink path
+    // just munmaps the tail, which trims the entry itself).
+    std::shared_ptr<KFile> moveDesc;
+    bool moveIsFile = false;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
+        moveIsFile = fileMappingCoverLocked(firstPage, oldPages, moveDesc);
+    }
     if (newRounded <= oldRounded && !(flags & DONTUNMAP)) {
         if (newRounded < oldRounded) munmap(oldAddr + newRounded, oldRounded - newRounded);
         return oldAddr;
@@ -1151,8 +1279,10 @@ U64 KMemory64::mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAdd
         for (U64 addr = oldAddr + oldRounded; addr < oldAddr + newRounded; addr += K64_PAGE_SIZE) {
             if (getPageFlags(addr >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) { free = false; break; }
         }
-        if (free && mmapAnonymousFixed(oldAddr + oldRounded, newRounded - oldRounded, prot) == oldAddr + oldRounded)
+        if (free && mmapAnonymousFixed(oldAddr + oldRounded, newRounded - oldRounded, prot) == oldAddr + oldRounded) {
+            if (moveIsFile) noteFileMapping(oldAddr, newRounded, moveDesc);
             return oldAddr;
+        }
         return (U64)-K_ENOMEM;
     }
     if (!(flags & MAYMOVE)) return (U64)-K_ENOMEM;
@@ -1167,10 +1297,17 @@ U64 KMemory64::mremap(U64 oldAddr, U64 oldLen, U64 newLen, U64 flags, U64 newAdd
         return destination;
     }
     memcpyToGuest(destination, contents.data(), copyLen);
+    if (moveIsFile) noteFileMapping(destination, newRounded, moveDesc);
     if (flags & DONTUNMAP) {
         // Linux retains the original mapping after move; accesses there fault
         // into a zero-filled anonymous page unless userfaultfd handles them.
         memsetGuest(oldAddr, 0, oldLen);
+        if (moveIsFile) {
+            // The retained range is anonymous now; the file mapping
+            // that lived there died with the move.
+            BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mmapMutex);
+            releaseFileMappingsLocked(firstPage, oldPages);
+        }
     } else {
         munmap(oldAddr, oldRounded);
     }

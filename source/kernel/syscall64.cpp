@@ -2196,6 +2196,10 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                                             kfile->openFile->node->path.c_str(),
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
+        // FD-82: count the mapping against its open description so
+        // the description's close event defers to the mapping's death
+        // (FD-79's contract), as on the demand-paged path.
+        cpu->memory->noteFileMapping(aligned, mapLen, kfile);
         if (kfile->openFile->node) {
             if (ripSamplerModuleTrackingEnabled()) {
                 ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
@@ -2249,6 +2253,11 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         if (!headSave.empty()) cpu->memory->memcpyToGuest(aligned, headSave.data(), head);
         if (!tailSave.empty()) cpu->memory->memcpyToGuest(fileEnd, tailSave.data(), tail);
     }
+    // FD-82: the mapping is established (reserved above, or mapped by
+    // mmapAnonymousFixed); record it against the description before
+    // the content copy, so the description's close event defers to
+    // the mapping's death (FD-79's contract).
+    cpu->memory->noteFileMapping(aligned, mapLen, kfile);
     // Read [offset, offset+length) and copy into [addr, addr+length).
     // KFile's positioned read holds the same filePosMutex as ordinary reads
     // and lseek. The global file-read lock alone cannot exclude lseek, and
