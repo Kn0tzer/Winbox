@@ -4589,7 +4589,8 @@ do not close the entry until they land.
   2026-11-02 by the FD-85 continuation lane; numbered
   FD-90 provisionally — FD-85…FD-89 are taken on
   unmerged branches; the composing merge verifies by
-  audit.)* A native ALSA client using MMAP_INTERLEAVED
+  audit. FIXED on lane-fd90, awaiting merge —
+  provisional CL-45.)* A native ALSA client using MMAP_INTERLEAVED
   access over the stock `default` PCM gets the full
   4,096-frame buffer from mmap_begin, and the first
   mmap_commit lands it at the emulator's audio input at
@@ -4620,6 +4621,34 @@ do not close the entry until they land.
   `test-results/fd85b/suite-fd85b-diag/` (writei
   position readings). Fixture:
   `tools/guest-fixtures/alsatone.c`.
+
+  **Update 2026-11-02 (lane-fd90): FIXED — the OSS
+  position face now reports the playback position.**
+  Fix `dd00eee9b`: GETOPTR/GETODELAY derive from a
+  played counter sourced from the bwPump ring
+  consumer (bytesWritten minus the ring queue, the
+  queue capped at capacity); SNDCTL_DSP_RESET no
+  longer clobbers the stream geometry hw_params
+  negotiated (the prepare-time RESET had shrunk the
+  position modulus 16384 -> 8192 for the stream's
+  whole life — the writei incoherence); and the
+  reported position advances at most half a buffer
+  per read, because the guest plugin's pointer
+  callback consumes count_info.ptr alone (verified
+  by disassembly of the shipped alsa-lib 1.2.8
+  module), which aliases to no-motion when a
+  non-paced sink drains a buffer or more between
+  reads. GETOSPACE and the poll face are unchanged
+  — the anti-stall surface is untouched — and the
+  new delay reaches 0 exactly when the audible
+  queue empties. Proof: suite test
+  `alsa-mmap-stream` — RED on the base build with
+  this entry's recorded signature (avail
+  4096,0,0,0,0,0,0,0), GREEN on the fixed build
+  (s16mmap 18,432 frames committed, floatmmap
+  22,528; writei avail/delay coherent, summing to
+  the 4,096-frame buffer). Provisional CL-45.
+  Record: `docs/reports/fd90-oss-position-20261102.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -4682,6 +4711,7 @@ is behavioural, is re-proven there.
 
 | `lane-fd23res` | FD-23 CLOSED (residue): `select` (23) implemented through the core factored out of `pselect6` (with the host's pre-checks, which also correct `pselect6`); `pidfd_getfd` (438) in the host's check order; `futex_waitv` (449) on both ABIs over the futex machinery (i386 table extended to 462 slots); per-number dispositions for every unimplemented number on both ABIs (404 entries, census-audited); FD-102 and FD-103 filed | Host-kernel reference programs measured first (select/pidfd/futex_waitv matrices; evidence `test-results/fd23res/hostref/`); new tests fail on the base for the recorded reasons and pass with the fix: x64 suite 72 tests, main suite 669 tests, 0 FAILED serial, RED runs show exactly the new tests failing (-ENOSYS); census: x86-64 implemented 199 -> 202, stubbed {334} only, i386 gap fully dispositioned (undispositioned 0, stale 0); browser build 'Browser export verified' (wasm c290559e). Record: `docs/reports/fd23-residue-20261102.md`; evidence `test-results/fd23res/` |
 | `lane-fd85b` | FD-85 continuation: the remaining silence sub-split measured — the ALSA leg serves writei clients at full scale (new alsatone fixture, four format/access modes), winealsa hands libasound an unbroken stream of zeros on every device including libasound's null (file-plugin dump, validated against the native client in-session), the traced client side is healthy (single AudioClient, 26 GetBuffer / 24 ReleaseBuffer of the full buffer), and the identical fixture on the 32-bit Wine stack is heard through the same emulator and chain — the defect is convicted to the 64-bit Wine payload's mmdevapi → winealsa render path (FD-85 stays open on payload-fix terms); FD-90 filed (the chain's mmap face stalls after one buffer: the OSS playback pointer never advances) | Six preserved diag sessions (`test-results/fd85b/`): writei tone at the input (S16 peak 12000) and page (peak 0.4550); Wine dumps 72,192 / 100,224 / 33,792 Float32 frames, 0 non-zero, three runs; x86 OpenAL heard (26,763 non-zero, peak 0.2269); mmap cycles: first commit lands full-scale (n=8192), avail 0 thereafter; dist 'Browser export verified' on the base build (this lane changes no emulator code). Record: `docs/reports/fd85b-audio-bisection-20261102.md` |
+| `lane-fd90` | FD-90: the OSS position face reported the write position and a constant 0 delay, so the ALSA mmap face stalled after one buffer and position readings were incoherent — GETOPTR/GETODELAY now derive from a played counter sourced from the bwPump ring consumer; SNDCTL_DSP_RESET no longer clobbers the hw_params-negotiated stream geometry at prepare; the reported position is slew-limited to half a buffer per read (the guest plugin's pointer callback consumes count_info.ptr alone, which aliases when a non-paced sink drains a buffer between reads) | Suite test alsa-mmap-stream: RED on the base build with the recorded signature (avail 4096,0,0,0,0,0,0,0), GREEN on the fixed build (s16mmap 18,432 frames / floatmmap 22,528 committed across the cycles; writei avail+delay coherent, summing to 4096); audio-tone PASS; common-dependencies identical to a base-tip control build under the same box load; native serial main 0 FAILED, x64 0 FAILED; legacy JS only the standing FD-64 four. Record: `docs/reports/fd90-oss-position-20261102.md`; evidence `test-results/fd90/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
