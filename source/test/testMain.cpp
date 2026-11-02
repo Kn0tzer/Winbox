@@ -125,6 +125,7 @@ void testAccept4Syscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
+void testExeSpawnSignal64();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -192,6 +193,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
+    {testExeSpawnSignal64, "Test x64 exe spawn signal under DLLTRACE (FD-54)"},
     {testDevInputJoystick, "Test joystick evdev node capabilities and events"},
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
     {testSetitimerProbes, "Test setitimer expiration probes"},
