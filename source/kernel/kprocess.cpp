@@ -3432,10 +3432,10 @@ U32 KProcess::readv(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
 // measured for FD-94 (see the register entry): a negative offset
 // is EINVAL ahead of the descriptor check, except that pwritev2's
 // offset -1 is the file-position mode; the descriptor check
-// precedes the flags check (EOPNOTSUPP outside the defined RWF
-// mask 0x3f) and the iovcnt range check; RWF_APPEND writes at end
-// of file; a later segment's failure returns the bytes already
-// written.
+// precedes the iovcnt range check and the iovec array check; the
+// flags check runs last (EOPNOTSUPP outside the defined RWF mask
+// 0x3f) (FD-100); RWF_APPEND writes at end of file; a later
+// segment's failure returns the bytes already written.
 U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPwritev2) {
     S64 off = (S64)offset;
     bool useFilePos = isPwritev2 && off == -1;
@@ -3446,15 +3446,15 @@ U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offse
     if (fd == nullptr) {
         return -K_EBADF;
     }
-    if (isPwritev2 && (flags & ~0x3f)) {
-        return -K_EOPNOTSUPP;
-    }
     if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
         return -K_EINVAL;
     }
     KMemory* memory = thread->memory;
     if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
         return -K_EFAULT;
+    }
+    if (isPwritev2 && (flags & ~0x3f)) {
+        return -K_EOPNOTSUPP;
     }
     bool append = isPwritev2 && (flags & 0x10); // RWF_APPEND
     S64 base = off;

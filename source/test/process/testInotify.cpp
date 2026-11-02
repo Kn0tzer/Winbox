@@ -484,9 +484,10 @@ void testInotifyEvents() {
 //    including calls that return 0 (at EOF, or with iovcnt 0); the
 //    vectored path differs from pread/read there, which stay silent
 //    when no bytes move.
-//  - any negative offset (including -1; there is no readv fallback),
-//    a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an unknown
-//    preadv2 flag bit is EOPNOTSUPP; every defined RWF flag is
+//  - any negative offset is EINVAL, except preadv2's -1, which is
+//    the file-position mode (FD-99); a negative iovcnt, or iovcnt >
+//    IOV_MAX, is EINVAL; an unknown preadv2 flag bit is EOPNOTSUPP,
+//    checked last (FD-100); every defined RWF flag (mask 0x3f) is
 //    accepted on a read; a bad descriptor is EBADF.
 // FD-83 / FD-84 extend this test below (sections 9-10): the same
 // host reference programme family measured readv's event contract
@@ -2941,8 +2942,9 @@ void testRecvmsgBadBuffer64Syscalls() {
 // testNewInstruction, so segments and payloads are staged inside
 // invoke()). The host contract is the one measured for the x64
 // test above: offset EINVAL ahead of the descriptor check,
-// descriptor ahead of flags and iovcnt, the partial shape, and
-// pwritev2's -1 position mode and RWF_APPEND.
+// descriptor ahead of the iovcnt range check and the iovec array
+// check with the flags check last (FD-100), the partial shape,
+// and pwritev2's -1 position mode and RWF_APPEND.
 void testPwritev32Dispatch() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;

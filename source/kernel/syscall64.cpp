@@ -1902,48 +1902,50 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     return sys_pread64Impl(cpu, fd, buf, count, offset, true);
 }
 
-// preadv / preadv2 (FD-80) -- vectored positioned reads over the same
-// positioned-read core as pread64. Host behaviour measured on the
-// box's 6.17 kernel: segments fill in order at successive offsets and
-// the file position does not move; a short read ends the walk;
-// IN_ACCESS is generated exactly once per successful call, including
-// calls that return 0 (at EOF, or with iovcnt 0) -- the vectored path
-// differs from pread/read there, which stay silent when no bytes
-// move. Any negative offset (including -1: there is no readv
-// fallback), a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an
-// unknown preadv2 flag bit is EOPNOTSUPP; every defined RWF flag
-// (HIPRI/DSYNC/SYNC/NOWAIT/APPEND, mask 0x1f) is accepted on a read.
-// FD-84 completed the validation order on the same kernel: the
-// negative-offset EINVAL precedes the wrong-mode EBADF, and the
-// wrong-mode EBADF precedes the flag and iovcnt checks.
+// preadv / preadv2 (FD-80; FD-99/FD-100) -- vectored positioned
+// reads over the same positioned-read core as pread64. Host
+// behaviour measured on the box's 6.17 kernel: segments fill in
+// order at successive offsets and the file position does not move;
+// a short read ends the walk; IN_ACCESS is generated exactly once
+// per successful call, including calls that return 0 (at EOF, or
+// with iovcnt 0) -- the vectored path differs from pread/read
+// there, which stay silent when no bytes move. Validation order:
+// a negative offset is EINVAL ahead of the descriptor check --
+// except that preadv2's offset -1 is the file-position mode (read
+// at the current position and advance it, as pwritev2's -1 does);
+// the descriptor check (EBADF) precedes the iovcnt range check
+// (EINVAL outside [0, IOV_MAX]) and the iovec array check (EFAULT
+// for a null or unmapped array with iovcnt > 0); the preadv2 flags
+// check runs LAST (EOPNOTSUPP for bits outside the defined RWF
+// mask 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/NOAPPEND -- every
+// defined flag is accepted on a read).
 static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPreadv2) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    bool useFilePos = isPreadv2 && offset == -1;
+    if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
-    if (offset < 0) return (U64)-K_EINVAL;
-    // FD-84: on a descriptor that cannot be read the host answers
-    // -EBADF ahead of both the preadv2 flag check and the iovcnt
-    // range check (and ahead of any zero-iovcnt success); only
-    // the negative-offset EINVAL above precedes it. Measured on
-    // the 6.17 host kernel (test-results/fd83-84/).
-    if (!fdesc->canRead()) return (U64)-K_EBADF;
-    if (isPreadv2 && (flags & ~0x1FULL)) return (U64)-K_EOPNOTSUPP;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
-    if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    if (isPreadv2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    S64 basePos = useFilePos ? fdesc->kobject->getPos() : offset;
     U64 total = 0;
     S64 err = 0;
     for (S32 i = 0; i < cnt; i++) {
-        U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
+        U64 segBase = cpu->memory->readq(iov + (U64)i * 16 + 0);
         U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
         if (len == 0) continue;
-        S64 got = (S64)sys_pread64Impl(cpu, fd, base, len, (U64)(offset + (S64)total), false);
+        S64 got = (S64)sys_pread64Impl(cpu, fd, segBase, len, (U64)(basePos + (S64)total), false);
         if (got < 0) { err = got; break; }
         total += (U64)got;
         if ((U64)got < len) break; // short read: EOF / drained
     }
     if (total == 0 && err < 0) return (U64)err;
+    if (useFilePos && total > 0) {
+        fdesc->kobject->seek(basePos + (S64)total);
+    }
     // Exactly one IN_ACCESS per successful call (see the header
     // comment); the per-segment reads above ran with notification
     // suppressed so a multi-segment read cannot stack them up.
@@ -1999,11 +2001,12 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
 // offset is EINVAL ahead of the descriptor check -- except that
 // pwritev2's offset -1 is the file-position mode (write at the
 // current position and advance it), so only an offset below -1 is
-// EINVAL there. The descriptor check (EBADF) precedes the pwritev2
-// flags check (EOPNOTSUPP for bits outside the defined RWF mask
-// 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/NOAPPEND) and the iovcnt
-// range check (EINVAL outside [0, IOV_MAX]); a bad iovec array with
-// iovcnt > 0 is EFAULT. RWF_APPEND writes at end of file, ignoring
+// EINVAL there. The descriptor check (EBADF) precedes the iovcnt
+// range check (EINVAL outside [0, IOV_MAX]) and the iovec array
+// check (EFAULT for a null or unmapped array with iovcnt > 0);
+// the pwritev2 flags check runs LAST (EOPNOTSUPP for bits outside
+// the defined RWF mask 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/
+// NOAPPEND) (FD-100). RWF_APPEND writes at end of file, ignoring
 // the offset, and leaves the position untouched outside the -1
 // mode. Segment buffers are range-checked before each segment's
 // write: the core's guest copy zero-fills an unreadable buffer
@@ -2016,10 +2019,10 @@ static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 
     if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
     bool append = isPwritev2 && (flags & 0x10ULL); // RWF_APPEND
     S64 base = offset;
     if (append) {
