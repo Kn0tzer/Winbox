@@ -1629,7 +1629,8 @@ do not close the entry until they land.
 
 - **FD-54 — With `BW64_DLLTRACE` set, the 64-bit
   process-spawn signal changes dialect and 64-bit session
-  certification can never complete.** *(Low — behind a
+  certification can never complete.
+  CLOSED 2026-11-01 — see CL-35.** *(Low — behind a
   diagnostic environment variable no session harness
   currently sets; found by the FD-48 lane)* In
   `sys_openat64` (`source/kernel/syscall64.cpp`) the default
@@ -1653,6 +1654,33 @@ do not close the entry until they land.
   FD-54 at integration — FD-53 is assigned in this
   batch to the support-archive duplicate-library
   entry.)*
+
+  **Resolution (2026-11-01, `lane-fd54`; record
+  `docs/reports/fd54-dlltrace-spawn-signal-20261101.md`):**
+  the mechanism is exactly the one filed, verified at both
+  ends: the emitter gated the line on
+  `!getenv("BW64_DLLTRACE")`, and the observer
+  (`observeSessionOutput` in the launcher) matches
+  `OPENED '<path>explorer.exe'`, which the DLLTRACE line's
+  `OPEN  '<path>'` dialect never satisfies — it was the
+  only `BW64_DLLTRACE` suppression of a default line in
+  the tree. Fixed in `e3660ab57`: the signal is emitted
+  unconditionally on a successful .exe open, exactly like
+  the 32-bit paths; the DLLTRACE line is unchanged, so a
+  traced session now logs both. Proof: `bc2cfd046` adds
+  `testExeSpawnSignal64`, which drives the real dispatcher
+  (openat64 on a fixture .exe, klog captured) — RED on
+  the unfixed code ("spawn signal suppressed under
+  BW64_DLLTRACE=1"), GREEN after; it also pins the
+  control (signal present untraced), the trace line's
+  presence (the flag still works), and the failure
+  discipline (a failed .exe open emits no signal in
+  either configuration). Suites on the fixed tree,
+  serial: x64 67/67 (66 + the new test), main 667/667,
+  0 FAILED; run-native 56 PASS; the browser build
+  compiles with the fix in shared code ("Browser export
+  verified", wasm `35302eba…`, support archive
+  `c4dbe35986a5…` unchanged).
 - **FD-55 — The Godot demo presents no frame in the
   browser path: the guest never reaches its first
   frame. Its startup is still inside engine
@@ -3826,3 +3854,29 @@ its lane and is not a defect, for the stated reason:
   launcher's "booted, no window, no output" failure
   surfacing remains specified-not-built, as the
   FD-77 entry records.
+
+- **CL-35 — The 64-bit exe spawn signal is emitted
+  regardless of BW64_DLLTRACE (FD-54).** *(Filed
+  provisionally as CL-35 on `lane-fd54`, 2026-11-01 —
+  CL-35 was the next free closure number on the
+  integration register at filing; the composing merge
+  verifies by audit and renumbers if a sibling lane
+  took it first.)* Fixed on branch `lane-fd54` in
+  `e3660ab57`: `sys_openat64` no longer conditions the
+  process-spawn signal (`OPENED '<path>' -> fd <n>` on
+  a successful .exe open) on `BW64_DLLTRACE` being
+  unset. With the flag set, the open previously
+  produced only the DLLTRACE dialect line, which the
+  launcher's readiness observer never matches, so a
+  traced 64-bit session could never complete the FD-47
+  handshake; the signal is a contract line, and it is
+  now emitted unconditionally, matching the 32-bit open
+  paths. The DLLTRACE diagnostic line itself is
+  unchanged. Proof: `testExeSpawnSignal64` (`bc2cfd046`)
+  drives the real dispatcher with klog captured — RED
+  before the fix, GREEN after, with the untraced
+  control, the trace line's presence, and the
+  no-signal-on-failed-open discipline all pinned;
+  serial suites x64 67/67 and main 667/667, 0 FAILED;
+  run-native 56 PASS; browser build "Browser export
+  verified" (wasm `35302eba…`).
