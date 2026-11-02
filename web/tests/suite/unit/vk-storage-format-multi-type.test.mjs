@@ -145,7 +145,12 @@ test('end-to-end: the split clone binds through its origin binding', () => {
 test('end-to-end: the empty shader prunes its dead declarations and translates', () => {
   const bytes = load(EMPTY);
   const r = applySpirvFix(bytes, {});
-  assert.ok(r.applied.includes('prune-dead-storage-image-types'), r.applied.join(','));
+  // FD-87: the empty shader's heap variables are themselves dead
+  // descriptors, so R18 (strip-dead-descriptors) now prunes them and
+  // their orphaned types first; on shapes where only the types are
+  // dead the dedicated prune-dead-storage-image-types still fires.
+  // Either way the dead declarations are gone and the module translates.
+  assert.ok(r.applied.includes('strip-dead-descriptors') || r.applied.includes('prune-dead-storage-image-types'), r.applied.join(','));
   const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: r.bytes }));
   assert.equal(storageDecls(wgsl).length, 0);
 });

@@ -157,7 +157,11 @@ test('multisig bare-image heap (the captured Godot compute shape): every signatu
   const sigs = decls.map(d => 'p' + d.arrSig.pushOff + 'a' + d.arrSig.add).sort();
   assert.deepEqual(sigs, ['p0a0', 'p0a1', 'p0a2', 'p4a0', 'p8a0']);
   const slots = decls.map(d => d.binding).sort((a, b) => a - b);
-  assert.deepEqual(slots, [0, 4, 5, 6, 7], 'first clone on the guest binding, the rest on synthetic slots past the set max (UBO at 3)');
+  // FD-87: the set's other occupant, an unreferenced uniform block at
+  // binding 3, is stripped as a dead descriptor (R18) before
+  // specialization runs, so the synthetic slots now start past the
+  // array's own binding instead of past the dead UBO.
+  assert.deepEqual(slots, [0, 1, 2, 3, 4], 'first clone on the guest binding, the rest on synthetic slots past the set max');
   for (const d of decls) {
     if (d.binding !== 0) assert.equal(d.origBinding, 0, 'synthetic-slot clones must resolve against the guest heap binding');
     assert.match(wgsl, new RegExp('textureLoad\\(' + d.name + ', vec2<u32>\\('), 'fetches through this clone are widened textureLoads');

@@ -4880,7 +4880,20 @@ export function specializeDescriptorArrays(mod, log) {
       if (ins.op === Op.Load) end = Math.min(end, start + 1);
       else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
       else if (ins.op === 64) end = Math.min(end, start + 3);
-      for (let k = start; k < end; k++) live.add(ins.words[k]);
+      for (let k = start; k < end; k++) {
+        // OpExtInst (12): words[start] is the set id (a reference);
+        // words[start + 1] is the extended instruction NUMBER, a
+        // literal that must not keep a swept type alive -- the
+        // FD-78 literal-position class, proven live on the captured
+        // Godot module godot-fs-f2b738c259a79b4a, whose GLSL.std.450
+        // instruction numbers 13/14/29/30 equal its specialized-away
+        // descriptor array / pointer type ids and kept both alive,
+        // which in turn kept the post-specialization texel conversion
+        // from seeing its image type as un-owned (FD-87). Mirrored in
+        // the bridge audit's skip5302 simulation.
+        if (ins.op === 12 && k === start + 1) continue;
+        live.add(ins.words[k]);
+      }
     }
     const dead = new Set();
     for (const ins of mod.insns) {
@@ -5347,6 +5360,152 @@ function stripDeadUndefs(mod, log) {
   return true;
 }
 
+
+// R18 "strip-dead-descriptors" (FD-87): vkd3d-proton / dxil-spirv emit a
+// module-wide descriptor header -- every root-signature resource is
+// declared in every module, used or not. A descriptor variable
+// (DescriptorSet/Binding-decorated, in UniformConstant / Uniform /
+// StorageBuffer storage) that no instruction references is dead weight
+// the translation stack cannot carry: its runtime array keeps the
+// RuntimeDescriptorArray declaration alive and a Dim=Buffer element
+// type keeps SampledBuffer alive, so the bridge audit refuses the
+// module for resources it never touches (captured Godot module
+// godot-fs-f1b4e0027d98e2e4: a fragment shader whose body reads only
+// push constants, refused for SampledBuffer + RuntimeDescriptorArray
+// over a texel heap array, an SSBO-offsets block and a bindless-CBV
+// array it never accesses). The variable, its decorations and its name
+// are deleted, the entry-point interface listing is spliced the way
+// R15a splices it, and a dead-type sweep then removes the type
+// instructions the deletion orphaned (pointer / array / runtime-array
+// / struct / image / sampler / sampled-image), iterated to a fixpoint:
+// the struct cascade matters, because a dead block variable's member
+// runtime array is referenced by its struct type, which is referenced
+// only by the dead variable's pointer type. When no runtime-array type
+// survives, the RuntimeDescriptorArray declaration is stripped (the
+// condition R15a's tail applies); SampledBuffer / ImageBuffer are left
+// to R12X, whose no-Dim=Buffer-type condition the sweep now satisfies.
+// Deadness is operand-aware (idOperandUseIndex) over the whole module
+// with the metadata families skipped: any genuine use -- a load, a
+// chain, a copy, a phi, a call argument -- keeps the variable, so the
+// failure mode of a wrong verdict is a continued refusal, never a
+// mistranslation. The bridge audit mirrors the verdict: its array
+// analysis treats a zero-use descriptor array as removed, and the
+// texel mirrors do the same (FD-87).
+const R18_METADATA_OPS = new Set([2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 15, 16, 17, 71, 72, 73, 74, 75]);
+const R18_DEAD_TYPE_OPS = new Set([25, 26, 27, 28, 29, 30, 32]);
+// Id references of one instruction under the orphan-sweep discipline
+// (the specializeDescriptorArrays sweep's scan, with the OpExtInst
+// instruction-number word bounded the same way, and the leading
+// literals of OpVariable / OpFunction bounded to their single id
+// operand): the resultType word counts; the constant family's and
+// OpTypeInt / OpTypeFloat's operand words are literals; the
+// memory-access family's trailing group is bounded at its start.
+function r18RefIds(ins) {
+  if (R18_METADATA_OPS.has(ins.op)) return [];
+  const refs = [];
+  if (ins.resultType != null) refs.push(ins.words[0]);
+  if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+      ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 ||
+      ins.op === 52) return refs;
+  if (ins.op === 21 || ins.op === 22) return refs;
+  const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+  if (ins.op === Op.Function) { if (ins.words.length > start + 1) refs.push(ins.words[start + 1]); return refs; }
+  let end = ins.words.length;
+  if (ins.op === Op.Load) end = Math.min(end, start + 1);
+  else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
+  else if (ins.op === 64) end = Math.min(end, start + 3);
+  const scanStart = ins.op === Op.Variable ? start + 1 : start;
+  for (let k = scanStart; k < end; k++) {
+    if (ins.op === 12 && k === 3) continue; // OpExtInst instruction number: a literal
+    refs.push(ins.words[k]);
+  }
+  return refs;
+}
+function stripDeadDescriptors(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const decorated = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.Decorate && (ins.words[1] === Dec.DescriptorSet || ins.words[1] === Dec.Binding)) decorated.add(ins.words[0]);
+  const deadVars = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || !decorated.has(ins.resultId)) continue;
+    const sc = ins.words[2];
+    if (sc !== 0 && sc !== 2 && sc !== 12) continue; // UniformConstant / Uniform / StorageBuffer
+    let used = false;
+    for (const u of mod.insns) {
+      if (u === ins || R18_METADATA_OPS.has(u.op)) continue;
+      if (idOperandUseIndex(byId, u, ins.resultId) >= 0) { used = true; break; }
+    }
+    if (!used) deadVars.push(ins);
+  }
+  if (!deadVars.length) return false;
+  const deadIds = new Set(deadVars.map(v => v.resultId));
+  const drop = new Set(deadVars);
+  for (const ins of mod.insns)
+    if ((ins.op === Op.Decorate || ins.op === Op.Name) && deadIds.has(ins.words[0])) drop.add(ins);
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  if ((mod.header?.version ?? 0) >= 0x00010400) {
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      const tail = r15EntryPointTail(ins);
+      ins.words = ins.words.slice(0, tail).concat(ins.words.slice(tail).filter(id => !deadIds.has(id)));
+    }
+  }
+  // Dead-type sweep, iterated to a fixpoint: a type dies when no
+  // surviving instruction references it; decorations and names
+  // targeting a dead type die with it.
+  let swept = true;
+  while (swept) {
+    swept = false;
+    const live = new Set();
+    for (const ins of mod.insns) for (const r of r18RefIds(ins)) live.add(r);
+    const dead = new Set();
+    for (const ins of mod.insns)
+      if (R18_DEAD_TYPE_OPS.has(ins.op) && ins.resultId != null && !live.has(ins.resultId)) dead.add(ins.resultId);
+    if (dead.size) {
+      mod.insns = mod.insns.filter(i => {
+        if (i.resultId != null && dead.has(i.resultId) && R18_DEAD_TYPE_OPS.has(i.op)) return false;
+        if ((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && dead.has(i.words[0])) return false;
+        return true;
+      });
+      swept = true;
+    }
+  }
+  if (!mod.insns.some(i => i.op === Op.TypeRuntimeArray)) {
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 5302));
+  }
+  for (const v of deadVars) log.push('spirvfix: stripped dead descriptor variable %' + v.resultId + ' (declared, never referenced)');
+  return true;
+}
+
+// R19 "strip-stray-sampled-image-array-dynamic-indexing" (FD-87): the
+// SampledImageArrayDynamicIndexing capability (29) exists only to
+// license dynamically indexing an array of images / sampled images.
+// naga rejects the bare declaration outright, so a module whose image
+// arrays have all been specialized away (R15a) or stripped as dead
+// (R18) -- or which never carried one, the dxbc-spirv module-header
+// form -- still dies at translation for a construct it no longer
+// contains. The declaration is stripped exactly when no OpTypeArray /
+// OpTypeRuntimeArray over an image or sampled-image element type
+// survives; a surviving image array keeps the declaration, and the
+// bridge audit keeps the named refusal (mirrored: the audit admits 29
+// under the same survival condition). Fixed-size image arrays are NOT
+// served by this rule: they survive, and keep the refusal.
+function stripStraySampledImageArrayDynamicIndexing(mod, log) {
+  if (!mod.insns.some(i => i.op === Op.Capability && i.words[0] === 29)) return false;
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.TypeArray && ins.op !== Op.TypeRuntimeArray) continue;
+    const elem = byId.get(ins.words[1]);
+    if (elem && (elem.op === Op.TypeImage || elem.op === Op.TypeSampledImage)) return false;
+  }
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 29));
+  log.push('spirvfix: stripped stray SampledImageArrayDynamicIndexing capability (no image array survives)');
+  return true;
+}
+
 export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
@@ -5356,6 +5515,9 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   } catch (e) {
     return { bytes: u8, applied, log: ['parse failed: ' + (e.message || e)] };
   }
+  try {
+    if (stripDeadDescriptors(mod, log)) applied.push('strip-dead-descriptors');
+  } catch (e) { log.push('R18 failed: ' + (e.message || e)); }
   try {
     if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
@@ -5458,6 +5620,9 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     if (splitSpecializedCloneBindings(mod, log)) applied.push('specialized-binding-split');
   } catch (e) { log.push('R15a-split failed: ' + (e.message || e)); }
   try {
+    if (stripStraySampledImageArrayDynamicIndexing(mod, log)) applied.push('strip-stray-sampled-image-array-dynamic-indexing');
+  } catch (e) { log.push('R19 failed: ' + (e.message || e)); }
+  try {
     if (pruneDeadStorageImageTypes(mod, log)) applied.push('prune-dead-storage-image-types');
   } catch (e) { log.push('R14-prune failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
@@ -5468,4 +5633,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];
+export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types', 'strip-dead-descriptors', 'strip-stray-sampled-image-array-dynamic-indexing'];
