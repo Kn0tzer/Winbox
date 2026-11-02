@@ -786,8 +786,9 @@ do not close the entry until they land.
   ("also observed, not a blocker").
 
 - **FD-65 — Wine Gecko aborts with "unable to find a usable
-  font (serif)"; the MSHTML fixture never reports.**
-  *(Medium — embedded-HTML rendering class: any guest
+  font (serif)"; the MSHTML fixture never reports.
+  CLOSED 2026-11-02 — see CL-41.** *(Was Medium —
+  embedded-HTML rendering class: any guest
   program that renders through Wine's Gecko engine.
   Surfaced by the FD-02+FD-38 deploy gate, 2026-11-01;
   proven pre-existing — the identical failure, including
@@ -818,6 +819,76 @@ do not close the entry until they land.
   `test-results/deploy-fd02-fd38-20261101/js-commondep-rerun.log`,
   `test-results/deploy-fd02-fd38-20261101/js-commondep-live-baseline.log`,
   `test-results/suite-common-dependencies/console.log`.
+  **Closed 2026-11-02 — see CL-41.** The determination
+  the entry asked for: the font set was absent AND the
+  enumeration machinery itself was missing — the
+  64-bit rootfs carried no faces, and the shipped
+  64-bit `win32u.so` was built without freetype or
+  fontconfig, so GDI enumerated zero families and
+  could realize none, whatever files were present.
+  Both layers are fixed on `lane-fd65`; the test's
+  Gecko stage passes unloosened, and its remaining
+  failure is the separate audio-capture stage filed
+  as FD-85.
+
+- **FD-85 — The common-dependencies audio stage: the
+  guest's OpenAL tone never reaches the browser's
+  audio capture.** *(Medium — guest audio output
+  class: any guest program whose sound must reach the
+  page. Surfaced 2026-11-02 by the FD-65 lane: the
+  stage was unreachable while the same test died at
+  its Gecko stage.)* On the FD-65-fixed build the
+  test's guest stages complete — `MSHTML: RESULT 0`,
+  then the OpenAL fixture prints its device, vendor,
+  version and renderer lines, `OPENAL: PLAYSTART` and
+  `OPENAL: RESULT 0` — but the page-side capture the
+  test installed (`__audioCapture`, counting non-zero
+  samples through the AudioContext script processor)
+  records no non-zero sample within the test's 30 s
+  window, deterministically (two runs, the same
+  failure at the same wait, ~264 s each; the runner
+  failure is the `waitForPageFn` timeout at
+  `common-dependencies.test.mjs:60`). The guest side
+  of the chain is proven by its own prints; the break
+  is downstream — emulator audio output/pump or the
+  page capture path — and is not characterized
+  further here. Neither the wait nor the assertions
+  may be loosened to pass it. *(Numbered FD-85
+  against the composed register: the fd79-80
+  branch's FD-82…FD-84 precede it in the composed
+  numbering; the composing merge verifies by
+  audit.)* Evidence: `test-results/fd65/`
+  (`commondep-v2-console.log`, `commondep-v3-console.log`,
+  `commondep-v2.log`, `commondep-v3.log`).
+
+- **FD-86 — No Arial family on the 64-bit stack:
+  family-name lookups for Arial find nothing.**
+  *(Low–Medium — Chromium-class text fallback:
+  Blink's Windows last-resort list includes Arial,
+  not DejaVu Sans. Surfaced 2026-11-02 by the FD-65
+  lane's win32-fonts probe on x64.)* The fixture
+  prints `GDI=1 FAMILIES=10 TAHOMA=1
+  MAPPING=00000000 ARIAL=0 METRICS=0` on the
+  FD-65-fixed build: enumeration and metrics work,
+  but no family named Arial exists, because the
+  64-bit prefix carries no
+  `[Software\Wine\Fonts\Replacements]` entry — the
+  32-bit stack serves Arial through exactly that
+  mechanism (`tools/browser/stage-wine32-fonts.py`
+  writes `"Arial"="DejaVu Sans"` into prefix32's
+  user.reg at dist export, with checker coverage).
+  The mirror fix is mechanical: a prefix64 staging
+  step on the same pattern, completeness coverage
+  for it, and the shipped win32-fonts suite test
+  extended to x64 as the standing guard (today it
+  runs x86 only, which is why the gap was
+  invisible). Gecko does not need Arial — FD-65
+  closed without this — so it is filed, not fixed,
+  here. *(Numbered FD-86 against the composed
+  register, as FD-85.)* Evidence:
+  `test-results/fd65/fonts-x64-v2-console.log`
+  (fixed build), `test-results/fd65/fd65-fontstepsx86-console.log`
+  (the 32-bit enumeration, Arial present).
 
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
@@ -3052,6 +3123,7 @@ is behavioural, is re-proven there.
 | `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
 | `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
 | `lane-fd66` | FD-66: `setupReadbacks` discarded still-pending readback plans without freeing their heap blocks (latent — every production submit pairs setup with completion, so the discard was reachable only from the harness's planning sections), and the harness's sanitizer flavour reported the fixture's abandoned blocks so it could never finish clean | RED on the base reproduced the filed measurement exactly (LeakSanitizer 1,132 bytes in 5 allocations from setupReadbacks, exit 1); GREEN fixed: sanitizer flavour 57 PASS, exit 0, zero leak reports, via the standard runner too (its sanitizer run budget raised to 180 s); sabotage (prologue alone reverted) reopens exactly 328 bytes in 2 allocations; native serial 667/667 + 66/66; JS 348/0; citations 352/0 after re-pins; browser build BUILD COMPLETE (wasm df27c5e0…). Record: `docs/reports/fd66-readback-disposal-20261101.md`; evidence `test-results/fd66/` |
+| `lane-fd65` | FD-65: Gecko's "unable to find a usable font" — two layers: the 64-bit rootfs carried no font faces, and the shipped 64-bit win32u.so was built without freetype/fontconfig so GDI could enumerate and realize no font at all; faces staged (fonts64) and win32u rebuilt with its font engine (the build now fails loudly if either SONAME is absent); FD-85 + FD-86 filed | Guest step probe x64: EnumFontFamiliesEx 0 → 85 families, GetTextMetrics fail → tmHeight 17 (the 32-bit stack's numbers); the real common-dependencies Gecko stage green in two runs (MSHTML: RESULT 0, zero abort lines, test untouched — its remaining audio-capture failure is FD-85); completeness 0 failures; JS 348/0; dist 'Browser export verified'. Record: `docs/reports/fd65-gecko-fonts-20261102.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4311,3 +4383,60 @@ its lane and is not a defect, for the stated reason:
   prologue alone reopens exactly 328 bytes in 2
   allocations. Full evidence:
   `docs/reports/fd66-readback-disposal-20261101.md`.
+- **CL-41 — Gecko starved because the 64-bit GDI font
+  engine was never built: the backport build configured
+  win32u's unix half without freetype or fontconfig, and
+  the 64-bit rootfs carried no font faces (FD-65).**
+  *(Filed provisionally as CL-41 on lane-fd65,
+  2026-11-02 — CL-35…CL-39 were settled by the
+  fd54/fd63/fd70int/fd79-80 composition and CL-40 is
+  expected for FD-66 in this batch; the composing merge
+  verifies the number by audit.)*
+  Fixed on branch `lane-fd65` in `51dd2019f`. The filed
+  question — absent font set or an enumeration race —
+  is answered in two layers. The 64-bit rootfs did
+  carry no font faces at all (the 32-bit DejaVu staging
+  was never mirrored); six DejaVu faces including the
+  Serif pair are now staged into `glibc-rootfs64.zip`
+  by `tools/rootfs64/stage-fonts64.sh`, wired into
+  `apply-runtime-poststeps.sh` and pinned by the
+  completeness checker's new fonts64 check. But faces
+  alone changed nothing: a step probe in the guest
+  (GetDC / EnumFontFamiliesEx / CreateFontIndirect +
+  SelectObject + GetTextMetrics) showed the 64-bit
+  stack enumerating ZERO families and failing metrics
+  even for registry-registered Tahoma and for faces
+  added with AddFontResourceEx, while the identical
+  32-bit probe enumerated 83 families with metrics
+  working — and DirectWrite's independent collection
+  saw faces in the same processes, which is why
+  Chromium-class text rendered while Gecko starved.
+  The shipped `win32u.so` (FD-01 build `bffd9036…`)
+  contains no freetype or fontconfig support: the
+  backport build script configured its unix-half tree
+  `--without-freetype --without-fontconfig`, and the
+  font driver and fontconfig enumerator live in that
+  half. The build now compiles that tree with both,
+  and fails loudly if either SONAME is missing from
+  the product; the rebuilt `win32u.so` (`d382cefb…`)
+  is re-pinned (checker + backports README) and staged
+  into `wine64.zip`, and the runtime-assets archive
+  was regenerated (`runtime-assets-20261102`,
+  `7df0cdc2…`; `bootstrap.py --check` green end to
+  end). Proof: baseline common-dependencies RED with
+  the filed signature (`no fonts … backend: gdi`, the
+  ABORT, no `MSHTML: RESULT 0`); on the fixed build
+  the step probe reads EnumFontFamiliesEx 0 → 85
+  families and GetTextMetrics failing → tmHeight 17
+  (the 32-bit numbers), and the real test's Gecko
+  stage is green in two runs (`MSHTML: RESULT 0`,
+  title and body-text checks pass, zero abort lines,
+  the baseline's companion 0xC0000005 exit gone), its
+  waits and assertions untouched; JS unit 348/0; the
+  browser build compiles on the fixed tree ("Browser
+  export verified", support archive unchanged). The
+  test's final audio-capture stage fails on a
+  separate, newly reachable defect — FD-85; the
+  missing Arial family on this stack is FD-86.
+  Record: `docs/reports/fd65-gecko-fonts-20261102.md`;
+  evidence: `test-results/fd65/`.
