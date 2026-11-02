@@ -3169,13 +3169,31 @@ U32 KProcess::getdents(FD fildes, U32 dirp, U32 count, bool is64) {
 U32 KProcess::msync(KThread* thread, U32 addr, U32 len, U32 flags) {
     const U64 end = (U64)addr + len;
     if (!len || end > 0x100000000ULL) return -K_EINVAL;
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
-    for (auto& n : this->mappedFiles) {
-        std::shared_ptr<MappedFile> m = n.value;
-        const U64 mappingEnd = (U64)m->address + m->len;
-        if (m->address <= addr && end <= mappingEnd) {
-            return m->file->pwrite(thread, addr, addr - m->address + m->offset, len);
+    // Lock order (FD-77): the memory mutex is always taken before
+    // mappedFilesMutex -- the demand path holds the memory mutex while
+    // it looks mappings up (FilePage::onDemmand -> getMappedFile), and
+    // KMemory::mmap takes the memory mutex before its mapped-files
+    // sections. The writeback below reads the guest range, which
+    // demand-faults its pages and so takes the memory mutex; holding
+    // mappedFilesMutex across it inverts the order and deadlocks the
+    // process (a parked consumer session was captured frozen in
+    // exactly that configuration). So the lookup snapshots the mapping
+    // under the mutex and the writeback runs after it is released; the
+    // shared_ptr keeps the mapping and its file alive for the write.
+    MappedFilePtr match;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
+        for (auto& n : this->mappedFiles) {
+            std::shared_ptr<MappedFile> m = n.value;
+            const U64 mappingEnd = (U64)m->address + m->len;
+            if (m->address <= addr && end <= mappingEnd) {
+                match = m;
+                break;
+            }
         }
+    }
+    if (match) {
+        return match->file->pwrite(thread, addr, addr - match->address + match->offset, len);
     }
     const U32 firstPage = addr >> K_PAGE_SHIFT;
     const U32 lastPage = (U32)((end - 1) >> K_PAGE_SHIFT);

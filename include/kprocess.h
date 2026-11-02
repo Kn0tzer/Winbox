@@ -507,6 +507,10 @@ private:
     BHashTable<U32, MappedFilePtr> mappedFiles; // key is index
     // needs to be static, since during clone, the file pages and mappedFiles are cloned with the same map index, so this nextMappedFileIndex must be shared across processes
     static std::atomic_int nextMappedFileIndex;
+    // Lock order: KMemory::mutex before mappedFilesMutex (FD-77).
+    // Never hold this mutex across guest-memory access -- the access
+    // can demand-fault, and the demand path takes the memory mutex
+    // first and this one second.
     BOXEDWINE_MUTEX mappedFilesMutex;
 
     BHashTable<U32, KThread*> threads;
