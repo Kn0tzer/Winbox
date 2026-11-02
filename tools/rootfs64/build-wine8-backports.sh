@@ -11,6 +11,21 @@
 #      (win32u.so). The desktop-wait patch's functions live in the unix
 #      half: a win32u.dll rebuilt without its win32u.so ships the patch
 #      in no binary at all (FD-01, reopened 2026-10-31 per FD-43).
+#      This tree is configured WITH freetype and fontconfig: win32u's
+#      font driver and fontconfig enumeration live in the unix half,
+#      and a win32u.so built --without-freetype --without-fontconfig
+#      leaves GDI with no enumerable or realizable fonts at all in the
+#      guest (font files on disk do not help; EnumFontFamiliesEx
+#      returns zero families and GetTextMetrics fails), which is what
+#      starved Wine Gecko into its 'unable to find a usable font'
+#      abort (FD-65). The build host needs the x86_64 freetype and
+#      fontconfig development files visible to configure (system
+#      packages, or FREETYPE_CFLAGS/FREETYPE_LIBS and
+#      FONTCONFIG_CFLAGS/FONTCONFIG_LIBS pointing at a sysroot); the
+#      post-build check below fails loudly if the products are not in
+#      the binary. The guest runtime already carries the matching
+#      runtime libraries (libfreetype.so.6, libfontconfig.so.1 and
+#      their dependency chain in the prefix64 overlay).
 # Everything compiles with the host's native toolchain — deliberately NOT
 # in the linux/amd64 container, whose binfmt/QEMU layer crashes on this
 # ARM64 host (see stage-wine64-payloads.sh's header).
@@ -114,7 +129,7 @@ cd "$WORK/x64linux-build"
 if [ ! -f Makefile ]; then
     CFLAGS="-O1" "$WORK/wine/configure" --host=x86_64-linux-gnu --enable-win64 \
         --with-wine-tools="$WORK/tools-build" --disable-tests \
-        --without-freetype --without-fontconfig --without-gnutls \
+        --without-gnutls \
         --without-gstreamer --without-dbus --without-sdl --without-vulkan \
         --without-opengl --without-osmesa --without-alsa --without-pulse \
         --without-cups --without-udev --without-usb --without-sane \
@@ -122,6 +137,17 @@ if [ ! -f Makefile ]; then
         --without-pcap --without-v4l2 --without-x > configure.log 2>&1
 fi
 make -j"$(nproc)" dlls/win32u/win32u.so > make-unix.log 2>&1
+# FD-65 guard: the unix half must actually carry the font driver and
+# the fontconfig enumerator (both are dlopen'ed by SONAME, so the
+# literals are in the binary when support is compiled in). A build
+# that silently dropped them must fail here, not ship.
+for soname in libfreetype.so libfontconfig.so; do
+    if ! grep -a -q "$soname" "$WORK/x64linux-build/dlls/win32u/win32u.so"; then
+        echo "build-wine8-backports: win32u.so is missing $soname support (FD-65 guard)" >&2
+        exit 1
+    fi
+done
+echo "--- win32u.so carries freetype + fontconfig support (FD-65 guard) ---"
 cp "$WORK/x64linux-build/dlls/win32u/win32u.so" "$OUT/win32u.so"
 echo "--- built win32u.so (unix half) ---"
 
