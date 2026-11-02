@@ -3932,8 +3932,10 @@ do not close the entry until they land.
 
 - **FD-97 — The 64-bit single-call write paths
   fabricate zero bytes for an unreadable guest
-  buffer instead of answering EFAULT.** *(Low.
-  Filed by the FD-94/96 lane, 2026-11-02;
+  buffer instead of answering EFAULT. FIXED
+  2026-11-02 on branch `lane-fd97` — see
+  CL-51.** *(Was Low. Filed by the FD-94/96
+  lane, 2026-11-02;
   provisional until the merge lane's audit.)*
   Found while wiring FD-94: KMemory64::
   memcpyFromGuest zero-fills its destination when
@@ -3959,6 +3961,56 @@ do not close the entry until they land.
   behaviour. Evidence: KMemory64::memcpyFromGuest
   in source/kernel/kmemory64.cpp and its call
   sites in sys_write64/sys_pwrite64 on this base.
+
+  Fixed in commits `6d7c28d00` (test) and
+  `c734fe89d` (fix) — see CL-51. The closing
+  contract was refined by measurement before
+  fixing (`test-results/fd97/hostref-fd97.c`,
+  host kernel 6.17.0-1020-oracle): the host
+  answers EFAULT only when no byte is
+  readable; a readable prefix running into
+  an unreadable page is written as a short
+  count, so the fix writes the prefix rather
+  than answering EFAULT for the whole call.
+  Record:
+  `docs/reports/fd97-single-call-write-efault-20261102.md`;
+  evidence `test-results/fd97/`.
+
+
+- **FD-101 — The 64-bit sendmsg path gathers
+  segment data from unreadable guest buffers
+  as fabricated zeros instead of answering
+  EFAULT.** *(Low. Filed by the FD-97 lane,
+  2026-11-02; the number follows FD-100 on
+  lane-fd98's register and is provisional
+  until the merge lane's audit.)* Found
+  auditing FD-97's trait beyond the file
+  paths: `sys_sendmsg64`
+  (source/kernel/syscall64.cpp) gathers each
+  iovec segment into its per-thread scratch
+  buffer through KMemory64::memcpyFromGuest
+  with no readability check on the segment
+  base, so a segment pointing at unmapped or
+  unreadable guest memory is sent as that
+  many zero bytes and the call reports
+  success; sendmmsg loops sys_sendmsg64 and
+  inherits it. The host answers -EFAULT and
+  sends nothing for a fully unreadable
+  segment (measured on the box's host kernel
+  6.17.0-1020-oracle with a dedicated
+  reference program,
+  `test-results/fd97/hostref-sendmsg.c`:
+  bad iov base -EFAULT; a good base is
+  delivered intact). The file paths' form of
+  the trait is FD-97 (fixed, CL-51); this is
+  the vectored socket form, left for the
+  owning lane — the fix shape mirrors
+  FD-97's (readable prefix / EFAULT per
+  segment), but the socket paths' partial
+  and message-boundary semantics need their
+  own host measurements first. Evidence:
+  the gather loop in sys_sendmsg64 on this
+  base.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -4012,6 +4064,7 @@ is behavioural, is re-proven there.
 | `lane-fd92mmap` | FD-92: sys_mmap64_file establishes a 64-bit file mapping (or the addr==0 reservation) before copying the file content in; when that content read failed, the syscall returned the error but left the pages mapped and the range reserved, where a failed host mmap leaves nothing mapped -- both content-read error returns (the private branch's copy loop, and the shared branch's seed read after an addr==0 reservation) now tear the established range down through KMemory64::munmap before returning the error | New test testMmap64FileReadFailure in the x64 native suite, driving the real 64-bit syscall dispatch against an open description whose positioned reads fail on command (immediately, partway through the copy, and as the shared seed read; a never-failing control maps and serves its content): RED on the base (the four failure cases each left their range mapped), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (build git_sha e37fa3c04, wasm 16abfc4c, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd92-failed-mmap64-teardown-20261102.md`; evidence `test-results/fd92mmap/` |
 | `lane-fd101` | FD-101: the 64-bit sendmsg gather (sys_sendmsg64) fabricates zero bytes for unreadable guest segment memory — now the whole message import is validated in the host's order (descriptor answers first, then msghdr/name/iov array/control/segments) and answers -EFAULT with nothing sent, -EMSGSIZE for an iovlen over 1024, sendmmsg inheriting through the loop; FD-102 (the SCM_RIGHTS translation trusts the guest's cmsg_len), FD-103 (sendto's single-call form of the trait) and FD-104 (recvmsg's silent scatter drop) filed | New test testSendmsgBadBuffer64Syscalls (x64 suite; RED on the base — crossing sendmsg returned 200 with 200 bytes held by the peer, good+bad segments returned 24, unmapped iov array returned 0, sendmmsg good,bad returned 2; GREEN on the fix); host reference programs measured first (sendmsg/sendmmsg all-or-nothing matrix incl. crossing, message-boundary and descriptor-order cases; sendto and recvmsg companions); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the closing commit 4363174fa); JS unit 348/0 (the socket64-message slice mock extended for the validation's descriptor/page-flag surface). Record: `docs/reports/fd101-sendmsg-efault-20261102.md`; evidence `test-results/fd101/` |
 | `lane-fd102-104` | FD-102: the SCM_RIGHTS translation trusted the guest's cmsg_len — now an under-header or past-controllen length and a count over the host's 253 cap answer -EINVAL before anything is sent, and accepted messages translate into a new extension area past the 64 KB scratch message so 253 records no longer overwrite the gathered payload; FD-103: sendto's dispatcher branch validates its buffer (descriptor answers first, then the clamped range readable) and answers -EFAULT with nothing sent; FD-104: sys_recvmsg64 validates its import in the host's order (descriptor answers, readable msghdr, -EMSGSIZE over 1024 segments, readable iov array) and its scatter validates each range page-piece by page-piece as it copies, answering -EFAULT at the first unwritable range with the prefix delivered; FD-105 (recvfrom's silent scatter), FD-106 (the control chain past the first header), FD-107 (the recvmsg name copyback) and FD-108 (datagram sendto reported sent but never delivered) filed | New x64 tests testSendmsgCmsgLen64Syscalls, testSendtoBadBuffer64Syscalls, testRecvmsgBadBuffer64Syscalls (RED on the base — past-controllen cmsg_len values sent their descriptors, the 253-record translation corrupted the payload in scratch, an under-header length killed its case, sendto delivered 16 fabricated bytes from an unmapped buffer and 200 from a crossing one, recvmsg reported 100 delivered into a half-unwritable scatter and recvmmsg reported 2 for a good+bad pair; GREEN on the fix); host reference programs measured first (cmsg_len shapes incl. the 253/254 cap and the chain-slack shape, recvmsg partial/crossing/peek/iovlen shapes); full native suites serial: main 668/668 and x64 73/73, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = 9b6c993d9, wasm 4180f7cd); JS unit 348/0 (socket64-message slice mock extended; reviewed silent-failure allowance 115 -> 117). Record: `docs/reports/fd102-fd104-message-faults-20261102.md`; evidence `test-results/fd102-104/` |
+| `lane-fd97` | FD-97: the 64-bit single-call write paths (sys_write64/sys_pwrite64) fabricate zero bytes for an unreadable guest buffer — now write only the guest-readable prefix and answer -EFAULT when no byte is readable, under the host's measured prefix contract; FD-101 (the sendmsg gather form of the trait) filed | New test testWriteBadBuffer64Syscalls (x64 suite; RED on the base — write from an unmapped buffer returned 16 with 16 zero bytes landed, crossing write returned 200, writev with a bad second segment returned 24; GREEN on the fix); host reference programs measured first (write/pwrite bad-buffer matrix incl. the short-count prefix cases; sendmsg matrix for FD-101); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the fixing commit); JS unit 348/0. Record: `docs/reports/fd97-single-call-write-efault-20261102.md`; evidence `test-results/fd97/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4651,6 +4704,45 @@ dead-start fix and needs composition care.
   this lane: FD-105, FD-106, FD-107,
   FD-108. Record:
   `docs/reports/fd102-fd104-message-faults-20261102.md`.
+- **CL-51 — The 64-bit single-call write
+  paths answer for unreadable guest buffers:
+  only the guest-readable prefix is written,
+  and a fully unreadable buffer answers
+  EFAULT (FD-97).** *(Provisional number,
+  filed on lane-fd97, 2026-11-02 — CL-40..
+  CL-50 are held by unmerged lanes off this
+  same base (fd66, fd65, fd85, fd87, fd64,
+  fd05, fd82, fd78, fd83-84, fd92, fd92mmap,
+  fd92-93, fd94-96, fd90); the merge lane's
+  audit settles the final number.)* Fixed
+  on branch `lane-fd97`, commits `6d7c28d00`
+  (test) and `c734fe89d` (fix). A new helper
+  (sys_guestReadablePrefix64) counts the
+  leading readable bytes of the buffer page
+  by page under the same predicate the
+  copy's own access check applies;
+  sys_write64 writes only the prefix and
+  returns its EFAULT at the write point,
+  after the descriptor and mode answers (the
+  host's measured order: a bad fd with a bad
+  buffer answers EBADF); sys_pwrite64 does
+  the same after its own answers; writev
+  inherits the shape through sys_write64.
+  The host contract was measured first
+  (`test-results/fd97/hostref-fd97.c`):
+  fully unreadable -EFAULT with nothing
+  written; a readable prefix written as a
+  short count (96 of 200; 1 of 2 at a page's
+  last byte); count 0 with a bad buffer
+  returns 0; a PROT_WRITE-only buffer lands
+  its real bytes. Proof: new test
+  testWriteBadBuffer64Syscalls (x64 suite)
+  RED on the base with the filed signatures
+  and GREEN on the fix; full native suites
+  serial — main 668/668, x64 70/70; browser
+  build verified (BUILD_INFO git_sha = the
+  fixing commit); JS unit 348/0. Record:
+  `docs/reports/fd97-single-call-write-efault-20261102.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
