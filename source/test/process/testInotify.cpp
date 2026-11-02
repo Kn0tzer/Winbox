@@ -945,6 +945,20 @@ void testSendmsgBadBuffer64Syscalls() {
 // bytes. On the base the calls below land zero-filled bytes and report
 // success.
 void testWriteBadBuffer64Syscalls() {
+// FD-93: the 64-bit write family's wrong-mode answers. Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with
+// dedicated reference programs, preserved under
+// test-results/fd92-93/; extends lane-fd83-84's hostref-write.c
+// matrix with the validation orderings):
+//  - write, pwrite64 and writev on a descriptor opened read-only
+//    answer EBADF -- for count 0 and iovcnt 0 as well; the
+//    descriptor check also precedes write's zero-count return.
+//  - pwrite64's negative offset answers EINVAL ahead of both the
+//    descriptor and mode answers (measured on a bad descriptor
+//    too); the mode answer precedes writev's iovcnt range check
+//    (EINVAL) and its null-iovec check (EFAULT).
+//  - a successful pwrite64 does not move the file position.
+void testWriteFamily64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -1787,6 +1801,16 @@ void testSendtoBadBuffer64Syscalls() {
     char* hostDir = mkdtemp(dirTemplate);
     if (!hostDir) {
         testFail("write-bad-buffer test could not create its host temp dir");
+    constexpr U64 page = 0x7B000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE * 8, 3) != page) {
+        testFail("write-family test could not map its fixture pages");
+        return;
+    }
+    char dirTemplate[] = "/tmp/k3bwritefamXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("write-family test could not create its host temp dir");
         return;
     }
     std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
@@ -1991,6 +2015,27 @@ void testRecvmsgBadBuffer64Syscalls() {
         }
     }
     const S32 fd = (S32)fileDesc->handle;
+    KFileDescriptorPtr rdwrDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, rdwrDesc);
+        if ((S32)result < 0 || !rdwrDesc) {
+            testFail("write-family test could not create /data.bin");
+            return;
+        }
+        const char* text = "0123456789ABCDEFGHIJ";
+        rdwrDesc->kobject->writeNative((U8*)text, 20);
+        rdwrDesc->kobject->seek(0);
+    }
+    KFileDescriptorPtr rdonlyDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdonlyDesc);
+        if ((S32)result < 0 || !rdonlyDesc) {
+            testFail("write-family test could not open /data.bin read-only");
+            return;
+        }
+    }
+    const S32 wfd = (S32)rdwrDesc->handle;
+    const S32 rfd = (S32)rdonlyDesc->handle;
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -2408,6 +2453,90 @@ void testRecvmsgBadBuffer64Syscalls() {
     process->close(fd);
     rmdir(hostDir);
 }
+
+    constexpr U64 bufAt = page + 0x100;
+    constexpr U64 iovAt = page + 0x200;
+    constexpr U64 bigIovAt = page + 0x1000;
+    memory->memcpyToGuest(bufAt, "xyz", 3);
+    auto setIov = [&](U64 at, U32 idx, U64 base, U64 len) {
+        memory->writeq(at + (U64)idx * 16 + 0, base);
+        memory->writeq(at + (U64)idx * 16 + 8, len);
+    };
+    setIov(iovAt, 0, bufAt, 3);
+    setIov(iovAt, 1, bufAt, 3);
+    {
+        std::vector<U8> zeros(16400, 0);
+        memory->memcpyToGuest(bigIovAt, zeros.data(), (U32)zeros.size());
+    }
+
+    // write (1): the mode answer, and the descriptor check ahead
+    // of the zero-count return.
+    if (invoke(1, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
+        testFail("write on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(1, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count write on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(1, 9999, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count write on a bad descriptor was not -EBADF");
+    }
+    // writev (20): mode ahead of the walk, the range check and
+    // the iovec pointer check.
+    if (invoke(20, (U64)(U32)rfd, iovAt, 1, 0) != -K_EBADF) {
+        testFail("writev on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(20, (U64)(U32)rfd, iovAt, 0, 0) != -K_EBADF) {
+        testFail("writev with iovcnt 0 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(20, (U64)(U32)wfd, bigIovAt, 1025, 0) != -K_EINVAL) {
+        testFail("writev with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    // pwrite64 (18): negative offset EINVAL ahead of the
+    // descriptor and mode answers; mode EBADF otherwise.
+    if (invoke(18, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
+        testFail("pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(18, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(18, (U64)(U32)rfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a read-only descriptor was not -EINVAL");
+    }
+    if (invoke(18, 9999, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a bad descriptor was not -EINVAL");
+    }
+    if (invoke(18, (U64)(U32)wfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a writable descriptor was not -EINVAL");
+    }
+    if (invoke(20, (U64)(U32)wfd, 0, 1, 0) != -K_EFAULT) {
+        testFail("writev with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+    // Controls: the writable descriptor still writes, and a
+    // positioned write leaves the file position alone.
+    if (invoke(1, (U64)(U32)wfd, bufAt, 3, 0) != 3) {
+        testFail("write on a writable descriptor did not return 3");
+    }
+    if (invoke(1, (U64)(U32)wfd, bufAt, 0, 0) != 0) {
+        testFail("zero-count write on a writable descriptor did not return 0");
+    }
+    if (invoke(20, (U64)(U32)wfd, iovAt, 2, 0) != 6) {
+        testFail("two-segment writev on a writable descriptor did not return 6");
+    }
+    {
+        S64 before = rdwrDesc->kobject->getPos();
+        if (invoke(18, (U64)(U32)wfd, bufAt, 3, 5) != 3) {
+            testFail("pwrite64 on a writable descriptor did not return 3");
+        }
+        if (rdwrDesc->kobject->getPos() != before) {
+            testFail("pwrite64 moved the file position");
+        }
+    }
+
+    process->close(rfd);
+    process->close(wfd);
+    rmdir(hostDir);
+}
+
 
 #endif
 
@@ -3436,4 +3565,351 @@ void testInotifyPollNotifyStress() {
     sweeper.join();
     process->close(fd);
 }
+// FD-93: the write family's wrong-mode answers at the KProcess
+// layer both syscall layers forward to (the x64 syscall layer is
+// pinned by testWriteFamily64Syscalls). Host behaviour as in that
+// test's header: EBADF for write / writev / pwrite64 on a
+// descriptor opened read-only, count 0 and iovcnt 0 included;
+// EINVAL for a negative pwrite64 offset, ahead of the mode
+// answer; EINVAL for an out-of-range writev iovcnt and EFAULT
+// for a null iovec on a writable descriptor (the mode answer
+// precedes both in the vectored walk's validation order).
+void testWriteFamilyWrongMode() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    char dirTemplate[] = "/tmp/bw64kwritefamXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for write-family test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr rdwrDesc;
+    U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, rdwrDesc);
+    if ((S32)result < 0 || !rdwrDesc) {
+        testFail("write-family test could not create /data.bin");
+        return;
+    }
+    const char* text = "0123456789ABCDEFGHIJ";
+    rdwrDesc->kobject->writeNative((U8*)text, 20);
+    rdwrDesc->kobject->seek(0);
+    KFileDescriptorPtr rdonlyDesc;
+    result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdonlyDesc);
+    if ((S32)result < 0 || !rdonlyDesc) {
+        testFail("write-family test could not open /data.bin read-only");
+        return;
+    }
+    const S32 wfd = (S32)rdwrDesc->handle;
+    const S32 rfd = (S32)rdonlyDesc->handle;
+
+    constexpr U32 bufAt = TEST_HEAP_ADDRESS + 0x200;
+    constexpr U32 iovAt = TEST_HEAP_ADDRESS + 0x400;
+    thread->memory->memcpy(bufAt, (void*)"xyz", 3);
+    thread->memory->writed(iovAt + 0, bufAt);
+    thread->memory->writed(iovAt + 4, 3);
+    thread->memory->writed(iovAt + 8, bufAt);
+    thread->memory->writed(iovAt + 12, 3);
+
+    if ((S32)process->write(thread, rfd, bufAt, 3) != -K_EBADF) {
+        testFail("KProcess::write on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->write(thread, rfd, bufAt, 0) != -K_EBADF) {
+        testFail("zero-count KProcess::write on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->writev(thread, rfd, iovAt, 1) != -K_EBADF) {
+        testFail("KProcess::writev on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->writev(thread, rfd, iovAt, 0) != -K_EBADF) {
+        testFail("KProcess::writev with iovcnt 0 on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->writev(thread, wfd, iovAt, -1) != -K_EINVAL) {
+        testFail("KProcess::writev with iovcnt -1 was not -EINVAL");
+    }
+    if ((S32)process->pwrite64(thread, rfd, bufAt, 3, 0) != -K_EBADF) {
+        testFail("KProcess::pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->pwrite64(thread, rfd, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count KProcess::pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if ((S32)process->pwrite64(thread, rfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("KProcess::pwrite64 with offset -1 on a read-only descriptor was not -EINVAL");
+    }
+    if ((S32)process->pwrite64(thread, wfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("KProcess::pwrite64 with offset -1 on a writable descriptor was not -EINVAL");
+    }
+    // Controls: the writable descriptor still writes through all
+    // three shapes, and the positioned write leaves the position.
+    if ((S32)process->write(thread, wfd, bufAt, 3) != 3) {
+        testFail("KProcess::write on a writable descriptor did not return 3");
+    }
+    if ((S32)process->writev(thread, wfd, iovAt, 2) != 6) {
+        testFail("two-segment KProcess::writev on a writable descriptor did not return 6");
+    }
+    {
+        S64 before = rdwrDesc->kobject->getPos();
+        if ((S32)process->pwrite64(thread, wfd, bufAt, 3, 5) != 3) {
+            testFail("KProcess::pwrite64 on a writable descriptor did not return 3");
+        }
+        if (rdwrDesc->kobject->getPos() != before) {
+            testFail("KProcess::pwrite64 moved the file position");
+        }
+    }
+
+    // Last: on the base this case never returns -- the walk
+    // dereferences the null iovec and the harness takes a guest
+    // fault at address 0 -- so it must not shadow the cases above.
+    if ((S32)process->writev(thread, wfd, 0, 1) != -K_EFAULT) {
+        testFail("KProcess::writev with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+
+    process->close(rfd);
+    process->close(wfd);
+    rmdir(dir);
+}
+
+#ifndef BOXEDWINE_GUEST_X64
+// FD-92: the 32-bit dispatcher's readv (145) was a null slot and
+// answered -ENOSYS; only the 64-bit readv existed. The contract
+// is FD-83's, measured on the host kernel (see
+// testPreadv64Syscalls' header and lane-fd83-84's host reference
+// matrix): exactly one IN_ACCESS per successful call -- one
+// segment or three, data or 0 bytes (at EOF, with iovcnt 0, with
+// all-zero-length segments) -- none on failure; a short read ends
+// the walk; validation answers EBADF (bad descriptor, wrong
+// mode), EINVAL (iovcnt outside 0..IOV_MAX), EFAULT (null iovec
+// with iovcnt > 0). Plain read at EOF stays silent (FD-59).
+void testReadv32Syscall() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    char dirTemplate[] = "/tmp/bw64kreadv32XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for 32-bit readv test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+    if ((S32)result < 0 || !fileDesc) {
+        testFail("32-bit readv test could not create /data.bin");
+        return;
+    }
+    const char* text = "0123456789ABCDEFGHIJ";
+    fileDesc->kobject->writeNative((U8*)text, 20);
+    fileDesc->kobject->seek(0);
+    KFileDescriptorPtr rdonlyDesc;
+    result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdonlyDesc);
+    if ((S32)result < 0 || !rdonlyDesc) {
+        testFail("32-bit readv test could not open /data.bin read-only");
+        return;
+    }
+    KFileDescriptorPtr wronlyDesc;
+    result = process->openFile(B("/"), B("/data.bin"), K_O_WRONLY, wronlyDesc);
+    if ((S32)result < 0 || !wronlyDesc) {
+        testFail("32-bit readv test could not open /data.bin write-only");
+        return;
+    }
+    const S32 rfd = (S32)rdonlyDesc->handle;
+    const S32 wfd = (S32)wronlyDesc->handle;
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("32-bit readv test could not create its inotify instance");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
+    if (wd < 1) {
+        testFail("32-bit readv test could not watch /data.bin");
+        return;
+    }
+    auto drainMasks = [&]() {
+        std::vector<U32> masks;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            U32 mask, nameLen;
+            memcpy(&mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            masks.push_back(mask);
+            offset += 16 + (S32)nameLen;
+        }
+        return masks;
+    };
+    auto accessCount = [&](const std::vector<U32>& masks) {
+        int n = 0;
+        for (U32 m : masks) if (m & 0x00000001) n++; // IN_ACCESS
+        return n;
+    };
+    drainMasks(); // setup noise
+
+    constexpr U32 iovAt = TEST_HEAP_ADDRESS + 0x400;
+    constexpr U32 buf0 = TEST_HEAP_ADDRESS + 0x800;
+    constexpr U32 buf1 = TEST_HEAP_ADDRESS + 0x900;
+    constexpr U32 buf2 = TEST_HEAP_ADDRESS + 0xA00;
+    // Segments are staged host-side and flushed by invoke():
+    // testNewInstruction wipes the whole test heap, so anything
+    // written to guest memory before it is gone by the time the
+    // dispatched call runs.
+    U32 stagedBase[8];
+    U32 stagedLen[8];
+    U32 stagedCount = 0;
+    auto setIov = [&](U32 idx, U32 base, U32 len) {
+        stagedBase[idx] = base;
+        stagedLen[idx] = len;
+        if (idx + 1 > stagedCount) stagedCount = idx + 1;
+    };
+    // Guest memory for the dispatched calls is context.memory:
+    // the dispatcher runs on context.cpu, and in this harness
+    // that is not context.thread's memory view.
+    auto invoke = [&](S32 fd, U32 iov, S32 iovcnt) -> S32 {
+        testNewInstruction(0);
+        for (U32 i = 0; i < stagedCount; i++) {
+            context.memory->writed(iovAt + i * 8 + 0, stagedBase[i]);
+            context.memory->writed(iovAt + i * 8 + 4, stagedLen[i]);
+        }
+        testPushCode8(0xB8); testPushCode32(145); // __NR_readv
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = (U32)fd;     // EBX
+        context.cpu->reg[1].u32 = iov;         // ECX
+        context.cpu->reg[2].u32 = (U32)iovcnt; // EDX
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+    auto bufEquals = [&](U32 at, const char* expected, U32 len) {
+        char got[32];
+        context.memory->memcpy(got, at, len);
+        return memcmp(got, expected, len) == 0;
+    };
+
+    // One segment, with data: bytes land, exactly one IN_ACCESS.
+    setIov(0, buf0, 4);
+    if (invoke(rfd, iovAt, 1) != 4 || !bufEquals(buf0, "0123", 4)) {
+        testFail("32-bit readv of one segment did not return its 4 bytes");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("one-segment 32-bit readv did not generate exactly one IN_ACCESS");
+    }
+    // Three segments fill in order; still exactly one event.
+    setIov(0, buf0, 4); setIov(1, buf1, 4); setIov(2, buf2, 4);
+    if (invoke(rfd, iovAt, 3) != 12 || !bufEquals(buf0, "4567", 4) ||
+        !bufEquals(buf1, "89AB", 4) || !bufEquals(buf2, "CDEF", 4)) {
+        testFail("three-segment 32-bit readv did not return its 12 bytes in order");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("three-segment 32-bit readv did not generate exactly one IN_ACCESS");
+    }
+    // A short final segment ends the walk (4 bytes remain).
+    setIov(0, buf0, 4); setIov(1, buf1, 4);
+    if (invoke(rfd, iovAt, 2) != 4 || !bufEquals(buf0, "GHIJ", 4)) {
+        testFail("32-bit readv at the last 4 bytes did not stop at EOF");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("short 32-bit readv did not generate exactly one IN_ACCESS");
+    }
+    // At EOF: a 0-byte success still generates the event.
+    setIov(0, buf0, 4);
+    if (invoke(rfd, iovAt, 1) != 0) {
+        testFail("32-bit readv at EOF did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit readv at EOF generated no IN_ACCESS");
+    }
+    // iovcnt 0: a 0-byte success, with the event.
+    if (invoke(rfd, iovAt, 0) != 0) {
+        testFail("32-bit readv with iovcnt 0 did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit readv with iovcnt 0 generated no IN_ACCESS");
+    }
+    // All-zero-length segments: a 0-byte success, with the event.
+    setIov(0, buf0, 0); setIov(1, buf1, 0);
+    if (invoke(rfd, iovAt, 2) != 0) {
+        testFail("32-bit readv of zero-length segments did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit readv of zero-length segments generated no IN_ACCESS");
+    }
+    // Failures: the host's answers, and no events.
+    if (invoke(9999, iovAt, 1) != -K_EBADF) {
+        testFail("32-bit readv on a bad descriptor was not -EBADF");
+    }
+    if (invoke(wfd, iovAt, 1) != -K_EBADF) {
+        testFail("32-bit readv on a write-only descriptor was not -EBADF");
+    }
+    if (invoke(wfd, iovAt, 0) != -K_EBADF) {
+        testFail("32-bit readv with iovcnt 0 on a write-only descriptor was not -EBADF");
+    }
+    if (invoke(rfd, iovAt, -1) != -K_EINVAL) {
+        testFail("32-bit readv with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke(rfd, iovAt, 1025) != -K_EINVAL) {
+        testFail("32-bit readv with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke(rfd, 0, 1) != -K_EFAULT) {
+        testFail("32-bit readv with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+
+    // FD-93, same route: the dispatcher's pwrite64 (181) answers
+    // a negative offset EINVAL ahead of even the descriptor check
+    // -- the positioned family's measured order, the same one the
+    // 64-bit sys_pwrite64 keeps.
+    auto invokePwrite64 = [&](S32 fd, U32 buf, U32 count, U64 offset) -> S32 {
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(181); // __NR_pwrite64
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = (U32)fd;          // EBX
+        context.cpu->reg[1].u32 = buf;              // ECX
+        context.cpu->reg[2].u32 = count;            // EDX
+        context.cpu->reg[6].u32 = (U32)offset;      // ESI = low
+        context.cpu->reg[7].u32 = (U32)(offset >> 32); // EDI = high
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+    if (invokePwrite64(9999, buf0, 3, (U64)-1) != -K_EINVAL) {
+        testFail("32-bit pwrite64 with offset -1 on a bad descriptor was not -EINVAL");
+    }
+    if (invokePwrite64(wfd, buf0, 3, (U64)-1) != -K_EINVAL) {
+        testFail("32-bit pwrite64 with offset -1 was not -EINVAL");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("failed 32-bit readv generated IN_ACCESS");
+    }
+    // Control: plain read at EOF stays silent (FD-59). The seek
+    // puts the descriptor at EOF directly, so the control does
+    // not depend on the walk above having advanced the position.
+    rdonlyDesc->kobject->seek(20);
+    if ((S32)process->read(thread, rfd, buf0, 4) != 0) {
+        testFail("plain read at EOF did not return 0");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("plain read at EOF generated IN_ACCESS");
+    }
+
+    process->close((S32)inotifyDesc->handle);
+    process->close(rfd);
+    process->close(wfd);
+    process->close((S32)fileDesc->handle);
+    rmdir(dir);
+}
+#endif
+
 #endif

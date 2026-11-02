@@ -79,6 +79,7 @@ void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
 void testGetrandom32Syscall();
+void testReadv32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
@@ -113,6 +114,7 @@ void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
+void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
@@ -136,6 +138,7 @@ void testSendmsgCmsgLen64Syscalls();
 void testSendtoBadBuffer64Syscalls();
 void testRecvmsgBadBuffer64Syscalls();
 void testWriteBadBuffer64Syscalls();
+void testWriteFamily64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -205,6 +208,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSendtoBadBuffer64Syscalls, "Test x64 sendto to unreadable guest buffers"},
     {testRecvmsgBadBuffer64Syscalls, "Test x64 recvmsg scatter to unwritable guest buffers"},
     {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
+    {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -222,6 +226,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEvents, "Test inotify event delivery end to end"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
@@ -872,6 +877,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
+    {testReadv32Syscall, "Test 32-bit readv dispatch and notification contract (FD-92)"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
@@ -909,6 +915,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
@@ -919,6 +926,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
+    {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
