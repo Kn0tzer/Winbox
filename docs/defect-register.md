@@ -3482,6 +3482,76 @@ do not close the entry until they land.
   consequences stated) is queued here. Evidence:
   web/vk-protocol.mjs lines 89-90;
   `docs/reports/fd64-legacy-descset-20261102.md`.
+- **FD-92 — spirvfix's fixed output for the captured
+  369,400-byte Godot module is not spirv-val clean:
+  synthesized pointer types are spliced ahead of a
+  module type definition they reference. FIXED
+  2026-11-02 on branch `lane-fd92` — see CL-45.**
+  *(Medium — any strict consumer of the fixed module
+  (spirv-val; the translator, once earlier refusals
+  are lifted) rejects it; filed by the FD-88 lane,
+  2026-11-02; the number is provisional until the
+  merge lane's audit.)* Measured on lane-fd87's
+  end-state output for
+  `godot-fs-f2b738c259a79b4a.spv`
+  (`test-results/fd87/godot-369400-d4da162f-fixed2.spv`):
+  spirv-val reports "Operand '54[%bool]' requires a
+  previous definition" — the synthesized Private and
+  Function pointer-to-bool types (ids 17439/17440,
+  allocated by the fixup) sit at instruction 299
+  while OpTypeBool (id 54) is defined at instruction
+  333. The raw module is spirv-val clean. The FD-87
+  lane's verdicts never reached the defect: the
+  translator refuses that module at the capability
+  stage, before type parsing reaches the mis-ordered
+  types, and its spirv-val check ran on the sibling
+  fixture only. Closing terms: the fixup's splice
+  machinery places synthesized type instructions
+  without regard to dependencies on module types
+  defined later in the type section; the fix keeps
+  every synthesized type behind the definitions it
+  references (or orders the type section
+  topologically after splicing), proven by spirv-val
+  on this module's fixed output with the corpus
+  expectations unchanged. Evidence:
+  `test-results/fd88/` (captured-naga5.log and the
+  lane record's id-54 analysis).
+  FIXED 2026-11-02 on branch `lane-fd92` (commit
+  89ac92ff9): the splice machinery now computes a
+  dependency-safe position — `defsSplicePos` returns
+  the earliest position at or after a rule's anchor
+  that follows every module definition the
+  synthesized instructions reference (grammar-aware
+  via idOperandUseIndex; a constant's resultType is
+  its type word) — applied at the three
+  intra-type-section splice sites:
+  lower-mid-shader-discard (the measured site; its
+  bool type, constants and pointer types now move as
+  one dependency-ordered block),
+  strip-point-builtins' constants, and the
+  texel-pointer rewrite's addTypes. Reproduced on
+  this base first: the raw module is spirv-val clean
+  and the base fixup's output fails with the filed
+  error verbatim. With the fix the captured module's
+  output validates cleanly and is a pure reordering
+  of the base output (instruction word-multiset
+  identical over 18,352 instructions), so the
+  module's meaning is unchanged; the translator's
+  verdict is unchanged (capability-stage refusal,
+  FD-88). Across the 72-module fixture corpus every
+  fixed output is byte-identical to the base and
+  every applied set is unchanged — the position only
+  moves when a referenced definition would otherwise
+  follow it — and the corpus gate passes 10/10 with
+  its expectations untouched. New guard
+  `web/tests/suite/unit/spirvfix-fd92.test.mjs`
+  builds the shape in miniature: RED on the base
+  (spirv-val on the base output: "ID '7[%bool]' has
+  not been defined"), GREEN with the fix (raw and
+  fixed minimal modules both spirv-val clean).
+  Record:
+  `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
+  evidence `test-results/fd92/`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3527,6 +3597,7 @@ is behavioural, is re-proven there.
 | `lane-fd77-stall-surface` | FD-77 remainder: a default session whose boot completes the desktop handshake but never maps a window and stops executing is now surfaced as a reported failure (the launcher takes its own thread dumps and convicts on the dump's measured zero-progress, two consecutive dumps, no fetch in flight); the held dump evidence is flushed to the preserved session log ahead of one BW64-FAIL line; slow-but-alive starts, armed diagnostic sessions, and every readiness rule are untouched | Unit tests over the shipped watchdog section: 8/8 green, 8/8 red on the unpatched launcher; shaped-session browser probe on the built dist: the park shape reports the failure with evidence in the log, the slow-but-alive and pre-handshake shapes raise no alarm; launcher UI regression green. Record: `docs/reports/fd77-stall-surfacing-20261101.md`; evidence `test-results/fd77-stall-surfacing/` |
 | `lane-fd87` | FD-87 CLOSED (CL-42, provisional): the Godot second-wave sibling classes — capability 29 (SampledImageArrayDynamicIndexing) named and admitted exactly when its image arrays are specializer-servable (spirvfix R19 strips the stray declaration), dead descriptor declarations stripped (R18) so the captured 2,340 B module translates end to end, and FD-78's ExtInst literal position bounded in both orphan sweeps so the 369,400 B module's texel conversion runs and SampledBuffer is served; FD-88 filed (data-dependent descriptor-array indexing, translator-stack-gated); FD-78 updated (ExtInst position proven live, fixed at two sweeps) | Both modules are committed fixtures (`testdata/spirv/godot-fs-f2b738c259a79b4a.spv`, `godot-fs-f1b4e0027d98e2e4.spv`): new suite `spirvfix-fd87.test.mjs` 5/5 (small module translates; big module loses SampledBuffer, keeps FD-88's pair by name); corpus test green over all 74 modules with per-module rewrite sets re-measured (every R18 verdict independently verified dead by raw-word scan); native run-native 60 PASS incl. 3 new FD-87 guards (cap-29 admit/refuse-by-name both forms, dead descriptors, ExtInst sweep position); JS unit suite 351/0; vulkan citations 352 rows 0 drift after re-pinning through the change's line map; browser build 'Browser export verified', wasm `f66e592c`. The two pipelines' in-vivo creations remain CL-42's owed clause for the carrying deploy gate. Record: `docs/reports/fd87-godot-sibling-classes-20261102.md`; evidence `test-results/fd87/` |
 | `lane-fd05` | FD-05: filling the file-descriptor table panicked and killed the emulator; exhaustion now answers EMFILE (EINVAL for an F_DUPFD minimum at/past the ceiling, EBADF for a dup2 target at/past it) and the guest survives — the allocation contract changed at its single choke point (`allocFileDescriptor`), all 22 production callers audited and made safe, SCM_RIGHTS partial delivery and accept requeue semantics preserved | New test testFdTableExhaustion in both suites: RED on the base (the fill hit the panic; the forked harness recorded the test as each suite's single failure, and un-forked the suite process died at the test), GREEN with the fix; native serial main 669/669 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE on the fixed tree (wasm ea3bdaa0), JS unit 348/0, legacy 110/4 (FD-64's standing set on this base). Record: `docs/reports/fd05-fd-table-exhaustion-20261102.md`; evidence `test-results/fd05/` |
+| `lane-fd92` | FD-92: spirvfix spliced its synthesized pointer-to-bool types ahead of the OpTypeBool they reference in the captured 369,400-byte Godot module (the module defines that type after its first global variable), so the fixed module failed spirv-val; synthesized types/constants are now spliced behind the definitions they reference (`defsSplicePos`, at the three intra-type-section splice sites) | spirv-val on the captured module's fixed output: clean (the base output fails with the filed error verbatim); the fixed output is a pure reordering of the base output (instruction word-multiset identical, 18,352 instructions); 72-module corpus: every output byte-identical to the base, applied sets unchanged, corpus gate 10/10; new guard spirvfix-fd92 RED on the base / GREEN with the fix. Record: `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`; evidence `test-results/fd92/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -5129,3 +5200,43 @@ its lane and is not a defect, for the stated reason:
   citations were re-pinned; the citation audit
   reports 0 drift. Record:
   `docs/reports/fd78-literal-positions-20261102.md`.
+
+- **CL-45 — spirvfix's fixed output for the captured
+  Godot module validates cleanly: synthesized
+  definitions are spliced behind the definitions
+  they reference (FD-92).** *(Filed provisionally
+  as CL-45 on lane-fd92, 2026-11-02 — CL-40..CL-44
+  are held provisionally by parallel branches (the
+  FD-66, FD-65, FD-85, FD-87, FD-64 and FD-05
+  filings); the composing merge verifies by audit
+  and renumbers if needed.)*
+  Fixed on branch `lane-fd92` (commit 89ac92ff9).
+  The defect: rules spliced synthesized types and
+  constants at the first-variable anchor without
+  regard to dependencies on module types defined
+  later in the type section; in the captured
+  369,400-byte Godot module, lower-mid-shader-
+  discard's pointer-to-bool types landed at
+  instruction 299, ahead of the OpTypeBool at 333
+  they reference, and spirv-val rejected the fixed
+  module. The fix adds `defsSplicePos`, which
+  computes the earliest splice position at or after
+  a rule's anchor that follows every module
+  definition the new instructions reference, and
+  applies it at the three intra-type-section splice
+  sites (lower-mid-shader-discard,
+  strip-point-builtins, the texel-pointer rewrite).
+  Proof: spirv-val clean on the captured module's
+  fixed output (the base output fails with the
+  filed error verbatim); the output is a pure
+  reordering of the base output (instruction
+  word-multiset identical over 18,352 instructions —
+  the module's meaning is unchanged) and the
+  translator's verdict is unchanged; the 72-module
+  fixture corpus is byte-identical to the base with
+  applied sets unchanged and the corpus gate green
+  at 10/10; new guard
+  `web/tests/suite/unit/spirvfix-fd92.test.mjs` is
+  RED on the base and GREEN with the fix. Record:
+  `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
+  evidence `test-results/fd92/`.
