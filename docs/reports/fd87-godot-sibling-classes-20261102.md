@@ -148,7 +148,16 @@ three native guards in `tools/vkd3d/tests/vk64_native_test.cpp`.
   20 multi-citation rows re-pinned through this change's exact line
   map, +55/+54 lines by region).
 - Browser build: `tools/bw64-build.sh` — "Browser export verified",
-  wasm `10c1a10b`, BUILD COMPLETE on the lane tree.
+  wasm `f66e592c`, BUILD COMPLETE on the lane tree.
+  (Hash provenance, corrected in a follow-up commit: the figure
+  first filed for this build came from a pre-commit dirty-tree
+  build whose log was lost with a dropped session. The build was
+  re-run from the clean committed tip (`e4fbc9d07`, dirty 0) —
+  after restoring the stripped DXVK and GStreamer payloads, whose
+  absence the first re-runs failed on at the staging step — and
+  reproduced `f66e592c` byte-identically; the verified run's log
+  is `test-results/fd87/build-verify3.log`, and
+  provenance-artifacts passes 8/8 against its export.)
 
 ## Observations carried, not filed
 
