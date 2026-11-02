@@ -35,11 +35,18 @@
 // FD-59 dispositions (measured against the host kernel,
 // 6.17.0-1020-oracle, with dedicated reference programs):
 // IN_ACCESS is generated for completed guest reads that delivered
-// at least one byte (KObject-layer reads, the 64-bit read/readv
-// path, pread64, and directory enumeration); a read that returns 0
-// generates nothing, and guest page-fault fills for memory-mapped
-// files are not reads and generate nothing - matching the host,
-// where an mmap read fault produces no IN_ACCESS either. Writes
+// at least one byte (KObject-layer reads, the 64-bit read path,
+// pread64, and directory enumeration); a plain read/pread that
+// returns 0 generates nothing, and guest page-fault fills for
+// memory-mapped files are not reads and generate nothing -
+// matching the host, where an mmap read fault produces no
+// IN_ACCESS either. The vectored calls differ, again as on the
+// host (FD-80 for preadv/preadv2, FD-83 for readv): exactly one
+// IN_ACCESS per successful call, including 0-byte successes (at
+// EOF, with iovcnt 0, or with all-zero-length segments); their
+// walks suppress the per-segment events below
+// (SuppressAccessNotifications) and raise the single event
+// themselves. Writes
 // through a memory mapping do not produce IN_MODIFY: that is NOT
 // a gap. On the host kernel a MAP_SHARED mapping written and then
 // msync'd (sync and async), fsync'd, sync'd, unmapped and closed
@@ -497,8 +504,28 @@ void KInotify::notifyAttrib(FsNode* node) {
     fileEvent(node, K_IN_ATTRIB);
 }
 
+// FD-83: per-thread depth of SuppressAccessNotifications scopes.
+namespace {
+thread_local int accessNotificationSuppressDepth = 0;
+}
+
+KInotify::SuppressAccessNotifications::SuppressAccessNotifications() {
+    accessNotificationSuppressDepth++;
+}
+
+KInotify::SuppressAccessNotifications::~SuppressAccessNotifications() {
+    accessNotificationSuppressDepth--;
+}
+
+bool KInotify::accessNotificationsSuppressed() {
+    return accessNotificationSuppressDepth > 0;
+}
+
 void KInotify::notifyAccessed(FsNode* node) {
-    if (!node || !anyInstance.load(std::memory_order_acquire)) {
+    if (!node || accessNotificationsSuppressed()) {
+        return;
+    }
+    if (!anyInstance.load(std::memory_order_acquire)) {
         return;
     }
     fileEvent(node, K_IN_ACCESS);

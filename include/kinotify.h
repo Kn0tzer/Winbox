@@ -107,6 +107,23 @@ public:
     static void notifyAttrib(FsNode* node);
     static void notifyAccessed(FsNode* node);
 
+    // FD-83: a vectored read (readv) generates exactly one
+    // IN_ACCESS per successful call, so the per-segment events the
+    // plain-read path raises while the vectored walk runs must be
+    // coalesced away; the walk raises the single event itself once
+    // it completes. Suppression is a property of the calling
+    // thread's walk -- never of the file or the process -- so the
+    // depth count is thread-local and the guard is RAII so an early
+    // return out of the walk cannot leave it raised.
+    class SuppressAccessNotifications {
+    public:
+        SuppressAccessNotifications();
+        SuppressAccessNotifications(const SuppressAccessNotifications&) = delete;
+        SuppressAccessNotifications& operator=(const SuppressAccessNotifications&) = delete;
+        ~SuppressAccessNotifications();
+    };
+    static bool accessNotificationsSuppressed();
+
 private:
     struct Watch {
         std::weak_ptr<FsNode> node;

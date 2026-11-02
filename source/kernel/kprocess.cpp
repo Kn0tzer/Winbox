@@ -1851,8 +1851,11 @@ U32 KProcess::read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen)
     if (!fd) {
         return -K_EBADF;
     }
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host, ahead of the buffer check and of any zero-length
+    // return (measured on the 6.17 host kernel).
     if (!fd->canRead()) {
-        return -K_EINVAL;
+        return -K_EBADF;
     }
     if (!memory->canWrite(bufferAddress, bufferLen)) {
         return -K_EFAULT;
@@ -3642,6 +3645,13 @@ U32 KProcess::pread64(KThread* thread, FD fildes, U32 address, U32 len, U64 offs
 
     if (openNode->node->isDirectory()) {
         return -K_EISDIR;
+    }
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host (measured on the 6.17 host kernel). Without this
+    // check the positioned read fell through to the backing read,
+    // whose host error the backing layer swallows into a silent 0.
+    if (!fd->canRead()) {
+        return -K_EBADF;
     }
     if (!this->memory->canWrite(address, len)) {
         return -K_EFAULT;

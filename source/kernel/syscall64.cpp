@@ -1409,7 +1409,10 @@ static U64 sys_read64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canRead()) return (U64)-K_EINVAL;
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host, ahead of the zero-count return (measured on the
+    // 6.17 host kernel; see sys_pread64Impl for the family order).
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Clamp only to a sane ceiling (was a 1MB cap — too small: wine's PE loader
     // reads whole multi-MB sections in one read() and doesn't loop on a short
@@ -1787,7 +1790,14 @@ static U64 sys_pread64Impl(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset, b
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canRead()) return (U64)-K_EINVAL;
+    // FD-84: the host's validation order for the positioned-read
+    // family, measured on the 6.17 host kernel: a negative offset
+    // answers -EINVAL ahead of the descriptor's mode, and a
+    // descriptor that cannot be read answers -EBADF ahead of the
+    // zero-count return. (preadv validates its own offset first;
+    // the check here is what gives plain pread64 the same order.)
+    if ((S64)offset < 0) return (U64)-K_EINVAL;
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Do NOT cap `count`: wine's PE loader preads an ENTIRE section in one call
     // (HxD's .text is ~5.3MB) and does NOT loop on a short return, so a small cap
@@ -1859,15 +1869,24 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
 // fallback), a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an
 // unknown preadv2 flag bit is EOPNOTSUPP; every defined RWF flag
 // (HIPRI/DSYNC/SYNC/NOWAIT/APPEND, mask 0x1f) is accepted on a read.
+// FD-84 completed the validation order on the same kernel: the
+// negative-offset EINVAL precedes the wrong-mode EBADF, and the
+// wrong-mode EBADF precedes the flag and iovcnt checks.
 static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPreadv2) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    if (offset < 0) return (U64)-K_EINVAL;
+    // FD-84: on a descriptor that cannot be read the host answers
+    // -EBADF ahead of both the preadv2 flag check and the iovcnt
+    // range check (and ahead of any zero-iovcnt success); only
+    // the negative-offset EINVAL above precedes it. Measured on
+    // the 6.17 host kernel (test-results/fd83-84/).
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     if (isPreadv2 && (flags & ~0x1FULL)) return (U64)-K_EOPNOTSUPP;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
-    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
-    if (offset < 0) return (U64)-K_EINVAL;
     if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
     U64 total = 0;
     S64 err = 0;
@@ -2343,18 +2362,51 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
 // the first segment's error if nothing was read. wine/wineserver read
 // server replies through readv, so a missing impl silently breaks the IPC
 // reply path (was -ENOSYS).
+//
+// FD-83 / FD-84 (host behaviour measured on the 6.17 kernel,
+// test-results/fd83-84/): a successful readv generates exactly one
+// IN_ACCESS -- a multi-segment walk included -- and a 0-byte success
+// (at EOF, with iovcnt 0, or with all-zero-length segments) generates
+// one too, where plain read/pread stay silent. The walk therefore
+// runs under KInotify::SuppressAccessNotifications (the per-segment
+// plain-read path would otherwise raise one event per segment) and
+// raises the single event itself on success; a call that fails
+// outright generates none, and a call that read bytes before a
+// later segment failed returns the byte count as a success, event
+// included. Validation mirrors sys_preadv64 and the host's order:
+// bad descriptor EBADF, then a descriptor that cannot be read
+// EBADF (FD-84 -- iovcnt 0 included: the host mode-checks before
+// the call can succeed), then the iovcnt range EINVAL, then a
+// null iovec EFAULT.
 static U64 sys_readv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+    if (!fdesc) return (U64)-9; // -EBADF
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
+    S32 cnt = (S32)iovcnt;
+    if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+    if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
     U64 total = 0;
-    for (U64 i = 0; i < iovcnt; i++) {
-        U64 base = cpu->memory->readq(iov + i * 16 + 0);
-        U64 len  = cpu->memory->readq(iov + i * 16 + 8);
-        if (len == 0) continue;
-        S64 got = (S64)sys_read64(cpu, fd, base, len);
-        if (got < 0) {
-            return total > 0 ? total : (U64)got;
+    S64 err = 0;
+    {
+        KInotify::SuppressAccessNotifications suppress;
+        for (S32 i = 0; i < cnt; i++) {
+            U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
+            U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
+            if (len == 0) continue;
+            S64 got = (S64)sys_read64(cpu, fd, base, len);
+            if (got < 0) { err = got; break; }
+            total += (U64)got;
+            if ((U64)got < len) break; // short read: EOF / drained
         }
-        total += (U64)got;
-        if ((U64)got < len) break; // short read: EOF / drained
+    }
+    if (total == 0 && err < 0) return (U64)err;
+    // Exactly one IN_ACCESS per successful call (see the header
+    // comment); descriptors that are not files have no node to
+    // notify, exactly as in sys_preadv64.
+    std::shared_ptr<KFile> rkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+    if (rkfile && rkfile->openFile && rkfile->openFile->node) {
+        KInotify::notifyAccessed(rkfile->openFile->node.get());
     }
     return total;
 }
