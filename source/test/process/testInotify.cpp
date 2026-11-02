@@ -28,6 +28,7 @@
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <atomic>
 #include <thread>
