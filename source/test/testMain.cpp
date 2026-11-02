@@ -111,6 +111,7 @@ void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
+void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
@@ -198,6 +199,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEvents, "Test inotify event delivery end to end"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
     {testPrctl64Options, "Test x64 prctl option surface"},
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
@@ -881,6 +883,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},

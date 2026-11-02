@@ -97,8 +97,37 @@ void logHostOpenFailure(const BString& path, const BString& nativePath, int err)
 }
 }
 
+namespace {
+// FD-81: true when this node belongs to a shared-backing-path
+// link group (see FsNodeLinkGroup) and at least one OTHER member
+// is still attached to a parent - i.e. this name is not the last
+// name for the shared backing file.
+bool hasAttachedLinkSiblings(const FsNode* node) {
+    if (!node->linkGroup || !node->linkGroup->sharedBackingPath) {
+        return false;
+    }
+    for (auto& m : const_cast<FsNode*>(node)->linkGroupMembers()) {
+        if (m.get() != node && !m->removedFromParent.load(std::memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+}
+
 bool FsFileNode::remove() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->openNodesMutex);
+    // FD-81: in a shared-backing-path link group, unlinking one
+    // name must not delete the backing file while another name
+    // still names it (POSIX unlink removes a name, not the
+    // file). Detach only; the last name's remove() deletes the
+    // backing through the normal path below. Open handles on
+    // this node keep working: they hold host descriptors to the
+    // still-existing backing file, as on Linux.
+    if (hasAttachedLinkSiblings(this)) {
+        this->removeNodeFromParent();
+        return true;
+    }
     bool result = false;
     bool exists = Fs::doesNativePathExist(this->nativePath);
 
@@ -312,6 +341,15 @@ U32 FsFileNode::getType(bool checkForLink) {
 
 U32 FsFileNode::getHardLinkCount() {
     if (this->linkGroup) {
+        if (this->linkGroup->sharedBackingPath) {
+            // FD-81: one shared backing file carries a host link
+            // count of 1 no matter how many guest names point at
+            // it; the group's live membership is the truth (the
+            // same liveness rule FsNode applies to non-file
+            // nodes, with the same stated lag while an unlinked
+            // name's node is still open).
+            return FsNode::getHardLinkCount();
+        }
         // FD-60: the guest's names are mirrored by host hard links
         // (see KProcess::link), so the host link count is the truth -
         // including right after an unlink drops a name while this
@@ -426,6 +464,50 @@ U32 FsFileNode::rename(BString path) {
     }
 
     BString fileName = Fs::getFileNameFromPath(path);
+    if (hasAttachedLinkSiblings(this)) {
+        // FD-81: renaming one name of a shared-backing-path link
+        // group must not move the shared backing file out from
+        // under the other names. POSIX rename moves a directory
+        // entry, not the file, so move only the guest tree entry
+        // and keep this node's native path (the shared backing)
+        // unchanged: content, identity and counts stay shared.
+        std::shared_ptr<FsNode> existingNode = Fs::getNodeFromLocalPath(B(""), path, false);
+        if (existingNode && existingNode.get() != this) {
+            if (existingNode->isDirectory() != this->isDirectory()) {
+                if (existingNode->isDirectory())
+                    return -K_EISDIR;
+                return -K_ENOTDIR;
+            }
+            if (existingNode->isDirectory()) {
+                result = existingNode->removeDir();
+                if (result != 0)
+                    return result;
+            } else {
+                existingNode->remove();
+            }
+        }
+        this->removeNodeFromParent(false);
+        this->path = path;
+        this->name = fileName;
+        std::shared_ptr<FsNode> parentNode = Fs::getNodeFromLocalPath(B(""), Fs::getParentPath(path), false);
+        parentNode->addChild(shared_from_this(), false);
+        this->parent = parentNode;
+        if (oldPath != this->path) {
+            Fs::invalidatePathCachePrefix(oldPath);
+        }
+        int i = 0;
+        this->openNodes.for_each([&tmpPos, &i](KListNode<FsOpenNode*>* n) {
+            if (i < (int)tmpPos.size() && tmpPos.at(i) != -1) {
+                FsOpenNode* openNode = n->data;
+                if (openNode) {
+                    openNode->reopen();
+                    openNode->seek(tmpPos.at(i));
+                }
+            }
+            i++;
+        });
+        return 0;
+    }
     Fs::localNameToRemote(fileName);
     BString nativePath = parent->nativePath.stringByApppendingPath(fileName);
     BString originalPath;

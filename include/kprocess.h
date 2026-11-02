@@ -309,6 +309,10 @@ public:
     U32 getrusuage(KThread* thread, U32 who, U32 usage);
     U32 ioctl(KThread* thread, FD fildes, U32 request);
     U32 link(BString from, BString to);
+    // FD-81: link() served by sharing the source's backing path
+    // (see KProcess::link). Public so the suites can prove the
+    // mechanism on hosts whose filesystems do hard-link.
+    U32 linkSharedBacking(BString from, BString to);
     S64 llseek(FD fildes, S64 offset, U32 whence);
     U32 lseek(FD fd, S32 offset, U32 whence);
     U32 lstat64(BString path, U32 buffer);

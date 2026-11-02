@@ -37,6 +37,12 @@ class KProcess;
 struct FsNodeLinkGroup {
     BOXEDWINE_MUTEX mutex;
     std::vector<std::weak_ptr<FsNode>> members;
+    // FD-81: true when the group's content identity is a single
+    // shared backing path (an emulated hard link, used when the
+    // backing store cannot hard-link) rather than one host hard
+    // link per name. Members must then consult the group - not
+    // the host - for link counts and backing-file lifetime.
+    bool sharedBackingPath = false;
 };
 class KThread;
 class KObject;

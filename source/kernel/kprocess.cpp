@@ -1687,6 +1687,24 @@ U32 KProcess::link(BString from, BString to) {
     }
     int err = 0;
     if (!Fs::createHostHardLink(fromNode->nativePath, toNativePath, err)) {
+#ifdef __EMSCRIPTEN__
+        // FD-81: the browser backing stores (MEMFS/IDBFS) provide
+        // no hard-link operation at all, and the Emscripten
+        // filesystem layer answers every link() on them with
+        // EMLINK - its "the backing cannot hard-link" signal
+        // (measured in vivo as errno=34 in this build's numbering
+        // on fontconfig's cache temp-to-lock links, 57 per 32-bit
+        // boot). That is a limitation of the backing store, not
+        // of the guest filesystem, so serve the link by sharing
+        // the backing path instead of refusing it. Native builds
+        // keep the refusal below for every failure: there EMLINK
+        // is the host's real link-count limit. Symlink sources
+        // keep the refusal in every build - their sidecar
+        // semantics stay host-linked (see linkSharedBacking).
+        if (err == EMLINK && !fromNode->isLink()) {
+            return this->linkSharedBacking(from, to);
+        }
+#endif
         kwarn_fmt("BW64-FAIL hard-link from=%s to=%s errno=%d outcome=link refused instead of copied", fromNode->nativePath.c_str(), toNativePath.c_str(), err);
         return -translateErr((U32)err);
     }
@@ -1695,6 +1713,65 @@ U32 KProcess::link(BString from, BString to) {
     KInotify::notifyAttrib(fromNode.get());
     std::shared_ptr<FsNode> newNode = Fs::addFileNodeWithSharedId(to, fromNode->link, toNativePath, false, toParentNode, fromNode->id);
     fromNode->joinLinkGroup(newNode);
+    return 0;
+}
+
+U32 KProcess::linkSharedBacking(BString from, BString to) {
+    // FD-81: serve a hard link by sharing the source's backing
+    // path when the backing store cannot create a host hard link
+    // (KProcess::link falls back to this in the browser build).
+    // The new name is a second node with the source's node id in
+    // the same link group, but pointing at the SAME native path,
+    // so every open of either name opens the same backing file:
+    // writes through one name are visible through the other and
+    // the content is one file, exactly as with a host hard link.
+    // FsFileNode::remove/rename/getHardLinkCount consult the
+    // group's sharedBackingPath flag, so unlinking or renaming
+    // one name never deletes or moves the backing out from under
+    // the other names. The prechecks mirror link()'s exactly.
+    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
+    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
+
+    if (!fromNode) {
+        return -K_ENOENT;
+    }
+    if (toNode) {
+        return -K_EEXIST;
+    }
+    if (fromNode->isDirectory()) {
+        return -K_EPERM;
+    }
+    std::shared_ptr<FsFileNode> fromFile = std::dynamic_pointer_cast<FsFileNode>(fromNode);
+    if (!fromFile) {
+        return -K_EPERM;
+    }
+    if (fromNode->isLink()) {
+        // Symlink sources keep the FD-60 behaviour (their .link
+        // sidecar is host-linked, or loudly refused); the shared
+        // backing path serves regular files.
+        return -K_EPERM;
+    }
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
+    if (!toParentNode) {
+        return -K_ENOENT;
+    }
+    fromFile->ensurePathIsLocal(true);
+    // Host order: the source's IN_ATTRIB precedes the new name's
+    // IN_CREATE (the latter fires from addChild inside addFileNode*).
+    KInotify::notifyAttrib(fromNode.get());
+    std::shared_ptr<FsNode> newNode = Fs::addFileNodeWithSharedId(to, fromNode->link, fromNode->nativePath, false, toParentNode, fromNode->id);
+    fromNode->joinLinkGroup(newNode);
+    if (fromNode->linkGroup) {
+        fromNode->linkGroup->sharedBackingPath = true;
+    }
+    // A served link is a success, not a failure - but it changes
+    // how the file is stored, so it stays observable with the
+    // counting-cap shape used for host-open failures.
+    static std::atomic<unsigned long long> sharedBackingLinks{0};
+    unsigned long long n = ++sharedBackingLinks;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-INFO hard-link from=%s to=%s outcome=served by shared backing path (backing store cannot hard-link) count=%llu", fromNode->nativePath.c_str(), to.c_str(), n);
+    }
     return 0;
 }
 
