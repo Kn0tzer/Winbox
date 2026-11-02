@@ -1,0 +1,184 @@
+Running 70 Test tests with 1 threads
+Test x64 syscall fallback guard ... OK
+Test guest CPU topology consistency ... OK
+Test x64 /proc maps generation ... OK
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x60000013 delivered=0 count=1
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x60000013 delivered=0 count=2
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x60000013 delivered=0 count=3
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x60000013 delivered=0 count=4
+Test x64 concurrent LOCK atomicity stress (K-M1) ... OK
+Test x64 futex dispatch guard ... OK
+Test x64 futex operations and multithread wake race ... OK
+Test condStartWaitTime deadline accounting (sleep/poll) ... OK
+Test 32-bit futex lost-wakeup scenarios ... OK
+Test msync mapped-files lock order (FD-77 ABBA) ... OK
+Test FD-44 thread lifetime: signal delivery racing teardown ... OK
+Test timerfd descriptor and expiration semantics ... OK
+ksocket: Unix SOL_SOCKET option 19 is unsupported; returned ENOPROTOOPT
+Test Unix socket SOL_SOCKET options ... OK
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+BW64-FAIL epoll-ctl op=3 fd=0 events=0x10000001 outcome=returned-EINVAL-bad-exclusive
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+Test epoll one-shot and exclusive flags ... OK
+Test memfd create flag and mode validation ... OK
+Test memfd seal enforcement ... OK
+recover: BW64-FAIL fs-memnode op=rename outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=remove outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=removeDir outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=setTimes outcome=refused errno=EPERM (memfd node stores no timestamps)
+recover: BW64-FAIL fs-memnode op=open outcome=refused (memfd is descriptor-only; open by path is not possible)
+Test memfd node operation refusals ... OK
+Test Fs::readNativeFile error results ... OK
+BW64-FAIL zip-readfile entry=a.txt zerr=-105 outcome=corrupt entry refused
+Test FsZip entry CRC enforcement ... OK
+BW64-FAIL zip-extract entry=a.txt zerr=-3 read=0 of 100 outcome=extraction failed
+BW64-FAIL zip-extract entry=a.txt read=0 of 100 outcome=partial file removed
+BW64-FAIL zip-unzip entry=a.txt read=0 of 100 outcome=partial file removed, extraction failed
+Test FsZip corrupt-entry extraction ... OK
+BW64-FAIL host-read native= errno=9 (Bad file descriptor) outcome=call reports failure count=1
+BW64-FAIL host-write native= errno=9 (Bad file descriptor) outcome=call reports failure count=2
+Test FsFileOpenNode host IO errors ... OK
+BW64-FAIL eventfd2-flags flags=0x40000000 outcome=returned-EINVAL
+Test eventfd2 flag validation ... OK
+BW64-FAIL epoll-read len=8 outcome=returned-EINVAL
+BW64-FAIL epoll-write len=8 outcome=returned-EINVAL
+BW64-FAIL epoll-stat outcome=returned-ENOTSUP
+BW64-FAIL eventfd-stat outcome=returned-ENOTSUP
+BW64-FAIL epoll-ctl op=1 fd=0 events=0x1 outcome=returned-EEXIST
+BW64-FAIL epoll-ctl op=3 fd=0 events=0x8 outcome=returned-EINVAL-bad-events
+BW64-FAIL epoll-ctl op=2 fd=98765 events=0x0 outcome=returned-EBADF
+BW64-FAIL epoll-ctl op=2 fd=2 events=0x0 outcome=returned-ENOENT
+recover: unsupported signalfd4 mask size; returned EINVAL
+recover: unsupported signalfd4 flags; returned EINVAL
+BW64-FAIL signalfd-write len=8 outcome=returned-EINVAL
+BW64-FAIL signalfd-stat outcome=returned-ENOTSUP
+BW64-FAIL signalfd-poll-write outcome=never-ready
+BW64-FAIL netlink-optlen what=setsockopt SO_RCVBUF len=3 expected=4 outcome=returned-EINVAL
+BW64-FAIL netlink-optlen what=getsockopt SO_RCVBUF len=3 expected=4 outcome=returned-EINVAL
+KNativeSocketObject::setsockopt IPPROTO_IP name 2 not implemented
+BW64-FAIL unixsocket-recvfrom outcome=unnamed-peer-address
+BW64-FAIL unixsocket-sendmsg cmsg-level=999 outcome=returned-EINVAL
+Test kernel object graceful error answers ... OK
+bw64: METRICS {"v":1,"uptimeMs":2773046928,"winMs":1100.2,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":false,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":false,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":2,"ms":0.08},"gl":{"supported":false,"calls":0,"ms":0.00},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+Test x64 timerfd syscall ABI ... OK
+Test x64 copy_file_range syscall ... OK
+Test x64 process_vm_readv/writev syscalls ... OK
+Test x64 preadv and preadv2 syscalls ... OK
+Test x64 pwritev and pwritev2 syscalls ... OK
+possible starvation in epoll, more events are ready than can be received.
+Test x64 epoll_pwait2 syscall ... OK
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+Test x64 epoll_pwait syscall ... OK
+Test x64 dup3 syscall ... OK
+Test x64 accept4 syscall ... OK
+ksyscall64: madvise advice 100 (page poison/offline) unsupported; returned -EPERM
+ksyscall64: madvise advice 101 (page poison/offline) unsupported; returned -EPERM
+Test x64 madvise side effects ... OK
+Test x64 pidfd_open/send_signal syscalls ... OK
+Test x64 inotify syscalls and watch management ... OK
+sys_openat64: OPENED '/spawnprobe.exe' -> fd 0
+DLLTRACE pid=10 OPEN  '/spawnprobe.exe' -> fd 0
+sys_openat64: OPENED '/spawnprobe.exe' -> fd 0
+DLLTRACE pid=10 FAIL open('/missing.exe') rc=-2 cwd=''
+Test x64 exe spawn signal under DLLTRACE (FD-54) ... OK
+Test joystick evdev node capabilities and events ... OK
+Test timerfd expiration through the process ABI ... OK
+recover: unsupported setitimer timer kind; returned EINVAL
+Test setitimer expiration probes ... OK
+recover: unsupported setitimer timer kind; returned EINVAL
+Test x64 setitimer and getitimer syscalls ... OK
+Test fcntl async ownership and SIGIO delivery ... OK
+Test loopback DNS service for guest resolvers ... OK
+Failed to open audio capture device: Audio subsystem is not initialized
+DevDsp: audio capture is not available in this configuration; reads return ENOTSUP
+Test dsp capture contract and GETISPACE ... OK
+BW64-FAIL inotify-rmwatch wd=1 outcome=returned-EINVAL
+Test inotify event delivery end to end ... OK
+Test chmod, inotify IN_ACCESS and hard link semantics ... OK
+Test inotify close events defer to the last munmap while a mapping is open ... OK
+BW64-INFO hard-link from=/tmp/bw64ktemplink71DI5q/CACHEDIR.TAG.TMP-X7f2Qa to=/CACHEDIR.TAG.LCK outcome=served by shared backing path (backing store cannot hard-link) count=1
+BW64-INFO hard-link from=/tmp/bw64ktemplink71DI5q/mv.TMP-zz to=/mv.LCK outcome=served by shared backing path (backing store cannot hard-link) count=2
+Test temp-file-to-lock-name link pattern on a shared backing path ... OK
+Test x64 signalfd create and update ... OK
+ksyscall64: prctl option 22 (PR_SET_SECCOMP filter) is not supported on this virtual x86 kernel; returned -EINVAL
+ksyscall64: prctl option 305419896 (unknown prctl option) is not supported on this virtual x86 kernel; returned -EINVAL
+ksyscall64: prctl option 67 (KSM memory merging) is not supported on this virtual x86 kernel; returned -EINVAL
+Test x64 prctl option surface ... OK
+BW64-FAIL CPU64: unimpl opcode at RIP=0x60000000 bytes=0f b9 c0 00 00 00 00 00 00 00 00 00 00 00 00 00 (rex=0x00 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x60000000 delivered=0 count=1
+BW64-FAIL CPU64: unimpl opcode at RIP=0x60000000 bytes=0f b9 c0 00 00 00 00 00 00 00 00 00 00 00 00 00 (rex=0x00 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x60000000 delivered=1 count=2
+BW64-FAIL CPU64: unimpl opcode at RIP=0x60000000 bytes=c5 f8 77 00 00 00 00 00 00 00 00 00 00 00 00 00 (rex=0x00 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x60000000 delivered=1 count=3
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x60000000 delivered=1 count=4
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x14a code=0 rip=0x60000000 delivered=1 count=5
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x162 code=0 rip=0x60000000 delivered=1 count=6
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x16a code=0 rip=0x60000000 delivered=1 count=7
+Test x64 undefined/VEX opcode SIGILL delivery ... OK
+Test x64 AVX CPUID bits stay consistently hidden ... OK
+Test x64 getrandom entropy and validation ... OK
+Test x64 statx ABI and metadata ... OK
+clone3: namespace flags 0x20000 unsupported; returned -EINVAL
+clone3: set_tid unsupported for unprivileged guests; returned -EPERM
+clone3: CLONE_INTO_CGROUP unsupported (no cgroupfs); returned -EBADF
+BW64-FAIL guest-fetchfault pid=12 rip=0x77101000 mapped=1 err=21 si_code=2 delivered=0 count=1
+BW64-FAIL guest-fetchfault pid=14 rip=0x77101000 mapped=1 err=21 si_code=2 delivered=0 count=2
+BW64-FAIL guest-fetchfault pid=16 rip=0x77101000 mapped=1 err=21 si_code=2 delivered=0 count=3
+BW64-FAIL guest-fetchfault pid=18 rip=0x77101000 mapped=1 err=21 si_code=2 delivered=0 count=4
+Test x64 clone3 argument ABI validation ... OK
+Test x64 clone sharing flags (CLONE_FS/FILES/SIGHAND/VM) ... OK
+Test x64 mremap fixed and DONTUNMAP semantics ... OK
+CPU64: exit syscall, status=0  pid=14 exe='' cmd=''
+Test x64 fork and vfork create real processes ... OK
+Test x64 sysinfo and meminfo consistency ... OK
+BW64-FAIL guest-fetchfault pid=12 rip=0x77b00000 mapped=1 err=21 si_code=2 delivered=0 count=1
+Test x64 madvise remove and fork advice ... OK
+BW64-FAIL lockRange op=lock addr=0x710000000 len=4096 page=7405568 reason=unmapped outcome=-ENOMEM count=1
+BW64-FAIL lockRange op=lock addr=0x77602000 len=4096 reason=limit locked=8192 new=4096 limit=8192 outcome=-ENOMEM count=2
+BW64-FAIL lockAllCurrent op=lock reason=limit locked=0 new=20480 limit=8192 outcome=-ENOMEM count=3
+Test x64 mlock accounting and RLIMIT_MEMLOCK ... OK
+BW64-FAIL madvise op=hint addr=0x77500000 len=4096 advice=7 outcome=noop count=1
+Test x64 madvise layer dispositions ... OK
+Test x64 signal FP/SSE snapshot and edited return (K-M4) ... OK
+Test x64 nested altstack signal frames ... OK
+Test x64 invalid signal FP frame faults ... OK
+Test x64 async signal FP snapshot and null restore ... OK
+BW64-FAIL guest-memfault pid=-1 addr=0x79300000 rip=0x79100000 err=5 si_code=2 delivered=1 count=1
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=1
+BW64-FAIL guest-memfault pid=-1 addr=0x79300000 rip=0x79100000 err=7 si_code=2 delivered=1 count=2
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=2
+BW64-FAIL guest-memfault pid=-1 addr=0x79300000 rip=0x79100000 err=7 si_code=2 delivered=1 count=3
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=3
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=5 si_code=2 delivered=1 count=4
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=4
+Test x64 data faults preserve interrupted state (K-M3) ... OK
+BW64-FAIL guest-memfault pid=-1 addr=0x79300000 rip=0x79100000 err=5 si_code=2 delivered=1 count=1
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=1
+Test x64 cached block safepoint poll faults (K-M3) ... OK
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=7 si_code=2 delivered=1 count=1
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=1
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=5 si_code=2 delivered=1 count=2
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=2
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=7 si_code=2 delivered=1 count=3
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=3
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=5 si_code=2 delivered=1 count=4
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=4
+BW64-FAIL guest-memfault pid=-1 addr=0x79301000 rip=0x79100000 err=7 si_code=2 delivered=1 count=5
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x79100800 delivered=0 count=5
+Test x64 REP string faults keep partial progress (K-M3) ... OK
+Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM ... OK
+Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore ... OK
+BW64-FAIL guest-memfault32 pid=10 tid=12 addr=0x0 eip=0x0 err=0 delivered=0 count=1
+00000000 EAX=00000000 ECX=00000000 EDX=00000000 EBX=00000000 ESP=00000000 EBP=00000000 ESI=00000000 EDI=00000000 Unknown at 00000000
+Page Fault at 00000000
+Valid address ranges:
+Mapped Files:
+   Unknown                                                       00000000 / 00000000
+Test x64 clone sigaltstack reset for CLONE_VM children ... OK
+0 tests FAILED in 21s
+RUN_EXIT=0

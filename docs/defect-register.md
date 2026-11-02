@@ -4181,7 +4181,9 @@ do not close the entry until they land.
 - **FD-98 — The 32-bit dispatcher's preadv (333)
   and preadv2 (377) are null table slots and
   answer -ENOSYS; only the 64-bit preadv
-  exists.** *(Low. Filed by the FD-98 lane,
+  exists. FIXED 2026-11-02 on branch
+  `lane-fd98` — see CL-51.** *(Was Low. Filed
+  by the FD-98 lane,
   2026-11-02; the number follows FD-97 on
   lane-fd94-96's register and is provisional
   until the merge lane's audit.)* FD-94 wired
@@ -4228,6 +4230,11 @@ do not close the entry until they land.
   base (slots 333/377 nullptr); the host
   reference programs and outputs in
   `test-results/fd98/`.
+
+  Fixed in commits `8edaaaea2` (test) and
+  `86dfb5830` (fix) — see CL-51. Record:
+  `docs/reports/fd98-preadv32-20261102.md`;
+  evidence `test-results/fd98/`.
 
 
 - **FD-99 — The 64-bit dispatcher's preadv2
@@ -4344,6 +4351,7 @@ is behavioural, is re-proven there.
 | `lane-fd97` | FD-97: the 64-bit single-call write paths (sys_write64/sys_pwrite64) fabricate zero bytes for an unreadable guest buffer — now write only the guest-readable prefix and answer -EFAULT when no byte is readable, under the host's measured prefix contract; FD-101 (the sendmsg gather form of the trait) filed | New test testWriteBadBuffer64Syscalls (x64 suite; RED on the base — write from an unmapped buffer returned 16 with 16 zero bytes landed, crossing write returned 200, writev with a bad second segment returned 24; GREEN on the fix); host reference programs measured first (write/pwrite bad-buffer matrix incl. the short-count prefix cases; sendmsg matrix for FD-101); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the fixing commit); JS unit 348/0. Record: `docs/reports/fd97-single-call-write-efault-20261102.md`; evidence `test-results/fd97/` |
 
 | `lane-fd92-93` | FD-92: the 32-bit dispatcher's readv (145) wired over a new KObject/KProcess readv — host-order validation (descriptor, mode, iovcnt range, iovec pointer) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-93: the write family answers EBADF on a descriptor that cannot be written, in the host's validation order, at every site the entry names (KProcess::write/writev/pwrite64 — the last gaining the mode check whose absence let the backing layer swallow the host's EBADF into a silent 0 — sys_write64's descriptor+mode gate ahead of its zero-count return, sys_writev64's validation block, sys_pwrite64 reordered offset-first, the 32-bit dispatcher's pwrite64 offset check); FD-94 (pwritev/pwritev2 undispatched), FD-95 (read family's bad-descriptor/negative-offset order) and FD-96 (32-bit writev's partial-error return shape) filed | New tests testReadv32Syscall (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS), testWriteFamilyWrongMode (both suites) and testWriteFamily64Syscalls (x64 suite), all RED on the base for the recorded reasons and GREEN with the fix; host-kernel reference programs measured first (write-family matrix incl. zero counts and the validation orderings; the positioned family's offset-before-descriptor order across pread/pwrite/preadv/pwritev); full native suites serial: main 670/670 and x64 71/71, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `bcc8a852`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd92-fd93-readv-write-family-20261102.md`; evidence `test-results/fd92-93/` |
+| `lane-fd98` | FD-98: the 32-bit dispatcher's preadv (333) and preadv2 (377) wired over a new KProcess::preadv walking pread64 — host-order validation measured fresh (offset EINVAL ahead of the descriptor check, except preadv2's -1 file-position mode; wrong-mode EBADF ahead of the iovcnt range check; the iovec array EFAULT ahead of the flags check, which runs last with the measured read mask 0x3f) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-99 (64-bit preadv2's -1 refusal and 0x1f mask) and FD-100 (the family's flags-check order) filed | New test testPreadv32Dispatch (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS, GREEN with the fix); host-kernel reference programs measured first (preadv/preadv2 validation, position-mode, flags-mask and IN_ACCESS matrices, plus the pwritev2 order addendum); full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha 86dfb5830, wasm 5c0d85fc, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd98-preadv32-20261102.md`; evidence `test-results/fd98/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -6688,3 +6696,64 @@ its lane and is not a defect, for the stated reason:
   Record:
   `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
   evidence `test-results/fd94-96/`.
+
+- **CL-51 — The 32-bit dispatcher's positioned
+  vectored reads are wired with the host's
+  validation order and FD-83's notification
+  contract (FD-98).** *(Provisional number,
+  filed on lane-fd98, 2026-11-02 — CL-40..CL-50
+  are held by the unmerged fd66, fd65,
+  fd85/fd87, fd64, fd05, fd83-84, fd92-93 and
+  fd94-96 lanes off this same base; the merge
+  lane's audit settles the final number.)*
+  Fixed on branch `lane-fd98`, commits
+  `8edaaaea2` (test) and `86dfb5830` (fix).
+  New KProcess::preadv dispatches table slots
+  333/377 over KProcess::pread64. Validation
+  in the order measured fresh on the host
+  kernel for this lane: a negative offset is
+  EINVAL ahead of the descriptor check, except
+  preadv2's offset -1 — the file-position mode
+  (read at the current position and advance
+  it); a descriptor that cannot be read is
+  EBADF, ahead of the iovcnt range check
+  (EINVAL outside 0..1024); the iovec array
+  check (EFAULT for a null/unmapped array with
+  iovcnt > 0) precedes the preadv2 flags check
+  (EOPNOTSUPP outside the defined RWF mask
+  0x3f), which runs last. A later segment's
+  failure returns the bytes already read; a
+  short read ends the walk; the file position
+  is untouched outside the -1 mode. Exactly
+  one IN_ACCESS per successful call, 0-byte
+  successes included (FD-83's contract): a
+  byte-moving walk notifies per segment
+  through the file layer and the queue
+  coalesces; a success that moved no bytes
+  raises it in KProcess::preadv, FD-92's readv
+  shape. The mode answer is EBADF from this
+  wiring's own gate, ahead of FD-84's
+  in-flight core fix; the two agree once
+  FD-84 composes, since the walk's per-segment
+  core is one of FD-84's named sites.
+  FD-95 interaction: for the (bad descriptor,
+  negative offset) pair this wiring answers
+  EINVAL — the host's side of FD-95's open
+  question, the same side FD-93/FD-94 took for
+  the write family; if the merge lane settles
+  FD-95 descriptor-first instead, the offset
+  check in KProcess::preadv moves behind the
+  descriptor check (one reorder) and this
+  closure's pinned case flips with it.
+  Proof: testPreadv32Dispatch (main suite,
+  real int 0x80 dispatch) — RED on the base
+  (every call -ENOSYS; the full assertion
+  battery failed) and GREEN on the fix; full
+  suites serial — main 671/671, x64 70/70;
+  browser build 'Browser export verified'
+  (BUILD_INFO git_sha `86dfb5830`, wasm
+  `5c0d85fc`, support archive `c4dbe35986a5`
+  unchanged); JS unit 348/0, no silent-failure
+  baseline change. Record:
+  `docs/reports/fd98-preadv32-20261102.md`;
+  evidence `test-results/fd98/`.
