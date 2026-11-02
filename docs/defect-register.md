@@ -3273,6 +3273,10 @@ do not close the entry until they land.
   on the 64-bit path or an equivalent liveness input
   to its close path. Evidence:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`.
+  FIXED 2026-11-02 on branch `lane-fd82` -- see
+  CL-45 (provisional). One correction to the text
+  above: the demand-paged path's deferral closure
+  is CL-38, not CL-36 as filed.
 
 - **FD-83 — readv generates no IN_ACCESS when it
   succeeds with 0 bytes (at EOF, or with iovcnt 0);
@@ -3552,6 +3556,28 @@ do not close the entry until they land.
   Record:
   `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
   evidence `test-results/fd92/`.
+- **FD-92 -- The 64-bit file-mmap path can return
+  an error after the mapping has been established:
+  in sys_mmap64_file's private branch, the content
+  read that follows the map can fail (an errored
+  positioned read of the file bytes) and the
+  syscall returns that errno, but the pages stay
+  mapped and the range stays reserved, where a
+  failed host mmap leaves nothing mapped.** *(Low.
+  Filed by the FD-82 lane, 2026-11-02; the number
+  is provisional until the merge lane's audit --
+  FD-87..FD-91 are held by parallel branches.)*
+  A guest that trusts the failure believes the
+  range is unmapped; an access there succeeds
+  instead of faulting, and (since CL-45) the
+  mapping counts against its description's
+  close-event deferral like any other live
+  mapping. Found by inspection while wiring
+  FD-82's birth accounting (the birth is recorded
+  before the read precisely because the mapping
+  exists from that point, whatever the read does).
+  Evidence:
+  `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3598,6 +3624,7 @@ is behavioural, is re-proven there.
 | `lane-fd87` | FD-87 CLOSED (CL-42, provisional): the Godot second-wave sibling classes — capability 29 (SampledImageArrayDynamicIndexing) named and admitted exactly when its image arrays are specializer-servable (spirvfix R19 strips the stray declaration), dead descriptor declarations stripped (R18) so the captured 2,340 B module translates end to end, and FD-78's ExtInst literal position bounded in both orphan sweeps so the 369,400 B module's texel conversion runs and SampledBuffer is served; FD-88 filed (data-dependent descriptor-array indexing, translator-stack-gated); FD-78 updated (ExtInst position proven live, fixed at two sweeps) | Both modules are committed fixtures (`testdata/spirv/godot-fs-f2b738c259a79b4a.spv`, `godot-fs-f1b4e0027d98e2e4.spv`): new suite `spirvfix-fd87.test.mjs` 5/5 (small module translates; big module loses SampledBuffer, keeps FD-88's pair by name); corpus test green over all 74 modules with per-module rewrite sets re-measured (every R18 verdict independently verified dead by raw-word scan); native run-native 60 PASS incl. 3 new FD-87 guards (cap-29 admit/refuse-by-name both forms, dead descriptors, ExtInst sweep position); JS unit suite 351/0; vulkan citations 352 rows 0 drift after re-pinning through the change's line map; browser build 'Browser export verified', wasm `f66e592c`. The two pipelines' in-vivo creations remain CL-42's owed clause for the carrying deploy gate. Record: `docs/reports/fd87-godot-sibling-classes-20261102.md`; evidence `test-results/fd87/` |
 | `lane-fd05` | FD-05: filling the file-descriptor table panicked and killed the emulator; exhaustion now answers EMFILE (EINVAL for an F_DUPFD minimum at/past the ceiling, EBADF for a dup2 target at/past it) and the guest survives — the allocation contract changed at its single choke point (`allocFileDescriptor`), all 22 production callers audited and made safe, SCM_RIGHTS partial delivery and accept requeue semantics preserved | New test testFdTableExhaustion in both suites: RED on the base (the fill hit the panic; the forked harness recorded the test as each suite's single failure, and un-forked the suite process died at the test), GREEN with the fix; native serial main 669/669 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE on the fixed tree (wasm ea3bdaa0), JS unit 348/0, legacy 110/4 (FD-64's standing set on this base). Record: `docs/reports/fd05-fd-table-exhaustion-20261102.md`; evidence `test-results/fd05/` |
 | `lane-fd92` | FD-92: spirvfix spliced its synthesized pointer-to-bool types ahead of the OpTypeBool they reference in the captured 369,400-byte Godot module (the module defines that type after its first global variable), so the fixed module failed spirv-val; synthesized types/constants are now spliced behind the definitions they reference (`defsSplicePos`, at the three intra-type-section splice sites) | spirv-val on the captured module's fixed output: clean (the base output fails with the filed error verbatim); the fixed output is a pure reordering of the base output (instruction word-multiset identical, 18,352 instructions); 72-module corpus: every output byte-identical to the base, applied sets unchanged, corpus gate 10/10; new guard spirvfix-fd92 RED on the base / GREEN with the fix. Record: `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`; evidence `test-results/fd92/` |
+| `lane-fd82` | FD-82: a 64-bit guest's file-backed mappings did not participate in FD-79's close-event deferral -- the 64-bit path materializes mappings as copied/shared pages in KMemory64 with no open-description accounting, so IN_CLOSE_WRITE / IN_CLOSE_NOWRITE fired at fd close while such a mapping was live; KMemory64 now tables its live file mappings per description and reports births and deaths (munmap, overwrite, mremap move/grow, fork, address-space destruction) through the same FsOpenNode accounting the demand-paged path uses | New test testCloseWriteDeferral64 (x64 suite; drives the real 64-bit syscall dispatch): RED on the base -- ten assertions failing (the event fired at fd close in every deferral case and never arrived at the mapping's death), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (wasm 551ec728, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`; evidence `test-results/fd82/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -5240,3 +5267,80 @@ its lane and is not a defect, for the stated reason:
   RED on the base and GREEN with the fix. Record:
   `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
   evidence `test-results/fd92/`.
+
+- **CL-45 -- A 64-bit guest's file-backed mappings
+  now participate in FD-79's close-event deferral:
+  the event is held while any materialized mapping
+  of the description is live and delivered at its
+  last death (FD-82).** *(Filed provisionally as
+  CL-45 on lane-fd82, 2026-11-02 -- CL-40..CL-44
+  are held provisionally by parallel branches
+  (the FD-66, FD-65, FD-85, FD-87, FD-64 and FD-05
+  filings); the composing merge verifies by audit
+  and renumbers if needed.)* Fixed on branch
+  `lane-fd82`. The 64-bit file-mmap path
+  (sys_mmap64_file) materializes a file mapping as
+  copied pages (MAP_PRIVATE) or registry-shared
+  pages (MAP_SHARED) inside KMemory64, which kept
+  no record of which open description a mapping
+  belonged to, so the description's close signal
+  always saw a zero live count and the event was
+  delivered at fd close. KMemory64 now keeps a
+  per-address-space table of its live file mappings
+  (start page -> page count + the KFile, pinned for
+  the mapping's lifetime exactly as the
+  demand-paged path's MappedFile pins it):
+  sys_mmap64_file counts the birth at the
+  description for both materializations, and
+  deaths are reported before the pages are
+  invalidated or replaced -- from munmap, from
+  overwrite by a later mapping (anonymous or
+  shared-file), from mremap (a shrink trims the
+  entry through the munmap path; a grow or move
+  re-notes the resulting range, counting the new
+  birth before the source is released so the live
+  total never dips through zero), from fork (the
+  child inherits the table without re-counting
+  births -- deaths are counted across the twins
+  and saturate at zero, the FD-79 fork model --
+  with DONTFORK pages detached in the child
+  without releasing), and from destruction of the
+  address space (exec replacement and teardown).
+  Boundaries, stated exactly: the fork corner
+  inherits FD-79's stated boundary (the event can
+  arrive when the first sharer's pages are gone
+  rather than the last; early, never lost); a
+  mapping duplicated by mremap's zero-length
+  shared-page path counts as a second live mapping
+  of the description; mappings the emulator's own
+  loader makes (not through a guest descriptor)
+  are outside the contract, as on the demand-paged
+  path. One correction to FD-82's filed text: the
+  demand-paged path's deferral closure is CL-38,
+  not CL-36. Proof: new test
+  testCloseWriteDeferral64 in the x64 native suite,
+  driving the real 64-bit syscall dispatch (mmap /
+  munmap / close) -- seven cases: shared-writable
+  deferral, private-read NOWRITE deferral, two
+  mappings of one description, unmap-before-close,
+  plain close, overwrite by an anonymous MAP_FIXED
+  mapping, and a partial unmap of a two-page
+  mapping -- RED on the base (ten assertions
+  failing: the event fired at fd close in every
+  deferral case and never arrived at the mapping's
+  death; the unmap-before-close and plain-close
+  guards passed), GREEN with the fix; full native
+  suites serial main 668/668 and x64 70/70,
+  0 FAILED (x64 baseline 69 + this test; the test
+  lives in the x64 suite because the materialized
+  path exists only in the 64-bit build -- the
+  shared contract's main-suite guard remains
+  testCloseWriteDeferral); JS unit 348 passed /
+  0 failed; browser build on the fixed tree
+  (clean-bootstrap staging from this base's pinned
+  runtime-assets-20261101 archive, 13 assets
+  verified): 'Browser export verified' / BUILD
+  COMPLETE, wasm 551ec728, support archive
+  c4dbe35986a5 unchanged. Record:
+  `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`;
+  evidence `test-results/fd82/`.
