@@ -466,6 +466,30 @@ static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
     if (ripModules) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
+// FD-97: the number of leading bytes of the guest range [addr, addr+len)
+// that are readable, page by page, under the same predicate the access
+// check inside KMemory64::memcpyFromGuest applies (the page is mapped
+// and carries READ; pages mapped write-only carry READ too under the
+// x86 write-implies-read flag rule, so they count as readable exactly
+// as they do for the host's copy_from_user and for the guest's own
+// loads). memcpyFromGuest zero-fills its whole destination when that
+// check fails for any part of the range; the single-call write paths
+// use this prefix to answer like the host instead — a short count for
+// a readable prefix, EFAULT when no byte is readable.
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {
+    if (!memory) return 0;
+    U64 readable = 0;
+    while (readable < len) {
+        const U64 at = addr + readable;
+        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
+        if (!(flags & K64_PAGE_MAPPED) || !(flags & K64_PAGE_READ)) break;
+        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
+        if (chunk > len - readable) chunk = len - readable;
+        readable += chunk;
+    }
+    return readable;
+}
+
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large writes for any
@@ -3474,6 +3498,21 @@ void bw64InvalidateScratchForThread(U32 threadId) {
 static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     KThread* thread = cpu->thread;
     if (!thread || !thread->process) return (U64)-K_ENOSYS;
+    // FD-101: the host answers the descriptor checks before it imports
+    // any of the message (EBADF / ENOTSOCK precede every copy fault),
+    // but ksendmsg reaches them only after the gather below -- so run
+    // them here, with the same tests ksendmsg itself applies.
+    KFileDescriptorPtr fdesc = thread->process->getFileDescriptor((U32)fd);
+    if (!fdesc) return (U64)-K_EBADF;
+    if (fdesc->kobject->type != KTYPE_NATIVE_SOCKET &&
+        fdesc->kobject->type != KTYPE_UNIX_SOCKET) return (U64)-K_ENOTSOCK;
+    // FD-101: the msghdr itself is imported before any of its fields
+    // are read. The reads below go through accessors that report an
+    // unreadable range as zeros, which would turn an unreadable msghdr
+    // into a silently successful empty send; the host faults the
+    // import (-EFAULT, measured).
+    if (sys_guestReadablePrefix64(cpu->memory, msg64, 56) < 56)
+        return (U64)-K_EFAULT;
     U32 base = msgScratch(thread);
     if (!base) return (U64)-K_EFAULT;
     KMemory* m32 = thread->memory;
@@ -3481,6 +3520,14 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     const U64 name64 = cpu->memory->readq(msg64);
     const U32 nameLength = name64 ? cpu->memory->readd(msg64 + 8) : 0;
     if (nameLength > 256) return (U64)-K_EINVAL;
+    // FD-101: the name is imported before the data, and the host
+    // faults an unreadable one even on a connected socket. The bounce
+    // copies through the zero-fill accessor (its contract is shared
+    // with the other socket calls), so the range is checked here
+    // instead of changing the bounce.
+    if (nameLength &&
+        sys_guestReadablePrefix64(cpu->memory, name64, nameLength) < nameLength)
+        return (U64)-K_EFAULT;
     const U32 name32 = nameLength ? bounceSockaddrTo32(cpu, name64, nameLength, nullptr) : 0;
     if (nameLength && !name32) return (U64)-K_EFAULT;
 
@@ -3488,6 +3535,20 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     U64 iovlen  = cpu->memory->readq(msg64 + 24);
     U64 control = cpu->memory->readq(msg64 + 32);
     U64 ctllen  = cpu->memory->readq(msg64 + 40);
+
+    // FD-101: the iov array is imported whole, before any segment is
+    // copied: an iovlen over UIO_MAXIOV answers -EMSGSIZE on the host
+    // and an unreadable array -EFAULT (both measured).
+    if (iovlen > 1024) return (U64)-K_EMSGSIZE;
+    if (iovlen &&
+        sys_guestReadablePrefix64(cpu->memory, iov, 16 * iovlen) < 16 * iovlen)
+        return (U64)-K_EFAULT;
+    // FD-101: the control area's header is imported before the data
+    // too; the translation below reads it through the same zero-fill
+    // accessors, so an unreadable header would be silently dropped.
+    if (control && ctllen >= 16 &&
+        sys_guestReadablePrefix64(cpu->memory, control, 16) < 16)
+        return (U64)-K_EFAULT;
 
     // Gather all iov segments into the scratch data buffer.
     U32 dataAddr = base + MSG_SCRATCH_DATA;
@@ -3499,6 +3560,17 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
         if (l == 0) continue;
         if (total + l > dataCap) l = dataCap - total;
         if (l == 0) break;
+        // FD-101: a segment the guest memory cannot read must not be
+        // sent as fabricated zeros (memcpyFromGuest zero-fills on a
+        // failed access check). The message paths are all-or-nothing
+        // on the host for every socket type -- a fully unreadable
+        // segment, a readable prefix running into an unreadable page,
+        // and a bad segment after a good one all answer -EFAULT with
+        // nothing sent (measured) -- so any unreadable byte in the
+        // range this segment contributes faults the whole call here,
+        // before ksendmsg is reached.
+        if (sys_guestReadablePrefix64(cpu->memory, b, l) < l)
+            return (U64)-K_EFAULT;
         std::vector<U8> tmp((size_t)l);
         cpu->memory->memcpyFromGuest(tmp.data(), b, (U32)l);
         m32->memcpy(dataAddr + total, tmp.data(), (U32)l);
@@ -3522,6 +3594,13 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
         U32 type  = cpu->memory->readd(control + 12);
         if (level == K_SOL_SOCKET && type == K_SCM_RIGHTS) {
             U32 nfds = (U32)((clen - 16) / 4);
+            // FD-101: the fd array is read element by element below
+            // through the zero-fill accessor, so an unreadable
+            // element would be passed on as fd 0; the host faults
+            // the import (-EFAULT, measured).
+            if (clen >= 16 &&
+                sys_guestReadablePrefix64(cpu->memory, control + 16, 4ULL * nfds) < 4ULL * nfds)
+                return (U64)-K_EFAULT;
             U32 cm = base + MSG_SCRATCH_CMSG;
             for (U32 i = 0; i < nfds; i++) {
                 U32 hostFd = cpu->memory->readd(control + 16 + 4 * i);
