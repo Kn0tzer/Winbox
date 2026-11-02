@@ -3930,6 +3930,37 @@ do not close the entry until they land.
   object's write path puts the bytes — so
   it is filed for its own lane.
 
+- **FD-97 — The 64-bit single-call write paths
+  fabricate zero bytes for an unreadable guest
+  buffer instead of answering EFAULT.** *(Low.
+  Filed by the FD-94/96 lane, 2026-11-02;
+  provisional until the merge lane's audit.)*
+  Found while wiring FD-94: KMemory64::
+  memcpyFromGuest zero-fills its destination when
+  the guest range fails its access check, and the
+  single-call write paths copy the guest buffer
+  through it before writing — sys_write64 and
+  sys_pwrite64 (source/kernel/syscall64.cpp) hand
+  the file whatever the copy produced, so a write
+  from an unmapped or unreadable guest address
+  lands that many zero bytes in the file and
+  returns success. The host answers EFAULT and
+  writes nothing (measured for the vectored form
+  in FD-94's host reference programs: a bad first
+  segment is EFAULT). FD-94's vectored paths work
+  around the trait with per-segment range checks;
+  the single-call paths keep it. The read side
+  does not have the trait (its paths range-check
+  the destination). Fix shape for the owning
+  lane: range-check the guest buffer before the
+  copy in the single-call write paths, or make
+  the copy report failure and answer -EFAULT;
+  either must keep the vectored paths' measured
+  behaviour. Evidence: KMemory64::memcpyFromGuest
+  in source/kernel/kmemory64.cpp and its call
+  sites in sys_write64/sys_pwrite64 on this base.
+
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
