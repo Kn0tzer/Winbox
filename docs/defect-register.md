@@ -4132,6 +4132,7 @@ do not close the entry until they land.
   output; `KObject::writev` in
   `source/kernel/kobject.cpp` on this base.
 
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
