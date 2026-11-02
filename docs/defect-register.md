@@ -3665,6 +3665,12 @@ do not close the entry until they land.
   widen its fix to match. Evidence:
   `test-results/fd83-84/` (hostref-write.c and its
   output).
+  FIXED 2026-11-02 on branch `lane-fd92mmap` -- see
+  CL-46 (provisional). The number is kept exactly
+  as carried from lane-fd82; it collides with
+  unrelated FD-92 entries on sibling branches
+  (see CL-46), and the composing merge settles
+  numbering by audit.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3713,6 +3719,8 @@ is behavioural, is re-proven there.
 | `lane-fd92` | FD-92: spirvfix spliced its synthesized pointer-to-bool types ahead of the OpTypeBool they reference in the captured 369,400-byte Godot module (the module defines that type after its first global variable), so the fixed module failed spirv-val; synthesized types/constants are now spliced behind the definitions they reference (`defsSplicePos`, at the three intra-type-section splice sites) | spirv-val on the captured module's fixed output: clean (the base output fails with the filed error verbatim); the fixed output is a pure reordering of the base output (instruction word-multiset identical, 18,352 instructions); 72-module corpus: every output byte-identical to the base, applied sets unchanged, corpus gate 10/10; new guard spirvfix-fd92 RED on the base / GREEN with the fix. Record: `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`; evidence `test-results/fd92/` |
 | `lane-fd82` | FD-82: a 64-bit guest's file-backed mappings did not participate in FD-79's close-event deferral -- the 64-bit path materializes mappings as copied/shared pages in KMemory64 with no open-description accounting, so IN_CLOSE_WRITE / IN_CLOSE_NOWRITE fired at fd close while such a mapping was live; KMemory64 now tables its live file mappings per description and reports births and deaths (munmap, overwrite, mremap move/grow, fork, address-space destruction) through the same FsOpenNode accounting the demand-paged path uses | New test testCloseWriteDeferral64 (x64 suite; drives the real 64-bit syscall dispatch): RED on the base -- ten assertions failing (the event fired at fd close in every deferral case and never arrived at the mapping's death), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (wasm 551ec728, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`; evidence `test-results/fd82/` |
 | `lane-fd83-84` | FD-83: readv generates exactly one IN_ACCESS per successful call, 0-byte successes included (the walk's per-segment notifications suppressed under a KInotify scope, one event raised on success; the walk gains its own fd/mode/iovcnt/iovec validation in the host's order); FD-84: the positioned/plain read family answers EBADF on a descriptor that cannot be read, in the host's validation order (negative offset EINVAL first in the positioned core; preadv's mode answer ahead of its flag and iovcnt checks; KProcess::pread64 gains the mode check it lacked — it had fallen through to the backing read, whose host EBADF the backing layer swallowed into a silent 0); FD-92 (32-bit readv is a null dispatch slot) and FD-93 (the write family's mirror of FD-84, host-measured) filed | Extensions to testPreadv64Syscalls (x64 suite; RED on the base — 20 assertion failures across the new sections, spanning both defects) and testChmodAccessHardLink (both suites; RED on the base — the three FD-84 KProcess assertions); host-kernel reference programs measured first (readv event matrix incl. multi-segment, partial-success and zero-length shapes; wrong-mode matrices for the read and write families incl. zero counts and the validation orderings); full native suites serial: main 668/668 and x64 69/69, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `2601ef69`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd83-fd84-read-family-20261102.md`; evidence `test-results/fd83-84/` |
+
+| `lane-fd92mmap` | FD-92: sys_mmap64_file establishes a 64-bit file mapping (or the addr==0 reservation) before copying the file content in; when that content read failed, the syscall returned the error but left the pages mapped and the range reserved, where a failed host mmap leaves nothing mapped -- both content-read error returns (the private branch's copy loop, and the shared branch's seed read after an addr==0 reservation) now tear the established range down through KMemory64::munmap before returning the error | New test testMmap64FileReadFailure in the x64 native suite, driving the real 64-bit syscall dispatch against an open description whose positioned reads fail on command (immediately, partway through the copy, and as the shared seed read; a never-failing control maps and serves its content): RED on the base (the four failure cases each left their range mapped), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (build git_sha e37fa3c04, wasm 16abfc4c, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd92-failed-mmap64-teardown-20261102.md`; evidence `test-results/fd92mmap/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -5532,3 +5540,109 @@ its lane and is not a defect, for the stated reason:
   fix. Record:
   `docs/reports/fd83-fd84-read-family-20261102.md`;
   evidence `test-results/fd83-84/`.
+
+- **CL-46 -- A failed 64-bit file mapping now
+  leaves nothing mapped and nothing reserved:
+  when the content read that follows the map in
+  sys_mmap64_file fails, the established range is
+  torn down before the error is returned
+  (FD-92).** *(Filed provisionally as CL-46 on
+  lane-fd92mmap, 2026-11-02 -- CL-40..CL-45 are
+  held provisionally by parallel branches (the
+  FD-66, FD-65, FD-85, FD-87, FD-64, FD-05 and
+  FD-82 filings); the composing merge verifies by
+  audit and renumbers if needed. The defect
+  number FD-92 is kept exactly as carried from
+  lane-fd82's register, where the FD-82 lane
+  filed it: the same number is used by unrelated
+  entries on two other sibling branches --
+  lane-fd92 carries an FD-92 for a spirvfix
+  output-ordering defect, and branch lane-fd92-93
+  is chartered on the FD-92 / FD-93 numbers -- so
+  the merge audit must settle which entry keeps
+  FD-92.)* Fixed on branch `lane-fd92mmap`.
+  sys_mmap64_file materializes a file mapping in
+  two phases: it establishes the mapping first
+  (mmapReserveAndMap for addr==0,
+  mmapAnonymousFixed otherwise; for MAP_SHARED it
+  reserves the range and then reads a seed buffer
+  before installing the shared pages), and only
+  then copies the file content in with positioned
+  reads. Both content-read error returns -- the
+  private branch's copy loop and the shared
+  branch's seed loop (the latter only with
+  addr==0, where the reservation already exists)
+  -- returned the read's errno with the
+  established range left mapped and reserved. A
+  guest that trusted the failure believed the
+  range unmapped; an access there succeeded
+  instead of faulting, and the range was
+  unavailable for reuse. Both sites now release
+  the established range through KMemory64::munmap
+  before returning the error: the private branch
+  unmaps [aligned, aligned+mapLen)
+  unconditionally (that span covers both of its
+  establishment forms), the shared branch unmaps
+  only the range it reserved. Composition with
+  FD-82's accounting (lane-fd82, CL-45) is by
+  construction: lane-fd82 counts the private
+  mapping's birth before the content read and
+  reports mapping deaths from KMemory64::munmap,
+  so this teardown releases the birth as well;
+  in the shared branch lane-fd82 counts the
+  birth only after the shared pages are
+  installed, so the seed-failure teardown has no
+  birth to release. Boundaries, stated exactly:
+  for an explicit-address map over a live
+  mapping, the prior contents were already
+  destroyed by the map phase's zeroing (the
+  pre-existing two-phase materialization
+  contract, which snapshots only the partial
+  head/tail pages), so teardown leaves the range
+  unmapped rather than resurrecting the prior
+  mapping -- 'nothing mapped' is the failed-host-
+  mmap contract the entry specifies, and that is
+  what the guest now observes; mmapSharedFile's
+  own failure return after a successful seed
+  read is a separate contract (its callers
+  include loader paths) and is not changed here.
+  The trigger is exercised at the interface the
+  defect lives at: the in-tree file backings
+  currently fold host read errors into a 0 (EOF)
+  answer, so no real file in the tree makes the
+  positioned read return an errno today;
+  KFile::preadNative's contract nonetheless
+  forwards the backing's result verbatim and its
+  callers (this function, sys_pread64's core)
+  are written against (S32)result < 0 as the
+  error answer, so the test drives that contract
+  with an open description whose readNative
+  serves a pattern up to a byte budget and then
+  returns -EIO. Proof: new test
+  testMmap64FileReadFailure in the x64 native
+  suite -- five cases (explicit-address private
+  failure on the first byte, explicit-address
+  private failure after one served page, a
+  never-failing control that maps and serves its
+  content, addr==0 private failure, addr==0
+  shared seed failure; the addr==0 cases locate
+  the reservation through a control allocation
+  at the mmap cursor) driving the real 64-bit
+  syscall dispatch -- RED on the base (the four
+  failure cases each reported their range still
+  mapped: 0x100000000, 0x100100000, 0x700003000,
+  0x700008000; the control passed), GREEN with
+  the fix; full native suites serial main
+  668/668 and x64 70/70, 0 FAILED (x64 baseline
+  69 + this test); JS unit 348 passed / 0
+  failed; browser build on the fixed tree
+  (clean-bootstrap staging from this base's
+  pinned runtime-assets-20261101 archive, 13
+  assets restored and verified, --check PASS
+  including the FD-73 retained-archive line):
+  'Browser export verified' / BUILD COMPLETE,
+  build git_sha e37fa3c04, wasm 16abfc4c,
+  support archive c4dbe35986a5 unchanged.
+  Record:
+  `docs/reports/fd92-failed-mmap64-teardown-20261102.md`;
+  evidence `test-results/fd92mmap/`.
