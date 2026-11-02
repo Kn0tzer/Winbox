@@ -71,13 +71,17 @@ public:
     U32 channels;
     U32 format;
     U32 fragmentCount = DSP_DEFAULT_FRAGMENT_COUNT;
-    U32 bytesWritten = 0;
-    U32 lastOutputBlocks = 0;
+    U64 bytesWritten = 0;
+    U32 lastPlayedBlocks = 0;
+    U64 reportedPlayedBytes = 0;
 
 private:
     U32 getEffectiveBufferCapacity();
     U32 getUsedBufferSize();
     U32 getAvailableBufferSize();
+    U32 getQueuedBufferSize();
+    U64 getPlayedBytes();
+    U64 getReportedPlayedBytes();
     // Capture state (kernel round 3B). openCaptureIfNeeded returns 1 when
     // capture is open with the current format/freq/channels, 0 when the
     // backend cannot capture, -1 when the device was opened write-only.
@@ -230,6 +234,50 @@ U32 DevDsp::getAvailableBufferSize() {
     return this->getEffectiveBufferCapacity() - this->getUsedBufferSize();
 }
 
+U32 DevDsp::getQueuedBufferSize() {
+    // Device-visible queue depth: bytes the backend accepted but has not
+    // consumed, capped at the device buffer capacity. A real device
+    // cannot hold more than its buffer, and the position consumers
+    // (GETOPTR/GETODELAY) must never see a depth beyond it — the
+    // uncapped figures are what produced incoherent positions
+    // (delay -190,464 frames on a 4,096-frame buffer, FD-90).
+    U64 queued = this->audio->getQueuedBytes();
+    U32 capacity = this->getEffectiveBufferCapacity();
+    return queued > capacity ? capacity : (U32)queued;
+}
+
+U64 DevDsp::getPlayedBytes() {
+    U64 queued = this->getQueuedBufferSize();
+    return this->bytesWritten > queued ? this->bytesWritten - queued : 0;
+}
+
+// The position GETOPTR reports. Consumers of count_info (ALSA's OSS
+// plugin among them) rebuild a free-running hardware pointer from the
+// in-buffer ptr field alone, which is only meaningful when successive
+// reads advance by less than half the buffer — an assumption real
+// hardware keeps for free, since a DAC drains at its sample rate and
+// the pointer is latched by fragment interrupts. This device's DAC is
+// a shared-memory ring drained by a Web Audio worklet whose pull rate
+// is not sample-paced (a headless sink can consume a whole buffer
+// between two guest reads, or nothing for a long stretch), so the raw
+// played counter can lap the buffer between reads and alias to "no
+// motion". The reported position therefore advances toward the true
+// played counter by at most half the buffer per read and never
+// rewinds: it never claims audio as played before the ring consumed
+// it, it is exact whenever the drain between reads is under half the
+// buffer (every sample-paced consumer), and it restores the
+// successive-read invariant the pointer contract is built on.
+U64 DevDsp::getReportedPlayedBytes() {
+    U64 target = this->getPlayedBytes();
+    U32 capacity = this->getEffectiveBufferCapacity();
+    U64 maxStep = capacity / 2;
+    if (maxStep && target > this->reportedPlayedBytes) {
+        U64 advance = target - this->reportedPlayedBytes;
+        this->reportedPlayedBytes += advance < maxStep ? advance : maxStep;
+    }
+    return this->reportedPlayedBytes;
+}
+
 bool DevDsp::isWriteReady() {
 #ifdef __EMSCRIPTEN__
     // bwPump: JS Web Audio bridge owns backpressure via its ring buffer.
@@ -257,13 +305,16 @@ U32 DevDsp::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
         this->audio->closeCaptureAudio();
         this->captureOpen = false;
         this->captureTried = false;
-        this->freq = 8000;
-        this->channels = 1;
-        this->format = AFMT_U8;
-        this->audio->setFragmentSize(DSP_DEFAULT_FRAGMENT_SIZE);
-        this->fragmentCount = DSP_DEFAULT_FRAGMENT_COUNT;
+        // RESET drops queued audio and restarts the position counters,
+        // but the stream configuration (format/rate/channels/fragment
+        // geometry) survives: it is a prepare/drop, and the ALSA
+        // plug->oss prepare issues RESET *after* hw_params negotiated
+        // that geometry. Clobbering it here desyncs the position
+        // modulus from the stream buffer for the stream's whole life
+        // (FD-90: capacity fell 16384 -> 8192 at prepare).
         this->bytesWritten = 0;
-        this->lastOutputBlocks = 0;
+        this->lastPlayedBlocks = 0;
+        this->reportedPlayedBytes = 0;
         return 0;
     case 0x5001: // SNDCTL_DSP_SYNC — drain; our sink paces via the SDL callback,
         return 0; // pending bytes keep playing, so report done immediately.
@@ -353,21 +404,28 @@ U32 DevDsp::ioctl64(U32 request, U64 argAddr, KMemory64* mem) {
         return 0;
     case 0x5010: // SNDCTL_DSP_SETTRIGGER — playback runs freely; accept.
         return 0;
-    case 0x5012: { // SNDCTL_DSP_GETOPTR (count_info)
+    case 0x5012: { // SNDCTL_DSP_GETOPTR (count_info) — the OSS contract is
+        // a playback position: bytes/blocks PLAYED and the playback
+        // pointer. Answering with bytes *written* leaves the ALSA
+        // plug->oss hardware pointer frozen once the buffer fills, so
+        // mmap clients stall after one buffer (FD-90).
+        U64 played = this->getReportedPlayedBytes();
         U32 fragmentSize = this->audio->getFragmentSize();
-        U32 currentBlocks = fragmentSize ? this->bytesWritten / fragmentSize : 0;
-        U32 blocks = currentBlocks - this->lastOutputBlocks;
-        this->lastOutputBlocks = currentBlocks;
+        U32 currentBlocks = fragmentSize ? (U32)(played / fragmentSize) : 0;
+        U32 blocks = currentBlocks - this->lastPlayedBlocks;
+        this->lastPlayedBlocks = currentBlocks;
         U32 capacity = this->getEffectiveBufferCapacity();
-        mem->writed(argAddr, this->bytesWritten);
-        mem->writed(argAddr + 4, blocks);
-        mem->writed(argAddr + 8, capacity ? this->bytesWritten % capacity : 0);
+        mem->writed(argAddr, (U32)played); // Total # of bytes played
+        mem->writed(argAddr + 4, blocks); // # of fragment transitions played since last time
+        mem->writed(argAddr + 8, capacity ? (U32)(played % capacity) : 0); // Current playback pointer
         return 0;
     }
     case 0x5016: // SNDCTL_DSP_SETDUPLEX
         return (U32)-K_EINVAL;
-    case 0x5017: // SNDCTL_DSP_GETODELAY
-        mem->writed(argAddr, this->getUsedBufferSize());
+    case 0x5017: // SNDCTL_DSP_GETODELAY — bytes written but not yet played,
+        // from the same played counter as GETOPTR and bounded by the
+        // buffer, so the two position answers can never contradict.
+        mem->writed(argAddr, this->getQueuedBufferSize());
         return 0;
     default:
         klog_fmt("DevDsp::ioctl64: unimplemented OSS ioctl 0x%x (len=%d dir=%c%c)",
@@ -392,13 +450,16 @@ U32 DevDsp::ioctl(KThread* thread, U32 request) {
         this->audio->closeCaptureAudio();
         this->captureOpen = false;
         this->captureTried = false;
-        this->freq = 8000;
-        this->channels = 1;
-        this->format = AFMT_U8;
-        this->audio->setFragmentSize(DSP_DEFAULT_FRAGMENT_SIZE);
-        this->fragmentCount = DSP_DEFAULT_FRAGMENT_COUNT;
+        // RESET drops queued audio and restarts the position counters,
+        // but the stream configuration (format/rate/channels/fragment
+        // geometry) survives: it is a prepare/drop, and the ALSA
+        // plug->oss prepare issues RESET *after* hw_params negotiated
+        // that geometry. Clobbering it here desyncs the position
+        // modulus from the stream buffer for the stream's whole life
+        // (FD-90: capacity fell 16384 -> 8192 at prepare).
         this->bytesWritten = 0;
-        this->lastOutputBlocks = 0;
+        this->lastPlayedBlocks = 0;
+        this->reportedPlayedBytes = 0;
         return 0;
     case 0x5002: { // SNDCTL_DSP_SPEED 
         if (len!=4) {
@@ -563,21 +624,24 @@ U32 DevDsp::ioctl(KThread* thread, U32 request) {
         */
         klog("DevDsp::ioctl was not expecting SNDCTL_DSP_SETTRIGGER");
         return 0;
-    case 0x5012: { // SNDCTL_DSP_GETOPTR
+    case 0x5012: { // SNDCTL_DSP_GETOPTR — playback position (see ioctl64):
+        // bytes/blocks PLAYED and the playback pointer, not bytes written.
+        U64 played = this->getReportedPlayedBytes();
         U32 fragmentSize = this->audio->getFragmentSize();
-        U32 currentBlocks = fragmentSize ? this->bytesWritten / fragmentSize : 0;
-        U32 blocks = currentBlocks - this->lastOutputBlocks;
-        this->lastOutputBlocks = currentBlocks;
+        U32 currentBlocks = fragmentSize ? (U32)(played / fragmentSize) : 0;
+        U32 blocks = currentBlocks - this->lastPlayedBlocks;
+        this->lastPlayedBlocks = currentBlocks;
         U32 capacity = this->getEffectiveBufferCapacity();
-        memory->writed(IOCTL_ARG1, this->bytesWritten); // Total # of bytes written
-        memory->writed(IOCTL_ARG1 + 4, blocks); // # of fragment transitions since last time
-        memory->writed(IOCTL_ARG1 + 8, capacity ? this->bytesWritten % capacity : 0); // Current DMA pointer value
+        memory->writed(IOCTL_ARG1, (U32)played); // Total # of bytes played
+        memory->writed(IOCTL_ARG1 + 4, blocks); // # of fragment transitions played since last time
+        memory->writed(IOCTL_ARG1 + 8, capacity ? (U32)(played % capacity) : 0); // Current playback pointer value
         return 0;
     }
     case 0x5016: // SNDCTL_DSP_SETDUPLEX
         return -K_EINVAL;
-    case 0x5017: // SNDCTL_DSP_GETODELAY
-        memory->writed(IOCTL_ARG1, this->getUsedBufferSize());
+    case 0x5017: // SNDCTL_DSP_GETODELAY — bytes written but not yet played,
+        // from the same played counter as GETOPTR, bounded by the buffer.
+        memory->writed(IOCTL_ARG1, this->getQueuedBufferSize());
         return 0;
     case 0x580C: // SNDCTL_ENGINEINFO
         if (write) {
