@@ -22,6 +22,47 @@
 #define NATIVE_PAGE_REF_COUNT 0
 
 static BOXEDWINE_MUTEX ramMutex;
+
+// FD-77: ownership record for ramMutex, in the same spirit as the
+// KMemory::mutex record (see faultstage.h): the allocator's sections
+// are short and none of them blocks on anything but the platform
+// reserve/commit calls in ramPageAlloc, so a dump that finds this
+// owner unchanged across dumps has localized a freeze to the
+// allocator -- and a thread waiting at FS_RAM_ALLOC with owner 0 here
+// is waiting behind a section the record does not cover. Written only
+// while holding ramMutex (RamMutexOwnerScope is declared after the
+// lock at each site), read locklessly by the guest thread dump.
+static std::atomic<U32> ramMutexOwnerTid{0};
+static std::atomic<U64> ramMutexOwnerSinceMs{0};
+
+namespace {
+struct RamMutexOwnerScope {
+    RamMutexOwnerScope() {
+        KThread* t = KThread::currentThread();
+        prevTid = ramMutexOwnerTid.exchange(t ? t->id : 0, std::memory_order_relaxed);
+        prevSinceMs = ramMutexOwnerSinceMs.exchange((U64)(KSystem::getMicroCounter() / 1000), std::memory_order_relaxed);
+    }
+    ~RamMutexOwnerScope() {
+        ramMutexOwnerTid.store(prevTid, std::memory_order_relaxed);
+        ramMutexOwnerSinceMs.store(prevSinceMs, std::memory_order_relaxed);
+    }
+    U32 prevTid = 0;
+    U64 prevSinceMs = 0;
+};
+} // namespace
+
+int bw64RamMutexStats(U32* ownerTid, U64* ownerAgeMs) {
+    const U32 tid = ramMutexOwnerTid.load(std::memory_order_relaxed);
+    *ownerTid = tid;
+    if (!tid) {
+        *ownerAgeMs = 0;
+        return 0;
+    }
+    const U64 since = ramMutexOwnerSinceMs.load(std::memory_order_relaxed);
+    const U64 now = (U64)(KSystem::getMicroCounter() / 1000);
+    *ownerAgeMs = (since && since <= now) ? now - since : 0;
+    return 1;
+}
 int allocatedRamPages;
 
 class RamInfo {
@@ -45,6 +86,7 @@ std::vector<AlignedU8*> allocatedPages;
 
 RamPage ramPageAlloc() {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     if (freeIndexes.size()) {
         RamPage found;
         found.value = freeIndexes.back();
@@ -103,6 +145,7 @@ RamPage ramPageAlloc() {
 
 RamPage ramPageAllocNative(U8* native) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     RAM_TYPE index = ((RAM_TYPE)native) >> K_PAGE_SHIFT;
 
     if (((U64)native) & 0xfff) {
@@ -135,6 +178,7 @@ void shutdownRam() {
 
 RamPage ramPageAllocNativeContinuous(U8* native, U32 pageCount) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     RAM_TYPE ramIndex = ((RAM_TYPE)native) >> K_PAGE_SHIFT;
 
     for (U32 i = 0; i < pageCount; i++) {
@@ -149,11 +193,13 @@ RamPage ramPageAllocNativeContinuous(U8* native, U32 pageCount) {
 
 void ramPageRetain(RamPage page) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     refCounts[page.value].refCount++;
 }
 
 U32 ramPageUseCount(RamPage page) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     return refCounts[page.value].refCount;
 }
 
@@ -174,6 +220,7 @@ void ramPageRelease(RamPage page) {
         return;
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(ramMutex);
+    RamMutexOwnerScope ramOwnerScope;
     refCounts[page.value].refCount--;
     if (refCounts[page.value].refCount == 0) {               
         if (refCounts[page.value].isNative) {

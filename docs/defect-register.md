@@ -401,8 +401,9 @@ do not close the entry until they land.
 
 - **FD-77 — A fully booted session can still freeze solid
   before its first window and never say why; the freeze
-  amplifier is fixed, the stall behind it is not.**
-  *(High)* *(Filed provisionally as FD-75 by the FD-12
+  amplifier is fixed, the stall behind it is not.
+  CLOSED 2026-11-01 — see CL-34.** *(Was High)*
+  *(Filed provisionally as FD-75 by the FD-12
   park lane, 2026-11-01; numbered FD-77 at composition on
   2026-11-01 — FD-75 was taken on integ by the FD-72
   lane's helper-invocation entry.)* Split from FD-12 —
@@ -520,6 +521,68 @@ do not close the entry until they land.
   as a reported failure in the default session instead
   of an endless quiet page (specified in the lane
   record, not built there).
+
+  **Update — CONVICTED AND FIXED (FD-77 next-step lane,
+  2026-11-01; record
+  `docs/reports/fd77-msync-abba-20261101.md`; evidence
+  `test-results/fd77b/`).** The specified instrument
+  was built (`3ca9decf4`): a per-thread fault-stage
+  marker across the demand path (memory-mutex acquire
+  and work, RAM allocation, file-position lock,
+  backing read, install) with the faulted page — and
+  for backing reads the file, offset and node type —
+  printed by the thread dump; an owner record on the
+  per-process memory mutex; an owner record on the
+  RAM allocator's mutex. The FIRST armed run on the
+  instrumented build parked, and the capture convicted
+  one mechanism in a single reading
+  (`test-results/fd77b/run-stage-1/`): the memory
+  mutex stood owned for 635 s by a thread at stage
+  mem-work inside `FilePage::onDemmand` — in
+  `KProcess::getMappedFile`, waiting for the
+  mapped-files mutex — while the thread holding that
+  mutex sat at stage mem-lock inside an `msync`
+  writeback, faulted on a page in the middle of its
+  range, waiting for the memory mutex; the remaining
+  running threads piled behind the memory mutex at
+  block entries. The RAM allocator was unheld
+  (owner 0) and the fetch proxy empty (inflight=0) in
+  the same dumps: of the three named candidates, the
+  memory mutex is convicted — as an ABBA deadlock,
+  not a slow section — and the allocator candidate is
+  cleared for this capture. THE MECHANISM:
+  `KProcess::msync` held the mapped-files mutex
+  across its writeback, and the writeback reads the
+  guest range, demand-faulting any page not yet
+  resident — memory mutex first, mapped-files mutex
+  second — while the demand path takes the pair in
+  that same order and waits for the mapped-files
+  mutex while holding the memory mutex. Code audit:
+  msync was the sole inversion (mmap/mremap take the
+  memory mutex before their mapped-files sections;
+  the lookups are leaves). FIX (`52ee264c7`): msync
+  snapshots the containing mapping under the mutex
+  and writes back after releasing it; the lock order
+  is documented at the mutex declaration. PROOF:
+  deterministic test `testMsyncLockOrder`
+  (`5436ead2b`) forms the interleave without timing
+  races — the fault-stage marker is its sync point —
+  RED on the unfixed code (the lookup stayed blocked
+  the full 3 s window; the test then unwinds itself
+  and fails with the diagnosis), GREEN with the fix,
+  in both suites; full native suites serial main
+  666/666 and x64 65/65, 0 FAILED; JS unit 348/348;
+  browser build on the fixed tree compiles (wasm
+  `646f85cc…`); consumer series on the fixed build:
+  6 of 6 runs mapped (45.8–71.4 s), zero parks,
+  against 2 parks in 7 comparable pre-fix runs and
+  the convicted capture above. The fault-stage
+  instrument and owner records stay in the tree as
+  permanent dump tooling. Still owed, unchanged: the
+  launcher surfacing "booted, no window, no output"
+  as a reported failure (specified in the previous
+  lane record, not built here). FD-77 CLOSED on this
+  branch — see CL-34.
 
 ### Graphics
 
@@ -1061,6 +1124,14 @@ do not close the entry until they land.
   differ from Linux, and inotify sees a creation for the new
   name but no link-count IN_ATTRIB on the source. Found by
   the FD-38 lane, 2026-10-31 (kprocess.cpp `KProcess::link`).
+  Update 2026-11-01 (FD-81): the refusal this entry's
+  fix specified also fired, in the browser build, on
+  ordinary files whose only problem is that the backing
+  store cannot hard-link at all - 57 times per 32-bit
+  boot on fontconfig's cache temp-to-lock links. FD-81
+  serves that case at the emulator layer with true
+  shared content; the refusal stands for the sources it
+  was written for. FD-60 stays closed by CL-31.
 
 - **FD-64 — Five legacy-suite subtests fail against the
   current V2 protocol fixtures.** *(Low, test-suite health.
@@ -2594,6 +2665,82 @@ do not close the entry until they land.
   Found by inspection during the FD-59 read-path work,
   2026-11-01 (syscall64.cpp name table vs dispatch
   switch).
+
+- **FD-81 — In the browser build, link() refuses every
+  link the backing store cannot hard-link - which is all
+  of them: the temp-file-to-lock-name pattern
+  (fontconfig's cache locks) failed 57 times per 32-bit
+  boot. CLOSED 2026-11-01 — see CL-33.** *(Medium - a mainstream library startup
+  pattern's step fails on every 32-bit boot; fontconfig
+  copes, but any guest code that requires the link
+  breaks.)* Filed 2026-11-01 from the FD-58..60 deploy
+  record's in-vivo observation (285 BW64-FAIL lines, all
+  this refusal, exactly 57 per x86 boot, 0 on x64).
+  FD-60 (CL-31) made link() a true hard link via a host
+  ::link() and specified refusal with EPERM and a
+  BW64-FAIL line for sources that are not host files. In
+  the browser build the "host" is the Emscripten
+  filesystem: its MEMFS and IDBFS backings provide no
+  hard-link operation at all, and its FS.link answers
+  every attempt with EMLINK (errno 34 in this build's
+  numbering - the value on all 285 deploy lines). The
+  refused sources are ordinary files (fontconfig's
+  /root/tmp/fontconfig/*.TMP-* temp files linked to
+  *.LCK lock names in the same directory); what refuses
+  them is the backing store's missing operation, not the
+  FD-60 scope. On the host the same pattern succeeds, so
+  the refusal is not the host-correct answer for it.
+  The fix (b0b3a70d3): when the host link fails with
+  EMLINK in the browser build, KProcess::link serves the
+  link at the emulator layer (KProcess::linkSharedBacking):
+  the new name is a second node with the source's id in
+  the same link group, pointing at the SAME backing
+  path, so content identity is real - every open of
+  either name opens the one backing file, and writes
+  through one name are visible through the other. The
+  link group gains a sharedBackingPath flag, and
+  FsFileNode consults it: link counts come from the
+  group's live membership (the backing's own count is
+  1), unlinking one name detaches only (the last name's
+  unlink deletes the backing), and renaming one name
+  moves only the guest tree entry (POSIX rename moves
+  an entry, not the file). Each served link logs a
+  capped BW64-INFO line; a served link is a success, not
+  a BW64-FAIL. Native builds are unchanged - there
+  EMLINK is the host's real link-count limit and stays a
+  refusal - as do symlink sources in every build
+  (FD-60's sidecar semantics) and non-file sources.
+  Proof: new test testTempFileLinkPattern in both
+  native suites runs the pattern end to end (shared
+  inode, nlink 2, exactly one backing file on the
+  host-side census - a copy would show two - writes
+  visible through both names, content survives
+  unlinking the temp name, the backing is deleted with
+  the last name, a rename keeps the sharing);
+  sabotage-checked both ways (a distinct backing path
+  fails the shared-content assertions; disabling the
+  unlink guard fails the survival assertions); full
+  native suites serial: main 666/666, x64 65/65,
+  0 FAILED (baselines 665/64 + the new test). Browser
+  build of the branch: 'Browser export verified' (dist
+  git_sha b0b3a70d3, wasm 8303eff4); in vivo
+  boot32-vkboot PASS on that dist - the console carries
+  0 BW64-FAIL lines of any kind and 5 BW64-INFO
+  hard-link lines, on exactly the fontconfig files the
+  deploy record lists (CACHEDIR.TAG and the four
+  le32d4 cache files; this boot shape runs one
+  fontconfig pass - the deploy's full-session count of
+  57 is the merge/deploy gates' figure to re-measure).
+  Residuals, stated: the group liveness count can lag
+  while an unlinked name's node is still open (FD-60's
+  stated class, now applying to file nodes on this path
+  too); after a cold rescan of the backing tree the two
+  names load as separate nodes (FD-60's stated class -
+  the backing holds one file); the served link exists
+  in the guest tree only, never as a second name in the
+  backing store itself.
+  Record: docs/reports/fd81-temp-link-pattern-20261101.md;
+  evidence test-results/fd81/ (on the lane tree).
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -2627,7 +2774,9 @@ is behavioural, is re-proven there.
 | `lane-fd57` | FD-62 audit hardening (the defect itself stays OPEN in Section A — this row is the classification half awaiting merge): both descriptor-array audit mirrors now audit through OpImageTexelPointer and refuse texel-pointer forms through an array element with a named reason naming the true blocker (the translation stack rejects OpImageTexelPointer), instead of an incidental generic pointer escape; zero modules change verdict | JS suite `spirvfix-texel-pointer-arrays.test.mjs` 5/5 (red 5/5 pre-fix) over the captured Godot module + reduction/copy-sabotage/attribution/escape fixtures; native classifier guard proven via a scratch harness (the standard harness is blocked by FD-50's abort, re-confirmed by this lane); full JS unit suite green except the dist-state audits of an unbuilt lane tree; vulkan citation register re-pinned through the exact diff line map (citations suite green, incl. the pre-existing reg:410 dual-cite drift). Record: `docs/reports/fd62-texel-pointer-atomics-20261101.md` |
 
 | `lane-fd58-60` | FD-58: chmod/fchmod/fchmodat apply the mode (stored on the node, reported by every stat writer, IN_ATTRIB on success; fchmodat NOFOLLOW on a symlink returns ENOTSUP as the host does); FD-59: IN_ACCESS generated for completed reads (mmap-write IN_MODIFY disproven against host references — the host generates none either); FD-60: link() creates a true hard link (host ::link between native paths, shared inode id, link group for counts and event fan-out); FD-79 and FD-80 filed | New test testChmodAccessHardLink in both suites: RED on the base (13 main / 18 x64 assertions failing), GREEN with the fix; host-kernel reference programs measured first (chmod/link/read/inotify matrices); full native suites serial: main 665/665 and x64 64/64, 0 FAILED; JS unit: the fs-dynamic-link-cache test that compiles the changed C++ passes standalone and in the runner (the lane tree is un-bootstrapped: 272 passed / 76 failed overall, every sampled failure a missing generated web/vendor file - the full JS run belongs to the merge gate). Record: `docs/reports/fd58-fd60-kernel-semantics-20261101.md`; evidence `test-results/fd58-60/` |
+| `lane-fd77b` | FD-77 CONVICTED + FIXED: the silent freeze is an ABBA deadlock — msync held the mapped-files mutex across a writeback that demand-faults guest pages (memory mutex second), against the demand path's memory -> mapped-files order; the specified fault-stage instrument + mutex owner records were built and the first armed run parked into a capture that names both halves; fix snapshots the mapping and writes back after release | Fault-stage instrument `3ca9decf4` (citation audit 352 rows / 0 drift; instrumented build compiles, wasm 5ebee420); deterministic test testMsyncLockOrder RED on unfixed code -> GREEN with the fix `52ee264c7`; native serial main 666/666, x64 65/65; JS 348/348; fixed browser build compiles (wasm 646f85cc); consumer 6/6 mapped, 0 parks. Record: `docs/reports/fd77-msync-abba-20261101.md`; evidence `test-results/fd77b/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
+| `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -3577,3 +3726,103 @@ its lane and is not a defect, for the stated reason:
   (`ref_inotify.c/.out`, `ref2.c/.out`,
   `ref3.c/.out`). One adjacent difference the same
   references found is filed separately as FD-79.
+
+- **CL-33 — The temp-file-to-lock-name link pattern
+  is served with true shared content (FD-81).**
+  *(Filed as FD-81 on lane-fd81-linktmp, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition; this closure
+  is written at composition, the merge gate having
+  reproduced the branch's proof.)*
+  Fixed on branch `lane-fd81-linktmp` in `b0b3a70d3`
+  (composed as `95a6d68b9`): in the browser build the
+  backing filesystems (MEMFS and IDBFS) provide no
+  hard-link operation, and Emscripten's FS.link
+  answers every attempt with EMLINK (errno 34 - the
+  value on all 285 refusal lines in the FD-58..60
+  deploy record, 57 per 32-bit boot), so FD-60's
+  host-link path could never succeed there and every
+  regular-file link was refused, although the same
+  pattern succeeds on the host. `KProcess::link` now
+  falls back (browser build, EMLINK, regular files
+  only) to `KProcess::linkSharedBacking`: the new
+  name is a second node with the source's id in the
+  same link group, pointing at the SAME backing
+  path, so content identity is real - every open of
+  either name opens the one backing file. The
+  group's new sharedBackingPath flag makes
+  FsFileNode take link counts from the group's live
+  membership (the backing's own count is 1), detach
+  only on unlink while a sibling name remains (the
+  last name's unlink deletes the backing), and move
+  only the guest tree entry on rename. Each served
+  link logs a capped BW64-INFO line; a served link
+  is a success, not a BW64-FAIL. Native builds keep
+  every refusal (there EMLINK is the host's real
+  link-count limit); symlink and non-file sources
+  keep FD-60's behaviour. Proof: new test
+  testTempFileLinkPattern in both native suites -
+  the fontconfig pattern end to end, including a
+  host-side census showing exactly one backing file
+  throughout (a copy would show two), writes visible
+  through both names, content surviving unlink of
+  the temp name, the backing deleted with the last
+  name, a rename keeping the sharing; sabotage-
+  checked both ways on the branch (a distinct
+  backing path fails the shared-content assertions;
+  disabling the unlink guard fails the survival
+  assertions), restored and re-verified green. Full
+  native suites serial: main 666/666, x64 65/65,
+  0 FAILED - reproduced exactly at this
+  composition's gate, the new test's line present in
+  both suite logs. In vivo, also reproduced at the
+  gate: the composed build's wasm is byte-identical
+  to the branch build's (`8303eff4`), and the gate's
+  boot32-vkboot console carries 0 BW64-FAIL lines of
+  any kind and 5 BW64-INFO hard-link served lines on
+  exactly the fontconfig files the deploy record
+  lists (CACHEDIR.TAG and the four le32d4 caches,
+  identical hashes); the boot64 console carries
+  neither (no fontconfig link activity on 64-bit
+  boots, as measured at the deploy). The deploy's
+  57-per-boot full-session figure remains the next
+  deploy's to re-measure on the shipped build.
+  Residuals, as stated in FD-81: the group-liveness
+  count can lag while an unlinked name's node is
+  still open; after a cold rescan of the backing
+  tree the two names load as separate nodes; a
+  served link exists in the guest tree only, never
+  as a second name in the backing store itself.
+- **CL-34 — The silent freeze convicted: an msync /
+  mapped-files ABBA deadlock, fixed at the lock
+  order (FD-77).** *(Filed as CL-33 on lane-fd77b,
+  2026-11-01; renumbered CL-34 at composition —
+  CL-33 was taken on the integration register by
+  FD-81's closure, written at its composition.)*
+  Fixed on branch `lane-fd77b` in `52ee264c7`, on
+  evidence from the fault-stage instrument built in
+  `3ca9decf4` (per-thread demand-path stage markers
+  plus owner records on the memory mutex and the RAM
+  allocator, kept as permanent dump tooling). The
+  parked capture (`test-results/fd77b/run-stage-1/`)
+  shows the whole configuration in one reading: the
+  memory mutex owned 635 s by a demand thread waiting
+  inside the mapping lookup; the msync thread holding
+  the mapped-files mutex, asleep inside its writeback
+  on a not-yet-resident page of its own range; the
+  allocator unheld and the fetch proxy empty in the
+  same dumps. msync now snapshots the mapping under
+  the mutex and writes back after release, and the
+  pair's lock order (memory mutex before mapped-files
+  mutex; never hold the mapped-files mutex across
+  guest-memory access) is written at the declaration.
+  Proof: `testMsyncLockOrder` (`5436ead2b`) forms
+  the interleave deterministically — RED before the
+  fix, GREEN after, both suites; full native suites
+  serial main 666/666, x64 65/65, 0 FAILED; JS unit
+  348/348; the browser build compiles on the fixed
+  tree (wasm `646f85cc…`); six of six consumer runs
+  on the fixed build mapped with no park. The
+  launcher's "booted, no window, no output" failure
+  surfacing remains specified-not-built, as the
+  FD-77 entry records.

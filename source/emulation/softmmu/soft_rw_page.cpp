@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "faultstage.h"
 
 #include "soft_rw_page.h"
 #include "soft_ram.h"
@@ -133,8 +134,11 @@ U8* RWPage::internalGetRamPtr(MMU* mmu, U32 address, bool write) {
     }
     if (mmu->ramIndex == 0) {
         KMemory* memory = KThread::currentThread()->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        // FD-77: stage-marked demand allocation (see faultstage.h).
+        FaultStageScope demandStage(KThread::currentThread(), FS_DEMAND, address >> K_PAGE_SHIFT);
+        MemoryDemandLock memLock(memory);
         if (mmu->ramIndex == 0) {
+            FaultStageScope allocStage(KThread::currentThread(), FS_RAM_ALLOC);
             RamPage ram = ramPageAlloc();
             U32 pageIndex = address >> K_PAGE_SHIFT;
             mmu->setPage(memory, pageIndex, PageType::Ram, ram);
@@ -157,8 +161,11 @@ U8* RWPage::getRamPtr(MMU* mmu, U32 page, bool write, bool force, U32 offset, U3
 void RWPage::onDemmand(MMU* mmu, U32 pageIndex) {
     if (mmu->ramIndex == 0) {
         KMemory* memory = KThread::currentThread()->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        // FD-77: stage-marked demand allocation (see faultstage.h).
+        FaultStageScope demandStage(KThread::currentThread(), FS_DEMAND, pageIndex);
+        MemoryDemandLock memLock(memory);
         if (mmu->ramIndex == 0) {
+            FaultStageScope allocStage(KThread::currentThread(), FS_RAM_ALLOC);
             RamPage ram = ramPageAlloc();
             mmu->setPage(memory, pageIndex, PageType::Ram, ram);
             ramPageRelease(ram);

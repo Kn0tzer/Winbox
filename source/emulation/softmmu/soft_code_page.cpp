@@ -19,6 +19,7 @@
 #include "boxedwine.h"
 
 #include "soft_code_page.h"
+#include "faultstage.h"
 #include "soft_ram.h"
 #include "kmemory_soft.h"
 #include "soft_mmu.h"
@@ -26,7 +27,13 @@
 
 void CodePage::onDemmand(MMU* mmu, U32 pageIndex) {
     KThread* thread = KThread::currentThread();
+    // FD-77: stage-marked demand path (see faultstage.h). This
+    // implementation takes no memory mutex itself; callers that hold it
+    // hold the tracked lock, so an alloc wait here is attributed by the
+    // ram-alloc stage and the allocator's owner record in the dump.
+    FaultStageScope demandStage(thread, FS_DEMAND, pageIndex);
     if (!thread->memory->mapShared(pageIndex) && ramPageUseCount((RamPage)mmu->ramIndex) > 1) {
+        FaultStageScope allocStage(thread, FS_RAM_ALLOC);
         RamPage ram = ramPageAlloc();
         ::memcpy(ramPageGet(ram), ramPageGet((RamPage)mmu->ramIndex), K_PAGE_SIZE);
         mmu->setPage(thread->memory, pageIndex, PageType::Code, ram);
@@ -41,7 +48,7 @@ void CodePage::writeb(MMU* mmu, U32 address, U8 value) {
     if (value != this->readb(mmu, address)) {
         KThread* thread = KThread::currentThread();
         KMemory* memory = thread->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        MemoryDemandLock memLock(memory);
         U8 currentValue = this->readb(mmu, address);
         if (currentValue == value) {
             return;
@@ -60,7 +67,7 @@ void CodePage::writew(MMU* mmu, U32 address, U16 value) {
     if (value != currentValue) {
         KThread* thread = KThread::currentThread();
         KMemory* memory = thread->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        MemoryDemandLock memLock(memory);
         currentValue = this->readw(mmu, address);
         if (value == currentValue) {
             return;
@@ -91,7 +98,7 @@ void CodePage::writed(MMU* mmu, U32 address, U32 value) {
     if (value != currentValue) {
         KThread* thread = KThread::currentThread();
         KMemory* memory = thread->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        MemoryDemandLock memLock(memory);
         currentValue = this->readd(mmu, address);
         if (value == currentValue) {
             return;
@@ -140,7 +147,7 @@ U8* CodePage::getRamPtr(MMU* mmu, U32 page, bool write, bool force, U32 offset, 
         }
         KThread* thread = KThread::currentThread();
         KMemory* memory = thread->memory;
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(memory->mutex);
+        MemoryDemandLock memLock(memory);
         memory->removeCode(thread, (page << K_PAGE_SHIFT) + offset, len, true);
         onDemmand(mmu, page);
         return Page::getRWPage()->getRamPtr(mmu, page, write, force, offset, len);

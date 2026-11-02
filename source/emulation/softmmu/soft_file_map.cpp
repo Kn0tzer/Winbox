@@ -20,6 +20,8 @@
 
 #include "soft_file_map.h"
 #include "kmemory_soft.h"
+#include "faultstage.h"
+#include <string.h>
 #include "soft_ram.h"
 #include "soft_mmu.h"
 
@@ -71,11 +73,14 @@ U8* FilePage::getRamPtr(MMU* mmu, U32 page, bool write, bool force, U32 offset, 
 
 void FilePage::onDemmand(MMU* mmu, U32 pageIndex) {
     KThread* thread = KThread::currentThread();
+    // FD-77: mark the demand stages so a thread frozen in this path
+    // names its wait in the guest thread dump (see faultstage.h).
+    FaultStageScope demandStage(thread, FS_DEMAND, pageIndex);
     MappedFilePtr mappedFile;
     U64 fileOffset = 0;
     U32 fileOffsetPage = 0;
     {
-        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->memory->mutex);
+        MemoryDemandLock memLock(thread->memory);
         if (mmu->getPageType() != PageType::File) {
             return;
         }
@@ -110,34 +115,51 @@ void FilePage::onDemmand(MMU* mmu, U32 pageIndex) {
     // held across the fetch); the fault path now does the same. Two
     // threads may read the same page concurrently; the loser of the
     // install race below discards its copy.
+    thread->setFaultStage(FS_RAM_ALLOC, pageIndex);
     RamPage ramPage = ramPageAlloc();
+    // Name the backing file for the dump before entering the read: if
+    // this thread freezes inside it, the dump's backing-read line says
+    // which file and offset it was reading.
+    thread->faultFileOffset.store(fileOffset, std::memory_order_relaxed);
+    if (mappedFile->file && mappedFile->file->openFile && mappedFile->file->openFile->node) {
+        FsNode* backingNode = mappedFile->file->openFile->node.get();
+        thread->faultNodeType.store((U32)backingNode->type, std::memory_order_relaxed);
+        strncpy(thread->faultFile, backingNode->path.c_str(), sizeof(thread->faultFile) - 1);
+        thread->faultFile[sizeof(thread->faultFile) - 1] = '\0';
+    } else {
+        thread->faultFile[0] = '\0';
+    }
+    thread->setFaultStage(FS_BACKING_READ, pageIndex);
     mappedFile->file->preadNative(ramPageGet(ramPage), fileOffset, K_PAGE_SIZE);
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->memory->mutex);
-    if (mmu->getPageType() != PageType::File) {
-        // Another thread installed this page (or the mapping changed)
-        // while the read was in flight; discard our copy.
-        ramPageRelease(ramPage);
-        return;
-    }
-    PageType pageType = PageType::Ram;
-    if (mappedFile->systemCacheEntry && fileOffsetPage < (U32)mappedFile->systemCacheEntry->data.size()) {
-        RamPage cachedPage = mappedFile->systemCacheEntry->data[fileOffsetPage];
-        if (cachedPage.value) {
-            // A concurrent fault populated the system cache first; use
-            // the shared page so all mappings of it stay copy-on-write
-            // consistent, and discard our private copy.
+    {
+        MemoryDemandLock memLock(thread->memory);
+        thread->setFaultStage(FS_INSTALL, pageIndex);
+        if (mmu->getPageType() != PageType::File) {
+            // Another thread installed this page (or the mapping changed)
+            // while the read was in flight; discard our copy.
             ramPageRelease(ramPage);
-            ramPage = cachedPage;
-            ramPageRetain(ramPage);
-            pageType = PageType::CopyOnWrite;
-        } else {
-            ramPageRetain(ramPage);
-            ramPageMarkSystem(ramPage, true);
-            mappedFile->systemCacheEntry->data[fileOffsetPage] = ramPage;
-            pageType = PageType::CopyOnWrite;
+            return;
         }
+        PageType pageType = PageType::Ram;
+        if (mappedFile->systemCacheEntry && fileOffsetPage < (U32)mappedFile->systemCacheEntry->data.size()) {
+            RamPage cachedPage = mappedFile->systemCacheEntry->data[fileOffsetPage];
+            if (cachedPage.value) {
+                // A concurrent fault populated the system cache first; use
+                // the shared page so all mappings of it stay copy-on-write
+                // consistent, and discard our private copy.
+                ramPageRelease(ramPage);
+                ramPage = cachedPage;
+                ramPageRetain(ramPage);
+                pageType = PageType::CopyOnWrite;
+            } else {
+                ramPageRetain(ramPage);
+                ramPageMarkSystem(ramPage, true);
+                mappedFile->systemCacheEntry->data[fileOffsetPage] = ramPage;
+                pageType = PageType::CopyOnWrite;
+            }
+        }
+        mmu->setPage(thread->memory, pageIndex, pageType, ramPage);
+        ramPageRelease(ramPage); // setPageType retained ramPage
+        getMemData(thread->memory)->onPageChanged(pageIndex);
     }
-    mmu->setPage(thread->memory, pageIndex, pageType, ramPage);
-    ramPageRelease(ramPage); // setPageType retained ramPage
-    getMemData(thread->memory)->onPageChanged(pageIndex);
 }

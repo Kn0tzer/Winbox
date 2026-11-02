@@ -309,6 +309,10 @@ public:
     U32 getrusuage(KThread* thread, U32 who, U32 usage);
     U32 ioctl(KThread* thread, FD fildes, U32 request);
     U32 link(BString from, BString to);
+    // FD-81: link() served by sharing the source's backing path
+    // (see KProcess::link). Public so the suites can prove the
+    // mechanism on hosts whose filesystems do hard-link.
+    U32 linkSharedBacking(BString from, BString to);
     S64 llseek(FD fildes, S64 offset, U32 whence);
     U32 lseek(FD fd, S32 offset, U32 whence);
     U32 lstat64(BString path, U32 buffer);
@@ -503,6 +507,10 @@ private:
     BHashTable<U32, MappedFilePtr> mappedFiles; // key is index
     // needs to be static, since during clone, the file pages and mappedFiles are cloned with the same map index, so this nextMappedFileIndex must be shared across processes
     static std::atomic_int nextMappedFileIndex;
+    // Lock order: KMemory::mutex before mappedFilesMutex (FD-77).
+    // Never hold this mutex across guest-memory access -- the access
+    // can demand-fault, and the demand path takes the memory mutex
+    // first and this one second.
     BOXEDWINE_MUTEX mappedFilesMutex;
 
     BHashTable<U32, KThread*> threads;

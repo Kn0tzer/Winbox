@@ -27,6 +27,7 @@
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
+#include <dirent.h>
 #include <atomic>
 #include <thread>
 #include <unistd.h>
@@ -975,6 +976,219 @@ void testChmodAccessHardLink() {
     process->close(ifd);
 }
 
+
+void testTempFileLinkPattern() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64ktemplinkXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for temp-file link pattern test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    // Same stat64 layout as testChmodAccessHardLink: ino @12,
+    // mode @16, nlink @20.
+    constexpr U32 statAt = TEST_HEAP_ADDRESS + 0x400;
+    struct StatInfo { U32 mode; U32 ino; U32 nlink; };
+    auto statOf = [&](const char* path, StatInfo& out) -> bool {
+        if ((S32)process->stat64(B(path), statAt) < 0) return false;
+        out.ino = context.thread->memory->readd(statAt + 12);
+        out.mode = context.thread->memory->readd(statAt + 16);
+        out.nlink = context.thread->memory->readd(statAt + 20);
+        return true;
+    };
+    // The host-side census of the fixture directory: a true
+    // shared backing keeps exactly ONE host file per guest file,
+    // a copy would show two.
+    auto hostEntryCount = [&]() -> int {
+        int n = 0;
+        DIR* d = opendir(dir);
+        if (!d) return -1;
+        while (dirent* e = readdir(d)) {
+            if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) n++;
+        }
+        closedir(d);
+        return n;
+    };
+    auto createWithContent = [&](const char* path, const char* data, U32 len) -> bool {
+        KFileDescriptorPtr created;
+        U32 r = process->openFile(B("/"), B(path), K_O_RDWR | K_O_CREAT, created);
+        if ((S32)r < 0 || !created) return false;
+        std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(created->kobject);
+        U32 at = TEST_HEAP_ADDRESS + 0x200;
+        context.thread->memory->memcpy(at, (void*)data, len);
+        f->write(context.thread, at, len);
+        process->close(created->handle);
+        return true;
+    };
+    auto writeFile = [&](const char* path, const char* data, U32 len) -> bool {
+        KFileDescriptorPtr desc;
+        U32 r = process->openFile(B("/"), B(path), K_O_RDWR, desc);
+        if ((S32)r < 0 || !desc) return false;
+        std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(desc->kobject);
+        U32 at = TEST_HEAP_ADDRESS + 0x200;
+        context.thread->memory->memcpy(at, (void*)data, len);
+        f->write(context.thread, at, len);
+        process->close(desc->handle);
+        return true;
+    };
+    auto readFile = [&](const char* path, char* out, U32 len) -> U32 {
+        KFileDescriptorPtr desc;
+        U32 r = process->openFile(B("/"), B(path), K_O_RDONLY, desc);
+        if ((S32)r < 0 || !desc) return 0;
+        std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(desc->kobject);
+        U32 got = f->readNative((U8*)out, len);
+        process->close(desc->handle);
+        return got;
+    };
+
+    // ---- FD-81: the fontconfig cache-lock pattern. A library
+    // creates a temp file in a directory, links it to a second
+    // name in the same directory, unlinks the temp name and
+    // keeps using the file through the second name. On the host
+    // every step succeeds and both names are one file. The
+    // browser backing store cannot hard-link at all, so
+    // KProcess::link falls back to linkSharedBacking there -
+    // the entry this test proves.
+    const char* tmpName = "/CACHEDIR.TAG.TMP-X7f2Qa";
+    const char* lckName = "/CACHEDIR.TAG.LCK";
+    if (!createWithContent(tmpName, "lock", 4)) {
+        testFail("could not create the temp file");
+        return;
+    }
+    if (hostEntryCount() != 1) {
+        testFail("one backing file expected after create, found %d", hostEntryCount());
+    }
+    StatInfo stTmp;
+    if (!statOf(tmpName, stTmp) || stTmp.nlink != 1) {
+        testFail("fresh temp file must have nlink 1");
+        return;
+    }
+    const U32 inoTmp = stTmp.ino;
+
+    if ((S32)process->linkSharedBacking(B(tmpName), B(lckName)) != 0) {
+        testFail("linkSharedBacking of the temp-to-lock pattern failed");
+        return;
+    }
+    if (hostEntryCount() != 1) {
+        testFail("shared-backing link must keep exactly one backing file, found %d", hostEntryCount());
+    }
+    StatInfo stLck;
+    if (!statOf(lckName, stLck)) {
+        testFail("stat64 of the lock name failed");
+        return;
+    }
+    if (stLck.ino != inoTmp) {
+        testFail("lock name must share the temp file's inode (tmp=%d lck=%d)", inoTmp, stLck.ino);
+    }
+    if (stLck.nlink != 2) {
+        testFail("lock name must report nlink 2, got %d", stLck.nlink);
+    }
+    if (!statOf(tmpName, stTmp) || stTmp.nlink != 2) {
+        testFail("temp name must report nlink 2 after the link, got %d", stTmp.nlink);
+    }
+
+    // A write through the lock name is visible through the temp name.
+    if (!writeFile(lckName, "held", 4)) {
+        testFail("write through the lock name failed");
+        return;
+    }
+    {
+        char out[8] = {};
+        if (readFile(tmpName, out, 4) != 4 || memcmp(out, "held", 4) != 0) {
+            testFail("write through the lock name is not visible through the temp name");
+        }
+    }
+    // Unlinking the temp name keeps the content under the lock name.
+    if ((S32)process->unlinkFile(B(tmpName)) != 0) {
+        testFail("unlinkFile of the temp name failed");
+        return;
+    }
+    {
+        StatInfo st;
+        if (statOf(tmpName, st)) {
+            testFail("temp name must be gone after unlink");
+        }
+        if (!statOf(lckName, st) || st.ino != inoTmp || st.nlink != 1) {
+            testFail("after unlinking the temp name: ino=%d nlink=%d (expected %d and 1)", st.ino, st.nlink, inoTmp);
+        }
+        char out[8] = {};
+        if (readFile(lckName, out, 4) != 4 || memcmp(out, "held", 4) != 0) {
+            testFail("content did not survive unlinking the temp name");
+        }
+    }
+    if (hostEntryCount() != 1) {
+        testFail("backing must survive while the lock name exists, found %d", hostEntryCount());
+    }
+    // Unlinking the last name deletes the backing file.
+    if ((S32)process->unlinkFile(B(lckName)) != 0) {
+        testFail("unlinkFile of the lock name failed");
+        return;
+    }
+    if (hostEntryCount() != 0) {
+        testFail("backing must be deleted with the last name, found %d", hostEntryCount());
+    }
+
+    // The error shape mirrors link()'s.
+    if ((S32)process->linkSharedBacking(B("/missing.TMP-zz"), B("/x.LCK")) != -K_ENOENT) {
+        testFail("linkSharedBacking of a missing source must return -ENOENT");
+    }
+    if ((S32)process->linkSharedBacking(B("/"), B("/x.LCK")) != -K_EPERM) {
+        testFail("linkSharedBacking of a directory must return -EPERM");
+    }
+
+    // Renaming one name of a shared-backing pair moves the name,
+    // not the file: the other name keeps the content and the
+    // identity they share.
+    if (!createWithContent("/mv.TMP-zz", "data", 4)) {
+        testFail("could not create the rename-pair temp file");
+        return;
+    }
+    if ((S32)process->linkSharedBacking(B("/mv.TMP-zz"), B("/mv.LCK")) != 0) {
+        testFail("linkSharedBacking of the rename pair failed");
+        return;
+    }
+    StatInfo before;
+    if (!statOf("/mv.TMP-zz", before)) {
+        testFail("stat64 of the rename-pair temp file failed");
+        return;
+    }
+    if ((S32)process->rename(B("/mv.LCK"), B("/mv.LCK2")) != 0) {
+        testFail("rename of a shared-backing name failed");
+        return;
+    }
+    {
+        StatInfo a, b;
+        if (!statOf("/mv.TMP-zz", a) || !statOf("/mv.LCK2", b)) {
+            testFail("stat64 after the rename failed");
+            return;
+        }
+        if (a.ino != before.ino || b.ino != before.ino || a.nlink != 2 || b.nlink != 2) {
+            testFail("rename must keep one shared file with nlink 2 (ino %d/%d vs %d, nlink %d/%d)", a.ino, b.ino, before.ino, a.nlink, b.nlink);
+        }
+        if (!writeFile("/mv.LCK2", "kept", 4)) {
+            testFail("write through the renamed name failed");
+            return;
+        }
+        char out[8] = {};
+        if (readFile("/mv.TMP-zz", out, 4) != 4 || memcmp(out, "kept", 4) != 0) {
+            testFail("write through the renamed name is not visible through the other name");
+        }
+    }
+    process->unlinkFile(B("/mv.TMP-zz"));
+    process->unlinkFile(B("/mv.LCK2"));
+    if (hostEntryCount() != 0) {
+        testFail("backing must be deleted once both names of the renamed pair are unlinked, found %d", hostEntryCount());
+    }
+}
 
 void testInotifyPollNotifyStress() {
     // FD-38 enablement-park mechanism pin. A poll scan holds the polling

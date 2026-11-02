@@ -19,6 +19,7 @@
 #ifndef __KMEMORY_H__
 #define __KMEMORY_H__
 
+#include <atomic>
 #include <unordered_map>
 
 #ifdef BOXEDWINE_JIT
@@ -199,6 +200,21 @@ public:
     KMemoryData* getData() { return data; }
 
     BOXEDWINE_MUTEX mutex;
+    // FD-77: demand-path ownership record for `mutex`. A
+    // std::recursive_mutex cannot name its holder, so acquisitions made
+    // through MemoryDemandLock (include/faultstage.h -- the demand/fault
+    // path's lock) record the holding guest thread here: mutexOwnerTid
+    // (0 = no demand-path holder recorded), mutexOwnerDepth (that
+    // holder's tracked recursion depth), mutexOwnerSinceMs (when the
+    // outermost tracked acquisition began). The guest thread dump prints
+    // these per process so a pile-up at the memory mutex names its
+    // holder. Acquisitions through the plain macro do not record; owner
+    // 0 with threads waiting at the lock therefore means the holder is
+    // outside the demand path -- the dump's per-thread stage/syscall
+    // lines are the evidence for that case.
+    std::atomic<U32> mutexOwnerTid{0};
+    std::atomic<U32> mutexOwnerDepth{0};
+    std::atomic<U64> mutexOwnerSinceMs{0};
     KMemoryData* deleteOnNextLoop = nullptr;    
 private:
     friend KMemoryData* getMemData(KMemory* memory);

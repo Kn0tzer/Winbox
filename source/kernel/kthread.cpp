@@ -145,6 +145,19 @@ void KThread::setupStack() {
     }
 }
 
+// FD-77: see the fault-stage fields in kthread.h and the stage list in
+// faultstage.h. The entry time is only restamped when the stage value
+// changes, so a stage's age measures the whole stay in that stage,
+// including nested excursions into substages (their scopes restore this
+// stage and its original stamp on exit).
+void KThread::setFaultStage(U32 stage, U32 page) {
+    if (this->faultStage.load(std::memory_order_relaxed) != stage) {
+        this->faultStage.store(stage, std::memory_order_release);
+        this->faultStageSinceMs.store((U64)(KSystem::getMicroCounter() / 1000), std::memory_order_relaxed);
+    }
+    this->faultPage.store(page, std::memory_order_relaxed);
+}
+
 KThread::KThread(U32 id, const KProcessPtr& process) :
     id(id),
     process(process),

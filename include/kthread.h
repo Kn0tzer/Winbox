@@ -229,6 +229,27 @@ public:
 	inline static void setCurrentThread(KThread* thread) { runningThread = thread; }
 
     BOXEDWINE_CONDITION waitingCond = nullptr;    
+    // FD-77 fault-stage marker: while this thread is inside the
+    // demand/fault path, faultStage names the stage it is in (see
+    // include/faultstage.h for the stage list) and faultStageSinceMs
+    // records when it entered that stage. The guest thread dump reads
+    // these locklessly (plain atomic loads) to separate the waits the
+    // demand path can hide: a thread frozen at FS_MEM_LOCK is piled
+    // behind KMemory::mutex (whose owner the dump prints), at
+    // FS_RAM_ALLOC behind the RAM-page allocator, at FS_FILEPOS_LOCK
+    // behind one mapped file's position lock, and at FS_BACKING_READ
+    // inside the backing read itself (faultFile/faultFileOffset/
+    // faultNodeType name the file). Written only by the thread itself
+    // through FaultStageScope / MemoryDemandLock; restored on scope
+    // exit, so a thread outside the demand path reads FS_NONE.
+    std::atomic<U32> faultStage{0};
+    std::atomic<U64> faultStageSinceMs{0};
+    std::atomic<U32> faultPage{0};
+    std::atomic<U64> faultFileOffset{0};
+    std::atomic<U32> faultNodeType{0};
+    char faultFile[128] = {};
+    void setFaultStage(U32 stage, U32 page);
+
     BOXEDWINE_CONDITION pollCond;
 #ifdef BOXEDWINE_MULTI_THREADED
     BOXEDWINE_MUTEX waitingCondSync;

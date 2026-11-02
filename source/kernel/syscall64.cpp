@@ -4469,8 +4469,10 @@ static void bwDumpGuestStack(CPU64* c, U32 pid, U32 tid) {
 #include <map>
 #include <mutex>
 #include <set>
+#include "faultstage.h"
 
 int bw64FsZipUrlProxyStats(U32* oldestTid, U64* oldestAgeMs);
+int bw64RamMutexStats(U32* ownerTid, U64* ownerAgeMs);
 
 namespace {
 struct BwStallRec {
@@ -4483,6 +4485,12 @@ std::mutex bwStallMutex;
 struct BwProcStallAgg {
     U32 running = 0;
     U64 minNoprogress = ~0ULL;
+    // FD-77: KMemory::mutex ownership (demand-path acquisitions only;
+    // see the fields in kmemory.h). Captured from the first thread of
+    // the process the dump sees with a soft memory attached.
+    bool memOwnerSeen = false;
+    U32 memOwnerTid = 0;
+    U64 memOwnerMs = 0;
 };
 
 // Observes one thread for this dump. Returns the thread's no-progress
@@ -4578,6 +4586,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
         const bool blocked = thread->waitingCond != nullptr;
         const char* state = blocked ? "blocked" : "running";
         const char* waitName = blocked ? thread->waitingCond->name.c_str() : "-";
+        // FD-77 fault stage (see faultstage.h): which wait in the
+        // demand path this thread is in and for how long. Plain atomic
+        // loads only -- the dump never blocks on an emulator lock.
+        const U32 fstage = thread->faultStage.load(std::memory_order_acquire);
+        const U64 fstageSinceMs = thread->faultStageSinceMs.load(std::memory_order_relaxed);
+        const U64 fstageMs = (fstage && fstageSinceMs && fstageSinceMs <= dumpNowMs)
+            ? dumpNowMs - fstageSinceMs : 0;
+        const U32 fpage = thread->faultPage.load(std::memory_order_relaxed);
 #ifdef BOXEDWINE_GUEST_X64
         if (thread->cpu64) {
             CPU64* c = thread->cpu64;
@@ -4590,7 +4606,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                 agg.running++;
                 if (stallMs < agg.minNoprogress) agg.minNoprogress = stallMs;
             }
-            klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%llu) args=0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx rip=0x%llx wait=%s noprogress_ms=%llu",
+            klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%llu) args=0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx rip=0x%llx wait=%s noprogress_ms=%llu fstage=%s fstage_ms=%llu fpage=0x%llx",
                      pid, thread->id, state,
                      blocked ? x64SyscallName(nr) : "-",
                      (unsigned long long)(blocked ? nr : 0),
@@ -4600,7 +4616,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                      (unsigned long long)c->reg[X64_R10].u64,
                      (unsigned long long)c->reg[X64_R8].u64,
                      (unsigned long long)c->reg[X64_R9].u64,
-                     (unsigned long long)rip, waitName, (unsigned long long)stallMs);
+                     (unsigned long long)rip, waitName, (unsigned long long)stallMs,
+                     bwFaultStageName(fstage), (unsigned long long)fstageMs,
+                     (unsigned long long)fpage);
+            if (fstage == FS_BACKING_READ) {
+                klog_fmt("BW_THREAD_DUMP fault pid=%u tid=%u file=%s foff=0x%llx ntype=%u",
+                         pid, thread->id, thread->faultFile,
+                         (unsigned long long)thread->faultFileOffset.load(std::memory_order_relaxed),
+                         thread->faultNodeType.load(std::memory_order_relaxed));
+            }
             if (blocked && thread->process &&
                 (nr == X64_SYS_read || nr == X64_SYS_readv || nr == X64_SYS_recvfrom || nr == X64_SYS_recvmsg)) {
                 bool fdBlocked = false;
@@ -4639,25 +4663,48 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
             BwProcStallAgg& agg = procAgg[pid];
             agg.running++;
             if (stallMs < agg.minNoprogress) agg.minNoprogress = stallMs;
+            if (!agg.memOwnerSeen && thread->memory) {
+                agg.memOwnerSeen = true;
+                agg.memOwnerTid = thread->memory->mutexOwnerTid.load(std::memory_order_relaxed);
+                const U64 ownerSince = thread->memory->mutexOwnerSinceMs.load(std::memory_order_relaxed);
+                agg.memOwnerMs = (agg.memOwnerTid && ownerSince && ownerSince <= dumpNowMs)
+                    ? dumpNowMs - ownerSince : 0;
+            }
         }
-        klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%u) args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x rip=0x%x wait=%s eax=0x%x noprogress_ms=%llu",
+        klog_fmt("BW_THREAD_DUMP pid=%u tid=%u state=%s syscall=%s(#%u) args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x rip=0x%x wait=%s eax=0x%x noprogress_ms=%llu fstage=%s fstage_ms=%llu fpage=0x%x",
                  pid, thread->id, state, blocked ? "x86" : "-", blocked ? nr : 0,
                  c ? c->reg[3].u32 : 0, c ? c->reg[1].u32 : 0,
                  c ? c->reg[2].u32 : 0, c ? c->reg[6].u32 : 0,
                  c ? c->reg[7].u32 : 0, c ? c->reg[5].u32 : 0,
                  c ? c->eip.u32 : 0, waitName, c ? c->reg[0].u32 : 0,
-                 (unsigned long long)stallMs);
+                 (unsigned long long)stallMs,
+                 bwFaultStageName(fstage), (unsigned long long)fstageMs, fpage);
+        if (fstage == FS_BACKING_READ) {
+            klog_fmt("BW_THREAD_DUMP fault pid=%u tid=%u file=%s foff=0x%llx ntype=%u",
+                     pid, thread->id, thread->faultFile,
+                     (unsigned long long)thread->faultFileOffset.load(std::memory_order_relaxed),
+                     thread->faultNodeType.load(std::memory_order_relaxed));
+        }
         thread->releaseRef();
     }
     bwStallSweep(stallSeen);
     for (const auto& kv : procAgg) {
-        klog_fmt("BW_THREAD_DUMP proc pid=%u running=%u min_noprogress_ms=%llu",
+        klog_fmt("BW_THREAD_DUMP proc pid=%u running=%u min_noprogress_ms=%llu memmutex_owner_tid=%u memmutex_owner_ms=%llu",
                  kv.first, kv.second.running,
-                 (unsigned long long)kv.second.minNoprogress);
+                 (unsigned long long)kv.second.minNoprogress,
+                 kv.second.memOwnerTid,
+                 (unsigned long long)kv.second.memOwnerMs);
     }
     if (proxyInFlight >= 0) {
         klog_fmt("BW_THREAD_DUMP proxyfetch inflight=%d oldest_tid=%u oldest_ms=%llu",
                  proxyInFlight, proxyOldestTid, (unsigned long long)proxyOldestMs);
+    }
+    {
+        U32 ramOwnerTid = 0;
+        U64 ramOwnerMs = 0;
+        bw64RamMutexStats(&ramOwnerTid, &ramOwnerMs);
+        klog_fmt("BW_THREAD_DUMP ramalloc owner_tid=%u owner_ms=%llu",
+                 ramOwnerTid, (unsigned long long)ramOwnerMs);
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);

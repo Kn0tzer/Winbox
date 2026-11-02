@@ -62,6 +62,7 @@ void testBStringJoin();
 void testBStringIndexOf();
 void testCondStartWaitTime();
 void testFutex32WakeRace();
+void testMsyncLockOrder();
 void testThreadLifetimeTeardown();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
@@ -111,6 +112,7 @@ void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
+void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
 void testTimerfd64Syscalls();
@@ -166,6 +168,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
@@ -198,6 +201,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEvents, "Test inotify event delivery end to end"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
     {testPrctl64Options, "Test x64 prctl option surface"},
     {testOpcodeFault64Delivery, "Test x64 undefined/VEX opcode SIGILL delivery"},
@@ -835,6 +839,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
+    {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
@@ -881,6 +886,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},

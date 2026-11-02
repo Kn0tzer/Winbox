@@ -1687,6 +1687,24 @@ U32 KProcess::link(BString from, BString to) {
     }
     int err = 0;
     if (!Fs::createHostHardLink(fromNode->nativePath, toNativePath, err)) {
+#ifdef __EMSCRIPTEN__
+        // FD-81: the browser backing stores (MEMFS/IDBFS) provide
+        // no hard-link operation at all, and the Emscripten
+        // filesystem layer answers every link() on them with
+        // EMLINK - its "the backing cannot hard-link" signal
+        // (measured in vivo as errno=34 in this build's numbering
+        // on fontconfig's cache temp-to-lock links, 57 per 32-bit
+        // boot). That is a limitation of the backing store, not
+        // of the guest filesystem, so serve the link by sharing
+        // the backing path instead of refusing it. Native builds
+        // keep the refusal below for every failure: there EMLINK
+        // is the host's real link-count limit. Symlink sources
+        // keep the refusal in every build - their sidecar
+        // semantics stay host-linked (see linkSharedBacking).
+        if (err == EMLINK && !fromNode->isLink()) {
+            return this->linkSharedBacking(from, to);
+        }
+#endif
         kwarn_fmt("BW64-FAIL hard-link from=%s to=%s errno=%d outcome=link refused instead of copied", fromNode->nativePath.c_str(), toNativePath.c_str(), err);
         return -translateErr((U32)err);
     }
@@ -1695,6 +1713,65 @@ U32 KProcess::link(BString from, BString to) {
     KInotify::notifyAttrib(fromNode.get());
     std::shared_ptr<FsNode> newNode = Fs::addFileNodeWithSharedId(to, fromNode->link, toNativePath, false, toParentNode, fromNode->id);
     fromNode->joinLinkGroup(newNode);
+    return 0;
+}
+
+U32 KProcess::linkSharedBacking(BString from, BString to) {
+    // FD-81: serve a hard link by sharing the source's backing
+    // path when the backing store cannot create a host hard link
+    // (KProcess::link falls back to this in the browser build).
+    // The new name is a second node with the source's node id in
+    // the same link group, but pointing at the SAME native path,
+    // so every open of either name opens the same backing file:
+    // writes through one name are visible through the other and
+    // the content is one file, exactly as with a host hard link.
+    // FsFileNode::remove/rename/getHardLinkCount consult the
+    // group's sharedBackingPath flag, so unlinking or renaming
+    // one name never deletes or moves the backing out from under
+    // the other names. The prechecks mirror link()'s exactly.
+    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
+    std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
+
+    if (!fromNode) {
+        return -K_ENOENT;
+    }
+    if (toNode) {
+        return -K_EEXIST;
+    }
+    if (fromNode->isDirectory()) {
+        return -K_EPERM;
+    }
+    std::shared_ptr<FsFileNode> fromFile = std::dynamic_pointer_cast<FsFileNode>(fromNode);
+    if (!fromFile) {
+        return -K_EPERM;
+    }
+    if (fromNode->isLink()) {
+        // Symlink sources keep the FD-60 behaviour (their .link
+        // sidecar is host-linked, or loudly refused); the shared
+        // backing path serves regular files.
+        return -K_EPERM;
+    }
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
+    if (!toParentNode) {
+        return -K_ENOENT;
+    }
+    fromFile->ensurePathIsLocal(true);
+    // Host order: the source's IN_ATTRIB precedes the new name's
+    // IN_CREATE (the latter fires from addChild inside addFileNode*).
+    KInotify::notifyAttrib(fromNode.get());
+    std::shared_ptr<FsNode> newNode = Fs::addFileNodeWithSharedId(to, fromNode->link, fromNode->nativePath, false, toParentNode, fromNode->id);
+    fromNode->joinLinkGroup(newNode);
+    if (fromNode->linkGroup) {
+        fromNode->linkGroup->sharedBackingPath = true;
+    }
+    // A served link is a success, not a failure - but it changes
+    // how the file is stored, so it stays observable with the
+    // counting-cap shape used for host-open failures.
+    static std::atomic<unsigned long long> sharedBackingLinks{0};
+    unsigned long long n = ++sharedBackingLinks;
+    if (n <= 64 || n % 1024 == 0) {
+        klog_fmt("BW64-INFO hard-link from=%s to=%s outcome=served by shared backing path (backing store cannot hard-link) count=%llu", fromNode->nativePath.c_str(), to.c_str(), n);
+    }
     return 0;
 }
 
@@ -3092,13 +3169,31 @@ U32 KProcess::getdents(FD fildes, U32 dirp, U32 count, bool is64) {
 U32 KProcess::msync(KThread* thread, U32 addr, U32 len, U32 flags) {
     const U64 end = (U64)addr + len;
     if (!len || end > 0x100000000ULL) return -K_EINVAL;
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
-    for (auto& n : this->mappedFiles) {
-        std::shared_ptr<MappedFile> m = n.value;
-        const U64 mappingEnd = (U64)m->address + m->len;
-        if (m->address <= addr && end <= mappingEnd) {
-            return m->file->pwrite(thread, addr, addr - m->address + m->offset, len);
+    // Lock order (FD-77): the memory mutex is always taken before
+    // mappedFilesMutex -- the demand path holds the memory mutex while
+    // it looks mappings up (FilePage::onDemmand -> getMappedFile), and
+    // KMemory::mmap takes the memory mutex before its mapped-files
+    // sections. The writeback below reads the guest range, which
+    // demand-faults its pages and so takes the memory mutex; holding
+    // mappedFilesMutex across it inverts the order and deadlocks the
+    // process (a parked consumer session was captured frozen in
+    // exactly that configuration). So the lookup snapshots the mapping
+    // under the mutex and the writeback runs after it is released; the
+    // shared_ptr keeps the mapping and its file alive for the write.
+    MappedFilePtr match;
+    {
+        BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(mappedFilesMutex);
+        for (auto& n : this->mappedFiles) {
+            std::shared_ptr<MappedFile> m = n.value;
+            const U64 mappingEnd = (U64)m->address + m->len;
+            if (m->address <= addr && end <= mappingEnd) {
+                match = m;
+                break;
+            }
         }
+    }
+    if (match) {
+        return match->file->pwrite(thread, addr, addr - match->address + match->offset, len);
     }
     const U32 firstPage = addr >> K_PAGE_SHIFT;
     const U32 lastPage = (U32)((end - 1) >> K_PAGE_SHIFT);
