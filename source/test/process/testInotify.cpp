@@ -2730,9 +2730,11 @@ void testRecvmsgBadBuffer64Syscalls() {
             testFail("pwritev at offset 2^32 left the file length at %lld",
                      (long long)desc2->kobject->length());
         }
-        // Read the tail back through the guest pread64 dispatch.
+        // Read the tail back through the guest pread64 dispatch
+        // (pread64 takes its offset in one 64-bit register, unlike
+        // the vectored calls' lo/hi split).
         memory->writeq(seg0, 0);
-        S64 pr = invoke6(17, (U64)(U32)desc2->handle, seg0, 4, 0, 1, 0);
+        S64 pr = invoke6(17, (U64)(U32)desc2->handle, seg0, 4, (1ULL << 32), 0, 0);
         if (pr != 4 || segText(seg0, 4) != "END!") {
             testFail("pread64 at offset 2^32 returned %lld with bytes '%s'",
                      (long long)pr, segText(seg0, 4).c_str());
