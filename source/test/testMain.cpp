@@ -117,6 +117,7 @@ void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
 void testPwritev32Dispatch();
+void testPreadv32Dispatch();
 void testWritevPartialError();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
@@ -922,6 +923,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testPwritev32Dispatch, "Test 32-bit pwritev and pwritev2 dispatch"},
+    {testPreadv32Dispatch, "Test 32-bit preadv and preadv2 dispatch"},
     {testWritevPartialError, "Test 32-bit writev partial-error return shape (FD-96)"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},

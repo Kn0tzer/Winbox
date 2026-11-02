@@ -2997,6 +2997,358 @@ void testPwritev32Dispatch() {
     rmdir(dir);
 }
 
+// FD-98: 32-bit preadv (333) / preadv2 (377). On the base both
+// table slots are nullptr, so every call answers ENOSYS. Driven
+// through the real int 0x80 dispatch, following the FD-94
+// pwritev test's staging pattern (guest memory is wiped by
+// testNewInstruction, so the iovec array is staged inside
+// invoke()). The host contract was measured fresh on the box's
+// 6.17 kernel (test-results/fd98/hostref-preadv*.c):
+//  - segments fill in order at successive offsets; the file
+//    position does not move (preadv2's offset -1 is the
+//    exception: it reads at the position and advances it); a
+//    short read ends the walk; a zero-length segment is
+//    skipped; a later segment's failure returns the bytes
+//    already read; a failing first segment returns the error.
+//  - exactly one IN_ACCESS per successful call, including
+//    0-byte successes (at EOF, with iovcnt 0, with
+//    all-zero-length segments); failed calls generate none
+//    (FD-83's contract).
+//  - validation order: a negative offset is EINVAL ahead of
+//    the descriptor check (preadv2: only below -1; -1 is the
+//    position mode, so a bad descriptor with offset -1
+//    answers EBADF); a descriptor that cannot be read answers
+//    EBADF, ahead of the iovcnt range check (EINVAL outside
+//    [0, IOV_MAX]), the iovec array check (EFAULT for a
+//    null/unmapped array with iovcnt > 0) and the preadv2
+//    flags check (EOPNOTSUPP outside the defined RWF mask
+//    0x3f), which runs last.
+void testPreadv32Dispatch() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64kpreadv32XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for 32-bit preadv test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+    if ((S32)result < 0 || !fileDesc) {
+        testFail("32-bit preadv test could not create /data.bin");
+        return;
+    }
+    const char* text = "0123456789ABCDEFGHIJ";
+    fileDesc->kobject->writeNative((U8*)text, 20);
+    fileDesc->kobject->seek(0);
+    const S32 fd = (S32)fileDesc->handle;
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("32-bit preadv test could not create its inotify instance");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
+    if (wd < 1) {
+        testFail("32-bit preadv test could not watch /data.bin");
+        return;
+    }
+    auto drainMasks = [&]() {
+        std::vector<U32> masks;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            U32 mask, nameLen;
+            memcpy(&mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            masks.push_back(mask);
+            offset += 16 + (S32)nameLen;
+        }
+        return masks;
+    };
+    auto accessCount = [&](const std::vector<U32>& masks) {
+        int n = 0;
+        for (U32 m : masks) if (m & K_IN_ACCESS) n++;
+        return n;
+    };
+    drainMasks(); // setup noise
+
+    constexpr U32 iovAt = TEST_HEAP_ADDRESS + 0x400;
+    constexpr U32 buf0 = TEST_HEAP_ADDRESS + 0x800;
+    constexpr U32 buf1 = TEST_HEAP_ADDRESS + 0x900;
+    constexpr U32 buf2 = TEST_HEAP_ADDRESS + 0xA00;
+    U32 stagedBase[8];
+    U32 stagedLen[8];
+    U32 stagedCount = 0;
+    auto setIov = [&](U32 idx, U32 base, U32 len) {
+        stagedBase[idx] = base;
+        stagedLen[idx] = len;
+        if (idx + 1 > stagedCount) stagedCount = idx + 1;
+    };
+    // Guest memory for the dispatched calls is context.memory: the
+    // dispatcher runs on context.cpu. Destination buffers are
+    // zeroed at staging so a segment the call never touches reads
+    // back as zeros, never as a previous case's bytes.
+    auto invoke = [&](U32 nr, S32 callFd, S32 iovcnt, U32 posLo, U32 posHi, U32 flags) -> S32 {
+        testNewInstruction(0);
+        static const U8 zeros[256] = {};
+        for (U32 i = 0; i < stagedCount; i++) {
+            context.memory->writed(iovAt + i * 8 + 0, stagedBase[i]);
+            context.memory->writed(iovAt + i * 8 + 4, stagedLen[i]);
+            if (stagedLen[i] && stagedBase[i] >= TEST_HEAP_ADDRESS) {
+                U32 n = stagedLen[i] <= 256 ? stagedLen[i] : 256;
+                context.memory->memcpy(stagedBase[i], (void*)zeros, n);
+            }
+        }
+        testPushCode8(0xB8); testPushCode32(nr); // mov eax, nr
+        testPushCode8(0xCD); testPushCode8(0x80); // int 0x80
+        context.cpu->reg[3].u32 = (U32)callFd;  // EBX
+        context.cpu->reg[1].u32 = iovAt;        // ECX
+        context.cpu->reg[2].u32 = (U32)iovcnt;  // EDX
+        context.cpu->reg[6].u32 = posLo;        // ESI
+        context.cpu->reg[7].u32 = posHi;        // EDI
+        context.cpu->reg[5].u32 = flags;        // EBP
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+    auto segText = [&](U32 at, U32 len) {
+        std::string s;
+        for (U32 i = 0; i < len; i++) s += (char)context.memory->readb(at + i);
+        return s;
+    };
+
+    // 1. Three segments at offset 2 through 333; position
+    // untouched; exactly one IN_ACCESS.
+    setIov(0, buf0, 4); setIov(1, buf1, 4); setIov(2, buf2, 4);
+    if (invoke(333, fd, 3, 2, 0, 0) != 12 || segText(buf0, 4) != "2345" ||
+        segText(buf1, 4) != "6789" || segText(buf2, 4) != "ABCD") {
+        testFail("32-bit preadv of three segments did not return 12 with contents '%s' '%s' '%s'",
+                 segText(buf0, 4).c_str(), segText(buf1, 4).c_str(), segText(buf2, 4).c_str());
+    }
+    if (fileDesc->kobject->getPos() != 0) {
+        testFail("32-bit preadv moved the file position");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv must generate exactly one IN_ACCESS");
+    }
+
+    // 2. A short read across the EOF boundary ends the walk.
+    setIov(0, buf0, 4); setIov(1, buf1, 4);
+    if (invoke(333, fd, 2, 18, 0, 0) != 2 || segText(buf0, 4) != std::string("IJ\0\0", 4) ||
+        segText(buf1, 4) != std::string(4, '\0')) {
+        testFail("32-bit preadv across EOF did not return 2 with the tail in segment 0 only");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("short 32-bit preadv must generate exactly one IN_ACCESS");
+    }
+
+    // 3. At EOF the call returns 0 and still generates IN_ACCESS
+    // once (the vectored path's measured host behaviour).
+    setIov(0, buf0, 4);
+    if (invoke(333, fd, 1, 1000, 0, 0) != 0) {
+        testFail("32-bit preadv at EOF did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv at EOF must still generate one IN_ACCESS");
+    }
+
+    // 4. iovcnt 0 returns 0 and generates IN_ACCESS once.
+    if (invoke(333, fd, 0, 0, 0, 0) != 0) {
+        testFail("32-bit preadv with iovcnt 0 did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv with iovcnt 0 must generate one IN_ACCESS");
+    }
+
+    // 5. All-zero-length segments return 0 with one IN_ACCESS.
+    setIov(0, buf0, 0); setIov(1, buf1, 0);
+    if (invoke(333, fd, 2, 0, 0, 0) != 0) {
+        testFail("32-bit preadv with all-zero-length segments did not return 0");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv with all-zero-length segments must generate one IN_ACCESS");
+    }
+
+    // 6. A zero-length segment in the middle is skipped.
+    setIov(0, buf0, 4); setIov(1, buf1, 0); setIov(2, buf2, 4);
+    if (invoke(333, fd, 3, 0, 0, 0) != 8 || segText(buf0, 4) != "0123" || segText(buf2, 4) != "4567") {
+        testFail("32-bit preadv with a zero-length segment did not return 8 with contents '%s' '%s'",
+                 segText(buf0, 4).c_str(), segText(buf2, 4).c_str());
+    }
+    drainMasks();
+
+    // 7. pos_h is honored: offset 2^32 + 2 is past EOF (a
+    // low-word-only implementation would read at offset 2).
+    setIov(0, buf0, 4);
+    if (invoke(333, fd, 1, 2, 1, 0) != 0) {
+        testFail("32-bit preadv at offset 2^32+2 did not return 0 (pos_h ignored?)");
+    }
+    drainMasks();
+
+    // 8. Partial shape: a good first segment and a bad second
+    // segment return the bytes already read; a bad first segment
+    // returns the error itself.
+    setIov(0, buf0, 4); setIov(1, 0x1000, 4);
+    if (invoke(333, fd, 2, 0, 0, 0) != 4 || segText(buf0, 4) != "0123") {
+        testFail("32-bit preadv with a bad second segment did not return the 4 bytes read");
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("partial 32-bit preadv must generate exactly one IN_ACCESS");
+    }
+    setIov(0, 0x1000, 4);
+    if (invoke(333, fd, 1, 0, 0, 0) != -K_EFAULT) {
+        testFail("32-bit preadv with a bad first segment was not -EFAULT");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("failed 32-bit preadv generated IN_ACCESS");
+    }
+
+    // 9. Validation, in the measured order; none of it generates
+    // IN_ACCESS.
+    setIov(0, buf0, 4);
+    if (invoke(333, fd, -1, 0, 0, 0) != -K_EINVAL) {
+        testFail("32-bit preadv with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke(333, fd, 1025, 0, 0, 0) != -K_EINVAL) {
+        testFail("32-bit preadv with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke(333, fd, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit preadv with offset -1 was not -EINVAL");
+    }
+    if (invoke(333, fd, 1, 0xFFFFFFFE, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit preadv with offset -2 was not -EINVAL");
+    }
+    if (invoke(333, 9999, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit preadv with a bad descriptor and offset -1 was not -EINVAL (offset precedes descriptor)");
+    }
+    if (invoke(333, 9999, 1, 0, 0, 0) != -K_EBADF) {
+        testFail("32-bit preadv with a bad descriptor was not -EBADF");
+    }
+    if (invoke(377, 9999, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != -K_EBADF) {
+        testFail("32-bit preadv2 with a bad descriptor and offset -1 was not -EBADF (the -1 position mode is legal)");
+    }
+    if (invoke(377, 9999, 1, 0xFFFFFFFE, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit preadv2 with a bad descriptor and offset -2 was not -EINVAL");
+    }
+    if (invoke(377, fd, -1, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("32-bit preadv2 with iovcnt -1 and an undefined flag bit was not -EINVAL (range precedes flags)");
+    }
+    if (invoke(377, fd, 1, 0, 0, 0x40) != -K_EOPNOTSUPP) {
+        testFail("32-bit preadv2 with an undefined flag bit was not -EOPNOTSUPP");
+    }
+    {
+        // A null iovec: invoke() always passes iovAt, so drive
+        // these two by hand.
+        auto invokeNullIov = [&](U32 nr, U32 flags) -> S32 {
+            testNewInstruction(0);
+            testPushCode8(0xB8); testPushCode32(nr);
+            testPushCode8(0xCD); testPushCode8(0x80);
+            context.cpu->reg[3].u32 = (U32)fd;
+            context.cpu->reg[1].u32 = 0;
+            context.cpu->reg[2].u32 = 1;
+            context.cpu->reg[6].u32 = 0;
+            context.cpu->reg[7].u32 = 0;
+            context.cpu->reg[5].u32 = flags;
+            testRunCPU();
+            return (S32)context.cpu->reg[0].u32;
+        };
+        if (invokeNullIov(333, 0) != -K_EFAULT) {
+            testFail("32-bit preadv with a null iovec was not -EFAULT");
+        }
+        if (invokeNullIov(377, 0x40) != -K_EFAULT) {
+            testFail("32-bit preadv2 with a null iovec and an undefined flag bit was not -EFAULT (array precedes flags)");
+        }
+    }
+    {
+        // A descriptor that cannot be read answers EBADF, ahead
+        // of the iovcnt-0 success return and of the flags check.
+        KFileDescriptorPtr wdesc;
+        U32 wr = process->openFile(B("/"), B("/data.bin"), K_O_WRONLY, wdesc);
+        if ((S32)wr < 0 || !wdesc) {
+            testFail("32-bit preadv test could not open /data.bin write-only");
+            return;
+        }
+        if (invoke(333, (S32)wdesc->handle, 1, 0, 0, 0) != -K_EBADF) {
+            testFail("32-bit preadv on a write-only descriptor was not -EBADF");
+        }
+        if (invoke(333, (S32)wdesc->handle, 0, 0, 0, 0) != -K_EBADF) {
+            testFail("32-bit preadv on a write-only descriptor with iovcnt 0 was not -EBADF");
+        }
+        if (invoke(377, (S32)wdesc->handle, 1, 0, 0, 0x40) != -K_EBADF) {
+            testFail("32-bit preadv2 on a write-only descriptor with an undefined flag bit was not -EBADF (mode precedes flags)");
+        }
+        process->close(wdesc->handle);
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("rejected 32-bit preadv calls generated IN_ACCESS");
+    }
+
+    // 10. preadv2 (377): defined flags are accepted on a read
+    // (0x20 included — the read side's mask is 0x3f on this
+    // kernel), and offset -1 is the file-position mode.
+    setIov(0, buf0, 4);
+    if (invoke(377, fd, 1, 4, 0, 0) != 4 || segText(buf0, 4) != "4567") {
+        testFail("32-bit preadv2 with flags 0 did not return 4 with content '%s'", segText(buf0, 4).c_str());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv2 must generate exactly one IN_ACCESS");
+    }
+    if (invoke(377, fd, 1, 4, 0, 0x8) != 4) { // RWF_NOWAIT
+        testFail("32-bit preadv2 with RWF_NOWAIT failed");
+    }
+    drainMasks();
+    if (invoke(377, fd, 1, 4, 0, 0x20) != 4) { // RWF_NOAPPEND: defined, meaningless on a read
+        testFail("32-bit preadv2 with flag 0x20 failed");
+    }
+    drainMasks();
+    fileDesc->kobject->seek(5);
+    if (invoke(377, fd, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != 4 || segText(buf0, 4) != "5678") {
+        testFail("32-bit preadv2 offset -1 did not read at the file position");
+    }
+    if (fileDesc->kobject->getPos() != 9) {
+        testFail("32-bit preadv2 offset -1 left the position at %lld, expected 9",
+                 (long long)fileDesc->kobject->getPos());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("32-bit preadv2 offset -1 must generate exactly one IN_ACCESS");
+    }
+    fileDesc->kobject->seek(0);
+
+    // 11. A directory descriptor follows the positioned core's
+    // answer (-EISDIR, the host's answer too).
+    if (mkdir((std::string(dir) + "/sub").c_str(), 0755) != 0) {
+        testFail("32-bit preadv test could not create its subdir");
+    } else {
+        KFileDescriptorPtr ddesc;
+        U32 dr = process->openFile(B("/"), B("/sub"), K_O_RDONLY, ddesc);
+        if ((S32)dr < 0 || !ddesc) {
+            testFail("32-bit preadv test could not open /sub");
+        } else {
+            setIov(0, buf0, 4);
+            if (invoke(333, (S32)ddesc->handle, 1, 0, 0, 0) != -K_EISDIR) {
+                testFail("32-bit preadv on a directory was not -EISDIR");
+            }
+            process->close(ddesc->handle);
+        }
+    }
+
+    process->close((S32)inotifyDesc->handle);
+    process->close(fd);
+    rmdir((std::string(dir) + "/sub").c_str());
+    rmdir(dir);
+}
+
 // FD-96: the 32-bit vectored write walk (KObject::writev, reached
 // through KProcess::writev) returned a later segment's error even
 // when earlier segments had already written; the host returns the
