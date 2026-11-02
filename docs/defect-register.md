@@ -3280,7 +3280,9 @@ do not close the entry until they land.
 
 - **FD-83 — readv generates no IN_ACCESS when it
   succeeds with 0 bytes (at EOF, or with iovcnt 0);
-  the host generates exactly one.** *(Low. Filed by
+  the host generates exactly one. FIXED 2026-11-02
+  on branch `lane-fd83-84` — see CL-45.** *(Was Low.
+  Filed by
   the FD-79/80 lane, 2026-11-01; the number was
   verified free against the register at filing and is
   provisional until the merge lane's audit.)*
@@ -3295,9 +3297,30 @@ do not close the entry until they land.
   Evidence: `test-results/fd79-80/` (host reference
   programs and outputs).
 
+  *Update 2026-11-02 (lane-fd83-84): the host
+  contract was re-measured in full before fixing —
+  exactly one IN_ACCESS per successful readv (one
+  segment or three, data or 0 bytes at EOF / iovcnt
+  0 / all-zero-length segments; a call that reads
+  bytes before a later segment fails returns the
+  bytes as a success and generates the event), none
+  on failure. The emulator's multi-segment count
+  held only by accident of the inotify queue
+  coalescing consecutive identical events; its
+  0-byte successes generated nothing, and its walk
+  carried no iovcnt range validation (an
+  out-of-range count was never EINVAL) nor a mode
+  check at iovcnt 0. Fixed in commits `0332ee82f`
+  (tests) and `3459a7d20` (fix) — see CL-45.
+  Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.*
+
 - **FD-84 — The positioned/plain read family answers
   -EINVAL on a descriptor that cannot be read; the
-  host answers -EBADF.** *(Low. Filed by the FD-79/80
+  host answers -EBADF. FIXED 2026-11-02 on branch
+  `lane-fd83-84` — see CL-46.** *(Was Low. Filed by
+  the FD-79/80
   lane, 2026-11-01; the number was verified free
   against the register at filing and is provisional
   until the merge lane's audit.)* Measured on the
@@ -3578,6 +3601,70 @@ do not close the entry until they land.
   exists from that point, whatever the read does).
   Evidence:
   `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`.
+  *Update 2026-11-02 (lane-fd83-84): the host
+  contract was re-measured in full before fixing —
+  EBADF for read, pread, readv, preadv and preadv2
+  on an O_WRONLY descriptor, for count 0 and
+  iovcnt 0 as well, and ahead of the buffer check;
+  in the positioned family a negative offset answers
+  EINVAL ahead of the mode answer, and in
+  preadv/preadv2 the mode answer precedes the
+  iovcnt range check and the unknown-flag
+  EOPNOTSUPP. A fourth site beyond the filing's
+  three: KProcess::pread64 carried no mode check at
+  all and fell through to the backing read, whose
+  host EBADF the backing layer swallows into a
+  silent 0. Fixed in commits `0332ee82f` (tests)
+  and `3459a7d20` (fix) — see CL-46; the write
+  family's mirror divergence, measured alongside,
+  is filed as FD-93. Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.*
+
+- **FD-92 — The 32-bit dispatcher's readv (145) has a
+  null dispatch slot and answers -ENOSYS; only the
+  64-bit readv exists.** *(Low. Filed by the
+  FD-83/84 lane, 2026-11-02; the number was chosen
+  past FD-85..FD-91, which live on unmerged lane
+  branches off the same base, so the composition
+  audit does not have to renumber it; provisional
+  until that audit.)* Found while scoping FD-83,
+  which covers the implemented 64-bit readv. The
+  32-bit table carries the slot as null, so a 32-bit
+  guest's readv returns -ENOSYS with only a debug
+  line — an unimplemented-shape answer for a call
+  Linux has always had, and one the one-event-per-
+  call notification contract (FD-83) would then
+  also apply to. writev (146) is dispatched on the
+  same table, so the wiring shape exists. Evidence:
+  the dispatch table in `source/kernel/syscall.cpp`
+  on this base; the FD-83 contract in
+  `test-results/fd83-84/`.
+
+- **FD-93 — The write family answers -EINVAL (or a
+  silent 0) where the host answers -EBADF for a
+  write on a descriptor opened read-only.** *(Low.
+  Filed by the FD-83/84 lane, 2026-11-02; the
+  number was chosen past FD-85..FD-91 for the same
+  reason as FD-92; provisional until the merge
+  lane's audit.)* The mirror of FD-84, host-measured
+  by this lane (host kernel 6.17.0-1020-oracle):
+  write, pwrite and writev on an O_RDONLY descriptor
+  answer EBADF, for count 0 and iovcnt 0 as well,
+  and pwrite's negative offset answers EINVAL ahead
+  of the mode answer. The emulator: `sys_pwrite64`
+  gates on canWrite() with -EINVAL; `KProcess::write`
+  answers -EINVAL for !canWrite; `KProcess::pwrite64`
+  carries no mode check, so the call falls through
+  to the backing write whose host EBADF the backing
+  layer swallows into a silent 0; `sys_write64`
+  carries no mode gate at all, so plain write and
+  (through it) `sys_writev64` inherit the backing
+  layer's answer rather than the kernel's. FD-84's
+  filing covers the read family; this lane did not
+  widen its fix to match. Evidence:
+  `test-results/fd83-84/` (hostref-write.c and its
+  output).
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3625,6 +3712,7 @@ is behavioural, is re-proven there.
 | `lane-fd05` | FD-05: filling the file-descriptor table panicked and killed the emulator; exhaustion now answers EMFILE (EINVAL for an F_DUPFD minimum at/past the ceiling, EBADF for a dup2 target at/past it) and the guest survives — the allocation contract changed at its single choke point (`allocFileDescriptor`), all 22 production callers audited and made safe, SCM_RIGHTS partial delivery and accept requeue semantics preserved | New test testFdTableExhaustion in both suites: RED on the base (the fill hit the panic; the forked harness recorded the test as each suite's single failure, and un-forked the suite process died at the test), GREEN with the fix; native serial main 669/669 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE on the fixed tree (wasm ea3bdaa0), JS unit 348/0, legacy 110/4 (FD-64's standing set on this base). Record: `docs/reports/fd05-fd-table-exhaustion-20261102.md`; evidence `test-results/fd05/` |
 | `lane-fd92` | FD-92: spirvfix spliced its synthesized pointer-to-bool types ahead of the OpTypeBool they reference in the captured 369,400-byte Godot module (the module defines that type after its first global variable), so the fixed module failed spirv-val; synthesized types/constants are now spliced behind the definitions they reference (`defsSplicePos`, at the three intra-type-section splice sites) | spirv-val on the captured module's fixed output: clean (the base output fails with the filed error verbatim); the fixed output is a pure reordering of the base output (instruction word-multiset identical, 18,352 instructions); 72-module corpus: every output byte-identical to the base, applied sets unchanged, corpus gate 10/10; new guard spirvfix-fd92 RED on the base / GREEN with the fix. Record: `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`; evidence `test-results/fd92/` |
 | `lane-fd82` | FD-82: a 64-bit guest's file-backed mappings did not participate in FD-79's close-event deferral -- the 64-bit path materializes mappings as copied/shared pages in KMemory64 with no open-description accounting, so IN_CLOSE_WRITE / IN_CLOSE_NOWRITE fired at fd close while such a mapping was live; KMemory64 now tables its live file mappings per description and reports births and deaths (munmap, overwrite, mremap move/grow, fork, address-space destruction) through the same FsOpenNode accounting the demand-paged path uses | New test testCloseWriteDeferral64 (x64 suite; drives the real 64-bit syscall dispatch): RED on the base -- ten assertions failing (the event fired at fd close in every deferral case and never arrived at the mapping's death), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (wasm 551ec728, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`; evidence `test-results/fd82/` |
+| `lane-fd83-84` | FD-83: readv generates exactly one IN_ACCESS per successful call, 0-byte successes included (the walk's per-segment notifications suppressed under a KInotify scope, one event raised on success; the walk gains its own fd/mode/iovcnt/iovec validation in the host's order); FD-84: the positioned/plain read family answers EBADF on a descriptor that cannot be read, in the host's validation order (negative offset EINVAL first in the positioned core; preadv's mode answer ahead of its flag and iovcnt checks; KProcess::pread64 gains the mode check it lacked — it had fallen through to the backing read, whose host EBADF the backing layer swallowed into a silent 0); FD-92 (32-bit readv is a null dispatch slot) and FD-93 (the write family's mirror of FD-84, host-measured) filed | Extensions to testPreadv64Syscalls (x64 suite; RED on the base — 20 assertion failures across the new sections, spanning both defects) and testChmodAccessHardLink (both suites; RED on the base — the three FD-84 KProcess assertions); host-kernel reference programs measured first (readv event matrix incl. multi-segment, partial-success and zero-length shapes; wrong-mode matrices for the read and write families incl. zero counts and the validation orderings); full native suites serial: main 668/668 and x64 69/69, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `2601ef69`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd83-fd84-read-family-20261102.md`; evidence `test-results/fd83-84/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -5344,3 +5432,103 @@ its lane and is not a defect, for the stated reason:
   c4dbe35986a5 unchanged. Record:
   `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`;
   evidence `test-results/fd82/`.
+
+- **CL-45 — readv generates exactly one IN_ACCESS
+  per successful call, 0-byte successes included
+  (FD-83).** *(Provisional number, filed on
+  lane-fd83-84, 2026-11-02 — CL-40..CL-44 are held
+  by the unmerged fd66, fd65, fd85/fd87, fd64 and
+  fd05 lanes off this same base; the merge lane's
+  audit settles the final number.)* Fixed on branch
+  `lane-fd83-84`, commits `0332ee82f` (tests),
+  `3459a7d20` (fix) and `bdbac75a5` (silent-failure
+  baseline review). The host contract was
+  re-measured first (host kernel
+  6.17.0-1020-oracle): exactly one IN_ACCESS per
+  successful readv — one segment or three, data or
+  0 bytes (at EOF, with iovcnt 0, with
+  all-zero-length segments) — none on failure, and
+  a call that reads bytes before a later segment
+  fails returns the bytes as a success and
+  generates the event. `sys_readv64` previously
+  walked its segments through `sys_read64`, whose
+  per-segment notification fires only when bytes
+  move: 0-byte successes generated nothing, and the
+  one-event shape for multi-segment reads held only
+  by accident of the inotify queue coalescing
+  consecutive identical events; the walk also
+  carried no validation of its own (an out-of-range
+  iovcnt was never EINVAL; iovcnt 0 on a
+  non-readable descriptor returned a silent 0). The
+  fix validates in the host's order (bad descriptor
+  EBADF, wrong mode EBADF — CL-46, iovcnt range
+  EINVAL, null iovec with iovcnt > 0 EFAULT), walks
+  the segments under a new
+  `KInotify::SuppressAccessNotifications` scope
+  (thread-local RAII depth, checked in
+  notifyAccessed), and raises one IN_ACCESS on
+  success; plain read/pread keep FD-59's
+  silence-at-0, and the FD-59 disposition comments
+  in kinotify/kfile now state the vectored
+  exception. Proof: testPreadv64Syscalls (x64
+  native suite) section 10 — RED on the base (the
+  0-byte shapes generated no event; the iovcnt
+  range and iovcnt-0 mode cases answered wrong),
+  GREEN with the fix across the multi-segment
+  walk, the short final segment, all three 0-byte
+  shapes, the failure set, and a plain-read
+  control that stays silent; full native suites
+  serial main 668/668 and x64 69/69, 0 FAILED;
+  browser build on the fixed tree verified (wasm
+  `2601ef69`, support archive unchanged); JS unit
+  348/0, legacy 110/4 (FD-64's standing set on
+  this base). Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.
+
+- **CL-46 — The positioned/plain read family
+  answers EBADF on a descriptor that cannot be
+  read (FD-84).** *(Provisional number, filed on
+  lane-fd83-84, 2026-11-02 — see CL-45's note.)*
+  Fixed on branch `lane-fd83-84`, commits
+  `0332ee82f` (tests), `3459a7d20` (fix) and
+  `bdbac75a5` (silent-failure baseline review).
+  The host contract was re-measured first: read,
+  pread, readv, preadv and preadv2 on an O_WRONLY
+  descriptor answer EBADF — for count 0 and
+  iovcnt 0 as well, and ahead of the buffer check;
+  a negative offset in the positioned family
+  answers EINVAL ahead of the mode answer; in
+  preadv/preadv2 the mode answer precedes the
+  iovcnt range check and the unknown-flag
+  EOPNOTSUPP. The answer is now -EBADF at
+  `sys_read64`, at `sys_pread64Impl` (whose
+  negative-offset check the fix places ahead of
+  the mode, also giving plain pread64 the host's
+  order), in `sys_preadv64` (fd, offset, mode,
+  flags, iovcnt), in `KProcess::read`, and in
+  `KProcess::pread64`, which previously carried
+  no mode check at all and fell through to the
+  backing read — the backing layer swallows the
+  host's EBADF into a silent 0, visible in the
+  RED logs as a `BW64-FAIL host-read errno=9`
+  line beside a 0 return to the guest. Proof:
+  testPreadv64Syscalls (x64 native suite)
+  section 9 — the write-only case the FD-80 lane
+  pinned at -EINVAL, rewritten to the eleven-
+  assertion host matrix (both orderings, the
+  zero-count cases, no event on failure) — and
+  testChmodAccessHardLink's FD-84 section through
+  the KProcess API (plain read, zero-length read,
+  pread64) in both native suites; RED on the base
+  (the x64 run failed 20 assertions across the
+  new sections 9-10, the FD-84 KProcess
+  assertions failing in both suites), GREEN with
+  the fix; full native suites serial main 668/668
+  and x64 69/69, 0 FAILED; browser build
+  verified, JS as CL-45. The write family's
+  mirror divergence was measured alongside and
+  filed as FD-93 rather than widened into this
+  fix. Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.
