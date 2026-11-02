@@ -1638,7 +1638,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
     // Process-spawn signal: successful .exe opens are rare (one per process)
     // and worth one line by default (probes detect EXE SPAWN from this even
     // when the open succeeds, e.g. the program exists in the game zip).
-    if (!getenv("BW64_DLLTRACE") && strstr(path, ".exe")) {
+    // The launcher session-readiness handshake matches this exact line for
+    // the shell launch (FD-47/FD-48), so it is a contract signal, not a
+    // debug aid: emit it unconditionally, exactly like the 32-bit open
+    // paths (logExeSpawnSignal in syscall.cpp). BW64_DLLTRACE adds its own
+    // richer line above; a diagnostic flag must never suppress this (FD-54).
+    if (strstr(path, ".exe")) {
         klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
     }
     return (U64)result->handle;
