@@ -2765,7 +2765,7 @@ do not close the entry until they land.
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
   host defers it until the mapping is unmapped.
-  CLOSED 2026-11-01 — see CL-37.** *(Low.
+  CLOSED 2026-11-01 — see CL-38.** *(Low.
   Filed as FD-79 on the FD-58..60 lane branch,
   2026-11-01; the number was verified free on the
   integration register and settled at composition.)* Measured on the host kernel
@@ -2790,7 +2790,7 @@ do not close the entry until they land.
   teardown. The host matrix was also widened by
   re-measurement: any live mapping of the description
   (shared or private, read or write) defers either
-  close event to the last unmap. CL-37 covers the
+  close event to the last unmap. CL-38 covers the
   demand-paged path; the 64-bit path, whose file
   mappings are materialized copies with no
   open-description accounting, is filed as FD-82.
@@ -2798,7 +2798,7 @@ do not close the entry until they land.
 - **FD-80 — The 64-bit dispatcher's preadv (295) and
   preadv2 (327) have name-table entries but no dispatch
   case, so they return ENOSYS. CLOSED 2026-11-01 —
-  see CL-38.** *(Low. Filed
+  see CL-39.** *(Low. Filed
   as FD-80 on the FD-58..60 lane branch, 2026-11-01;
   the number was verified free on the integration
   register and settled at composition.)*
@@ -2913,7 +2913,7 @@ do not close the entry until they land.
   emulator's readv notifies per segment through the
   plain read path, whose bytes>0 rule is correct for
   read/pread but not for the vectored calls.
-  preadv/preadv2 follow the host rule since CL-38.
+  preadv/preadv2 follow the host rule since CL-39.
   Evidence: `test-results/fd79-80/` (host reference
   programs and outputs).
 
@@ -2926,7 +2926,7 @@ do not close the entry until they land.
   host: preadv on an O_WRONLY descriptor returns
   EBADF. The emulator's positioned-read core rejects
   a non-readable file with -EINVAL, and pread64 and
-  (since CL-38) preadv inherit that answer;
+  (since CL-39) preadv inherit that answer;
   KProcess::read makes the same choice for plain
   reads. Found by the FD-79/80 lane while pinning
   preadv's validation matrix; left as found rather
@@ -4112,14 +4112,17 @@ its lane and is not a defect, for the stated reason:
   succeeding in vivo on the shipped build — the
   FD-70 closing terms' last clause, unmet by
   construction until a deploy carries the branch.
-- **CL-37 — A file description's close event is
+- **CL-38 — A file description's close event is
   delivered at the host's moment: held while any
   mapping of the description is live, delivered at
   the last unmap (FD-79).** *(Filed as CL-37 on
-  lane-fd79-80, 2026-11-01; the number is provisional
-  — CL-35 and CL-36 were taken provisionally by the
-  FD-54 and FD-63 closures on their own branches,
-  and the merge lane settles the sequence by audit.)* Fixed on branch
+  lane-fd79-80, 2026-11-01 — CL-35 and CL-36 were
+  taken provisionally by the FD-54 and FD-63
+  closures on their own branches; renumbered CL-38
+  at composition, CL-37 having been taken on the
+  integration register by FD-70's closure in this
+  batch; the text is preserved apart from the
+  number.)* Fixed on branch
   `lane-fd79-80`. The host contract was re-measured
   first (6.17.0-1020-oracle): any live mapping of a
   description — shared or private, read or write —
@@ -4167,12 +4170,13 @@ its lane and is not a defect, for the stated reason:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
   evidence `test-results/fd79-80/`.
 
-- **CL-38 — The 64-bit dispatcher's preadv (295) and
+- **CL-39 — The 64-bit dispatcher's preadv (295) and
   preadv2 (327) are wired: vectored positioned reads
   with the host's validation and notification shape
   (FD-80).** *(Filed as CL-38 on lane-fd79-80,
-  2026-11-01; the number is provisional, as CL-37
-  above.)* Fixed on branch `lane-fd79-80`. The host
+  2026-11-01; renumbered CL-39 at composition,
+  following CL-38 above; the text is preserved
+  apart from the number.)* Fixed on branch `lane-fd79-80`. The host
   contract was measured first (raw syscalls,
   6.17.0-1020-oracle): segments fill in order at
   successive offsets, the file position does not
