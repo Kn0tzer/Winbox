@@ -2307,6 +2307,48 @@ do not close the entry until they land.
   sense. Record:
   `docs/reports/fd70-intoffset-20261101.md`.
 
+  **Update 2026-11-02 (deploy of the FD-54 + FD-63 +
+  FD-70 + FD-79/80 batch, shipped build `9e37e5640`,
+  wasm `d631d254`): the deploy-side proof CL-37 owed
+  was run in vivo and FAILED on its pipeline clause —
+  the pair's module creations succeed and FD-70's
+  refusal is extinct in vivo, but the pair's pipeline
+  creations still fail, on sibling modules in the
+  same pipelines.** Standard demo path against the
+  shipped build (warmed archive, vktrace on, 3,300 s
+  deadline; evidence
+  `test-results/deploy-fd54-63-70-7980-20261102/godot-proof/console.txt`,
+  14,880 lines): the pair was submitted in the second
+  wave and CREATED — 23,440 bytes (djb2
+  28a2394720432fda) at 2,047.0 s, 16,304 bytes
+  (3eccbc1e60e9f7a4) at 2,073.3 s and 2,074.4 s, all
+  plain `vkCreateShaderModule` lines; the run
+  carries ZERO `spirv-capability-unknown:5347` lines
+  and five REFUSED lines total, none of them the
+  pair. The three second-wave pipeline creations
+  nevertheless failed with
+  `Create(Graphics)PipelineState 0x80004005`
+  (2,072.4 s, 2,073.6 s, 2,074.6 s; the run's other
+  two E_FAILs are FD-72's, at 236.9/237.4 s), each
+  killed by another module in the same pipeline: a
+  369,400-byte module (djb2 d4da162f9cbdb948)
+  refused at 2,072.4 s for
+  `spirv-capability-unknown:29`,
+  `spirv-capability:RuntimeDescriptorArray` and
+  FD-72's `spirv-builtin-helper-invocation`; and a
+  2,340-byte module (djb2 fe166085df72b93f) refused
+  at 2,073.6 s and 2,074.6 s for
+  `spirv-capability:SampledBuffer` and
+  `spirv-capability:RuntimeDescriptorArray`. CL-37's
+  owed clause — the pair's PIPELINE creations
+  succeeding in vivo — is therefore NOT met and
+  stays owed, now gated on those sibling classes
+  (one of them FD-72's). The sibling modules are
+  recorded here and in the deploy record as found
+  in vivo; filing them is the register owner's.
+  Record:
+  `docs/reports/deploy-fd54-63-70-7980-20261102.md`.
+
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
   pointers, although its own classifiers record them
