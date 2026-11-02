@@ -28,7 +28,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   assert.equal(await page.getByLabel('CPU JIT', { exact: true }).count(), 1);
   await page.waitForFunction(() => window.wineGames && !document.getElementById('library').hasAttribute('aria-busy'));
-  assert.equal(await page.locator('[data-game]').count(), 8);
+  assert.equal(await page.locator('[data-game]').count(), 15);
   assert.equal(await page.locator('#jit').inputValue(), 'off');
   {
     const mode = await page.evaluate(() => ({
