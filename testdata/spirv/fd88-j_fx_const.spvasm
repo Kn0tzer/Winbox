@@ -1,0 +1,61 @@
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %texs %smps %pc %ssbo %out
+OpExecutionMode %main OriginUpperLeft
+OpDecorate %texs DescriptorSet 3
+OpDecorate %texs Binding 0
+OpDecorate %smps DescriptorSet 0
+OpDecorate %smps Binding 0
+OpDecorate %pcblk Block
+OpMemberDecorate %pcblk 0 Offset 0
+OpDecorate %ssboblk Block
+OpMemberDecorate %ssboblk 0 Offset 0
+OpDecorate %ssbo DescriptorSet 3
+OpDecorate %ssbo Binding 2
+OpDecorate %out Location 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v4 = OpTypeVector %float 4
+%v3 = OpTypeVector %float 3
+%uint = OpTypeInt 32 0
+%u0 = OpConstant %uint 0
+%u4 = OpConstant %uint 4
+%u16 = OpConstant %uint 16
+%uffff = OpConstant %uint 65535
+%f025 = OpConstant %float 0.25
+%coord = OpConstantComposite %v3 %f025 %f025 %f025
+%img = OpTypeImage %float 3D 0 0 0 1 Unknown
+%arrt = OpTypeArray %img %u4
+%parr = OpTypePointer UniformConstant %arrt
+%pimg = OpTypePointer UniformConstant %img
+%smp = OpTypeSampler
+%sarr = OpTypeRuntimeArray %smp
+%psarr = OpTypePointer UniformConstant %sarr
+%psmp = OpTypePointer UniformConstant %smp
+%simg = OpTypeSampledImage %img
+%pout = OpTypePointer Output %v4
+%pcblk = OpTypeStruct %uint
+%ppc = OpTypePointer PushConstant %pcblk
+%ppcu = OpTypePointer PushConstant %uint
+%rtu = OpTypeRuntimeArray %uint
+%ssboblk = OpTypeStruct %rtu
+%pssbo = OpTypePointer StorageBuffer %ssboblk
+%pssbou = OpTypePointer StorageBuffer %uint
+%texs = OpVariable %parr UniformConstant
+%smps = OpVariable %psarr UniformConstant
+%pc = OpVariable %ppc PushConstant
+%ssbo = OpVariable %pssbo StorageBuffer
+%out = OpVariable %pout Output
+%main = OpFunction %void None %fn
+%lab = OpLabel
+%idx = OpCopyObject %uint %u0
+%ip = OpAccessChain %pimg %texs %idx
+%im = OpLoad %img %ip
+%sp = OpAccessChain %psmp %smps %u0
+%sm = OpLoad %smp %sp
+%si = OpSampledImage %simg %im %sm
+%r = OpImageSampleImplicitLod %v4 %si %coord
+OpStore %out %r
+OpReturn
+OpFunctionEnd
