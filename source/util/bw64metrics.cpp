@@ -510,8 +510,17 @@ void bw64_metrics_maybe_emit(void) {
             uint64_t vkFrames = g_vkFrames.load(std::memory_order_relaxed);
             uint64_t glCalls = g_stage[BW64_STAGE_GL].calls.load(std::memory_order_relaxed);
             uint64_t audioCalls = g_stage[BW64_STAGE_AUDIO].calls.load(std::memory_order_relaxed);
+            uint64_t syscallCalls = g_stage[BW64_STAGE_SYSCALL].calls.load(std::memory_order_relaxed);
             bool frameActivity = vkPresents || vk32Presents || sdlPresents || vkFrames;
-            bool bridgeActivity = glCalls || audioCalls;
+            // FD-63: syscall dispatch counts as activity. A guest that is
+            // executing dispatches syscalls continuously, so a window holding
+            // only syscall calls is a live session, not idleness. Without
+            // this, exactly the sessions that present nothing (a game stuck
+            // before its first frame, a compute-bound guest) fell into the
+            // no-activity branch below, which discarded the accumulated
+            // counters unreported every interval and froze the panel at the
+            // last frame-driven snapshot for the rest of the run.
+            bool bridgeActivity = glCalls || audioCalls || syscallCalls;
             if (!last) {
                 // First call: start the window, nothing to report yet.
                 g_lastEmitUs.store(nowUs, std::memory_order_relaxed);
