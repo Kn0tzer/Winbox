@@ -44,6 +44,37 @@ U32 KObject::writev(KThread* thread, U32 iov, S32 iovcnt) {
     return len;
 }
 
+// FD-92: the read mirror of writev, in the host's walk shape (and
+// sys_readv64's): zero-length segments are skipped, a segment
+// error after bytes were read returns those bytes as a success,
+// and a short segment ends the walk. Validation (descriptor,
+// mode, iovcnt range, iovec pointer) lives in KProcess::readv,
+// mirroring where sys_readv64 validates.
+U32 KObject::readv(KThread* thread, U32 iov, S32 iovcnt) {
+    U32 len = 0;
+    KMemory* memory = thread->memory;
+
+    for (S32 i = 0; i < iovcnt; i++) {
+        U32 buf = memory->readd(iov + i * 8);
+        U32 toRead = memory->readd(iov + i * 8 + 4);
+        if (toRead == 0) {
+            continue;
+        }
+        S32 result = (S32)this->read(thread, buf, toRead);
+        if (result < 0) {
+            if (len > 0) {
+                break;
+            }
+            return (U32)result;
+        }
+        len += (U32)result;
+        if ((U32)result < toRead) {
+            break; // short read: EOF or drained source
+        }
+    }
+    return len;
+}
+
 U32 KObject::read(KThread* thread, U32 address, U32 len) {
     U32 result = 0;
     KMemory* memory = thread->memory;

@@ -353,6 +353,7 @@ public:
     U32 utimesat64(FD dirfd, BString path, U32 times, U32 flags);
     U32 write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
     U32 writev(KThread* thread, FD handle, U32 iov, S32 iovcnt);
+    U32 readv(KThread* thread, FD handle, U32 iov, S32 iovcnt);
     U32 sendFile(U32 outFd, U32 inFd, U32 offset, U32 count);
     U32 memfd_create(BString name, U32 flags);
     U32 timerfd_create(U32 clockid, U32 flags);

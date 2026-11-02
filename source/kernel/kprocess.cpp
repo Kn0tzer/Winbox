@@ -1913,7 +1913,7 @@ U32 KProcess::write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen
         return -K_EBADF;
     }
     if (!fd->canWrite()) {
-        return -K_EINVAL;
+        return -K_EBADF; // FD-93: the host's wrong-mode answer (was -K_EINVAL)
     }
     if (!memory->canRead(bufferAddress, bufferLen)) {
         return -K_EFAULT;
@@ -3374,10 +3374,55 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
         return -K_EBADF;
     }
     if (!fd->canWrite()) {
+        return -K_EBADF; // FD-93: the host's wrong-mode answer (was -K_EINVAL)
+    }
+    // FD-93: the walk's own validation, in the host's order (mode
+    // ahead of both, measured on the 6.17 host kernel) -- without
+    // it an out-of-range iovcnt was never EINVAL here and a null
+    // iovec took a guest fault inside the walk instead of EFAULT.
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
         return -K_EINVAL;
     }
+    if (iovcnt > 0 && iov == 0) {
+        return -K_EFAULT;
+    }
     patchWbEvt(thread, fd, iov, iovcnt);
-    return fd->kobject->writev(thread, iov, iovcnt);    
+    return fd->kobject->writev(thread, iov, iovcnt);
+}
+
+// FD-92: the 32-bit dispatcher's readv forwards here (the 64-bit
+// dispatcher walks its own in sys_readv64). Validation mirrors
+// sys_readv64's, in the host's order (measured for FD-83 on the
+// 6.17 host kernel): bad descriptor EBADF, wrong mode EBADF,
+// iovcnt outside 0..IOV_MAX EINVAL, null iovec with iovcnt > 0
+// EFAULT. The notification contract is FD-83's: exactly one
+// IN_ACCESS per successful call, 0-byte successes included. A
+// byte-moving walk notifies per segment through the file layer
+// and the inotify queue coalesces those into one observable
+// event, so only a success that moved no bytes raises it here.
+U32 KProcess::readv(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    if (!fd->canRead()) {
+        return -K_EBADF;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    if (iovcnt > 0 && iov == 0) {
+        return -K_EFAULT;
+    }
+    U32 result = fd->kobject->readv(thread, iov, iovcnt);
+    if ((S32)result == 0) {
+        std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (file && file->openFile && file->openFile->node) {
+            KInotify::notifyAccessed(file->openFile->node.get());
+        }
+    }
+    return result;
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
@@ -3676,6 +3721,19 @@ U32 KProcess::pwrite64(KThread* thread, FD fildes, U32 address, U32 len, U64 off
 
     if (openNode->node->isDirectory()) {
         return -K_EISDIR;
+    }
+    // FD-93: the positioned-write family's remaining validation,
+    // in the host's order (measured on the 6.17 host kernel): a
+    // negative offset answers -EINVAL ahead of the mode answer,
+    // and a descriptor that cannot be written answers -EBADF.
+    // Without the mode check the call fell through to the backing
+    // write, whose host EBADF the backing layer swallows into a
+    // silent 0.
+    if ((S64)offset < 0) {
+        return -K_EINVAL;
+    }
+    if (!fd->canWrite()) {
+        return -K_EBADF;
     }
     if (!this->memory->canRead(address, len)) {
         return -K_EFAULT;

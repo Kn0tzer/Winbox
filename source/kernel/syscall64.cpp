@@ -479,6 +479,22 @@ static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
 static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len);
 
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
+    // FD-93: the host validates the descriptor and its mode ahead
+    // of the zero-count return (measured on the 6.17 host kernel:
+    // write on a bad or read-only descriptor answers EBADF even
+    // with count 0). The body's own gate below is reached only
+    // after the buffer copy and answered EINVAL; this call used
+    // to return a silent 0 for both wrong shapes. The fd 1/2
+    // carve-out matches the body's: a missing descriptor there is
+    // the console tee's business, not an error.
+    if (cpu->thread && cpu->thread->process) {
+        KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+        if (!fdesc) {
+            if (fd != 1 && fd != 2) return (U64)-K_EBADF;
+        } else if (!fdesc->canWrite()) {
+            return (U64)-K_EBADF;
+        }
+    }
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large writes for any
     // caller that doesn't loop on a short return). 256MB is plenty for the temp
@@ -647,7 +663,7 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
         return (U64)-9; // -EBADF
     }
     if (!fdesc->canWrite()) {
-        return (U64)-K_EINVAL;
+        return (U64)-K_EBADF; // FD-93: host's wrong-mode answer (was -K_EINVAL)
     }
     if (badBuffer) return (U64)-K_EFAULT;
     U32 wrote = fdesc->kobject->writeNative(buffer.data(), (U32)count);
@@ -1942,9 +1958,15 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
 // save-pos/seek/write/restore over the KObject layer, mirroring sys_pread64.
 static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    // FD-93: the host's validation order for the positioned-write
+    // family, measured on the 6.17 host kernel: a negative offset
+    // answers -EINVAL ahead of both the descriptor and the mode
+    // answers (it does so even for a bad descriptor), and the
+    // mode answer is -EBADF.
+    if ((S64)offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canWrite()) return (U64)-K_EINVAL;
+    if (!fdesc->canWrite()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large pwrites).
     if (count > (256ULL << 20)) count = 256ULL << 20;
@@ -2393,6 +2415,21 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
 // writev — iterate the iovec array, calling write per segment. Each iovec
 // entry on x86-64 is { u64 base; u64 len }.
 static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
+    // FD-93: validate like sys_readv64 does, in the host's order
+    // (measured on the 6.17 host kernel): bad descriptor EBADF,
+    // wrong mode EBADF, iovcnt outside 0..IOV_MAX EINVAL, null
+    // iovec with iovcnt > 0 EFAULT. The walk itself only ever
+    // reached sys_write64 segment by segment, so iovcnt 0 on a
+    // read-only descriptor returned a silent 0 and an
+    // out-of-range iovcnt was never EINVAL.
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    {
+        KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+        if (!fdesc) return (U64)-K_EBADF;
+        if (!fdesc->canWrite()) return (U64)-K_EBADF;
+        if ((S64)iovcnt < 0 || iovcnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+        if (iovcnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    }
     U64 total = 0;
     for (U64 i = 0; i < iovcnt; i++) {
         U64 base = cpu->memory->readq(iov + i * 16 + 0);

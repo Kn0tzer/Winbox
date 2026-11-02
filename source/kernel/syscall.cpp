@@ -860,6 +860,16 @@ static U32 syscall_msync(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+// FD-92: slot 145 was empty and answered -ENOSYS; the 64-bit
+// dispatcher has its own readv (sys_readv64), this is the 32-bit
+// route into the shared KProcess::readv.
+static U32 syscall_readv(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "readv: fd=%d iov=0x%X iovcnt=%d", ARG1, ARG2, ARG3);
+    U32 result = cpu->thread->process->readv(cpu->thread, ARG1, ARG2, ARG3);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
 static U32 syscall_writev(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_WRITE, cpu, "writev: filds=%d iov=0x%X iovcn=%d", ARG1, ARG2, ARG3);    
     U32 result = cpu->thread->process->writev(cpu->thread, ARG1, ARG2, ARG3);
@@ -1024,6 +1034,14 @@ static U32 syscall_pread64(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_pwrite64(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_WRITE, cpu, "pwrite64: fd=%d buf=%X len=%d offset=%d", ARG1, ARG2, ARG3, ARG4);
+    // FD-93: the host answers a negative offset with EINVAL ahead
+    // of even the descriptor check (measured on the 6.17 host
+    // kernel; ARG5 is the offset's high word, so its sign is the
+    // offset's). KProcess::pwrite64 orders its own mode answer
+    // behind the offset check the same way.
+    if ((S32)ARG5 < 0) {
+        return (U32)-K_EINVAL;
+    }
     U32 result = cpu->thread->process->pwrite64(cpu->thread, ARG1, ARG2, ARG3, ARG4 | ((U64)ARG5) << 32);
     SYS_LOG(SYSCALL_WRITE, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -2251,7 +2269,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_newselect,  // 142 __NR_newselect
     syscall_flock,      // 143 __NR_flock
     syscall_msync,      // 144 __NR_msync
-    nullptr,                  // 145
+    syscall_readv,      // 145 __NR_readv
     syscall_writev,     // 146  __NR_writev
     nullptr,                  // 147
     syscall_fdatasync,  // 148 __NR_fdatasync
