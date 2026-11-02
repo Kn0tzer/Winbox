@@ -3425,6 +3425,65 @@ U32 KProcess::readv(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     return result;
 }
 
+
+// FD-94: positioned vectored write for the 32-bit dispatcher
+// (pwritev 334 / pwritev2 378), walking this->pwrite64 per segment.
+// The validation order and return shape follow the host behaviour
+// measured for FD-94 (see the register entry): a negative offset
+// is EINVAL ahead of the descriptor check, except that pwritev2's
+// offset -1 is the file-position mode; the descriptor check
+// precedes the flags check (EOPNOTSUPP outside the defined RWF
+// mask 0x3f) and the iovcnt range check; RWF_APPEND writes at end
+// of file; a later segment's failure returns the bytes already
+// written.
+U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPwritev2) {
+    S64 off = (S64)offset;
+    bool useFilePos = isPwritev2 && off == -1;
+    if (!useFilePos && off < 0) {
+        return -K_EINVAL;
+    }
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    if (isPwritev2 && (flags & ~0x3f)) {
+        return -K_EOPNOTSUPP;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    KMemory* memory = thread->memory;
+    if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
+        return -K_EFAULT;
+    }
+    bool append = isPwritev2 && (flags & 0x10); // RWF_APPEND
+    S64 base = off;
+    if (append) {
+        if (fd->kobject->type == KTYPE_FILE) {
+            base = fd->kobject->length();
+        }
+    } else if (useFilePos) {
+        base = fd->kobject->getPos();
+    }
+    U32 total = 0;
+    U32 err = 0;
+    for (S32 i = 0; i < iovcnt; i++) {
+        U32 segBase = memory->readd(iov + i * 8);
+        U32 len = memory->readd(iov + i * 8 + 4);
+        if (len == 0) continue;
+        U32 wrote = this->pwrite64(thread, handle, segBase, len, (U64)(base + (S64)total));
+        if ((S32)wrote < 0) { err = wrote; break; }
+        total += wrote;
+        if (wrote < len) break; // short write
+    }
+    if (useFilePos && total > 0) {
+        fd->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && (S32)err < 0) {
+        return err;
+    }
+    return total;
+}
 U32 KProcess::memfd_create(BString name, U32 flags) {
     constexpr U32 supportedFlags = 1u /*MFD_CLOEXEC*/ | 2u /*MFD_ALLOW_SEALING*/;
     if (flags & ~supportedFlags) return (U32)-K_EINVAL;

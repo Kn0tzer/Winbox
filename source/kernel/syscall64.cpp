@@ -255,6 +255,8 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_readv             19
 #define X64_SYS_preadv            295
 #define X64_SYS_preadv2           327
+#define X64_SYS_pwritev           296
+#define X64_SYS_pwritev2          328
 #define X64_SYS_select            23
 #define X64_SYS_chmod             90
 #define X64_SYS_fchmod            91
@@ -1984,6 +1986,65 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     U32 wrote = fdesc->kobject->writeNative(tmp.data(), (U32)count);
     fdesc->kobject->seek(savedPos);
     return (U64)(S64)(S32)wrote;
+}
+
+
+// pwritev / pwritev2 (FD-94) -- vectored positioned writes over the
+// same positioned-write core as pwrite64. Host behaviour measured on
+// the box's 6.17 kernel (test-results/fd94-96/hostref-pwritev*.c):
+// segments are written in order at successive offsets and the file
+// position does not move; a short write ends the walk; a later
+// segment's failure returns the bytes already written, never the
+// error (the writev partial shape). Validation order: a negative
+// offset is EINVAL ahead of the descriptor check -- except that
+// pwritev2's offset -1 is the file-position mode (write at the
+// current position and advance it), so only an offset below -1 is
+// EINVAL there. The descriptor check (EBADF) precedes the pwritev2
+// flags check (EOPNOTSUPP for bits outside the defined RWF mask
+// 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/NOAPPEND) and the iovcnt
+// range check (EINVAL outside [0, IOV_MAX]); a bad iovec array with
+// iovcnt > 0 is EFAULT. RWF_APPEND writes at end of file, ignoring
+// the offset, and leaves the position untouched outside the -1
+// mode. Segment buffers are range-checked before each segment's
+// write: the core's guest copy zero-fills an unreadable buffer
+// instead of failing, which would fabricate bytes the host never
+// writes (the single-call paths keep that trait -- FD-97).
+static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPwritev2) {
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    bool useFilePos = isPwritev2 && offset == -1;
+    if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
+    KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+    if (!fdesc) return (U64)-9; // -EBADF
+    if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    S32 cnt = (S32)iovcnt;
+    if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+    if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    bool append = isPwritev2 && (flags & 0x10ULL); // RWF_APPEND
+    S64 base = offset;
+    if (append) {
+        std::shared_ptr<KFile> pkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+        if (pkfile) base = pkfile->length();
+    } else if (useFilePos) {
+        base = fdesc->kobject->getPos();
+    }
+    U64 total = 0;
+    S64 err = 0;
+    for (S32 i = 0; i < cnt; i++) {
+        U64 segBase = cpu->memory->readq(iov + (U64)i * 16 + 0);
+        U64 len     = cpu->memory->readq(iov + (U64)i * 16 + 8);
+        if (len == 0) continue;
+        if (!sys_rangeHasPermission64(cpu->memory, segBase, len, K64_PAGE_READ)) { err = -K_EFAULT; break; }
+        S64 wrote = (S64)sys_pwrite64(cpu, fd, segBase, len, (U64)(base + (S64)total));
+        if (wrote < 0) { err = wrote; break; }
+        total += (U64)wrote;
+        if ((U64)wrote < len) break; // short write
+    }
+    if (useFilePos && total > 0) {
+        fdesc->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && err < 0) return (U64)err;
+    return total;
 }
 
 // writeStatBuf64 — write the x86-64 Linux struct stat (144 bytes) into
@@ -7083,6 +7144,14 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_preadv2:
             // preadv2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-80.
             ret = sys_preadv64(cpu, a1, a2, a3, a4, a5, a6, true);
+            break;
+        case X64_SYS_pwritev:
+            // pwritev(fd, iov, iovcnt, pos_l, pos_h) — FD-94.
+            ret = sys_pwritev64(cpu, a1, a2, a3, a4, a5, 0, false);
+            break;
+        case X64_SYS_pwritev2:
+            // pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-94.
+            ret = sys_pwritev64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
         case X64_SYS_select:
             ret = unimplementedSyscall64(nr);

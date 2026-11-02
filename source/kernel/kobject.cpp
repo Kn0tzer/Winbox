@@ -34,8 +34,12 @@ U32 KObject::writev(KThread* thread, U32 iov, S32 iovcnt) {
 
         result = this->write(thread, buf, toWrite);
         if (result<0) {
-            if (i>0) {
-                kwarn("writev partial fail: TODO file pointer should not change");
+            // FD-96: host writev returns the bytes already written
+            // when a later segment fails; the error is the answer
+            // only when nothing was written.
+            if (len>0) {
+                kwarn("writev partial fail: returning the bytes already written");
+                return len;
             }
             return result;
         }
