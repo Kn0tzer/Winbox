@@ -4210,6 +4210,201 @@ int main() {
             puts("PASS: GUARD integer-offset root addresses admit exactly the word-load class (FD-70)");
         }
 
+        // GUARD (FD-87 cap-29 admission): capability 29
+        // (SampledImageArrayDynamicIndexing, named by this lane) is
+        // admitted exactly when every image/sampled-image array in the
+        // module is a runtime array spirvfix's specializer serves --
+        // spirvfix strips the bare declaration (R19) once no such
+        // array survives, and naga rejects the declaration itself, so
+        // an unservable image array keeps the refusal BY NAME. A
+        // data-dependent index and a fixed-size image array are the
+        // two unservable forms (FD-88).
+        {
+            const U32 siadi = vk64BridgeUnsupportedCount("spirv-capability:SampledImageArrayDynamicIndexing");
+            const U32 rda87 = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            // Servable: runtime array of 2D sampled images, constant index.
+            assert(module({
+                (2u << 16) | 17u, 1u,                          // OpCapability Shader
+                (2u << 16) | 17u, 29u,                         // OpCapability SampledImageArrayDynamicIndexing
+                (2u << 16) | 17u, 5302u,                       // OpCapability RuntimeDescriptorArray
+                (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+                (6u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u, // OpEntryPoint Fragment %17 "main" %8
+                (3u << 16) | 16u, 17u, 7u,                     // OpExecutionMode %17 OriginUpperLeft
+                (4u << 16) | 71u, 8u, 34u, 0u,                 // OpDecorate %8 DescriptorSet 0
+                (4u << 16) | 71u, 8u, 33u, 0u,                 // OpDecorate %8 Binding 0
+                (2u << 16) | 19u, 1u,                          // %1 OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                      // %2 OpTypeFunction %1
+                (3u << 16) | 22u, 4u, 32u,                     // %4 OpTypeFloat 32
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u, // %5 OpTypeImage %4 2D, Sampled=1
+                (3u << 16) | 29u, 6u, 5u,                      // %6 OpTypeRuntimeArray %5
+                (4u << 16) | 32u, 7u, 0u, 6u,                  // %7 OpTypePointer UniformConstant %6
+                (4u << 16) | 21u, 9u, 32u, 0u,                 // %9 OpTypeInt 32 unsigned
+                (4u << 16) | 43u, 9u, 10u, 0u,                 // %10 OpConstant %9 0
+                (4u << 16) | 32u, 11u, 0u, 5u,                 // %11 OpTypePointer UniformConstant %5
+                (4u << 16) | 23u, 12u, 4u, 4u,                 // %12 OpTypeVector %4 4
+                (4u << 16) | 43u, 4u, 13u, 0x3F800000u,        // %13 OpConstant %4 1.0f
+                (7u << 16) | 44u, 12u, 14u, 13u, 13u, 13u, 13u, // %14 OpConstantComposite %12 %13 x4
+                (4u << 16) | 59u, 7u, 8u, 0u,                  // %8 OpVariable %7 UniformConstant
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,             // %17 OpFunction %1 None %2
+                (2u << 16) | 248u, 18u,                        // %18 OpLabel
+                (5u << 16) | 65u, 11u, 3u, 8u, 10u,            // %3 OpAccessChain %11 %8 %10
+                (4u << 16) | 61u, 5u, 15u, 3u,                 // %15 OpLoad %5 %3
+                (5u << 16) | 81u, 4u, 16u, 14u, 3u,            // %16 OpCompositeExtract %4 %14 3
+                (1u << 16) | 253u,                             // OpReturn
+                (1u << 16) | 56u,                              // OpFunctionEnd
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:SampledImageArrayDynamicIndexing") == siadi);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda87);
+            // Data-dependent index: the array is unservable, so both
+            // declarations refuse (the audit reports every unservable
+            // capability it finds), capability 29 by its new name.
+            assert(module({
+                (2u << 16) | 17u, 1u,
+                (2u << 16) | 17u, 29u,
+                (2u << 16) | 17u, 5302u,
+                (3u << 16) | 14u, 0u, 1u,
+                (7u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u, 20u, // OpEntryPoint Fragment %17 "main" %8 %20
+                (3u << 16) | 16u, 17u, 7u,
+                (4u << 16) | 71u, 8u, 34u, 0u,
+                (4u << 16) | 71u, 8u, 33u, 0u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (3u << 16) | 22u, 4u, 32u,
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u,
+                (3u << 16) | 29u, 6u, 5u,
+                (4u << 16) | 32u, 7u, 0u, 6u,
+                (4u << 16) | 21u, 9u, 32u, 0u,
+                (4u << 16) | 43u, 9u, 10u, 0u,
+                (4u << 16) | 32u, 11u, 0u, 5u,
+                (4u << 16) | 32u, 19u, 1u, 9u,                 // %19 OpTypePointer Input %9
+                (4u << 16) | 59u, 7u, 8u, 0u,                  // %8 OpVariable %7 UniformConstant
+                (4u << 16) | 59u, 19u, 20u, 1u,                // %20 OpVariable %19 Input
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,
+                (2u << 16) | 248u, 18u,
+                (4u << 16) | 61u, 9u, 21u, 20u,                // %21 OpLoad %9 %20 (data-dependent index)
+                (5u << 16) | 65u, 11u, 3u, 8u, 21u,            // %3 OpAccessChain %11 %8 %21
+                (4u << 16) | 61u, 5u, 15u, 3u,
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            }) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:SampledImageArrayDynamicIndexing") == siadi + 1);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda87 + 1);
+            // Fixed-size image array: never in the specializer's
+            // universe, so the declaration refuses by name as well.
+            assert(module({
+                (2u << 16) | 17u, 1u,
+                (2u << 16) | 17u, 29u,
+                (3u << 16) | 14u, 0u, 1u,
+                (6u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u,
+                (3u << 16) | 16u, 17u, 7u,
+                (4u << 16) | 71u, 8u, 34u, 0u,
+                (4u << 16) | 71u, 8u, 33u, 0u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (3u << 16) | 22u, 4u, 32u,
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u,
+                (4u << 16) | 21u, 9u, 32u, 0u,
+                (4u << 16) | 43u, 9u, 10u, 0u,
+                (4u << 16) | 43u, 9u, 16u, 4u,                 // %16 OpConstant %9 4
+                (4u << 16) | 28u, 6u, 5u, 16u,                 // %6 OpTypeArray %5 %16
+                (4u << 16) | 32u, 7u, 0u, 6u,
+                (4u << 16) | 32u, 11u, 0u, 5u,
+                (4u << 16) | 59u, 7u, 8u, 0u,
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,
+                (2u << 16) | 248u, 18u,
+                (5u << 16) | 65u, 11u, 3u, 8u, 10u,
+                (4u << 16) | 61u, 5u, 15u, 3u,
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            }) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:SampledImageArrayDynamicIndexing") == siadi + 2);
+            puts("PASS: GUARD SampledImageArrayDynamicIndexing admitted exactly when its image arrays are servable, refused by name otherwise (FD-87)");
+        }
+
+        // GUARD (FD-87 dead descriptors): a module whose descriptor
+        // variables are never referenced -- the captured 2,340 B Godot
+        // fragment module's shape: a texel-buffer runtime array and a
+        // read-only SSBO, declared but unused -- is admitted end to
+        // end: spirvfix strips the dead descriptors and their
+        // orphaned types (R18), so neither SampledBuffer nor
+        // RuntimeDescriptorArray may refuse it.
+        {
+            const U32 sb87 = vk64BridgeUnsupportedCount("spirv-capability:SampledBuffer");
+            const U32 rda87b = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+                (2u << 16) | 17u, 1u,                          // OpCapability Shader
+                (2u << 16) | 17u, 46u,                         // OpCapability SampledBuffer
+                (2u << 16) | 17u, 5302u,                       // OpCapability RuntimeDescriptorArray
+                (3u << 16) | 14u, 0u, 1u,                      // OpMemoryModel Logical GLSL450
+                (5u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u,     // OpEntryPoint Fragment %17 "main"
+                (3u << 16) | 16u, 17u, 7u,                     // OpExecutionMode %17 OriginUpperLeft
+                (4u << 16) | 71u, 8u, 34u, 2u,                 // OpDecorate %8 DescriptorSet 2
+                (4u << 16) | 71u, 8u, 33u, 0u,                 // OpDecorate %8 Binding 0
+                (4u << 16) | 71u, 14u, 34u, 0u,                // OpDecorate %14 DescriptorSet 0
+                (4u << 16) | 71u, 14u, 33u, 1u,                // OpDecorate %14 Binding 1
+                (3u << 16) | 71u, 14u, 24u,                    // OpDecorate %14 NonWritable
+                (3u << 16) | 71u, 12u, 3u,                     // OpDecorate %12 BufferBlock
+                (2u << 16) | 19u, 1u,                          // %1 OpTypeVoid
+                (3u << 16) | 33u, 2u, 1u,                      // %2 OpTypeFunction %1
+                (3u << 16) | 22u, 4u, 32u,                     // %4 OpTypeFloat 32
+                (9u << 16) | 25u, 5u, 4u, 5u, 0u, 0u, 0u, 1u, 0u, // %5 OpTypeImage %4 Buffer, Sampled=1
+                (3u << 16) | 29u, 6u, 5u,                      // %6 OpTypeRuntimeArray %5
+                (4u << 16) | 32u, 7u, 0u, 6u,                  // %7 OpTypePointer UniformConstant %6
+                (4u << 16) | 59u, 7u, 8u, 0u,                  // %8 OpVariable %7 UniformConstant (never used)
+                (3u << 16) | 30u, 12u, 4u,                     // %12 OpTypeStruct %4
+                (4u << 16) | 32u, 13u, 12u, 12u,               // %13 OpTypePointer StorageBuffer %12
+                (4u << 16) | 59u, 13u, 14u, 12u,               // %14 OpVariable %13 StorageBuffer (never used)
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,             // %17 OpFunction %1 None %2
+                (2u << 16) | 248u, 18u,                        // %18 OpLabel
+                (1u << 16) | 253u,                             // OpReturn
+                (1u << 16) | 56u,                              // OpFunctionEnd
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:SampledBuffer") == sb87);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda87b);
+            puts("PASS: GUARD dead descriptor variables gate neither SampledBuffer nor RuntimeDescriptorArray (FD-87)");
+        }
+
+        // GUARD (FD-87/FD-78 ExtInst sweep position): a GLSL.std.450
+        // OpExtInst whose INSTRUCTION NUMBER equals the servable
+        // array's runtime-array type id is a literal, not a reference
+        // to that type: the skip-5302 sweep simulation must still
+        // retire the type, exactly as spirvfix's orphan sweep now
+        // does (proven live on the captured 369,400 B module, whose
+        // texel conversion this same collision used to block).
+        {
+            const U32 rda87c = vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray");
+            assert(module({
+                (2u << 16) | 17u, 1u,
+                (2u << 16) | 17u, 5302u,
+                (5u << 16) | 11u, 20u, 0x4c534c47u, 0x6474732eu, 0x00303534u, // %20 OpExtInstImport "GLSL.std.450"
+                (3u << 16) | 14u, 0u, 1u,
+                (6u << 16) | 15u, 4u, 17u, 0x6e69616du, 0u, 8u,
+                (3u << 16) | 16u, 17u, 7u,
+                (4u << 16) | 71u, 8u, 34u, 0u,
+                (4u << 16) | 71u, 8u, 33u, 0u,
+                (2u << 16) | 19u, 1u,
+                (3u << 16) | 33u, 2u, 1u,
+                (3u << 16) | 22u, 4u, 32u,
+                (9u << 16) | 25u, 5u, 4u, 1u, 0u, 0u, 0u, 1u, 0u,
+                (3u << 16) | 29u, 6u, 5u,                      // %6 OpTypeRuntimeArray %5 (id == the ExtInst number below)
+                (4u << 16) | 32u, 7u, 0u, 6u,
+                (4u << 16) | 21u, 9u, 32u, 0u,
+                (4u << 16) | 43u, 9u, 10u, 0u,
+                (4u << 16) | 43u, 4u, 13u, 0x3F800000u,        // %13 OpConstant %4 1.0f
+                (4u << 16) | 32u, 11u, 0u, 5u,
+                (4u << 16) | 59u, 7u, 8u, 0u,
+                (5u << 16) | 54u, 1u, 17u, 0u, 2u,
+                (2u << 16) | 248u, 18u,
+                (5u << 16) | 65u, 11u, 3u, 8u, 10u,
+                (4u << 16) | 61u, 5u, 15u, 3u,
+                (6u << 16) | 12u, 4u, 30u, 20u, 6u, 13u,       // %30 OpExtInst %4 %20 6 %13 (literal 6)
+                (1u << 16) | 253u,
+                (1u << 16) | 56u,
+            }) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rda87c);
+            puts("PASS: GUARD an ExtInst instruction number equal to a swept type id is not a reference (FD-87/FD-78)");
+        }
+
         // GUARD (heapSets mirror divergence): the bridge audit's R15b
         // collision check must consult the module's descriptor-heap set --
         // the set shared by its runtime-array variables -- exactly as
