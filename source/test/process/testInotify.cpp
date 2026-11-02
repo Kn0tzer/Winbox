@@ -721,6 +721,268 @@ void testPreadv64Syscalls() {
     rmdir(hostDir);
 }
 
+// FD-82: the 64-bit guest file-mmap path (sys_mmap64_file)
+// materializes file mappings as copied/shared pages in KMemory64,
+// which carried no open-description accounting, so FD-79's
+// close-event deferral did not apply there: a 64-bit guest saw
+// IN_CLOSE_WRITE / IN_CLOSE_NOWRITE at fd close while such a mapping
+// was still live, where the host defers the event to the last unmap.
+// Same host contract as testCloseWriteDeferral (measured on the box's
+// 6.17 kernel), driven here through the real 64-bit syscall dispatch
+// (mmap 9 / munmap 11 / close 3), so the materialized path itself is
+// the thing under test.
+void testCloseWriteDeferral64() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64kclose64XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for close-write deferral 64 test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    // Create /w64.txt with known content before any watch exists.
+    {
+        KFileDescriptorPtr created;
+        U32 result = process->openFile(B("/"), B("/w64.txt"), K_O_RDWR | K_O_CREAT, created);
+        if ((S32)result < 0 || !created) {
+            testFail("openFile(O_CREAT) for /w64.txt failed: %d", (S32)result);
+            return;
+        }
+        const char* text = "0123456789abcdef";
+        created->kobject->writeNative((U8*)text, 16);
+        process->close(created->handle);
+    }
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("allocFileDescriptor for the inotify instance failed");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/w64.txt"), 0xfff);
+    if (wd < 1) {
+        testFail("inotify_add_watch on /w64.txt failed: %d", wd);
+        return;
+    }
+
+    struct Ev { S32 wd; U32 mask; };
+    auto drainEvents = [&]() {
+        std::vector<Ev> events;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            Ev e;
+            U32 nameLen;
+            memcpy(&e.wd, buffer + offset, 4);
+            memcpy(&e.mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            events.push_back(e);
+            offset += 16 + (S32)nameLen;
+        }
+        return events;
+    };
+    auto hasClose = [](const std::vector<Ev>& events, S32 wd_, U32 bit) {
+        for (auto& e : events) {
+            if (e.wd == wd_ && (e.mask & bit)) return true;
+        }
+        return false;
+    };
+    constexpr U32 IN_CLOSE_WRITE_BIT = 0x8;
+    constexpr U32 IN_CLOSE_NOWRITE_BIT = 0x10;
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto sysMmap = [&](U64 addr, U64 len, U64 prot, U64 flags, S32 fd) -> S64 {
+        return invoke6(9, addr, len, prot, flags, (U64)(U32)fd, 0);
+    };
+    auto sysMunmap = [&](U64 addr, U64 len) -> S64 {
+        return invoke6(11, addr, len, 0, 0, 0, 0);
+    };
+    auto sysClose = [&](S32 fd) -> S64 {
+        return invoke6(3, (U64)(U32)fd, 0, 0, 0, 0, 0);
+    };
+    auto openWatched = [&](U32 flags, S32& handleOut) -> bool {
+        KFileDescriptorPtr d;
+        U32 result = process->openFile(B("/"), B("/w64.txt"), flags, d);
+        if ((S32)result < 0 || !d) return false;
+        handleOut = (S32)d->handle;
+        return true; // the local reference drops here; the fd table holds the description
+    };
+    constexpr U64 PROT_R = 1;
+    constexpr U64 PROT_RW = 3;
+    constexpr U64 MAP_SHARED_ = 0x01;
+    constexpr U64 MAP_PRIVATE_ = 0x02;
+    constexpr U64 MAP_FIXED_ = 0x10;
+    constexpr U64 MAP_ANON_ = 0x20;
+
+    // Case A64: a MAP_SHARED writable mapping made through the 64-bit
+    // mmap syscall stays live across close -- IN_CLOSE_WRITE must
+    // wait for the munmap.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case A64 open failed"); return; }
+        drainEvents(); // IN_OPEN
+        S64 addr = sysMmap(0, K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        if (addr < 0) { testFail("case A64 mmap failed: %lld", (long long)addr); return; }
+        if (memory->readb((U64)addr) != '0') {
+            testFail("case A64: the shared mapping does not show the file content");
+        }
+        memory->writeb((U64)addr, 'X');
+        sysClose(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case A64: IN_CLOSE_WRITE fired at fd close while a 64-bit shared mapping is live");
+        }
+        if (sysMunmap((U64)addr, K64_PAGE_SIZE) != 0) { testFail("case A64 munmap failed"); return; }
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case A64: IN_CLOSE_WRITE did not arrive at munmap");
+        }
+    }
+
+    // Case B64: a read-only description with a MAP_PRIVATE read
+    // mapping defers IN_CLOSE_NOWRITE the same way.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDONLY, h)) { testFail("case B64 open failed"); return; }
+        drainEvents();
+        S64 addr = sysMmap(0, K64_PAGE_SIZE, PROT_R, MAP_PRIVATE_, h);
+        if (addr < 0) { testFail("case B64 mmap failed: %lld", (long long)addr); return; }
+        if (memory->readb((U64)addr) != '0') {
+            testFail("case B64: the private mapping does not show the file content");
+        }
+        sysClose(h);
+        std::vector<Ev> atClose = drainEvents();
+        if (hasClose(atClose, wd, IN_CLOSE_NOWRITE_BIT) || hasClose(atClose, wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case B64: a close event fired at fd close while a 64-bit private mapping is live");
+        }
+        if (sysMunmap((U64)addr, K64_PAGE_SIZE) != 0) { testFail("case B64 munmap failed"); return; }
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_NOWRITE_BIT)) {
+            testFail("case B64: IN_CLOSE_NOWRITE did not arrive at munmap");
+        }
+    }
+
+    // Case C64: two mappings of one description -- the event waits
+    // for the second munmap.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case C64 open failed"); return; }
+        drainEvents();
+        S64 addr1 = sysMmap(0, K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        S64 addr2 = sysMmap(0, K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        if (addr1 < 0 || addr2 < 0 || addr1 == addr2) { testFail("case C64 mmaps failed: %lld %lld", (long long)addr1, (long long)addr2); return; }
+        sysClose(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C64: IN_CLOSE_WRITE fired at fd close with two 64-bit mappings live");
+        }
+        if (sysMunmap((U64)addr1, K64_PAGE_SIZE) != 0) { testFail("case C64 first munmap failed"); return; }
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C64: IN_CLOSE_WRITE fired at the first of two munmaps");
+        }
+        if (sysMunmap((U64)addr2, K64_PAGE_SIZE) != 0) { testFail("case C64 second munmap failed"); return; }
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C64: IN_CLOSE_WRITE did not arrive at the last munmap");
+        }
+    }
+
+    // Case D64: mapping unmapped before close -- nothing at munmap,
+    // the event fires at close.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case D64 open failed"); return; }
+        drainEvents();
+        S64 addr = sysMmap(0, K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        if (addr < 0) { testFail("case D64 mmap failed: %lld", (long long)addr); return; }
+        if (sysMunmap((U64)addr, K64_PAGE_SIZE) != 0) { testFail("case D64 munmap failed"); return; }
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case D64: IN_CLOSE_WRITE fired at munmap while the fd is still open");
+        }
+        sysClose(h);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case D64: IN_CLOSE_WRITE did not fire at close after the mapping was gone");
+        }
+    }
+
+    // Case E64: no mapping at all -- the event still fires at close.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case E64 open failed"); return; }
+        drainEvents();
+        sysClose(h);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case E64: plain close produced no IN_CLOSE_WRITE");
+        }
+    }
+
+    // Case F64: an anonymous MAP_FIXED mapping over the file mapping
+    // kills it by replacement -- the deferred event arrives at the
+    // overwrite, not before.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case F64 open failed"); return; }
+        drainEvents();
+        S64 addr = sysMmap(0, K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        if (addr < 0) { testFail("case F64 mmap failed: %lld", (long long)addr); return; }
+        sysClose(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case F64: IN_CLOSE_WRITE fired at fd close while a 64-bit shared mapping is live");
+        }
+        S64 r = sysMmap((U64)addr, K64_PAGE_SIZE, PROT_RW, MAP_FIXED_ | MAP_ANON_, -1);
+        if (r != addr) { testFail("case F64 overwrite mmap failed: %lld", (long long)r); return; }
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case F64: IN_CLOSE_WRITE did not arrive when the mapping was overwritten");
+        }
+        sysMunmap((U64)addr, K64_PAGE_SIZE);
+    }
+
+    // Case G64: a partial unmap of a two-page mapping does not fire
+    // the event; unmapping the last page does.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case G64 open failed"); return; }
+        drainEvents();
+        S64 addr = sysMmap(0, 2 * K64_PAGE_SIZE, PROT_RW, MAP_SHARED_, h);
+        if (addr < 0) { testFail("case G64 mmap failed: %lld", (long long)addr); return; }
+        sysClose(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case G64: IN_CLOSE_WRITE fired at fd close while a two-page mapping is live");
+        }
+        if (sysMunmap((U64)addr, K64_PAGE_SIZE) != 0) { testFail("case G64 partial munmap failed"); return; }
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case G64: IN_CLOSE_WRITE fired at a partial munmap");
+        }
+        if (sysMunmap((U64)addr + K64_PAGE_SIZE, K64_PAGE_SIZE) != 0) { testFail("case G64 final munmap failed"); return; }
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case G64: IN_CLOSE_WRITE did not arrive at the last page's munmap");
+        }
+    }
+
+    process->close((S32)inotifyDesc->handle);
+    rmdir(dir);
+}
+
 #endif
 
 // Native-suite variant: same event contract driven through the

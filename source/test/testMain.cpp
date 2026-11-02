@@ -129,6 +129,7 @@ void testPidfd64Syscalls();
 void testInotify64Syscalls();
 void testExeSpawnSignal64();
 void testPreadv64Syscalls();
+void testCloseWriteDeferral64();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -191,6 +192,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -903,6 +905,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
