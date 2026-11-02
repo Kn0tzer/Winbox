@@ -1898,8 +1898,9 @@ do not close the entry until they land.
 
 - **FD-63 — The emulator's periodic METRICS emission
   stops a few minutes into a session, freezing the
-  metrics snapshot for the rest of the run.** *(Low —
-  developer observability; open. Numbered FD-58 on
+  metrics snapshot for the rest of the run.
+  CLOSED 2026-11-01 — see CL-36.** *(Was Low —
+  developer observability.)* *(Numbered FD-58 on
   the lane's register; renumbered FD-63 in the
   composed numbering.)* Found by the FD-55 lane
   (2026-11-01): in a 1,752 s demo run the console
@@ -1913,6 +1914,37 @@ do not close the entry until they land.
   reading a frozen instrument. Evidence:
   `test-results/fd55/long1/` (console.txt,
   metrics.jsonl).
+  **Update — CONVICTED AND FIXED (FD-63 lane,
+  2026-11-01; record
+  `docs/reports/fd63-metrics-emission-20261101.md`).**
+  The three emitted windows in the filed evidence
+  are all SDL-present-driven (`present.path` "sdl",
+  sdl=1/2/1, gl=0, audio=0): presents were the only
+  activity the emission gate recognised in them.
+  The gate (`bw64_metrics_maybe_emit`) counted
+  presents, Vulkan frame completions, GL calls and
+  audio calls as activity — but not the syscall
+  stage, which every 64-bit syscall dispatch feeds.
+  Once the session stopped presenting, every later
+  window held only syscall activity and fell into
+  the gate's no-activity branch, which discarded
+  the accumulated counters unreported and restarted
+  the window clock — every interval, for the rest
+  of the run. The panel froze at the last
+  present-driven snapshot (syscall calls=239,
+  ms=46108.4) while the session executed on. Fix
+  `6d711e6a6`: the gate now counts syscall dispatch
+  as activity. Proof: a new section of the native
+  metrics selftest drives successive syscall-only
+  intervals against the real registry — RED on the
+  unfixed code (exactly its two assertions fail),
+  GREEN with the fix; the browser build compiles
+  on the fixed tree (wasm `1809b7d7…`). Stated
+  boundary, unchanged by design: Vulkan trap
+  traffic that never completes a frame still feeds
+  no counter — pre-existing, and not this entry's
+  evidence, whose session dispatched syscalls
+  throughout.
 
 - **FD-66 — The native bridge harness's sanitizer flavour
   cannot finish clean: readback blocks the fixture leaves
@@ -2805,6 +2837,7 @@ is behavioural, is re-proven there.
 | `lane-fd77b` | FD-77 CONVICTED + FIXED: the silent freeze is an ABBA deadlock — msync held the mapped-files mutex across a writeback that demand-faults guest pages (memory mutex second), against the demand path's memory -> mapped-files order; the specified fault-stage instrument + mutex owner records were built and the first armed run parked into a capture that names both halves; fix snapshots the mapping and writes back after release | Fault-stage instrument `3ca9decf4` (citation audit 352 rows / 0 drift; instrumented build compiles, wasm 5ebee420); deterministic test testMsyncLockOrder RED on unfixed code -> GREEN with the fix `52ee264c7`; native serial main 666/666, x64 65/65; JS 348/348; fixed browser build compiles (wasm 646f85cc); consumer 6/6 mapped, 0 parks. Record: `docs/reports/fd77-msync-abba-20261101.md`; evidence `test-results/fd77b/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 | `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
+| `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -3880,3 +3913,37 @@ its lane and is not a defect, for the stated reason:
   serial suites x64 67/67 and main 667/667, 0 FAILED;
   run-native 56 PASS; browser build "Browser export
   verified" (wasm `35302eba…`).
+- **CL-36 — The METRICS stream froze mid-session:
+  the emission gate did not count syscall dispatch
+  as activity (FD-63).** *(Filed provisionally as
+  CL-36 on lane-fd63, 2026-11-01 — CL-35 was filed
+  provisionally by the FD-54 lane on its branch;
+  the composing merge verifies by audit and
+  renumbers if needed.)*
+  Fixed on branch `lane-fd63` in `6d711e6a6`. The
+  gate in `bw64_metrics_maybe_emit`
+  (`source/util/bw64metrics.cpp`) decided whether a
+  window was worth emitting from presents, Vulkan
+  frame completions, GL calls and audio calls; the
+  syscall stage — fed by every 64-bit syscall
+  dispatch — was not counted, so once a session
+  stopped presenting, each window fell into the
+  no-activity branch and its accumulated counters
+  were discarded unreported, freezing the panel at
+  the last present-driven snapshot for the rest of
+  the run (the filed 1,752 s run: three emissions,
+  all SDL-present-driven, then silence for
+  ~1,500 s). The gate now counts syscall dispatch
+  as activity, with the reason written at the site.
+  Proof: a new section of the native metrics
+  selftest (`tools/bw64metrics-selftest.cpp`)
+  drives six successive ~600 ms intervals of
+  syscall-only accounting against the real
+  registry — RED on the unfixed code (24 PASS,
+  exactly the two new assertions FAIL), GREEN with
+  the fix; the writer's contract fixture is
+  reproduced byte-identically modulo clock fields,
+  so the committed fixture stands; reader contract
+  and panel tests 21/21; the browser build compiles
+  on the fixed tree (wasm `1809b7d7…`, support
+  archive `c4dbe35986a5…` unchanged).
