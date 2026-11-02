@@ -891,6 +891,20 @@ static U32 syscall_pwritev2(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+static U32 syscall_preadv(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "preadv: fd=%d iov=0x%X iovcnt=%d off=0x%X%X", ARG1, ARG2, ARG3, ARG5, ARG4);
+    U32 result = cpu->thread->process->preadv(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, 0, false);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_preadv2(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "preadv2: fd=%d iov=0x%X iovcnt=%d off=0x%X%X flags=%d", ARG1, ARG2, ARG3, ARG5, ARG4, ARG6);
+    U32 result = cpu->thread->process->preadv(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, ARG6, true);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
 static U32 syscall_fdatasync(CPU* cpu, U32 eipCount) {    
     U32 result = 0;
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "fdatasync: fd=%d result=%d(0x%X) IGNORED\n", ARG1, result, result);
@@ -2471,7 +2485,7 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 330
     syscall_pipe2,      // 331 __NR_pipe2
     syscall_inotify_init1,    // 332 __NR_inotify_init1
-    nullptr,                  // 333
+    syscall_preadv,           // 333 __NR_preadv
     syscall_pwritev,          // 334 __NR_pwritev
     nullptr,                  // 335
     nullptr,                  // 336
@@ -2515,7 +2529,7 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 374
     nullptr,                  // 375
     nullptr,                  // 376
-    nullptr,                  // 377
+    syscall_preadv2,          // 377 __NR_preadv2
     syscall_pwritev2,         // 378 __NR_pwritev2
     nullptr,                  // 379
     nullptr,                  // 380

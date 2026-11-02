@@ -3484,6 +3484,73 @@ U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offse
     }
     return total;
 }
+// FD-98: positioned vectored read for the 32-bit dispatcher
+// (preadv 333 / preadv2 377), walking this->pread64 per segment.
+// The validation order and return shape follow the host behaviour
+// measured for FD-98 (see the register entry): a negative offset
+// is EINVAL ahead of the descriptor check, except that
+// preadv2's offset -1 is the file-position mode (read at the
+// current position and advance it); a descriptor that cannot be
+// read is EBADF, ahead of the iovcnt range check; the iovec
+// array check (EFAULT) precedes the preadv2 flags check
+// (EOPNOTSUPP outside the defined RWF mask 0x3f), which runs
+// last. A later segment's failure returns the bytes already
+// read. The notification contract is FD-83's: exactly one
+// IN_ACCESS per successful call, 0-byte successes included — a
+// byte-moving walk notifies per segment through the file layer
+// and the inotify queue coalesces those into one observable
+// event, so only a success that moved no bytes raises it here
+// (the shape FD-92's readv established).
+U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPreadv2) {
+    S64 off = (S64)offset;
+    bool useFilePos = isPreadv2 && off == -1;
+    if (!useFilePos && off < 0) {
+        return -K_EINVAL;
+    }
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    if (!fd->canRead()) {
+        return -K_EBADF;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    KMemory* memory = thread->memory;
+    if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
+        return -K_EFAULT;
+    }
+    if (isPreadv2 && (flags & ~0x3f)) {
+        return -K_EOPNOTSUPP;
+    }
+    S64 base = useFilePos ? fd->kobject->getPos() : off;
+    U32 total = 0;
+    U32 err = 0;
+    for (S32 i = 0; i < iovcnt; i++) {
+        U32 segBase = memory->readd(iov + i * 8);
+        U32 len = memory->readd(iov + i * 8 + 4);
+        if (len == 0) continue;
+        U32 got = this->pread64(thread, handle, segBase, len, (U64)(base + (S64)total));
+        if ((S32)got < 0) { err = got; break; }
+        total += got;
+        if (got < len) break; // short read: EOF / drained
+    }
+    if (useFilePos && total > 0) {
+        fd->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && (S32)err < 0) {
+        return err;
+    }
+    if (total == 0) {
+        std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (file && file->openFile && file->openFile->node) {
+            KInotify::notifyAccessed(file->openFile->node.get());
+        }
+    }
+    return total;
+}
+
 U32 KProcess::memfd_create(BString name, U32 flags) {
     constexpr U32 supportedFlags = 1u /*MFD_CLOEXEC*/ | 2u /*MFD_ALLOW_SEALING*/;
     if (flags & ~supportedFlags) return (U32)-K_EINVAL;

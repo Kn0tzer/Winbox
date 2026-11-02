@@ -1,0 +1,41 @@
+Running 1 Test tests with 1 threads starting at 653
+Test 32-bit preadv and preadv2 dispatch ... FAILED
+  32-bit preadv of three segments did not return 12 with contents '' '' ''
+  32-bit preadv must generate exactly one IN_ACCESS
+  32-bit preadv across EOF did not return 2 with the tail in segment 0 only
+  short 32-bit preadv must generate exactly one IN_ACCESS
+  32-bit preadv at EOF did not return 0
+  32-bit preadv at EOF must still generate one IN_ACCESS
+  32-bit preadv with iovcnt 0 did not return 0
+  32-bit preadv with iovcnt 0 must generate one IN_ACCESS
+  32-bit preadv with all-zero-length segments did not return 0
+  32-bit preadv with all-zero-length segments must generate one IN_ACCESS
+  32-bit preadv with a zero-length segment did not return 8 with contents '' ''
+  32-bit preadv at offset 2^32+2 did not return 0 (pos_h ignored?)
+  32-bit preadv with a bad second segment did not return the 4 bytes read
+  partial 32-bit preadv must generate exactly one IN_ACCESS
+  32-bit preadv with a bad first segment was not -EFAULT
+  32-bit preadv with iovcnt -1 was not -EINVAL
+  32-bit preadv with iovcnt IOV_MAX+1 was not -EINVAL
+  32-bit preadv with offset -1 was not -EINVAL
+  32-bit preadv with offset -2 was not -EINVAL
+  32-bit preadv with a bad descriptor and offset -1 was not -EINVAL (offset precedes descriptor)
+  32-bit preadv with a bad descriptor was not -EBADF
+  32-bit preadv2 with a bad descriptor and offset -1 was not -EBADF (the -1 position mode is legal)
+  32-bit preadv2 with a bad descriptor and offset -2 was not -EINVAL
+  32-bit preadv2 with iovcnt -1 and an undefined flag bit was not -EINVAL (range precedes flags)
+  32-bit preadv2 with an undefined flag bit was not -EOPNOTSUPP
+  32-bit preadv with a null iovec was not -EFAULT
+  32-bit preadv2 with a null iovec and an undefined flag bit was not -EFAULT (array precedes flags)
+  32-bit preadv on a write-only descriptor was not -EBADF
+  32-bit preadv on a write-only descriptor with iovcnt 0 was not -EBADF
+  32-bit preadv2 on a write-only descriptor with an undefined flag bit was not -EBADF (mode precedes flags)
+  32-bit preadv2 with flags 0 did not return 4 with content ''
+  32-bit preadv2 must generate exactly one IN_ACCESS
+  32-bit preadv2 with RWF_NOWAIT failed
+  32-bit preadv2 with flag 0x20 failed
+  32-bit preadv2 offset -1 did not read at the file position
+  32-bit preadv2 offset -1 left the position at 5, expected 9
+  32-bit preadv2 offset -1 must generate exactly one IN_ACCESS
+  32-bit preadv test could not open /sub
+1 tests FAILED in 0s

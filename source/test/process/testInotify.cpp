@@ -3032,6 +3032,10 @@ void testPreadv32Dispatch() {
         testFail("mkdtemp failed for 32-bit preadv test");
         return;
     }
+    if (mkdir((std::string(dir) + "/sub").c_str(), 0755) != 0) {
+        testFail("32-bit preadv test could not create its subdir");
+        return;
+    }
     std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
     struct RootRestore {
         std::shared_ptr<FsFileNode> previous;
@@ -3327,9 +3331,7 @@ void testPreadv32Dispatch() {
 
     // 11. A directory descriptor follows the positioned core's
     // answer (-EISDIR, the host's answer too).
-    if (mkdir((std::string(dir) + "/sub").c_str(), 0755) != 0) {
-        testFail("32-bit preadv test could not create its subdir");
-    } else {
+    {
         KFileDescriptorPtr ddesc;
         U32 dr = process->openFile(B("/"), B("/sub"), K_O_RDONLY, ddesc);
         if ((S32)dr < 0 || !ddesc) {

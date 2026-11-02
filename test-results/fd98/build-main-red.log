@@ -1,0 +1,21 @@
+make: Entering directory '/home/ubuntu/wt-fd98/project/linux'
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-fd98/project/linux'
+MAKEFLAGS 
+/home/ubuntu/wt-fd98/source/test/process/testInotify.cpp: In lambda function:
+/home/ubuntu/wt-fd98/source/test/process/testInotify.cpp:1305:37: error: ‘IN_ACCESS’ was not declared in this scope; did you mean ‘K_IN_ACCESS’?
+ 1305 |         for (U32 m : masks) if (m & IN_ACCESS) n++;
+      |                                     ^~~~~~~~~
+      |                                     K_IN_ACCESS
+make[1]: *** [makefile:157: Build/Test//home/ubuntu/wt-fd98/source/test/process/testInotify.cpp.o] Error 1
+make[1]: *** Waiting for unfinished jobs....
+/home/ubuntu/wt-fd98/source/test/process/testKernelGrace.cpp: In function ‘void testKernelGrace()’:
+/home/ubuntu/wt-fd98/source/test/process/testKernelGrace.cpp:63:39: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   63 |     if (epoll->readNative(scratch, 8) != -K_EINVAL) { testFail("epoll readNative must return EINVAL"); return; }
+/home/ubuntu/wt-fd98/source/test/process/testKernelGrace.cpp:64:40: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   64 |     if (epoll->writeNative(scratch, 8) != -K_EINVAL) { testFail("epoll writeNative must return EINVAL"); return; }
+/home/ubuntu/wt-fd98/source/test/process/testKernelGrace.cpp:113:41: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+  113 |     if (sigObj->writeNative(scratch, 8) != -K_EINVAL) { testFail("signalfd writeNative must return EINVAL"); return; }
+make[1]: Leaving directory '/home/ubuntu/wt-fd98/project/linux'
+make: *** [makefile:42: test] Error 2
+make: Leaving directory '/home/ubuntu/wt-fd98/project/linux'

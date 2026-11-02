@@ -1,0 +1,7 @@
+make: Entering directory '/home/ubuntu/wt-fd98/project/linux'
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-fd98/project/linux'
+MAKEFLAGS 
+make[1]: Leaving directory '/home/ubuntu/wt-fd98/project/linux'
+make: Leaving directory '/home/ubuntu/wt-fd98/project/linux'
+BUILD_EXIT=0
