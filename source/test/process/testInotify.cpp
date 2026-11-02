@@ -22,6 +22,7 @@
 
 #include "kerror.h"
 #include "kinotify.h"
+#include "kevent.h"
 #include "../../io/fs.h"
 #include "../../io/fsfilenode.h"
 #include "../cpu/testCPU.h"
@@ -959,6 +960,30 @@ void testWriteBadBuffer64Syscalls() {
 //    (EINVAL) and its null-iovec check (EFAULT).
 //  - a successful pwrite64 does not move the file position.
 void testWriteFamily64Syscalls() {
+// FD-94: x64 pwritev (296) / pwritev2 (328). On the base both numbers
+// are in the name table only -- no X64_SYS define, no dispatch case --
+// so every call answers ENOSYS. Host-kernel reference behaviour
+// (measured on the box's 6.17 kernel with dedicated reference
+// programs, test-results/fd94-96/hostref-pwritev*.c):
+//  - segments are written in order at successive offsets; the file
+//    position does not move; a zero-length segment is skipped; a
+//    short write ends the walk.
+//  - validation order: a negative offset is EINVAL ahead of the
+//    descriptor check (EBADF); the descriptor check is ahead of the
+//    pwritev2 flags check (EOPNOTSUPP for bits outside the defined
+//    RWF mask) and of the iovcnt range check (EINVAL outside
+//    [0, IOV_MAX]); a bad iovec array with iovcnt > 0 is EFAULT.
+//  - a later segment's failure returns the bytes already written
+//    (the writev partial shape); a failing first segment returns
+//    the error itself.
+//  - pwritev2 offset -1 is the file-position mode (write at the
+//    current position and advance it); offset below -1 is EINVAL.
+//    RWF_APPEND writes at end of file ignoring the offset and,
+//    outside the -1 mode, leaves the position untouched.
+//  - a successful multi-segment call produces one watcher-visible
+//    IN_MODIFY (the queue coalesces the per-segment events, as on
+//    Linux); failed calls produce none.
+void testPwritev64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -1811,6 +1836,16 @@ void testSendtoBadBuffer64Syscalls() {
     char* hostDir = mkdtemp(dirTemplate);
     if (!hostDir) {
         testFail("write-family test could not create its host temp dir");
+    constexpr U64 page = 0x7A000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+        testFail("pwritev test could not map its fixture page");
+        return;
+    }
+    char dirTemplate[] = "/tmp/k3bpwritevXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("pwritev test could not create its host temp dir");
         return;
     }
     std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
@@ -1830,6 +1865,58 @@ void testSendtoBadBuffer64Syscalls() {
         }
     }
     const S32 fileFd = (S32)fileDesc->handle;
+            testFail("pwritev test could not create /data.bin");
+            return;
+        }
+        const char* text = "0123456789ABCDEFGHIJ";
+        fileDesc->kobject->writeNative((U8*)text, 20);
+        fileDesc->kobject->seek(0);
+    }
+    S32 fd = (S32)fileDesc->handle;
+    const std::string hostPath = std::string(hostDir) + "/data.bin";
+    auto hostContent = [&]() {
+        std::string out;
+        FILE* f = fopen(hostPath.c_str(), "rb");
+        if (!f) return out;
+        char chunk[4096];
+        size_t n;
+        while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) out.append(chunk, n);
+        fclose(f);
+        return out;
+    };
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("pwritev test could not create its inotify instance");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
+    if (wd < 1) {
+        testFail("pwritev test could not watch /data.bin");
+        return;
+    }
+    auto drainMasks = [&]() {
+        std::vector<U32> masks;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            U32 mask, nameLen;
+            memcpy(&mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            masks.push_back(mask);
+            offset += 16 + (S32)nameLen;
+        }
+        return masks;
+    };
+    auto modifyCount = [&](const std::vector<U32>& masks) {
+        int n = 0;
+        for (U32 m : masks) if (m & IN_MODIFY) n++;
+        return n;
+    };
+    drainMasks(); // setup noise
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -2104,6 +2191,10 @@ void testRecvmsgBadBuffer64Syscalls() {
         }
         return true;
     };
+    constexpr U64 iovAt = page + 0x100;
+    constexpr U64 seg0 = page + 0x400;
+    constexpr U64 seg1 = page + 0x500;
+    constexpr U64 seg2 = page + 0x600;
     auto setIov = [&](U32 idx, U64 base, U64 len) {
         memory->writeq(iovAt + idx * 16, base);
         memory->writeq(iovAt + idx * 16 + 8, len);
@@ -2450,6 +2541,199 @@ void testRecvmsgBadBuffer64Syscalls() {
         testFail("write from a write-only page returned %lld", (long long)r);
     }
 
+    auto stageText = [&](U64 at, const char* text, U32 len) {
+        memory->memcpyToGuest(at, text, len);
+    };
+    auto filePos = [&]() -> S64 { return invoke6(8, (U64)(U32)fd, 0, 1, 0, 0, 0); }; // lseek(fd, 0, SEEK_CUR)
+    auto setPos = [&](S64 pos) -> S64 { return invoke6(8, (U64)(U32)fd, (U64)pos, 0, 0, 0, 0); }; // SEEK_SET
+
+    // 1. Three segments at offset 2; position untouched; one IN_MODIFY.
+    stageText(seg0, "abcd", 4); stageText(seg1, "efgh", 4); stageText(seg2, "ijkl", 4);
+    setIov(0, seg0, 4); setIov(1, seg1, 4); setIov(2, seg2, 4);
+    S64 r = invoke6(296, (U64)(U32)fd, iovAt, 3, 2, 0, 0);
+    if (r != 12 || hostContent() != "01abcdefghijklEFGHIJ") {
+        testFail("pwritev 3 segments at offset 2 returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 0) {
+        testFail("pwritev moved the file position to %lld", (long long)filePos());
+    }
+    if (modifyCount(drainMasks()) != 1) {
+        testFail("3-segment pwritev must generate exactly one watcher-visible IN_MODIFY");
+    }
+
+    // 2. A zero-length segment in the middle is skipped.
+    stageText(seg0, "wxyz", 4); stageText(seg2, "WXYZ", 4);
+    setIov(0, seg0, 4); setIov(1, seg1, 0); setIov(2, seg2, 4);
+    r = invoke6(296, (U64)(U32)fd, iovAt, 3, 14, 0, 0);
+    if (r != 8 || hostContent() != "01abcdefghijklwxyzWXYZ") {
+        testFail("pwritev with a zero-length segment returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    drainMasks();
+
+    // 3. Partial shape: a good first segment and a bad second segment
+    // return the bytes already written, and only those bytes land.
+    stageText(seg0, "xyz", 3);
+    setIov(0, seg0, 3); setIov(1, 0x1000, 3); // 0x1000: unmapped guest page
+    r = invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0);
+    if (r != 3 || hostContent().substr(0, 3) != "xyz") {
+        testFail("pwritev with a bad second segment returned %lld with content prefix '%s'",
+                 (long long)r, hostContent().substr(0, 3).c_str());
+    }
+    if (modifyCount(drainMasks()) != 1) {
+        testFail("partial pwritev must generate exactly one IN_MODIFY");
+    }
+
+    // 4. A bad first segment returns the error itself.
+    setIov(0, 0x1000, 3); setIov(1, seg0, 3);
+    if (invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0) != -K_EFAULT) {
+        testFail("pwritev with a bad first segment was not -EFAULT");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("failed pwritev generated IN_MODIFY");
+    }
+
+    // 5. Validation, in the measured order; none of it writes or
+    // generates IN_MODIFY.
+    if (invoke6(296, 9999, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with a bad descriptor and offset -1 was not -EINVAL (offset precedes descriptor)");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with offset -1 was not -EINVAL");
+    }
+    if (invoke6(296, 9999, iovAt, 1, 0, 0, 0) != -9) {
+        testFail("pwritev with a bad descriptor was not -EBADF");
+    }
+    if (invoke6(296, 9999, iovAt, 0, 0, 0, 0) != -9) {
+        testFail("pwritev with a bad descriptor and iovcnt 0 was not -EBADF");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt 0 and offset -1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0, 0, 0) != 0) {
+        testFail("pwritev with iovcnt 0 did not return 0");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 1025, 0, 0, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, 0, 1, 0, 0, 0) != -K_EFAULT) {
+        testFail("pwritev with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0, 0, 0x40) != -K_EOPNOTSUPP) {
+        testFail("pwritev2 with an undefined flag bit was not -EOPNOTSUPP");
+    }
+    if (invoke6(328, 9999, iovAt, 1, 0, 0, 0x40) != -9) {
+        testFail("pwritev2 with a bad descriptor and a bad flag was not -EBADF (descriptor precedes flags)");
+    }
+    if (invoke6(328, 9999, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 with a bad descriptor and offset -2 was not -EINVAL (offset precedes descriptor)");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 with offset -2 was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 in position mode with iovcnt -1 was not -EINVAL");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("rejected pwritev/pwritev2 calls generated IN_MODIFY");
+    }
+
+    // 6. pwritev2 offset -1 is the file-position mode: writes at the
+    // current position and advances it.
+    if (setPos(5) != 5) {
+        testFail("pwritev test could not seek its fixture file");
+        return;
+    }
+    stageText(seg0, "PQ", 2);
+    setIov(0, seg0, 2);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0);
+    if (r != 2 || hostContent().substr(5, 2) != "PQ") {
+        testFail("pwritev2 offset -1 returned %lld with content '%s'",
+                 (long long)r, hostContent().substr(5, 2).c_str());
+    }
+    if (filePos() != 7) {
+        testFail("pwritev2 offset -1 left the position at %lld, expected 7", (long long)filePos());
+    }
+    drainMasks();
+
+    // 7. RWF_APPEND ignores the offset, writes at end of file, and
+    // leaves the position untouched outside the -1 mode.
+    stageText(seg0, "ZZ", 2);
+    setIov(0, seg0, 2);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 2, 0, 0x10);
+    if (r != 2 || hostContent().size() != 24 || hostContent().substr(22, 2) != "ZZ") {
+        testFail("pwritev2 RWF_APPEND returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 7) {
+        testFail("pwritev2 RWF_APPEND moved the position to %lld", (long long)filePos());
+    }
+    drainMasks();
+
+    // 8. RWF_APPEND with offset -1 appends and the position follows
+    // the written bytes to the new end of file.
+    stageText(seg0, "Q", 1);
+    setIov(0, seg0, 1);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0x10);
+    if (r != 1 || hostContent().size() != 25 || hostContent().substr(24, 1) != "Q") {
+        testFail("pwritev2 RWF_APPEND offset -1 returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 25) {
+        testFail("pwritev2 RWF_APPEND offset -1 left the position at %lld, expected 25", (long long)filePos());
+    }
+    drainMasks();
+
+    // 9. A read-only descriptor follows pwrite64's house answer
+    // (-EINVAL; the host answers EBADF for the whole positioned-write
+    // family -- that divergence is the write family's, registered
+    // separately, exactly as the preadv test pins the read side).
+    {
+        KFileDescriptorPtr rdesc;
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdesc);
+        if ((S32)result < 0 || !rdesc) {
+            testFail("pwritev test could not open /data.bin read-only");
+            return;
+        }
+        setIov(0, seg0, 2);
+        if (invoke6(296, (U64)(U32)rdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
+            testFail("pwritev on a read-only descriptor was not -EINVAL");
+        }
+        process->close(rdesc->handle);
+    }
+
+    // 10. pos_h is honored: offset 2^32 lands past 4 GiB (sparse),
+    // verified on the host backing file.
+    {
+        KFileDescriptorPtr desc2;
+        U32 result = process->openFile(B("/"), B("/data2.bin"), K_O_RDWR | K_O_CREAT, desc2);
+        if ((S32)result < 0 || !desc2) {
+            testFail("pwritev test could not create /data2.bin");
+            return;
+        }
+        stageText(seg0, "END!", 4);
+        setIov(0, seg0, 4);
+        r = invoke6(296, (U64)(U32)desc2->handle, iovAt, 1, 0, 1, 0);
+        if (r != 4) {
+            testFail("pwritev at offset 2^32 returned %lld (pos_h ignored?)", (long long)r);
+        }
+        process->close(desc2->handle);
+        const std::string hostPath2 = std::string(hostDir) + "/data2.bin";
+        struct stat st;
+        char tail[4] = {0, 0, 0, 0};
+        int hfd = open(hostPath2.c_str(), O_RDONLY);
+        if (hfd < 0 || fstat(hfd, &st) != 0 || st.st_size != (S64)((1ULL << 32) + 4) ||
+            pread(hfd, tail, 4, (off_t)(1ULL << 32)) != 4 || memcmp(tail, "END!", 4) != 0) {
+            testFail("pwritev at offset 2^32 did not land 'END!' at 2^32 on the backing file");
+        }
+        if (hfd >= 0) close(hfd);
+    }
+
+    process->close((S32)inotifyDesc->handle);
     process->close(fd);
     rmdir(hostDir);
 }
@@ -2539,6 +2823,239 @@ void testRecvmsgBadBuffer64Syscalls() {
 
 
 #endif
+
+// FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
+// table slots are nullptr, so every call answers ENOSYS. Driven
+// through the real int 0x80 dispatch, following the FD-92 readv
+// test's staging pattern (guest memory is wiped by
+// testNewInstruction, so segments and payloads are staged inside
+// invoke()). The host contract is the one measured for the x64
+// test above: offset EINVAL ahead of the descriptor check,
+// descriptor ahead of flags and iovcnt, the partial shape, and
+// pwritev2's -1 position mode and RWF_APPEND.
+void testPwritev32Dispatch() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    char dirTemplate[] = "/tmp/bw64kpwritev32XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for 32-bit pwritev test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+    if ((S32)result < 0 || !fileDesc) {
+        testFail("32-bit pwritev test could not create /data.bin");
+        return;
+    }
+    const char* text = "0123456789ABCDEFGHIJ";
+    fileDesc->kobject->writeNative((U8*)text, 20);
+    fileDesc->kobject->seek(0);
+    const S32 fd = (S32)fileDesc->handle;
+    const std::string hostPath = std::string(dir) + "/data.bin";
+    auto hostContent = [&]() {
+        std::string out;
+        FILE* f = fopen(hostPath.c_str(), "rb");
+        if (!f) return out;
+        char chunk[4096];
+        size_t n;
+        while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) out.append(chunk, n);
+        fclose(f);
+        return out;
+    };
+
+    constexpr U32 iovAt = TEST_HEAP_ADDRESS + 0x400;
+    constexpr U32 buf0 = TEST_HEAP_ADDRESS + 0x800;
+    constexpr U32 buf1 = TEST_HEAP_ADDRESS + 0x900;
+    constexpr U32 buf2 = TEST_HEAP_ADDRESS + 0xA00;
+    U32 stagedBase[8];
+    U32 stagedLen[8];
+    const char* stagedText[8];
+    U32 stagedCount = 0;
+    auto setIov = [&](U32 idx, U32 base, U32 len, const char* payload) {
+        stagedBase[idx] = base;
+        stagedLen[idx] = len;
+        stagedText[idx] = payload;
+        if (idx + 1 > stagedCount) stagedCount = idx + 1;
+    };
+    // Guest memory for the dispatched calls is context.memory: the
+    // dispatcher runs on context.cpu.
+    auto invoke = [&](U32 nr, S32 callFd, S32 iovcnt, U32 posLo, U32 posHi, U32 flags) -> S32 {
+        testNewInstruction(0);
+        for (U32 i = 0; i < stagedCount; i++) {
+            context.memory->writed(iovAt + i * 8 + 0, stagedBase[i]);
+            context.memory->writed(iovAt + i * 8 + 4, stagedLen[i]);
+            if (stagedText[i] && stagedLen[i]) {
+                context.memory->memcpy(stagedBase[i], (void*)stagedText[i], stagedLen[i]);
+            }
+        }
+        testPushCode8(0xB8); testPushCode32(nr); // mov eax, nr
+        testPushCode8(0xCD); testPushCode8(0x80); // int 0x80
+        context.cpu->reg[3].u32 = (U32)callFd;  // EBX
+        context.cpu->reg[1].u32 = iovAt;        // ECX
+        context.cpu->reg[2].u32 = (U32)iovcnt;  // EDX
+        context.cpu->reg[6].u32 = posLo;        // ESI
+        context.cpu->reg[7].u32 = posHi;        // EDI
+        context.cpu->reg[5].u32 = flags;        // EBP
+        testRunCPU();
+        return (S32)context.cpu->reg[0].u32;
+    };
+
+    // 1. Three segments at offset 2 through 334; position untouched.
+    setIov(0, buf0, 4, "abcd"); setIov(1, buf1, 4, "efgh"); setIov(2, buf2, 4, "ijkl");
+    if (invoke(334, fd, 3, 2, 0, 0) != 12 || hostContent() != "01abcdefghijklEFGHIJ") {
+        testFail("32-bit pwritev of three segments did not return 12 with content '%s'", hostContent().c_str());
+    }
+    if (fileDesc->kobject->getPos() != 0) {
+        testFail("32-bit pwritev moved the file position");
+    }
+
+    // 2. Validation, in the measured order.
+    setIov(0, buf0, 3, "xyz");
+    if (invoke(334, 9999, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit pwritev with a bad descriptor and offset -1 was not -EINVAL");
+    }
+    if (invoke(334, fd, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != -K_EINVAL) {
+        testFail("32-bit pwritev with offset -1 was not -EINVAL");
+    }
+    if (invoke(334, 9999, 1, 0, 0, 0) != -K_EBADF) {
+        testFail("32-bit pwritev with a bad descriptor was not -EBADF");
+    }
+    if (invoke(334, fd, -1, 0, 0, 0) != -K_EINVAL) {
+        testFail("32-bit pwritev with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke(334, fd, 1025, 0, 0, 0) != -K_EINVAL) {
+        testFail("32-bit pwritev with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke(334, fd, 0, 0, 0, 0) != 0) {
+        testFail("32-bit pwritev with iovcnt 0 did not return 0");
+    }
+    {
+        // A null iovec with iovcnt 1: invoke() always passes iovAt,
+        // so drive this one by hand.
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(334);
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = (U32)fd;
+        context.cpu->reg[1].u32 = 0;
+        context.cpu->reg[2].u32 = 1;
+        context.cpu->reg[6].u32 = 0;
+        context.cpu->reg[7].u32 = 0;
+        context.cpu->reg[5].u32 = 0;
+        testRunCPU();
+        if ((S32)context.cpu->reg[0].u32 != -K_EFAULT) {
+            testFail("32-bit pwritev with a null iovec was not -EFAULT");
+        }
+    }
+
+    // 3. Partial shape: good first segment, bad second segment.
+    setIov(0, buf0, 3, "xyz"); setIov(1, 0x1000, 3, nullptr);
+    if (invoke(334, fd, 2, 0, 0, 0) != 3 || hostContent().substr(0, 3) != "xyz") {
+        testFail("32-bit pwritev with a bad second segment did not return the 3 bytes written");
+    }
+
+    // 4. pwritev2 (378): flags, the -1 position mode, RWF_APPEND.
+    setIov(0, buf0, 2, "PQ");
+    if (invoke(378, fd, 1, 0, 0, 0x40) != -K_EOPNOTSUPP) {
+        testFail("32-bit pwritev2 with an undefined flag bit was not -EOPNOTSUPP");
+    }
+    fileDesc->kobject->seek(5);
+    if (invoke(378, fd, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0) != 2 || hostContent().substr(5, 2) != "PQ") {
+        testFail("32-bit pwritev2 offset -1 did not write at the file position");
+    }
+    if (fileDesc->kobject->getPos() != 7) {
+        testFail("32-bit pwritev2 offset -1 left the position at %lld, expected 7",
+                 (long long)fileDesc->kobject->getPos());
+    }
+    setIov(0, buf0, 2, "ZZ");
+    if (invoke(378, fd, 1, 2, 0, 0x10) != 2 || hostContent().size() != 22 ||
+        hostContent().substr(20, 2) != "ZZ") {
+        testFail("32-bit pwritev2 RWF_APPEND did not append at end of file");
+    }
+    if (fileDesc->kobject->getPos() != 7) {
+        testFail("32-bit pwritev2 RWF_APPEND moved the file position");
+    }
+
+    process->close(fd);
+    rmdir(dir);
+}
+
+// FD-96: the 32-bit vectored write walk (KObject::writev, reached
+// through KProcess::writev) returned a later segment's error even
+// when earlier segments had already written; the host returns the
+// bytes written (measured: a good 3-byte first segment and a bad
+// second segment return 3). The walk's one caller-visible failure
+// shape is pinned here with an eventfd, whose counter overflow
+// fails a segment deterministically (-EAGAIN) once earlier
+// segments have landed.
+void testWritevPartialError() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    std::shared_ptr<KEvent> event = std::make_shared<KEvent>();
+    event->blocking = false;
+    KFileDescriptorPtr eventDesc = process->allocFileDescriptor(event, K_O_RDWR, 0, -1, 0);
+    if (!eventDesc || !eventDesc->kobject) {
+        testFail("writev partial test could not create its eventfd");
+        return;
+    }
+    const S32 fd = (S32)eventDesc->handle;
+    constexpr U32 iovAt = TEST_HEAP_ADDRESS + 0x400;
+    constexpr U32 val0 = TEST_HEAP_ADDRESS + 0x800;
+    constexpr U32 val1 = TEST_HEAP_ADDRESS + 0x900;
+    auto stage = [&](U64 v0, U64 v1) {
+        thread->memory->writed(iovAt + 0, val0);
+        thread->memory->writed(iovAt + 4, 8);
+        thread->memory->writed(iovAt + 8, val1);
+        thread->memory->writed(iovAt + 12, 8);
+        thread->memory->writed(val0 + 0, (U32)v0);
+        thread->memory->writed(val0 + 4, (U32)(v0 >> 32));
+        thread->memory->writed(val1 + 0, (U32)v1);
+        thread->memory->writed(val1 + 4, (U32)(v1 >> 32));
+    };
+
+    // Partial: the first segment lands (counter 10 -> 15), the
+    // second overflows the counter and fails. The answer is the
+    // 8 bytes already written, not the second segment's error.
+    event->counter = 10;
+    stage(5, 0xFFFFFFFFFFFFFFFFULL);
+    U32 r = process->writev(thread, fd, iovAt, 2);
+    if ((S32)r != 8) {
+        testFail("writev with a failing second segment returned %d, expected the 8 bytes already written", (S32)r);
+    }
+    if (event->counter != 15) {
+        testFail("writev partial case left the eventfd counter at %llu, expected 15",
+                 (unsigned long long)event->counter);
+    }
+
+    // A failing first segment still returns its error: nothing was
+    // written, so there is no byte count to report.
+    event->counter = 0xFFFFFFFFFFFFFFF0ULL;
+    stage(0xFF, 1);
+    r = process->writev(thread, fd, iovAt, 2);
+    if ((S32)r != -K_EAGAIN) {
+        testFail("writev with a failing first segment returned %d, expected -EAGAIN", (S32)r);
+    }
+
+    // Every segment lands: the total byte count.
+    event->counter = 0;
+    stage(5, 7);
+    r = process->writev(thread, fd, iovAt, 2);
+    if ((S32)r != 16 || event->counter != 12) {
+        testFail("writev of two good segments returned %d with counter %llu, expected 16 and 12",
+                 (S32)r, (unsigned long long)event->counter);
+    }
+
+    process->close(fd);
+}
 
 // Native-suite variant: same event contract driven through the
 // width-agnostic KProcess API (the x64 test above drives the syscall

@@ -116,6 +116,8 @@ void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
+void testPwritev32Dispatch();
+void testWritevPartialError();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
@@ -139,6 +141,7 @@ void testSendtoBadBuffer64Syscalls();
 void testRecvmsgBadBuffer64Syscalls();
 void testWriteBadBuffer64Syscalls();
 void testWriteFamily64Syscalls();
+void testPwritev64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -209,6 +212,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testRecvmsgBadBuffer64Syscalls, "Test x64 recvmsg scatter to unwritable guest buffers"},
     {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
+    {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -917,6 +921,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
+    {testPwritev32Dispatch, "Test 32-bit pwritev and pwritev2 dispatch"},
+    {testWritevPartialError, "Test 32-bit writev partial-error return shape (FD-96)"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
@@ -927,6 +933,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
+    {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},
