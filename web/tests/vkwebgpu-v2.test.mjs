@@ -60,15 +60,21 @@ function dxvkFrame(frameNo = 7) {
     new W().u32(1).u32(0).u32(106).u32(12).buf()                   // loc 1, binding 0, R32G32B32_SFLOAT, off 12
   )));
   R.push(rec(V2_REC.BIND_SETS, cat(new W().u8(0).u8(2).u16(0).buf(), new W().u64(0xa1).u64(0xa2).buf())));
-  // set 0: uniform buffer + 3-element sampled-image array + sampler
+  // set 0: uniform buffer + 3-element sampled-image array + sampler.
+  // Wire header is u8 setIndex, u8 pad, u16 nBind (docs/vulkan-protocol.md
+  // 0x08; the bridge's emitDescSet writes exactly this) and a descriptor
+  // array travels as one entry per element (count 1, dstArrayElement =
+  // element index) -- see FD-64.
   R.push(rec(V2_REC.DESC_SET, cat(
-    new W().u8(0).u8(3).u16(0).u64(0x1eaf).buf(),
+    new W().u8(0).u8(0).u16(5).u64(0x1eaf).buf(),
     new W().u32(0).u32(6).u32(0).u32(1).u8(1).u8(0).u16(0).u64(0xb001).u64(128).u64(0).buf(),   // binding 0: UBO
-    new W().u32(1).u32(2).u32(0).u32(3).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).u64(0).buf(),       // binding 1: 3 sampled images
+    new W().u32(1).u32(2).u32(0).u32(1).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).u64(0).buf(),       // binding 1 elem 0: sampled image
+    new W().u32(1).u32(2).u32(1).u32(1).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).u64(0).buf(),       // binding 1 elem 1: sampled image
+    new W().u32(1).u32(2).u32(2).u32(1).u8(2).u8(0).u16(0).u64(0x9e9).u64(0).u64(0).buf(),       // binding 1 elem 2: sampled image
     new W().u32(2).u32(0).u32(0).u32(1).u8(3).u8(0).u16(0).u64(0x5a5a).u64(0).u64(0).buf()       // binding 2: sampler
   )));
   R.push(rec(V2_REC.DESC_SET, cat(
-    new W().u8(1).u8(1).u16(0).u64(0x2eaf).buf(),
+    new W().u8(1).u8(0).u16(1).u64(0x2eaf).buf(),
     new W().u32(0).u32(1000138000).u32(0).u32(16).u8(4).u8(0).u16(0).u64(0xdead).u64(16).u64(0).buf() // inline uniform block
   )));
   R.push(rec(V2_REC.BUFFER_DATA, cat(new W().u64(0xb001).u64(0).u64(0x1001).u32(8).buf(), new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]))));
@@ -210,7 +216,13 @@ test('render-target cache keys alias by VkImage identity', () => {
   const sampler = frame.samplers.get('0000000000005a5a');
   assert.deepEqual(sampler, {
     mag: 'linear', min: 'linear', mipmap: 'linear',
-    addrU: 'clamp-to-edge', addrV: 'clamp-to-edge', addrW: 'clamp-to-edge',
+    // Fixture modes are U=3 (CLAMP_TO_BORDER), V=3, W=4
+    // (MIRROR_CLAMP_TO_EDGE): ADDR collapses border to clamp-to-edge and
+    // mirror-clamp to mirror-repeat, and the raw modes ride along for the
+    // page tier's border emulation (FD-64: expectation updated to the
+    // current decoder contract).
+    addrU: 'clamp-to-edge', addrV: 'clamp-to-edge', addrW: 'mirror-repeat',
+    addrModeU: 3, addrModeV: 3, addrModeW: 4,
     maxAnisotropy: 8, anisotropyEnable: true, compareEnable: true, compareOp: 3,
     mipLodBias: 1.25, minLod: 2.5, maxLod: 9.5, borderColor: 4,
   });
@@ -227,11 +239,11 @@ test('render-target cache keys alias by VkImage identity', () => {
     'viewport', 'scissor', 'vbind', 'ibind', 'draw', 'inline']);
 
   const ds0 = pass.ops.find(o => o.op === 'descSet' && o.setIndex === 0);
-  assert.equal(ds0.bindings.length, 3);
-  const arr = ds0.bindings.find(b => b.binding === 1);
-  assert.equal(arr.count, 3, 'descriptor array geometry is explicit, not collapsed to element 0');
-  assert.equal(arr.dstArrayElement, 0);
-  assert.equal(arr.kind, 2);
+  assert.equal(ds0.bindings.length, 5);
+  const arr = ds0.bindings.filter(b => b.binding === 1);
+  assert.equal(arr.length, 3, 'descriptor array geometry is explicit: one wire entry per element, not collapsed to element 0');
+  assert.deepEqual(arr.map(b => b.dstArrayElement), [0, 1, 2]);
+  assert.ok(arr.every(b => b.count === 1 && b.kind === 2));
 
   const pushes = pass.ops.filter(o => o.op === 'push');
   assert.equal(pushes[0].offset, 0);
