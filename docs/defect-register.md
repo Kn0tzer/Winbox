@@ -2607,8 +2607,7 @@ do not close the entry until they land.
   link the backing store cannot hard-link - which is all
   of them: the temp-file-to-lock-name pattern
   (fontconfig's cache locks) failed 57 times per 32-bit
-  boot. FIXED on lane-fd81-linktmp - awaiting merge (see
-  Section B).** *(Medium - a mainstream library startup
+  boot. CLOSED 2026-11-01 — see CL-33.** *(Medium - a mainstream library startup
   pattern's step fails on every 32-bit boot; fontconfig
   copes, but any guest code that requires the link
   breaks.)* Filed 2026-11-01 from the FD-58..60 deploy
@@ -3663,3 +3662,70 @@ its lane and is not a defect, for the stated reason:
   (`ref_inotify.c/.out`, `ref2.c/.out`,
   `ref3.c/.out`). One adjacent difference the same
   references found is filed separately as FD-79.
+
+- **CL-33 — The temp-file-to-lock-name link pattern
+  is served with true shared content (FD-81).**
+  *(Filed as FD-81 on lane-fd81-linktmp, 2026-11-01;
+  the number was verified free on the integration
+  register and settled at composition; this closure
+  is written at composition, the merge gate having
+  reproduced the branch's proof.)*
+  Fixed on branch `lane-fd81-linktmp` in `b0b3a70d3`
+  (composed as `95a6d68b9`): in the browser build the
+  backing filesystems (MEMFS and IDBFS) provide no
+  hard-link operation, and Emscripten's FS.link
+  answers every attempt with EMLINK (errno 34 - the
+  value on all 285 refusal lines in the FD-58..60
+  deploy record, 57 per 32-bit boot), so FD-60's
+  host-link path could never succeed there and every
+  regular-file link was refused, although the same
+  pattern succeeds on the host. `KProcess::link` now
+  falls back (browser build, EMLINK, regular files
+  only) to `KProcess::linkSharedBacking`: the new
+  name is a second node with the source's id in the
+  same link group, pointing at the SAME backing
+  path, so content identity is real - every open of
+  either name opens the one backing file. The
+  group's new sharedBackingPath flag makes
+  FsFileNode take link counts from the group's live
+  membership (the backing's own count is 1), detach
+  only on unlink while a sibling name remains (the
+  last name's unlink deletes the backing), and move
+  only the guest tree entry on rename. Each served
+  link logs a capped BW64-INFO line; a served link
+  is a success, not a BW64-FAIL. Native builds keep
+  every refusal (there EMLINK is the host's real
+  link-count limit); symlink and non-file sources
+  keep FD-60's behaviour. Proof: new test
+  testTempFileLinkPattern in both native suites -
+  the fontconfig pattern end to end, including a
+  host-side census showing exactly one backing file
+  throughout (a copy would show two), writes visible
+  through both names, content surviving unlink of
+  the temp name, the backing deleted with the last
+  name, a rename keeping the sharing; sabotage-
+  checked both ways on the branch (a distinct
+  backing path fails the shared-content assertions;
+  disabling the unlink guard fails the survival
+  assertions), restored and re-verified green. Full
+  native suites serial: main 666/666, x64 65/65,
+  0 FAILED - reproduced exactly at this
+  composition's gate, the new test's line present in
+  both suite logs. In vivo, also reproduced at the
+  gate: the composed build's wasm is byte-identical
+  to the branch build's (`8303eff4`), and the gate's
+  boot32-vkboot console carries 0 BW64-FAIL lines of
+  any kind and 5 BW64-INFO hard-link served lines on
+  exactly the fontconfig files the deploy record
+  lists (CACHEDIR.TAG and the four le32d4 caches,
+  identical hashes); the boot64 console carries
+  neither (no fontconfig link activity on 64-bit
+  boots, as measured at the deploy). The deploy's
+  57-per-boot full-session figure remains the next
+  deploy's to re-measure on the shipped build.
+  Residuals, as stated in FD-81: the group-liveness
+  count can lag while an unlinked name's node is
+  still open; after a cold rescan of the backing
+  tree the two names load as separate nodes; a
+  served link exists in the guest tree only, never
+  as a second name in the backing store itself.
