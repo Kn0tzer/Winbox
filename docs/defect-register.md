@@ -3619,6 +3619,89 @@ do not close the entry until they land.
   merge lane's audit.)* Measured on lane-fd87's
   end-state output for
   `godot-fs-f2b738c259a79b4a.spv`
+  UPDATE (2026-11-02, lane-fd88) — the gating named
+  above is corrected by measurement: the translation
+  stack is NOT the blocker. The vendored translator
+  (naga 30.0.1) serves this exact class: on minimal
+  fixtures in the captured module's own form (runtime
+  array of 3D sampled images, separate sampler array,
+  OpSampledImage), a data-dependent index — a storage
+  load reduced by `>> 16` / `& 0xFFFF`, the shape of
+  the two unservable chains — translates to WGSL with
+  the index expression preserved verbatim over an
+  unsized `binding_array<texture_3d<f32>>`. The only
+  translator refusal is the capability DECLARATION:
+  every fixture declaring SampledImageArrayDynamicIndexing
+  is refused by name, and the identical module without
+  the declaration translates. On the captured module
+  itself, with the declaration removed and one
+  unrelated mis-ordering in the fixup's own output
+  repaired (FD-92), the translator accepts the whole
+  type/global section — all seven chains into the
+  array included — and its next refusal is an
+  OpIAddCarry in a root-address cone that no array
+  chain's index cone contains (FD-70/R15 territory,
+  rewritten in production with a pipeline signature;
+  the FD-72 helper-invocation refusal stands behind
+  it). Tint in the project's Chromium parses sized
+  `binding_array<texture_3d<f32>, N>` shader modules.
+  THE PROVEN BLOCKER IS ONE EXTERNAL COMPONENT: the
+  WebGPU implementation of the project's Chromium
+  (HeadlessChrome 145, SwiftShader adapter) cannot
+  populate an arrayed texture binding. Measured:
+  createBindGroupLayout accepts a texture entry with
+  count 2/4/1024/65536, but pipeline validation
+  reports the layout 'only provides 1 elements'
+  against a count-2 entry — the count is not
+  honoured; createBindGroup with an array of texture
+  views as the entry resource throws at WebIDL
+  conversion ('Failed to read the 'buffer' property
+  from 'GPUBufferBinding'); repeated scalar entries
+  for the binding are rejected ('binding index 0
+  already used'). No spelling populates the array.
+  Every other link is shaped and ready: the fixup's
+  servability analysis already isolates exactly this
+  class, and the tier's bind-group builder already
+  assembles per-element view arrays in spec form (it
+  would reach the same browser throw). Closing
+  terms, revised: when the serving browser honours
+  arrayed texture bindings, the in-project work is
+  (i) a fixup rule stripping the cap-29 declaration
+  for arrays the analysis proves binding-array-
+  servable (loads and sampled-image formation only;
+  escapes, stores and texel forms keep the refusal),
+  with the audit mirror admitting cap 29 under the
+  same verdict; (ii) the tier sizing the translator's
+  unsized binding-array declarations from the guest
+  layout's descriptor count in the pipeline
+  signature, dropping the `enable wgpu_binding_array;`
+  directive (Tint rejects the name), and a layout-
+  entry arm carrying the count; (iii) per-element
+  bind-group supply, which exists. Until then both
+  mirrors KEEP refusing the class by name: that
+  refusal is the correct behaviour, since an admitted
+  module would fail later and worse — an uncaught
+  browser throw at draw time instead of a named
+  VK_ERROR_FEATURE_NOT_PRESENT at module creation.
+  FD-88 stays OPEN, re-gated on the browser.
+  Evidence: `test-results/fd88/` (fixture matrix,
+  translator outputs, browser probes); record
+  `docs/reports/fd88-binding-array-blocker-20261102.md`.
+  NOTE for the composing merge: this entry also
+  lives, in its original form, on lane-fd87's
+  register; this branch's copy carries the narrowing
+  and supersedes it.
+
+- **FD-92 — spirvfix's fixed output for the captured
+  369,400-byte Godot module is not spirv-val clean:
+  synthesized pointer types are spliced ahead of a
+  module type definition they reference.** *(Medium —
+  any strict consumer of the fixed module (spirv-val;
+  the translator, once earlier refusals are lifted)
+  rejects it; filed by the FD-88 lane, 2026-11-02;
+  the number is provisional until the merge lane's
+  audit.)* Measured on lane-fd87's end-state output
+  for `godot-fs-f2b738c259a79b4a.spv`
   (`test-results/fd87/godot-369400-d4da162f-fixed2.spv`):
   spirv-val reports "Operand '54[%bool]' requires a
   previous definition" — the synthesized Private and
@@ -4712,6 +4795,7 @@ is behavioural, is re-proven there.
 | `lane-fd23res` | FD-23 CLOSED (residue): `select` (23) implemented through the core factored out of `pselect6` (with the host's pre-checks, which also correct `pselect6`); `pidfd_getfd` (438) in the host's check order; `futex_waitv` (449) on both ABIs over the futex machinery (i386 table extended to 462 slots); per-number dispositions for every unimplemented number on both ABIs (404 entries, census-audited); FD-102 and FD-103 filed | Host-kernel reference programs measured first (select/pidfd/futex_waitv matrices; evidence `test-results/fd23res/hostref/`); new tests fail on the base for the recorded reasons and pass with the fix: x64 suite 72 tests, main suite 669 tests, 0 FAILED serial, RED runs show exactly the new tests failing (-ENOSYS); census: x86-64 implemented 199 -> 202, stubbed {334} only, i386 gap fully dispositioned (undispositioned 0, stale 0); browser build 'Browser export verified' (wasm c290559e). Record: `docs/reports/fd23-residue-20261102.md`; evidence `test-results/fd23res/` |
 | `lane-fd85b` | FD-85 continuation: the remaining silence sub-split measured — the ALSA leg serves writei clients at full scale (new alsatone fixture, four format/access modes), winealsa hands libasound an unbroken stream of zeros on every device including libasound's null (file-plugin dump, validated against the native client in-session), the traced client side is healthy (single AudioClient, 26 GetBuffer / 24 ReleaseBuffer of the full buffer), and the identical fixture on the 32-bit Wine stack is heard through the same emulator and chain — the defect is convicted to the 64-bit Wine payload's mmdevapi → winealsa render path (FD-85 stays open on payload-fix terms); FD-90 filed (the chain's mmap face stalls after one buffer: the OSS playback pointer never advances) | Six preserved diag sessions (`test-results/fd85b/`): writei tone at the input (S16 peak 12000) and page (peak 0.4550); Wine dumps 72,192 / 100,224 / 33,792 Float32 frames, 0 non-zero, three runs; x86 OpenAL heard (26,763 non-zero, peak 0.2269); mmap cycles: first commit lands full-scale (n=8192), avail 0 thereafter; dist 'Browser export verified' on the base build (this lane changes no emulator code). Record: `docs/reports/fd85b-audio-bisection-20261102.md` |
 | `lane-fd90` | FD-90: the OSS position face reported the write position and a constant 0 delay, so the ALSA mmap face stalled after one buffer and position readings were incoherent — GETOPTR/GETODELAY now derive from a played counter sourced from the bwPump ring consumer; SNDCTL_DSP_RESET no longer clobbers the hw_params-negotiated stream geometry at prepare; the reported position is slew-limited to half a buffer per read (the guest plugin's pointer callback consumes count_info.ptr alone, which aliases when a non-paced sink drains a buffer between reads) | Suite test alsa-mmap-stream: RED on the base build with the recorded signature (avail 4096,0,0,0,0,0,0,0), GREEN on the fixed build (s16mmap 18,432 frames / floatmmap 22,528 committed across the cycles; writei avail+delay coherent, summing to 4096); audio-tone PASS; common-dependencies identical to a base-tip control build under the same box load; native serial main 0 FAILED, x64 0 FAILED; legacy JS only the standing FD-64 four. Record: `docs/reports/fd90-oss-position-20261102.md`; evidence `test-results/fd90/` |
+| `lane-fd88` | FD-88 NARROWED to its proven blocker (no code change): the class is re-gated from 'translation stack' to the serving browser — the vendored translator serves the class exactly, and the project's Chromium (145) cannot populate an arrayed texture binding at any API surface; both mirrors' by-name refusals stay as the correct fail-closed behaviour, with the in-project closing terms specified for when the browser link lands. FD-92 filed (the fixup's output for the captured module is not spirv-val clean — synthesized pointer types spliced ahead of OpTypeBool) | Minimal fixtures in the captured module's own form (committed as `testdata/spirv/fd88-*`): a translator matrix over eight array/index/capability variants proves the cap-29 DECLARATION is the only translator tripwire, and the data-dependent runtime-array form translates with its index expression preserved. Captured module: declaration stripped + the FD-92 ordering repaired → the translator accepts the whole type/global section; its next refusal is an OpIAddCarry that cone analysis proves sits outside all seven array chains. Browser probes (probe-slot, the project's Chromium): sized binding-array modules compile; layout counts are accepted but not honoured ('only provides 1 elements'); the createBindGroup array resource throws at WebIDL; duplicate entries are rejected. Record: `docs/reports/fd88-binding-array-blocker-20261102.md`; evidence `test-results/fd88/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
