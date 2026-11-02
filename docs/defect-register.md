@@ -274,15 +274,27 @@ do not close the entry until they land.
 ### Emulator-killing and correctness defects (kernel / CPU / memory)
 
 - **FD-05 — Running out of file descriptors panics and kills the
-  whole emulator.** *(High)* `KProcess::getNextFileDescriptorHandle`
-  panics at the 0x4000-descriptor ceiling. Answering EMFILE safely
-  needs the allocation contract changed across ~50 call sites
-  whose callers mostly dereference the result immediately — a
-  dedicated lane, not a naive conversion (which would trade a loud
-  failure for null dereferences). This is the one known remaining
-  guest-reachable emulator-kill in the kernel-subsystems area.
-  Evidence: `docs/reports/cleanlog-ksubsys-20261030.md`
-  (branch `lane-cleanlog-ksubsys`, "deliberately left alone").
+  whole emulator. FIXED 2026-11-02 on branch `lane-fd05` —
+  see CL-44.** *(Was High)* `KProcess::getNextFileDescriptorHandle`
+  panics at the 0x4000-descriptor ceiling. The filed estimate —
+  that answering EMFILE needs the allocation contract changed
+  across ~50 call sites — did not survive audit: the panicking
+  function has exactly one caller, `allocFileDescriptor`, so the
+  contract changed at that single point (the scan's exhaustion
+  result is now a sentinel the allocator turns into a null
+  descriptor), and the 22 production callers of the allocator
+  were made safe one by one; two of them (the pidfd paths)
+  already carried the null check and were unreachable only
+  because the panic fired first. The guest now gets the
+  kernel's answers — EMFILE, with EINVAL/EBADF at the two
+  boundary cases the host distinguishes — and survives. This
+  was the one known remaining guest-reachable emulator-kill
+  in the kernel-subsystems area. Evidence:
+  `docs/reports/cleanlog-ksubsys-20261030.md`
+  (branch `lane-cleanlog-ksubsys`, "deliberately left alone");
+  fix record `docs/reports/fd05-fd-table-exhaustion-20261102.md`;
+  evidence `test-results/fd05/`.
+
 - **FD-06 — 32-bit port-IO instructions panic and kill the whole
   emulator. FIXED 2026-10-31 on branch `lane-fd06-portio`
   (commit `d88fdc61a`) — see Section B.** *(Was High)* The twelve INS-string handlers in the
@@ -3494,6 +3506,7 @@ is behavioural, is re-proven there.
 | `lane-fd85` | FD-85: the audio-capture failure convicted as two defects — the test's capture watched SDL's bypassed ScriptProcessor node while guest audio flows through the bwPump AudioWorklet (FD-87: fixed, closed CL-42), and beneath it Wine's mmdevapi → winealsa → ALSA leg delivers silence to the emulator's audio input for every Windows audio client tried (FD-85 stays open, break point proven by measurement); wasapi-tone + winmm-tone fixtures added | Fixed capture hears the direct-DSP control tone at peak 0.3662 where the shipped capture counted 0 non-zero in 266,240 samples; shipped test post-fix still fails at its audio wait (Gecko green, `OPENAL: RESULT 0`, first push peak 0.0000, no S16 non-zero line); JS 348/0; dist 'Browser export verified' (wasm byte-identical to shipped). Record: `docs/reports/fd85-audio-leg-20261102.md` |
 | `lane-fd77-stall-surface` | FD-77 remainder: a default session whose boot completes the desktop handshake but never maps a window and stops executing is now surfaced as a reported failure (the launcher takes its own thread dumps and convicts on the dump's measured zero-progress, two consecutive dumps, no fetch in flight); the held dump evidence is flushed to the preserved session log ahead of one BW64-FAIL line; slow-but-alive starts, armed diagnostic sessions, and every readiness rule are untouched | Unit tests over the shipped watchdog section: 8/8 green, 8/8 red on the unpatched launcher; shaped-session browser probe on the built dist: the park shape reports the failure with evidence in the log, the slow-but-alive and pre-handshake shapes raise no alarm; launcher UI regression green. Record: `docs/reports/fd77-stall-surfacing-20261101.md`; evidence `test-results/fd77-stall-surfacing/` |
 | `lane-fd87` | FD-87 CLOSED (CL-42, provisional): the Godot second-wave sibling classes — capability 29 (SampledImageArrayDynamicIndexing) named and admitted exactly when its image arrays are specializer-servable (spirvfix R19 strips the stray declaration), dead descriptor declarations stripped (R18) so the captured 2,340 B module translates end to end, and FD-78's ExtInst literal position bounded in both orphan sweeps so the 369,400 B module's texel conversion runs and SampledBuffer is served; FD-88 filed (data-dependent descriptor-array indexing, translator-stack-gated); FD-78 updated (ExtInst position proven live, fixed at two sweeps) | Both modules are committed fixtures (`testdata/spirv/godot-fs-f2b738c259a79b4a.spv`, `godot-fs-f1b4e0027d98e2e4.spv`): new suite `spirvfix-fd87.test.mjs` 5/5 (small module translates; big module loses SampledBuffer, keeps FD-88's pair by name); corpus test green over all 74 modules with per-module rewrite sets re-measured (every R18 verdict independently verified dead by raw-word scan); native run-native 60 PASS incl. 3 new FD-87 guards (cap-29 admit/refuse-by-name both forms, dead descriptors, ExtInst sweep position); JS unit suite 351/0; vulkan citations 352 rows 0 drift after re-pinning through the change's line map; browser build 'Browser export verified', wasm `f66e592c`. The two pipelines' in-vivo creations remain CL-42's owed clause for the carrying deploy gate. Record: `docs/reports/fd87-godot-sibling-classes-20261102.md`; evidence `test-results/fd87/` |
+| `lane-fd05` | FD-05: filling the file-descriptor table panicked and killed the emulator; exhaustion now answers EMFILE (EINVAL for an F_DUPFD minimum at/past the ceiling, EBADF for a dup2 target at/past it) and the guest survives — the allocation contract changed at its single choke point (`allocFileDescriptor`), all 22 production callers audited and made safe, SCM_RIGHTS partial delivery and accept requeue semantics preserved | New test testFdTableExhaustion in both suites: RED on the base (the fill hit the panic; the forked harness recorded the test as each suite's single failure, and un-forked the suite process died at the test), GREEN with the fix; native serial main 669/669 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE on the fixed tree (wasm ea3bdaa0), JS unit 348/0, legacy 110/4 (FD-64's standing set on this base). Record: `docs/reports/fd05-fd-table-exhaustion-20261102.md`; evidence `test-results/fd05/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4962,3 +4975,79 @@ its lane and is not a defect, for the stated reason:
   entries). Record:
   `docs/reports/fd64-legacy-descset-20261102.md`;
   evidence `test-results/fd64/`.
+
+- **CL-44 — A guest that fills its file-descriptor
+  table now gets EMFILE instead of killing the
+  emulator (FD-05).** *(Filed provisionally as
+  CL-44 on lane-fd05, 2026-11-02 — CL-40..CL-43
+  are held provisionally by parallel branches
+  (the FD-66, FD-65, FD-85, FD-87 and FD-64
+  filings); the composing merge verifies by
+  audit and renumbers if needed.)*
+  Fixed on branch `lane-fd05`. The panic had
+  exactly one caller: `allocFileDescriptor` is
+  the only path into `getNextFileDescriptorHandle`,
+  so the allocation contract changed at that
+  single point — the scan returns
+  MAX_NUMBER_OF_FILES as its "none available"
+  sentinel and the allocator returns no
+  descriptor — instead of the ~50-site rewrite
+  the entry estimated. Two call sites
+  (pidfd_open, createPidFdForProcess) already
+  implemented exactly this null contract and
+  were unreachable only because the panic fired
+  first; the remaining 20 production callers
+  were audited one by one and now propagate the
+  kernel's answer: open, dup, memfd, epoll,
+  inotify, timerfd, eventfd, signalfd and
+  socket creation return -EMFILE; F_DUPFD with
+  a minimum at/past the ceiling returns
+  -EINVAL (the host's distinction); dup2/dup3
+  targets at/past the ceiling return -EBADF,
+  so explicit targets can no longer grow the
+  table past the advertised RLIMIT_NOFILE;
+  socketpair stays atomic (the first
+  descriptor is closed when the second cannot
+  be allocated); SCM_RIGHTS installs what fits
+  and marks the rest MSG_CTRUNC; the unix
+  accept requeues its pending connection, the
+  loopback accept pre-checks and requeues, and
+  the host accept pre-checks and, in the
+  lost-race case only, closes the consumed
+  host descriptor. Exhaustion logs one
+  `BW64-FAIL fd-table-exhausted ... outcome=returned-EMFILE`
+  line per process. Characterized residuals,
+  none of them a crash: the native accepts
+  answer EMFILE on entry when the table is
+  already full rather than after a connection
+  becomes pending (the unix accept keeps its
+  blocking shape); internal explicit-handle
+  allocations (fork's table copy, stdio setup)
+  bypass the ceiling by construction and can
+  only carry handles the process already
+  legally holds. Proof: new test
+  testFdTableExhaustion in both native suites
+  drives a process to the ceiling through dup,
+  checks every creator family, the exact
+  ceiling boundary, and recovery after one
+  close — RED on the base (the fill hit the
+  panic: in the forked harness the test was
+  each suite's single failure, its child dead
+  at the panic line; un-forked, the suite
+  process died at the test), GREEN with the
+  fix: native serial main 669/669 and x64
+  70/70, 0 FAILED, exactly one exhaustion log
+  line per run. Browser build on the fixed
+  tree: BUILD COMPLETE with "Browser export
+  verified" (wasm `ea3bdaa0…`, support archive
+  `c4dbe35986a5…` unchanged); JS unit 348/0
+  (the three source-slice tests whose mock
+  errno tables predated the new returns —
+  fs-file-create, browser-network,
+  unix-connect-handoff — gained `K_EMFILE=24`
+  in their mocks and pass with the edited
+  functions exercised in their harnesses); JS
+  legacy 110/4, FD-64's standing set on this
+  base. Record:
+  `docs/reports/fd05-fd-table-exhaustion-20261102.md`;
+  evidence `test-results/fd05/`.
