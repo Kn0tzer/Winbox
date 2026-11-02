@@ -1949,7 +1949,8 @@ do not close the entry until they land.
 - **FD-66 — The native bridge harness's sanitizer flavour
   cannot finish clean: readback blocks the fixture leaves
   pending are reported as leaks, and the bridge drops
-  pending readbacks without freeing them.** *(Low —
+  pending readbacks without freeing them. CLOSED
+  2026-11-01 — see CL-38.** *(Low —
   developer-only verification debt, plus a latent bridge
   sharp edge no production path currently reaches)* Found
   by the FD-50 lane (2026-11-01) once the harness could
@@ -1986,6 +1987,42 @@ do not close the entry until they land.
   belong to the FD-55/FD-57 lanes' items, and FD-64
   and FD-65 were taken on the integration branch
   meanwhile.)*
+  **Update (2026-11-01, `lane-fd66`): CLOSED — see
+  CL-38.** A census of every mention of the two pending
+  vectors confirms the filed reachability exactly: the
+  only exits for a pending entry are `completeReadbacks`
+  (which frees every block) and `setupReadbacks`' own
+  prologue, and all three production submit paths pair
+  the calls — so no production leak is proven, and the
+  discard was reachable with a non-empty plan only from
+  the harness's planning sections. The latent half is
+  removed by construction: a new `freePendingReadbacks()`
+  frees every pending block before clearing, and setup
+  replans through it. Frees go through a new `heapRaw`
+  field holding the allocation's true host pointer —
+  `heapPtr`/`flagPtr` are page-tier handles narrowed to
+  32 bits by the bridge/page ABI (exact in the browser
+  build), and the first version of the fix, which freed
+  through the handle, died in the sanitizer harness with
+  a wild free under the host's 64-bit allocator. The
+  harness's three planning sections dispose through the
+  same helper (two ended in raw clears of the vectors;
+  the third abandoned its block), a new section plans
+  twice without completing and pins the counts, and the
+  runner's sanitizer flavour now gets a 180 s run budget
+  (plain stays 30 s) so it reports a verdict instead of
+  a timeout. Proof: the sanitizer flavour on the base
+  reproduced the filed measurement exactly (1,132 bytes
+  in 5 allocations from `setupReadbacks`, exit 1); on
+  the fixed tree it completes at 57 PASS, exit 0, zero
+  leak reports, through the standard runner as well;
+  sabotage (prologue alone reverted) reopens exactly
+  the new section's first plan — 328 bytes in 2
+  allocations. Native serial 667/667 + 66/66, JS 348/0,
+  citations 352 rows 0 drift after re-pinning the
+  citations the fix's insertions shifted, browser build
+  BUILD COMPLETE (wasm `df27c5e0…`). Record:
+  `docs/reports/fd66-readback-disposal-20261101.md`.
 - **FD-62 — A class of real shader modules is refused
   over atomic operations performed through image texel
   pointers; the refusal now rests on the true, named
@@ -3014,6 +3051,7 @@ is behavioural, is re-proven there.
 | `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
 | `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
 | `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
+| `lane-fd66` | FD-66: `setupReadbacks` discarded still-pending readback plans without freeing their heap blocks (latent — every production submit pairs setup with completion, so the discard was reachable only from the harness's planning sections), and the harness's sanitizer flavour reported the fixture's abandoned blocks so it could never finish clean | RED on the base reproduced the filed measurement exactly (LeakSanitizer 1,132 bytes in 5 allocations from setupReadbacks, exit 1); GREEN fixed: sanitizer flavour 57 PASS, exit 0, zero leak reports, via the standard runner too (its sanitizer run budget raised to 180 s); sabotage (prologue alone reverted) reopens exactly 328 bytes in 2 allocations; native serial 667/667 + 66/66; JS 348/0; citations 352/0 after re-pins; browser build BUILD COMPLETE (wasm df27c5e0…). Record: `docs/reports/fd66-readback-disposal-20261101.md`; evidence `test-results/fd66/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4245,3 +4283,31 @@ its lane and is not a defect, for the stated reason:
   668/668 and x64 68/68, 0 FAILED. Record:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
   evidence `test-results/fd79-80/`.
+- **CL-38 — A readback plan a setup discards is freed
+  with it, and the sanitizer flavour finishes clean
+  (FD-66).** *(Filed as CL-38 on `lane-fd66`,
+  2026-11-01 — CL-35, CL-36 and CL-37 stand filed
+  provisionally on the `lane-fd54`, `lane-fd63` and
+  `lane-fd70int` branches; the composing merge verifies
+  the numbering by audit.)*
+  Fixed on branch `lane-fd66` in `7d3f4ff31`
+  (citations re-pinned in `eaf03b285`).
+  `setupReadbacks` replans through
+  `freePendingReadbacks()`, the only unpaired exit for
+  a pending readback, so a plan that is never completed
+  can no longer lose its heap blocks silently; the
+  harness's planning sections dispose through the same
+  helper, and the runner's sanitizer flavour has the
+  run budget to report its verdict. Every free in the
+  readback path goes through the new `heapRaw` field:
+  the page-tier handles are 32-bit by ABI, and freeing
+  through them under a 64-bit host allocator is a wild
+  free — the first version of the fix proved it by
+  crashing the sanitizer harness. Proof: the base
+  tree's sanitizer run reproduced the filed leak
+  exactly (1,132 bytes in 5 allocations from
+  `setupReadbacks`); the fixed tree's flavour completes
+  at 57 PASS with zero leak reports, and reverting the
+  prologue alone reopens exactly 328 bytes in 2
+  allocations. Full evidence:
+  `docs/reports/fd66-readback-disposal-20261101.md`.
