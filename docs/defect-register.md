@@ -4067,7 +4067,9 @@ do not close the entry until they land.
 
 - **FD-94 — pwritev and pwritev2 are undispatched
   on the 64-bit dispatcher and absent from the
-  32-bit syscall table.** *(Low. Filed by the
+  32-bit syscall table. FIXED 2026-11-02 on
+  branch `lane-fd94-96` — see CL-49.** *(Was Low.
+  Filed by the
   FD-92/93 lane, 2026-11-02; the number follows
   FD-92/FD-93 as carried from lane-fd83-84 and is
   provisional until the merge lane's audit.)* Found
@@ -4109,10 +4111,18 @@ do not close the entry until they land.
   `test-results/fd92-93/hostref-off-order.c` and
   its output; FD-84's entry and CL-46 on
   lane-fd83-84.
+  Fixed in commits `c060e0613` (tests; build
+  corrections `f9a8fdeef` and `84e5feca7`) and
+  `d528d792b` (fix) — see CL-49. Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
 
 - **FD-96 — The 32-bit vectored write returns a
   later segment's error even after earlier segments
-  wrote bytes; the host returns the bytes.** *(Low.
+  wrote bytes; the host returns the bytes.
+  FIXED 2026-11-02 on branch `lane-fd94-96` — see
+  CL-50.** *(Was Low.
   Filed by the FD-92/93 lane, 2026-11-02;
   provisional until the merge lane's audit.)*
   Measured on the host kernel (6.17.0-1020-oracle):
@@ -4131,6 +4141,42 @@ do not close the entry until they land.
   `test-results/fd92-93/hostref-write2.c` and its
   output; `KObject::writev` in
   `source/kernel/kobject.cpp` on this base.
+
+  Fixed in commits `c060e0613` (tests) and
+  `d528d792b` (fix) — see CL-50. Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+
+- **FD-97 — The 64-bit single-call write paths
+  fabricate zero bytes for an unreadable guest
+  buffer instead of answering EFAULT.** *(Low.
+  Filed by the FD-94/96 lane, 2026-11-02;
+  provisional until the merge lane's audit.)*
+  Found while wiring FD-94: KMemory64::
+  memcpyFromGuest zero-fills its destination when
+  the guest range fails its access check, and the
+  single-call write paths copy the guest buffer
+  through it before writing — sys_write64 and
+  sys_pwrite64 (source/kernel/syscall64.cpp) hand
+  the file whatever the copy produced, so a write
+  from an unmapped or unreadable guest address
+  lands that many zero bytes in the file and
+  returns success. The host answers EFAULT and
+  writes nothing (measured for the vectored form
+  in FD-94's host reference programs: a bad first
+  segment is EFAULT). FD-94's vectored paths work
+  around the trait with per-segment range checks;
+  the single-call paths keep it. The read side
+  does not have the trait (its paths range-check
+  the destination). Fix shape for the owning
+  lane: range-check the guest buffer before the
+  copy in the single-call write paths, or make
+  the copy report failure and answer -EFAULT;
+  either must keep the vectored paths' measured
+  behaviour. Evidence: KMemory64::memcpyFromGuest
+  in source/kernel/kmemory64.cpp and its call
+  sites in sys_write64/sys_pwrite64 on this base.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -6433,3 +6479,101 @@ its lane and is not a defect, for the stated reason:
   `bcc8a852`). Record:
   `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
   evidence `test-results/fd92-93/`.
+
+- **CL-49 — The positioned vectored writes are
+  wired on both dispatchers with the host's
+  validation order and return shape (FD-94).**
+  *(Provisional number, filed on lane-fd94-96,
+  2026-11-02 — CL-40..CL-48 are held by the
+  unmerged fd66, fd65, fd85/fd87, fd64, fd05,
+  fd83-84 and fd92-93 lanes off this same base;
+  the merge lane's audit settles the final
+  number. The FD-94/FD-96 numbers are the filing
+  lane's, carried exactly.)*
+  Fixed on branch `lane-fd94-96`, commits
+  `c060e0613` (tests; build corrections
+  `f9a8fdeef`, `84e5feca7`) and `d528d792b`
+  (fix). 64-bit: new sys_pwritev64 dispatches
+  296/328 over the pwrite64 core; 32-bit: new
+  KProcess::pwritev dispatches table slots
+  334/378 over KProcess::pwrite64. Validation
+  in the measured order: a negative offset is
+  EINVAL ahead of the descriptor check, except
+  pwritev2's offset -1 — the file-position mode
+  (write at the current position and advance
+  it); the descriptor check (EBADF) precedes
+  the pwritev2 flags check (EOPNOTSUPP for bits
+  outside the defined RWF mask 0x3f — measured:
+  0x20 NOAPPEND is defined and accepted on the
+  host, unlike the read side's 0x1f; NOWAIT is
+  accepted by the emulator per the preadv2
+  precedent, though this host's /tmp filesystem
+  answers EOPNOTSUPP for it as a per-filesystem
+  capability) and the iovcnt range check
+  (EINVAL outside 0..1024); a bad iovec array
+  with iovcnt > 0 is EFAULT. RWF_APPEND writes
+  at end of file, ignoring the offset, and
+  leaves the position untouched outside the -1
+  mode. Segment buffers are range-checked per
+  segment because the core's guest copy
+  zero-fills an unreadable buffer instead of
+  failing (FD-97); a later segment's failure
+  returns the bytes already written; the walk
+  raises exactly one watcher-visible IN_MODIFY
+  (per-segment events coalesce in the inotify
+  queue, as on the host). The read-only
+  descriptor answer stays the write family's
+  house -EINVAL (the host's EBADF divergence
+  is FD-93's registered territory, exactly as
+  FD-92's test pins the read side). Proof:
+  testPwritev64Syscalls (x64 suite) and
+  testPwritev32Dispatch (main suite), RED on
+  the base with -ENOSYS on every call and GREEN
+  on the fix; full suites serial — main
+  670/670, x64 70/70; browser build
+  'Browser export verified'; JS unit 348/0
+  (the silent-failure baseline for syscall64.cpp
+  is bumped 115 -> 118 with this lane — the
+  counted returns are the new function's
+  guest-validation errno answers; the merge
+  audit should expect 119 once lane-fd92-93's
+  116 bump composes).
+  Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+- **CL-50 — The 32-bit vectored write returns
+  the bytes already written when a later
+  segment fails (FD-96).** *(Provisional
+  number, filed on lane-fd94-96, 2026-11-02 —
+  numbering as in CL-49; the merge lane's audit
+  settles the final number.)*
+  Fixed on branch `lane-fd94-96`, commits
+  `c060e0613` (tests) and `d528d792b` (fix).
+  KObject::writev (source/kernel/kobject.cpp)
+  returned the failing segment's error result
+  regardless of bytes already written; it now
+  returns the accumulated count when any
+  segment wrote, and the error only when
+  nothing was written — the host's shape
+  (measured: a good 3-byte first segment and a
+  bad second returns 3) and the shape the
+  64-bit walk already had. The old kwarn's
+  'TODO file pointer' wording goes with it;
+  the walk's short-write accumulate-and-
+  continue behaviour is unchanged. KObject::
+  writev's only caller is KProcess::writev, so
+  the change is contained to the 32-bit
+  dispatcher's writev (146); the new 32-bit
+  pwritev walk has the same return shape by
+  construction. Proof: testWritevPartialError
+  (main suite) drives the walk over a KEvent
+  whose counter admits one 8-byte segment and
+  refuses the next — RED on the base (returned
+  -EAGAIN where 8 was owed) and GREEN on the
+  fix, with the first-segment-fails and
+  all-good boundaries pinned; full suites
+  serial — main 670/670, x64 70/70.
+  Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
