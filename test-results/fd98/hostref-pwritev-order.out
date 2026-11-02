@@ -1,0 +1,4 @@
+pwritev2 good fd iovcnt -1 AND bad flags -> ret=-1 errno=22 (Invalid argument)
+pwritev2 RDONLY fd iovcnt -1 -> ret=-1 errno=9 (Bad file descriptor)
+pwritev2 RDONLY fd bad flags -> ret=-1 errno=9 (Bad file descriptor)
+pwritev2 flags 0x20 (NOAPPEND) -> ret=4 errno=0 (Success)

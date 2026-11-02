@@ -1,0 +1,4 @@
+preadv2 NULL iov AND bad flags -> ret=-1 errno=14 (Bad address)
+preadv2 unmapped iov AND bad flags -> ret=-1 errno=14 (Bad address)
+preadv2 iovcnt 1025 AND bad flags -> ret=-1 errno=22 (Invalid argument)
+preadv2 offset -2 AND bad flags -> ret=-1 errno=22 (Invalid argument)

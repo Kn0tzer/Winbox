@@ -4178,6 +4178,117 @@ do not close the entry until they land.
   in source/kernel/kmemory64.cpp and its call
   sites in sys_write64/sys_pwrite64 on this base.
 
+- **FD-98 — The 32-bit dispatcher's preadv (333)
+  and preadv2 (377) are null table slots and
+  answer -ENOSYS; only the 64-bit preadv
+  exists.** *(Low. Filed by the FD-98 lane,
+  2026-11-02; the number follows FD-97 on
+  lane-fd94-96's register and is provisional
+  until the merge lane's audit.)* FD-94 wired
+  the write-side twin (pwritev 334 / pwritev2
+  378) and recorded these two slots as the read
+  family's, deliberately untouched there. The
+  host contract was measured fresh on the host
+  kernel (6.17.0-1020-oracle) with dedicated
+  reference programs
+  (`test-results/fd98/hostref-preadv*.c`):
+  segments fill in order at successive offsets
+  and the file position does not move; a short
+  read ends the walk; a later segment's failure
+  returns the bytes already read; exactly one
+  IN_ACCESS per successful call, 0-byte
+  successes (at EOF, with iovcnt 0, with
+  all-zero-length segments) included, and none
+  on failure (FD-83's contract). Validation
+  order, each step measured against its
+  neighbours: a negative offset is EINVAL ahead
+  of the descriptor check — except preadv2's
+  offset -1, which is the file-position mode
+  (read at the current position and advance
+  it); a descriptor that cannot be read answers
+  EBADF, ahead of the iovcnt range check, of
+  the preadv2 flags check, and of an iovcnt-0
+  success return; the iovcnt range check
+  (EINVAL outside 0..1024) precedes the iovec
+  array check (EFAULT for a null or unmapped
+  array with iovcnt > 0), which precedes the
+  flags check (EOPNOTSUPP for bits outside the
+  defined RWF mask 0x3f — the read side accepts
+  0x20/NOAPPEND on this kernel). Boundary
+  inherited from the shared positioned core
+  rather than created here: preadv on a pipe
+  answers the core's -EINVAL where the host
+  answers ESPIPE (measured in the same
+  programs; 32-bit pread64 shares the core and
+  the answer). The FD-95 interaction is
+  recorded in the lane record: this wiring
+  takes the host's offset-first side of
+  FD-95's question. Evidence: the dispatch
+  table in `source/kernel/syscall.cpp` on this
+  base (slots 333/377 nullptr); the host
+  reference programs and outputs in
+  `test-results/fd98/`.
+
+
+- **FD-99 — The 64-bit dispatcher's preadv2
+  refuses the file-position offset and one
+  defined flag the host accepts.** *(Low. Filed
+  by the FD-98 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Measured on
+  the host kernel (6.17.0-1020-oracle) while
+  pinning FD-98's contract
+  (`test-results/fd98/hostref-preadv.c`):
+  preadv2 with offset -1 reads at the current
+  file position and advances it (the
+  file-position mode, as pwritev2's -1 does
+  since FD-94), and preadv2 accepts flag bit
+  0x20 (RWF_NOAPPEND, defined on this kernel;
+  the read side's defined mask is 0x3f). The
+  composed sys_preadv64 (FD-80) answers EINVAL
+  for any negative offset including -1 — its
+  header comment records the -1 refusal as
+  measured behaviour, which the fresh
+  measurement contradicts for preadv2 (preadv
+  itself does answer EINVAL at -1) — and
+  answers EOPNOTSUPP for flags outside 0x1f.
+  Both divergences are confined to the 64-bit
+  dispatcher's preadv2 arm; FD-98's 32-bit
+  wiring implements the measured behaviour.
+  Fix shape for the owning lane: in
+  sys_preadv64, treat preadv2's offset -1 as
+  the file-position mode (walk at the current
+  position and advance by the bytes read, as
+  sys_pwritev64's -1 mode does) and widen the
+  flags mask to 0x3f; extend
+  testPreadv64Syscalls' matrix for both.
+
+
+- **FD-100 — The positioned vectored family's
+  v2 flags check runs ahead of the iovcnt range
+  and iovec array checks; the host runs it
+  last.** *(Low. Filed by the FD-98 lane,
+  2026-11-02; provisional until the merge
+  lane's audit.)* Measured on the host kernel
+  (6.17.0-1020-oracle) for both directions
+  (`test-results/fd98/hostref-preadv-order2.c`,
+  `hostref-pwritev-order.c`): with iovcnt -1
+  and an undefined flag bit together, the host
+  answers EINVAL (the range check first); with
+  a null or unmapped iovec array and an
+  undefined flag bit together, the host answers
+  EFAULT (the array check first). The family's
+  three wired implementations — sys_preadv64
+  (FD-80), sys_pwritev64 and KProcess::pwritev
+  (FD-94) — all test the flags before the
+  iovcnt range and the array pointer, so those
+  two combinations answer EOPNOTSUPP where the
+  host answers EINVAL / EFAULT. Every other
+  measured combination agrees. FD-98's 32-bit
+  preadv wiring uses the measured order (flags
+  last); the fix for these three is moving the
+  flags test below the iovcnt and array checks
+  in each.
+
 
 ## B. Fixed on a lane branch — awaiting merge
 

@@ -1,0 +1,41 @@
+preadv 3 segs off 2                                        ret=12 errno=0 (Success) in_access=1
+    segs: '2345' '6789' 'ABCD' pos=0
+preadv at EOF (0-byte success)                             ret=0 errno=0 (Success) in_access=1
+preadv iovcnt 0                                            ret=0 errno=0 (Success) in_access=1
+preadv all-zero-length segs                                ret=0 errno=0 (Success) in_access=1
+preadv across EOF (short first seg)                        ret=2 errno=0 (Success) in_access=1
+    seg0='IJ' seg1 untouched=1
+preadv good seg + bad-buffer seg                           ret=4 errno=0 (Success) in_access=1
+preadv bad-buffer first seg                                ret=-1 errno=14 (Bad address) in_access=0
+preadv good fd offset -1                                   ret=-1 errno=22 (Invalid argument) in_access=0
+preadv good fd offset -2                                   ret=-1 errno=22 (Invalid argument) in_access=0
+preadv2 good fd offset -1 flags 0 (pos was 5)              ret=4 errno=0 (Success) in_access=1
+    seg='5678' pos after=9
+preadv2 good fd offset -2                                  ret=-1 errno=22 (Invalid argument) in_access=0
+preadv BAD fd offset -1                                    ret=-1 errno=22 (Invalid argument) in_access=0
+preadv BAD fd offset -2                                    ret=-1 errno=22 (Invalid argument) in_access=0
+preadv BAD fd offset 0                                     ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv2 BAD fd offset -1                                   ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv2 BAD fd offset -2                                   ret=-1 errno=22 (Invalid argument) in_access=0
+preadv2 BAD fd bad flags 0x40                              ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv2 good fd offset -2 AND bad flags                    ret=-1 errno=22 (Invalid argument) in_access=0
+preadv2 WRONLY fd bad flags                                ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv WRONLY fd offset 0                                  ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv WRONLY fd offset -1                                 ret=-1 errno=22 (Invalid argument) in_access=0
+preadv WRONLY fd iovcnt 0                                  ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv WRONLY fd iovcnt -1                                 ret=-1 errno=9 (Bad file descriptor) in_access=0
+preadv2 good fd iovcnt -1 AND bad flags                    ret=-1 errno=22 (Invalid argument) in_access=0
+preadv iovcnt -1 NULL iov                                  ret=-1 errno=22 (Invalid argument) in_access=0
+preadv iovcnt 1 NULL iov                                   ret=-1 errno=14 (Bad address) in_access=0
+preadv iovcnt 1 unmapped iov                               ret=-1 errno=14 (Bad address) in_access=0
+preadv iovcnt 1025                                         ret=-1 errno=22 (Invalid argument) in_access=0
+preadv2 flags 0x01                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x02                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x04                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x08                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x10                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x20                                         ret=4 errno=0 (Success) in_access=1
+preadv2 flags 0x40                                         ret=-1 errno=95 (Operation not supported) in_access=0
+preadv directory fd                                        ret=-1 errno=21 (Is a directory) in_access=0
+preadv pipe fd                                             ret=-1 errno=29 (Illegal seek) in_access=0
+preadv explicit offset: ret=4 pos after=3 (was 3)
