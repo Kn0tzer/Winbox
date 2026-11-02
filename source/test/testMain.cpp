@@ -135,6 +135,7 @@ void testSendmsgBadBuffer64Syscalls();
 void testSendmsgCmsgLen64Syscalls();
 void testSendtoBadBuffer64Syscalls();
 void testRecvmsgBadBuffer64Syscalls();
+void testWriteBadBuffer64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -203,6 +204,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSendmsgCmsgLen64Syscalls, "Test x64 sendmsg SCM_RIGHTS cmsg_len validation"},
     {testSendtoBadBuffer64Syscalls, "Test x64 sendto to unreadable guest buffers"},
     {testRecvmsgBadBuffer64Syscalls, "Test x64 recvmsg scatter to unwritable guest buffers"},
+    {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

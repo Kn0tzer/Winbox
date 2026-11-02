@@ -932,6 +932,19 @@ void testCloseWriteDeferral64() {
 // poll so an empty queue can never block the test; each case uses a
 // fresh socketpair so no case can see another case's bytes.
 void testSendmsgBadBuffer64Syscalls() {
+// FD-97: the 64-bit single-call write paths (write/pwrite64, and writev
+// through them) must not fabricate zero bytes for an unreadable guest
+// buffer. Host-kernel reference behaviour (measured on the box's 6.17
+// kernel with a dedicated reference program,
+// test-results/fd97/hostref-fd97): a fully unreadable buffer answers
+// -EFAULT and writes nothing; a buffer whose readable prefix runs into
+// an unreadable page writes the prefix as a short count; count 0 with a
+// bad buffer returns 0; a bad fd with a bad buffer answers -EBADF (the
+// descriptor answer precedes the copy fault); a PROT_WRITE-only buffer
+// is readable to the copy (x86 write-implies-read) and lands its real
+// bytes. On the base the calls below land zero-filled bytes and report
+// success.
+void testWriteBadBuffer64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -1016,6 +1029,15 @@ void testSendmsgBadBuffer64Syscalls() {
         if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
             memory->mmapAnonymousFixed(addr, size, prot) != addr) {
             testFail("sendmsg-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
+    constexpr U64 dataPage = 0x7B000000ULL;
+    constexpr U64 crossPage = 0x7C000000ULL;
+    constexpr U64 nonePage = 0x7D000000ULL;
+    constexpr U64 wonlyPage = 0x7E000000ULL;
+    constexpr U64 unmapped = 0x6000000000ULL;
+    auto mapFixture = [&](U64 addr, U32 prot) {
+        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
+            memory->mmapAnonymousFixed(addr, K64_PAGE_SIZE, prot) != addr) {
+            testFail("write-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
             return false;
         }
         return true;
@@ -1026,6 +1048,11 @@ void testSendmsgBadBuffer64Syscalls() {
     if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
         memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
         testFail("sendmsg-bad-buffer test fixture addresses are unexpectedly mapped");
+    if (!mapFixture(dataPage, 3) || !mapFixture(crossPage, 3) ||
+        !mapFixture(nonePage, 0) || !mapFixture(wonlyPage, 2)) return;
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
+        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
+        testFail("write-bad-buffer test fixture addresses are unexpectedly mapped");
         return;
     }
     if (!(memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) ||
@@ -1748,6 +1775,18 @@ void testSendtoBadBuffer64Syscalls() {
     char* hostDir = mkdtemp(dirTemplate);
     if (!hostDir) {
         testFail("sendto-bad-buffer test could not create its host temp dir");
+        testFail("write-bad-buffer test PROT_NONE fixture has the wrong flags");
+        return;
+    }
+    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("write-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
+        return;
+    }
+
+    char dirTemplate[] = "/tmp/k3bwbadbufXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("write-bad-buffer test could not create its host temp dir");
         return;
     }
     std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
@@ -1757,6 +1796,7 @@ void testSendtoBadBuffer64Syscalls() {
     } rootRestore{previousRoot};
     Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
     Fs::clearPathCache();
+
     KFileDescriptorPtr fileDesc;
     {
         U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
@@ -1946,6 +1986,11 @@ void testRecvmsgBadBuffer64Syscalls() {
         testFail("recvmsg-bad-buffer test fixture addresses are unexpectedly mapped");
         return;
     }
+            testFail("write-bad-buffer test could not create /data.bin");
+            return;
+        }
+    }
+    const S32 fd = (S32)fileDesc->handle;
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -2255,6 +2300,113 @@ void testRecvmsgBadBuffer64Syscalls() {
             closePair(p);
         }
     }
+    auto fileBytes = [&]() {
+        std::string s;
+        U8 buf[8192];
+        fileDesc->kobject->seek(0);
+        S32 n = (S32)fileDesc->kobject->readNative(buf, sizeof(buf));
+        if (n > 0) s.assign((const char*)buf, (size_t)n);
+        return s;
+    };
+    auto seekSet = [&](S64 pos) { invoke(8, (U64)(U32)fd, (U64)pos, 0, 0); };
+    auto filePos = [&]() -> S64 { return invoke(8, (U64)(U32)fd, 0, 1, 0); };
+
+    // Guest data: a 16-byte string on the data page, a full pattern page
+    // for the crossing cases, and the write-only page's real bytes.
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(dataPage, text, 16);
+    std::vector<U8> pattern(K64_PAGE_SIZE);
+    for (U32 i = 0; i < K64_PAGE_SIZE; i++) pattern[i] = (U8)('a' + (i % 26));
+    memory->memcpyToGuest(crossPage, pattern.data(), K64_PAGE_SIZE);
+    const char* wonlyText = "FEDCBA9876543210";
+    for (U32 i = 0; i < 16; i++) memory->writeb(wonlyPage + i, (U8)wonlyText[i]);
+    const std::string crossTail((const char*)pattern.data() + 4000, 96);
+
+    // 1. write from a fully unmapped buffer: -EFAULT, nothing lands.
+    S64 r = invoke(1, (U64)(U32)fd, unmapped, 16, 0);
+    if (r != -K_EFAULT || !fileBytes().empty()) {
+        testFail("write from an unmapped buffer returned %lld, file holds %u bytes",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 2. write from a mapped but unreadable (PROT_NONE) page: same.
+    r = invoke(1, (U64)(U32)fd, nonePage, 16, 0);
+    if (r != -K_EFAULT || !fileBytes().empty()) {
+        testFail("write from a PROT_NONE page returned %lld, file holds %u bytes",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 3. Control: a readable buffer lands its real bytes.
+    r = invoke(1, (U64)(U32)fd, dataPage, 16, 0);
+    if (r != 16 || fileBytes() != std::string(text, 16)) {
+        testFail("control write returned %lld, file size %u", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 4. A readable prefix running into an unmapped page writes the
+    // prefix as a short count (96 of 200), not zeros or an error.
+    seekSet(16);
+    r = invoke(1, (U64)(U32)fd, crossPage + 4000, 200, 0);
+    if (r != 96 || fileBytes() != std::string(text, 16) + crossTail) {
+        testFail("crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 5. One readable byte before the boundary: count 1.
+    r = invoke(1, (U64)(U32)fd, crossPage + 4095, 2, 0);
+    if (r != 1 || fileBytes().size() != 113 || fileBytes()[112] != (char)pattern[4095]) {
+        testFail("last-byte crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 6. pwrite from a fully unmapped buffer: -EFAULT, file and position
+    // untouched.
+    seekSet(113);
+    r = invoke(18, (U64)(U32)fd, unmapped, 16, 0);
+    if (r != -K_EFAULT || fileBytes().size() != 113 || fileBytes().substr(0, 16) != std::string(text, 16) || filePos() != 113) {
+        testFail("pwrite from an unmapped buffer returned %lld (file size %u, pos %lld)",
+                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
+    }
+    // 7. pwrite with a readable prefix at offset 8: short count 96, the
+    // prefix lands at the offset, the position does not move.
+    r = invoke(18, (U64)(U32)fd, crossPage + 4000, 200, 8);
+    if (r != 96 || fileBytes().substr(8, 96) != crossTail || fileBytes().size() != 113 || filePos() != 113) {
+        testFail("crossing pwrite returned %lld (file size %u, pos %lld)",
+                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
+    }
+    // 8. Count 0 with a bad buffer is 0, not a fault (host-measured).
+    if (invoke(1, (U64)(U32)fd, unmapped, 0, 0) != 0 || invoke(18, (U64)(U32)fd, unmapped, 0, 0) != 0) {
+        testFail("zero-count write/pwrite from an unmapped buffer was not 0");
+    }
+    // 9. A bad fd with a bad buffer answers -EBADF: the descriptor
+    // answer precedes the copy fault, as on the host.
+    if (invoke(1, 9999, unmapped, 16, 0) != -9) {
+        testFail("write with a bad fd and a bad buffer was not -EBADF");
+    }
+    // 10. writev inherits the shape through sys_write64: a bad first
+    // segment answers -EFAULT and writes nothing.
+    constexpr U64 iovAt = dataPage + 0x800;
+    memory->writeq(iovAt, unmapped);
+    memory->writeq(iovAt + 8, 16);
+    seekSet(113);
+    r = invoke(20, (U64)(U32)fd, iovAt, 1, 0);
+    if (r != -K_EFAULT || fileBytes().size() != 113) {
+        testFail("writev with an unmapped first segment returned %lld (file size %u)",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 11. writev with a bad later segment returns the bytes already
+    // written.
+    memory->writeq(iovAt, dataPage);
+    memory->writeq(iovAt + 8, 8);
+    memory->writeq(iovAt + 16, unmapped);
+    memory->writeq(iovAt + 24, 16);
+    r = invoke(20, (U64)(U32)fd, iovAt, 2, 0);
+    if (r != 8 || fileBytes().size() != 121 || fileBytes().substr(113, 8) != "01234567") {
+        testFail("writev with an unmapped second segment returned %lld (file size %u)",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 12. A PROT_WRITE-only buffer is readable to the copy under the
+    // x86 write-implies-read rule and lands its real bytes.
+    seekSet(121);
+    r = invoke(1, (U64)(U32)fd, wonlyPage, 16, 0);
+    if (r != 16 || fileBytes().substr(121, 16) != std::string(wonlyText, 16)) {
+        testFail("write from a write-only page returned %lld", (long long)r);
+    }
+
+    process->close(fd);
+    rmdir(hostDir);
 }
 
 #endif
