@@ -1817,7 +1817,6 @@ do not close the entry until they land.
   entry.)*
   Fixed on lane-fd53 in `1e228a7ed` — see CL-24.
 
-
 - **FD-45 — Texture-parameter queries have no answer on the
   vector entry points or the WebGPU path (found by the FD-39
   lane, uncharacterized).** *(Low)* The bridge ABI traps only
@@ -4421,6 +4420,206 @@ do not close the entry until they land.
   combinations characterized there belong to
   FD-84's / FD-93's composition.
 
+- **FD-85 — The common-dependencies audio stage: the
+  guest's OpenAL tone never reaches the browser's
+  audio capture.** *(Medium — guest audio output
+  class: any guest program whose sound must reach the
+  page. Surfaced 2026-11-02 by the FD-65 lane: the
+  stage was unreachable while the same test died at
+  its Gecko stage.)* On the FD-65-fixed build the
+  test's guest stages complete — `MSHTML: RESULT 0`,
+  then the OpenAL fixture prints its device, vendor,
+  version and renderer lines, `OPENAL: PLAYSTART` and
+  `OPENAL: RESULT 0` — but the page-side capture the
+  test installed (`__audioCapture`, counting non-zero
+  samples through the AudioContext script processor)
+  records no non-zero sample within the test's 30 s
+  window, deterministically (two runs, the same
+  failure at the same wait, ~264 s each; the runner
+  failure is the `waitForPageFn` timeout at
+  `common-dependencies.test.mjs:60`). The guest side
+  of the chain is proven by its own prints; the break
+  is downstream — emulator audio output/pump or the
+  page capture path — and is not characterized
+  further here. Neither the wait nor the assertions
+  may be loosened to pass it. *(Numbered FD-85
+  against the composed register: the fd79-80
+  branch's FD-82…FD-84 precede it in the composed
+  numbering; the composing merge verifies by
+  audit.)* Evidence: `test-results/fd65/`
+  (`commondep-v2-console.log`, `commondep-v3-console.log`,
+  `commondep-v2.log`, `commondep-v3.log`).
+
+  **Update 2026-11-02 (lane-fd85): the filed failure is
+  TWO defects, not one.** (1) The page capture itself was
+  blind — split off as FD-87, fixed and closed there
+  (CL-42): since the bwPump bridge moved guest audio onto
+  an AudioWorkletNode (`13b33d3e1`), this test's
+  ScriptProcessor-only capture watches a path whose only
+  output is SDL's bypassed silent node; in a control run a
+  real tone played at full scale (peak 0.3662; 261,528
+  non-zero samples at a worklet tap) while the shipped
+  capture counted 0 non-zero in 266,240 samples. The
+  capture now taps the worklet output (the
+  `audio-tone.test.mjs` pattern); no wait or assertion
+  changed. (2) With a capture proven able to hear, the
+  OpenAL tone STILL does not arrive — and the break is
+  proven at the emulator's audio INPUT, not its
+  output/pump: across the FD-65 lane's two runs and this
+  lane's runs, `KDspAudioSdl::writeAudio` never received
+  an S16 sample above its standing diagnostic threshold
+  from any Wine-path device (the `S16 input first
+  non-zero` line fires only for the direct-DSP control),
+  and the first converted push is 898 frames at peak
+  0.0000, while byte volume flows at real-time rate and
+  the guest completes normally. The leg below the break
+  is proven good in the same sessions: a Linux ELF
+  writing the same 440 Hz tone straight to `/dev/dsp`
+  reaches the page at peak 0.3662 (12000/32768). The leg
+  was exercised three more ways, all failing at the same
+  boundary: OpenAL forced to its winmm backend (guest
+  completes, silence at the input); OpenAL forced to
+  dsound (the backend's event waits time out —
+  `(EE) WaitForSingleObjectEx error: 0x102` — and the
+  source never finishes); a raw WASAPI fixture filling
+  the `IAudioClient` shared buffer with the same sine
+  in-process (silence at the input; consumption stalls
+  after 26,737 ring frames and the client hangs on full
+  padding — OpenAL is exonerated); a raw WinMM fixture
+  (`waveOutWrite` never returns, WHDR_DONE never fires —
+  the waveOut face of the same leg). mmdevapi selects
+  the alsa driver (wineoss.drv is absent from the staged
+  Wine — load error 126; winepulse reports Unavailable);
+  OpenAL's WASAPI log is error-free (Stereo Float32
+  48000 Hz, buffer 480/1536). **The break point is
+  therefore proven between a Windows audio client's
+  successful API calls in the guest and the emulator's
+  audio input — inside Wine's mmdevapi → winealsa →
+  ALSA(OSS-plug) leg or its contract with the emulator's
+  OSS device. The open remainder is the sub-split
+  (shared-buffer handoff vs driver feeder vs ALSA plug
+  conversion); the next bisection needs an ALSA-client
+  probe on the guest's Linux side — the dsptone fixture
+  bypasses ALSA, which is exactly why it works — or a
+  Wine-side content trace of the feeder's periods.**
+  The shipped test, with the FD-87 fix in, still fails
+  at this entry's wait (now line 90) on this lane's
+  build — Gecko green, `OPENAL: RESULT 0`, first push
+  peak 0.0000 — which is this entry's standing proof.
+  Neither the wait nor the assertions were loosened.
+  Fixtures committed for the continuation:
+  `tools/guest-fixtures/wasapi-tone.c`,
+  `tools/guest-fixtures/winmm-tone.c`. Record:
+  `docs/reports/fd85-audio-leg-20261102.md`; evidence:
+  `test-results/fd85/`.
+  **Update 2026-11-02 (lane-fd85b — the continuation this
+  entry named): the sub-split is measured, and the break is
+  convicted to the 64-bit Wine payload's mmdevapi → winealsa
+  render path — above libasound, below the Windows client.**
+  Method: a native ALSA-client fixture
+  (`tools/guest-fixtures/alsatone.c`) playing the control
+  tone through the same libasound → plug → oss → /dev/dsp
+  chain winealsa uses, and a libasound file-plugin dump
+  (`tools/guest-fixtures/alsadump-alsa.conf`,
+  `alsadump-wine.conf`, `alsadump-null.conf`, `dumpstat.c`)
+  capturing the exact bytes a client hands to libasound.
+  Findings, each re-read from preserved logs
+  (`test-results/fd85b/`):
+  (1) The ALSA leg is GOOD for writei clients: alsatone's
+  S16_LE and Float32 writei modes both reached the
+  emulator's audio input at full scale (`bwPump: S16 input
+  first non-zero peak=12000`; page capture peak 0.4550 in
+  both modes) — the plug format conversion and the OSS
+  contract serve real data.
+  (2) What winealsa hands libasound is an unbroken stream
+  of zeros: the dump of the OpenAL run over the stock
+  chain is 72,192 Float32 stereo frames, every sample
+  0.0000; over libasound's `null` device (no emulator
+  device in the path at all) 100,224 frames, every sample
+  zero; on a traced rerun 33,792 more frames of zero. The
+  same dump mechanism captured the native client's tone
+  intact in the same sessions (1,536,000 bytes, peak
+  0.3662), so the zeros are the driver's output, not a
+  measurement artifact.
+  (3) The client side of the driver is healthy by Wine's
+  own tracing (WINEDEBUG=+mmdevapi,+alsa): a single
+  AudioClient (Initialize → Start), 26 GetBuffer / 24
+  ReleaseBuffer cycles of the full 1,536-frame MMDevice
+  buffer with flags 0, padding oscillating 0 ↔ 1536, and
+  `alsa_write_data` running 118 times with avail 1920.
+  The data is lost between ReleaseBuffer and the driver's
+  write to libasound, inside the prebuilt driver.
+  (4) The A/B that convicts the payload: the identical
+  fixture on the 32-bit Wine stack (WineHQ Wine 10 — a
+  different build from this project's 64-bit Wine 8
+  payload) IS HEARD through the same emulator and chain
+  in the same harness: page capture 26,763 non-zero
+  samples, peak 0.2269; non-zero S16 at the input;
+  `OPENAL: RESULT 0`. The emulator, libasound, the OSS
+  device and the capture are therefore all exonerated;
+  the defect is specific to the 64-bit Wine build's
+  audio data path, and every x64 client face tried
+  (OpenAL/WASAPI, OpenAL/winmm, raw WASAPI, raw WinMM)
+  fails the same way.
+  What remains open, stated exactly: which side of the
+  driver's internal GetBuffer→writei copy drops the data
+  is not reachable by emulator-side measurement — the
+  driver is a prebuilt payload and both sides' entry
+  points succeed under tracing. The fix this points to
+  is a payload fix (the 64-bit mmdevapi/winealsa pair
+  rebuilt or replaced — the 32-bit stack proves a Wine
+  10 build works in this harness — and re-pinned by the
+  FD-73 procedure), a payload lane of its own;
+  deliberately not attempted in this lane because it
+  re-pins wine64.zip against the pending batch-2
+  composition. FD-85 stays OPEN on those terms; the
+  shipped common-dependencies test still fails at this
+  entry's audio wait on the 64-bit stack until it lands.
+  The chain's mmap face is separately defective — that
+  is FD-90, and it is not this entry's cause (finding 2:
+  forcing the Wine stream through writei changes
+  nothing). Record:
+  `docs/reports/fd85b-audio-bisection-20261102.md`;
+  evidence: `test-results/fd85b/`.
+- **FD-90 — The ALSA chain's mmap face delivers one
+  buffer, then reports no space forever: the playback
+  pointer the chain consumes never advances.** *(Medium —
+  any ALSA client rendering through snd_pcm_mmap_begin /
+  commit over the shipped plug → oss chain. Found
+  2026-11-02 by the FD-85 continuation lane; numbered
+  FD-90 provisionally — FD-85…FD-89 are taken on
+  unmerged branches; the composing merge verifies by
+  audit.)* A native ALSA client using MMAP_INTERLEAVED
+  access over the stock `default` PCM gets the full
+  4,096-frame buffer from mmap_begin, and the first
+  mmap_commit lands it at the emulator's audio input at
+  full scale (`S16 input first non-zero peak=12000
+  (n=8192)`; `first push 3250 frames peak=0.4550`); from
+  then on `snd_pcm_avail_update` returns 0 permanently —
+  eight fixed cycles, both S16_LE and Float32 — so no
+  second buffer is ever offered. The position reporting
+  underneath is incoherent in both access modes: the
+  same client's writei run read `snd_pcm_delay` =
+  **-190,464 frames** and avail **194,560** on a
+  4,096-frame buffer. The emulator's OSS device reports
+  GETOPTR as a write position modulo capacity and
+  GETODELAY as a constant 0 under the bwPump bridge
+  (`source/kernel/devs/devdsp.cpp`: ioctl64 GETOPTR,
+  `getUsedBufferSize`), so the ALSA layer's hardware
+  pointer has no playback motion to consume. Writei
+  clients ignore position and play; mmap clients stall
+  after one buffer. NOT the cause of FD-85 (proven
+  there). A fix belongs to the OSS device's position
+  contract — a played-frames counter sourced from the
+  bwPump ring consumer is the shape the evidence
+  supports — and must be proven against both access
+  modes without reviving the waveOut poll stalls the
+  GETODELAY fiction was originally introduced to avoid.
+  Evidence: `test-results/fd85b/suite-fd85b-diag2/`
+  (fresh-session mmap cycles + input lines),
+  `test-results/fd85b/suite-fd85b-diag/` (writei
+  position readings). Fixture:
+  `tools/guest-fixtures/alsatone.c`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -4482,6 +4681,7 @@ is behavioural, is re-proven there.
 | `lane-fd86` | FD-86: no Arial family on the 64-bit stack — prefix64 carried no Fonts\Replacements entry, the mechanism the 32-bit stack serves Arial through; canonical-set staging step `stage-font-alias64.py` (the 32-bit edit imported, so the stacks cannot drift) bakes `"Arial"="DejaVu Sans"` into prefix64, checker drift coverage added, win32-fonts suite test extended to x64, payload re-pinned as `runtime-assets-20261103` | win32-fonts PASS both architectures (x64 `ARIAL=0` — `ARIAL=1 METRICS=1 RESULT 0`; x86 unregressed); checker RED on this gap alone pre-fix, green after; bootstrap --check 0 failures; clean --local bootstrap from the new archive reproduces the replacement; Gecko stage `MSHTML: RESULT 0`, zero abort lines (shipped test, load-gated run); JS 348/0; wasm unchanged. Record: `docs/reports/fd86-arial-prefix64-20261103.md` |
 
 | `lane-fd23res` | FD-23 CLOSED (residue): `select` (23) implemented through the core factored out of `pselect6` (with the host's pre-checks, which also correct `pselect6`); `pidfd_getfd` (438) in the host's check order; `futex_waitv` (449) on both ABIs over the futex machinery (i386 table extended to 462 slots); per-number dispositions for every unimplemented number on both ABIs (404 entries, census-audited); FD-102 and FD-103 filed | Host-kernel reference programs measured first (select/pidfd/futex_waitv matrices; evidence `test-results/fd23res/hostref/`); new tests fail on the base for the recorded reasons and pass with the fix: x64 suite 72 tests, main suite 669 tests, 0 FAILED serial, RED runs show exactly the new tests failing (-ENOSYS); census: x86-64 implemented 199 -> 202, stubbed {334} only, i386 gap fully dispositioned (undispositioned 0, stale 0); browser build 'Browser export verified' (wasm c290559e). Record: `docs/reports/fd23-residue-20261102.md`; evidence `test-results/fd23res/` |
+| `lane-fd85b` | FD-85 continuation: the remaining silence sub-split measured — the ALSA leg serves writei clients at full scale (new alsatone fixture, four format/access modes), winealsa hands libasound an unbroken stream of zeros on every device including libasound's null (file-plugin dump, validated against the native client in-session), the traced client side is healthy (single AudioClient, 26 GetBuffer / 24 ReleaseBuffer of the full buffer), and the identical fixture on the 32-bit Wine stack is heard through the same emulator and chain — the defect is convicted to the 64-bit Wine payload's mmdevapi → winealsa render path (FD-85 stays open on payload-fix terms); FD-90 filed (the chain's mmap face stalls after one buffer: the OSS playback pointer never advances) | Six preserved diag sessions (`test-results/fd85b/`): writei tone at the input (S16 peak 12000) and page (peak 0.4550); Wine dumps 72,192 / 100,224 / 33,792 Float32 frames, 0 non-zero, three runs; x86 OpenAL heard (26,763 non-zero, peak 0.2269); mmap cycles: first commit lands full-scale (n=8192), avail 0 thereafter; dist 'Browser export verified' on the base build (this lane changes no emulator code). Record: `docs/reports/fd85b-audio-bisection-20261102.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4541,7 +4741,6 @@ dead-start fix and needs composition care.
   `lane-cleanlog32`, `lane-cleanlog-ksubsys`,
   `lane-cleanweb`). Proof: those lanes' records. They close
   fully when the branches merge.
-
 
 - **CL-06 — First-time visitors could not reliably start a
   program on the first attempt (was FD-01). VOID —
