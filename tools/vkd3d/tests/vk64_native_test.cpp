@@ -4117,6 +4117,98 @@ int main() {
         assert(vk64BridgeUnsupportedCount("spirv-capability:RuntimeDescriptorArray") == rdaFd70 + 1);
         puts("PASS: GUARD memory-access and type-width literals equal to a swept type id are not references (FD-70)");
 
+        // GUARD (FD-70 integer-offset roots, R15c): a root address
+        // computed in integer space -- the push-loaded base VA's low
+        // half summed through OpIAddCarry with a data-dependent byte
+        // offset (index*stride + C), the high half consuming only the
+        // carry -- is servable when every use of the materialized
+        // pointer is a word load and every offset coefficient is
+        // word-divisible; the audit admits the module end to end. A
+        // stride that is not a multiple of 4, a constant addend that
+        // is not word-aligned, or a store through the cone each keep
+        // the refusal. The real captured pair this reduces is pinned
+        // on the JS side in spirvfix-fd70.test.mjs.
+        {
+            auto intOffsetModule = [](U32 stride, U32 addend, bool withStore) {
+                std::vector<U32> w = {0x07230203u, 0x00010600u, 0, 64, 0};
+                auto ins = [&w](U32 op, std::vector<U32> ops) {
+                    w.push_back(((U32)(ops.size() + 1) << 16) | op);
+                    w.insert(w.end(), ops.begin(), ops.end());
+                };
+                ins(17, {1}); ins(17, {5347});                       // Shader, PhysicalStorageBufferAddresses
+                ins(14, {5348, 3});                                  // MemoryModel PhysicalStorageBuffer64, Vulkan
+                ins(15, {4, 30, 1852399981u, 0, 7});                 // EntryPoint Fragment %30 "main" {%7}
+                ins(16, {30, 7});                                    // ExecutionMode OriginUpperLeft
+                ins(71, {5, 2}); ins(72, {5, 0, 35, 0}); ins(72, {5, 1, 35, 8}); // push struct Block, members at 0 and 8
+                ins(71, {11, 3}); ins(72, {11, 0, 35, 0});           // root pointee BufferBlock, member Offset 0
+                ins(19, {1});                                        // %1 void
+                ins(33, {2, 1});                                     // %2 function type
+                ins(21, {3, 32, 0});                                 // %3 u32
+                ins(23, {4, 3, 2});                                  // %4 v2<u32>
+                ins(30, {5, 4, 3});                                  // %5 push struct {v2u32, u32}
+                ins(32, {6, 9, 5});                                  // %6 ptr PushConstant %5
+                ins(59, {6, 7, 9});                                  // %7 push variable
+                ins(22, {8, 32});                                    // %8 f32
+                ins(23, {9, 8, 4});                                  // %9 v4<f32>
+                ins(30, {10, 3, 3});                                 // %10 struct {u32, u32} (IAddCarry result)
+                ins(30, {11, 9});                                    // %11 root pointee {v4f}
+                ins(32, {12, 5349, 11});                             // %12 ptr PhysicalStorageBuffer %11
+                ins(32, {13, 5349, 9});                              // %13 ptr PhysicalStorageBuffer %9
+                ins(32, {14, 9, 4});                                 // %14 ptr PushConstant %4
+                ins(32, {15, 9, 3});                                 // %15 ptr PushConstant %3
+                ins(43, {3, 16, 0});                                 // %16 const 0
+                ins(43, {3, 17, 1});                                 // %17 const 1
+                ins(43, {3, 18, stride});                            // %18 const stride
+                ins(43, {3, 19, addend});                            // %19 const addend
+                ins(54, {1, 30, 0, 2});                              // %30 function
+                ins(248, {31});                                      // %31 label
+                ins(65, {14, 32, 7, 16});                            // %32 chain to push member 0 (the root VA)
+                ins(61, {4, 33, 32});                                // %33 load v2uint
+                ins(65, {15, 34, 7, 17});                            // %34 chain to push member 1 (the index)
+                ins(61, {3, 35, 34});                                // %35 load u32
+                ins(132, {3, 36, 35, 18});                           // %36 index*stride
+                ins(128, {3, 37, 36, 19});                           // %37 + addend
+                ins(81, {3, 38, 33, 0});                             // %38 base low half
+                ins(81, {3, 39, 33, 1});                             // %39 base high half
+                ins(149, {10, 40, 38, 37});                          // %40 IAddCarry(low, offset)
+                ins(81, {3, 41, 40, 0});                             // %41 sum
+                ins(81, {3, 42, 40, 1});                             // %42 carry
+                ins(128, {3, 43, 39, 42});                           // %43 high + carry
+                ins(80, {4, 44, 41, 43});                            // %44 rebuilt v2uint address
+                ins(124, {12, 45, 44});                              // %45 bitcast to a PSB pointer (the materialization)
+                ins(66, {13, 46, 45, 16});                           // %46 in-bounds chain to member 0
+                ins(61, {9, 47, 46});                                // %47 load v4f through the root pointer
+                if (withStore) ins(62, {46, 47});                    // store back through the cone (mutation)
+                ins(253, {});                                        // ReturnVoid
+                ins(56, {});                                         // FunctionEnd
+                return w;
+            };
+            auto verdict = [&intOffsetModule](U32 stride, U32 addend, bool withStore) {
+                std::vector<U32> w = intOffsetModule(stride, addend, withStore);
+                r15::Module m; assert(r15::parse(w, m));
+                return r15::analyzeRoot(m);
+            };
+            {
+                r15::RootVerdict rv = verdict(176, 48, false);
+                assert(rv.hasMats && rv.servable && rv.slots.size() == 1 && rv.slots[0] == 0 && rv.writableSlots.empty());
+                assert(!verdict(174, 48, false).servable);  // stride not word-divisible
+                assert(!verdict(176, 46, false).servable);  // addend not word-aligned
+                assert(!verdict(176, 48, true).servable);   // the word view serves loads only
+            }
+            const U32 psbBefore = vk64BridgeUnsupportedCount("spirv-capability-unknown:5347");
+            auto audit = [&module, &intOffsetModule](U32 stride, U32 addend, bool withStore) {
+                std::vector<U32> w = intOffsetModule(stride, addend, withStore);
+                return module({w.begin() + 5, w.end()});
+            };
+            assert(audit(176, 48, false) == VK_SUCCESS);
+            assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore);
+            assert(audit(174, 48, false) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 1);
+            assert(audit(176, 48, true) == VK_ERROR_FEATURE_NOT_PRESENT);
+            assert(vk64BridgeUnsupportedCount("spirv-capability-unknown:5347") == psbBefore + 2);
+            puts("PASS: GUARD integer-offset root addresses admit exactly the word-load class (FD-70)");
+        }
+
         // GUARD (heapSets mirror divergence): the bridge audit's R15b
         // collision check must consult the module's descriptor-heap set --
         // the set shared by its runtime-array variables -- exactly as
