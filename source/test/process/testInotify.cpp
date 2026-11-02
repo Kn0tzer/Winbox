@@ -28,7 +28,6 @@
 #include "../cpu/testCPU.h"
 
 #include <stdlib.h>
-#include <fcntl.h>
 #include <dirent.h>
 #include <atomic>
 #include <thread>
@@ -2545,6 +2544,11 @@ void testRecvmsgBadBuffer64Syscalls() {
     auto stageText = [&](U64 at, const char* text, U32 len) {
         memory->memcpyToGuest(at, text, len);
     };
+    auto segText = [&](U64 at, U32 len) {
+        std::string out;
+        for (U32 i = 0; i < len; i++) out += (char)memory->readb(at + i);
+        return out;
+    };
     auto filePos = [&]() -> S64 { return invoke6(8, (U64)(U32)fd, 0, 1, 0, 0, 0); }; // lseek(fd, 0, SEEK_CUR)
     auto setPos = [&](S64 pos) -> S64 { return invoke6(8, (U64)(U32)fd, (U64)pos, 0, 0, 0, 0); }; // SEEK_SET
 
@@ -2708,7 +2712,7 @@ void testRecvmsgBadBuffer64Syscalls() {
     }
 
     // 10. pos_h is honored: offset 2^32 lands past 4 GiB (sparse),
-    // verified on the host backing file.
+    // verified by the file length and a guest pread64 readback.
     {
         KFileDescriptorPtr desc2;
         U32 result = process->openFile(B("/"), B("/data2.bin"), K_O_RDWR | K_O_CREAT, desc2);
@@ -2722,16 +2726,18 @@ void testRecvmsgBadBuffer64Syscalls() {
         if (r != 4) {
             testFail("pwritev at offset 2^32 returned %lld (pos_h ignored?)", (long long)r);
         }
-        process->close(desc2->handle);
-        const std::string hostPath2 = std::string(hostDir) + "/data2.bin";
-        struct stat st;
-        char tail[4] = {0, 0, 0, 0};
-        int hfd = open(hostPath2.c_str(), O_RDONLY);
-        if (hfd < 0 || fstat(hfd, &st) != 0 || st.st_size != (S64)((1ULL << 32) + 4) ||
-            pread(hfd, tail, 4, (off_t)(1ULL << 32)) != 4 || memcmp(tail, "END!", 4) != 0) {
-            testFail("pwritev at offset 2^32 did not land 'END!' at 2^32 on the backing file");
+        if (desc2->kobject->length() != (S64)((1ULL << 32) + 4)) {
+            testFail("pwritev at offset 2^32 left the file length at %lld",
+                     (long long)desc2->kobject->length());
         }
-        if (hfd >= 0) close(hfd);
+        // Read the tail back through the guest pread64 dispatch.
+        memory->writeq(seg0, 0);
+        S64 pr = invoke6(17, (U64)(U32)desc2->handle, seg0, 4, 0, 1, 0);
+        if (pr != 4 || segText(seg0, 4) != "END!") {
+            testFail("pread64 at offset 2^32 returned %lld with bytes '%s'",
+                     (long long)pr, segText(seg0, 4).c_str());
+        }
+        process->close(desc2->handle);
     }
 
     process->close((S32)inotifyDesc->handle);
