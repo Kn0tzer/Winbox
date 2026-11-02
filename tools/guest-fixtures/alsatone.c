@@ -166,6 +166,14 @@ static int run_mode(const char *name, unsigned int access, unsigned int format, 
          * ever moves frames through this chain. Always terminates. */
         long total_committed = 0;
         for (int cycle = 0; cycle < 8; cycle++) {
+            /* Pace the cycles at a playback-like cadence: on this
+             * chain snd_pcm_wait returns without blocking (the OSS
+             * poll face never sleeps), so without a real pause the
+             * loop would outrun any hardware drain and every cycle
+             * would sample the same instant. 500 ms per cycle gives
+             * the DAC-side consumer real time to advance the ring,
+             * which is what avail recovery measures. */
+            if (cycle > 0) usleep(500000);
             sframes_t avail = p_avail_update(pcm);
             const channel_area_t *areas = NULL;
             uframes_t offset = 0, frames = got_buffer ? got_buffer : 4096;
