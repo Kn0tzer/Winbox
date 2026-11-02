@@ -1342,6 +1342,38 @@ do not close the entry until they land.
   branch records not yet composed.)* Evidence:
   `test-results/merge-fd02-fd38-20261031/js-suite.log`.
 
+  Update 2026-11-02 (FD-64 lane, branch `lane-fd64`,
+  fix `9d132afc7`): CLOSED on branch — see CL-43
+  (provisional). The corpus subtest had already been
+  resolved by the FD-62 lane's measured corpus
+  re-baseline (`ea7283041`) and kept green by the
+  FD-70 composition's fixture enrollment
+  (`bf2ce6bbf`); the four DESC_SET subtests are
+  resolved here. Determination: the fixture was the
+  stale side. The current contract — `u8 setIndex,
+  u8 pad, u16 nBind, u64 layoutId`, one entry per
+  written (binding, arrayElement) with count 1 — is
+  stated in docs/vulkan-protocol.md §0x08, written
+  by the bridge's emitDescSet, read by
+  web/vk-protocol.mjs, and pinned by the suite's
+  vk-desc-set-wire.test.mjs; the legacy fixture
+  still wrote the superseded u8-count header and a
+  single array entry with count 3, so the reader
+  rightly reported the 132 binding bytes as
+  trailing. The correction is test-file only
+  (fixture header + per-element array entries +
+  the decode assertions updated to the same
+  contract; a second masked staleness, the decoded
+  sampler object's shape, likewise updated to the
+  current decoder contract — the ADDR mapping plus
+  the raw addrMode* fields from `26ffedefa`).
+  Proof: legacy group 114/0 (was 110/4; the
+  standing failing set is empty), suite-unit group
+  348/0 unchanged, sabotage re-run returns the four
+  failures. Record:
+  `docs/reports/fd64-legacy-descset-20261102.md`;
+  evidence `test-results/fd64/`.
+
 - **FD-41 — The native suite aborts mid-run in the clone
   test group when the syscall-ABI tests run first.
   CLOSED 2026-10-31 — see CL-08.** *(Was Medium)*
@@ -3389,6 +3421,29 @@ do not close the entry until they land.
   `test-results/fd87/` (index-provenance trace);
   record
   `docs/reports/fd87-godot-sibling-classes-20261102.md`.
+- **FD-91 — The comment above the ADDR table in
+  web/vk-protocol.mjs misstates the mapping it
+  annotates.** *(Low, documentation. Filed by the
+  FD-64 lane, 2026-11-02; FD-85..FD-90 are taken
+  by parallel lanes' uncomposed branch records,
+  so this number is provisional until the merge
+  lane's audit.)* The comment says WebGPU has no
+  border addressing or mirror-clamp mode and
+  'both use clamp-to-edge'; the table it annotates
+  maps MIRROR_CLAMP_TO_EDGE (4) to 'mirror-repeat'
+  — only CLAMP_TO_BORDER (3) collapses to
+  clamp-to-edge. The served behaviour is the
+  table's (in use since the page tier; the
+  border-emulation tier keys off the raw addrMode*
+  fields precisely because the table collapses
+  modes). The comment is the stale side. The
+  filing lane left it unedited — its mandate was
+  the legacy cases — so the fix (correct the
+  comment; or, if a future audit finds the table
+  wrong, the table, with the served-behaviour
+  consequences stated) is queued here. Evidence:
+  web/vk-protocol.mjs lines 89-90;
+  `docs/reports/fd64-legacy-descset-20261102.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -4849,3 +4904,52 @@ its lane and is not a defect, for the stated reason:
   composing merge — and which now gates only on
   FD-88 and FD-72 for these pipelines. Record:
   `docs/reports/fd87-godot-sibling-classes-20261102.md`.
+
+- **CL-43 — Four legacy-suite subtests threw
+  'DESC_SET has 132 trailing bytes' against the
+  current V2 protocol fixtures (was FD-64).**
+  Closed on branch `lane-fd64` in `9d132afc7`.
+  This number is PROVISIONAL: CL-40/41/42 are
+  provisionally taken by in-flight lanes'
+  uncomposed records; the composing merge
+  verifies and renumbers by audit (the FD-63
+  precedent). FD-64's fifth subtest (the spirvfix
+  corpus conversion) had already been resolved by
+  the FD-62 lane's measured corpus re-baseline
+  (`ea7283041`) and kept green by the FD-70
+  composition's fixture enrollment (`bf2ce6bbf`).
+  For the four: the fixture in
+  web/tests/vkwebgpu-v2.test.mjs was the stale
+  side — it encoded the superseded DESC_SET
+  header (u8 count) and a descriptor array as one
+  entry with count 3, while docs/vulkan-protocol.md
+  §0x08, the bridge writer (emitDescSet: u8
+  setIndex, u8 pad, u16 nBind; applyDescWrite
+  stores one Binding per element, count 1), the
+  vk-protocol.mjs reader and the suite's
+  vk-desc-set-wire.test.mjs all carry the current
+  contract. The correction is test-file only: the
+  fixture writes the current header and
+  per-element array entries, and the decode
+  assertions assert that contract (five bindings
+  in set 0; binding 1 as elements [0,1,2], each
+  count 1, kind 2). A second stale expectation
+  the throw had masked — the decoded sampler
+  object's shape — was updated to the current
+  decoder contract (the ADDR mapping for the
+  fixture's CLAMP_TO_BORDER / MIRROR_CLAMP_TO_EDGE
+  modes, plus the raw addrModeU/V/W fields the
+  border-emulation feature added in `26ffedefa`,
+  pinned by vk-border-emulation.test.mjs); no
+  assertion was dropped and no served behaviour
+  changed. Proof: web/tests/vkwebgpu-v2.test.mjs
+  20/20; full legacy group 114 passed / 0 failed
+  (baseline 110/4 — the standing failing set is
+  empty); suite-unit group unchanged at 348/0;
+  tools/run-tests.mjs exits 0. Sabotage:
+  restoring the stale u8-count header in a
+  scratch copy returns the same four failures
+  (220 trailing bytes over the five current
+  entries). Record:
+  `docs/reports/fd64-legacy-descset-20261102.md`;
+  evidence `test-results/fd64/`.
