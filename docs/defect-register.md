@@ -1629,7 +1629,8 @@ do not close the entry until they land.
 
 - **FD-54 — With `BW64_DLLTRACE` set, the 64-bit
   process-spawn signal changes dialect and 64-bit session
-  certification can never complete.** *(Low — behind a
+  certification can never complete.
+  CLOSED 2026-11-01 — see CL-35.** *(Low — behind a
   diagnostic environment variable no session harness
   currently sets; found by the FD-48 lane)* In
   `sys_openat64` (`source/kernel/syscall64.cpp`) the default
@@ -1653,6 +1654,33 @@ do not close the entry until they land.
   FD-54 at integration — FD-53 is assigned in this
   batch to the support-archive duplicate-library
   entry.)*
+
+  **Resolution (2026-11-01, `lane-fd54`; record
+  `docs/reports/fd54-dlltrace-spawn-signal-20261101.md`):**
+  the mechanism is exactly the one filed, verified at both
+  ends: the emitter gated the line on
+  `!getenv("BW64_DLLTRACE")`, and the observer
+  (`observeSessionOutput` in the launcher) matches
+  `OPENED '<path>explorer.exe'`, which the DLLTRACE line's
+  `OPEN  '<path>'` dialect never satisfies — it was the
+  only `BW64_DLLTRACE` suppression of a default line in
+  the tree. Fixed in `e3660ab57`: the signal is emitted
+  unconditionally on a successful .exe open, exactly like
+  the 32-bit paths; the DLLTRACE line is unchanged, so a
+  traced session now logs both. Proof: `bc2cfd046` adds
+  `testExeSpawnSignal64`, which drives the real dispatcher
+  (openat64 on a fixture .exe, klog captured) — RED on
+  the unfixed code ("spawn signal suppressed under
+  BW64_DLLTRACE=1"), GREEN after; it also pins the
+  control (signal present untraced), the trace line's
+  presence (the flag still works), and the failure
+  discipline (a failed .exe open emits no signal in
+  either configuration). Suites on the fixed tree,
+  serial: x64 67/67 (66 + the new test), main 667/667,
+  0 FAILED; run-native 56 PASS; the browser build
+  compiles with the fix in shared code ("Browser export
+  verified", wasm `35302eba…`, support archive
+  `c4dbe35986a5…` unchanged).
 - **FD-55 — The Godot demo presents no frame in the
   browser path: the guest never reaches its first
   frame. Its startup is still inside engine
@@ -1870,8 +1898,9 @@ do not close the entry until they land.
 
 - **FD-63 — The emulator's periodic METRICS emission
   stops a few minutes into a session, freezing the
-  metrics snapshot for the rest of the run.** *(Low —
-  developer observability; open. Numbered FD-58 on
+  metrics snapshot for the rest of the run.
+  CLOSED 2026-11-01 — see CL-36.** *(Was Low —
+  developer observability.)* *(Numbered FD-58 on
   the lane's register; renumbered FD-63 in the
   composed numbering.)* Found by the FD-55 lane
   (2026-11-01): in a 1,752 s demo run the console
@@ -1885,6 +1914,37 @@ do not close the entry until they land.
   reading a frozen instrument. Evidence:
   `test-results/fd55/long1/` (console.txt,
   metrics.jsonl).
+  **Update — CONVICTED AND FIXED (FD-63 lane,
+  2026-11-01; record
+  `docs/reports/fd63-metrics-emission-20261101.md`).**
+  The three emitted windows in the filed evidence
+  are all SDL-present-driven (`present.path` "sdl",
+  sdl=1/2/1, gl=0, audio=0): presents were the only
+  activity the emission gate recognised in them.
+  The gate (`bw64_metrics_maybe_emit`) counted
+  presents, Vulkan frame completions, GL calls and
+  audio calls as activity — but not the syscall
+  stage, which every 64-bit syscall dispatch feeds.
+  Once the session stopped presenting, every later
+  window held only syscall activity and fell into
+  the gate's no-activity branch, which discarded
+  the accumulated counters unreported and restarted
+  the window clock — every interval, for the rest
+  of the run. The panel froze at the last
+  present-driven snapshot (syscall calls=239,
+  ms=46108.4) while the session executed on. Fix
+  `6d711e6a6`: the gate now counts syscall dispatch
+  as activity. Proof: a new section of the native
+  metrics selftest drives successive syscall-only
+  intervals against the real registry — RED on the
+  unfixed code (exactly its two assertions fail),
+  GREEN with the fix; the browser build compiles
+  on the fixed tree (wasm `1809b7d7…`). Stated
+  boundary, unchanged by design: Vulkan trap
+  traffic that never completes a frame still feeds
+  no counter — pre-existing, and not this entry's
+  evidence, whose session dispatched syscalls
+  throughout.
 
 - **FD-66 — The native bridge harness's sanitizer flavour
   cannot finish clean: readback blocks the fixture leaves
@@ -2033,7 +2093,8 @@ do not close the entry until they land.
   a late wave at ~1,819 s (diag1) and ~1,881 s (diag2). Filed
   provisionally as FD-70 by the FD-55 pipeline-creation lane,
   2026-11-01; numbered FD-70 at composition on 2026-11-01 —
-  the number was free on integ.)* In the
+  the number was free on integ.)* CLOSED 2026-11-01 —
+  see CL-37 (provisional, filed on branch `lane-fd70int`). In the
   diag2 capture (build 72360dda5; evidence
   test-results/fd55pipe/diag2) the engine's scene-shader retries
   hit two further modules the bridge audit refuses with
@@ -2181,6 +2242,112 @@ do not close the entry until they land.
   an upstream translator change that accepts the
   capability, re-vendored. Record:
   `docs/reports/fd70-second-wave-20261101.md`.
+
+  **Update 2026-11-01 (FD-70 integer-offset lane, branch
+  `lane-fd70int`): the integer-offset root-addressing
+  design is implemented in both mirrors and proven on
+  the fixtures and the corpus; the entry CLOSES
+  provisionally — see CL-37 — with the in-vivo
+  pair-creations check on a shipped build named as
+  the deploy-side proof still owed.** The restated
+  remaining term — root loads whose addresses are
+  computed in integer space — is served by a word
+  view (R15c in `tools/spirvfix/spirvfix.mjs`, mirrored
+  in `source/vulkan/vk64bridge.cpp`): when any
+  materialization of a root slot carries an affine
+  integer offset (push-block base VA plus a
+  data-dependent byte offset folded into the low half
+  through OpIAddCarry, the high half consuming only
+  the carry), the slot is re-rooted at the same
+  `bw_root_p<off>` name and binding as a storage
+  struct wrapping a runtime array of 32-bit words, and
+  every load through the slot is rewritten as word
+  loads at its total affine byte offset divided by
+  four, reassembled by bitcast. The class boundary is
+  exact in both mirrors: the offset must classify
+  affinely (constants, adds, subtractions without a
+  dynamic subtrahend, multiplication by a positive
+  constant; any other 32-bit value is an opaque term
+  the rewrite recomputes from the same SSA value);
+  every use of every materialized pointer must be a
+  load of a 32-bit scalar or 2-4-component 32-bit
+  vector reached through access chains and copies,
+  with every chain index folding into the affine
+  offset (struct members by Offset decoration, array
+  elements at ArrayStride, vector components at 4
+  bytes); every coefficient and the constant
+  remainder of every load's total offset must be
+  divisible by 4; a store through any cone refuses
+  the slot by name. Proof: both specification
+  fixtures take `root-descriptor-bda`, pass spirv-val
+  and translate through the vendored translator;
+  `spirvfix-fd70.test.mjs` 11/11 including the three
+  mutation boundaries pinned on the captured module
+  (stride 176 -> 174 refuses, field offset 48 -> 46
+  refuses, an inserted store refuses naming the
+  loads-only word view) and a sabotage pass; corpus
+  over all 148 `testdata/spirv` fixtures — 146
+  byte-identical, only the pair's output changed;
+  native guard in `vk64_native_test.cpp` (the audit
+  admits the synthetic integer-offset module end to
+  end and keeps the mutations' refusals; run-native
+  57 PASS); citations re-pinned (352 rows, 0 DRIFT);
+  browser build on the staged branch (wasm
+  `1cdc208e`) with the full JS unit suite 348/348.
+  The mirrors caught each other once during the lane:
+  the bridge's first word-cone struct step used the
+  index constant's id where the JS resolves its
+  value — the new native guard reddened on it before
+  any fixture proof ran, and the fix is in the same
+  commit. What remains owed is only the deploy-side
+  confirmation the closing terms name — the pair's
+  creations succeeding in vivo on a shipped build —
+  which belongs to the deploy gate that carries this
+  branch; this closure is provisional in exactly that
+  sense. Record:
+  `docs/reports/fd70-intoffset-20261101.md`.
+
+  **Update 2026-11-02 (deploy of the FD-54 + FD-63 +
+  FD-70 + FD-79/80 batch, shipped build `9e37e5640`,
+  wasm `d631d254`): the deploy-side proof CL-37 owed
+  was run in vivo and FAILED on its pipeline clause —
+  the pair's module creations succeed and FD-70's
+  refusal is extinct in vivo, but the pair's pipeline
+  creations still fail, on sibling modules in the
+  same pipelines.** Standard demo path against the
+  shipped build (warmed archive, vktrace on, 3,300 s
+  deadline; evidence
+  `test-results/deploy-fd54-63-70-7980-20261102/godot-proof/console.txt`,
+  14,880 lines): the pair was submitted in the second
+  wave and CREATED — 23,440 bytes (djb2
+  28a2394720432fda) at 2,047.0 s, 16,304 bytes
+  (3eccbc1e60e9f7a4) at 2,073.3 s and 2,074.4 s, all
+  plain `vkCreateShaderModule` lines; the run
+  carries ZERO `spirv-capability-unknown:5347` lines
+  and five REFUSED lines total, none of them the
+  pair. The three second-wave pipeline creations
+  nevertheless failed with
+  `Create(Graphics)PipelineState 0x80004005`
+  (2,072.4 s, 2,073.6 s, 2,074.6 s; the run's other
+  two E_FAILs are FD-72's, at 236.9/237.4 s), each
+  killed by another module in the same pipeline: a
+  369,400-byte module (djb2 d4da162f9cbdb948)
+  refused at 2,072.4 s for
+  `spirv-capability-unknown:29`,
+  `spirv-capability:RuntimeDescriptorArray` and
+  FD-72's `spirv-builtin-helper-invocation`; and a
+  2,340-byte module (djb2 fe166085df72b93f) refused
+  at 2,073.6 s and 2,074.6 s for
+  `spirv-capability:SampledBuffer` and
+  `spirv-capability:RuntimeDescriptorArray`. CL-37's
+  owed clause — the pair's PIPELINE creations
+  succeeding in vivo — is therefore NOT met and
+  stays owed, now gated on those sibling classes
+  (one of them FD-72's). The sibling modules are
+  recorded here and in the deploy record as found
+  in vivo; filing them is the register owner's.
+  Record:
+  `docs/reports/deploy-fd54-63-70-7980-20261102.md`.
 
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
@@ -2639,7 +2806,8 @@ do not close the entry until they land.
 
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
-  host defers it until the mapping is unmapped.** *(Low.
+  host defers it until the mapping is unmapped.
+  CLOSED 2026-11-01 — see CL-38.** *(Low.
   Filed as FD-79 on the FD-58..60 lane branch,
   2026-11-01; the number was verified free on the
   integration register and settled at composition.)* Measured on the host kernel
@@ -2653,10 +2821,26 @@ do not close the entry until they land.
   FD-58..60 lane, 2026-11-01. Evidence:
   `test-results/fd58-60/` (host reference programs and
   outputs).
+  Update (FD-79/80 lane, 2026-11-01): measured on the
+  emulator, the behaviour was worse than the filed
+  text — on the demand-paged path the event was not
+  merely early but lost in-session: the open node's
+  close is destructor-driven, and a mapped file's
+  KFile is pinned by its mapping entries and by the
+  system file cache, so neither close nor munmap
+  delivered the event; it surfaced only at process
+  teardown. The host matrix was also widened by
+  re-measurement: any live mapping of the description
+  (shared or private, read or write) defers either
+  close event to the last unmap. CL-38 covers the
+  demand-paged path; the 64-bit path, whose file
+  mappings are materialized copies with no
+  open-description accounting, is filed as FD-82.
 
 - **FD-80 — The 64-bit dispatcher's preadv (295) and
   preadv2 (327) have name-table entries but no dispatch
-  case, so they return ENOSYS.** *(Low. Filed
+  case, so they return ENOSYS. CLOSED 2026-11-01 —
+  see CL-39.** *(Low. Filed
   as FD-80 on the FD-58..60 lane branch, 2026-11-01;
   the number was verified free on the integration
   register and settled at composition.)*
@@ -2741,6 +2925,57 @@ do not close the entry until they land.
   backing store itself.
   Record: docs/reports/fd81-temp-link-pattern-20261101.md;
   evidence test-results/fd81/ (on the lane tree).
+- **FD-82 — A 64-bit guest's file-backed mappings do
+  not participate in FD-79's close-event deferral: the
+  64-bit memory path materializes a file mapping as
+  copied/shared pages keyed by node, with no
+  open-description accounting, so a 64-bit guest still
+  sees IN_CLOSE_WRITE / IN_CLOSE_NOWRITE at fd close
+  while such a mapping is live, where the host defers
+  the event to the last unmap.** *(Low. Filed by the
+  FD-79/80 lane, 2026-11-01; the number was verified
+  free against the register at filing and is
+  provisional until the merge lane's audit.)* The
+  demand-paged path is exact after CL-36; closing
+  this entry needs per-description mapping accounting
+  on the 64-bit path or an equivalent liveness input
+  to its close path. Evidence:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`.
+
+- **FD-83 — readv generates no IN_ACCESS when it
+  succeeds with 0 bytes (at EOF, or with iovcnt 0);
+  the host generates exactly one.** *(Low. Filed by
+  the FD-79/80 lane, 2026-11-01; the number was
+  verified free against the register at filing and is
+  provisional until the merge lane's audit.)*
+  Measured on the host kernel (6.17.0-1020-oracle):
+  the vectored reads generate IN_ACCESS once per
+  successful call including 0-byte successes, where
+  plain read/pread stay silent at 0 bytes. The
+  emulator's readv notifies per segment through the
+  plain read path, whose bytes>0 rule is correct for
+  read/pread but not for the vectored calls.
+  preadv/preadv2 follow the host rule since CL-39.
+  Evidence: `test-results/fd79-80/` (host reference
+  programs and outputs).
+
+- **FD-84 — The positioned/plain read family answers
+  -EINVAL on a descriptor that cannot be read; the
+  host answers -EBADF.** *(Low. Filed by the FD-79/80
+  lane, 2026-11-01; the number was verified free
+  against the register at filing and is provisional
+  until the merge lane's audit.)* Measured on the
+  host: preadv on an O_WRONLY descriptor returns
+  EBADF. The emulator's positioned-read core rejects
+  a non-readable file with -EINVAL, and pread64 and
+  (since CL-39) preadv inherit that answer;
+  KProcess::read makes the same choice for plain
+  reads. Found by the FD-79/80 lane while pinning
+  preadv's validation matrix; left as found rather
+  than changed inside a wiring fix. Evidence:
+  `test-results/fd79-80/` (host reference programs
+  and outputs).
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -2777,6 +3012,8 @@ is behavioural, is re-proven there.
 | `lane-fd77b` | FD-77 CONVICTED + FIXED: the silent freeze is an ABBA deadlock — msync held the mapped-files mutex across a writeback that demand-faults guest pages (memory mutex second), against the demand path's memory -> mapped-files order; the specified fault-stage instrument + mutex owner records were built and the first armed run parked into a capture that names both halves; fix snapshots the mapping and writes back after release | Fault-stage instrument `3ca9decf4` (citation audit 352 rows / 0 drift; instrumented build compiles, wasm 5ebee420); deterministic test testMsyncLockOrder RED on unfixed code -> GREEN with the fix `52ee264c7`; native serial main 666/666, x64 65/65; JS 348/348; fixed browser build compiles (wasm 646f85cc); consumer 6/6 mapped, 0 parks. Record: `docs/reports/fd77-msync-abba-20261101.md`; evidence `test-results/fd77b/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 | `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
+| `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
+| `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -3826,3 +4063,185 @@ its lane and is not a defect, for the stated reason:
   launcher's "booted, no window, no output" failure
   surfacing remains specified-not-built, as the
   FD-77 entry records.
+
+- **CL-35 — The 64-bit exe spawn signal is emitted
+  regardless of BW64_DLLTRACE (FD-54).** *(Filed
+  provisionally as CL-35 on `lane-fd54`, 2026-11-01 —
+  CL-35 was the next free closure number on the
+  integration register at filing; the composing merge
+  verifies by audit and renumbers if a sibling lane
+  took it first.)* Fixed on branch `lane-fd54` in
+  `e3660ab57`: `sys_openat64` no longer conditions the
+  process-spawn signal (`OPENED '<path>' -> fd <n>` on
+  a successful .exe open) on `BW64_DLLTRACE` being
+  unset. With the flag set, the open previously
+  produced only the DLLTRACE dialect line, which the
+  launcher's readiness observer never matches, so a
+  traced 64-bit session could never complete the FD-47
+  handshake; the signal is a contract line, and it is
+  now emitted unconditionally, matching the 32-bit open
+  paths. The DLLTRACE diagnostic line itself is
+  unchanged. Proof: `testExeSpawnSignal64` (`bc2cfd046`)
+  drives the real dispatcher with klog captured — RED
+  before the fix, GREEN after, with the untraced
+  control, the trace line's presence, and the
+  no-signal-on-failed-open discipline all pinned;
+  serial suites x64 67/67 and main 667/667, 0 FAILED;
+  run-native 56 PASS; browser build "Browser export
+  verified" (wasm `35302eba…`).
+- **CL-36 — The METRICS stream froze mid-session:
+  the emission gate did not count syscall dispatch
+  as activity (FD-63).** *(Filed provisionally as
+  CL-36 on lane-fd63, 2026-11-01 — CL-35 was filed
+  provisionally by the FD-54 lane on its branch;
+  the composing merge verifies by audit and
+  renumbers if needed.)*
+  Fixed on branch `lane-fd63` in `6d711e6a6`. The
+  gate in `bw64_metrics_maybe_emit`
+  (`source/util/bw64metrics.cpp`) decided whether a
+  window was worth emitting from presents, Vulkan
+  frame completions, GL calls and audio calls; the
+  syscall stage — fed by every 64-bit syscall
+  dispatch — was not counted, so once a session
+  stopped presenting, each window fell into the
+  no-activity branch and its accumulated counters
+  were discarded unreported, freezing the panel at
+  the last present-driven snapshot for the rest of
+  the run (the filed 1,752 s run: three emissions,
+  all SDL-present-driven, then silence for
+  ~1,500 s). The gate now counts syscall dispatch
+  as activity, with the reason written at the site.
+  Proof: a new section of the native metrics
+  selftest (`tools/bw64metrics-selftest.cpp`)
+  drives six successive ~600 ms intervals of
+  syscall-only accounting against the real
+  registry — RED on the unfixed code (24 PASS,
+  exactly the two new assertions FAIL), GREEN with
+  the fix; the writer's contract fixture is
+  reproduced byte-identically modulo clock fields,
+  so the committed fixture stands; reader contract
+  and panel tests 21/21; the browser build compiles
+  on the fixed tree (wasm `1809b7d7…`, support
+  archive `c4dbe35986a5…` unchanged).
+- **CL-37 — Integer-offset root addresses served
+  through a word view in both mirrors (FD-70).**
+  *(Filed provisionally on branch `lane-fd70int`,
+  2026-11-01; CL-35 and CL-36 are held provisionally
+  by the FD-54 and FD-63 branches — the composing
+  merge lane verifies and renumbers by audit.)*
+  Fixed on branch `lane-fd70int` in `b837f16c8`
+  (spirvfix serving), `7f409d71e` (bridge mirror +
+  native guard) and `e47e03a6a` (citation re-pins).
+  A root slot whose materializations compute their
+  addresses in integer space (push base VA + affine
+  data-dependent byte offset through OpIAddCarry) is
+  re-rooted as a storage struct wrapping a runtime
+  array of 32-bit words at the unchanged
+  `bw_root_p<off>` name and binding, and each load
+  through it is rewritten as word loads at its total
+  affine byte offset / 4. Proof: the two
+  specification fixtures take `root-descriptor-bda`,
+  pass spirv-val and translate; corpus 146/148
+  byte-identical with only the pair changed;
+  `spirvfix-fd70.test.mjs` 11/11 with mutation
+  boundaries and a sabotage pass; native guard
+  admits the class end to end and keeps the
+  mutations refused (run-native 57 PASS); browser
+  build on the staged branch (wasm `1cdc208e`) with
+  the full JS unit suite 348/348; citation audit
+  352 rows, 0 DRIFT. Owed at the deploy gate that
+  carries this branch: the pair's pipeline creations
+  succeeding in vivo on the shipped build — the
+  FD-70 closing terms' last clause, unmet by
+  construction until a deploy carries the branch.
+- **CL-38 — A file description's close event is
+  delivered at the host's moment: held while any
+  mapping of the description is live, delivered at
+  the last unmap (FD-79).** *(Filed as CL-37 on
+  lane-fd79-80, 2026-11-01 — CL-35 and CL-36 were
+  taken provisionally by the FD-54 and FD-63
+  closures on their own branches; renumbered CL-38
+  at composition, CL-37 having been taken on the
+  integration register by FD-70's closure in this
+  batch; the text is preserved apart from the
+  number.)* Fixed on branch
+  `lane-fd79-80`. The host contract was re-measured
+  first (6.17.0-1020-oracle): any live mapping of a
+  description — shared or private, read or write —
+  defers its close event (IN_CLOSE_WRITE, or
+  IN_CLOSE_NOWRITE for a read-only description) to
+  the last unmap; per-description, a second unmapped
+  description of the same file fires at its own
+  close. The emulator's event was lost in-session,
+  not merely early: the open node's close is
+  destructor-driven and a mapped file's KFile is
+  pinned by its mapping entries and the system file
+  cache. The fix tracks the contract explicitly at
+  the open description: FsOpenNode carries a
+  live-mapped-page count and pending/delivered
+  state, both file and mem open nodes route their
+  close notification through it (a destructor
+  backstop delivers a still-pending event rather
+  than losing it, and reopen() re-arms the state);
+  KProcess::close signals the event when a close
+  drops the process's last descriptor for the
+  description; KMemory counts page births at the
+  three mapping-creation sites and reports deaths
+  before pages are invalidated or replaced (from
+  unmap, from mmap overwrite, and for the whole
+  address space at exec) — File pages by their
+  mapping key, CopyOnWrite pages (a write fault
+  converts a file page; its entry names the cache
+  page, not the mapping) by range, to the newest
+  table entry containing the page. Boundaries,
+  stated exactly: a description shared with another
+  process is signalled by the first process to drop
+  its last descriptor and its pages are counted
+  across the sharers, so in the fork corner the
+  event can arrive early; it is never lost. The
+  64-bit materialized-mapping path has no
+  open-description accounting and is filed as
+  FD-82. Proof: new test testCloseWriteDeferral in
+  both native suites (six cases: shared-writable
+  deferral, unmap-before-close, two mappings,
+  private-read NOWRITE deferral, plain close, the
+  two-description split) — RED on the base (five
+  arrival assertions failing), GREEN with the fix;
+  full native suites serial main 668/668 and x64
+  68/68, 0 FAILED. Record:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
+  evidence `test-results/fd79-80/`.
+
+- **CL-39 — The 64-bit dispatcher's preadv (295) and
+  preadv2 (327) are wired: vectored positioned reads
+  with the host's validation and notification shape
+  (FD-80).** *(Filed as CL-38 on lane-fd79-80,
+  2026-11-01; renumbered CL-39 at composition,
+  following CL-38 above; the text is preserved
+  apart from the number.)* Fixed on branch `lane-fd79-80`. The host
+  contract was measured first (raw syscalls,
+  6.17.0-1020-oracle): segments fill in order at
+  successive offsets, the file position does not
+  move, a short read at EOF ends the walk,
+  zero-length segments are skipped, IN_ACCESS is
+  generated exactly once per successful call
+  including 0-byte successes, any negative offset is
+  EINVAL (there is no readv fallback), iovcnt
+  outside 0..IOV_MAX is EINVAL, an unknown preadv2
+  flag bit is EOPNOTSUPP, and every defined RWF flag
+  is accepted on a read. The implementation walks
+  the iovec over pread64's factored core with
+  per-segment notification suppressed and generates
+  the single IN_ACCESS on success; pread64's own
+  behaviour is unchanged. A descriptor that cannot
+  be read keeps pread64's -EINVAL (the host's EBADF
+  divergence predates this lane and is filed as
+  FD-84). Proof: new test testPreadv64Syscalls in
+  the x64 native suite — RED on the base (every
+  call -ENOSYS), GREEN with the fix across the
+  data/position/segment walk, the EOF cases, the
+  validation matrix, the 64-bit offset, and the
+  flag matrix; full native suites serial main
+  668/668 and x64 68/68, 0 FAILED. Record:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
+  evidence `test-results/fd79-80/`.

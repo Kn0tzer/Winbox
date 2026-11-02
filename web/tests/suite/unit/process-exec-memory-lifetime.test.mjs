@@ -33,7 +33,7 @@ void requireQuiescent() {
   if (!stopped || !destroyed) throw std::runtime_error("exec reset memory while a sibling can still access it");
 }
 struct KThread { void reset() { requireQuiescent(); } };
-struct Memory { void execvReset(bool) { requireQuiescent(); } };
+struct Memory { void execvReset(bool) { requireQuiescent(); } void noteAllMappedFilePagesDying() { requireQuiescent(); } };
 struct Heap { void freeAll(Memory*) { requireQuiescent(); } };
 struct KMemory64 {
   explicit KMemory64(void*) { requireQuiescent(); }

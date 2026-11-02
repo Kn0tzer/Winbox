@@ -1,6 +1,7 @@
 // FD-70 — the second-wave Godot vertex modules (godot-vs-4000ddfd359efb05,
-// godot-vs-ebac7e2d70a20d62) and the descriptor-array orphan sweep's
-// literal-reference defect.
+// godot-vs-ebac7e2d70a20d62), the descriptor-array orphan sweep's
+// literal-reference defect, and the integer-offset root-addressing
+// serving design (R15c).
 //
 // The pair's descriptor image array IS R15a-servable, but an OpLoad
 // through a root-descriptor pointer carries an Aligned 16 memory-access
@@ -16,42 +17,53 @@
 // audit's skip5302 simulation; the native guard lives in
 // tools/vkd3d/tests/vk64_native_test.cpp).
 //
-// What remains for the pair after the fix is the true boundary: the
-// vendored translator rejects PhysicalStorageBufferAddresses outright
-// once the false layers are gone.
+// With the false layers gone, the pair's root loads compute their
+// addresses in integer space -- push-constant base VA plus an
+// instance-derived index times the 176-byte element stride plus a
+// field offset, added to the base's low half through the OpIAddCarry
+// idiom and bitcast to a physical pointer. R15c serves exactly that
+// shape: a slot carrying an integer-offset materialization is
+// re-rooted through a word view (a synthesized storage struct wrapping
+// a runtime array of 32-bit words at the same bw_root_p<off> name and
+// binding), and every load through the slot is rewritten as word
+// loads at its affine byte offset divided by four. The boundary tests
+// below pin the class edges by model mutation of the captured module:
+// a stride or field offset not divisible by four, and a store through
+// an integer-offset pointer, all keep the loud refusal.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { applySpirvFix, parseSpirv, serializeSpirv } from '../../../../tools/spirvfix/spirvfix.mjs';
+import { applySpirvFix, parseSpirv, serializeSpirv, analyzeRootDescriptors } from '../../../../tools/spirvfix/spirvfix.mjs';
 import * as naga from '../../../vendor/naga/node.js';
 
 const load = name => new Uint8Array(readFileSync(new URL(`../../../../testdata/spirv/${name}`, import.meta.url)));
 const capsOf = mod => mod.insns.filter(i => i.op === 17).map(i => i.words[0]);
 const rtasOf = mod => mod.insns.filter(i => i.op === 29);
 
-for (const name of ['godot-vs-4000ddfd359efb05.spv', 'godot-vs-ebac7e2d70a20d62.spv']) {
-  test(`FD-70 pair (${name}): false layers peeled, physical addressing is the remaining rejection`, () => {
+for (const [name, loadCount] of [['godot-vs-4000ddfd359efb05.spv', 7], ['godot-vs-ebac7e2d70a20d62.spv', 5]]) {
+  test(`FD-70 pair (${name}): integer-offset root loads are served through the word view`, () => {
+    const a = analyzeRootDescriptors(parseSpirv(load(name)));
+    assert.equal(a.moduleServable, true, 'the analysis serves the pair');
+    assert.equal(a.slots.length, 1, 'one root slot');
+    assert.equal(a.slots[0].wordView, true, 'the slot is served through the word view');
+    assert.equal(a.slots[0].wordLoads.length, loadCount, 'every root load is a word load');
     const r = applySpirvFix(load(name));
     assert.ok(r.applied.includes('descriptor-array-specialize'), 'the descriptor array specializes');
+    assert.ok(r.applied.includes('root-descriptor-bda'), 'the root loads are re-rooted');
     assert.ok(r.applied.includes('texel-buffer-to-2d'), 'the specialized texel clone converts in the post-specialization R12 pass');
     const mod = parseSpirv(r.bytes);
     const caps = capsOf(mod);
     assert.ok(!caps.includes(46), 'SampledBuffer capability is gone (the texel clone converted)');
     assert.ok(!caps.includes(4427), 'DrawParameters capability is gone');
-    assert.ok(caps.includes(5347), 'PhysicalStorageBufferAddresses remains declared (used form, not stripped)');
+    assert.ok(!caps.includes(5347), 'PhysicalStorageBufferAddresses is stripped (served, not merely declared)');
+    assert.ok(!mod.insns.some(i => i.op === 32 && i.words[1] === 5349), 'no PhysicalStorageBuffer pointer type survives');
     const memModel = mod.insns.find(i => i.op === 14);
-    assert.equal(memModel.words[0], 5348, 'memory model remains PhysicalStorageBuffer64');
-    const rtas = rtasOf(mod);
-    assert.equal(rtas.length, 3, 'only the three buffer-content runtime arrays survive');
-    for (const t of rtas) {
-      const elem = mod.insns.find(i => i.resultId === t.words[1]);
-      assert.notEqual(elem.op, 25, 'no surviving runtime array has an image element (the descriptor array is swept)');
-    }
-    assert.throws(
-      () => naga.translate({ from: 'spirv', to: 'wgsl', source: r.bytes }),
-      /PhysicalStorageBufferAddresses/,
-      'the translator remaining rejection names the physical addressing capability');
+    assert.equal(memModel.words[0], 0, 'memory model is back to Logical addressing');
+    const rootVar = mod.insns.find(i => i.op === 59 && (() => { const nm = mod.insns.find(n => n.op === 5 && n.words[0] === i.resultId); return nm && Buffer.from(nm.words.slice(1).flatMap(w => [w & 255, (w >> 8) & 255, (w >> 16) & 255, (w >> 24) & 255])).toString('utf8').startsWith('bw_root_p0'); })());
+    assert.ok(rootVar, 'a variable named bw_root_p0 is synthesized');
+    const wgsl = String(naga.translate({ from: 'spirv', to: 'wgsl', source: r.bytes }));
+    assert.ok(wgsl.includes('bw_root_p0'), 'the translator accepts the module and the word view reaches WGSL');
   });
 }
 
@@ -70,6 +82,70 @@ test('FD-70 pair: the sweep outcome does not depend on the colliding literal val
   const viaLiteral = applySpirvFix(serializeSpirv(mod));
   assert.deepEqual(viaLiteral.applied, plain.applied, 'same rewrites with and without the collision');
   assert.equal(viaLiteral.bytes.length, plain.bytes.length, 'same output size with and without the collision');
+});
+
+// --- R15c boundary: model mutations of the captured module -----------------
+
+function addUintConst(mod, value) {
+  const uintTy = mod.insns.find(i => i.op === 21 && i.words[1] === 32 && i.words[2] === 0);
+  const id = mod.header.bound++;
+  const at = mod.insns.findIndex(i => i.op === 54);
+  mod.insns.splice(at, 0, { op: 43, words: [uintTy.resultId, id, value], resultType: uintTy.resultId, resultId: id });
+  return id;
+}
+function constValueOf(mod, id) {
+  const ins = mod.insns.find(i => i.resultId === id);
+  return ins && ins.op === 43 ? ins.words[2] : null;
+}
+function assertRefused(mod, label) {
+  const a = analyzeRootDescriptors(mod);
+  assert.equal(a.moduleServable, false, label + ': the analysis refuses');
+  const r = applySpirvFix(serializeSpirv(mod));
+  assert.ok(!r.applied.includes('root-descriptor-bda'), label + ': the rewrite does not fire');
+  assert.ok(capsOf(parseSpirv(r.bytes)).includes(5347), label + ': the capability remains declared');
+  assert.throws(
+    () => naga.translate({ from: 'spirv', to: 'wgsl', source: r.bytes }),
+    /PhysicalStorageBufferAddresses/,
+    label + ': the translator refusal stands');
+}
+
+test('FD-70 boundary: an element stride not divisible by four keeps the refusal', () => {
+  const mod = parseSpirv(load('godot-vs-ebac7e2d70a20d62.spv'));
+  // The offset cone's IMul (index * 176): repoint its stride operand
+  // at a fresh constant 174 (174 % 4 != 0, so the byte offset has no
+  // exact word index).
+  const mul = mod.insns.find(i => i.op === 132 && i.words.some(w => constValueOf(mod, w) === 176));
+  assert.ok(mul, 'the stride multiply is found');
+  const at = mul.words.findIndex(w => constValueOf(mod, w) === 176);
+  mul.words[at] = addUintConst(mod, 174);
+  assertRefused(mod, 'stride 174');
+});
+
+test('FD-70 boundary: a field offset not divisible by four keeps the refusal', () => {
+  const mod = parseSpirv(load('godot-vs-ebac7e2d70a20d62.spv'));
+  // The offset IAdd whose constant operand is the 48-byte field offset
+  // and whose other operand is itself an IAdd (the accumulated index
+  // term) -- distinct from the module's other 48-constant use.
+  const add = mod.insns.find(i => i.op === 128 && i.words.some(w => constValueOf(mod, w) === 48)
+    && i.words.some(w => { const d = mod.insns.find(x => x.resultId === w); return d && d.op === 128; }));
+  assert.ok(add, 'the field-offset add is found');
+  const at = add.words.findIndex(w => constValueOf(mod, w) === 48);
+  add.words[at] = addUintConst(mod, 46);
+  assertRefused(mod, 'field offset 46');
+});
+
+test('FD-70 boundary: a store through an integer-offset pointer keeps the refusal', () => {
+  const mod = parseSpirv(load('godot-vs-ebac7e2d70a20d62.spv'));
+  // The root loads are the function's Aligned loads, in order. Store
+  // the first load's value back through the second load's chain: the
+  // slot becomes writable, which the word view does not serve.
+  const rootLoads = mod.insns.filter(i => i.op === 61 && i.words.length === 5);
+  assert.ok(rootLoads.length >= 2, 'at least two root loads');
+  const at = mod.insns.indexOf(rootLoads[1]);
+  mod.insns.splice(at + 1, 0, { op: 62, words: [rootLoads[1].words[2], rootLoads[0].resultId], resultType: null, resultId: null });
+  const a = analyzeRootDescriptors(mod);
+  assert.match(a.rejectReason, /word view serves loads only/, 'the refusal names the loads-only word view');
+  assertRefused(mod, 'store through a word-view chain');
 });
 
 for (const name of ['fd70-aligned-literal-sweep.spv', 'fd70-aligned-literal-twin.spv']) {
@@ -100,4 +176,12 @@ test('FD-70 controls: previously admitted Godot modules keep byte-identical spir
     const r = applySpirvFix(load(name));
     assert.equal(createHash('sha256').update(r.bytes).digest('hex'), sha, `${name} output unchanged`);
   }
+});
+
+test('bridge mirror: the R15c integer-offset class exists in the audit', () => {
+  const bridge = readFileSync(new URL('../../../../source/vulkan/vk64bridge.cpp', import.meta.url), 'utf8');
+  assert.ok(bridge.includes('inline bool classifyDynOffset'), 'the bridge mirror classifies affine integer offsets');
+  assert.ok(bridge.includes('inline bool wordCone('), 'the bridge mirror audits the word cone');
+  assert.ok(bridge.includes('acc.wordView'), 'the bridge mirror marks integer-offset slots as word views');
+  assert.ok(bridge.includes('h.hasDyn = true; h.dyn = dyn;'), 'the bridge mirror folds the carry addend into the address provenance');
 });

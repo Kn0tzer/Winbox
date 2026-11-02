@@ -253,6 +253,8 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_epoll_pwait       281
 #define X64_SYS_pwrite64          18
 #define X64_SYS_readv             19
+#define X64_SYS_preadv            295
+#define X64_SYS_preadv2           327
 #define X64_SYS_select            23
 #define X64_SYS_chmod             90
 #define X64_SYS_fchmod            91
@@ -1638,7 +1640,12 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
     // Process-spawn signal: successful .exe opens are rare (one per process)
     // and worth one line by default (probes detect EXE SPAWN from this even
     // when the open succeeds, e.g. the program exists in the game zip).
-    if (!getenv("BW64_DLLTRACE") && strstr(path, ".exe")) {
+    // The launcher session-readiness handshake matches this exact line for
+    // the shell launch (FD-47/FD-48), so it is a contract signal, not a
+    // debug aid: emit it unconditionally, exactly like the 32-bit open
+    // paths (logExeSpawnSignal in syscall.cpp). BW64_DLLTRACE adds its own
+    // richer line above; a diagnostic flag must never suppress this (FD-54).
+    if (strstr(path, ".exe")) {
         klog_fmt("sys_openat64: OPENED '%s' -> fd %d", path, (int)result->handle);
     }
     return (U64)result->handle;
@@ -1775,7 +1782,7 @@ static U64 sys_lseek64(CPU64* cpu, U64 fd, U64 offset, U64 whence) {
 // pread64(fd, buf, count, offset) — read at an absolute offset without moving
 // the file position. glibc's ld.so uses it to read a DSO's program headers
 // before mmap. Emulated as save-pos/seek/read/restore over the KObject layer.
-static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
+static U64 sys_pread64Impl(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset, bool notifyAccess) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
@@ -1824,7 +1831,7 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
         got = readFully();
     }
     if (got < 0) return (U64)got;
-    if (got > 0 && pkfile && pkfile->openFile && pkfile->openFile->node) {
+    if (notifyAccess && got > 0 && pkfile && pkfile->openFile && pkfile->openFile->node) {
         KInotify::notifyAccessed(pkfile->openFile->node.get());
     }
     if (got > 0) {
@@ -1834,6 +1841,53 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
         ripSamplerNotePeRead(cpu, fdesc, buf, (U64)got);
     }
     return (U64)got;
+}
+
+static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
+    return sys_pread64Impl(cpu, fd, buf, count, offset, true);
+}
+
+// preadv / preadv2 (FD-80) -- vectored positioned reads over the same
+// positioned-read core as pread64. Host behaviour measured on the
+// box's 6.17 kernel: segments fill in order at successive offsets and
+// the file position does not move; a short read ends the walk;
+// IN_ACCESS is generated exactly once per successful call, including
+// calls that return 0 (at EOF, or with iovcnt 0) -- the vectored path
+// differs from pread/read there, which stay silent when no bytes
+// move. Any negative offset (including -1: there is no readv
+// fallback), a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an
+// unknown preadv2 flag bit is EOPNOTSUPP; every defined RWF flag
+// (HIPRI/DSYNC/SYNC/NOWAIT/APPEND, mask 0x1f) is accepted on a read.
+static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPreadv2) {
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+    if (!fdesc) return (U64)-9; // -EBADF
+    if (isPreadv2 && (flags & ~0x1FULL)) return (U64)-K_EOPNOTSUPP;
+    S32 cnt = (S32)iovcnt;
+    if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    if (offset < 0) return (U64)-K_EINVAL;
+    if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    U64 total = 0;
+    S64 err = 0;
+    for (S32 i = 0; i < cnt; i++) {
+        U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
+        U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
+        if (len == 0) continue;
+        S64 got = (S64)sys_pread64Impl(cpu, fd, base, len, (U64)(offset + (S64)total), false);
+        if (got < 0) { err = got; break; }
+        total += (U64)got;
+        if ((U64)got < len) break; // short read: EOF / drained
+    }
+    if (total == 0 && err < 0) return (U64)err;
+    // Exactly one IN_ACCESS per successful call (see the header
+    // comment); the per-segment reads above ran with notification
+    // suppressed so a multi-segment read cannot stack them up.
+    std::shared_ptr<KFile> pkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+    if (pkfile && pkfile->openFile && pkfile->openFile->node) {
+        KInotify::notifyAccessed(pkfile->openFile->node.get());
+    }
+    return total;
 }
 
 // pwrite64(fd, buf, count, offset) — write at an absolute offset without moving
@@ -6660,6 +6714,14 @@ void ksyscall64(CPU64* cpu) {
             // Scatter-gather read — walk the iovec, read into each segment.
             if (a2 == 0) { ret = (U64)-K_EFAULT; break; }
             ret = sys_readv64(cpu, a1, a2, a3);
+            break;
+        case X64_SYS_preadv:
+            // preadv(fd, iov, iovcnt, pos_l, pos_h) — FD-80.
+            ret = sys_preadv64(cpu, a1, a2, a3, a4, a5, 0, false);
+            break;
+        case X64_SYS_preadv2:
+            // preadv2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-80.
+            ret = sys_preadv64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
         case X64_SYS_select:
             ret = unimplementedSyscall64(nr);

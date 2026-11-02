@@ -126,13 +126,14 @@ U32 FsMemOpenNode::writeNative(U8* buffer, U32 len) {
 
 void FsMemOpenNode::close() {
     if (!this->isClosed) {
-        KInotify::notifyClosed(this->node.get(), (this->flags & K_O_ACCMODE) != K_O_RDONLY);
+        this->signalCloseEvent((this->flags & K_O_ACCMODE) != K_O_RDONLY);
     }
     this->isClosed = true;
 }
 
 void FsMemOpenNode::reopen() {
     this->isClosed = false;
+    this->resetCloseEventState();
 }
 
 bool FsMemOpenNode::isOpen() {

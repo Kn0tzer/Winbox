@@ -3677,7 +3677,30 @@ function injectStorageImageFormats(mod, log, signature) {
 // OpPtrAccessChain) fail closed the same way, as do pointees whose
 // decorated layout is not byte-exact in WGSL storage layout (the R13
 // measure rules, storage space, plus a runtime-array tail member).
-const R15_OP = { Extension: 10, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, ConvertPtrToU: 117, ConvertUToPtr: 120, Bitcast: 124, IAdd: 128, ISub: 129, IAddCarry: 149, AtomicLoad: 227 };
+//
+// R15c "root-descriptor-bda-intoffset" (FD-70): the integer-offset form
+// of the same root addressing -- the address reaches the
+// materialization as the push-loaded base VA plus a DATA-DEPENDENT
+// byte offset computed in integer space (an instance-derived index
+// times an element stride plus a field offset, added to the base's low
+// half through the same OpIAddCarry idiom; the form Godot's scene
+// vertex shaders take). A slot carrying any such materialization is
+// served through a WORD VIEW instead of the pointee view: the
+// synthesized variable keeps the R15b name and binding, but its type
+// is a synthesized Block struct wrapping a runtime array of 32-bit
+// words (ArrayStride 4), and every load through the slot is rewritten
+// as word loads at the load's affine byte offset divided by four,
+// reassembled into the loaded value. The class is exact: the offset
+// must be affine in opaque 32-bit integer values with every
+// coefficient and the constant part divisible by four (so the word
+// index recomputes the byte offset exactly), every use of every
+// materialization in the slot must be a load reached through access
+// chains (loads only -- no stores, no atomics, no escapes), and every
+// loaded type must be a 32-bit scalar or a 2-4 component vector of
+// 32-bit components. A slot with no integer-offset materialization
+// keeps the R15b pointee rewrite byte-for-byte, so modules the
+// existing cone serves are untouched.
+const R15_OP = { Extension: 10, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, ConvertPtrToU: 117, ConvertUToPtr: 120, Bitcast: 124, IAdd: 128, ISub: 129, IMul: 132, IAddCarry: 149, AtomicLoad: 227 };
 const R15_PSB = 5349;          // PhysicalStorageBuffer storage class
 const R15_PSB_MODEL = 5348;    // PhysicalStorageBuffer64 addressing model
 const R15_STORAGE_BUFFER = 12; // StorageBuffer storage class
@@ -3831,6 +3854,64 @@ function r15BaseLoadId(ctx, id) {
   return null;
 }
 
+// Classify a 32-bit integer expression as an affine byte offset:
+// { terms, add } -- the value is sum(coef * value(termId)) + add
+// (mod 2^32) where every termId is an opaque 32-bit integer value the
+// classifier does not interpret (the R15c word-view rewrite recomputes
+// the offset from the same ids in word space, so opacity is sound).
+// Coefficients must stay positive: a product of two dynamic values, a
+// subtraction of a dynamic value, a non-positive multiply constant, or
+// any other shape returns null. (Mirror: classifyDynOffset in
+// vk64bridge.cpp's r15 namespace.)
+function r15ClassifyDynOffset(ctx, id, depth = 0) {
+  if (depth > 8) return null;
+  const cv = r15ConstInt(ctx, id);
+  if (cv != null) return { terms: new Map(), add: cv >>> 0 };
+  const ins = ctx.byId.get(id);
+  if (!ins) return null;
+  if (ins.op === Op.CopyObject) return r15ClassifyDynOffset(ctx, ins.words[2], depth + 1);
+  if (ins.op === R15_OP.IAdd || ins.op === R15_OP.ISub) {
+    const a = r15ClassifyDynOffset(ctx, ins.words[2], depth + 1);
+    const b = r15ClassifyDynOffset(ctx, ins.words[3], depth + 1);
+    if (!a || !b) return null;
+    if (ins.op === R15_OP.ISub) {
+      if (b.terms.size) return null;
+      return { terms: a.terms, add: (a.add - b.add) >>> 0 };
+    }
+    const terms = new Map(a.terms);
+    for (const [t, c] of b.terms) {
+      const v = (terms.get(t) || 0) + c;
+      if (v > 0x7fffffff) return null;
+      terms.set(t, v);
+    }
+    return { terms, add: (a.add + b.add) >>> 0 };
+  }
+  if (ins.op === R15_OP.IMul) {
+    const a = r15ClassifyDynOffset(ctx, ins.words[2], depth + 1);
+    const b = r15ClassifyDynOffset(ctx, ins.words[3], depth + 1);
+    if (!a || !b) return null;
+    // One side must be a pure constant (the stride); it scales the
+    // other side's affine form. A zero constant folds the product to
+    // the constant zero offset.
+    for (const [k, v] of [[a, b], [b, a]]) {
+      if (k.terms.size) continue;
+      if (k.add === 0) return { terms: new Map(), add: 0 };
+      if (k.add >= 0x80000000) return null; // negative multiplier: not a stride
+      const terms = new Map();
+      for (const [t, c] of v.terms) {
+        const nc = c * k.add;
+        if (nc > 0x7fffffff) return null;
+        terms.set(t, nc);
+      }
+      return { terms, add: (v.add * k.add) >>> 0 };
+    }
+    return null;
+  }
+  const t = ctx.byId.get(ins.resultType);
+  if (t && t.op === Op.TypeInt && t.words[1] === 32) return { terms: new Map([[id, 1]]), add: 0 };
+  return null;
+}
+
 // Classify one 32-bit half of a 64-bit address built by the dxbc-spirv
 // carry idiom: the half traces to OpCompositeExtract <half> of ONE
 // push-loaded v2uint (the root VA), plus constant adds/subs and at most
@@ -3863,8 +3944,24 @@ function r15Vec2Half(ctx, id, depth = 0) {
       let base = null, c = null;
       if (bC != null && aC == null) { base = r15Vec2Half(ctx, src.words[2], depth + 1); c = bC; }
       else if (aC != null && bC == null) { base = r15Vec2Half(ctx, src.words[3], depth + 1); c = aC; }
-      if (!base || base.half !== 0 || base.carryId != null) return null;
-      return { ...base, add: (base.add + c) >>> 0, carryId: src.resultId };
+      if (base) {
+        if (base.half !== 0 || base.carryId != null) return null;
+        return { ...base, add: (base.add + c) >>> 0, carryId: src.resultId };
+      }
+      // R15c: the addend may be a data-dependent byte offset (an
+      // affine integer expression, r15ClassifyDynOffset) instead of a
+      // constant -- the integer-offset root-addressing form. The base
+      // half must be the other operand, and the offset must carry at
+      // least one dynamic term (a pure-constant addend is the case
+      // above and keeps its historical classification).
+      for (const [bId, oId] of [[src.words[2], src.words[3]], [src.words[3], src.words[2]]]) {
+        const bb = r15Vec2Half(ctx, bId, depth + 1);
+        if (!bb || bb.half !== 0 || bb.carryId != null || bb.dynOff) continue;
+        const dyn = r15ClassifyDynOffset(ctx, oId);
+        if (!dyn || !dyn.terms.size) continue;
+        return { ...bb, dynOff: dyn, carryId: src.resultId };
+      }
+      return null;
     }
     return null;
   }
@@ -3916,6 +4013,15 @@ function r15ClassifyVec2Addr(ctx, id) {
   // high half, and the high half may consume no other carry: both sides
   // must name the same OpIAddCarry (or neither).
   if (lo.carryId !== hi.carryId) return null;
+  if (lo.dynOff) {
+    // The high half of base + offset gains nothing but the low half's
+    // carry: any constant added there is a different address shape.
+    if (hi.add !== 0 || !lo.carryId) return null;
+    // Constant adds accumulated on the low half outside the carry
+    // operand fold into the offset's constant part.
+    const dynOff = { terms: lo.dynOff.terms, add: (lo.dynOff.add + lo.add) >>> 0 };
+    return { kind: 'push', byteOff: lo.byteOff, add: 0, addHi: 0, vec2: true, dynOff };
+  }
   return { kind: 'push', byteOff: lo.byteOff, add: lo.add, addHi: hi.add, vec2: true };
 }
 
@@ -4120,6 +4226,108 @@ function r15PointerUses(ctx, rootId) {
   };
   visit(rootId, 0, false);
   return out;
+}
+
+// The loaded type of an R15c word-view load: a 32-bit scalar, or a
+// vector of 2-4 32-bit components. Returns { words, compTypeId } or null.
+function r15WordLoadType(ctx, typeId) {
+  const t = ctx.byId.get(typeId);
+  if (!t) return null;
+  if (t.op === Op.TypeInt || t.op === Op.TypeFloat) {
+    if (t.words[1] !== 32) return null;
+    return { words: 1, compTypeId: typeId };
+  }
+  if (t.op === Op.TypeVector) {
+    const comp = ctx.byId.get(t.words[1]);
+    if (!comp || (comp.op !== Op.TypeInt && comp.op !== Op.TypeFloat) || comp.words[1] !== 32) return null;
+    if (t.words[2] < 2 || t.words[2] > 4) return null;
+    return { words: t.words[2], compTypeId: t.words[1] };
+  }
+  return null;
+}
+
+// One access-chain step in the R15c word view: fold the chain's indices
+// into the affine byte offset { terms, add, typeId } carried from the
+// materialization. Struct indices must be constants resolving through
+// Offset decorations; array / runtime-array / vector indices fold a
+// constant into add or a dynamic id into terms at the element stride.
+// Anything else (a matrix, an undecorated member, an unmodelled type)
+// returns null.
+function r15ChainAffineStep(ctx, state, ins, start) {
+  const terms = new Map(state.terms);
+  let add = state.add, cur = state.typeId;
+  for (let k = start + 1; k < ins.words.length; k++) {
+    const idxId = ins.words[k];
+    const t = ctx.byId.get(cur);
+    if (!t) return null;
+    const ci = r15ConstInt(ctx, idxId);
+    if (t.op === Op.TypeStruct) {
+      if (ci == null || ci < 0 || ci + 1 >= t.words.length) return null;
+      const md = ctx.memberDeco.get(cur + ':' + ci);
+      if (!md || md.offset == null) return null;
+      add = (add + md.offset) >>> 0; cur = t.words[ci + 1];
+    } else if (t.op === Op.TypeArray || t.op === Op.TypeRuntimeArray) {
+      const d = ctx.typeDeco.get(cur);
+      if (!d || d.arrayStride == null) return null;
+      if (ci != null) { if (ci < 0) return null; add = (add + ci * d.arrayStride) >>> 0; }
+      else terms.set(idxId, (terms.get(idxId) || 0) + d.arrayStride);
+      cur = t.words[1];
+    } else if (t.op === Op.TypeVector) {
+      const comp = ctx.byId.get(t.words[1]);
+      if (!comp || (comp.op !== Op.TypeInt && comp.op !== Op.TypeFloat) || comp.words[1] !== 32) return null;
+      if (ci != null) { if (ci < 0 || ci >= t.words[2]) return null; add = (add + ci * 4) >>> 0; }
+      else terms.set(idxId, (terms.get(idxId) || 0) + 4);
+      cur = t.words[1];
+    } else return null;
+  }
+  return { terms, add, typeId: cur };
+}
+
+// Walk one materialization's cone for the R15c word view. Returns
+// { loads: [{ ins, terms, add, words, compTypeId, typeId }] } -- the
+// affine byte offset of every load relative to the materialization --
+// when EVERY use of the materialized pointer is an OpLoad (with no
+// memory operands beyond a lone Aligned) reached through access
+// chains or copies; any other use returns null. A pointer id's offset
+// state is unique (its single definition fixes the path back to the
+// materialization), so the shared seen set is exact, as in
+// r15PointerUses. (Mirror: wordCone in vk64bridge.cpp's r15 namespace.)
+function r15WordCone(ctx, mat) {
+  const loads = [];
+  const seen = new Set();
+  const visit = (pid, state, depth) => {
+    if (depth > 16 || seen.has(pid)) return true;
+    seen.add(pid);
+    for (let ii = ctx.firstFunc; ii < ctx.mod.insns.length; ii++) {
+      const ins = ctx.mod.insns[ii];
+      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+      const hit = r15IdUseIndex(ctx, ins, pid);
+      if (hit < 0) continue;
+      if ((ins.op === Op.AccessChain || ins.op === Op.InBoundsAccessChain) && hit === start) {
+        const step = r15ChainAffineStep(ctx, state, ins, start);
+        if (!step) return false;
+        if (!visit(ins.resultId, step, depth + 1)) return false;
+        continue;
+      }
+      if (ins.op === Op.CopyObject && hit === start) {
+        if (!visit(ins.resultId, state, depth + 1)) return false;
+        continue;
+      }
+      if (ins.op === Op.Load && hit === start) {
+        if (ins.words.length > 3 && !(ins.words.length === 5 && ins.words[3] === 2)) return false;
+        if (ins.resultType !== state.typeId) return false;
+        const lt = r15WordLoadType(ctx, ins.resultType);
+        if (!lt) return false;
+        loads.push({ ins, terms: state.terms, add: state.add, words: lt.words, compTypeId: lt.compTypeId, typeId: ins.resultType });
+        continue;
+      }
+      return false;
+    }
+    return true;
+  };
+  if (!visit(mat.matId, { terms: new Map(), add: 0, typeId: mat.pointeeId }, 0)) return null;
+  if (!loads.length) return null;
+  return { loads };
 }
 
 // WGSL storage-layout measure (the R13 rules for the storage space, plus a
@@ -4329,9 +4537,10 @@ export function analyzeRootDescriptors(mod) {
       return out;
     }
     const key = m.provenance.byteOff;
-    if (!bySlot.has(key)) bySlot.set(key, { byteOff: key, mats: [], writable: false, atomicWrites: 0, escapes: [], pointees: new Set(), coneTypes: new Set() });
+    if (!bySlot.has(key)) bySlot.set(key, { byteOff: key, mats: [], writable: false, atomicWrites: 0, escapes: [], pointees: new Set(), coneTypes: new Set(), wordView: false, wordLoads: null });
     const s = bySlot.get(key);
     s.mats.push(m);
+    if (m.provenance.dynOff) s.wordView = true;
     if (m.uses.writes > 0) s.writable = true;
     s.atomicWrites += m.uses.atomicWrites || 0;
     s.texelWrites = (s.texelWrites || 0) + (m.uses.texelWrites || 0);
@@ -4370,6 +4579,35 @@ export function analyzeRootDescriptors(mod) {
     if (s.atomicWrites > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through an atomic operation (atomics not served)'; return out; }
     if ((s.texelWrites || 0) > 0) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through a texel pointer (not served)'; return out; }
     if (s.escapes.length) { out.rejectReason = 'root slot push@' + s.byteOff + ' pointer escapes (' + s.escapes[0] + ')'; return out; }
+    if (s.wordView) {
+      // R15c: a slot carrying an integer-offset materialization is
+      // served through the word view, which is loads-only and does
+      // not redeclare the pointee types -- the per-slot pointee /
+      // measure / flip verdicts below are the pointee view's and do
+      // not apply. Every materialization's every load must land in
+      // the word class with a 4-byte-word-expressible offset.
+      if (s.writable) { out.rejectReason = 'root slot push@' + s.byteOff + ' is written through an integer-offset root pointer (the word view serves loads only)'; return out; }
+      const wl = [];
+      let bad = null;
+      for (const m of s.mats) {
+        const cone = r15WordCone(ctx, m);
+        if (!cone) { bad = 'root slot push@' + s.byteOff + ' has a use outside the integer-offset load class (pointer %' + m.matId + ')'; break; }
+        const base = m.provenance.dynOff || { terms: new Map(), add: 0 };
+        for (const ld of cone.loads) {
+          const terms = new Map(base.terms);
+          for (const [t, c] of ld.terms) terms.set(t, (terms.get(t) || 0) + c);
+          const add = (base.add + ld.add) >>> 0;
+          let div = add % 4 === 0;
+          for (const c of terms.values()) if (c % 4 !== 0) div = false;
+          if (!div) { bad = 'root slot push@' + s.byteOff + ' load offset is not expressible in 4-byte words (pointer %' + m.matId + ')'; break; }
+          wl.push({ ins: ld.ins, terms, add, words: ld.words, compTypeId: ld.compTypeId, typeId: ld.typeId });
+        }
+        if (bad) break;
+      }
+      if (bad) { out.rejectReason = bad; return out; }
+      s.wordLoads = wl;
+      continue;
+    }
     if (s.pointees.size !== 1) { out.rejectReason = 'root slot push@' + s.byteOff + ' has ' + s.pointees.size + ' distinct pointee types'; return out; }
     const pointeeId = [...s.pointees][0];
     s.pointeeId = pointeeId;
@@ -4832,11 +5070,119 @@ export function rewriteRootDescriptors(mod, log) {
     twinOf.set(ptrTypeId, id);
     return id;
   };
+  // R15c word view (FD-70): the shared synthesized types for slots
+  // served through the byte view, created on first use -- a Block
+  // struct wrapping a runtime array of 32-bit words (ArrayStride 4).
+  let wv = null;
+  const constCache = new Map();
+  const constUint = (v) => {
+    if (constCache.has(v)) return constCache.get(v);
+    const id = nextId();
+    addTypes.push({ op: Op.Constant, words: [wv.uintId, id, v >>> 0], resultType: wv.uintId, resultId: id });
+    constCache.set(v, id);
+    return id;
+  };
+  const wordViewTypes = () => {
+    if (wv) return wv;
+    let uintId = null;
+    for (const ins of mod.insns) if (ins.op === Op.TypeInt && ins.words[1] === 32 && ins.words[2] === 0) { uintId = ins.resultId; break; }
+    if (uintId == null) { uintId = nextId(); addTypes.push({ op: Op.TypeInt, words: [uintId, 32, 0], resultType: null, resultId: uintId }); }
+    let rtArrId = null;
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.TypeRuntimeArray || ins.words[1] !== uintId) continue;
+      const d = ctx.typeDeco.get(ins.resultId);
+      if (d && d.arrayStride === 4) { rtArrId = ins.resultId; break; }
+    }
+    if (rtArrId == null) {
+      rtArrId = nextId();
+      addTypes.push({ op: Op.TypeRuntimeArray, words: [rtArrId, uintId], resultType: null, resultId: rtArrId });
+      addAnnot.push({ op: Op.Decorate, words: [rtArrId, 6, 4], resultType: null, resultId: null });
+    }
+    const structId = nextId();
+    addTypes.push({ op: Op.TypeStruct, words: [structId, rtArrId], resultType: null, resultId: structId });
+    addAnnot.push({ op: Op.Decorate, words: [structId, mod.header.version < 0x00010300 ? 3 : 2], resultType: null, resultId: null });
+    addAnnot.push({ op: Op.MemberDecorate, words: [structId, 0, 35, 0], resultType: null, resultId: null });
+    const ptrStructId = nextId();
+    addTypes.push({ op: Op.TypePointer, words: [ptrStructId, R15_STORAGE_BUFFER, structId], resultType: null, resultId: ptrStructId });
+    let ptrUintId = null;
+    for (const ins of mod.insns) if (ins.op === Op.TypePointer && ins.words[1] === R15_STORAGE_BUFFER && ins.words[2] === uintId) { ptrUintId = ins.resultId; break; }
+    if (ptrUintId == null) { ptrUintId = nextId(); addTypes.push({ op: Op.TypePointer, words: [ptrUintId, R15_STORAGE_BUFFER, uintId], resultType: null, resultId: ptrUintId }); }
+    wv = { uintId, rtArrId, structId, ptrStructId, ptrUintId };
+    return wv;
+  };
+  // The instruction sequence replacing one word-view load: the word
+  // index expression (the analysis proved every coefficient and the
+  // constant part divisible by four, so u32 arithmetic recomputes
+  // byteOffset / 4 exactly), one access chain + word load per 32-bit
+  // word of the loaded value, and the reassembly into the loaded type.
+  const buildWordLoad = (slot, wl) => {
+    const t = wordViewTypes();
+    const out = [];
+    const parts = [];
+    for (const [termId, coef] of wl.terms) {
+      if (coef === 4) { parts.push(termId); continue; }
+      const id = nextId();
+      out.push({ op: R15_OP.IMul, words: [t.uintId, id, termId, constUint(coef / 4)], resultType: t.uintId, resultId: id });
+      parts.push(id);
+    }
+    if (wl.add !== 0) parts.push(constUint(wl.add / 4));
+    let sumId;
+    if (!parts.length) sumId = constUint(0);
+    else {
+      sumId = parts[0];
+      for (let i = 1; i < parts.length; i++) {
+        const id = nextId();
+        out.push({ op: R15_OP.IAdd, words: [t.uintId, id, sumId, parts[i]], resultType: t.uintId, resultId: id });
+        sumId = id;
+      }
+    }
+    const wordIds = [];
+    for (let k = 0; k < wl.words; k++) {
+      let idxId = sumId;
+      if (k > 0) { idxId = nextId(); out.push({ op: R15_OP.IAdd, words: [t.uintId, idxId, sumId, constUint(k)], resultType: t.uintId, resultId: idxId }); }
+      const chainId = nextId();
+      out.push({ op: Op.AccessChain, words: [t.ptrUintId, chainId, slot.newVarId, constUint(0), idxId], resultType: t.ptrUintId, resultId: chainId });
+      const loadId = nextId();
+      out.push({ op: Op.Load, words: [t.uintId, loadId, chainId], resultType: t.uintId, resultId: loadId });
+      wordIds.push(loadId);
+    }
+    const origId = wl.ins.resultId, origType = wl.typeId;
+    if (wl.words === 1 && origType === t.uintId) {
+      // The word load IS the loaded value: retarget its result id.
+      const last = out[out.length - 1];
+      last.words[1] = origId; last.resultId = origId;
+      return out;
+    }
+    if (wl.words === 1) {
+      out.push({ op: R15_OP.Bitcast, words: [origType, origId, wordIds[0]], resultType: origType, resultId: origId });
+      return out;
+    }
+    const compVals = wordIds.map(w => {
+      if (wl.compTypeId === t.uintId) return w;
+      const id = nextId();
+      out.push({ op: R15_OP.Bitcast, words: [wl.compTypeId, id, w], resultType: wl.compTypeId, resultId: id });
+      return id;
+    });
+    out.push({ op: Op.CompositeConstruct, words: [origType, origId, ...compVals], resultType: origType, resultId: origId });
+    return out;
+  };
   const baseOf = new Map(); // old pointer value id -> new base value id
   const newVars = [];
   for (const slot of analysis.slots) {
     const binding = 4096 + slot.byteOff / 8;
     const varId = nextId();
+    if (slot.wordView) {
+      const t = wordViewTypes();
+      addTypes.push({ op: Op.Variable, words: [t.ptrStructId, varId, R15_STORAGE_BUFFER], resultType: t.ptrStructId, resultId: varId });
+      addNames.push({ op: Op.Name, words: [varId, ...strWords('bw_root_p' + slot.byteOff)], resultType: null, resultId: null });
+      addAnnot.push({ op: Op.Decorate, words: [varId, 34, heapSet], resultType: null, resultId: null });
+      addAnnot.push({ op: Op.Decorate, words: [varId, 33, binding], resultType: null, resultId: null });
+      addAnnot.push({ op: Op.Decorate, words: [varId, 24], resultType: null, resultId: null });
+      slot.newVarId = varId;
+      newVars.push(varId);
+      log.push('spirvfix: re-rooted root descriptor push@' + slot.byteOff + ' at set ' + heapSet + ' binding ' + binding + ' (bw_root_p' + slot.byteOff + ', integer-offset word view)');
+      continue;
+    }
     const ptrId = twinPointer(slot.mats[0].ptrTypeId);
     addTypes.push({ op: Op.Variable, words: [ptrId, varId, R15_STORAGE_BUFFER], resultType: ptrId, resultId: varId });
     addNames.push({ op: Op.Name, words: [varId, ...strWords('bw_root_p' + slot.byteOff)], resultType: null, resultId: null });
@@ -4847,6 +5193,24 @@ export function rewriteRootDescriptors(mod, log) {
     slot.newVarId = varId;
     newVars.push(varId);
     log.push('spirvfix: re-rooted root descriptor push@' + slot.byteOff + ' at set ' + heapSet + ' binding ' + binding + ' (bw_root_p' + slot.byteOff + (slot.writable ? ', writable' : '') + ')');
+  }
+  // R15c: replace every word-view load with word loads over the
+  // slot's synthesized variable, at the load's own position (the
+  // offset terms dominate the materialization, which dominates the
+  // load, so their values are in scope there). The materializations
+  // and their chains are dropped / swept by the passes below.
+  {
+    const byIns = new Map();
+    for (const slot of analysis.slots) if (slot.wordView) for (const wl of slot.wordLoads) byIns.set(wl.ins, { slot, wl });
+    if (byIns.size) {
+      const out2 = [];
+      for (const ins of mod.insns) {
+        const rec = byIns.get(ins);
+        if (!rec) { out2.push(ins); continue; }
+        out2.push(...buildWordLoad(rec.slot, rec.wl));
+      }
+      mod.insns = out2;
+    }
   }
   // Block -> BufferBlock on the pointee structs, pre-SPIR-V 1.3 only:
   // from 1.3 on, a StorageBuffer variable's struct keeps Block (BufferBlock
@@ -4888,12 +5252,23 @@ export function rewriteRootDescriptors(mod, log) {
   // (loads / chains / arithmetic that fed only deleted materializations).
   const drop = new Set(analysis.mats.map(m => m.ins));
   const sweepOps = new Set([Op.Load, Op.AccessChain, Op.InBoundsAccessChain, Op.CopyObject, R15_OP.IAdd, R15_OP.ISub, R15_OP.Bitcast, Op.CompositeConstruct, Op.CompositeExtract, R15_OP.IAddCarry]);
+  // The integer-offset cone multiplies the index by the element
+  // stride; its OpIMul joins the sweep ONLY for word-view modules, so
+  // pointee-served modules keep byte-identical output.
+  const wordModule = analysis.slots.some(s => s.wordView);
+  if (wordModule) sweepOps.add(R15_OP.IMul);
   let grew = true;
   while (grew) {
     grew = false;
     const live = new Set();
     for (const ins of mod.insns) {
       if (drop.has(ins)) continue;
+      // Word-view modules: OpName / OpMemberName are debug labels,
+      // not value references -- a named cone instruction is still
+      // dead (the FD-70 captures name their address temporaries, and
+      // the raw scan would keep the whole cone alive on the labels
+      // alone). The labels of dropped ids are removed below.
+      if (wordModule && (ins.op === 5 || ins.op === 6)) continue;
       if (ins.resultType != null) live.add(ins.words[0]);
       const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
       for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
@@ -4902,6 +5277,11 @@ export function rewriteRootDescriptors(mod, log) {
       if (drop.has(ins) || !sweepOps.has(ins.op) || ins.resultId == null) continue;
       if (!live.has(ins.resultId)) { drop.add(ins); grew = true; }
     }
+  }
+  if (wordModule) {
+    const droppedIds = new Set();
+    for (const ins of drop) if (ins.resultId != null) droppedIds.add(ins.resultId);
+    for (const ins of mod.insns) if ((ins.op === 5 || ins.op === 6) && droppedIds.has(ins.words[0])) drop.add(ins);
   }
   mod.insns = mod.insns.filter(i => !drop.has(i));
   // No PhysicalStorageBuffer type may survive (analysis proved every one
@@ -4913,9 +5293,16 @@ export function rewriteRootDescriptors(mod, log) {
   for (const ins of mod.insns) {
     if (ins.op === Op.MemoryModel && ins.words[0] === R15_PSB_MODEL) ins.words[0] = 0;
   }
-  for (const ins of mod.insns) {
-    if (ins.op !== Op.EntryPoint) continue;
-    for (const v of newVars) ins.words.push(v);
+  // Interface listing is version-bound, as in R15a: SPIR-V 1.4+
+  // requires every used global in the entry point's interface; before
+  // 1.4 only Input/Output variables may be listed (spirv-val rejects
+  // a StorageBuffer variable there), and descriptor globals are used
+  // unlisted.
+  if ((mod.header?.version ?? 0) >= 0x00010400) {
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      for (const v of newVars) ins.words.push(v);
+    }
   }
   r15SpliceAdditions(mod, addAnnot, addTypes, addNames);
   return true;

@@ -194,6 +194,44 @@ int main(int argc, char** argv) {
            "stale window was dropped, fresh window has calls=1");
 
 
+    // FD-63: a session whose only instrumented traffic is syscall dispatch
+    // (a guest busy in its engine loop, presenting nothing, making no GL or
+    // audio calls) must still emit. The stream exists to describe the live
+    // session; a window holding only syscall activity is live traffic, not
+    // idleness, and its counters must be reported, not silently discarded.
+    // Drive several emit intervals of syscall-only accounting and require
+    // emitted snapshots carrying the accumulated counters.
+    {
+        // Drain any residue from the sections above, so the windows below
+        // hold syscall activity and nothing else.
+        usleep(600000);
+        bw64_metrics_maybe_emit();
+        g_lastLog.clear();
+        int emittedLines = 0;
+        std::string firstLine;
+        for (int i = 0; i < 6; i++) {
+            g_lastLog.clear();
+            bw64_metrics_add_stage(BW64_STAGE_SYSCALL, 2.0, 0);
+            bw64_metrics_add_stage(BW64_STAGE_SYSCALL, 2.0, 0);
+            bw64_metrics_add_stage(BW64_STAGE_SYSCALL, 2.0, 0);
+            usleep(600000);
+            bw64_metrics_maybe_emit();
+            if (!g_lastLog.empty()) {
+                emittedLines++;
+                if (firstLine.empty()) firstLine = g_lastLog;
+            }
+        }
+        expect(emittedLines >= 3,
+               "FD-63: syscall-only activity emits snapshots across successive intervals");
+        expect(firstLine.find("\"syscall\":{\"supported\":true,\"calls\":3,") != std::string::npos,
+               "FD-63: emitted snapshot carries the window's accumulated syscall calls");
+        // Restore the residue the fixture section below was written against:
+        // the long-stall section leaves one audio call accounted in the fresh
+        // window, and the fixture window's totals include it. The drain at
+        // this section's start consumed it, so put it back.
+        bw64_metrics_add_stage(BW64_STAGE_AUDIO, 1.0, 1024);
+    }
+
     // Emit one representative snapshot for the reader-side contract test. The
     // window is built from the same calls a live frame makes, so the fixture is
     // the writer's real output, not a hand-written shape.

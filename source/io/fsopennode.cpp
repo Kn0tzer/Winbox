@@ -26,7 +26,55 @@ FsOpenNode::FsOpenNode(std::shared_ptr<FsNode> node, U32 flags) : node(node), fl
 }
 
 FsOpenNode::~FsOpenNode() {
+    // FD-79 backstop: a close event still held pending by mappings
+    // that outlived every other trigger (teardown paths that drop
+    // pages without passing an unmap) is delivered here rather than
+    // lost; the host delivers it during process teardown as well.
+    if (this->closeEventPending.load(std::memory_order_acquire) &&
+        !this->closeEventDone.exchange(true, std::memory_order_acq_rel)) {
+        KInotify::notifyClosed(this->node.get(), this->closeEventWasWrite);
+    }
     this->node->removeOpenNode(this);
+}
+
+void FsOpenNode::signalCloseEvent(bool wasWrite) {
+    if (this->closeEventDone.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (this->mappedPagesLive.load(std::memory_order_acquire) == 0) {
+        if (!this->closeEventDone.exchange(true, std::memory_order_acq_rel)) {
+            KInotify::notifyClosed(this->node.get(), wasWrite);
+        }
+        return;
+    }
+    // Mappings of this description are still live: hold the event
+    // until noteMappedPagesReleased() reports the last page gone.
+    this->closeEventWasWrite = wasWrite;
+    this->closeEventPending.store(true, std::memory_order_release);
+}
+
+void FsOpenNode::noteMappedPagesAdded(U32 pages) {
+    this->mappedPagesLive.fetch_add(pages, std::memory_order_acq_rel);
+}
+
+void FsOpenNode::noteMappedPagesReleased(U32 pages) {
+    U32 prev = this->mappedPagesLive.fetch_sub(pages, std::memory_order_acq_rel);
+    if (prev < pages) {
+        // More pages reported dead than were ever counted (a fork
+        // twin's copies share the count): saturate at zero instead of
+        // wrapping, and treat the count as exhausted.
+        this->mappedPagesLive.fetch_add(pages - prev, std::memory_order_acq_rel);
+    }
+    if (prev <= pages && this->closeEventPending.load(std::memory_order_acquire) &&
+        !this->closeEventDone.exchange(true, std::memory_order_acq_rel)) {
+        this->closeEventPending.store(false, std::memory_order_release);
+        KInotify::notifyClosed(this->node.get(), this->closeEventWasWrite);
+    }
+}
+
+void FsOpenNode::resetCloseEventState() {
+    this->closeEventPending.store(false, std::memory_order_release);
+    this->closeEventDone.store(false, std::memory_order_release);
 }
 
 U32 FsOpenNode::internalRead(KThread* thread, U32 address, U32 len) {

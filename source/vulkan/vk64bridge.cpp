@@ -753,7 +753,11 @@ inline bool chainOffset(const Module& m, U32 ptrId, ChainRes& r, int depth) {
     r = {off, cur}; return true;
 }
 
-struct Expr { bool isConst = false, isPush = false; I64 value = 0, byteOff = 0, add = 0, addHi = 0; };
+// R15c (FD-70): an affine byte offset in integer space -- a sum of
+// (SSA id x positive coefficient) terms plus a constant remainder,
+// all mod 2^32. Mirrors spirvfix's r15ClassifyDynOffset result.
+struct DynOff { std::vector<std::pair<U32, I64>> terms; U32 add = 0; };
+struct Expr { bool isConst = false, isPush = false; I64 value = 0, byteOff = 0, add = 0, addHi = 0; bool hasDyn = false; DynOff dyn; };
 inline bool classifyExpr(const Module& m, U32 id, Expr& e, int depth) {
     if (depth > 8) return false;
     auto it = m.byId.find(id); if (it == m.byId.end()) return false;
@@ -1038,7 +1042,65 @@ inline U32 vec2BaseLoadId(const Module& m, U32 id) {
     return 0;
 }
 
-struct V2Half { bool ok = false; U32 loadId = 0; I64 byteOff = 0; int half = 0; U32 add = 0; U32 carryId = 0; };
+struct V2Half { bool ok = false; U32 loadId = 0; I64 byteOff = 0; int half = 0; U32 add = 0; U32 carryId = 0; bool hasDyn = false; DynOff dyn; };
+// Mirror of spirvfix r15ClassifyDynOffset: classify a 32-bit integer
+// expression as an affine byte offset {terms, add} -- constants,
+// IAdd/ISub of classified operands (no dynamic subtrahend), IMul by a
+// positive constant scale, copies. Any other 32-bit-integer SSA value
+// is an opaque term with coefficient 1: the sum is recomputed from
+// the same SSA values at serving time, so an unrecognized shape is a
+// term, never a guess. Coefficients cap at 0x7fffffff so signed and
+// unsigned readings of the fold agree.
+inline bool classifyDynOffset(const Module& m, U32 id, DynOff& out, int depth) {
+    if (depth > 8) return false;
+    I64 cv;
+    if (constInt(m, id, cv)) { out = DynOff{}; out.add = (U32)cv; return true; }
+    auto it = m.byId.find(id); if (it == m.byId.end()) return false;
+    const Insn& in = m.insns[it->second];
+    if (in.op == 83) return classifyDynOffset(m, in.w[2], out, depth + 1); // OpCopyObject
+    if (in.op == 128 || in.op == 129) { // OpIAdd / OpISub
+        DynOff a, b;
+        if (!classifyDynOffset(m, in.w[2], a, depth + 1) || !classifyDynOffset(m, in.w[3], b, depth + 1)) return false;
+        if (in.op == 129) {
+            if (!b.terms.empty()) return false; // a dynamic subtrahend is not affine-positive
+            out = a; out.add = a.add - b.add; return true;
+        }
+        out = a;
+        for (auto& kv : b.terms) {
+            bool merged = false;
+            for (auto& t : out.terms) if (t.first == kv.first) {
+                I64 v = t.second + kv.second; if (v > 0x7fffffffLL) return false;
+                t.second = v; merged = true; break;
+            }
+            if (!merged) out.terms.push_back(kv);
+        }
+        out.add = a.add + b.add; return true;
+    }
+    if (in.op == 132) { // OpIMul by a constant scale
+        DynOff a, b;
+        if (!classifyDynOffset(m, in.w[2], a, depth + 1) || !classifyDynOffset(m, in.w[3], b, depth + 1)) return false;
+        for (int sd = 0; sd < 2; sd++) {
+            const DynOff& k = sd ? b : a; const DynOff& v = sd ? a : b;
+            if (!k.terms.empty()) continue;
+            if (k.add == 0) { out = DynOff{}; return true; }
+            if (k.add >= 0x80000000u) return false; // a negative multiplier leaves the affine-positive class
+            out = DynOff{}; out.add = (U32)((U64)v.add * k.add);
+            for (auto& t : v.terms) {
+                I64 nc = t.second * (I64)k.add;
+                if (nc > 0x7fffffffLL) return false;
+                out.terms.push_back({t.first, nc});
+            }
+            return true;
+        }
+        return false;
+    }
+    if (!in.resultType) return false;
+    auto tt = m.byId.find(in.resultType); if (tt == m.byId.end()) return false;
+    const Insn& t = m.insns[tt->second];
+    if (t.op == 21 && t.n >= 2 && t.w[1] == 32) { out = DynOff{}; out.terms.push_back({id, 1}); return true; }
+    return false;
+}
+
 // Mirror of spirvfix r15Vec2Half: one 32-bit half of a 64-bit root
 // address built by the dxbc-spirv OpIAddCarry idiom (extract of one
 // push-loaded v2uint, plus constant adds/subs and at most one
@@ -1065,12 +1127,28 @@ inline bool vec2Half(const Module& m, U32 id, V2Half& h, int depth) {
         }
         if (src.op == 149 && half == 0) { // OpIAddCarry sum half
             I64 aC = 0, bC = 0; bool aK = constInt(m, src.w[2], aC), bK = constInt(m, src.w[3], bC);
-            V2Half base; I64 c = 0;
-            if (bK && !aK) { if (!vec2Half(m, src.w[2], base, depth + 1)) return false; c = bC; }
-            else if (aK && !bK) { if (!vec2Half(m, src.w[3], base, depth + 1)) return false; c = aC; }
-            else return false;
-            if (base.half != 0 || base.carryId) return false;
-            h = base; h.add = base.add + (U32)c; h.carryId = src.resultId; return true;
+            V2Half base; I64 c = 0; bool haveBase = false;
+            if (bK && !aK) { haveBase = vec2Half(m, src.w[2], base, depth + 1); c = bC; }
+            else if (aK && !bK) { haveBase = vec2Half(m, src.w[3], base, depth + 1); c = aC; }
+            if (haveBase) {
+                if (base.half != 0 || base.carryId) return false;
+                h = base; h.add = base.add + (U32)c; h.carryId = src.resultId; return true;
+            }
+            // R15c (FD-70): the addend may be a dynamic affine offset
+            // instead of a constant -- the dxbc-spirv integer-address
+            // idiom adds a data-dependent byte offset (index*stride +
+            // C) into the low half and lets the carry propagate. A
+            // pure-constant addend (no terms) keeps the classification
+            // above, so previously served modules are unaffected.
+            // Mirror of the dynOff branch in spirvfix's r15Vec2Half.
+            for (int sd = 0; sd < 2; sd++) {
+                U32 bId = sd ? src.w[3] : src.w[2], oId = sd ? src.w[2] : src.w[3];
+                V2Half bb; if (!vec2Half(m, bId, bb, depth + 1)) continue;
+                if (bb.half != 0 || bb.carryId || bb.hasDyn) continue;
+                DynOff dyn; if (!classifyDynOffset(m, oId, dyn, 0) || dyn.terms.empty()) continue;
+                h = bb; h.hasDyn = true; h.dyn = dyn; h.carryId = src.resultId; return true;
+            }
+            return false;
         }
         return false;
     }
@@ -1114,6 +1192,16 @@ inline bool classifyRootAddr(const Module& m, U32 id, Expr& e) {
     if (lo.half != 0 || hi.half != 1) return false;
     if (!lo.loadId || lo.loadId != hi.loadId || lo.byteOff != hi.byteOff) return false;
     if (lo.carryId != hi.carryId) return false;
+    if (lo.hasDyn) {
+        // R15c: the low half's dynamic offset is the address's affine
+        // offset; the high half must be a pure carry consumer (any
+        // constant added there is a different address shape), and
+        // constant adds accumulated on the low half outside the carry
+        // operand fold into the offset's constant part.
+        if (hi.add != 0 || !lo.carryId) return false;
+        e = Expr{}; e.isPush = true; e.byteOff = lo.byteOff; e.hasDyn = true; e.dyn = lo.dyn;
+        e.dyn.add = lo.dyn.add + lo.add; return true;
+    }
     e = Expr{}; e.isPush = true; e.byteOff = lo.byteOff; e.add = (I64)lo.add; e.addHi = (I64)hi.add; return true;
 }
 
@@ -1231,6 +1319,107 @@ inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
     return scanIds(start, n);
 }
 
+// R15c (FD-70): the word-cone audit for an integer-addressed root
+// slot (mirror of spirvfix r15WordCone, r15ChainAffineStep and
+// r15WordLoadType). Every use of one materialized pointer must be a
+// load of a 32-bit scalar or 2-4 component 32-bit vector, reached
+// through access chains and copies only, and every index on the path
+// must fold into the affine byte-offset state: struct members via
+// their Offset decorations, array elements at ArrayStride (a dynamic
+// index classifies affinely and scales by the stride), vector
+// components at 4 bytes. Anything else rejects the slot.
+struct WordState { std::vector<std::pair<U32, I64>> terms; U32 add = 0; U32 typeId = 0; };
+struct WordLoad { const Insn* ins; WordState st; int words = 0; U32 compTypeId = 0; };
+inline bool wordLoadType(const Module& m, U32 typeId, int& words, U32& compTypeId) {
+    auto scalar = [&](U32 id, U32& comp) -> bool {
+        auto ci = m.byId.find(id); if (ci == m.byId.end()) return false;
+        const Insn& c = m.insns[ci->second];
+        if ((c.op == 21 || c.op == 22) && c.n >= 2 && c.w[1] == 32) { comp = id; return true; }
+        return false;
+    };
+    U32 comp = 0;
+    if (scalar(typeId, comp)) { words = 1; compTypeId = comp; return true; }
+    auto it = m.byId.find(typeId); if (it == m.byId.end()) return false;
+    const Insn& t = m.insns[it->second];
+    if (t.op == 23 && t.n >= 3 && scalar(t.w[1], comp) && t.w[2] >= 2 && t.w[2] <= 4) {
+        words = (int)t.w[2]; compTypeId = comp; return true;
+    }
+    return false;
+}
+inline bool chainAffineStep(const Module& m, const WordState& st0, const Insn& in, WordState& out) {
+    out = st0;
+    for (U32 k = in.fv + 1; k < in.n; k++) {
+        U32 idx = in.w[k];
+        auto tit = m.byId.find(out.typeId); if (tit == m.byId.end()) return false;
+        const Insn& t = m.insns[tit->second];
+        if (t.op == 30) { // OpTypeStruct: the index is a constant member number
+            I64 ci; if (!constInt(m, idx, ci)) return false;
+            if (ci < 0 || ci + 1 >= (I64)t.n) return false;
+            auto mo = m.memberOffset.find(mkey(out.typeId, (U32)ci)); if (mo == m.memberOffset.end()) return false;
+            out.add += mo->second; out.typeId = t.w[ci + 1];
+        } else if (t.op == 28 || t.op == 29) { // OpTypeArray / OpTypeRuntimeArray
+            auto as = m.arrayStride.find(out.typeId); if (as == m.arrayStride.end()) return false;
+            I64 stride = (I64)as->second;
+            I64 cv;
+            if (constInt(m, idx, cv)) {
+                if (stride == 0 && cv != 0) return false;
+                out.add = (U32)((I64)out.add + cv * stride);
+            } else {
+                DynOff d; if (!classifyDynOffset(m, idx, d, 0)) return false;
+                if (stride == 0) { if (!d.terms.empty()) return false; }
+                else if ((I64)d.add % stride != 0) return false;
+                for (auto& kv : d.terms) {
+                    I64 nc = kv.second * stride;
+                    if (nc > 0x7fffffffLL || nc % 4 != 0) return false;
+                    bool merged = false;
+                    for (auto& t2 : out.terms) if (t2.first == kv.first) { t2.second += nc; merged = true; break; }
+                    if (!merged) out.terms.push_back({kv.first, nc});
+                }
+                out.add = (U32)((I64)out.add + (I64)d.add * stride);
+            }
+            out.typeId = t.w[1];
+        } else if (t.op == 23) { // OpTypeVector: components are 4-byte words
+            I64 cv; if (!constInt(m, idx, cv)) return false;
+            auto cit = m.byId.find(t.w[1]); if (cit == m.byId.end()) return false;
+            const Insn& comp = m.insns[cit->second];
+            if ((comp.op != 21 && comp.op != 22) || comp.n < 2 || comp.w[1] != 32) return false;
+            if (cv < 0 || cv >= (I64)t.w[2]) return false;
+            out.add += (U32)(cv * 4); out.typeId = t.w[1];
+        } else return false; // matrices and everything else: outside the word class
+    }
+    return true;
+}
+inline bool wordConeVisit(const Module& m, U32 pid, const WordState& st, int depth, std::unordered_set<U32>& seen, std::vector<WordLoad>& loads) {
+    if (depth > 24 || !seen.insert(pid).second) return true;
+    for (const Insn& in : m.insns) {
+        if (!in.resultId) continue;
+        int hit = findIdUse(m, in, pid);
+        if (hit < 0) continue;
+        if (in.op == 65 || in.op == 66) { // OpAccessChain / OpInBoundsAccessChain
+            if (hit != (int)in.fv) return false;
+            WordState nx; if (!chainAffineStep(m, st, in, nx)) return false;
+            if (!wordConeVisit(m, in.resultId, nx, depth + 1, seen, loads)) return false;
+        } else if (in.op == 83) { // OpCopyObject
+            if (hit != (int)in.fv) return false;
+            if (!wordConeVisit(m, in.resultId, st, depth + 1, seen, loads)) return false;
+        } else if (in.op == 61) { // OpLoad: the only terminal use
+            if (hit != (int)in.fv) return false;
+            if (in.resultType != st.typeId) return false;
+            // Memory operands: none, or a lone Aligned literal (the
+            // parameter is not an id, so it cannot move the address).
+            if (in.n > 3 && !(in.n == 5 && in.w[3] == 2)) return false;
+            int words = 0; U32 comp = 0;
+            if (!wordLoadType(m, st.typeId, words, comp)) return false;
+            loads.push_back(WordLoad{&in, st, words, comp});
+        } else return false;
+    }
+    return true;
+}
+inline bool wordCone(const Module& m, U32 matId, U32 pointeeId, std::vector<WordLoad>& loads) {
+    std::unordered_set<U32> seen; WordState st; st.typeId = pointeeId;
+    return wordConeVisit(m, matId, st, 0, seen, loads);
+}
+
 inline RootVerdict analyzeRoot(const Module& m) {
     RootVerdict out;
     struct Mat { U32 matId, ptrTypeId, pointeeId; Expr prov; bool provOk; Uses uses; };
@@ -1247,12 +1436,15 @@ inline RootVerdict analyzeRoot(const Module& m) {
     }
     if (mats.empty()) return out;
     out.hasMats = true;
-    std::map<I64, std::vector<const Mat*>> bySlot;
+    struct SlotAcc { std::vector<const Mat*> mats; bool wordView = false; };
+    std::map<I64, SlotAcc> bySlot;
     for (const Mat& mt : mats) {
         if (!mt.provOk || !mt.prov.isPush) return out;
         if (mt.prov.add != 0 || mt.prov.addHi != 0) return out;
         if (mt.prov.byteOff < 0 || mt.prov.byteOff % 8 != 0) return out;
-        bySlot[mt.prov.byteOff].push_back(&mt);
+        SlotAcc& acc = bySlot[mt.prov.byteOff];
+        acc.mats.push_back(&mt);
+        if (mt.prov.hasDyn) acc.wordView = true;
     }
     // Every PhysicalStorageBuffer pointer type must belong to a root cone
     // or be entirely unreferenced (spirvfix deletes those); an externally
@@ -1278,12 +1470,43 @@ inline RootVerdict analyzeRoot(const Module& m) {
     for (auto& kv : bySlot) {
         std::unordered_set<U32> pointees;
         bool slotWritable = false;
-        for (const Mat* mt : kv.second) {
+        for (const Mat* mt : kv.second.mats) {
             if (mt->uses.atomicWrites > 0) return out;
             if (mt->uses.texelWrites > 0) return out;
             if (mt->uses.storeWrites > 0) slotWritable = true;
             if (!mt->uses.escapes.empty()) return out;
             pointees.insert(mt->pointeeId);
+        }
+        if (kv.second.wordView) {
+            // R15c word view (mirror of spirvfix): the slot is served
+            // as a flat word array, so the pointee/measure/flip
+            // verdicts do not apply -- but every cone must consist of
+            // word loads only (a store through any cone made the slot
+            // writable above and rejects here), and every load's
+            // total byte offset -- the materialization's offset plus
+            // the cone's -- must be word-aligned in every term.
+            if (slotWritable) return out;
+            for (const Mat* mt : kv.second.mats) {
+                std::vector<WordLoad> loads;
+                if (!wordCone(m, mt->matId, mt->pointeeId, loads)) return out;
+                if (loads.empty()) return out;
+                for (const WordLoad& ld : loads) {
+                    std::vector<std::pair<U32, I64>> terms = ld.st.terms;
+                    U32 add = ld.st.add;
+                    if (mt->prov.hasDyn) {
+                        for (auto& tv : mt->prov.dyn.terms) {
+                            bool merged = false;
+                            for (auto& t2 : terms) if (t2.first == tv.first) { t2.second += tv.second; merged = true; break; }
+                            if (!merged) terms.push_back(tv);
+                        }
+                        add += mt->prov.dyn.add;
+                    }
+                    if (add % 4 != 0) return out;
+                    for (auto& t2 : terms) if (t2.second % 4 != 0) return out;
+                }
+            }
+            out.slots.push_back((U32)kv.first);
+            continue;
         }
         if (pointees.size() != 1) return out;
         U32 pointeeId = *pointees.begin();
