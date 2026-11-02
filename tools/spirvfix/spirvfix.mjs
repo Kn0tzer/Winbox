@@ -450,6 +450,40 @@ export function operandRefIds(byId, ins) {
   }
   return refs;
 }
+// --- dependency-safe splice position for synthesized definitions --------
+// SPIR-V requires a definition to precede every use, but nothing groups
+// the type section: a valid module may define a type AFTER its first
+// global variable (the captured Godot module defines OpTypeBool there).
+// A rule that splices synthesized types/constants at the first-variable
+// anchor therefore emits uses ahead of their definitions whenever a
+// referenced type sits past that anchor, and spirv-val rejects the
+// output ('requires a previous definition', FD-92). defsSplicePos
+// returns the earliest position at or after `anchor` that still follows
+// every module definition the new instructions reference (grammar-aware,
+// via idOperandUseIndex; a constant's resultType is its type word). Ids
+// the block itself defines are the caller's to order and do not
+// constrain the position. The position only ever moves later, and never
+// needs to pass the first function (every referenced definition precedes
+// it), so output that was valid before is byte-identical.
+function defsSplicePos(mod, adds, anchor) {
+  const defAt = new Map(), byId = new Map();
+  mod.insns.forEach((ins, idx) => {
+    if (ins.resultId != null && !defAt.has(ins.resultId)) { defAt.set(ins.resultId, idx); byId.set(ins.resultId, ins); }
+  });
+  const own = new Set();
+  for (const ins of adds) if (ins.resultId != null) own.add(ins.resultId);
+  let pos = anchor;
+  const after = id => {
+    if (id == null || own.has(id)) return;
+    const at = defAt.get(id);
+    if (at != null && at + 1 > pos) pos = at + 1;
+  };
+  for (const ins of adds) {
+    after(ins.resultType);
+    for (const w of new Set(ins.words)) if (idOperandUseIndex(byId, ins, w) >= 0) after(w);
+  }
+  return pos;
+}
 // --- R1: split combined SampledImage uniforms -------------------------------
 // A UniformConstant variable of OpTypeSampledImage becomes an image uniform
 // (same set/binding) plus a sampler uniform (same set, first free binding).
@@ -1118,7 +1152,8 @@ function stripPointBuiltins(mod, log) {
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
   }
   const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constants);
+  const at = firstVariable < 0 ? mod.insns.length : firstVariable;
+  mod.insns.splice(defsSplicePos(mod, constants, at), 0, ...constants);
   log.push(`spirvfix: stripped ${decorations.filter(i => i.words[2] === 1).length} PointSize output(s) and replaced ${pointLoadCount} point builtin load(s)`);
   return true;
 }
@@ -1300,14 +1335,18 @@ function lowerMidShaderDiscards(mod, log, protectedKills = new Set()) {
   const localVariables = new Map();
   if (sites.length) for (const id of entryFunctions) localVariables.set(id, newId());
 
-  if (boolTypeAdd) {
-    const firstConstant = mod.insns.findIndex(i => [41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 59, 54].includes(i.op));
-    mod.insns.splice(firstConstant < 0 ? mod.insns.length : firstConstant, 0, boolTypeAdd);
+  // The synthesized globals form one dependency-ordered block (the bool
+  // type, its constants, pointers to it). A module may define a
+  // referenced type after its first global variable -- the captured
+  // Godot module defines OpTypeBool there -- so the block is placed
+  // behind every module definition it references; splicing the pointer
+  // types at the first-variable anchor emitted them ahead of OpTypeBool
+  // and the output failed spirv-val (FD-92).
+  const globalAdds = [...(boolTypeAdd ? [boolTypeAdd] : []), ...constantAdds, ...typeAdds];
+  if (globalAdds.length) {
+    const anchor = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+    mod.insns.splice(defsSplicePos(mod, globalAdds, anchor < 0 ? mod.insns.length : anchor), 0, ...globalAdds);
   }
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constantAdds);
-  const firstGlobalVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstGlobalVariable < 0 ? mod.insns.length : firstGlobalVariable, 0, ...typeAdds);
   const firstFunction = mod.insns.findIndex(i => i.op === Op.Function);
   mod.insns.splice(firstFunction < 0 ? mod.insns.length : firstFunction, 0, privateVariable);
 
@@ -2819,7 +2858,13 @@ export function texelPointersToStorageBuffers(mod, log) {
   mod.insns = mod.insns.filter(i => !drop.has(i));
   if (addTypes.length) {
     const atVar = mod.insns.findIndex(i => i.op === Op.Variable);
-    mod.insns.splice(atVar < 0 ? mod.insns.length : atVar, 0, ...addTypes);
+    // The first variable need not follow every type (FD-92): keep the
+    // synthesized types behind the module definitions they reference.
+    // Each referenced element type precedes the converted variable whose
+    // own pointer chain names it; the block can pass an earlier converted
+    // variable only when a module interleaves fresh type definitions
+    // between two converted variables, a shape no corpus module carries.
+    mod.insns.splice(defsSplicePos(mod, addTypes, atVar < 0 ? mod.insns.length : atVar), 0, ...addTypes);
   }
   r15SpliceAdditions(mod, addAnnot, [], addNames);
   sweepTexelOrphans(mod, converted);
