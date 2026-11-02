@@ -18,8 +18,10 @@ what it asserts about served behaviour.
 ## Result
 
 The legacy failing set is now **empty**: full legacy group
-**114 passed / 0 failed** (baseline 110/4), suite-unit group
-unchanged at **348/0**, `tools/run-tests.mjs` exits 0.
+**115 passed / 0 failed** (baseline 110/4; 116 tests, 1 skipped),
+and with the browser build run in this tree the suite-unit group
+passes **348/0** and `tools/run-tests.mjs` reports ALL TESTS
+PASSED (see the Correction section for the first run's story).
 
 ## Baseline
 
@@ -107,8 +109,12 @@ fields added; nothing dropped.
 
 - `web/tests/vkwebgpu-v2.test.mjs`: 20/20
   (`test-results/fd64/vkwebgpu-v2-fixed2.log`).
-- Full `tools/run-tests.mjs`: rc 0 — legacy group 114/0,
-  suite-unit group 348/0 (`test-results/fd64/run-tests-fixed.log`).
+- Full `tools/run-tests.mjs` against the built tree: ALL TESTS
+  PASSED — legacy group 115/0, suite-unit group 348/0
+  (`test-results/fd64/run-tests-built.log`). Browser build:
+  BUILD COMPLETE with 'Browser export verified', wasm
+  `d631d254` — byte-identical to the shipped build's wasm, as
+  expected for a test-only change (`browser-build3.log`).
 - Sabotage: a scratch copy with only the stale u8-count header
   restored returns the same four failures (now "220 trailing
   bytes" over the five current entries), so the corrected cases
@@ -116,8 +122,28 @@ fields added; nothing dropped.
   (`test-results/fd64/sabotage-stale-header.log`).
 - No product file changed (`git diff` vs base: the one test file,
   then register + this record). The changed file is a test, not
-  shipped code, so no browser build applies; both JS groups ran
-  green in-tree as the evidence for the change.
+  shipped code; the browser build was nevertheless run in-tree
+  because the suite's provenance-artifacts test requires a
+  built tree (see Correction).
+
+## Correction to the first completion figures
+
+The lane's first completion message quoted full-run figures
+(legacy 114/0, suite 348/0, rc 0) taken from a background-delivery
+summary that proved to be garbled. The preserved log of that run
+(`run-tests-fixed.log`) actually shows legacy 115/0 and the
+suite-unit group at 347 passed / 1 failed — the failure being
+`provenance-artifacts` in a then-unbuilt tree (it asserts
+BUILD_INFO.json and wasm/js pairs in dist/runtime and
+web/runtime, which exist only after a browser build; the failure
+is environmental and pre-existing for any unbuilt tree). The
+browser build was then run in this tree (first attempt named the
+fresh-tree payload staging the established recipe requires —
+dxvk/vkd3d build dirs and the rootfs64 payload dirs copied from
+integ; log `browser-build3.log`) and the full runner re-run
+against the built tree gives the figures quoted in this record:
+legacy 115/0, suite 348/0, ALL TESTS PASSED
+(`run-tests-built.log`).
 
 ## Also found
 
@@ -136,7 +162,9 @@ lanes' uncomposed records; the composing merge verifies and
 renumbers by audit). FD-91 filed provisionally in Section A
 (FD-85..FD-90 likewise taken in flight).
 
-Housekeeping: no build ran in this tree (no dist / web/runtime /
-project/linux/Build generated); evidence logs under
+Housekeeping: the browser build ran in this tree for the
+provenance evidence above; generated state (dist, web/runtime,
+project/linux/Build, web/vendor, the copied payload dirs) was
+stripped again at lane end. Evidence logs under
 test-results/fd64/ stay in the worktree; disk 63G free at lane
-start, unchanged in kind.
+start.

@@ -1367,10 +1367,16 @@ do not close the entry until they land.
   sampler object's shape, likewise updated to the
   current decoder contract — the ADDR mapping plus
   the raw addrMode* fields from `26ffedefa`).
-  Proof: legacy group 114/0 (was 110/4; the
+  Proof: legacy group 115/0 (was 110/4; the
   standing failing set is empty), suite-unit group
-  348/0 unchanged, sabotage re-run returns the four
-  failures. Record:
+  348/0 on the built tree (its provenance test
+  requires one; browser build in-lane, wasm
+  d631d254, byte-identical to the shipped
+  build's), sabotage re-run returns the four
+  failures. (The lane's initial message quoted
+  first-run figures from a garbled delivery
+  summary; the record's Correction section gives
+  the log-verified account.) Record:
   `docs/reports/fd64-legacy-descset-20261102.md`;
   evidence `test-results/fd64/`.
 
@@ -4943,10 +4949,13 @@ its lane and is not a defect, for the stated reason:
   pinned by vk-border-emulation.test.mjs); no
   assertion was dropped and no served behaviour
   changed. Proof: web/tests/vkwebgpu-v2.test.mjs
-  20/20; full legacy group 114 passed / 0 failed
+  20/20; full legacy group 115 passed / 0 failed
   (baseline 110/4 — the standing failing set is
-  empty); suite-unit group unchanged at 348/0;
-  tools/run-tests.mjs exits 0. Sabotage:
+  empty); suite-unit group 348/0 and
+  tools/run-tests.mjs ALL TESTS PASSED on the
+  built tree (browser build in-lane, wasm
+  d631d254, byte-identical to the shipped
+  build's). Sabotage:
   restoring the stale u8-count header in a
   scratch copy returns the same four failures
   (220 trailing bytes over the five current
