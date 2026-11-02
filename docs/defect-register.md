@@ -402,7 +402,7 @@ do not close the entry until they land.
 - **FD-77 — A fully booted session can still freeze solid
   before its first window and never say why; the freeze
   amplifier is fixed, the stall behind it is not.
-  CLOSED 2026-11-01 — see CL-33.** *(Was High)*
+  CLOSED 2026-11-01 — see CL-34.** *(Was High)*
   *(Filed provisionally as FD-75 by the FD-12
   park lane, 2026-11-01; numbered FD-77 at composition on
   2026-11-01 — FD-75 was taken on integ by the FD-72
@@ -582,7 +582,7 @@ do not close the entry until they land.
   launcher surfacing "booted, no window, no output"
   as a reported failure (specified in the previous
   lane record, not built here). FD-77 CLOSED on this
-  branch — see CL-33.
+  branch — see CL-34.
 
 ### Graphics
 
@@ -3793,11 +3793,12 @@ its lane and is not a defect, for the stated reason:
   tree the two names load as separate nodes; a
   served link exists in the guest tree only, never
   as a second name in the backing store itself.
-- **CL-33 — The silent freeze convicted: an msync /
+- **CL-34 — The silent freeze convicted: an msync /
   mapped-files ABBA deadlock, fixed at the lock
   order (FD-77).** *(Filed as CL-33 on lane-fd77b,
-  2026-11-01; the number was verified free on the
-  integration register and settles at composition.)*
+  2026-11-01; renumbered CL-34 at composition —
+  CL-33 was taken on the integration register by
+  FD-81's closure, written at its composition.)*
   Fixed on branch `lane-fd77b` in `52ee264c7`, on
   evidence from the fault-stage instrument built in
   `3ca9decf4` (per-thread demand-path stage markers
