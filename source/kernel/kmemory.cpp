@@ -418,6 +418,9 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
             ++it;
         }
     }
+    // FD-79: pages in the target range are about to be replaced;
+    // file pages among them die here just as surely as in unmap().
+    noteMappedFilePagesDying(pageStart, pageCount);
     {
         U32 permissions = PAGE_MAPPED;
 
@@ -455,6 +458,9 @@ U32 KMemory::mmap(KThread* thread, U32 addr, U32 len, S32 prot, S32 flags, FD fi
                 mappedFile->systemCacheEntry = cache;
             }
             this->process->mappedFiles.set(mappedFile->key, mappedFile);
+            if (mappedFile->file && mappedFile->file->openFile) {
+                mappedFile->file->openFile->noteMappedPagesAdded(pageCount);
+            }
             this->data->allocPages(thread, pageStart, pageCount, permissions, fildes, off, mappedFile);
         } else {
             this->data->allocPages(thread, pageStart, pageCount, permissions, 0, 0, nullptr);
@@ -532,6 +538,9 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
             mappedFile->key = process->nextMappedFileIndex++;
             mappedFile->systemCacheEntry = dupSrc->systemCacheEntry;
             process->mappedFiles.set(mappedFile->key, mappedFile);
+            if (mappedFile->file && mappedFile->file->openFile) {
+                mappedFile->file->openFile->noteMappedPagesAdded(dupRounded >> K_PAGE_SHIFT);
+            }
             const U32 perms = (dupFlags & (PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_SHARED)) | PAGE_MAPPED;
             this->data->allocPages(thread, dupDest >> K_PAGE_SHIFT, dupRounded >> K_PAGE_SHIFT, (U8)perms, 0, dupOffset, mappedFile);
         }
@@ -612,6 +621,9 @@ U32 KMemory::mremap(KThread* thread, U32 oldaddress, U32 oldsize, U32 newsize, U
             mappedFile->key = process->nextMappedFileIndex++;
             mappedFile->systemCacheEntry = srcFile->systemCacheEntry;
             process->mappedFiles.set(mappedFile->key, mappedFile);
+            if (mappedFile->file && mappedFile->file->openFile) {
+                mappedFile->file->openFile->noteMappedPagesAdded(destLen >> K_PAGE_SHIFT);
+            }
             this->data->allocPages(thread, destAddr >> K_PAGE_SHIFT, destLen >> K_PAGE_SHIFT,
                                    (U8)perms, 0, fileOffset, mappedFile);
         };
@@ -736,9 +748,62 @@ BString KMemory::generateMaps(bool smaps) {
     return result;
 }
 
+void KMemory::noteMappedFilePagesDying(U32 pageStart, U32 pageCount) {
+    if (!process) {
+        return;
+    }
+    // A page installed for a file mapping starts as PageType::File
+    // with the mapping's table key in ramIndex. A write fault can
+    // convert it to PageType::CopyOnWrite, whose ramIndex names the
+    // shared cache page instead; those pages are attributed by range
+    // to the newest table entry containing them -- the same
+    // selection getMappedFileForRange makes. Aggregate per mapping
+    // first: one release per mapping, not per page.
+    std::vector<std::pair<MappedFilePtr, U32>> byMapping;
+    auto addPage = [&byMapping](const MappedFilePtr& mappedFile) {
+        for (auto& kv : byMapping) {
+            if (kv.first == mappedFile) {
+                kv.second++;
+                return;
+            }
+        }
+        byMapping.push_back(std::make_pair(mappedFile, 1));
+    };
+    for (U32 i = 0; i < pageCount; i++) {
+        U32 page = pageStart + i;
+        if (page >= K_NUMBER_OF_PAGES) {
+            break;
+        }
+        PageType type = data->mmu[page].getPageType();
+        if (type == PageType::File) {
+            MappedFilePtr mappedFile = process->getMappedFile((U32)data->mmu[page].ramIndex);
+            if (mappedFile) {
+                addPage(mappedFile);
+            }
+        } else if (type == PageType::CopyOnWrite) {
+            MappedFilePtr mappedFile = process->getMappedFileForRange(page << K_PAGE_SHIFT, K_PAGE_SIZE);
+            if (mappedFile) {
+                addPage(mappedFile);
+            }
+        }
+    }
+    for (auto& kv : byMapping) {
+        if (kv.first->file && kv.first->file->openFile) {
+            kv.first->file->openFile->noteMappedPagesReleased(kv.second);
+        }
+    }
+}
+
+void KMemory::noteAllMappedFilePagesDying() {
+    noteMappedFilePagesDying(0, K_NUMBER_OF_PAGES);
+}
+
 U32 KMemory::unmap(U32 address, U32 len) {
     U32 pageStart = address >> K_PAGE_SHIFT;
     U32 pageCount = (len + K_PAGE_SIZE - 1) >> K_PAGE_SHIFT;
+    // FD-79: file pages in this range are about to die; release any
+    // close event they were deferring before the pages go invalid.
+    noteMappedFilePagesDying(pageStart, pageCount);
 
     for (auto it = pageState.begin(); it != pageState.end();) {
         if (it->first >= pageStart && it->first < pageStart + pageCount) {

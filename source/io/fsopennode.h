@@ -20,6 +20,7 @@
 #define __FSOPENNODE_H__
 
 #include "platformBoxedwine.h"
+#include <atomic>
 #include "kthread.h"
 
 class FsOpenNode {
@@ -83,7 +84,28 @@ protected:
     // delivery contract is registered in docs/known-gaps/coverage.md.
     void applyAsyncFlag(bool isAsync);
 
+public:
+    // FD-79: close-event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) timing.
+    // On the host, a file description's close event is deferred while
+    // any mapping of the description is live and is delivered when
+    // the last mapping is released. The memory layer reports mapped
+    // page births and deaths through noteMappedPagesAdded/Released;
+    // signalCloseEvent() delivers the event immediately when no
+    // mapped pages are live and holds it pending otherwise. Only the
+    // open-node types whose close() generates the event route through
+    // signalCloseEvent().
+    void signalCloseEvent(bool wasWrite);
+    void noteMappedPagesAdded(U32 pages);
+    void noteMappedPagesReleased(U32 pages);
+    void resetCloseEventState();
+
 private:
+    // FD-79 state (see signalCloseEvent above).
+    std::atomic<U32> mappedPagesLive{0};
+    std::atomic<bool> closeEventPending{false};
+    std::atomic<bool> closeEventDone{false};
+    bool closeEventWasWrite = false;
+
     std::vector<std::shared_ptr<FsNode> > dirEntries;
     void loadDirEntries();
 

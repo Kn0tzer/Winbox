@@ -48,6 +48,7 @@ S32 ksyscall64(CPU64* cpu);
 // nonblocking empty read are pinned too.
 
 namespace {
+constexpr U32 IN_ACCESS = 0x00000001;
 constexpr U32 IN_MODIFY = 0x00000002;
 constexpr U32 IN_ATTRIB = 0x00000004;
 constexpr U32 IN_CLOSE_WRITE = 0x00000008;
@@ -467,6 +468,256 @@ void testInotifyEvents() {
     invoke(3, (U64)fillerFd, 0, 0, 0);
 
     (void)IN_DELETE_SELF; (void)IN_MOVE_SELF; (void)IN_UNMOUNT; (void)IN_Q_OVERFLOW;
+    rmdir(hostDir);
+}
+
+// FD-80: x64 preadv (295) / preadv2 (327). The name table knew both
+// numbers but the dispatch switch had no case for them, so every call
+// answered ENOSYS; pread64 itself was already implemented. Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with
+// dedicated reference programs):
+//  - segments are filled in order at successive offsets; the file
+//    position does not move; a short read at EOF ends the walk; a
+//    zero-length segment is skipped.
+//  - IN_ACCESS is generated exactly once per successful call --
+//    including calls that return 0 (at EOF, or with iovcnt 0); the
+//    vectored path differs from pread/read there, which stay silent
+//    when no bytes move.
+//  - any negative offset (including -1; there is no readv fallback),
+//    a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an unknown
+//    preadv2 flag bit is EOPNOTSUPP; every defined RWF flag is
+//    accepted on a read; a bad descriptor is EBADF.
+void testPreadv64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x7A000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+        testFail("preadv test could not map its fixture page");
+        return;
+    }
+    char dirTemplate[] = "/tmp/k3bpreadvXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("preadv test could not create its host temp dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+        if ((S32)result < 0 || !fileDesc) {
+            testFail("preadv test could not create /data.bin");
+            return;
+        }
+        const char* text = "0123456789ABCDEFGHIJ";
+        fileDesc->kobject->writeNative((U8*)text, 20);
+        fileDesc->kobject->seek(0);
+    }
+    S32 fd = (S32)fileDesc->handle;
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("preadv test could not create its inotify instance");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
+    if (wd < 1) {
+        testFail("preadv test could not watch /data.bin");
+        return;
+    }
+    auto drainMasks = [&]() {
+        std::vector<U32> masks;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            U32 mask, nameLen;
+            memcpy(&mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            masks.push_back(mask);
+            offset += 16 + (S32)nameLen;
+        }
+        return masks;
+    };
+    auto accessCount = [&](const std::vector<U32>& masks) {
+        int n = 0;
+        for (U32 m : masks) if (m & IN_ACCESS) n++;
+        return n;
+    };
+    drainMasks(); // setup noise
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    constexpr U64 iovAt = page + 0x100;
+    constexpr U64 seg0 = page + 0x400;
+    constexpr U64 seg1 = page + 0x500;
+    constexpr U64 seg2 = page + 0x600;
+    auto setIov = [&](U32 idx, U64 base, U64 len) {
+        memory->writeq(iovAt + idx * 16, base);
+        memory->writeq(iovAt + idx * 16 + 8, len);
+    };
+    auto clearSegs = [&]() {
+        memory->writeq(seg0, 0); memory->writeq(seg1, 0); memory->writeq(seg2, 0);
+    };
+    auto segText = [&](U64 at, U32 len) {
+        std::string s;
+        for (U32 i = 0; i < len; i++) s += (char)memory->readb(at + i);
+        return s;
+    };
+    auto filePos = [&]() -> S64 { return invoke6(8, (U64)(U32)fd, 0, 1, 0, 0, 0); }; // lseek(fd, 0, SEEK_CUR)
+
+    // 1. Three segments at offset 2; position untouched; one IN_ACCESS.
+    setIov(0, seg0, 4); setIov(1, seg1, 4); setIov(2, seg2, 4);
+    clearSegs();
+    S64 r = invoke6(295, (U64)(U32)fd, iovAt, 3, 2, 0, 0);
+    if (r != 12 || segText(seg0, 4) != "2345" || segText(seg1, 4) != "6789" || segText(seg2, 4) != "ABCD") {
+        testFail("preadv 3 segments at offset 2 returned %lld with segments '%s' '%s' '%s'",
+                 (long long)r, segText(seg0, 4).c_str(), segText(seg1, 4).c_str(), segText(seg2, 4).c_str());
+    }
+    if (filePos() != 0) {
+        testFail("preadv moved the file position to %lld", (long long)filePos());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("preadv must generate exactly one IN_ACCESS");
+    }
+
+    // 2. Short read across the EOF boundary ends the walk.
+    setIov(0, seg0, 4); setIov(1, seg1, 4);
+    clearSegs();
+    r = invoke6(295, (U64)(U32)fd, iovAt, 2, 18, 0, 0);
+    if (r != 2 || segText(seg0, 2) != "IJ" || segText(seg1, 4) != std::string(4, '\0')) {
+        testFail("preadv across EOF returned %lld (segment0 '%s')", (long long)r, segText(seg0, 4).c_str());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("short preadv must generate exactly one IN_ACCESS");
+    }
+
+    // 3. At EOF the call returns 0 and still generates IN_ACCESS once
+    // (the vectored path's measured host behaviour).
+    r = invoke6(295, (U64)(U32)fd, iovAt, 1, 1000, 0, 0);
+    if (r != 0) {
+        testFail("preadv at EOF returned %lld", (long long)r);
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("preadv at EOF must still generate one IN_ACCESS");
+    }
+
+    // 4. iovcnt 0 returns 0 and generates IN_ACCESS once.
+    r = invoke6(295, (U64)(U32)fd, iovAt, 0, 0, 0, 0);
+    if (r != 0) {
+        testFail("preadv with iovcnt 0 returned %lld", (long long)r);
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("preadv with iovcnt 0 must generate one IN_ACCESS");
+    }
+
+    // 5. Validation, and none of it generates IN_ACCESS.
+    if (invoke6(295, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0) != -K_EINVAL) {
+        testFail("preadv with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke6(295, (U64)(U32)fd, iovAt, 1025, 0, 0, 0) != -K_EINVAL) {
+        testFail("preadv with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke6(295, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("preadv with offset -1 was not -EINVAL");
+    }
+    if (invoke6(295, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("preadv with offset -2 was not -EINVAL");
+    }
+    if (invoke6(295, 9999, iovAt, 1, 0, 0, 0) != -9) {
+        testFail("preadv with a bad descriptor was not -EBADF");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("failed preadv calls generated IN_ACCESS");
+    }
+
+    // 6. pos_h is honored: offset 2^32 + 2 is past EOF (a low-word-only
+    // implementation would read at offset 2 and return data).
+    setIov(0, seg0, 4);
+    clearSegs();
+    r = invoke6(295, (U64)(U32)fd, iovAt, 1, 2, 1, 0);
+    if (r != 0) {
+        testFail("preadv at offset 2^32+2 returned %lld (pos_h ignored?)", (long long)r);
+    }
+    drainMasks();
+
+    // 7. A zero-length segment in the middle is skipped.
+    setIov(0, seg0, 4); setIov(1, seg1, 0); setIov(2, seg2, 4);
+    clearSegs();
+    r = invoke6(295, (U64)(U32)fd, iovAt, 3, 0, 0, 0);
+    if (r != 8 || segText(seg0, 4) != "0123" || segText(seg2, 4) != "4567") {
+        testFail("preadv with a zero-length segment returned %lld ('%s' '%s')",
+                 (long long)r, segText(seg0, 4).c_str(), segText(seg2, 4).c_str());
+    }
+    drainMasks();
+
+    // 8. preadv2: flags 0, RWF_NOWAIT and RWF_APPEND are accepted on a
+    // read; an unknown flag bit is EOPNOTSUPP.
+    setIov(0, seg0, 4);
+    clearSegs();
+    r = invoke6(327, (U64)(U32)fd, iovAt, 1, 4, 0, 0);
+    if (r != 4 || segText(seg0, 4) != "4567") {
+        testFail("preadv2 with flags 0 returned %lld ('%s')", (long long)r, segText(seg0, 4).c_str());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("preadv2 must generate exactly one IN_ACCESS");
+    }
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1, 4, 0, 0x8) != 4) { // RWF_NOWAIT
+        testFail("preadv2 with RWF_NOWAIT failed");
+    }
+    drainMasks();
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1, 4, 0, 0x10) != 4) { // RWF_APPEND
+        testFail("preadv2 with RWF_APPEND failed");
+    }
+    drainMasks();
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1, 4, 0, 0x40) != -K_EOPNOTSUPP) {
+        testFail("preadv2 with an unknown flag bit was not -EOPNOTSUPP");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("rejected preadv2 generated IN_ACCESS");
+    }
+
+    // 9. A write-only descriptor follows pread64's house answer
+    // (-EINVAL; the host answers EBADF for the whole positioned-read
+    // family -- that divergence is registered separately).
+    {
+        KFileDescriptorPtr wdesc;
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_WRONLY, wdesc);
+        if ((S32)result < 0 || !wdesc) {
+            testFail("preadv test could not open /data.bin write-only");
+            return;
+        }
+        if (invoke6(295, (U64)(U32)wdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
+            testFail("preadv on a write-only descriptor was not -EINVAL");
+        }
+        process->close(wdesc->handle);
+    }
+
+    process->close((S32)inotifyDesc->handle);
+    process->close(fd);
     rmdir(hostDir);
 }
 
@@ -973,6 +1224,215 @@ void testChmodAccessHardLink() {
     }
 
     process->close(fileFd);
+    process->close(ifd);
+}
+
+// FD-79: IN_CLOSE_WRITE / IN_CLOSE_NOWRITE timing against mapping
+// lifetime. Host-kernel reference behaviour (measured on the box's
+// 6.17 kernel with a dedicated reference program): any live mapping
+// of an open file description -- shared or private, read or write --
+// defers the description's close event until the last such mapping
+// is unmapped; with no mapping live it fires at close; a second,
+// unmapped description of the same file fires at its own close while
+// the first description's event stays deferred.
+void testCloseWriteDeferral() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    KThread* thread = context.thread;
+    char dirTemplate[] = "/tmp/bw64kcloseXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for close-write deferral test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("allocFileDescriptor for the inotify instance failed");
+        return;
+    }
+    S32 ifd = (S32)inotifyDesc->handle;
+
+    // Create /w.txt with known content before any watch exists.
+    {
+        KFileDescriptorPtr created;
+        U32 result = process->openFile(B("/"), B("/w.txt"), K_O_RDWR | K_O_CREAT, created);
+        if ((S32)result < 0 || !created) {
+            testFail("openFile(O_CREAT) for /w.txt failed: %d", (S32)result);
+            return;
+        }
+        const char* text = "0123456789abcdef";
+        created->kobject->writeNative((U8*)text, 16);
+        process->close(created->handle);
+    }
+
+    S32 wd = (S32)process->inotify_add_watch(ifd, B("/w.txt"), 0xfff);
+    if (wd < 1) {
+        testFail("inotify_add_watch on /w.txt failed: %d", wd);
+        return;
+    }
+
+    struct Ev { S32 wd; U32 mask; };
+    auto drainEvents = [&]() {
+        std::vector<Ev> events;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            Ev e;
+            U32 nameLen;
+            memcpy(&e.wd, buffer + offset, 4);
+            memcpy(&e.mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            events.push_back(e);
+            offset += 16 + (S32)nameLen;
+        }
+        return events;
+    };
+    auto hasClose = [](const std::vector<Ev>& events, S32 wd_, U32 bit) {
+        for (auto& e : events) {
+            if (e.wd == wd_ && (e.mask & bit)) return true;
+        }
+        return false;
+    };
+    constexpr U32 IN_CLOSE_WRITE_BIT = 0x8;
+    constexpr U32 IN_CLOSE_NOWRITE_BIT = 0x10;
+
+    auto openWatched = [&](U32 flags, S32& handleOut) -> bool {
+        KFileDescriptorPtr d;
+        U32 result = process->openFile(B("/"), B("/w.txt"), flags, d);
+        if ((S32)result < 0 || !d) return false;
+        handleOut = (S32)d->handle;
+        return true; // the local reference drops here; the fd table holds the description
+    };
+    auto mapWatched = [&](S32 h, S32 prot, S32 flags) -> U32 {
+        return process->memory->mmap(thread, 0, K_PAGE_SIZE, prot, flags, h, 0);
+    };
+
+    // Case A: a MAP_SHARED writable mapping live across close defers
+    // IN_CLOSE_WRITE to the munmap.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case A open failed"); return; }
+        drainEvents(); // IN_OPEN
+        U32 addr = mapWatched(h, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED);
+        if ((S32)addr < 0) { testFail("case A mmap failed: %d", (S32)addr); return; }
+        process->memory->writeb(addr, 'X');
+        process->close(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case A: IN_CLOSE_WRITE fired at fd close while a writable shared mapping is still open");
+        }
+        process->memory->unmap(addr, K_PAGE_SIZE);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case A: IN_CLOSE_WRITE did not arrive at munmap");
+        }
+    }
+
+    // Case B: mapping unmapped before close -- nothing at munmap, the
+    // event fires at close.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case B open failed"); return; }
+        drainEvents();
+        U32 addr = mapWatched(h, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED);
+        if ((S32)addr < 0) { testFail("case B mmap failed: %d", (S32)addr); return; }
+        process->memory->unmap(addr, K_PAGE_SIZE);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case B: IN_CLOSE_WRITE fired at munmap while the fd is still open");
+        }
+        process->close(h);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case B: IN_CLOSE_WRITE did not fire at close after the mapping was gone");
+        }
+    }
+
+    // Case C: two mappings of one description -- the event waits for
+    // the second munmap.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case C open failed"); return; }
+        drainEvents();
+        U32 addr1 = mapWatched(h, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED);
+        U32 addr2 = mapWatched(h, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED);
+        if ((S32)addr1 < 0 || (S32)addr2 < 0 || addr1 == addr2) { testFail("case C mmaps failed: %d %d", (S32)addr1, (S32)addr2); return; }
+        process->close(h);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C: IN_CLOSE_WRITE fired at fd close with two mappings open");
+        }
+        process->memory->unmap(addr1, K_PAGE_SIZE);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C: IN_CLOSE_WRITE fired at the first of two munmaps");
+        }
+        process->memory->unmap(addr2, K_PAGE_SIZE);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case C: IN_CLOSE_WRITE did not arrive at the last munmap");
+        }
+    }
+
+    // Case D: a read-only description with a MAP_PRIVATE read mapping
+    // defers IN_CLOSE_NOWRITE the same way.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDONLY, h)) { testFail("case D open failed"); return; }
+        drainEvents();
+        U32 addr = mapWatched(h, K_PROT_READ, K_MAP_PRIVATE);
+        if ((S32)addr < 0) { testFail("case D mmap failed: %d", (S32)addr); return; }
+        process->close(h);
+        std::vector<Ev> atClose = drainEvents();
+        if (hasClose(atClose, wd, IN_CLOSE_NOWRITE_BIT) || hasClose(atClose, wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case D: a close event fired at fd close while a private read mapping is still open");
+        }
+        process->memory->unmap(addr, K_PAGE_SIZE);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_NOWRITE_BIT)) {
+            testFail("case D: IN_CLOSE_NOWRITE did not arrive at munmap");
+        }
+    }
+
+    // Case E: no mapping at all -- the event still fires at close.
+    {
+        S32 h;
+        if (!openWatched(K_O_RDWR, h)) { testFail("case E open failed"); return; }
+        drainEvents();
+        process->close(h);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case E: plain close produced no IN_CLOSE_WRITE");
+        }
+    }
+
+    // Case F: a second, unmapped description fires at its own close
+    // while the first description's event stays deferred.
+    {
+        S32 h1;
+        if (!openWatched(K_O_RDWR, h1)) { testFail("case F open h1 failed"); return; }
+        drainEvents();
+        U32 addr = mapWatched(h1, K_PROT_READ | K_PROT_WRITE, K_MAP_SHARED);
+        if ((S32)addr < 0) { testFail("case F mmap failed: %d", (S32)addr); return; }
+        S32 h2;
+        if (!openWatched(K_O_RDWR, h2)) { testFail("case F open h2 failed"); return; }
+        drainEvents(); // h2's IN_OPEN
+        process->close(h2);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case F: the unmapped description did not fire at its own close");
+        }
+        process->close(h1);
+        if (hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case F: the mapped description fired at fd close");
+        }
+        process->memory->unmap(addr, K_PAGE_SIZE);
+        if (!hasClose(drainEvents(), wd, IN_CLOSE_WRITE_BIT)) {
+            testFail("case F: the mapped description's IN_CLOSE_WRITE did not arrive at munmap");
+        }
+    }
+
     process->close(ifd);
 }
 

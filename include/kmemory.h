@@ -104,6 +104,14 @@ public:
     U32 allocatedPageCount();
     BString generateMaps(bool smaps);
     U32 unmap(U32 address, U32 len);
+    // FD-79: report that the file-mapped pages in [pageStart,
+    // pageStart+pageCount) are about to die (unmap, overwrite, exec),
+    // so FsOpenNode can release close events deferred by them. Must
+    // be called BEFORE the pages are invalidated or replaced: a File
+    // page's table entry carries the mapping key that resolves to
+    // the open description.
+    void noteMappedFilePagesDying(U32 pageStart, U32 pageCount);
+    void noteAllMappedFilePagesDying();
 
     U32 mapPages(KThread* thread, U32 startPage, const std::vector<RamPage>& pages, U32 permissions);
     U32 mapNativeMemory(void* hostAddress, U32 size);

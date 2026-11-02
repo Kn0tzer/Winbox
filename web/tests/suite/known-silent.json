@@ -19,7 +19,7 @@
     "source/kernel/syscall64.cpp": {
       "emptyCatch": 0,
       "unloggedDefault": 7,
-      "unloggedErrno": 112
+      "unloggedErrno": 115
     },
     "source/opengl/gl64bridge.cpp": {
       "emptyCatch": 1,

@@ -67,7 +67,7 @@ S64 FsFileOpenNode::seek(S64 pos) {
 void FsFileOpenNode::close() {
     if (this->handle!=0xFFFFFFFF) {
         ::close(this->handle);
-        KInotify::notifyClosed(this->node.get(), (this->flags & K_O_ACCMODE) != K_O_RDONLY);
+        this->signalCloseEvent((this->flags & K_O_ACCMODE) != K_O_RDONLY);
     }
     this->handle = 0xFFFFFFFF;
 }
@@ -112,6 +112,7 @@ void FsFileOpenNode::reopen() {
     }
     this->invalidateReadBuffer();
     this->expectedPos = 0;
+    this->resetCloseEventState();
 }
 
 U32 FsFileOpenNode::ioctl(KThread* thread, U32 request) {

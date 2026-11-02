@@ -112,6 +112,7 @@ void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
+void testCloseWriteDeferral();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
@@ -126,6 +127,7 @@ void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
 void testExeSpawnSignal64();
+void testPreadv64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -186,6 +188,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -203,6 +206,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEvents, "Test inotify event delivery end to end"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
     {testPrctl64Options, "Test x64 prctl option surface"},
@@ -888,12 +892,14 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
     {testTimerfd64Syscalls, "Test x64 timerfd syscall ABI"},
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
+    {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},

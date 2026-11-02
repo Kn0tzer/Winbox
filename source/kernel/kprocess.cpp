@@ -30,6 +30,7 @@
 #include "kepoll.h"
 #include "../io/fsmemnode.h"
 #include "../io/fsmemopennode.h"
+#include "../io/fsfileopennode.h"
 #include "../io/fsfilenode.h"
 #include "../x11/x11.h"
 #include "kunixsocket.h"
@@ -1222,6 +1223,10 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadExitMutex);
     }
     this->heap.freeAll(this->memory);
+    // FD-79: every file mapping of the old image dies at exec; report
+    // the page deaths while the mapping table is still intact (the
+    // onExec pass below clears it), so deferred close events resolve.
+    this->memory->noteAllMappedFilePagesDying();
     this->memory->execvReset(cloneVM);
     cloneVM = false;
     // mlock state (kernel round 3A): exec drops all locks and MCL_FUTURE.
@@ -1781,6 +1786,28 @@ U32 KProcess::close(FD fildes) {
         return -K_EBADF;
     }
     clearFdHandle(fd->handle);
+    // FD-79: when this close drops the last descriptor this process
+    // holds for a file description, signal the description's close
+    // event now; FsOpenNode delivers it at once or defers it until
+    // the description's last mapping is released. Descriptions shared
+    // with other processes are signalled by the first process to drop
+    // its last descriptor -- the host ties the event to the last
+    // system-wide reference (see the FD-79 register entry).
+    std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+    if (file && file->openFile &&
+        (dynamic_cast<FsFileOpenNode*>(file->openFile) || dynamic_cast<FsMemOpenNode*>(file->openFile))) {
+        bool stillHeld = false;
+        BHashTable<U32, KFileDescriptorPtr> remaining = this->fds.snapshotTable();
+        for (auto& n : remaining) {
+            if (n.value && n.value->kobject == fd->kobject) {
+                stillHeld = true;
+                break;
+            }
+        }
+        if (!stillHeld) {
+            file->openFile->signalCloseEvent((file->openFile->flags & K_O_ACCMODE) != K_O_RDONLY);
+        }
+    }
     return 0;
 }
 

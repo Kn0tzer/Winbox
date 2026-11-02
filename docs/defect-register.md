@@ -2764,7 +2764,8 @@ do not close the entry until they land.
 
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
-  host defers it until the mapping is unmapped.** *(Low.
+  host defers it until the mapping is unmapped.
+  CLOSED 2026-11-01 — see CL-37.** *(Low.
   Filed as FD-79 on the FD-58..60 lane branch,
   2026-11-01; the number was verified free on the
   integration register and settled at composition.)* Measured on the host kernel
@@ -2778,10 +2779,26 @@ do not close the entry until they land.
   FD-58..60 lane, 2026-11-01. Evidence:
   `test-results/fd58-60/` (host reference programs and
   outputs).
+  Update (FD-79/80 lane, 2026-11-01): measured on the
+  emulator, the behaviour was worse than the filed
+  text — on the demand-paged path the event was not
+  merely early but lost in-session: the open node's
+  close is destructor-driven, and a mapped file's
+  KFile is pinned by its mapping entries and by the
+  system file cache, so neither close nor munmap
+  delivered the event; it surfaced only at process
+  teardown. The host matrix was also widened by
+  re-measurement: any live mapping of the description
+  (shared or private, read or write) defers either
+  close event to the last unmap. CL-37 covers the
+  demand-paged path; the 64-bit path, whose file
+  mappings are materialized copies with no
+  open-description accounting, is filed as FD-82.
 
 - **FD-80 — The 64-bit dispatcher's preadv (295) and
   preadv2 (327) have name-table entries but no dispatch
-  case, so they return ENOSYS.** *(Low. Filed
+  case, so they return ENOSYS. CLOSED 2026-11-01 —
+  see CL-38.** *(Low. Filed
   as FD-80 on the FD-58..60 lane branch, 2026-11-01;
   the number was verified free on the integration
   register and settled at composition.)*
@@ -2866,6 +2883,57 @@ do not close the entry until they land.
   backing store itself.
   Record: docs/reports/fd81-temp-link-pattern-20261101.md;
   evidence test-results/fd81/ (on the lane tree).
+- **FD-82 — A 64-bit guest's file-backed mappings do
+  not participate in FD-79's close-event deferral: the
+  64-bit memory path materializes a file mapping as
+  copied/shared pages keyed by node, with no
+  open-description accounting, so a 64-bit guest still
+  sees IN_CLOSE_WRITE / IN_CLOSE_NOWRITE at fd close
+  while such a mapping is live, where the host defers
+  the event to the last unmap.** *(Low. Filed by the
+  FD-79/80 lane, 2026-11-01; the number was verified
+  free against the register at filing and is
+  provisional until the merge lane's audit.)* The
+  demand-paged path is exact after CL-36; closing
+  this entry needs per-description mapping accounting
+  on the 64-bit path or an equivalent liveness input
+  to its close path. Evidence:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`.
+
+- **FD-83 — readv generates no IN_ACCESS when it
+  succeeds with 0 bytes (at EOF, or with iovcnt 0);
+  the host generates exactly one.** *(Low. Filed by
+  the FD-79/80 lane, 2026-11-01; the number was
+  verified free against the register at filing and is
+  provisional until the merge lane's audit.)*
+  Measured on the host kernel (6.17.0-1020-oracle):
+  the vectored reads generate IN_ACCESS once per
+  successful call including 0-byte successes, where
+  plain read/pread stay silent at 0 bytes. The
+  emulator's readv notifies per segment through the
+  plain read path, whose bytes>0 rule is correct for
+  read/pread but not for the vectored calls.
+  preadv/preadv2 follow the host rule since CL-38.
+  Evidence: `test-results/fd79-80/` (host reference
+  programs and outputs).
+
+- **FD-84 — The positioned/plain read family answers
+  -EINVAL on a descriptor that cannot be read; the
+  host answers -EBADF.** *(Low. Filed by the FD-79/80
+  lane, 2026-11-01; the number was verified free
+  against the register at filing and is provisional
+  until the merge lane's audit.)* Measured on the
+  host: preadv on an O_WRONLY descriptor returns
+  EBADF. The emulator's positioned-read core rejects
+  a non-readable file with -EINVAL, and pread64 and
+  (since CL-38) preadv inherit that answer;
+  KProcess::read makes the same choice for plain
+  reads. Found by the FD-79/80 lane while pinning
+  preadv's validation matrix; left as found rather
+  than changed inside a wiring fix. Evidence:
+  `test-results/fd79-80/` (host reference programs
+  and outputs).
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -2903,6 +2971,7 @@ is behavioural, is re-proven there.
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 | `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
 | `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
+| `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4043,3 +4112,90 @@ its lane and is not a defect, for the stated reason:
   succeeding in vivo on the shipped build — the
   FD-70 closing terms' last clause, unmet by
   construction until a deploy carries the branch.
+- **CL-37 — A file description's close event is
+  delivered at the host's moment: held while any
+  mapping of the description is live, delivered at
+  the last unmap (FD-79).** *(Filed as CL-37 on
+  lane-fd79-80, 2026-11-01; the number is provisional
+  — CL-35 and CL-36 were taken provisionally by the
+  FD-54 and FD-63 closures on their own branches,
+  and the merge lane settles the sequence by audit.)* Fixed on branch
+  `lane-fd79-80`. The host contract was re-measured
+  first (6.17.0-1020-oracle): any live mapping of a
+  description — shared or private, read or write —
+  defers its close event (IN_CLOSE_WRITE, or
+  IN_CLOSE_NOWRITE for a read-only description) to
+  the last unmap; per-description, a second unmapped
+  description of the same file fires at its own
+  close. The emulator's event was lost in-session,
+  not merely early: the open node's close is
+  destructor-driven and a mapped file's KFile is
+  pinned by its mapping entries and the system file
+  cache. The fix tracks the contract explicitly at
+  the open description: FsOpenNode carries a
+  live-mapped-page count and pending/delivered
+  state, both file and mem open nodes route their
+  close notification through it (a destructor
+  backstop delivers a still-pending event rather
+  than losing it, and reopen() re-arms the state);
+  KProcess::close signals the event when a close
+  drops the process's last descriptor for the
+  description; KMemory counts page births at the
+  three mapping-creation sites and reports deaths
+  before pages are invalidated or replaced (from
+  unmap, from mmap overwrite, and for the whole
+  address space at exec) — File pages by their
+  mapping key, CopyOnWrite pages (a write fault
+  converts a file page; its entry names the cache
+  page, not the mapping) by range, to the newest
+  table entry containing the page. Boundaries,
+  stated exactly: a description shared with another
+  process is signalled by the first process to drop
+  its last descriptor and its pages are counted
+  across the sharers, so in the fork corner the
+  event can arrive early; it is never lost. The
+  64-bit materialized-mapping path has no
+  open-description accounting and is filed as
+  FD-82. Proof: new test testCloseWriteDeferral in
+  both native suites (six cases: shared-writable
+  deferral, unmap-before-close, two mappings,
+  private-read NOWRITE deferral, plain close, the
+  two-description split) — RED on the base (five
+  arrival assertions failing), GREEN with the fix;
+  full native suites serial main 668/668 and x64
+  68/68, 0 FAILED. Record:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
+  evidence `test-results/fd79-80/`.
+
+- **CL-38 — The 64-bit dispatcher's preadv (295) and
+  preadv2 (327) are wired: vectored positioned reads
+  with the host's validation and notification shape
+  (FD-80).** *(Filed as CL-38 on lane-fd79-80,
+  2026-11-01; the number is provisional, as CL-37
+  above.)* Fixed on branch `lane-fd79-80`. The host
+  contract was measured first (raw syscalls,
+  6.17.0-1020-oracle): segments fill in order at
+  successive offsets, the file position does not
+  move, a short read at EOF ends the walk,
+  zero-length segments are skipped, IN_ACCESS is
+  generated exactly once per successful call
+  including 0-byte successes, any negative offset is
+  EINVAL (there is no readv fallback), iovcnt
+  outside 0..IOV_MAX is EINVAL, an unknown preadv2
+  flag bit is EOPNOTSUPP, and every defined RWF flag
+  is accepted on a read. The implementation walks
+  the iovec over pread64's factored core with
+  per-segment notification suppressed and generates
+  the single IN_ACCESS on success; pread64's own
+  behaviour is unchanged. A descriptor that cannot
+  be read keeps pread64's -EINVAL (the host's EBADF
+  divergence predates this lane and is filed as
+  FD-84). Proof: new test testPreadv64Syscalls in
+  the x64 native suite — RED on the base (every
+  call -ENOSYS), GREEN with the fix across the
+  data/position/segment walk, the EOF cases, the
+  validation matrix, the 64-bit offset, and the
+  flag matrix; full native suites serial main
+  668/668 and x64 68/68, 0 FAILED. Record:
+  `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
+  evidence `test-results/fd79-80/`.
