@@ -3050,6 +3050,8 @@ do not close the entry until they land.
   the operand positions proven on a captured
   module; the same raw-word liveness idiom survives
   at sibling positions and in sibling sweeps.
+  CLOSED 2026-11-02 — see CL-45 (provisional
+  number).
   *(Low — no captured module is known to be gated
   by the unfixed positions; filed by the FD-70
   lane, 2026-11-01. Numbered FD-78 at composition on
@@ -3088,6 +3090,24 @@ do not close the entry until they land.
   no module shape can align it with a swept type
   id. Evidence: `docs/reports/fd70-second-wave-20261101.md`;
   `test-results/fd70/` (keeper census).
+  Update (FD-78 lane, 2026-11-02): CLOSED on branch
+  `lane-fd78` — see CL-45. The operand-aware walker
+  gained an enumerating sibling in both mirrors
+  (`operandRefIds` in spirvfix, `r15::operandRefIds`
+  in the bridge) and the five remaining raw-word
+  liveness scans in the fixup layer plus the
+  bridge's skip-5302 simulation now route through
+  it. Every position named at filing is covered by
+  a guard that is RED on the base scans and GREEN
+  with the fix; the storage-image prune's constant
+  and width positions, which the filing did not
+  name because that scan excluded nothing at all,
+  are covered by two new assembled fixtures.
+  `stripDeadUndefs`, the fail-closed veto scans and
+  the OpGroupDecorate family were audited and
+  deliberately left unchanged, with reasons, in the
+  record:
+  `docs/reports/fd78-literal-positions-20261102.md`.
 
   **Update (FD-87 lane, 2026-11-02): the ExtInst
   instruction-number position named above is PROVEN
@@ -5051,3 +5071,61 @@ its lane and is not a defect, for the stated reason:
   base. Record:
   `docs/reports/fd05-fd-table-exhaustion-20261102.md`;
   evidence `test-results/fd05/`.
+
+- **CL-45 — No liveness scan in the SPIR-V serving
+  layer counts a literal word as an id reference:
+  every sweep routes through operand-aware
+  positions (FD-78).** *(Provisional number,
+  assigned on lane-fd78, 2026-11-02; CL-40…CL-44
+  are held by the fd66 / fd65 / fd85 / fd87 / fd64 /
+  fd05 lane branches — the merge lane renumbers
+  by audit if the composition order differs.)*
+  Fixed on branch `lane-fd78` off integ
+  `cc1d89ab3`. The operand-aware walker gained an
+  enumerating sibling (`operandRefIds` in
+  `tools/spirvfix/spirvfix.mjs`,
+  `r15::operandRefIds` in
+  `source/vulkan/vk64bridge.cpp`) — a word counts
+  as a reference exactly where the per-op walker
+  finds one — plus its missing OpExecutionModeId
+  case; the descriptor-array orphan sweep, the
+  storage-image type prune, the R15b root-cone
+  sweep, the texel-orphan scan, the
+  specialized-alias scan and the bridge's
+  skip-5302 simulation now route through it, each
+  keeping its existing op exclusions. Positions
+  covered: VectorShuffle components,
+  CompositeExtract / CompositeInsert indices,
+  OpSwitch case literals, OpLine words, the
+  OpArrayLength structure index, the leading
+  literals of OpFunction / OpVariable, constant
+  values and type widths in the prune, and the
+  ExtInst instruction number — the last subsumes
+  the FD-87 lane's targeted bound at those two
+  scans; the merge lane resolves the overlap by
+  audit. Audited and deliberately unchanged:
+  `stripDeadUndefs` (the raw scan is its
+  documented fail-closed contract), the
+  fail-closed veto scans, and the OpGroupDecorate
+  family at the walker's default. Proof: new JS
+  suite file
+  `web/tests/suite/unit/spirvfix-fd78.test.mjs`
+  (31 checks — per-position walker tests, mutation
+  guards on the FD-70 fixture, two new assembled
+  prune fixtures
+  `testdata/spirv/fd78-prune-constant.spv` /
+  `fd78-prune-function.spv`, and cone / texel /
+  alias mutation guards on captured modules),
+  every mutation guard RED on the base scans and
+  GREEN with the fix by direct experiment; native
+  guard in `tools/vkd3d/tests/vk64_native_test.cpp`
+  (nine literal carriers, a function-control
+  carrier, a genuine-reference control) RED on the
+  base bridge, GREEN with the fix, full native
+  suite green; spirvfix corpus tests 10/10; full
+  JS unit suite 349 passed, 0 failed; the lane build
+  completed with Browser export verified (wasm
+  `c9a30661`). The register's drifted line
+  citations were re-pinned; the citation audit
+  reports 0 drift. Record:
+  `docs/reports/fd78-literal-positions-20261102.md`.

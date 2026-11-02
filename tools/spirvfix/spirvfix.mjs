@@ -316,6 +316,11 @@ export function idOperandUseIndex(byId, ins, id) {
     }
     case 16:                  // OpExecutionMode: entry id; mode + params are literals
       return hitAt(0);
+    case 331: {               // OpExecutionModeId: entry id, mode literal,
+                              // then id parameters (constants)
+      const h = hitAt(0); if (h >= 0) return h;
+      return scanIds(2, n);
+    }
     case 71:                  // OpDecorate: target id; decoration + params are literals
       return hitAt(0);
     case 72:                  // OpMemberDecorate: struct id; member / decoration / values are literals
@@ -418,6 +423,32 @@ export function idOperandUseIndex(byId, ins, id) {
       return scanIds(start, n);
     }
   }
+}
+// operandRefIds(byId, ins): the enumerating sibling of
+// idOperandUseIndex -- the set of id VALUES `ins` references in
+// id-typed operand positions, under exactly the walker's per-op
+// table (a value is in the set iff the walker finds it). The
+// module-wide liveness sweeps build their live sets from this
+// enumeration instead of scanning raw words: a literal word that
+// happens to equal a swept id -- an ExtInst instruction number, a
+// VectorShuffle component, a CompositeExtract / CompositeInsert
+// index, an OpSwitch case literal, an OpLine line number, the
+// leading literals of OpFunction / OpVariable, an OpArrayLength
+// index, a storage-class word -- is not a reference, and counting
+// it keeps a dead type or variable alive one layer past its true
+// blocker (FD-78: FD-70's literal-reference class, closed at every
+// remaining position the FD-70 / FD-87 fixes named). The resultType
+// word is NOT included: each sweep counts it under its own
+// discipline, as before. Unlisted opcodes keep the walker's
+// default (every operand word), so the enumeration is never
+// narrower than the historical scan for an unmodelled layout.
+export function operandRefIds(byId, ins) {
+  const refs = new Set();
+  for (let k = 0; k < ins.words.length; k++) {
+    const v = ins.words[k];
+    if (!refs.has(v) && idOperandUseIndex(byId, ins, v) >= 0) refs.add(v);
+  }
+  return refs;
 }
 // --- R1: split combined SampledImage uniforms -------------------------------
 // A UniformConstant variable of OpTypeSampledImage becomes an image uniform
@@ -1686,7 +1717,11 @@ function pruneSpecializedAliases(mod, log) {
   for (const ins of mod.insns) {
     if (ins.op === Op.Function) inFunc = true;
     if (ins.op === Op.FunctionEnd) inFunc = false;
-    if (inFunc) for (const word of ins.words.slice(ins.resultType ? 2 : 0)) referenced.add(word);
+    // FD-78: operand-aware (operandRefIds) -- a literal word inside
+    // a function body (a VectorShuffle component, an OpLine line
+    // number, the OpFunction control mask) equal to a variable's id
+    // is not a use of the variable.
+    if (inFunc) for (const r of operandRefIds(byId, ins)) referenced.add(r);
   }
   const unused = new Set(mod.insns.filter(i => i.op === Op.Variable && i.words[2] === SC.UniformConstant
     && !referenced.has(i.resultId)).map(i => i.resultId));
@@ -2621,6 +2656,8 @@ function sweepTexelOrphans(mod, converted) {
   // names do not reference, header/directive words are literals or
   // enums, and the constant family's operand words are literal values
   // (its resultType word still counts).
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
   const referencedOutside = id => {
     for (const ins of mod.insns) {
       if (ins.resultId != null && closure.has(ins.resultId)) continue;
@@ -2630,8 +2667,11 @@ function sweepTexelOrphans(mod, converted) {
       if (ins.resultType === id) return true;
       if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
           ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 || ins.op === 52) continue;
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === id) return true;
+      // FD-78: operand-aware (operandRefIds). This scan previously
+      // also counted OpTypeInt / OpTypeFloat width words and the
+      // memory-access family's trailing group; the walker's table
+      // bounds those positions too.
+      if (operandRefIds(byId, ins).has(id)) return true;
     }
     return false;
   };
@@ -4831,6 +4871,7 @@ export function specializeDescriptorArrays(mod, log) {
   let swept = true;
   while (swept) {
     swept = false;
+    const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
     const live = new Set();
     for (const ins of mod.insns) {
       if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
@@ -4859,41 +4900,24 @@ export function specializeDescriptorArrays(mod, log) {
       // OpTypeInt / OpTypeFloat carry only literals (width, signedness)
       // after their result id -- never references, for the same reason.
       if (ins.op === 21 || ins.op === 22) continue;
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      // The memory-access family (OpLoad / OpStore / OpCopyMemory /
-      // OpCopyMemorySized) appends a MemoryAccess operand group -- a
-      // literal mask word, an Aligned literal, scope ids -- after its
-      // pointer/object/size ids. Those trailing words are not type
-      // references either: counting them lets an Aligned literal equal
-      // to a dead type's id keep that type alive, the same failure
-      // shape as the constant family above (captured Godot modules
-      // godot-vs-4000ddfd359efb05 and godot-vs-ebac7e2d70a20d62: an
-      // OpLoad Aligned 16 through a root-descriptor pointer kept the
-      // specialized-away descriptor runtime-array type %16 alive, so
-      // the capability strip never ran and the post-specialization
-      // texel conversion still saw the image type as array-owned).
-      // The group's scope ids name constants, never the array /
-      // pointer types this sweep deletes, so bounding the scan at the
-      // group start loses no real reference. Mirrored in the bridge
-      // audit's skip5302 simulation.
-      let end = ins.words.length;
-      if (ins.op === Op.Load) end = Math.min(end, start + 1);
-      else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
-      else if (ins.op === 64) end = Math.min(end, start + 3);
-      for (let k = start; k < end; k++) {
-        // OpExtInst (12): words[start] is the set id (a reference);
-        // words[start + 1] is the extended instruction NUMBER, a
-        // literal that must not keep a swept type alive -- the
-        // FD-78 literal-position class, proven live on the captured
-        // Godot module godot-fs-f2b738c259a79b4a, whose GLSL.std.450
-        // instruction numbers 13/14/29/30 equal its specialized-away
-        // descriptor array / pointer type ids and kept both alive,
-        // which in turn kept the post-specialization texel conversion
-        // from seeing its image type as un-owned (FD-87). Mirrored in
-        // the bridge audit's skip5302 simulation.
-        if (ins.op === 12 && k === start + 1) continue;
-        live.add(ins.words[k]);
-      }
+      // FD-78: the scan is operand-aware (operandRefIds, on the
+      // idOperandUseIndex table) instead of a raw word scan bounded
+      // by hand. The hand bounds this replaces -- the memory-access
+      // family's trailing group (an OpLoad Aligned 16 kept the
+      // specialized-away type %16 alive in the captured Godot
+      // modules godot-vs-4000ddfd359efb05 and
+      // godot-vs-ebac7e2d70a20d62) -- are the walker's cases for
+      // those ops, and the same enumeration now also bounds every
+      // other literal position the raw scan counted: the ExtInst
+      // instruction number, VectorShuffle components,
+      // CompositeExtract / CompositeInsert indices, OpSwitch case
+      // literals, OpLine words, the leading literals of OpFunction
+      // / OpVariable, the OpArrayLength index and storage-class
+      // words. The group's scope ids name constants, never the
+      // array / pointer types this sweep deletes, so counting them
+      // as references (the walker does) loses nothing here.
+      // Mirrored in the bridge audit's skip5302 simulation.
+      for (const r of operandRefIds(byId, ins)) live.add(r);
     }
     const dead = new Set();
     for (const ins of mod.insns) {
@@ -4997,6 +5021,7 @@ function pruneDeadStorageImageTypes(mod, log) {
     if (ins.op === Op.TypeImage && ins.words[6] === 2 && ins.words[7] === 0) candidates.push(ins.resultId);
   }
   if (!candidates.length) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
   const live = new Set();
   const wrappers = new Map(); // wrapper type id -> wrapped (child) type id
   for (const ins of mod.insns) {
@@ -5010,8 +5035,13 @@ function pruneDeadStorageImageTypes(mod, log) {
         ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
     if (ins.op === Op.TypeImage || wrappers.has(ins.resultId ?? -1)) continue; // types are users only through the wrapper fixpoint below
     if (ins.resultType != null) live.add(ins.words[0]);
-    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-    for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+    // FD-78: operand-aware (operandRefIds). This scan previously
+    // counted every operand word -- constant values, type widths
+    // and the memory-access group included -- so a literal equal to
+    // a candidate's id kept the format-less type (and its stray
+    // capabilities) alive exactly as in the orphan sweep's
+    // FD-70 failure shape.
+    for (const r of operandRefIds(byId, ins)) live.add(r);
   }
   let grew = true;
   while (grew) {
@@ -5273,6 +5303,7 @@ export function rewriteRootDescriptors(mod, log) {
   let grew = true;
   while (grew) {
     grew = false;
+    const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
     const live = new Set();
     for (const ins of mod.insns) {
       if (drop.has(ins)) continue;
@@ -5283,8 +5314,11 @@ export function rewriteRootDescriptors(mod, log) {
       // alone). The labels of dropped ids are removed below.
       if (wordModule && (ins.op === 5 || ins.op === 6)) continue;
       if (ins.resultType != null) live.add(ins.words[0]);
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+      // FD-78: operand-aware (operandRefIds) -- a literal word
+      // (an OpLine line number, a VectorShuffle component, a
+      // constant value in a surviving instruction) equal to a cone
+      // instruction's id is not a use of the cone instruction.
+      for (const r of operandRefIds(byId, ins)) live.add(r);
     }
     for (const ins of mod.insns) {
       if (drop.has(ins) || !sweepOps.has(ins.op) || ins.resultId == null) continue;

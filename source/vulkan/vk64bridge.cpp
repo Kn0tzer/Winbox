@@ -1268,6 +1268,10 @@ inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
             return scanIds(k, n);
         }
         case 16: return hitAt(0);                       // OpExecutionMode: entry id
+        case 331: {                                     // OpExecutionModeId: entry id, mode literal, then id parameters (constants)
+            int h = hitAt(0); if (h >= 0) return h;
+            return scanIds(2, n);
+        }
         case 71: case 72: return hitAt(0);              // OpDecorate / OpMemberDecorate: target / struct id
         case 330: return -1;                            // OpModuleProcessed: string words only
         case 5632: case 5633: return hitAt(0);          // OpDecorateString / OpMemberDecorateString: target id, then literals + string
@@ -1318,6 +1322,24 @@ inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
     // Unlisted opcodes: the historical every-operand scan from the
     // first value operand -- exact for them, or fail-closed.
     return scanIds(start, n);
+}
+
+// Enumerating sibling of idOperandUseIndex (mirror of operandRefIds
+// in spirvfix.mjs): inserts every id value `in` references in an
+// id-typed operand position into `out`, under exactly the walker's
+// per-op table. The skip-5302 sweep simulation in analyzeArrays
+// builds its live set from this enumeration instead of scanning raw
+// words, so a literal word that happens to equal a swept type id --
+// an ExtInst instruction number, a VectorShuffle component, an
+// OpSwitch case literal, an OpLine line number, the leading
+// literals of OpFunction / OpVariable, an OpArrayLength index, a
+// storage-class word -- is not a reference (FD-78).
+inline void operandRefIds(const Module& m, const Insn& in, std::unordered_set<U32>& out) {
+    for (U32 k = 0; k < in.n; k++) {
+        const U32 v = in.w[k];
+        if (out.count(v)) continue;
+        if (idOperandUseIndex(m, in, v) >= 0) out.insert(v);
+    }
 }
 
 // R15c (FD-70): the word-cone audit for an integer-addressed root
@@ -1843,31 +1865,22 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             // OpTypeInt / OpTypeFloat carry only literals (width,
             // signedness) after their result id -- never references.
             if (in.op == 21 || in.op == 22) continue;
-            // The memory-access family (OpLoad / OpStore / OpCopyMemory /
-            // OpCopyMemorySized) appends a MemoryAccess operand group --
-            // a literal mask word, an Aligned literal, scope ids -- after
-            // its pointer/object/size ids; those trailing words are not
-            // type references (mirrors the spirvfix orphan sweep: an
-            // OpLoad Aligned 16 kept a specialized-away descriptor
-            // runtime-array type alive in the captured Godot modules
-            // godot-vs-4000ddfd359efb05 / godot-vs-ebac7e2d70a20d62).
-            // The group's scope ids name constants, never the array /
-            // pointer types this sweep deletes.
-            U32 kend = in.n;
-            if (in.op == 61) kend = std::min(kend, in.fv + 1);
-            else if (in.op == 62 || in.op == 63) kend = std::min(kend, in.fv + 2);
-            else if (in.op == 64) kend = std::min(kend, in.fv + 3);
-            for (U32 k = in.fv; k < kend; k++) {
-                // OpExtInst: w[fv] is the set id (a reference); w[fv + 1]
-                // is the extended instruction NUMBER, a literal -- the
-                // FD-78 literal-position class, proven live on the
-                // captured Godot module godot-fs-f2b738c259a79b4a (its
-                // GLSL.std.450 instruction numbers equal its
-                // specialized-away array / pointer type ids). Mirrors
-                // the spirvfix orphan sweep (FD-87).
-                if (in.op == 12 && k == in.fv + 1) continue;
-                live.insert(in.w[k]);
-            }
+            // FD-78: the scan is operand-aware (operandRefIds, on
+            // the idOperandUseIndex table) instead of a raw word
+            // scan bounded by hand (mirrors the spirvfix orphan
+            // sweep). The hand bound this replaces -- the
+            // memory-access family's trailing group, whose Aligned
+            // literal kept a specialized-away descriptor
+            // runtime-array type alive in the captured Godot
+            // modules godot-vs-4000ddfd359efb05 /
+            // godot-vs-ebac7e2d70a20d62 -- is the walker's case for
+            // those ops, and the same enumeration now also bounds
+            // the ExtInst instruction number, VectorShuffle
+            // components, CompositeExtract / CompositeInsert
+            // indices, OpSwitch case literals, OpLine words, the
+            // leading literals of OpFunction / OpVariable, the
+            // OpArrayLength index and storage-class words.
+            operandRefIds(m, in, live);
         }
         for (const Insn& in : m.insns) {
             if (removed.count(&in) || dead.count(&in)) continue;
