@@ -583,6 +583,41 @@ do not close the entry until they land.
   as a reported failure (specified in the previous
   lane record, not built here). FD-77 CLOSED on this
   branch — see CL-34.
+  UPDATE 2026-11-01 (`lane-fd77-stall-surface`): the
+  owed surfacing is BUILT. Default (unarmed) sessions
+  now run the thread dump on the launcher's own
+  cadence (first at 90 s after runtime start, then
+  every 60 s) and convict only on the dump's measured
+  evidence: the FD-47 desktop handshake complete,
+  no window mapped, one process with `running` >= 3
+  and `min_noprogress_ms` >= 60,000 in two consecutive
+  dumps, and no proxy fetch in flight in either (a
+  fetch in flight, a dump that cannot be taken, a
+  process that progresses or vanishes each reset the
+  count). On conviction the held per-thread dump
+  lines are flushed to the session log, one
+  `BW64-FAIL component=launcher.session
+  reason=booted-no-window-no-progress` line is
+  emitted, and the page reports the session as
+  failed through the existing error surface with the
+  log preserved. Slow-but-alive starts cannot
+  convict: any thread of the process executing keeps
+  `min_noprogress_ms` small, and mapping a window
+  disarms the watchdog. Armed sessions (`?guestdiag`,
+  `?bw64diag=threads`) and `?stallwatch=0` behave
+  exactly as before; no readiness rule was touched.
+  Proof: unit tests drive the shipped watchdog code
+  (park convicts; slow-but-alive, fetch-in-flight,
+  pre-handshake and thin-process shapes do not),
+  red 8/8 on the unpatched launcher; a shaped-session
+  browser probe drives the built page end to end
+  (report shown with evidence in the log; the alive
+  and pre-handshake shapes raise no alarm). Record:
+  `docs/reports/fd77-stall-surfacing-20261101.md`;
+  evidence `test-results/fd77-stall-surfacing/`.
+  FD-77's register debt is now fully discharged: the
+  freeze is fixed (CL-34) and its silence is
+  surfaced. FD-77 stays CLOSED.
 
 ### Graphics
 
@@ -3165,6 +3200,28 @@ do not close the entry until they land.
   `test-results/fd79-80/` (host reference programs
   and outputs).
 
+- **FD-82 — The launcher UI test's demo-card count no
+  longer matches the demo catalog.** *(Low)* `web/demos.mjs`
+  lists 15 demos and `web/app.mjs` `renderDemos()` renders
+  one `[data-game]` card per demo unconditionally, while
+  `web/tests/launcher-ui.mjs` asserts exactly 8 cards
+  (line 31) — so the test fails at that assertion
+  (15 !== 8) on a fresh build of the integration tip,
+  before any of its UI checks run. Found by
+  `lane-fd77-stall-surface` while regression-checking an
+  unrelated launcher change: the failure is independent
+  of that change (the test replaces the runtime page with
+  a fixture, so the changed launcher script never loads;
+  the count comes only from `demos.mjs`/`app.mjs`, both
+  untouched by the lane) and reproduces from the
+  branch-point sources. Either the catalog grew without
+  the test following, or the test's 8 encodes a filtered
+  view the renderer no longer applies; an owner should
+  decide which side is wrong. Evidence: this lane's
+  healthy-path log,
+  `test-results/fd77-stall-surfacing/healthy.log`
+  (branch `lane-fd77-stall-surface`); record:
+  `docs/reports/fd77-stall-surfacing-20261101.md`.
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -3206,6 +3263,7 @@ is behavioural, is re-proven there.
 | `lane-fd66` | FD-66: `setupReadbacks` discarded still-pending readback plans without freeing their heap blocks (latent — every production submit pairs setup with completion, so the discard was reachable only from the harness's planning sections), and the harness's sanitizer flavour reported the fixture's abandoned blocks so it could never finish clean | RED on the base reproduced the filed measurement exactly (LeakSanitizer 1,132 bytes in 5 allocations from setupReadbacks, exit 1); GREEN fixed: sanitizer flavour 57 PASS, exit 0, zero leak reports, via the standard runner too (its sanitizer run budget raised to 180 s); sabotage (prologue alone reverted) reopens exactly 328 bytes in 2 allocations; native serial 667/667 + 66/66; JS 348/0; citations 352/0 after re-pins; browser build BUILD COMPLETE (wasm df27c5e0…). Record: `docs/reports/fd66-readback-disposal-20261101.md`; evidence `test-results/fd66/` |
 | `lane-fd65` | FD-65: Gecko's "unable to find a usable font" — two layers: the 64-bit rootfs carried no font faces, and the shipped 64-bit win32u.so was built without freetype/fontconfig so GDI could enumerate and realize no font at all; faces staged (fonts64) and win32u rebuilt with its font engine (the build now fails loudly if either SONAME is absent); FD-85 + FD-86 filed | Guest step probe x64: EnumFontFamiliesEx 0 → 85 families, GetTextMetrics fail → tmHeight 17 (the 32-bit stack's numbers); the real common-dependencies Gecko stage green in two runs (MSHTML: RESULT 0, zero abort lines, test untouched — its remaining audio-capture failure is FD-85); completeness 0 failures; JS 348/0; dist 'Browser export verified'. Record: `docs/reports/fd65-gecko-fonts-20261102.md` |
 | `lane-fd85` | FD-85: the audio-capture failure convicted as two defects — the test's capture watched SDL's bypassed ScriptProcessor node while guest audio flows through the bwPump AudioWorklet (FD-87: fixed, closed CL-42), and beneath it Wine's mmdevapi → winealsa → ALSA leg delivers silence to the emulator's audio input for every Windows audio client tried (FD-85 stays open, break point proven by measurement); wasapi-tone + winmm-tone fixtures added | Fixed capture hears the direct-DSP control tone at peak 0.3662 where the shipped capture counted 0 non-zero in 266,240 samples; shipped test post-fix still fails at its audio wait (Gecko green, `OPENAL: RESULT 0`, first push peak 0.0000, no S16 non-zero line); JS 348/0; dist 'Browser export verified' (wasm byte-identical to shipped). Record: `docs/reports/fd85-audio-leg-20261102.md` |
+| `lane-fd77-stall-surface` | FD-77 remainder: a default session whose boot completes the desktop handshake but never maps a window and stops executing is now surfaced as a reported failure (the launcher takes its own thread dumps and convicts on the dump's measured zero-progress, two consecutive dumps, no fetch in flight); the held dump evidence is flushed to the preserved session log ahead of one BW64-FAIL line; slow-but-alive starts, armed diagnostic sessions, and every readiness rule are untouched | Unit tests over the shipped watchdog section: 8/8 green, 8/8 red on the unpatched launcher; shaped-session browser probe on the built dist: the park shape reports the failure with evidence in the log, the slow-but-alive and pre-handshake shapes raise no alarm; launcher UI regression green. Record: `docs/reports/fd77-stall-surfacing-20261101.md`; evidence `test-results/fd77-stall-surfacing/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
