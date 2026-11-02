@@ -1061,6 +1061,14 @@ do not close the entry until they land.
   differ from Linux, and inotify sees a creation for the new
   name but no link-count IN_ATTRIB on the source. Found by
   the FD-38 lane, 2026-10-31 (kprocess.cpp `KProcess::link`).
+  Update 2026-11-01 (FD-81): the refusal this entry's
+  fix specified also fired, in the browser build, on
+  ordinary files whose only problem is that the backing
+  store cannot hard-link at all - 57 times per 32-bit
+  boot on fontconfig's cache temp-to-lock links. FD-81
+  serves that case at the emulator layer with true
+  shared content; the refusal stands for the sources it
+  was written for. FD-60 stays closed by CL-31.
 
 - **FD-64 — Five legacy-suite subtests fail against the
   current V2 protocol fixtures.** *(Low, test-suite health.
@@ -2594,6 +2602,83 @@ do not close the entry until they land.
   Found by inspection during the FD-59 read-path work,
   2026-11-01 (syscall64.cpp name table vs dispatch
   switch).
+
+- **FD-81 — In the browser build, link() refuses every
+  link the backing store cannot hard-link - which is all
+  of them: the temp-file-to-lock-name pattern
+  (fontconfig's cache locks) failed 57 times per 32-bit
+  boot. FIXED on lane-fd81-linktmp - awaiting merge (see
+  Section B).** *(Medium - a mainstream library startup
+  pattern's step fails on every 32-bit boot; fontconfig
+  copes, but any guest code that requires the link
+  breaks.)* Filed 2026-11-01 from the FD-58..60 deploy
+  record's in-vivo observation (285 BW64-FAIL lines, all
+  this refusal, exactly 57 per x86 boot, 0 on x64).
+  FD-60 (CL-31) made link() a true hard link via a host
+  ::link() and specified refusal with EPERM and a
+  BW64-FAIL line for sources that are not host files. In
+  the browser build the "host" is the Emscripten
+  filesystem: its MEMFS and IDBFS backings provide no
+  hard-link operation at all, and its FS.link answers
+  every attempt with EMLINK (errno 34 in this build's
+  numbering - the value on all 285 deploy lines). The
+  refused sources are ordinary files (fontconfig's
+  /root/tmp/fontconfig/*.TMP-* temp files linked to
+  *.LCK lock names in the same directory); what refuses
+  them is the backing store's missing operation, not the
+  FD-60 scope. On the host the same pattern succeeds, so
+  the refusal is not the host-correct answer for it.
+  The fix (b0b3a70d3): when the host link fails with
+  EMLINK in the browser build, KProcess::link serves the
+  link at the emulator layer (KProcess::linkSharedBacking):
+  the new name is a second node with the source's id in
+  the same link group, pointing at the SAME backing
+  path, so content identity is real - every open of
+  either name opens the one backing file, and writes
+  through one name are visible through the other. The
+  link group gains a sharedBackingPath flag, and
+  FsFileNode consults it: link counts come from the
+  group's live membership (the backing's own count is
+  1), unlinking one name detaches only (the last name's
+  unlink deletes the backing), and renaming one name
+  moves only the guest tree entry (POSIX rename moves
+  an entry, not the file). Each served link logs a
+  capped BW64-INFO line; a served link is a success, not
+  a BW64-FAIL. Native builds are unchanged - there
+  EMLINK is the host's real link-count limit and stays a
+  refusal - as do symlink sources in every build
+  (FD-60's sidecar semantics) and non-file sources.
+  Proof: new test testTempFileLinkPattern in both
+  native suites runs the pattern end to end (shared
+  inode, nlink 2, exactly one backing file on the
+  host-side census - a copy would show two - writes
+  visible through both names, content survives
+  unlinking the temp name, the backing is deleted with
+  the last name, a rename keeps the sharing);
+  sabotage-checked both ways (a distinct backing path
+  fails the shared-content assertions; disabling the
+  unlink guard fails the survival assertions); full
+  native suites serial: main 666/666, x64 65/65,
+  0 FAILED (baselines 665/64 + the new test). Browser
+  build of the branch: 'Browser export verified' (dist
+  git_sha b0b3a70d3, wasm 8303eff4); in vivo
+  boot32-vkboot PASS on that dist - the console carries
+  0 BW64-FAIL lines of any kind and 5 BW64-INFO
+  hard-link lines, on exactly the fontconfig files the
+  deploy record lists (CACHEDIR.TAG and the four
+  le32d4 cache files; this boot shape runs one
+  fontconfig pass - the deploy's full-session count of
+  57 is the merge/deploy gates' figure to re-measure).
+  Residuals, stated: the group liveness count can lag
+  while an unlinked name's node is still open (FD-60's
+  stated class, now applying to file nodes on this path
+  too); after a cold rescan of the backing tree the two
+  names load as separate nodes (FD-60's stated class -
+  the backing holds one file); the served link exists
+  in the guest tree only, never as a second name in the
+  backing store itself.
+  Record: docs/reports/fd81-temp-link-pattern-20261101.md;
+  evidence test-results/fd81/ (on the lane tree).
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -2628,6 +2713,7 @@ is behavioural, is re-proven there.
 
 | `lane-fd58-60` | FD-58: chmod/fchmod/fchmodat apply the mode (stored on the node, reported by every stat writer, IN_ATTRIB on success; fchmodat NOFOLLOW on a symlink returns ENOTSUP as the host does); FD-59: IN_ACCESS generated for completed reads (mmap-write IN_MODIFY disproven against host references — the host generates none either); FD-60: link() creates a true hard link (host ::link between native paths, shared inode id, link group for counts and event fan-out); FD-79 and FD-80 filed | New test testChmodAccessHardLink in both suites: RED on the base (13 main / 18 x64 assertions failing), GREEN with the fix; host-kernel reference programs measured first (chmod/link/read/inotify matrices); full native suites serial: main 665/665 and x64 64/64, 0 FAILED; JS unit: the fs-dynamic-link-cache test that compiles the changed C++ passes standalone and in the runner (the lane tree is un-bootstrapped: 272 passed / 76 failed overall, every sampled failure a missing generated web/vendor file - the full JS run belongs to the merge gate). Record: `docs/reports/fd58-fd60-kernel-semantics-20261101.md`; evidence `test-results/fd58-60/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
+| `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
