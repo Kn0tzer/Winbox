@@ -1160,6 +1160,19 @@
                     ENV["BW_GUEST_PROFILE"] = "1";
                 }
                 if (param("wildjump") === "1") ENV["BW64_WILDJUMP"] = "1";                if (param("dlltrace") === "1") ENV["BW64_DLLTRACE"] = "1";                if (param("filemap") === "1") ENV["BW64_FMMAP"] = "1";
+                // Stall watchdog (FD-77 remainder): in a default (unarmed)
+                // session the launcher takes its own guest thread dumps to
+                // watch for a booted session that never maps a window (see
+                // the stall-watchdog section below). The dump export only
+                // runs when BW_THREAD_DUMP is set, so arm it here — unless
+                // diagnostics are armed (?guestdiag / ?bw64diag=threads
+                // drive their own dumps) or the watchdog is opted out
+                // (?stallwatch=0).
+                if (param("stallwatch") !== "0" && param("bw64diag") !== "threads") {
+                    var stallWatchGuestDiag = Number(param("guestdiag"));
+                    if (!(Number.isInteger(stallWatchGuestDiag) && stallWatchGuestDiag >= 1 && stallWatchGuestDiag <= 300))
+                        ENV["BW_THREAD_DUMP"] = "1";
+                }
                 if (param("pathcachestats") === "1") ENV["BW64_PATHCACHE_STATS"] = "1";
                 if (param("nopathcache") === "1") ENV["BW64_NOPATHCACHE"] = "1";
                 // Unified logging: ?loglevel=debug&logfilter=vulkan:trace,wineserver:debug
@@ -1286,14 +1299,14 @@
                 observeSessionOutput(text);
                 observeSessionHealth(text);
                 console.log(text);
-                if (window.bwRuntimeLog) window.bwRuntimeLog(text);
+                if (stallWatchLine(text) && window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
             },
             printErr: function () {
                 var text = Array.prototype.slice.call(arguments).join(" ");
                 observeSessionHealth(text);
                 console.error(text);
-                if (window.bwRuntimeLog) window.bwRuntimeLog(text);
+                if (stallWatchLine(text) && window.bwRuntimeLog) window.bwRuntimeLog(text);
                 mirrorOutput(text);
             },
             setStatus: function (text) { if (text) setStatusText(text); },
@@ -1348,6 +1361,15 @@
                         catch (e) { console.warn("bw64_vktrace_enable failed: " + e); }
                     }
                 }
+                // Stall watchdog (FD-77 remainder): in a default (unarmed)
+                // session, watch for a booted boot that never maps a window
+                // and stops making progress (see the stall-watchdog section
+                // below). No-op when diagnostics are armed or ?stallwatch=0.
+                // The typeof guard keeps this call safe in the unit rigs
+                // that evaluate this initializer without the session
+                // section; in the shipped launcher the declaration is
+                // hoisted and always present.
+                if (typeof stallWatchStart === "function") stallWatchStart();
                 // BW64_METRICS (?metrics=0): live frame-stage metrics are ON by
                 // default (the origin check + timing hooks are cheap and the
                 // snapshot is 2 lines/s). The timers run on guest worker
@@ -1530,6 +1552,189 @@
             console.error("session: could not restart session boot: " + e);
         }
     }
+
+    // --- session stall watchdog (FD-77 remainder) -------------------------
+    // The FD-77 lane record specified this and did not build it: in a
+    // DEFAULT (unarmed) session, a boot that completes the desktop
+    // handshake (FD-47's evidence, tracked by observeSessionOutput: a
+    // plausible deskpin handle, five X11 accepts, explorer.exe opened)
+    // but never maps a window must end as a reported failure, not an
+    // endless quiet page. The signal is the guest thread dump's
+    // per-process line — FD-77's own definition of the park: a process
+    // whose every running thread has executed no guest operations for a
+    // long stretch (min_noprogress_ms at or past
+    // STALL_WATCH_MIN_NOPROGRESS_MS) while no lazy fetch is in flight
+    // (the dump footer's proxyfetch line; a fetch in flight is an
+    // explained wait, and the FD-12 amplifier shape must not convict).
+    // One dump never convicts: the same process must show the shape in
+    // STALL_WATCH_DUMPS_TO_REPORT consecutive dumps. A slow start whose
+    // threads keep executing (shader compiles, asset loads) reads a
+    // small min_noprogress_ms and is never reported; a process with
+    // fewer than STALL_WATCH_MIN_RUNNING running threads is too small
+    // to call — a lone thread parked in a host bridge call is a wait,
+    // not the pile-up this watches for. No readiness rule is weakened:
+    // the handshake evidence is read, never written, here.
+    // Diagnostics-armed sessions (?guestdiag=N, ?bw64diag=threads)
+    // drive their own dumps and are left exactly as they were;
+    // ?stallwatch=0 opts out.
+    //
+    // The watchdog's own dumps are taken only while no window has
+    // mapped (first at STALL_WATCH_FIRST_DUMP_MS, then every
+    // STALL_WATCH_DUMP_INTERVAL_MS; ?stallwatchdelay /
+    // ?stallwatchinterval override the cadence in milliseconds for
+    // test rigs). Their per-thread lines are held back from the
+    // session log while the session is healthy — a healthy slow boot
+    // should not have its log flooded — and flushed in full ahead of
+    // the failure line if the watchdog reports, so the evidence that
+    // convicted is preserved in the log the user can open. The summary
+    // lines (begin / proc / proxyfetch / ramalloc / end) are always
+    // forwarded.
+    var STALL_WATCH_FIRST_DUMP_MS = 90000;
+    var STALL_WATCH_DUMP_INTERVAL_MS = 60000;
+    var STALL_WATCH_MIN_NOPROGRESS_MS = 60000;
+    var STALL_WATCH_MIN_RUNNING = 3;
+    var STALL_WATCH_DUMPS_TO_REPORT = 2;
+    var stallWatchOn = null; // cached stallWatchEnabled()
+    var stallWatchMapped = false;
+    var stallWatchReported = false;
+    var stallWatchTimeout = null;
+    var stallWatchTimer = null;
+    var stallWatchCounts = {}; // pid -> consecutive stalled dumps
+    var stallWatchDumpProcs = null; // pid -> {running, min} for the dump in flight
+    var stallWatchDumpInflight = null;
+    var stallWatchCapture = null; // held lines while one of our dumps prints
+    var stallWatchLastDump = null; // held lines of the most recent dump
+    function stallWatchEnabled() {
+        if (stallWatchOn !== null) return stallWatchOn;
+        stallWatchOn = false;
+        if (param("stallwatch") !== "0" && param("bw64diag") !== "threads") {
+            var gd = Number(param("guestdiag"));
+            stallWatchOn = !(Number.isInteger(gd) && gd >= 1 && gd <= 300);
+        }
+        return stallWatchOn;
+    }
+    function stallWatchStop() {
+        if (stallWatchTimeout !== null) { window.clearTimeout(stallWatchTimeout); stallWatchTimeout = null; }
+        if (stallWatchTimer !== null) { window.clearInterval(stallWatchTimer); stallWatchTimer = null; }
+    }
+    function stallWatchStart() {
+        if (!stallWatchEnabled() || stallWatchTimer !== null || stallWatchTimeout !== null) return;
+        var firstMs = Number(param("stallwatchdelay"));
+        var intervalMs = Number(param("stallwatchinterval"));
+        var first = Number.isInteger(firstMs) && firstMs >= 250 ? firstMs : STALL_WATCH_FIRST_DUMP_MS;
+        var interval = Number.isInteger(intervalMs) && intervalMs >= 250 ? intervalMs : STALL_WATCH_DUMP_INTERVAL_MS;
+        stallWatchTimeout = window.setTimeout(function () {
+            stallWatchTimeout = null;
+            stallWatchDumpNow();
+            if (!stallWatchReported && !stallWatchMapped)
+                stallWatchTimer = window.setInterval(stallWatchDumpNow, interval);
+        }, first);
+    }
+    function stallWatchDumpNow() {
+        if (stallWatchReported || stallWatchMapped) { stallWatchStop(); return; }
+        var M = liveModule || window.Module;
+        if (!M || typeof M.ccall !== "function") return;
+        stallWatchCapture = [];
+        var rc;
+        try { rc = M.ccall("bw64_dump_guest_threads", "number", [], []); }
+        catch (e) {
+            console.warn("stallwatch: thread dump failed: " + e);
+            stallWatchCapture = null;
+            return;
+        }
+        if (rc === 2) {
+            // The dump's never-block contract: a guest thread holds the
+            // log lock across a browser-proxied call, so no dump was
+            // taken. A skipped sample is not evidence either way.
+            console.warn("stallwatch: thread dump unavailable (log lock held across a proxied call); sample skipped");
+            stallWatchCapture = null;
+            return;
+        }
+        if (rc !== 1) { stallWatchCapture = null; return; }
+        stallWatchLastDump = stallWatchCapture;
+        stallWatchCapture = null;
+    }
+    // Feeds one guest output line to the watchdog. Returns false when
+    // the line is held dump output (kept as evidence, forwarded only on
+    // a report); the Module print paths forward the line to the session
+    // log only when this returns true.
+    function stallWatchLine(text) {
+        if (!stallWatchEnabled()) return true;
+        if (stallWatchCapture !== null && text.startsWith("BW_THREAD_DUMP")) {
+            var summary = /^BW_THREAD_DUMP (begin|end|proc|proxyfetch|ramalloc)\b/.test(text);
+            if (!summary) { stallWatchCapture.push(text); return false; }
+        }
+        if (!stallWatchReported) stallWatchObserve(text);
+        return true;
+    }
+    function stallWatchObserve(text) {
+        if (text.includes("XWire: first window mapped")) {
+            stallWatchMapped = true;
+            stallWatchCounts = {};
+            stallWatchStop();
+            return;
+        }
+        var m;
+        if (text.startsWith("BW_THREAD_DUMP begin")) {
+            stallWatchDumpProcs = {};
+            stallWatchDumpInflight = null;
+            return;
+        }
+        if (stallWatchDumpProcs === null) return;
+        if ((m = /^BW_THREAD_DUMP proc pid=(\d+) running=(\d+) min_noprogress_ms=(\d+)/.exec(text))) {
+            stallWatchDumpProcs[m[1]] = { running: Number(m[2]), min: Number(m[3]) };
+            return;
+        }
+        if ((m = /^BW_THREAD_DUMP proxyfetch inflight=(\d+)/.exec(text))) {
+            stallWatchDumpInflight = Number(m[1]);
+            return;
+        }
+        if (text.startsWith("BW_THREAD_DUMP end")) stallWatchFinishDump();
+    }
+    function stallWatchFinishDump() {
+        var procs = stallWatchDumpProcs;
+        var inflight = stallWatchDumpInflight;
+        stallWatchDumpProcs = null;
+        stallWatchDumpInflight = null;
+        if (stallWatchMapped || !procs) return;
+        // The same evidence the readiness rules use (FD-47): nothing is
+        // a "booted" session until the full handshake has been seen.
+        var booted = sessionDesktopHwndOk && sessionX11Accepts >= 5 && sessionExplorerOpened;
+        if (!booted) return;
+        if (inflight === null) return; // no footer: not a complete dump; count nothing
+        if (inflight > 0) { stallWatchCounts = {}; return; }
+        var culprit = null;
+        var next = {};
+        for (var pid in procs) {
+            var p = procs[pid];
+            if (p.running >= STALL_WATCH_MIN_RUNNING && p.min >= STALL_WATCH_MIN_NOPROGRESS_MS) {
+                next[pid] = (stallWatchCounts[pid] || 0) + 1;
+                if (next[pid] >= STALL_WATCH_DUMPS_TO_REPORT && !culprit)
+                    culprit = { pid: pid, running: p.running, min: p.min };
+            } else {
+                next[pid] = 0;
+            }
+        }
+        stallWatchCounts = next;
+        if (culprit) stallWatchReport(culprit);
+    }
+    function stallWatchReport(culprit) {
+        stallWatchReported = true;
+        stallWatchStop();
+        var held = stallWatchCapture || stallWatchLastDump || [];
+        for (var i = 0; i < held.length; i++)
+            if (window.bwRuntimeLog) window.bwRuntimeLog(held[i]);
+        var fail = "BW64-FAIL component=launcher.session reason=booted-no-window-no-progress pid=" + culprit.pid +
+            " running=" + culprit.running + " min_noprogress_ms=" + culprit.min +
+            " stall_dumps=" + STALL_WATCH_DUMPS_TO_REPORT +
+            " detail=desktop handshake completed but no window mapped; every running thread of the process executed no guest operations across consecutive thread dumps";
+        console.error(fail);
+        if (window.bwRuntimeLog) window.bwRuntimeLog(fail);
+        if (window.bwRuntimeError) window.bwRuntimeError(
+            "Windows started, but this program never opened a window and stopped making progress, so the session is reported as failed. " +
+            "The session log is preserved — open Show logs for the captured evidence, or retry.");
+    }
+    // --- end session stall watchdog ---------------------------------------
     function pidAlive(pid) {
         return callExport("bw64_pid_alive", ["number"], [pid]) === 1;
     }
