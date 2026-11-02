@@ -2093,7 +2093,8 @@ do not close the entry until they land.
   a late wave at ~1,819 s (diag1) and ~1,881 s (diag2). Filed
   provisionally as FD-70 by the FD-55 pipeline-creation lane,
   2026-11-01; numbered FD-70 at composition on 2026-11-01 —
-  the number was free on integ.)* In the
+  the number was free on integ.)* CLOSED 2026-11-01 —
+  see CL-37 (provisional, filed on branch `lane-fd70int`). In the
   diag2 capture (build 72360dda5; evidence
   test-results/fd55pipe/diag2) the engine's scene-shader retries
   hit two further modules the bridge audit refuses with
@@ -2241,6 +2242,70 @@ do not close the entry until they land.
   an upstream translator change that accepts the
   capability, re-vendored. Record:
   `docs/reports/fd70-second-wave-20261101.md`.
+
+  **Update 2026-11-01 (FD-70 integer-offset lane, branch
+  `lane-fd70int`): the integer-offset root-addressing
+  design is implemented in both mirrors and proven on
+  the fixtures and the corpus; the entry CLOSES
+  provisionally — see CL-37 — with the in-vivo
+  pair-creations check on a shipped build named as
+  the deploy-side proof still owed.** The restated
+  remaining term — root loads whose addresses are
+  computed in integer space — is served by a word
+  view (R15c in `tools/spirvfix/spirvfix.mjs`, mirrored
+  in `source/vulkan/vk64bridge.cpp`): when any
+  materialization of a root slot carries an affine
+  integer offset (push-block base VA plus a
+  data-dependent byte offset folded into the low half
+  through OpIAddCarry, the high half consuming only
+  the carry), the slot is re-rooted at the same
+  `bw_root_p<off>` name and binding as a storage
+  struct wrapping a runtime array of 32-bit words, and
+  every load through the slot is rewritten as word
+  loads at its total affine byte offset divided by
+  four, reassembled by bitcast. The class boundary is
+  exact in both mirrors: the offset must classify
+  affinely (constants, adds, subtractions without a
+  dynamic subtrahend, multiplication by a positive
+  constant; any other 32-bit value is an opaque term
+  the rewrite recomputes from the same SSA value);
+  every use of every materialized pointer must be a
+  load of a 32-bit scalar or 2-4-component 32-bit
+  vector reached through access chains and copies,
+  with every chain index folding into the affine
+  offset (struct members by Offset decoration, array
+  elements at ArrayStride, vector components at 4
+  bytes); every coefficient and the constant
+  remainder of every load's total offset must be
+  divisible by 4; a store through any cone refuses
+  the slot by name. Proof: both specification
+  fixtures take `root-descriptor-bda`, pass spirv-val
+  and translate through the vendored translator;
+  `spirvfix-fd70.test.mjs` 11/11 including the three
+  mutation boundaries pinned on the captured module
+  (stride 176 -> 174 refuses, field offset 48 -> 46
+  refuses, an inserted store refuses naming the
+  loads-only word view) and a sabotage pass; corpus
+  over all 148 `testdata/spirv` fixtures — 146
+  byte-identical, only the pair's output changed;
+  native guard in `vk64_native_test.cpp` (the audit
+  admits the synthetic integer-offset module end to
+  end and keeps the mutations' refusals; run-native
+  57 PASS); citations re-pinned (352 rows, 0 DRIFT);
+  browser build on the staged branch (wasm
+  `1cdc208e`) with the full JS unit suite 348/348.
+  The mirrors caught each other once during the lane:
+  the bridge's first word-cone struct step used the
+  index constant's id where the JS resolves its
+  value — the new native guard reddened on it before
+  any fixture proof ran, and the fix is in the same
+  commit. What remains owed is only the deploy-side
+  confirmation the closing terms name — the pair's
+  creations succeeding in vivo on a shipped build —
+  which belongs to the deploy gate that carries this
+  branch; this closure is provisional in exactly that
+  sense. Record:
+  `docs/reports/fd70-intoffset-20261101.md`.
 
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
@@ -3947,3 +4012,34 @@ its lane and is not a defect, for the stated reason:
   and panel tests 21/21; the browser build compiles
   on the fixed tree (wasm `1809b7d7…`, support
   archive `c4dbe35986a5…` unchanged).
+- **CL-37 — Integer-offset root addresses served
+  through a word view in both mirrors (FD-70).**
+  *(Filed provisionally on branch `lane-fd70int`,
+  2026-11-01; CL-35 and CL-36 are held provisionally
+  by the FD-54 and FD-63 branches — the composing
+  merge lane verifies and renumbers by audit.)*
+  Fixed on branch `lane-fd70int` in `b837f16c8`
+  (spirvfix serving), `7f409d71e` (bridge mirror +
+  native guard) and `e47e03a6a` (citation re-pins).
+  A root slot whose materializations compute their
+  addresses in integer space (push base VA + affine
+  data-dependent byte offset through OpIAddCarry) is
+  re-rooted as a storage struct wrapping a runtime
+  array of 32-bit words at the unchanged
+  `bw_root_p<off>` name and binding, and each load
+  through it is rewritten as word loads at its total
+  affine byte offset / 4. Proof: the two
+  specification fixtures take `root-descriptor-bda`,
+  pass spirv-val and translate; corpus 146/148
+  byte-identical with only the pair changed;
+  `spirvfix-fd70.test.mjs` 11/11 with mutation
+  boundaries and a sabotage pass; native guard
+  admits the class end to end and keeps the
+  mutations refused (run-native 57 PASS); browser
+  build on the staged branch (wasm `1cdc208e`) with
+  the full JS unit suite 348/348; citation audit
+  352 rows, 0 DRIFT. Owed at the deploy gate that
+  carries this branch: the pair's pipeline creations
+  succeeding in vivo on the shipped build — the
+  FD-70 closing terms' last clause, unmet by
+  construction until a deploy carries the branch.
