@@ -30,4 +30,9 @@ with tempfile.TemporaryDirectory(prefix="vkd3d-native-") as folder:
                     *flags, "-I", str(root / "include"),
                     str(root / "tools/vkd3d/tests/vk64_native_test.cpp"),
                     str(path / "shim.o"), "-o", str(path / "test")], check=True, timeout=180)
-    subprocess.run([str(path / "test")], check=True, timeout=30)
+    # The sanitizer flavour runs the same sections under ASan/UBSan and
+    # needs well over the plain flavour's 30 s on a loaded box; through
+    # the flat cap it ended as a timeout instead of a verdict (FD-66).
+    # The cap's job is catching hangs, so the instrumented flavour gets
+    # the compile steps' budget.
+    subprocess.run([str(path / "test")], check=True, timeout=180 if sanitize else 30)

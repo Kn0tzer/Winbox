@@ -5564,6 +5564,13 @@ U32 v2VertexFormatBytes(U32 fmt) {
 // graph). One v2 frame per submit-with-draw, queued for the present hop.
 struct ReadbackPending {
     U64 srcImage = 0, dstBuffer = 0, dstBufOff = 0;
+    // heapPtr/flagPtr are the page-tier handles: the bridge/page ABI
+    // narrows them to 32 bits, which is exact in the 32-bit browser
+    // build. heapRaw keeps the allocation's true host pointer for
+    // lifetime management -- free() must never go through the narrowed
+    // handle (under a 64-bit host allocator the narrowing is lossy, as
+    // the native harness's sanitizer flavour demonstrates: FD-66).
+    U64 heapRaw = 0;
     U32 w = 0, h = 0, heapPtr = 0, flagPtr = 0, pitch = 0;
 };
 static std::vector<ReadbackPending> g_readbackPending;
@@ -5971,15 +5978,31 @@ static void vk64CopyRegionSplit(CmdBuf* cb, U64 srcId, U64 dstId, U64 srcMemOff,
 // bridge then expands it into the destination's guest memory.
 struct BufReadbackPending {
     U64 srcBuffer = 0, srcAbsOff = 0, size = 0, dstBuffer = 0, dstBufOff = 0;
+    U64 heapRaw = 0; // the allocation's true host pointer -- see ReadbackPending
     U32 heapPtr = 0, flagPtr = 0;
     bool emitted = false;
 };
 static std::vector<BufReadbackPending> g_bufReadbacks;
 
+// Dispose of every pending readback without serving it: free the heap
+// block each entry owns, then clear. completeReadbacks is the paired
+// consumer and frees what it processes; this is the only other way
+// pendings may leave the vectors. setupReadbacks replans wholesale, so
+// anything still pending when it runs was never completed -- a bare
+// clear() there dropped the entries and lost their heap blocks
+// silently (FD-66). An unpaired setup can no longer leak by
+// construction; callers discarding a plan call this instead. Frees go
+// through heapRaw, never the narrowed page-tier handle.
+static void freePendingReadbacks() {
+    for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapRaw);
+    g_readbackPending.clear();
+    for (auto& pend : g_bufReadbacks) free((void*)(uintptr_t)pend.heapRaw);
+    g_bufReadbacks.clear();
+}
+
 static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
     VkEncodeScope phase(vkProfAcc().encode, vkencode::ReadbackSetup, vkEncodeDetailEnabled());
-    g_readbackPending.clear();
-    g_bufReadbacks.clear();
+    freePendingReadbacks();
     for (const auto& fr : frames) {
         CmdBuf* cb = fr.first;
         VK64_DROP_IF(continue, !cb);
@@ -6027,6 +6050,7 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             // rows and every strided readback check failed past row 0.
             pend.pitch = rb.rowLen ? rb.rowLen * 4 : rb.w * 4;
             pend.heapPtr = (U32)(uintptr_t)heap;
+            pend.heapRaw = (U64)(uintptr_t)heap;
             pend.flagPtr = (U32)(uintptr_t)(heap + pxBytes);
             g_readbackPending.push_back(pend);
         }
@@ -6050,6 +6074,7 @@ static bool setupReadbacks(const std::vector<std::pair<CmdBuf*, U64>>& frames) {
             pend.srcBuffer = cp.srcBuffer; pend.srcAbsOff = sb->memOff + cp.srcOff;
             pend.size = cp.size; pend.dstBuffer = cp.dstBuffer; pend.dstBufOff = cp.dstOff;
             pend.heapPtr = (U32)(uintptr_t)heap;
+            pend.heapRaw = (U64)(uintptr_t)heap;
             pend.flagPtr = (U32)(uintptr_t)(heap + cp.size);
             g_bufReadbacks.push_back(pend);
         }
@@ -6090,7 +6115,7 @@ static void completeReadbacks() {
         buf->dirtyGen = g_bufDirtyTick++;
         vk64TouchMem(mem, buf->memOff + pend.dstBufOff, (U64)((pend.h - 1) * pitch + tightRow));
     }
-    for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapPtr);
+    for (auto& pend : g_readbackPending) free((void*)(uintptr_t)pend.heapRaw);
     g_readbackPending.clear();
     // Deferred buffer readbacks (V2 compute): the page copied the
     // GPU-written range into the heap and notified; expand it into the
@@ -6126,7 +6151,7 @@ static void completeReadbacks() {
                 g_gpuWriteMarks.erase(g_gpuWriteMarks.begin() + (ptrdiff_t)i);
             else i++;
         }
-        free((void*)(uintptr_t)pend.heapPtr);
+        free((void*)(uintptr_t)pend.heapRaw);
     }
     g_bufReadbacks.clear();
 }

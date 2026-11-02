@@ -896,7 +896,7 @@ int main() {
         }
         assert(sawRb);
         g_v2Pending.clear();
-        g_readbackPending.clear();
+        freePendingReadbacks();
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 CopyImageToBuffer records region fields (v1 + 2KHR) and submits a READBACK");
     }
@@ -1840,7 +1840,7 @@ int main() {
                 }
             }
             assert(sawPipe && sawDisp && sawRb);
-            g_v2Pending.clear(); g_bufReadbacks.clear(); g_readbackPending.clear();
+            g_v2Pending.clear(); freePendingReadbacks();
             // DispatchBase with a non-zero base group: the base is
             // recorded, so the submit emitter declines it loudly instead
             // of silently serving the dispatch at base zero.
@@ -2382,6 +2382,7 @@ int main() {
                 }
                 assert(sawView && sawKind6 && sawDisp && sawRb);
                 g_v2Pending.clear();
+                freePendingReadbacks();
                 puts("PASS: storage texel push descriptor wires kind 6, marks and reads back");
             }
 
@@ -4485,6 +4486,41 @@ int main() {
             assert(!findObj(poolId, K_QUERYPOOL));
             g_mem32 = nullptr;
             puts("PASS: query pools create, record, complete and destroy (32-bit)");
+        }
+        {
+            // FD-66: an unpaired setup must not lose its heap blocks.
+            // setupReadbacks replans wholesale; pendings left by a plan
+            // that is never completed used to be dropped unfreed --
+            // by the bridge's prologue clear and by this fixture's own
+            // clears alike -- and LeakSanitizer reported every block
+            // (1,132 bytes in 5 allocations, all from setupReadbacks).
+            // Plan twice without completing: the second plan must
+            // dispose of the first plan's blocks -- under the sanitizer
+            // flavour any block lost here fails the run at exit -- and
+            // the planned counts stay exact.
+            g_mem = &memory;
+            U64 rbMemId; auto* rbMem = createObj<DeviceMemory>(K_MEMORY, rbMemId);
+            rbMem->size = 4096; rbMem->va = memory.mmapReserveAndMap(4096, 3);
+            U64 rbBufId; auto* rbBuf = createObj<Buffer>(K_BUFFER, rbBufId);
+            rbBuf->size = 1024; rbBuf->mem = rbMemId; rbBuf->memOff = 0;
+            U64 rbImgId; auto* rbImg = createObj<Image>(K_IMAGE, rbImgId);
+            rbImg->w = 4; rbImg->h = 4; rbImg->d = 1; rbImg->layers = 1; rbImg->mips = 1;
+            rbImg->format = VK_FORMAT_R8G8B8A8_UNORM; rbImg->mem = rbMemId; rbImg->memOff = 0; rbImg->pixBytes = 64;
+            U64 rbCbId; auto* rbCb = createObj<CmdBuf>(K_CMDBUF, rbCbId);
+            Cmd i2b{}; i2b.kind = CMD_COPY_I2B;
+            i2b.copyI2B.srcImage = rbImgId; i2b.copyI2B.dstBuffer = rbBufId;
+            i2b.copyI2B.w = 4; i2b.copyI2B.h = 4;
+            rbCb->cmds.push_back(i2b);
+            Cmd b2b{}; b2b.kind = CMD_COPY_B2B_RB;
+            b2b.copyB2BRb = Cmd::CopyB2BRb{rbBufId, rbBufId, 0, 0, 256};
+            rbCb->cmds.push_back(b2b);
+            assert(setupReadbacks({{rbCb, rbCbId}}));
+            assert(g_readbackPending.size() == 1 && g_bufReadbacks.size() == 1);
+            assert(setupReadbacks({{rbCb, rbCbId}}));
+            assert(g_readbackPending.size() == 1 && g_bufReadbacks.size() == 1);
+            freePendingReadbacks();
+            assert(g_readbackPending.empty() && g_bufReadbacks.empty());
+            puts("PASS: re-planning readbacks disposes of the previous plan's heap blocks (FD-66)");
         }
         while (!g_objs.empty()) dropObj(g_objs.begin()->first);
     }
