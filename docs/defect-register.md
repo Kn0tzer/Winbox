@@ -861,6 +861,68 @@ do not close the entry until they land.
   (`commondep-v2-console.log`, `commondep-v3-console.log`,
   `commondep-v2.log`, `commondep-v3.log`).
 
+  **Update 2026-11-02 (lane-fd85): the filed failure is
+  TWO defects, not one.** (1) The page capture itself was
+  blind — split off as FD-87, fixed and closed there
+  (CL-42): since the bwPump bridge moved guest audio onto
+  an AudioWorkletNode (`13b33d3e1`), this test's
+  ScriptProcessor-only capture watches a path whose only
+  output is SDL's bypassed silent node; in a control run a
+  real tone played at full scale (peak 0.3662; 261,528
+  non-zero samples at a worklet tap) while the shipped
+  capture counted 0 non-zero in 266,240 samples. The
+  capture now taps the worklet output (the
+  `audio-tone.test.mjs` pattern); no wait or assertion
+  changed. (2) With a capture proven able to hear, the
+  OpenAL tone STILL does not arrive — and the break is
+  proven at the emulator's audio INPUT, not its
+  output/pump: across the FD-65 lane's two runs and this
+  lane's runs, `KDspAudioSdl::writeAudio` never received
+  an S16 sample above its standing diagnostic threshold
+  from any Wine-path device (the `S16 input first
+  non-zero` line fires only for the direct-DSP control),
+  and the first converted push is 898 frames at peak
+  0.0000, while byte volume flows at real-time rate and
+  the guest completes normally. The leg below the break
+  is proven good in the same sessions: a Linux ELF
+  writing the same 440 Hz tone straight to `/dev/dsp`
+  reaches the page at peak 0.3662 (12000/32768). The leg
+  was exercised three more ways, all failing at the same
+  boundary: OpenAL forced to its winmm backend (guest
+  completes, silence at the input); OpenAL forced to
+  dsound (the backend's event waits time out —
+  `(EE) WaitForSingleObjectEx error: 0x102` — and the
+  source never finishes); a raw WASAPI fixture filling
+  the `IAudioClient` shared buffer with the same sine
+  in-process (silence at the input; consumption stalls
+  after 26,737 ring frames and the client hangs on full
+  padding — OpenAL is exonerated); a raw WinMM fixture
+  (`waveOutWrite` never returns, WHDR_DONE never fires —
+  the waveOut face of the same leg). mmdevapi selects
+  the alsa driver (wineoss.drv is absent from the staged
+  Wine — load error 126; winepulse reports Unavailable);
+  OpenAL's WASAPI log is error-free (Stereo Float32
+  48000 Hz, buffer 480/1536). **The break point is
+  therefore proven between a Windows audio client's
+  successful API calls in the guest and the emulator's
+  audio input — inside Wine's mmdevapi → winealsa →
+  ALSA(OSS-plug) leg or its contract with the emulator's
+  OSS device. The open remainder is the sub-split
+  (shared-buffer handoff vs driver feeder vs ALSA plug
+  conversion); the next bisection needs an ALSA-client
+  probe on the guest's Linux side — the dsptone fixture
+  bypasses ALSA, which is exactly why it works — or a
+  Wine-side content trace of the feeder's periods.**
+  The shipped test, with the FD-87 fix in, still fails
+  at this entry's wait (now line 90) on this lane's
+  build — Gecko green, `OPENAL: RESULT 0`, first push
+  peak 0.0000 — which is this entry's standing proof.
+  Neither the wait nor the assertions were loosened.
+  Fixtures committed for the continuation:
+  `tools/guest-fixtures/wasapi-tone.c`,
+  `tools/guest-fixtures/winmm-tone.c`. Record:
+  `docs/reports/fd85-audio-leg-20261102.md`; evidence:
+  `test-results/fd85/`.
 - **FD-86 — No Arial family on the 64-bit stack:
   family-name lookups for Arial find nothing.**
   *(Low–Medium — Chromium-class text fallback:
@@ -890,6 +952,25 @@ do not close the entry until they land.
   (fixed build), `test-results/fd65/fd65-fontstepsx86-console.log`
   (the 32-bit enumeration, Arial present).
 
+- **FD-87 — The common-dependencies audio capture
+  watched a path guest audio no longer uses.**
+  **CLOSED 2026-11-02 — see CL-42.** *(Medium —
+  test infrastructure: the suite's only end-to-end
+  OpenAL check could never pass, whatever the guest
+  played. Found 2026-11-02 by the FD-85 lane.)* The
+  test counted non-zero samples only in
+  ScriptProcessorNode output buffers; since
+  `13b33d3e1` the bwPump bridge carries guest audio on
+  an AudioWorkletNode straight to the destination, so
+  the capture's only source was SDL's bypassed node,
+  silent by construction. Measured: a direct-DSP tone
+  audible at full scale (peak 0.3662) in the same
+  session scored 0 non-zero in 266,240 captured
+  samples. Fixed in `65cabcd67` (the capture taps the
+  worklet output, waits and assertions unchanged);
+  full account in CL-42. What the test still fails on
+  after this fix is FD-85's remaining defect, a
+  different layer.
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
 - **FD-20 — Gang Beasts' engine process exits during startup
@@ -3124,6 +3205,7 @@ is behavioural, is re-proven there.
 | `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
 | `lane-fd66` | FD-66: `setupReadbacks` discarded still-pending readback plans without freeing their heap blocks (latent — every production submit pairs setup with completion, so the discard was reachable only from the harness's planning sections), and the harness's sanitizer flavour reported the fixture's abandoned blocks so it could never finish clean | RED on the base reproduced the filed measurement exactly (LeakSanitizer 1,132 bytes in 5 allocations from setupReadbacks, exit 1); GREEN fixed: sanitizer flavour 57 PASS, exit 0, zero leak reports, via the standard runner too (its sanitizer run budget raised to 180 s); sabotage (prologue alone reverted) reopens exactly 328 bytes in 2 allocations; native serial 667/667 + 66/66; JS 348/0; citations 352/0 after re-pins; browser build BUILD COMPLETE (wasm df27c5e0…). Record: `docs/reports/fd66-readback-disposal-20261101.md`; evidence `test-results/fd66/` |
 | `lane-fd65` | FD-65: Gecko's "unable to find a usable font" — two layers: the 64-bit rootfs carried no font faces, and the shipped 64-bit win32u.so was built without freetype/fontconfig so GDI could enumerate and realize no font at all; faces staged (fonts64) and win32u rebuilt with its font engine (the build now fails loudly if either SONAME is absent); FD-85 + FD-86 filed | Guest step probe x64: EnumFontFamiliesEx 0 → 85 families, GetTextMetrics fail → tmHeight 17 (the 32-bit stack's numbers); the real common-dependencies Gecko stage green in two runs (MSHTML: RESULT 0, zero abort lines, test untouched — its remaining audio-capture failure is FD-85); completeness 0 failures; JS 348/0; dist 'Browser export verified'. Record: `docs/reports/fd65-gecko-fonts-20261102.md` |
+| `lane-fd85` | FD-85: the audio-capture failure convicted as two defects — the test's capture watched SDL's bypassed ScriptProcessor node while guest audio flows through the bwPump AudioWorklet (FD-87: fixed, closed CL-42), and beneath it Wine's mmdevapi → winealsa → ALSA leg delivers silence to the emulator's audio input for every Windows audio client tried (FD-85 stays open, break point proven by measurement); wasapi-tone + winmm-tone fixtures added | Fixed capture hears the direct-DSP control tone at peak 0.3662 where the shipped capture counted 0 non-zero in 266,240 samples; shipped test post-fix still fails at its audio wait (Gecko green, `OPENAL: RESULT 0`, first push peak 0.0000, no S16 non-zero line); JS 348/0; dist 'Browser export verified' (wasm byte-identical to shipped). Record: `docs/reports/fd85-audio-leg-20261102.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4440,3 +4522,50 @@ its lane and is not a defect, for the stated reason:
   missing Arial family on this stack is FD-86.
   Record: `docs/reports/fd65-gecko-fonts-20261102.md`;
   evidence: `test-results/fd65/`.
+
+- **CL-42 — The common-dependencies capture counted
+  samples on SDL's bypassed ScriptProcessor node
+  while guest audio flows through the bwPump
+  AudioWorklet (FD-87).** *(Filed provisionally as
+  CL-42 on lane-fd85, 2026-11-02 — CL-40 is expected
+  for FD-66 and CL-41 stands filed for FD-65 in this
+  batch; the composing merge verifies the number by
+  audit.)* Fixed on branch `lane-fd85` in
+  `65cabcd67`. The test (written 2026-10-18) wrapped
+  `AudioContext.createScriptProcessor` and counted
+  non-zero samples in those nodes' output buffers.
+  Commit `13b33d3e1` (2026-10-20, "stream browser
+  audio through AudioWorklet") moved the bwPump
+  bridge in `platform/sdl/kdspaudio.cpp` onto an
+  `AudioWorkletNode` connected straight to the
+  destination and updated `audio-tone.test.mjs` in
+  the same commit to tap that node; this test was
+  not updated, so its only remaining ScriptProcessor
+  source was SDL's own node, which the bwPump bypass
+  leaves silent by construction — the test's audio
+  stage became unpassable regardless of the guest.
+  The capture now also taps the bridge worklet's
+  output into the same counters (via the un-wrapped
+  creator stored on the context, the audio-tone
+  pattern); every wait and assertion is unchanged.
+  Proof: in one session a Linux ELF's direct
+  `/dev/dsp` tone was measured at the worklet tap at
+  peak 0.3662 with 261,528 non-zero samples (and the
+  worklet's own metrics reported inputPeak =
+  outputPeak = 0.3662) while the shipped capture
+  counted 0 non-zero in 266,240 samples — RED; a
+  harness installing the fixed capture verbatim
+  counted the same control tone at peak 0.3662 with
+  143,360 non-zero samples — GREEN (the further
+  non-zero counts in that run's OpenAL window were
+  the control tone's device-drain tail, identified
+  as such in the lane record, not OpenAL audio).
+  JS unit suite 348/0; browser build "Browser
+  export verified" with the wasm byte-identical to
+  the shipped build (this closure changes no
+  emulator code). The shipped test still fails its
+  audio stage after this fix — on FD-85's
+  remaining Wine-leg defect, which the fixed
+  capture now honestly reports. Record:
+  `docs/reports/fd85-audio-leg-20261102.md`;
+  evidence: `test-results/fd85/`.
