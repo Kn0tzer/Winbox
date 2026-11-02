@@ -909,6 +909,29 @@ void testPreadv64Syscalls() {
 // (mmap 9 / munmap 11 / close 3), so the materialized path itself is
 // the thing under test.
 void testCloseWriteDeferral64() {
+// FD-101: the 64-bit sendmsg path (and sendmmsg, which loops it) must
+// not fabricate zero bytes for guest memory it cannot read. Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with dedicated
+// reference programs, test-results/fd101/hostref-sendmsg-fd101 and
+// hostref-sendto-fd101): for AF_UNIX the send is all-or-nothing for
+// EVERY socket type -- if any byte of any nonzero segment is unreadable,
+// the call answers -EFAULT and nothing arrives; this holds for a fully
+// unreadable segment, a segment whose readable prefix runs into an
+// unreadable page, and a bad segment anywhere in the array. Zero-length
+// segments are skipped even when their base is unreadable; a
+// PROT_WRITE-only segment is readable to the copy (x86
+// write-implies-read) and lands its real bytes. The msghdr, the iov
+// array, msg_name and msg_control are imported before the data: an
+// unreadable one answers -EFAULT, an iovlen over UIO_MAXIOV answers
+// -EMSGSIZE, and the descriptor answers (-EBADF / -ENOTSOCK) precede
+// every copy fault. sendmmsg delivers the messages before the bad one
+// and reports their count. On the base the calls below land zero-filled
+// bytes and report success.
+// The peer is drained through recvmsg (the message-queue receive that
+// pairs with sendmsg in this socket layer), gated by a zero-timeout
+// poll so an empty queue can never block the test; each case uses a
+// fresh socketpair so no case can see another case's bytes.
+void testSendmsgBadBuffer64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -983,6 +1006,41 @@ void testCloseWriteDeferral64() {
     CPU64 cpu(memory);
     cpu.thread = context.thread;
     auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+    constexpr U64 dataPage = 0x71000000ULL;
+    constexpr U64 crossPage = 0x72000000ULL;
+    constexpr U64 nonePage = 0x73000000ULL;
+    constexpr U64 wonlyPage = 0x74000000ULL;
+    constexpr U64 bigArray = 0x75000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    auto mapFixture = [&](U64 addr, U64 size, U32 prot) {
+        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
+            memory->mmapAnonymousFixed(addr, size, prot) != addr) {
+            testFail("sendmsg-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
+            return false;
+        }
+        return true;
+    };
+    if (!mapFixture(dataPage, K64_PAGE_SIZE, 3) || !mapFixture(crossPage, K64_PAGE_SIZE, 3) ||
+        !mapFixture(nonePage, K64_PAGE_SIZE, 0) || !mapFixture(wonlyPage, K64_PAGE_SIZE, 2) ||
+        !mapFixture(bigArray, 5 * K64_PAGE_SIZE, 3)) return;
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
+        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
+        testFail("sendmsg-bad-buffer test fixture addresses are unexpectedly mapped");
+        return;
+    }
+    if (!(memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) ||
+        (memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("sendmsg-bad-buffer test PROT_NONE fixture has the wrong flags");
+        return;
+    }
+    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("sendmsg-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
+        return;
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
         cpu.reg[X64_RAX].setU64(nr);
         cpu.reg[X64_RDI].setU64(a1);
         cpu.reg[X64_RSI].setU64(a2);
@@ -1158,6 +1216,294 @@ void testCloseWriteDeferral64() {
 
     process->close((S32)inotifyDesc->handle);
     rmdir(dir);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    // Fixture layout on the data page.
+    constexpr U64 textAt = dataPage + 0x000;      // 16 good bytes
+    constexpr U64 svAt = dataPage + 0x100;        // socketpair out fds
+    constexpr U64 recvAt = dataPage + 0x200;      // drain buffer
+    constexpr U64 pollAt = dataPage + 0x300;      // one pollfd
+    constexpr U64 hdrAt = dataPage + 0x1000;      // send msghdr (slot 0)
+    constexpr U64 iovAt = dataPage + 0x1800;      // send iovec arena
+    constexpr U64 riovAt = dataPage + 0x1C00;     // recv iovec
+    constexpr U64 rhdrAt = dataPage + 0x1C80;     // recv msghdr
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(textAt, text, 16);
+    std::vector<U8> pattern(K64_PAGE_SIZE);
+    for (U32 i = 0; i < K64_PAGE_SIZE; i++) pattern[i] = (U8)('a' + (i % 26));
+    memory->memcpyToGuest(crossPage, pattern.data(), K64_PAGE_SIZE);
+    const char* wonlyText = "FEDCBA9876543210";
+    for (U32 i = 0; i < 16; i++) memory->writeb(wonlyPage + i, (U8)wonlyText[i]);
+    memory->writeq(riovAt, recvAt);
+    memory->writeq(riovAt + 8, 512);
+    for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+    memory->writeq(rhdrAt + 16, riovAt);
+    memory->writeq(rhdrAt + 24, 1);
+
+    struct Pair {
+        S32 tx = 0, rx = 0;
+    };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("sendmsg-bad-buffer test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close((S32)p.tx);
+        process->close((S32)p.rx);
+    };
+    // Build the send msghdr (slot 0) over the iov arena.
+    auto buildHdr = [&](U64 iovAddr, U64 iovlen) -> U64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 16, iovAddr);
+        memory->writeq(hdrAt + 24, iovlen);
+        return hdrAt;
+    };
+    auto setIov = [&](U32 idx, U64 base, U64 len) {
+        memory->writeq(iovAt + idx * 16, base);
+        memory->writeq(iovAt + idx * 16 + 8, len);
+    };
+    // Drain whatever is queued on rx via recvmsg; returns the byte
+    // count and fills `got`. A zero-timeout poll gates every recvmsg
+    // so an empty queue never blocks.
+    auto drain = [&](S32 rx, std::string& got) -> S64 {
+        got.clear();
+        S64 total = 0;
+        for (int iter = 0; iter < 8; iter++) {
+            memory->writed(pollAt, (U32)rx);
+            memory->writew(pollAt + 4, 1); // POLLIN
+            memory->writew(pollAt + 6, 0);
+            if (invoke(7, pollAt, 1, 0, 0) <= 0) break;
+            if (!(memory->readw(pollAt + 6) & 1)) break;
+            S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+            if (rc <= 0) break;
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            got.append((const char*)buf.data(), (size_t)rc);
+            total += rc;
+        }
+        return total;
+    };
+    // One sendmsg case on a fresh stream pair: the call must return
+    // wantRet and the peer must hold exactly wantBytes.
+    auto sendCase = [&](const char* what, S64 wantRet, const std::string& wantBytes) {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) return;
+        S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+        std::string got;
+        S64 held = drain(p.rx, got);
+        if (r != wantRet || held != (S64)wantBytes.size() || got != wantBytes) {
+            testFail("%s returned %lld (want %lld), peer holds %lld bytes",
+                     what, (long long)r, (long long)wantRet, (long long)held);
+        }
+        closePair(p);
+    };
+
+    // 1. Fully unmapped segment: -EFAULT, nothing arrives.
+    setIov(0, unmapped, 16);
+    buildHdr(iovAt, 1);
+    sendCase("sendmsg from an unmapped segment", -K_EFAULT, "");
+    // 2. PROT_NONE segment: same.
+    setIov(0, nonePage, 16);
+    buildHdr(iovAt, 1);
+    sendCase("sendmsg from a PROT_NONE segment", -K_EFAULT, "");
+    // 3. Control: a readable segment lands its real bytes.
+    setIov(0, textAt, 16);
+    buildHdr(iovAt, 1);
+    sendCase("control sendmsg", 16, std::string(text, 16));
+    // 4. A readable prefix running into an unmapped page: the host
+    // faults the whole send (-EFAULT, nothing arrives) -- there is no
+    // short-count prefix shape on the message paths.
+    setIov(0, crossPage + 4000, 200);
+    buildHdr(iovAt, 1);
+    sendCase("crossing sendmsg", -K_EFAULT, "");
+    // 5. Good segment then a bad one: -EFAULT, nothing arrives.
+    setIov(0, textAt, 8);
+    setIov(1, unmapped, 16);
+    buildHdr(iovAt, 2);
+    sendCase("sendmsg good+bad", -K_EFAULT, "");
+    // 6. Bad segment first: same.
+    setIov(0, unmapped, 16);
+    setIov(1, textAt, 8);
+    buildHdr(iovAt, 2);
+    sendCase("sendmsg bad+good", -K_EFAULT, "");
+    // 7. A zero-length segment is skipped even with an unreadable base.
+    setIov(0, unmapped, 0);
+    setIov(1, textAt, 8);
+    buildHdr(iovAt, 2);
+    sendCase("sendmsg zerolen-bad+good", 8, std::string(text, 8));
+    // 8. A PROT_WRITE-only segment is readable to the copy and lands
+    // its real bytes.
+    setIov(0, wonlyPage, 16);
+    buildHdr(iovAt, 1);
+    sendCase("sendmsg from a write-only page", 16, std::string(wonlyText, 16));
+    // 9. The iov array itself unreadable: -EFAULT.
+    buildHdr(unmapped, 1);
+    sendCase("sendmsg with an unmapped iov array", -K_EFAULT, "");
+    // 10. The msghdr itself unreadable: -EFAULT.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            std::string got;
+            S64 r = invoke(46, (U64)(U32)p.tx, unmapped, 0, 0);
+            if (r != -K_EFAULT || drain(p.rx, got) != 0) {
+                testFail("sendmsg with an unmapped msghdr returned %lld", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // 11. iovlen over UIO_MAXIOV answers -EMSGSIZE even when every
+    // segment is zero-length (host-measured).
+    for (U32 i = 0; i < 1025; i++) {
+        memory->writeq(bigArray + i * 16, textAt);
+        memory->writeq(bigArray + i * 16 + 8, 0);
+    }
+    buildHdr(bigArray, 1025);
+    sendCase("sendmsg with iovlen 1025", -K_EMSGSIZE, "");
+    // 12. msg_name unreadable (connected pair: the host imports the
+    // name before the data and faults): -EFAULT, nothing arrives.
+    setIov(0, textAt, 8);
+    buildHdr(iovAt, 1);
+    memory->writeq(hdrAt + 0, unmapped); // msg_name
+    memory->writed(hdrAt + 8, 16);       // msg_namelen
+    sendCase("sendmsg with an unmapped msg_name", -K_EFAULT, "");
+    // 13. msg_control unreadable: -EFAULT, nothing arrives.
+    setIov(0, textAt, 8);
+    buildHdr(iovAt, 1);
+    memory->writeq(hdrAt + 32, unmapped); // msg_control
+    memory->writeq(hdrAt + 40, 16);       // msg_controllen
+    sendCase("sendmsg with an unmapped msg_control", -K_EFAULT, "");
+    // 14. SCM_RIGHTS whose fd array runs into an unmapped page: the
+    // header sits at the tail of the crossing page (fds at +16: the
+    // first is the last readable word, the second is unmapped). The
+    // fd value is read back after the pair exists, so this case
+    // builds its header inline.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            U64 ctl = crossPage + 4076;
+            memory->writeq(ctl + 0, 24);     // cmsg_len (header + 2 fds)
+            memory->writed(ctl + 8, 1);      // SOL_SOCKET
+            memory->writed(ctl + 12, 1);     // SCM_RIGHTS
+            memory->writed(ctl + 16, (U32)p.tx);
+            setIov(0, textAt, 8);
+            buildHdr(iovAt, 1);
+            memory->writeq(hdrAt + 32, ctl);
+            memory->writeq(hdrAt + 40, 24);
+            std::string got;
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            if (r != -K_EFAULT || drain(p.rx, got) != 0) {
+                testFail("sendmsg with a crossing SCM_RIGHTS array returned %lld, peer holds %u bytes",
+                         (long long)r, (unsigned)got.size());
+            }
+            closePair(p);
+        }
+    }
+    // 15. Ordering guard (already holds on the base and must not
+    // move): a bad fd answers -EBADF ahead of any copy fault.
+    setIov(0, unmapped, 16);
+    buildHdr(iovAt, 1);
+    if (invoke(46, 9999, hdrAt, 0, 0) != -K_EBADF) {
+        testFail("sendmsg with a bad fd and a bad segment was not -EBADF");
+    }
+    // 16. sendmmsg: a good message before the bad one is delivered and
+    // counted, with its msg_len written back; the bad one sends
+    // nothing. Both messages share one pair.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            constexpr U64 vecAt = dataPage + 0x2400;
+            for (U32 i = 0; i < 128; i += 8) memory->writeq(vecAt + i, 0);
+            setIov(0, textAt, 8);
+            setIov(1, unmapped, 16);
+            memory->writeq(vecAt + 16, iovAt);      // msg0 iov
+            memory->writeq(vecAt + 24, 1);
+            memory->writeq(vecAt + 64 + 16, iovAt + 16); // msg1 iov
+            memory->writeq(vecAt + 64 + 24, 1);
+            std::string got;
+            S64 r = invoke(307, (U64)(U32)p.tx, vecAt, 2, 0);
+            if (r != 1 || memory->readd(vecAt + 56) != 8 ||
+                drain(p.rx, got) != 8 || got != std::string(text, 8)) {
+                testFail("sendmmsg good,bad returned %lld (msg_len %u, peer holds %u bytes)",
+                         (long long)r, (unsigned)memory->readd(vecAt + 56), (unsigned)got.size());
+            }
+            // 17. sendmmsg with the bad message first: -EFAULT,
+            // nothing.
+            memory->writeq(vecAt + 16, iovAt + 16);
+            memory->writeq(vecAt + 64 + 16, iovAt);
+            r = invoke(307, (U64)(U32)p.tx, vecAt, 2, 0);
+            if (r != -K_EFAULT || drain(p.rx, got) != 0) {
+                testFail("sendmmsg bad,good returned %lld, peer holds %u bytes",
+                         (long long)r, (unsigned)got.size());
+            }
+            closePair(p);
+        }
+    }
+    // 18. Datagram pair: the same all-or-nothing shape, and a good
+    // datagram arrives whole.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            setIov(0, textAt, 8);
+            setIov(1, unmapped, 16);
+            buildHdr(iovAt, 2);
+            std::string got;
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            if (r != -K_EFAULT || drain(p.rx, got) != 0) {
+                testFail("dgram sendmsg good+bad returned %lld, peer holds %u bytes",
+                         (long long)r, (unsigned)got.size());
+            }
+            closePair(p);
+        }
+        Pair q;
+        if (makePair(2, q)) {
+            setIov(0, textAt, 16);
+            buildHdr(iovAt, 1);
+            std::string got;
+            S64 r = invoke(46, (U64)(U32)q.tx, hdrAt, 0, 0);
+            if (r != 16 || drain(q.rx, got) != 16 || got != std::string(text, 16)) {
+                testFail("control dgram sendmsg returned %lld, peer holds %u bytes",
+                         (long long)r, (unsigned)got.size());
+            }
+            closePair(q);
+        }
+    }
+    // 19. A non-socket descriptor answers -ENOTSOCK with a bad segment
+    // (guard: holds on the base, must not move to -EFAULT).
+    {
+        char dirTemplate[] = "/tmp/k3bwmsgXXXXXX";
+        char* hostDir = mkdtemp(dirTemplate);
+        if (!hostDir) {
+            testFail("sendmsg-bad-buffer test could not create its host temp dir");
+            return;
+        }
+        std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+        struct RootRestore {
+            std::shared_ptr<FsFileNode> previous;
+            ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+        } rootRestore{previousRoot};
+        Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
+        Fs::clearPathCache();
+        KFileDescriptorPtr fileDesc;
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+        if ((S32)result < 0 || !fileDesc) {
+            testFail("sendmsg-bad-buffer test could not create /data.bin");
+            return;
+        }
+        setIov(0, unmapped, 16);
+        buildHdr(iovAt, 1);
+        if (invoke(46, (U64)(U32)fileDesc->handle, hdrAt, 0, 0) != -K_ENOTSOCK) {
+            testFail("sendmsg on a file descriptor with a bad segment was not -ENOTSOCK");
+        }
+        process->close((S32)fileDesc->handle);
+        rmdir(hostDir);
+    }
 }
 
 #endif

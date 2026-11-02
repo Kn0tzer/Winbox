@@ -131,6 +131,7 @@ void testExeSpawnSignal64();
 void testPreadv64Syscalls();
 void testCloseWriteDeferral64();
 void testMmap64FileReadFailure();
+void testSendmsgBadBuffer64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -195,6 +196,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
+    {testSendmsgBadBuffer64Syscalls, "Test x64 sendmsg/sendmmsg from unreadable guest buffers"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
