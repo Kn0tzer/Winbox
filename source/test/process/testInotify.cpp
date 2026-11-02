@@ -487,6 +487,12 @@ void testInotifyEvents() {
 //    a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an unknown
 //    preadv2 flag bit is EOPNOTSUPP; every defined RWF flag is
 //    accepted on a read; a bad descriptor is EBADF.
+// FD-83 / FD-84 extend this test below (sections 9-10): the same
+// host reference programme family measured readv's event contract
+// (exactly one IN_ACCESS per successful call, 0-byte successes
+// included) and the wrong-mode errno matrix for the whole
+// positioned/plain read family (EBADF, with the validation order
+// pinned case by case). Reference: test-results/fd83-84/.
 void testPreadv64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
@@ -700,9 +706,14 @@ void testPreadv64Syscalls() {
         testFail("rejected preadv2 generated IN_ACCESS");
     }
 
-    // 9. A write-only descriptor follows pread64's house answer
-    // (-EINVAL; the host answers EBADF for the whole positioned-read
-    // family -- that divergence is registered separately).
+    // 9. FD-84: the positioned/plain read family answers -EBADF on
+    // a descriptor that cannot be read (host-measured on the 6.17
+    // kernel; reference in test-results/fd83-84/). The validation
+    // order is part of the measured contract: a negative offset
+    // (EINVAL) precedes the mode answer; the mode answer precedes
+    // preadv2's flag check (EOPNOTSUPP), preadv's iovcnt check
+    // (EINVAL), and the zero-count returns. Failures generate no
+    // IN_ACCESS.
     {
         KFileDescriptorPtr wdesc;
         U32 result = process->openFile(B("/"), B("/data.bin"), K_O_WRONLY, wdesc);
@@ -710,10 +721,176 @@ void testPreadv64Syscalls() {
             testFail("preadv test could not open /data.bin write-only");
             return;
         }
-        if (invoke6(295, (U64)(U32)wdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
-            testFail("preadv on a write-only descriptor was not -EINVAL");
+        U64 wfd = (U64)(U32)wdesc->handle;
+        setIov(0, seg0, 4);
+        if (invoke6(295, wfd, iovAt, 1, 0, 0, 0) != -K_EBADF) {
+            testFail("preadv on a write-only descriptor was not -EBADF");
+        }
+        if (invoke6(327, wfd, iovAt, 1, 0, 0, 0x40) != -K_EBADF) {
+            testFail("preadv2 with an unknown flag on a write-only descriptor was not -EBADF (mode precedes the flag check)");
+        }
+        if (invoke6(295, wfd, iovAt, (U64)-1, 0, 0, 0) != -K_EBADF) {
+            testFail("preadv with iovcnt -1 on a write-only descriptor was not -EBADF (mode precedes the iovcnt check)");
+        }
+        if (invoke6(295, wfd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+            testFail("preadv with offset -1 on a write-only descriptor was not -EINVAL (offset precedes the mode check)");
+        }
+        if (invoke6(295, wfd, iovAt, 0, 0, 0, 0) != -K_EBADF) {
+            testFail("preadv with iovcnt 0 on a write-only descriptor was not -EBADF");
+        }
+        if (invoke6(17, wfd, seg0, 4, 0, 0, 0) != -K_EBADF) {
+            testFail("pread64 on a write-only descriptor was not -EBADF");
+        }
+        if (invoke6(17, wfd, seg0, 0, 0, 0, 0) != -K_EBADF) {
+            testFail("pread64 with count 0 on a write-only descriptor was not -EBADF");
+        }
+        if (invoke6(17, wfd, seg0, 4, 0xFFFFFFFFFFFFFFFFULL, 0, 0) != -K_EINVAL) {
+            testFail("pread64 with offset -1 on a write-only descriptor was not -EINVAL (offset precedes the mode check)");
+        }
+        if (invoke6(0, wfd, seg0, 4, 0, 0, 0) != -K_EBADF) {
+            testFail("read on a write-only descriptor was not -EBADF");
+        }
+        if (invoke6(0, wfd, seg0, 0, 0, 0, 0) != -K_EBADF) {
+            testFail("read with count 0 on a write-only descriptor was not -EBADF");
+        }
+        if (accessCount(drainMasks()) != 0) {
+            testFail("wrong-mode reads generated IN_ACCESS");
         }
         process->close(wdesc->handle);
+    }
+
+    // 10. FD-83: readv (19) generates exactly one IN_ACCESS per
+    // successful call -- a multi-segment walk included -- and the
+    // 0-byte successes (at EOF, iovcnt 0, all-zero-length segments)
+    // generate one too, where plain read/pread stay silent (host
+    // behaviour measured on the 6.17 kernel; reference in
+    // test-results/fd83-84/). Failures generate none. Before the
+    // fix, readv notified per segment through the plain read path
+    // (the inotify queue's coalescing of consecutive identical
+    // events masks that in the simple count below) and stayed
+    // silent on every 0-byte success -- the cases that provably
+    // diverge, and the ones that fail on the unfixed code.
+    {
+        // A second descriptor for the same file: the plain-read
+        // path special-cases descriptor 0 (stdin), and the first
+        // descriptor may hold it in this harness.
+        KFileDescriptorPtr rdesc;
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdesc);
+        if ((S32)result < 0 || !rdesc) {
+            testFail("readv test could not reopen /data.bin read-only");
+            return;
+        }
+        U64 rfd = (U64)(U32)rdesc->handle;
+        auto seekTo = [&](U64 off) { invoke6(8, rfd, off, 0, 0, 0, 0); };
+
+        // Multi-segment walk: the data lands in order, the position
+        // advances by the total, exactly one IN_ACCESS.
+        setIov(0, seg0, 4); setIov(1, seg1, 4); setIov(2, seg2, 4);
+        clearSegs();
+        seekTo(0);
+        r = invoke6(19, rfd, iovAt, 3, 0, 0, 0);
+        if (r != 12 || segText(seg0, 4) != "0123" || segText(seg1, 4) != "4567" || segText(seg2, 4) != "89AB") {
+            testFail("readv 3 segments returned %lld ('%s' '%s' '%s')",
+                     (long long)r, segText(seg0, 4).c_str(), segText(seg1, 4).c_str(), segText(seg2, 4).c_str());
+        }
+        if (invoke6(8, rfd, 0, 1, 0, 0, 0) != 12) {
+            testFail("readv did not advance the file position to 12");
+        }
+        if (accessCount(drainMasks()) != 1) {
+            testFail("readv across 3 segments must generate exactly one IN_ACCESS");
+        }
+
+        // A short final segment at the EOF boundary ends the walk;
+        // the partial success still generates exactly one event.
+        setIov(0, seg0, 4); setIov(1, seg1, 4);
+        clearSegs();
+        seekTo(18);
+        r = invoke6(19, rfd, iovAt, 2, 0, 0, 0);
+        if (r != 2 || segText(seg0, 2) != "IJ") {
+            testFail("readv across EOF returned %lld ('%s')", (long long)r, segText(seg0, 4).c_str());
+        }
+        if (accessCount(drainMasks()) != 1) {
+            testFail("short readv must generate exactly one IN_ACCESS");
+        }
+
+        // At EOF the call returns 0 and still generates one
+        // IN_ACCESS (the vectored path's measured host behaviour).
+        setIov(0, seg0, 4);
+        seekTo(20);
+        r = invoke6(19, rfd, iovAt, 1, 0, 0, 0);
+        if (r != 0) {
+            testFail("readv at EOF returned %lld", (long long)r);
+        }
+        if (accessCount(drainMasks()) != 1) {
+            testFail("readv at EOF must still generate one IN_ACCESS");
+        }
+
+        // iovcnt 0 returns 0 and generates one IN_ACCESS.
+        r = invoke6(19, rfd, iovAt, 0, 0, 0, 0);
+        if (r != 0) {
+            testFail("readv with iovcnt 0 returned %lld", (long long)r);
+        }
+        if (accessCount(drainMasks()) != 1) {
+            testFail("readv with iovcnt 0 must generate one IN_ACCESS");
+        }
+
+        // All-zero-length segments: a 0-byte success, one IN_ACCESS.
+        setIov(0, seg0, 0); setIov(1, seg1, 0);
+        r = invoke6(19, rfd, iovAt, 2, 0, 0, 0);
+        if (r != 0) {
+            testFail("readv of zero-length segments returned %lld", (long long)r);
+        }
+        if (accessCount(drainMasks()) != 1) {
+            testFail("readv of zero-length segments must generate one IN_ACCESS");
+        }
+
+        // Failures generate no IN_ACCESS: bad descriptor, iovcnt
+        // out of range, wrong mode (FD-84 -- iovcnt 0 included: the
+        // host mode-checks before the call can succeed). The walk
+        // is parked at EOF so that on unfixed code the out-of-range
+        // iovcnt calls short-read and return instead of walking
+        // the iovec array without bound.
+        setIov(0, seg0, 4);
+        seekTo(20);
+        if (invoke6(19, 9999, iovAt, 1, 0, 0, 0) != -K_EBADF) {
+            testFail("readv with a bad descriptor was not -EBADF");
+        }
+        if (invoke6(19, rfd, iovAt, 1025, 0, 0, 0) != -K_EINVAL) {
+            testFail("readv with iovcnt IOV_MAX+1 was not -EINVAL");
+        }
+        if (invoke6(19, rfd, iovAt, (U64)-1, 0, 0, 0) != -K_EINVAL) {
+            testFail("readv with iovcnt -1 was not -EINVAL");
+        }
+        {
+            KFileDescriptorPtr wdesc;
+            U32 wresult = process->openFile(B("/"), B("/data.bin"), K_O_WRONLY, wdesc);
+            if ((S32)wresult < 0 || !wdesc) {
+                testFail("readv test could not open /data.bin write-only");
+                return;
+            }
+            U64 wfd = (U64)(U32)wdesc->handle;
+            if (invoke6(19, wfd, iovAt, 1, 0, 0, 0) != -K_EBADF) {
+                testFail("readv on a write-only descriptor was not -EBADF");
+            }
+            if (invoke6(19, wfd, iovAt, 0, 0, 0, 0) != -K_EBADF) {
+                testFail("readv with iovcnt 0 on a write-only descriptor was not -EBADF");
+            }
+            process->close(wdesc->handle);
+        }
+        if (accessCount(drainMasks()) != 0) {
+            testFail("failed readv calls generated IN_ACCESS");
+        }
+
+        // Control: a plain read at EOF stays silent (the FD-59
+        // behaviour the vectored fix must not disturb).
+        seekTo(20);
+        if (invoke6(0, rfd, seg0, 4, 0, 0, 0) != 0) {
+            testFail("plain read at EOF did not return 0");
+        }
+        if (accessCount(drainMasks()) != 0) {
+            testFail("plain read at EOF generated IN_ACCESS");
+        }
+        process->close(rdesc->handle);
     }
 
     process->close((S32)inotifyDesc->handle);
@@ -1121,8 +1298,9 @@ void testInotifyEventsProcessApi() {
 //    included; fchmod does the same by descriptor; chmod generates
 //    IN_ATTRIB on the file's watchers; fchmodat with
 //    AT_SYMLINK_NOFOLLOW on a symlink fails with ENOTSUP.
-//  - read/pread/readv and getdents generate IN_ACCESS (a read that
-//    returns 0 bytes does not); writes through memory mappings
+//  - read/pread/readv and getdents generate IN_ACCESS (a plain
+//    read/pread that returns 0 bytes does not; the vectored calls
+//    differ there -- FD-83); writes through memory mappings
 //    generate no IN_MODIFY at write, msync, fsync, munmap, or close.
 //  - link() gives both names one inode and one link count, generates
 //    IN_ATTRIB on the source and IN_CREATE in the target directory,
@@ -1353,6 +1531,31 @@ void testChmodAccessHardLink() {
         if (hasEvent(events, wdFile, 0x1, "")) {
             testFail("a read returning 0 bytes must not generate IN_ACCESS");
         }
+    }
+
+    // ---- FD-84: wrong-mode reads answer -EBADF through the
+    // KProcess API (host-measured on the 6.17 kernel; reference in
+    // test-results/fd83-84/). Plain read used to answer -EINVAL;
+    // pread64 had no mode check at all and fell through to the
+    // backing read, whose host error was swallowed into a silent 0.
+    // The mode answer also precedes the zero-length return.
+    {
+        KFileDescriptorPtr wDesc;
+        U32 wresult = process->openFile(B("/"), B("/a.txt"), K_O_WRONLY, wDesc);
+        if ((S32)wresult < 0 || !wDesc) {
+            testFail("openFile(O_WRONLY) for /a.txt failed: %d", (S32)wresult);
+            return;
+        }
+        if ((S32)process->read(context.thread, (FD)wDesc->handle, bufAt, 5) != -K_EBADF) {
+            testFail("plain read on a write-only descriptor must return -EBADF");
+        }
+        if ((S32)process->read(context.thread, (FD)wDesc->handle, bufAt, 0) != -K_EBADF) {
+            testFail("zero-length read on a write-only descriptor must return -EBADF");
+        }
+        if ((S32)process->pread64(context.thread, (FD)wDesc->handle, bufAt, 5, 0) != -K_EBADF) {
+            testFail("pread64 on a write-only descriptor must return -EBADF");
+        }
+        process->close(wDesc->handle);
     }
 
     // ---- FD-59: getdents generates IN_ACCESS on the directory.
