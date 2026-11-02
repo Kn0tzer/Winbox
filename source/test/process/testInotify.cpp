@@ -892,6 +892,85 @@ void testPreadv64Syscalls() {
             testFail("plain read at EOF generated IN_ACCESS");
         }
         process->close(rdesc->handle);
+    // 10. FD-99: preadv2's offset -1 is the file-position mode (read
+    // at the current position and advance it, as pwritev2's -1 does);
+    // preadv's own -1 stays EINVAL. RWF_NOAPPEND (0x20) is a defined
+    // read flag on the host kernel -- the defined mask is 0x3f, not
+    // 0x1f. The offset validity check precedes the descriptor check
+    // (the write family's measured order, and KProcess::preadv's):
+    // a bad descriptor with an offset that is invalid for the call
+    // answers EINVAL; preadv2's -1 is valid, so there the descriptor
+    // answers EBADF.
+    if (invoke6(8, (U64)(U32)fd, 5, 0, 0, 0, 0) != 5) { // lseek SEEK_SET
+        testFail("preadv test could not seek its fixture file");
+        return;
+    }
+    setIov(0, seg0, 4); setIov(1, seg1, 4);
+    clearSegs();
+    r = invoke6(327, (U64)(U32)fd, iovAt, 2, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0);
+    if (r != 8 || segText(seg0, 4) != "5678" || segText(seg1, 4) != "9ABC") {
+        testFail("preadv2 offset -1 returned %lld with segments '%s' '%s'",
+                 (long long)r, segText(seg0, 4).c_str(), segText(seg1, 4).c_str());
+    }
+    if (filePos() != 13) {
+        testFail("preadv2 offset -1 left the position at %lld, expected 13", (long long)filePos());
+    }
+    if (accessCount(drainMasks()) != 1) {
+        testFail("preadv2 offset -1 must generate exactly one IN_ACCESS");
+    }
+    if (invoke6(8, (U64)(U32)fd, 0, 0, 0, 0, 0) != 0) { // rewind
+        testFail("preadv test could not rewind its fixture file");
+        return;
+    }
+    setIov(0, seg0, 4);
+    clearSegs();
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1, 4, 0, 0x20) != 4 || segText(seg0, 4) != "4567") {
+        testFail("preadv2 with RWF_NOAPPEND (0x20) did not read 4 bytes at offset 4");
+    }
+    drainMasks();
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("preadv2 with offset -2 was not -EINVAL");
+    }
+    if (invoke6(295, 9999, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("preadv with a bad descriptor and offset -1 was not -EINVAL");
+    }
+    if (invoke6(327, 9999, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("preadv2 with a bad descriptor and offset -2 was not -EINVAL");
+    }
+    if (invoke6(327, 9999, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -9) {
+        testFail("preadv2 with a bad descriptor and offset -1 was not -EBADF");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("rejected preadv2 position-mode calls generated IN_ACCESS");
+    }
+
+    // 11. FD-100: the preadv2 flags check runs LAST -- behind the
+    // iovcnt range check and the iovec array check. An undefined flag
+    // bit combined with an out-of-range iovcnt answers EINVAL, and
+    // combined with a null or unmapped iovec array answers EFAULT;
+    // only a call that passes those checks reaches EOPNOTSUPP (the
+    // section-8 case). The array check covers the array's full range,
+    // as sys_pwritev64's already did.
+    if (invoke6(327, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("preadv2 with iovcnt -1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(327, (U64)(U32)fd, iovAt, 1025, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("preadv2 with iovcnt IOV_MAX+1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(327, (U64)(U32)fd, 0, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("preadv2 with a null iovec and an undefined flag was not -EFAULT");
+    }
+    if (invoke6(327, (U64)(U32)fd, 0x1000, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("preadv2 with an unmapped iovec and an undefined flag was not -EFAULT");
+    }
+    if (invoke6(327, (U64)(U32)fd, 0, 1, 0, 0, 0) != -K_EFAULT) {
+        testFail("preadv2 with a null iovec was not -EFAULT");
+    }
+    if (invoke6(327, (U64)(U32)fd, 0x1000, 1, 0, 0, 0) != -K_EFAULT) {
+        testFail("preadv2 with an unmapped iovec was not -EFAULT");
+    }
+    if (accessCount(drainMasks()) != 0) {
+        testFail("rejected preadv2 flag-order calls generated IN_ACCESS");
     }
 
     process->close((S32)inotifyDesc->handle);
@@ -2742,6 +2821,28 @@ void testRecvmsgBadBuffer64Syscalls() {
         process->close(desc2->handle);
     }
 
+    // 11. FD-100: the pwritev2 flags check runs LAST -- behind the
+    // iovcnt range check and the iovec array check. An undefined flag
+    // bit combined with an out-of-range iovcnt answers EINVAL, and
+    // combined with a null or unmapped iovec array answers EFAULT;
+    // only a call that passes those checks reaches EOPNOTSUPP (the
+    // section-5 case). None of these writes or generates IN_MODIFY.
+    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("pwritev2 with iovcnt -1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1025, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("pwritev2 with iovcnt IOV_MAX+1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, 0, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("pwritev2 with a null iovec and an undefined flag was not -EFAULT");
+    }
+    if (invoke6(328, (U64)(U32)fd, 0x1000, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("pwritev2 with an unmapped iovec and an undefined flag was not -EFAULT");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("rejected pwritev2 flag-order calls generated IN_MODIFY");
+    }
+
     process->close((S32)inotifyDesc->handle);
     process->close(fd);
     rmdir(hostDir);
@@ -2962,6 +3063,47 @@ void testPwritev32Dispatch() {
         testRunCPU();
         if ((S32)context.cpu->reg[0].u32 != -K_EFAULT) {
             testFail("32-bit pwritev with a null iovec was not -EFAULT");
+        }
+    }
+
+    // 2b. FD-100: the pwritev2 flags check runs last -- behind the
+    // iovcnt range check and the iovec array check. An undefined flag
+    // bit combined with an out-of-range iovcnt answers EINVAL, and
+    // combined with a null or unmapped iovec array answers EFAULT.
+    if (invoke(378, fd, -1, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("32-bit pwritev2 with iovcnt -1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke(378, fd, 1025, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("32-bit pwritev2 with iovcnt IOV_MAX+1 and an undefined flag was not -EINVAL");
+    }
+    {
+        // Null and unmapped iovec arrays with an undefined flag:
+        // invoke() always passes iovAt, so drive these by hand.
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(378);
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = (U32)fd;
+        context.cpu->reg[1].u32 = 0;
+        context.cpu->reg[2].u32 = 1;
+        context.cpu->reg[6].u32 = 0;
+        context.cpu->reg[7].u32 = 0;
+        context.cpu->reg[5].u32 = 0x40;
+        testRunCPU();
+        if ((S32)context.cpu->reg[0].u32 != -K_EFAULT) {
+            testFail("32-bit pwritev2 with a null iovec and an undefined flag was not -EFAULT");
+        }
+        testNewInstruction(0);
+        testPushCode8(0xB8); testPushCode32(378);
+        testPushCode8(0xCD); testPushCode8(0x80);
+        context.cpu->reg[3].u32 = (U32)fd;
+        context.cpu->reg[1].u32 = 0x1000;
+        context.cpu->reg[2].u32 = 1;
+        context.cpu->reg[6].u32 = 0;
+        context.cpu->reg[7].u32 = 0;
+        context.cpu->reg[5].u32 = 0x40;
+        testRunCPU();
+        if ((S32)context.cpu->reg[0].u32 != -K_EFAULT) {
+            testFail("32-bit pwritev2 with an unmapped iovec and an undefined flag was not -EFAULT");
         }
     }
 
