@@ -2205,7 +2205,16 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
             U64 total = 0;
             while (total < mapLen) {
                 U32 n = kfile->preadNative(seedBuf.data() + total, (S64)(fileBase + total), (U32)(mapLen - total));
-                if ((S32)n < 0) return (U64)(S64)(S32)n;
+                if ((S32)n < 0) {
+                    // FD-92: with addr==0 the range is already
+                    // reserved and mapped (mmapReserveAndMap
+                    // above); a failed mmap leaves nothing
+                    // reserved, so release it before returning
+                    // the error. With an explicit address nothing
+                    // has been established yet at this point.
+                    if (reserved) cpu->memory->munmap(aligned, mapLen);
+                    return (U64)(S64)(S32)n;
+                }
                 if (n == 0) break;
                 total += n;
             }
@@ -2292,7 +2301,19 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         U64 total = 0;
         while (total < length) {
             U32 n = kfile->preadNative(buf.data() + total, (S64)(offset + total), (U32)(length - total));
-            if ((S32)n < 0) return (U64)(S64)(S32)n;
+            if ((S32)n < 0) {
+                // FD-92: the mapping is already established here
+                // (mmapAnonymousFixed above, or the addr==0
+                // reservation), but a failed host mmap leaves
+                // nothing mapped -- tear the range back down
+                // before returning the error, so no live pages
+                // hide behind a failure return. Where the
+                // description accounting of FD-82 is present,
+                // this munmap is also what releases the mapping's
+                // birth from its open description.
+                cpu->memory->munmap(aligned, mapLen);
+                return (U64)(S64)(S32)n;
+            }
             if (n == 0) break; // EOF / no progress
             total += n;
         }
