@@ -3672,6 +3672,42 @@ do not close the entry until they land.
   (see CL-46), and the composing merge settles
   numbering by audit.
 
+- **FD-101 — The 64-bit sendmsg path gathers
+  segment data from unreadable guest buffers
+  as fabricated zeros instead of answering
+  EFAULT.** *(Low. Filed by the FD-97 lane,
+  2026-11-02; the number follows FD-100 on
+  lane-fd98's register and is provisional
+  until the merge lane's audit.)* Found
+  auditing FD-97's trait beyond the file
+  paths: `sys_sendmsg64`
+  (source/kernel/syscall64.cpp) gathers each
+  iovec segment into its per-thread scratch
+  buffer through KMemory64::memcpyFromGuest
+  with no readability check on the segment
+  base, so a segment pointing at unmapped or
+  unreadable guest memory is sent as that
+  many zero bytes and the call reports
+  success; sendmmsg loops sys_sendmsg64 and
+  inherits it. The host answers -EFAULT and
+  sends nothing for a fully unreadable
+  segment (measured on the box's host kernel
+  6.17.0-1020-oracle with a dedicated
+  reference program,
+  `test-results/fd97/hostref-sendmsg.c`:
+  bad iov base -EFAULT; a good base is
+  delivered intact). The file paths' form of
+  the trait is FD-97 (fixed, CL-51); this is
+  the vectored socket form, left for the
+  owning lane — the fix shape mirrors
+  FD-97's (readable prefix / EFAULT per
+  segment), but the socket paths' partial
+  and message-boundary semantics need their
+  own host measurements first. Evidence:
+  the gather loop in sys_sendmsg64 on this
+  base.
+
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
