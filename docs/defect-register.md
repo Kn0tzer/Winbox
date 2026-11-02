@@ -2573,6 +2573,17 @@ do not close the entry until they land.
   Record:
   `docs/reports/deploy-fd54-63-70-7980-20261102.md`.
 
+  **Update (FD-87 lane, 2026-11-02): the sibling
+  classes this update recorded are now filed and
+  dispositioned.** The 2,340-byte module's classes
+  and the 369,400-byte module's SampledBuffer and
+  capability-29-name classes are served under FD-87
+  (CLOSED — CL-42); the same module's remaining
+  RuntimeDescriptorArray share is the data-dependent
+  array filed as FD-88; the helper-invocation share
+  was already FD-72's. CL-37's owed pipeline clause
+  now gates only on FD-88 and FD-72.
+
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
   pointers, although its own classifiers record them
@@ -3028,6 +3039,33 @@ do not close the entry until they land.
   id. Evidence: `docs/reports/fd70-second-wave-20261101.md`;
   `test-results/fd70/` (keeper census).
 
+  **Update (FD-87 lane, 2026-11-02): the ExtInst
+  instruction-number position named above is PROVEN
+  LIVE on a captured module and is fixed at the two
+  sweeps it gated.** The captured 369,400-byte Godot
+  fragment module (`godot-fs-f2b738c259a79b4a.spv`,
+  djb2 `d4da162f9cbdb948`) runs GLSL.std.450 ExtInsts
+  whose instruction numbers (13, 14, 29, 30) equal
+  the ids of its specialized-away runtime-array and
+  pointer types; both sweeps counted those literal
+  words as references, the texel image type stayed
+  array-owned, and the module's SampledBuffer class
+  refused one layer before its true (FD-88) blocker.
+  The position is now bounded in spirvfix's
+  descriptor-array orphan sweep and in the bridge
+  audit's skip-5302 sweep simulation (native guard:
+  an ExtInst instruction number equal to a swept
+  type id is not a reference). The entry's premise
+  sentence above — no captured module known to be
+  gated — is superseded for this position. FD-78
+  stays open for the remaining positions
+  (VectorShuffle components, CompositeExtract /
+  CompositeInsert indices, OpSwitch case literals,
+  OpLine words, the OpArrayLength structure index)
+  and for the two sibling sweeps named above (the
+  storage-image type prune and the R15b root-cone
+  sweep), none of which this lane touched.
+
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
   host defers it until the mapping is unmapped.
@@ -3241,6 +3279,117 @@ do not close the entry until they land.
   Closed inline at composition; no CL number consumed,
   so the CL-42/CL-43 split coordinated for the two FD-87
   claims is undisturbed.
+- **FD-87 — The Godot demo's second-wave pipeline
+  creations fail on sibling shader modules:
+  capability 29 refused unnamed as a bare
+  declaration, dead descriptor declarations gating
+  SampledBuffer and RuntimeDescriptorArray, and the
+  ExtInst literal position defeating the texel
+  conversion. CLOSED 2026-11-02 — see CL-42.**
+  *(Medium — three pipeline creations in the
+  shipped demo run (deploy of 2026-11-02, build
+  `9e37e5640`); filed by the FD-87 lane, 2026-11-02,
+  on the deploy record's evidence.)* The deploy
+  proof run (FD-70 update, above) recorded the two
+  modules byte-exact: 369,400 B, djb2
+  `d4da162f9cbdb948` (harvested fixture
+  `testdata/spirv/godot-fs-f2b738c259a79b4a.spv`),
+  refused for `spirv-capability-unknown:29`,
+  RuntimeDescriptorArray and FD-72's
+  helper-invocation class; and 2,340 B, djb2
+  `fe166085df72b93f` (`godot-fs-f1b4e0027d98e2e4.spv`,
+  twice), refused for SampledBuffer and
+  RuntimeDescriptorArray. Measured per class:
+  (a) capability 29 is
+  SampledImageArrayDynamicIndexing; the translator
+  rejects the bare declaration outright, whatever
+  the module's arrays look like. It is served
+  exactly when no image array survives the fixup
+  layer: spirvfix R19 strips the declaration once
+  every image/sampled-image array is a used runtime
+  array the specializer served (or a dead one R18
+  removed) and no fixed-size image array exists;
+  the bridge audit now names the capability and
+  admits exactly that class, refusing it by name
+  otherwise. (b) The 2,340-byte module's classes
+  were entirely dead descriptors: its body reads
+  only push constants and inputs, while its three
+  descriptor variables (a texel-buffer runtime
+  array, an SSBO-offsets block, a bindless-CBV
+  array) are referenced by no instruction. spirvfix
+  R18 strips declared-but-unreferenced descriptor
+  variables and their orphaned types; the module
+  now translates end to end, and the audit mirrors
+  (a dead variable gates neither SampledBuffer nor
+  RuntimeDescriptorArray). (c) The 369,400-byte
+  module's SampledBuffer share was FD-78's ExtInst
+  position proven live (see the FD-78 update): the
+  orphan sweep counted GLSL.std.450 instruction
+  numbers as id references, the texel image type
+  never stopped looking array-owned, and the
+  post-specialization texel conversion silently
+  declined; with the position bounded in both
+  sweeps the conversion runs (508 fetches widened)
+  and SampledBuffer is genuinely served. Not closed
+  here: the same module's remaining
+  RuntimeDescriptorArray + capability-29 share is
+  FD-88's data-dependent array, and its
+  helper-invocation share is FD-72's. CL-42's owed
+  clause — the two pipelines' creations succeeding
+  in vivo on a shipped build — belongs to the
+  deploy gate that carries the composing merge.
+  The proof run also recorded one delivered guest
+  memory fault (addr `0x2140bf26c`, rip
+  `0x140301916`, at 2,116.8 s, ~42 s after the
+  failures; the run continued to deadline): noted
+  in the lane record as observed and unattributed;
+  fixture work did not reproduce it and it is not
+  filed as a defect. Record:
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`;
+  evidence `test-results/fd87/`.
+
+- **FD-88 — A descriptor array indexed by a value
+  loaded from GPU memory cannot be specialized;
+  the array, its RuntimeDescriptorArray
+  declaration, and the SampledImageArrayDynamicIndexing
+  declaration riding on it stay refused.**
+  *(Medium — one array in the captured 369,400-byte
+  Godot fragment module gates its pipeline; filed
+  by the FD-87 lane, 2026-11-02.)* In
+  `godot-fs-f2b738c259a79b4a.spv` the 3D image array
+  at set 3 / binding 0 is reached by seven access
+  chains: five index it with push-constant-derived
+  values (the specializer's servable class, proven
+  on the sibling arrays in the same module sharing
+  that binding), and two add a term loaded through
+  a root-descriptor (buffer-device-address) pointer
+  — `& 0xFFFF` / `>> 16` of a GPU-memory load — so
+  the element index is data-dependent and no
+  per-signature clone set exists. Specialization is
+  per-array fail-closed, so the two chains leave
+  the whole array unserved, the five servable
+  chains with it. Gating, named exactly: true
+  binding arrays in the translation stack. The
+  translator (naga) and WGSL have no runtime-sized
+  texture arrays, so no fixup-layer rewrite can
+  serve the class; a heap-sized fixed array with a
+  whole-heap binding would be a page-tier feature
+  with its own sizing and lifetime terms, not a
+  fixup. (Boundary, verified on both mirrors:
+  fixed-size image arrays are likewise outside the
+  specializer's universe — runtime arrays only —
+  and keep the same named refusal.) Closing terms:
+  a translation-stack binding-array capability, or
+  a page-tier heap-array feature filed and built as
+  its own entry; until then both mirrors refuse the
+  class by name
+  (`spirv-capability:SampledImageArrayDynamicIndexing`
+  / `spirv-capability:RuntimeDescriptorArray`) and
+  spirvfix leaves the array untouched. Evidence:
+  `test-results/fd87/` (index-provenance trace);
+  record
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -3283,6 +3432,7 @@ is behavioural, is re-proven there.
 | `lane-fd65` | FD-65: Gecko's "unable to find a usable font" — two layers: the 64-bit rootfs carried no font faces, and the shipped 64-bit win32u.so was built without freetype/fontconfig so GDI could enumerate and realize no font at all; faces staged (fonts64) and win32u rebuilt with its font engine (the build now fails loudly if either SONAME is absent); FD-85 + FD-86 filed | Guest step probe x64: EnumFontFamiliesEx 0 → 85 families, GetTextMetrics fail → tmHeight 17 (the 32-bit stack's numbers); the real common-dependencies Gecko stage green in two runs (MSHTML: RESULT 0, zero abort lines, test untouched — its remaining audio-capture failure is FD-85); completeness 0 failures; JS 348/0; dist 'Browser export verified'. Record: `docs/reports/fd65-gecko-fonts-20261102.md` |
 | `lane-fd85` | FD-85: the audio-capture failure convicted as two defects — the test's capture watched SDL's bypassed ScriptProcessor node while guest audio flows through the bwPump AudioWorklet (FD-87: fixed, closed CL-42), and beneath it Wine's mmdevapi → winealsa → ALSA leg delivers silence to the emulator's audio input for every Windows audio client tried (FD-85 stays open, break point proven by measurement); wasapi-tone + winmm-tone fixtures added | Fixed capture hears the direct-DSP control tone at peak 0.3662 where the shipped capture counted 0 non-zero in 266,240 samples; shipped test post-fix still fails at its audio wait (Gecko green, `OPENAL: RESULT 0`, first push peak 0.0000, no S16 non-zero line); JS 348/0; dist 'Browser export verified' (wasm byte-identical to shipped). Record: `docs/reports/fd85-audio-leg-20261102.md` |
 | `lane-fd77-stall-surface` | FD-77 remainder: a default session whose boot completes the desktop handshake but never maps a window and stops executing is now surfaced as a reported failure (the launcher takes its own thread dumps and convicts on the dump's measured zero-progress, two consecutive dumps, no fetch in flight); the held dump evidence is flushed to the preserved session log ahead of one BW64-FAIL line; slow-but-alive starts, armed diagnostic sessions, and every readiness rule are untouched | Unit tests over the shipped watchdog section: 8/8 green, 8/8 red on the unpatched launcher; shaped-session browser probe on the built dist: the park shape reports the failure with evidence in the log, the slow-but-alive and pre-handshake shapes raise no alarm; launcher UI regression green. Record: `docs/reports/fd77-stall-surfacing-20261101.md`; evidence `test-results/fd77-stall-surfacing/` |
+| `lane-fd87` | FD-87 CLOSED (CL-42, provisional): the Godot second-wave sibling classes — capability 29 (SampledImageArrayDynamicIndexing) named and admitted exactly when its image arrays are specializer-servable (spirvfix R19 strips the stray declaration), dead descriptor declarations stripped (R18) so the captured 2,340 B module translates end to end, and FD-78's ExtInst literal position bounded in both orphan sweeps so the 369,400 B module's texel conversion runs and SampledBuffer is served; FD-88 filed (data-dependent descriptor-array indexing, translator-stack-gated); FD-78 updated (ExtInst position proven live, fixed at two sweeps) | Both modules are committed fixtures (`testdata/spirv/godot-fs-f2b738c259a79b4a.spv`, `godot-fs-f1b4e0027d98e2e4.spv`): new suite `spirvfix-fd87.test.mjs` 5/5 (small module translates; big module loses SampledBuffer, keeps FD-88's pair by name); corpus test green over all 74 modules with per-module rewrite sets re-measured (every R18 verdict independently verified dead by raw-word scan); native run-native 60 PASS incl. 3 new FD-87 guards (cap-29 admit/refuse-by-name both forms, dead descriptors, ExtInst sweep position); JS unit suite 351/0; vulkan citations 352 rows 0 drift after re-pinning through the change's line map; browser build 'Browser export verified', wasm `10c1a10b`. The two pipelines' in-vivo creations remain CL-42's owed clause for the carrying deploy gate. Record: `docs/reports/fd87-godot-sibling-classes-20261102.md`; evidence `test-results/fd87/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4650,3 +4800,52 @@ its lane and is not a defect, for the stated reason:
   capture now honestly reports. Record:
   `docs/reports/fd85-audio-leg-20261102.md`;
   evidence: `test-results/fd85/`.
+
+- **CL-42 — The second-wave sibling classes are
+  served in the fixup layer, with the mirror
+  admitting exactly the same classes (FD-87).**
+  *(Numbered provisionally by the FD-87 lane,
+  2026-11-02 — CL-40 and CL-41 stand provisionally
+  on the fd66 and fd65 branches; the composing
+  merge verifies the sequence by audit.)* Fixed on
+  branch `lane-fd87`. spirvfix gains R18
+  (`strip-dead-descriptors`: DescriptorSet/Binding
+  variables in the descriptor storage classes with
+  zero operand-aware uses are deleted with their
+  decorations, entry-point interface entries and
+  orphaned types, and RuntimeDescriptorArray is
+  dropped when no runtime array survives) and R19
+  (`strip-stray-sampled-image-array-dynamic-indexing`:
+  capability 29 is deleted when no
+  image/sampled-image array survives), and its
+  descriptor-array orphan sweep now bounds the
+  OpExtInst instruction-number word (the FD-78
+  position this lane proved live). The bridge
+  audit names capability 29
+  (SampledImageArrayDynamicIndexing), admits it
+  exactly when every used image/sampled-image
+  runtime array is R15a-servable and no fixed-size
+  image array exists, treats zero-use descriptor
+  array variables as dead in both the array verdict
+  and the skip-5302 simulation (whose scan bounds
+  the same ExtInst word), and no longer lets a dead
+  array variable gate the texel mirrors. Proof: the
+  two captured modules are committed fixtures — the
+  2,340-byte module's fixed form carries only the
+  Shader capability and translates end to end; the
+  369,400-byte module's fixed form drops
+  SampledBuffer (508 texel fetches widened) and
+  keeps exactly FD-88's pair; new JS suite
+  `spirvfix-fd87.test.mjs` 5/5; corpus green over
+  all 74 modules with every newly-firing rewrite
+  independently verified against the raw modules;
+  native run-native 60 PASS including three new
+  guards; JS unit suite 351/0; citation audit 352
+  rows, 0 drift; browser build 'Browser export
+  verified', wasm `10c1a10b`. Owed, in FD-70's
+  clause form: the two pipelines' creations
+  succeeding in vivo on a shipped build, which
+  belongs to the deploy gate that carries the
+  composing merge — and which now gates only on
+  FD-88 and FD-72 for these pipelines. Record:
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`.
