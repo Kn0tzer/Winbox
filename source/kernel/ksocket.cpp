@@ -96,10 +96,16 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
     if (domain==K_AF_UNIX) {
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
         KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        if (!result) {
+            return -K_EMFILE;
+        }
         return result->handle;
     } else if (domain == K_AF_NETLINK) {
         std::shared_ptr<KNetLinkObject> kSocket = std::make_shared<KNetLinkObject>(domain, type, protocol);
         KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        if (!result) {
+            return -K_EMFILE;
+        }
         return result->handle;
     } else if (domain == K_AF_INET) {
         std::shared_ptr<KNativeSocketObject> s = std::make_shared<KNativeSocketObject>(domain, type, protocol);
@@ -107,6 +113,9 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
             return s->error;
         } else {
             KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
+            if (!result) {
+                return -K_EMFILE;
+            }
             return result->handle;
         }
     }
@@ -386,7 +395,16 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
         return -K_EINVAL;
     }
     fd1 = ksocket(af, type, protocol);
+    if ((S32)fd1 < 0) {
+        return (S32)fd1;
+    }
     fd2 = ksocket(af, type, protocol);
+    if ((S32)fd2 < 0) {
+        // socketpair is atomic on Linux: both descriptors or
+        // neither, so the first descriptor is closed again here.
+        thread->process->close(fd1);
+        return (S32)fd2;
+    }
     f1 = thread->process->getFileDescriptor(fd1);
     f2 = thread->process->getFileDescriptor(fd2);
     s1 = std::dynamic_pointer_cast<KUnixSocketObject>(f1->kobject);

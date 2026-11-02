@@ -225,6 +225,8 @@ public:
     // lines that print through c_str() (which would stop at argv[0]).
     BString commandLineForLog() const;
     void clone(const KProcessPtr& from, U32 shareFlags = 0);
+    // Returns MAX_NUMBER_OF_FILES when no descriptor is available at
+    // or after `after` (FD-05: exhaustion is answered, never panicked).
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);
     void free(U32 address);
@@ -493,6 +495,7 @@ public:
     BHashTable<U32, U32> keySymToName;
 private:
     KFdTable fds;
+    bool fdTableExhaustionLogged = false; // FD-05: one exhaustion log line per process
 
     user_desc ldt[LDT_ENTRIES];
     BOXEDWINE_MUTEX ldtMutex;

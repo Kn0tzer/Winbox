@@ -1519,6 +1519,7 @@ static U64 sys_signalfd64(CPU64* cpu, S32 fdNumber, U64 maskAddress, U64 maskSiz
     } else {
         auto signal = std::make_shared<KSignal>();
         descriptor = process->allocFileDescriptor(signal, K_O_RDONLY, 0, -1, 0);
+        if (!descriptor) return (U64)-K_EMFILE;
     }
     if (flags & K_O_CLOEXEC) descriptor->descriptorFlags |= FD_CLOEXEC;
     else if (fdNumber >= 0) descriptor->descriptorFlags &= ~FD_CLOEXEC;

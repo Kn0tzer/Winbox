@@ -824,6 +824,14 @@ U32 KUnixSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(pendingConnection->lockCond);
     std::shared_ptr<KUnixSocketObject> resultSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
     KFileDescriptorPtr result = thread->process->allocFileDescriptor(resultSocket, K_O_RDWR, 0, -1, 0);
+    if (!result) {
+        // FD-05: EMFILE leaves the pending connection queued, as on
+        // Linux; the connector keeps waiting for a later accept.
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
+        this->pendingConnections.push_front(pendingConnection);
+        BOXEDWINE_CONDITION_SIGNAL_ALL(this->lockCond);
+        return -K_EMFILE;
+    }
 
     if (flags & FD_CLOEXEC) {
         result->descriptorFlags|=FD_CLOEXEC;
@@ -1363,6 +1371,13 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         U32 i=0;
         for (;used + 16 <= hdr.msg_controllen && i<msg->objects.size();i++) {
             KFileDescriptorPtr recvFd = thread->process->allocFileDescriptor(msg->objects[i].object, msg->objects[i].accessFlags, 0, -1, 0);
+            if (!recvFd) {
+                // FD-05: the receiver's table is full. The descriptors
+                // that fit are delivered; the rest are marked
+                // MSG_CTRUNC by the count check below and dropped with
+                // the message -- the close Linux performs for them.
+                break;
+            }
             // BW64_SOCKDTOR: witness the RECEIVER installing a passed fd. The
             // object is SHARED (same shared_ptr) with the sender's fd — this is
             // the share-vs-dup site. Log the kobj + the receiver's new fd + the

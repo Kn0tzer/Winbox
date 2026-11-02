@@ -748,8 +748,13 @@ U32 KProcess::getNextFileDescriptorHandle(int after) {
             return i;
         }
     }
-    kpanic_fmt("KProcess::getNextFileDescriptorHandle %s ran out of file handles", name.c_str());
-    return -1;
+    // FD-05: a full table (or a minimum at/past the ceiling) is a
+    // normal guest-visible condition, not an invariant violation:
+    // a real kernel answers EMFILE and the guest lives.
+    // MAX_NUMBER_OF_FILES is the "none available" sentinel;
+    // allocFileDescriptor, the only caller, turns it into a null
+    // result, and its callers answer -EMFILE.
+    return MAX_NUMBER_OF_FILES;
 }
 
 KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {    
@@ -757,6 +762,18 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
 
     if (handle<0) {
         handle = this->getNextFileDescriptorHandle(afterHandle);
+        if (handle>=(S32)MAX_NUMBER_OF_FILES) {
+            // FD-05: table full -- return no descriptor; every caller
+            // answers -EMFILE (the pidfd paths already did). Logged
+            // once per process: exhaustion is a legitimate guest
+            // outcome, but it must not be silent, and a guest retry
+            // loop must not flood the log either.
+            if (!this->fdTableExhaustionLogged) {
+                this->fdTableExhaustionLogged = true;
+                kwarn_fmt("BW64-FAIL fd-table-exhausted process=%s outcome=returned-EMFILE", name.c_str());
+            }
+            return nullptr;
+        }
     }
     KFileDescriptorPtr result = std::make_shared<KFileDescriptor>(shared_from_this(), kobject, accessFlags, descriptorFlags, handle);
     
@@ -840,6 +857,9 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
         kobject = std::make_shared<KFile>(openNode);
     }
     result = this->allocFileDescriptor(kobject, accessFlags, descriptorFlags, handle, afterHandle);
+    if (!result) {
+        return -K_EMFILE;
+    }
     return 0;
 }
 
@@ -1448,7 +1468,11 @@ U32 KProcess::dup(U32 fildes) {
     if (!fd) {
         return -K_EBADF;
     }
-    return this->allocFileDescriptor(fd->kobject, fd->accessFlags, 0, -1, 0)->handle; // do not copy file descriptor flags
+    KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, 0, -1, 0); // do not copy file descriptor flags
+    if (!result) {
+        return -K_EMFILE;
+    }
+    return result->handle;
 }
 
 U32 KProcess::rmdir(BString path) {
@@ -1948,6 +1972,13 @@ U32 KProcess::dup2(FD fildes, FD fildes2) {
     }
     if (fildes == fildes2) {
         return fildes;
+    }
+    if (fildes2>=(FD)MAX_NUMBER_OF_FILES) {
+        // FD-05: the ceiling the guest sees as RLIMIT_NOFILE bounds
+        // explicit targets too; Linux answers EBADF past it. Without
+        // this check dup2 could grow the table past the limit the
+        // guest was told it has.
+        return -K_EBADF;
     }
     KFileDescriptorPtr fd2 = this->getFileDescriptor(fildes2);
     if (fd2) {        
@@ -3369,7 +3400,11 @@ U32 KProcess::memfd_create(BString name, U32 flags) {
     if (!(flags & 2)) { // MFD_ALLOW_SEALING	
         openNode->addSeals(K_F_SEAL_SEAL);
     }
-    return this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0)->handle;
+    KFileDescriptorPtr result = this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0);
+    if (!result) {
+        return -K_EMFILE;
+    }
+    return result->handle;
 }
 
 // Rate-limited "valid Linux request that this emulator cannot model" logger.
@@ -3743,11 +3778,23 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
             return 0;
         }
         case K_F_DUPFD: {
+            if (arg>=MAX_NUMBER_OF_FILES) {
+                return -K_EINVAL; // Linux: a minimum at/past RLIMIT_NOFILE is EINVAL, not EMFILE
+            }
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);        
+            if (!result) {
+                return -K_EMFILE;
+            }
             return result->handle;
         }
         case K_F_DUPFD_CLOEXEC: {
+            if (arg>=MAX_NUMBER_OF_FILES) {
+                return -K_EINVAL; // Linux: a minimum at/past RLIMIT_NOFILE is EINVAL, not EMFILE
+            }
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);
+            if (!result) {
+                return -K_EMFILE;
+            }
             result->descriptorFlags=FD_CLOEXEC;
             return result->handle;
         }
@@ -3881,6 +3928,9 @@ U32 KProcess::set_thread_area(KThread* thread, U32 info) {
 U32 KProcess::epollcreate(U32 size, U32 flags) {
     std::shared_ptr<KObject> o = std::make_shared<KEPoll>();
     KFileDescriptorPtr result = this->allocFileDescriptor(o, K_O_RDWR, flags, -1, 0);
+    if (!result) {
+        return -K_EMFILE;
+    }
     return result->handle;
 }
 
@@ -4322,8 +4372,11 @@ U32 KProcess::inotify_init1(U32 flags) {
     // presenting with delivery live -- is recorded with FD-38.
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
-    KInotify::registerInstance(o);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (!fd) {
+        return -K_EMFILE;
+    }
+    KInotify::registerInstance(o);
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags |= FD_CLOEXEC;
     }
@@ -4361,6 +4414,9 @@ U32 KProcess::timerfd_create(U32 clockid, U32 flags) {
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KTimer> o = std::make_shared<KTimer>(clockid);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (!fd) {
+        return -K_EMFILE;
+    }
 
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags |= FD_CLOEXEC;
