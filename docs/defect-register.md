@@ -3624,6 +3624,10 @@ do not close the entry until they land.
 - **FD-92 — The 32-bit dispatcher's readv (145) has a
   null dispatch slot and answers -ENOSYS; only the
   64-bit readv exists.** *(Low. Filed by the
+- **FD-92 — The 32-bit dispatcher's readv (145) has a
+  null dispatch slot and answers -ENOSYS; only the
+  64-bit readv exists. FIXED 2026-11-02 on branch
+  `lane-fd92-93` — see CL-47.** *(Was Low. Filed by the
   FD-83/84 lane, 2026-11-02; the number was chosen
   past FD-85..FD-91, which live on unmerged lane
   branches off the same base, so the composition
@@ -3645,6 +3649,27 @@ do not close the entry until they land.
   silent 0) where the host answers -EBADF for a
   write on a descriptor opened read-only.** *(Low.
   Filed by the FD-83/84 lane, 2026-11-02; the
+  *Update 2026-11-02 (lane-fd92-93): the entry was
+  carried verbatim from lane-fd83-84's register and
+  fixed here. Slot 145 dispatches to a new
+  KProcess::readv over a new KObject::readv walk,
+  validating in the host's order (bad descriptor
+  EBADF, wrong mode EBADF, iovcnt range EINVAL,
+  null iovec EFAULT) and holding FD-83's contract:
+  exactly one IN_ACCESS per successful call — a
+  byte-moving walk's per-segment events coalesce
+  in the inotify queue, and a success that moved
+  no bytes raises its event in KProcess::readv.
+  Fixed in commits `48bb12b1c` (tests) and
+  `8d2da6430` (fix) — see CL-47. Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.*
+
+- **FD-93 — The write family answers -EINVAL (or a
+  silent 0) where the host answers -EBADF for a
+  write on a descriptor opened read-only. FIXED
+  2026-11-02 on branch `lane-fd92-93` — see CL-48.**
+  *(Was Low. Filed by the FD-83/84 lane, 2026-11-02; the
   number was chosen past FD-85..FD-91 for the same
   reason as FD-92; provisional until the merge
   lane's audit.)* The mirror of FD-84, host-measured
@@ -4013,6 +4038,100 @@ do not close the entry until they land.
   base.
 
 
+  *Update 2026-11-02 (lane-fd92-93): the entry was
+  carried verbatim from lane-fd83-84's register and
+  fixed here, at every site it names —
+  KProcess::write and KProcess::writev (EINVAL ->
+  EBADF; the vectored walk also gains its
+  iovcnt-range and iovec-pointer validation, behind
+  the mode check as measured), KProcess::pwrite64
+  (the missing mode check, with the negative
+  offset's EINVAL ahead of it), sys_write64 (a
+  descriptor+mode gate ahead of the zero-count
+  return; its later gate's answer corrected),
+  sys_writev64 (the validation block its read
+  counterpart carries) and sys_pwrite64 (the offset
+  EINVAL reordered ahead of the descriptor and mode
+  answers); the 32-bit dispatcher's pwrite64 checks
+  the offset's high word ahead of forwarding, so
+  that route keeps the same order. One correction
+  to the text above: sys_write64 does carry a mode
+  gate on the base — answering -EINVAL, behind the
+  buffer copy, and bypassed entirely by the
+  count==0 return; the entry's observable claim
+  stands. Fixed in commits `48bb12b1c` (tests),
+  `8d2da6430` (fix) and `0acf72a4b` (silent-failure
+  baseline review) — see CL-48. Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.*
+
+- **FD-94 — pwritev and pwritev2 are undispatched
+  on the 64-bit dispatcher and absent from the
+  32-bit syscall table.** *(Low. Filed by the
+  FD-92/93 lane, 2026-11-02; the number follows
+  FD-92/FD-93 as carried from lane-fd83-84 and is
+  provisional until the merge lane's audit.)* Found
+  while scoping FD-93's positioned-write family:
+  the 64-bit dispatch carries pwritev (296) and
+  pwritev2 (328) in its name table only — no
+  X64_SYS define, no dispatch case — so both answer
+  -ENOSYS, and the 32-bit table has no pwritev slot
+  at all. The write-side twin of FD-92 (preadv was
+  wired by FD-80/CL-39; the write side never was).
+  For the wiring lane, measured on the host kernel
+  (6.17.0-1020-oracle): pwritev on a bad descriptor
+  with offset -1 answers EINVAL, the positioned
+  family's offset-before-descriptor order
+  (`test-results/fd92-93/hostref-off-order.c`).
+  Evidence: the dispatch switch in
+  `source/kernel/syscall64.cpp` and the table in
+  `source/kernel/syscall.cpp` on this base.
+
+- **FD-95 — The read family's (bad descriptor,
+  negative offset) combination answers EBADF where
+  the host answers EINVAL.** *(Low. Filed by the
+  FD-92/93 lane, 2026-11-02; provisional until the
+  merge lane's audit.)* Measured on the host kernel
+  (6.17.0-1020-oracle): pread, preadv and pwritev
+  on a bad descriptor with offset -1 all answer
+  EINVAL — the positioned family's offset check
+  precedes even the descriptor check. FD-84's
+  composed fix on lane-fd83-84 orders the
+  descriptor check first in sys_pread64Impl and
+  sys_preadv64, so that combination answers EBADF
+  there; and the shared KProcess::pread64 carries
+  no offset check in either shape (its dispatcher
+  callers check the offset themselves, after the
+  descriptor). The write side was ordered
+  offset-first by FD-93; the read side's
+  composition is the merge lane's call, since
+  FD-84's fix is in flight. Evidence:
+  `test-results/fd92-93/hostref-off-order.c` and
+  its output; FD-84's entry and CL-46 on
+  lane-fd83-84.
+
+- **FD-96 — The 32-bit vectored write returns a
+  later segment's error even after earlier segments
+  wrote bytes; the host returns the bytes.** *(Low.
+  Filed by the FD-92/93 lane, 2026-11-02;
+  provisional until the merge lane's audit.)*
+  Measured on the host kernel (6.17.0-1020-oracle):
+  writev with a good first segment (3 bytes) and a
+  bad second segment returns 3. The emulator's
+  32-bit walk, KObject::writev, returns the failing
+  segment's error result regardless of what was
+  already written (it logs a kwarn for the partial
+  case and still returns the error); the 64-bit
+  walk (sys_writev64) returns the accumulated total
+  in the same situation, as does the new 32-bit
+  readv walk. FD-93's fix adds descriptor, mode,
+  range and pointer validation ahead of this walk
+  but does not change its return shape, and no test
+  pins the partial-error case. Evidence:
+  `test-results/fd92-93/hostref-write2.c` and its
+  output; `KObject::writev` in
+  `source/kernel/kobject.cpp` on this base.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -4065,6 +4184,8 @@ is behavioural, is re-proven there.
 | `lane-fd101` | FD-101: the 64-bit sendmsg gather (sys_sendmsg64) fabricates zero bytes for unreadable guest segment memory — now the whole message import is validated in the host's order (descriptor answers first, then msghdr/name/iov array/control/segments) and answers -EFAULT with nothing sent, -EMSGSIZE for an iovlen over 1024, sendmmsg inheriting through the loop; FD-102 (the SCM_RIGHTS translation trusts the guest's cmsg_len), FD-103 (sendto's single-call form of the trait) and FD-104 (recvmsg's silent scatter drop) filed | New test testSendmsgBadBuffer64Syscalls (x64 suite; RED on the base — crossing sendmsg returned 200 with 200 bytes held by the peer, good+bad segments returned 24, unmapped iov array returned 0, sendmmsg good,bad returned 2; GREEN on the fix); host reference programs measured first (sendmsg/sendmmsg all-or-nothing matrix incl. crossing, message-boundary and descriptor-order cases; sendto and recvmsg companions); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the closing commit 4363174fa); JS unit 348/0 (the socket64-message slice mock extended for the validation's descriptor/page-flag surface). Record: `docs/reports/fd101-sendmsg-efault-20261102.md`; evidence `test-results/fd101/` |
 | `lane-fd102-104` | FD-102: the SCM_RIGHTS translation trusted the guest's cmsg_len — now an under-header or past-controllen length and a count over the host's 253 cap answer -EINVAL before anything is sent, and accepted messages translate into a new extension area past the 64 KB scratch message so 253 records no longer overwrite the gathered payload; FD-103: sendto's dispatcher branch validates its buffer (descriptor answers first, then the clamped range readable) and answers -EFAULT with nothing sent; FD-104: sys_recvmsg64 validates its import in the host's order (descriptor answers, readable msghdr, -EMSGSIZE over 1024 segments, readable iov array) and its scatter validates each range page-piece by page-piece as it copies, answering -EFAULT at the first unwritable range with the prefix delivered; FD-105 (recvfrom's silent scatter), FD-106 (the control chain past the first header), FD-107 (the recvmsg name copyback) and FD-108 (datagram sendto reported sent but never delivered) filed | New x64 tests testSendmsgCmsgLen64Syscalls, testSendtoBadBuffer64Syscalls, testRecvmsgBadBuffer64Syscalls (RED on the base — past-controllen cmsg_len values sent their descriptors, the 253-record translation corrupted the payload in scratch, an under-header length killed its case, sendto delivered 16 fabricated bytes from an unmapped buffer and 200 from a crossing one, recvmsg reported 100 delivered into a half-unwritable scatter and recvmmsg reported 2 for a good+bad pair; GREEN on the fix); host reference programs measured first (cmsg_len shapes incl. the 253/254 cap and the chain-slack shape, recvmsg partial/crossing/peek/iovlen shapes); full native suites serial: main 668/668 and x64 73/73, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = 9b6c993d9, wasm 4180f7cd); JS unit 348/0 (socket64-message slice mock extended; reviewed silent-failure allowance 115 -> 117). Record: `docs/reports/fd102-fd104-message-faults-20261102.md`; evidence `test-results/fd102-104/` |
 | `lane-fd97` | FD-97: the 64-bit single-call write paths (sys_write64/sys_pwrite64) fabricate zero bytes for an unreadable guest buffer — now write only the guest-readable prefix and answer -EFAULT when no byte is readable, under the host's measured prefix contract; FD-101 (the sendmsg gather form of the trait) filed | New test testWriteBadBuffer64Syscalls (x64 suite; RED on the base — write from an unmapped buffer returned 16 with 16 zero bytes landed, crossing write returned 200, writev with a bad second segment returned 24; GREEN on the fix); host reference programs measured first (write/pwrite bad-buffer matrix incl. the short-count prefix cases; sendmsg matrix for FD-101); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the fixing commit); JS unit 348/0. Record: `docs/reports/fd97-single-call-write-efault-20261102.md`; evidence `test-results/fd97/` |
+
+| `lane-fd92-93` | FD-92: the 32-bit dispatcher's readv (145) wired over a new KObject/KProcess readv — host-order validation (descriptor, mode, iovcnt range, iovec pointer) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-93: the write family answers EBADF on a descriptor that cannot be written, in the host's validation order, at every site the entry names (KProcess::write/writev/pwrite64 — the last gaining the mode check whose absence let the backing layer swallow the host's EBADF into a silent 0 — sys_write64's descriptor+mode gate ahead of its zero-count return, sys_writev64's validation block, sys_pwrite64 reordered offset-first, the 32-bit dispatcher's pwrite64 offset check); FD-94 (pwritev/pwritev2 undispatched), FD-95 (read family's bad-descriptor/negative-offset order) and FD-96 (32-bit writev's partial-error return shape) filed | New tests testReadv32Syscall (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS), testWriteFamilyWrongMode (both suites) and testWriteFamily64Syscalls (x64 suite), all RED on the base for the recorded reasons and GREEN with the fix; host-kernel reference programs measured first (write-family matrix incl. zero counts and the validation orderings; the positioned family's offset-before-descriptor order across pread/pwrite/preadv/pwritev); full native suites serial: main 670/670 and x64 71/71, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `bcc8a852`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd92-fd93-readv-write-family-20261102.md`; evidence `test-results/fd92-93/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -6234,3 +6355,80 @@ its lane and is not a defect, for the stated reason:
   Record:
   `docs/reports/fd92-failed-mmap64-teardown-20261102.md`;
   evidence `test-results/fd92mmap/`.
+
+- **CL-47 — The 32-bit dispatcher's readv is wired
+  with the host's validation and FD-83's
+  one-IN_ACCESS-per-success contract (FD-92).**
+  *(Provisional number, filed on lane-fd92-93,
+  2026-11-02 — CL-40..CL-44 are held by the
+  unmerged fd66, fd65, fd85/fd87, fd64 and fd05
+  lanes and CL-45/CL-46 by lane-fd83-84, all off
+  this same base; the merge lane's audit settles
+  the final number. The FD-92 number is the filing
+  lane's, carried exactly; an unrelated
+  shader-fixup entry on branch `lane-fd92` uses the
+  same number, flagged in this lane's record.)*
+  Fixed on branch `lane-fd92-93`, commits
+  `48bb12b1c` (tests) and `8d2da6430` (fix). Slot
+  145 was null and answered -ENOSYS. The fix
+  dispatches it to KProcess::readv over a new
+  KObject::readv walk: validation in the host's
+  order (bad descriptor EBADF, wrong mode EBADF,
+  iovcnt outside 0..IOV_MAX EINVAL, null iovec
+  with iovcnt > 0 EFAULT); the walk skips
+  zero-length segments, returns the bytes already
+  read when a later segment fails, and ends at a
+  short segment; exactly one IN_ACCESS is
+  generated per successful call — the byte-moving
+  case through the file layer's per-segment
+  events coalesced by the inotify queue, the
+  0-byte case (at EOF, with iovcnt 0, with
+  all-zero-length segments) raised by
+  KProcess::readv. Proof: new test
+  testReadv32Syscall in the main native suite
+  drives the real int 0x80 dispatch — RED on the
+  base (all 20 assertions failing, every call
+  -ENOSYS), GREEN with the fix; full native suites
+  serial main 670/670 and x64 71/71, 0 FAILED;
+  browser build 'Browser export verified' (wasm
+  `bcc8a852`). Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.
+
+- **CL-48 — The write family answers EBADF on a
+  descriptor that cannot be written, in the host's
+  validation order (FD-93).** *(Provisional number,
+  filed on lane-fd92-93, 2026-11-02, on the same
+  terms as CL-47.)* Fixed on branch `lane-fd92-93`,
+  commits `48bb12b1c` (tests), `8d2da6430` (fix)
+  and `0acf72a4b` (silent-failure baseline
+  review). The host contract was measured first
+  (host kernel 6.17.0-1020-oracle, extending the
+  filing lane's matrix): write, pwrite and writev
+  on an O_RDONLY descriptor answer EBADF, for
+  count 0 and iovcnt 0 as well; writev's mode
+  answer precedes its iovcnt-range and
+  iovec-pointer answers; a negative offset in the
+  positioned family answers EINVAL ahead of both
+  the descriptor and the mode answers. The base
+  answered -EINVAL at KProcess::write,
+  KProcess::writev, sys_write64's gate and
+  sys_pwrite64; returned a silent 0 from
+  KProcess::pwrite64 (no mode check — the backing
+  write's host EBADF swallowed by the backing
+  layer, visible in the RED log), from sys_write64
+  at count 0 (its gate sat behind the zero-count
+  return) and from sys_writev64 at iovcnt 0 (no
+  validation of its own); and took a guest fault
+  at address 0 for writev with a null iovec at the
+  KProcess layer. The fix answers EBADF at every
+  named site and adds the missing validation in
+  the measured order. Proof: new tests
+  testWriteFamilyWrongMode (both suites) and
+  testWriteFamily64Syscalls (x64 suite) — RED on
+  the base, GREEN with the fix; full native suites
+  serial main 670/670 and x64 71/71, 0 FAILED;
+  browser build 'Browser export verified' (wasm
+  `bcc8a852`). Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.
