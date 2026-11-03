@@ -5502,27 +5502,45 @@ int runX64SelfTest() {
         });
     }
 
-    // chmod → 0 (success no-op, rax=90)
+    // chmod → -ENOENT (rax=90, null path). FD-125: the case used to
+    // expect a no-op success, a disposition from before FD-58
+    // implemented chmod for real. Per the FD-125 settlement the case
+    // expects the implemented layer's real answer for the staged call:
+    // a null path reads as the empty path and answers -ENOENT. (The
+    // host answers -EFAULT for a null path; that divergence is
+    // FD-126.) Staging an existing path instead is not available to
+    // this fixture: its CPU runs in isolation with no thread/process,
+    // so no path resolves here -- measured with a stack-built "/"
+    // staging, which answered the same -ENOENT.
     {
         std::vector<U8> code = {
             0x48, 0xC7, 0xC0, 0x5A, 0x00, 0x00, 0x00,                     // mov rax, 90
             0x48, 0x31, 0xFF, 0x48, 0x31, 0xF6,                           // rdi=rsi=0
             0x0F, 0x05,
         };
-        runAndCheck(r, "chmod → 0 (no-op success)", withExit(code), [](CPU64& c) {
-            return c.reg[X64_R15].u64 == 0;
+        runAndCheck(r, "chmod → -ENOENT (null path)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFEULL;
         });
     }
 
-    // fchmod → 0 (success no-op, rax=91)
+    // fchmod → -EBADF (rax=91, descriptor 0 with nothing open).
+    // FD-125: the case used to expect a no-op success, the same stale
+    // pre-FD-58 disposition as chmod above. Per the FD-125 settlement
+    // the case expects -EBADF as staged: the settlement's host
+    // reference measures -EBADF for a closed or never-opened
+    // descriptor, so the layer's answer is the host's and the layer
+    // stands. (The settlement's other option, re-staging on an open
+    // descriptor, is not available to this fixture: openat answers
+    // -ENOSYS here because the isolated CPU has no thread/process --
+    // measured with an openat-then-fchmod staging.)
     {
         std::vector<U8> code = {
             0x48, 0xC7, 0xC0, 0x5B, 0x00, 0x00, 0x00,                     // mov rax, 91
             0x48, 0x31, 0xFF, 0x48, 0x31, 0xF6,                           // rdi=rsi=0
             0x0F, 0x05,
         };
-        runAndCheck(r, "fchmod → 0 (no-op success)", withExit(code), [](CPU64& c) {
-            return c.reg[X64_R15].u64 == 0;
+        runAndCheck(r, "fchmod → -EBADF (unopened descriptor)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFF7ULL;
         });
     }
 
@@ -9721,33 +9739,48 @@ int runX64SelfTest() {
                (unsigned long long)r.wasmEntered,
                (unsigned long long)r.emitRejected,
                (unsigned long long)r.instantiateFailed);
-        if (!r.jitBlocks || !r.jitInsns) {
-            printf("  FAIL: required JIT path did not execute any blocks\n");
-            r.failed++;
-        }
-        // The wasm engine must prove it ran generated code: the emitted
-        // modules report their own entry count and retired-instruction count.
-        // The phase-1 interpreter engine must prove the opposite (no emitted
-        // code at all), which is what makes it a valid A/B control.
-        if (std::strcmp(r.engine, "wasm") == 0) {
-            if (!r.wasmBlocks || !r.wasmInsns) {
-                printf("  FAIL: wasm engine executed no emitted blocks\n");
-                r.failed++;
-            }
-            if (r.wasmEntered != r.wasmBlocks) {
-                printf("  FAIL: emitted-code entry counter %llu != host call count %llu\n",
-                       (unsigned long long)r.wasmEntered, (unsigned long long)r.wasmBlocks);
-                r.failed++;
-            }
-        } else if (std::strcmp(r.engine, "interp") == 0) {
-            if (r.wasmBlocks || r.wasmInsns || r.wasmEntered) {
-                printf("  FAIL: interpreter engine reported emitted blocks=%llu insns=%llu\n",
-                       (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns);
+        // FD-125: BW64_JIT_VERIFY asks each build flavour only for the
+        // record that flavour can give. The standard build selects no
+        // engine (engine=off): zero blocks is its correct record, so the
+        // off arm asserts exactly that. The engine-required checks below
+        // belong to the builds that select an engine (wasm64-mt-jit).
+        if (std::strcmp(r.engine, "off") == 0) {
+            if (r.jitBlocks || r.jitInsns || r.wasmBlocks || r.wasmInsns || r.wasmEntered) {
+                printf("  FAIL: no engine selected but counters report blocks=%llu insns=%llu emitted=%llu/%llu entered=%llu\n",
+                       (unsigned long long)r.jitBlocks, (unsigned long long)r.jitInsns,
+                       (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns,
+                       (unsigned long long)r.wasmEntered);
                 r.failed++;
             }
         } else {
-            printf("  FAIL: no JIT engine selected (engine=%s)\n", r.engine);
-            r.failed++;
+            if (!r.jitBlocks || !r.jitInsns) {
+                printf("  FAIL: required JIT path did not execute any blocks\n");
+                r.failed++;
+            }
+            // The wasm engine must prove it ran generated code: the emitted
+            // modules report their own entry count and retired-instruction count.
+            // The phase-1 interpreter engine must prove the opposite (no emitted
+            // code at all), which is what makes it a valid A/B control.
+            if (std::strcmp(r.engine, "wasm") == 0) {
+                if (!r.wasmBlocks || !r.wasmInsns) {
+                    printf("  FAIL: wasm engine executed no emitted blocks\n");
+                    r.failed++;
+                }
+                if (r.wasmEntered != r.wasmBlocks) {
+                    printf("  FAIL: emitted-code entry counter %llu != host call count %llu\n",
+                           (unsigned long long)r.wasmEntered, (unsigned long long)r.wasmBlocks);
+                    r.failed++;
+                }
+            } else if (std::strcmp(r.engine, "interp") == 0) {
+                if (r.wasmBlocks || r.wasmInsns || r.wasmEntered) {
+                    printf("  FAIL: interpreter engine reported emitted blocks=%llu insns=%llu\n",
+                           (unsigned long long)r.wasmBlocks, (unsigned long long)r.wasmInsns);
+                    r.failed++;
+                }
+            } else {
+                printf("  FAIL: no JIT engine selected (engine=%s)\n", r.engine);
+                r.failed++;
+            }
         }
     }
     printf("=== self-test summary: %d passed, %d failed ===\n\n", r.passed, r.failed);
