@@ -3446,6 +3446,12 @@ U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offse
     if (fd == nullptr) {
         return -K_EBADF;
     }
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check, ahead of the iovcnt range and iovec
+    // array checks, mirroring KProcess::preadv and the host.
+    if (!fd->canWrite()) {
+        return -K_EBADF;
+    }
     if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
         return -K_EINVAL;
     }

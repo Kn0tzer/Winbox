@@ -3653,6 +3653,13 @@ do not close the entry until they land.
   governed by wherever this entry's mode gate
   lands when it composes.
 
+  *Composition note (batch-3 merge): the mode gate the
+  addendum above leaves open lands in the vectored
+  wrappers themselves -- sys_preadv64 and sys_pwritev64
+  now answer the mode EBADF with the descriptor check,
+  ahead of the iovcnt range and iovec array checks --
+  settled with FD-95, which see.*
+
 - **FD-102 — The launcher UI test's demo-card count no
   longer matches the demo catalog.** *(Low. Filed as
   FD-82 on `lane-fd77-stall-surface`, 2026-11-01;
@@ -4426,6 +4433,14 @@ do not close the entry until they land.
   `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
   evidence `test-results/fd94-96/`.
 
+  *Batch-3 merge note: this lane's test pinned
+  pwritev's read-only answer as the house -EINVAL
+  (section 9 of testPwritev64Syscalls), deferring the
+  divergence to FD-93; with FD-93 composed in this
+  batch, the merge decision recorded at FD-95 flipped
+  that case to -EBADF, and sys_pwritev64 now answers it
+  at the descriptor check.*
+
 - **FD-95 — The read family's (bad descriptor,
   negative offset) combination answers EBADF where
   the host answers EINVAL.** *(Low. Filed by the
@@ -4448,6 +4463,34 @@ do not close the entry until they land.
   `test-results/fd92-93/hostref-off-order.c` and
   its output; FD-84's entry and CL-50 on
   lane-fd83-84.
+
+  **Settled and closed by the batch-3 merge audit
+  (2026-11-02); no closure number consumed (the batch-2
+  FD-102 precedent).** The order is settled for the whole
+  positioned family from the host measurements on record
+  -- FD-83/84's and FD-98's, taken on the box's 6.17
+  kernel and agreeing: offset validity (EINVAL) first,
+  except the v2 calls' offset -1, which is the
+  file-position mode; then the descriptor answers (EBADF
+  for a closed descriptor and for a wrong-mode one);
+  then the iovcnt range (EINVAL); then the iovec array
+  (EFAULT); and the v2 flags check last (EOPNOTSUPP,
+  mask 0x3f). The shared positioned cores already held
+  this order (sys_pread64Impl, sys_pwrite64,
+  KProcess::pread64, KProcess::pwrite64), and the 32-bit
+  vectored read already held it in KProcess::preadv;
+  the merge aligned the three vectored wrappers that
+  had deferred the mode answer to their per-segment
+  walks -- sys_preadv64, sys_pwritev64 and
+  KProcess::pwritev -- by placing the mode check with
+  the descriptor check. The same decision aligns the
+  positioned vectored write's wrong-mode answer with
+  the write family's settled contract (FD-93): FD-94's
+  pinned -EINVAL expectation for pwritev on a read-only
+  descriptor (section 9 of testPwritev64Syscalls) is
+  flipped to -EBADF. Proof: native suites serial, main
+  675/675 and x64 83/83, 0 FAILED
+  (test-results/merge-batch3-20261102/).
 
 
 - **FD-96 — The 32-bit vectored write returns a

@@ -2228,10 +2228,14 @@ void testPwritev64Syscalls() {
     }
     drainMasks();
 
-    // 9. A read-only descriptor follows pwrite64's house answer
-    // (-EINVAL; the host answers EBADF for the whole positioned-write
-    // family -- that divergence is the write family's, registered
-    // separately, exactly as the preadv test pins the read side).
+    // 9. A read-only descriptor answers -EBADF, the write family's
+    // settled answer (FD-93). This case originally pinned the house
+    // -EINVAL and deferred the divergence to FD-93; the batch-3
+    // merge decision (FD-95) aligned the vectored wrapper with the
+    // family contract -- the mode check sits with the descriptor
+    // check, ahead of the iovcnt and iovec checks -- so the whole
+    // positioned-write family answers EBADF here, exactly as the
+    // host does and as the preadv test pins the read side.
     {
         KFileDescriptorPtr rdesc;
         U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdesc);
@@ -2240,8 +2244,8 @@ void testPwritev64Syscalls() {
             return;
         }
         setIov(0, seg0, 2);
-        if (invoke6(296, (U64)(U32)rdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
-            testFail("pwritev on a read-only descriptor was not -EINVAL");
+        if (invoke6(296, (U64)(U32)rdesc->handle, iovAt, 1, 0, 0, 0) != -K_EBADF) {
+            testFail("pwritev on a read-only descriptor was not -EBADF");
         }
         process->close(rdesc->handle);
     }

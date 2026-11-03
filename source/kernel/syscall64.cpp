@@ -1928,6 +1928,13 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
     if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check -- a descriptor that cannot be read
+    // answers -EBADF ahead of the iovcnt range and iovec array
+    // checks, as the host's does (measured for FD-98/FD-84);
+    // without this gate the answer deferred to the walk's
+    // per-segment core, behind both checks.
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
@@ -2021,6 +2028,13 @@ static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 
     if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check -- a descriptor that cannot be
+    // written answers -EBADF ahead of the iovcnt range and
+    // iovec array checks, as the host's does; this aligns the
+    // vectored write with the write family's settled contract
+    // (FD-93) at the wrapper as well as in the pwrite64 core.
+    if (!fdesc->canWrite()) return (U64)-K_EBADF;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
