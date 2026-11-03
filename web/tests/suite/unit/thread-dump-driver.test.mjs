@@ -50,7 +50,18 @@ test('ccall path asks for the numeric return code; missing exports are labeled',
 test('the C++ dump never blocks on an emulator lock (source pins)', () => {
   const start = syscalls.indexOf('extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads()');
   assert.ok(start >= 0, 'dump export must return its status code');
-  const body = syscalls.slice(start, syscalls.indexOf('void ksyscall64(CPU64* cpu)', start));
+  // Batch-3 composition note: the scan covers the dump function's own
+  // body (brace-matched), not the file span up to ksyscall64 -- FD-23's
+  // select implementation legitimately uses the blocking fd lookup in
+  // syscall context and now sits in that span. The contract is the
+  // dump's own lookups, which stay try-only.
+  let depth = 0, end = -1;
+  for (let i = syscalls.indexOf('{', start); i >= 0 && i < syscalls.length; i++) {
+    if (syscalls[i] === '{') depth++;
+    else if (syscalls[i] === '}' && --depth === 0) { end = i + 1; break; }
+  }
+  assert.ok(end > start, 'dump function body must brace-match');
+  const body = syscalls.slice(start, end);
 
   // The log lock gates the whole dump, by try-lock only.
   assert.match(body, /bw64TryLockLog\(\)/);
