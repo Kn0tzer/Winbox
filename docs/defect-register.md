@@ -4335,10 +4335,12 @@ do not close the entry until they land.
   through the same silent-drop accessor as
   FD-107's recvmsg: an unwritable receive
   buffer loses bytes the call reports
-  delivered.** *(Low. Filed by the
-  FD-105..104 lane, 2026-11-02; provisional
-  until the merge lane's audit.)* Found
-  closing FD-107: the dispatcher's recvfrom
+  delivered. FIXED 2026-11-02 on branch
+  `lane-fd105-108` — see CL-56.** *(Was Low.
+  Filed by the FD-102..104 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* Found
+  closing FD-104: the dispatcher's recvfrom
   branch (source/kernel/syscall64.cpp,
   sharing its case block with sendto)
   receives through krecvfrom into scratch
@@ -4362,9 +4364,11 @@ do not close the entry until they land.
   translation examines only the first cmsg
   header: nothing past it is validated or
   translated, where the host walks the
-  whole chain.** *(Low. Filed by the
-  FD-105..104 lane, 2026-11-02; provisional
-  until the merge lane's audit.)* Measured
+  whole chain. FIXED 2026-11-02 on branch
+  `lane-fd105-108` — see CL-57.** *(Was Low.
+  Filed by the FD-102..104 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* Measured
   on the host
   (`test-results/fd102-104/hostref-cmsglen-fd102.c`,
   host kernel 6.17.0-1020-oracle): a valid
@@ -4386,8 +4390,10 @@ do not close the entry until they land.
   copyback goes through the same
   silent-drop accessor: a peer address
   that cannot be written is lost while
-  the call reports success.** *(Low. Filed
-  by the FD-105..104 lane, 2026-11-02;
+  the call reports success. FIXED
+  2026-11-02 on branch `lane-fd105-108` —
+  see CL-58.** *(Was Low. Filed
+  by the FD-102..104 lane, 2026-11-02;
   provisional until the merge lane's
   audit.)* Code evidence, found auditing
   FD-107's function: after a successful
@@ -4409,8 +4415,10 @@ do not close the entry until they land.
   reported sent but never delivered: it
   reaches neither the peer's message
   queue nor its stream buffer in any form
-  the peer can receive.** *(Low. Filed by
-  the FD-105..104 lane, 2026-11-02;
+  the peer can receive. FIXED 2026-11-02
+  on branch `lane-fd105-108` — see
+  CL-59.** *(Was Low. Filed by
+  the FD-102..104 lane, 2026-11-02;
   provisional until the merge lane's
   audit.)* Measured on this base while
   writing FD-106's test:
@@ -4989,6 +4997,7 @@ is behavioural, is re-proven there.
 | `lane-fd85b` | FD-85 continuation: the remaining silence sub-split measured — the ALSA leg serves writei clients at full scale (new alsatone fixture, four format/access modes), winealsa hands libasound an unbroken stream of zeros on every device including libasound's null (file-plugin dump, validated against the native client in-session), the traced client side is healthy (single AudioClient, 26 GetBuffer / 24 ReleaseBuffer of the full buffer), and the identical fixture on the 32-bit Wine stack is heard through the same emulator and chain — the defect is convicted to the 64-bit Wine payload's mmdevapi → winealsa render path (FD-85 stays open on payload-fix terms); FD-90 filed (the chain's mmap face stalls after one buffer: the OSS playback pointer never advances) | Six preserved diag sessions (`test-results/fd85b/`): writei tone at the input (S16 peak 12000) and page (peak 0.4550); Wine dumps 72,192 / 100,224 / 33,792 Float32 frames, 0 non-zero, three runs; x86 OpenAL heard (26,763 non-zero, peak 0.2269); mmap cycles: first commit lands full-scale (n=8192), avail 0 thereafter; dist 'Browser export verified' on the base build (this lane changes no emulator code). Record: `docs/reports/fd85b-audio-bisection-20261102.md` |
 | `lane-fd90` | FD-90: the OSS position face reported the write position and a constant 0 delay, so the ALSA mmap face stalled after one buffer and position readings were incoherent — GETOPTR/GETODELAY now derive from a played counter sourced from the bwPump ring consumer; SNDCTL_DSP_RESET no longer clobbers the hw_params-negotiated stream geometry at prepare; the reported position is slew-limited to half a buffer per read (the guest plugin's pointer callback consumes count_info.ptr alone, which aliases when a non-paced sink drains a buffer between reads) | Suite test alsa-mmap-stream: RED on the base build with the recorded signature (avail 4096,0,0,0,0,0,0,0), GREEN on the fixed build (s16mmap 18,432 frames / floatmmap 22,528 committed across the cycles; writei avail+delay coherent, summing to 4096); audio-tone PASS; common-dependencies identical to a base-tip control build under the same box load; native serial main 0 FAILED, x64 0 FAILED; legacy JS only the standing FD-64 four. Record: `docs/reports/fd90-oss-position-20261102.md`; evidence `test-results/fd90/` |
 | `lane-fd88` | FD-88 NARROWED to its proven blocker (no code change): the class is re-gated from 'translation stack' to the serving browser — the vendored translator serves the class exactly, and the project's Chromium (145) cannot populate an arrayed texture binding at any API surface; both mirrors' by-name refusals stay as the correct fail-closed behaviour, with the in-project closing terms specified for when the browser link lands. FD-92 filed (the fixup's output for the captured module is not spirv-val clean — synthesized pointer types spliced ahead of OpTypeBool) | Minimal fixtures in the captured module's own form (committed as `testdata/spirv/fd88-*`): a translator matrix over eight array/index/capability variants proves the cap-29 DECLARATION is the only translator tripwire, and the data-dependent runtime-array form translates with its index expression preserved. Captured module: declaration stripped + the FD-92 ordering repaired → the translator accepts the whole type/global section; its next refusal is an OpIAddCarry that cone analysis proves sits outside all seven array chains. Browser probes (probe-slot, the project's Chromium): sized binding-array modules compile; layout counts are accepted but not honoured ('only provides 1 elements'); the createBindGroup array resource throws at WebIDL; duplicate entries are rejected. Record: `docs/reports/fd88-binding-array-blocker-20261102.md`; evidence `test-results/fd88/` |
+| `lane-fd105-108` | FD-105: the dispatcher's recvfrom copyback scatters page by page with a writability check per piece, answering -EFAULT at the first unwritable piece with the prefix delivered; FD-106: sys_sendmsg64 imports the whole control area before validating, then walks the whole chain (malformed lengths -EINVAL, rights accumulating under the cumulative 253 cap with descriptor values resolved in walk order, credentials only at cmsg_len exactly 28, other SOL_SOCKET types -EINVAL, other levels skipped) and translates every rights header; FD-107: sys_recvmsg64's name copyback is deferred past the control translation and answers -EFAULT for an unwritable target, with the data and passed descriptors delivered and no msghdr field writebacks; FD-108: KUnixSocketObject::sendto queues a real datagram on a connected datagram pair, mirroring sendmsg's queueing tail; FD-109 (recvmsg fabricates the source name for queued messages), FD-110 (the message queue is invisible to read/recvfrom), FD-111 (named datagram delivery has no route) and FD-112 (a zero-length sendmsg datagram queues nothing) filed | New x64 tests testRecvfromBadBuffer64Syscalls, testSendmsgControlChain64Syscalls, testRecvmsgNameCopyback64Syscalls, testSendtoDatagram64Syscalls (RED on the base — recvfrom reported 16 into an unmapped buffer and 200 into a crossing one, a second rights header's descriptors never arrived and malformed tails sent silently, an unwritable name target reported success with its fields written back, datagram sendto delivered nothing; GREEN on the fix); host reference programs measured first (the chain walk rules incl. the credential length and the import/resolution order, the name-copyback field behaviour, the recvfrom crossing prefix); full native suites serial: main 668/668 and x64 77/77, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = db1bd2e22, wasm 77b9c090, staged archive c4dbe35986a5 as pinned); JS unit 348/0 (reviewed silent-failure allowance 117 -> 119). Record: `docs/reports/fd105-fd108-message-faults-20261102.md`; evidence `test-results/fd105-108/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -5666,6 +5675,171 @@ dead-start fix and needs composition care.
   build verified (BUILD_INFO git_sha = the
   fixing commit); JS unit 348/0. Record:
   `docs/reports/fd97-single-call-write-efault-20261102.md`.
+
+- **CL-56 — The 64-bit recvfrom copyback
+  answers for unwritable guest memory:
+  the dispatcher branch scatters the
+  received bytes page by page, validating
+  each page piece before its copy, and
+  answers -EFAULT at the first unwritable
+  piece with the prefix already copied,
+  instead of dropping the bytes silently
+  through memcpyToGuest while reporting
+  them delivered (FD-105).** *(Provisional
+  number, filed on lane-fd105-108,
+  2026-11-02 — CL-53..CL-55 are this
+  register's previous lane closures and
+  other lanes hold colliding claims; the
+  merge lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd105-108`, commits `39d7761c4`
+  (test) and `73d2ddc2f` (fix). Measured
+  first
+  (`test-results/fd105-108/hostref-name-fd107.c`
+  N5/N6 and `hostref-n6-fd105.c`, host
+  kernel 6.17.0-1020-oracle): an
+  unwritable buffer answers -EFAULT, a
+  crossing buffer faults with the
+  writable prefix landed, a datagram is
+  consumed. Consumption follows FD-104's
+  settled shape — the object receive
+  consumes into scratch with no pushback,
+  so a faulted plain receive consumes on
+  a stream socket too (the host leaves
+  the data queued; MSG_PEEK consumes
+  nothing on either side and is pinned),
+  and in the 46-writable-byte crossing
+  geometry the host leaves 40 bytes to
+  the scatter's 46 (its copy engine drops
+  the final partial block) — answer and
+  consumption match, only the sub-page
+  prefix length on a faulted call
+  differs. Proof: new test
+  testRecvfromBadBuffer64Syscalls RED on
+  the base (16 into an unmapped buffer,
+  16 for a peeking receive, 200 into a
+  crossing buffer) and GREEN on the fix;
+  full native suites serial — main
+  668/668, x64 77/77; browser build
+  verified (BUILD_INFO git_sha =
+  `db1bd2e22`, wasm 77b9c090, staged
+  archive c4dbe35986a5 as pinned); JS
+  unit 348/0. Record:
+  `docs/reports/fd105-fd108-message-faults-20261102.md`.
+
+- **CL-57 — The 64-bit sendmsg validates
+  the whole control chain the way the
+  host does: the entire control area is
+  imported first (an unreadable byte
+  anywhere in msg_controllen answers
+  -EFAULT ahead of every chain verdict),
+  then headers are walked at 8-aligned
+  steps while at least 16 bytes remain —
+  a walked header under 16 or past the
+  remaining room answers -EINVAL,
+  SCM_RIGHTS headers accumulate under
+  one cumulative 253 cap with their
+  descriptor values resolved as the walk
+  reaches each header (a bad value
+  answers -EBADF ahead of a later
+  header's malformed length),
+  SCM_CREDENTIALS is accepted only at
+  cmsg_len exactly 28, any other
+  SOL_SOCKET type answers -EINVAL, and
+  other levels are skipped; translation
+  emits every rights header's
+  descriptors (FD-106).** *(Provisional
+  number, filed on lane-fd105-108,
+  2026-11-02 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd105-108`, commits
+  `39d7761c4` (test), `73d2ddc2f` (fix)
+  and `eb57da3d9` (slice surface).
+  Measured first
+  (`test-results/fd105-108/hostref-chain-fd106.c`,
+  `hostref-chain2-fd106.c`,
+  `hostref-order-fd106.c`): sub-header
+  slack is ignored, two rights headers
+  deliver both descriptor sets on stream
+  and datagram pairs, 200 + 100
+  descriptors answer -EINVAL while
+  200 + 53 deliver, credentials at 20 /
+  24 / 32 answer -EINVAL, and the iovlen
+  cap precedes the control import.
+  FD-102's first-header validation is
+  subsumed; its test passes unmodified.
+  Proof: new test
+  testSendmsgControlChain64Syscalls RED
+  on the base (a second header's
+  descriptors dropped, malformed tails
+  and over-cap chains sent silently,
+  the import order inverted) and GREEN
+  on the fix; suites and build as
+  CL-56. Record:
+  `docs/reports/fd105-fd108-message-faults-20261102.md`.
+
+- **CL-58 — sys_recvmsg64's source-name
+  copyback answers for unwritable guest
+  memory: the copyback is deferred past
+  the control translation and the name
+  range must land whole, else the call
+  answers -EFAULT with the received data
+  and any passed descriptor still
+  delivered and none of the msghdr's
+  namelen, flags or controllen fields
+  written back (FD-107).** *(Provisional
+  number, filed on lane-fd105-108,
+  2026-11-02 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd105-108`, commits
+  `39d7761c4` (test) and `73d2ddc2f`
+  (fix). Measured first
+  (`test-results/fd105-108/hostref-name-fd107.c`
+  N1/N2): the fault leaves the msghdr
+  fields exactly as the guest set them
+  while the descriptor is installed.
+  Proof: new test
+  testRecvmsgNameCopyback64Syscalls RED
+  on the base (success reported with the
+  address dropped and the fields written
+  back) and GREEN on the fix; suites and
+  build as CL-56. Filed from this lane:
+  FD-109, FD-110, FD-111, FD-112. Record:
+  `docs/reports/fd105-fd108-message-faults-20261102.md`.
+
+- **CL-59 — A datagram sent with sendto
+  on a connected unix socketpair is
+  actually delivered: KUnixSocketObject::sendto
+  queues one datagram on the peer,
+  mirroring sendmsg's queueing tail —
+  the peer-closed answer, the socket
+  filter (a filtered packet still
+  reports its submitted length), one
+  length-prefixed segment, the queue,
+  signal and readiness notification —
+  instead of routing to the stream write
+  path that discards the payload while
+  reporting it sent (FD-108).**
+  *(Provisional number, filed on
+  lane-fd105-108, 2026-11-02 — the merge
+  lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd105-108`, commits `39d7761c4`
+  (test) and `73d2ddc2f` (fix). Proof:
+  new test testSendtoDatagram64Syscalls
+  RED on the base (nothing arrived after
+  a sendto reporting its full length)
+  and GREEN on the fix — one datagram
+  whole and exactly once, two in order
+  with their boundaries, an oversized
+  datagram truncating with the remainder
+  discarded, a zero-length datagram
+  delivered as a real empty message (its
+  sendmsg twin is FD-112), MSG_DONTWAIT
+  accepted, the stream-pair guard
+  unchanged; suites and build as CL-56.
+  Record:
+  `docs/reports/fd105-fd108-message-faults-20261102.md`.
 
 ## Appendix — examined and deliberately NOT registered
 

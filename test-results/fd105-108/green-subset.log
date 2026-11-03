@@ -1,0 +1,11 @@
+Running 8 Test tests with 1 threads starting at 26
+Test x64 sendmsg/sendmmsg from unreadable guest buffers ... OK
+Test x64 sendmsg SCM_RIGHTS cmsg_len validation ... OK
+Test x64 sendto to unreadable guest buffers ... OK
+Test x64 recvmsg scatter to unwritable guest buffers ... OK
+Test x64 recvfrom to unwritable guest buffers ... OK
+Test x64 sendmsg control-chain validation ... OK
+Test x64 recvmsg source-name copyback to unwritable guest buffers ... OK
+BW64-FAIL unixsocket-recvmsg iovlen=16 segmentlen=100 outcome=segment-truncated
+Test x64 sendto datagram delivery on a connected socketpair ... OK
+0 tests FAILED in 0s

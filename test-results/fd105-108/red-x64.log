@@ -1,0 +1,31 @@
+Running 4 Test tests with 1 threads starting at 30
+Test x64 recvfrom to unwritable guest buffers ... FAILED
+  stream recvfrom to an unmapped buffer returned 16 then -11 (want -EFAULT then the surviving 16 bytes)
+  stream MSG_PEEK recvfrom to an unmapped buffer returned 16 then 16 (want -EFAULT then 16)
+  crossing stream recvfrom returned 200 (want -EFAULT) with the 96-byte prefix delivered
+Test x64 sendmsg control-chain validation ... FAILED
+  rights(1) then rights(1), stream returned 16 (want 16), peer holds 1 fds and 16 data bytes
+  rights(1) then rights(1), datagram returned 16 (want 16), peer holds 1 fds and 16 data bytes
+  rights(0) then rights(1) returned 16 (want 16), peer holds 0 fds and 16 data bytes
+  rights(1) then SOL_SOCKET type 999 returned 16 (want -22), peer holds 1 fds and 16 data bytes
+  rights(1) then a header of length 8 returned 16 (want -22), peer holds 1 fds and 16 data bytes
+  rights(1) then a header of length 4096 returned 16 (want -22), peer holds 1 fds and 16 data bytes
+  SOL_SOCKET type 999 alone returned 16 (want -22), peer holds 0 fds and 16 data bytes
+  credentials of length 16 returned 16 (want -22), peer holds 0 fds and 16 data bytes
+  credentials of length 32 returned 16 (want -22), peer holds 0 fds and 16 data bytes
+  rights(200) then rights(100) over the cap returned 16 (want -22), peer holds 28 fds and 16 data bytes
+  good header 1, bad fd in header 2 returned 16 (want -9), peer holds 1 fds and 16 data bytes
+  valid header with controllen crossing into an unreadable page returned 16 (want -EFAULT)
+  malformed header with controllen crossing into an unreadable page returned -22 (want -EFAULT)
+  unreadable control area of 8 bytes returned 16 (want -EFAULT)
+Test x64 recvmsg source-name copyback to unwritable guest buffers ... FAILED
+  recvmsg with an unwritable name target returned 16 (want -EFAULT), data delivered, fd installed, flags field 0x0, controllen field 24
+  recvmsg with a crossing name target returned 16 (want -EFAULT)
+BW64-FAIL unixsocket-sendto flags=0x1 outcome=returned-EINVAL
+Test x64 sendto datagram delivery on a connected socketpair ... FAILED
+  datagram sendto returned 16, recvmsg -11 (0 bytes), second recvmsg -11 (want 16, 16 with the payload, -EWOULDBLOCK)
+  two datagrams arrived as -11 (0 bytes) then -11 (0 bytes)
+  oversized datagram recvmsg returned -11 (0 bytes), next -11 (want 16 truncated, then -EWOULDBLOCK)
+  zero-length datagram: sendto 0, readable no, recvmsg -11 (want 0, readable, 0)
+  MSG_DONTWAIT datagram sendto returned -22, recvmsg -11
+4 tests FAILED in 0s
