@@ -3770,6 +3770,24 @@ do not close the entry until they land.
   `docs/reports/fd87-godot-sibling-classes-20261102.md`;
   evidence `test-results/fd87/`.
 
+  Update (deploy 2026-11-03, build `caadab5ad`): the
+  owed in-vivo run was attempted twice on the
+  shipped build through the standard demo path
+  (FD-70 capture configuration, 3,300 s deadline).
+  In both attempts the session booted (Godot banner
+  at 114.5 s and 181 s) and the guest stayed alive
+  and executing to the end of the window, but no
+  window mapped inside the capture driver's 1,200 s
+  launch wait, so the run obtained no shader-module
+  or pipeline evidence in either direction (0
+  vkCreateShaderModule lines, 0 BW64-FAIL lines in
+  both preserved consoles). CL-43's pipeline clause
+  therefore stays owed, still gated on FD-88 +
+  FD-72; the attempts are recorded in full in
+  `docs/reports/deploy-batch3-20261103.md`,
+  evidence `test-results/deploy-batch3-20261103/`
+  (godot-proof-attempt1/ and godot-proof/).
+
 - **FD-88 — A descriptor array indexed by a value
   loaded from GPU memory cannot be specialized;
   the array, its RuntimeDescriptorArray
