@@ -4064,6 +4064,16 @@ do not close the entry until they land.
   baseline review) — see CL-48. Record:
   `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
   evidence `test-results/fd92-93/`.*
+  Addendum (FD-100's lane, 2026-11-02): in
+  the 64-bit dispatcher's vectored arms the
+  mode answer comes from the walk's
+  per-segment core, behind the iovcnt range
+  and iovec array checks, so a write-only
+  descriptor with an out-of-range iovcnt or a
+  bad array answers EINVAL / EFAULT where the
+  host answers EBADF -- one more combination
+  governed by wherever this entry's mode gate
+  lands when it composes.
 
 - **FD-94 — pwritev and pwritev2 are undispatched
   on the 64-bit dispatcher and absent from the
@@ -4239,7 +4249,9 @@ do not close the entry until they land.
 
 - **FD-99 — The 64-bit dispatcher's preadv2
   refuses the file-position offset and one
-  defined flag the host accepts.** *(Low. Filed
+  defined flag the host accepts. FIXED
+  2026-11-02 on branch `lane-fd99-100` — see
+  CL-53.** *(Low. Filed
   by the FD-98 lane, 2026-11-02; provisional
   until the merge lane's audit.)* Measured on
   the host kernel (6.17.0-1020-oracle) while
@@ -4269,11 +4281,19 @@ do not close the entry until they land.
   flags mask to 0x3f; extend
   testPreadv64Syscalls' matrix for both.
 
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix) —
+  see CL-53. Proof and the FD-95 interaction
+  are recorded there; the validation-order
+  half of the restructure is FD-100's fix
+  (CL-54).
+
 
 - **FD-100 — The positioned vectored family's
   v2 flags check runs ahead of the iovcnt range
   and iovec array checks; the host runs it
-  last.** *(Low. Filed by the FD-98 lane,
+  last. FIXED 2026-11-02 on branch
+  `lane-fd99-100` — see CL-54.** *(Low. Filed by the FD-98 lane,
   2026-11-02; provisional until the merge
   lane's audit.)* Measured on the host kernel
   (6.17.0-1020-oracle) for both directions
@@ -4295,6 +4315,12 @@ do not close the entry until they land.
   last); the fix for these three is moving the
   flags test below the iovcnt and array checks
   in each.
+
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix) —
+  see CL-54. The wrong-mode + range/array
+  combinations characterized there belong to
+  FD-84's / FD-93's composition.
 
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -4352,6 +4378,7 @@ is behavioural, is re-proven there.
 
 | `lane-fd92-93` | FD-92: the 32-bit dispatcher's readv (145) wired over a new KObject/KProcess readv — host-order validation (descriptor, mode, iovcnt range, iovec pointer) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-93: the write family answers EBADF on a descriptor that cannot be written, in the host's validation order, at every site the entry names (KProcess::write/writev/pwrite64 — the last gaining the mode check whose absence let the backing layer swallow the host's EBADF into a silent 0 — sys_write64's descriptor+mode gate ahead of its zero-count return, sys_writev64's validation block, sys_pwrite64 reordered offset-first, the 32-bit dispatcher's pwrite64 offset check); FD-94 (pwritev/pwritev2 undispatched), FD-95 (read family's bad-descriptor/negative-offset order) and FD-96 (32-bit writev's partial-error return shape) filed | New tests testReadv32Syscall (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS), testWriteFamilyWrongMode (both suites) and testWriteFamily64Syscalls (x64 suite), all RED on the base for the recorded reasons and GREEN with the fix; host-kernel reference programs measured first (write-family matrix incl. zero counts and the validation orderings; the positioned family's offset-before-descriptor order across pread/pwrite/preadv/pwritev); full native suites serial: main 670/670 and x64 71/71, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `bcc8a852`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd92-fd93-readv-write-family-20261102.md`; evidence `test-results/fd92-93/` |
 | `lane-fd98` | FD-98: the 32-bit dispatcher's preadv (333) and preadv2 (377) wired over a new KProcess::preadv walking pread64 — host-order validation measured fresh (offset EINVAL ahead of the descriptor check, except preadv2's -1 file-position mode; wrong-mode EBADF ahead of the iovcnt range check; the iovec array EFAULT ahead of the flags check, which runs last with the measured read mask 0x3f) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-99 (64-bit preadv2's -1 refusal and 0x1f mask) and FD-100 (the family's flags-check order) filed | New test testPreadv32Dispatch (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS, GREEN with the fix); host-kernel reference programs measured first (preadv/preadv2 validation, position-mode, flags-mask and IN_ACCESS matrices, plus the pwritev2 order addendum); full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha 86dfb5830, wasm 5c0d85fc, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd98-preadv32-20261102.md`; evidence `test-results/fd98/` |
+| `lane-fd99-100` | FD-99: sys_preadv64 takes preadv2's offset -1 as the file-position mode and the full defined read flag mask 0x3f, with the host's validation order throughout (offset validity ahead of the descriptor check; the iovec array check now a range check) -- FD-95 interaction recorded in CL-53. FD-100: the v2 flags check runs last, below the iovcnt range and iovec array checks, in sys_preadv64, sys_pwritev64 and KProcess::pwritev; the wrong-mode + range/array combinations characterized for FD-84's/FD-93's composition | Extended testPreadv64Syscalls sections 10-11 and testPwritev64Syscalls section 11 (x64 suite) and testPwritev32Dispatch section 2b (main suite) -- RED on the base with the filed signatures, GREEN with the fix; full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha fad85c19c, wasm 52da72d5, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd99-fd100-preadv2-family-order-20261102.md`; evidence `test-results/fd99-100/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -6757,3 +6784,95 @@ its lane and is not a defect, for the stated reason:
   baseline change. Record:
   `docs/reports/fd98-preadv32-20261102.md`;
   evidence `test-results/fd98/`.
+
+- **CL-53 — The 64-bit dispatcher's preadv2
+  takes its file-position offset and the full
+  defined read flag mask (FD-99).** *(Provisional
+  number, filed on lane-fd99-100, 2026-11-02 —
+  CL-52 was taken by lane-fd101 (FD-101) while
+  this lane ran, recorded here so the merge
+  lane's audit sees it; the audit settles the
+  final number.)*
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix).
+  sys_preadv64 refused preadv2's offset -1
+  outright (EINVAL) and rejected the defined
+  flag RWF_NOAPPEND (0x20) as EOPNOTSUPP (mask
+  0x1f); the host reads at the current position
+  and advances it for -1 and accepts every flag
+  in the read mask 0x3f. sys_preadv64 now
+  implements the -1 file-position mode (the
+  walk starts at the descriptor's position and
+  seeks it forward by the bytes read; exactly
+  one IN_ACCESS, as the rest of the family),
+  accepts 0x3f, and takes the host's validation
+  order throughout: offset validity ahead of
+  the descriptor check (plain preadv on a bad
+  descriptor with offset -1 answers EINVAL;
+  preadv2 answers EBADF there, -1 being valid
+  for it), the descriptor check ahead of the
+  iovcnt range and iovec array checks, the
+  flags check last (FD-100's order, applied to
+  this arm here). Its iovec array check is now
+  a range check like the write side's, so an
+  unmapped array answers EFAULT instead of
+  reading as zero-length segments. FD-95
+  interaction: the offset-first order takes
+  the host's side of FD-95's open question for
+  the preadv arm, as CL-51 did for the 32-bit
+  arm; if the merge lane settles FD-95
+  descriptor-first, this arm's offset check
+  moves behind the descriptor check and the
+  pinned bad-descriptor cases flip with it.
+  Proof: testPreadv64Syscalls sections 10-11
+  (x64 suite) — RED on the base (offset -1
+  -EINVAL, no bytes, position unmoved; 0x20
+  -EOPNOTSUPP; the bad-descriptor order cases
+  answered from the wrong side) and GREEN on
+  the fix; full suites serial — main 671/671,
+  x64 70/70; browser build 'Browser export
+  verified' (BUILD_INFO git_sha `fad85c19c`,
+  wasm `52da72d5`, support archive
+  `c4dbe35986a5` unchanged); JS unit 348/0, no
+  silent-failure baseline change. Record:
+  `docs/reports/fd99-fd100-preadv2-family-order-20261102.md`;
+  evidence `test-results/fd99-100/`.
+
+- **CL-54 — The positioned vectored family's
+  v2 flags check runs last, below the iovcnt
+  range and iovec array checks (FD-100).**
+  *(Provisional number, as in CL-53.)*
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix).
+  sys_preadv64, sys_pwritev64 and
+  KProcess::pwritev all tested the v2 flags
+  ahead of the iovcnt range check and the
+  iovec array check, answering EOPNOTSUPP for
+  (out-of-range iovcnt + undefined flag) and
+  (null/unmapped array + undefined flag); the
+  host answers EINVAL and EFAULT there. The
+  flags test now runs below both checks in
+  each of the three (in sys_preadv64 as part
+  of FD-99's restructure). KProcess::preadv
+  already used the measured order and is
+  untouched. Two neighbouring combinations
+  were measured during this lane and
+  deliberately left: in the two 64-bit arms
+  the mode answer comes from the walk's
+  per-segment core, behind the range/array
+  checks, so a wrong-mode descriptor with an
+  out-of-range iovcnt or a bad array answers
+  EINVAL/EFAULT where the host answers
+  EBADF — on the read side a facet of FD-84
+  (whose fix owns the core's mode gate; an
+  addendum on FD-84's entry records the
+  combination), on the write side part of
+  FD-93's composition; both are named here so
+  the merge lane sees them. Proof: the
+  flags-last pins in testPreadv64Syscalls
+  section 11, testPwritev64Syscalls section
+  11 and testPwritev32Dispatch section 2b —
+  RED on the base (every combination
+  -EOPNOTSUPP) and GREEN on the fix; shared
+  suite, browser and JS figures as in CL-53.
+  Record and evidence as in CL-53.
