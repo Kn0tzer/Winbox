@@ -64,6 +64,7 @@ struct KUnixSocketObject:KObject {
  KUnixSocketObject(int d,int t,int p):domain(d),protocol(p){type=t;}
  ~KUnixSocketObject();
  int domain,protocol,type;U32 pid=0;bool blocking=true,connected=false,inClosed=false,outClosed=false;
+ bool listening=false;
  std::string abstractName;bool abstractRegistered=false;bool oneWayPeerLink=false;bool peerCloseRefusalPending=false;bool oneWayRefusalSpent=false;
  std::shared_ptr<FsNode> node;std::queue<int> msgs;
 
@@ -113,7 +114,7 @@ std::shared_ptr<KUnixSocketObject> KUnixSocketObject::resolveNamedPeer(KThread* 
 void handoff(bool pendingRetry){
  KMemory memory;Process process;KThread thread{&memory,&process};
  const U16 family=K_AF_UNIX;std::memcpy(memory.bytes,&family,2);std::memcpy(memory.bytes+2,"socket",7);
- auto listener=std::make_shared<KUnixSocketObject>(1,1,0);Fs::node=std::make_shared<FsNode>();Fs::node->kobject=listener;
+ auto listener=std::make_shared<KUnixSocketObject>(1,1,0);listener->listening=true;Fs::node=std::make_shared<FsNode>();Fs::node->kobject=listener;
  auto client=std::make_shared<KUnixSocketObject>(1,1,0);
  auto fd=process.allocFileDescriptor(client,2,0,-1,0);
  if(pendingRetry){client->blocking=false;assert(int32_t(client->connect(&thread,fd,0,9))==-K_EINPROGRESS);}
