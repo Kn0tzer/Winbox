@@ -528,6 +528,11 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     // prefix; the EFAULT answer itself is returned at the write point
     // below, after the descriptor and mode answers, matching the host's
     // order (a bad fd with a bad buffer answers EBADF).
+    // The guest's own zero count (FD-116's case) must be told apart
+    // from a nonzero count whose readable prefix is zero (FD-97's
+    // badBuffer case): count is reassigned to the prefix below, so
+    // capture the distinction here.
+    const bool zeroCount = (count == 0);
     const U64 readable = sys_guestReadablePrefix64(cpu->memory, buf, count);
     const bool badBuffer = readable == 0;
     count = readable;
@@ -683,7 +688,7 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (!fdesc->canWrite()) {
         return (U64)-K_EBADF; // FD-93: host's wrong-mode answer (was -K_EINVAL)
     }
-    if (count == 0) {
+    if (zeroCount) {
         if (buf > 0x00007FFFFFFFFFFFULL) {
             // FD-116: the host's zero-length import still validates
             // the buffer address itself: NULL and unmapped user
