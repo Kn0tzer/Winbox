@@ -7217,6 +7217,10 @@ void testNullPath64Syscalls() {
     // AT_EMPTY_PATH as the descriptor form (already honoured by the
     // stat helpers here), and faccessat2/fchmodat/linkat have NO
     // null descriptor form -- NULL faults even with AT_EMPTY_PATH.
+    // utimensat's null matrix is per-shape (FD-136, re-measured at
+    // the raw syscall level in test-results/fd136-138/): it HAS a
+    // null descriptor form, succeeding with flags 0 on an open
+    // descriptor; the rows are pinned at the end of this test.
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -7288,6 +7292,11 @@ void testNullPath64Syscalls() {
         U64 envp[1] = {0};
         memory->memcpyToGuest(argvAt, argv, sizeof(argv));
         memory->memcpyToGuest(envpAt, envp, sizeof(envp));
+    }
+    const U64 timesAt = dataPage + 0xE00;
+    {
+        U64 times[4] = {1500000000ULL, 123000000ULL, 1600000000ULL, 456000000ULL};
+        memory->memcpyToGuest(timesAt, times, sizeof(times));
     }
 
     CPU64 cpu(memory);
@@ -7374,6 +7383,33 @@ void testNullPath64Syscalls() {
             invoke(3, (U64)ifd, 0, 0, 0);
         }
     }
+
+    // utimensat with a null path answers the raw kernel's per-shape
+    // matrix (FD-136, host-measured at the raw syscall level in
+    // test-results/fd136-138/hostref-fd136b.c): the kernel copies
+    // the times first, so an unreadable times pointer faults ahead
+    // of every other verdict; flag bits outside
+    // AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer -EINVAL; the
+    // current-directory shape faults on the name fetch; any other
+    // flag with a null path answers -EINVAL; with flags 0 an
+    // unopened descriptor answers -EBADF and an open one is the
+    // descriptor form and succeeds. (This dispatcher does not apply
+    // times on any shape, so the descriptor form pins the success
+    // answer alone.)
+    expectEq("utimensat null AT_FDCWD", invoke(280, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_EMPTY_PATH", invoke(280, atFdcwd, 0, 0, atEmptyPath), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_SYMLINK_NOFOLLOW", invoke(280, atFdcwd, 0, 0, 0x100), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD invalid flags", invoke(280, atFdcwd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null dirfd fd form (null times)", invoke(280, dirfd, 0, 0, 0), 0);
+    expectEq("utimensat null filefd fd form (valid times)", invoke(280, filefd, 0, timesAt, 0), 0);
+    expectEq("utimensat null filefd fd form (null times)", invoke(280, filefd, 0, 0, 0), 0);
+    expectEq("utimensat null AT_EMPTY_PATH fd shape", invoke(280, filefd, 0, 0, atEmptyPath), -K_EINVAL);
+    expectEq("utimensat null AT_SYMLINK_NOFOLLOW fd shape", invoke(280, filefd, 0, 0, 0x100), -K_EINVAL);
+    expectEq("utimensat null invalid flags fd shape", invoke(280, filefd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null unopened", invoke(280, 4096, 0, 0, 0), -K_EBADF);
+    expectEq("utimensat null unopened AT_EMPTY_PATH", invoke(280, 4096, 0, 0, atEmptyPath), -K_EINVAL);
+    expectEq("utimensat null bad times fd shape", invoke(280, filefd, 0, 0x1000, 0), -K_EFAULT);
+    expectEq("utimensat null bad times beats invalid flags", invoke(280, atFdcwd, 0, 0x1000, 0x2000), -K_EFAULT);
 
     process->close(dirDesc->handle);
     process->close(subdirDesc->handle);

@@ -25,9 +25,13 @@
 // so on the 32-bit side a null path was indistinguishable from an
 // empty one and took FD-131's -ENOENT route. The measured
 // exceptions: fstatat64/statx treat NULL with AT_EMPTY_PATH as the
-// descriptor form (the string they receive is already ""), and
-// utimensat answers -EINVAL for a null path in every shape -- the
-// kernel special-cases the null filename before any name fetch.
+// descriptor form (the string they receive is already ""). The
+// FD-132-era claim that utimensat answers -EINVAL for a null path
+// in every shape was a libc-wrapper measurement, not a kernel one:
+// glibc's utimensat wrapper refuses the null path in userspace
+// without issuing the call. FD-136 re-measured at the raw syscall
+// level (test-results/fd136-138/hostref-fd136b.c); the per-shape
+// matrix is pinned in the utimensat block below.
 // (i386 linkat has no helper at all -- a nullptr dispatch entry
 // answering -ENOSYS for every input -- so it is not part of this
 // erasure and is not pinned here.)
@@ -85,6 +89,8 @@ void testNullPath32Syscalls() {
     const U32 envpAt = TEST_HEAP_ADDRESS + 0x680;
     const U32 bufAt = TEST_HEAP_ADDRESS + 0x800;
     const U32 rlBufAt = TEST_HEAP_ADDRESS + 0xC00;
+    const U32 timesAt = TEST_HEAP_ADDRESS + 0xE00;
+    const U32 times64At = TEST_HEAP_ADDRESS + 0xE80;
     auto putStr = [&](U32 at, const char* s) {
         context.memory->memcpy(at, s, (U32)strlen(s) + 1);
     };
@@ -100,6 +106,10 @@ void testNullPath32Syscalls() {
         U32 envp[1] = {0};
         context.memory->memcpy(argvAt, argv, sizeof(argv));
         context.memory->memcpy(envpAt, envp, sizeof(envp));
+        U32 timesLegacy[4] = {1500000000, 123000000, 1600000000, 456000000};
+        context.memory->memcpy(timesAt, timesLegacy, sizeof(timesLegacy));
+        U32 times64[8] = {1500000000, 0, 123000000, 0, 1600000000, 0, 456000000, 0};
+        context.memory->memcpy(times64At, times64, sizeof(times64));
     };
 
     auto invoke = [&](U32 nr, U32 a1, U32 a2, U32 a3, U32 a4 = 0, U32 a5 = 0, U32 a6 = 0) -> S32 {
@@ -171,11 +181,43 @@ void testNullPath32Syscalls() {
     expectEq("faccessat2 null", invoke(439, atFdcwd, 0, 0, 0), -K_EFAULT);
     expectEq("faccessat2 null AT_EMPTY_PATH (no null fd form)", invoke(439, filefd, 0, 0, atEmptyPath), -K_EFAULT);
 
-    // utimensat is the measured exception: a null path answers
-    // -EINVAL in every shape, fd form included.
-    expectEq("utimensat null", invoke(320, atFdcwd, 0, 0, 0), -K_EINVAL);
+    // utimensat with a null path answers the raw kernel's per-shape
+    // matrix (FD-136, host-measured at the raw syscall level in
+    // test-results/fd136-138/hostref-fd136b.c): flag bits outside
+    // AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer -EINVAL ahead of
+    // everything; the current-directory shape faults on the name
+    // fetch; any other flag with a null path answers -EINVAL; with
+    // flags 0 an unopened descriptor answers -EBADF and an open one
+    // is the descriptor form (futimens' shape) and succeeds.
+    expectEq("utimensat null AT_FDCWD", invoke(320, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_EMPTY_PATH", invoke(320, atFdcwd, 0, 0, atEmptyPath), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_SYMLINK_NOFOLLOW", invoke(320, atFdcwd, 0, 0, 0x100), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD invalid flags", invoke(320, atFdcwd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null dirfd fd form (valid times)", invoke(320, dirfd, 0, timesAt, 0), 0);
+    expectEq("utimensat null filefd fd form (valid times)", invoke(320, filefd, 0, timesAt, 0), 0);
+    {
+        // The descriptor form applies the times: the fixture file's
+        // modified time is now the staged one (1600000000 seconds;
+        // FsFileNode::lastModified reports host st_mtime in ms).
+        std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fileDesc->kobject);
+        U64 modified = (file && file->openFile && file->openFile->node) ? file->openFile->node->lastModified() : 0;
+        if (modified != 1600000000ULL * 1000) {
+            testFail("utimensat null filefd fd form did not apply the times: /a.txt lastModified=%llu (expected %llu)",
+                     (unsigned long long)modified, (unsigned long long)(1600000000ULL * 1000));
+        }
+    }
+    expectEq("utimensat null dirfd fd form (null times)", invoke(320, dirfd, 0, 0, 0), 0);
+    expectEq("utimensat null filefd fd form (null times)", invoke(320, filefd, 0, 0, 0), 0);
     expectEq("utimensat null AT_EMPTY_PATH fd shape", invoke(320, filefd, 0, 0, atEmptyPath), -K_EINVAL);
-    expectEq("utimensat_time64 null", invoke(412, atFdcwd, 0, 0, 0), -K_EINVAL);
+    expectEq("utimensat null AT_SYMLINK_NOFOLLOW fd shape", invoke(320, filefd, 0, 0, 0x100), -K_EINVAL);
+    expectEq("utimensat null invalid flags fd shape", invoke(320, filefd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null unopened", invoke(320, 4096, 0, 0, 0), -K_EBADF);
+    expectEq("utimensat null unopened AT_EMPTY_PATH", invoke(320, 4096, 0, 0, atEmptyPath), -K_EINVAL);
+    expectEq("utimensat_time64 null AT_FDCWD", invoke(412, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("utimensat_time64 null AT_FDCWD AT_EMPTY_PATH", invoke(412, atFdcwd, 0, 0, atEmptyPath), -K_EFAULT);
+    expectEq("utimensat_time64 null filefd fd form (valid times)", invoke(412, filefd, 0, times64At, 0), 0);
+    expectEq("utimensat_time64 null filefd fd form (null times)", invoke(412, filefd, 0, 0, 0), 0);
+    expectEq("utimensat_time64 null unopened", invoke(412, 4096, 0, 0, 0), -K_EBADF);
 
     process->close((U32)ifd);
     process->close(dirDesc->handle);

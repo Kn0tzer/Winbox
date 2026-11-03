@@ -33,9 +33,11 @@
 // KMemory::readString returns "" for a null address by construction.
 // The host also validates the flags word before it faults the name
 // copy, so a null name with invalid flags answers -EINVAL, and
-// these tests pin that order too. The 300-char name row is printed
-// as an observation only: the host's 249-char name limit is a
-// separate filing (FD-138), not part of this fix.
+// these tests pin that order too. FD-138 (same host measurement,
+// re-verified in test-results/fd136-138/hostref-fd136b.c): the
+// host refuses names longer than 249 chars with -EINVAL while a
+// name at the limit still creates; the boundary rows are pinned
+// below alongside the null rows.
 
 #ifndef BOXEDWINE_GUEST_X64
 
@@ -53,6 +55,8 @@ void testMemfdNullName32Syscalls() {
     const U32 emptyAt = TEST_HEAP_ADDRESS + 0x400;
     const U32 labelAt = TEST_HEAP_ADDRESS + 0x480;
     const U32 longAt = TEST_HEAP_ADDRESS + 0x500;
+    const U32 name249At = TEST_HEAP_ADDRESS + 0x700;
+    const U32 name250At = TEST_HEAP_ADDRESS + 0x800;
     // testNewInstruction() resets the whole test heap, so the staged
     // strings are rewritten inside invoke() after the code emission.
     auto stageStrings = [&]() {
@@ -62,6 +66,14 @@ void testMemfdNullName32Syscalls() {
         memset(longName, 'm', 300);
         longName[300] = 0;
         context.memory->memcpy(longAt, longName, 301);
+        char name249[250];
+        memset(name249, 'm', 249);
+        name249[249] = 0;
+        context.memory->memcpy(name249At, name249, 250);
+        char name250[251];
+        memset(name250, 'm', 250);
+        name250[250] = 0;
+        context.memory->memcpy(name250At, name250, 251);
     };
     auto invoke = [&](U32 a1, U32 a2) -> S32 {
         testNewInstruction(0);
@@ -98,11 +110,11 @@ void testMemfdNullName32Syscalls() {
     expectEq("memfd_create null name CLOEXEC", invoke(0, 1), -K_EFAULT);
     expectEq("memfd_create null name ALLOW_SEALING", invoke(0, 2), -K_EFAULT);
 
-    // FD-138 observation (host answers -EINVAL past 249 chars):
-    // printed, not pinned.
-    S32 longResult = invoke(longAt, 0);
-    printf("FD-137 observation: 32-bit memfd_create with a 300-char name returned %d (host: -EINVAL)\n", longResult);
-    if (longResult >= 0) process->close((U32)longResult);
+    // FD-138: the host's 249-char name limit. A name at the limit
+    // still creates; past it the answer is -EINVAL.
+    expectFd("memfd_create 249-char name creates", invoke(name249At, 0));
+    expectEq("memfd_create 250-char name", invoke(name250At, 0), -K_EINVAL);
+    expectEq("memfd_create 300-char name", invoke(longAt, 0), -K_EINVAL);
 }
 
 #endif
@@ -136,12 +148,22 @@ void testMemfdNullName64Syscalls() {
     const U64 emptyAt = dataPage;
     const U64 labelAt = dataPage + 0x100;
     const U64 longAt = dataPage + 0x200;
+    const U64 name249At = dataPage + 0x400;
+    const U64 name250At = dataPage + 0x500;
     memory->memcpyToGuest(emptyAt, "", 1);
     memory->memcpyToGuest(labelAt, "label", 6);
     char longName[320];
     memset(longName, 'm', 300);
     longName[300] = 0;
     memory->memcpyToGuest(longAt, longName, 301);
+    char name249[250];
+    memset(name249, 'm', 249);
+    name249[249] = 0;
+    memory->memcpyToGuest(name249At, name249, 250);
+    char name250[251];
+    memset(name250, 'm', 250);
+    name250[250] = 0;
+    memory->memcpyToGuest(name250At, name250, 251);
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -177,11 +199,11 @@ void testMemfdNullName64Syscalls() {
     expectEq("memfd_create null name CLOEXEC", invoke(0, 1), -K_EFAULT);
     expectEq("memfd_create null name ALLOW_SEALING", invoke(0, 2), -K_EFAULT);
 
-    // FD-138 observation (host answers -EINVAL past 249 chars):
-    // printed, not pinned.
-    S64 longResult = invoke(longAt, 0);
-    printf("FD-137 observation: x64 memfd_create with a 300-char name returned %lld (host: -EINVAL)\n", (long long)longResult);
-    if (longResult >= 0) process->close((U32)longResult);
+    // FD-138: the host's 249-char name limit. A name at the limit
+    // still creates; past it the answer is -EINVAL.
+    expectFd("memfd_create 249-char name creates", invoke(name249At, 0));
+    expectEq("memfd_create 250-char name", invoke(name250At, 0), -K_EINVAL);
+    expectEq("memfd_create 300-char name", invoke(longAt, 0), -K_EINVAL);
 }
 
 #endif
