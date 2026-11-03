@@ -163,6 +163,7 @@ void testSeqpacket64Syscalls();
 void testDatagramPeerCloseRefusal64Syscalls();
 void testSocketStateAnswers64Syscalls();
 void testPeerClosedStreamSendmsg64Syscalls();
+void testChmodNullPath64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -250,6 +251,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDatagramPeerCloseRefusal64Syscalls, "Test x64 datagram send to a just-closed peer answers ECONNREFUSED once, then ENOTCONN"},
     {testSocketStateAnswers64Syscalls, "Test x64 socket state answers: drained datagram reads, unconnected receives, non-listening connect, connected stream addressed sends"},
     {testPeerClosedStreamSendmsg64Syscalls, "Test x64 peer-closed stream sendmsg answers -EPIPE; never-connected stays -ENOTCONN"},
+    {testChmodNullPath64Syscalls, "Test x64 chmod/fchmodat null path answers -EFAULT; empty path stays -ENOENT"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

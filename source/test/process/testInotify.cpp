@@ -6887,6 +6887,122 @@ void testPeerClosedStreamSendmsg64Syscalls() {
     process->close(anchorFd);
 }
 
+void testChmodNullPath64Syscalls() {
+    // FD-126 (host-measured, test-results/fd126/hostref-fd126.c):
+    // a path system call given a null path pointer answers
+    // -EFAULT on the host, where an empty path answers -ENOENT.
+    // The 64-bit dispatcher's shared guest-string reader maps a
+    // null pointer to the empty string, so chmod(NULL) and
+    // fchmodat(dirfd, NULL) answered -ENOENT. Host answers (box
+    // kernel, raw fchmodat): chmod(NULL) -EFAULT, chmod("")
+    // -ENOENT; fchmodat(any dirfd, NULL, any flags) -EFAULT --
+    // including under AT_EMPTY_PATH and with an unopened dirfd,
+    // so the fault precedes both flag handling and dirfd
+    // resolution; fchmodat(dirfd, "", AT_EMPTY_PATH) -ENOENT
+    // (the legacy fchmodat gives an empty name the plain lookup
+    // answer even with the flag), pinned here as a control so
+    // the null fix cannot overshoot into empty-path handling.
+    // The reader's other consumers are not this defect:
+    // execve's path is already guarded to -EFAULT in the
+    // dispatcher, and the argv/envp walk never passes a null
+    // element pointer to the reader.
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd126XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("chmod null-path test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    // The fixture file, created through the process API against
+    // the swapped root.
+    KFileDescriptorPtr created;
+    U32 result = process->openFile(B("/"), B("/a.txt"), K_O_RDWR | K_O_CREAT, created);
+    if ((S32)result < 0 || !created) {
+        testFail("chmod null-path test could not create /a.txt: %d", (S32)result);
+        return;
+    }
+    process->close(created->handle);
+
+    // A real dirfd for the fixture root.
+    KFileDescriptorPtr dirDesc;
+    result = process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc);
+    if ((S32)result < 0 || !dirDesc) {
+        testFail("chmod null-path test could not open its fixture dir: %d", (S32)result);
+        return;
+    }
+    const U64 dirfd = (U64)(U32)dirDesc->handle;
+
+    constexpr U64 dataPage = 0x7E000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("chmod null-path test could not map its fixture page");
+        process->close(dirDesc->handle);
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: got %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+    auto expectMode = [&](U32 want, const char* label) {
+        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(process->fsContext->currentDirectory, B("/a.txt"), true);
+        if (!node || (node->getStatMode() & 07777) != want) {
+            testFail("%s: mode did not land (want %04o)", label, want);
+        }
+    };
+
+    constexpr U64 nameAt  = dataPage + 0x000; // "a.txt"
+    constexpr U64 emptyAt = dataPage + 0x100; // ""
+    memory->memcpyToGuest(nameAt, "a.txt", 6);
+    memory->memcpyToGuest(emptyAt, "", 1);
+
+    constexpr U64 AT_FDCWD = (U64)-100;
+    constexpr U64 AT_EMPTY_PATH = 0x1000;
+
+    // chmod (90): the filed shape and its controls.
+    expectEq(invoke(90, 0, 0644, 0, 0), -K_EFAULT, "chmod(NULL)");
+    expectEq(invoke(90, emptyAt, 0644, 0, 0), -K_ENOENT, "chmod(\"\")");
+    expectEq(invoke(90, nameAt, 0600, 0, 0), 0, "chmod(\"a.txt\", 0600)");
+    expectMode(0600, "chmod(\"a.txt\", 0600)");
+
+    // fchmodat (268): a null path answers -EFAULT at every
+    // dirfd/flags combination the host was measured on; the
+    // empty path keeps -ENOENT, including under AT_EMPTY_PATH.
+    expectEq(invoke(268, AT_FDCWD, 0, 0644, 0), -K_EFAULT, "fchmodat(AT_FDCWD, NULL)");
+    expectEq(invoke(268, AT_FDCWD, emptyAt, 0644, 0), -K_ENOENT, "fchmodat(AT_FDCWD, \"\")");
+    expectEq(invoke(268, dirfd, 0, 0644, 0), -K_EFAULT, "fchmodat(dirfd, NULL)");
+    expectEq(invoke(268, dirfd, 0, 0644, AT_EMPTY_PATH), -K_EFAULT, "fchmodat(dirfd, NULL, AT_EMPTY_PATH)");
+    expectEq(invoke(268, 4096, 0, 0644, 0), -K_EFAULT, "fchmodat(unopened dirfd, NULL)");
+    expectEq(invoke(268, dirfd, emptyAt, 0644, AT_EMPTY_PATH), -K_ENOENT, "fchmodat(dirfd, \"\", AT_EMPTY_PATH)");
+    expectEq(invoke(268, dirfd, nameAt, 0640, 0), 0, "fchmodat(dirfd, \"a.txt\", 0640)");
+    expectMode(0640, "fchmodat(dirfd, \"a.txt\", 0640)");
+
+    process->close(dirDesc->handle);
+}
+
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
