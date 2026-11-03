@@ -5953,6 +5953,7 @@ void testSeqpacket64Syscalls() {
                 process->close(spClient);
                 S32 stClient = sock(1 /*SOCK_STREAM*/);
                 nonblock(stClient);
+                writePathAddr(addrAt, "/spsrv");
                 S64 m2 = invoke(42, (U64)(U32)stClient, addrAt, slen, 0);
                 if (m2 != -K_EPROTOTYPE) testFail("stream connect to a seqpacket listener: %lld, want -EPROTOTYPE", (long long)m2);
                 process->close(stClient);
