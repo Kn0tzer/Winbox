@@ -82,6 +82,7 @@ void testGetrandom32Syscall();
 void testReadv32Syscall();
 void testFutexWaitv32Syscall();
 void testNullPath32Syscalls();
+void testMemfdNullName32Syscalls();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
@@ -168,6 +169,7 @@ void testPeerClosedStreamSendmsg64Syscalls();
 void testChmodNullPath64Syscalls();
 void testEmptyPath64Syscalls();
 void testNullPath64Syscalls();
+void testMemfdNullName64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -258,6 +260,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testChmodNullPath64Syscalls, "Test x64 chmod/fchmodat null path answers -EFAULT; empty path stays -ENOENT"},
     {testEmptyPath64Syscalls, "Test x64 empty path answers -ENOENT at the path calls; AT_EMPTY_PATH fd forms keep working"},
     {testNullPath64Syscalls, "Test x64 null path answers -EFAULT at the open-coded path cases; empty path keeps -ENOENT"},
+    {testMemfdNullName64Syscalls, "Test x64 memfd_create null name answers -EFAULT; empty name still creates the file"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -969,6 +972,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testEmptyPathProcessApi, "Test empty path answers -ENOENT through the KProcess API; AT_EMPTY_PATH fd forms keep working"},
     {testNullPath32Syscalls, "Test 32-bit null path answers -EFAULT through the string reader path; utimensat answers -EINVAL"},
+    {testMemfdNullName32Syscalls, "Test 32-bit memfd_create null name answers -EFAULT; empty name still creates the file"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
