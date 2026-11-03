@@ -5599,7 +5599,7 @@ void testWriteZeroLength64Syscalls() {
             } else {
                 KFileDescriptorPtr roDesc = process->allocFileDescriptor(txDesc->kobject, K_O_RDONLY, 0, -1, 0);
                 S64 w = write0(roDesc->handle, bufAt);
-                expectNothingQueued(p, w, -K_EINVAL, "dgram write0 read-only descriptor");
+                expectNothingQueued(p, w, -K_EBADF, "dgram write0 read-only descriptor");
                 process->close(roDesc->handle);
                 KFileDescriptorPtr woDesc = process->allocFileDescriptor(txDesc->kobject, K_O_WRONLY, 0, -1, 0);
                 w = write0(woDesc->handle, bufAt);
