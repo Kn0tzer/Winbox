@@ -151,6 +151,10 @@ void testRecvfromBadBuffer64Syscalls();
 void testSendmsgControlChain64Syscalls();
 void testRecvmsgNameCopyback64Syscalls();
 void testSendtoDatagram64Syscalls();
+void testRecvmsgSenderName64Syscalls();
+void testReadQueuedDatagram64Syscalls();
+void testNamedDatagram64Syscalls();
+void testSendmsgZeroLength64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -226,6 +230,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testSendmsgControlChain64Syscalls, "Test x64 sendmsg control-chain validation"},
     {testRecvmsgNameCopyback64Syscalls, "Test x64 recvmsg source-name copyback to unwritable guest buffers"},
     {testSendtoDatagram64Syscalls, "Test x64 sendto datagram delivery on a connected socketpair"},
+    {testRecvmsgSenderName64Syscalls, "Test x64 recvmsg/recvfrom sender-name reporting for queued messages"},
+    {testReadQueuedDatagram64Syscalls, "Test x64 plain read/recvfrom draining the message queue"},
+    {testNamedDatagram64Syscalls, "Test x64 named datagram delivery: addressed sendto and datagram connect"},
+    {testSendmsgZeroLength64Syscalls, "Test x64 zero-length sendmsg datagram delivery"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
