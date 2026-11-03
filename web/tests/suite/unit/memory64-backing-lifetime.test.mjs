@@ -22,6 +22,11 @@ test('shared mapping replacement retains in-flight private backing pointers', ()
 using U8 = uint8_t; using U32 = uint32_t; using U64 = uint64_t;
 #define K64_PAGE_SIZE 4096
 void bssBufDiagLog(const char*, const void*, const void*) {}
+// FD-129: the sliced K64Page allocates via the backing arena;
+// stub it to the heap fallback (nullptr) so the slice keeps
+// exercising the same retain/free semantics standalone.
+U8* k64BackingArenaAlloc() { return nullptr; }
+void k64BackingArenaFree(U8* p) { delete[] p; }
 ${extractSourceRange(header, start, end)}
 int main() {
     U8 shared[K64_PAGE_SIZE] = {};

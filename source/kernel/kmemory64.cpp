@@ -346,6 +346,64 @@ void KMemory64::noteGuestWriteRange(U64 addr, U64 len) {
 }
 #endif // BOXEDWINE_BLOCK_CACHE_INFRA
 
+
+// ================= FD-129 backing arena =================
+// See include/kmemory64.h for the rationale. Chunks are obtained
+// from malloc in large blocks and sub-allocated in page-size slots
+// with a free list; chunks are never freed, so an arena slot's span
+// stays owned by the arena for the life of the process. The arena
+// mutex is a leaf lock (it guards only the free list and carve
+// pointer), so commit()/backing-free are safe from every context
+// that could previously call new U8[]/delete[].
+namespace {
+struct K64BackingArena {
+    static constexpr size_t CHUNK_BYTES = 16 * 1024 * 1024;
+    std::mutex mutex;
+    std::vector<U8*> chunks;
+    std::vector<U8*> freeSlots;
+    U8* carve = nullptr;
+    U8* carveEnd = nullptr;
+    int disabled = -1; // -1 unknown, 0 enabled, 1 disabled by env
+};
+K64BackingArena& k64Arena() {
+    static K64BackingArena arena;
+    return arena;
+}
+} // namespace
+
+U8* k64BackingArenaAlloc() {
+    K64BackingArena& a = k64Arena();
+    std::lock_guard<std::mutex> lock(a.mutex);
+    if (a.disabled < 0) {
+        const char* e = std::getenv("BW64_PAGE_ARENA");
+        a.disabled = (e && e[0] == '0') ? 1 : 0;
+    }
+    if (a.disabled) return nullptr;
+    if (!a.freeSlots.empty()) {
+        U8* p = a.freeSlots.back();
+        a.freeSlots.pop_back();
+        return p;
+    }
+    if (!a.carve || a.carve + K64_PAGE_SIZE > a.carveEnd) {
+        U8* chunk = (U8*)std::malloc(K64BackingArena::CHUNK_BYTES);
+        if (!chunk) return nullptr;
+        a.chunks.push_back(chunk);
+        a.carve = chunk;
+        a.carveEnd = chunk + K64BackingArena::CHUNK_BYTES;
+    }
+    U8* p = a.carve;
+    a.carve += K64_PAGE_SIZE;
+    return p;
+}
+
+void k64BackingArenaFree(U8* p) {
+    if (!p) return;
+    K64BackingArena& a = k64Arena();
+    std::lock_guard<std::mutex> lock(a.mutex);
+    a.freeSlots.push_back(p);
+}
+// ================= end FD-129 backing arena =================
+
 KMemory64::KMemory64(KProcess* process) : process(process) {}
 KMemory64::~KMemory64() {
     // FD-82: every file mapping of this address space dies with it
