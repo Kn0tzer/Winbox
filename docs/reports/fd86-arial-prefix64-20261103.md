@@ -120,10 +120,15 @@ GREEN:
    `user.reg` now carries
    `[Software\Wine\Fonts\Replacements]` +
    `"Arial"="DejaVu Sans"`.
-5. Checker on the re-pinned set (`checker-midstate.log`):
-   exit 0, no FAIL lines. `bootstrap.py --check`
-   (`bootstrap-check.log`): 0 failures, 1 standing skip,
-   "Runtime assets verified (13 files)".
+5. Checker sequence: a mid-state run after staging
+   (`checker-midstate.log`) already passed the FD-86
+   check — its only failure was the
+   not-yet-regenerated artifact manifest (`manifest
+   matches shipped zips: … drifted …; regenerate
+   it`; 1 failure, 1 skip). After regenerating the
+   manifest, `bootstrap.py --check`
+   (`bootstrap-check.log`): 0 failures, 1 standing
+   skip, "Runtime assets verified (13 files)".
 6. Archive procedure: rebuilding the 20261102 tar from
    its pinned files first reproduced it byte-for-byte
    (514,365,440 B, `7df0cdc2…` — determinism proven before
