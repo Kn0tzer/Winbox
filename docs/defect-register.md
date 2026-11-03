@@ -1199,6 +1199,65 @@ do not close the entry until they land.
   whose highest entry was FD-86; the number is
   claimed on sibling branches for unrelated items,
   so the composing merge renumbers by audit.)*
+  **CLOSED 2026-11-03 by lane-fd87loss, CL-55
+  provisional (the merge audit settles numbering).**
+  The filed mechanism was wrong, and the correction
+  is part of this closure: the 64-bit memory
+  serving is innocent -- a page-level store/read
+  trace (BW64_BSSDIAG) shows every store landing
+  in the one committed buffer and every later read
+  returning exactly what was stored; in the
+  failing loops the STORED VALUES THEMSELVES were
+  already wrong. The fixtures' `sin` is mingw
+  libm's x87 wrapper (fld/fsin/fstp through
+  `__sinl_internal`), and its results degraded
+  across repeated calls: a bare `fldl; fsin;
+  fstpl` loop printed the iterated-sine sequence
+  (sin of the previous result: 0.4794255,
+  0.4612696, 0.4450853, ...), while an FNSAVE dump
+  after a fresh load showed the correct 80-bit
+  state. Root cause: with `KSystem::useF64 ==
+  false` (the 64-bit guest), `FPU::FLD_F32`,
+  `FLD_F64`, `FLD_I16` and `FLD_I32` wrote the
+  loaded value into the SoftFloat `regs[]` slot
+  but left `isRegCached[slot]` untouched, while
+  `FPU::getF64()` (reached from the FSTP handlers
+  and other double readers) sets that flag and
+  leaves its cached double behind -- so the next
+  load into the same physical slot kept the stale
+  cached value authoritative, and FSIN and every
+  other cache-honoring op computed on the previous
+  occupant of the slot. Fixing commit `dd6a6855d`
+  (lane-fd87loss): the four load entry points now
+  clear `isRegCached[store_to]` on the 80-bit
+  path, matching FLD_I64, FLD_F80, LD80 and the
+  constant loaders, which already did. Proof
+  (lane record
+  `docs/reports/fd87-x87-stale-cache-20261103.md`;
+  evidence `test-results/fd87loss/`): fpprobe6's
+  accumulator reads exactly 184.1776 and
+  fpprobe7's post-loop arrays hold the true
+  values; fpprobe16's direct-call and
+  pointer-call sections agree (0.909297 /
+  0.479426); fpprobe21's loop returns
+  0.47942553860420301 on every iteration;
+  fpprobe8's sections A/B/D (previously lost) are
+  exact, fpprobe9 counts 1 zero, fpprobe19/20 are
+  exact including the bare-asm section; native
+  suites run serially -- main Test 0 FAILED,
+  X64Test 0 FAILED, both EXIT=0; browser build
+  "Browser export verified". The closing term on
+  FD-85's audio stage was verified on the
+  composed state (batch-3 integration tip
+  caadab5ad + this fix, in a scratch tree, runtime
+  assets 20261103): the shipped
+  common-dependencies suite test PASSES
+  (1 passed, 0 failed; OPENAL RESULT 0) with its
+  checks unloosened. This also discharges FD-85's
+  remaining blocker: the audio stack was innocent
+  exactly as lane-fd85pay measured -- the tone
+  buffer had been filled with the corrupted
+  values.
 
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
