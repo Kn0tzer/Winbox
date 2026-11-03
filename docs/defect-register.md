@@ -3226,6 +3226,21 @@ do not close the entry until they land.
   `test-results/fd77-stall-surfacing/healthy.log`
   (branch `lane-fd77-stall-surface`); record:
   `docs/reports/fd77-stall-surfacing-20261101.md`.
+  **Update (2026-11-02, batch-2 merge lane): RESOLVED at
+  composition.** The catalog side is right and the test's
+  expectation was stale: `web/demos.mjs` lists 15 demos
+  and `renderDemos()` renders one `[data-game]` card per
+  demo unconditionally, so the filtered-view alternative
+  in the filing does not hold. Test-only correction
+  `8ac504abf` (`web/tests/launcher-ui.mjs` line 31:
+  8 -> 15), following the FD-64 stale-fixture precedent.
+  Proof at this composition's gate:
+  `node web/tests/launcher-ui.mjs` against the composed
+  build returns `pass:true` with all 13 checks (evidence:
+  `test-results/merge-fd66-65-85-fd77surface-20261102/launcher-ui.log`).
+  Closed inline at composition; no CL number consumed,
+  so the CL-42/CL-43 split coordinated for the two FD-87
+  claims is undisturbed.
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
