@@ -4666,8 +4666,14 @@ void testNamedDatagram64Syscalls() {
             S32 srx = (S32)memory->readd(svAt + 4);
             dl = writePathAddr(destAt, "/fd111i");
             S64 s = invoke6(44, (U64)(U32)stx, bufAt, 4, 0, destAt, dl);
-            if (s != -K_EOPNOTSUPP) {
-                testFail("stream sendto with a destination returned %lld (want -EOPNOTSUPP)", (long long)s);
+            // FD-123 reconciliation: the pair end staged here is a
+            // CONNECTED stream socket, whose addressed sendto the
+            // host answers -EISCONN; FD-111's -EOPNOTSUPP is the
+            // host's answer for an UNCONNECTED stream socket (its
+            // measurement did not record the state) and is pinned
+            // in that shape by the FD-123 test.
+            if (s != -K_EISCONN) {
+                testFail("stream sendto with a destination returned %lld (want -EISCONN for the connected pair end, FD-123)", (long long)s);
             }
             process->close(stx);
             process->close(srx);
