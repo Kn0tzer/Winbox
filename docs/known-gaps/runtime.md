@@ -732,10 +732,10 @@ reads `ARIAL=1 METRICS=1 RESULT 0`, x86 unregressed;
 the common-dependencies Gecko stage prints
 `MSHTML: TITLE boxedwine gecko`, `MSHTML: TEXT
 embedded html works`, `MSHTML: RESULT 0` with zero
-abort and zero missing-font lines (long-window
-evidence run — see the record for why the shipped
-test's 180 s stage window was not the instrument on
-a contended box). Record:
+abort and zero missing-font lines in the shipped
+test itself (load-gated third run; two earlier runs
+were contention-bound at the stage's 180 s window
+— see the record). Record:
 `docs/reports/fd86-arial-prefix64-20261103.md`.
 
 

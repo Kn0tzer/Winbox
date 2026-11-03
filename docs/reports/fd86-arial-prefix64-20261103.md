@@ -148,27 +148,38 @@ GREEN:
     (this branch's baseline; includes the
     runtime-completeness unit coverage of the checker).
 11. Gecko stage unregressed: the shipped
-    common-dependencies test was run twice on the fixed
-    build while the shared box was heavily contended
-    (load 10–20 on 4 CPUs); both runs stopped at the
-    Gecko stage's fixed 180 s wall-clock window with the
-    fixture spawned and its threads waiting and zero
-    ABORT / missing-font lines in the console
-    (`commondep2`/`commondep3` logs, preserved console) —
-    the stage never reached its print. A long-window
-    evidence variant of the same stage — identical boot,
+    common-dependencies test, run a third time on the
+    fixed build gated on a load trough
+    (`commondep4.log`, `commondep4-console.log`,
+    365,811 ms), passed the Gecko stage outright —
+    `MSHTML: TITLE boxedwine gecko`, `MSHTML: TEXT
+    embedded html works`, `MSHTML: RESULT 0`, zero
+    ABORT lines in the whole console — and the
+    OpenAL guest stage behind it (`OPENAL: RESULT 0`
+    with its device/vendor/version/renderer lines);
+    the test's only failure was the page-side
+    audio-capture wait (`page.waitForFunction:
+    Timeout 30000ms exceeded` at `waitForPageFn`),
+    FD-85's standing failure, the same shape as
+    FD-65's parent-branch runs. Two earlier runs the
+    same night on the heavily contended box (load
+    10–20 on 4 CPUs) stopped at the Gecko stage's
+    fixed 180 s wall-clock window with the fixture
+    spawned and its threads waiting and zero ABORT /
+    missing-font lines (`commondep2`/`commondep3`
+    logs, preserved console) — the stage never
+    reached its print; a long-window evidence
+    variant of the same stage (identical boot,
     fixture, and assertions, stage window raised to
-    600 s, evidence-only file deleted after the run —
-    PASSed in 322,425 ms (`mshtml-evidence.log`,
-    `mshtml-evidence-console.log`): `MSHTML: TITLE
-    boxedwine gecko`, `MSHTML: TEXT embedded html
-    works`, `MSHTML: RESULT 0`, zero ABORT lines and
-    zero `unable to find a usable font` lines in the
-    whole run console. Baseline for comparison: on the
-    parent branch the same stage passed the shipped test
-    outright twice (FD-65 record, ~264 s full runs on a
-    quieter box). The shipped test's downstream
-    audio-capture stage is FD-85, untouched here.
+    600 s, evidence-only file deleted after the run)
+    PASSed in 322,425 ms with the same three MSHTML
+    lines and zero abort / missing-font lines
+    (`mshtml-evidence.log`,
+    `mshtml-evidence-console.log`), separating the
+    stage verdict from the wall clock before the
+    load-gated shipped run confirmed it. The shipped
+    test's downstream audio-capture stage is FD-85,
+    untouched here.
 
 ## Also filed
 
