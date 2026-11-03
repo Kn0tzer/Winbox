@@ -4804,6 +4804,129 @@ do not close the entry until they land.
   the 4,096-frame buffer). Provisional CL-66.
   Record: `docs/reports/fd90-oss-position-20261102.md`.
 
+- **FD-115 — A first-visit 32-bit start of the
+  shipped build can wedge before the desktop
+  handshake: a winedevice-host guest thread loops
+  on a delivered memory fault, the desktop never
+  opens, and the start fails silently.** *(Medium.
+  Filed by the wedge-incidence lane, 2026-11-02,
+  as FD-103 — the next free number on the
+  register that lane based on. That number was
+  taken on the composed register by the batch-3
+  audit's readv settlement (first-composed wins),
+  so the batch-4 audit settles this entry as
+  FD-115.)* Observed once, during
+  the deploy checks of the shipped build
+  `8ac504abf` / wasm `9a7d101c` (the FD-66 + FD-65
+  + FD-85 + FD-77-stall-surface batch), measured
+  through the public route: fresh browser profile
+  per boot, the deskpin-anchored harness session
+  (session=1), the launcher's restart budget
+  pre-exhausted (bwretry=2), a 900 s window,
+  classified offline under the hardened FD-47
+  rule. Deploy record:
+  `docs/reports/deploy-fd66-65-85-fd77surface-20261102.md`;
+  evidence
+  `test-results/deploy-fd66-65-85-fd77surface-20261102/`.
+  The instance is boot 1 of that deploy's x86
+  n=5: result class "other", pageReady false, note
+  "budget exhausted", wall 901,393 ms. Its
+  preserved console (684 lines,
+  `live-x86/boot-1/console.log`) starts normally —
+  wineserver32 and the deskpin spawned, the
+  fontconfig set served (5 BW64-INFO served-link
+  lines) — and then a guest thread of the
+  winedevice host process (pid=71, tid=76; the
+  session had opened `winedevice.exe` -> fd 63)
+  enters a delivered-memfault loop it never
+  leaves: the first fault reads addr=`0x10584384`
+  eip=`0x10584384` err=0 (count=1), then
+  addr=`0xfffffd08` at the same eip, err=2,
+  repeated. The console preserves 65 BW64-FAIL
+  guest-memfault32 lines — counts 1–64
+  consecutively and a final preserved line at
+  count=1024, so the thread took at least 1,024
+  delivered faults inside the window. The closing
+  thread dumps show that thread still running at
+  rip=`0x10584384` with noprogress_ms=780018. The
+  desktop handshake never completed (no explorer
+  OPENED signal, no deskpin READY line), zero
+  session restarts occurred, and the FD-77 stall
+  surfacing did not fire — by its stated design it
+  reports only stalls after the handshake — so
+  within the window the start presented as an
+  endless wait, not a reported failure. No
+  mechanism is claimed for the fault; the deploy
+  record claims none and the incidence work below
+  adds none. The deploy's other starts were
+  clean: the four following x86 starts certified
+  (handle `0x10052`, certified-ready 33.6–47.1 s,
+  median 40.8 s per the preserved summary), all
+  three x64 starts certified, and six consumer
+  Chromium sessions mapped with clean consoles;
+  the 65 BW64-FAIL lines are the only failure
+  lines in the deploy's 8-boot census (5,141
+  lines). MEASURED INCIDENCE (wedge-incidence
+  lane, 2026-11-02): the identical protocol and
+  driver (a byte-identical copy of the deploy's
+  `live-driver.mjs`, md5
+  `fc1a4cadc8ceb764ac7c9b8aa592f6f5`), n=10
+  further fresh first-visit x86 starts against
+  the same live build (BUILD_INFO re-read during
+  the series: git_sha `8ac504abf`, wasm
+  `9a7d101c`). Result: 10/10 certified, handle
+  `0x10052` on every boot, certified-ready
+  22.6–24.9 s (median 24.2 s), zero restarts,
+  zero false-ready. Census of the ten preserved
+  consoles (3,170 lines): 0 BW64-FAIL lines of
+  any kind, 0 guest-memfault32 lines, exactly 5
+  BW64-INFO served-link lines and 3 explorer
+  OPENED lines per boot. The wedge did not
+  reproduce, so no cleaner signature was
+  obtained; the deploy instance remains the only
+  one. Combined count on the shipped build: 1
+  wedged start in 15 measured first-visit x86
+  starts (the deploy's 5 + this series' 10), 14
+  certified. That bounds the observed rate at
+  one-in-fifteen so far; it does not prove the
+  rate, and one silent wedged first visit is a
+  defect at any rate — first-visit session-start
+  reliability is the project's stated top
+  usability priority — so the entry stays open.
+  Noted without any claim of identity: the
+  FD-54-batch deploy's Godot proof run recorded
+  one delivered guest memory fault (64-bit, addr
+  `0x2140bf26c`, rip `0x140301916`; see CL-42's
+  entry) that was observed, unattributed, and not
+  filed; the shapes differ (a single delivered
+  fault in a run that continued, against a
+  pre-handshake fault loop in a 32-bit start) and
+  no shared mechanism is asserted — the
+  cross-reference exists so the two observations
+  are findable from each other. Closing terms:
+  the fault's mechanism is identified and fixed,
+  and a first-visit series at least this size on
+  the fixed build shows no wedge and no memfault
+  lines; OR a pre-handshake stall of this shape
+  is surfaced to the user as a reported failure
+  instead of an endless wait (FD-77's surfacing
+  covers only post-handshake stalls). Lane
+  record:
+  `docs/reports/fd103-wedge-incidence-20261102.md`;
+  series evidence
+  `test-results/wedge-incidence-20261102/` (on
+  the lane tree: the driver copy, driver.log,
+  `series/results.jsonl`, `series/summary.json`,
+  `series/boot-1..10/console.log`,
+  `series-census.txt`, `live-build-info.json`).
+  **Update (batch-3 deploy, 2026-11-03):** that
+  deploy's checks added 5 further clean first-visit
+  x86 starts on the shipped batch-3 build (5/5
+  certified, 0 BW64-FAIL); the running tally on
+  shipped builds is now 1 wedged in 20 measured
+  first-visit x86 starts. The entry stays open on
+  its closing terms.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
