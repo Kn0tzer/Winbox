@@ -43,16 +43,11 @@
 //   24 allocFileDescriptor: descriptor stored (before the /proc link)
 //   25 allocFileDescriptor: /proc link about to be added
 //   26 allocFileDescriptor: /proc link added
-//   27 FsNode::addChild: children loaded (before the children lock)
-//   28 FsNode::addChild: child stored (before the inotify notify)
-//   36 FsNode::addChild: inotify notify returned
-//   29 KInotify::notifyChildAdded enter
-//   30 KInotify::sweepAll: instance snapshot taken, at least one live
-//   31 KInotify::sweepAll: no live instances
-//   32 KInotify::sweepAll: about to sweep one instance
-//   33 KInotify::sweepAll: one instance swept
-//   34 KInotify::sweep: before the instance condition lock
-//   35 KInotify::sweep: instance condition lock acquired
+//   27-36 retired: FsNode::addChild / KInotify sweep notes used while
+//      the investigation cleared the inotify path (every healthy
+//      allocation showed step 31, no live instances); removed because
+//      a unit test compiles addChild's source standalone. The alloc
+//      and pair notes above are the ones that convicted FD-127.
 //   41 allocFileDescriptor: after the lock; pid field carries the low
 //      bits of the fd-table mutex address, tid field the process id
 //   37 getNextFileDescriptorHandle: entry (same address encoding)
