@@ -73,6 +73,18 @@ BString socketAddressName(KMemory* memory, U32 address, U32 len) {
     return B("Unknown address family");
 }
 
+namespace {
+// FD-127 diagnostic gate: same switch as the guest thread dump, so the
+// step logging below exists only in diagnostic captures.
+bool bwPairDiagEnabled() {
+    static const bool enabled = []() {
+        const char* value = getenv("BW_THREAD_DUMP");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+} // namespace
+
 U32 ksocket(U32 domain, U32 type, U32 protocol) {
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
     // Offline by default. The launcher sets this host-only flag together with
@@ -94,8 +106,22 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
     }
 #endif
     if (domain==K_AF_UNIX) {
+        const bool sockDiag = bwPairDiagEnabled();
+        KThread* diagThread = sockDiag ? KThread::currentThread() : nullptr;
+        if (sockDiag) {
+            klog_fmt("BW64-DIAG sock obj-new pid=%u tid=%u type=%u",
+                     diagThread->process->id, diagThread->id, type);
+        }
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
+        if (sockDiag) {
+            klog_fmt("BW64-DIAG sock obj-made pid=%u tid=%u",
+                     diagThread->process->id, diagThread->id);
+        }
         KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        if (sockDiag) {
+            klog_fmt("BW64-DIAG sock fd-alloc pid=%u tid=%u handle=%d",
+                     diagThread->process->id, diagThread->id, result ? (S32)result->handle : -1);
+        }
         if (!result) {
             return -K_EMFILE;
         }
@@ -393,7 +419,28 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     std::shared_ptr<KUnixSocketObject> s1;
     std::shared_ptr<KUnixSocketObject> s2;
 
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
+    // FD-127 diagnostic instrumentation (BW_THREAD_DUMP-gated, see
+    // bwPairDiagEnabled): the fd-table lock acquisition is bracketed so
+    // a caller that never gets the lock is distinguishable from one
+    // blocked inside the wiring, and a busy lock is named before the
+    // blocking wait begins.
+    const bool pairDiag = bwPairDiagEnabled();
+    const U32 diagPid = thread->process->id;
+    const U32 diagTid = thread->id;
+    if (pairDiag) {
+        klog_fmt("BW64-DIAG pair enter pid=%u tid=%u af=%u type=%u flags=0x%x",
+                 diagPid, diagTid, af, type, flags);
+    }
+    std::unique_lock<std::recursive_mutex> lock(thread->process->fdsMutex(), std::defer_lock);
+    if (pairDiag) {
+        if (!lock.try_lock()) {
+            klog_fmt("BW64-DIAG pair lock-busy pid=%u tid=%u", diagPid, diagTid);
+            lock.lock();
+        }
+        klog_fmt("BW64-DIAG pair locked pid=%u tid=%u", diagPid, diagTid);
+    } else {
+        lock.lock();
+    }
 
     if (af!=K_AF_UNIX) {
         return -K_EAFNOSUPPORT;
@@ -402,10 +449,16 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
         return -K_EINVAL;
     }
     fd1 = ksocket(af, type, protocol);
+    if (pairDiag) {
+        klog_fmt("BW64-DIAG pair s1 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd1);
+    }
     if ((S32)fd1 < 0) {
         return (S32)fd1;
     }
     fd2 = ksocket(af, type, protocol);
+    if (pairDiag) {
+        klog_fmt("BW64-DIAG pair s2 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd2);
+    }
     if ((S32)fd2 < 0) {
         // socketpair is atomic on Linux: both descriptors or
         // neither, so the first descriptor is closed again here.
@@ -434,6 +487,10 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     }
     if (flags & ~(K_O_CLOEXEC|K_O_NONBLOCK)) {
         kwarn_fmt("Unknow flags sent to pipe2: %X", flags);
+    }
+    if (pairDiag) {
+        klog_fmt("BW64-DIAG pair wired pid=%u tid=%u fd1=%u fd2=%u",
+                 diagPid, diagTid, (U32)fd1, (U32)fd2);
     }
     outFd1 = fd1;
     outFd2 = fd2;

@@ -6927,10 +6927,29 @@ void ksyscall64(CPU64* cpu) {
             if (pipeFlags & 0x80000) passFlags |= K_O_CLOEXEC;  // O_CLOEXEC
             if (pipeFlags & 0x800)   passFlags |= K_O_NONBLOCK; // O_NONBLOCK
             FD fd1 = 0, fd2 = 0;
+            // FD-127 diagnostic instrumentation: active only when the
+            // thread-dump diagnostic is enabled (BW_THREAD_DUMP=1), so
+            // production runs are untouched. Entry/exit brackets around
+            // the pair creation and the fd writeback name the calling
+            // thread; the matching step lines live in ksocketpairFds.
+            const bool pipeDiag = bwThreadDumpEnabled();
+            if (pipeDiag) {
+                klog_fmt("BW64-DIAG pipe2 enter pid=%u tid=%u nr=%d fds=0x%llx flags=0x%llx",
+                         cpu->thread->process->id, cpu->thread->id, (int)nr,
+                         (unsigned long long)a1, (unsigned long long)a2);
+            }
             S32 rc = ksocketpairFds(cpu->thread, K_AF_UNIX, K_SOCK_STREAM, 0, passFlags, fd1, fd2);
+            if (pipeDiag) {
+                klog_fmt("BW64-DIAG pipe2 pair-returned pid=%u tid=%u rc=%d fd1=%u fd2=%u",
+                         cpu->thread->process->id, cpu->thread->id, (int)rc, (U32)fd1, (U32)fd2);
+            }
             if (rc) { ret = (U64)(S64)rc; break; }
             cpu->memory->writed(a1, (U32)fd1);
             cpu->memory->writed(a1 + 4, (U32)fd2);
+            if (pipeDiag) {
+                klog_fmt("BW64-DIAG pipe2 exit pid=%u tid=%u",
+                         cpu->thread->process->id, cpu->thread->id);
+            }
             ret = 0;
             break;
         }
