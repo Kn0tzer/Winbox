@@ -466,30 +466,6 @@ static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
     if (ripModules) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
-// FD-97: the number of leading bytes of the guest range [addr, addr+len)
-// that are readable, page by page, under the same predicate the access
-// check inside KMemory64::memcpyFromGuest applies (the page is mapped
-// and carries READ; pages mapped write-only carry READ too under the
-// x86 write-implies-read flag rule, so they count as readable exactly
-// as they do for the host's copy_from_user and for the guest's own
-// loads). memcpyFromGuest zero-fills its whole destination when that
-// check fails for any part of the range; the single-call write paths
-// use this prefix to answer like the host instead — a short count for
-// a readable prefix, EFAULT when no byte is readable.
-static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {
-    if (!memory) return 0;
-    U64 readable = 0;
-    while (readable < len) {
-        const U64 at = addr + readable;
-        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
-        if (!(flags & K64_PAGE_MAPPED) || !(flags & K64_PAGE_READ)) break;
-        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
-        if (chunk > len - readable) chunk = len - readable;
-        readable += chunk;
-    }
-    return readable;
-}
-
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large writes for any
@@ -3495,6 +3471,30 @@ void bw64InvalidateScratchForThread(U32 threadId) {
 // into one scratch blob, translates any SCM_RIGHTS cmsg, builds a 32-bit msghdr
 // in scratch, and calls the 32-bit ksendmsg (reusing all the AF_UNIX queue +
 // fd-passing logic).
+// FD-97: the number of leading bytes of the guest range [addr, addr+len)
+// that are readable, page by page, under the same predicate the access
+// check inside KMemory64::memcpyFromGuest applies (the page is mapped
+// and carries READ; pages mapped write-only carry READ too under the
+// x86 write-implies-read flag rule, so they count as readable exactly
+// as they do for the host's copy_from_user and for the guest's own
+// loads). memcpyFromGuest zero-fills its whole destination when that
+// check fails for any part of the range; the single-call write paths
+// use this prefix to answer like the host instead — a short count for
+// a readable prefix, EFAULT when no byte is readable.
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {
+    if (!memory) return 0;
+    U64 readable = 0;
+    while (readable < len) {
+        const U64 at = addr + readable;
+        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
+        if (!(flags & K64_PAGE_MAPPED) || !(flags & K64_PAGE_READ)) break;
+        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
+        if (chunk > len - readable) chunk = len - readable;
+        readable += chunk;
+    }
+    return readable;
+}
+
 static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     KThread* thread = cpu->thread;
     if (!thread || !thread->process) return (U64)-K_ENOSYS;

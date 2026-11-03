@@ -11,7 +11,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..',
 
 test('x64 socket messages retain addresses and flags and bound truncated packet copies', () => {
   const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
-  const start = source.indexOf('static U64 sys_sendmsg64(');
+  const start = source.indexOf('static U64 sys_guestReadablePrefix64(');
   const end = source.indexOf('// mincore(addr', start);
   const dir = mkdtempSync(join(tmpdir(), 'bw-socket64-msg-'));
   try {
@@ -25,13 +25,18 @@ test('x64 socket messages retain addresses and flags and bound truncated packet 
 #include <atomic>
 #include <algorithm>
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using S32=int32_t;using U8=uint8_t;
-constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1,K_SCM_CREDENTIALS=2,K_MSG_CTRUNC=8;
+constexpr U32 K_ENOSYS=38,K_EFAULT=14,K_EINVAL=22,K_SOL_SOCKET=1,K_SCM_RIGHTS=1,K_SCM_CREDENTIALS=2,K_MSG_CTRUNC=8,K_EBADF=9,K_ENOTSOCK=88,K_EMSGSIZE=90,KTYPE_UNIX_SOCKET=1,KTYPE_NATIVE_SOCKET=2;
 #define klog_fmt(...)
 #define MSG_SCRATCH_BYTES (64*1024)
 #define MSG_SCRATCH_HDR 0
 #define MSG_SCRATCH_IOV 32
 #define MSG_SCRATCH_CMSG 64
 #define MSG_SCRATCH_DATA 512
+#define K64_PAGE_SIZE 4096
+#define K64_PAGE_SHIFT 12
+#define K64_PAGE_MASK 0xFFFULL
+#define K64_PAGE_READ 0x01
+#define K64_PAGE_MAPPED 0x20
 struct Memory {
  U8 bytes[131072]={};U32 dataReads=0;
  U32 readd(U64 a){assert(a+4<=sizeof(bytes));U32 v;std::memcpy(&v,bytes+a,4);return v;}
@@ -42,10 +47,16 @@ struct Memory {
  void memcpy(U32 a,const void* in,U32 n){assert(a+n<=sizeof(bytes));std::memcpy(bytes+a,in,n);}
  void memcpyFromGuest(void* out,U64 a,U64 n){assert(a+n<=sizeof(bytes));std::memcpy(out,bytes+a,n);}
  void memcpyToGuest(U64 a,const void* in,U64 n){assert(a+n<=sizeof(bytes));std::memcpy(bytes+a,in,n);}
+ U32 getPageFlags(U64)const{return K64_PAGE_MAPPED|K64_PAGE_READ;}
 };
 using KMemory=Memory;
+using KMemory64=Memory;
 struct Exe{bool contains(const char*){return false;}};
-struct Process{U32 id=10;Exe exe;};
+struct KThread;
+struct KObject{U32 type=KTYPE_UNIX_SOCKET;};
+struct KFileDescriptorObject{std::shared_ptr<KObject> kobject=std::make_shared<KObject>();};
+using KFileDescriptorPtr=std::shared_ptr<KFileDescriptorObject>;
+struct Process{U32 id=10;Exe exe;KFileDescriptorPtr getFileDescriptor(U32){return std::make_shared<KFileDescriptorObject>();}};
 struct KThread{Memory* memory;std::shared_ptr<Process> process=std::make_shared<Process>();U32 id=11;};
 struct CPU64{KThread* thread;Memory* memory;};
 static std::atomic<int> g_wsConcInflight{0};
