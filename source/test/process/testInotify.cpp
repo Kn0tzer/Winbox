@@ -893,6 +893,7 @@ void testPreadv64Syscalls() {
             testFail("plain read at EOF generated IN_ACCESS");
         }
         process->close(rdesc->handle);
+    }
     // 10. FD-99: preadv2's offset -1 is the file-position mode (read
     // at the current position and advance it, as pwritev2's -1 does);
     // preadv's own -1 stays EINVAL. RWF_NOAPPEND (0x20) is a defined
@@ -990,80 +991,6 @@ void testPreadv64Syscalls() {
 // (mmap 9 / munmap 11 / close 3), so the materialized path itself is
 // the thing under test.
 void testCloseWriteDeferral64() {
-// FD-101: the 64-bit sendmsg path (and sendmmsg, which loops it) must
-// not fabricate zero bytes for guest memory it cannot read. Host-kernel
-// reference behaviour (measured on the box's 6.17 kernel with dedicated
-// reference programs, test-results/fd101/hostref-sendmsg-fd101 and
-// hostref-sendto-fd101): for AF_UNIX the send is all-or-nothing for
-// EVERY socket type -- if any byte of any nonzero segment is unreadable,
-// the call answers -EFAULT and nothing arrives; this holds for a fully
-// unreadable segment, a segment whose readable prefix runs into an
-// unreadable page, and a bad segment anywhere in the array. Zero-length
-// segments are skipped even when their base is unreadable; a
-// PROT_WRITE-only segment is readable to the copy (x86
-// write-implies-read) and lands its real bytes. The msghdr, the iov
-// array, msg_name and msg_control are imported before the data: an
-// unreadable one answers -EFAULT, an iovlen over UIO_MAXIOV answers
-// -EMSGSIZE, and the descriptor answers (-EBADF / -ENOTSOCK) precede
-// every copy fault. sendmmsg delivers the messages before the bad one
-// and reports their count. On the base the calls below land zero-filled
-// bytes and report success.
-// The peer is drained through recvmsg (the message-queue receive that
-// pairs with sendmsg in this socket layer), gated by a zero-timeout
-// poll so an empty queue can never block the test; each case uses a
-// fresh socketpair so no case can see another case's bytes.
-void testSendmsgBadBuffer64Syscalls() {
-// FD-97: the 64-bit single-call write paths (write/pwrite64, and writev
-// through them) must not fabricate zero bytes for an unreadable guest
-// buffer. Host-kernel reference behaviour (measured on the box's 6.17
-// kernel with a dedicated reference program,
-// test-results/fd97/hostref-fd97): a fully unreadable buffer answers
-// -EFAULT and writes nothing; a buffer whose readable prefix runs into
-// an unreadable page writes the prefix as a short count; count 0 with a
-// bad buffer returns 0; a bad fd with a bad buffer answers -EBADF (the
-// descriptor answer precedes the copy fault); a PROT_WRITE-only buffer
-// is readable to the copy (x86 write-implies-read) and lands its real
-// bytes. On the base the calls below land zero-filled bytes and report
-// success.
-void testWriteBadBuffer64Syscalls() {
-// FD-93: the 64-bit write family's wrong-mode answers. Host-kernel
-// reference behaviour (measured on the box's 6.17 kernel with
-// dedicated reference programs, preserved under
-// test-results/fd92-93/; extends lane-fd83-84's hostref-write.c
-// matrix with the validation orderings):
-//  - write, pwrite64 and writev on a descriptor opened read-only
-//    answer EBADF -- for count 0 and iovcnt 0 as well; the
-//    descriptor check also precedes write's zero-count return.
-//  - pwrite64's negative offset answers EINVAL ahead of both the
-//    descriptor and mode answers (measured on a bad descriptor
-//    too); the mode answer precedes writev's iovcnt range check
-//    (EINVAL) and its null-iovec check (EFAULT).
-//  - a successful pwrite64 does not move the file position.
-void testWriteFamily64Syscalls() {
-// FD-94: x64 pwritev (296) / pwritev2 (328). On the base both numbers
-// are in the name table only -- no X64_SYS define, no dispatch case --
-// so every call answers ENOSYS. Host-kernel reference behaviour
-// (measured on the box's 6.17 kernel with dedicated reference
-// programs, test-results/fd94-96/hostref-pwritev*.c):
-//  - segments are written in order at successive offsets; the file
-//    position does not move; a zero-length segment is skipped; a
-//    short write ends the walk.
-//  - validation order: a negative offset is EINVAL ahead of the
-//    descriptor check (EBADF); the descriptor check is ahead of the
-//    pwritev2 flags check (EOPNOTSUPP for bits outside the defined
-//    RWF mask) and of the iovcnt range check (EINVAL outside
-//    [0, IOV_MAX]); a bad iovec array with iovcnt > 0 is EFAULT.
-//  - a later segment's failure returns the bytes already written
-//    (the writev partial shape); a failing first segment returns
-//    the error itself.
-//  - pwritev2 offset -1 is the file-position mode (write at the
-//    current position and advance it); offset below -1 is EINVAL.
-//    RWF_APPEND writes at end of file ignoring the offset and,
-//    outside the -1 mode, leaves the position untouched.
-//  - a successful multi-segment call produces one watcher-visible
-//    IN_MODIFY (the queue coalesces the per-segment events, as on
-//    Linux); failed calls produce none.
-void testPwritev64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
@@ -1138,55 +1065,6 @@ void testPwritev64Syscalls() {
     CPU64 cpu(memory);
     cpu.thread = context.thread;
     auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
-    constexpr U64 dataPage = 0x71000000ULL;
-    constexpr U64 crossPage = 0x72000000ULL;
-    constexpr U64 nonePage = 0x73000000ULL;
-    constexpr U64 wonlyPage = 0x74000000ULL;
-    constexpr U64 bigArray = 0x75000000ULL;
-    constexpr U64 unmapped = 0x6200000000ULL;
-    auto mapFixture = [&](U64 addr, U64 size, U32 prot) {
-        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
-            memory->mmapAnonymousFixed(addr, size, prot) != addr) {
-            testFail("sendmsg-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
-    constexpr U64 dataPage = 0x7B000000ULL;
-    constexpr U64 crossPage = 0x7C000000ULL;
-    constexpr U64 nonePage = 0x7D000000ULL;
-    constexpr U64 wonlyPage = 0x7E000000ULL;
-    constexpr U64 unmapped = 0x6000000000ULL;
-    auto mapFixture = [&](U64 addr, U32 prot) {
-        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
-            memory->mmapAnonymousFixed(addr, K64_PAGE_SIZE, prot) != addr) {
-            testFail("write-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
-            return false;
-        }
-        return true;
-    };
-    if (!mapFixture(dataPage, K64_PAGE_SIZE, 3) || !mapFixture(crossPage, K64_PAGE_SIZE, 3) ||
-        !mapFixture(nonePage, K64_PAGE_SIZE, 0) || !mapFixture(wonlyPage, K64_PAGE_SIZE, 2) ||
-        !mapFixture(bigArray, 5 * K64_PAGE_SIZE, 3)) return;
-    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
-        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
-        testFail("sendmsg-bad-buffer test fixture addresses are unexpectedly mapped");
-    if (!mapFixture(dataPage, 3) || !mapFixture(crossPage, 3) ||
-        !mapFixture(nonePage, 0) || !mapFixture(wonlyPage, 2)) return;
-    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
-        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
-        testFail("write-bad-buffer test fixture addresses are unexpectedly mapped");
-        return;
-    }
-    if (!(memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) ||
-        (memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
-        testFail("sendmsg-bad-buffer test PROT_NONE fixture has the wrong flags");
-        return;
-    }
-    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
-        testFail("sendmsg-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
-        return;
-    }
-
-    CPU64 cpu(memory);
-    cpu.thread = context.thread;
-    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
         cpu.reg[X64_RAX].setU64(nr);
         cpu.reg[X64_RDI].setU64(a1);
         cpu.reg[X64_RSI].setU64(a2);
@@ -1362,6 +1240,77 @@ void testPwritev64Syscalls() {
 
     process->close((S32)inotifyDesc->handle);
     rmdir(dir);
+}
+
+
+// FD-101: the 64-bit sendmsg path (and sendmmsg, which loops it) must
+// not fabricate zero bytes for guest memory it cannot read. Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with dedicated
+// reference programs, test-results/fd101/hostref-sendmsg-fd101 and
+// hostref-sendto-fd101): for AF_UNIX the send is all-or-nothing for
+// EVERY socket type -- if any byte of any nonzero segment is unreadable,
+// the call answers -EFAULT and nothing arrives; this holds for a fully
+// unreadable segment, a segment whose readable prefix runs into an
+// unreadable page, and a bad segment anywhere in the array. Zero-length
+// segments are skipped even when their base is unreadable; a
+// PROT_WRITE-only segment is readable to the copy (x86
+// write-implies-read) and lands its real bytes. The msghdr, the iov
+// array, msg_name and msg_control are imported before the data: an
+// unreadable one answers -EFAULT, an iovlen over UIO_MAXIOV answers
+// -EMSGSIZE, and the descriptor answers (-EBADF / -ENOTSOCK) precede
+// every copy fault. sendmmsg delivers the messages before the bad one
+// and reports their count. On the base the calls below land zero-filled
+// bytes and report success.
+// The peer is drained through recvmsg (the message-queue receive that
+// pairs with sendmsg in this socket layer), gated by a zero-timeout
+// poll so an empty queue can never block the test; each case uses a
+// fresh socketpair so no case can see another case's bytes.
+void testSendmsgBadBuffer64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x71000000ULL;
+    constexpr U64 crossPage = 0x72000000ULL;
+    constexpr U64 nonePage = 0x73000000ULL;
+    constexpr U64 wonlyPage = 0x74000000ULL;
+    constexpr U64 bigArray = 0x75000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    auto mapFixture = [&](U64 addr, U64 size, U32 prot) {
+        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
+            memory->mmapAnonymousFixed(addr, size, prot) != addr) {
+            testFail("sendmsg-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
+            return false;
+        }
+        return true;
+    };
+    if (!mapFixture(dataPage, K64_PAGE_SIZE, 3) || !mapFixture(crossPage, K64_PAGE_SIZE, 3) ||
+        !mapFixture(nonePage, K64_PAGE_SIZE, 0) || !mapFixture(wonlyPage, K64_PAGE_SIZE, 2) ||
+        !mapFixture(bigArray, 5 * K64_PAGE_SIZE, 3)) return;
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
+        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
+        testFail("sendmsg-bad-buffer test fixture addresses are unexpectedly mapped");
+        return;
+    }
+    if (!(memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) ||
+        (memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("sendmsg-bad-buffer test PROT_NONE fixture has the wrong flags");
+        return;
+    }
+    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("sendmsg-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
+        return;
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
         ksyscall64(&cpu);
         return (S64)cpu.reg[X64_RAX].u64;
     };
@@ -1653,6 +1602,710 @@ void testPwritev64Syscalls() {
 }
 
 
+// FD-97: the 64-bit single-call write paths (write/pwrite64, and writev
+// through them) must not fabricate zero bytes for an unreadable guest
+// buffer. Host-kernel reference behaviour (measured on the box's 6.17
+// kernel with a dedicated reference program,
+// test-results/fd97/hostref-fd97): a fully unreadable buffer answers
+// -EFAULT and writes nothing; a buffer whose readable prefix runs into
+// an unreadable page writes the prefix as a short count; count 0 with a
+// bad buffer returns 0; a bad fd with a bad buffer answers -EBADF (the
+// descriptor answer precedes the copy fault); a PROT_WRITE-only buffer
+// is readable to the copy (x86 write-implies-read) and lands its real
+// bytes. On the base the calls below land zero-filled bytes and report
+// success.
+void testWriteBadBuffer64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x7B000000ULL;
+    constexpr U64 crossPage = 0x7C000000ULL;
+    constexpr U64 nonePage = 0x7D000000ULL;
+    constexpr U64 wonlyPage = 0x7E000000ULL;
+    constexpr U64 unmapped = 0x6000000000ULL;
+    auto mapFixture = [&](U64 addr, U32 prot) {
+        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
+            memory->mmapAnonymousFixed(addr, K64_PAGE_SIZE, prot) != addr) {
+            testFail("write-bad-buffer test could not map its fixture page at 0x%llx", (unsigned long long)addr);
+            return false;
+        }
+        return true;
+    };
+    if (!mapFixture(dataPage, 3) || !mapFixture(crossPage, 3) ||
+        !mapFixture(nonePage, 0) || !mapFixture(wonlyPage, 2)) return;
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT) != 0 ||
+        memory->getPageFlags((crossPage + K64_PAGE_SIZE) >> K64_PAGE_SHIFT) != 0) {
+        testFail("write-bad-buffer test fixture addresses are unexpectedly mapped");
+        return;
+    }
+    if (!(memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_MAPPED) ||
+        (memory->getPageFlags(nonePage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("write-bad-buffer test PROT_NONE fixture has the wrong flags");
+        return;
+    }
+    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
+        testFail("write-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
+        return;
+    }
+
+    char dirTemplate[] = "/tmp/k3bwbadbufXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("write-bad-buffer test could not create its host temp dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+        if ((S32)result < 0 || !fileDesc) {
+            testFail("write-bad-buffer test could not create /data.bin");
+            return;
+        }
+    }
+    const S32 fd = (S32)fileDesc->handle;
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto fileBytes = [&]() {
+        std::string s;
+        U8 buf[8192];
+        fileDesc->kobject->seek(0);
+        S32 n = (S32)fileDesc->kobject->readNative(buf, sizeof(buf));
+        if (n > 0) s.assign((const char*)buf, (size_t)n);
+        return s;
+    };
+    auto seekSet = [&](S64 pos) { invoke(8, (U64)(U32)fd, (U64)pos, 0, 0); };
+    auto filePos = [&]() -> S64 { return invoke(8, (U64)(U32)fd, 0, 1, 0); };
+
+    // Guest data: a 16-byte string on the data page, a full pattern page
+    // for the crossing cases, and the write-only page's real bytes.
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(dataPage, text, 16);
+    std::vector<U8> pattern(K64_PAGE_SIZE);
+    for (U32 i = 0; i < K64_PAGE_SIZE; i++) pattern[i] = (U8)('a' + (i % 26));
+    memory->memcpyToGuest(crossPage, pattern.data(), K64_PAGE_SIZE);
+    const char* wonlyText = "FEDCBA9876543210";
+    for (U32 i = 0; i < 16; i++) memory->writeb(wonlyPage + i, (U8)wonlyText[i]);
+    const std::string crossTail((const char*)pattern.data() + 4000, 96);
+
+    // 1. write from a fully unmapped buffer: -EFAULT, nothing lands.
+    S64 r = invoke(1, (U64)(U32)fd, unmapped, 16, 0);
+    if (r != -K_EFAULT || !fileBytes().empty()) {
+        testFail("write from an unmapped buffer returned %lld, file holds %u bytes",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 2. write from a mapped but unreadable (PROT_NONE) page: same.
+    r = invoke(1, (U64)(U32)fd, nonePage, 16, 0);
+    if (r != -K_EFAULT || !fileBytes().empty()) {
+        testFail("write from a PROT_NONE page returned %lld, file holds %u bytes",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 3. Control: a readable buffer lands its real bytes.
+    r = invoke(1, (U64)(U32)fd, dataPage, 16, 0);
+    if (r != 16 || fileBytes() != std::string(text, 16)) {
+        testFail("control write returned %lld, file size %u", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 4. A readable prefix running into an unmapped page writes the
+    // prefix as a short count (96 of 200), not zeros or an error.
+    seekSet(16);
+    r = invoke(1, (U64)(U32)fd, crossPage + 4000, 200, 0);
+    if (r != 96 || fileBytes() != std::string(text, 16) + crossTail) {
+        testFail("crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 5. One readable byte before the boundary: count 1.
+    r = invoke(1, (U64)(U32)fd, crossPage + 4095, 2, 0);
+    if (r != 1 || fileBytes().size() != 113 || fileBytes()[112] != (char)pattern[4095]) {
+        testFail("last-byte crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
+    }
+    // 6. pwrite from a fully unmapped buffer: -EFAULT, file and position
+    // untouched.
+    seekSet(113);
+    r = invoke(18, (U64)(U32)fd, unmapped, 16, 0);
+    if (r != -K_EFAULT || fileBytes().size() != 113 || fileBytes().substr(0, 16) != std::string(text, 16) || filePos() != 113) {
+        testFail("pwrite from an unmapped buffer returned %lld (file size %u, pos %lld)",
+                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
+    }
+    // 7. pwrite with a readable prefix at offset 8: short count 96, the
+    // prefix lands at the offset, the position does not move.
+    r = invoke(18, (U64)(U32)fd, crossPage + 4000, 200, 8);
+    if (r != 96 || fileBytes().substr(8, 96) != crossTail || fileBytes().size() != 113 || filePos() != 113) {
+        testFail("crossing pwrite returned %lld (file size %u, pos %lld)",
+                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
+    }
+    // 8. Count 0 with a bad buffer is 0, not a fault (host-measured).
+    if (invoke(1, (U64)(U32)fd, unmapped, 0, 0) != 0 || invoke(18, (U64)(U32)fd, unmapped, 0, 0) != 0) {
+        testFail("zero-count write/pwrite from an unmapped buffer was not 0");
+    }
+    // 9. A bad fd with a bad buffer answers -EBADF: the descriptor
+    // answer precedes the copy fault, as on the host.
+    if (invoke(1, 9999, unmapped, 16, 0) != -9) {
+        testFail("write with a bad fd and a bad buffer was not -EBADF");
+    }
+    // 10. writev inherits the shape through sys_write64: a bad first
+    // segment answers -EFAULT and writes nothing.
+    constexpr U64 iovAt = dataPage + 0x800;
+    memory->writeq(iovAt, unmapped);
+    memory->writeq(iovAt + 8, 16);
+    seekSet(113);
+    r = invoke(20, (U64)(U32)fd, iovAt, 1, 0);
+    if (r != -K_EFAULT || fileBytes().size() != 113) {
+        testFail("writev with an unmapped first segment returned %lld (file size %u)",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 11. writev with a bad later segment returns the bytes already
+    // written.
+    memory->writeq(iovAt, dataPage);
+    memory->writeq(iovAt + 8, 8);
+    memory->writeq(iovAt + 16, unmapped);
+    memory->writeq(iovAt + 24, 16);
+    r = invoke(20, (U64)(U32)fd, iovAt, 2, 0);
+    if (r != 8 || fileBytes().size() != 121 || fileBytes().substr(113, 8) != "01234567") {
+        testFail("writev with an unmapped second segment returned %lld (file size %u)",
+                 (long long)r, (unsigned)fileBytes().size());
+    }
+    // 12. A PROT_WRITE-only buffer is readable to the copy under the
+    // x86 write-implies-read rule and lands its real bytes.
+    seekSet(121);
+    r = invoke(1, (U64)(U32)fd, wonlyPage, 16, 0);
+    if (r != 16 || fileBytes().substr(121, 16) != std::string(wonlyText, 16)) {
+        testFail("write from a write-only page returned %lld", (long long)r);
+    }
+
+    process->close(fd);
+    rmdir(hostDir);
+}
+
+
+// FD-93: the 64-bit write family's wrong-mode answers. Host-kernel
+// reference behaviour (measured on the box's 6.17 kernel with
+// dedicated reference programs, preserved under
+// test-results/fd92-93/; extends lane-fd83-84's hostref-write.c
+// matrix with the validation orderings):
+//  - write, pwrite64 and writev on a descriptor opened read-only
+//    answer EBADF -- for count 0 and iovcnt 0 as well; the
+//    descriptor check also precedes write's zero-count return.
+//  - pwrite64's negative offset answers EINVAL ahead of both the
+//    descriptor and mode answers (measured on a bad descriptor
+//    too); the mode answer precedes writev's iovcnt range check
+//    (EINVAL) and its null-iovec check (EFAULT).
+//  - a successful pwrite64 does not move the file position.
+void testWriteFamily64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x7B000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE * 8, 3) != page) {
+        testFail("write-family test could not map its fixture pages");
+        return;
+    }
+    char dirTemplate[] = "/tmp/k3bwritefamXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("write-family test could not create its host temp dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr rdwrDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, rdwrDesc);
+        if ((S32)result < 0 || !rdwrDesc) {
+            testFail("write-family test could not create /data.bin");
+            return;
+        }
+        const char* text = "0123456789ABCDEFGHIJ";
+        rdwrDesc->kobject->writeNative((U8*)text, 20);
+        rdwrDesc->kobject->seek(0);
+    }
+    KFileDescriptorPtr rdonlyDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdonlyDesc);
+        if ((S32)result < 0 || !rdonlyDesc) {
+            testFail("write-family test could not open /data.bin read-only");
+            return;
+        }
+    }
+    const S32 wfd = (S32)rdwrDesc->handle;
+    const S32 rfd = (S32)rdonlyDesc->handle;
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    constexpr U64 bufAt = page + 0x100;
+    constexpr U64 iovAt = page + 0x200;
+    constexpr U64 bigIovAt = page + 0x1000;
+    memory->memcpyToGuest(bufAt, "xyz", 3);
+    auto setIov = [&](U64 at, U32 idx, U64 base, U64 len) {
+        memory->writeq(at + (U64)idx * 16 + 0, base);
+        memory->writeq(at + (U64)idx * 16 + 8, len);
+    };
+    setIov(iovAt, 0, bufAt, 3);
+    setIov(iovAt, 1, bufAt, 3);
+    {
+        std::vector<U8> zeros(16400, 0);
+        memory->memcpyToGuest(bigIovAt, zeros.data(), (U32)zeros.size());
+    }
+
+    // write (1): the mode answer, and the descriptor check ahead
+    // of the zero-count return.
+    if (invoke(1, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
+        testFail("write on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(1, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count write on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(1, 9999, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count write on a bad descriptor was not -EBADF");
+    }
+    // writev (20): mode ahead of the walk, the range check and
+    // the iovec pointer check.
+    if (invoke(20, (U64)(U32)rfd, iovAt, 1, 0) != -K_EBADF) {
+        testFail("writev on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(20, (U64)(U32)rfd, iovAt, 0, 0) != -K_EBADF) {
+        testFail("writev with iovcnt 0 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(20, (U64)(U32)wfd, bigIovAt, 1025, 0) != -K_EINVAL) {
+        testFail("writev with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    // pwrite64 (18): negative offset EINVAL ahead of the
+    // descriptor and mode answers; mode EBADF otherwise.
+    if (invoke(18, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
+        testFail("pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(18, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
+        testFail("zero-count pwrite64 on a read-only descriptor was not -EBADF");
+    }
+    if (invoke(18, (U64)(U32)rfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a read-only descriptor was not -EINVAL");
+    }
+    if (invoke(18, 9999, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a bad descriptor was not -EINVAL");
+    }
+    if (invoke(18, (U64)(U32)wfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+        testFail("pwrite64 with offset -1 on a writable descriptor was not -EINVAL");
+    }
+    if (invoke(20, (U64)(U32)wfd, 0, 1, 0) != -K_EFAULT) {
+        testFail("writev with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+    // Controls: the writable descriptor still writes, and a
+    // positioned write leaves the file position alone.
+    if (invoke(1, (U64)(U32)wfd, bufAt, 3, 0) != 3) {
+        testFail("write on a writable descriptor did not return 3");
+    }
+    if (invoke(1, (U64)(U32)wfd, bufAt, 0, 0) != 0) {
+        testFail("zero-count write on a writable descriptor did not return 0");
+    }
+    if (invoke(20, (U64)(U32)wfd, iovAt, 2, 0) != 6) {
+        testFail("two-segment writev on a writable descriptor did not return 6");
+    }
+    {
+        S64 before = rdwrDesc->kobject->getPos();
+        if (invoke(18, (U64)(U32)wfd, bufAt, 3, 5) != 3) {
+            testFail("pwrite64 on a writable descriptor did not return 3");
+        }
+        if (rdwrDesc->kobject->getPos() != before) {
+            testFail("pwrite64 moved the file position");
+        }
+    }
+
+    process->close(rfd);
+    process->close(wfd);
+    rmdir(hostDir);
+}
+
+
+// FD-94: x64 pwritev (296) / pwritev2 (328). On the base both numbers
+// are in the name table only -- no X64_SYS define, no dispatch case --
+// so every call answers ENOSYS. Host-kernel reference behaviour
+// (measured on the box's 6.17 kernel with dedicated reference
+// programs, test-results/fd94-96/hostref-pwritev*.c):
+//  - segments are written in order at successive offsets; the file
+//    position does not move; a zero-length segment is skipped; a
+//    short write ends the walk.
+//  - validation order: a negative offset is EINVAL ahead of the
+//    descriptor check (EBADF); the descriptor check is ahead of the
+//    pwritev2 flags check (EOPNOTSUPP for bits outside the defined
+//    RWF mask) and of the iovcnt range check (EINVAL outside
+//    [0, IOV_MAX]); a bad iovec array with iovcnt > 0 is EFAULT.
+//  - a later segment's failure returns the bytes already written
+//    (the writev partial shape); a failing first segment returns
+//    the error itself.
+//  - pwritev2 offset -1 is the file-position mode (write at the
+//    current position and advance it); offset below -1 is EINVAL.
+//    RWF_APPEND writes at end of file ignoring the offset and,
+//    outside the -1 mode, leaves the position untouched.
+//  - a successful multi-segment call produces one watcher-visible
+//    IN_MODIFY (the queue coalesces the per-segment events, as on
+//    Linux); failed calls produce none.
+void testPwritev64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+    constexpr U64 page = 0x7A000000ULL;
+    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
+        testFail("pwritev test could not map its fixture page");
+        return;
+    }
+    char dirTemplate[] = "/tmp/k3bpwritevXXXXXX";
+    char* hostDir = mkdtemp(dirTemplate);
+    if (!hostDir) {
+        testFail("pwritev test could not create its host temp dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr fileDesc;
+    {
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
+        if ((S32)result < 0 || !fileDesc) {
+            testFail("pwritev test could not create /data.bin");
+            return;
+        }
+        const char* text = "0123456789ABCDEFGHIJ";
+        fileDesc->kobject->writeNative((U8*)text, 20);
+        fileDesc->kobject->seek(0);
+    }
+    S32 fd = (S32)fileDesc->handle;
+    const std::string hostPath = std::string(hostDir) + "/data.bin";
+    auto hostContent = [&]() {
+        std::string out;
+        FILE* f = fopen(hostPath.c_str(), "rb");
+        if (!f) return out;
+        char chunk[4096];
+        size_t n;
+        while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) out.append(chunk, n);
+        fclose(f);
+        return out;
+    };
+
+    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
+    KInotify::registerInstance(inotify);
+    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
+    if (!inotifyDesc || !inotifyDesc->kobject) {
+        testFail("pwritev test could not create its inotify instance");
+        return;
+    }
+    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
+    if (wd < 1) {
+        testFail("pwritev test could not watch /data.bin");
+        return;
+    }
+    auto drainMasks = [&]() {
+        std::vector<U32> masks;
+        U8 buffer[8192];
+        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
+        S32 offset = 0;
+        while (total > 0 && offset + 16 <= total) {
+            U32 mask, nameLen;
+            memcpy(&mask, buffer + offset + 4, 4);
+            memcpy(&nameLen, buffer + offset + 12, 4);
+            masks.push_back(mask);
+            offset += 16 + (S32)nameLen;
+        }
+        return masks;
+    };
+    auto modifyCount = [&](const std::vector<U32>& masks) {
+        int n = 0;
+        for (U32 m : masks) if (m & IN_MODIFY) n++;
+        return n;
+    };
+    drainMasks(); // setup noise
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    constexpr U64 iovAt = page + 0x100;
+    constexpr U64 seg0 = page + 0x400;
+    constexpr U64 seg1 = page + 0x500;
+    constexpr U64 seg2 = page + 0x600;
+    auto setIov = [&](U32 idx, U64 base, U64 len) {
+        memory->writeq(iovAt + idx * 16, base);
+        memory->writeq(iovAt + idx * 16 + 8, len);
+    };
+    auto stageText = [&](U64 at, const char* text, U32 len) {
+        memory->memcpyToGuest(at, text, len);
+    };
+    auto segText = [&](U64 at, U32 len) {
+        std::string out;
+        for (U32 i = 0; i < len; i++) out += (char)memory->readb(at + i);
+        return out;
+    };
+    auto filePos = [&]() -> S64 { return invoke6(8, (U64)(U32)fd, 0, 1, 0, 0, 0); }; // lseek(fd, 0, SEEK_CUR)
+    auto setPos = [&](S64 pos) -> S64 { return invoke6(8, (U64)(U32)fd, (U64)pos, 0, 0, 0, 0); }; // SEEK_SET
+
+    // 1. Three segments at offset 2; position untouched; one IN_MODIFY.
+    stageText(seg0, "abcd", 4); stageText(seg1, "efgh", 4); stageText(seg2, "ijkl", 4);
+    setIov(0, seg0, 4); setIov(1, seg1, 4); setIov(2, seg2, 4);
+    S64 r = invoke6(296, (U64)(U32)fd, iovAt, 3, 2, 0, 0);
+    if (r != 12 || hostContent() != "01abcdefghijklEFGHIJ") {
+        testFail("pwritev 3 segments at offset 2 returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 0) {
+        testFail("pwritev moved the file position to %lld", (long long)filePos());
+    }
+    if (modifyCount(drainMasks()) != 1) {
+        testFail("3-segment pwritev must generate exactly one watcher-visible IN_MODIFY");
+    }
+
+    // 2. A zero-length segment in the middle is skipped.
+    stageText(seg0, "wxyz", 4); stageText(seg2, "WXYZ", 4);
+    setIov(0, seg0, 4); setIov(1, seg1, 0); setIov(2, seg2, 4);
+    r = invoke6(296, (U64)(U32)fd, iovAt, 3, 14, 0, 0);
+    if (r != 8 || hostContent() != "01abcdefghijklwxyzWXYZ") {
+        testFail("pwritev with a zero-length segment returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    drainMasks();
+
+    // 3. Partial shape: a good first segment and a bad second segment
+    // return the bytes already written, and only those bytes land.
+    stageText(seg0, "xyz", 3);
+    setIov(0, seg0, 3); setIov(1, 0x1000, 3); // 0x1000: unmapped guest page
+    r = invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0);
+    if (r != 3 || hostContent().substr(0, 3) != "xyz") {
+        testFail("pwritev with a bad second segment returned %lld with content prefix '%s'",
+                 (long long)r, hostContent().substr(0, 3).c_str());
+    }
+    if (modifyCount(drainMasks()) != 1) {
+        testFail("partial pwritev must generate exactly one IN_MODIFY");
+    }
+
+    // 4. A bad first segment returns the error itself.
+    setIov(0, 0x1000, 3); setIov(1, seg0, 3);
+    if (invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0) != -K_EFAULT) {
+        testFail("pwritev with a bad first segment was not -EFAULT");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("failed pwritev generated IN_MODIFY");
+    }
+
+    // 5. Validation, in the measured order; none of it writes or
+    // generates IN_MODIFY.
+    if (invoke6(296, 9999, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with a bad descriptor and offset -1 was not -EINVAL (offset precedes descriptor)");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with offset -1 was not -EINVAL");
+    }
+    if (invoke6(296, 9999, iovAt, 1, 0, 0, 0) != -9) {
+        testFail("pwritev with a bad descriptor was not -EBADF");
+    }
+    if (invoke6(296, 9999, iovAt, 0, 0, 0, 0) != -9) {
+        testFail("pwritev with a bad descriptor and iovcnt 0 was not -EBADF");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt 0 and offset -1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0, 0, 0) != 0) {
+        testFail("pwritev with iovcnt 0 did not return 0");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt -1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, iovAt, 1025, 0, 0, 0) != -K_EINVAL) {
+        testFail("pwritev with iovcnt IOV_MAX+1 was not -EINVAL");
+    }
+    if (invoke6(296, (U64)(U32)fd, 0, 1, 0, 0, 0) != -K_EFAULT) {
+        testFail("pwritev with a null iovec and iovcnt 1 was not -EFAULT");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0, 0, 0x40) != -K_EOPNOTSUPP) {
+        testFail("pwritev2 with an undefined flag bit was not -EOPNOTSUPP");
+    }
+    if (invoke6(328, 9999, iovAt, 1, 0, 0, 0x40) != -9) {
+        testFail("pwritev2 with a bad descriptor and a bad flag was not -EBADF (descriptor precedes flags)");
+    }
+    if (invoke6(328, 9999, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 with a bad descriptor and offset -2 was not -EINVAL (offset precedes descriptor)");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 with offset -2 was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
+        testFail("pwritev2 in position mode with iovcnt -1 was not -EINVAL");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("rejected pwritev/pwritev2 calls generated IN_MODIFY");
+    }
+
+    // 6. pwritev2 offset -1 is the file-position mode: writes at the
+    // current position and advances it.
+    if (setPos(5) != 5) {
+        testFail("pwritev test could not seek its fixture file");
+        return;
+    }
+    stageText(seg0, "PQ", 2);
+    setIov(0, seg0, 2);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0);
+    if (r != 2 || hostContent().substr(5, 2) != "PQ") {
+        testFail("pwritev2 offset -1 returned %lld with content '%s'",
+                 (long long)r, hostContent().substr(5, 2).c_str());
+    }
+    if (filePos() != 7) {
+        testFail("pwritev2 offset -1 left the position at %lld, expected 7", (long long)filePos());
+    }
+    drainMasks();
+
+    // 7. RWF_APPEND ignores the offset, writes at end of file, and
+    // leaves the position untouched outside the -1 mode.
+    stageText(seg0, "ZZ", 2);
+    setIov(0, seg0, 2);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 2, 0, 0x10);
+    if (r != 2 || hostContent().size() != 24 || hostContent().substr(22, 2) != "ZZ") {
+        testFail("pwritev2 RWF_APPEND returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 7) {
+        testFail("pwritev2 RWF_APPEND moved the position to %lld", (long long)filePos());
+    }
+    drainMasks();
+
+    // 8. RWF_APPEND with offset -1 appends and the position follows
+    // the written bytes to the new end of file.
+    stageText(seg0, "Q", 1);
+    setIov(0, seg0, 1);
+    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0x10);
+    if (r != 1 || hostContent().size() != 25 || hostContent().substr(24, 1) != "Q") {
+        testFail("pwritev2 RWF_APPEND offset -1 returned %lld with content '%s'",
+                 (long long)r, hostContent().c_str());
+    }
+    if (filePos() != 25) {
+        testFail("pwritev2 RWF_APPEND offset -1 left the position at %lld, expected 25", (long long)filePos());
+    }
+    drainMasks();
+
+    // 9. A read-only descriptor follows pwrite64's house answer
+    // (-EINVAL; the host answers EBADF for the whole positioned-write
+    // family -- that divergence is the write family's, registered
+    // separately, exactly as the preadv test pins the read side).
+    {
+        KFileDescriptorPtr rdesc;
+        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdesc);
+        if ((S32)result < 0 || !rdesc) {
+            testFail("pwritev test could not open /data.bin read-only");
+            return;
+        }
+        setIov(0, seg0, 2);
+        if (invoke6(296, (U64)(U32)rdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
+            testFail("pwritev on a read-only descriptor was not -EINVAL");
+        }
+        process->close(rdesc->handle);
+    }
+
+    // 10. pos_h is honored: offset 2^32 lands past 4 GiB (sparse),
+    // verified by the file length and a guest pread64 readback.
+    {
+        KFileDescriptorPtr desc2;
+        U32 result = process->openFile(B("/"), B("/data2.bin"), K_O_RDWR | K_O_CREAT, desc2);
+        if ((S32)result < 0 || !desc2) {
+            testFail("pwritev test could not create /data2.bin");
+            return;
+        }
+        stageText(seg0, "END!", 4);
+        setIov(0, seg0, 4);
+        r = invoke6(296, (U64)(U32)desc2->handle, iovAt, 1, 0, 1, 0);
+        if (r != 4) {
+            testFail("pwritev at offset 2^32 returned %lld (pos_h ignored?)", (long long)r);
+        }
+        if (desc2->kobject->length() != (S64)((1ULL << 32) + 4)) {
+            testFail("pwritev at offset 2^32 left the file length at %lld",
+                     (long long)desc2->kobject->length());
+        }
+        // Read the tail back through the guest pread64 dispatch
+        // (pread64 takes its offset in one 64-bit register, unlike
+        // the vectored calls' lo/hi split).
+        memory->writeq(seg0, 0);
+        S64 pr = invoke6(17, (U64)(U32)desc2->handle, seg0, 4, (1ULL << 32), 0, 0);
+        if (pr != 4 || segText(seg0, 4) != "END!") {
+            testFail("pread64 at offset 2^32 returned %lld with bytes '%s'",
+                     (long long)pr, segText(seg0, 4).c_str());
+        }
+        process->close(desc2->handle);
+    }
+
+    // 11. FD-100: the pwritev2 flags check runs LAST -- behind the
+    // iovcnt range check and the iovec array check. An undefined flag
+    // bit combined with an out-of-range iovcnt answers EINVAL, and
+    // combined with a null or unmapped iovec array answers EFAULT;
+    // only a call that passes those checks reaches EOPNOTSUPP (the
+    // section-5 case). None of these writes or generates IN_MODIFY.
+    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("pwritev2 with iovcnt -1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, iovAt, 1025, 0, 0, 0x40) != -K_EINVAL) {
+        testFail("pwritev2 with iovcnt IOV_MAX+1 and an undefined flag was not -EINVAL");
+    }
+    if (invoke6(328, (U64)(U32)fd, 0, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("pwritev2 with a null iovec and an undefined flag was not -EFAULT");
+    }
+    if (invoke6(328, (U64)(U32)fd, 0x1000, 1, 0, 0, 0x40) != -K_EFAULT) {
+        testFail("pwritev2 with an unmapped iovec and an undefined flag was not -EFAULT");
+    }
+    if (modifyCount(drainMasks()) != 0) {
+        testFail("rejected pwritev2 flag-order calls generated IN_MODIFY");
+    }
+
+    process->close((S32)inotifyDesc->handle);
+    process->close(fd);
+    rmdir(hostDir);
+}
+
+
+
 // FD-102: the sendmsg SCM_RIGHTS translation must validate the
 // guest-supplied cmsg_len against the header size and the declared
 // controllen (and the host's 253-descriptor cap) instead of deriving
@@ -1855,6 +2508,7 @@ void testSendmsgCmsgLen64Syscalls() {
     caseSend("cmsg_len 15", 15, 20, 1, -K_EINVAL, 0, false);
 }
 
+
 // FD-103: the 64-bit sendto copies its buffer through the
 // zero-filling memcpyFromGuest with no readability check, so an
 // unreadable buffer is sent as fabricated zeros and reported as
@@ -1894,38 +2548,6 @@ void testSendtoBadBuffer64Syscalls() {
     char* hostDir = mkdtemp(dirTemplate);
     if (!hostDir) {
         testFail("sendto-bad-buffer test could not create its host temp dir");
-        testFail("write-bad-buffer test PROT_NONE fixture has the wrong flags");
-        return;
-    }
-    if (!(memory->getPageFlags(wonlyPage >> K64_PAGE_SHIFT) & K64_PAGE_READ)) {
-        testFail("write-bad-buffer test write-only fixture lacks the x86 write-implies-read flag");
-        return;
-    }
-
-    char dirTemplate[] = "/tmp/k3bwbadbufXXXXXX";
-    char* hostDir = mkdtemp(dirTemplate);
-    if (!hostDir) {
-        testFail("write-bad-buffer test could not create its host temp dir");
-    constexpr U64 page = 0x7B000000ULL;
-    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
-        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE * 8, 3) != page) {
-        testFail("write-family test could not map its fixture pages");
-        return;
-    }
-    char dirTemplate[] = "/tmp/k3bwritefamXXXXXX";
-    char* hostDir = mkdtemp(dirTemplate);
-    if (!hostDir) {
-        testFail("write-family test could not create its host temp dir");
-    constexpr U64 page = 0x7A000000ULL;
-    if (!memory->getPageFlags(page >> K64_PAGE_SHIFT) &&
-        memory->mmapAnonymousFixed(page, K64_PAGE_SIZE, 3) != page) {
-        testFail("pwritev test could not map its fixture page");
-        return;
-    }
-    char dirTemplate[] = "/tmp/k3bpwritevXXXXXX";
-    char* hostDir = mkdtemp(dirTemplate);
-    if (!hostDir) {
-        testFail("pwritev test could not create its host temp dir");
         return;
     }
     std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
@@ -1935,7 +2557,6 @@ void testSendtoBadBuffer64Syscalls() {
     } rootRestore{previousRoot};
     Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(hostDir), true, true, nullptr);
     Fs::clearPathCache();
-
     KFileDescriptorPtr fileDesc;
     {
         U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, fileDesc);
@@ -1945,58 +2566,6 @@ void testSendtoBadBuffer64Syscalls() {
         }
     }
     const S32 fileFd = (S32)fileDesc->handle;
-            testFail("pwritev test could not create /data.bin");
-            return;
-        }
-        const char* text = "0123456789ABCDEFGHIJ";
-        fileDesc->kobject->writeNative((U8*)text, 20);
-        fileDesc->kobject->seek(0);
-    }
-    S32 fd = (S32)fileDesc->handle;
-    const std::string hostPath = std::string(hostDir) + "/data.bin";
-    auto hostContent = [&]() {
-        std::string out;
-        FILE* f = fopen(hostPath.c_str(), "rb");
-        if (!f) return out;
-        char chunk[4096];
-        size_t n;
-        while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) out.append(chunk, n);
-        fclose(f);
-        return out;
-    };
-
-    std::shared_ptr<KInotify> inotify = std::make_shared<KInotify>(false);
-    KInotify::registerInstance(inotify);
-    KFileDescriptorPtr inotifyDesc = process->allocFileDescriptor(inotify, K_O_RDONLY, 0, -1, 0);
-    if (!inotifyDesc || !inotifyDesc->kobject) {
-        testFail("pwritev test could not create its inotify instance");
-        return;
-    }
-    S32 wd = (S32)process->inotify_add_watch((S32)inotifyDesc->handle, B("/data.bin"), 0xfff);
-    if (wd < 1) {
-        testFail("pwritev test could not watch /data.bin");
-        return;
-    }
-    auto drainMasks = [&]() {
-        std::vector<U32> masks;
-        U8 buffer[8192];
-        S32 total = (S32)inotifyDesc->kobject->readNative(buffer, sizeof(buffer));
-        S32 offset = 0;
-        while (total > 0 && offset + 16 <= total) {
-            U32 mask, nameLen;
-            memcpy(&mask, buffer + offset + 4, 4);
-            memcpy(&nameLen, buffer + offset + 12, 4);
-            masks.push_back(mask);
-            offset += 16 + (S32)nameLen;
-        }
-        return masks;
-    };
-    auto modifyCount = [&](const std::vector<U32>& masks) {
-        int n = 0;
-        for (U32 m : masks) if (m & IN_MODIFY) n++;
-        return n;
-    };
-    drainMasks(); // setup noise
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -2132,6 +2701,7 @@ void testSendtoBadBuffer64Syscalls() {
     process->close(fileFd);
 }
 
+
 // FD-104: the recvmsg scatter drops received bytes silently when a
 // guest segment is unwritable -- the data is consumed from the
 // socket and the call reports it delivered. Host contract measured
@@ -2177,32 +2747,6 @@ void testRecvmsgBadBuffer64Syscalls() {
         testFail("recvmsg-bad-buffer test fixture addresses are unexpectedly mapped");
         return;
     }
-            testFail("write-bad-buffer test could not create /data.bin");
-            return;
-        }
-    }
-    const S32 fd = (S32)fileDesc->handle;
-    KFileDescriptorPtr rdwrDesc;
-    {
-        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDWR | K_O_CREAT, rdwrDesc);
-        if ((S32)result < 0 || !rdwrDesc) {
-            testFail("write-family test could not create /data.bin");
-            return;
-        }
-        const char* text = "0123456789ABCDEFGHIJ";
-        rdwrDesc->kobject->writeNative((U8*)text, 20);
-        rdwrDesc->kobject->seek(0);
-    }
-    KFileDescriptorPtr rdonlyDesc;
-    {
-        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdonlyDesc);
-        if ((S32)result < 0 || !rdonlyDesc) {
-            testFail("write-family test could not open /data.bin read-only");
-            return;
-        }
-    }
-    const S32 wfd = (S32)rdwrDesc->handle;
-    const S32 rfd = (S32)rdonlyDesc->handle;
 
     CPU64 cpu(memory);
     cpu.thread = context.thread;
@@ -2271,10 +2815,6 @@ void testRecvmsgBadBuffer64Syscalls() {
         }
         return true;
     };
-    constexpr U64 iovAt = page + 0x100;
-    constexpr U64 seg0 = page + 0x400;
-    constexpr U64 seg1 = page + 0x500;
-    constexpr U64 seg2 = page + 0x600;
     auto setIov = [&](U32 idx, U64 base, U64 len) {
         memory->writeq(iovAt + idx * 16, base);
         memory->writeq(iovAt + idx * 16 + 8, len);
@@ -2516,420 +3056,6 @@ void testRecvmsgBadBuffer64Syscalls() {
             closePair(p);
         }
     }
-    auto fileBytes = [&]() {
-        std::string s;
-        U8 buf[8192];
-        fileDesc->kobject->seek(0);
-        S32 n = (S32)fileDesc->kobject->readNative(buf, sizeof(buf));
-        if (n > 0) s.assign((const char*)buf, (size_t)n);
-        return s;
-    };
-    auto seekSet = [&](S64 pos) { invoke(8, (U64)(U32)fd, (U64)pos, 0, 0); };
-    auto filePos = [&]() -> S64 { return invoke(8, (U64)(U32)fd, 0, 1, 0); };
-
-    // Guest data: a 16-byte string on the data page, a full pattern page
-    // for the crossing cases, and the write-only page's real bytes.
-    const char* text = "0123456789ABCDEF";
-    memory->memcpyToGuest(dataPage, text, 16);
-    std::vector<U8> pattern(K64_PAGE_SIZE);
-    for (U32 i = 0; i < K64_PAGE_SIZE; i++) pattern[i] = (U8)('a' + (i % 26));
-    memory->memcpyToGuest(crossPage, pattern.data(), K64_PAGE_SIZE);
-    const char* wonlyText = "FEDCBA9876543210";
-    for (U32 i = 0; i < 16; i++) memory->writeb(wonlyPage + i, (U8)wonlyText[i]);
-    const std::string crossTail((const char*)pattern.data() + 4000, 96);
-
-    // 1. write from a fully unmapped buffer: -EFAULT, nothing lands.
-    S64 r = invoke(1, (U64)(U32)fd, unmapped, 16, 0);
-    if (r != -K_EFAULT || !fileBytes().empty()) {
-        testFail("write from an unmapped buffer returned %lld, file holds %u bytes",
-                 (long long)r, (unsigned)fileBytes().size());
-    }
-    // 2. write from a mapped but unreadable (PROT_NONE) page: same.
-    r = invoke(1, (U64)(U32)fd, nonePage, 16, 0);
-    if (r != -K_EFAULT || !fileBytes().empty()) {
-        testFail("write from a PROT_NONE page returned %lld, file holds %u bytes",
-                 (long long)r, (unsigned)fileBytes().size());
-    }
-    // 3. Control: a readable buffer lands its real bytes.
-    r = invoke(1, (U64)(U32)fd, dataPage, 16, 0);
-    if (r != 16 || fileBytes() != std::string(text, 16)) {
-        testFail("control write returned %lld, file size %u", (long long)r, (unsigned)fileBytes().size());
-    }
-    // 4. A readable prefix running into an unmapped page writes the
-    // prefix as a short count (96 of 200), not zeros or an error.
-    seekSet(16);
-    r = invoke(1, (U64)(U32)fd, crossPage + 4000, 200, 0);
-    if (r != 96 || fileBytes() != std::string(text, 16) + crossTail) {
-        testFail("crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
-    }
-    // 5. One readable byte before the boundary: count 1.
-    r = invoke(1, (U64)(U32)fd, crossPage + 4095, 2, 0);
-    if (r != 1 || fileBytes().size() != 113 || fileBytes()[112] != (char)pattern[4095]) {
-        testFail("last-byte crossing write returned %lld (file size %u)", (long long)r, (unsigned)fileBytes().size());
-    }
-    // 6. pwrite from a fully unmapped buffer: -EFAULT, file and position
-    // untouched.
-    seekSet(113);
-    r = invoke(18, (U64)(U32)fd, unmapped, 16, 0);
-    if (r != -K_EFAULT || fileBytes().size() != 113 || fileBytes().substr(0, 16) != std::string(text, 16) || filePos() != 113) {
-        testFail("pwrite from an unmapped buffer returned %lld (file size %u, pos %lld)",
-                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
-    }
-    // 7. pwrite with a readable prefix at offset 8: short count 96, the
-    // prefix lands at the offset, the position does not move.
-    r = invoke(18, (U64)(U32)fd, crossPage + 4000, 200, 8);
-    if (r != 96 || fileBytes().substr(8, 96) != crossTail || fileBytes().size() != 113 || filePos() != 113) {
-        testFail("crossing pwrite returned %lld (file size %u, pos %lld)",
-                 (long long)r, (unsigned)fileBytes().size(), (long long)filePos());
-    }
-    // 8. Count 0 with a bad buffer is 0, not a fault (host-measured).
-    if (invoke(1, (U64)(U32)fd, unmapped, 0, 0) != 0 || invoke(18, (U64)(U32)fd, unmapped, 0, 0) != 0) {
-        testFail("zero-count write/pwrite from an unmapped buffer was not 0");
-    }
-    // 9. A bad fd with a bad buffer answers -EBADF: the descriptor
-    // answer precedes the copy fault, as on the host.
-    if (invoke(1, 9999, unmapped, 16, 0) != -9) {
-        testFail("write with a bad fd and a bad buffer was not -EBADF");
-    }
-    // 10. writev inherits the shape through sys_write64: a bad first
-    // segment answers -EFAULT and writes nothing.
-    constexpr U64 iovAt = dataPage + 0x800;
-    memory->writeq(iovAt, unmapped);
-    memory->writeq(iovAt + 8, 16);
-    seekSet(113);
-    r = invoke(20, (U64)(U32)fd, iovAt, 1, 0);
-    if (r != -K_EFAULT || fileBytes().size() != 113) {
-        testFail("writev with an unmapped first segment returned %lld (file size %u)",
-                 (long long)r, (unsigned)fileBytes().size());
-    }
-    // 11. writev with a bad later segment returns the bytes already
-    // written.
-    memory->writeq(iovAt, dataPage);
-    memory->writeq(iovAt + 8, 8);
-    memory->writeq(iovAt + 16, unmapped);
-    memory->writeq(iovAt + 24, 16);
-    r = invoke(20, (U64)(U32)fd, iovAt, 2, 0);
-    if (r != 8 || fileBytes().size() != 121 || fileBytes().substr(113, 8) != "01234567") {
-        testFail("writev with an unmapped second segment returned %lld (file size %u)",
-                 (long long)r, (unsigned)fileBytes().size());
-    }
-    // 12. A PROT_WRITE-only buffer is readable to the copy under the
-    // x86 write-implies-read rule and lands its real bytes.
-    seekSet(121);
-    r = invoke(1, (U64)(U32)fd, wonlyPage, 16, 0);
-    if (r != 16 || fileBytes().substr(121, 16) != std::string(wonlyText, 16)) {
-        testFail("write from a write-only page returned %lld", (long long)r);
-    }
-
-    auto stageText = [&](U64 at, const char* text, U32 len) {
-        memory->memcpyToGuest(at, text, len);
-    };
-    auto segText = [&](U64 at, U32 len) {
-        std::string out;
-        for (U32 i = 0; i < len; i++) out += (char)memory->readb(at + i);
-        return out;
-    };
-    auto filePos = [&]() -> S64 { return invoke6(8, (U64)(U32)fd, 0, 1, 0, 0, 0); }; // lseek(fd, 0, SEEK_CUR)
-    auto setPos = [&](S64 pos) -> S64 { return invoke6(8, (U64)(U32)fd, (U64)pos, 0, 0, 0, 0); }; // SEEK_SET
-
-    // 1. Three segments at offset 2; position untouched; one IN_MODIFY.
-    stageText(seg0, "abcd", 4); stageText(seg1, "efgh", 4); stageText(seg2, "ijkl", 4);
-    setIov(0, seg0, 4); setIov(1, seg1, 4); setIov(2, seg2, 4);
-    S64 r = invoke6(296, (U64)(U32)fd, iovAt, 3, 2, 0, 0);
-    if (r != 12 || hostContent() != "01abcdefghijklEFGHIJ") {
-        testFail("pwritev 3 segments at offset 2 returned %lld with content '%s'",
-                 (long long)r, hostContent().c_str());
-    }
-    if (filePos() != 0) {
-        testFail("pwritev moved the file position to %lld", (long long)filePos());
-    }
-    if (modifyCount(drainMasks()) != 1) {
-        testFail("3-segment pwritev must generate exactly one watcher-visible IN_MODIFY");
-    }
-
-    // 2. A zero-length segment in the middle is skipped.
-    stageText(seg0, "wxyz", 4); stageText(seg2, "WXYZ", 4);
-    setIov(0, seg0, 4); setIov(1, seg1, 0); setIov(2, seg2, 4);
-    r = invoke6(296, (U64)(U32)fd, iovAt, 3, 14, 0, 0);
-    if (r != 8 || hostContent() != "01abcdefghijklwxyzWXYZ") {
-        testFail("pwritev with a zero-length segment returned %lld with content '%s'",
-                 (long long)r, hostContent().c_str());
-    }
-    drainMasks();
-
-    // 3. Partial shape: a good first segment and a bad second segment
-    // return the bytes already written, and only those bytes land.
-    stageText(seg0, "xyz", 3);
-    setIov(0, seg0, 3); setIov(1, 0x1000, 3); // 0x1000: unmapped guest page
-    r = invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0);
-    if (r != 3 || hostContent().substr(0, 3) != "xyz") {
-        testFail("pwritev with a bad second segment returned %lld with content prefix '%s'",
-                 (long long)r, hostContent().substr(0, 3).c_str());
-    }
-    if (modifyCount(drainMasks()) != 1) {
-        testFail("partial pwritev must generate exactly one IN_MODIFY");
-    }
-
-    // 4. A bad first segment returns the error itself.
-    setIov(0, 0x1000, 3); setIov(1, seg0, 3);
-    if (invoke6(296, (U64)(U32)fd, iovAt, 2, 0, 0, 0) != -K_EFAULT) {
-        testFail("pwritev with a bad first segment was not -EFAULT");
-    }
-    if (modifyCount(drainMasks()) != 0) {
-        testFail("failed pwritev generated IN_MODIFY");
-    }
-
-    // 5. Validation, in the measured order; none of it writes or
-    // generates IN_MODIFY.
-    if (invoke6(296, 9999, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev with a bad descriptor and offset -1 was not -EINVAL (offset precedes descriptor)");
-    }
-    if (invoke6(296, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev with offset -1 was not -EINVAL");
-    }
-    if (invoke6(296, 9999, iovAt, 1, 0, 0, 0) != -9) {
-        testFail("pwritev with a bad descriptor was not -EBADF");
-    }
-    if (invoke6(296, 9999, iovAt, 0, 0, 0, 0) != -9) {
-        testFail("pwritev with a bad descriptor and iovcnt 0 was not -EBADF");
-    }
-    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev with iovcnt 0 and offset -1 was not -EINVAL");
-    }
-    if (invoke6(296, (U64)(U32)fd, iovAt, 0, 0, 0, 0) != 0) {
-        testFail("pwritev with iovcnt 0 did not return 0");
-    }
-    if (invoke6(296, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0) != -K_EINVAL) {
-        testFail("pwritev with iovcnt -1 was not -EINVAL");
-    }
-    if (invoke6(296, (U64)(U32)fd, iovAt, 1025, 0, 0, 0) != -K_EINVAL) {
-        testFail("pwritev with iovcnt IOV_MAX+1 was not -EINVAL");
-    }
-    if (invoke6(296, (U64)(U32)fd, 0, 1, 0, 0, 0) != -K_EFAULT) {
-        testFail("pwritev with a null iovec and iovcnt 1 was not -EFAULT");
-    }
-    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0, 0, 0x40) != -K_EOPNOTSUPP) {
-        testFail("pwritev2 with an undefined flag bit was not -EOPNOTSUPP");
-    }
-    if (invoke6(328, 9999, iovAt, 1, 0, 0, 0x40) != -9) {
-        testFail("pwritev2 with a bad descriptor and a bad flag was not -EBADF (descriptor precedes flags)");
-    }
-    if (invoke6(328, 9999, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev2 with a bad descriptor and offset -2 was not -EINVAL (offset precedes descriptor)");
-    }
-    if (invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFEULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev2 with offset -2 was not -EINVAL");
-    }
-    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0) != -K_EINVAL) {
-        testFail("pwritev2 in position mode with iovcnt -1 was not -EINVAL");
-    }
-    if (modifyCount(drainMasks()) != 0) {
-        testFail("rejected pwritev/pwritev2 calls generated IN_MODIFY");
-    }
-
-    // 6. pwritev2 offset -1 is the file-position mode: writes at the
-    // current position and advances it.
-    if (setPos(5) != 5) {
-        testFail("pwritev test could not seek its fixture file");
-        return;
-    }
-    stageText(seg0, "PQ", 2);
-    setIov(0, seg0, 2);
-    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0);
-    if (r != 2 || hostContent().substr(5, 2) != "PQ") {
-        testFail("pwritev2 offset -1 returned %lld with content '%s'",
-                 (long long)r, hostContent().substr(5, 2).c_str());
-    }
-    if (filePos() != 7) {
-        testFail("pwritev2 offset -1 left the position at %lld, expected 7", (long long)filePos());
-    }
-    drainMasks();
-
-    // 7. RWF_APPEND ignores the offset, writes at end of file, and
-    // leaves the position untouched outside the -1 mode.
-    stageText(seg0, "ZZ", 2);
-    setIov(0, seg0, 2);
-    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 2, 0, 0x10);
-    if (r != 2 || hostContent().size() != 24 || hostContent().substr(22, 2) != "ZZ") {
-        testFail("pwritev2 RWF_APPEND returned %lld with content '%s'",
-                 (long long)r, hostContent().c_str());
-    }
-    if (filePos() != 7) {
-        testFail("pwritev2 RWF_APPEND moved the position to %lld", (long long)filePos());
-    }
-    drainMasks();
-
-    // 8. RWF_APPEND with offset -1 appends and the position follows
-    // the written bytes to the new end of file.
-    stageText(seg0, "Q", 1);
-    setIov(0, seg0, 1);
-    r = invoke6(328, (U64)(U32)fd, iovAt, 1, 0xFFFFFFFFULL, 0xFFFFFFFFULL, 0x10);
-    if (r != 1 || hostContent().size() != 25 || hostContent().substr(24, 1) != "Q") {
-        testFail("pwritev2 RWF_APPEND offset -1 returned %lld with content '%s'",
-                 (long long)r, hostContent().c_str());
-    }
-    if (filePos() != 25) {
-        testFail("pwritev2 RWF_APPEND offset -1 left the position at %lld, expected 25", (long long)filePos());
-    }
-    drainMasks();
-
-    // 9. A read-only descriptor follows pwrite64's house answer
-    // (-EINVAL; the host answers EBADF for the whole positioned-write
-    // family -- that divergence is the write family's, registered
-    // separately, exactly as the preadv test pins the read side).
-    {
-        KFileDescriptorPtr rdesc;
-        U32 result = process->openFile(B("/"), B("/data.bin"), K_O_RDONLY, rdesc);
-        if ((S32)result < 0 || !rdesc) {
-            testFail("pwritev test could not open /data.bin read-only");
-            return;
-        }
-        setIov(0, seg0, 2);
-        if (invoke6(296, (U64)(U32)rdesc->handle, iovAt, 1, 0, 0, 0) != -K_EINVAL) {
-            testFail("pwritev on a read-only descriptor was not -EINVAL");
-        }
-        process->close(rdesc->handle);
-    }
-
-    // 10. pos_h is honored: offset 2^32 lands past 4 GiB (sparse),
-    // verified by the file length and a guest pread64 readback.
-    {
-        KFileDescriptorPtr desc2;
-        U32 result = process->openFile(B("/"), B("/data2.bin"), K_O_RDWR | K_O_CREAT, desc2);
-        if ((S32)result < 0 || !desc2) {
-            testFail("pwritev test could not create /data2.bin");
-            return;
-        }
-        stageText(seg0, "END!", 4);
-        setIov(0, seg0, 4);
-        r = invoke6(296, (U64)(U32)desc2->handle, iovAt, 1, 0, 1, 0);
-        if (r != 4) {
-            testFail("pwritev at offset 2^32 returned %lld (pos_h ignored?)", (long long)r);
-        }
-        if (desc2->kobject->length() != (S64)((1ULL << 32) + 4)) {
-            testFail("pwritev at offset 2^32 left the file length at %lld",
-                     (long long)desc2->kobject->length());
-        }
-        // Read the tail back through the guest pread64 dispatch
-        // (pread64 takes its offset in one 64-bit register, unlike
-        // the vectored calls' lo/hi split).
-        memory->writeq(seg0, 0);
-        S64 pr = invoke6(17, (U64)(U32)desc2->handle, seg0, 4, (1ULL << 32), 0, 0);
-        if (pr != 4 || segText(seg0, 4) != "END!") {
-            testFail("pread64 at offset 2^32 returned %lld with bytes '%s'",
-                     (long long)pr, segText(seg0, 4).c_str());
-        }
-        process->close(desc2->handle);
-    }
-
-    // 11. FD-100: the pwritev2 flags check runs LAST -- behind the
-    // iovcnt range check and the iovec array check. An undefined flag
-    // bit combined with an out-of-range iovcnt answers EINVAL, and
-    // combined with a null or unmapped iovec array answers EFAULT;
-    // only a call that passes those checks reaches EOPNOTSUPP (the
-    // section-5 case). None of these writes or generates IN_MODIFY.
-    if (invoke6(328, (U64)(U32)fd, iovAt, (U64)-1, 0, 0, 0x40) != -K_EINVAL) {
-        testFail("pwritev2 with iovcnt -1 and an undefined flag was not -EINVAL");
-    }
-    if (invoke6(328, (U64)(U32)fd, iovAt, 1025, 0, 0, 0x40) != -K_EINVAL) {
-        testFail("pwritev2 with iovcnt IOV_MAX+1 and an undefined flag was not -EINVAL");
-    }
-    if (invoke6(328, (U64)(U32)fd, 0, 1, 0, 0, 0x40) != -K_EFAULT) {
-        testFail("pwritev2 with a null iovec and an undefined flag was not -EFAULT");
-    }
-    if (invoke6(328, (U64)(U32)fd, 0x1000, 1, 0, 0, 0x40) != -K_EFAULT) {
-        testFail("pwritev2 with an unmapped iovec and an undefined flag was not -EFAULT");
-    }
-    if (modifyCount(drainMasks()) != 0) {
-        testFail("rejected pwritev2 flag-order calls generated IN_MODIFY");
-    }
-
-    process->close((S32)inotifyDesc->handle);
-    process->close(fd);
-    rmdir(hostDir);
-}
-
-    constexpr U64 bufAt = page + 0x100;
-    constexpr U64 iovAt = page + 0x200;
-    constexpr U64 bigIovAt = page + 0x1000;
-    memory->memcpyToGuest(bufAt, "xyz", 3);
-    auto setIov = [&](U64 at, U32 idx, U64 base, U64 len) {
-        memory->writeq(at + (U64)idx * 16 + 0, base);
-        memory->writeq(at + (U64)idx * 16 + 8, len);
-    };
-    setIov(iovAt, 0, bufAt, 3);
-    setIov(iovAt, 1, bufAt, 3);
-    {
-        std::vector<U8> zeros(16400, 0);
-        memory->memcpyToGuest(bigIovAt, zeros.data(), (U32)zeros.size());
-    }
-
-    // write (1): the mode answer, and the descriptor check ahead
-    // of the zero-count return.
-    if (invoke(1, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
-        testFail("write on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(1, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
-        testFail("zero-count write on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(1, 9999, bufAt, 0, 0) != -K_EBADF) {
-        testFail("zero-count write on a bad descriptor was not -EBADF");
-    }
-    // writev (20): mode ahead of the walk, the range check and
-    // the iovec pointer check.
-    if (invoke(20, (U64)(U32)rfd, iovAt, 1, 0) != -K_EBADF) {
-        testFail("writev on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(20, (U64)(U32)rfd, iovAt, 0, 0) != -K_EBADF) {
-        testFail("writev with iovcnt 0 on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(20, (U64)(U32)wfd, bigIovAt, 1025, 0) != -K_EINVAL) {
-        testFail("writev with iovcnt IOV_MAX+1 was not -EINVAL");
-    }
-    // pwrite64 (18): negative offset EINVAL ahead of the
-    // descriptor and mode answers; mode EBADF otherwise.
-    if (invoke(18, (U64)(U32)rfd, bufAt, 3, 0) != -K_EBADF) {
-        testFail("pwrite64 on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(18, (U64)(U32)rfd, bufAt, 0, 0) != -K_EBADF) {
-        testFail("zero-count pwrite64 on a read-only descriptor was not -EBADF");
-    }
-    if (invoke(18, (U64)(U32)rfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
-        testFail("pwrite64 with offset -1 on a read-only descriptor was not -EINVAL");
-    }
-    if (invoke(18, 9999, bufAt, 3, (U64)-1) != -K_EINVAL) {
-        testFail("pwrite64 with offset -1 on a bad descriptor was not -EINVAL");
-    }
-    if (invoke(18, (U64)(U32)wfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
-        testFail("pwrite64 with offset -1 on a writable descriptor was not -EINVAL");
-    }
-    if (invoke(20, (U64)(U32)wfd, 0, 1, 0) != -K_EFAULT) {
-        testFail("writev with a null iovec and iovcnt 1 was not -EFAULT");
-    }
-    // Controls: the writable descriptor still writes, and a
-    // positioned write leaves the file position alone.
-    if (invoke(1, (U64)(U32)wfd, bufAt, 3, 0) != 3) {
-        testFail("write on a writable descriptor did not return 3");
-    }
-    if (invoke(1, (U64)(U32)wfd, bufAt, 0, 0) != 0) {
-        testFail("zero-count write on a writable descriptor did not return 0");
-    }
-    if (invoke(20, (U64)(U32)wfd, iovAt, 2, 0) != 6) {
-        testFail("two-segment writev on a writable descriptor did not return 6");
-    }
-    {
-        S64 before = rdwrDesc->kobject->getPos();
-        if (invoke(18, (U64)(U32)wfd, bufAt, 3, 5) != 3) {
-            testFail("pwrite64 on a writable descriptor did not return 3");
-        }
-        if (rdwrDesc->kobject->getPos() != before) {
-            testFail("pwrite64 moved the file position");
-        }
-    }
-
-    process->close(rfd);
-    process->close(wfd);
-    rmdir(hostDir);
 }
 
 
