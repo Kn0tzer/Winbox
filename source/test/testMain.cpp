@@ -161,6 +161,7 @@ void testWritevDatagram64Syscalls();
 void testWriteZeroLength64Syscalls();
 void testSeqpacket64Syscalls();
 void testDatagramPeerCloseRefusal64Syscalls();
+void testSocketStateAnswers64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -246,6 +247,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testWriteZeroLength64Syscalls, "Test x64 zero-length plain write on a datagram socket"},
     {testSeqpacket64Syscalls, "Test x64 SOCK_SEQPACKET unix sockets keep record boundaries end to end"},
     {testDatagramPeerCloseRefusal64Syscalls, "Test x64 datagram send to a just-closed peer answers ECONNREFUSED once, then ENOTCONN"},
+    {testSocketStateAnswers64Syscalls, "Test x64 socket state answers: drained datagram reads, unconnected receives, non-listening connect, connected stream addressed sends"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

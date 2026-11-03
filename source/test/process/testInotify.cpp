@@ -6165,9 +6165,10 @@ void testDatagramPeerCloseRefusal64Syscalls() {
         }
     }
     // Receiving what the peer queued before closing does not spend the
-    // refusal. (The drained-read answer 0 pinned here is the standing
-    // emulator behaviour; the host answers -EWOULDBLOCK for a drained
-    // datagram survivor, filed separately in this lane's register entries.)
+    // refusal. The drained-read answer pinned here was the standing 0
+    // when this lane ran; the host answers -EWOULDBLOCK for a drained
+    // datagram survivor (FD-120, whose lane corrected this pin to the
+    // host answer).
     {
         Pair p;
         if (!makePair(p)) { testFail("datagram pair failed (recv-first case)"); }
@@ -6177,7 +6178,7 @@ void testDatagramPeerCloseRefusal64Syscalls() {
             S64 r = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
             if (r != 1) testFail("queued datagram not delivered after peer close: %lld", (long long)r);
             S64 r2 = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
-            if (r2 != 0) testFail("drained datagram survivor read: %lld, want the standing 0", (long long)r2);
+            if (r2 != -K_EWOULDBLOCK) testFail("drained datagram survivor read: %lld, want -EWOULDBLOCK (FD-120)", (long long)r2);
             S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
             S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
             expectRefusalThenNotConn(f, s, "receiving first does not spend the refusal");
@@ -6244,6 +6245,328 @@ void testDatagramPeerCloseRefusal64Syscalls() {
                 process->close(p.tx);
             }
             process->close(live);
+        }
+    }
+}
+
+
+// FD-120..FD-123: socket state answers, host-measured on the box's
+// kernel (test-results/fd120-123/hostref-fd120-123.c and
+// hostref-fd120-123b.c):
+//   FD-120 a datagram survivor whose pair peer closed answers
+//     -EWOULDBLOCK for a drained read on every receive path --
+//     datagram has no end of stream. The seqpacket and stream
+//     survivors keep their 0 (end of stream) controls.
+//   FD-121 a receive on a socket that is not connected answers
+//     -EINVAL for stream (fresh, listening, or connect in flight
+//     alike), -ENOTCONN for seqpacket, and -EWOULDBLOCK for
+//     datagram, on the read, recvfrom and recvmsg paths alike.
+//   FD-122 a connect to a bound but not listening socket answers
+//     -ECONNREFUSED at once, blocking and nonblocking alike, and
+//     queues nothing a later listen could accept.
+//   FD-123 an addressed send on a connected stream socket answers
+//     -EISCONN (sendto and sendmsg alike; a peer's death does not
+//     change it), and on a never-connected stream socket it
+//     answers -EOPNOTSUPP -- FD-111's measurement, which was the
+//     unconnected shape.
+void testSocketStateAnswers64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd120XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("socket state answers test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x7B000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("socket state answers test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    memory->memcpyToGuest(bufAt + 0x00, "q", 1);
+    memory->memcpyToGuest(bufAt + 0x10, "r1", 2);
+    memory->memcpyToGuest(bufAt + 0x20, "s", 1);
+    memory->memcpyToGuest(bufAt + 0x30, "N", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) -> bool {
+        if (invoke(53, 1, type, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto recvfromOnce = [&](S32 fd) -> S64 { return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0); };
+    auto readOnce = [&](S32 fd) -> S64 { return invoke(0, (U64)(U32)fd, recvAt, 64, 0); };
+    auto recvmsgOnce = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(iovAt, recvAt);
+        memory->writeq(iovAt + 8, 64);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(47, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto sendtoAddr = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        return invoke6(44, (U64)(U32)fd, bufAt + 0x30, 1, 0, addrAt, alen);
+    };
+    auto sendmsgNamed = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, addrAt);
+        memory->writed(hdrAt + 8, alen);
+        memory->writeq(iovAt, bufAt + 0x30);
+        memory->writeq(iovAt + 8, 1);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+
+    // ---- FD-120: drained datagram reads after the peer closes ----
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-120 queued case)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt, 1, 0), 1, "FD-120 peer write before close");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 1, "FD-120 queued datagram delivered after peer close");
+            if (memory->readb(recvAt) != 'q') testFail("FD-120 queued datagram payload wrong");
+            expectEq(recvfromOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram recvfrom");
+            expectEq(recvmsgOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram recvmsg");
+            expectEq(readOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram read");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-120 empty case)"); }
+        else {
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), -K_EWOULDBLOCK, "FD-120 datagram survivor, nothing ever queued");
+            process->close(p.tx);
+        }
+    }
+    {
+        // Control: a seqpacket survivor keeps end of stream.
+        Pair p;
+        if (!makePair(5 /*SOCK_SEQPACKET*/, p)) { testFail("seqpacket pair failed (FD-120 control)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x10, 2, 0), 2, "FD-120 control seqpacket record write");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 2, "FD-120 control seqpacket queued record");
+            expectEq(recvfromOnce(p.tx), 0, "FD-120 control seqpacket drained read stays end of stream");
+            process->close(p.tx);
+        }
+    }
+    {
+        // Control: a stream survivor keeps end of stream.
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-120 control)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x20, 1, 0), 1, "FD-120 control stream write");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 1, "FD-120 control stream queued byte");
+            expectEq(recvfromOnce(p.tx), 0, "FD-120 control stream drained read stays end of stream");
+            process->close(p.tx);
+        }
+    }
+
+    // ---- FD-121: receives on sockets that are not connected ----
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        if (s < 0) { testFail("could not create a stream socket (FD-121)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EINVAL, "FD-121 unconnected stream recvfrom");
+            expectEq(readOnce(s), -K_EINVAL, "FD-121 unconnected stream read");
+            expectEq(recvmsgOnce(s), -K_EINVAL, "FD-121 unconnected stream recvmsg");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(5 /*SOCK_SEQPACKET*/);
+        if (s < 0) { testFail("could not create a seqpacket socket (FD-121)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_ENOTCONN, "FD-121 unconnected seqpacket recvfrom");
+            expectEq(recvmsgOnce(s), -K_ENOTCONN, "FD-121 unconnected seqpacket recvmsg");
+            process->close(s);
+        }
+    }
+    {
+        // Standing correct shape: an unconnected datagram socket
+        // receives from anyone, so an empty one would block.
+        S32 s = sock(2 /*SOCK_DGRAM*/);
+        if (s < 0) { testFail("could not create a datagram socket (FD-121 control)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EWOULDBLOCK, "FD-121 control unconnected datagram recvfrom");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lst");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-121)");
+        } else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EINVAL, "FD-121 listening stream recvfrom");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(5 /*SOCK_SEQPACKET*/);
+        U32 alen = writePathAddr(addrAt, "/lsq");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening seqpacket socket (FD-121)");
+        } else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_ENOTCONN, "FD-121 listening seqpacket recvfrom");
+            process->close(s);
+        }
+    }
+
+    // ---- FD-122: connect to a bound but not listening socket ----
+    {
+        S32 server = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/nlstr");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0) {
+            testFail("could not stage a non-listening stream socket (FD-122)");
+        } else {
+            S32 client = sock(1 /*SOCK_STREAM*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_ECONNREFUSED,
+                     "FD-122 stream connect to a non-listening socket");
+            // The refused connect queues nothing: a later listen has
+            // nothing to accept.
+            expectEq(invoke(50, (U64)(U32)server, 4, 0, 0), 0, "FD-122 listen after the refused connect");
+            nonblock(server);
+            expectEq(invoke(43, (U64)(U32)server, 0, 0, 0), -K_EWOULDBLOCK,
+                     "FD-122 nothing pending after the refused connect");
+            process->close(client);
+            process->close(server);
+        }
+    }
+    {
+        S32 server = sock(5 /*SOCK_SEQPACKET*/);
+        U32 alen = writePathAddr(addrAt, "/nlseq");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0) {
+            testFail("could not stage a non-listening seqpacket socket (FD-122)");
+        } else {
+            S32 client = sock(5 /*SOCK_SEQPACKET*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_ECONNREFUSED,
+                     "FD-122 seqpacket connect to a non-listening socket");
+            process->close(client);
+            process->close(server);
+        }
+    }
+    {
+        // Control: a listening destination still pairs.
+        S32 server = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lstr");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)server, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-122 control)");
+        } else {
+            S32 client = sock(1 /*SOCK_STREAM*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_EINPROGRESS,
+                     "FD-122 control connect to a listener pends (standing emulator shape)");
+            nonblock(server);
+            S64 accepted = invoke(43, (U64)(U32)server, 0, 0, 0);
+            if (accepted < 0) testFail("FD-122 control accept of the pending client: %lld", (long long)accepted);
+            else process->close((S32)accepted);
+            process->close(client);
+            process->close(server);
+        }
+    }
+
+    // ---- FD-123: addressed sends on stream sockets ----
+    {
+        S32 dgpeer = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer");
+        if (dgpeer < 0 || invoke(49, (U64)(U32)dgpeer, addrAt, alen, 0) != 0) {
+            testFail("could not stage the addressed datagram peer (FD-123)");
+        } else {
+            nonblock(dgpeer);
+            Pair p;
+            if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-123)"); }
+            else {
+                expectEq(sendtoAddr(p.tx, "/dgpeer"), -K_EISCONN, "FD-123 connected stream sendto with a destination");
+                expectEq(sendmsgNamed(p.tx, "/dgpeer"), -K_EISCONN, "FD-123 connected stream sendmsg with a name");
+                expectEq(recvfromOnce(p.rx), -K_EWOULDBLOCK, "FD-123 nothing delivered to the pair peer");
+                expectEq(recvfromOnce(dgpeer), -K_EWOULDBLOCK, "FD-123 nothing delivered to the named peer");
+                process->close(p.rx);
+                expectEq(sendtoAddr(p.tx, "/dgpeer"), -K_EISCONN,
+                         "FD-123 peer-closed stream survivor sendto with a destination");
+                expectEq(sendmsgNamed(p.tx, "/dgpeer"), -K_EISCONN,
+                         "FD-123 peer-closed stream survivor sendmsg with a name");
+                process->close(p.tx);
+            }
+            S32 u = sock(1 /*SOCK_STREAM*/);
+            if (u < 0) { testFail("could not create an unconnected stream socket (FD-123)"); }
+            else {
+                // FD-111's measurement: the unconnected shape.
+                expectEq(sendtoAddr(u, "/dgpeer"), -K_EOPNOTSUPP, "FD-123 unconnected stream sendto with a destination");
+                expectEq(sendmsgNamed(u, "/dgpeer"), -K_EOPNOTSUPP, "FD-123 unconnected stream sendmsg with a name");
+                process->close(u);
+            }
+            process->close(dgpeer);
         }
     }
 }
