@@ -4935,6 +4935,60 @@ do not close the entry until they land.
   first-visit x86 starts. The entry stays open on
   its closing terms.
 
+- **FD-116 — A zero-length plain write on
+  a 64-bit datagram socket queues nothing,
+  where the host queues an empty
+  datagram.** *(Low. Filed by the
+  FD-113..115 lane, 2026-11-03; provisional
+  until the merge lane's audit.)* Measured
+  on the host
+  (`test-results/fd113-115/hostref-fd115.c`):
+  write(fd, buf, 0) on a connected datagram
+  socket returns 0 and the peer's recv
+  returns 0 for a real empty datagram.
+  Every other emulator write path queues
+  it (the 32-bit write, and sendmsg per
+  FD-112), but the 64-bit dispatcher's
+  sys_write64 returns 0 on a zero count
+  before the descriptor is even resolved,
+  so the kobject never sees the call. The
+  writev gather is NOT this defect: a
+  gather totalling zero queues nothing on
+  the host too (measured in the same
+  program, and covered by CL-66). Filed,
+  not fixed, by the FD-113..115 lane; the
+  fix belongs with the 64-bit write
+  family's own lane.
+
+- **FD-117 — The JS slice test
+  unix-connect-handoff no longer compiles
+  against the current kunixsocket.cpp: the
+  destructor and connect/accept it
+  extracts outgrew its stub class.**
+  *(Low. Filed by the FD-113..115 lane,
+  2026-11-03; provisional until the merge
+  lane's audit.)* Found running the full
+  JS unit suite on a built tree: the
+  test's stub KUnixSocketObject has no
+  abstractRegistered / abstractName /
+  oneWayPeerLink members and no
+  recvBuffer, and the helpers the current
+  destructor and connect path use
+  (abstractRegistry, resolveNamedPeer and
+  friends) are not stubbed, so its
+  extracted check.cpp fails to compile.
+  Verified failing identically on the
+  unmodified base `963272707` — the
+  breakage came with FD-111's abstract
+  registry and one-way datagram links,
+  and the FD-109..112 lane's JS accounting
+  (272 passed / 76 failed on an
+  un-bootstrapped tree, failures sampled)
+  did not isolate it. The product code is
+  not implicated: the native suites cover
+  the same paths and pass. The harness
+  completion is its own piece of work.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -5000,6 +5054,7 @@ is behavioural, is re-proven there.
 | `lane-fd105-108` | FD-105: the dispatcher's recvfrom copyback scatters page by page with a writability check per piece, answering -EFAULT at the first unwritable piece with the prefix delivered; FD-106: sys_sendmsg64 imports the whole control area before validating, then walks the whole chain (malformed lengths -EINVAL, rights accumulating under the cumulative 253 cap with descriptor values resolved in walk order, credentials only at cmsg_len exactly 28, other SOL_SOCKET types -EINVAL, other levels skipped) and translates every rights header; FD-107: sys_recvmsg64's name copyback is deferred past the control translation and answers -EFAULT for an unwritable target, with the data and passed descriptors delivered and no msghdr field writebacks; FD-108: KUnixSocketObject::sendto queues a real datagram on a connected datagram pair, mirroring sendmsg's queueing tail; FD-109 (recvmsg fabricates the source name for queued messages), FD-110 (the message queue is invisible to read/recvfrom), FD-111 (named datagram delivery has no route) and FD-112 (a zero-length sendmsg datagram queues nothing) filed | New x64 tests testRecvfromBadBuffer64Syscalls, testSendmsgControlChain64Syscalls, testRecvmsgNameCopyback64Syscalls, testSendtoDatagram64Syscalls (RED on the base — recvfrom reported 16 into an unmapped buffer and 200 into a crossing one, a second rights header's descriptors never arrived and malformed tails sent silently, an unwritable name target reported success with its fields written back, datagram sendto delivered nothing; GREEN on the fix); host reference programs measured first (the chain walk rules incl. the credential length and the import/resolution order, the name-copyback field behaviour, the recvfrom crossing prefix); full native suites serial: main 668/668 and x64 77/77, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = db1bd2e22, wasm 77b9c090, staged archive c4dbe35986a5 as pinned); JS unit 348/0 (reviewed silent-failure allowance 117 -> 119). Record: `docs/reports/fd105-fd108-message-faults-20261102.md`; evidence `test-results/fd105-108/` |
 
 | `lane-fd109-112` | FD-109: queued messages carry the sender's bound address (recorded at bind; abstract names resolve through a length-exact registry), recvmsg reports it with the host's length rules and the 64-bit bridge behaves accordingly; FD-110: read/recvfrom (object and native paths) drain the message queue with host datagram semantics (whole datagram per call, truncation discards, MSG_PEEK repeats) and report the queued sender; FD-111: datagram connect links the named peer (reconnect switches, AF_UNSPEC disconnects), addressed sendto/sendmsg deliver through one resolver matching the host's error matrix, and the dispatcher's bare sendto/recvfrom bounce their address arguments; FD-112: a zero-length datagram queues as a real empty message with its credentials and descriptors; FD-113 (closed pathname socket answers ENOENT instead of ECONNREFUSED), FD-114 (stream queue/buffer interleave order) and FD-115 (writev gathers into one datagram) filed; the FD-107 copyback test's fixture now uses a named sender (with an unnamed pair peer its fault scenarios fired only through FD-109's fabrication) and FD-107's own closure carries the note | New x64 tests testRecvmsgSenderName64Syscalls, testReadQueuedDatagram64Syscalls, testNamedDatagram64Syscalls, testSendmsgZeroLength64Syscalls (RED on the base — pair recvmsg reported a 128-byte fabricated name, every queued read answered -EWOULDBLOCK, addressed sendto reported sent but delivered nothing and datagram connect answered -EISCONN, the zero-length datagram never became readable; GREEN on the fix); host reference programs measured first (sender-name rules incl. abstract names and no-autobind, the named-delivery error matrix, read/peek/truncation semantics, the zero-length and descriptor cases); full native suites serial: main 668/668 and x64 81/81, 0 FAILED; JS unit at the lane's un-built-tree baseline (272 passed / 76 failed, every sampled failure a missing generated web/vendor file, matching the FD-58..60 lane's accounting on an un-bootstrapped tree; the socket-relevant silent-failure tests pass: no-silent-failure, no-silent-drops, silent-failure-scanner); browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = 0523a2d85, wasm a691ae8f, staged archive c4dbe35986a5 as pinned). Record: `docs/reports/fd109-fd112-message-delivery-20261102.md`; evidence `test-results/fd109-112/` |
+| `lane-fd113-115` | FD-113: the binding socket's destructor no longer unlinks its pathname node, so a closed pathname socket answers -ECONNREFUSED (and rebind -EADDRINUSE) until a guest unlink, exactly the host's answers; FD-114: the stream receive stores keep call order — sendmsg flushes the peer's buffered bytes into the message queue ahead of its own, and the plain write paths queue behind a non-empty queue, so reads serve one seniority across both stores (the X11 wire path, whose peers never queue, is untouched); FD-115: writev gathers into a single datagram on both paths (the object writev inside its critical section, the 64-bit dispatcher validating every segment before one writeNative), an unreadable segment answering -EFAULT with nothing queued and a zero-total gather queueing nothing; FD-116 (a zero-length plain 64-bit write queues no empty datagram) and FD-117 (the unix-connect-handoff JS slice test's stub outgrown by FD-111's destructor/connect growth; verified failing on the unmodified base) filed | New x64 tests testStalePathnameSocket64Syscalls, testStreamWriteSendmsgOrder64Syscalls, testWritevDatagram64Syscalls (RED on the base — stale path sendto/connect -2 and rebind 0, every interleave served queue-first, writev arriving as two datagrams with invented bytes for a bad segment; GREEN on the fix); the FD-107/FD-109 pathname tests' fixtures unlink before re-binding, the host discipline FD-113's fix now enforces; host reference programs measured first (the stale-path answer matrix incl. EADDRINUSE, the interleave and ancillary-position cases, the gather cases incl. the atomic -EFAULT and the plain zero-length write behind FD-116); full native suites serial: main 668/668 and x64 84/84, 0 FAILED; JS unit 347 passed / 1 failed — the one failure is FD-117, pre-existing on the base; this lane's two harness touches: the reviewed silent-failure allowance for syscall64.cpp 119 -> 120 (FD-115's dispatcher gate is one counted guest-validation errno return) and the socket64-message slice anchor tightened to the helper's definition (the fix's forward declaration had become its first match); browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = b80adf804, wasm ac291689, staged archive c4dbe35986a5 as pinned). Record: `docs/reports/fd113-fd115-socket-followups-20261103.md`; evidence `test-results/fd113-115/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -6002,6 +6057,126 @@ dead-start fix and needs composition care.
   -EWOULDBLOCK) and GREEN on the fix;
   suites and build as CL-60. Filed from
   this lane: FD-113, FD-114, FD-115.
+
+- **CL-64 — A closed pathname socket
+  answers like the host: the binding
+  socket's destructor no longer unlinks
+  its filesystem node, so the node
+  outlives the socket; addressed sends
+  and connects find the node with its
+  socket gone and answer -ECONNREFUSED
+  through the FD-111 resolver, a bind
+  over the node answers -EADDRINUSE, and
+  only an explicit guest unlink removes
+  it (after which the answer is
+  -ENOENT).** *(Provisional number, filed
+  on lane-fd109-112, 2026-11-03 — the
+  merge lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd113-115`, commits `8550a9823`
+  (tests), `1fcfe3018` (fix) and
+  `b80adf804` (fixture corrections). Host
+  behaviour measured first
+  (`test-results/fd113-115/hostref-fd113.c`):
+  sendto, datagram connect and stream
+  connect to the stale path all
+  -ECONNREFUSED, bind over it
+  -EADDRINUSE, after unlink -ENOENT, and
+  a rebind after unlink delivers. Proof:
+  new test testStalePathnameSocket64Syscalls
+  RED on the base (sendto -2, connect -2,
+  bind over the stale node 0) and GREEN
+  on the fix; the FD-107 and FD-109
+  pathname tests, whose fixtures re-bind
+  one path across cases, unlink before
+  binding now — the host discipline the
+  fix enforces. Suites and build as
+  CL-66. Filed from this lane: FD-116,
+  FD-117.
+
+- **CL-65 — Stream bytes keep call order
+  across the two receive stores: once
+  the message queue holds anything it is
+  the ordered store — sendmsg first
+  moves the peer's buffered bytes into
+  the queue ahead of its own message,
+  and the plain write paths (object
+  write, writeNative, the native nowait
+  write) queue their bytes as a
+  payload-only message whenever the
+  queue is non-empty, buffering exactly
+  as before when it is empty. The read
+  paths are unchanged; queue-then-buffer
+  is now a true seniority order, a read
+  can span a flushed chunk and the
+  message behind it, and ancillary data
+  still arrives with the first byte of
+  its carrying chunk.** *(Provisional
+  number, filed on lane-fd109-112,
+  2026-11-03 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd113-115`, commits as
+  CL-64. Host behaviour measured first
+  (`test-results/fd113-115/hostref-fd114.c`):
+  write-then-sendmsg reads "ZW12",
+  sendmsg-then-write "W12Z", a four-way
+  interleave "ABCD", the descriptor
+  arriving with its chunk's first byte,
+  and a plain read over a carrying chunk
+  discarding the descriptor. Proof: new
+  test testStreamWriteSendmsgOrder64Syscalls
+  RED on the base (every interleave
+  served the queue first, and no read
+  spanned the stores) and GREEN on the
+  fix. Suites and build as CL-66. Filed
+  from this lane: FD-116, FD-117.
+
+- **CL-66 — A gathered write queues one
+  datagram: both writev paths gather
+  before queueing. The object writev
+  collects its segments into one packet
+  inside its critical section and queues
+  once through the datagram send tail
+  factored out of internal_write
+  (sendDatagramToPeer); the 64-bit
+  dispatcher, which cannot use the
+  object writev, validates every segment
+  with the FD-101 readable-prefix helper
+  and makes one writeNative of the
+  gathered packet. An unreadable segment
+  answers -EFAULT with nothing queued,
+  zero-length segments are skipped
+  without touching their base, a gather
+  totalling zero queues nothing, and
+  /dev/log keeps its print behaviour on
+  the gathered bytes.** *(Provisional
+  number, filed on lane-fd109-112,
+  2026-11-03 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd113-115`, commits as
+  CL-64. Host behaviour measured first
+  (`test-results/fd113-115/hostref-fd115.c`):
+  two segments arrive as one datagram
+  "ABCD", an empty middle segment
+  changes nothing, the all-zero and
+  zero-count gathers queue nothing, the
+  bad-segment gather answers -EFAULT
+  atomically. Proof: new test
+  testWritevDatagram64Syscalls RED on
+  the base (two datagrams, "AB" then
+  "CD"; the bad-segment gather queued
+  invented bytes) and GREEN on the fix.
+  Suites: full native suites serial,
+  main 668/668 and x64 84/84, 0 FAILED;
+  JS unit 347 passed / 1 failed, the one
+  failure FD-117 (pre-existing on the
+  base `963272707`, verified there);
+  browser build BUILD COMPLETE, "Browser
+  export verified" (BUILD_INFO git_sha
+  `b80adf804`, wasm sha256 `ac291689`,
+  staged dependency archive `c4dbe35986a5`
+  as pinned). Filed from this lane:
+  FD-116, FD-117.
 
 ## Appendix — examined and deliberately NOT registered
 
