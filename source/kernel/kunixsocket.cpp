@@ -580,12 +580,20 @@ U32 KUnixSocketObject::readNative(U8* buffer, U32 len) {
     // socket's input is its queue, and a queued message is input
     // for any socket; the 64-bit bridge's read() (sys_read64)
     // reaches the queue through here.
-    if (!this->inClosed && !con && this->type != K_SOCK_DGRAM && this->msgs.empty())
-        return -K_EPIPE;
+    // FD-121 (host-measured): the not-connected answer is per type
+    // -- stream -EINVAL (fresh, listening, or connect in flight
+    // alike), seqpacket -ENOTCONN; other types keep the standing
+    // -EPIPE this gate used to answer for every type.
+    if (!this->inClosed && !con && this->msgs.empty()) {
+        if (this->type == K_SOCK_STREAM) return -K_EINVAL;
+        if (this->type == K_SOCK_SEQPACKET) return -K_ENOTCONN;
+        if (this->type != K_SOCK_DGRAM) return -K_EPIPE;
+    }
     con = nullptr; // don't hold a strong reference to this, if we are blocking then it would prevent the con object from being destroyed when its process is closed
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
     while (this->recvBuffer.size_used()==0 && this->msgs.empty()) {
-        if (this->inClosed) {
+        if (this->inClosed && this->type != K_SOCK_DGRAM) {
+            // FD-120: no end of stream for datagram (see read()).
             return 0;
         }
         if (!this->blocking) {
@@ -653,16 +661,27 @@ U32 KUnixSocketObject::read(KThread* thread, U32 buffer, U32 len, U32 flags, Rea
     if (!memory->canWrite(buffer, len)) {
         return -K_EFAULT;
     }
-    // FD-110: the EPIPE is the unconnected-stream answer. A datagram
-    // socket's input is its message queue, connected or not, and a
-    // queued message is readable input for any socket; neither may
-    // take the EPIPE.
-    if (!this->inClosed && !con && this->type != K_SOCK_DGRAM && this->msgs.empty())
-        return -K_EPIPE;
+    // FD-110: a datagram socket's input is its message queue,
+    // connected or not, and a queued message is readable input for
+    // any socket; neither may take the not-connected answers.
+    // FD-121 (host-measured): those answers are per type -- stream
+    // -EINVAL (fresh, listening, or connect in flight alike),
+    // seqpacket -ENOTCONN; other types keep the standing -EPIPE
+    // this gate used to answer for every type.
+    if (!this->inClosed && !con && this->msgs.empty()) {
+        if (this->type == K_SOCK_STREAM) return -K_EINVAL;
+        if (this->type == K_SOCK_SEQPACKET) return -K_ENOTCONN;
+        if (this->type != K_SOCK_DGRAM) return -K_EPIPE;
+    }
     con = nullptr; // don't hold a strong reference to this, if we are blocking then it would prevent the con object from being destroyed when its process is closed
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
     while (this->recvBuffer.size_used()==0 && this->msgs.empty()) {
-        if (this->inClosed) {
+        if (this->inClosed && this->type != K_SOCK_DGRAM) {
+            // FD-120 (host-measured): end of stream is the stream
+            // and seqpacket answer; a datagram socket has none, so
+            // its drained read after a peer close takes the
+            // would-block path below like any empty datagram read
+            // (a blocking one waits for the next datagram).
             return 0;
         }
         if (!this->blocking) {
@@ -1027,6 +1046,17 @@ U32 KUnixSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, U3
                 if (destination && destination->type != this->type) {
                     this->destAddress.family = 0;
                     return -K_EPROTOTYPE;
+                }
+                // FD-122 (host-measured): a destination that is
+                // bound but not listening refuses at once --
+                // -ECONNREFUSED, blocking and nonblocking alike.
+                // The connect used to queue as a pending connection
+                // that only an accept (which a non-listener never
+                // issues) or the destination's destruction could
+                // resolve.
+                if (destination && !destination->listening) {
+                    this->destAddress.family = 0;
+                    return -K_ECONNREFUSED;
                 }
                 this->connecting = destination;
                 {
@@ -1737,6 +1767,22 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         }
     }
 
+    if (this->type == K_SOCK_STREAM) {
+        // FD-123 (host-measured): a header destination on a stream
+        // socket answers by connection state, exactly as sendto's
+        // addressed branch does -- -EISCONN while connected (a
+        // peer's death does not change it), -EOPNOTSUPP while
+        // never connected (FD-111's measurement). The name is never
+        // resolved for stream and nothing is delivered under either
+        // answer; a header without a name leaves the paths below
+        // standing.
+        MsgHdr destHdr = {};
+        readMsgHdr(thread, address, &destHdr);
+        if (destHdr.msg_name) {
+            return this->connected ? -K_EISCONN : -K_EOPNOTSUPP;
+        }
+    }
+
     if (!con) {
         if (this->type == K_SOCK_DGRAM) {
             // FD-119: the no-peer answer is the peer-close
@@ -1942,6 +1988,20 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     KMemory* memory = thread->memory;
 
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->lockCond);
+    // FD-121 (host-measured): recvmsg on a socket that is not
+    // connected answers as the read paths do -- stream -EINVAL,
+    // seqpacket -ENOTCONN. This entry had no such gate and fell
+    // into the wait below (-EWOULDBLOCK nonblocking, a wait on a
+    // blocking socket). A queued message or buffered byte is input
+    // for any socket and skips the gate, as does a datagram
+    // socket, whose input is its queue connected or not.
+    {
+        std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
+        if (!this->inClosed && !con && this->msgs.empty() && this->recvBuffer.size_used() == 0) {
+            if (this->type == K_SOCK_STREAM) return -K_EINVAL;
+            if (this->type == K_SOCK_SEQPACKET) return -K_ENOTCONN;
+        }
+    }
     while (!this->msgs.size()) {
         if (this->recvBuffer.size_used()) {
             readMsgHdr(thread, address, &hdr);        
@@ -1973,7 +2033,8 @@ U32 KUnixSocketObject::recvmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             memory->writed(address + 20, 0); // msg_controllen
             return result;
         }
-        if (this->inClosed) {
+        if (this->inClosed && this->type != K_SOCK_DGRAM) {
+            // FD-120: no end of stream for datagram (see read()).
             return 0;
         }
         if (!this->blocking) {
@@ -2138,8 +2199,17 @@ U32 KUnixSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32
             return result;
         }
         if (this->type != K_SOCK_DGRAM) {
-            // Measured: a stream socket's sendto with a destination
-            // answers EOPNOTSUPP.
+            // FD-123 (host-measured): an addressed send on a
+            // CONNECTED stream socket answers -EISCONN -- the
+            // connection state decides, not the peer pointer, so a
+            // survivor whose peer closed answers the same. The
+            // -EOPNOTSUPP below is FD-111's measurement, which was
+            // the UNCONNECTED shape; it stands for that shape.
+            if (this->type == K_SOCK_STREAM && this->connected) {
+                return -K_EISCONN;
+            }
+            // Measured: an unconnected stream socket's sendto with
+            // a destination answers EOPNOTSUPP (FD-111).
             if (bw64RecoverEnabled()) {
                 bw64RecoverLogOnce("unixsocket.sendto.dest", "BW64-FAIL unixsocket-sendto outcome=returned-EOPNOTSUPP");
             } else {
