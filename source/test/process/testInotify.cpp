@@ -6892,8 +6892,14 @@ void testChmodNullPath64Syscalls() {
     // a path system call given a null path pointer answers
     // -EFAULT on the host, where an empty path answers -ENOENT.
     // The 64-bit dispatcher's shared guest-string reader maps a
-    // null pointer to the empty string, so chmod(NULL) and
-    // fchmodat(dirfd, NULL) answered -ENOENT. Host answers (box
+    // null pointer to the empty string, so a null path takes the
+    // empty-path route: the path resolver returns the directory
+    // node itself for an empty full path, so here (working
+    // directory "/") both shapes answered 0 on the base and
+    // chmodded the directory; in the browser self-test whose
+    // filing measured -ENOENT, the working directory's own path
+    // did not resolve, so the same route answered -ENOENT there.
+    // Both shapes are pinned to the host's answers. Host answers (box
     // kernel, raw fchmodat): chmod(NULL) -EFAULT, chmod("")
     // -ENOENT; fchmodat(any dirfd, NULL, any flags) -EFAULT --
     // including under AT_EMPTY_PATH and with an unopened dirfd,
