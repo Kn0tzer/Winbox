@@ -115,6 +115,18 @@ public:
 
     // syscalls
     U32 futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, bool time64) ;
+    // futex_waitv (449): one parsed waiter. key is the futex-table key the
+    // sibling futex paths use (guest address for a private futex, host RAM
+    // pointer for a shared one; for 64-bit guests always the host RAM
+    // pointer); word is the host pointer the expected value is compared
+    // against. expireTimeInMillies is an absolute deadline on the
+    // KSystem::getMilliesSinceStart() clock, 0xFFFFFFFF for no timeout.
+    struct FutexWaitvEntry {
+        U64 key;
+        U32* word;
+        U32 val;
+    };
+    U32 futexWaitv(const FutexWaitvEntry* entries, U32 nr, U32 expireTimeInMillies);
 #ifdef BOXEDWINE_GUEST_X64
     // 64-bit guest futex. Blocks/wakes via the same global system_futex[]
     // table as the 32-bit futex(), keyed on the stable host pointer that
@@ -123,6 +135,7 @@ public:
     // takes its user-space fallback. arg4 (when non-zero) points at a
     // guest `struct timespec` for the relative WAIT timeout.
     S64 futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3);
+    S64 futexWaitv64(const FutexWaitvEntry* entries, U32 nr, U32 expireTimeInMillies);
 #endif
     U32 modify_ldt(U32 func, U32 ptr, U32 count);
     U32 signalstack(U32 ss, U32 oss);

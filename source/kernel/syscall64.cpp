@@ -218,6 +218,8 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_process_vm_writev 311
 #define X64_SYS_pidfd_send_signal 424
 #define X64_SYS_pidfd_open        434
+#define X64_SYS_pidfd_getfd       438
+#define X64_SYS_futex_waitv       449
 #define X64_SYS_membarrier        324
 #define X64_SYS_timerfd_create    283
 #define X64_SYS_inotify_init      253
@@ -5173,6 +5175,183 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 }
 #endif
 
+// FD-23 residue: the shared readiness core behind select (23) and
+// pselect6 (270). kpoll() is the emulator's real readiness/blocking engine;
+// this translates the fd_set bitmaps into a pollfd array, runs kpoll, and
+// translates the revents back. timeoutMs follows kpoll's convention
+// (0 == non-blocking, >0xF0000000 == wait forever). When
+// remainingWritebackAddr is nonzero (select), the unslept remainder of the
+// caller's timeout — totalTimeoutUs microseconds at entry — is written
+// back there after every completed wait, timeout expiry and interruption
+// included: Linux select() returns the time left in the caller's timeval.
+// The sets are written back only on success. A descriptor named in any set
+// that is not open answers -EBADF before any waiting, as the host does;
+// the previous pselect6-only implementation let a bad descriptor read as
+// merely unready. nfds is capped at the 1024 descriptors these fd_set
+// buffers can hold; the host itself has no such cap.
+static S64 sys_select_core64(CPU64* cpu, S32 nfds, U64 rfdsAddr, U64 wfdsAddr, U64 efdsAddr, U32 timeoutMs, U64 remainingWritebackAddr, U64 totalTimeoutUs) {
+    KProcessPtr process = cpu->thread->process;
+    KMemory64* memory = cpu->memory;
+    if (nfds < 0 || nfds > 1024) {
+        return -K_EINVAL;
+    }
+    U32 setBytes = ((U32)nfds + 7) / 8;
+    if (setBytes > 0) {
+        if (rfdsAddr && !sys_rangeHasPermission64(memory, rfdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+        if (wfdsAddr && !sys_rangeHasPermission64(memory, wfdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+        if (efdsAddr && !sys_rangeHasPermission64(memory, efdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+    }
+    U8 rset[128] = {0}, wset[128] = {0}, eset[128] = {0};
+    if (rfdsAddr) memory->memcpyFromGuest(rset, rfdsAddr, setBytes);
+    if (wfdsAddr) memory->memcpyFromGuest(wset, wfdsAddr, setBytes);
+    if (efdsAddr) memory->memcpyFromGuest(eset, efdsAddr, setBytes);
+    auto isSet = [](const U8* s, U32 fd) { return (s[fd >> 3] >> (fd & 7)) & 1; };
+    for (S32 fd = 0; fd < nfds; fd++) {
+        if ((rfdsAddr && isSet(rset, (U32)fd)) || (wfdsAddr && isSet(wset, (U32)fd)) || (efdsAddr && isSet(eset, (U32)fd))) {
+            if (!process->getFileDescriptor((FD)fd)) {
+                return -K_EBADF;
+            }
+        }
+    }
+    // Build a pollfd array (8 bytes each: {int fd; short events; short
+    // revents}) — one entry per fd that appears in any set. POLLIN=1,
+    // POLLOUT=4, POLLPRI=2 per Linux poll.h.
+    struct PFD { S32 fd; U16 ev; U16 rev; };
+    PFD pfds[1024];
+    U32 npoll = 0;
+    for (U32 fd = 0; fd < (U32)nfds; fd++) {
+        U16 ev = 0;
+        if (rfdsAddr && isSet(rset, fd)) ev |= 0x0001; // POLLIN
+        if (wfdsAddr && isSet(wset, fd)) ev |= 0x0004; // POLLOUT
+        if (efdsAddr && isSet(eset, fd)) ev |= 0x0002; // POLLPRI
+        if (ev) { pfds[npoll].fd = (S32)fd; pfds[npoll].ev = ev; pfds[npoll].rev = 0; npoll++; }
+    }
+    // Run kpoll via the 32-bit scratch (same path the poll/ppoll case uses).
+    U64 startUs = KSystem::getMicroCounter();
+    U32 scratch = bounceSockaddrTo32(cpu, 0, 0, nullptr);
+    if (!scratch) {
+        return -K_EFAULT;
+    }
+    S32 rc;
+    if (npoll == 0) {
+        rc = (S32)kpoll(cpu->thread, scratch, 0, timeoutMs);
+    } else {
+        U8 tmp[K_PAGE_SIZE] = {0};
+        for (U32 i = 0; i < npoll; i++) {
+            U8* e = tmp + i * 8;
+            *(U32*)e = (U32)pfds[i].fd;
+            *(U16*)(e + 4) = pfds[i].ev;
+            *(U16*)(e + 6) = 0;
+        }
+        cpu->thread->memory->memcpy(scratch, tmp, npoll * 8);
+        rc = (S32)kpoll(cpu->thread, scratch, npoll, timeoutMs);
+        cpu->thread->memory->memcpy(tmp, scratch, npoll * 8);
+        for (U32 i = 0; i < npoll; i++) pfds[i].rev = *(U16*)(tmp + i * 8 + 6);
+    }
+    if (remainingWritebackAddr) {
+        U64 elapsedUs = KSystem::getMicroCounter() - startUs;
+        U64 remainingUs = totalTimeoutUs > elapsedUs ? totalTimeoutUs - elapsedUs : 0;
+        memory->writeq(remainingWritebackAddr, remainingUs / 1000000);
+        memory->writeq(remainingWritebackAddr + 8, remainingUs % 1000000);
+    }
+    if (rc < 0) {
+        return rc;
+    }
+    // Translate revents back into freshly-zeroed fd_sets and count ready
+    // fds (select returns the total number of ready bits across all sets).
+    U8 outR[128] = {0}, outW[128] = {0}, outE[128] = {0};
+    U32 readyCount = 0;
+    for (U32 i = 0; i < npoll; i++) {
+        U32 fd = (U32)pfds[i].fd; U16 rev = pfds[i].rev;
+        if (rfdsAddr && (rev & (0x0001 | 0x0010))) { outR[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }   // POLLIN|POLLHUP
+        if (wfdsAddr && (rev & 0x0004)) { outW[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }              // POLLOUT
+        if (efdsAddr && (rev & (0x0002 | 0x0008))) { outE[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }   // POLLPRI|POLLERR
+    }
+    if (rfdsAddr) memory->memcpyToGuest(rfdsAddr, outR, setBytes);
+    if (wfdsAddr) memory->memcpyToGuest(wfdsAddr, outW, setBytes);
+    if (efdsAddr) memory->memcpyToGuest(efdsAddr, outE, setBytes);
+    return readyCount;
+}
+
+// FD-23 residue: futex_waitv (449). Validation and the absolute-timeout
+// conversion follow the host-measured contract: the per-call flags must
+// be 0; nr must be in [1,128]; clockid is CLOCK_REALTIME (0) or
+// CLOCK_MONOTONIC (1) and the timeout is absolute in that clock; every
+// entry must be a U32 futex (the 2-bit size field must be FUTEX_32), val
+// must fit 32 bits, __reserved must be 0, uaddr must be 4-byte aligned;
+// an unmapped waiters array or futex word answers -EFAULT. Parse
+// validation of ALL entries precedes any address pinning, as on the host.
+// The wait itself lives in KThread::futexWaitv64.
+static U64 sys_futex_waitv64(CPU64* cpu, U64 waitersAddr, U64 nrArg, U64 flags, U64 timeoutAddr, U64 clockid) {
+    if (flags != 0) return (U64)-K_EINVAL;
+    if (nrArg < 1 || nrArg > 128) return (U64)-K_EINVAL;
+    if (clockid != 0 && clockid != 1) return (U64)-K_EINVAL;
+    if (!cpu->memory) return (U64)-K_EFAULT;
+    U32 expireMs = 0xFFFFFFFF;
+    if (timeoutAddr) {
+        if (!sys_rangeHasPermission64(cpu->memory, timeoutAddr, 16, K64_PAGE_READ)) return (U64)-K_EFAULT;
+        S64 sec = (S64)cpu->memory->readq(timeoutAddr);
+        U64 nsec = cpu->memory->readq(timeoutAddr + 8);
+        if (sec < 0 || nsec >= 1000000000ULL) return (U64)-K_EINVAL;
+        U64 deadlineMs = (U64)sec * 1000 + nsec / 1000000;
+        if (clockid == 0) {
+            // Convert the wall-clock deadline onto the millies-since-start
+            // clock the futex machinery waits on, by delta from now (the
+            // same pattern as futex64's PI timeout conversion).
+            U64 nowMs = KSystem::getSystemTimeAsMicroSeconds() / 1000;
+            deadlineMs = deadlineMs >= nowMs
+                ? KSystem::getMilliesSinceStart() + (deadlineMs - nowMs)
+                : 0; // already past: reads as expired at the first poll
+        }
+        expireMs = deadlineMs > 0xFFFFFFFE ? 0xFFFFFFFE : (U32)deadlineMs;
+    }
+    if (!sys_rangeHasPermission64(cpu->memory, waitersAddr, nrArg * 24, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    U64 vals[128];
+    U64 addrs[128];
+    U32 eflags[128];
+    for (U32 i = 0; i < (U32)nrArg; i++) {
+        U64 base = waitersAddr + (U64)i * 24;
+        vals[i] = cpu->memory->readq(base);
+        addrs[i] = cpu->memory->readq(base + 8);
+        eflags[i] = cpu->memory->readd(base + 16);
+        U32 reserved = cpu->memory->readd(base + 20);
+        if (reserved != 0) return (U64)-K_EINVAL;
+        if (eflags[i] & ~0x87) return (U64)-K_EINVAL; // valid: size 0x03 | FUTEX2_NUMA 0x04 | FUTEX_PRIVATE 0x80
+        if ((eflags[i] & 0x03) != 0x02) return (U64)-K_EINVAL; // FUTEX_32 only
+        if (vals[i] > 0xFFFFFFFFULL) return (U64)-K_EINVAL;
+        if (addrs[i] & 3) return (U64)-K_EINVAL;
+    }
+    if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
+        KMemory64* mem = cpu->thread->process->memory64;
+        KThread::FutexWaitvEntry entries[128];
+        for (U32 i = 0; i < (U32)nrArg; i++) {
+            // futex64 keys its table on the host RAM pointer for every
+            // futex (a 64-bit process's pointers are process-unique), so
+            // waitv entries key the same way or wakes would never match.
+            if (!sys_rangeHasPermission64(cpu->memory, addrs[i], 4, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            U32* word = (U32*)mem->getRamPtr(addrs[i], 4);
+            if (!word) return (U64)-K_EFAULT;
+            entries[i].key = (U64)word;
+            entries[i].word = word;
+            entries[i].val = (U32)vals[i];
+        }
+        S64 r = cpu->thread->futexWaitv64(entries, (U32)nrArg, expireMs);
+        if (r == K_FUTEX64_PARKED) {
+            cpu->reExecuteSyscall = true;
+            cpu->yield = true;
+            return cpu->reg[X64_RAX].u64;
+        }
+        return (U64)r;
+    }
+    // Threadless fallback (--x64-run-elf / selftest): no thread to park.
+    // Compare like sys_futex64's stub: a match would block, which the stub
+    // answers with the would-block placeholder.
+    for (U32 i = 0; i < (U32)nrArg; i++) {
+        if (cpu->memory->readd(addrs[i]) != (U32)vals[i]) return (U64)-K_EAGAIN;
+    }
+    return (U64)-K_EAGAIN;
+}
+
 void ksyscall64(CPU64* cpu) {
     if (!cpu) return;
 #ifdef __EMSCRIPTEN__
@@ -5401,6 +5580,28 @@ void ksyscall64(CPU64* cpu) {
             std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
             const U32 descriptorFlags = (a2 & O_CLOEXEC) ? FD_CLOEXEC : 0;
             KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(object, K_O_RDWR, descriptorFlags, -1, 0);
+            ret = result ? result->handle : (U64)-K_EMFILE;
+            break;
+        }
+        case X64_SYS_pidfd_getfd: {
+            // pidfd_getfd(pidfd, fd, flags). Host-measured answer order
+            // (FD-23): flags are validated before the pidfd is looked at;
+            // a descriptor that is not a pidfd, or a target descriptor
+            // that does not exist, answers -EBADF; a terminated target
+            // answers -ESRCH (zombie and reaped alike); a target owned by
+            // a different user answers -EPERM. Success installs the SAME
+            // open file description in the caller with FD_CLOEXEC set.
+            if (a3 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
+            KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+            std::shared_ptr<KPidFd> pidfd = descriptor ? std::dynamic_pointer_cast<KPidFd>(descriptor->kobject) : nullptr;
+            if (!pidfd) { ret = (U64)-K_EBADF; break; }
+            KProcessPtr target = pidfd->process();
+            if (!target || target->isTerminated()) { ret = (U64)-K_ESRCH; break; }
+            if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+            KFileDescriptorPtr source = target->getFileDescriptor((FD)(S32)a2);
+            if (!source) { ret = (U64)-K_EBADF; break; }
+            KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(source->kobject, source->accessFlags, FD_CLOEXEC, -1, 0);
             ret = result ? result->handle : (U64)-K_EMFILE;
             break;
         }
@@ -6610,6 +6811,9 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_futex:
             ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, a5, (U32)a6);
             break;
+        case X64_SYS_futex_waitv:
+            ret = sys_futex_waitv64(cpu, a1, a2, a3, a4, a5);
+            break;
         case X64_SYS_poll:
         case X64_SYS_ppoll: {
             // poll(fds, nfds, timeout_ms) / ppoll(fds, nfds, timespec*, sigmask).
@@ -6677,88 +6881,24 @@ void ksyscall64(CPU64* cpu) {
         }
         case X64_SYS_pselect6: {
             // pselect6(nfds, readfds*, writefds*, exceptfds*, timespec*, sigmask).
-            // We have no native select, but kpoll() is the real readiness/blocking
-            // engine. Translate the fd_set bitmaps into a pollfd array, run kpoll,
-            // then translate the revents back into the fd_sets. Without this, wine
-            // (winex11/msg-loop) spins on pselect6=ENOSYS and never reaches GL.
+            // Served by the shared select core (sys_select_core64). The
+            // sigmask argument (a6) is NOT applied: the emulator has no
+            // pselect-style atomic mask swap in its 64-bit signal plumbing,
+            // so a guest passing one gets plain select behaviour rather
+            // than masked waiting (recorded on the defect register).
             if (!cpu->thread || !cpu->thread->process || !cpu->thread->memory) {
                 ret = (U64)-K_ENOSYS; break;
             }
-            U32 nfds = (U32)a1;          // highest fd + 1
-            U64 rfdsAddr = a2, wfdsAddr = a3, efdsAddr = a4, tsAddr = a5;
-            if (nfds > 1024) { ret = (U64)-K_EINVAL; break; }
-
-            // Timeout: a5 is a timespec* (NULL == infinite). Match kpoll's
-            // convention (0 == non-blocking, >0xF0000000 == infinite).
             U32 timeoutMs;
-            if (tsAddr == 0) {
-                timeoutMs = 0xFFFFFFFFu;
+            if (a5 == 0) {
+                timeoutMs = 0xFFFFFFFFu; // NULL timespec == wait forever
             } else {
-                U64 sec  = cpu->memory->readq(tsAddr);
-                U64 nsec = cpu->memory->readq(tsAddr + 8);
+                if (!sys_rangeHasPermission64(cpu->memory, a5, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                U64 sec  = cpu->memory->readq(a5);
+                U64 nsec = cpu->memory->readq(a5 + 8);
                 timeoutMs = (U32)(sec * 1000 + nsec / 1000000);
             }
-
-            // Read the three fd_set bitmaps (each (nfds+7)/8 bytes, capped to the
-            // 128-byte/1024-fd standard). 0 addr == that set not requested.
-            U32 setBytes = (nfds + 7) / 8;
-            if (setBytes > 128) setBytes = 128;
-            U8 rset[128] = {0}, wset[128] = {0}, eset[128] = {0};
-            if (rfdsAddr) cpu->memory->memcpyFromGuest(rset, rfdsAddr, setBytes);
-            if (wfdsAddr) cpu->memory->memcpyFromGuest(wset, wfdsAddr, setBytes);
-            if (efdsAddr) cpu->memory->memcpyFromGuest(eset, efdsAddr, setBytes);
-
-            auto isSet = [](const U8* s, U32 fd) { return (s[fd >> 3] >> (fd & 7)) & 1; };
-
-            // Build a pollfd array (8 bytes each: {int fd; short events; short revents})
-            // — one entry per fd that appears in any set. POLLIN=1, POLLOUT=4,
-            // POLLPRI=2 (the select events) per Linux poll.h.
-            struct PFD { S32 fd; U16 ev; U16 rev; };
-            PFD pfds[1024];
-            U32 npoll = 0;
-            for (U32 fd = 0; fd < nfds && npoll < 1024; fd++) {
-                U16 ev = 0;
-                if (rfdsAddr && isSet(rset, fd)) ev |= 0x0001; // POLLIN
-                if (wfdsAddr && isSet(wset, fd)) ev |= 0x0004; // POLLOUT
-                if (efdsAddr && isSet(eset, fd)) ev |= 0x0002; // POLLPRI
-                if (ev) { pfds[npoll].fd = (S32)fd; pfds[npoll].ev = ev; pfds[npoll].rev = 0; npoll++; }
-            }
-
-            // Run kpoll via the 32-bit scratch (same path the poll/ppoll case uses).
-            S32 rc;
-            U32 scratch = bounceSockaddrTo32(cpu, 0, 0, nullptr);
-            if (!scratch) { ret = (U64)-K_EFAULT; break; }
-            if (npoll == 0) {
-                rc = (S32)kpoll(cpu->thread, scratch, 0, timeoutMs);
-            } else {
-                U8 tmp[K_PAGE_SIZE] = {0};
-                for (U32 i = 0; i < npoll; i++) {
-                    U8* e = tmp + i * 8;
-                    *(U32*)e = (U32)pfds[i].fd;
-                    *(U16*)(e + 4) = pfds[i].ev;
-                    *(U16*)(e + 6) = 0;
-                }
-                cpu->thread->memory->memcpy(scratch, tmp, npoll * 8);
-                rc = (S32)kpoll(cpu->thread, scratch, npoll, timeoutMs);
-                cpu->thread->memory->memcpy(tmp, scratch, npoll * 8);
-                for (U32 i = 0; i < npoll; i++) pfds[i].rev = *(U16*)(tmp + i * 8 + 6);
-            }
-            if (rc < 0) { ret = (U64)(S64)rc; break; }
-
-            // Translate revents back into freshly-zeroed fd_sets and count ready fds
-            // (select returns the total number of ready bits across all sets).
-            U8 outR[128] = {0}, outW[128] = {0}, outE[128] = {0};
-            U32 readyCount = 0;
-            for (U32 i = 0; i < npoll; i++) {
-                U32 fd = (U32)pfds[i].fd; U16 rev = pfds[i].rev;
-                if (rfdsAddr && (rev & (0x0001 | 0x0010 /*POLLHUP*/ ))) { outR[fd>>3] |= (1<<(fd&7)); readyCount++; }
-                if (wfdsAddr && (rev & 0x0004)) { outW[fd>>3] |= (1<<(fd&7)); readyCount++; }
-                if (efdsAddr && (rev & (0x0002 | 0x0008 /*POLLERR*/))) { outE[fd>>3] |= (1<<(fd&7)); readyCount++; }
-            }
-            if (rfdsAddr) cpu->memory->memcpyToGuest(rfdsAddr, outR, setBytes);
-            if (wfdsAddr) cpu->memory->memcpyToGuest(wfdsAddr, outW, setBytes);
-            if (efdsAddr) cpu->memory->memcpyToGuest(efdsAddr, outE, setBytes);
-            ret = (U64)readyCount;
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, 0, 0);
             break;
         }
         case X64_SYS_sched_yield:
@@ -7156,9 +7296,34 @@ void ksyscall64(CPU64* cpu) {
             // pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-94.
             ret = sys_pwritev64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
-        case X64_SYS_select:
-            ret = unimplementedSyscall64(nr);
+        case X64_SYS_select: {
+            // select(nfds, readfds*, writefds*, exceptfds*, timeval*).
+            // Served by the shared select core (sys_select_core64); unlike
+            // pselect6, select writes the unslept remainder of the timeout
+            // back into the caller's timeval (host-measured, FD-23).
+            if (!cpu->thread || !cpu->thread->process || !cpu->thread->memory) {
+                ret = (U64)-K_ENOSYS; break;
+            }
+            U32 timeoutMs = 0xFFFFFFFFu;
+            U64 totalTimeoutUs = 0;
+            if (a5 != 0) {
+                if (!sys_rangeHasPermission64(cpu->memory, a5, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                S64 sec = (S64)cpu->memory->readq(a5);
+                S64 usec = (S64)cpu->memory->readq(a5 + 8);
+                if (sec < 0 || usec < 0) { ret = (U64)-K_EINVAL; break; }
+                // An oversized usec is normalized by the host, not refused:
+                // folding both fields into one microsecond total does that.
+                totalTimeoutUs = (U64)sec * 1000000 + (U64)usec;
+                if (totalTimeoutUs == 0) {
+                    timeoutMs = 0;
+                } else {
+                    U64 ms = (totalTimeoutUs + 999) / 1000;
+                    timeoutMs = ms > 0xF0000000 ? 0xFFFFFFFFu : (U32)ms;
+                }
+            }
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, a5, totalTimeoutUs);
             break;
+        }
         case X64_SYS_chmod: {  // chmod(path, mode)
             BString path = readGuestString64(cpu, a1);
             ret = (U64)(S64)(S32)cpu->thread->process->chmod(path, (U32)a2);

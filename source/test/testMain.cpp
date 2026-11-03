@@ -80,6 +80,7 @@ void testClone32Flags();
 void testClone3Abi32();
 void testGetrandom32Syscall();
 void testReadv32Syscall();
+void testFutexWaitv32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
@@ -129,6 +130,9 @@ void testEpollPwait2Syscall();
 void testEpollPwaitSyscall();
 void testDup3Syscall();
 void testAccept4Syscall();
+void testSelectSyscall();
+void testPidfdGetfdSyscall();
+void testFutexWaitvSyscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
@@ -218,6 +222,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
     {testAccept4Syscall, "Test x64 accept4 syscall"},
+    {testSelectSyscall, "Test x64 select syscall"},
+    {testPidfdGetfdSyscall, "Test x64 pidfd_getfd syscall"},
+    {testFutexWaitvSyscall, "Test x64 futex_waitv syscall"},
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
@@ -883,6 +890,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testReadv32Syscall, "Test 32-bit readv dispatch and notification contract (FD-92)"},
+    {testFutexWaitv32Syscall, "Test 32-bit futex_waitv syscall"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},

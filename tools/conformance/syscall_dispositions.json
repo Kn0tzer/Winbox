@@ -1,0 +1,2036 @@
+{
+ "about": "Per-number disposition for every syscall the census finds unimplemented: why it is absent and the route by which it would be served. Audited by tools/conformance/syscall_census.py (undispositioned and stale counts). Generated for the FD-23 residue lane; regenerate after any census change.",
+ "categories": {
+  "identity-model": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox.",
+  "legacy-dead": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands.",
+  "modern-unconsumed": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call.",
+  "ordinary-unimplemented": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced.",
+  "privilege-surface": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer.",
+  "subsystem-absent": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract.",
+  "superseded": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+ },
+ "i386": {
+  "0": {
+   "disposition": "legacy-dead",
+   "name": "restart_syscall",
+   "reason": "Kernel-internal restart marker: only ever entered by the kernel restarting an interrupted call, never a service a guest can request fresh."
+  },
+  "100": {
+   "disposition": "superseded",
+   "name": "fstatfs",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "103": {
+   "disposition": "privilege-surface",
+   "name": "syslog",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "106": {
+   "disposition": "superseded",
+   "name": "stat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "107": {
+   "disposition": "superseded",
+   "name": "lstat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "108": {
+   "disposition": "superseded",
+   "name": "fstat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "109": {
+   "disposition": "legacy-dead",
+   "name": "olduname",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "111": {
+   "disposition": "privilege-surface",
+   "name": "vhangup",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "112": {
+   "disposition": "legacy-dead",
+   "name": "idle",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "113": {
+   "disposition": "legacy-dead",
+   "name": "vm86old",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "115": {
+   "disposition": "privilege-surface",
+   "name": "swapoff",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "121": {
+   "disposition": "privilege-surface",
+   "name": "setdomainname",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "124": {
+   "disposition": "privilege-surface",
+   "name": "adjtimex",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "126": {
+   "disposition": "superseded",
+   "name": "sigprocmask",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "127": {
+   "disposition": "legacy-dead",
+   "name": "create_module",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "128": {
+   "disposition": "privilege-surface",
+   "name": "init_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "129": {
+   "disposition": "privilege-surface",
+   "name": "delete_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "130": {
+   "disposition": "legacy-dead",
+   "name": "get_kernel_syms",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "131": {
+   "disposition": "privilege-surface",
+   "name": "quotactl",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "134": {
+   "disposition": "legacy-dead",
+   "name": "bdflush",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "135": {
+   "disposition": "legacy-dead",
+   "name": "sysfs",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "136": {
+   "disposition": "identity-model",
+   "name": "personality",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "137": {
+   "disposition": "legacy-dead",
+   "name": "afs_syscall",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "138": {
+   "disposition": "identity-model",
+   "name": "setfsuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "139": {
+   "disposition": "identity-model",
+   "name": "setfsgid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "14": {
+   "disposition": "privilege-surface",
+   "name": "mknod",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "145": {
+   "disposition": "ordinary-unimplemented",
+   "name": "readv",
+   "reason": "The vectored-read core exists (KObject::readv, used by the 64-bit side); the 32-bit slot only needs wiring to it."
+  },
+  "147": {
+   "disposition": "ordinary-unimplemented",
+   "name": "getsid",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "149": {
+   "disposition": "legacy-dead",
+   "name": "_sysctl",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "154": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_setparam",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "156": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_setscheduler",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "16": {
+   "disposition": "identity-model",
+   "name": "lchown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "161": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_rr_get_interval",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "164": {
+   "disposition": "identity-model",
+   "name": "setresuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "165": {
+   "disposition": "identity-model",
+   "name": "getresuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "167": {
+   "disposition": "legacy-dead",
+   "name": "query_module",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "169": {
+   "disposition": "legacy-dead",
+   "name": "nfsservctl",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "17": {
+   "disposition": "legacy-dead",
+   "name": "break",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "170": {
+   "disposition": "identity-model",
+   "name": "setresgid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "171": {
+   "disposition": "identity-model",
+   "name": "getresgid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "173": {
+   "disposition": "ordinary-unimplemented",
+   "name": "rt_sigreturn",
+   "reason": "The positional slot is empty and the sibling sigreturn (119) handler is a never-exercised stub that faults if called; 32-bit signal delivery currently completes without a guest restorer round-trip. Route: verify against a guest that returns through a restorer, then wire to the delivery machinery's context restore."
+  },
+  "176": {
+   "disposition": "ordinary-unimplemented",
+   "name": "rt_sigpending",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "177": {
+   "disposition": "ordinary-unimplemented",
+   "name": "rt_sigtimedwait",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "178": {
+   "disposition": "ordinary-unimplemented",
+   "name": "rt_sigqueueinfo",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "18": {
+   "disposition": "superseded",
+   "name": "oldstat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "182": {
+   "disposition": "identity-model",
+   "name": "chown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "184": {
+   "disposition": "identity-model",
+   "name": "capget",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "185": {
+   "disposition": "identity-model",
+   "name": "capset",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "187": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sendfile",
+   "reason": "Ordinary data-path call in the served file/socket layer. Route: a read/write loop over the existing descriptor machinery when a guest need is evidenced."
+  },
+  "188": {
+   "disposition": "legacy-dead",
+   "name": "getpmsg",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "189": {
+   "disposition": "legacy-dead",
+   "name": "putpmsg",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "193": {
+   "disposition": "superseded",
+   "name": "truncate64",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "203": {
+   "disposition": "identity-model",
+   "name": "setreuid32",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "204": {
+   "disposition": "identity-model",
+   "name": "setregid32",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "215": {
+   "disposition": "identity-model",
+   "name": "setfsuid32",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "216": {
+   "disposition": "identity-model",
+   "name": "setfsgid32",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "217": {
+   "disposition": "privilege-surface",
+   "name": "pivot_root",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "22": {
+   "disposition": "privilege-surface",
+   "name": "umount",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "225": {
+   "disposition": "ordinary-unimplemented",
+   "name": "readahead",
+   "reason": "Cache-readahead hint; on x86-64 the fadvise64 WILLNEED route is dispatched. On i386 fadvise64 is itself absent, so the hint has no served route on that ABI."
+  },
+  "226": {
+   "disposition": "ordinary-unimplemented",
+   "name": "setxattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "227": {
+   "disposition": "ordinary-unimplemented",
+   "name": "lsetxattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "23": {
+   "disposition": "identity-model",
+   "name": "setuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "232": {
+   "disposition": "ordinary-unimplemented",
+   "name": "listxattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "233": {
+   "disposition": "ordinary-unimplemented",
+   "name": "llistxattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "235": {
+   "disposition": "ordinary-unimplemented",
+   "name": "removexattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "236": {
+   "disposition": "ordinary-unimplemented",
+   "name": "lremovexattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "238": {
+   "disposition": "superseded",
+   "name": "tkill",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "244": {
+   "disposition": "ordinary-unimplemented",
+   "name": "get_thread_area",
+   "reason": "On x86-64 TLS is served by arch_prctl. On i386 set_thread_area is dispatched and the getter only needs to read the installed descriptor back."
+  },
+  "245": {
+   "disposition": "subsystem-absent",
+   "name": "io_setup",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "246": {
+   "disposition": "subsystem-absent",
+   "name": "io_destroy",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "247": {
+   "disposition": "subsystem-absent",
+   "name": "io_getevents",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "248": {
+   "disposition": "subsystem-absent",
+   "name": "io_submit",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "249": {
+   "disposition": "subsystem-absent",
+   "name": "io_cancel",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "25": {
+   "disposition": "privilege-surface",
+   "name": "stime",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "250": {
+   "disposition": "ordinary-unimplemented",
+   "name": "fadvise64",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "253": {
+   "disposition": "legacy-dead",
+   "name": "lookup_dcookie",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "257": {
+   "disposition": "legacy-dead",
+   "name": "remap_file_pages",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "259": {
+   "disposition": "subsystem-absent",
+   "name": "timer_create",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "260": {
+   "disposition": "subsystem-absent",
+   "name": "timer_settime",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "261": {
+   "disposition": "subsystem-absent",
+   "name": "timer_gettime",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "262": {
+   "disposition": "subsystem-absent",
+   "name": "timer_getoverrun",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "263": {
+   "disposition": "subsystem-absent",
+   "name": "timer_delete",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "264": {
+   "disposition": "privilege-surface",
+   "name": "clock_settime",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "273": {
+   "disposition": "legacy-dead",
+   "name": "vserver",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "274": {
+   "disposition": "privilege-surface",
+   "name": "mbind",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "275": {
+   "disposition": "privilege-surface",
+   "name": "get_mempolicy",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "276": {
+   "disposition": "privilege-surface",
+   "name": "set_mempolicy",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "277": {
+   "disposition": "subsystem-absent",
+   "name": "mq_open",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "278": {
+   "disposition": "subsystem-absent",
+   "name": "mq_unlink",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "279": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedsend",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "28": {
+   "disposition": "superseded",
+   "name": "oldfstat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "280": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedreceive",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "281": {
+   "disposition": "subsystem-absent",
+   "name": "mq_notify",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "282": {
+   "disposition": "subsystem-absent",
+   "name": "mq_getsetattr",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "283": {
+   "disposition": "privilege-surface",
+   "name": "kexec_load",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "284": {
+   "disposition": "ordinary-unimplemented",
+   "name": "waitid",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "286": {
+   "disposition": "subsystem-absent",
+   "name": "add_key",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "287": {
+   "disposition": "subsystem-absent",
+   "name": "request_key",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "288": {
+   "disposition": "subsystem-absent",
+   "name": "keyctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "289": {
+   "disposition": "privilege-surface",
+   "name": "ioprio_set",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "29": {
+   "disposition": "ordinary-unimplemented",
+   "name": "pause",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "290": {
+   "disposition": "privilege-surface",
+   "name": "ioprio_get",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "294": {
+   "disposition": "privilege-surface",
+   "name": "migrate_pages",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "297": {
+   "disposition": "privilege-surface",
+   "name": "mknodat",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "299": {
+   "disposition": "superseded",
+   "name": "futimesat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "303": {
+   "disposition": "ordinary-unimplemented",
+   "name": "linkat",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "309": {
+   "disposition": "ordinary-unimplemented",
+   "name": "ppoll",
+   "reason": "poll with a timespec and mask, over the existing kpoll/kselect machinery (pselect6 is dispatched on this ABI through the same core)."
+  },
+  "31": {
+   "disposition": "legacy-dead",
+   "name": "stty",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "310": {
+   "disposition": "privilege-surface",
+   "name": "unshare",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "312": {
+   "disposition": "ordinary-unimplemented",
+   "name": "get_robust_list",
+   "reason": "set_robust_list is dispatched; the getter only needs to hand back the registered head from the same robust-list state."
+  },
+  "313": {
+   "disposition": "ordinary-unimplemented",
+   "name": "splice",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "315": {
+   "disposition": "ordinary-unimplemented",
+   "name": "tee",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "316": {
+   "disposition": "ordinary-unimplemented",
+   "name": "vmsplice",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "317": {
+   "disposition": "privilege-surface",
+   "name": "move_pages",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "318": {
+   "disposition": "ordinary-unimplemented",
+   "name": "getcpu",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "319": {
+   "disposition": "ordinary-unimplemented",
+   "name": "epoll_pwait",
+   "reason": "epoll_wait plus a signal mask; the epoll machinery and the x86-64 epoll_pwait case both exist. Route: mirror the x86-64 case."
+  },
+  "32": {
+   "disposition": "legacy-dead",
+   "name": "gtty",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "321": {
+   "disposition": "superseded",
+   "name": "signalfd",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "323": {
+   "disposition": "superseded",
+   "name": "eventfd",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "324": {
+   "disposition": "ordinary-unimplemented",
+   "name": "fallocate",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "330": {
+   "disposition": "ordinary-unimplemented",
+   "name": "dup3",
+   "reason": "Dispatched on x86-64 (FD-23); the descriptor-duplication machinery is shared. Route: wire the same handler into the i386 table."
+  },
+  "333": {
+   "disposition": "ordinary-unimplemented",
+   "name": "preadv",
+   "reason": "Positioned vectored I/O over the existing pread64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "334": {
+   "disposition": "ordinary-unimplemented",
+   "name": "pwritev",
+   "reason": "Positioned vectored I/O over the existing pwrite64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "335": {
+   "disposition": "ordinary-unimplemented",
+   "name": "rt_tgsigqueueinfo",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "336": {
+   "disposition": "subsystem-absent",
+   "name": "perf_event_open",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "337": {
+   "disposition": "ordinary-unimplemented",
+   "name": "recvmmsg",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "338": {
+   "disposition": "subsystem-absent",
+   "name": "fanotify_init",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "339": {
+   "disposition": "subsystem-absent",
+   "name": "fanotify_mark",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "34": {
+   "disposition": "superseded",
+   "name": "nice",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "341": {
+   "disposition": "ordinary-unimplemented",
+   "name": "name_to_handle_at",
+   "reason": "File-handle encoding over the virtual filesystem; no guest has been observed using handles. Route: define a stable handle encoding in the filesystem layer when evidenced."
+  },
+  "342": {
+   "disposition": "ordinary-unimplemented",
+   "name": "open_by_handle_at",
+   "reason": "File-handle encoding over the virtual filesystem; no guest has been observed using handles. Route: define a stable handle encoding in the filesystem layer when evidenced."
+  },
+  "343": {
+   "disposition": "privilege-surface",
+   "name": "clock_adjtime",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "344": {
+   "disposition": "ordinary-unimplemented",
+   "name": "syncfs",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "346": {
+   "disposition": "privilege-surface",
+   "name": "setns",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "347": {
+   "disposition": "ordinary-unimplemented",
+   "name": "process_vm_readv",
+   "reason": "Dispatched on x86-64 over the cross-process memory machinery; the 32-bit slot only needs the narrower address handling."
+  },
+  "348": {
+   "disposition": "ordinary-unimplemented",
+   "name": "process_vm_writev",
+   "reason": "Dispatched on x86-64 over the cross-process memory machinery; the 32-bit slot only needs the narrower address handling."
+  },
+  "349": {
+   "disposition": "privilege-surface",
+   "name": "kcmp",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "35": {
+   "disposition": "superseded",
+   "name": "ftime",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "350": {
+   "disposition": "privilege-surface",
+   "name": "finit_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "351": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_setattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "352": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_getattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "354": {
+   "disposition": "subsystem-absent",
+   "name": "seccomp",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "357": {
+   "disposition": "subsystem-absent",
+   "name": "bpf",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "358": {
+   "disposition": "ordinary-unimplemented",
+   "name": "execveat",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "374": {
+   "disposition": "subsystem-absent",
+   "name": "userfaultfd",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "375": {
+   "disposition": "modern-unconsumed",
+   "name": "membarrier",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "376": {
+   "disposition": "ordinary-unimplemented",
+   "name": "mlock2",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "377": {
+   "disposition": "ordinary-unimplemented",
+   "name": "copy_file_range",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "378": {
+   "disposition": "ordinary-unimplemented",
+   "name": "preadv2",
+   "reason": "Positioned vectored I/O over the existing pread64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "379": {
+   "disposition": "ordinary-unimplemented",
+   "name": "pwritev2",
+   "reason": "Positioned vectored I/O over the existing pwrite64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "380": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_mprotect",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "381": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_alloc",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "382": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_free",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "384": {
+   "disposition": "superseded",
+   "name": "arch_prctl",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "385": {
+   "disposition": "subsystem-absent",
+   "name": "io_pgetevents",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "393": {
+   "disposition": "subsystem-absent",
+   "name": "semget",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "394": {
+   "disposition": "subsystem-absent",
+   "name": "semctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "398": {
+   "disposition": "subsystem-absent",
+   "name": "shmdt",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "399": {
+   "disposition": "subsystem-absent",
+   "name": "msgget",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "400": {
+   "disposition": "subsystem-absent",
+   "name": "msgsnd",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "401": {
+   "disposition": "subsystem-absent",
+   "name": "msgrcv",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "402": {
+   "disposition": "subsystem-absent",
+   "name": "msgctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "404": {
+   "disposition": "privilege-surface",
+   "name": "clock_settime64",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "405": {
+   "disposition": "privilege-surface",
+   "name": "clock_adjtime64",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "408": {
+   "disposition": "subsystem-absent",
+   "name": "timer_gettime64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "409": {
+   "disposition": "subsystem-absent",
+   "name": "timer_settime64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "410": {
+   "disposition": "superseded",
+   "name": "timerfd_gettime64",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "411": {
+   "disposition": "superseded",
+   "name": "timerfd_settime64",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "414": {
+   "disposition": "ordinary-unimplemented",
+   "name": "ppoll_time64",
+   "reason": "poll with a timespec and mask, over the existing kpoll/kselect machinery (pselect6 is dispatched on this ABI through the same core)."
+  },
+  "416": {
+   "disposition": "subsystem-absent",
+   "name": "io_pgetevents_time64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "417": {
+   "disposition": "ordinary-unimplemented",
+   "name": "recvmmsg_time64",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "418": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedsend_time64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "419": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedreceive_time64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "420": {
+   "disposition": "subsystem-absent",
+   "name": "semtimedop_time64",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "423": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_rr_get_interval_time64",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "424": {
+   "disposition": "modern-unconsumed",
+   "name": "pidfd_send_signal",
+   "reason": "The pidfd machinery (KPidFd) is shared with the 32-bit clone paths and the family is dispatched on x86-64; no 32-bit guest has been observed asking. Route: wire the same handlers into the i386 table."
+  },
+  "425": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_setup",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "426": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_enter",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "427": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_register",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "428": {
+   "disposition": "subsystem-absent",
+   "name": "open_tree",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "429": {
+   "disposition": "subsystem-absent",
+   "name": "move_mount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "430": {
+   "disposition": "subsystem-absent",
+   "name": "fsopen",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "431": {
+   "disposition": "subsystem-absent",
+   "name": "fsconfig",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "432": {
+   "disposition": "subsystem-absent",
+   "name": "fsmount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "433": {
+   "disposition": "subsystem-absent",
+   "name": "fspick",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "434": {
+   "disposition": "modern-unconsumed",
+   "name": "pidfd_open",
+   "reason": "The pidfd machinery (KPidFd) is shared with the 32-bit clone paths and the family is dispatched on x86-64; no 32-bit guest has been observed asking. Route: wire the same handlers into the i386 table."
+  },
+  "436": {
+   "disposition": "modern-unconsumed",
+   "name": "close_range",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "437": {
+   "disposition": "modern-unconsumed",
+   "name": "openat2",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "438": {
+   "disposition": "modern-unconsumed",
+   "name": "pidfd_getfd",
+   "reason": "The pidfd machinery (KPidFd) is shared with the 32-bit clone paths and the family is dispatched on x86-64; no 32-bit guest has been observed asking. Route: wire the same handlers into the i386 table."
+  },
+  "44": {
+   "disposition": "legacy-dead",
+   "name": "prof",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "440": {
+   "disposition": "modern-unconsumed",
+   "name": "process_madvise",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "441": {
+   "disposition": "modern-unconsumed",
+   "name": "epoll_pwait2",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "442": {
+   "disposition": "subsystem-absent",
+   "name": "mount_setattr",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "443": {
+   "disposition": "privilege-surface",
+   "name": "quotactl_fd",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "444": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_create_ruleset",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "445": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_add_rule",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "446": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_restrict_self",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "447": {
+   "disposition": "modern-unconsumed",
+   "name": "memfd_secret",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "448": {
+   "disposition": "modern-unconsumed",
+   "name": "process_mrelease",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "450": {
+   "disposition": "modern-unconsumed",
+   "name": "set_mempolicy_home_node",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "451": {
+   "disposition": "modern-unconsumed",
+   "name": "cachestat",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "452": {
+   "disposition": "modern-unconsumed",
+   "name": "fchmodat2",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "453": {
+   "disposition": "modern-unconsumed",
+   "name": "map_shadow_stack",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "454": {
+   "disposition": "modern-unconsumed",
+   "name": "futex_wake",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "455": {
+   "disposition": "modern-unconsumed",
+   "name": "futex_wait",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "456": {
+   "disposition": "modern-unconsumed",
+   "name": "futex_requeue",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "457": {
+   "disposition": "subsystem-absent",
+   "name": "statmount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "458": {
+   "disposition": "subsystem-absent",
+   "name": "listmount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "459": {
+   "disposition": "modern-unconsumed",
+   "name": "lsm_get_self_attr",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "46": {
+   "disposition": "identity-model",
+   "name": "setgid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "460": {
+   "disposition": "modern-unconsumed",
+   "name": "lsm_set_self_attr",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "461": {
+   "disposition": "modern-unconsumed",
+   "name": "lsm_list_modules",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "48": {
+   "disposition": "superseded",
+   "name": "signal",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "51": {
+   "disposition": "privilege-surface",
+   "name": "acct",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "52": {
+   "disposition": "privilege-surface",
+   "name": "umount2",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "53": {
+   "disposition": "legacy-dead",
+   "name": "lock",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "56": {
+   "disposition": "legacy-dead",
+   "name": "mpx",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "58": {
+   "disposition": "legacy-dead",
+   "name": "ulimit",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "59": {
+   "disposition": "legacy-dead",
+   "name": "oldolduname",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "61": {
+   "disposition": "privilege-surface",
+   "name": "chroot",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "62": {
+   "disposition": "legacy-dead",
+   "name": "ustat",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "67": {
+   "disposition": "superseded",
+   "name": "sigaction",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "68": {
+   "disposition": "superseded",
+   "name": "sgetmask",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "69": {
+   "disposition": "superseded",
+   "name": "ssetmask",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "70": {
+   "disposition": "identity-model",
+   "name": "setreuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "71": {
+   "disposition": "identity-model",
+   "name": "setregid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "72": {
+   "disposition": "superseded",
+   "name": "sigsuspend",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "73": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sigpending",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "74": {
+   "disposition": "privilege-surface",
+   "name": "sethostname",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "76": {
+   "disposition": "superseded",
+   "name": "getrlimit",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "79": {
+   "disposition": "privilege-surface",
+   "name": "settimeofday",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "8": {
+   "disposition": "superseded",
+   "name": "creat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "80": {
+   "disposition": "identity-model",
+   "name": "getgroups",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "81": {
+   "disposition": "identity-model",
+   "name": "setgroups",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "82": {
+   "disposition": "superseded",
+   "name": "select",
+   "reason": "oldselect takes its sets through a single argument block; the operation itself is served by _newselect (142) over the shared kselect core. Route: decode the block into the same kselect call if a guest is ever observed using it."
+  },
+  "84": {
+   "disposition": "superseded",
+   "name": "oldlstat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "86": {
+   "disposition": "legacy-dead",
+   "name": "uselib",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "87": {
+   "disposition": "privilege-surface",
+   "name": "swapon",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "88": {
+   "disposition": "privilege-surface",
+   "name": "reboot",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "89": {
+   "disposition": "superseded",
+   "name": "readdir",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "92": {
+   "disposition": "superseded",
+   "name": "truncate",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "95": {
+   "disposition": "identity-model",
+   "name": "fchown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "96": {
+   "disposition": "ordinary-unimplemented",
+   "name": "getpriority",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "98": {
+   "disposition": "legacy-dead",
+   "name": "profil",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  }
+ },
+ "x86_64": {
+  "103": {
+   "disposition": "privilege-surface",
+   "name": "syslog",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "109": {
+   "disposition": "ordinary-unimplemented",
+   "name": "setpgid",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "113": {
+   "disposition": "identity-model",
+   "name": "setreuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "114": {
+   "disposition": "identity-model",
+   "name": "setregid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "115": {
+   "disposition": "identity-model",
+   "name": "getgroups",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "116": {
+   "disposition": "identity-model",
+   "name": "setgroups",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "122": {
+   "disposition": "identity-model",
+   "name": "setfsuid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "123": {
+   "disposition": "identity-model",
+   "name": "setfsgid",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "125": {
+   "disposition": "identity-model",
+   "name": "capget",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "126": {
+   "disposition": "identity-model",
+   "name": "capset",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "132": {
+   "disposition": "superseded",
+   "name": "utime",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "133": {
+   "disposition": "privilege-surface",
+   "name": "mknod",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "134": {
+   "disposition": "legacy-dead",
+   "name": "uselib",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "135": {
+   "disposition": "identity-model",
+   "name": "personality",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "136": {
+   "disposition": "legacy-dead",
+   "name": "ustat",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "139": {
+   "disposition": "legacy-dead",
+   "name": "sysfs",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "140": {
+   "disposition": "ordinary-unimplemented",
+   "name": "getpriority",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "141": {
+   "disposition": "ordinary-unimplemented",
+   "name": "setpriority",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "142": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_setparam",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "146": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_get_priority_max",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "147": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_get_priority_min",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "148": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_rr_get_interval",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "153": {
+   "disposition": "privilege-surface",
+   "name": "vhangup",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "154": {
+   "disposition": "legacy-dead",
+   "name": "modify_ldt",
+   "reason": "32-bit descriptor-table machinery; a 64-bit guest's TLS is served by arch_prctl. The defect register separately tracks answering deliberately if a guest is observed probing it."
+  },
+  "155": {
+   "disposition": "privilege-surface",
+   "name": "pivot_root",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "156": {
+   "disposition": "legacy-dead",
+   "name": "_sysctl",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "159": {
+   "disposition": "privilege-surface",
+   "name": "adjtimex",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "161": {
+   "disposition": "privilege-surface",
+   "name": "chroot",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "162": {
+   "disposition": "privilege-surface",
+   "name": "sync",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "163": {
+   "disposition": "privilege-surface",
+   "name": "acct",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "164": {
+   "disposition": "privilege-surface",
+   "name": "settimeofday",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "165": {
+   "disposition": "privilege-surface",
+   "name": "mount",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "166": {
+   "disposition": "privilege-surface",
+   "name": "umount2",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "167": {
+   "disposition": "privilege-surface",
+   "name": "swapon",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "168": {
+   "disposition": "privilege-surface",
+   "name": "swapoff",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "169": {
+   "disposition": "privilege-surface",
+   "name": "reboot",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "170": {
+   "disposition": "privilege-surface",
+   "name": "sethostname",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "171": {
+   "disposition": "privilege-surface",
+   "name": "setdomainname",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "172": {
+   "disposition": "privilege-surface",
+   "name": "iopl",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "173": {
+   "disposition": "privilege-surface",
+   "name": "ioperm",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "174": {
+   "disposition": "legacy-dead",
+   "name": "create_module",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "175": {
+   "disposition": "privilege-surface",
+   "name": "init_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "176": {
+   "disposition": "privilege-surface",
+   "name": "delete_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "177": {
+   "disposition": "legacy-dead",
+   "name": "get_kernel_syms",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "178": {
+   "disposition": "legacy-dead",
+   "name": "query_module",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "179": {
+   "disposition": "privilege-surface",
+   "name": "quotactl",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "180": {
+   "disposition": "legacy-dead",
+   "name": "nfsservctl",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "181": {
+   "disposition": "legacy-dead",
+   "name": "getpmsg",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "182": {
+   "disposition": "legacy-dead",
+   "name": "putpmsg",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "183": {
+   "disposition": "legacy-dead",
+   "name": "afs_syscall",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "184": {
+   "disposition": "legacy-dead",
+   "name": "tuxcall",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "185": {
+   "disposition": "legacy-dead",
+   "name": "security",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "187": {
+   "disposition": "superseded",
+   "name": "readahead",
+   "reason": "Cache-readahead hint; on x86-64 the fadvise64 WILLNEED route is dispatched. On i386 fadvise64 is itself absent, so the hint has no served route on that ABI."
+  },
+  "205": {
+   "disposition": "superseded",
+   "name": "set_thread_area",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "206": {
+   "disposition": "subsystem-absent",
+   "name": "io_setup",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "207": {
+   "disposition": "subsystem-absent",
+   "name": "io_destroy",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "208": {
+   "disposition": "subsystem-absent",
+   "name": "io_getevents",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "209": {
+   "disposition": "subsystem-absent",
+   "name": "io_submit",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "210": {
+   "disposition": "subsystem-absent",
+   "name": "io_cancel",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "211": {
+   "disposition": "superseded",
+   "name": "get_thread_area",
+   "reason": "On x86-64 TLS is served by arch_prctl. On i386 set_thread_area is dispatched and the getter only needs to read the installed descriptor back."
+  },
+  "212": {
+   "disposition": "legacy-dead",
+   "name": "lookup_dcookie",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "214": {
+   "disposition": "legacy-dead",
+   "name": "epoll_ctl_old",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "215": {
+   "disposition": "legacy-dead",
+   "name": "epoll_wait_old",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "216": {
+   "disposition": "legacy-dead",
+   "name": "remap_file_pages",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "219": {
+   "disposition": "legacy-dead",
+   "name": "restart_syscall",
+   "reason": "Kernel-internal restart marker: only ever entered by the kernel restarting an interrupted call, never a service a guest can request fresh."
+  },
+  "220": {
+   "disposition": "subsystem-absent",
+   "name": "semtimedop",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "222": {
+   "disposition": "subsystem-absent",
+   "name": "timer_create",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "223": {
+   "disposition": "subsystem-absent",
+   "name": "timer_settime",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "224": {
+   "disposition": "subsystem-absent",
+   "name": "timer_gettime",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "225": {
+   "disposition": "subsystem-absent",
+   "name": "timer_getoverrun",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "226": {
+   "disposition": "subsystem-absent",
+   "name": "timer_delete",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "227": {
+   "disposition": "privilege-surface",
+   "name": "clock_settime",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "235": {
+   "disposition": "superseded",
+   "name": "utimes",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "236": {
+   "disposition": "legacy-dead",
+   "name": "vserver",
+   "reason": "Dead interface: removed from, or never shipped by, the kernel ABI (placeholder numbers included). Guests cannot be relying on it; the -ENOSYS answer stands."
+  },
+  "240": {
+   "disposition": "subsystem-absent",
+   "name": "mq_open",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "241": {
+   "disposition": "subsystem-absent",
+   "name": "mq_unlink",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "242": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedsend",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "243": {
+   "disposition": "subsystem-absent",
+   "name": "mq_timedreceive",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "244": {
+   "disposition": "subsystem-absent",
+   "name": "mq_notify",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "245": {
+   "disposition": "subsystem-absent",
+   "name": "mq_getsetattr",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "246": {
+   "disposition": "privilege-surface",
+   "name": "kexec_load",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "247": {
+   "disposition": "ordinary-unimplemented",
+   "name": "waitid",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "248": {
+   "disposition": "subsystem-absent",
+   "name": "add_key",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "249": {
+   "disposition": "subsystem-absent",
+   "name": "request_key",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "250": {
+   "disposition": "subsystem-absent",
+   "name": "keyctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "251": {
+   "disposition": "privilege-surface",
+   "name": "ioprio_set",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "252": {
+   "disposition": "privilege-surface",
+   "name": "ioprio_get",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "256": {
+   "disposition": "privilege-surface",
+   "name": "migrate_pages",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "259": {
+   "disposition": "privilege-surface",
+   "name": "mknodat",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "260": {
+   "disposition": "identity-model",
+   "name": "fchownat",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "261": {
+   "disposition": "superseded",
+   "name": "futimesat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "272": {
+   "disposition": "privilege-surface",
+   "name": "unshare",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "274": {
+   "disposition": "ordinary-unimplemented",
+   "name": "get_robust_list",
+   "reason": "set_robust_list is dispatched; the getter only needs to hand back the registered head from the same robust-list state."
+  },
+  "275": {
+   "disposition": "ordinary-unimplemented",
+   "name": "splice",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "276": {
+   "disposition": "ordinary-unimplemented",
+   "name": "tee",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "278": {
+   "disposition": "ordinary-unimplemented",
+   "name": "vmsplice",
+   "reason": "Pipe-buffer splice family in the served pipe layer; no guest failure has been attributed to its absence. Route: implement over the pipe machinery when evidenced."
+  },
+  "279": {
+   "disposition": "privilege-surface",
+   "name": "move_pages",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "284": {
+   "disposition": "superseded",
+   "name": "eventfd",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "285": {
+   "disposition": "ordinary-unimplemented",
+   "name": "fallocate",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "296": {
+   "disposition": "ordinary-unimplemented",
+   "name": "pwritev",
+   "reason": "Positioned vectored I/O over the existing pwrite64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "298": {
+   "disposition": "subsystem-absent",
+   "name": "perf_event_open",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "300": {
+   "disposition": "subsystem-absent",
+   "name": "fanotify_init",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "301": {
+   "disposition": "subsystem-absent",
+   "name": "fanotify_mark",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "303": {
+   "disposition": "ordinary-unimplemented",
+   "name": "name_to_handle_at",
+   "reason": "File-handle encoding over the virtual filesystem; no guest has been observed using handles. Route: define a stable handle encoding in the filesystem layer when evidenced."
+  },
+  "304": {
+   "disposition": "ordinary-unimplemented",
+   "name": "open_by_handle_at",
+   "reason": "File-handle encoding over the virtual filesystem; no guest has been observed using handles. Route: define a stable handle encoding in the filesystem layer when evidenced."
+  },
+  "305": {
+   "disposition": "privilege-surface",
+   "name": "clock_adjtime",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "306": {
+   "disposition": "ordinary-unimplemented",
+   "name": "syncfs",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "308": {
+   "disposition": "privilege-surface",
+   "name": "setns",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "312": {
+   "disposition": "privilege-surface",
+   "name": "kcmp",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "313": {
+   "disposition": "privilege-surface",
+   "name": "finit_module",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "314": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_setattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "315": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sched_getattr",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "317": {
+   "disposition": "subsystem-absent",
+   "name": "seccomp",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "320": {
+   "disposition": "privilege-surface",
+   "name": "kexec_file_load",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "321": {
+   "disposition": "subsystem-absent",
+   "name": "bpf",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "322": {
+   "disposition": "ordinary-unimplemented",
+   "name": "execveat",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "323": {
+   "disposition": "subsystem-absent",
+   "name": "userfaultfd",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "328": {
+   "disposition": "ordinary-unimplemented",
+   "name": "pwritev2",
+   "reason": "Positioned vectored I/O over the existing pwrite64 core; only the dispatch wiring is absent on this ABI."
+  },
+  "329": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_mprotect",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "330": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_alloc",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "331": {
+   "disposition": "modern-unconsumed",
+   "name": "pkey_free",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "333": {
+   "disposition": "subsystem-absent",
+   "name": "io_pgetevents",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "335": {
+   "disposition": "modern-unconsumed",
+   "name": "uretprobe",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "37": {
+   "disposition": "superseded",
+   "name": "alarm",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "40": {
+   "disposition": "ordinary-unimplemented",
+   "name": "sendfile",
+   "reason": "Ordinary data-path call in the served file/socket layer. Route: a read/write loop over the existing descriptor machinery when a guest need is evidenced."
+  },
+  "425": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_setup",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "426": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_enter",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "427": {
+   "disposition": "subsystem-absent",
+   "name": "io_uring_register",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "428": {
+   "disposition": "subsystem-absent",
+   "name": "open_tree",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "429": {
+   "disposition": "subsystem-absent",
+   "name": "move_mount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "430": {
+   "disposition": "subsystem-absent",
+   "name": "fsopen",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "431": {
+   "disposition": "subsystem-absent",
+   "name": "fsconfig",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "432": {
+   "disposition": "subsystem-absent",
+   "name": "fsmount",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "433": {
+   "disposition": "subsystem-absent",
+   "name": "fspick",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "436": {
+   "disposition": "modern-unconsumed",
+   "name": "close_range",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "437": {
+   "disposition": "modern-unconsumed",
+   "name": "openat2",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "440": {
+   "disposition": "modern-unconsumed",
+   "name": "process_madvise",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "442": {
+   "disposition": "subsystem-absent",
+   "name": "mount_setattr",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "443": {
+   "disposition": "privilege-surface",
+   "name": "quotactl_fd",
+   "reason": "Operates on host or system-wide state (the machine, mounts, modules, clocks, quotas, NUMA topology) that a single-user browser guest does not own; refusing is the honest answer."
+  },
+  "444": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_create_ruleset",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "445": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_add_rule",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "446": {
+   "disposition": "subsystem-absent",
+   "name": "landlock_restrict_self",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "447": {
+   "disposition": "modern-unconsumed",
+   "name": "memfd_secret",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "448": {
+   "disposition": "modern-unconsumed",
+   "name": "process_mrelease",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "450": {
+   "disposition": "modern-unconsumed",
+   "name": "set_mempolicy_home_node",
+   "reason": "Current call with no observed guest demand in this project yet. Route: implement when a guest is observed asking, or when its family's machinery lands for another call."
+  },
+  "64": {
+   "disposition": "subsystem-absent",
+   "name": "semget",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "65": {
+   "disposition": "subsystem-absent",
+   "name": "semop",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "66": {
+   "disposition": "subsystem-absent",
+   "name": "semctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "68": {
+   "disposition": "subsystem-absent",
+   "name": "msgget",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "69": {
+   "disposition": "subsystem-absent",
+   "name": "msgsnd",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "70": {
+   "disposition": "subsystem-absent",
+   "name": "msgrcv",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "71": {
+   "disposition": "subsystem-absent",
+   "name": "msgctl",
+   "reason": "Belongs to a subsystem the emulator does not provide; guests probe for these and fall back by design, so the -ENOSYS answer is the contract."
+  },
+  "73": {
+   "disposition": "ordinary-unimplemented",
+   "name": "flock",
+   "reason": "A well-defined call inside a subsystem the emulator serves; simply not implemented yet. Route: implement over the existing machinery of its family when a guest need is evidenced."
+  },
+  "76": {
+   "disposition": "superseded",
+   "name": "truncate",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "78": {
+   "disposition": "superseded",
+   "name": "getdents",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "84": {
+   "disposition": "superseded",
+   "name": "rmdir",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "85": {
+   "disposition": "superseded",
+   "name": "creat",
+   "reason": "Superseded: a dispatched call serves the same need, so the gap is not observable to a guest using current interfaces."
+  },
+  "92": {
+   "disposition": "identity-model",
+   "name": "chown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "93": {
+   "disposition": "identity-model",
+   "name": "fchown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  },
+  "94": {
+   "disposition": "identity-model",
+   "name": "lchown",
+   "reason": "Part of the uid/gid/capability surface beyond the emulator's fixed-identity model: there is no second identity for the answer to describe, and faking one would misreport the sandbox."
+  }
+ }
+}
