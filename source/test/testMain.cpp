@@ -159,6 +159,8 @@ void testStalePathnameSocket64Syscalls();
 void testStreamWriteSendmsgOrder64Syscalls();
 void testWritevDatagram64Syscalls();
 void testWriteZeroLength64Syscalls();
+void testSeqpacket64Syscalls();
+void testDatagramPeerCloseRefusal64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -242,6 +244,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testStreamWriteSendmsgOrder64Syscalls, "Test x64 stream write/sendmsg byte order"},
     {testWritevDatagram64Syscalls, "Test x64 writev gathering on a datagram socket"},
     {testWriteZeroLength64Syscalls, "Test x64 zero-length plain write on a datagram socket"},
+    {testSeqpacket64Syscalls, "Test x64 SOCK_SEQPACKET unix sockets keep record boundaries end to end"},
+    {testDatagramPeerCloseRefusal64Syscalls, "Test x64 datagram send to a just-closed peer answers ECONNREFUSED once, then ENOTCONN"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

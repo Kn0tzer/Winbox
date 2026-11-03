@@ -5652,21 +5652,597 @@ void testWriteZeroLength64Syscalls() {
             process->close(p.tx);
         }
     }
-    // A datagram socket whose peer is gone: the object is
-    // destroyed with the descriptor, so the write answers
-    // -ENOTCONN, the same answer the nonzero write gives on
-    // this tree (the host's one-shot -ECONNREFUSED for the
-    // first send after a peer close is the socket layer's
-    // peer accounting for every count, not this dispatcher's
-    // zero-count shape).
+    // A datagram socket whose peer just closed: the host answers
+    // the first send after the close -ECONNREFUSED and later
+    // sends -ENOTCONN (FD-119, host-measured); the zero-count
+    // write follows the same peer accounting as every other send.
     {
         Pair p;
         if (makePair(2, p)) {
             process->close(p.rx);
-            if (write0(p.tx, bufAt) != -K_ENOTCONN) {
-                testFail("write0 on a datagram socket with a closed peer: want -ENOTCONN");
+            S64 w0 = write0(p.tx, bufAt);
+            S64 w1 = write0(p.tx, bufAt);
+            if (w0 != -K_ECONNREFUSED || w1 != -K_ENOTCONN) {
+                testFail("write0 on a datagram socket with a closed peer: %lld, %lld (want -ECONNREFUSED, -ENOTCONN)",
+                         (long long)w0, (long long)w1);
             }
             process->close(p.tx);
+        }
+    }
+}
+
+void testSeqpacket64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd118XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("seqpacket test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x70000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("seqpacket test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 lenAt  = dataPage + 0x980;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    constexpr U64 riovAt = dataPage + 0x1480;
+    memory->memcpyToGuest(bufAt + 0x00, "abc", 3);
+    memory->memcpyToGuest(bufAt + 0x10, "de", 2);
+    memory->memcpyToGuest(bufAt + 0x20, "0123456789", 10);
+    memory->memcpyToGuest(bufAt + 0x40, "12", 2);
+    memory->memcpyToGuest(bufAt + 0x48, "345", 3);
+    memory->memcpyToGuest(bufAt + 0x60, "zz", 2);
+    memory->memcpyToGuest(bufAt + 0x70, "bk", 2);
+    memory->memcpyToGuest(bufAt + 0x80, "r1", 2);
+    memory->memcpyToGuest(bufAt + 0x88, "r2", 2);
+    memory->memcpyToGuest(bufAt + 0x90, "N", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](Pair& p) -> bool {
+        if (invoke(53, 1, 5 /*SOCK_SEQPACKET*/, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.rx);
+        return true;
+    };
+    auto recvStr = [&](S32 fd, std::string& out) -> S64 {
+        S64 rc = invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    auto expectRecord = [&](S32 fd, const char* want, const char* label) {
+        std::string got;
+        S64 r = recvStr(fd, got);
+        if (r != (S64)strlen(want) || got != want) {
+            testFail("%s: recv %lld (%s), want %lld (%s)", label, (long long)r, got.c_str(),
+                     (long long)strlen(want), want);
+        }
+    };
+    auto expectWouldBlock = [&](S32 fd, const char* label) {
+        std::string got;
+        S64 r = recvStr(fd, got);
+        if (r != -K_EWOULDBLOCK) {
+            testFail("%s: recv %lld, want -EWOULDBLOCK", label, (long long)r);
+        }
+    };
+    auto sendmsgIov = [&](S32 fd, U64 nameAtArg, U32 nameLen, std::vector<std::pair<U64, U64>> segs) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, nameAtArg);
+        memory->writed(hdrAt + 8, nameLen);
+        for (size_t i = 0; i < segs.size(); i++) {
+            memory->writeq(iovAt + i * 16, segs[i].first);
+            memory->writeq(iovAt + i * 16 + 8, segs[i].second);
+        }
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, (U64)segs.size());
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+
+    // A seqpacket pair is created without refusal, writes keep their record
+    // boundaries, a short read truncates and discards the rest of the record,
+    // and a zero-length write is delivered as an empty record.
+    {
+        Pair p;
+        if (!makePair(p)) {
+            testFail("SOCK_SEQPACKET socketpair was refused");
+        } else {
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x00, 3, 0) != 3) testFail("seqpacket write of abc failed");
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x10, 2, 0) != 2) testFail("seqpacket write of de failed");
+            expectRecord(p.rx, "abc", "first record keeps its boundary");
+            expectRecord(p.rx, "de", "second record keeps its boundary");
+            expectWouldBlock(p.rx, "pair drained after two records");
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x20, 10, 0) != 10) testFail("seqpacket write of 10 bytes failed");
+            S64 tr = invoke6(45, (U64)(U32)p.rx, recvAt, 4, 0, 0, 0);
+            std::string tgot;
+            if (tr > 0) {
+                std::vector<U8> buf((size_t)tr);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)tr);
+                tgot.assign((const char*)buf.data(), (size_t)tr);
+            }
+            if (tr != 4 || tgot != "0123") testFail("truncated record: recv %lld (%s), want 4 (0123)", (long long)tr, tgot.c_str());
+            expectWouldBlock(p.rx, "rest of a truncated record is discarded");
+            if (invoke(1, (U64)(U32)p.tx, bufAt, 0, 0) != 0) testFail("seqpacket zero-length write failed");
+            std::string got;
+            S64 zr = recvStr(p.rx, got);
+            if (zr != 0) testFail("empty record: recv %lld, want 0", (long long)zr);
+            expectWouldBlock(p.rx, "empty record consumed exactly once");
+            // writev gathers its segments into ONE record.
+            memory->writeq(iovAt + 0, bufAt + 0x40);
+            memory->writeq(iovAt + 8, 2);
+            memory->writeq(iovAt + 16, bufAt + 0x48);
+            memory->writeq(iovAt + 24, 3);
+            if (invoke(20, (U64)(U32)p.tx, iovAt, 2, 0) != 5) testFail("seqpacket writev failed");
+            expectRecord(p.rx, "12345", "writev arrives as one record");
+            expectWouldBlock(p.rx, "writev produced exactly one record");
+            // sendmsg gathers too, a zero-length sendmsg is an empty record,
+            // and recvmsg reports an unnamed source (namelen 0).
+            if (sendmsgIov(p.tx, 0, 0, {{bufAt + 0x40, 2}, {bufAt + 0x48, 3}}) != 5) testFail("seqpacket sendmsg failed");
+            if (sendmsgIov(p.tx, 0, 0, {{bufAt, 0}}) != 0) testFail("seqpacket zero-length sendmsg failed");
+            for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+            memory->writeq(riovAt, recvAt);
+            memory->writeq(riovAt + 8, 64);
+            memory->writeq(hdrAt + 16, riovAt);
+            memory->writeq(hdrAt + 24, 1);
+            memory->writed(hdrAt + 8, 128);
+            S64 mr = invoke(47, (U64)(U32)p.rx, hdrAt, 0, 0);
+            std::string mgot;
+            if (mr > 0) {
+                std::vector<U8> buf((size_t)mr);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)mr);
+                mgot.assign((const char*)buf.data(), (size_t)mr);
+            }
+            if (mr != 5 || mgot != "12345") testFail("recvmsg record: %lld (%s), want 5 (12345)", (long long)mr, mgot.c_str());
+            if (memory->readd(hdrAt + 8) != 0) testFail("recvmsg source namelen %u, want 0 (unnamed)", memory->readd(hdrAt + 8));
+            std::string got2;
+            S64 zr2 = recvStr(p.rx, got2);
+            if (zr2 != 0) testFail("sendmsg empty record: recv %lld, want 0", (long long)zr2);
+            // MSG_PEEK shows the front record without consuming it.
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x00, 3, 0) != 3) testFail("seqpacket write for peek failed");
+            S64 pk = invoke6(45, (U64)(U32)p.rx, recvAt, 64, 2 /*MSG_PEEK*/, 0, 0);
+            if (pk != 3) testFail("MSG_PEEK returned %lld, want 3", (long long)pk);
+            expectRecord(p.rx, "abc", "peeked record is still delivered");
+            expectWouldBlock(p.rx, "pair drained after peek case");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // An addressed send on a CONNECTED seqpacket socket ignores the address
+    // and delivers to the connected peer (host-measured); on an UNCONNECTED
+    // seqpacket socket every send answers -ENOTCONN.
+    {
+        S32 bound = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/sppeer");
+        if (bound < 0 || invoke(49, (U64)(U32)bound, addrAt, alen, 0) != 0) {
+            testFail("seqpacket test could not bind its datagram peer");
+        } else {
+            nonblock(bound);
+            Pair p;
+            if (!makePair(p)) {
+                testFail("SOCK_SEQPACKET socketpair was refused (addressed case)");
+            } else {
+                S64 rc = invoke6(44, (U64)(U32)p.tx, bufAt + 0x90, 1, 0, addrAt, alen);
+                if (rc != 1) testFail("connected seqpacket sendto-with-address: %lld, want 1 (address ignored)", (long long)rc);
+                expectRecord(p.rx, "N", "addressed send on a connected seqpacket lands on the pair peer");
+                std::string none;
+                S64 nr = recvStr(bound, none);
+                if (nr != -K_EWOULDBLOCK) testFail("named datagram peer received %lld from a connected seqpacket sendto, want nothing", (long long)nr);
+                process->close(p.tx);
+                process->close(p.rx);
+            }
+            S32 lone = sock(5 /*SOCK_SEQPACKET*/);
+            if (lone < 0) {
+                testFail("seqpacket test could not create an unconnected socket");
+            } else {
+                if (invoke(1, (U64)(U32)lone, bufAt + 0x90, 1, 0) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket write: want -ENOTCONN");
+                if (invoke6(44, (U64)(U32)lone, bufAt + 0x90, 1, 0, addrAt, alen) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket sendto-with-address: want -ENOTCONN");
+                if (sendmsgIov(lone, addrAt, alen, {{bufAt + 0x90, 1}}) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket sendmsg-with-name: want -ENOTCONN");
+                process->close(lone);
+            }
+            process->close(bound);
+        }
+    }
+
+    // A seqpacket listener accepts a seqpacket client and records flow over
+    // the accepted socket; a connect whose type differs from the bound
+    // socket's answers -EPROTOTYPE.
+    {
+        S32 server = sock(5 /*SOCK_SEQPACKET*/);
+        U32 slen = writePathAddr(addrAt, "/spsrv");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, slen, 0) != 0 ||
+            invoke(50, (U64)(U32)server, 4, 0, 0) != 0) {
+            testFail("seqpacket test could not bind/listen its server");
+        } else {
+            S32 client = sock(5 /*SOCK_SEQPACKET*/);
+            nonblock(client);
+            S64 crc = invoke(42, (U64)(U32)client, addrAt, slen, 0);
+            if (crc != 0 && crc != -K_EINPROGRESS) testFail("seqpacket connect: %lld, want 0 or -EINPROGRESS", (long long)crc);
+            // Only accept when the connect queued: a blocking accept
+            // with no pending connection would wait forever (on the
+            // base this case must fail, not hang).
+            memory->writed(lenAt, 128);
+            S64 acc = (crc == 0 || crc == -K_EINPROGRESS) ? invoke(43, (U64)(U32)server, addrAt + 0x100, lenAt, 0) : -1;
+            if (acc < 0) {
+                testFail("seqpacket accept: %lld", (long long)acc);
+            } else {
+                S32 accepted = (S32)acc;
+                nonblock(accepted);
+                if (invoke(1, (U64)(U32)client, bufAt + 0x60, 2, 0) != 2) testFail("client write over accepted connection failed");
+                if (invoke(1, (U64)(U32)client, bufAt, 0, 0) != 0) testFail("client empty write over accepted connection failed");
+                expectRecord(accepted, "zz", "accepted socket receives the record");
+                std::string got;
+                S64 zr = recvStr(accepted, got);
+                if (zr != 0) testFail("accepted socket empty record: recv %lld, want 0", (long long)zr);
+                if (invoke(1, (U64)(U32)accepted, bufAt + 0x70, 2, 0) != 2) testFail("accepted socket write back failed");
+                expectRecord(client, "bk", "client receives the reply record");
+                process->close(accepted);
+                process->close(client);
+            }
+            // Cross-type connects are refused with -EPROTOTYPE.
+            S32 stServer = sock(1 /*SOCK_STREAM*/);
+            U32 tlen = writePathAddr(addrAt, "/stlsn");
+            if (stServer < 0 || invoke(49, (U64)(U32)stServer, addrAt, tlen, 0) != 0 ||
+                invoke(50, (U64)(U32)stServer, 4, 0, 0) != 0) {
+                testFail("seqpacket test could not bind/listen its stream server");
+            } else {
+                // Nonblocking clients: on a tree without the type
+                // check a mismatched connect queues as pending and
+                // a blocking client would wait forever -- the case
+                // must fail there, not hang.
+                S32 spClient = sock(5 /*SOCK_SEQPACKET*/);
+                nonblock(spClient);
+                S64 m1 = invoke(42, (U64)(U32)spClient, addrAt, tlen, 0);
+                if (m1 != -K_EPROTOTYPE) testFail("seqpacket connect to a stream listener: %lld, want -EPROTOTYPE", (long long)m1);
+                process->close(spClient);
+                S32 stClient = sock(1 /*SOCK_STREAM*/);
+                nonblock(stClient);
+                S64 m2 = invoke(42, (U64)(U32)stClient, addrAt, slen, 0);
+                if (m2 != -K_EPROTOTYPE) testFail("stream connect to a seqpacket listener: %lld, want -EPROTOTYPE", (long long)m2);
+                process->close(stClient);
+                process->close(stServer);
+            }
+            process->close(server);
+        }
+    }
+
+    // Shutdown and peer close: after shutdown(SHUT_WR) own writes answer
+    // -EPIPE; after the peer closes, queued records drain, reads then answer
+    // 0 (end of stream), and writes answer -EPIPE on the first and later
+    // sends alike (no datagram-style one-shot refusal for seqpacket).
+    {
+        Pair p;
+        if (!makePair(p)) {
+            testFail("SOCK_SEQPACKET socketpair was refused (shutdown case)");
+        } else {
+            if (invoke(48, (U64)(U32)p.tx, 1 /*SHUT_WR*/, 0, 0) != 0) testFail("seqpacket shutdown failed");
+            bool was64 = context.thread->process->is64Bit;
+            context.thread->process->is64Bit = true;
+            S64 w = invoke(1, (U64)(U32)p.tx, bufAt + 0x90, 1, 0);
+            context.thread->process->is64Bit = was64;
+            if (w != -K_EPIPE) testFail("seqpacket write after SHUT_WR: %lld, want -EPIPE", (long long)w);
+            std::string got;
+            S64 er = recvStr(p.rx, got);
+            if (er != 0) testFail("seqpacket read after peer SHUT_WR with empty queue: %lld, want 0 (end of stream)", (long long)er);
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+        Pair q;
+        if (!makePair(q)) {
+            testFail("SOCK_SEQPACKET socketpair was refused (peer-close case)");
+        } else {
+            if (invoke(1, (U64)(U32)q.tx, bufAt + 0x80, 2, 0) != 2) testFail("seqpacket write r1 failed");
+            if (invoke(1, (U64)(U32)q.tx, bufAt + 0x88, 2, 0) != 2) testFail("seqpacket write r2 failed");
+            process->close(q.tx);
+            expectRecord(q.rx, "r1", "first queued record drains after peer close");
+            expectRecord(q.rx, "r2", "second queued record drains after peer close");
+            std::string got;
+            S64 er = recvStr(q.rx, got);
+            if (er != 0) testFail("seqpacket read after drain: %lld, want 0 (end of stream)", (long long)er);
+            bool was64 = context.thread->process->is64Bit;
+            context.thread->process->is64Bit = true;
+            S64 w1 = invoke(1, (U64)(U32)q.rx, bufAt + 0x90, 1, 0);
+            S64 w2 = invoke(1, (U64)(U32)q.rx, bufAt + 0x90, 1, 0);
+            context.thread->process->is64Bit = was64;
+            if (w1 != -K_EPIPE || w2 != -K_EPIPE)
+                testFail("seqpacket writes after peer close: %lld, %lld; want -EPIPE, -EPIPE", (long long)w1, (long long)w2);
+            process->close(q.rx);
+        }
+    }
+}
+
+void testDatagramPeerCloseRefusal64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd119XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("peer-close refusal test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x72000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("peer-close refusal test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    memory->memcpyToGuest(bufAt + 0x00, "a", 1);
+    memory->memcpyToGuest(bufAt + 0x10, "z", 1);
+    memory->memcpyToGuest(bufAt + 0x20, "W", 1);
+    memory->memcpyToGuest(bufAt + 0x30, "L", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](Pair& p) -> bool {
+        if (invoke(53, 1, 2 /*SOCK_DGRAM*/, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto sendmsgOne = [&](S32 fd, U64 dataAt, U64 len) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(iovAt, dataAt);
+        memory->writeq(iovAt + 8, len);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto writevOne = [&](S32 fd, U64 dataAt, U64 len) -> S64 {
+        memory->writeq(iovAt, dataAt);
+        memory->writeq(iovAt + 8, len);
+        return invoke(20, (U64)(U32)fd, iovAt, 1, 0);
+    };
+    auto expectRefusalThenNotConn = [&](S64 first, S64 second, const char* label) {
+        if (first != -K_ECONNREFUSED || second != -K_ENOTCONN) {
+            testFail("%s: first send %lld, second %lld; want -ECONNREFUSED then -ENOTCONN",
+                     label, (long long)first, (long long)second);
+        }
+    };
+
+    // The host answers the first send after a peer close with
+    // -ECONNREFUSED and later sends with -ENOTCONN, on every connected send
+    // path; the one-shot is per-socket, not per-path.
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (write case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 t = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "write after peer close");
+            if (t != -K_ENOTCONN) testFail("third write after peer close: %lld, want -ENOTCONN", (long long)t);
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (sendto case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke6(44, (U64)(U32)p.tx, bufAt, 1, 0, 0, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "sendto spends the refusal, write is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (sendmsg case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = sendmsgOne(p.tx, bufAt, 1);
+            S64 s = invoke6(44, (U64)(U32)p.tx, bufAt, 1, 0, 0, 0);
+            expectRefusalThenNotConn(f, s, "sendmsg spends the refusal, sendto is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (writev case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = writevOne(p.tx, bufAt, 1);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "writev spends the refusal, write is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (zero-length case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 0, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "zero-length write spends the refusal");
+            process->close(p.tx);
+        }
+    }
+    // Receiving what the peer queued before closing does not spend the
+    // refusal. (The drained-read answer 0 pinned here is the standing
+    // emulator behaviour; the host answers -EWOULDBLOCK for a drained
+    // datagram survivor, filed separately in this lane's register entries.)
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (recv-first case)"); }
+        else {
+            if (invoke(1, (U64)(U32)p.rx, bufAt + 0x10, 1, 0) != 1) testFail("peer write before close failed");
+            process->close(p.rx);
+            S64 r = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
+            if (r != 1) testFail("queued datagram not delivered after peer close: %lld", (long long)r);
+            S64 r2 = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
+            if (r2 != 0) testFail("drained datagram survivor read: %lld, want the standing 0", (long long)r2);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "receiving first does not spend the refusal");
+            process->close(p.tx);
+        }
+    }
+    // A never-connected datagram socket keeps the plain -ENOTCONN.
+    {
+        S32 lone = sock(2 /*SOCK_DGRAM*/);
+        if (lone < 0) { testFail("could not create a datagram socket (control case)"); }
+        else {
+            S64 w = invoke(1, (U64)(U32)lone, bufAt, 1, 0);
+            if (w != -K_ENOTCONN) testFail("never-connected datagram write: %lld, want -ENOTCONN", (long long)w);
+            process->close(lone);
+        }
+    }
+    // A one-way connected datagram socket (connected to a bound pathname
+    // peer) shows the same one-shot when that peer closes.
+    {
+        S32 bound = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer");
+        if (bound < 0 || invoke(49, (U64)(U32)bound, addrAt, alen, 0) != 0) {
+            testFail("peer-close refusal test could not bind its pathname peer");
+        } else {
+            nonblock(bound);
+            S32 sender = sock(2 /*SOCK_DGRAM*/);
+            if (sender < 0 || invoke(42, (U64)(U32)sender, addrAt, alen, 0) != 0) {
+                testFail("one-way datagram connect failed");
+            } else {
+                if (invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0) != 1) testFail("one-way write before close failed");
+                S64 r = invoke6(45, (U64)(U32)bound, recvAt, 64, 0, 0, 0);
+                if (r != 1) testFail("bound peer did not receive the one-way datagram: %lld", (long long)r);
+                process->close(bound);
+                S64 f = invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0);
+                S64 s = invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0);
+                S64 t = invoke6(44, (U64)(U32)sender, bufAt + 0x20, 1, 0, 0, 0);
+                expectRefusalThenNotConn(f, s, "one-way connected write after peer close");
+                if (t != -K_ENOTCONN) testFail("one-way sendto after the refusal was spent: %lld, want -ENOTCONN", (long long)t);
+                process->close(sender);
+            }
+            if (bound >= 0) { /* already closed above when the case ran */ }
+        }
+    }
+    // An addressed send to a live third peer succeeds and does not spend
+    // the connected refusal.
+    {
+        S32 live = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dglive");
+        if (live < 0 || invoke(49, (U64)(U32)live, addrAt, alen, 0) != 0) {
+            testFail("peer-close refusal test could not bind its live peer");
+        } else {
+            nonblock(live);
+            Pair p;
+            if (!makePair(p)) { testFail("datagram pair failed (addressed-spend case)"); }
+            else {
+                process->close(p.rx);
+                S64 a = invoke6(44, (U64)(U32)p.tx, bufAt + 0x30, 1, 0, addrAt, alen);
+                if (a != 1) testFail("addressed sendto to a live peer: %lld, want 1", (long long)a);
+                S64 r = invoke6(45, (U64)(U32)live, recvAt, 64, 0, 0, 0);
+                if (r != 1) testFail("live peer did not receive the addressed datagram: %lld", (long long)r);
+                S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+                S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+                expectRefusalThenNotConn(f, s, "addressed send does not spend the refusal");
+                process->close(p.tx);
+            }
+            process->close(live);
         }
     }
 }
