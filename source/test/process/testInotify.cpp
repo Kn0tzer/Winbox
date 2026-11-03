@@ -6583,6 +6583,310 @@ void testSocketStateAnswers64Syscalls() {
         }
     }
 }
+void testPeerClosedStreamSendmsg64Syscalls() {
+    // FD-124 (host-measured, test-results/fd124/hostref-fd124.c):
+    // on a stream pair, after the peer closes, the survivor's
+    // sendmsg with no header destination answers -EPIPE -- at any
+    // length, including zero -- as do its sendto without an
+    // address, its plain send, its write and its sendmmsg; a
+    // never-connected stream socket's sendmsg answers -ENOTCONN.
+    // The emulator's sendmsg answered -ENOTCONN for both shapes:
+    // its no-peer branch did not distinguish never-connected from
+    // peer-died for stream, though FD-118 gave seqpacket's sendmsg
+    // exactly that distinction. The neighbouring answers are
+    // pinned as controls: the seqpacket survivor's -EPIPE
+    // (FD-118), the datagram survivor's one-shot -ECONNREFUSED
+    // then -ENOTCONN through sendmsg (FD-119), the addressed
+    // survivor sendmsg's -EISCONN (FD-123), the shutdown shapes,
+    // and healthy-pair delivery.
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd124XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("peer-closed stream sendmsg test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x7C000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("peer-closed stream sendmsg test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    constexpr U64 vecAt  = dataPage + 0x1800;
+    memory->memcpyToGuest(bufAt + 0x40, "x", 1);
+
+    constexpr U64 kNoSignal = 0x4000; // MSG_NOSIGNAL
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) -> bool {
+        if (invoke(53, 1, type, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto stageHdr = [&](U64 name, U32 namelen, U64 len) {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, name);
+        memory->writed(hdrAt + 8, namelen);
+        memory->writeq(iovAt, bufAt + 0x40);
+        memory->writeq(iovAt + 8, len);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+    };
+    auto sendmsgNoName = [&](S32 fd, U64 flags, U64 len) -> S64 {
+        stageHdr(0, 0, len);
+        return invoke(46, (U64)(U32)fd, hdrAt, flags, 0);
+    };
+    auto sendmsgEmpty = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        return invoke(46, (U64)(U32)fd, hdrAt, kNoSignal, 0);
+    };
+    auto sendmsgNamed = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        stageHdr(addrAt, alen, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, kNoSignal, 0);
+    };
+    auto sendmmsgOne = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 64; i += 8) memory->writeq(vecAt + i, 0);
+        memory->writeq(iovAt, bufAt + 0x40);
+        memory->writeq(iovAt + 8, 1);
+        memory->writeq(vecAt + 16, iovAt);
+        memory->writeq(vecAt + 24, 1);
+        return invoke(307, (U64)(U32)fd, vecAt, 1, kNoSignal);
+    };
+    auto recvfromOnce = [&](S32 fd) -> S64 { return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0); };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+
+    // Same anchor as the sibling tests: no tested socket may land
+    // on descriptor 0 (the dispatcher's host-stdin convention).
+    S32 anchorFd = sock(2 /*SOCK_DGRAM*/);
+    (void)anchorFd;
+
+    // ---- Healthy pair: unnamed sendmsg delivers, zero-length queues nothing ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 healthy case)"); }
+        else {
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), 1, "FD-124 healthy stream sendmsg delivers");
+            expectEq(recvfromOnce(p.rx), 1, "FD-124 healthy stream peer receives");
+            if (memory->readb(recvAt) != 'x') testFail("FD-124 healthy stream payload wrong");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), 0, "FD-124 healthy stream zero-length sendmsg");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // ---- FD-124: the peer-closed stream survivor ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 survivor case)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 survivor sendmsg with no name");
+            expectEq(sendmsgNoName(p.tx, 0, 1), -K_EPIPE,
+                     "FD-124 survivor sendmsg with no name, no NOSIGNAL");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), -K_EPIPE,
+                     "FD-124 survivor zero-length sendmsg");
+            expectEq(sendmsgEmpty(p.tx), -K_EPIPE,
+                     "FD-124 survivor sendmsg with an empty iovec");
+            expectEq(sendmmsgOne(p.tx), -K_EPIPE,
+                     "FD-124 survivor sendmmsg");
+            // Neighbouring send paths on the same survivor: the
+            // host gives the same broken-pipe answer on each, and
+            // the write family already gives it here. The socket
+            // layer keys its broken-pipe split (a clean -EPIPE
+            // for a 64-bit thread vs the 32-bit SIGPIPE path) on
+            // the process width, so flag the shared test process
+            // 64-bit for the write cases, as a real 64-bit guest
+            // process would be (the FD-116 test's pattern).
+            bool was64 = process->is64Bit;
+            process->is64Bit = true;
+            expectEq(invoke6(44, (U64)(U32)p.tx, bufAt + 0x40, 1, kNoSignal, 0, 0), -K_EPIPE,
+                     "FD-124 survivor sendto with no address");
+            expectEq(invoke(1, (U64)(U32)p.tx, bufAt + 0x40, 1, 0), -K_EPIPE,
+                     "FD-124 survivor plain write");
+            expectEq(invoke(1, (U64)(U32)p.tx, bufAt + 0x40, 0, 0), -K_EPIPE,
+                     "FD-124 survivor zero-length write");
+            memory->writeq(iovAt, bufAt + 0x40);
+            memory->writeq(iovAt + 8, 1);
+            expectEq(invoke(20, (U64)(U32)p.tx, iovAt, 1, 0), -K_EPIPE,
+                     "FD-124 survivor writev");
+            process->is64Bit = was64;
+            process->close(p.tx);
+        }
+    }
+    {
+        // Unread data from the peer does not change the answer.
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 unread case)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x40, 1, 0), 1, "FD-124 peer write before close");
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 survivor with unread data sendmsg");
+            process->close(p.tx);
+        }
+    }
+
+    // ---- Shutdown shapes around the same call ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 peer-shutWR case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.rx, 1 /*SHUT_WR*/, 0, 0), 0, "FD-124 peer shutdown write side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), 1,
+                     "FD-124 sendmsg to a peer that shut only its write side still delivers");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 peer-shutRD case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.rx, 0 /*SHUT_RD*/, 0, 0), 0, "FD-124 peer shutdown read side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 sendmsg to a peer that shut its read side");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 own-shutWR case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.tx, 1 /*SHUT_WR*/, 0, 0), 0, "FD-124 own shutdown write side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 sendmsg after shutting the own write side");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // ---- Never connected: -ENOTCONN stands ----
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        if (s < 0) { testFail("could not create a stream socket (FD-124 fresh case)"); }
+        else {
+            expectEq(sendmsgNoName(s, kNoSignal, 1), -K_ENOTCONN, "FD-124 fresh stream sendmsg");
+            expectEq(sendmsgNoName(s, kNoSignal, 0), -K_ENOTCONN, "FD-124 fresh stream zero-length sendmsg");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lst124");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-124)");
+        } else {
+            expectEq(sendmsgNoName(s, kNoSignal, 1), -K_ENOTCONN, "FD-124 listening stream sendmsg");
+            process->close(s);
+        }
+    }
+
+    // ---- Sibling distinctions preserved through sendmsg ----
+    {
+        Pair p;
+        if (!makePair(5 /*SOCK_SEQPACKET*/, p)) { testFail("seqpacket pair failed (FD-124 control)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 control seqpacket survivor sendmsg (FD-118)");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), -K_EPIPE,
+                     "FD-124 control seqpacket survivor zero-length sendmsg (FD-118)");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-124 control)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_ECONNREFUSED,
+                     "FD-124 control datagram survivor first sendmsg (FD-119)");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_ENOTCONN,
+                     "FD-124 control datagram survivor second sendmsg (FD-119)");
+            process->close(p.tx);
+        }
+    }
+    {
+        // FD-123 control: a destination in the header on the
+        // survivor still answers -EISCONN; the name is staged
+        // against a bound datagram peer and never resolved.
+        S32 dgpeer = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer124");
+        if (dgpeer < 0 || invoke(49, (U64)(U32)dgpeer, addrAt, alen, 0) != 0) {
+            testFail("could not stage the named peer (FD-124 control)");
+        } else {
+            Pair p;
+            if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 named control)"); }
+            else {
+                process->close(p.rx);
+                expectEq(sendmsgNamed(p.tx, "/dgpeer124"), -K_EISCONN,
+                         "FD-124 control survivor sendmsg with a name (FD-123)");
+                process->close(p.tx);
+            }
+            process->close(dgpeer);
+        }
+    }
+
+    process->close(anchorFd);
+}
+
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
