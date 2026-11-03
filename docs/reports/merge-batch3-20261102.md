@@ -95,5 +95,62 @@ section 9) was flipped to −EBADF in the same commit.
 - **kobject.cpp line endings:** fd94-96's lane rewrote the file
   as LF over a CRLF base; the composed file keeps CRLF with
   FD-96's writev hunk hand-applied.
-- **Vectored-read wrappe
-...[truncated 1863 chars]
+- **Vectored-read core choice:** where fd99-100's rewrite met
+  FD-84's composed wrapper additions, fd99-100's version stands
+  (its per-segment core answers the mode); the family mode
+  answer moved to the wrappers under decision (1).
+- **FD-85:** one entry — batch-2 text + fd85b continuation +
+  fd85pay's conviction addendum, renumbered to FD-108. FD-85
+  stays OPEN, re-gated on the FD-108 write-loss fix; the audio
+  payload stands exonerated by the fpprobe reproduction.
+
+## Silent-failure baseline
+
+known-silent.json, syscall64.cpp unloggedErrno: batch-2 base
+115, lane-accounted moves +1 (fd83-84) +2 (fd102-104) +1
+(fd92-93) +3 (fd94-96) = 122; the scanner measures **132** on
+the composed tree (the FD-23 residue implementations are the
+largest single contributor beyond the lanes' own accounting).
+Baseline set to the measured 132, per the merge brief.
+
+## Gate (evidence: test-results/merge-batch3-20261102/)
+
+- Bootstrap from the retained runtime-assets-20261103 archive
+  ONLY: 13 assets restored and verified; post-build --check
+  0 failures, 1 skip. (The sibling lane's payload-drift warning
+  did not bite here: this tree's payloads come from the
+  retained archive, and the build verified support archive
+  c4dbe35986a5. No payloads were regenerated.)
+- Browser build: "Browser export verified"; BUILD_INFO git_sha
+  129462a63 (the decision-commit tip the build ran from).
+- Native suites serial, 1 thread: main **675/675**, x64
+  **83/83**, 0 FAILED. (An early 4-thread main run died in a
+  guest-memfault flood — the registered FD-32 multi-worker
+  shape; the gate standard is the serial run. Log kept as
+  native-full-main-4t-died.log.)
+- JS unit: **352 passed, 0 failed** (final run). JS legacy:
+  **115 pass, 0 fail** — FD-64's empty failing set confirmed.
+- run-native: **62 PASS, 0 FAIL**.
+- Citations: **0 DRIFT** (352 rows; --fix moved 33, 22 rows
+  hand-pinned per-cite against the composed files).
+- Boots: boot64-smoke PASS, 0 BW64-FAIL; boot32-vkboot PASS,
+  0 BW64-FAIL, exactly 5 BW64-INFO hard-link served lines.
+
+Gate pins settled on the composed tree (52f3b72c9, ff31c9f7e):
+the legacy corpus table re-baselined for the FD-78 + FD-88
+corpus members (the lanes pinned their contracts only in their
+own unit suites; three FD-88 modules sit in REFUSED with the
+translator's UnsupportedCapability(SampledImageArray
+DynamicIndexing), exactly as spirvfix-fd87 pins); spirvfix-fd78
+(F) accepts FD-87's R18 strip removing its variable first
+(outcome unchanged); the thread-dump source pin rescoped to
+the dump function's own body (FD-23's select legitimately uses
+the blocking fd lookup in syscall context).
+
+## Owed after this merge
+
+- FD-89/CL-43's in-vivo pipeline-creation proof belongs to the
+  carrying deploy, not this gate; it stays owed (pipelines
+  still gate on FD-88 + FD-72).
+- The batch-2 wedged-boot entry on lane-wedge-incidence
+  renumbers off FD-103 at batch-4 composition (rule above).
