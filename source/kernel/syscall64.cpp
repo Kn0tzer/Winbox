@@ -5925,6 +5925,10 @@ void ksyscall64(CPU64* cpu) {
             // default /home/username, so that "." stat failed with ENOENT and
             // wine reported "could not find the prefix". Route to KProcess::chdir.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string and take
+            // the empty route.
+            if (!a1) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->chdir(BString::copy(path));
@@ -6263,6 +6267,10 @@ void ksyscall64(CPU64* cpu) {
             // Standalone runner (no KProcess) -> ENOENT, matching ld.so probes.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-2; break; }
             U64 pathArg = (nr == X64_SYS_access) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host -- for
+            // faccessat2 even with AT_EMPTY_PATH (there is no null
+            // descriptor form); the copy below would erase it to "".
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             // FD-131: an empty path answers -ENOENT; faccessat2 with
@@ -6283,6 +6291,9 @@ void ksyscall64(CPU64* cpu) {
             // writes into the native (writable) root overlay.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 pathArg = (nr == X64_SYS_mkdir) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string.
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             // FD-131: an empty path answers -ENOENT, as the host does.
@@ -6303,10 +6314,13 @@ void ksyscall64(CPU64* cpu) {
             // when initializing the prefix. target is arg1; linkpath is arg2
             // (symlink) or arg3 (symlinkat, dirfd=arg2 is AT_FDCWD/absolute).
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
+            // FD-132: a null target or linkpath answers -EFAULT on
+            // the host; the copies below would erase either to "".
+            if (!a1 || !linkArg) { ret = (U64)-K_EFAULT; break; }
             char target[1024] = {0};
             char linkpath[1024] = {0};
             cpu->memory->memcpyFromGuest(target, a1, sizeof(target) - 1);
-            U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
             cpu->memory->memcpyFromGuest(linkpath, linkArg, sizeof(linkpath) - 1);
             // FD-131: an empty target or an empty linkpath answers
             // -ENOENT, as the host does.
@@ -6336,6 +6350,10 @@ void ksyscall64(CPU64* cpu) {
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 oldArg = (nr == X64_SYS_link) ? a1 : a2;
             U64 newArg = (nr == X64_SYS_link) ? a2 : a4;
+            // FD-132: a null old or new path answers -EFAULT on the
+            // host (linkat has no null descriptor form either); the
+            // copies below would erase either to "".
+            if (!oldArg || !newArg) { ret = (U64)-K_EFAULT; break; }
             char oldp[1024] = {0};
             char newp[1024] = {0};
             cpu->memory->memcpyFromGuest(oldp, oldArg, sizeof(oldp) - 1);
@@ -6374,6 +6392,9 @@ void ksyscall64(CPU64* cpu) {
             char from[1024] = {0};
             char to[1024] = {0};
             if (nr == X64_SYS_rename) {
+                // FD-132: a null path answers -EFAULT on the host;
+                // the copies below would erase it to "".
+                if (!a1 || !a2) { ret = (U64)-K_EFAULT; break; }
                 cpu->memory->memcpyFromGuest(from, a1, sizeof(from) - 1);
                 cpu->memory->memcpyFromGuest(to,   a2, sizeof(to) - 1);
                 ret = (U64)(S64)(S32)cpu->thread->process->rename(
@@ -6385,6 +6406,9 @@ void ksyscall64(CPU64* cpu) {
                 }
                 FD olddirfd = (FD)(S32)a1;
                 FD newdirfd = (FD)(S32)a3;
+                // FD-132: a null path answers -EFAULT on the host;
+                // the copies below would erase it to "".
+                if (!a2 || !a4) { ret = (U64)-K_EFAULT; break; }
                 cpu->memory->memcpyFromGuest(from, a2, sizeof(from) - 1);
                 cpu->memory->memcpyFromGuest(to,   a4, sizeof(to) - 1);
                 ret = (U64)(S64)(S32)cpu->thread->process->renameat(
@@ -6796,6 +6820,11 @@ void ksyscall64(CPU64* cpu) {
             // (unlinkat, dirfd AT_FDCWD/absolute). Route to KProcess::unlinkFile.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 pathArg = (nr == X64_SYS_unlink) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string (which
+            // resolved to the working directory itself and answered
+            // success on the base).
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
             // FD-131: an empty path answers -ENOENT, as the host does
@@ -6858,8 +6887,22 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_inotify_add_watch: {
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (!a2) {
+                // FD-132: a null path answers -EFAULT on the host,
+                // but the descriptor is validated first (a bad one
+                // answers -EBADF) -- the order KProcess applies to
+                // the empty path (FD-131), mirrored here because
+                // the null pointer never reaches that layer.
+                KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor((FD)a1);
+                if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+                    ret = (U64)-K_EBADF;
+                } else {
+                    ret = (U64)-K_EFAULT;
+                }
+                break;
+            }
             char path[1024] = {0};
-            if (a2) cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
+            cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->inotify_add_watch((S32)a1, BString::copy(path), (U32)a3);
             break;
         }

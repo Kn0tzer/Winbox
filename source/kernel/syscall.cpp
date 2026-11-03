@@ -134,6 +134,7 @@ static void logExeSpawnSignal(const char* syscallName, const BString& name, U32 
 }
 
 static U32 syscall_open(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString name = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "open: name=%s flags=%x", name.c_str(), ARG2);
     U32 result = cpu->thread->process->open(name, ARG2);
@@ -162,6 +163,7 @@ static U32 syscall_waitpid(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_link(CPU* cpu, U32 eipCount) {
+    if (!ARG1 || !ARG2) return -K_EFAULT; // FD-132: a null path faults on the host, on either side
     BString path1 = cpu->memory->readString(ARG1);
     BString path2 = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "link: path1=%X(%s) path2=%X(%s)", ARG1, path1.c_str(), ARG2, path2.c_str());
@@ -171,6 +173,7 @@ static U32 syscall_link(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_unlink(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "unlink: path=%X(%s)", ARG1, path.c_str());
     U32 result = cpu->thread->process->unlinkFile(path);
@@ -191,6 +194,7 @@ static void readStringArray(KMemory* memory, U32 address, std::vector<BString>& 
 static U32 syscall_execve(CPU* cpu, U32 eipCount) {
     std::vector<BString> args;
     std::vector<BString> envs;
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     readStringArray(cpu->memory, ARG2, args);
@@ -203,6 +207,7 @@ static U32 syscall_execve(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_chdir(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_PROCESS, cpu, "chdir: path=%X(%s)", ARG1, path.c_str());
@@ -220,6 +225,7 @@ static U32 syscall_time(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_chmod(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_FILE, cpu, "chmod: path=%X (%s) mode=%o", ARG1, path.c_str(), ARG2);
@@ -276,6 +282,7 @@ static U32 syscall_utime(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_access(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString fileName = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_FILE, cpu, "access: filename=%s flags=0x%X", fileName.c_str(), ARG2);
@@ -299,6 +306,7 @@ static U32 syscall_kill(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_rename(CPU* cpu, U32 eipCount) {
+    if (!ARG1 || !ARG2) return -K_EFAULT; // FD-132: a null path faults on the host, on either side
     BString oldName = cpu->memory->readString(ARG1);
     BString newName = cpu->memory->readString(ARG2);
 
@@ -309,6 +317,7 @@ static U32 syscall_rename(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_mkdir(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_FILE, cpu, "mkdir: path=%X (%s) mode=%X", ARG1, path.c_str(), ARG2);
@@ -318,6 +327,7 @@ static U32 syscall_mkdir(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_rmdir(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_FILE, cpu, "rmdir: path=%X(%s)", ARG1, path.c_str());
@@ -472,6 +482,7 @@ static U32 syscall_gettimeofday(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_symlink(CPU* cpu, U32 eipCount) {
+    if (!ARG1 || !ARG2) return -K_EFAULT; // FD-132: a null target or linkpath faults on the host
     BString path1 = cpu->memory->readString(ARG1);
     BString path2 = cpu->memory->readString(ARG2);
 
@@ -482,6 +493,7 @@ static U32 syscall_symlink(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_readlink(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     U32 result = cpu->thread->process->readlink(path, ARG2, ARG3);
@@ -533,6 +545,7 @@ static U32 syscall_setpriority(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_statfs(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
 
     SYS_LOG1(SYSCALL_FILE, cpu, "statfs: path=%X(%s) buf=%X", ARG1, path.c_str(), ARG2);
@@ -1118,6 +1131,7 @@ static U32 syscall_ftruncate64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_statx(CPU* cpu, U32 eipCount) {
+    if (!ARG2 && !(ARG3 & 0x1000)) return -K_EFAULT; // FD-132: with AT_EMPTY_PATH a null path is the descriptor form, as "" is; without it the host faults the name fetch
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "statx: dirfd=%d path=%s flags=%x mask=%x statxbuf=%x", ARG1, path.c_str(), ARG3, ARG4, ARG5);
     U32 result = cpu->thread->process->statx(ARG1, path, ARG3, ARG4, ARG5);
@@ -1126,6 +1140,7 @@ static U32 syscall_statx(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_stat64(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "stat64: path=%s buf=%X", path.c_str(), ARG2);
     U32 result = cpu->thread->process->stat64(path, ARG2);
@@ -1134,6 +1149,7 @@ static U32 syscall_stat64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_lstat64(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "lstat64: path=%s buf=%X", path.c_str(), ARG2);
     U32 result = cpu->thread->process->lstat64(path, ARG2);
@@ -1366,9 +1382,11 @@ static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
     if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
+    if (!ARG2) return -K_EFAULT; // FD-132: a null attribute name faults on the host, once the path has resolved
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
@@ -1392,9 +1410,11 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
     if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
+    if (!ARG2) return -K_EFAULT; // FD-132: a null attribute name faults on the host, once the path has resolved
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false);
@@ -1678,6 +1698,7 @@ static U32 syscall_clock_getres_time64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_statfs64(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "fstatfs64: path=%X(%s) len=%d buf=%X", ARG1, path.c_str(), ARG2, ARG3);
     U32 result = cpu->thread->process->statfs64(path, ARG3);
@@ -1700,6 +1721,7 @@ static U32 syscall_tgkill(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_utimes(CPU* cpu, U32 eipCount) {
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString fileName = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "utimes: fileName=%s times=%X", fileName.c_str(), ARG2);
     U32 result = cpu->thread->process->utimes(fileName, ARG2);
@@ -1726,6 +1748,18 @@ static U32 syscall_inotify_init1(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_inotify_add_watch(CPU* cpu, U32 eipCount) {
+    if (!ARG2) {
+        // FD-132: a null path answers -EFAULT on the host, but the
+        // descriptor is validated first (a bad one answers
+        // -EBADF) -- the order KProcess::inotify_add_watch
+        // applies to the empty path (FD-131), mirrored here
+        // because the null pointer never reaches that layer.
+        KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor(ARG1);
+        if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+            return -K_EBADF;
+        }
+        return -K_EFAULT;
+    }
     BString path = cpu->memory->readString(ARG2);
     U32 result = cpu->thread->process->inotify_add_watch((S32)ARG1, path, ARG3);
     SYS_LOG1(SYSCALL_FILE, cpu, "inotify_add_watch: fd=%d path=%s mask=%X result=%d(0x%X)\n", ARG1, path.c_str(), ARG3, result, result);
@@ -1739,6 +1773,7 @@ static U32 syscall_inotify_rm_watch(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_openat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString name = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "openat: dirfd=%d name=%s flags=%x", ARG1, name.c_str(), ARG3);
 #ifdef _DEBUG    
@@ -1760,6 +1795,7 @@ static U32 syscall_openat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_mkdirat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "mkdirat: dirfd=%d path=%s mode=%x", ARG1, path.c_str(), ARG3);
     U32 result = cpu->thread->process->mkdirat(ARG1, path, ARG3);
@@ -1775,6 +1811,7 @@ static U32 syscall_fchownat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_fstatat64(CPU* cpu, U32 eipCount) {
+    if (!ARG2 && !(ARG4 & 0x1000)) return -K_EFAULT; // FD-132: with AT_EMPTY_PATH a null path is the descriptor form, as "" is; without it the host faults the name fetch
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "statat64: dirfd=%d path=%s buf=%X flags=%x", ARG1, path.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->fstatat64(ARG1, path, ARG3, ARG4);
@@ -1783,6 +1820,7 @@ static U32 syscall_fstatat64(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_unlinkat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "unlinkat: dirfd=%d path=%s flags=%x", ARG1, path.c_str(), ARG3);
     U32 result = cpu->thread->process->unlinkat(ARG1, path, ARG3);
@@ -1791,6 +1829,7 @@ static U32 syscall_unlinkat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_symlinkat(CPU* cpu, U32 eipCount) {
+    if (!ARG1 || !ARG3) return -K_EFAULT; // FD-132: a null target or linkpath faults on the host
     BString oldpath = cpu->memory->readString(ARG1);
     BString newpath = cpu->memory->readString(ARG3);
     SYS_LOG1(SYSCALL_FILE, cpu, "symlinkat: oldpath=%x(%s) dirfd=%d newpath=%X(%s)", ARG1, oldpath.c_str(), ARG2, ARG3, newpath.c_str());
@@ -1814,6 +1853,7 @@ static U32 syscall_readlinkat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_fchmodat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString pathname = cpu->memory->readString(ARG2);
     U32 result = cpu->thread->process->fchmodat((FD)ARG1, pathname, ARG3, ARG4);
     SYS_LOG1(SYSCALL_FILE, cpu, "fchmodat dirfd=%X pathname=%X(%s) mode=%X flags=%X result=%d(0x%X)\n", ARG1, ARG2, pathname.c_str(), ARG3, ARG4, result, result);
@@ -1821,6 +1861,7 @@ static U32 syscall_fchmodat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_faccessat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString pathname = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "faccessat dirfd=%X pathname=%X(%s) mode=%X flags=%X", ARG1, ARG2, pathname.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->faccessat(ARG1, pathname, ARG3, ARG4);
@@ -1829,6 +1870,7 @@ static U32 syscall_faccessat(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_faccessat2(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EFAULT; // FD-132: a null path faults on the host even with AT_EMPTY_PATH (no null descriptor form)
     BString pathname = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "faccessat2 dirfd=%X pathname=%X(%s) mode=%X flags=%X", ARG1, ARG2, pathname.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->faccessat(ARG1, pathname, ARG3, ARG4);
@@ -1859,6 +1901,7 @@ static U32 syscall_sync_file_range(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_utimensat(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EINVAL; // FD-132: the host answers -EINVAL for a null path at utimensat in every shape (the kernel special-cases the null filename before any name fetch or descriptor resolution)
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "utimensat dirfd=%d path=%X(%s) times=%X flags=%X", ARG1, ARG2, path.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->utimesat(ARG1, path, ARG3, ARG4, false);
@@ -1888,6 +1931,7 @@ static U32 syscall_timerfd_gettime(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_utimensat_time64(CPU* cpu, U32 eipCount) {
+    if (!ARG2) return -K_EINVAL; // FD-132: the host answers -EINVAL for a null path at utimensat in every shape (the kernel special-cases the null filename before any name fetch or descriptor resolution)
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "utimensat_time64 dirfd=%d path=%X(%s) times=%X flags=%X", ARG1, ARG2, path.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->utimesat(ARG1, path, ARG3, ARG4, true);
@@ -1938,6 +1982,7 @@ static U32 syscall_sendmmsg(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_renameat(CPU* cpu, U32 eipCount) {
+    if (!ARG2 || !ARG4) return -K_EFAULT; // FD-132: a null path faults on the host, on either side
     BString oldpath = cpu->memory->readString(ARG2);
     BString newpath = cpu->memory->readString(ARG4);
     SYS_LOG1(SYSCALL_FILE, cpu, "renameat olddirfd=%d oldpath=%X(%s) newdirfd=%d newpath=%X(%s)", ARG1, ARG2, oldpath.c_str(), ARG3, ARG4, newpath.c_str());
