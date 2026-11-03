@@ -1772,7 +1772,12 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
         kwarn_fmt("KUnixSocketObject::sendmsg unhandled flag=%x", flags);
     }
     BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
-    if (this->outClosed) {
+    // FD-119: a datagram socket's outClosed means only that its
+    // pair peer died (its own shutdown is unimplemented); neither
+    // a connected nor a name-resolved datagram sendmsg answers
+    // for it here -- the no-peer tail holds the connected
+    // accounting, and an addressed send delivers.
+    if (this->outClosed && this->type != K_SOCK_DGRAM) {
         return writePipeClosed(thread, noSignal);
     }
     readMsgHdr(thread, address, &hdr);
@@ -2156,11 +2161,13 @@ U32 KUnixSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32
         if (!dest) {
             return -(S32)err;
         }
-        const bool noSignal = (flags & K_MSG_NOSIGNAL) != 0;
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(dest->lockCond);
-        if (this->outClosed) {
-            return writePipeClosed(thread, noSignal);
-        }
+        // FD-119: no outClosed check on an addressed send. A
+        // datagram socket's outClosed is only ever set by its pair
+        // peer's death (its own shutdown is unimplemented), and the
+        // host delivers an addressed datagram regardless of the
+        // pair link's state; the check answered a live addressed
+        // send with the broken-pipe path after a pair peer closed.
         std::vector<U8> packet;
         packet.reserve(length);
         for (U32 i = 0; i < length; i++) packet.push_back(memory->readb(message + i));

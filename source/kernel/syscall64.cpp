@@ -2545,6 +2545,8 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
         if ((S64)iovcnt < 0 || iovcnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
         if (iovcnt > 0 && iov == 0) return (U64)-K_EFAULT;
     }
+    // FD-118: a seqpacket socket takes the same gather -- one
+    // writev, one record (host-measured).
     // FD-115: on a datagram unix socket the host queues ONE datagram
     // for the whole gather; the per-segment loop below queues one
     // per segment through sys_write64 -> writeNative. Gather into a
@@ -2560,7 +2562,7 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
     if (iovcnt > 0 && cpu->thread && cpu->thread->process) {
         KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
         std::shared_ptr<KUnixSocketObject> unixSock = fdesc ? std::dynamic_pointer_cast<KUnixSocketObject>(fdesc->kobject) : nullptr;
-        if (unixSock && unixSock->type == K_SOCK_DGRAM) {
+        if (unixSock && (unixSock->type == K_SOCK_DGRAM || unixSock->type == K_SOCK_SEQPACKET)) {
             if (!fdesc->canWrite()) {
                 return (U64)-K_EBADF;
             }
