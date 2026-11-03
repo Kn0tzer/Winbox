@@ -11,7 +11,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..',
 
 test('x64 socket messages retain addresses and flags and bound truncated packet copies', () => {
   const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
-  const start = source.indexOf('static U64 sys_guestReadablePrefix64(');
+  const start = source.indexOf('static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {');
   const end = source.indexOf('// mincore(addr', start);
   const dir = mkdtempSync(join(tmpdir(), 'bw-socket64-msg-'));
   try {

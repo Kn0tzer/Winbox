@@ -476,19 +476,7 @@ static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
 // check fails for any part of the range; the single-call write paths
 // use this prefix to answer like the host instead — a short count for
 // a readable prefix, EFAULT when no byte is readable.
-static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {
-    if (!memory) return 0;
-    U64 readable = 0;
-    while (readable < len) {
-        const U64 at = addr + readable;
-        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
-        if (!(flags & K64_PAGE_MAPPED) || !(flags & K64_PAGE_READ)) break;
-        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
-        if (chunk > len - readable) chunk = len - readable;
-        readable += chunk;
-    }
-    return readable;
-}
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len);
 
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (count == 0) return 0;
