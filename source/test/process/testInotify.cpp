@@ -7009,6 +7009,203 @@ void testChmodNullPath64Syscalls() {
     process->close(dirDesc->handle);
 }
 
+// FD-131: an empty path answers -ENOENT at the path calls generally,
+// matching the host. The FD-126 lane fixed chmod/fchmodat at the two
+// 64-bit dispatcher sites (CL-76); the shared resolver still resolves
+// "" to the working-directory node, so every other path call answered
+// as if the directory had been named (open("") opened the directory,
+// stat("") stat'ed it, mkdir("") answered -EEXIST, and so on). This
+// test stages an empty path at the representative 64-bit calls and
+// pins the host's answers, including the deliberate exemptions:
+// the AT_EMPTY_PATH fd forms keep working, and a bad descriptor
+// paired with an empty path keeps the descriptor's own answer where
+// the host resolves the descriptor first (inotify) while the empty
+// answer precedes descriptor resolution where the host checks the
+// path first (statx; the newfstatat bad-fd pin rides the standing
+// unsupported-dirfd route, which already answers -ENOENT).
+void testEmptyPath64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd131XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("FD-131 guest test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    auto createFile = [&](BString path) -> bool {
+        KFileDescriptorPtr desc;
+        if (process->openFile(B("/"), path, K_O_RDWR | K_O_CREAT, desc) != 0 || !desc) return false;
+        process->close(desc->handle);
+        return true;
+    };
+    if (process->mkdir(B("/d")) != 0 || process->mkdir(B("/sac1")) != 0 || process->mkdir(B("/sac2")) != 0 ||
+        !createFile(B("/a.txt")) || !createFile(B("/d/inner")) ||
+        process->symlink(B("a.txt"), B("/ln")) != 0 || process->chdir(B("/")) != 0) {
+        testFail("failed to stage the FD-131 fixture");
+        return;
+    }
+    KFileDescriptorPtr dirDesc, subdirDesc, fileDesc;
+    if (process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc) != 0 || !dirDesc ||
+        process->openFile(B("/"), B("/d"), K_O_RDONLY, subdirDesc) != 0 || !subdirDesc ||
+        process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("failed to open FD-131 fixture descriptors");
+        return;
+    }
+    const U64 dirfd = (U64)(U32)dirDesc->handle;
+    const U64 subdirfd = (U64)(U32)subdirDesc->handle;
+
+    constexpr U64 dataPage = 0x7E000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("FD-131 guest test could not map its fixture page");
+        return;
+    }
+    constexpr U64 atFdcwd = (U64)-100;
+    auto putStr = [&](U64 at, const char* s) {
+        memory->memcpyToGuest(at, s, strlen(s) + 1);
+    };
+    const U64 aTxtAt = dataPage;
+    const U64 emptyAt = dataPage + 0x100;
+    const U64 slashAt = dataPage + 0x180;
+    const U64 tgtAt = dataPage + 0x200;
+    const U64 xAt = dataPage + 0x280;
+    const U64 sac1At = dataPage + 0x300;
+    const U64 sac2At = dataPage + 0x380;
+    const U64 lnAt = dataPage + 0x400;
+    const U64 emptyLinkAt = dataPage + 0x500;
+    const U64 argvAt = dataPage + 0x600;
+    const U64 envpAt = dataPage + 0x680;
+    const U64 bufAt = dataPage + 0x800;
+    const U64 rlBufAt = dataPage + 0xC00;
+    putStr(aTxtAt, "/a.txt");
+    putStr(emptyAt, "");
+    putStr(slashAt, "/");
+    putStr(tgtAt, "tgt");
+    putStr(xAt, "x");
+    putStr(sac1At, "/sac1");
+    putStr(sac2At, "/sac2");
+    putStr(lnAt, "/ln");
+    putStr(emptyLinkAt, "emptylink");
+    {
+        U64 argv[2] = {tgtAt, 0};
+        U64 envp[1] = {0};
+        memory->memcpyToGuest(argvAt, argv, sizeof(argv));
+        memory->memcpyToGuest(envpAt, envp, sizeof(envp));
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5 = 0, U64 a6 = 0) -> S64 {
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        cpu.reg[X64_RAX].setU64(nr);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto expectEq = [&](const char* what, S64 got, S64 want) {
+        if (got != want) {
+            testFail("%s returned %lld (expected %lld)", what, (long long)got, (long long)want);
+        }
+    };
+    auto expectFd = [&](const char* what, S64 got) {
+        if (got < 0) {
+            testFail("%s returned %lld (expected a descriptor)", what, (long long)got);
+        } else {
+            invoke(3, (U64)got, 0, 0, 0); // close
+        }
+    };
+
+    // Controls: real paths keep working, the FD-126 answers hold, and
+    // the AT_EMPTY_PATH fd forms keep operating on the descriptor.
+    expectFd("open(/a.txt)", invoke(2, aTxtAt, 0, 0, 0));
+    expectEq("stat(/a.txt)", invoke(4, aTxtAt, bufAt, 0, 0), 0);
+    expectEq("chmod empty path (FD-126 control)", invoke(90, emptyAt, 0644, 0, 0), -K_ENOENT);
+    expectEq("fchmodat empty path (FD-126 control)", invoke(268, dirfd, emptyAt, 0644, 0), -K_ENOENT);
+    expectEq("readlink(/ln)", invoke(89, lnAt, rlBufAt, 256, 0), 5);
+    expectEq("newfstatat AT_EMPTY_PATH fd form", invoke(262, dirfd, emptyAt, bufAt, 0x1000), 0);
+    expectEq("statx AT_EMPTY_PATH fd form", invoke(332, subdirfd, emptyAt, 0x1000, 0x7ff, bufAt), 0);
+    expectEq("faccessat2 AT_EMPTY_PATH cwd form", invoke(439, atFdcwd, emptyAt, 0, 0x1000), 0);
+    expectEq("utimensat AT_EMPTY_PATH stub form", invoke(280, atFdcwd, emptyAt, 0, 0x1000), 0);
+    expectEq("inotify_add_watch bad fd empty path", invoke(254, 4096, emptyAt, 0xFFF, 0), -K_EBADF);
+
+    // The filed shapes: an empty path answers -ENOENT.
+    expectEq("open empty", invoke(2, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("open empty O_CREAT", invoke(2, emptyAt, 65, 0, 0), -K_ENOENT);
+    expectEq("openat cwd empty", invoke(257, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    // openat against a real dirfd already answers -ENOENT on the base
+    // through the unsupported-relative-dirfd route; pin that it stays.
+    expectEq("openat dirfd empty (standing route)", invoke(257, subdirfd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("stat empty", invoke(4, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq("lstat empty", invoke(6, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq("newfstatat cwd empty", invoke(262, atFdcwd, emptyAt, bufAt, 0), -K_ENOENT);
+    expectEq("newfstatat badfd empty (standing route)", invoke(262, 4096, emptyAt, bufAt, 0), -K_ENOENT);
+    expectEq("statx cwd empty", invoke(332, atFdcwd, emptyAt, 0, 0x7ff, bufAt), -K_ENOENT);
+    expectEq("statx badfd empty (path precedes fd)", invoke(332, 4096, emptyAt, 0, 0x7ff, bufAt), -K_ENOENT);
+    expectEq("access empty", invoke(21, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("faccessat empty", invoke(269, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("faccessat2 empty no flag", invoke(439, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("mkdir empty", invoke(83, emptyAt, 0755, 0, 0), -K_ENOENT);
+    expectEq("mkdirat empty", invoke(258, atFdcwd, emptyAt, 0755, 0), -K_ENOENT);
+    expectEq("rename to empty", invoke(82, aTxtAt, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("link from empty", invoke(86, emptyAt, xAt, 0, 0), -K_ENOENT);
+    expectEq("link to empty", invoke(86, aTxtAt, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("linkat from empty", invoke(265, subdirfd, emptyAt, atFdcwd, xAt, 0), -K_ENOENT);
+    expectEq("symlink empty linkpath", invoke(88, tgtAt, emptyAt, 0, 0), -K_ENOENT);
+    {
+        S64 r = invoke(88, emptyAt, emptyLinkAt, 0, 0);
+        expectEq("symlink empty target", r, -K_ENOENT);
+        process->unlinkFile(B("/emptylink")); // the base creates it; keep the fixture clean either way
+    }
+    expectEq("symlinkat empty linkpath", invoke(266, tgtAt, subdirfd, emptyAt, 0), -K_ENOENT);
+    expectEq("readlink empty", invoke(89, emptyAt, rlBufAt, 256, 0), -K_ENOENT);
+    expectEq("readlinkat empty", invoke(267, atFdcwd, emptyAt, rlBufAt, 256), -K_ENOENT);
+    expectEq("chdir empty", invoke(80, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("execve empty", invoke(59, emptyAt, argvAt, envpAt, 0), -K_ENOENT);
+    expectEq("utimensat empty no flag", invoke(280, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("statfs empty", invoke(137, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    {
+        S64 ifd = invoke(294, 0, 0, 0, 0);
+        if (ifd < 0) {
+            testFail("inotify_init1 returned %lld", (long long)ifd);
+        } else {
+            expectEq("inotify_add_watch empty", invoke(254, (U64)ifd, emptyAt, 0xFFF, 0), -K_ENOENT);
+            S64 wd = invoke(254, (U64)ifd, aTxtAt, 0xFFF, 0);
+            if (wd < 1) testFail("inotify_add_watch(/a.txt) returned %lld (expected a watch descriptor)", (long long)wd);
+            invoke(3, (U64)ifd, 0, 0, 0);
+        }
+    }
+
+    // Destructive shapes last, staged against sacrificial directories:
+    // on the base an empty unlink/rename resolves to the working
+    // directory itself, so the working directory is a throwaway one.
+    expectEq("chdir /sac1", invoke(80, sac1At, 0, 0, 0), 0);
+    expectEq("unlink empty", invoke(87, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("unlinkat empty", invoke(263, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("chdir / (restore)", invoke(80, slashAt, 0, 0, 0), 0);
+    expectEq("chdir /sac2", invoke(80, sac2At, 0, 0, 0), 0);
+    expectEq("rename from empty", invoke(82, emptyAt, xAt, 0, 0), -K_ENOENT);
+    expectEq("chdir / (restore 2)", invoke(80, slashAt, 0, 0, 0), 0);
+
+    process->close(fileDesc->handle);
+    process->close(subdirDesc->handle);
+    process->close(dirDesc->handle);
+}
+
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
@@ -7643,6 +7840,139 @@ void testWritevPartialError() {
 // Native-suite variant: same event contract driven through the
 // width-agnostic KProcess API (the x64 test above drives the syscall
 // layer; the KProcess methods are what both syscall layers forward to).
+// FD-131: the KProcess-level half of the empty-path answers. The
+// guest test (testEmptyPath64Syscalls) covers the 64-bit dispatcher
+// surface; this one pins the process-API methods both dispatchers
+// funnel into, including the calls only the 32-bit side reaches this
+// way (rmdir, utimes, the *at family through KProcess) and the
+// ordering the host measures: the empty answer precedes descriptor
+// resolution at fchmodat/mkdirat/statx/fstatat64/renameat, while
+// inotify_add_watch and readlinkat resolve the descriptor first and
+// keep answering -EBADF for a bad descriptor with an empty path.
+// The AT_EMPTY_PATH fd forms keep working throughout.
+void testEmptyPathProcessApi() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    char dirTemplate[] = "/tmp/bw64fd131apiXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for FD-131 process-api test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    auto createFile = [&](BString path) -> bool {
+        KFileDescriptorPtr desc;
+        if (process->openFile(B("/"), path, K_O_RDWR | K_O_CREAT, desc) != 0 || !desc) return false;
+        process->close(desc->handle);
+        return true;
+    };
+    if (process->mkdir(B("/d")) != 0 || process->mkdir(B("/sac")) != 0 ||
+        !createFile(B("/a.txt")) || !createFile(B("/d/inner")) ||
+        process->symlink(B("a.txt"), B("/ln")) != 0 || process->chdir(B("/")) != 0) {
+        testFail("failed to stage the FD-131 API fixture");
+        return;
+    }
+    KFileDescriptorPtr dirDesc;
+    if (process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc) != 0 || !dirDesc) {
+        testFail("failed to open the FD-131 API fixture directory");
+        return;
+    }
+    const FD dirfd = dirDesc->handle;
+    constexpr U32 bufAt = TEST_HEAP_ADDRESS + 0x600;
+    constexpr FD atFdcwd = (FD)-100;
+
+    auto expectEq = [&](const char* what, S32 got, S32 want) {
+        if (got != want) {
+            testFail("%s returned %d (expected %d)", what, got, want);
+        }
+    };
+    auto expectPath = [&](const char* what, U32 got) {
+        expectEq(what, (S32)got, -K_ENOENT);
+    };
+
+    // Controls: absolute paths keep working.
+    expectEq("chdir(/) control", (S32)process->chdir(B("/")), 0);
+    expectEq("stat64(/a.txt) control", (S32)process->stat64(B("/a.txt"), bufAt), 0);
+    expectEq("access(/a.txt) control", (S32)process->access(B("/a.txt"), 0), 0);
+
+    // The filed shapes at the process API.
+    expectPath("open empty", process->open(B(""), K_O_RDONLY));
+    expectPath("openat cwd empty", process->openat(atFdcwd, B(""), K_O_RDONLY));
+    expectPath("access empty", process->access(B(""), 0));
+    expectPath("chdir empty", process->chdir(B("")));
+    expectPath("chmod empty", process->chmod(B(""), 0644));
+    expectPath("fchmodat cwd empty", process->fchmodat(atFdcwd, B(""), 0644, 0));
+    expectPath("fchmodat badfd empty (path precedes fd)", process->fchmodat((FD)4096, B(""), 0644, 0));
+    expectPath("stat64 empty", process->stat64(B(""), bufAt));
+    expectPath("lstat64 empty", process->lstat64(B(""), bufAt));
+    expectPath("fstatat64 cwd empty", process->fstatat64(atFdcwd, B(""), bufAt, 0));
+    expectPath("fstatat64 badfd empty (path precedes fd)", process->fstatat64((FD)4096, B(""), bufAt, 0));
+    expectEq("fstatat64 AT_EMPTY_PATH fd form", (S32)process->fstatat64(dirfd, B(""), bufAt, 0x1000), 0);
+    expectPath("statx cwd empty", process->statx(atFdcwd, B(""), 0, 0x7ff, bufAt));
+    expectPath("statx badfd empty (path precedes fd)", process->statx((FD)4096, B(""), 0, 0x7ff, bufAt));
+    expectEq("statx AT_EMPTY_PATH fd form", (S32)process->statx(dirfd, B(""), 0x1000, 0x7ff, bufAt), 0);
+    expectPath("faccessat cwd empty", process->faccessat((U32)-100, B(""), 0, 0));
+    expectEq("faccessat AT_EMPTY_PATH fd form", (S32)process->faccessat((U32)dirfd, B(""), 0, 0x1000), 0);
+    expectPath("rmdir empty", process->rmdir(B("")));
+    expectPath("mkdir empty", process->mkdir(B("")));
+    expectPath("mkdirat cwd empty", process->mkdirat(atFdcwd, B(""), 0755));
+    expectPath("mkdirat badfd empty (path precedes fd)", process->mkdirat((FD)4096, B(""), 0755));
+    expectPath("rename from empty", process->rename(B(""), B("x")));
+    expectPath("rename to empty", process->rename(B("/a.txt"), B("")));
+    expectPath("renameat from empty", process->renameat(atFdcwd, B(""), atFdcwd, B("x")));
+    expectPath("renameat to empty bad newdirfd (path precedes fd)", process->renameat(atFdcwd, B("a.txt"), (FD)4096, B("")));
+    expectPath("link from empty", process->link(B(""), B("x")));
+    expectPath("link to empty", process->link(B("/a.txt"), B("")));
+    expectPath("symlink empty linkpath", process->symlink(B("tgt"), B("")));
+    {
+        U32 r = process->symlink(B(""), B("/emptylink"));
+        expectPath("symlink empty target", r);
+        if (r == 0) process->unlinkFile(B("/emptylink")); // the base creates it; keep the fixture clean
+    }
+    expectPath("readlink empty", process->readlink(B(""), bufAt, 256));
+    expectEq("readlinkat badfd empty (fd precedes path)", (S32)process->readlinkat((FD)4096, B(""), bufAt, 256), -K_EBADF);
+    {
+        std::vector<BString> args{B("tgt")};
+        std::vector<BString> envs;
+        expectPath("execve empty", process->execve(context.thread, B(""), args, envs));
+    }
+    expectPath("utimes empty", process->utimes(B(""), 0));
+    expectPath("utimesat cwd empty", process->utimesat(atFdcwd, B(""), 0, 0, false));
+    expectEq("utimesat AT_EMPTY_PATH fd form", (S32)process->utimesat(dirfd, B(""), 0, 0x1000, false), 0);
+    expectPath("statfs empty", process->statfs(B(""), bufAt));
+    expectPath("statfs64 empty", process->statfs64(B(""), bufAt));
+    {
+        S32 ifd = (S32)process->inotify_init1(0);
+        if (ifd < 0) {
+            testFail("inotify_init1 returned %d", ifd);
+        } else {
+            expectPath("inotify_add_watch empty", process->inotify_add_watch(ifd, B(""), 0xFFF));
+            expectEq("inotify_add_watch badfd empty (fd precedes path)", (S32)process->inotify_add_watch((FD)4096, B(""), 0xFFF), -K_EBADF);
+            U32 wd = process->inotify_add_watch(ifd, B("/a.txt"), 0xFFF);
+            if ((S32)wd < 1) testFail("inotify_add_watch(/a.txt) returned %d (expected a watch descriptor)", (S32)wd);
+            process->close(ifd);
+        }
+    }
+
+    // Destructive shapes last, against a sacrificial working
+    // directory: on the base an empty unlink resolves to the working
+    // directory node itself.
+    expectEq("chdir /sac", (S32)process->chdir(B("/sac")), 0);
+    expectPath("unlinkFile empty", process->unlinkFile(B("")));
+    expectPath("unlinkat cwd empty", process->unlinkat(atFdcwd, B(""), 0));
+    expectEq("chdir / (restore)", (S32)process->chdir(B("/")), 0);
+
+    process->close(dirDesc->handle);
+}
+
 void testInotifyEventsProcessApi() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;

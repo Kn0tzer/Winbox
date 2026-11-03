@@ -114,6 +114,7 @@ void testAsyncSigio();
 void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
+void testEmptyPathProcessApi();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
@@ -164,6 +165,7 @@ void testDatagramPeerCloseRefusal64Syscalls();
 void testSocketStateAnswers64Syscalls();
 void testPeerClosedStreamSendmsg64Syscalls();
 void testChmodNullPath64Syscalls();
+void testEmptyPath64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -252,6 +254,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testSocketStateAnswers64Syscalls, "Test x64 socket state answers: drained datagram reads, unconnected receives, non-listening connect, connected stream addressed sends"},
     {testPeerClosedStreamSendmsg64Syscalls, "Test x64 peer-closed stream sendmsg answers -EPIPE; never-connected stays -ENOTCONN"},
     {testChmodNullPath64Syscalls, "Test x64 chmod/fchmodat null path answers -EFAULT; empty path stays -ENOENT"},
+    {testEmptyPath64Syscalls, "Test x64 empty path answers -ENOENT at the path calls; AT_EMPTY_PATH fd forms keep working"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -961,6 +964,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
+    {testEmptyPathProcessApi, "Test empty path answers -ENOENT through the KProcess API; AT_EMPTY_PATH fd forms keep working"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
