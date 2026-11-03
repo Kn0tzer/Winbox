@@ -971,8 +971,9 @@ do not close the entry until they land.
   `docs/reports/fd85-audio-leg-20261102.md`; evidence:
   `test-results/fd85/`.
 - **FD-86 — No Arial family on the 64-bit stack:
-  family-name lookups for Arial find nothing.**
-  *(Low–Medium — Chromium-class text fallback:
+  family-name lookups for Arial find nothing.
+  FIXED 2026-11-03 — see CL-55.** *(Was
+  Low–Medium — Chromium-class text fallback:
   Blink's Windows last-resort list includes Arial,
   not DejaVu Sans. Surfaced 2026-11-02 by the FD-65
   lane's win32-fonts probe on x64.)* The fixture
@@ -998,6 +999,22 @@ do not close the entry until they land.
   `test-results/fd65/fonts-x64-v2-console.log`
   (fixed build), `test-results/fd65/fd65-fontstepsx86-console.log`
   (the 32-bit enumeration, Arial present).
+  **Closed 2026-11-03 — see CL-55.** The mirror fix
+  the entry specified, with one strengthening: the
+  replacement is baked into the canonical
+  `prefix64.zip` by the new staging step
+  `tools/rootfs64/stage-font-alias64.py` (the 32-bit
+  edit itself, imported, so the stacks cannot drift),
+  not added as an export-time step, so the re-pinned
+  retained archive (`runtime-assets-20261103`)
+  reproduces it from a clean bootstrap. The checker
+  carries the matching drift check, and the shipped
+  win32-fonts test — extended to x64, assertion
+  unchanged — passes on both architectures: x64 reads
+  `ARIAL=1 METRICS=1 RESULT 0`. The Gecko stage is
+  unregressed (long-window evidence run: `MSHTML:
+  RESULT 0`, zero abort lines; see the record for the
+  shipped test's two contention-bound runs).
 
 - **FD-87 — The common-dependencies audio capture
   watched a path guest audio no longer uses.**
@@ -4379,6 +4396,7 @@ is behavioural, is re-proven there.
 | `lane-fd92-93` | FD-92: the 32-bit dispatcher's readv (145) wired over a new KObject/KProcess readv — host-order validation (descriptor, mode, iovcnt range, iovec pointer) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-93: the write family answers EBADF on a descriptor that cannot be written, in the host's validation order, at every site the entry names (KProcess::write/writev/pwrite64 — the last gaining the mode check whose absence let the backing layer swallow the host's EBADF into a silent 0 — sys_write64's descriptor+mode gate ahead of its zero-count return, sys_writev64's validation block, sys_pwrite64 reordered offset-first, the 32-bit dispatcher's pwrite64 offset check); FD-94 (pwritev/pwritev2 undispatched), FD-95 (read family's bad-descriptor/negative-offset order) and FD-96 (32-bit writev's partial-error return shape) filed | New tests testReadv32Syscall (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS), testWriteFamilyWrongMode (both suites) and testWriteFamily64Syscalls (x64 suite), all RED on the base for the recorded reasons and GREEN with the fix; host-kernel reference programs measured first (write-family matrix incl. zero counts and the validation orderings; the positioned family's offset-before-descriptor order across pread/pwrite/preadv/pwritev); full native suites serial: main 670/670 and x64 71/71, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `bcc8a852`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd92-fd93-readv-write-family-20261102.md`; evidence `test-results/fd92-93/` |
 | `lane-fd98` | FD-98: the 32-bit dispatcher's preadv (333) and preadv2 (377) wired over a new KProcess::preadv walking pread64 — host-order validation measured fresh (offset EINVAL ahead of the descriptor check, except preadv2's -1 file-position mode; wrong-mode EBADF ahead of the iovcnt range check; the iovec array EFAULT ahead of the flags check, which runs last with the measured read mask 0x3f) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-99 (64-bit preadv2's -1 refusal and 0x1f mask) and FD-100 (the family's flags-check order) filed | New test testPreadv32Dispatch (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS, GREEN with the fix); host-kernel reference programs measured first (preadv/preadv2 validation, position-mode, flags-mask and IN_ACCESS matrices, plus the pwritev2 order addendum); full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha 86dfb5830, wasm 5c0d85fc, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd98-preadv32-20261102.md`; evidence `test-results/fd98/` |
 | `lane-fd99-100` | FD-99: sys_preadv64 takes preadv2's offset -1 as the file-position mode and the full defined read flag mask 0x3f, with the host's validation order throughout (offset validity ahead of the descriptor check; the iovec array check now a range check) -- FD-95 interaction recorded in CL-53. FD-100: the v2 flags check runs last, below the iovcnt range and iovec array checks, in sys_preadv64, sys_pwritev64 and KProcess::pwritev; the wrong-mode + range/array combinations characterized for FD-84's/FD-93's composition | Extended testPreadv64Syscalls sections 10-11 and testPwritev64Syscalls section 11 (x64 suite) and testPwritev32Dispatch section 2b (main suite) -- RED on the base with the filed signatures, GREEN with the fix; full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha fad85c19c, wasm 52da72d5, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd99-fd100-preadv2-family-order-20261102.md`; evidence `test-results/fd99-100/` |
+| `lane-fd86` | FD-86: no Arial family on the 64-bit stack — prefix64 carried no Fonts\Replacements entry, the mechanism the 32-bit stack serves Arial through; canonical-set staging step `stage-font-alias64.py` (the 32-bit edit imported, so the stacks cannot drift) bakes `"Arial"="DejaVu Sans"` into prefix64, checker drift coverage added, win32-fonts suite test extended to x64, payload re-pinned as `runtime-assets-20261103` | win32-fonts PASS both architectures (x64 `ARIAL=0` — `ARIAL=1 METRICS=1 RESULT 0`; x86 unregressed); checker RED on this gap alone pre-fix, green after; bootstrap --check 0 failures; clean --local bootstrap from the new archive reproduces the replacement; Gecko stage `MSHTML: RESULT 0`, zero abort lines (long-window evidence run); JS 348/0; wasm unchanged. Record: `docs/reports/fd86-arial-prefix64-20261103.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -6881,3 +6899,45 @@ its lane and is not a defect, for the stated reason:
   -EOPNOTSUPP) and GREEN on the fix; shared
   suite, browser and JS figures as in CL-53.
   Record and evidence as in CL-53.
+- **CL-55 — The 64-bit stack served no Arial family:
+  prefix64 carried no font replacement entry, the
+  mechanism the 32-bit stack serves Arial through
+  (FD-86).**
+  *(Filed provisionally as CL-55 on lane-fd86,
+  2026-11-03 — a sweep of the lane registers that
+  day showed CL-50–CL-54 claimed, CL-54 highest;
+  the composing merge verifies the number by
+  audit.)*
+  Fixed on branch `lane-fd86` in `a3349c4cb`. The
+  new canonical-set staging step
+  `tools/rootfs64/stage-font-alias64.py`, wired into
+  `apply-runtime-poststeps.sh` after
+  `stage-fonts64.sh`, writes `"Arial"="DejaVu Sans"`
+  into prefix64's `user.reg` under
+  `[Software\Wine\Fonts\Replacements]`, importing the
+  edit (`configure_replacements`) from
+  `tools/browser/stage-wine32-fonts.py` so the two
+  stacks cannot drift in shape; it refuses to stage
+  an alias whose target face is absent from
+  `glibc-rootfs64.zip`. The completeness checker
+  gains the matching drift check, and the shipped
+  win32-fonts suite test now runs both architectures
+  (it ran x86 only, which is why the gap was
+  invisible), its assertion unchanged. The payload
+  was re-pinned as release `runtime-assets-20261103`
+  (only `prefix64.zip` changed); a clean bootstrap
+  from the new retained archive reproduces the
+  replacement, and `bootstrap.py --check` passes
+  (0 failures, 1 standing skip). Proof: the checker
+  failed on this gap alone before the fix; the
+  extended win32-fonts test reproduced the filed
+  x64 signature (`ARIAL=0 METRICS=0 RESULT 4`, x86
+  leg green) and passes on the fixed build on both
+  architectures; the Gecko stage prints `MSHTML:
+  RESULT 0` with zero abort lines (long-window
+  evidence run — the shipped test's 180 s stage
+  window was contention-bound on the shared box;
+  see the record); JS unit 348/0; the wasm is
+  byte-identical to the base build. Record:
+  `docs/reports/fd86-arial-prefix64-20261103.md`;
+  evidence: `test-results/fd86/`.
