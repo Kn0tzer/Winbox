@@ -6789,10 +6789,15 @@ its lane and is not a defect, for the stated reason:
   takes its file-position offset and the full
   defined read flag mask (FD-99).** *(Provisional
   number, filed on lane-fd99-100, 2026-11-02 —
-  CL-52 was taken by lane-fd101 (FD-101) while
-  this lane ran, recorded here so the merge
-  lane's audit sees it; the audit settles the
-  final number.)*
+  CL-52 is left unused: a sibling lane's
+  report claimed it for FD-101, but that
+  claim could not be verified on disk (no
+  lane register carries a CL-52 closure, and
+  the report's cited commits do not exist in
+  the repository — checked 2026-11-02);
+  CL-53/CL-54 were verified free on every
+  lane register. The audit settles the final
+  number.)*
   Fixed on branch `lane-fd99-100`, commits
   `9e1b617c7` (tests) and `fad85c19c` (fix).
   sys_preadv64 refused preadv2's offset -1
