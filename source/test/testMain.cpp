@@ -147,6 +147,10 @@ void testRecvmsgBadBuffer64Syscalls();
 void testWriteBadBuffer64Syscalls();
 void testWriteFamily64Syscalls();
 void testPwritev64Syscalls();
+void testRecvfromBadBuffer64Syscalls();
+void testSendmsgControlChain64Syscalls();
+void testRecvmsgNameCopyback64Syscalls();
+void testSendtoDatagram64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -218,6 +222,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
     {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
+    {testRecvfromBadBuffer64Syscalls, "Test x64 recvfrom to unwritable guest buffers"},
+    {testSendmsgControlChain64Syscalls, "Test x64 sendmsg control-chain validation"},
+    {testRecvmsgNameCopyback64Syscalls, "Test x64 recvmsg source-name copyback to unwritable guest buffers"},
+    {testSendtoDatagram64Syscalls, "Test x64 sendto datagram delivery on a connected socketpair"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

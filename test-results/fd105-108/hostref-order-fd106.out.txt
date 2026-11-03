@@ -1,0 +1,3 @@
+iovlen1025 + control PROT_NONE               ret=-1 errno=90(Message too long)
+badfd in hdr1 + len8 hdr2                    ret=-1 errno=9(Bad file descriptor)
+good hdr1 + badfd in hdr2                    ret=-1 errno=9(Bad file descriptor)

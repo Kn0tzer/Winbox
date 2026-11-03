@@ -1,0 +1,5 @@
+ret=-1 errno=14(Bad address)
+first16: 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70 
+want16:  61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70 
+bytes 40..46: ee ee ee ee ee ee  (want 6f 70 71 72 73 74)
+stream ret=-1 errno=14 first16match=0

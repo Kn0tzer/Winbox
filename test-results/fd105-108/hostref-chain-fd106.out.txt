@@ -1,0 +1,16 @@
+K1 rights(1) room=CMSG_SPACE+8 slack8        ret=16 errno=0(-) fds=1
+K2 rights(1) room=20+16 slack16zero          ret=16 errno=0(-) fds=1
+K3 rights(1)+rights(1)                       ret=16 errno=0(-) fds=2
+K4 rights(1)+creds(28)                       ret=16 errno=0(-) fds=1
+K5 rights(1)+SOL_SOCKET type999              ret=-1 errno=22(Invalid argument) fds=-2
+K6 creds(28) only                            ret=16 errno=0(-) fds=0
+K7 level=IPPROTO_IP len16 only               ret=16 errno=0(-) fds=0
+K8 rights(1)+hdr len8                        ret=-1 errno=22(Invalid argument) fds=-2
+K9 rights(1)+hdr len4096>room                ret=-1 errno=22(Invalid argument) fds=-2
+K10 rights(1)+level IP len16                 ret=16 errno=0(-) fds=1
+K11 rights(200)+rights(100)=300              ret=-1 errno=22(Invalid argument) fds=-2
+K11b rights(200)+rights(53)=253              ret=16 errno=0(-) fds=253
+K14 rights(1)+rights len18 (0 fds)           ret=16 errno=0(-) fds=1
+K13 creds len16 (short)                      ret=-1 errno=22(Invalid argument) fds=-2
+K16 rights(0)+rights(1)                      ret=16 errno=0(-) fds=1
+K3d rights(1)+rights(1) DGRAM                ret=16 errno=0(-) fds=2
