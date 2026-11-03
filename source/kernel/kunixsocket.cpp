@@ -1799,6 +1799,12 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
             return -K_ENOTCONN;
         }
         if (this->type == K_SOCK_STREAM) {
+            // FD-124: the same distinction as seqpacket above,
+            // host-measured -- a peer that closed answers -EPIPE;
+            // a socket that was never connected answers -ENOTCONN.
+            if (this->outClosed) {
+                return -K_EPIPE;
+            }
             return -K_ENOTCONN;
         }
         // A socket of any other type with neither a connection nor
