@@ -53,6 +53,14 @@
 //   33 KInotify::sweepAll: one instance swept
 //   34 KInotify::sweep: before the instance condition lock
 //   35 KInotify::sweep: instance condition lock acquired
+//   41 allocFileDescriptor: after the lock; pid field carries the low
+//      bits of the fd-table mutex address, tid field the process id
+//   37 getNextFileDescriptorHandle: entry (same address encoding)
+//   38 getNextFileDescriptorHandle: its lock acquired
+//   39 getNextFileDescriptorHandle: scan progress (pid field = index)
+//   40 getNextFileDescriptorHandle: about to return (pid field = handle)
+//   42 ksocketpairFds: after the lock; pid field carries the low bits
+//      of the fd-table mutex address it holds, tid field the pid
 
 bool bwStepDiagEnabled();
 void bwStepNote(unsigned int step, unsigned int pid, unsigned int tid);

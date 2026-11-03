@@ -741,13 +741,29 @@ static void setupThreadStack(KThread* thread, CPU* cpu, BString programName, con
 }
 
 U32 KProcess::getNextFileDescriptorHandle(int after) {
+    const bool getNextDiag = bwStepDiagEnabled();
+    if (getNextDiag) {
+        bwStepNote(37, (U32)((unsigned long)&fdsMutex() >> 4), this->id);
+    }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
+    if (getNextDiag) {
+        bwStepNote(38, 0, this->id);
+    }
     U32 i=after;
 
     for (;i< MAX_NUMBER_OF_FILES;i++) {
+        if (getNextDiag && (i & 0x1FFF) == 0) {
+            bwStepNote(39, i, this->id);
+        }
         if (!this->fds[i]) {
+            if (getNextDiag) {
+                bwStepNote(40, i, this->id);
+            }
             return i;
         }
+    }
+    if (getNextDiag) {
+        bwStepNote(40, MAX_NUMBER_OF_FILES, this->id);
     }
     // FD-05: a full table (or a minimum at/past the ceiling) is a
     // normal guest-visible condition, not an invariant violation:
@@ -770,6 +786,7 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
     if (allocDiag) {
         bwStepNote(21, this->id, allocDiagTid);
+        bwStepNote(41, (U32)((unsigned long)&fdsMutex() >> 4), this->id);
     }
 
     if (handle<0) {

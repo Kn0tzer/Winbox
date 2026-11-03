@@ -496,6 +496,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
         bwStepNote(4, diagPid, diagTid);
         klog_fmt("BW64-DIAG pair locked pid=%u tid=%u", diagPid, diagTid);
         bwStepNote(5, diagPid, diagTid);
+        bwStepNote(42, (U32)((unsigned long)&thread->process->fdsMutex() >> 4), diagPid);
     } else {
         lock.lock();
     }
