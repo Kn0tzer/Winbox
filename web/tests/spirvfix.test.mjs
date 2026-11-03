@@ -84,6 +84,16 @@ const EXPECTED = {
   'fd70-aligned-literal-negative.spv': [],
   'fd70-aligned-literal-sweep.spv': ["descriptor-array-specialize"],
   'fd70-aligned-literal-twin.spv': ["descriptor-array-specialize"],
+  'fd78-prune-constant.spv': ["prune-dead-storage-image-types"],
+  'fd78-prune-function.spv': ["prune-dead-storage-image-types"],
+  'fd88-g_rt_push.spv': ["strip-dead-descriptors", "descriptor-array-specialize", "strip-stray-sampled-image-array-dynamic-indexing"],
+  'fd88-h_rt_data.spv': ["descriptor-array-specialize"],
+  'fd88-i_fx_data.spv': ["descriptor-array-specialize"],
+  'fd88-j_fx_const.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
+  'fd88-k_rt_const.spv': ["strip-dead-descriptors", "descriptor-array-specialize", "strip-stray-sampled-image-array-dynamic-indexing"],
+  'fd88-l_rt_data_nocap29.spv': ["descriptor-array-specialize"],
+  'fd88-m_fx_push.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
+  'fd88-n_rt_push_nocap29.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
   'godot-cs-21fc48e37911e9a5.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
   'godot-cs-40b0cb95dde9567e.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
   'godot-cs-9347f1b2426929e0.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
@@ -153,6 +163,14 @@ const REFUSED = {
   'fd70-aligned-literal-negative.spv': /InvalidOperandCount\(Load, 6\)/,
   'fd70-aligned-literal-sweep.spv': /InvalidOperandCount\(Load, 6\)/,
   'fd70-aligned-literal-twin.spv': /InvalidOperandCount\(Load, 6\)/,
+  // FD-88 corpus (batch-3 re-baseline): these three genuinely use
+  // sampled-image-array dynamic indexing -- the capability is
+  // admitted at module creation and stays as a passenger, and the
+  // translator refuses it (spirvfix-fd87.test.mjs pins the same
+  // refusal); the rest of the fd88 set converts.
+  'fd88-h_rt_data.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
+  'fd88-i_fx_data.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
+  'fd88-m_fx_push.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
@@ -187,7 +205,7 @@ test('every corpus module converts through toWGSL(spirv) with the pre-pass', asy
     const wgsl = await toWGSL('spirv', bytesOf(f), stageOf(f));
     assert.ok(typeof wgsl === 'string' && wgsl.length > 0, `${f}: empty WGSL`);
   }
-  assert.deepEqual([...seen].sort(), ["descriptor-array-specialize", "flat-integer-varyings", "fold-spec-constants", "fragment-layer-to-zero", "lower-mid-shader-discard", "prune-specialized-aliases", "replace-draw-parameters", "root-descriptor-bda", "specialized-binding-split", "split-combined-sampler", "storage-texel-buffer-to-2d", "strip-dead-descriptors", "strip-dead-undefs", "strip-draw-parameters", "strip-float-controls", "strip-point-builtins", "strip-unused-physical-storage-buffer", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "texel-buffer-to-2d", "texel-pointer-to-storage-buffer"]);
+  assert.deepEqual([...seen].sort(), ["descriptor-array-specialize", "flat-integer-varyings", "fold-spec-constants", "fragment-layer-to-zero", "lower-mid-shader-discard", "prune-dead-storage-image-types", "prune-specialized-aliases", "replace-draw-parameters", "root-descriptor-bda", "specialized-binding-split", "split-combined-sampler", "storage-texel-buffer-to-2d", "strip-dead-descriptors", "strip-dead-undefs", "strip-draw-parameters", "strip-float-controls", "strip-point-builtins", "strip-stray-sampled-image-array-dynamic-indexing", "strip-unused-physical-storage-buffer", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "texel-buffer-to-2d", "texel-pointer-to-storage-buffer"]);
 });
 
 test('pre-pass is idempotent; clean modules pass through byte-identical', () => {
