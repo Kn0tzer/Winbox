@@ -4999,6 +4999,8 @@ is behavioural, is re-proven there.
 | `lane-fd88` | FD-88 NARROWED to its proven blocker (no code change): the class is re-gated from 'translation stack' to the serving browser — the vendored translator serves the class exactly, and the project's Chromium (145) cannot populate an arrayed texture binding at any API surface; both mirrors' by-name refusals stay as the correct fail-closed behaviour, with the in-project closing terms specified for when the browser link lands. FD-92 filed (the fixup's output for the captured module is not spirv-val clean — synthesized pointer types spliced ahead of OpTypeBool) | Minimal fixtures in the captured module's own form (committed as `testdata/spirv/fd88-*`): a translator matrix over eight array/index/capability variants proves the cap-29 DECLARATION is the only translator tripwire, and the data-dependent runtime-array form translates with its index expression preserved. Captured module: declaration stripped + the FD-92 ordering repaired → the translator accepts the whole type/global section; its next refusal is an OpIAddCarry that cone analysis proves sits outside all seven array chains. Browser probes (probe-slot, the project's Chromium): sized binding-array modules compile; layout counts are accepted but not honoured ('only provides 1 elements'); the createBindGroup array resource throws at WebIDL; duplicate entries are rejected. Record: `docs/reports/fd88-binding-array-blocker-20261102.md`; evidence `test-results/fd88/` |
 | `lane-fd105-108` | FD-105: the dispatcher's recvfrom copyback scatters page by page with a writability check per piece, answering -EFAULT at the first unwritable piece with the prefix delivered; FD-106: sys_sendmsg64 imports the whole control area before validating, then walks the whole chain (malformed lengths -EINVAL, rights accumulating under the cumulative 253 cap with descriptor values resolved in walk order, credentials only at cmsg_len exactly 28, other SOL_SOCKET types -EINVAL, other levels skipped) and translates every rights header; FD-107: sys_recvmsg64's name copyback is deferred past the control translation and answers -EFAULT for an unwritable target, with the data and passed descriptors delivered and no msghdr field writebacks; FD-108: KUnixSocketObject::sendto queues a real datagram on a connected datagram pair, mirroring sendmsg's queueing tail; FD-109 (recvmsg fabricates the source name for queued messages), FD-110 (the message queue is invisible to read/recvfrom), FD-111 (named datagram delivery has no route) and FD-112 (a zero-length sendmsg datagram queues nothing) filed | New x64 tests testRecvfromBadBuffer64Syscalls, testSendmsgControlChain64Syscalls, testRecvmsgNameCopyback64Syscalls, testSendtoDatagram64Syscalls (RED on the base — recvfrom reported 16 into an unmapped buffer and 200 into a crossing one, a second rights header's descriptors never arrived and malformed tails sent silently, an unwritable name target reported success with its fields written back, datagram sendto delivered nothing; GREEN on the fix); host reference programs measured first (the chain walk rules incl. the credential length and the import/resolution order, the name-copyback field behaviour, the recvfrom crossing prefix); full native suites serial: main 668/668 and x64 77/77, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = db1bd2e22, wasm 77b9c090, staged archive c4dbe35986a5 as pinned); JS unit 348/0 (reviewed silent-failure allowance 117 -> 119). Record: `docs/reports/fd105-fd108-message-faults-20261102.md`; evidence `test-results/fd105-108/` |
 
+| `lane-fd109-112` | FD-109: queued messages carry the sender's bound address (recorded at bind; abstract names resolve through a length-exact registry), recvmsg reports it with the host's length rules and the 64-bit bridge behaves accordingly; FD-110: read/recvfrom (object and native paths) drain the message queue with host datagram semantics (whole datagram per call, truncation discards, MSG_PEEK repeats) and report the queued sender; FD-111: datagram connect links the named peer (reconnect switches, AF_UNSPEC disconnects), addressed sendto/sendmsg deliver through one resolver matching the host's error matrix, and the dispatcher's bare sendto/recvfrom bounce their address arguments; FD-112: a zero-length datagram queues as a real empty message with its credentials and descriptors; FD-113 (closed pathname socket answers ENOENT instead of ECONNREFUSED), FD-114 (stream queue/buffer interleave order) and FD-115 (writev gathers into one datagram) filed; the FD-107 copyback test's fixture now uses a named sender (with an unnamed pair peer its fault scenarios fired only through FD-109's fabrication) and FD-107's own closure carries the note | New x64 tests testRecvmsgSenderName64Syscalls, testReadQueuedDatagram64Syscalls, testNamedDatagram64Syscalls, testSendmsgZeroLength64Syscalls (RED on the base — pair recvmsg reported a 128-byte fabricated name, every queued read answered -EWOULDBLOCK, addressed sendto reported sent but delivered nothing and datagram connect answered -EISCONN, the zero-length datagram never became readable; GREEN on the fix); host reference programs measured first (sender-name rules incl. abstract names and no-autobind, the named-delivery error matrix, read/peek/truncation semantics, the zero-length and descriptor cases); full native suites serial: main 668/668 and x64 81/81, 0 FAILED; JS unit at the lane's un-built-tree baseline (272 passed / 76 failed, every sampled failure a missing generated web/vendor file, matching the FD-58..60 lane's accounting on an un-bootstrapped tree; the socket-relevant silent-failure tests pass: no-silent-failure, no-silent-drops, silent-failure-scanner); browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = 0523a2d85, wasm a691ae8f, staged archive c4dbe35986a5 as pinned). Record: `docs/reports/fd109-fd112-message-delivery-20261102.md`; evidence `test-results/fd109-112/` |
+
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
 (signalfd4) two ways — the queue's recorded decision is the
@@ -5803,7 +5805,21 @@ dead-start fix and needs composition care.
   on the base (success reported with the
   address dropped and the fields written
   back) and GREEN on the fix; suites and
-  build as CL-56. Filed from this lane:
+  build as CL-56. Fixture note from
+  lane-fd109-112: the test's sender is now
+  a socket bound to a pathname (connected
+  through FD-111's datagram connect)
+  instead of an unnamed socketpair peer —
+  with an unnamed sender the reported
+  length on the base was the offered
+  capacity only through FD-109's
+  fabrication, and once FD-109 is fixed
+  the copyback has no bytes to land and
+  the fault scenarios cannot fire; the
+  host faults only when a name is
+  actually copied, and FD-107's own host
+  reference used a named sender. Filed
+  from this lane:
   FD-109, FD-110, FD-111, FD-112. Record:
   `docs/reports/fd105-fd108-message-faults-20261102.md`.
 
@@ -5840,6 +5856,152 @@ dead-start fix and needs composition care.
   unchanged; suites and build as CL-56.
   Record:
   `docs/reports/fd105-fd108-message-faults-20261102.md`.
+
+- **CL-60 — A queued message's source is
+  reported as the sender the host reports:
+  every queued message carries the address
+  its sender was bound to (recorded at
+  bind; pathname names as the literal path
+  plus its NUL, abstract names through a
+  length-exact registry), recvmsg reports
+  that address with the host's length
+  rules — the real length even when the
+  guest's buffer truncates the copy, 0 for
+  an unnamed sender — and the stream-buffer
+  fallback reports the connected peer's
+  bound address the same way.** *(Provisional
+  number, filed on lane-fd105-108,
+  2026-11-02 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd109-112`, commits
+  `901efb53a` (test), `3a04d7682` (fix)
+  and `0523a2d85` (fixture/compatibility
+  follow-ups) — see
+  `docs/reports/fd109-fd112-message-delivery-20261102.md`.
+  Host behaviour measured first
+  (`test-results/fd109-112/hostref-names-fd109.c`):
+  pathname and abstract length rules, no
+  autobind for an unbound sender, the pair
+  peer reports 0, a relative-path bind is
+  reported literally, a zero-length sender
+  address cannot be replied to. Proof:
+  new test testRecvmsgSenderName64Syscalls
+  RED on the base (a socketpair peer
+  reported a 128-byte fabricated name;
+  a named sender's recvmsg reported the
+  offered 128 instead of its real length)
+  and GREEN on the fix; full native suites
+  serial: main 668/668 and x64 81/81,
+  0 FAILED; browser build as the lane
+  record states.
+
+- **CL-61 — Data queued as a message is
+  visible to the plain read paths: read
+  and recvfrom (the object path and the
+  64-bit native path alike) drain the
+  message queue with the host's datagram
+  semantics — one whole datagram per call
+  with its segments concatenated, a small
+  buffer truncating and discarding the
+  rest, MSG_PEEK repeating without
+  consuming, an empty datagram consumed
+  by a read returning 0 — and recvfrom
+  reports the queued message's
+  sender.** *(Provisional number, filed
+  on lane-fd105-108, 2026-11-02 — the
+  merge lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd109-112`, commits as CL-60.
+  Host behaviour measured first
+  (`test-results/fd109-112/hostref-read-fd110.c`):
+  the read/recvfrom/peek/truncation matrix
+  above, read() on a stream pair serving
+  sendmsg bytes, and the one measured
+  divergence kept as FD-114 (stream
+  write/sendmsg call order). One measured
+  compatibility rule is kept from the
+  base: recvfrom from an unnamed connected
+  STREAM peer reports family + length 2
+  (host-measured,
+  `test-results/fd109-112/hostref-stream-addr.c`;
+  the main suite's testKernelGrace pins
+  it) while a datagram peer reports 0.
+  Proof: new test
+  testReadQueuedDatagram64Syscalls RED on
+  the base (every queued read answered
+  -EWOULDBLOCK) and GREEN on the fix;
+  suites and build as CL-60.
+
+- **CL-62 — Datagrams addressed to a named
+  peer actually arrive: datagram connect
+  links the peer object (it returns 0,
+  re-connect switches the peer, an
+  AF_UNSPEC connect disconnects,
+  getpeername reports the peer's name),
+  and sendto/sendmsg with a destination
+  deliver through one resolver that
+  matches the host's answers — ENOENT for
+  a missing pathname, ECONNREFUSED for a
+  node that is not a live socket of a
+  matching type's peer, EPROTOTYPE for a
+  type mismatch, EOPNOTSUPP for an
+  addressed stream send, ENOTCONN for an
+  unaddressed unconnected send — while
+  the dispatcher's bare sendto/recvfrom
+  now bounce their address arguments at
+  all.** *(Provisional number, filed on
+  lane-fd105-108, 2026-11-02 — the merge
+  lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd109-112`, commits as CL-60.
+  Host behaviour measured first
+  (`test-results/fd109-112/hostref-connect-fd111.c`,
+  `hostref-tail-fd111.c`,
+  `hostref-unspec-fd111.c`): the connect,
+  addressed-send and error matrix above.
+  Two measured host behaviours are NOT
+  matched and are filed: FD-113 (a closed
+  pathname socket's node answers
+  ECONNREFUSED on the host; the emulator
+  unlinks at close and answers ENOENT).
+  Proof: new test
+  testNamedDatagram64Syscalls RED on the
+  base (addressed sendto reported its
+  length with nothing delivered, connect
+  answered -EISCONN, unconnected sends
+  answered -EDESTADDRREQ) and GREEN on
+  the fix; suites and build as CL-60.
+
+- **CL-63 — A zero-length datagram is
+  delivered as a real empty message:
+  sendmsg's queueing tail no longer reads
+  the filter's 0 for an empty packet as
+  'filtered', so the empty message queues
+  with its credentials and any passed
+  descriptors, the receiver becomes
+  readable, and recvmsg returns 0 for
+  it; an empty datagram ahead of a real
+  one is consumed in order; a zero-length
+  stream sendmsg still queues
+  nothing.** *(Provisional number, filed
+  on lane-fd105-108, 2026-11-02 — the
+  merge lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd109-112`, commits as CL-60.
+  Host behaviour measured first (the
+  zero-length cases of
+  `test-results/fd109-112/hostref-names-fd109.c`
+  and `hostref-read-fd110.c`): the empty
+  datagram readable with recvmsg 0 and
+  flags 0, descriptors delivered with an
+  empty datagram, the stream guard.
+  Proof: new test
+  testSendmsgZeroLength64Syscalls RED on
+  the base (the receiver never became
+  readable; recvmsg answered
+  -EWOULDBLOCK) and GREEN on the fix;
+  suites and build as CL-60. Filed from
+  this lane: FD-113, FD-114, FD-115.
 
 ## Appendix — examined and deliberately NOT registered
 
