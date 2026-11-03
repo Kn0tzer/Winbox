@@ -2492,6 +2492,8 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
     return addr;
 }
 
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len);
+
 // writev — iterate the iovec array, calling write per segment. Each iovec
 // entry on x86-64 is { u64 base; u64 len }.
 static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
@@ -2509,6 +2511,56 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
         if (!fdesc->canWrite()) return (U64)-K_EBADF;
         if ((S64)iovcnt < 0 || iovcnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
         if (iovcnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    }
+    // FD-115: on a datagram unix socket the host queues ONE datagram
+    // for the whole gather; the per-segment loop below queues one
+    // per segment through sys_write64 -> writeNative. Gather into a
+    // single buffer and make one write instead, with the send
+    // family's answers: sys_write64's descriptor and mode gates
+    // first, then -EFAULT if any segment is unreadable -- the
+    // host's gather is atomic, nothing is queued (the rule FD-101
+    // measured for sendmsg). Zero-length segments are skipped
+    // without touching their base, and a gather totalling zero
+    // queues nothing, exactly as the loop behaves today. A gather
+    // past sys_write64's per-call ceiling keeps the loop's
+    // behaviour.
+    if (iovcnt > 0 && cpu->thread && cpu->thread->process) {
+        KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+        std::shared_ptr<KUnixSocketObject> unixSock = fdesc ? std::dynamic_pointer_cast<KUnixSocketObject>(fdesc->kobject) : nullptr;
+        if (unixSock && unixSock->type == K_SOCK_DGRAM) {
+            if (!fdesc->canWrite()) {
+                return (U64)-K_EBADF;
+            }
+            U64 totalLen = 0;
+            bool tooBig = false;
+            for (U64 i = 0; i < iovcnt; i++) {
+                U64 len = cpu->memory->readq(iov + i * 16 + 8);
+                if (len == 0) continue;
+                U64 base = cpu->memory->readq(iov + i * 16 + 0);
+                if (sys_guestReadablePrefix64(cpu->memory, base, len) < len) {
+                    return (U64)-K_EFAULT;
+                }
+                totalLen += len;
+                if (totalLen > (256ULL << 20)) { tooBig = true; break; }
+            }
+            if (!tooBig) {
+                if (totalLen == 0) {
+                    return 0;
+                }
+                std::vector<U8> packet;
+                packet.reserve((size_t)totalLen);
+                for (U64 i = 0; i < iovcnt; i++) {
+                    U64 base = cpu->memory->readq(iov + i * 16 + 0);
+                    U64 len  = cpu->memory->readq(iov + i * 16 + 8);
+                    if (len == 0) continue;
+                    const size_t at = packet.size();
+                    packet.resize(at + (size_t)len);
+                    cpu->memory->memcpyFromGuest(packet.data() + at, base, len);
+                }
+                U32 wrote = fdesc->kobject->writeNative(packet.data(), (U32)packet.size());
+                return (S32)wrote < 0 ? (U64)(S64)(S32)wrote : (U64)wrote;
+            }
+        }
     }
     U64 total = 0;
     for (U64 i = 0; i < iovcnt; i++) {

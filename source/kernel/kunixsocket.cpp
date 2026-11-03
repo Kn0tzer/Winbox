@@ -57,12 +57,14 @@ KUnixSocketObject::~KUnixSocketObject() {
             abstractRegistry().erase(it);
         }
     }
-    if (this->node) {
-        std::shared_ptr<FsNode> parent = this->node->getParent().lock();
-        if (parent) {
-            parent->removeChildByName(this->node->name);
-        }
-    }
+    // FD-113: the filesystem node of a bound pathname socket is NOT
+    // removed here. On the host, close() never unlinks a bound path:
+    // the node remains, addressed sends and connects answer
+    // ECONNREFUSED (resolveNamedPeer finds the node but its kobject
+    // weak_ptr has expired), a bind over it answers EADDRINUSE, and
+    // only an explicit guest unlink removes it (after which the
+    // answer becomes ENOENT). This destructor used to remove the
+    // node, so a stale path resolved as ENOENT instead.
 
     std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
     // A one-way datagram link (FD-111: connect() on a datagram socket
@@ -302,22 +304,9 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
         // datagram on the host; the payload used to be discarded
         // here while the length was reported. Queue it like the
         // FD-108 sendto branch (the caller signals con->lockCond).
-        // An unconnected datagram write answers ENOTCONN, as the
-        // host's send path does.
-        if (!con) {
-            return -K_ENOTCONN;
-        }
-        if (this->outClosed) {
-            // Same split as the stream path below: a clean -EPIPE for
-            // 64-bit threads, the SIGPIPE path for 32-bit ones.
-            if (thread->process->is64Bit) {
-                return -K_EPIPE;
-            }
-            return writePipeClosed(thread, false);
-        }
         std::vector<U8> packet(len);
         memory->memcpy(packet.data(), buffer, len);
-        return queueDatagramLocked(thread, con, packet.data(), len);
+        return sendDatagramToPeer(thread, con, packet.data(), (U32)packet.size());
     }
     if (this->outClosed || !con) {
         // 64-bit threads must not take the SIGPIPE/-K_CONTINUE path (mis-delivered
@@ -335,7 +324,15 @@ U32 KUnixSocketObject::internal_write(KThread* thread, const std::shared_ptr<KUn
     memory->memcpy(packet.data(), buffer, len);
     const U32 kept = con->applySocketFilter(packet.data(), len);
     if (kept) {
-        con->recvBuffer.put(packet.data(), kept);
+        // FD-114: if the peer's message queue holds sendmsg bytes,
+        // these bytes belong behind them in the stream; queue them
+        // as a payload-only message so the read paths serve one
+        // call order across the two receive stores.
+        if (!con->msgs.empty()) {
+            this->queueStreamBytesLocked(thread, con.get(), packet.data(), kept);
+        } else {
+            con->recvBuffer.put(packet.data(), kept);
+        }
         con->notifyAsyncReady(K_POLL_IN);
     }
     return len;
@@ -351,7 +348,45 @@ U32 KUnixSocketObject::writev(KThread* thread, U32 iov, S32 iovcnt) {
         BOXEDWINE_CONDITION& cond = (con?con->lockCond:this->lockCond);
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(cond);
 
-        for (S32 i=0;i<iovcnt;i++) {
+        if (this->type == K_SOCK_DGRAM) {
+            // FD-115: the host queues ONE datagram for the whole
+            // gather; the per-segment loop below queued one per
+            // segment. Gather into a single packet first, checking
+            // every segment before anything is queued -- an
+            // unreadable segment answers -EFAULT with nothing
+            // delivered, the host's atomic gather (the same rule
+            // FD-101 measured for sendmsg). Zero-length segments are
+            // skipped without touching their base; a gather
+            // totalling zero queues nothing.
+            std::vector<U8> packet;
+            bool badSegment = false;
+            for (S32 i=0;i<iovcnt;i++) {
+                U32 buf = memory->readd(iov + i * 8);
+                U32 toWrite = memory->readd(iov + i * 8 + 4);
+                if (!toWrite) {
+                    continue;
+                }
+                if (!memory->canRead(buf, toWrite)) {
+                    badSegment = true;
+                    break;
+                }
+                const size_t at = packet.size();
+                packet.resize(at + toWrite);
+                memory->memcpy(packet.data() + at, buf, toWrite);
+            }
+            if (badSegment) {
+                len = -K_EFAULT;
+            } else if (!packet.empty()) {
+                if (!strcmp(this->destAddress.data, "/dev/log")) {
+                    size_t n = 0;
+                    while (n < packet.size() && packet[n]) n++;
+                    printf("%.*s\n", (int)n, (const char*)packet.data());
+                    len = (S32)packet.size();
+                } else {
+                    len = (S32)this->sendDatagramToPeer(thread, con, packet.data(), (U32)packet.size());
+                }
+            }
+        } else for (S32 i=0;i<iovcnt;i++) {
             U32 buf = memory->readd(iov + i * 8);
             U32 toWrite = memory->readd(iov + i * 8 + 4);
             S32 result;
@@ -469,7 +504,15 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
     const U32 kept = con->applySocketFilter(buffer, len);
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
-        if (kept) con->recvBuffer.put(buffer, kept);
+        if (kept) {
+            // FD-114: keep call order against queued sendmsg bytes
+            // (see internal_write).
+            if (!con->msgs.empty()) {
+                this->queueStreamBytesLocked(KThread::currentThread(), con.get(), buffer, kept);
+            } else {
+                con->recvBuffer.put(buffer, kept);
+            }
+        }
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     if (kept) con->notifyAsyncReady(K_POLL_IN);
@@ -498,7 +541,15 @@ U32 KUnixSocketObject::unixsocket_write_native_nowait(const std::shared_ptr<KObj
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
         //printf("SOCKET write len=%d bufferSize=%d pos=%d\n", len, s->connection->recvBufferLen, s->connection->recvBufferWritePos);
-        if (kept) con->recvBuffer.put(value, kept);
+        if (kept) {
+            // FD-114: keep call order against queued sendmsg bytes
+            // (see internal_write).
+            if (!con->msgs.empty()) {
+                s->queueStreamBytesLocked(KThread::currentThread(), con.get(), value, kept);
+            } else {
+                con->recvBuffer.put(value, kept);
+            }
+        }
         BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
     }
     if (kept) con->notifyAsyncReady(K_POLL_IN);
@@ -1407,6 +1458,52 @@ std::shared_ptr<KUnixSocketObject> KUnixSocketObject::resolveNamedPeer(KThread* 
     return dest;
 }
 
+void KUnixSocketObject::queueStreamBytesLocked(KThread* thread, KUnixSocketObject* dest, const U8* bytes, U32 len) {
+    std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
+    // thread may be null when the queueing caller is a native write
+    // path off a non-guest thread; the credential fields are
+    // informational then and stay 0 (as in queueDatagramLocked).
+    if (thread) {
+        msg->senderPid = thread->process->id;
+        msg->senderUid = thread->process->userId;
+        msg->senderGid = thread->process->groupId;
+    }
+    msg->senderAddr = this->localAddr;
+    msg->data.push_back((U8)len);
+    msg->data.push_back((U8)(len >> 8));
+    msg->data.push_back((U8)(len >> 16));
+    msg->data.push_back((U8)(len >> 24));
+    msg->data.insert(msg->data.end(), bytes, bytes + len);
+    dest->msgs.push(msg);
+}
+
+void KUnixSocketObject::flushRecvBufferToQueueLocked(KThread* thread, KUnixSocketObject* sender) {
+    const U32 buffered = (U32)this->recvBuffer.size_used();
+    if (!buffered) {
+        return;
+    }
+    std::vector<U8> bytes(buffered);
+    this->recvBuffer.get(bytes.data(), buffered);
+    sender->queueStreamBytesLocked(thread, this, bytes.data(), buffered);
+}
+
+U32 KUnixSocketObject::sendDatagramToPeer(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, const U8* packet, U32 len) {
+    // FD-111: an unconnected datagram send answers ENOTCONN, as the
+    // host's send path does.
+    if (!con) {
+        return -K_ENOTCONN;
+    }
+    if (this->outClosed) {
+        // Same split as the stream path: a clean -EPIPE for 64-bit
+        // threads, the SIGPIPE path for 32-bit ones.
+        if (thread->process->is64Bit) {
+            return -K_EPIPE;
+        }
+        return writePipeClosed(thread, false);
+    }
+    return queueDatagramLocked(thread, con, packet, len);
+}
+
 U32 KUnixSocketObject::queueDatagramLocked(KThread* thread, const std::shared_ptr<KUnixSocketObject>& dest, const U8* packet, U32 len) {
     std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
     // thread may be null when the queueing caller is the native
@@ -1724,6 +1821,12 @@ U32 KUnixSocketObject::sendmsg(KThread* thread, const KFileDescriptorPtr& fd, U3
     msg->data.push_back((U8)(kept >> 16));
     msg->data.push_back((U8)(kept >> 24));
     msg->data.insert(msg->data.end(), packet.begin(), packet.begin() + kept);
+    // FD-114: bytes the plain write paths left in the peer's stream
+    // buffer were written before this message; move them into the
+    // queue ahead of it so the read paths serve call order.
+    if (this->type == K_SOCK_STREAM) {
+        con->flushRecvBufferToQueueLocked(thread, this);
+    }
     con->msgs.push(msg);
     BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
 

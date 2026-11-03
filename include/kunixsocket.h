@@ -163,6 +163,27 @@ protected:
     // sender address, the destination's socket filter) on dest.
     // The caller holds dest->lockCond and signals it afterwards.
     U32 queueDatagramLocked(KThread* thread, const std::shared_ptr<KUnixSocketObject>& dest, const U8* packet, U32 len);
+    // FD-115: the connected-datagram send tail shared by
+    // internal_write and writev's gathered send: the ENOTCONN
+    // answer for an unconnected socket, the closed-pipe split, and
+    // queueDatagramLocked itself. The caller holds con->lockCond
+    // (or this->lockCond when there is no peer) and signals it
+    // afterwards.
+    U32 sendDatagramToPeer(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, const U8* packet, U32 len);
+    // FD-114: queue already-filtered stream bytes as a payload-only
+    // message on dest, recorded as sent by this socket. The plain
+    // write paths use it when dest's message queue is non-empty, so
+    // their bytes cannot jump ahead of queued sendmsg bytes: the
+    // two receive stores then serve one call order. The caller
+    // holds dest->lockCond and signals it afterwards.
+    void queueStreamBytesLocked(KThread* thread, KUnixSocketObject* dest, const U8* bytes, U32 len);
+    // FD-114: move every byte waiting in this socket's stream
+    // buffer into a payload-only message at the back of this
+    // socket's own queue, recorded as sent by sender. sendmsg calls
+    // this on its destination before queueing its own message, so
+    // buffered bytes written earlier keep their seniority. The
+    // caller holds this->lockCond.
+    void flushRecvBufferToQueueLocked(KThread* thread, KUnixSocketObject* sender);
     // FD-110: copy bytes out of the message queue (caller holds
     // this->lockCond). A datagram socket takes the front message
     // only; consume retires what the host's read would retire.
