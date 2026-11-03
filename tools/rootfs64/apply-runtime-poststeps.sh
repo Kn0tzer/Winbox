@@ -48,6 +48,9 @@ echo "apply-runtime-poststeps: runtime set incomplete; applying every post-step.
 python3 tools/rootfs32/stage-fonts.py
 # 32-bit DejaVu Bold/Mono faces (web/runtime and dist/runtime).
 tools/rootfs64/stage-fonts32.sh
+# 64-bit DejaVu faces incl. the Serif pair (web/runtime and dist/runtime);
+# the 64-bit rootfs carried no faces at all (FD-65).
+tools/rootfs64/stage-fonts64.sh
 # 32-bit ALSA->OSS bridge: OSS plugins into wine32.zip, asound.conf +
 # /usr/share/alsa into glibc-rootfs32.zip.
 tools/rootfs64/stage-alsa32.sh web/runtime

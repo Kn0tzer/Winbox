@@ -636,6 +636,61 @@ present, `--local` from the regenerated archive restores and
 verifies all 13 assets and `--check` then passes with the
 completeness checker at 0 failures.
 
+### FD-65 addendum (2026-11-02, lane-fd65)
+
+The question FD-65 filed — is the guest font set
+genuinely absent, or does enumeration race first-boot
+font-cache generation — is answered: both layers were
+broken, and neither was a race. Census of the shipped
+set: `glibc-rootfs64.zip` carried no font faces at all
+(the 32-bit DejaVu staging was never mirrored);
+`prefix64.zip` carries the fontconfig machinery
+(fonts.conf, libfontconfig.so.1, libfreetype.so.6 and
+their dependency chain) but no faces; `wine64.zip`
+carries Wine's own fonts (Tahoma + rasters, no serif).
+A guest step probe (EnumFontFamiliesEx with a counting
+callback; CreateFontIndirect/SelectObject/
+GetTextMetrics) on the baseline read **0 families and
+failing metrics on x64** against **83 families and
+tmHeight 17 on x86** with the identical fixture; faces
+added explicitly with AddFontResourceEx resolved by
+name but still enumerated zero and realized nothing,
+while DirectWrite's independent collection saw faces
+in the same processes. The shipped 64-bit `win32u.so`
+(FD-01 build) contains no freetype or fontconfig code:
+`tools/rootfs64/build-wine8-backports.sh` configured
+its unix-half tree `--without-freetype
+--without-fontconfig`, and win32u's font driver and
+fontconfig enumerator live in that half.
+
+Fix, on `lane-fd65` (`51dd2019f`): the backport build
+compiles the unix-half tree with freetype and
+fontconfig and fails loudly if either SONAME is
+absent from the product; `win32u.so` rebuilt
+(1,479,712 B, `d382cefb…`) and re-pinned (checker +
+backports README); six DejaVu faces including the
+Serif pair staged into `glibc-rootfs64.zip` by the
+new `tools/rootfs64/stage-fonts64.sh` (the 64-bit
+mirror of the 32-bit staging), wired into
+`apply-runtime-poststeps.sh` and pinned by the new
+fonts64 completeness check. `wine64.zip` is now
+209,637,447 B / `be4d4956…`; `glibc-rootfs64.zip`
+11,469,777 B / `88fad6d6…`. The retained archive was
+regenerated from the pin-verified files as release
+`runtime-assets-20261102` (`browser-runtime-20261102.tar`,
+514,365,440 B, `7df0cdc2…`, retained at
+`/home/ubuntu/backups/winbox-runtime-assets-20261102/`);
+`bootstrap.py --check` verifies the set end to end
+(0 failures, 1 standing skip). Guest proof on the
+fixed build: enumeration 85 families, metrics
+tmHeight 17; the common-dependencies test's Gecko
+stage prints `MSHTML: RESULT 0` with zero abort lines
+in two runs. That test's downstream audio-capture
+stage is filed separately as FD-85, and the missing
+Arial family on this stack as FD-86. Record:
+`docs/reports/fd65-gecko-fonts-20261102.md`.
+
+
 ## GStreamer split finish (2026-10-25, split audit/finish lane)
 
 A cancelled lane had left this split half-landed: staging scripts edited,

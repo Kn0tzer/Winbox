@@ -24,6 +24,8 @@ const fixtures = {
   'jitbenchmix-pe': ['tools/guest-fixtures/jitbenchmix.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
   'openal-tone': ['tools/guest-fixtures/openal-tone.c', '-lm'],
+  'winmm-tone': ['tools/guest-fixtures/winmm-tone.c', '-lwinmm'],
+  'wasapi-tone': ['tools/guest-fixtures/wasapi-tone.c', '-lole32', '-luuid'],
   'win32-fonts': ['tools/guest-fixtures/win32-fonts.cpp', '-ldwrite', '-lgdi32', '-luser32'],
   dsptone: ['tools/guest-fixtures/dsptone.c', '-lm'],
   trigl: ['tools/openglTest/trigl.c', '-lopengl32', '-lgdi32', '-luser32'],

@@ -9,12 +9,25 @@ export default class CommonDependenciesTest extends ProbeTest {
   constructor() { super({ tag: 'common-dependencies', timeoutMs: 1200000 }); }
   async run({ page }) {
     await page.addInitScript(() => {
-      globalThis.__audioCapture = { contexts: [], callbacks: 0, samples: 0, nonZero: 0, peak: 0 };
+      globalThis.__audioCapture = { contexts: [], callbacks: 0, samples: 0, nonZero: 0, peak: 0, worklets: 0 };
+      const countBuffer = buffer => {
+        const capture = globalThis.__audioCapture;
+        capture.callbacks++;
+        for (const sample of buffer.getChannelData(0)) {
+          capture.samples++; capture.peak = Math.max(capture.peak, Math.abs(sample));
+          if (Math.abs(sample) > 0.001) capture.nonZero++;
+        }
+      };
       const RealContext = globalThis.AudioContext;
       globalThis.AudioContext = class extends RealContext {
         constructor(...args) {
           super(...args); globalThis.__audioCapture.contexts.push(this);
           const create = this.createScriptProcessor.bind(this);
+          // The bwPump bridge carries guest audio on an AudioWorkletNode
+          // (kdspaudio.cpp), not on a ScriptProcessorNode; the un-wrapped
+          // creator is kept so the worklet tap below can observe that path
+          // (the same pattern as audio-tone.test.mjs).
+          this.__bwTestCreateScriptProcessor = create;
           this.createScriptProcessor = (...args) => {
             const node = create(...args);
             let prototype = Object.getPrototypeOf(node), descriptor;
@@ -24,18 +37,35 @@ export default class CommonDependenciesTest extends ProbeTest {
             Object.defineProperty(node, 'onaudioprocess', { configurable: true, get: () => handler,
               set: fn => { handler = fn; descriptor.set.call(node, fn && (event => {
                 fn.call(node, event);
-                const capture = globalThis.__audioCapture;
-                capture.callbacks++;
-                for (const sample of event.outputBuffer.getChannelData(0)) {
-                  capture.samples++; capture.peak = Math.max(capture.peak, Math.abs(sample));
-                  if (Math.abs(sample) > 0.001) capture.nonZero++;
-                }
+                countBuffer(event.outputBuffer);
               })); }
             });
             return node;
           };
         }
       };
+      // Guest audio reaches the page destination through the bridge's
+      // AudioWorkletNode (see above). Tap that node's output so the capture
+      // counts the samples a listener would actually hear; without this the
+      // capture only ever sees SDL's bypassed ScriptProcessor node, whose
+      // output is silence by construction (FD-87).
+      const RealWorkletNode = globalThis.AudioWorkletNode;
+      if (RealWorkletNode) {
+        globalThis.AudioWorkletNode = class extends RealWorkletNode {
+          constructor(context, name, options) {
+            super(context, name, options);
+            globalThis.__audioCapture.worklets++;
+            const channels = options.outputChannelCount?.[0] || options.channelCount || 2;
+            const tap = context.__bwTestCreateScriptProcessor(1024, channels, 1);
+            const silent = context.createGain();
+            silent.gain.value = 0;
+            tap.onaudioprocess = event => countBuffer(event.inputBuffer);
+            this.connect(tap);
+            tap.connect(silent);
+            silent.connect(context.destination);
+          }
+        };
+      }
     });
     // The Wine 8 x64 stack is the one Chromium uses. The Wine 9 x86 stack
     // stages the same x86 payloads, but this console harness blocks inside

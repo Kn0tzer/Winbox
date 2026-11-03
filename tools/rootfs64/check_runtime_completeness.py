@@ -51,6 +51,11 @@ artifacts and the *source* payloads, offline:
      byte-identical to the canonical alsa32 one.
   4. glibc-rootfs32.zip carries the DejaVu Bold/Mono faces from fonts32/
      with the README-pinned hashes.
+  4b. glibc-rootfs64.zip carries the DejaVu faces from fonts64/ with the
+     README-pinned hashes: the Sans/Bold/Mono set the 32-bit rootfs
+     already ships, plus the Serif pair — the 64-bit rootfs carried no
+     faces at all, so 64-bit font enumeration found no usable serif
+     and Wine Gecko aborted at startup (FD-65).
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
      the download cache exists, the cached deb's ttc matches the pin.
   6. When build-prefix64.sh output exists (tools/rootfs64/dist/), its
@@ -116,7 +121,7 @@ WINE8_BACKPORT_PINS = {
     # The unix half of win32u (FD-01): the desktop-wait patch lives in
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
-    'win32u.so': 'bffd9036f5c6149e02fe54720b0429acaecc9eb5a7725103a1579615ca8e7fc3',
+    'win32u.so': 'd382cefb32fbe71d7e52349da06c478a22c03bde2b38d8e6bfb4eaff42ef2608',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
@@ -149,6 +154,14 @@ FONTS32_PINS = {
     'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
     'DejaVuSansMono.ttf': 'c805f9436dbc268644c1d9584f01a601a653e028e08fd74b9b949f6cf8304d88',
     'DejaVuSansMono-Bold.ttf': '3a3c502eeff669a231549e80df9f7c49de109bafe303170409e905d0b31a38fe',
+}
+FONTS64_PINS = {
+    'DejaVuSans.ttf': 'ae7b7855e115a5966d8b1b3f80f254ccc117ec86f9965e202ee2940453837280',
+    'DejaVuSans-Bold.ttf': '5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895',
+    'DejaVuSansMono.ttf': 'c805f9436dbc268644c1d9584f01a601a653e028e08fd74b9b949f6cf8304d88',
+    'DejaVuSansMono-Bold.ttf': '3a3c502eeff669a231549e80df9f7c49de109bafe303170409e905d0b31a38fe',
+    'DejaVuSerif.ttf': '8f2c103bfa3fd5de71f1b92b18f21906b5a26871fb7e19a9a4c9af539c3cc7ab',
+    'DejaVuSerif-Bold.ttf': '847b33e13925f19ff87e4d934d6b3cf7cac35ce16424f6f670e40c2f377cf2df',
 }
 CJK_TTC_SHA = '2420e8078af796b19a3f6ef13de527a1a91c1e7171eea115926c614ced1009b3'
 RUNTIME = ROOT / 'web/runtime'
@@ -574,6 +587,18 @@ def t_fonts32():
             assert sha(z.read(entry)) == FONTS32_PINS[name], f'{entry} bytes != pin'
 
 
+def t_fonts64():
+    for name, pin in FONTS64_PINS.items():
+        src = ROOT / 'tools/rootfs64/fonts64' / name
+        assert sha(src.read_bytes()) == pin, f'fonts64/{name} hash drifted'
+    with zipfile.ZipFile(RUNTIME / 'glibc-rootfs64.zip') as z:
+        names = set(z.namelist())
+        for name in FONTS64_PINS:
+            entry = 'usr/share/fonts/truetype/dejavu/' + name
+            assert entry in names, f'{entry} missing from glibc-rootfs64.zip'
+            assert sha(z.read(entry)) == FONTS64_PINS[name], f'{entry} bytes != pin'
+
+
 def t_cjk_pin():
     text = (ROOT / 'tools/browser/stage-dependencies.py').read_text()
     assert CJK_TTC_SHA in text, 'stage-dependencies.py lost the CJK ttc pin'
@@ -622,6 +647,7 @@ if __name__ == '__main__':
     check('manifest matches shipped zips', t_manifest)
     check('ALSA-to-OSS bridge members (staging-tree anchored, both arches)', t_alsa_bridge)
     check('fonts32 faces (source + shipped zip)', t_fonts32)
+    check('fonts64 faces (source + shipped zip)', t_fonts64)
     check('CJK font pin', t_cjk_pin)
     check('prefix64 built artifact sections', t_prefix64_built)
     print(f'{len(FAILURES)} failures, {len(SKIPS)} skips')
