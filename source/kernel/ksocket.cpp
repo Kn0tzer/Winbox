@@ -156,25 +156,14 @@ U32 ksocket(KThread* thread, U32 domain, U32 type, U32 protocol) {
     }
 #endif
     if (domain==K_AF_UNIX) {
-        const bool sockDiag = bwPairDiagEnabled();
-        KThread* diagThread = sockDiag ? thread : nullptr;
-        if (sockDiag) {
-            klog_fmt("BW64-DIAG sock obj-new pid=%u tid=%u type=%u",
-                     diagThread->process->id, diagThread->id, type);
-        }
+        const bool sockDiag = bwStepDiagEnabled();
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
         if (sockDiag) {
-            bwStepNote(8, diagThread->process->id, diagThread->id);
-            klog_fmt("BW64-DIAG sock obj-made pid=%u tid=%u",
-                     diagThread->process->id, diagThread->id);
+            bwStepNote(8, thread->process->id, thread->id);
         }
         KFileDescriptorPtr result = thread->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         if (sockDiag) {
-            bwStepNote(9, diagThread->process->id, diagThread->id);
-        }
-        if (sockDiag) {
-            klog_fmt("BW64-DIAG sock fd-alloc pid=%u tid=%u handle=%d",
-                     diagThread->process->id, diagThread->id, result ? (S32)result->handle : -1);
+            bwStepNote(9, thread->process->id, thread->id);
         }
         if (!result) {
             return -K_EMFILE;

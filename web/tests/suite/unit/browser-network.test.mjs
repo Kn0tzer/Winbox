@@ -27,33 +27,37 @@ using U32=uint32_t;
 #define __EMSCRIPTEN__ 1
 #define BOXEDWINE_GUEST_X64 1
 constexpr U32 K_AF_UNIX=1,K_AF_INET=2,K_AF_NETLINK=16,K_AF_INET6=10;
-constexpr U32 K_SOCK_STREAM=1,K_SOCK_DGRAM=2,K_EAFNOSUPPORT=97,K_O_RDWR=2,K_EMFILE=24;
+constexpr U32 K_SOCK_STREAM=1,K_SOCK_DGRAM=2,K_EAFNOSUPPORT=97,K_O_RDWR=2,K_EMFILE=24,K_ENOSYS=38;
 struct Object {virtual ~Object()=default;};
 struct KUnixSocketObject:Object {KUnixSocketObject(U32,U32,U32){}};
 struct KNetLinkObject:Object {KNetLinkObject(U32,U32,U32){}};
 struct KNativeSocketObject:Object {U32 error=0;KNativeSocketObject(U32,U32,U32){}};
 struct Descriptor {U32 handle;};
 using KFileDescriptorPtr=std::shared_ptr<Descriptor>;
-struct Process {U32 next=3;KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<Object>,U32,U32,int,U32){return std::make_shared<Descriptor>(Descriptor{next++});}};
-struct KThread {std::shared_ptr<Process> process=std::make_shared<Process>();static KThread* currentThread(){static KThread thread;return &thread;}};
+struct Process {U32 id=0;U32 next=3;KFileDescriptorPtr allocFileDescriptor(std::shared_ptr<Object>,U32,U32,int,U32){return std::make_shared<Descriptor>(Descriptor{next++});}};
+struct KThread {U32 id=0;std::shared_ptr<Process> process=std::make_shared<Process>();static KThread* currentThread(){static KThread thread;return &thread;}};
+// FD-127: ksocket's step-ring diagnostics and its explicit owner parameter.
+static bool bwStepDiagEnabled(){return false;}
+static void bwStepNote(unsigned,unsigned,unsigned){}
 ${extractSourceRange(source, start,end)}
 int main(int argc,char** argv){
  assert(argc==2);
  const bool enabled=!strcmp(argv[1],"1");
  if(!strcmp(argv[1],"unset"))unsetenv("BW64_NETWORK_RELAY");else setenv("BW64_NETWORK_RELAY",argv[1],1);
  const U32 denied=static_cast<U32>(-K_EAFNOSUPPORT);
- assert(ksocket(K_AF_UNIX,K_SOCK_STREAM,0)!=denied);
- assert(ksocket(K_AF_NETLINK,K_SOCK_DGRAM,0)!=denied);
- const U32 tcp=ksocket(K_AF_INET,K_SOCK_STREAM,6);
+ KThread* owner=KThread::currentThread();
+ assert(ksocket(owner,K_AF_UNIX,K_SOCK_STREAM,0)!=denied);
+ assert(ksocket(owner,K_AF_NETLINK,K_SOCK_DGRAM,0)!=denied);
+ const U32 tcp=ksocket(owner,K_AF_INET,K_SOCK_STREAM,6);
  (void)enabled;
  assert(tcp!=denied && "IPv4 TCP sockets exist for guest-local loopback; external connects are gated separately");
- assert(ksocket(K_AF_INET,K_SOCK_STREAM,0)!=denied);
- assert(ksocket(K_AF_INET,K_SOCK_DGRAM,0)!=denied && "IPv4 UDP loopback works without the relay");
- assert(ksocket(K_AF_INET,K_SOCK_DGRAM,17)!=denied && "IPv4 UDP loopback works without the relay");
- assert(ksocket(K_AF_INET,K_SOCK_DGRAM,6)==denied);
- assert(ksocket(K_AF_INET,K_SOCK_STREAM,1)==denied);
- assert(ksocket(K_AF_INET6,K_SOCK_STREAM,6)==denied);
- assert(ksocket(17,K_SOCK_STREAM,0)==denied);
+ assert(ksocket(owner,K_AF_INET,K_SOCK_STREAM,0)!=denied);
+ assert(ksocket(owner,K_AF_INET,K_SOCK_DGRAM,0)!=denied && "IPv4 UDP loopback works without the relay");
+ assert(ksocket(owner,K_AF_INET,K_SOCK_DGRAM,17)!=denied && "IPv4 UDP loopback works without the relay");
+ assert(ksocket(owner,K_AF_INET,K_SOCK_DGRAM,6)==denied);
+ assert(ksocket(owner,K_AF_INET,K_SOCK_STREAM,1)==denied);
+ assert(ksocket(owner,K_AF_INET6,K_SOCK_STREAM,6)==denied);
+ assert(ksocket(owner,17,K_SOCK_STREAM,0)==denied);
 }
 `);
     const build = spawnSync('c++', ['-std=c++20', join(dir, 'check.cpp'), '-o', join(dir, 'check')],
