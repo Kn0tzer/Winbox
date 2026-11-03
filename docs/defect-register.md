@@ -1079,6 +1079,21 @@ do not close the entry until they land.
   records) and
   `docs/reports/fd85pay-audio-conviction-20261103.md`.
 
+  **CLOSED 2026-11-03 at the batch-4
+  composition, CL-68.** FD-108's fix
+  (CL-67) is composed, and the closing
+  term is proven on the composed tree
+  itself: the batch-4 gate's
+  common-dependencies run passes
+  unloosened with OPENAL: RESULT 0
+  (evidence
+  `test-results/merge-batch4-20261103/`
+  and `test-results/suite-common-dependencies/`).
+  The audio stack was innocent
+  throughout; the samples were computed
+  wrong by the x87 register-cache defect
+  FD-108 records, and with the values
+  right the capture hears the tone.
 - **FD-86 — No Arial family on the 64-bit stack:
   family-name lookups for Arial find nothing.
   FIXED 2026-11-03 — see CL-64.** *(Was
@@ -3660,7 +3675,7 @@ do not close the entry until they land.
   FD-79/80 lane, 2026-11-01; the number was verified
   free against the register at filing and is
   provisional until the merge lane's audit.)* The
-  demand-paged path is exact after CL-36; closing
+  demand-paged path is exact after CL-38; closing
   this entry needs per-description mapping accounting
   on the 64-bit path or an equivalent liveness input
   to its close path. Evidence:
@@ -6566,6 +6581,36 @@ dead-start fix and needs composition care.
   RESULT 0) and is re-proven on the
   composed tree by the batch-4 gate
   (see CL-68).
+
+- **CL-68 — FD-85 closed: with the x87
+  stale cache fixed (CL-67), the
+  common-dependencies audio stage passes
+  unloosened and the tone is heard.**
+  *(Settled at the batch-4 composition;
+  this closure is written by the merge
+  lane on the composed tree's own gate
+  evidence, per the composition terms.)*
+  FD-85's entry records the full
+  conviction: every payload layer
+  exonerated, the samples lost because
+  they were computed from a stale x87
+  register slot (FD-108). Proof on the
+  composed tree (batch-4 gate, evidence
+  `test-results/merge-batch4-20261103/`):
+  browser build from the composed tip,
+  'Browser export verified', wasm
+  c274128e; the common-dependencies
+  browser test passes as shipped — no
+  loosened threshold — with OPENAL:
+  RESULT 0 in its console and 0
+  BW64-FAIL lines; native suites run
+  serially at 0 FAILED; JS unit 352
+  passed / 0 failed; JS legacy 115
+  passed / 0 failed. The same test on
+  the batch-3 tip plus the fix, in a
+  scratch tree, had already passed the
+  same way (lane-fd87loss); this closure
+  rests on the composed tree's run.
 
 ## Appendix — examined and deliberately NOT registered
 
