@@ -398,7 +398,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     if (af!=K_AF_UNIX) {
         return -K_EAFNOSUPPORT;
     }
-    if (type!=K_SOCK_DGRAM && type!=K_SOCK_STREAM) {
+    if (type!=K_SOCK_DGRAM && type!=K_SOCK_STREAM && type!=K_SOCK_SEQPACKET) {
         return -K_EINVAL;
     }
     fd1 = ksocket(af, type, protocol);
