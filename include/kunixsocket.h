@@ -48,7 +48,15 @@ public:
     U32 writeNative(U8* buffer, U32 len) override;
     U32 writev(KThread* thread, U32 iov, S32 iovcnt) override;
     U32 read(KThread* thread, U32 buffer, U32 len) override;
+    // FD-110: what a read consumed from, for recvfrom's source
+    // report: the recorded sender of the queued message the read
+    // took, or the connected peer's bound address for stream-buffer
+    // bytes. An empty senderAddr is an unnamed source.
+    struct ReadSource {
+        std::vector<U8> senderAddr;
+    };
     U32 read(KThread* thread, U32 buffer, U32 len, U32 flags);
+    U32 read(KThread* thread, U32 buffer, U32 len, U32 flags, ReadSource* source);
     U32 readNative(U8* buffer, U32 len) override;
     U32 stat(KProcess* process, U32 address, bool is64) override;
     U32 map(KThread* thread, U32 address, U32 len, S32 prot, S32 flags, U64 off) override;
@@ -72,6 +80,21 @@ public:
 
     std::shared_ptr<FsNode> node;    
     std::weak_ptr<KUnixSocketObject> connection;
+
+    // FD-109: this socket's own bound address as a raw sockaddr
+    // image (family first), recorded by bind(); empty while
+    // unbound. destAddress cannot serve as the record: connect()
+    // overwrites it with the peer's address.
+    std::vector<U8> localAddr;
+    // FD-111: the abstract name this socket is registered under
+    // (the bytes after the leading NUL; the empty name is legal,
+    // hence the separate flag), and whether this socket's peer link
+    // is a one-way datagram connect (the peer never points back, so
+    // this socket's destruction must not poison it with pair
+    // teardown).
+    std::string abstractName;
+    bool abstractRegistered = false;
+    bool oneWayPeerLink = false;
 
     static U32 unixsocket_write_native_nowait(const std::shared_ptr<KObject>& obj, U8* value, int len);
 
@@ -130,6 +153,20 @@ protected:
 
     U32 internal_write(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, BOXEDWINE_CONDITION& cond, U32 buffer, U32 len);
     U32 writePipeClosed(KThread* thread, bool noSignal);
+    // FD-111: resolve a guest sockaddr (in this socket's address
+    // space) to the live unix socket bound at that name, of this
+    // socket's type. On failure returns nullptr with err set to the
+    // host's errno for the case (EINVAL / ENOENT / ECONNREFUSED /
+    // EPROTOTYPE, all measured).
+    std::shared_ptr<KUnixSocketObject> resolveNamedPeer(KThread* thread, U32 address, U32 len, U32& err);
+    // FD-111: queue one datagram (sender credentials + recorded
+    // sender address, the destination's socket filter) on dest.
+    // The caller holds dest->lockCond and signals it afterwards.
+    U32 queueDatagramLocked(KThread* thread, const std::shared_ptr<KUnixSocketObject>& dest, const U8* packet, U32 len);
+    // FD-110: copy bytes out of the message queue (caller holds
+    // this->lockCond). A datagram socket takes the front message
+    // only; consume retires what the host's read would retire.
+    U32 copyFromQueue(U32 len, bool consume, U8* out, std::shared_ptr<KSocketMsg>* front);
     void recordOwner(KThread* thread);
     void recordQueueWrite(KThread* thread, U64 bytes, bool message);
     void recordQueueRead(KThread* thread, U64 bytes, bool message);

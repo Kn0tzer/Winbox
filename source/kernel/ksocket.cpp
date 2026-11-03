@@ -289,9 +289,16 @@ U32 kconnect(KThread* thread, U32 socket, U32 address, U32 len) {
         return -K_ENOTSOCK;
     }
     std::shared_ptr<KSocketObject> s = std::dynamic_pointer_cast<KSocketObject>(fd->kobject);
-    if (s->connected) {
+    if (s->connected && s->type != K_SOCK_DGRAM) {
         return -K_EISCONN;
     }
+    // FD-111: a connected DATAGRAM socket falls through -- a
+    // repeated datagram connect switches the peer and an AF_UNSPEC
+    // address disconnects, both answering 0 on the host (measured,
+    // test-results/fd109-112/hostref-unspec-fd111.c); the object's
+    // datagram branch owns reconnection. A datagram socket that
+    // connect() linked to /dev/log (which sets connected without a
+    // peer) also re-enters here; its answers are unchanged.
     // Isolate 32-bit wineserver sockets from 64-bit ones (see rewriteWineserverSocketPath)
     BString origPath, patchedPath;
     U32 newLen = len;

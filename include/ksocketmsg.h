@@ -35,6 +35,11 @@ public:
     U32 senderPid = 0;
     U32 senderUid = 0;
     U32 senderGid = 0;
+    // FD-109: the sending socket's own bound address as a raw
+    // sockaddr image (family first), recorded when the message is
+    // queued; empty for an unnamed sender. Receives report exactly
+    // this (length and bytes) as the message's source.
+    std::vector<U8> senderAddr;
 };
 
 #endif

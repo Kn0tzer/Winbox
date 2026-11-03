@@ -6502,8 +6502,11 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_recvfrom: {
             // sendto(fd, buf, len, flags, dest_addr, addrlen) /
             // recvfrom(fd, buf, len, flags, src_addr, addrlen). wine's unix ntdll
-            // uses these on the (connected AF_UNIX) wineserver socket, so the
-            // addr argument is unused — pass NULL addr to k*. Bounce the data
+            // uses these on the (connected AF_UNIX) wineserver socket with no
+            // addr argument; datagram guests do pass one (FD-111: an addressed
+            // sendto is the named-delivery route, and recvfrom's source report
+            // is FD-109's data), so a present address is bounced through the
+            // socket scratch like bind/connect's. Bounce the data
             // buffer through the 32-bit msg scratch (k* read/write thread->memory)
             // and copy results back to the 64-bit guest buffer via cpu->memory.
             if (!cpu->thread || !cpu->thread->process || !cpu->thread->memory) {
@@ -6534,6 +6537,21 @@ void ksyscall64(CPU64* cpu) {
                 if (sys_guestReadablePrefix64(cpu->memory, a2, len) < len) {
                     ret = (U64)-K_EFAULT; break;
                 }
+                // FD-111: a destination address is imported like the
+                // buffer (FD-103's order: descriptor checks first,
+                // then the imports); an unreadable one faults the
+                // call with nothing delivered. The object layer reads
+                // the bounced copy in 32-bit memory.
+                U32 dest32 = 0;
+                if (a5) {
+                    const U64 destLen = a6 < 256 ? a6 : 256;
+                    if (destLen &&
+                        sys_guestReadablePrefix64(cpu->memory, a5, destLen) < destLen) {
+                        ret = (U64)-K_EFAULT; break;
+                    }
+                    dest32 = bounceSockaddrTo32(cpu, a5, (U32)a6, nullptr);
+                    if (!dest32) { ret = (U64)-K_EFAULT; break; }
+                }
                 U8 tmp[4096];
                 U64 off = 0;
                 // copy guest buffer -> 32-bit scratch in chunks
@@ -6544,10 +6562,24 @@ void ksyscall64(CPU64* cpu) {
                     off += chunk;
                 }
                 ret = (U64)(S64)(S32)ksendto(cpu->thread, (U32)a1, dataAddr, (U32)len,
-                                             (U32)a4, 0, 0);
+                                             (U32)a4, dest32, (U32)a6);
             } else {
+                // FD-109/FD-111: a present source-address out-pair is
+                // bounced through the socket scratch (in: the
+                // offered capacity; out: the reported name and its
+                // full length), and copied back below once the data
+                // has landed. This case used to pass NULL for both,
+                // so no 64-bit guest could learn a datagram's sender.
+                U32 name32 = 0;
+                U32 lenSlot = 0;
+                U32 inLen = 0;
+                if (a5 && a6) {
+                    inLen = cpu->memory->readd(a6);
+                    name32 = bounceSockaddrTo32(cpu, 0, inLen, &lenSlot);
+                    if (!name32) { ret = (U64)-K_EFAULT; break; }
+                }
                 S32 rc = (S32)krecvfrom(cpu->thread, (U32)a1, dataAddr, (U32)len,
-                                        (U32)a4, 0, 0);
+                                        (U32)a4, name32, lenSlot);
                 if (rc > 0) {
                     // FD-105: this copyback went through memcpyToGuest
                     // in 4096-byte chunks; that accessor writes
@@ -6582,6 +6614,24 @@ void ksyscall64(CPU64* cpu) {
                         off += piece;
                     }
                     if (fault) { ret = (U64)-K_EFAULT; break; }
+                }
+                if (rc >= 0 && name32) {
+                    // The object wrote the source's full length at
+                    // lenSlot and as many name bytes as the offered
+                    // capacity held; mirror both back to the guest
+                    // (a zero-length receive still carries the
+                    // sender of an empty datagram, FD-112).
+                    const U32 outLen = cpu->thread->memory->readd(lenSlot);
+                    const U32 copy = std::min(outLen, std::min(inLen, (U32)256));
+                    if (copy) {
+                        if (sys_guestWritablePrefix64(cpu->memory, a5, copy) < copy) {
+                            ret = (U64)-K_EFAULT; break;
+                        }
+                        U8 tmp[256];
+                        cpu->thread->memory->memcpy(tmp, name32, copy);
+                        cpu->memory->memcpyToGuest(a5, tmp, copy);
+                    }
+                    cpu->memory->writed(a6, outLen);
                 }
                 ret = (U64)(S64)rc;
             }
