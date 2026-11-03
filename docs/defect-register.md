@@ -3888,6 +3888,43 @@ do not close the entry until they land.
   evidence `test-results/deploy-batch3-20261103/`
   (godot-proof-attempt1/ and godot-proof/).
 
+  Update (deploy 2026-11-03, build `600da7651`): the
+  owed in-vivo run was retried once on the shipped
+  build through the standard demo path (FD-70 capture
+  configuration, 5,400 s deadline), this time with the
+  capture driver's launch wait extended from 1,200 s
+  to 2,700 s and the run sequenced into the quietest
+  window of the deploy (the sibling lane's build and
+  suite both finished first; 1-minute load 2.24 at
+  launch, against ~3–12.7 across batch 3's attempts).
+  The session booted (Godot banner at 173.2 s) and
+  completed Vulkan instance creation and vkd3d-proton
+  device initialisation (device caps at 210.4 s, the
+  console's last Vulkan milestone), but no window
+  mapped inside the extended 2,700 s launch wait, so
+  the run again obtained no shader-module or pipeline
+  evidence in either direction (console 16,369 lines:
+  0 vkCreateShaderModule lines, 0
+  vkCreateGraphicsPipelines lines, 0 BW64-FAIL lines,
+  present count 0 throughout). The guest stayed alive
+  and executing to the expiry (final metrics windows
+  90–146 syscalls per 500 ms window) but parked:
+  after 1,000 s the console carries only metrics and
+  thread dumps, and the thread dump at 2,675.3 s
+  shows the guest process running with
+  min_noprogress_ms 2,460,001 and its threads parked
+  in ntdll. CL-43's pipeline clause therefore stays
+  owed, still gated on FD-88 + FD-72; on this
+  evidence the batch-3 ambiguities are excluded —
+  neither the 1,200 s wait nor box load explains the
+  missing window. One attempt was made and no second:
+  batch 3's two attempts at the shorter wait already
+  established the shape's reproducibility, and this
+  attempt removed the two confounds they left open.
+  The attempt is recorded in full in
+  `docs/reports/deploy-batch4-20261103.md`, evidence
+  `test-results/deploy-batch4-20261103/` (godot-proof/).
+
 - **FD-88 — A descriptor array indexed by a value
   loaded from GPU memory cannot be specialized;
   the array, its RuntimeDescriptorArray
