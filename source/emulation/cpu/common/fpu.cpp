@@ -273,6 +273,7 @@ void FPU::FLD_F32(U32 value, int store_to) {
         float32_sf f;
         f.v = value;
         regs[store_to] = f32_to_extF80(f);
+        isRegCached[store_to] = false;
     }
 }
 
@@ -284,6 +285,7 @@ void FPU::FLD_F64(U64 value, int store_to) {
         float64_sf f;
         f.v = value;
         regs[store_to] = f64_to_extF80(f);
+        isRegCached[store_to] = false;
     }
 }
 
@@ -317,6 +319,7 @@ void FPU::FLD_I16(S16 value, int store_to) {
         isRegCached[store_to] = true;
     } else {
         regs[store_to] = i32_to_extF80((S32)value);
+        isRegCached[store_to] = false;
     }
 }
 
@@ -326,6 +329,7 @@ void FPU::FLD_I32(S32 value, int store_to) {
         isRegCached[store_to] = true;
     } else {
         regs[store_to] = i32_to_extF80(value);
+        isRegCached[store_to] = false;
     }
 }
 

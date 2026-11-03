@@ -1,0 +1,6 @@
+N1 bad name: ret=-1 errno=14(Bad address) data100=1 namelen=128 flags=0x7777 ctllen=256
+N2 bad name + rights: ret=-1 errno=14(Bad address) data16=1 namelen=128 ctllen=256 fd_installed=1
+N3 good name: ret=16 errno=0 namelen=11 name=fd107snd data16=1
+N4 unnamed sender + bad name: ret=16 errno=0(-) namelen=0 data16=1
+N5 recvfrom stream crossing: ret=-1 errno=14(Bad address) prefix96=1
+N6 recvfrom dgram crossing(46 good): ret=-1 errno=14(Bad address) prefix46=0

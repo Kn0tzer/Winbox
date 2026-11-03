@@ -1,0 +1,28 @@
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-fd105-108/project/linux'
+MAKEFLAGS 
+In file included from ../../include/platformBoxedwine.h:194,
+                 from ../../include/boxedwine.h:93,
+                 from /home/ubuntu/wt-fd105-108/source/kernel/syscall64.cpp:10:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-fd105-108/source/kernel/syscall64.cpp:2418:17:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-fd105-108/source/test/process/testInotify.cpp: In function ‘void testTempFileLinkPattern()’:
+/home/ubuntu/wt-fd105-108/source/test/process/testInotify.cpp:2690:21: warning: ‘st.testTempFileLinkPattern()::StatInfo::ino’ may be used uninitialized [-Wmaybe-uninitialized]
+ 2690 |             testFail("after unlinking the temp name: ino=%d nlink=%d (expected %d and 1)", st.ino, st.nlink, inoTmp);
+      |             ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-fd105-108/source/test/process/testInotify.cpp:2685:18: note: ‘st.testTempFileLinkPattern()::StatInfo::ino’ was declared here
+ 2685 |         StatInfo st;
+      |                  ^~
+/home/ubuntu/wt-fd105-108/source/test/process/testInotify.cpp:2690:21: warning: ‘st.testTempFileLinkPattern()::StatInfo::nlink’ may be used uninitialized [-Wmaybe-uninitialized]
+ 2690 |             testFail("after unlinking the temp name: ino=%d nlink=%d (expected %d and 1)", st.ino, st.nlink, inoTmp);
+      |             ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-fd105-108/source/test/process/testInotify.cpp:2685:18: note: ‘st.testTempFileLinkPattern()::StatInfo::nlink’ was declared here
+ 2685 |         StatInfo st;
+      |                  ^~
+make[1]: Leaving directory '/home/ubuntu/wt-fd105-108/project/linux'

@@ -147,6 +147,18 @@ void testRecvmsgBadBuffer64Syscalls();
 void testWriteBadBuffer64Syscalls();
 void testWriteFamily64Syscalls();
 void testPwritev64Syscalls();
+void testRecvfromBadBuffer64Syscalls();
+void testSendmsgControlChain64Syscalls();
+void testRecvmsgNameCopyback64Syscalls();
+void testSendtoDatagram64Syscalls();
+void testRecvmsgSenderName64Syscalls();
+void testReadQueuedDatagram64Syscalls();
+void testNamedDatagram64Syscalls();
+void testSendmsgZeroLength64Syscalls();
+void testStalePathnameSocket64Syscalls();
+void testStreamWriteSendmsgOrder64Syscalls();
+void testWritevDatagram64Syscalls();
+void testWriteZeroLength64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -218,6 +230,18 @@ const TestEntry TEST_ENTRIES[] = {
     {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
     {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
+    {testRecvfromBadBuffer64Syscalls, "Test x64 recvfrom to unwritable guest buffers"},
+    {testSendmsgControlChain64Syscalls, "Test x64 sendmsg control-chain validation"},
+    {testRecvmsgNameCopyback64Syscalls, "Test x64 recvmsg source-name copyback to unwritable guest buffers"},
+    {testSendtoDatagram64Syscalls, "Test x64 sendto datagram delivery on a connected socketpair"},
+    {testRecvmsgSenderName64Syscalls, "Test x64 recvmsg/recvfrom sender-name reporting for queued messages"},
+    {testReadQueuedDatagram64Syscalls, "Test x64 plain read/recvfrom draining the message queue"},
+    {testNamedDatagram64Syscalls, "Test x64 named datagram delivery: addressed sendto and datagram connect"},
+    {testSendmsgZeroLength64Syscalls, "Test x64 zero-length sendmsg datagram delivery"},
+    {testStalePathnameSocket64Syscalls, "Test x64 sendto/connect to a closed pathname socket"},
+    {testStreamWriteSendmsgOrder64Syscalls, "Test x64 stream write/sendmsg byte order"},
+    {testWritevDatagram64Syscalls, "Test x64 writev gathering on a datagram socket"},
+    {testWriteZeroLength64Syscalls, "Test x64 zero-length plain write on a datagram socket"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},

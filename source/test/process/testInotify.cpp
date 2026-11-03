@@ -3063,6 +3063,2613 @@ void testRecvmsgBadBuffer64Syscalls() {
 }
 
 
+// FD-105: the dispatcher's recvfrom branch receives into scratch and
+// copies back through KMemory64::memcpyToGuest, whose access-check
+// failure returns silently -- a receive into unwritable guest memory
+// reports the full byte count and the bytes are gone. Host contract
+// measured in test-results/fd105-108/hostref-name-fd107.c (N5/N6) and
+// the filing lane's P10/P11: an unwritable buffer answers -EFAULT,
+// and a buffer crossing into unwritable memory faults with the
+// writable prefix delivered. Consumption follows FD-104's settled
+// shape: the object receive consumes into scratch with no pushback,
+// so a faulted plain receive consumes the bytes on a stream socket
+// too (the host leaves them queued -- the one settled divergence),
+// while MSG_PEEK consumes nothing on either. Coverage boundary: the
+// emulator's datagram queue is reachable only through recvmsg
+// (read/recvfrom drain only the stream buffer), so the datagram
+// half of the host shape is pinned by FD-104's recvmsg cases; the
+// copyback fixed here is the shared single-call path and is
+// type-agnostic.
+void testRecvfromBadBuffer64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x6B000000ULL;
+    constexpr U64 crossPage = 0x6C000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("recvfrom test could not map its fixture page");
+        return;
+    }
+    if (!memory->getPageFlags(crossPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(crossPage, 5 * K64_PAGE_SIZE, 3) != crossPage) {
+        testFail("recvfrom test could not map its crossing page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    // Page index 2 of the crossing region rejects writes.
+    if (invoke(10, crossPage + 2 * K64_PAGE_SIZE, K64_PAGE_SIZE, 0, 0) != 0) {
+        testFail("recvfrom test could not restrict its crossing page");
+        return;
+    }
+
+    constexpr U64 textAt = dataPage + 0x000;
+    constexpr U64 svAt   = dataPage + 0x100;
+    constexpr U64 recvAt = dataPage + 0x200;
+    constexpr U64 patAt  = dataPage + 0x600;
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(textAt, text, 16);
+    std::string pattern;
+    for (int i = 0; i < 200; i++) pattern.push_back((char)('a' + (i % 26)));
+    memory->memcpyToGuest(patAt, pattern.data(), 200);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](Pair& p) {
+        if (invoke(53, 1, 1 /*SOCK_STREAM*/, 0, svAt) != 0) {
+            testFail("recvfrom test could not create a stream socketpair");
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        if (invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0) != 0) {
+            testFail("recvfrom test could not set the receiver nonblocking");
+            return false;
+        }
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close((S32)p.tx);
+        process->close((S32)p.rx);
+    };
+    auto guestEq = [&](U64 addr, const char* want, U64 len) {
+        std::vector<U8> buf((size_t)len);
+        memory->memcpyFromGuest(buf.data(), addr, len);
+        return memcmp(buf.data(), want, (size_t)len) == 0;
+    };
+
+    // Guard: an ordinary stream recvfrom still works.
+    {
+        Pair p;
+        if (makePair(p)) {
+            invoke(1, (U64)(U32)p.tx, textAt, 16, 0);
+            S64 r = invoke(45, (U64)(U32)p.rx, recvAt, 512, 0);
+            if (r != 16 || !guestEq(recvAt, text, 16)) {
+                testFail("plain stream recvfrom returned %lld (want 16)", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // Unwritable buffer: -EFAULT. The bytes are consumed by the
+    // failed call -- FD-104's settled divergence (the object
+    // receive consumes into scratch with no pushback; the host
+    // leaves stream data queued).
+    {
+        Pair p;
+        if (makePair(p)) {
+            invoke(1, (U64)(U32)p.tx, textAt, 16, 0);
+            S64 r = invoke(45, (U64)(U32)p.rx, unmapped, 16, 0);
+            S64 r2 = invoke(45, (U64)(U32)p.rx, recvAt, 512, 0);
+            if (r != -K_EFAULT || r2 != -K_EWOULDBLOCK) {
+                testFail("stream recvfrom to an unmapped buffer returned %lld then %lld (want -EFAULT, then -EWOULDBLOCK: consumed per FD-104's settled shape)",
+                         (long long)r, (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // MSG_PEEK faults the same way and consumes nothing.
+    {
+        Pair p;
+        if (makePair(p)) {
+            invoke(1, (U64)(U32)p.tx, textAt, 16, 0);
+            S64 r = invoke(45, (U64)(U32)p.rx, unmapped, 16, 2 /*MSG_PEEK*/);
+            S64 r2 = invoke(45, (U64)(U32)p.rx, recvAt, 512, 0);
+            if (r != -K_EFAULT || r2 != 16 || !guestEq(recvAt, text, 16)) {
+                testFail("stream MSG_PEEK recvfrom to an unmapped buffer returned %lld then %lld (want -EFAULT then 16)",
+                         (long long)r, (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // Crossing buffer: -EFAULT with the writable prefix delivered.
+    {
+        Pair p;
+        if (makePair(p)) {
+            invoke(1, (U64)(U32)p.tx, patAt, 200, 0);
+            // 96 writable bytes, then the restricted page.
+            const U64 start = crossPage + 2 * K64_PAGE_SIZE - 96;
+            S64 r = invoke(45, (U64)(U32)p.rx, start, 200, 0);
+            bool prefixOk = guestEq(start, pattern.data(), 96);
+            if (r != -K_EFAULT || !prefixOk) {
+                testFail("crossing stream recvfrom returned %lld (want -EFAULT) with the 96-byte prefix %s",
+                         (long long)r, prefixOk ? "delivered" : "missing");
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-106: sys_sendmsg64 examines only the first control header --
+// nothing past it is validated or translated, where the host walks
+// the whole chain. Host contract measured in
+// test-results/fd105-108/hostref-chain-fd106.c,
+// hostref-chain2-fd106.c and hostref-order-fd106.c: headers are
+// walked at 8-byte-aligned steps while at least 16 bytes remain; a
+// walked header with cmsg_len under 16 or past the remaining room
+// answers -EINVAL; SCM_RIGHTS headers accumulate under one 253
+// descriptor cap and their fds all arrive; SCM_CREDENTIALS requires
+// cmsg_len exactly 28; any other SOL_SOCKET type answers -EINVAL;
+// other levels are skipped; the whole control area is copied before
+// validation, so unreadable bytes anywhere in msg_controllen answer
+// -EFAULT ahead of every -EINVAL; and a bad descriptor value in an
+// earlier rights header answers -EBADF ahead of a later header's
+// malformed length.
+void testSendmsgControlChain64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x6D000000ULL;
+    constexpr U64 ctrlPage = 0x6E000000ULL;
+    constexpr U64 tailPage = 0x6F000000ULL;
+    constexpr U64 bigIovPage = 0x70000000ULL;
+    auto mapFixture = [&](U64 addr, U64 size) {
+        if (!memory->getPageFlags(addr >> K64_PAGE_SHIFT) &&
+            memory->mmapAnonymousFixed(addr, size, 3) != addr) {
+            testFail("cmsg-chain test could not map its fixture page at 0x%llx", (unsigned long long)addr);
+            return false;
+        }
+        return true;
+    };
+    if (!mapFixture(dataPage, 4 * K64_PAGE_SIZE) ||
+        !mapFixture(ctrlPage, 2 * K64_PAGE_SIZE) ||
+        !mapFixture(tailPage, 2 * K64_PAGE_SIZE) ||
+        !mapFixture(bigIovPage, 5 * K64_PAGE_SIZE)) return;
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    // The tail region's second page rejects reads and writes: a
+    // control area crossing into it is unreadable past the boundary.
+    if (invoke(10, tailPage + K64_PAGE_SIZE, K64_PAGE_SIZE, 0, 0) != 0) {
+        testFail("cmsg-chain test could not restrict its tail page");
+        return;
+    }
+
+    constexpr U64 textAt = dataPage + 0x000;
+    constexpr U64 svAt   = dataPage + 0x100;
+    constexpr U64 recvAt = dataPage + 0x200;
+    constexpr U64 pollAt = dataPage + 0x300;
+    constexpr U64 hdrAt  = dataPage + 0x1000;
+    constexpr U64 iovAt  = dataPage + 0x1800;
+    constexpr U64 riovAt = dataPage + 0x1C00;
+    constexpr U64 rhdrAt = dataPage + 0x1C80;
+    constexpr U64 rctlAt = dataPage + 0x2000;
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(textAt, text, 16);
+    memory->writeq(riovAt, recvAt);
+    memory->writeq(riovAt + 8, 512);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("cmsg-chain test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close((S32)p.tx);
+        process->close((S32)p.rx);
+    };
+    struct Hdr {
+        U64 len; U32 level; U32 type; std::vector<U32> fds;
+    };
+    // Lay down a chain of headers at 8-aligned offsets in the ctrl
+    // page (zeroed first), point the send msghdr at it with the
+    // given controllen, one data segment (textAt, 16).
+    auto buildChain = [&](U64 ctrlBase, const std::vector<Hdr>& hdrs, U64 room) {
+        for (U32 i = 0; i < 2048; i += 8) memory->writeq(ctrlBase + i, 0);
+        U64 off = 0;
+        for (const Hdr& h : hdrs) {
+            memory->writeq(ctrlBase + off, h.len);
+            memory->writed(ctrlBase + off + 8, h.level);
+            memory->writed(ctrlBase + off + 12, h.type);
+            for (size_t i = 0; i < h.fds.size(); i++)
+                memory->writed(ctrlBase + off + 16 + 4 * (U64)i, h.fds[i]);
+            off += (h.len + 7) & ~7ULL;
+        }
+        memory->writeq(iovAt, textAt);
+        memory->writeq(iovAt + 8, 16);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        memory->writeq(hdrAt + 32, ctrlBase);
+        memory->writeq(hdrAt + 40, room);
+    };
+    struct RecvRes {
+        S64 rc = -1;
+        std::string data;
+        std::vector<U32> fds;
+        U32 msgFlags = 0;
+    };
+    auto recvPeer = [&](S32 rx) {
+        RecvRes res;
+        memory->writed(pollAt, (U32)rx);
+        memory->writew(pollAt + 4, 1); // POLLIN
+        memory->writew(pollAt + 6, 0);
+        if (invoke(7, pollAt, 1, 0, 0) <= 0 || !(memory->readw(pollAt + 6) & 1)) return res;
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        memory->writeq(rhdrAt + 32, rctlAt);
+        memory->writeq(rhdrAt + 40, 2048);
+        memory->writeq(rctlAt, 0);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        res.rc = rc;
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            res.data.assign((const char*)buf.data(), (size_t)rc);
+        }
+        res.msgFlags = memory->readd(rhdrAt + 48);
+        U64 ctlLen = memory->readq(rhdrAt + 40);
+        if (ctlLen >= 16 && memory->readd(rctlAt + 8) == 1 && memory->readd(rctlAt + 12) == 1) {
+            U64 len = memory->readq(rctlAt);
+            if (len >= 16) {
+                U32 n = (U32)((len - 16) / 4);
+                for (U32 i = 0; i < n; i++) res.fds.push_back(memory->readd(rctlAt + 16 + 4 * i));
+            }
+        }
+        return res;
+    };
+    auto rights = [](U32 fdValue, U32 count) {
+        Hdr h; h.len = 16 + 4ULL * count; h.level = 1; h.type = 1;
+        h.fds.assign(count, fdValue);
+        return h;
+    };
+    auto raw = [](U64 len, U32 level, U32 type) {
+        Hdr h; h.len = len; h.level = level; h.type = type;
+        return h;
+    };
+    auto caseChain = [&](const char* what, U32 type, const std::vector<Hdr>& hdrs, U64 room,
+                         S64 wantRet, size_t wantFds, bool wantData) {
+        Pair p;
+        if (!makePair(type, p)) return;
+        std::vector<Hdr> hs = hdrs;
+        for (Hdr& h : hs) for (U32& v : h.fds) if (v == 0xFFFFFFFEu) v = (U32)p.tx;
+        buildChain(ctrlPage, hs, room);
+        S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+        RecvRes got = recvPeer(p.rx);
+        bool dataOk = wantData ? (got.data == std::string(text, 16)) : got.data.empty();
+        if (r != wantRet || got.fds.size() != wantFds || !dataOk) {
+            testFail("%s returned %lld (want %lld), peer holds %u fds and %u data bytes",
+                     what, (long long)r, (long long)wantRet,
+                     (unsigned)got.fds.size(), (unsigned)got.data.size());
+        }
+        for (U32 f : got.fds) process->close((S32)f);
+        closePair(p);
+    };
+    const U32 SELF = 0xFFFFFFFEu; // placeholder replaced with the pair's tx fd
+    const U32 BADFD = 9999;
+
+    // Guards: single-header and skip shapes that already match.
+    caseChain("rights(1) with 8 bytes of trailing slack", 1, { rights(SELF, 1) }, 32, 16, 1, true);
+    caseChain("rights(1) then credentials(28)", 1, { rights(SELF, 1), raw(28, 1, 2) }, 52, 16, 1, true);
+    caseChain("rights(1) then a skipped IPPROTO_IP header", 1, { rights(SELF, 1), raw(16, 0, 0) }, 40, 16, 1, true);
+    caseChain("credentials(28) alone", 1, { raw(28, 1, 2) }, 28, 16, 0, true);
+    caseChain("IPPROTO_IP header alone", 1, { raw(16, 0, 0) }, 16, 16, 0, true);
+    {
+        Hdr trunc; trunc.len = 18; trunc.level = 1; trunc.type = 1; trunc.fds = { SELF };
+        caseChain("rights(1) then a rights header of length 18", 1, { rights(SELF, 1), trunc }, 48, 16, 1, true);
+    }
+    // The chain itself: a second rights header's fds arrive too.
+    caseChain("rights(1) then rights(1), stream", 1, { rights(SELF, 1), rights(SELF, 1) }, 44, 16, 2, true);
+    caseChain("rights(1) then rights(1), datagram", 2, { rights(SELF, 1), rights(SELF, 1) }, 44, 16, 2, true);
+    caseChain("rights(0) then rights(1)", 1, { rights(SELF, 0), rights(SELF, 1) }, 40, 16, 1, true);
+    // Malformed shapes past the first header.
+    caseChain("rights(1) then SOL_SOCKET type 999", 1, { rights(SELF, 1), raw(16, 1, 999) }, 40, -K_EINVAL, 0, false);
+    caseChain("rights(1) then a header of length 8", 1, { rights(SELF, 1), raw(8, 1, 1) }, 40, -K_EINVAL, 0, false);
+    caseChain("rights(1) then a header of length 4096", 1, { rights(SELF, 1), raw(4096, 1, 1) }, 48, -K_EINVAL, 0, false);
+    caseChain("SOL_SOCKET type 999 alone", 1, { raw(16, 1, 999) }, 16, -K_EINVAL, 0, false);
+    caseChain("credentials of length 16", 1, { raw(16, 1, 2) }, 16, -K_EINVAL, 0, false);
+    caseChain("credentials of length 32", 1, { raw(32, 1, 2) }, 32, -K_EINVAL, 0, false);
+    // The descriptor cap is cumulative across headers.
+    caseChain("rights(200) then rights(100) over the cap", 1, { rights(SELF, 200), rights(SELF, 100) }, 1232, -K_EINVAL, 0, false);
+    {
+        // 253 across two headers: sent, payload intact; the receive
+        // side holds 28 records and reports MSG_CTRUNC for the rest.
+        Pair p;
+        if (makePair(1, p)) {
+            buildChain(ctrlPage, { rights((U32)p.tx, 200), rights((U32)p.tx, 53) }, 1044);
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            RecvRes got = recvPeer(p.rx);
+            if (r != 16 || got.data != std::string(text, 16) || got.fds.size() != 28 ||
+                !(got.msgFlags & 8 /*MSG_CTRUNC*/)) {
+                testFail("253 fds across two headers returned %lld, peer holds %u fds (flags 0x%x) and %u data bytes",
+                         (long long)r, (unsigned)got.fds.size(), got.msgFlags, (unsigned)got.data.size());
+            }
+            for (U32 f : got.fds) process->close((S32)f);
+            closePair(p);
+        }
+    }
+    // Descriptor values resolve as the walk reaches their header: a
+    // bad value in the first header answers -EBADF ahead of a later
+    // header's malformed length, and one in the second header is
+    // answered at all.
+    {
+        Hdr h1 = rights(BADFD, 1);
+        caseChain("bad fd in header 1, malformed header 2", 1, { h1, raw(8, 1, 1) }, 40, -K_EBADF, 0, false);
+    }
+    caseChain("good header 1, bad fd in header 2", 1, { rights(SELF, 1), rights(BADFD, 1) }, 44, -K_EBADF, 0, false);
+    // Import precedes validation: bytes of the control area past a
+    // valid header are unreadable -> -EFAULT, nothing sent; the same
+    // with a malformed first header -> still -EFAULT, not -EINVAL.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            const U64 ctl = tailPage + K64_PAGE_SIZE - 32;
+            buildChain(ctl, { rights((U32)p.tx, 1) }, 64);
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            RecvRes got = recvPeer(p.rx);
+            if (r != -K_EFAULT || !got.data.empty() || !got.fds.empty()) {
+                testFail("valid header with controllen crossing into an unreadable page returned %lld (want -EFAULT)", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            const U64 ctl = tailPage + K64_PAGE_SIZE - 32;
+            buildChain(ctl, { raw(8, 1, 1) }, 64);
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            if (r != -K_EFAULT) {
+                testFail("malformed header with controllen crossing into an unreadable page returned %lld (want -EFAULT)", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // Even a sub-header controllen is imported: an unreadable
+    // control area of 8 bytes answers -EFAULT.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            buildChain(tailPage + K64_PAGE_SIZE, {}, 8);
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            if (r != -K_EFAULT) {
+                testFail("unreadable control area of 8 bytes returned %lld (want -EFAULT)", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // The iovlen cap is answered ahead of the control import:
+    // 1025 segments plus an unreadable control area -> -EMSGSIZE.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            for (U32 i = 0; i < 1025; i++) {
+                memory->writeq(bigIovPage + 16ULL * i, textAt);
+                memory->writeq(bigIovPage + 16ULL * i + 8, 0);
+            }
+            for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+            memory->writeq(hdrAt + 16, bigIovPage);
+            memory->writeq(hdrAt + 24, 1025);
+            memory->writeq(hdrAt + 32, tailPage + K64_PAGE_SIZE);
+            memory->writeq(hdrAt + 40, 32);
+            S64 r = invoke(46, (U64)(U32)p.tx, hdrAt, 0, 0);
+            if (r != -K_EMSGSIZE) {
+                testFail("1025 segments with an unreadable control area returned %lld (want -EMSGSIZE)", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-107: sys_recvmsg64's source-name copyback goes through the
+// same silent-drop accessor as FD-105 -- a peer address that cannot
+// be written is lost while the call reports success. Host contract
+// measured in test-results/fd105-108/hostref-name-fd107.c (N1/N2):
+// the call answers -EFAULT, the received data and any passed
+// descriptor are still delivered, and the msghdr's namelen / flags /
+// controllen fields are left untouched. Staged through the message
+// queue (a queued message is what makes the bridge attempt a name
+// copyback at all); the sender name the bridge reports for queued
+// messages is a separate known gap, filed on the register.
+void testRecvmsgNameCopyback64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    // FD-109 fixture correction (lane-fd109-112): the sender below
+    // is bound to a pathname, so the queued message carries a real
+    // sender address and the name copyback has bytes to land. The
+    // original socketpair fixture's sender was unnamed; its
+    // reported length on the base was the offered capacity only
+    // through FD-109's fabrication, and with the fabrication fixed
+    // the reported length is 0, the copyback is empty, and the
+    // unwritable-target scenarios cannot fault -- the host faults
+    // only when a name is actually copied (FD-107's own host
+    // reference used a named sender).
+    char dirTemplate[] = "/tmp/bw64fd107XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("recvmsg-name test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x71000000ULL;
+    constexpr U64 namePage = 0x72000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("recvmsg-name test could not map its fixture page");
+        return;
+    }
+    if (!memory->getPageFlags(namePage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(namePage, 5 * K64_PAGE_SIZE, 3) != namePage) {
+        testFail("recvmsg-name test could not map its name page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    if (invoke(10, namePage + 2 * K64_PAGE_SIZE, K64_PAGE_SIZE, 0, 0) != 0) {
+        testFail("recvmsg-name test could not restrict its name page");
+        return;
+    }
+
+    constexpr U64 textAt = dataPage + 0x000;
+    constexpr U64 svAt   = dataPage + 0x100;
+    constexpr U64 recvAt = dataPage + 0x200;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1400;
+    constexpr U64 sctlAt = dataPage + 0x1800;
+    constexpr U64 rhdrAt = dataPage + 0x1C80;
+    constexpr U64 riovAt = dataPage + 0x1C00;
+    constexpr U64 rctlAt = dataPage + 0x2000;
+    const char* text = "0123456789ABCDEF";
+    memory->memcpyToGuest(textAt, text, 16);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    // A bound receiver and a bound, connected sender (FD-111's
+    // datagram connect). The sender's name is 22 bytes long, so
+    // its reported address (25 bytes) crosses a page end placed
+    // 16 bytes ahead of the unwritable page in the scenario below.
+    constexpr U64 saAt = dataPage + 0x300;
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1); // AF_UNIX
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto makePair = [&](Pair& p) {
+        p.rx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        U32 rl = writePathAddr(saAt, "/fd107r");
+        invoke(87, saAt + 2, 0, 0, 0); // unlink first: a closed socket's node outlives it (FD-113), as on the host
+        if (p.rx < 0 || invoke(49, (U64)(U32)p.rx, saAt, rl, 0) != 0) {
+            testFail("recvmsg-name test could not bind its receiver");
+            return false;
+        }
+        p.tx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        U32 sl = writePathAddr(saAt, "/fd107sender-long-name");
+        invoke(87, saAt + 2, 0, 0, 0); // unlink first (FD-113)
+        if (p.tx < 0 || invoke(49, (U64)(U32)p.tx, saAt, sl, 0) != 0) {
+            testFail("recvmsg-name test could not bind its sender");
+            return false;
+        }
+        U32 dl = writePathAddr(saAt, "/fd107r");
+        if (invoke(42, (U64)(U32)p.tx, saAt, dl, 0) != 0) {
+            testFail("recvmsg-name test could not connect its sender");
+            return false;
+        }
+        if (invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0) != 0) {
+            testFail("recvmsg-name test could not set the receiver nonblocking");
+            return false;
+        }
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close((S32)p.tx);
+        process->close((S32)p.rx);
+    };
+    // Queue one datagram carrying the text and one descriptor.
+    auto queueMsg = [&](S32 tx) {
+        memory->writeq(siovAt, textAt);
+        memory->writeq(siovAt + 8, 16);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, 1);
+        memory->writeq(sctlAt, 20);
+        memory->writed(sctlAt + 8, 1);  // SOL_SOCKET
+        memory->writed(sctlAt + 12, 1); // SCM_RIGHTS
+        memory->writed(sctlAt + 16, (U32)tx);
+        memory->writeq(shdrAt + 32, sctlAt);
+        memory->writeq(shdrAt + 40, 20);
+        return invoke(46, (U64)(U32)tx, shdrAt, 0, 0) == 16;
+    };
+    // Receive with the given name target; the msghdr's flags field
+    // is pre-filled with a sentinel so a writeback is observable,
+    // and the controllen field starts at 2048 like any caller.
+    auto recvNamed = [&](S32 rx, U64 name, U64 nameLen, S64& rc, U32& installedFd) {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(rhdrAt, name);
+        memory->writeq(rhdrAt + 8, nameLen);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, 512);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        memory->writeq(rhdrAt + 32, rctlAt);
+        memory->writeq(rhdrAt + 40, 2048);
+        memory->writed(rhdrAt + 48, 0x7777);
+        memory->writeq(rctlAt, 0);
+        rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        installedFd = 0;
+        if (memory->readq(rhdrAt + 40) >= 20 && memory->readd(rctlAt + 12) == 1) {
+            installedFd = memory->readd(rctlAt + 16);
+        }
+    };
+    auto dataOk = [&]() {
+        std::vector<U8> buf(16);
+        memory->memcpyFromGuest(buf.data(), recvAt, 16);
+        return memcmp(buf.data(), text, 16) == 0;
+    };
+
+    // Unwritable name target: -EFAULT, data and the passed
+    // descriptor still delivered, and neither the flags nor the
+    // controllen field of the msghdr is written back.
+    {
+        Pair p;
+        if (makePair(p) && queueMsg(p.tx)) {
+            S64 rc; U32 fd = 0;
+            recvNamed(p.rx, namePage + 2 * K64_PAGE_SIZE, 128, rc, fd);
+            U32 flagsAfter = memory->readd(rhdrAt + 48);
+            U64 ctlAfter = memory->readq(rhdrAt + 40);
+            if (rc != -K_EFAULT || !dataOk() || fd == 0 ||
+                flagsAfter != 0x7777 || ctlAfter != 2048) {
+                testFail("recvmsg with an unwritable name target returned %lld (want -EFAULT), data %s, fd %s, flags field 0x%x, controllen field %llu",
+                         (long long)rc, dataOk() ? "delivered" : "lost",
+                         fd ? "installed" : "missing", flagsAfter,
+                         (unsigned long long)ctlAfter);
+            }
+            if (fd) process->close((S32)fd);
+            closePair(p);
+        }
+    }
+    // A name target crossing into an unwritable page faults the
+    // same way.
+    {
+        Pair p;
+        if (makePair(p) && queueMsg(p.tx)) {
+            S64 rc; U32 fd = 0;
+            recvNamed(p.rx, namePage + 2 * K64_PAGE_SIZE - 16, 128, rc, fd);
+            if (rc != -K_EFAULT || !dataOk() || fd == 0) {
+                testFail("recvmsg with a crossing name target returned %lld (want -EFAULT)", (long long)rc);
+            }
+            if (fd) process->close((S32)fd);
+            closePair(p);
+        }
+    }
+    // Guard: a writable name target receives normally, fields and
+    // all.
+    {
+        Pair p;
+        if (makePair(p) && queueMsg(p.tx)) {
+            S64 rc; U32 fd = 0;
+            recvNamed(p.rx, namePage, 128, rc, fd);
+            U32 flagsAfter = memory->readd(rhdrAt + 48);
+            if (rc != 16 || !dataOk() || fd == 0 || flagsAfter == 0x7777) {
+                testFail("recvmsg with a writable name target returned %lld (want 16), flags field 0x%x",
+                         (long long)rc, flagsAfter);
+            }
+            if (fd) process->close((S32)fd);
+            closePair(p);
+        }
+    }
+    // Guard: no name target at all still receives.
+    {
+        Pair p;
+        if (makePair(p) && queueMsg(p.tx)) {
+            S64 rc; U32 fd = 0;
+            recvNamed(p.rx, 0, 0, rc, fd);
+            if (rc != 16 || !dataOk() || fd == 0) {
+                testFail("recvmsg with no name target returned %lld (want 16)", (long long)rc);
+            }
+            if (fd) process->close((S32)fd);
+            closePair(p);
+        }
+    }
+}
+
+// FD-108: KUnixSocketObject::sendto routes every send to the
+// stream write path, whose datagram branch discards the payload --
+// a datagram sent on a connected socketpair is reported sent and
+// never delivered. Host contract (filing lane's hostref and the
+// host's datagram semantics): the send arrives as one datagram,
+// boundaries and order preserved, an oversized datagram truncates
+// at the receive buffer with the rest discarded.
+void testSendtoDatagram64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x73000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("sendto-datagram test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 textAt = dataPage + 0x000;
+    constexpr U64 svAt   = dataPage + 0x100;
+    constexpr U64 recvAt = dataPage + 0x200;
+    constexpr U64 pollAt = dataPage + 0x300;
+    constexpr U64 patAt  = dataPage + 0x600;
+    constexpr U64 rhdrAt = dataPage + 0x1C80;
+    constexpr U64 riovAt = dataPage + 0x1C00;
+    const char* textA = "0123456789ABCDEF";
+    const char* textB = "FEDCBA9876543210";
+    memory->memcpyToGuest(textAt, textA, 16);
+    memory->memcpyToGuest(textAt + 32, textB, 16);
+    std::string pattern;
+    for (int i = 0; i < 100; i++) pattern.push_back((char)('a' + (i % 26)));
+    memory->memcpyToGuest(patAt, pattern.data(), 100);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("sendto-datagram test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        if (invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0) != 0) {
+            testFail("sendto-datagram test could not set the receiver nonblocking");
+            return false;
+        }
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close((S32)p.tx);
+        process->close((S32)p.rx);
+    };
+    // One recvmsg with a receive iovec of the given length; returns
+    // the syscall result and fills `out` with what landed.
+    auto recvOne = [&](S32 rx, U64 iovLen, std::string& out) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, iovLen);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    auto readable = [&](S32 rx) {
+        memory->writed(pollAt, (U32)rx);
+        memory->writew(pollAt + 4, 1); // POLLIN
+        memory->writew(pollAt + 6, 0);
+        return invoke(7, pollAt, 1, 0, 0) > 0 && (memory->readw(pollAt + 6) & 1);
+    };
+
+    // One datagram, delivered whole, exactly once.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 16, 0, 0, 0);
+            std::string got;
+            S64 r = recvOne(p.rx, 512, got);
+            std::string again;
+            S64 r2 = recvOne(p.rx, 512, again);
+            if (s != 16 || r != 16 || got != std::string(textA, 16) || r2 != -K_EWOULDBLOCK) {
+                testFail("datagram sendto returned %lld, recvmsg %lld (%u bytes), second recvmsg %lld (want 16, 16 with the payload, -EWOULDBLOCK)",
+                         (long long)s, (long long)r, (unsigned)got.size(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // Two datagrams keep their order and boundaries.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            invoke6(44, (U64)(U32)p.tx, textAt, 16, 0, 0, 0);
+            invoke6(44, (U64)(U32)p.tx, textAt + 32, 16, 0, 0, 0);
+            std::string g1, g2;
+            S64 r1 = recvOne(p.rx, 512, g1);
+            S64 r2 = recvOne(p.rx, 512, g2);
+            if (r1 != 16 || g1 != std::string(textA, 16) || r2 != 16 || g2 != std::string(textB, 16)) {
+                testFail("two datagrams arrived as %lld (%u bytes) then %lld (%u bytes)", (long long)r1, (unsigned)g1.size(), (long long)r2, (unsigned)g2.size());
+            }
+            closePair(p);
+        }
+    }
+    // An oversized datagram truncates at the receive buffer; the
+    // remainder is discarded, not delivered as a second message.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            invoke6(44, (U64)(U32)p.tx, patAt, 100, 0, 0, 0);
+            std::string got;
+            S64 r = recvOne(p.rx, 16, got);
+            std::string again;
+            S64 r2 = recvOne(p.rx, 512, again);
+            if (r != 16 || got != pattern.substr(0, 16) || r2 != -K_EWOULDBLOCK) {
+                testFail("oversized datagram recvmsg returned %lld (%u bytes), next %lld (want 16 truncated, then -EWOULDBLOCK)",
+                         (long long)r, (unsigned)got.size(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // A zero-length datagram is a real, readable, empty message.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 0, 0, 0, 0);
+            bool rd = readable(p.rx);
+            std::string got;
+            S64 r = recvOne(p.rx, 512, got);
+            if (s != 0 || !rd || r != 0) {
+                testFail("zero-length datagram: sendto %lld, readable %s, recvmsg %lld (want 0, readable, 0)",
+                         (long long)s, rd ? "yes" : "no", (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // MSG_DONTWAIT is an accepted flag and changes nothing.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 16, 0x40 /*MSG_DONTWAIT*/, 0, 0);
+            std::string got;
+            S64 r = recvOne(p.rx, 512, got);
+            if (s != 16 || r != 16 || got != std::string(textA, 16)) {
+                testFail("MSG_DONTWAIT datagram sendto returned %lld, recvmsg %lld", (long long)s, (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // Guard: sendto on a stream pair still delivers through the
+    // stream path.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 16, 0, 0, 0);
+            std::string got;
+            S64 r = recvOne(p.rx, 512, got);
+            if (s != 16 || r != 16 || got != std::string(textA, 16)) {
+                testFail("stream sendto returned %lld, recvmsg %lld (want 16 and the payload)", (long long)s, (long long)r);
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-109: KUnixSocketObject::recvmsg never wrote msg_name/msg_namelen
+// for a queued message, so the 64-bit bridge's initialised length --
+// the guest's offered capacity -- survived as the reported length
+// and that many bounce-buffer bytes were copied out as the sender's
+// "address". Host contract (measured, test-results/fd109-112/
+// hostref-names-fd109.c): a pathname sender is reported with length
+// 2 + strlen(path) + 1 and the literal bound bytes, an abstract
+// sender with 2 + 1 + namelen, an unbound or pair sender with
+// length 0; a short offer truncates the copy, never the length.
+void testRecvmsgSenderName64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd109XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("recvmsg-sender-name test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x74000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("recvmsg-sender-name test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 destAt = dataPage + 0x100;
+    constexpr U64 bindAt = dataPage + 0x200;
+    constexpr U64 nameAt = dataPage + 0x400;
+    constexpr U64 lenAt  = dataPage + 0x480;
+    constexpr U64 recvAt = dataPage + 0x600;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1080;
+    constexpr U64 rhdrAt = dataPage + 0x1400;
+    constexpr U64 riovAt = dataPage + 0x1480;
+    memory->memcpyToGuest(bufAt, "pair", 4);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1); // AF_UNIX
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto writeAbsAddr = [&](U64 at, const char* name) -> U32 {
+        memory->writew(at, 1);
+        U8 zero = 0;
+        memory->memcpyToGuest(at + 2, &zero, 1);
+        memory->memcpyToGuest(at + 3, name, strlen(name));
+        return (U32)(2 + 1 + strlen(name));
+    };
+    auto dgram = [&]() -> S32 { return (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    auto nameIsPath = [&](U64 at, const char* path) -> bool {
+        size_t n = strlen(path);
+        std::vector<U8> buf(n + 3);
+        memory->memcpyFromGuest(buf.data(), at, n + 3);
+        return buf[0] == 1 && buf[1] == 0 && memcmp(buf.data() + 2, path, n) == 0 && buf[2 + n] == 0;
+    };
+    auto nameIsAbs = [&](U64 at, const char* name) -> bool {
+        size_t n = strlen(name);
+        std::vector<U8> buf(n + 3);
+        memory->memcpyFromGuest(buf.data(), at, n + 3);
+        return buf[0] == 1 && buf[1] == 0 && buf[2] == 0 && memcmp(buf.data() + 3, name, n) == 0;
+    };
+    // One sendmsg of the 4 bytes at bufAt, no name, no control.
+    auto sendmsgText = [&](S32 tx) -> S64 {
+        memory->writeq(siovAt, bufAt);
+        memory->writeq(siovAt + 8, 4);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, 1);
+        return invoke(46, (U64)(U32)tx, shdrAt, 0, 0);
+    };
+    // One recvmsg offering `offer` name bytes; returns the syscall
+    // result and the reported msg_namelen.
+    auto recvNamed = [&](S32 rx, U64 offer, U32& reported) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(rhdrAt, nameAt);
+        memory->writeq(rhdrAt + 8, offer);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, 512);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        reported = memory->readd(rhdrAt + 8);
+        return rc;
+    };
+    auto boundReceiver = [&]() -> S32 {
+        S32 rx = dgram();
+        U32 len = writePathAddr(bindAt, "/fd109r");
+        invoke(87, bindAt + 2, 0, 0, 0); // unlink first (FD-113)
+        if (rx < 0 || invoke(49, (U64)(U32)rx, bindAt, len, 0) != 0) {
+            testFail("recvmsg-sender-name test could not bind its receiver");
+            return -1;
+        }
+        nonblock(rx);
+        return rx;
+    };
+
+    // A socketpair sender is unnamed: the host reports length 0.
+    // The base fabricated the offered capacity (128) instead.
+    {
+        if (invoke(53, 1, 2, 0, svAt) == 0) {
+            S32 tx = (S32)memory->readd(svAt);
+            S32 rx = (S32)memory->readd(svAt + 4);
+            nonblock(rx);
+            U32 reported = 0xFFFF;
+            S64 rc = (sendmsgText(tx) == 4) ? recvNamed(rx, 128, reported) : -999;
+            if (rc != 4 || reported != 0) {
+                testFail("pair recvmsg sender report: rc %lld, namelen %u (want 4 and 0)",
+                         (long long)rc, reported);
+            }
+            process->close(tx);
+            process->close(rx);
+        }
+    }
+    // The same report through recvfrom.
+    {
+        if (invoke(53, 1, 2, 0, svAt) == 0) {
+            S32 tx = (S32)memory->readd(svAt);
+            S32 rx = (S32)memory->readd(svAt + 4);
+            nonblock(rx);
+            memory->writed(lenAt, 128);
+            S64 s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, 0, 0);
+            S64 rc = invoke6(45, (U64)(U32)rx, recvAt, 512, 0, nameAt, lenAt);
+            if (s != 4 || rc != 4 || memory->readd(lenAt) != 0) {
+                testFail("pair recvfrom sender report: sendto %lld, rc %lld, addrlen %u (want 4, 4, 0)",
+                         (long long)s, (long long)rc, memory->readd(lenAt));
+            }
+            process->close(tx);
+            process->close(rx);
+        }
+    }
+    // A pathname-bound sender is reported with its literal bound
+    // name, length 2 + strlen + 1.
+    {
+        S32 rx = boundReceiver();
+        S32 tx = dgram();
+        U32 bl = writePathAddr(bindAt, "/fd109s");
+        invoke(87, bindAt + 2, 0, 0, 0); // unlink first (FD-113)
+        U32 dl = writePathAddr(destAt, "/fd109r");
+        if (rx >= 0 && tx >= 0 && invoke(49, (U64)(U32)tx, bindAt, bl, 0) == 0) {
+            S64 s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl);
+            U32 reported = 0;
+            S64 rc = recvNamed(rx, 128, reported);
+            if (s != 4 || rc != 4 || reported != 10 || !nameIsPath(nameAt, "/fd109s")) {
+                testFail("pathname sender report: sendto %lld, rc %lld, namelen %u (want 4, 4, 10 and /fd109s)",
+                         (long long)s, (long long)rc, reported);
+            }
+            // A 4-byte offer truncates the copy, not the length.
+            s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl);
+            rc = recvNamed(rx, 4, reported);
+            U8 head[4];
+            memory->memcpyFromGuest(head, nameAt, 4);
+            if (s != 4 || rc != 4 || reported != 10 ||
+                head[0] != 1 || head[1] != 0 || head[2] != '/' || head[3] != 'f') {
+                testFail("truncated sender report: sendto %lld, rc %lld, namelen %u (want 4, 4, 10 with the first 4 name bytes)",
+                         (long long)s, (long long)rc, reported);
+            }
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // An abstract-bound sender is reported with 2 + 1 + namelen.
+    {
+        S32 rx = boundReceiver();
+        S32 tx = dgram();
+        U32 bl = writeAbsAddr(bindAt, "fd109abs");
+        U32 dl = writePathAddr(destAt, "/fd109r");
+        if (rx >= 0 && tx >= 0 && invoke(49, (U64)(U32)tx, bindAt, bl, 0) == 0) {
+            S64 s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl);
+            U32 reported = 0;
+            S64 rc = recvNamed(rx, 128, reported);
+            if (s != 4 || rc != 4 || reported != 11 || !nameIsAbs(nameAt, "fd109abs")) {
+                testFail("abstract sender report: sendto %lld, rc %lld, namelen %u (want 4, 4, 11 and the abstract name)",
+                         (long long)s, (long long)rc, reported);
+            }
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // An unbound sender has no name to report (the host does not
+    // autobind datagram senders).
+    {
+        S32 rx = boundReceiver();
+        S32 tx = dgram();
+        U32 dl = writePathAddr(destAt, "/fd109r");
+        if (rx >= 0 && tx >= 0) {
+            S64 s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl);
+            U32 reported = 0xFFFF;
+            S64 rc = recvNamed(rx, 128, reported);
+            if (s != 4 || rc != 4 || reported != 0) {
+                testFail("unbound sender report: sendto %lld, rc %lld, namelen %u (want 4, 4, 0)",
+                         (long long)s, (long long)rc, reported);
+            }
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+}
+
+// FD-110: data queued as a message (sendmsg, or an addressed
+// datagram) was invisible to the plain read paths -- read() and
+// recvfrom() drained only the stream byte buffer, so a receiver
+// using them waited forever beside a full queue. Host contract
+// (measured, test-results/fd109-112/hostref-read-fd110.c): read on
+// a datagram socket returns the front datagram whole, segments
+// concatenated, one datagram per call, an over-long datagram
+// truncated with the rest discarded; MSG_PEEK repeats without
+// consuming; on a stream socket the queued bytes read as bytes,
+// partial reads included.
+void testReadQueuedDatagram64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x75000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("read-queued test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 segAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1080;
+    memory->memcpyToGuest(segAt + 0x00, "AB", 2);
+    memory->memcpyToGuest(segAt + 0x08, "CD", 2);
+    memory->memcpyToGuest(segAt + 0x10, "ABCDEF", 6);
+    memory->memcpyToGuest(segAt + 0x20, "HELLO", 5);
+    memory->memcpyToGuest(segAt + 0x30, "ZW", 2);
+    memory->memcpyToGuest(segAt + 0x40, "PK", 2);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("read-queued test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    // sendmsg with the given (address, length) segments.
+    auto sendmsgSegs = [&](S32 tx, std::vector<std::pair<U64, U64>> segs) -> S64 {
+        for (size_t i = 0; i < segs.size(); i++) {
+            memory->writeq(siovAt + i * 16, segs[i].first);
+            memory->writeq(siovAt + i * 16 + 8, segs[i].second);
+        }
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, (U64)segs.size());
+        return invoke(46, (U64)(U32)tx, shdrAt, 0, 0);
+    };
+    auto readStr = [&](S32 fd, U32 len, std::string& out) -> S64 {
+        S64 rc = invoke(0, (U64)(U32)fd, recvAt, len, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+
+    // Two sendmsg segments arrive concatenated through one read.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 s = sendmsgSegs(p.tx, {{segAt + 0x00, 2}, {segAt + 0x08, 2}});
+            std::string got;
+            S64 r = readStr(p.rx, 64, got);
+            std::string again;
+            S64 r2 = readStr(p.rx, 64, again);
+            if (s != 4 || r != 4 || got != "ABCD" || r2 != -K_EWOULDBLOCK) {
+                testFail("queued segments through read: sendmsg %lld, read %lld (%s), next %lld (want 4, 4 ABCD, -EWOULDBLOCK)",
+                         (long long)s, (long long)r, got.c_str(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // One datagram per read, in order.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            sendmsgSegs(p.tx, {{segAt + 0x00, 2}});
+            sendmsgSegs(p.tx, {{segAt + 0x08, 2}});
+            std::string g1, g2, g3;
+            S64 r1 = readStr(p.rx, 64, g1);
+            S64 r2 = readStr(p.rx, 64, g2);
+            S64 r3 = readStr(p.rx, 64, g3);
+            if (r1 != 2 || g1 != "AB" || r2 != 2 || g2 != "CD" || r3 != -K_EWOULDBLOCK) {
+                testFail("queued datagrams one per read: %lld (%s), %lld (%s), %lld (want AB, CD, -EWOULDBLOCK)",
+                         (long long)r1, g1.c_str(), (long long)r2, g2.c_str(), (long long)r3);
+            }
+            closePair(p);
+        }
+    }
+    // A small buffer truncates the datagram; the rest is discarded.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            sendmsgSegs(p.tx, {{segAt + 0x10, 6}});
+            std::string got;
+            S64 r = readStr(p.rx, 3, got);
+            std::string again;
+            S64 r2 = readStr(p.rx, 64, again);
+            if (r != 3 || got != "ABC" || r2 != -K_EWOULDBLOCK) {
+                testFail("queued datagram truncation: read %lld (%s), next %lld (want 3 ABC, -EWOULDBLOCK)",
+                         (long long)r, got.c_str(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // MSG_PEEK through recvfrom repeats without consuming.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            sendmsgSegs(p.tx, {{segAt + 0x40, 2}});
+            auto peek = [&]() -> S64 {
+                return invoke6(45, (U64)(U32)p.rx, recvAt, 64, 2 /*MSG_PEEK*/, 0, 0);
+            };
+            S64 r1 = peek();
+            std::vector<U8> b1(2);
+            memory->memcpyFromGuest(b1.data(), recvAt, 2);
+            S64 r2 = peek();
+            std::string got;
+            S64 r3 = readStr(p.rx, 64, got);
+            std::string again;
+            S64 r4 = readStr(p.rx, 64, again);
+            if (r1 != 2 || b1[0] != 'P' || b1[1] != 'K' || r2 != 2 ||
+                r3 != 2 || got != "PK" || r4 != -K_EWOULDBLOCK) {
+                testFail("queued MSG_PEEK: peek %lld, peek %lld, read %lld (%s), next %lld (want 2, 2, 2 PK, -EWOULDBLOCK)",
+                         (long long)r1, (long long)r2, (long long)r3, got.c_str(), (long long)r4);
+            }
+            closePair(p);
+        }
+    }
+    // A stream socket reads queued bytes as bytes, partially too.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 s = sendmsgSegs(p.tx, {{segAt + 0x20, 5}});
+            std::string g1, g2;
+            S64 r1 = readStr(p.rx, 2, g1);
+            S64 r2 = readStr(p.rx, 3, g2);
+            std::string again;
+            S64 r3 = readStr(p.rx, 64, again);
+            if (s != 5 || r1 != 2 || g1 != "HE" || r2 != 3 || g2 != "LLO" || r3 != -K_EWOULDBLOCK) {
+                testFail("queued stream bytes through read: sendmsg %lld, reads %lld (%s) %lld (%s) %lld (want 5, 2 HE, 3 LLO, -EWOULDBLOCK)",
+                         (long long)s, (long long)r1, g1.c_str(), (long long)r2, g2.c_str(), (long long)r3);
+            }
+            closePair(p);
+        }
+    }
+    // Guard: the plain stream-buffer write/read path is unchanged.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            S64 w = invoke(1, (U64)(U32)p.tx, segAt + 0x30, 2, 0);
+            std::string got;
+            S64 r = readStr(p.rx, 64, got);
+            if (w != 2 || r != 2 || got != "ZW") {
+                testFail("stream write/read guard: write %lld, read %lld (%s)", (long long)w, (long long)r, got.c_str());
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-111: a datagram addressed to a named peer had no route --
+// sendto with a destination answered -EDESTADDRREQ for every unix
+// socket, and connect() on a datagram socket set the connected flag
+// and answered -EISCONN without linking a peer, so nothing sent to
+// a name could arrive anywhere. Host contract (measured,
+// test-results/fd109-112/hostref-connect-fd111.c and
+// hostref-tail-fd111.c): addressed sends deliver; connect returns
+// 0, links the peer, and can be repeated or undone with AF_UNSPEC;
+// a header destination wins over the connected peer for that call;
+// the failure answers are ENOENT (missing path), ECONNREFUSED
+// (missing abstract name, regular file, dead socket path),
+// EPROTOTYPE (type mismatch), EOPNOTSUPP (stream sendto with a
+// destination), EINVAL (non-unix or empty destination), ENOTCONN
+// (unconnected send by any entry point). The /dev/log convention is
+// preserved: connect answers -EISCONN and the write path prints.
+void testNamedDatagram64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd111XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("named-datagram test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+    // A regular file at a socket-looking path, for ECONNREFUSED.
+    {
+        std::string f = std::string(dir) + "/fd111f";
+        FILE* fp = fopen(f.c_str(), "w");
+        if (fp) fclose(fp);
+    }
+
+    constexpr U64 dataPage = 0x76000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("named-datagram test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 destAt = dataPage + 0x100;
+    constexpr U64 bindAt = dataPage + 0x200;
+    constexpr U64 nameAt = dataPage + 0x400;
+    constexpr U64 lenAt  = dataPage + 0x480;
+    constexpr U64 recvAt = dataPage + 0x600;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1080;
+    constexpr U64 rhdrAt = dataPage + 0x1400;
+    constexpr U64 riovAt = dataPage + 0x1480;
+    memory->memcpyToGuest(bufAt + 0x00, "PING", 4);
+    memory->memcpyToGuest(bufAt + 0x10, "CNCT", 4);
+    memory->memcpyToGuest(bufAt + 0x20, "WRTE", 4);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto writeAbsAddr = [&](U64 at, const char* name) -> U32 {
+        memory->writew(at, 1);
+        U8 zero = 0;
+        memory->memcpyToGuest(at + 2, &zero, 1);
+        memory->memcpyToGuest(at + 3, name, strlen(name));
+        return (U32)(2 + 1 + strlen(name));
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    auto bindPath = [&](S32 fd, const char* path) -> bool {
+        U32 len = writePathAddr(bindAt, path);
+        return invoke(49, (U64)(U32)fd, bindAt, len, 0) == 0;
+    };
+    auto boundReceiver = [&](const char* path) -> S32 {
+        S32 rx = sock(2 /*SOCK_DGRAM*/);
+        if (rx < 0 || !bindPath(rx, path)) {
+            testFail("named-datagram test could not bind receiver %s", path);
+            return -1;
+        }
+        nonblock(rx);
+        return rx;
+    };
+    auto recvOne = [&](S32 rx, std::string& out) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, 512);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    // sendmsg of the 4 bytes at bufAt, with an optional header name
+    // already written at destAt (nameLen 0 = no name).
+    auto sendmsgNamed = [&](S32 tx, U32 nameLen) -> S64 {
+        memory->writeq(siovAt, bufAt);
+        memory->writeq(siovAt + 8, 4);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        if (nameLen) {
+            memory->writeq(shdrAt, destAt);
+            memory->writeq(shdrAt + 8, nameLen);
+        }
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, 1);
+        return invoke(46, (U64)(U32)tx, shdrAt, 0, 0);
+    };
+
+    // Addressed delivery: an unbound sender reaches the bound peer.
+    {
+        S32 rx = boundReceiver("/fd111a");
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/fd111a");
+        S64 s = (rx >= 0 && tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl) : -999;
+        std::string got;
+        S64 r = (rx >= 0) ? recvOne(rx, got) : -999;
+        if (s != 4 || r != 4 || got != "PING") {
+            testFail("addressed datagram: sendto %lld, recvmsg %lld (%s) (want 4, 4 PING)",
+                     (long long)s, (long long)r, got.c_str());
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // Connect links the peer, answers 0, and both sendto and write
+    // deliver through it; getpeername reports the peer's name.
+    {
+        S32 rx = boundReceiver("/fd111b");
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/fd111b");
+        S64 c = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        memory->writed(lenAt, 128);
+        S64 gp = (tx >= 0) ? invoke(52, (U64)(U32)tx, nameAt, lenAt, 0) : -999;
+        U32 peerLen = memory->readd(lenAt);
+        U8 head[10];
+        memory->memcpyFromGuest(head, nameAt, 10);
+        S64 s1 = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt + 0x10, 4, 0, 0, 0) : -999;
+        std::string g1;
+        S64 r1 = (rx >= 0) ? recvOne(rx, g1) : -999;
+        S64 s2 = (tx >= 0) ? invoke(1, (U64)(U32)tx, bufAt + 0x20, 4, 0) : -999;
+        std::string g2;
+        S64 r2 = (rx >= 0) ? recvOne(rx, g2) : -999;
+        if (c != 0 || gp != 0 || peerLen != 10 || head[0] != 1 || memcmp(head + 2, "/fd111b", 8) != 0 ||
+            s1 != 4 || r1 != 4 || g1 != "CNCT" || s2 != 4 || r2 != 4 || g2 != "WRTE") {
+            testFail("connected datagram: connect %lld, getpeername %lld len %u, sendto %lld/%lld (%s), write %lld/%lld (%s) (want 0, 0 len 10 /fd111b, CNCT, WRTE)",
+                     (long long)c, (long long)gp, peerLen, (long long)s1, (long long)r1, g1.c_str(),
+                     (long long)s2, (long long)r2, g2.c_str());
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // The measured failure answers for bad destinations.
+    {
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/fd111none");
+        S64 c1 = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        S64 s1 = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl) : -999;
+        U32 al = writeAbsAddr(destAt, "fd111noabs");
+        S64 c2 = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, al, 0) : -999;
+        dl = writePathAddr(destAt, "/fd111f");
+        S64 s2 = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl) : -999;
+        S32 st = sock(1 /*SOCK_STREAM*/);
+        bool bound = (st >= 0) && bindPath(st, "/fd111s");
+        dl = writePathAddr(destAt, "/fd111s");
+        S64 s3 = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl) : -999;
+        S64 c3 = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        if (!bound || c1 != -K_ENOENT || s1 != -K_ENOENT || c2 != -K_ECONNREFUSED ||
+            s2 != -K_ECONNREFUSED || s3 != -K_EPROTOTYPE || c3 != -K_EPROTOTYPE) {
+            testFail("bad datagram destinations: connect-missing %lld, sendto-missing %lld, connect-abstract %lld, sendto-file %lld, sendto-stream %lld, connect-stream %lld (want ENOENT, ENOENT, ECONNREFUSED, ECONNREFUSED, EPROTOTYPE, EPROTOTYPE)",
+                     (long long)c1, (long long)s1, (long long)c2, (long long)s2, (long long)s3, (long long)c3);
+        }
+        if (st >= 0) process->close(st);
+        if (tx >= 0) process->close(tx);
+    }
+    // AF_UNSPEC disconnects; later sends answer ENOTCONN.
+    {
+        S32 rx = boundReceiver("/fd111d");
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/fd111d");
+        S64 c1 = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        memory->writew(destAt, 0); // AF_UNSPEC
+        S64 c2 = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, 2, 0) : -999;
+        S64 s = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, 0, 0) : -999;
+        S64 w = (tx >= 0) ? invoke(1, (U64)(U32)tx, bufAt, 4, 0) : -999;
+        if (c1 != 0 || c2 != 0 || s != -K_ENOTCONN || w != -K_ENOTCONN) {
+            testFail("AF_UNSPEC disconnect: connect %lld, disconnect %lld, sendto %lld, write %lld (want 0, 0, ENOTCONN, ENOTCONN)",
+                     (long long)c1, (long long)c2, (long long)s, (long long)w);
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // A header destination wins over the connected peer, and an
+    // unconnected sendmsg needs the header name.
+    {
+        S32 r1 = boundReceiver("/fd111h1");
+        S32 r2 = boundReceiver("/fd111h2");
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/fd111h1");
+        S64 c = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        U32 nl = writePathAddr(destAt, "/fd111h2");
+        S64 s = (tx >= 0) ? sendmsgNamed(tx, nl) : -999;
+        std::string g2, g1;
+        S64 rr2 = (r2 >= 0) ? recvOne(r2, g2) : -999;
+        S64 rr1 = (r1 >= 0) ? recvOne(r1, g1) : -999;
+        S32 free2 = sock(2);
+        S64 sn = (free2 >= 0) ? sendmsgNamed(free2, 0) : -999;
+        S64 st = (free2 >= 0) ? invoke6(44, (U64)(U32)free2, bufAt, 4, 0, 0, 0) : -999;
+        nl = writePathAddr(destAt, "/fd111h1");
+        S64 sw = (free2 >= 0) ? sendmsgNamed(free2, nl) : -999;
+        std::string g3;
+        S64 rr3 = (r1 >= 0) ? recvOne(r1, g3) : -999;
+        if (c != 0 || s != 4 || rr2 != 4 || g2 != "PING" || rr1 != -K_EWOULDBLOCK ||
+            sn != -K_ENOTCONN || st != -K_ENOTCONN || sw != 4 || rr3 != 4 || g3 != "PING") {
+            testFail("header destination: connect %lld, sendmsg-named %lld -> peer2 %lld (%s), peer1 %lld; unconnected sendmsg %lld, sendto %lld, sendmsg-named %lld -> peer1 %lld (%s)",
+                     (long long)c, (long long)s, (long long)rr2, g2.c_str(), (long long)rr1,
+                     (long long)sn, (long long)st, (long long)sw, (long long)rr3, g3.c_str());
+        }
+        if (free2 >= 0) process->close(free2);
+        if (tx >= 0) process->close(tx);
+        if (r1 >= 0) process->close(r1);
+        if (r2 >= 0) process->close(r2);
+    }
+    // Abstract names deliver too, and recvfrom reports the abstract
+    // sender (FD-109 through the named path).
+    {
+        S32 rx = sock(2);
+        U32 bl = writeAbsAddr(bindAt, "fd111arx");
+        bool bound = (rx >= 0) && invoke(49, (U64)(U32)rx, bindAt, bl, 0) == 0;
+        if (bound) nonblock(rx);
+        S32 tx = sock(2);
+        bl = writeAbsAddr(bindAt, "fd111atx");
+        bool boundTx = (tx >= 0) && invoke(49, (U64)(U32)tx, bindAt, bl, 0) == 0;
+        U32 dl = writeAbsAddr(destAt, "fd111arx");
+        S64 s = (bound && boundTx) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl) : -999;
+        memory->writed(lenAt, 128);
+        S64 r = bound ? invoke6(45, (U64)(U32)rx, recvAt, 512, 0, nameAt, lenAt) : -999;
+        U8 nm[12];
+        memory->memcpyFromGuest(nm, nameAt, 12);
+        if (!bound || !boundTx || s != 4 || r != 4 || memory->readd(lenAt) != 11 ||
+            nm[0] != 1 || nm[1] != 0 || nm[2] != 0 || memcmp(nm + 3, "fd111atx", 8) != 0) {
+            testFail("abstract delivery: sendto %lld, recvfrom %lld, addrlen %u (want 4, 4, 11 and the abstract sender)",
+                     (long long)s, (long long)r, memory->readd(lenAt));
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+    // Guards: the /dev/log convention, stream sendto with a
+    // destination, and a non-unix destination.
+    {
+        S32 tx = sock(2);
+        U32 dl = writePathAddr(destAt, "/dev/log");
+        S64 c = (tx >= 0) ? invoke(42, (U64)(U32)tx, destAt, dl, 0) : -999;
+        S64 w = (tx >= 0) ? invoke(1, (U64)(U32)tx, bufAt, 1, 0) : -999;
+        S32 rx = boundReceiver("/fd111i");
+        if (invoke(53, 1, 1 /*SOCK_STREAM*/, 0, svAt) == 0) {
+            S32 stx = (S32)memory->readd(svAt);
+            S32 srx = (S32)memory->readd(svAt + 4);
+            dl = writePathAddr(destAt, "/fd111i");
+            S64 s = invoke6(44, (U64)(U32)stx, bufAt, 4, 0, destAt, dl);
+            if (s != -K_EOPNOTSUPP) {
+                testFail("stream sendto with a destination returned %lld (want -EOPNOTSUPP)", (long long)s);
+            }
+            process->close(stx);
+            process->close(srx);
+        }
+        memory->writew(destAt, 2); // AF_INET
+        for (U32 i = 0; i < 14; i++) {
+            U8 z = 0;
+            memory->memcpyToGuest(destAt + 2 + i, &z, 1);
+        }
+        S64 si = (tx >= 0) ? invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, 16) : -999;
+        if (c != -K_EISCONN || w != 1 || si != -K_EINVAL) {
+            testFail("guards: /dev/log connect %lld, write %lld, AF_INET sendto %lld (want -EISCONN, 1, -EINVAL)",
+                     (long long)c, (long long)w, (long long)si);
+        }
+        if (tx >= 0) process->close(tx);
+        if (rx >= 0) process->close(rx);
+    }
+}
+
+// FD-112: a zero-length datagram sent with sendmsg vanished --
+// KSocketObject::applySocketFilter answers the packet length (0)
+// when no filter is installed, and sendmsg's queueing tail treated
+// !kept as "filtered, queue nothing", while FD-108's sendto branch
+// already distinguished the cases. Host contract (measured,
+// test-results/fd109-112/hostref-tail-fd111.c): the empty datagram
+// is a real message -- the receiver becomes readable, recvmsg
+// returns 0 for it, descriptors sent with it are delivered, a read
+// consumes it and returns 0 ahead of a following real datagram; a
+// zero-length STREAM sendmsg queues nothing.
+void testSendmsgZeroLength64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x77000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("zero-length test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x200;
+    constexpr U64 pollAt = dataPage + 0x300;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1080;
+    constexpr U64 sctlAt = dataPage + 0x1400;
+    constexpr U64 rhdrAt = dataPage + 0x1800;
+    constexpr U64 riovAt = dataPage + 0x1880;
+    constexpr U64 rctlAt = dataPage + 0x2000;
+    memory->memcpyToGuest(bufAt, "Z", 1);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("zero-length test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    auto readable = [&](S32 rx) {
+        memory->writed(pollAt, (U32)rx);
+        memory->writew(pollAt + 4, 1); // POLLIN
+        memory->writew(pollAt + 6, 0);
+        return invoke(7, pollAt, 1, 0, 0) > 0 && (memory->readw(pollAt + 6) & 1);
+    };
+    // sendmsg with a single zero-length iovec; withFd adds an
+    // SCM_RIGHTS control carrying the pair's tx descriptor.
+    auto sendEmpty = [&](Pair& p, bool withFd) -> S64 {
+        memory->writeq(siovAt, bufAt);
+        memory->writeq(siovAt + 8, 0);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, 1);
+        if (withFd) {
+            memory->writeq(sctlAt, 20);
+            memory->writed(sctlAt + 8, 1);  // SOL_SOCKET
+            memory->writed(sctlAt + 12, 1); // SCM_RIGHTS
+            memory->writed(sctlAt + 16, (U32)p.tx);
+            memory->writeq(shdrAt + 32, sctlAt);
+            memory->writeq(shdrAt + 40, 20);
+        }
+        return invoke(46, (U64)(U32)p.tx, shdrAt, 0, 0);
+    };
+    auto recvMsg = [&](S32 rx, U32& installedFd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, 512);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        memory->writeq(rhdrAt + 32, rctlAt);
+        memory->writeq(rhdrAt + 40, 2048);
+        memory->writeq(rctlAt, 0);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        installedFd = 0;
+        if (memory->readq(rhdrAt + 40) >= 20 && memory->readd(rctlAt + 12) == 1) {
+            installedFd = memory->readd(rctlAt + 16);
+        }
+        return rc;
+    };
+
+    // The empty datagram is delivered: readable, recvmsg returns 0,
+    // and it is consumed exactly once.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 s = sendEmpty(p, false);
+            bool rd = readable(p.rx);
+            U32 fd = 0;
+            S64 r = recvMsg(p.rx, fd);
+            U32 fd2 = 0;
+            S64 r2 = recvMsg(p.rx, fd2);
+            if (s != 0 || !rd || r != 0 || r2 != -K_EWOULDBLOCK) {
+                testFail("zero-length datagram: sendmsg %lld, readable %s, recvmsg %lld, next %lld (want 0, readable, 0, -EWOULDBLOCK)",
+                         (long long)s, rd ? "yes" : "no", (long long)r, (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // Descriptors sent with the empty datagram are delivered.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 s = sendEmpty(p, true);
+            U32 fd = 0;
+            S64 r = recvMsg(p.rx, fd);
+            if (s != 0 || r != 0 || fd == 0) {
+                testFail("zero-length datagram with rights: sendmsg %lld, recvmsg %lld, fd %s (want 0, 0, installed)",
+                         (long long)s, (long long)r, fd ? "installed" : "missing");
+            }
+            if (fd) process->close((S32)fd);
+            closePair(p);
+        }
+    }
+    // A read consumes the empty datagram (returning 0) ahead of a
+    // following real one (FD-110's read path).
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 s1 = sendEmpty(p, false);
+            memory->writeq(siovAt, bufAt);
+            memory->writeq(siovAt + 8, 1);
+            for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+            memory->writeq(shdrAt + 16, siovAt);
+            memory->writeq(shdrAt + 24, 1);
+            S64 s2 = invoke(46, (U64)(U32)p.tx, shdrAt, 0, 0);
+            S64 r1 = invoke(0, (U64)(U32)p.rx, recvAt, 64, 0);
+            S64 r2 = invoke(0, (U64)(U32)p.rx, recvAt, 64, 0);
+            U8 got = 0;
+            memory->memcpyFromGuest(&got, recvAt, 1);
+            S64 r3 = invoke(0, (U64)(U32)p.rx, recvAt, 64, 0);
+            if (s1 != 0 || s2 != 1 || r1 != 0 || r2 != 1 || got != 'Z' || r3 != -K_EWOULDBLOCK) {
+                testFail("empty-then-real through read: sends %lld/%lld, reads %lld, %lld (%c), %lld (want 0/1, 0, 1 Z, -EWOULDBLOCK)",
+                         (long long)s1, (long long)s2, (long long)r1, (long long)r2, got ? got : '?', (long long)r3);
+            }
+            closePair(p);
+        }
+    }
+    // Guard: a zero-length stream sendmsg queues nothing.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 s = sendEmpty(p, false);
+            U32 fd = 0;
+            S64 r = recvMsg(p.rx, fd);
+            if (s != 0 || r != -K_EWOULDBLOCK) {
+                testFail("zero-length stream sendmsg: sendmsg %lld, recvmsg %lld (want 0, -EWOULDBLOCK)",
+                         (long long)s, (long long)r);
+            }
+            closePair(p);
+        }
+    }
+}
+
+
+// FD-113: sendto/connect to a pathname whose socket has closed
+// answers -ENOENT in the emulator, where the host answers
+// -ECONNREFUSED for as long as the filesystem node remains (host
+// contract measured, test-results/fd113-115/hostref-fd113.c: close
+// never unlinks a bound pathname; addressed sends to the stale node
+// answer ECONNREFUSED, a bind over it answers EADDRINUSE, and only
+// an explicit unlink turns the answer into ENOENT).
+void testStalePathnameSocket64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd113XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("stale-path test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x78000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("stale-path test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 addrAt = dataPage + 0x100;
+    constexpr U64 recvAt = dataPage + 0x600;
+    memory->memcpyToGuest(bufAt, "x", 1);
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    const U32 addrLen = writePathAddr(addrAt, "/fd113sock");
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+
+    // Bind a datagram socket to the path and close it. The host
+    // keeps the node; the socket behind it is gone.
+    S32 bound = sock(2 /*SOCK_DGRAM*/);
+    S64 b = invoke(49, (U64)(U32)bound, addrAt, addrLen, 0);
+    S64 c = invoke(3, (U64)(U32)bound, 0, 0, 0);
+    if (bound < 0 || b != 0 || c != 0) {
+        testFail("stale-path setup: socket %d, bind %lld, close %lld", bound, (long long)b, (long long)c);
+        return;
+    }
+
+    // Addressed sends and connects to the stale path answer
+    // ECONNREFUSED, not ENOENT.
+    {
+        S32 tx = sock(2);
+        S64 s1 = invoke6(44, (U64)(U32)tx, bufAt, 1, 0, addrAt, addrLen);
+        S32 cd = sock(2);
+        S64 c1 = invoke(42, (U64)(U32)cd, addrAt, addrLen, 0);
+        S32 cs = sock(1 /*SOCK_STREAM*/);
+        S64 c2 = invoke(42, (U64)(U32)cs, addrAt, addrLen, 0);
+        if (s1 != -K_ECONNREFUSED || c1 != -K_ECONNREFUSED || c2 != -K_ECONNREFUSED) {
+            testFail("stale pathname answers: sendto %lld, connect dgram %lld, connect stream %lld (want -ECONNREFUSED x3)",
+                     (long long)s1, (long long)c1, (long long)c2);
+        }
+        process->close(tx);
+        process->close(cd);
+        process->close(cs);
+    }
+    // A bind over the stale node answers EADDRINUSE, as over any
+    // existing filesystem entry.
+    {
+        S32 reb = sock(2);
+        S64 b2 = invoke(49, (U64)(U32)reb, addrAt, addrLen, 0);
+        if (b2 != -K_EADDRINUSE) {
+            testFail("bind over stale node: %lld (want -EADDRINUSE)", (long long)b2);
+        }
+        process->close(reb);
+    }
+    // After an explicit unlink the same send answers ENOENT, and a
+    // fresh bind restores delivery.
+    {
+        S32 tx = sock(2);
+        S64 u = invoke(87, addrAt + 2, 0, 0, 0);
+        S64 s2 = invoke6(44, (U64)(U32)tx, bufAt, 1, 0, addrAt, addrLen);
+        if (u != 0 || s2 != -K_ENOENT) {
+            testFail("after unlink: unlink %lld, sendto %lld (want 0, -ENOENT)",
+                     (long long)u, (long long)s2);
+        }
+        S32 live = sock(2);
+        S64 b3 = invoke(49, (U64)(U32)live, addrAt, addrLen, 0);
+        nonblock(live);
+        S64 s3 = invoke6(44, (U64)(U32)tx, bufAt, 1, 0, addrAt, addrLen);
+        S64 r3 = invoke6(45, (U64)(U32)live, recvAt, 16, 0, 0, 0);
+        U8 got = (r3 == 1) ? memory->readb(recvAt) : 0;
+        if (b3 != 0 || s3 != 1 || r3 != 1 || got != 'x') {
+            testFail("rebound delivery: bind %lld, sendto %lld, recv %lld, byte %c (want 0, 1, 1, x)",
+                     (long long)b3, (long long)s3, (long long)r3, got ? got : '-');
+        }
+        process->close(tx);
+        process->close(live);
+    }
+}
+
+// FD-114: stream bytes queued by sendmsg and bytes in the stream
+// buffer do not keep call order at the read paths -- the queue is
+// always served first, so write("Z") followed by sendmsg("W12")
+// reads back "W12Z". Host contract (measured,
+// test-results/fd113-115/hostref-fd114.c): write() and sendmsg()
+// bytes arrive in call order at read, recvfrom and recvmsg; a
+// descriptor sent with a chunk is reported by the recvmsg that
+// reads the chunk's first byte; a plain read across the chunk
+// discards the descriptor.
+void testStreamWriteSendmsgOrder64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x79000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("stream-order test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 segAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 shdrAt = dataPage + 0x1000;
+    constexpr U64 siovAt = dataPage + 0x1080;
+    constexpr U64 rhdrAt = dataPage + 0x1400;
+    constexpr U64 riovAt = dataPage + 0x1480;
+    constexpr U64 sctlAt = dataPage + 0x1800;
+    constexpr U64 rctlAt = dataPage + 0x1C00;
+    memory->memcpyToGuest(segAt + 0x00, "Z", 1);
+    memory->memcpyToGuest(segAt + 0x08, "W12", 3);
+    memory->memcpyToGuest(segAt + 0x10, "A", 1);
+    memory->memcpyToGuest(segAt + 0x18, "B", 1);
+    memory->memcpyToGuest(segAt + 0x20, "C", 1);
+    memory->memcpyToGuest(segAt + 0x28, "D", 1);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("stream-order test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    auto writeStr = [&](S32 fd, U64 at, U64 len) -> S64 {
+        return invoke(1, (U64)(U32)fd, at, len, 0);
+    };
+    auto sendmsgSegs = [&](S32 tx, std::vector<std::pair<U64, U64>> segs, S32 passFd) -> S64 {
+        for (size_t i = 0; i < segs.size(); i++) {
+            memory->writeq(siovAt + i * 16, segs[i].first);
+            memory->writeq(siovAt + i * 16 + 8, segs[i].second);
+        }
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(shdrAt + i, 0);
+        memory->writeq(shdrAt + 16, siovAt);
+        memory->writeq(shdrAt + 24, (U64)segs.size());
+        if (passFd >= 0) {
+            memory->writeq(sctlAt, 20);
+            memory->writed(sctlAt + 8, 1);  // SOL_SOCKET
+            memory->writed(sctlAt + 12, 1); // SCM_RIGHTS
+            memory->writed(sctlAt + 16, (U32)passFd);
+            memory->writeq(shdrAt + 32, sctlAt);
+            memory->writeq(shdrAt + 40, 20);
+        }
+        return invoke(46, (U64)(U32)tx, shdrAt, 0, 0);
+    };
+    auto readStr = [&](S32 fd, U32 len, std::string& out) -> S64 {
+        S64 rc = invoke(0, (U64)(U32)fd, recvAt, len, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    auto recvMsg = [&](S32 rx, std::string& out, U32& installedFd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(rhdrAt + i, 0);
+        memory->writeq(riovAt, recvAt);
+        memory->writeq(riovAt + 8, 512);
+        memory->writeq(rhdrAt + 16, riovAt);
+        memory->writeq(rhdrAt + 24, 1);
+        memory->writeq(rhdrAt + 32, rctlAt);
+        memory->writeq(rhdrAt + 40, 2048);
+        memory->writeq(rctlAt, 0);
+        memory->writeq(rctlAt + 8, 0);
+        memory->writeq(rctlAt + 16, 0);
+        S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        installedFd = 0;
+        if (memory->readq(rhdrAt + 40) >= 20 && memory->readd(rctlAt + 12) == 1) {
+            installedFd = memory->readd(rctlAt + 16);
+        }
+        return rc;
+    };
+
+    // write() then sendmsg(): the buffered byte is older and must
+    // be served first.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 w = writeStr(p.tx, segAt + 0x00, 1);
+            S64 s = sendmsgSegs(p.tx, {{segAt + 0x08, 3}}, -1);
+            std::string got;
+            S64 r = readStr(p.rx, 4, got);
+            std::string again;
+            S64 r2 = readStr(p.rx, 4, again);
+            if (w != 1 || s != 3 || r != 4 || got != "ZW12" || r2 != -K_EWOULDBLOCK) {
+                testFail("write-then-sendmsg order: write %lld, sendmsg %lld, read %lld (%s), next %lld (want 1, 3, 4 ZW12, -EWOULDBLOCK)",
+                         (long long)w, (long long)s, (long long)r, got.c_str(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // sendmsg() then write(): the queued bytes are older.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            S64 s = sendmsgSegs(p.tx, {{segAt + 0x08, 3}}, -1);
+            S64 w = writeStr(p.tx, segAt + 0x00, 1);
+            std::string got;
+            S64 r = readStr(p.rx, 4, got);
+            std::string again;
+            S64 r2 = readStr(p.rx, 4, again);
+            if (s != 3 || w != 1 || r != 4 || got != "W12Z" || r2 != -K_EWOULDBLOCK) {
+                testFail("sendmsg-then-write order: sendmsg %lld, write %lld, read %lld (%s), next %lld (want 3, 1, 4 W12Z, -EWOULDBLOCK)",
+                         (long long)s, (long long)w, (long long)r, got.c_str(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // A four-way interleave reads back in call order.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            writeStr(p.tx, segAt + 0x10, 1);
+            sendmsgSegs(p.tx, {{segAt + 0x18, 1}}, -1);
+            writeStr(p.tx, segAt + 0x20, 1);
+            sendmsgSegs(p.tx, {{segAt + 0x28, 1}}, -1);
+            std::string got;
+            S64 r = readStr(p.rx, 4, got);
+            if (r != 4 || got != "ABCD") {
+                testFail("four-way interleave: read %lld (%s) (want 4 ABCD)",
+                         (long long)r, got.c_str());
+            }
+            closePair(p);
+        }
+    }
+    // A descriptor sent with the second chunk is reported by the
+    // recvmsg that reads that chunk, not the one that reads the
+    // older buffered byte.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            writeStr(p.tx, segAt + 0x00, 1);
+            S64 s = sendmsgSegs(p.tx, {{segAt + 0x08, 3}}, p.tx);
+            std::string g1, g2;
+            U32 fd1 = 0, fd2 = 0;
+            S64 r1 = recvMsg(p.rx, g1, fd1);
+            S64 r2 = recvMsg(p.rx, g2, fd2);
+            if (s != 3 || r1 != 1 || g1 != "Z" || fd1 != 0 ||
+                r2 != 3 || g2 != "W12" || fd2 == 0) {
+                testFail("ancillary position: sendmsg %lld, recvmsg %lld (%s, fd %u), recvmsg %lld (%s, fd %u) (want 3, 1 Z no-fd, 3 W12 with-fd)",
+                         (long long)s, (long long)r1, g1.c_str(), fd1,
+                         (long long)r2, g2.c_str(), fd2);
+            }
+            if (fd2) process->close((S32)fd2);
+            closePair(p);
+        }
+    }
+    // A plain read across the ancillary chunk serves the bytes in
+    // order and discards the descriptor.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            writeStr(p.tx, segAt + 0x00, 1);
+            sendmsgSegs(p.tx, {{segAt + 0x08, 3}}, p.tx);
+            std::string got;
+            S64 r = readStr(p.rx, 4, got);
+            std::string rest;
+            U32 fd = 0;
+            S64 r2 = recvMsg(p.rx, rest, fd);
+            if (r != 4 || got != "ZW12" || r2 != -K_EWOULDBLOCK || fd != 0) {
+                testFail("plain read over ancillary chunk: read %lld (%s), recvmsg %lld (want 4 ZW12, -EWOULDBLOCK)",
+                         (long long)r, got.c_str(), (long long)r2);
+            }
+            closePair(p);
+        }
+    }
+    // MSG_PEEK sees the same order without consuming it.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            writeStr(p.tx, segAt + 0x00, 1);
+            sendmsgSegs(p.tx, {{segAt + 0x08, 3}}, -1);
+            S64 pk = invoke6(45, (U64)(U32)p.rx, recvAt, 2, 2 /*MSG_PEEK*/, 0, 0);
+            std::string peeked;
+            if (pk > 0) {
+                std::vector<U8> buf((size_t)pk);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)pk);
+                peeked.assign((const char*)buf.data(), (size_t)pk);
+            }
+            std::string got;
+            S64 r = readStr(p.rx, 4, got);
+            if (pk != 2 || peeked != "ZW" || r != 4 || got != "ZW12") {
+                testFail("peek order: peek %lld (%s), read %lld (%s) (want 2 ZW, 4 ZW12)",
+                         (long long)pk, peeked.c_str(), (long long)r, got.c_str());
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-115: writev on a connected datagram socket queues one
+// datagram per iovec segment, where the host delivers a single
+// datagram for the whole gather. Host contract (measured,
+// test-results/fd113-115/hostref-fd115.c): segments arrive as one
+// datagram with the segments concatenated; a zero-length segment
+// contributes nothing; a gather totalling zero queues nothing (a
+// plain zero-length write DOES queue an empty datagram -- a
+// different call); an unreadable segment answers -EFAULT with
+// nothing queued.
+void testWritevDatagram64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x7a000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("writev-datagram test could not map its fixture page");
+        return;
+    }
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT)) {
+        testFail("writev-datagram test fixture address is unexpectedly mapped");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 segAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    memory->memcpyToGuest(segAt + 0x00, "AB", 2);
+    memory->memcpyToGuest(segAt + 0x08, "CD", 2);
+    memory->memcpyToGuest(segAt + 0x10, "EF", 2);
+    memory->memcpyToGuest(segAt + 0x18, "GH", 2);
+    memory->memcpyToGuest(segAt + 0x20, "IJ", 2);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("writev-datagram test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    auto writevSegs = [&](S32 fd, std::vector<std::pair<U64, U64>> segs) -> S64 {
+        for (size_t i = 0; i < segs.size(); i++) {
+            memory->writeq(iovAt + i * 16, segs[i].first);
+            memory->writeq(iovAt + i * 16 + 8, segs[i].second);
+        }
+        return invoke(20, (U64)(U32)fd, iovAt, (U64)segs.size(), 0);
+    };
+    auto recvStr = [&](S32 fd, std::string& out) -> S64 {
+        S64 rc = invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    auto expectOneDatagram = [&](Pair& p, S64 wrote, S64 wantWrote, const char* want, const char* label) {
+        std::string got;
+        S64 r = recvStr(p.rx, got);
+        std::string again;
+        S64 r2 = recvStr(p.rx, again);
+        if (wrote != wantWrote || r != (S64)strlen(want) || got != want || r2 != -K_EWOULDBLOCK) {
+            testFail("%s: writev %lld, recv %lld (%s), next %lld (want %lld, %s, -EWOULDBLOCK)",
+                     label, (long long)wrote, (long long)r, got.c_str(), (long long)r2,
+                     (long long)wantWrote, want);
+        }
+    };
+
+    // Two segments arrive as one datagram.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x00, 2}, {segAt + 0x08, 2}});
+            expectOneDatagram(p, w, 4, "ABCD", "writev two segments");
+            closePair(p);
+        }
+    }
+    // A zero-length segment in the middle contributes nothing.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x00, 2}, {segAt + 0x10, 0}, {segAt + 0x08, 2}});
+            expectOneDatagram(p, w, 4, "ABCD", "writev zero-length middle segment");
+            closePair(p);
+        }
+    }
+    // Three segments arrive as one datagram.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x10, 2}, {segAt + 0x18, 2}, {segAt + 0x20, 2}});
+            expectOneDatagram(p, w, 6, "EFGHIJ", "writev three segments");
+            closePair(p);
+        }
+    }
+    // A gather totalling zero queues nothing (unlike a plain
+    // zero-length write, which queues an empty datagram).
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x00, 0}, {segAt + 0x08, 0}});
+            std::string got;
+            S64 r = recvStr(p.rx, got);
+            if (w != 0 || r != -K_EWOULDBLOCK) {
+                testFail("writev all-zero gather: writev %lld, recv %lld (want 0, -EWOULDBLOCK)",
+                         (long long)w, (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // A zero-length segment is skipped without touching its base,
+    // even a bad one.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = writevSegs(p.tx, {{unmapped, 0}, {segAt + 0x00, 2}});
+            expectOneDatagram(p, w, 2, "AB", "writev bad zero-length segment skipped");
+            closePair(p);
+        }
+    }
+    // An unreadable segment answers -EFAULT and queues nothing:
+    // the gather is atomic.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x00, 2}, {unmapped, 2}});
+            std::string got;
+            S64 r = recvStr(p.rx, got);
+            if (w != -K_EFAULT || r != -K_EWOULDBLOCK) {
+                testFail("writev bad segment: writev %lld, recv %lld (want -EFAULT, -EWOULDBLOCK)",
+                         (long long)w, (long long)r);
+            }
+            closePair(p);
+        }
+    }
+    // Guard: stream writev still delivers its bytes in order.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 w = writevSegs(p.tx, {{segAt + 0x00, 2}, {segAt + 0x08, 2}});
+            S64 r = invoke(0, (U64)(U32)p.rx, recvAt, 4, 0);
+            std::string got;
+            if (r > 0) {
+                std::vector<U8> buf((size_t)r);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)r);
+                got.assign((const char*)buf.data(), (size_t)r);
+            }
+            if (w != 4 || r != 4 || got != "ABCD") {
+                testFail("stream writev guard: writev %lld, read %lld (%s) (want 4, 4 ABCD)",
+                         (long long)w, (long long)r, got.c_str());
+            }
+            closePair(p);
+        }
+    }
+}
+
+// FD-116: a plain zero-length write on a 64-bit datagram socket
+// queues a real empty datagram, behind the descriptor checks the
+// host runs first. Host contract (measured,
+// test-results/fd116-117/hostref-fd116.c, kernel
+// 6.17.0-1020-oracle): write(fd, buf, 0) on a connected datagram
+// socket returns 0 and the peer's recv returns 0 for an empty
+// datagram; an unknown descriptor answers -EBADF; a wrong-mode
+// descriptor answers the mode answer (this tree's write family
+// answers -K_EINVAL, the nonzero path's standing value); a
+// buffer address outside the user range answers -EFAULT with
+// nothing queued, while NULL and unmapped user addresses queue
+// the empty datagram; an unconnected datagram socket answers
+// -ENOTCONN; a stream socket queues nothing and answers 0, and
+// a stream socket whose peer is gone answers -EPIPE. On the
+// base, sys_write64 returns 0 on a zero count before resolving
+// the descriptor, so every case below that expects a queue or
+// an error fails.
+void testWriteZeroLength64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x7d000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("write-zero-length test could not map its fixture page");
+        return;
+    }
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT)) {
+        testFail("write-zero-length test fixture address is unexpectedly mapped");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    memory->memcpyToGuest(bufAt, "Z", 1);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("write-zero-length test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    auto write0 = [&](S32 fd, U64 buf) -> S64 {
+        return invoke(1, (U64)(U32)fd, buf, 0, 0);
+    };
+    auto recvRc = [&](S32 fd) -> S64 {
+        return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0);
+    };
+    // A zero-length write that must queue exactly one empty
+    // datagram: write answers 0, the first recv answers 0 (the
+    // empty datagram), the next answers -EWOULDBLOCK.
+    auto expectEmptyDatagram = [&](Pair& p, S64 w, const char* label) {
+        S64 r1 = recvRc(p.rx);
+        S64 r2 = recvRc(p.rx);
+        if (w != 0 || r1 != 0 || r2 != -K_EWOULDBLOCK) {
+            testFail("%s: write0 %lld, recv %lld, next %lld (want 0, 0, -EWOULDBLOCK)",
+                     label, (long long)w, (long long)r1, (long long)r2);
+        }
+    };
+    // A zero-length write that must queue nothing.
+    auto expectNothingQueued = [&](Pair& p, S64 w, S64 wantW, const char* label) {
+        S64 r1 = recvRc(p.rx);
+        if (w != wantW || r1 != -K_EWOULDBLOCK) {
+            testFail("%s: write0 %lld, recv %lld (want %lld, -EWOULDBLOCK)",
+                     label, (long long)w, (long long)r1, (long long)wantW);
+        }
+    };
+
+    // Connected datagram pair, valid buffer: one empty datagram
+    // per zero-length write.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 w = write0(p.tx, bufAt);
+            expectEmptyDatagram(p, w, "dgram write0 valid buffer");
+            w = write0(p.tx, bufAt);
+            expectEmptyDatagram(p, w, "dgram write0 valid buffer, second");
+            closePair(p);
+        }
+    }
+    // NULL and unmapped user buffers queue the empty datagram
+    // too: a zero-length import checks only that the address is
+    // a user address.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = write0(p.tx, 0);
+            expectEmptyDatagram(p, w, "dgram write0 NULL buffer");
+            w = write0(p.tx, unmapped);
+            expectEmptyDatagram(p, w, "dgram write0 unmapped buffer");
+            closePair(p);
+        }
+    }
+    // A buffer address outside the user range answers -EFAULT
+    // and queues nothing.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = write0(p.tx, 0xFFFFFFFFFFFFFFFFULL);
+            expectNothingQueued(p, w, -K_EFAULT, "dgram write0 buffer -1");
+            closePair(p);
+        }
+    }
+    // The descriptor checks run before the queue: an unknown
+    // descriptor answers -EBADF (the base answered 0).
+    if (write0(9999, bufAt) != -K_EBADF) {
+        testFail("write0 on an unknown descriptor: want -EBADF");
+    }
+    // A wrong-mode descriptor answers the write family's mode
+    // answer and queues nothing; a write-only descriptor over
+    // the same socket queues the empty datagram.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            KFileDescriptorPtr txDesc = process->getFileDescriptor((FD)p.tx);
+            if (!txDesc) {
+                testFail("write-zero-length test could not fetch the pair descriptor");
+            } else {
+                KFileDescriptorPtr roDesc = process->allocFileDescriptor(txDesc->kobject, K_O_RDONLY, 0, -1, 0);
+                S64 w = write0(roDesc->handle, bufAt);
+                expectNothingQueued(p, w, -K_EBADF, "dgram write0 read-only descriptor");
+                process->close(roDesc->handle);
+                KFileDescriptorPtr woDesc = process->allocFileDescriptor(txDesc->kobject, K_O_WRONLY, 0, -1, 0);
+                w = write0(woDesc->handle, bufAt);
+                expectEmptyDatagram(p, w, "dgram write0 write-only descriptor");
+                process->close(woDesc->handle);
+            }
+            closePair(p);
+        }
+    }
+    // An unconnected datagram socket answers -ENOTCONN.
+    {
+        S32 fd = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        if (fd < 0) {
+            testFail("write-zero-length test could not create a datagram socket");
+        } else {
+            if (write0(fd, bufAt) != -K_ENOTCONN) {
+                testFail("write0 on an unconnected datagram socket: want -ENOTCONN");
+            }
+            process->close(fd);
+        }
+    }
+    // A stream socket queues nothing and answers 0.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 w = write0(p.tx, bufAt);
+            expectNothingQueued(p, w, 0, "stream write0");
+            closePair(p);
+        }
+    }
+    // A stream socket whose peer is gone answers -EPIPE. The
+    // socket layer keys its broken-pipe split (a clean -EPIPE
+    // for a 64-bit thread vs the 32-bit SIGPIPE path) on the
+    // current thread's process width, so flag the shared test
+    // process 64-bit for this case, as a real 64-bit guest
+    // process would be (the testDevInputJoystick pattern).
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            process->close(p.rx);
+            bool was64 = process->is64Bit;
+            process->is64Bit = true;
+            S64 w0 = write0(p.tx, bufAt);
+            S64 w1 = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            process->is64Bit = was64;
+            if (w0 != -K_EPIPE || w1 != -K_EPIPE) {
+                testFail("stream socket with a closed peer: write0 %lld, write1 %lld (want -EPIPE, -EPIPE)",
+                         (long long)w0, (long long)w1);
+            }
+            process->close(p.tx);
+        }
+    }
+    // A datagram socket whose peer is gone: the object is
+    // destroyed with the descriptor, so the write answers
+    // -ENOTCONN, the same answer the nonzero write gives on
+    // this tree (the host's one-shot -ECONNREFUSED for the
+    // first send after a peer close is the socket layer's
+    // peer accounting for every count, not this dispatcher's
+    // zero-count shape).
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            process->close(p.rx);
+            if (write0(p.tx, bufAt) != -K_ENOTCONN) {
+                testFail("write0 on a datagram socket with a closed peer: want -ENOTCONN");
+            }
+            process->close(p.tx);
+        }
+    }
+}
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
@@ -5065,5 +7672,6 @@ void testReadv32Syscall() {
     rmdir(dir);
 }
 #endif
+
 
 #endif
