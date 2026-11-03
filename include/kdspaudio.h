@@ -39,6 +39,12 @@ public:
 	virtual void setFragmentSize(U32 size) = 0;
 	virtual U32 getBufferSize() = 0;
 	virtual U32 getBufferCapacity() = 0;
+	// Bytes accepted by writeAudio that the output has not consumed yet,
+	// in writeAudio's input units. DevDsp derives the playback position
+	// from this (played = written - queued). The default is the queued
+	// size the backend already reports; the SDL backend overrides it
+	// for the bwPump bridge, whose real queue is the JS-side ring.
+	virtual U32 getQueuedBytes() { return getBufferSize(); }
 	virtual bool isBwPump() { return false; }
 
 	// Capture (kernel round 3B). The base implementations report capture as

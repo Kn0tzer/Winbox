@@ -134,8 +134,11 @@ U32 KFile::read(KThread* thread, U32 buffer, U32 len) {
 U32 KFile::readNative(U8* buffer, U32 len) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(filePosMutex);
     U32 result = this->openFile->readNative(buffer, len);
-    // FD-59: the 64-bit read/readv paths complete here; a read that
-    // delivered bytes is an access (IN_ACCESS).
+    // FD-59: the 64-bit read path completes here; a read that
+    // delivered bytes is an access (IN_ACCESS). The vectored
+    // readv walk runs under KInotify::SuppressAccessNotifications
+    // and raises its own single event per call (FD-83), so this
+    // per-segment notification is coalesced away there.
     if ((S32)result > 0 && this->openFile->node) {
         KInotify::notifyAccessed(this->openFile->node.get());
     }

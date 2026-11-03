@@ -225,6 +225,8 @@ public:
     // lines that print through c_str() (which would stop at argv[0]).
     BString commandLineForLog() const;
     void clone(const KProcessPtr& from, U32 shareFlags = 0);
+    // Returns MAX_NUMBER_OF_FILES when no descriptor is available at
+    // or after `after` (FD-05: exhaustion is answered, never panicked).
     U32 getNextFileDescriptorHandle(int after);
     U32 alloc(KThread* thread, U32 len);
     void free(U32 address);
@@ -351,6 +353,9 @@ public:
     U32 utimesat64(FD dirfd, BString path, U32 times, U32 flags);
     U32 write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
     U32 writev(KThread* thread, FD handle, U32 iov, S32 iovcnt);
+    U32 readv(KThread* thread, FD handle, U32 iov, S32 iovcnt);
+    U32 pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPwritev2);
+    U32 preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPreadv2);
     U32 sendFile(U32 outFd, U32 inFd, U32 offset, U32 count);
     U32 memfd_create(BString name, U32 flags);
     U32 timerfd_create(U32 clockid, U32 flags);
@@ -493,6 +498,7 @@ public:
     BHashTable<U32, U32> keySymToName;
 private:
     KFdTable fds;
+    bool fdTableExhaustionLogged = false; // FD-05: one exhaustion log line per process
 
     user_desc ldt[LDT_ENTRIES];
     BOXEDWINE_MUTEX ldtMutex;

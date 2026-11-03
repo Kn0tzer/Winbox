@@ -860,10 +860,48 @@ static U32 syscall_msync(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+// FD-92: slot 145 was empty and answered -ENOSYS; the 64-bit
+// dispatcher has its own readv (sys_readv64), this is the 32-bit
+// route into the shared KProcess::readv.
+static U32 syscall_readv(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "readv: fd=%d iov=0x%X iovcnt=%d", ARG1, ARG2, ARG3);
+    U32 result = cpu->thread->process->readv(cpu->thread, ARG1, ARG2, ARG3);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
 static U32 syscall_writev(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_WRITE, cpu, "writev: filds=%d iov=0x%X iovcn=%d", ARG1, ARG2, ARG3);    
     U32 result = cpu->thread->process->writev(cpu->thread, ARG1, ARG2, ARG3);
     SYS_LOG(SYSCALL_WRITE, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_pwritev(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_WRITE, cpu, "pwritev: fd=%d iov=0x%X iovcnt=%d off=0x%X%X", ARG1, ARG2, ARG3, ARG5, ARG4);
+    U32 result = cpu->thread->process->pwritev(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, 0, false);
+    SYS_LOG(SYSCALL_WRITE, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_pwritev2(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_WRITE, cpu, "pwritev2: fd=%d iov=0x%X iovcnt=%d off=0x%X%X flags=%d", ARG1, ARG2, ARG3, ARG5, ARG4, ARG6);
+    U32 result = cpu->thread->process->pwritev(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, ARG6, true);
+    SYS_LOG(SYSCALL_WRITE, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_preadv(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "preadv: fd=%d iov=0x%X iovcnt=%d off=0x%X%X", ARG1, ARG2, ARG3, ARG5, ARG4);
+    U32 result = cpu->thread->process->preadv(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, 0, false);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
+static U32 syscall_preadv2(CPU* cpu, U32 eipCount) {
+    SYS_LOG1(SYSCALL_READ, cpu, "preadv2: fd=%d iov=0x%X iovcnt=%d off=0x%X%X flags=%d", ARG1, ARG2, ARG3, ARG5, ARG4, ARG6);
+    U32 result = cpu->thread->process->preadv(cpu->thread, ARG1, ARG2, (S32)ARG3, ARG4 | ((U64)ARG5) << 32, ARG6, true);
+    SYS_LOG(SYSCALL_READ, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
 
@@ -1024,6 +1062,14 @@ static U32 syscall_pread64(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_pwrite64(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_WRITE, cpu, "pwrite64: fd=%d buf=%X len=%d offset=%d", ARG1, ARG2, ARG3, ARG4);
+    // FD-93: the host answers a negative offset with EINVAL ahead
+    // of even the descriptor check (measured on the 6.17 host
+    // kernel; ARG5 is the offset's high word, so its sign is the
+    // offset's). KProcess::pwrite64 orders its own mode answer
+    // behind the offset check the same way.
+    if ((S32)ARG5 < 0) {
+        return (U32)-K_EINVAL;
+    }
     U32 result = cpu->thread->process->pwrite64(cpu->thread, ARG1, ARG2, ARG3, ARG4 | ((U64)ARG5) << 32);
     SYS_LOG(SYSCALL_WRITE, cpu, " result=%d(0x%X)\n", result, result);
     return result;
@@ -1460,6 +1506,78 @@ static U32 syscall_futex_time64(CPU* cpu, U32 eipCount) {
     U32 result = cpu->thread->futex(ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, true);
     SYS_LOG1(SYSCALL_FUTEX, cpu, "futex time64   end: address=%X op=%s value=%d result=%d(0x%X)\n", ARG1, getFutexOp(ARG2), ARG3, result, result);
     return result;
+}
+
+static U32 syscall_futex_waitv(CPU* cpu, U32 eipCount) {
+    // futex_waitv(waiters, nr_futexes, flags, timeout, clockid) — 449.
+    // Validation and the absolute-timeout conversion follow the
+    // host-measured contract recorded for FD-23: the per-call flags must
+    // be 0; nr in [1,128]; clockid CLOCK_REALTIME (0) or CLOCK_MONOTONIC
+    // (1) with an absolute timeout; every entry a U32 futex (the 2-bit
+    // size field must be FUTEX_32), val fitting 32 bits, __reserved 0,
+    // uaddr 4-byte aligned; an unmapped waiters array or futex word
+    // answers -EFAULT. Parse validation of ALL entries precedes any
+    // address pinning, as on the host. The wait itself lives in
+    // KThread::futexWaitv.
+    const U32 waitersAddr = ARG1;
+    const U32 nr = ARG2;
+    const U32 flags = ARG3;
+    const U32 timeoutAddr = ARG4;
+    const U32 clockid = ARG5;
+    if (flags != 0) return -K_EINVAL;
+    if (nr < 1 || nr > 128) return -K_EINVAL;
+    if (clockid != 0 && clockid != 1) return -K_EINVAL;
+    KMemory* memory = cpu->thread->memory;
+    U32 expireMs = 0xFFFFFFFF;
+    if (timeoutAddr) {
+        if (!memory->canRead(timeoutAddr, 8)) return -K_EFAULT;
+        S32 sec = (S32)memory->readd(timeoutAddr);
+        U32 nsec = memory->readd(timeoutAddr + 4);
+        if (sec < 0 || nsec >= 1000000000) return -K_EINVAL;
+        U64 deadlineMs = (U64)(U32)sec * 1000 + nsec / 1000000;
+        if (clockid == 0) {
+            // Wall-clock deadline -> millies-since-start clock, by delta
+            // from now (same pattern as the 64-bit handler).
+            U64 nowMs = KSystem::getSystemTimeAsMicroSeconds() / 1000;
+            deadlineMs = deadlineMs >= nowMs
+                ? KSystem::getMilliesSinceStart() + (deadlineMs - nowMs)
+                : 0; // already past: reads as expired at the first poll
+        }
+        expireMs = deadlineMs > 0xFFFFFFFE ? 0xFFFFFFFE : (U32)deadlineMs;
+    }
+    if (!memory->canRead(waitersAddr, nr * 24)) return -K_EFAULT;
+    U64 vals[128];
+    U64 addrs[128];
+    U32 eflags[128];
+    for (U32 i = 0; i < nr; i++) {
+        U32 base = waitersAddr + i * 24;
+        vals[i] = memory->readq(base);
+        addrs[i] = memory->readq(base + 8);
+        eflags[i] = memory->readd(base + 16);
+        U32 reserved = memory->readd(base + 20);
+        if (reserved != 0) return -K_EINVAL;
+        if (eflags[i] & ~0x87) return -K_EINVAL; // valid: size 0x03 | FUTEX2_NUMA 0x04 | FUTEX_PRIVATE 0x80
+        if ((eflags[i] & 0x03) != 0x02) return -K_EINVAL; // FUTEX_32 only
+        if (vals[i] > 0xFFFFFFFFULL) return -K_EINVAL;
+        if (addrs[i] & 3) return -K_EINVAL;
+    }
+    KThread::FutexWaitvEntry entries[128];
+    for (U32 i = 0; i < nr; i++) {
+        if (addrs[i] > 0xFFFFFFFFULL) return -K_EFAULT;
+        U32 addr = (U32)addrs[i];
+        // Same keying as KThread::futex: the guest address for a private
+        // futex, the host RAM pointer for a shared one. The RAM pointer
+        // is resolved and checked HERE — futex()'s unchecked lookup
+        // kpanics on an unmapped word, which a waitv entry must never be
+        // able to reach.
+        if (!memory->canRead(addr, 4)) return -K_EFAULT;
+        U8* ram = memory->getRamPtr(addr, 4, false, true);
+        if (!ram) return -K_EFAULT;
+        entries[i].key = (eflags[i] & 0x80) ? (U64)addr : (U64)ram;
+        entries[i].word = (U32*)ram;
+        entries[i].val = (U32)vals[i];
+    }
+    return cpu->thread->futexWaitv(entries, nr, expireMs);
 }
 
 static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {    
@@ -2251,7 +2369,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_newselect,  // 142 __NR_newselect
     syscall_flock,      // 143 __NR_flock
     syscall_msync,      // 144 __NR_msync
-    nullptr,                  // 145
+    syscall_readv,      // 145 __NR_readv
     syscall_writev,     // 146  __NR_writev
     nullptr,                  // 147
     syscall_fdatasync,  // 148 __NR_fdatasync
@@ -2439,8 +2557,8 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 330
     syscall_pipe2,      // 331 __NR_pipe2
     syscall_inotify_init1,    // 332 __NR_inotify_init1
-    nullptr,                  // 333
-    nullptr,                  // 334
+    syscall_preadv,           // 333 __NR_preadv
+    syscall_pwritev,          // 334 __NR_pwritev
     nullptr,                  // 335
     nullptr,                  // 336
     nullptr,                  // 337
@@ -2483,8 +2601,8 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 374
     nullptr,                  // 375
     nullptr,                  // 376
-    nullptr,                  // 377
-    nullptr,                  // 378
+    syscall_preadv2,          // 377 __NR_preadv2
+    syscall_pwritev2,         // 378 __NR_pwritev2
     nullptr,                  // 379
     nullptr,                  // 380
     nullptr,                  // 381
@@ -2545,7 +2663,29 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 436
     nullptr,                  // 437
     nullptr,                  // 438
-    syscall_faccessat2        // 439 __NR_faccessat2
+    syscall_faccessat2,       // 439 __NR_faccessat2
+    nullptr,                  // 440 __NR_process_madvise
+    nullptr,                  // 441 __NR_epoll_pwait2
+    nullptr,                  // 442 __NR_mount_setattr
+    nullptr,                  // 443 __NR_quotactl_fd
+    nullptr,                  // 444 __NR_landlock_create_ruleset
+    nullptr,                  // 445 __NR_landlock_add_rule
+    nullptr,                  // 446 __NR_landlock_restrict_self
+    nullptr,                  // 447 __NR_memfd_secret
+    nullptr,                  // 448 __NR_process_mrelease
+    syscall_futex_waitv,      // 449 __NR_futex_waitv
+    nullptr,                  // 450 __NR_set_mempolicy_home_node
+    nullptr,                  // 451 __NR_cachestat
+    nullptr,                  // 452 __NR_fchmodat2
+    nullptr,                  // 453 __NR_map_shadow_stack
+    nullptr,                  // 454 __NR_futex_wake
+    nullptr,                  // 455 __NR_futex_wait
+    nullptr,                  // 456 __NR_futex_requeue
+    nullptr,                  // 457 __NR_statmount
+    nullptr,                  // 458 __NR_listmount
+    nullptr,                  // 459 __NR_lsm_get_self_attr
+    nullptr,                  // 460 __NR_lsm_set_self_attr
+    nullptr                   // 461 __NR_lsm_list_modules
 };
 
 #ifndef BOXEDWINE_MULTI_THREADED
@@ -2596,7 +2736,7 @@ void ksyscall(CPU* cpu, U32 eipCount) {
         cpu->thread->kernelTime += KSystem::getMicroCounter() - startTime;
         return;
     }
-    if (EAX>439) {
+    if (EAX >= sizeof(syscallFunc) / sizeof(syscallFunc[0])) {
         result = -K_ENOSYS;
         kdebug("no syscall for %d", EAX);
     } else if (!syscallFunc[EAX]) {

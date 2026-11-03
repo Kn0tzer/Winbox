@@ -27,7 +27,7 @@ using U32=uint32_t;
 #define __EMSCRIPTEN__ 1
 #define BOXEDWINE_GUEST_X64 1
 constexpr U32 K_AF_UNIX=1,K_AF_INET=2,K_AF_NETLINK=16,K_AF_INET6=10;
-constexpr U32 K_SOCK_STREAM=1,K_SOCK_DGRAM=2,K_EAFNOSUPPORT=97,K_O_RDWR=2;
+constexpr U32 K_SOCK_STREAM=1,K_SOCK_DGRAM=2,K_EAFNOSUPPORT=97,K_O_RDWR=2,K_EMFILE=24;
 struct Object {virtual ~Object()=default;};
 struct KUnixSocketObject:Object {KUnixSocketObject(U32,U32,U32){}};
 struct KNetLinkObject:Object {KNetLinkObject(U32,U32,U32){}};

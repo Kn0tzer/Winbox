@@ -575,6 +575,7 @@ static const char* vk64SpirvCapabilityName(U32 cap) {
         case 65: return nullptr;   // subgroup operations only when the page device carries the WebGPU
         case 66: return nullptr;   // subgroups feature (see vk64SubgroupSupportedOperations).
         case 67: return "GroupNonUniformClustered"; // naga rejects the capability outright (verified)
+        case 29: return "SampledImageArrayDynamicIndexing"; // named: passes in the loop when the R15 mirror proves no dynamically-indexable image array survives (spirvfix R19 strips the declaration in exactly that state); a surviving image array keeps this named rejection (FD-87)
         // Descriptor-indexing capabilities: the descriptor model keeps ONE resource
         // per binding number, so runtime indexing into a resource array cannot be
         // honoured; the loud half of the "exception" rows in vk-capabilities.json.
@@ -1267,6 +1268,10 @@ inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
             return scanIds(k, n);
         }
         case 16: return hitAt(0);                       // OpExecutionMode: entry id
+        case 331: {                                     // OpExecutionModeId: entry id, mode literal, then id parameters (constants)
+            int h = hitAt(0); if (h >= 0) return h;
+            return scanIds(2, n);
+        }
         case 71: case 72: return hitAt(0);              // OpDecorate / OpMemberDecorate: target / struct id
         case 330: return -1;                            // OpModuleProcessed: string words only
         case 5632: case 5633: return hitAt(0);          // OpDecorateString / OpMemberDecorateString: target id, then literals + string
@@ -1317,6 +1322,24 @@ inline int idOperandUseIndex(const Module& m, const Insn& in, U32 id) {
     // Unlisted opcodes: the historical every-operand scan from the
     // first value operand -- exact for them, or fail-closed.
     return scanIds(start, n);
+}
+
+// Enumerating sibling of idOperandUseIndex (mirror of operandRefIds
+// in spirvfix.mjs): inserts every id value `in` references in an
+// id-typed operand position into `out`, under exactly the walker's
+// per-op table. The skip-5302 sweep simulation in analyzeArrays
+// builds its live set from this enumeration instead of scanning raw
+// words, so a literal word that happens to equal a swept type id --
+// an ExtInst instruction number, a VectorShuffle component, an
+// OpSwitch case literal, an OpLine line number, the leading
+// literals of OpFunction / OpVariable, an OpArrayLength index, a
+// storage-class word -- is not a reference (FD-78).
+inline void operandRefIds(const Module& m, const Insn& in, std::unordered_set<U32>& out) {
+    for (U32 k = 0; k < in.n; k++) {
+        const U32 v = in.w[k];
+        if (out.count(v)) continue;
+        if (idOperandUseIndex(m, in, v) >= 0) out.insert(v);
+    }
 }
 
 // R15c (FD-70): the word-cone audit for an integer-addressed root
@@ -1709,11 +1732,12 @@ inline TexelCone analyzeTexelCone(const Module& m, U32 rootPtrId, U32 imageTypeI
     return out;
 }
 
-struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false; std::set<U32> servableVars; std::map<U32, U32> texelAtomicByVar; };
+struct ArrayVerdict { bool hasDescriptorArrays = false, servable = false, skip5302 = false, imageDynIndexServable = false; std::set<U32> servableVars; std::map<U32, U32> texelAtomicByVar; };
 inline ArrayVerdict analyzeArrays(const Module& m) {
     ArrayVerdict out;
-    struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; U32 texelAtomicWrites = 0; };
+    struct Arr { const Insn* varInsn; U32 pointeeRA; bool servable; U32 elemOp = 0; U32 texelAtomicWrites = 0; };
     std::vector<Arr> arrs;
+    std::vector<const Insn*> deadVarInsns; // FD-87: descriptor arrays no instruction references (spirvfix R18 strips the variable before R15a runs, so the mirror treats it as removed, not as an unservable array)
     for (const Insn& in : m.insns) {
         if (in.op != 59) continue;
         auto pt = m.byId.find(in.resultType); if (pt == m.byId.end()) continue;
@@ -1725,7 +1749,19 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
         auto et = m.byId.find(ra.w[1]); if (et == m.byId.end()) continue;
         const Insn& e = m.insns[et->second];
         if (e.op != 25 && e.op != 26 && e.op != 27) continue; // image / sampler / sampled image
-        Arr a; a.varInsn = &in; a.pointeeRA = p.w[2]; a.servable = false;
+        // FD-87 (mirrors spirvfix R18): a descriptor array variable
+        // with no use anywhere in the function region is dead -- the
+        // fixup layer deletes it (and its orphaned types) before the
+        // R15a analysis runs, so it neither gates the capability
+        // verdicts nor counts as a surviving descriptor array in the
+        // sweep simulation below.
+        {
+            bool used = false;
+            for (size_t ii = m.firstFunc; ii < m.insns.size() && !used; ii++)
+                if (findIdUse(m, m.insns[ii], in.resultId) >= 0) used = true;
+            if (!used) { deadVarInsns.push_back(&in); continue; }
+        }
+        Arr a; a.varInsn = &in; a.pointeeRA = p.w[2]; a.servable = false; a.elemOp = e.op;
         out.hasDescriptorArrays = true;
         // Writable storage-image arrays (Sampled==2, no NonWritable) are
         // classified by the same signature/uses rules as read-only ones:
@@ -1773,7 +1809,27 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
         if (a.servable) out.servableVars.insert(in.resultId);
         if (a.texelAtomicWrites > 0) out.texelAtomicByVar[in.resultId] = a.texelAtomicWrites;
     }
-    if (!out.hasDescriptorArrays) return out;
+    // FD-87 (mirrors spirvfix R19): capability 29 is admissible exactly
+    // when no dynamically-indexable image array survives the fixup
+    // layer -- every USED runtime descriptor array over an image /
+    // sampled-image element is R15a-servable (dead ones are R18-stripped
+    // and absent from arrs), and the module carries no fixed-size array
+    // over an image / sampled-image element (fixed image arrays are
+    // not served and keep the named rejection).
+    {
+        bool fixedImageArray = false;
+        for (const Insn& in : m.insns) {
+            if (in.op != 28) continue; // OpTypeArray
+            auto et = m.byId.find(in.w[1]); if (et == m.byId.end()) continue;
+            const Insn& e = m.insns[et->second];
+            if (e.op == 25 || e.op == 27) { fixedImageArray = true; break; }
+        }
+        bool rtImageOk = true;
+        for (const Arr& a : arrs)
+            if ((a.elemOp == 25 || a.elemOp == 27) && !a.servable) { rtImageOk = false; break; }
+        out.imageDynIndexServable = !fixedImageArray && rtImageOk;
+    }
+    if (!out.hasDescriptorArrays && deadVarInsns.empty()) return out;
     out.servable = true;
     for (const Arr& a : arrs) if (!a.servable) out.servable = false;
     if (!out.servable) return out;
@@ -1783,6 +1839,7 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
     // resultId word do not count; the resultType word does).
     std::unordered_set<const Insn*> removed, dead;
     for (const Arr& a : arrs) removed.insert(a.varInsn);
+    for (const Insn* v : deadVarInsns) removed.insert(v); // FD-87: R18-stripped variables are removed in the simulation too, so their orphaned types can die
     bool grew = true;
     while (grew) {
         grew = false;
@@ -1808,21 +1865,22 @@ inline ArrayVerdict analyzeArrays(const Module& m) {
             // OpTypeInt / OpTypeFloat carry only literals (width,
             // signedness) after their result id -- never references.
             if (in.op == 21 || in.op == 22) continue;
-            // The memory-access family (OpLoad / OpStore / OpCopyMemory /
-            // OpCopyMemorySized) appends a MemoryAccess operand group --
-            // a literal mask word, an Aligned literal, scope ids -- after
-            // its pointer/object/size ids; those trailing words are not
-            // type references (mirrors the spirvfix orphan sweep: an
-            // OpLoad Aligned 16 kept a specialized-away descriptor
-            // runtime-array type alive in the captured Godot modules
-            // godot-vs-4000ddfd359efb05 / godot-vs-ebac7e2d70a20d62).
-            // The group's scope ids name constants, never the array /
-            // pointer types this sweep deletes.
-            U32 kend = in.n;
-            if (in.op == 61) kend = std::min(kend, in.fv + 1);
-            else if (in.op == 62 || in.op == 63) kend = std::min(kend, in.fv + 2);
-            else if (in.op == 64) kend = std::min(kend, in.fv + 3);
-            for (U32 k = in.fv; k < kend; k++) live.insert(in.w[k]);
+            // FD-78: the scan is operand-aware (operandRefIds, on
+            // the idOperandUseIndex table) instead of a raw word
+            // scan bounded by hand (mirrors the spirvfix orphan
+            // sweep). The hand bound this replaces -- the
+            // memory-access family's trailing group, whose Aligned
+            // literal kept a specialized-away descriptor
+            // runtime-array type alive in the captured Godot
+            // modules godot-vs-4000ddfd359efb05 /
+            // godot-vs-ebac7e2d70a20d62 -- is the walker's case for
+            // those ops, and the same enumeration now also bounds
+            // the ExtInst instruction number, VectorShuffle
+            // components, CompositeExtract / CompositeInsert
+            // indices, OpSwitch case literals, OpLine words, the
+            // leading literals of OpFunction / OpVariable, the
+            // OpArrayLength index and storage-class words.
+            operandRefIds(m, in, live);
         }
         for (const Insn& in : m.insns) {
             if (removed.count(&in) || dead.count(&in)) continue;
@@ -1960,6 +2018,15 @@ static std::set<U32> vk64RawArrayVarsOver(const Vk64RawModule& m, const std::set
     }
     return out;
 }
+// FD-87 (mirrors spirvfix R18): a descriptor variable no function-body
+// instruction references is stripped by the fixup layer before the R12
+// family runs, so an array variable in that state must not gate the
+// texel verdicts -- the type it carries is dead weight, not a cone.
+static bool vk64RawVarDead(const Vk64RawModule& m, U32 varId) {
+    for (size_t ix = m.firstFunc; ix < m.insns.size(); ix++)
+        if (vk64RawIdUse(m.insns[ix], varId)) return false;
+    return true;
+}
 // R12 mirror: every UniformConstant sampled-image variable over a
 // Dim=Buffer/Sampled=1 image type, and every value traced from those loads,
 // is consumed only by OpSampledImage / OpImage / OpCopyObject / OpImageFetch
@@ -1989,7 +2056,7 @@ static bool vk64TexelUniformServable(const Vk64RawModule& m, const std::set<U32>
         const std::set<U32> bareArrayVarIds = vk64RawArrayVarsOver(m, convTy);
         arrayVarIds.insert(bareArrayVarIds.begin(), bareArrayVarIds.end());
     }
-    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v)) return false;
+    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v) && !vk64RawVarDead(m, v)) return false; // FD-87: a dead array (R18-stripped) does not gate
     if (varIds.empty() && bareVarIds.empty() && arrayVarIds.empty()) return false;
     std::set<U32> tracedSampled, tracedImage;
     for (const Vk64RawInsn& in : m.insns) {
@@ -2201,7 +2268,7 @@ static bool vk64TexelStorageServable(const Vk64RawModule& m, const std::set<U32>
     // are already proven by the R15 classifier: chains only, load-only
     // pointer uses); anything else keeps the type unconverted.
     const std::set<U32> arrayVarIds = vk64RawArrayVarsOver(m, convTy);
-    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v)) return false;
+    for (U32 v : arrayVarIds) if (!servableArrayVars.count(v) && !vk64RawVarDead(m, v)) return false; // FD-87: a dead array (R18-stripped) does not gate
     if (varIds.empty() && arrayVarIds.empty()) return false;
     // FD-62 (R12A): direct variables and array access chains whose
     // texel cone the R12A rewrite serves are converted before R12S
@@ -2540,6 +2607,7 @@ static VkResult vk64AuditSpirv(const std::vector<U8>& code) {
         if ((c == 55 || c == 56) && !storageImageWrite) continue; // Typed-UAV read codegen: declared for storage-image READS, which the tier serves via the R14 format injection. Writers fall through to the named rejection.
         if ((c == 5346 || c == 5347) && !physicalBufferUsed) continue; // PhysicalStorageBufferAddresses declared but unused (vkd3d module-wide header artifact): spirvfix R8 strips exactly this case in the tier. The used form falls through to spirv-capability-unknown:<n> below.
         if ((c == 5346 || c == 5347) && r15Root.servable) continue; // R15b: every physical pointer in the module is a read-only root descriptor spirvfix re-roots at a synthesized binding; the bridge resolves its VA per draw (ROOT_DESCS).
+        if (c == 29 && r15Arr.imageDynIndexServable) continue; // SampledImageArrayDynamicIndexing: spirvfix R19 strips the declaration when no dynamically-indexable image array survives (every used runtime image/sampled-image descriptor array R15a-specialized away or R18-dead, and no fixed-size image array in the module). A surviving image array falls through to the named rejection (FD-87).
         if (c == 5302 && r15Arr.skip5302) continue; // R15a: every DESCRIPTOR runtime array in the module is specialized away by spirvfix (single provable index signature each). Buffer-content runtime arrays (inside buffer blocks, or bare buffer variables) survive specialization by design and are served through the standard buffer path; they do not gate this capability.
         const char* name = vk64SpirvCapabilityName(c);
         if (name) {

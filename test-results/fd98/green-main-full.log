@@ -1,0 +1,766 @@
+Running 671 Test tests with 1 threads
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=1
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=2
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=3
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=4
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=5
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=6
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=4 delivered=1 count=7
+CPU32 system instruction fault and store behavior ... OK
+CPU32 CPUID and proc cpuinfo architecture ... OK
+CPU32 QEMU differential instruction cases ... OK
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=1
+SSE LDMXCSR reserved bits fault ... OK
+Test 32-bit Memory Access ... OK
+Test 16-bit Memory Access ... OK
+Test Add R8,R8 000 ... OK
+Test Add E8,R8 000 ... OK
+Test Add R16,R16 001 ... OK
+Test Add E16,R16 001 ... OK
+Test Add R32,R32 001 ... OK
+Test Add E32,R32 001 ... OK
+Test Add R8,R8 002 ... OK
+Test Add R8,E8 002 ... OK
+Test Add R16,R16 003 ... OK
+Test Add R16,E16 003 ... OK
+Test Add R32,R32 003 ... OK
+Test Add R32,E32 003 ... OK
+Test Add AL,Ib 004 ... OK
+Test Add AX,Iw 005 ... OK
+Test Add EAX,Id 005 ... OK
+Test Push ES 006 ... OK
+Test Push ES 206 ... OK
+Test Pop ES 007 ... OK
+Test Pop ES 207 ... OK
+Test Or R8,R8 008 ... OK
+Test Or E8,R8 008 ... OK
+Test Or R16,R16 009 ... OK
+Test Or E16,R16 009 ... OK
+Test Or R32,R32 009 ... OK
+Test Or E32,R32 009 ... OK
+Test Or R8,R8 00a ... OK
+Test Or R8,E8 00a ... OK
+Test Or R16,R16 00b ... OK
+Test Or R16,E16 00b ... OK
+Test Or R32,R32 00b ... OK
+Test Or R32,E32 00b ... OK
+Test Or AL,Ib 00c ... OK
+Test Or AX,Iw 00d ... OK
+Test Or EAX,Id 00d ... OK
+Test Push CS 00e ... OK
+Test Push CS 20e ... OK
+Test Adc R8,R8 010 ... OK
+Test Adc E8,R8 010 ... OK
+Test Adc R16,R16 011 ... OK
+Test Adc E16,R16 011 ... OK
+Test Adc R32,R32 011 ... OK
+Test Adc E32,R32 011 ... OK
+Test Adc R8,R8 012 ... OK
+Test Adc R8,E8 012 ... OK
+Test Adc R16,R16 013 ... OK
+Test Adc R16,E16 013 ... OK
+Test Adc R32,R32 013 ... OK
+Test Adc R32,E32 013 ... OK
+Test Adc AL,Ib 014 ... OK
+Test Adc AX,Iw 015 ... OK
+Test Adc EAX,Id 015 ... OK
+Test Push SS 016 ... OK
+Test Push SS 216 ... OK
+Test Pop SS 017 ... OK
+Test Pop SS 217 ... OK
+Test Sbb R8,R8 018 ... OK
+Test Sbb E8,R8 018 ... OK
+Test Sbb R16,R16 019 ... OK
+Test Sbb E16,R16 019 ... OK
+Test Sbb R32,R32 019 ... OK
+Test Sbb E32,R32 019 ... OK
+Test Sbb R8,R8 01a ... OK
+Test Sbb R8,E8 01a ... OK
+Test Sbb R16,R16 01b ... OK
+Test Sbb R16,E16 01b ... OK
+Test Sbb R32,R32 01b ... OK
+Test Sbb R32,E32 01b ... OK
+Test Sbb AL,Ib 01c ... OK
+Test Sbb AX,Iw 01d ... OK
+Test Sbb EAX,Id 01d ... OK
+Test Push DS 01e ... OK
+Test Push DS 21e ... OK
+Test Pop DS 01f ... OK
+Test Pop DS 21f ... OK
+Test And R8,R8 020 ... OK
+Test And E8,R8 020 ... OK
+Test And R16,R16 021 ... OK
+Test And E16,R16 021 ... OK
+Test And R32,R32 021 ... OK
+Test And E32,R32 021 ... OK
+Test And R8,R8 022 ... OK
+Test And R8,E8 022 ... OK
+Test And R16,R16 023 ... OK
+Test And R16,E16 023 ... OK
+Test And R32,R32 023 ... OK
+Test And R32,E32 023 ... OK
+Test And AL,Ib 024 ... OK
+Test And AX,Iw 025 ... OK
+Test And EAX,Id 025 ... OK
+Test Seg ES 026 ... OK
+Test Seg ES 226 ... OK
+Test DAA 027 ... OK
+Test Sub R8,R8 028 ... OK
+Test Sub E8,R8 028 ... OK
+Test Sub R16,R16 029 ... OK
+Test Sub E16,R16 029 ... OK
+Test Sub R32,R32 029 ... OK
+Test Sub E32,R32 029 ... OK
+Test Sub R8,R8 02a ... OK
+Test Sub R8,E8 02a ... OK
+Test Sub R16,R16 02b ... OK
+Test Sub R16,E16 02b ... OK
+Test Sub R32,R32 02b ... OK
+Test Sub R32,E32 02b ... OK
+Test Sub AL,Ib 02c ... OK
+Test Sub AX,Iw 02d ... OK
+Test Sub EAX,Id 02d ... OK
+Test Seg CS 02e ... OK
+Test Seg CS 22e ... OK
+Test DAS 02f ... OK
+Test Xor R8,R8 030 ... OK
+Test Xor E8,R8 030 ... OK
+Test Xor R16,R16 031 ... OK
+Test Xor E16,R16 031 ... OK
+Test Xor R32,R32 031 ... OK
+Test Xor E32,R32 031 ... OK
+Test Xor R8,R8 032 ... OK
+Test Xor R8,E8 032 ... OK
+Test Xor R16,R16 033 ... OK
+Test Xor R16,E16 033 ... OK
+Test Xor R32,R32 033 ... OK
+Test Xor R32,E32 033 ... OK
+Test Xor AL,Ib 034 ... OK
+Test Xor AX,Iw 035 ... OK
+Test Xor EAX,Id 035 ... OK
+Test Seg SS 036 ... OK
+Test Seg SS 236 ... OK
+Test AAA 037 ... OK
+Test Cmp R8,R8 038 ... OK
+Test Cmp E8,R8 038 ... OK
+Test Cmp R16,R16 039 ... OK
+Test Cmp E16,R16 039 ... OK
+Test Cmp R32,R32 039 ... OK
+Test Cmp E32,R32 039 ... OK
+Test Cmp R8,R8 03a ... OK
+Test Cmp R8,E8 03a ... OK
+Test Cmp R16,R16 03b ... OK
+Test Cmp R16,E16 03b ... OK
+Test Cmp R32,R32 03b ... OK
+Test Cmp R32,E32 03b ... OK
+Test Cmp AL,Ib 03c ... OK
+Test Cmp AX,Iw 03d ... OK
+Test Cmp EAX,Id 03d ... OK
+Test Seg DS 03e ... OK
+Test Seg DS 23e ... OK
+Test AAS 03f ... OK
+Test Inc R16 040 ... OK
+Test Inc R32 240 ... OK
+Test Dec R16 048 ... OK
+Test Dec R32 248 ... OK
+Test Push R16 050 ... OK
+Test Push R32 250 ... OK
+Test Pop R16 058 ... OK
+Test Pop R32 258 ... OK
+Test PushA 060 ... OK
+Test PushA 260 ... OK
+Test PopA 061 ... OK
+Test PopA 261 ... OK
+Test Bound R16,M16 062 ... OK
+Test Bound R32,M32 262 ... OK
+Test Seg FS 064 ... OK
+Test Seg FS 264 ... OK
+Test Seg GS 065 ... OK
+Test Seg GS 265 ... OK
+Test Operand size prefix 066 ... OK
+Test Operand size prefix 266 ... OK
+Test Address prefix 067 ... OK
+Test Address prefix 267 ... OK
+Test Push Iw 068 ... OK
+Test Push Id 268 ... OK
+Test IMul R16,E16,Iw 069 ... OK
+Test IMul R32,E32,Id 269 ... OK
+Test Push Ib 06a ... OK
+Test Push Ib 26a ... OK
+Test IMul R16,E16,Ib 06b ... OK
+Test IMul R32,E32,Ib 26b ... OK
+Test JO 070 ... OK
+Test JO 270 ... OK
+Test JNO 071 ... OK
+Test JNO 271 ... OK
+Test JB 072 ... OK
+Test JB 272 ... OK
+Test JNB 073 ... OK
+Test JNB 273 ... OK
+Test JZ 074 ... OK
+Test JZ 274 ... OK
+Test JNZ 075 ... OK
+Test JNZ 275 ... OK
+Test JBE 076 ... OK
+Test JBE 276 ... OK
+Test JNBE 077 ... OK
+Test JNBE 277 ... OK
+Test JS 078 ... OK
+Test JS 278 ... OK
+Test JNS 079 ... OK
+Test JNS 279 ... OK
+Test JP 07a ... OK
+Test JP 27a ... OK
+Test JNP 07b ... OK
+Test JNP 27b ... OK
+Test JL 07c ... OK
+Test JL 27c ... OK
+Test JNL 07d ... OK
+Test JNL 27d ... OK
+Test JLE 07e ... OK
+Test JLE 27e ... OK
+Test JNLE 07f ... OK
+Test JNLE 27f ... OK
+Test Add E8,Ib 080 ... OK
+Test Or E8,Ib 080 ... OK
+Test Adc E8,Ib 080 ... OK
+Test Sbb E8,Ib 080 ... OK
+Test And E8,Ib 080 ... OK
+Test Sub E8,Ib 080 ... OK
+Test Xor E8,Ib 080 ... OK
+Test Cmp E8,Ib 080 ... OK
+Test Add E8,Ib 280 ... OK
+Test Or E8,Ib 280 ... OK
+Test Adc E8,Ib 280 ... OK
+Test Sbb E8,Ib 280 ... OK
+Test And E8,Ib 280 ... OK
+Test Sub E8,Ib 280 ... OK
+Test Xor E8,Ib 280 ... OK
+Test Cmp E8,Ib 280 ... OK
+Test Add E16,Iw 081 ... OK
+Test Or E16,Iw 081 ... OK
+Test Adc E16,Iw 081 ... OK
+Test Sbb E16,Iw 081 ... OK
+Test And E16,Iw 081 ... OK
+Test Sub E16,Iw 081 ... OK
+Test Xor E16,Iw 081 ... OK
+Test Cmp E16,Iw 081 ... OK
+Test Add E32,Id 281 ... OK
+Test Or E32,Id 281 ... OK
+Test Adc E32,Id 281 ... OK
+Test Sbb E32,Id 281 ... OK
+Test And E32,Id 281 ... OK
+Test Sub E32,Id 281 ... OK
+Test Xor E32,Id 281 ... OK
+Test Cmp E32,Id 281 ... OK
+Test Add E8,Ib 082 ... OK
+Test Or E8,Ib 082 ... OK
+Test Adc E8,Ib 082 ... OK
+Test Sbb E8,Ib 082 ... OK
+Test And E8,Ib 082 ... OK
+Test Sub E8,Ib 082 ... OK
+Test Xor E8,Ib 082 ... OK
+Test Cmp E8,Ib 082 ... OK
+Test Add E8,Ib 282 ... OK
+Test Or E8,Ib 282 ... OK
+Test Adc E8,Ib 282 ... OK
+Test Sbb E8,Ib 282 ... OK
+Test And E8,Ib 282 ... OK
+Test Sub E8,Ib 282 ... OK
+Test Xor E8,Ib 282 ... OK
+Test Cmp E8,Ib 282 ... OK
+Test Add E16,Ib 083 ... OK
+Test Or E16,Ib 083 ... OK
+Test Adc E16,Ib 083 ... OK
+Test Sbb E16,Ib 083 ... OK
+Test And E16,Ib 083 ... OK
+Test Sub E16,Ib 083 ... OK
+Test Xor E16,Ib 083 ... OK
+Test Cmp E16,Ib 083 ... OK
+Test Add E32,Ib 283 ... OK
+Test Or E32,Ib 283 ... OK
+Test Adc E32,Ib 283 ... OK
+Test Sbb E32,Ib 283 ... OK
+Test And E32,Ib 283 ... OK
+Test Sub E32,Ib 283 ... OK
+Test Xor E32,Ib 283 ... OK
+Test Cmp E32,Ib 283 ... OK
+Test Test R8,R8 084 ... OK
+Test Test E8,R8 084 ... OK
+Test Test R8,R8 284 ... OK
+Test Test E8,R8 284 ... OK
+Test Test R16,R16 085 ... OK
+Test Test E16,R16 085 ... OK
+Test Test R32,R32 285 ... OK
+Test Test E32,R32 285 ... OK
+Test Xchg R8,R8 086 ... OK
+Test Xchg E8,R8 086 ... OK
+Test Xchg R8,R8 286 ... OK
+Test Xchg E8,R8 286 ... OK
+Test Xchg R16,R16 087 ... OK
+Test Xchg E16,R16 087 ... OK
+Test Xchg R32,R32 287 ... OK
+Test Xchg E32,R32 287 ... OK
+Test Mov R8,R8 088 ... OK
+Test Mov E8,R8 088 ... OK
+Test Mov R8,R8 288 ... OK
+Test Mov E8,R8 288 ... OK
+Test Mov R16,R16 089 ... OK
+Test Mov E16,R16 089 ... OK
+Test Mov R32,R32 289 ... OK
+Test Mov E32,R32 289 ... OK
+Test Mov R8,R8 08a ... OK
+Test Mov R8,E8 08a ... OK
+Test Mov R8,R8 28a ... OK
+Test Mov R8,E8 28a ... OK
+Test Mov R16,R16 08b ... OK
+Test Mov R16,E16 08b ... OK
+Test Mov R32,R32 28b ... OK
+Test Mov R32,E32 28b ... OK
+Test Mov E16,Sreg 08c ... OK
+Test Mov E32,Sreg 28c ... OK
+Test Lea R16,M 08d ... OK
+Test Lea R32,M 28d ... OK
+Test Mov Sreg,E16 08e ... OK
+Test Mov Sreg,E32 28e ... OK
+Test Pop E16 08f ... OK
+Test Pop E32 28f ... OK
+Test Xchg AX,AX 090 ... OK
+Test Xchg EAX,EAX 290 ... OK
+Test Xchg CX,AX 091 ... OK
+Test Xchg ECX,EAX 291 ... OK
+Test Xchg DX,AX 092 ... OK
+Test Xchg EDX,EAX 292 ... OK
+Test Xchg BX,AX 093 ... OK
+Test Xchg EBX,EAX 293 ... OK
+Test Xchg SP,AX 094 ... OK
+Test Xchg ESP,EAX 294 ... OK
+Test Xchg BP,AX 095 ... OK
+Test Xchg EBP,EAX 295 ... OK
+Test Xchg SI,AX 096 ... OK
+Test Xchg ESI,EAX 296 ... OK
+Test Xchg DI,AX 097 ... OK
+Test Xchg EDI,EAX 297 ... OK
+Test CmpXchg E8,R8 1b0 ... OK
+Test CmpXchg E8,R8 3b0 ... OK
+Test CmpXchg E16,R16 1b1 ... OK
+Test CmpXchg E32,R32 3b1 ... OK
+Test Cbw 098 ... OK
+Test Cwde 298 ... OK
+Test Cwd 099 ... OK
+Test Cdq 299 ... OK
+Test Pushf 09c ... OK
+Test Pushf 29c ... OK
+Test Sahf 09e ... OK
+Test Sahf 29e ... OK
+Test Lahf 09f ... OK
+Test Lahf 29f ... OK
+Test Mov AL,Ob 0a0 ... OK
+Test Mov AL,Ob 2a0 ... OK
+Test Mov AX,Ow 0a1 ... OK
+Test Mov EAX,Od 2a1 ... OK
+Test Mov Ob,AL 0a2 ... OK
+Test Mov Ob,AL 2a2 ... OK
+Test Mov Ow,AX 0a3 ... OK
+Test Mov Od,EAX 2a3 ... OK
+Test Call Far16 09a ... OK
+Test Call Far32 29a ... OK
+Test Movsb 0a4 ... OK
+Test Movsb 2a4 ... OK
+Test Movsw 0a5 ... OK
+Test Movsd 2a5 ... OK
+Test Cmpsb 0a6 ... OK
+Test Cmpsb 2a6 ... OK
+Test Cmpsw 0a7 ... OK
+Test Cmpsd 2a7 ... OK
+Test Test AL,Ib 0a8 ... OK
+Test Test AL,Ib 2a8 ... OK
+Test Test AX,Iw 0a9 ... OK
+Test Test EAX,Id 2a9 ... OK
+Test Stosb 0aa ... OK
+Test Stosb 2aa ... OK
+Test Stosw 0ab ... OK
+Test Stosd 2ab ... OK
+Test Lodsb 0ac ... OK
+Test Lodsb 2ac ... OK
+Test Lodsw 0ad ... OK
+Test Lodsd 2ad ... OK
+Test Scasb 0ae ... OK
+Test Scasb 2ae ... OK
+Test Scasw 0af ... OK
+Test Scasd 2af ... OK
+Test MMX Movd 36e/37e ... OK
+Test MMX Movq 36f/37f ... OK
+Test MMX Unpack/Pack/Compare ... OK
+Test MMX Shift Imm 371/372/373 ... OK
+Test MMX Shift Reg ... OK
+Test MMX Saturating Arithmetic ... OK
+Test MMX Multiply/Subtract ... OK
+Test MMX Padd 3fc/3fd/3fe ... OK
+Test MMX Logic 3db/3df/3eb/3ef ... OK
+Test SSE Movups 310/311 ... OK
+Test SSE Movss f310/f311 ... OK
+Test SSE Logic 354/355/356/357 ... OK
+Test SSE Addps 358 ... OK
+Test SSE Move/Unpack 312/313/316/317/328/329 ... OK
+Test SSE Movntps 32b ... OK
+Test SSE Convert 32a/32c/32d ... OK
+Test SSE Compare Flags 32e/32f ... OK
+Test SSE Movmsk/Approx 350/351/352/353 ... OK
+Test SSE Arithmetic 358/359/35c/35d/35e/35f ... OK
+Test SSE Pshufw 370 ... OK
+Test SSE2 Move ... OK
+Test SSE2 Unpack/Shuffle ... OK
+Test SSE2 Pack/Compare ... OK
+Test SSE2 Shift ... OK
+Test SSE2 Convert ... OK
+Test SSE2 Compare Flags ... OK
+Test SSE2 Arithmetic ... OK
+Test SSE2 Transfers ... OK
+Test SSE2 Packed Arithmetic ... OK
+Test Mov R8,Ib 0b0 ... OK
+Test Mov R8,Ib 2b0 ... OK
+Test Mov R16,Iw 0b8 ... OK
+Test Mov R32,Id 2b8 ... OK
+Test Shift E8,Ib 0c0 ... OK
+Test Shift E8,Ib 2c0 ... OK
+Test Shift E16,Ib 0c1 ... OK
+Test Shift E32,Ib 2c1 ... OK
+Test Mov E8,Ib 0c6 ... OK
+Test Mov E8,Ib 2c6 ... OK
+Test Mov E16,Iw 0c7 ... OK
+Test Mov E32,Id 2c7 ... OK
+Test Les R16,M16 c4 ... OK
+Test Les R32,M32 2c4 ... OK
+Test Lds R16,M16 c5 ... OK
+Test Lds R32,M32 2c5 ... OK
+Test Retn16,Iw 0c2 ... OK
+Test Retn32,Iw 2c2 ... OK
+Test Retn16 0c3 ... OK
+Test Retn32 2c3 ... OK
+Test Call Jw 0e8 ... OK
+Test Call Jd 2e8 ... OK
+Test Call R16 0ff ... OK
+Test Call E16 0ff ... OK
+Test Call Far E16 0ff ... OK
+Test Call R32 2ff ... OK
+Test Call E32 2ff ... OK
+Test Call Far E32 2ff ... OK
+Test Enter16 0c8 ... OK
+Test Enter32 2c8 ... OK
+Test Leave16 0c9 ... OK
+Test Leave32 2c9 ... OK
+Test Shift E8,1 0d0 ... OK
+Test Shift E8,1 2d0 ... OK
+Test Shift E16,1 0d1 ... OK
+Test Shift E32,1 2d1 ... OK
+Test Shift E8,CL 0d2 ... OK
+Test Shift E8,CL 2d2 ... OK
+Test Shift E16,CL 0d3 ... OK
+Test Shift E32,CL 2d3 ... OK
+Test AAM 0d4 ... OK
+Test AAD 0d5 ... OK
+Test Salc 0d6 ... OK
+Test Salc 2d6 ... OK
+Test Xlat 0d7 ... OK
+Test Xlat 2d7 ... OK
+Test FPU D8 0d8 ... OK
+Test FPU D8 2d8 ... OK
+Test FPU D9 0d9 ... OK
+Test FPU D9 2d9 ... OK
+Test FPU DA 0da ... OK
+Test FPU DA 2da ... OK
+Test FPU DB 0db ... OK
+Test FPU DB 2db ... OK
+Test FPU DC 0dc ... OK
+Test FPU DC 2dc ... OK
+Test FPU DD 0dd ... OK
+Test FPU DD 2dd ... OK
+Test FPU DE 0de ... OK
+Test FPU DE 2de ... OK
+Test FPU DF 0df ... OK
+Test FPU DF 2df ... OK
+Test LoopNZ 0e0 ... OK
+Test LoopNZ 2e0 ... OK
+Test LoopZ 0e1 ... OK
+Test LoopZ 2e1 ... OK
+Test Loop 0e2 ... OK
+Test Loop 2e2 ... OK
+Test Jcxz 0e3 ... OK
+Test Jecxz 2e3 ... OK
+Test Jmp Jw 0e9 ... OK
+Test Jmp Jd 2e9 ... OK
+Test Cmc 0f5 ... OK
+Test Cmc 2f5 ... OK
+Test Test E8,Ib 0f6 ... OK
+Test Test E8,Ib /1 0f6 ... OK
+Test Not E8 0f6 ... OK
+Test Neg E8 0f6 ... OK
+Test Mul R8/E8 0f6 ... OK
+Test IMul R8/E8 0f6 ... OK
+Test Div R8/E8 0f6 ... OK
+Test IDiv R8/E8 0f6 ... OK
+Test Test E8,Ib 2f6 ... OK
+Test Test E8,Ib /1 2f6 ... OK
+Test Not E8 2f6 ... OK
+Test Neg E8 2f6 ... OK
+Test Mul R8/E8 2f6 ... OK
+Test IMul R8/E8 2f6 ... OK
+Test Div R8/E8 2f6 ... OK
+Test IDiv R8/E8 2f6 ... OK
+Test Test E16,Iw 0f7 ... OK
+Test Test E16,Iw /1 0f7 ... OK
+Test Not E16 0f7 ... OK
+Test Neg E16 0f7 ... OK
+Test Mul R16/E16 0f7 ... OK
+Test IMul R16/E16 0f7 ... OK
+Test Div R16/E16 0f7 ... OK
+Test IDiv R16/E16 0f7 ... OK
+Test Test E32,Id 2f7 ... OK
+Test Test E32,Id /1 2f7 ... OK
+Test Not E32 2f7 ... OK
+Test Neg E32 2f7 ... OK
+Test Mul R32/E32 2f7 ... OK
+Test IMul R32/E32 2f7 ... OK
+Test Div R32/E32 2f7 ... OK
+Test IDiv R32/E32 2f7 ... OK
+Test Clc 0f8 ... OK
+Test Clc 2f8 ... OK
+Test Stc 0f9 ... OK
+Test Stc 2f9 ... OK
+Test Inc R8 0fe ... OK
+Test Inc E8 0fe ... OK
+Test Dec R8 0fe ... OK
+Test Dec E8 0fe ... OK
+Test Inc E16 0ff ... OK
+Test Dec E16 0ff ... OK
+Test Jmp E16 0ff ... OK
+Test Jmp Far E16 0ff ... OK
+Test Push E16 0ff ... OK
+Test Inc E32 2ff ... OK
+Test Dec E32 2ff ... OK
+Test Jmp E32 2ff ... OK
+Test Jmp Far E32 2ff ... OK
+Test Push E32 2ff ... OK
+Test Push [ESP+disp8] ordering 2ff ... OK
+Test Cmov R16,E16 140-14f ... OK
+Test Cmov R32,E32 340-34f ... OK
+Test Set E8 190-19f ... OK
+Test Set E8 390-39f ... OK
+Test Bt E16,R16 1a3 ... OK
+Test Bt E32,R32 3a3 ... OK
+Test Shld E16,R16,Ib 1a4 ... OK
+Test Shld E32,R32,Ib 3a4 ... OK
+Test Shld E16,R16,CL 1a5 ... OK
+Test Shld E32,R32,CL 3a5 ... OK
+Test Bts E16,R16 1ab ... OK
+Test Bts E32,R32 3ab ... OK
+Test Shrd E16,R16,Ib 1ac ... OK
+Test Shrd E32,R32,Ib 3ac ... OK
+Test Shrd E16,R16,CL 1ad ... OK
+Test Shrd E32,R32,CL 3ad ... OK
+Test IMUL R16,E16 1af ... OK
+Test IMUL R32,E32 3af ... OK
+Test Lss R16,M16 1b2 ... OK
+Test Lss R32,M32 3b2 ... OK
+Test Lfs R16,M16 1b4 ... OK
+Test Lfs R32,M32 3b4 ... OK
+Test Lgs R16,M16 1b5 ... OK
+Test Lgs R32,M32 3b5 ... OK
+Test Btr E16,R16 1b3 ... OK
+Test Btr E32,R32 3b3 ... OK
+Test Movzx R16,E8 1b6 ... OK
+Test Movzx R32,E8 3b6 ... OK
+Test Movzx R32,E16 3b7 ... OK
+Test Group8 E16,Ib 1ba ... OK
+Test Group8 E32,Ib 3ba ... OK
+Test Btc E16,R16 1bb ... OK
+Test Btc E32,R32 3bb ... OK
+Test Bsf R16,E16 1bc ... OK
+Test Bsf R32,E32 3bc ... OK
+Test Bsr R16,E16 1bd ... OK
+Test Bsr R32,E32 3bd ... OK
+Test Movsx R16,E8 1be ... OK
+Test Movsx R32,E8 3be ... OK
+Test Movsx R32,E16 3bf ... OK
+Test Xadd E8,R8 1c0 ... OK
+Test Xadd E8,R8 3c0 ... OK
+Test Xadd E16,R16 1c1 ... OK
+Test Xadd E32,R32 3c1 ... OK
+Test unaligned split-lock operations ... OK
+Test SSE Compare Immediate 3c2 ... OK
+Test SSE Insert/Extract/Shuffle ... OK
+Test CmpXchg8b 3c7 ... OK
+Test Bswap 3c8-3cf ... OK
+Test MMX Pmovmskb 3d7 ... OK
+Test MMX Pminub 3da ... OK
+Test MMX Pmaxub 3de ... OK
+Test MMX Pavgb 3e0 ... OK
+Test MMX Pavgw 3e3 ... OK
+Test MMX Pmulhuw 3e4 ... OK
+Test MMX Movntq 3e7 ... OK
+Test MMX Pminsw 3ea ... OK
+Test MMX Pmaxsw 3ee ... OK
+Test MMX Psadbw 3f6 ... OK
+Test MMX Maskmovq 3f7 ... OK
+Test Self Modifying Code ... OK
+Test Self Modifying Code using movsb ... OK
+Test Self Modifying Code Same Block(Previous) ... OK
+Test Self Modifying Code Same Block(Next) ... OK
+Test brk/mmap heap ... OK
+Test BString contains with embedded NUL bytes ... OK
+Test BString join delimiter lengths ... OK
+Test BString indexOf/lastIndexOf with embedded NUL bytes ... OK
+Test condStartWaitTime deadline accounting (sleep/poll) ... OK
+Test 32-bit futex lost-wakeup scenarios ... OK
+Test msync mapped-files lock order (FD-77 ABBA) ... OK
+Test FD-44 thread lifetime: signal delivery racing teardown ... OK
+Test Multi-threaded locked inc ... OK
+Test waitpid child selection ... OK
+BW64-FAIL mlock op=lock addr=0x60000000 len=4096 page=0x60000 reason=unmapped outcome=-ENOMEM count=1
+Test 32-bit madvise syscall effects ... OK
+BW64-FAIL guest-exception32 pid=12 tid=13 addr=0x0 eip=0xd0000000 err=0 delivered=0 count=1
+BW64-FAIL guest-trap32 pid=14 tid=15 addr=0x0 eip=0xd0000000 err=1 delivered=0 count=2
+BW64-FAIL guest-memfault32 pid=16 tid=17 addr=0x60000000 eip=0xd0000000 err=0 delivered=0 count=3
+D0000000 EAX=00000000 ECX=00000000 EDX=00000000 EBX=00000000 ESP=DFFFFFF0 EBP=DFFFFFF0 ESI=00000000 EDI=00000000 Unknown at 00000000
+Page Fault at 60000000
+Valid address ranges:
+Mapped Files:
+   Unknown                                                       d0000000 / 00000000
+Test 32-bit fault delivery without a guest handler ... OK
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=1
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=2
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=3
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=4
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=5
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=6
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=0 delivered=1 count=7
+BW64-FAIL guest-exception32 pid=10 tid=11 addr=0x0 eip=0x0 err=1226 delivered=1 count=8
+Test 32-bit port IO and int 0x99 fault delivery ... OK
+Test 32-bit getrandom entropy and validation ... OK
+BW64-FAIL mlock op=lock addr=0x71000000 len=16 page=0x71000 reason=unmapped outcome=-ENOMEM count=1
+BW64-FAIL munlock op=unlock addr=0x71000000 len=16 page=0x71000 reason=unmapped outcome=-ENOMEM count=2
+Test 32-bit memory lock syscall ABI ... OK
+Test 32-bit scheduler affinity ABI ... OK
+Test 32-bit mremap fixed and DONTUNMAP semantics ... OK
+Test 32-bit fork madvise inheritance ... OK
+BW64-FAIL guest-memfault32 pid=18 tid=19 addr=0x62001002 eip=0x62001002 err=0 delivered=0 count=1
+62001002 EAX=00000000 ECX=00000000 EDX=00000000 EBX=00000000 ESP=62001800 EBP=00000000 ESI=00000000 EDI=00000000 Unknown at 00000000
+Page Fault at 62001002
+Valid address ranges:
+Mapped Files:
+   Unknown                                                       62001002 / 00000000
+Test 32-bit clone sharing flags (CLONE_FS/FILES/SIGHAND/VM) ... OK
+clone: namespace flags 0x20000000 unsupported; returned -EINVAL
+clone: namespace flags 0x20000 unsupported; returned -EINVAL
+Test 32-bit clone flag dispositions ... OK
+clone3: set_tid unsupported; returned -EPERM
+clone3: CLONE_INTO_CGROUP unsupported; returned -EBADF
+clone: namespace flags 0x20000 unsupported; returned -EINVAL
+Test 32-bit clone3 ABI validation ... OK
+Test 32-bit mremap shared file identity ... OK
+BW64-FAIL performOnMemory op=copy addr=0x60000000 len=4 page=0x60000 readOnly=0 tid=11 pid=10 outcome=stopped count=1
+Test 32-bit performOnMemory bad buffer degrades ... OK
+BW64-FAIL getRamPtr op=hostptr addr=0xF0001FFC len=8 write=1 outcome=null count=1
+Test 32-bit getRamPtr cross-page request degrades ... OK
+BW64-FAIL memcpy op=guest-copy dest=0xFFFFFFF0 src=0xF0001000 len=64 outcome=skipped-overflow count=1
+Test 32-bit guest memcpy overflow degrades ... OK
+BW64-FAIL madvise op=hint addr=0xF0001000 len=4096 advice=7 outcome=noop count=1
+Test 32-bit madvise layer dispositions ... OK
+Test x64 syscall fallback guard ... OK
+Test guest CPU topology consistency ... OK
+kobject: KEPoll::setLock on a non-lockable object; returned ENOTSUP
+kobject: KEvent::setLock on a non-lockable object; returned ENOTSUP
+Test KObject lock stub dispositions ... OK
+Test 32-bit /proc maps generation ... OK
+Test x64 futex dispatch guard ... OK
+Test timerfd descriptor and expiration semantics ... OK
+ksocket: Unix SOL_SOCKET option 19 is unsupported; returned ENOPROTOOPT
+Test Unix socket SOL_SOCKET options ... OK
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+BW64-FAIL epoll-ctl op=3 fd=0 events=0x10000001 outcome=returned-EINVAL-bad-exclusive
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+possible starvation in epoll, more events are ready than can be received.
+Test epoll one-shot and exclusive flags ... OK
+Test memfd create flag and mode validation ... OK
+Test memfd seal enforcement ... OK
+recover: BW64-FAIL fs-memnode op=rename outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=remove outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=removeDir outcome=refused errno=EPERM (memfd node has no directory entry)
+recover: BW64-FAIL fs-memnode op=setTimes outcome=refused errno=EPERM (memfd node stores no timestamps)
+recover: BW64-FAIL fs-memnode op=open outcome=refused (memfd is descriptor-only; open by path is not possible)
+Test memfd node operation refusals ... OK
+Test Fs::readNativeFile error results ... OK
+BW64-FAIL zip-readfile entry=a.txt zerr=-105 outcome=corrupt entry refused
+Test FsZip entry CRC enforcement ... OK
+BW64-FAIL zip-extract entry=a.txt zerr=-3 read=0 of 100 outcome=extraction failed
+BW64-FAIL zip-extract entry=a.txt read=0 of 100 outcome=partial file removed
+BW64-FAIL zip-unzip entry=a.txt read=0 of 100 outcome=partial file removed, extraction failed
+Test FsZip corrupt-entry extraction ... OK
+BW64-FAIL host-read native= errno=9 (Bad file descriptor) outcome=call reports failure count=1
+BW64-FAIL host-write native= errno=9 (Bad file descriptor) outcome=call reports failure count=2
+Test FsFileOpenNode host IO errors ... OK
+BW64-FAIL eventfd2-flags flags=0x40000000 outcome=returned-EINVAL
+Test eventfd2 flag validation ... OK
+BW64-FAIL epoll-read len=8 outcome=returned-EINVAL
+BW64-FAIL epoll-write len=8 outcome=returned-EINVAL
+BW64-FAIL epoll-stat outcome=returned-ENOTSUP
+BW64-FAIL eventfd-stat outcome=returned-ENOTSUP
+BW64-FAIL epoll-ctl op=1 fd=0 events=0x1 outcome=returned-EEXIST
+BW64-FAIL epoll-ctl op=3 fd=0 events=0x8 outcome=returned-EINVAL-bad-events
+BW64-FAIL epoll-ctl op=2 fd=98765 events=0x0 outcome=returned-EBADF
+BW64-FAIL epoll-ctl op=2 fd=2 events=0x0 outcome=returned-ENOENT
+recover: unsupported signalfd4 mask size; returned EINVAL
+recover: unsupported signalfd4 flags; returned EINVAL
+BW64-FAIL signalfd-write len=8 outcome=returned-EINVAL
+BW64-FAIL signalfd-stat outcome=returned-ENOTSUP
+BW64-FAIL signalfd-poll-write outcome=never-ready
+BW64-FAIL netlink-optlen what=setsockopt SO_RCVBUF len=3 expected=4 outcome=returned-EINVAL
+BW64-FAIL netlink-optlen what=getsockopt SO_RCVBUF len=3 expected=4 outcome=returned-EINVAL
+KNativeSocketObject::setsockopt IPPROTO_IP name 2 not implemented
+BW64-FAIL unixsocket-recvfrom outcome=unnamed-peer-address
+BW64-FAIL unixsocket-sendmsg cmsg-level=999 outcome=returned-EINVAL
+Test kernel object graceful error answers ... OK
+Test joystick evdev node capabilities and events ... OK
+Test timerfd expiration through the process ABI ... OK
+recover: unsupported setitimer timer kind; returned EINVAL
+Test setitimer expiration probes ... OK
+Test fcntl async ownership and SIGIO delivery ... OK
+Test loopback DNS service for guest resolvers ... OK
+Failed to open audio capture device: Audio subsystem is not initialized
+DevDsp: audio capture is not available in this configuration; reads return ENOTSUP
+Test dsp capture contract and GETISPACE ... OK
+Test inotify event delivery through the KProcess API ... OK
+Test chmod, inotify IN_ACCESS and hard link semantics ... OK
+Test inotify close events defer to the last munmap while a mapping is open ... OK
+Test 32-bit pwritev and pwritev2 dispatch ... OK
+Test 32-bit preadv and preadv2 dispatch ... OK
+writev partial fail: returning the bytes already written
+Test 32-bit writev partial-error return shape (FD-96) ... OK
+BW64-INFO hard-link from=/tmp/bw64ktemplinkJdENKL/CACHEDIR.TAG.TMP-X7f2Qa to=/CACHEDIR.TAG.LCK outcome=served by shared backing path (backing store cannot hard-link) count=1
+BW64-INFO hard-link from=/tmp/bw64ktemplinkJdENKL/mv.TMP-zz to=/mv.LCK outcome=served by shared backing path (backing store cannot hard-link) count=2
+Test temp-file-to-lock-name link pattern on a shared backing path ... OK
+Test inotify poll/notify lock composition under stress ... OK
+Test AF_INET UDP loopback socket ... OK
+Test AF_INET TCP loopback socket ... OK
+Test GL64 client-array index range ... OK
+Test decoder executable page boundary ... OK
+Test vk32 Trap Witness (Stage A) ... OK
+Test gl32 Trap Witness (Stage A-GL) ... OK
+Test demand-page isolation ... OK
+Test SSE3 duplicate moves ... OK
+Test SSE3 HADDPD ... OK
+Test SSE3 MONITOR and MWAIT no-op ... OK
+recover: skipped CPU32 opcode at EIP=0xd0000000 len=3
+BW64-FAIL guest-ill32 pid=10 tid=11 addr=0x0 eip=0x100 err=2 delivered=1 count=1
+CPU32 unknown opcode recovery and UD2 fault ... OK
+CPU32 SGDT/SIDT store values on all engines ... OK
+CPU32 LOCK ops through JIT-compiled blocks ... OK
+BW64-FAIL guest-ill32 pid=10 tid=11 addr=0x0 eip=0x100 err=2 delivered=0 count=1
+ud2-dfl scenario: continued=0 eip=0x100 signo=4 faultAddr=0x100 -> PASS
+CPU32 UD2 with SIG_DFL in a subprocess ... OK
+0 tests FAILED in 348s
+RUN_EXIT=0

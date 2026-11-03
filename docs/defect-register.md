@@ -274,15 +274,27 @@ do not close the entry until they land.
 ### Emulator-killing and correctness defects (kernel / CPU / memory)
 
 - **FD-05 — Running out of file descriptors panics and kills the
-  whole emulator.** *(High)* `KProcess::getNextFileDescriptorHandle`
-  panics at the 0x4000-descriptor ceiling. Answering EMFILE safely
-  needs the allocation contract changed across ~50 call sites
-  whose callers mostly dereference the result immediately — a
-  dedicated lane, not a naive conversion (which would trade a loud
-  failure for null dereferences). This is the one known remaining
-  guest-reachable emulator-kill in the kernel-subsystems area.
-  Evidence: `docs/reports/cleanlog-ksubsys-20261030.md`
-  (branch `lane-cleanlog-ksubsys`, "deliberately left alone").
+  whole emulator. FIXED 2026-11-02 on branch `lane-fd05` —
+  see CL-45.** *(Was High)* `KProcess::getNextFileDescriptorHandle`
+  panics at the 0x4000-descriptor ceiling. The filed estimate —
+  that answering EMFILE needs the allocation contract changed
+  across ~50 call sites — did not survive audit: the panicking
+  function has exactly one caller, `allocFileDescriptor`, so the
+  contract changed at that single point (the scan's exhaustion
+  result is now a sentinel the allocator turns into a null
+  descriptor), and the 22 production callers of the allocator
+  were made safe one by one; two of them (the pidfd paths)
+  already carried the null check and were unreachable only
+  because the panic fired first. The guest now gets the
+  kernel's answers — EMFILE, with EINVAL/EBADF at the two
+  boundary cases the host distinguishes — and survives. This
+  was the one known remaining guest-reachable emulator-kill
+  in the kernel-subsystems area. Evidence:
+  `docs/reports/cleanlog-ksubsys-20261030.md`
+  (branch `lane-cleanlog-ksubsys`, "deliberately left alone");
+  fix record `docs/reports/fd05-fd-table-exhaustion-20261102.md`;
+  evidence `test-results/fd05/`.
+
 - **FD-06 — 32-bit port-IO instructions panic and kill the whole
   emulator. FIXED 2026-10-31 on branch `lane-fd06-portio`
   (commit `d88fdc61a`) — see Section B.** *(Was High)* The twelve INS-string handlers in the
@@ -958,9 +970,119 @@ do not close the entry until they land.
   `tools/guest-fixtures/winmm-tone.c`. Record:
   `docs/reports/fd85-audio-leg-20261102.md`; evidence:
   `test-results/fd85/`.
+  **Update 2026-11-02 (lane-fd85b — the continuation this
+  entry named): the sub-split is measured, and the break is
+  convicted to the 64-bit Wine payload's mmdevapi → winealsa
+  render path — above libasound, below the Windows client.**
+  Method: a native ALSA-client fixture
+  (`tools/guest-fixtures/alsatone.c`) playing the control
+  tone through the same libasound → plug → oss → /dev/dsp
+  chain winealsa uses, and a libasound file-plugin dump
+  (`tools/guest-fixtures/alsadump-alsa.conf`,
+  `alsadump-wine.conf`, `alsadump-null.conf`, `dumpstat.c`)
+  capturing the exact bytes a client hands to libasound.
+  Findings, each re-read from preserved logs
+  (`test-results/fd85b/`):
+  (1) The ALSA leg is GOOD for writei clients: alsatone's
+  S16_LE and Float32 writei modes both reached the
+  emulator's audio input at full scale (`bwPump: S16 input
+  first non-zero peak=12000`; page capture peak 0.4550 in
+  both modes) — the plug format conversion and the OSS
+  contract serve real data.
+  (2) What winealsa hands libasound is an unbroken stream
+  of zeros: the dump of the OpenAL run over the stock
+  chain is 72,192 Float32 stereo frames, every sample
+  0.0000; over libasound's `null` device (no emulator
+  device in the path at all) 100,224 frames, every sample
+  zero; on a traced rerun 33,792 more frames of zero. The
+  same dump mechanism captured the native client's tone
+  intact in the same sessions (1,536,000 bytes, peak
+  0.3662), so the zeros are the driver's output, not a
+  measurement artifact.
+  (3) The client side of the driver is healthy by Wine's
+  own tracing (WINEDEBUG=+mmdevapi,+alsa): a single
+  AudioClient (Initialize → Start), 26 GetBuffer / 24
+  ReleaseBuffer cycles of the full 1,536-frame MMDevice
+  buffer with flags 0, padding oscillating 0 ↔ 1536, and
+  `alsa_write_data` running 118 times with avail 1920.
+  The data is lost between ReleaseBuffer and the driver's
+  write to libasound, inside the prebuilt driver.
+  (4) The A/B that convicts the payload: the identical
+  fixture on the 32-bit Wine stack (WineHQ Wine 10 — a
+  different build from this project's 64-bit Wine 8
+  payload) IS HEARD through the same emulator and chain
+  in the same harness: page capture 26,763 non-zero
+  samples, peak 0.2269; non-zero S16 at the input;
+  `OPENAL: RESULT 0`. The emulator, libasound, the OSS
+  device and the capture are therefore all exonerated;
+  the defect is specific to the 64-bit Wine build's
+  audio data path, and every x64 client face tried
+  (OpenAL/WASAPI, OpenAL/winmm, raw WASAPI, raw WinMM)
+  fails the same way.
+  What remains open, stated exactly: which side of the
+  driver's internal GetBuffer→writei copy drops the data
+  is not reachable by emulator-side measurement — the
+  driver is a prebuilt payload and both sides' entry
+  points succeed under tracing. The fix this points to
+  is a payload fix (the 64-bit mmdevapi/winealsa pair
+  rebuilt or replaced — the 32-bit stack proves a Wine
+  10 build works in this harness — and re-pinned by the
+  FD-73 procedure), a payload lane of its own;
+  deliberately not attempted in this lane because it
+  re-pins wine64.zip against the pending batch-2
+  composition. FD-85 stays OPEN on those terms; the
+  shipped common-dependencies test still fails at this
+  entry's audio wait on the 64-bit stack until it lands.
+  The chain's mmap face is separately defective — that
+  is FD-90, and it is not this entry's cause (finding 2:
+  forcing the Wine stream through writei changes
+  nothing). Record:
+  `docs/reports/fd85b-audio-bisection-20261102.md`;
+  evidence: `test-results/fd85b/`.
+
+  **Addendum 2026-11-03 (lane-fd85pay, second attempt):
+  the break is located, and it is not in the audio
+  chain.** An instrumented self-built mmdevapi/winealsa
+  pair (PE-side and unix-side buffer scans at every
+  release) plus raw WASAPI fixtures prove the whole
+  audio path sound on this stack: polling, event-
+  callback and worker-thread clients, including a
+  full-ring 1536-frame client, all deliver their
+  samples through the shipped driver to the page
+  capture. A native ALSA client through the exact
+  winealsa chain is likewise heard. The OpenAL run is
+  the only silent one, and the instrumented driver
+  reads its render buffer as zeros at release on the
+  client's own thread. An instrumented OpenAL Soft
+  1.25.2 build then shows why: its mixer renders
+  zeros because the buffer it uploads from is zeros —
+  the upload copy's source span (52,920 bytes, the
+  fixture's own sine table, pointer identical on both
+  sides of the call) reads as all zeros inside
+  `alBufferData`, and the fixture's own readback of
+  its table is likewise all zeros. The samples never
+  persist in the client's own memory; that loss is
+  the emulator defect filed as FD-108, with a pure
+  Win32 minimal repro needing no audio at all. Every
+  payload layer is thereby exonerated — driver,
+  winealsa/ALSA/OSS chain, bwPump, page capture, the
+  OpenAL DLL (stock MSVC binary, a config-forced
+  scalar run, and a from-source scalar rebuild all
+  behave identically) — and no payload rebuild or
+  replacement can close FD-85, because no audio
+  module can recover samples that were never in the
+  client's buffer. FD-85 stays open, gated on FD-108.
+  The identical fixture on the 32-bit stack is heard,
+  matching FD-108's 64-bit scope. Evidence:
+  `test-results/fd85pay/` (diag runs e31-e56, the
+  instrumented-driver and instrumented-OpenAL
+  records) and
+  `docs/reports/fd85pay-audio-conviction-20261103.md`.
+
 - **FD-86 — No Arial family on the 64-bit stack:
-  family-name lookups for Arial find nothing.**
-  *(Low–Medium — Chromium-class text fallback:
+  family-name lookups for Arial find nothing.
+  FIXED 2026-11-03 — see CL-64.** *(Was
+  Low–Medium — Chromium-class text fallback:
   Blink's Windows last-resort list includes Arial,
   not DejaVu Sans. Surfaced 2026-11-02 by the FD-65
   lane's win32-fonts probe on x64.)* The fixture
@@ -986,6 +1108,23 @@ do not close the entry until they land.
   `test-results/fd65/fonts-x64-v2-console.log`
   (fixed build), `test-results/fd65/fd65-fontstepsx86-console.log`
   (the 32-bit enumeration, Arial present).
+  **Closed 2026-11-03 — see CL-64.** The mirror fix
+  the entry specified, with one strengthening: the
+  replacement is baked into the canonical
+  `prefix64.zip` by the new staging step
+  `tools/rootfs64/stage-font-alias64.py` (the 32-bit
+  edit itself, imported, so the stacks cannot drift),
+  not added as an export-time step, so the re-pinned
+  retained archive (`runtime-assets-20261103`)
+  reproduces it from a clean bootstrap. The checker
+  carries the matching drift check, and the shipped
+  win32-fonts test — extended to x64, assertion
+  unchanged — passes on both architectures: x64 reads
+  `ARIAL=1 METRICS=1 RESULT 0`. The Gecko stage is
+  unregressed (shipped test, load-gated third run:
+  `MSHTML: RESULT 0`, zero abort lines; two earlier
+  runs contention-bound at the stage's 180 s window
+  — see the record).
 
 - **FD-87 — The common-dependencies audio capture
   watched a path guest audio no longer uses.**
@@ -1006,6 +1145,61 @@ do not close the entry until they land.
   full account in CL-42. What the test still fails on
   after this fix is FD-85's remaining defect, a
   different layer.
+- **FD-108 — 64-bit guest writes interleaved with
+  repeated cross-module calls are lost to later
+  reads: the memory reads back as zeros although
+  immediate in-loop readbacks verify every write.**
+  *(High — silent data loss in the 64-bit memory
+  serving; any guest program that fills a buffer
+  across repeated library calls can silently read
+  back zeros. Filed 2026-11-03 by lane-fd85pay as
+  the convicted blocker behind FD-85. The repro is
+  a pure Win32 console program: no audio, no Wine
+  audio modules, nothing downstream of the writes
+  themselves.)* Minimal repro (sources committed as
+  `tools/guest-fixtures/fpprobe6.c` and
+  `fpprobe7.c`; built binaries and run records in
+  `test-results/fd85pay/fixtures/` and
+  `test-results/suite-fd85pay-diag25/`,
+  `test-results/suite-fd85pay-diag26/`): a static
+  double array is filled `db[i] = i*0.01` in a
+  call-free loop and verified; a second loop
+  computes `s = sin(db[i])` (msvcrt), stores `s`
+  into a second static array, and reads it back
+  immediately — the readback matches `s` for all
+  1000 iterations, mismatch count 0, for both a
+  direct store and a memcpy store — yet after the
+  loop every stored value reads as 0.0, and a
+  `.data` accumulator summed over the same calls
+  reads back 0.0000 against a true sum of
+  184.1776. Controls in the same fixtures:
+  individual `sin` calls with memory arguments are
+  correct (including sin(100.0) = -0.506366, so
+  range reduction works); integer and double
+  stores in call-free loops persist and read back
+  correctly after the loop; an accumulator across
+  calls to a local noinline function, and across
+  `fabs`, is exact; per-iteration `sin` values
+  passed straight to printf are correct; constants
+  from the pool, `.rdata` and `.data` all load
+  exactly. The loss needs the combination —
+  repeated cross-module calls interleaved with the
+  writes — and is shape-sensitive rather than a
+  clean page discard: with a printf inside the
+  loop the accumulator survives partially (71.8690
+  of 184.1776). The 32-bit stack does not show it
+  (the identical OpenAL fixture's tone is heard
+  there). This one mechanism explains FD-85 end to
+  end. Closing terms: the 64-bit memory serving
+  fixed such that the repro's post-loop readbacks
+  return the stored values, FD-85's audio stage
+  then passes unloosened, and the native and JS
+  suites stay green. *(Numbered FD-108 on
+  lane-fd85pay against this branch's register,
+  whose highest entry was FD-86; the number is
+  claimed on sibling branches for unrelated items,
+  so the composing merge renumbers by audit.)*
+
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
 - **FD-20 — Gang Beasts' engine process exits during startup
@@ -1045,7 +1239,9 @@ do not close the entry until they land.
 
 - **FD-23 — Large parts of the system-call surface have no
   dispatch at all, and the disposition pass has not been
-  done.** *(Medium)* Counted by census: on the 64-bit side,
+  done.** *(Medium)* **CLOSED 2026-11-02 — the residue left
+  open below is closed on `lane-fd23res`; see CL-65
+  (provisional number, pending the merge audit).** Counted by census: on the 64-bit side,
   168 of 363 named system calls have no dispatch case; on the
   32-bit side, 223 table slots are null and numbers 440–461
   (including `futex_waitv`) fall off the end of the table.
@@ -1077,6 +1273,85 @@ do not close the entry until they land.
   `futex_waitv` (449, both ABIs; no observed asks). `io_uring`
   (425-427) is dispositioned ENOSYS-correct (a subsystem, not a
   call; guests probe and fall back by design).
+  **Residue closed 2026-11-02 (lane `lane-fd23res`;
+  record `docs/reports/fd23-residue-20261102.md`; closure
+  CL-65).** The three named routes are implemented to
+  host-measured contracts: `select` (23) via the core
+  factored out of `pselect6` — with the descriptor and
+  readability pre-checks both calls were missing (which
+  also corrects `pselect6`), timeval validation, and the
+  remaining-time write-back the host performs; `pidfd_getfd`
+  (438) in the host's check order; `futex_waitv` (449) on
+  both ABIs over the futex machinery (one slot per entry on
+  a shared condition, registration under the pending-wake
+  lock, the woken index as the answer), with the i386 table
+  extended to 462 slots so the number dispatches at all.
+  The per-number disposition of the long tail is done:
+  `tools/conformance/syscall_dispositions.json` carries a
+  category, a reason and a route for every unimplemented
+  number on both ABIs (404 entries), and the census tool
+  audits it — undispositioned 0, stale 0. Census on the
+  fixed tree: x86-64 implemented 202, stubbed {334 `rseq`}
+  only, missing 160; i386 dispatched 206, gap 244.
+  `rseq` itself is unchanged — the loud refusal stands —
+  and its prerequisite is filed as FD-109. Two findings
+  from the lane are filed as FD-110.
+- **FD-109 — `rseq` cannot be served honestly until the
+  64-bit signal-delivery path honours the abort
+  contract.** *(Medium)* FD-23's entry records why `rseq`
+  (334) stays a loud `-ENOSYS`: a registration without
+  abort-on-signal handling would silently corrupt per-cpu
+  data on signal delivery. This entry names the missing
+  machinery so the refusal has a closing condition, not
+  just a rationale. What is absent: when a signal is
+  delivered to a 64-bit thread that has a registered rseq
+  area, nothing inspects whether the interrupted program
+  counter sits inside the registered critical section,
+  and nothing redirects execution to the section's abort
+  handler with the abort signature in place; the same
+  inspection is owed on preemption and on any
+  thread-migration point the emulator introduces. A guest
+  (glibc registers rseq unconditionally) that is resumed
+  inside an aborted critical section would read and write
+  per-cpu state under a stale cpu id with no fault and no
+  log — exactly the silent-corruption shape the refusal
+  exists to prevent. Closing terms: the 64-bit signal
+  path (frame setup in the syscall/signal layer) checks
+  the registered rseq area's critical-section range on
+  delivery, and on a hit redirects to the abort IP with
+  the kernel's abort signature and clears the section;
+  proven by a native test that registers rseq, enters a
+  critical section in guest code, delivers a signal, and
+  observes the abort handler running with the signature
+  — failing on the current code because delivery ignores
+  the area entirely. Only then may 334 be reconsidered,
+  as its own lane with its own host-measured contract.
+- **FD-110 — The 64-bit `pselect6` ignores its signal-mask
+  argument entirely, and never validates its timespec.**
+  *(Medium)* Found on the FD-23 residue lane
+  (2026-11-02), which factored `pselect6`'s body into the
+  core `select` now shares. The dispatch case reads five
+  arguments; the sixth (the `{sigset_t*, size_t}` pair)
+  is never touched: the mask is not applied for the
+  duration of the wait, not restored after it, and its
+  pointer and size are never validated — a guest that
+  blocks a signal around the wait (the standard
+  race-free pattern pselect exists for) runs the whole
+  wait with the signal unblocked, so the very race the
+  call exists to prevent can fire. The timespec's
+  nanosecond field is likewise never range-checked
+  (values >= 1e9 are folded into the wait instead of
+  answering `-EINVAL` as the host does). Closing terms:
+  apply the guest mask for the wait and restore the
+  previous mask on every exit, in the signal layer's own
+  terms; validate the mask pointer and size with the
+  host's answers (`-EFAULT` / `-EINVAL` as the host
+  does); range-check the timespec; prove with a native
+  test that delivers the blocked signal during the wait
+  and observes it pending until return, and that a bad
+  mask size and an out-of-range timespec answer as the
+  host's do — failing on the current code because the
+  argument is never read.
 - **FD-24 — No game controller exists for guests.** *(Medium)*
   There is no guest joystick device at all: controller queries
   return "device not connected" for every slot. The entry
@@ -1341,6 +1616,44 @@ do not close the entry until they land.
   FD-64: FD-61/62/63 are already taken by parallel lanes'
   branch records not yet composed.)* Evidence:
   `test-results/merge-fd02-fd38-20261031/js-suite.log`.
+
+  Update 2026-11-02 (FD-64 lane, branch `lane-fd64`,
+  fix `9d132afc7`): CLOSED on branch — see CL-44
+  (provisional). The corpus subtest had already been
+  resolved by the FD-62 lane's measured corpus
+  re-baseline (`ea7283041`) and kept green by the
+  FD-70 composition's fixture enrollment
+  (`bf2ce6bbf`); the four DESC_SET subtests are
+  resolved here. Determination: the fixture was the
+  stale side. The current contract — `u8 setIndex,
+  u8 pad, u16 nBind, u64 layoutId`, one entry per
+  written (binding, arrayElement) with count 1 — is
+  stated in docs/vulkan-protocol.md §0x08, written
+  by the bridge's emitDescSet, read by
+  web/vk-protocol.mjs, and pinned by the suite's
+  vk-desc-set-wire.test.mjs; the legacy fixture
+  still wrote the superseded u8-count header and a
+  single array entry with count 3, so the reader
+  rightly reported the 132 binding bytes as
+  trailing. The correction is test-file only
+  (fixture header + per-element array entries +
+  the decode assertions updated to the same
+  contract; a second masked staleness, the decoded
+  sampler object's shape, likewise updated to the
+  current decoder contract — the ADDR mapping plus
+  the raw addrMode* fields from `26ffedefa`).
+  Proof: legacy group 115/0 (was 110/4; the
+  standing failing set is empty), suite-unit group
+  348/0 on the built tree (its provenance test
+  requires one; browser build in-lane, wasm
+  d631d254, byte-identical to the shipped
+  build's), sabotage re-run returns the four
+  failures. (The lane's initial message quoted
+  first-run figures from a garbled delivery
+  summary; the record's Correction section gives
+  the log-verified account.) Record:
+  `docs/reports/fd64-legacy-descset-20261102.md`;
+  evidence `test-results/fd64/`.
 
 - **FD-41 — The native suite aborts mid-run in the clone
   test group when the syscall-ABI tests run first.
@@ -1667,7 +1980,6 @@ do not close the entry until they land.
   integration branch by the texture-parameter
   entry.)*
   Fixed on lane-fd53 in `1e228a7ed` — see CL-24.
-
 
 - **FD-45 — Texture-parameter queries have no answer on the
   vector entry points or the WebGPU path (found by the FD-39
@@ -2573,6 +2885,17 @@ do not close the entry until they land.
   Record:
   `docs/reports/deploy-fd54-63-70-7980-20261102.md`.
 
+  **Update (FD-87 lane, 2026-11-02): the sibling
+  classes this update recorded are now filed and
+  dispositioned.** The 2,340-byte module's classes
+  and the 369,400-byte module's SampledBuffer and
+  capability-29-name classes are served under FD-89
+  (CLOSED — CL-43); the same module's remaining
+  RuntimeDescriptorArray share is the data-dependent
+  array filed as FD-88; the helper-invocation share
+  was already FD-72's. CL-37's owed pipeline clause
+  now gates only on FD-88 and FD-72.
+
 - **FD-67 — The bridge's shader audit admits modules
   whose descriptor-heap array elements form texel
   pointers, although its own classifiers record them
@@ -2857,6 +3180,78 @@ do not close the entry until they land.
   pipeline time. FD-55 stays open on this entry
   and FD-70.
 
+  **Re-measured link by link on the current
+  base, 2026-11-02 (lane `lane-fd72b`, base
+  `cc1d89ab3`; record
+  `docs/reports/fd72b-helper-invocation-recheck-20261102.md`;
+  evidence `test-results/fd72b/`). STILL OPEN —
+  the boundary above stands.** The blocker is
+  one component: the vendored translator's
+  SPIR-V frontend. Called in stages on this
+  base, its parse stage fails with
+  `UnsupportedBuiltIn(23)` — for the captured
+  module (post-pre-pass), for a minimal module
+  that declares the variable but never loads
+  it, for a load-and-use minimal, and for a
+  glslangValidator-compiled textbook
+  `gl_HelperInvocation` module — identically
+  for the wgsl/glsl/hlsl/msl targets, so the
+  failure precedes every writer. With ONLY the
+  HelperInvocation decoration, variable and
+  interface entry removed from the captured
+  module (its two loads replaced by a constant;
+  a measurement probe, not a serving
+  candidate), the frontend ingests the whole
+  real module; its next failure is the
+  validator's SampleMask error — FD-74, a
+  different stage of the same component.
+  Every other link measured ready on this
+  base: the pre-pass applies the captured
+  module's four standing rewrites and passes
+  the decoration through untouched (no rule
+  rewrites the BuiltIn-variable form); the
+  creation audit refuses both spellings by
+  name, neighbouring FragCoord admitted
+  (native guard green in a 57-PASS run);
+  downstream, the twin module's production
+  WGSL compiles in the probe browser with zero
+  errors and renders its required value at
+  every pixel, a subgroup-ballot WGSL module
+  compiles and renders its required value
+  likewise, and the browser's WGSL compiler
+  rejects both conceivable helper-query
+  spellings in its own words (its builtin list
+  has no helper entry; `isHelperInvocation`
+  is an unresolved call target). Upstream has
+  not moved: the WGSL specification (TR and
+  living draft, fetched 2026-11-02) still has
+  no helper-invocation query and still carries
+  the subgroup-participation non-portability
+  warning verbatim; the newest published naga
+  is 30.0.1 — the vendored version — and its
+  published source contains `HelperInvocation`
+  nowhere (IR `BuiltIn` enum: 49 variants,
+  none for it), so no re-vendor changes the
+  verdict. One refinement of (1): the EXT
+  opcode spelling IS translated translator-
+  side on this base — the pre-pass's discard
+  lowering (in the tree since 2026-10-20)
+  rewrites each `OpIsHelperInvocationEXT` read
+  into a load of a private flag that only the
+  module's own demote / lowered-discard sites
+  set. That value is the self-demotion
+  component of helper state only;
+  rasterization helper state is unrepresented
+  (a module with no demote sites emits WGSL
+  reading a constant false, measured rendering
+  accordingly). The guest path still refuses
+  the spelling at creation (FD-75), and
+  admitting it on the flag's terms would serve
+  exactly the collective-steering uses (2)
+  shows are poisoned — so it is not a serving
+  of this class, and this entry's closing
+  terms are unchanged.
+
 - **FD-73 — The pinned runtime-assets release
   archive disagrees with the manifest's file pins
   for both Wine archives, so a fresh checkout
@@ -2989,6 +3384,8 @@ do not close the entry until they land.
   the operand positions proven on a captured
   module; the same raw-word liveness idiom survives
   at sibling positions and in sibling sweeps.
+  CLOSED 2026-11-02 — see CL-46 (provisional
+  number).
   *(Low — no captured module is known to be gated
   by the unfixed positions; filed by the FD-70
   lane, 2026-11-01. Numbered FD-78 at composition on
@@ -3027,6 +3424,24 @@ do not close the entry until they land.
   no module shape can align it with a swept type
   id. Evidence: `docs/reports/fd70-second-wave-20261101.md`;
   `test-results/fd70/` (keeper census).
+  Update (FD-78 lane, 2026-11-02): CLOSED on branch
+  `lane-fd78` — see CL-46. The operand-aware walker
+  gained an enumerating sibling in both mirrors
+  (`operandRefIds` in spirvfix, `r15::operandRefIds`
+  in the bridge) and the five remaining raw-word
+  liveness scans in the fixup layer plus the
+  bridge's skip-5302 simulation now route through
+  it. Every position named at filing is covered by
+  a guard that is RED on the base scans and GREEN
+  with the fix; the storage-image prune's constant
+  and width positions, which the filing did not
+  name because that scan excluded nothing at all,
+  are covered by two new assembled fixtures.
+  `stripDeadUndefs`, the fail-closed veto scans and
+  the OpGroupDecorate family were audited and
+  deliberately left unchanged, with reasons, in the
+  record:
+  `docs/reports/fd78-literal-positions-20261102.md`.
 
 - **FD-79 — IN_CLOSE_WRITE is reported at fd close even
   when a writable mapping of the file is still open; the
@@ -3160,15 +3575,21 @@ do not close the entry until they land.
   FD-79/80 lane, 2026-11-01; the number was verified
   free against the register at filing and is
   provisional until the merge lane's audit.)* The
-  demand-paged path is exact after CL-38; closing
+  demand-paged path is exact after CL-36; closing
   this entry needs per-description mapping accounting
   on the 64-bit path or an equivalent liveness input
   to its close path. Evidence:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`.
+  FIXED 2026-11-02 on branch `lane-fd82` -- see
+  CL-48 (provisional). One correction to the text
+  above: the demand-paged path's deferral closure
+  is CL-38, not CL-36 as filed.
 
 - **FD-83 — readv generates no IN_ACCESS when it
   succeeds with 0 bytes (at EOF, or with iovcnt 0);
-  the host generates exactly one.** *(Low. Filed by
+  the host generates exactly one. FIXED 2026-11-02
+  on branch `lane-fd83-84` — see CL-49.** *(Was Low.
+  Filed by
   the FD-79/80 lane, 2026-11-01; the number was
   verified free against the register at filing and is
   provisional until the merge lane's audit.)*
@@ -3183,9 +3604,30 @@ do not close the entry until they land.
   Evidence: `test-results/fd79-80/` (host reference
   programs and outputs).
 
+  *Update 2026-11-02 (lane-fd83-84): the host
+  contract was re-measured in full before fixing —
+  exactly one IN_ACCESS per successful readv (one
+  segment or three, data or 0 bytes at EOF / iovcnt
+  0 / all-zero-length segments; a call that reads
+  bytes before a later segment fails returns the
+  bytes as a success and generates the event), none
+  on failure. The emulator's multi-segment count
+  held only by accident of the inotify queue
+  coalescing consecutive identical events; its
+  0-byte successes generated nothing, and its walk
+  carried no iovcnt range validation (an
+  out-of-range count was never EINVAL) nor a mode
+  check at iovcnt 0. Fixed in commits `0332ee82f`
+  (tests) and `3459a7d20` (fix) — see CL-49.
+  Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.*
+
 - **FD-84 — The positioned/plain read family answers
   -EINVAL on a descriptor that cannot be read; the
-  host answers -EBADF.** *(Low. Filed by the FD-79/80
+  host answers -EBADF. FIXED 2026-11-02 on branch
+  `lane-fd83-84` — see CL-50.** *(Was Low. Filed by
+  the FD-79/80
   lane, 2026-11-01; the number was verified free
   against the register at filing and is provisional
   until the merge lane's audit.)* Measured on the
@@ -3199,6 +3641,24 @@ do not close the entry until they land.
   than changed inside a wiring fix. Evidence:
   `test-results/fd79-80/` (host reference programs
   and outputs).
+
+  Addendum (FD-100's lane, 2026-11-02): in
+  the 64-bit dispatcher's vectored arms the
+  mode answer comes from the walk's
+  per-segment core, behind the iovcnt range
+  and iovec array checks, so a write-only
+  descriptor with an out-of-range iovcnt or a
+  bad array answers EINVAL / EFAULT where the
+  host answers EBADF -- one more combination
+  governed by wherever this entry's mode gate
+  lands when it composes.
+
+  *Composition note (batch-3 merge): the mode gate the
+  addendum above leaves open lands in the vectored
+  wrappers themselves -- sys_preadv64 and sys_pwritev64
+  now answer the mode EBADF with the descriptor check,
+  ahead of the iovcnt range and iovec array checks --
+  settled with FD-95, which see.*
 
 - **FD-102 — The launcher UI test's demo-card count no
   longer matches the demo catalog.** *(Low. Filed as
@@ -3241,6 +3701,1050 @@ do not close the entry until they land.
   Closed inline at composition; no CL number consumed,
   so the CL-42/CL-43 split coordinated for the two FD-87
   claims is undisturbed.
+- **FD-89 — The Godot demo's second-wave pipeline
+  creations fail on sibling shader modules:
+  capability 29 refused unnamed as a bare
+  declaration, dead descriptor declarations gating
+  SampledBuffer and RuntimeDescriptorArray, and the
+  ExtInst literal position defeating the texel
+  conversion. CLOSED 2026-11-02 — see CL-43.**
+  *(Medium — three pipeline creations in the
+  shipped demo run (deploy of 2026-11-02, build
+  `9e37e5640`); filed by the FD-89 lane, 2026-11-02,
+  on the deploy record's evidence.)* The deploy
+  proof run (FD-70 update, above) recorded the two
+  modules byte-exact: 369,400 B, djb2
+  `d4da162f9cbdb948` (harvested fixture
+  `testdata/spirv/godot-fs-f2b738c259a79b4a.spv`),
+  refused for `spirv-capability-unknown:29`,
+  RuntimeDescriptorArray and FD-72's
+  helper-invocation class; and 2,340 B, djb2
+  `fe166085df72b93f` (`godot-fs-f1b4e0027d98e2e4.spv`,
+  twice), refused for SampledBuffer and
+  RuntimeDescriptorArray. Measured per class:
+  (a) capability 29 is
+  SampledImageArrayDynamicIndexing; the translator
+  rejects the bare declaration outright, whatever
+  the module's arrays look like. It is served
+  exactly when no image array survives the fixup
+  layer: spirvfix R19 strips the declaration once
+  every image/sampled-image array is a used runtime
+  array the specializer served (or a dead one R18
+  removed) and no fixed-size image array exists;
+  the bridge audit now names the capability and
+  admits exactly that class, refusing it by name
+  otherwise. (b) The 2,340-byte module's classes
+  were entirely dead descriptors: its body reads
+  only push constants and inputs, while its three
+  descriptor variables (a texel-buffer runtime
+  array, an SSBO-offsets block, a bindless-CBV
+  array) are referenced by no instruction. spirvfix
+  R18 strips declared-but-unreferenced descriptor
+  variables and their orphaned types; the module
+  now translates end to end, and the audit mirrors
+  (a dead variable gates neither SampledBuffer nor
+  RuntimeDescriptorArray). (c) The 369,400-byte
+  module's SampledBuffer share was FD-78's ExtInst
+  position proven live (see the FD-78 update): the
+  orphan sweep counted GLSL.std.450 instruction
+  numbers as id references, the texel image type
+  never stopped looking array-owned, and the
+  post-specialization texel conversion silently
+  declined; with the position bounded in both
+  sweeps the conversion runs (508 fetches widened)
+  and SampledBuffer is genuinely served. Not closed
+  here: the same module's remaining
+  RuntimeDescriptorArray + capability-29 share is
+  FD-88's data-dependent array, and its
+  helper-invocation share is FD-72's. CL-43's owed
+  clause — the two pipelines' creations succeeding
+  in vivo on a shipped build — belongs to the
+  deploy gate that carries the composing merge.
+  The proof run also recorded one delivered guest
+  memory fault (addr `0x2140bf26c`, rip
+  `0x140301916`, at 2,116.8 s, ~42 s after the
+  failures; the run continued to deadline): noted
+  in the lane record as observed and unattributed;
+  fixture work did not reproduce it and it is not
+  filed as a defect. Record:
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`;
+  evidence `test-results/fd87/`.
+
+  Update (deploy 2026-11-03, build `caadab5ad`): the
+  owed in-vivo run was attempted twice on the
+  shipped build through the standard demo path
+  (FD-70 capture configuration, 3,300 s deadline).
+  In both attempts the session booted (Godot banner
+  at 114.5 s and 181 s) and the guest stayed alive
+  and executing to the end of the window, but no
+  window mapped inside the capture driver's 1,200 s
+  launch wait, so the run obtained no shader-module
+  or pipeline evidence in either direction (0
+  vkCreateShaderModule lines, 0 BW64-FAIL lines in
+  both preserved consoles). CL-43's pipeline clause
+  therefore stays owed, still gated on FD-88 +
+  FD-72; the attempts are recorded in full in
+  `docs/reports/deploy-batch3-20261103.md`,
+  evidence `test-results/deploy-batch3-20261103/`
+  (godot-proof-attempt1/ and godot-proof/).
+
+- **FD-88 — A descriptor array indexed by a value
+  loaded from GPU memory cannot be specialized;
+  the array, its RuntimeDescriptorArray
+  declaration, and the SampledImageArrayDynamicIndexing
+  declaration riding on it stay refused.**
+  *(Medium — one array in the captured 369,400-byte
+  Godot fragment module gates its pipeline; filed
+  by the FD-89 lane, 2026-11-02.)* In
+  `godot-fs-f2b738c259a79b4a.spv` the 3D image array
+  at set 3 / binding 0 is reached by seven access
+  chains: five index it with push-constant-derived
+  values (the specializer's servable class, proven
+  on the sibling arrays in the same module sharing
+  that binding), and two add a term loaded through
+  a root-descriptor (buffer-device-address) pointer
+  — `& 0xFFFF` / `>> 16` of a GPU-memory load — so
+  the element index is data-dependent and no
+  per-signature clone set exists. Specialization is
+  per-array fail-closed, so the two chains leave
+  the whole array unserved, the five servable
+  chains with it. Gating, named exactly: true
+  binding arrays in the translation stack. The
+  translator (naga) and WGSL have no runtime-sized
+  texture arrays, so no fixup-layer rewrite can
+  serve the class; a heap-sized fixed array with a
+  whole-heap binding would be a page-tier feature
+  with its own sizing and lifetime terms, not a
+  fixup. (Boundary, verified on both mirrors:
+  fixed-size image arrays are likewise outside the
+  specializer's universe — runtime arrays only —
+  and keep the same named refusal.) Closing terms:
+  a translation-stack binding-array capability, or
+  a page-tier heap-array feature filed and built as
+  its own entry; until then both mirrors refuse the
+  class by name
+  (`spirv-capability:SampledImageArrayDynamicIndexing`
+  / `spirv-capability:RuntimeDescriptorArray`) and
+  spirvfix leaves the array untouched. Evidence:
+  `test-results/fd87/` (index-provenance trace);
+  record
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`.
+  UPDATE (2026-11-02, lane-fd88) — the gating named
+  above is corrected by measurement: the translation
+  stack is NOT the blocker. The vendored translator
+  (naga 30.0.1) serves this exact class: on minimal
+  fixtures in the captured module's own form (runtime
+  array of 3D sampled images, separate sampler array,
+  OpSampledImage), a data-dependent index — a storage
+  load reduced by `>> 16` / `& 0xFFFF`, the shape of
+  the two unservable chains — translates to WGSL with
+  the index expression preserved verbatim over an
+  unsized `binding_array<texture_3d<f32>>`. The only
+  translator refusal is the capability DECLARATION:
+  every fixture declaring SampledImageArrayDynamicIndexing
+  is refused by name, and the identical module without
+  the declaration translates. On the captured module
+  itself, with the declaration removed and one
+  unrelated mis-ordering in the fixup's own output
+  repaired (FD-92), the translator accepts the whole
+  type/global section — all seven chains into the
+  array included — and its next refusal is an
+  OpIAddCarry in a root-address cone that no array
+  chain's index cone contains (FD-70/R15 territory,
+  rewritten in production with a pipeline signature;
+  the FD-72 helper-invocation refusal stands behind
+  it). Tint in the project's Chromium parses sized
+  `binding_array<texture_3d<f32>, N>` shader modules.
+  THE PROVEN BLOCKER IS ONE EXTERNAL COMPONENT: the
+  WebGPU implementation of the project's Chromium
+  (HeadlessChrome 145, SwiftShader adapter) cannot
+  populate an arrayed texture binding. Measured:
+  createBindGroupLayout accepts a texture entry with
+  count 2/4/1024/65536, but pipeline validation
+  reports the layout 'only provides 1 elements'
+  against a count-2 entry — the count is not
+  honoured; createBindGroup with an array of texture
+  views as the entry resource throws at WebIDL
+  conversion ('Failed to read the 'buffer' property
+  from 'GPUBufferBinding'); repeated scalar entries
+  for the binding are rejected ('binding index 0
+  already used'). No spelling populates the array.
+  Every other link is shaped and ready: the fixup's
+  servability analysis already isolates exactly this
+  class, and the tier's bind-group builder already
+  assembles per-element view arrays in spec form (it
+  would reach the same browser throw). Closing
+  terms, revised: when the serving browser honours
+  arrayed texture bindings, the in-project work is
+  (i) a fixup rule stripping the cap-29 declaration
+  for arrays the analysis proves binding-array-
+  servable (loads and sampled-image formation only;
+  escapes, stores and texel forms keep the refusal),
+  with the audit mirror admitting cap 29 under the
+  same verdict; (ii) the tier sizing the translator's
+  unsized binding-array declarations from the guest
+  layout's descriptor count in the pipeline
+  signature, dropping the `enable wgpu_binding_array;`
+  directive (Tint rejects the name), and a layout-
+  entry arm carrying the count; (iii) per-element
+  bind-group supply, which exists. Until then both
+  mirrors KEEP refusing the class by name: that
+  refusal is the correct behaviour, since an admitted
+  module would fail later and worse — an uncaught
+  browser throw at draw time instead of a named
+  VK_ERROR_FEATURE_NOT_PRESENT at module creation.
+  FD-88 stays OPEN, re-gated on the browser.
+  Evidence: `test-results/fd88/` (fixture matrix,
+  translator outputs, browser probes); record
+  `docs/reports/fd88-binding-array-blocker-20261102.md`.
+  NOTE for the composing merge: this entry also
+  lives, in its original form, on lane-fd87's
+  register; this branch's copy carries the narrowing
+  and supersedes it.
+- **FD-91 — The comment above the ADDR table in
+  web/vk-protocol.mjs misstates the mapping it
+  annotates.** *(Low, documentation. Filed by the
+  FD-64 lane, 2026-11-02; FD-85..FD-90 are taken
+  by parallel lanes' uncomposed branch records,
+  so this number is provisional until the merge
+  lane's audit.)* The comment says WebGPU has no
+  border addressing or mirror-clamp mode and
+  'both use clamp-to-edge'; the table it annotates
+  maps MIRROR_CLAMP_TO_EDGE (4) to 'mirror-repeat'
+  — only CLAMP_TO_BORDER (3) collapses to
+  clamp-to-edge. The served behaviour is the
+  table's (in use since the page tier; the
+  border-emulation tier keys off the raw addrMode*
+  fields precisely because the table collapses
+  modes). The comment is the stale side. The
+  filing lane left it unedited — its mandate was
+  the legacy cases — so the fix (correct the
+  comment; or, if a future audit finds the table
+  wrong, the table, with the served-behaviour
+  consequences stated) is queued here. Evidence:
+  web/vk-protocol.mjs lines 89-90;
+  `docs/reports/fd64-legacy-descset-20261102.md`.
+- **FD-92 — spirvfix's fixed output for the captured
+  369,400-byte Godot module is not spirv-val clean:
+  synthesized pointer types are spliced ahead of a
+  module type definition they reference. FIXED
+  2026-11-02 on branch `lane-fd92` — see CL-47.**
+  *(Medium — any strict consumer of the fixed module
+  (spirv-val; the translator, once earlier refusals
+  are lifted) rejects it; filed by the FD-88 lane,
+  2026-11-02; the number is provisional until the
+  merge lane's audit.)* Measured on lane-fd87's
+  end-state output for
+  `godot-fs-f2b738c259a79b4a.spv`
+  (`test-results/fd87/godot-369400-d4da162f-fixed2.spv`):
+  spirv-val reports "Operand '54[%bool]' requires a
+  previous definition" — the synthesized Private and
+  Function pointer-to-bool types (ids 17439/17440,
+  allocated by the fixup) sit at instruction 299
+  while OpTypeBool (id 54) is defined at instruction
+  333. The raw module is spirv-val clean. The FD-87
+  lane's verdicts never reached the defect: the
+  translator refuses that module at the capability
+  stage, before type parsing reaches the mis-ordered
+  types, and its spirv-val check ran on the sibling
+  fixture only. Closing terms: the fixup's splice
+  machinery places synthesized type instructions
+  without regard to dependencies on module types
+  defined later in the type section; the fix keeps
+  every synthesized type behind the definitions it
+  references (or orders the type section
+  topologically after splicing), proven by spirv-val
+  on this module's fixed output with the corpus
+  expectations unchanged. Evidence:
+  `test-results/fd88/` (captured-naga5.log and the
+  lane record's id-54 analysis).
+  FIXED 2026-11-02 on branch `lane-fd92` (commit
+  89ac92ff9): the splice machinery now computes a
+  dependency-safe position — `defsSplicePos` returns
+  the earliest position at or after a rule's anchor
+  that follows every module definition the
+  synthesized instructions reference (grammar-aware
+  via idOperandUseIndex; a constant's resultType is
+  its type word) — applied at the three
+  intra-type-section splice sites:
+  lower-mid-shader-discard (the measured site; its
+  bool type, constants and pointer types now move as
+  one dependency-ordered block),
+  strip-point-builtins' constants, and the
+  texel-pointer rewrite's addTypes. Reproduced on
+  this base first: the raw module is spirv-val clean
+  and the base fixup's output fails with the filed
+  error verbatim. With the fix the captured module's
+  output validates cleanly and is a pure reordering
+  of the base output (instruction word-multiset
+  identical over 18,352 instructions), so the
+  module's meaning is unchanged; the translator's
+  verdict is unchanged (capability-stage refusal,
+  FD-88). Across the 72-module fixture corpus every
+  fixed output is byte-identical to the base and
+  every applied set is unchanged — the position only
+  moves when a referenced definition would otherwise
+  follow it — and the corpus gate passes 10/10 with
+  its expectations untouched. New guard
+  `web/tests/suite/unit/spirvfix-fd92.test.mjs`
+  builds the shape in miniature: RED on the base
+  (spirv-val on the base output: "ID '7[%bool]' has
+  not been defined"), GREEN with the fix (raw and
+  fixed minimal modules both spirv-val clean).
+  Record:
+  `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
+  evidence `test-results/fd92/`.
+
+- **FD-104 — The 64-bit file-mmap path can return
+  an error after the mapping has been established:
+  in sys_mmap64_file's private branch, the content
+  read that follows the map can fail (an errored
+  positioned read of the file bytes) and the
+  syscall returns that errno, but the pages stay
+  mapped and the range stays reserved, where a
+  failed host mmap leaves nothing mapped.** *(Low.
+  Filed by the FD-82 lane, 2026-11-02; the number
+  is provisional until the merge lane's audit --
+  FD-87..FD-91 are held by parallel branches.)*
+  A guest that trusts the failure believes the
+  range is unmapped; an access there succeeds
+  instead of faulting, and (since CL-48) the
+  mapping counts against its description's
+  close-event deferral like any other live
+  mapping. Found by inspection while wiring
+  FD-82's birth accounting (the birth is recorded
+  before the read precisely because the mapping
+  exists from that point, whatever the read does).
+  Evidence:
+  `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`.
+  FIXED 2026-11-02 on branch `lane-fd92mmap` -- see
+  CL-51 (provisional). The number is kept exactly
+  as carried from lane-fd82; it collides with
+  unrelated FD-104 entries on sibling branches
+  (see CL-51), and the composing merge settles
+  numbering by audit.
+
+- **FD-103 — The 32-bit dispatcher's readv (145) has a
+  null dispatch slot and answers -ENOSYS; only the
+  64-bit readv exists. FIXED 2026-11-02 on branch
+  `lane-fd92-93` — see CL-57.** *(Was Low. Filed by the
+  FD-83/84 lane, 2026-11-02; the number was chosen
+  past FD-85..FD-91, which live on unmerged lane
+  branches off the same base, so the composition
+  audit does not have to renumber it; provisional
+  until that audit.)* Found while scoping FD-83,
+  which covers the implemented 64-bit readv. The
+  32-bit table carries the slot as null, so a 32-bit
+  guest's readv returns -ENOSYS with only a debug
+  line — an unimplemented-shape answer for a call
+  Linux has always had, and one the one-event-per-
+  call notification contract (FD-83) would then
+  also apply to. writev (146) is dispatched on the
+  same table, so the wiring shape exists. Evidence:
+  the dispatch table in `source/kernel/syscall.cpp`
+  on this base; the FD-83 contract in
+  `test-results/fd83-84/`.
+
+  *Update 2026-11-02 (lane-fd92-93): the entry was
+  carried verbatim from lane-fd83-84's register and
+  fixed here. Slot 145 dispatches to a new
+  KProcess::readv over a new KObject::readv walk,
+  validating in the host's order (bad descriptor
+  EBADF, wrong mode EBADF, iovcnt range EINVAL,
+  null iovec EFAULT) and holding FD-83's contract:
+  exactly one IN_ACCESS per successful call — a
+  byte-moving walk's per-segment events coalesce
+  in the inotify queue, and a success that moved
+  no bytes raises its event in KProcess::readv.
+  Fixed in commits `48bb12b1c` (tests) and
+  `8d2da6430` (fix) — see CL-57. Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.*
+
+- **FD-93 — The write family answers -EINVAL (or a
+  silent 0) where the host answers -EBADF for a
+  write on a descriptor opened read-only. FIXED
+  2026-11-02 on branch `lane-fd92-93` — see CL-58.**
+  *(Was Low. Filed by the FD-83/84 lane, 2026-11-02; the
+  number was chosen past FD-85..FD-91 for the same
+  reason as FD-103; provisional until the merge
+  lane's audit.)* The mirror of FD-84, host-measured
+  by this lane (host kernel 6.17.0-1020-oracle):
+  write, pwrite and writev on an O_RDONLY descriptor
+  answer EBADF, for count 0 and iovcnt 0 as well,
+  and pwrite's negative offset answers EINVAL ahead
+  of the mode answer. The emulator: `sys_pwrite64`
+  gates on canWrite() with -EINVAL; `KProcess::write`
+  answers -EINVAL for !canWrite; `KProcess::pwrite64`
+  carries no mode check, so the call falls through
+  to the backing write whose host EBADF the backing
+  layer swallows into a silent 0; `sys_write64`
+  carries no mode gate at all, so plain write and
+  (through it) `sys_writev64` inherit the backing
+  layer's answer rather than the kernel's. FD-84's
+  filing covers the read family; this lane did not
+  widen its fix to match. Evidence:
+  `test-results/fd83-84/` (hostref-write.c and its
+  output).
+
+  *Update 2026-11-02 (lane-fd92-93): the entry was
+  carried verbatim from lane-fd83-84's register and
+  fixed here, at every site it names —
+  KProcess::write and KProcess::writev (EINVAL ->
+  EBADF; the vectored walk also gains its
+  iovcnt-range and iovec-pointer validation, behind
+  the mode check as measured), KProcess::pwrite64
+  (the missing mode check, with the negative
+  offset's EINVAL ahead of it), sys_write64 (a
+  descriptor+mode gate ahead of the zero-count
+  return; its later gate's answer corrected),
+  sys_writev64 (the validation block its read
+  counterpart carries) and sys_pwrite64 (the offset
+  EINVAL reordered ahead of the descriptor and mode
+  answers); the 32-bit dispatcher's pwrite64 checks
+  the offset's high word ahead of forwarding, so
+  that route keeps the same order. One correction
+  to the text above: sys_write64 does carry a mode
+  gate on the base — answering -EINVAL, behind the
+  buffer copy, and bypassed entirely by the
+  count==0 return; the entry's observable claim
+  stands. Fixed in commits `48bb12b1c` (tests),
+  `8d2da6430` (fix) and `0acf72a4b` (silent-failure
+  baseline review) — see CL-58. Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.*
+
+
+- **FD-101 — The 64-bit sendmsg path gathers
+  segment data from unreadable guest buffers
+  as fabricated zeros instead of answering
+  EFAULT. FIXED 2026-11-02 on branch
+  `lane-fd101` — see CL-52.** *(Was Low.
+  Filed by the FD-97 lane,
+  2026-11-02; the number follows FD-100 on
+  lane-fd98's register and is provisional
+  until the merge lane's audit.)* Found
+  auditing FD-97's trait beyond the file
+  paths: `sys_sendmsg64`
+  (source/kernel/syscall64.cpp) gathers each
+  iovec segment into its per-thread scratch
+  buffer through KMemory64::memcpyFromGuest
+  with no readability check on the segment
+  base, so a segment pointing at unmapped or
+  unreadable guest memory is sent as that
+  many zero bytes and the call reports
+  success; sendmmsg loops sys_sendmsg64 and
+  inherits it. The host answers -EFAULT and
+  sends nothing for a fully unreadable
+  segment (measured on the box's host kernel
+  6.17.0-1020-oracle with a dedicated
+  reference program,
+  `test-results/fd97/hostref-sendmsg.c`:
+  bad iov base -EFAULT; a good base is
+  delivered intact). The file paths' form of
+  the trait is FD-97 (fixed, CL-56); this is
+  the vectored socket form, left for the
+  owning lane — the fix shape mirrors
+  FD-97's (readable prefix / EFAULT per
+  segment), but the socket paths' partial
+  and message-boundary semantics need their
+  own host measurements first. Evidence:
+  the gather loop in sys_sendmsg64 on this
+  base.
+
+  Fixed in commits `7eed978a9` (test),
+  `f70b16116` (fix) and `4363174fa`
+  (slice-test surface) — see CL-52. The
+  closing contract was settled by measurement
+  before fixing
+  (`test-results/fd101/hostref-sendmsg-fd101.c`
+  with sendto and recvmsg companions, host
+  kernel 6.17.0-1020-oracle): the host's
+  sendmsg is all-or-nothing — any unreadable
+  byte in any nonzero segment answers
+  -EFAULT with nothing delivered, including
+  a segment that starts readable and crosses
+  into an unmapped page (no short-count
+  prefix, unlike FD-97's write contract);
+  the descriptor answers precede the copy
+  faults, and an iovlen over the host's
+  1024 answers -EMSGSIZE. Record:
+  `docs/reports/fd101-sendmsg-efault-20261102.md`;
+  evidence `test-results/fd101/`.
+
+
+- **FD-105 — The 64-bit sendmsg SCM_RIGHTS
+  translation trusts the guest's cmsg_len:
+  a length under the header size, or past
+  the control area, makes the translation
+  loop run unboundedly past its scratch
+  area. FIXED 2026-11-02 on branch
+  `lane-fd102-104` — see CL-53.** *(Was
+  Low. Filed by the FD-101 lane,
+  2026-11-02; provisional until the merge
+  lane's audit.)* Found fixing FD-101: in
+  sys_sendmsg64's ancillary translation
+  (source/kernel/syscall64.cpp) the rights
+  count is derived from the guest-supplied
+  cmsg_len alone — nfds = (clen - 16) / 4 —
+  with no check that the length covers the
+  header or stays inside msg_controllen. A
+  cmsg_len under 16 underflows the count to
+  roughly 2^30 descriptors; the loop then
+  reads guest words and writes 16-byte
+  records into and far past the per-thread
+  scratch cmsg area, and a merely oversized
+  length overruns the same way. Code
+  evidence on this base; not exercised
+  against the running emulator (by
+  construction the failure is a hang or
+  scratch corruption). The FD-101 fix
+  validates the rights array's readability
+  only when clen >= 16 and deliberately
+  does not clamp the count — that is this
+  defect, on the wineserver fd-passing
+  path, left for its owning lane. Fix
+  shape: reject or clamp a cmsg_len under
+  the header size or beyond the remaining
+  controllen before the count is derived.
+
+- **FD-106 — The 64-bit single-call socket
+  send (sendto) copies its guest buffer
+  through the same zero-filling accessor
+  with no readability check: an unreadable
+  buffer is sent as fabricated zeros and
+  the call reports success. FIXED
+  2026-11-02 on branch `lane-fd102-104` —
+  see CL-54.** *(Was Low. Filed
+  by the FD-101 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* sys_sendto64
+  (source/kernel/syscall64.cpp) copies the
+  buffer through KMemory64::memcpyFromGuest
+  in chunks before the send, so it carries
+  FD-101's trait in the single-call form;
+  it does not share the msghdr gather, so
+  it is filed separately rather than fixed
+  with FD-101. The host contract is
+  measured
+  (`test-results/fd101/hostref-sendto-fd101.c`,
+  host kernel 6.17.0-1020-oracle): unmapped
+  and page-crossing sendto buffers answer
+  -EFAULT with nothing delivered on stream
+  and datagram sockets alike, and the
+  descriptor answer (-ENOTSOCK on a file)
+  precedes the fault. Fix shape: validate
+  the buffer's full range before the copy,
+  mirroring FD-101's checks and ordering.
+
+- **FD-107 — The 64-bit recvmsg scatter
+  drops received bytes silently when a
+  guest segment is unwritable: the data is
+  consumed from the socket and the call
+  reports it delivered. FIXED 2026-11-02
+  on branch `lane-fd102-104` — see
+  CL-55.** *(Was Low. Filed by
+  the FD-101 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Found
+  auditing FD-101's mirror direction:
+  sys_recvmsg64
+  (source/kernel/syscall64.cpp) receives
+  into scratch through krecvmsg —
+  consuming the message — then scatters to
+  the guest iov through
+  KMemory64::memcpyToGuest, which returns
+  silently when its access check fails, so
+  an unmapped or unwritable segment loses
+  the bytes while the return value reports
+  them received. The host answers -EFAULT
+  for an unwritable receive buffer, and
+  the consumption differs by socket type
+  (measured,
+  `test-results/fd101/hostref-recvmsg-fd101.c`,
+  host kernel 6.17.0-1020-oracle): on a
+  stream socket the data survives the
+  failed call and a following recvmsg
+  returns it; on a datagram socket the
+  failed call consumes the datagram. The
+  receive direction's fix needs its own
+  design (validate the scatter ranges
+  before krecvmsg consumes, and settle the
+  stream/datagram difference), left for
+  the owning lane.
+
+- **FD-111 — The 64-bit recvfrom scatters
+  through the same silent-drop accessor as
+  FD-107's recvmsg: an unwritable receive
+  buffer loses bytes the call reports
+  delivered.** *(Low. Filed by the
+  FD-105..104 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Found
+  closing FD-107: the dispatcher's recvfrom
+  branch (source/kernel/syscall64.cpp,
+  sharing its case block with sendto)
+  receives through krecvfrom into scratch
+  and copies back through
+  KMemory64::memcpyToGuest, whose
+  access-check failure returns silently —
+  FD-107's trait in the single-call receive
+  form. Measured on the host
+  (`test-results/fd102-104/hostref-recvmsg2-fd104.c`,
+  host kernel 6.17.0-1020-oracle): an
+  unwritable buffer answers -EFAULT, a
+  stream socket's data survives the failed
+  call, and a datagram is consumed by it.
+  FD-107's fix covers sys_recvmsg64 only;
+  the fix shape mirrors it (validate the
+  destination as the scatter proceeds,
+  with the same settled stream-consumption
+  divergence).
+
+- **FD-112 — The 64-bit sendmsg control
+  translation examines only the first cmsg
+  header: nothing past it is validated or
+  translated, where the host walks the
+  whole chain.** *(Low. Filed by the
+  FD-105..104 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Measured
+  on the host
+  (`test-results/fd102-104/hostref-cmsglen-fd102.c`,
+  host kernel 6.17.0-1020-oracle): a valid
+  SCM_RIGHTS header followed by trailing
+  slack inside msg_controllen answers
+  -EINVAL — the zeroed trailing header is
+  malformed — while the emulator sends the
+  rights and the data without complaint. A
+  second header of any kind, and a first
+  header that is not SCM_RIGHTS, are
+  likewise dropped silently where the host
+  processes them (code evidence:
+  sys_sendmsg64's single-header
+  translation). Found measuring FD-105's
+  host contract; FD-105's fix validates
+  the first header's length only.
+
+- **FD-113 — sys_recvmsg64's source-name
+  copyback goes through the same
+  silent-drop accessor: a peer address
+  that cannot be written is lost while
+  the call reports success.** *(Low. Filed
+  by the FD-105..104 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* Code evidence, found auditing
+  FD-107's function: after a successful
+  receive, the name copyback
+  (source/kernel/syscall64.cpp) copies the
+  bounced sockaddr to the guest's msg_name
+  through KMemory64::memcpyToGuest, which
+  returns silently when its access check
+  fails; the host's address copy faults
+  the call (-EFAULT, with the received
+  data already delivered). FD-107's fix
+  covers the data scatter and the import
+  side; the copyback needs its own settled
+  answer, since by then the receive has
+  already happened on every socket type.
+
+- **FD-114 — A datagram sent with sendto
+  on a connected unix socketpair is
+  reported sent but never delivered: it
+  reaches neither the peer's message
+  queue nor its stream buffer in any form
+  the peer can receive.** *(Low. Filed by
+  the FD-105..104 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* Measured on this base while
+  writing FD-106's test:
+  KUnixSocketObject::sendto routes every
+  send to the object's stream write path
+  (source/kernel/kunixsocket.cpp); for a
+  datagram pair, a sendto that returns its
+  full length is afterwards invisible to
+  the peer's poll (whose readiness covers
+  both stores), to recvmsg, and to a
+  blocking read, which parks on the empty
+  stream buffer (gdb stack in
+  `test-results/fd102-104/`). sendmsg on
+  the same pair queues a real datagram and
+  works. The host delivers a connected
+  datagram sendto as one datagram. Not
+  FD-106's claim — the dispatcher's buffer
+  validation is independent of where the
+  object's write path puts the bytes — so
+  it is filed for its own lane.
+
+- **FD-97 — The 64-bit single-call write paths
+  fabricate zero bytes for an unreadable guest
+  buffer instead of answering EFAULT. FIXED
+  2026-11-02 on branch `lane-fd97` — see
+  CL-56.** *(Was Low. Filed by the FD-94/96
+  lane, 2026-11-02;
+  provisional until the merge lane's audit.)*
+  Found while wiring FD-94: KMemory64::
+  memcpyFromGuest zero-fills its destination when
+  the guest range fails its access check, and the
+  single-call write paths copy the guest buffer
+  through it before writing — sys_write64 and
+  sys_pwrite64 (source/kernel/syscall64.cpp) hand
+  the file whatever the copy produced, so a write
+  from an unmapped or unreadable guest address
+  lands that many zero bytes in the file and
+  returns success. The host answers EFAULT and
+  writes nothing (measured for the vectored form
+  in FD-94's host reference programs: a bad first
+  segment is EFAULT). FD-94's vectored paths work
+  around the trait with per-segment range checks;
+  the single-call paths keep it. The read side
+  does not have the trait (its paths range-check
+  the destination). Fix shape for the owning
+  lane: range-check the guest buffer before the
+  copy in the single-call write paths, or make
+  the copy report failure and answer -EFAULT;
+  either must keep the vectored paths' measured
+  behaviour. Evidence: KMemory64::memcpyFromGuest
+  in source/kernel/kmemory64.cpp and its call
+  sites in sys_write64/sys_pwrite64 on this base.
+
+  Fixed in commits `6d7c28d00` (test) and
+  `c734fe89d` (fix) — see CL-56. The closing
+  contract was refined by measurement before
+  fixing (`test-results/fd97/hostref-fd97.c`,
+  host kernel 6.17.0-1020-oracle): the host
+  answers EFAULT only when no byte is
+  readable; a readable prefix running into
+  an unreadable page is written as a short
+  count, so the fix writes the prefix rather
+  than answering EFAULT for the whole call.
+  Record:
+  `docs/reports/fd97-single-call-write-efault-20261102.md`;
+  evidence `test-results/fd97/`.
+
+
+
+- **FD-94 — pwritev and pwritev2 are undispatched
+  on the 64-bit dispatcher and absent from the
+  32-bit syscall table. FIXED 2026-11-02 on
+  branch `lane-fd94-96` — see CL-59.** *(Was Low.
+  Filed by the
+  FD-92/93 lane, 2026-11-02; the number follows
+  FD-92/FD-93 as carried from lane-fd83-84 and is
+  provisional until the merge lane's audit.)* Found
+  while scoping FD-93's positioned-write family:
+  the 64-bit dispatch carries pwritev (296) and
+  pwritev2 (328) in its name table only — no
+  X64_SYS define, no dispatch case — so both answer
+  -ENOSYS, and the 32-bit table has no pwritev slot
+  at all. The write-side twin of FD-92 (preadv was
+  wired by FD-80/CL-39; the write side never was).
+  For the wiring lane, measured on the host kernel
+  (6.17.0-1020-oracle): pwritev on a bad descriptor
+  with offset -1 answers EINVAL, the positioned
+  family's offset-before-descriptor order
+  (`test-results/fd92-93/hostref-off-order.c`).
+  Evidence: the dispatch switch in
+  `source/kernel/syscall64.cpp` and the table in
+  `source/kernel/syscall.cpp` on this base.
+
+  Fixed in commits `c060e0613` (tests; build
+  corrections `f9a8fdeef` and `84e5feca7`) and
+  `d528d792b` (fix) — see CL-59. Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+  *Batch-3 merge note: this lane's test pinned
+  pwritev's read-only answer as the house -EINVAL
+  (section 9 of testPwritev64Syscalls), deferring the
+  divergence to FD-93; with FD-93 composed in this
+  batch, the merge decision recorded at FD-95 flipped
+  that case to -EBADF, and sys_pwritev64 now answers it
+  at the descriptor check.*
+
+- **FD-95 — The read family's (bad descriptor,
+  negative offset) combination answers EBADF where
+  the host answers EINVAL.** *(Low. Filed by the
+  FD-92/93 lane, 2026-11-02; provisional until the
+  merge lane's audit.)* Measured on the host kernel
+  (6.17.0-1020-oracle): pread, preadv and pwritev
+  on a bad descriptor with offset -1 all answer
+  EINVAL — the positioned family's offset check
+  precedes even the descriptor check. FD-84's
+  composed fix on lane-fd83-84 orders the
+  descriptor check first in sys_pread64Impl and
+  sys_preadv64, so that combination answers EBADF
+  there; and the shared KProcess::pread64 carries
+  no offset check in either shape (its dispatcher
+  callers check the offset themselves, after the
+  descriptor). The write side was ordered
+  offset-first by FD-93; the read side's
+  composition is the merge lane's call, since
+  FD-84's fix is in flight. Evidence:
+  `test-results/fd92-93/hostref-off-order.c` and
+  its output; FD-84's entry and CL-50 on
+  lane-fd83-84.
+
+  **Settled and closed by the batch-3 merge audit
+  (2026-11-02); no closure number consumed (the batch-2
+  FD-102 precedent).** The order is settled for the whole
+  positioned family from the host measurements on record
+  -- FD-83/84's and FD-98's, taken on the box's 6.17
+  kernel and agreeing: offset validity (EINVAL) first,
+  except the v2 calls' offset -1, which is the
+  file-position mode; then the descriptor answers (EBADF
+  for a closed descriptor and for a wrong-mode one);
+  then the iovcnt range (EINVAL); then the iovec array
+  (EFAULT); and the v2 flags check last (EOPNOTSUPP,
+  mask 0x3f). The shared positioned cores already held
+  this order (sys_pread64Impl, sys_pwrite64,
+  KProcess::pread64, KProcess::pwrite64), and the 32-bit
+  vectored read already held it in KProcess::preadv;
+  the merge aligned the three vectored wrappers that
+  had deferred the mode answer to their per-segment
+  walks -- sys_preadv64, sys_pwritev64 and
+  KProcess::pwritev -- by placing the mode check with
+  the descriptor check. The same decision aligns the
+  positioned vectored write's wrong-mode answer with
+  the write family's settled contract (FD-93): FD-94's
+  pinned -EINVAL expectation for pwritev on a read-only
+  descriptor (section 9 of testPwritev64Syscalls) is
+  flipped to -EBADF. Proof: native suites serial, main
+  675/675 and x64 83/83, 0 FAILED
+  (test-results/merge-batch3-20261102/).
+
+
+- **FD-96 — The 32-bit vectored write returns a
+  later segment's error even after earlier segments
+  wrote bytes; the host returns the bytes.
+  FIXED 2026-11-02 on branch `lane-fd94-96` — see
+  CL-60.** *(Was Low.
+  Filed by the FD-92/93 lane, 2026-11-02;
+  provisional until the merge lane's audit.)*
+  Measured on the host kernel (6.17.0-1020-oracle):
+  writev with a good first segment (3 bytes) and a
+  bad second segment returns 3. The emulator's
+  32-bit walk, KObject::writev, returns the failing
+  segment's error result regardless of what was
+  already written (it logs a kwarn for the partial
+  case and still returns the error); the 64-bit
+  walk (sys_writev64) returns the accumulated total
+  in the same situation, as does the new 32-bit
+  readv walk. FD-93's fix adds descriptor, mode,
+  range and pointer validation ahead of this walk
+  but does not change its return shape, and no test
+  pins the partial-error case. Evidence:
+  `test-results/fd92-93/hostref-write2.c` and its
+  output; `KObject::writev` in
+  `source/kernel/kobject.cpp` on this base.
+
+  Fixed in commits `c060e0613` (tests) and
+  `d528d792b` (fix) — see CL-60. Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+
+
+- **FD-98 — The 32-bit dispatcher's preadv (333)
+  and preadv2 (377) are null table slots and
+  answer -ENOSYS; only the 64-bit preadv
+  exists. FIXED 2026-11-02 on branch
+  `lane-fd98` — see CL-61.** *(Was Low. Filed
+  by the FD-98 lane,
+  2026-11-02; the number follows FD-97 on
+  lane-fd94-96's register and is provisional
+  until the merge lane's audit.)* FD-94 wired
+  the write-side twin (pwritev 334 / pwritev2
+  378) and recorded these two slots as the read
+  family's, deliberately untouched there. The
+  host contract was measured fresh on the host
+  kernel (6.17.0-1020-oracle) with dedicated
+  reference programs
+  (`test-results/fd98/hostref-preadv*.c`):
+  segments fill in order at successive offsets
+  and the file position does not move; a short
+  read ends the walk; a later segment's failure
+  returns the bytes already read; exactly one
+  IN_ACCESS per successful call, 0-byte
+  successes (at EOF, with iovcnt 0, with
+  all-zero-length segments) included, and none
+  on failure (FD-83's contract). Validation
+  order, each step measured against its
+  neighbours: a negative offset is EINVAL ahead
+  of the descriptor check — except preadv2's
+  offset -1, which is the file-position mode
+  (read at the current position and advance
+  it); a descriptor that cannot be read answers
+  EBADF, ahead of the iovcnt range check, of
+  the preadv2 flags check, and of an iovcnt-0
+  success return; the iovcnt range check
+  (EINVAL outside 0..1024) precedes the iovec
+  array check (EFAULT for a null or unmapped
+  array with iovcnt > 0), which precedes the
+  flags check (EOPNOTSUPP for bits outside the
+  defined RWF mask 0x3f — the read side accepts
+  0x20/NOAPPEND on this kernel). Boundary
+  inherited from the shared positioned core
+  rather than created here: preadv on a pipe
+  answers the core's -EINVAL where the host
+  answers ESPIPE (measured in the same
+  programs; 32-bit pread64 shares the core and
+  the answer). The FD-95 interaction is
+  recorded in the lane record: this wiring
+  takes the host's offset-first side of
+  FD-95's question. Evidence: the dispatch
+  table in `source/kernel/syscall.cpp` on this
+  base (slots 333/377 nullptr); the host
+  reference programs and outputs in
+  `test-results/fd98/`.
+
+  Fixed in commits `8edaaaea2` (test) and
+  `86dfb5830` (fix) — see CL-61. Record:
+  `docs/reports/fd98-preadv32-20261102.md`;
+  evidence `test-results/fd98/`.
+
+
+- **FD-99 — The 64-bit dispatcher's preadv2
+  refuses the file-position offset and one
+  defined flag the host accepts. FIXED
+  2026-11-02 on branch `lane-fd99-100` — see
+  CL-62.** *(Low. Filed
+  by the FD-98 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Measured on
+  the host kernel (6.17.0-1020-oracle) while
+  pinning FD-98's contract
+  (`test-results/fd98/hostref-preadv.c`):
+  preadv2 with offset -1 reads at the current
+  file position and advances it (the
+  file-position mode, as pwritev2's -1 does
+  since FD-94), and preadv2 accepts flag bit
+  0x20 (RWF_NOAPPEND, defined on this kernel;
+  the read side's defined mask is 0x3f). The
+  composed sys_preadv64 (FD-80) answers EINVAL
+  for any negative offset including -1 — its
+  header comment records the -1 refusal as
+  measured behaviour, which the fresh
+  measurement contradicts for preadv2 (preadv
+  itself does answer EINVAL at -1) — and
+  answers EOPNOTSUPP for flags outside 0x1f.
+  Both divergences are confined to the 64-bit
+  dispatcher's preadv2 arm; FD-98's 32-bit
+  wiring implements the measured behaviour.
+  Fix shape for the owning lane: in
+  sys_preadv64, treat preadv2's offset -1 as
+  the file-position mode (walk at the current
+  position and advance by the bytes read, as
+  sys_pwritev64's -1 mode does) and widen the
+  flags mask to 0x3f; extend
+  testPreadv64Syscalls' matrix for both.
+
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix) —
+  see CL-62. Proof and the FD-95 interaction
+  are recorded there; the validation-order
+  half of the restructure is FD-100's fix
+  (CL-63).
+
+
+- **FD-100 — The positioned vectored family's
+  v2 flags check runs ahead of the iovcnt range
+  and iovec array checks; the host runs it
+  last. FIXED 2026-11-02 on branch
+  `lane-fd99-100` — see CL-63.** *(Low. Filed by the FD-98 lane,
+  2026-11-02; provisional until the merge
+  lane's audit.)* Measured on the host kernel
+  (6.17.0-1020-oracle) for both directions
+  (`test-results/fd98/hostref-preadv-order2.c`,
+  `hostref-pwritev-order.c`): with iovcnt -1
+  and an undefined flag bit together, the host
+  answers EINVAL (the range check first); with
+  a null or unmapped iovec array and an
+  undefined flag bit together, the host answers
+  EFAULT (the array check first). The family's
+  three wired implementations — sys_preadv64
+  (FD-80), sys_pwritev64 and KProcess::pwritev
+  (FD-94) — all test the flags before the
+  iovcnt range and the array pointer, so those
+  two combinations answer EOPNOTSUPP where the
+  host answers EINVAL / EFAULT. Every other
+  measured combination agrees. FD-98's 32-bit
+  preadv wiring uses the measured order (flags
+  last); the fix for these three is moving the
+  flags test below the iovcnt and array checks
+  in each.
+
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix) —
+  see CL-63. The wrong-mode + range/array
+  combinations characterized there belong to
+  FD-84's / FD-93's composition.
+
+- **FD-90 — The ALSA chain's mmap face delivers one
+  buffer, then reports no space forever: the playback
+  pointer the chain consumes never advances.** *(Medium —
+  any ALSA client rendering through snd_pcm_mmap_begin /
+  commit over the shipped plug → oss chain. Found
+  2026-11-02 by the FD-85 continuation lane; numbered
+  FD-90 provisionally — FD-85…FD-89 are taken on
+  unmerged branches; the composing merge verifies by
+  audit. FIXED on lane-fd90, awaiting merge —
+  provisional CL-66.)* A native ALSA client using MMAP_INTERLEAVED
+  access over the stock `default` PCM gets the full
+  4,096-frame buffer from mmap_begin, and the first
+  mmap_commit lands it at the emulator's audio input at
+  full scale (`S16 input first non-zero peak=12000
+  (n=8192)`; `first push 3250 frames peak=0.4550`); from
+  then on `snd_pcm_avail_update` returns 0 permanently —
+  eight fixed cycles, both S16_LE and Float32 — so no
+  second buffer is ever offered. The position reporting
+  underneath is incoherent in both access modes: the
+  same client's writei run read `snd_pcm_delay` =
+  **-190,464 frames** and avail **194,560** on a
+  4,096-frame buffer. The emulator's OSS device reports
+  GETOPTR as a write position modulo capacity and
+  GETODELAY as a constant 0 under the bwPump bridge
+  (`source/kernel/devs/devdsp.cpp`: ioctl64 GETOPTR,
+  `getUsedBufferSize`), so the ALSA layer's hardware
+  pointer has no playback motion to consume. Writei
+  clients ignore position and play; mmap clients stall
+  after one buffer. NOT the cause of FD-85 (proven
+  there). A fix belongs to the OSS device's position
+  contract — a played-frames counter sourced from the
+  bwPump ring consumer is the shape the evidence
+  supports — and must be proven against both access
+  modes without reviving the waveOut poll stalls the
+  GETODELAY fiction was originally introduced to avoid.
+  Evidence: `test-results/fd85b/suite-fd85b-diag2/`
+  (fresh-session mmap cycles + input lines),
+  `test-results/fd85b/suite-fd85b-diag/` (writei
+  position readings). Fixture:
+  `tools/guest-fixtures/alsatone.c`.
+
+  **Update 2026-11-02 (lane-fd90): FIXED — the OSS
+  position face now reports the playback position.**
+  Fix `dd00eee9b`: GETOPTR/GETODELAY derive from a
+  played counter sourced from the bwPump ring
+  consumer (bytesWritten minus the ring queue, the
+  queue capped at capacity); SNDCTL_DSP_RESET no
+  longer clobbers the stream geometry hw_params
+  negotiated (the prepare-time RESET had shrunk the
+  position modulus 16384 -> 8192 for the stream's
+  whole life — the writei incoherence); and the
+  reported position advances at most half a buffer
+  per read, because the guest plugin's pointer
+  callback consumes count_info.ptr alone (verified
+  by disassembly of the shipped alsa-lib 1.2.8
+  module), which aliases to no-motion when a
+  non-paced sink drains a buffer or more between
+  reads. GETOSPACE and the poll face are unchanged
+  — the anti-stall surface is untouched — and the
+  new delay reaches 0 exactly when the audible
+  queue empties. Proof: suite test
+  `alsa-mmap-stream` — RED on the base build with
+  this entry's recorded signature (avail
+  4096,0,0,0,0,0,0,0), GREEN on the fixed build
+  (s16mmap 18,432 frames committed, floatmmap
+  22,528; writei avail/delay coherent, summing to
+  the 4,096-frame buffer). Provisional CL-66.
+  Record: `docs/reports/fd90-oss-position-20261102.md`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -3283,6 +4787,26 @@ is behavioural, is re-proven there.
 | `lane-fd65` | FD-65: Gecko's "unable to find a usable font" — two layers: the 64-bit rootfs carried no font faces, and the shipped 64-bit win32u.so was built without freetype/fontconfig so GDI could enumerate and realize no font at all; faces staged (fonts64) and win32u rebuilt with its font engine (the build now fails loudly if either SONAME is absent); FD-85 + FD-86 filed | Guest step probe x64: EnumFontFamiliesEx 0 → 85 families, GetTextMetrics fail → tmHeight 17 (the 32-bit stack's numbers); the real common-dependencies Gecko stage green in two runs (MSHTML: RESULT 0, zero abort lines, test untouched — its remaining audio-capture failure is FD-85); completeness 0 failures; JS 348/0; dist 'Browser export verified'. Record: `docs/reports/fd65-gecko-fonts-20261102.md` |
 | `lane-fd85` | FD-85: the audio-capture failure convicted as two defects — the test's capture watched SDL's bypassed ScriptProcessor node while guest audio flows through the bwPump AudioWorklet (FD-87: fixed, closed CL-42), and beneath it Wine's mmdevapi → winealsa → ALSA leg delivers silence to the emulator's audio input for every Windows audio client tried (FD-85 stays open, break point proven by measurement); wasapi-tone + winmm-tone fixtures added | Fixed capture hears the direct-DSP control tone at peak 0.3662 where the shipped capture counted 0 non-zero in 266,240 samples; shipped test post-fix still fails at its audio wait (Gecko green, `OPENAL: RESULT 0`, first push peak 0.0000, no S16 non-zero line); JS 348/0; dist 'Browser export verified' (wasm byte-identical to shipped). Record: `docs/reports/fd85-audio-leg-20261102.md` |
 | `lane-fd77-stall-surface` | FD-77 remainder: a default session whose boot completes the desktop handshake but never maps a window and stops executing is now surfaced as a reported failure (the launcher takes its own thread dumps and convicts on the dump's measured zero-progress, two consecutive dumps, no fetch in flight); the held dump evidence is flushed to the preserved session log ahead of one BW64-FAIL line; slow-but-alive starts, armed diagnostic sessions, and every readiness rule are untouched | Unit tests over the shipped watchdog section: 8/8 green, 8/8 red on the unpatched launcher; shaped-session browser probe on the built dist: the park shape reports the failure with evidence in the log, the slow-but-alive and pre-handshake shapes raise no alarm; launcher UI regression green. Record: `docs/reports/fd77-stall-surfacing-20261101.md`; evidence `test-results/fd77-stall-surfacing/` |
+| `lane-fd87` | FD-89 CLOSED (CL-43): the Godot second-wave sibling classes — capability 29 (SampledImageArrayDynamicIndexing) named and admitted exactly when its image arrays are specializer-servable (spirvfix R19 strips the stray declaration), dead descriptor declarations stripped (R18) so the captured 2,340 B module translates end to end, and FD-78's ExtInst literal position bounded in both orphan sweeps so the 369,400 B module's texel conversion runs and SampledBuffer is served; FD-88 filed (data-dependent descriptor-array indexing, translator-stack-gated); FD-78 updated (ExtInst position proven live, fixed at two sweeps) | Both modules are committed fixtures (`testdata/spirv/godot-fs-f2b738c259a79b4a.spv`, `godot-fs-f1b4e0027d98e2e4.spv`): new suite `spirvfix-fd87.test.mjs` 5/5 (small module translates; big module loses SampledBuffer, keeps FD-88's pair by name); corpus test green over all 74 modules with per-module rewrite sets re-measured (every R18 verdict independently verified dead by raw-word scan); native run-native 60 PASS incl. 3 new FD-87 guards (cap-29 admit/refuse-by-name both forms, dead descriptors, ExtInst sweep position); JS unit suite 351/0; vulkan citations 352 rows 0 drift after re-pinning through the change's line map; browser build 'Browser export verified', wasm `f66e592c`. The two pipelines' in-vivo creations remain CL-42's owed clause for the carrying deploy gate. Record: `docs/reports/fd87-godot-sibling-classes-20261102.md`; evidence `test-results/fd87/` |
+| `lane-fd05` | FD-05: filling the file-descriptor table panicked and killed the emulator; exhaustion now answers EMFILE (EINVAL for an F_DUPFD minimum at/past the ceiling, EBADF for a dup2 target at/past it) and the guest survives — the allocation contract changed at its single choke point (`allocFileDescriptor`), all 22 production callers audited and made safe, SCM_RIGHTS partial delivery and accept requeue semantics preserved | New test testFdTableExhaustion in both suites: RED on the base (the fill hit the panic; the forked harness recorded the test as each suite's single failure, and un-forked the suite process died at the test), GREEN with the fix; native serial main 669/669 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE on the fixed tree (wasm ea3bdaa0), JS unit 348/0, legacy 110/4 (FD-64's standing set on this base). Record: `docs/reports/fd05-fd-table-exhaustion-20261102.md`; evidence `test-results/fd05/` |
+| `lane-fd92` | FD-92: spirvfix spliced its synthesized pointer-to-bool types ahead of the OpTypeBool they reference in the captured 369,400-byte Godot module (the module defines that type after its first global variable), so the fixed module failed spirv-val; synthesized types/constants are now spliced behind the definitions they reference (`defsSplicePos`, at the three intra-type-section splice sites) | spirv-val on the captured module's fixed output: clean (the base output fails with the filed error verbatim); the fixed output is a pure reordering of the base output (instruction word-multiset identical, 18,352 instructions); 72-module corpus: every output byte-identical to the base, applied sets unchanged, corpus gate 10/10; new guard spirvfix-fd92 RED on the base / GREEN with the fix. Record: `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`; evidence `test-results/fd92/` |
+| `lane-fd82` | FD-82: a 64-bit guest's file-backed mappings did not participate in FD-79's close-event deferral -- the 64-bit path materializes mappings as copied/shared pages in KMemory64 with no open-description accounting, so IN_CLOSE_WRITE / IN_CLOSE_NOWRITE fired at fd close while such a mapping was live; KMemory64 now tables its live file mappings per description and reports births and deaths (munmap, overwrite, mremap move/grow, fork, address-space destruction) through the same FsOpenNode accounting the demand-paged path uses | New test testCloseWriteDeferral64 (x64 suite; drives the real 64-bit syscall dispatch): RED on the base -- ten assertions failing (the event fired at fd close in every deferral case and never arrived at the mapping's death), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (wasm 551ec728, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`; evidence `test-results/fd82/` |
+| `lane-fd83-84` | FD-83: readv generates exactly one IN_ACCESS per successful call, 0-byte successes included (the walk's per-segment notifications suppressed under a KInotify scope, one event raised on success; the walk gains its own fd/mode/iovcnt/iovec validation in the host's order); FD-84: the positioned/plain read family answers EBADF on a descriptor that cannot be read, in the host's validation order (negative offset EINVAL first in the positioned core; preadv's mode answer ahead of its flag and iovcnt checks; KProcess::pread64 gains the mode check it lacked — it had fallen through to the backing read, whose host EBADF the backing layer swallowed into a silent 0); FD-103 (32-bit readv is a null dispatch slot) and FD-93 (the write family's mirror of FD-84, host-measured) filed | Extensions to testPreadv64Syscalls (x64 suite; RED on the base — 20 assertion failures across the new sections, spanning both defects) and testChmodAccessHardLink (both suites; RED on the base — the three FD-84 KProcess assertions); host-kernel reference programs measured first (readv event matrix incl. multi-segment, partial-success and zero-length shapes; wrong-mode matrices for the read and write families incl. zero counts and the validation orderings); full native suites serial: main 668/668 and x64 69/69, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `2601ef69`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd83-fd84-read-family-20261102.md`; evidence `test-results/fd83-84/` |
+
+| `lane-fd92mmap` | FD-104: sys_mmap64_file establishes a 64-bit file mapping (or the addr==0 reservation) before copying the file content in; when that content read failed, the syscall returned the error but left the pages mapped and the range reserved, where a failed host mmap leaves nothing mapped -- both content-read error returns (the private branch's copy loop, and the shared branch's seed read after an addr==0 reservation) now tear the established range down through KMemory64::munmap before returning the error | New test testMmap64FileReadFailure in the x64 native suite, driving the real 64-bit syscall dispatch against an open description whose positioned reads fail on command (immediately, partway through the copy, and as the shared seed read; a never-failing control maps and serves its content): RED on the base (the four failure cases each left their range mapped), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (build git_sha e37fa3c04, wasm 16abfc4c, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd92-failed-mmap64-teardown-20261102.md`; evidence `test-results/fd92mmap/` |
+| `lane-fd101` | FD-101: the 64-bit sendmsg gather (sys_sendmsg64) fabricates zero bytes for unreadable guest segment memory — now the whole message import is validated in the host's order (descriptor answers first, then msghdr/name/iov array/control/segments) and answers -EFAULT with nothing sent, -EMSGSIZE for an iovlen over 1024, sendmmsg inheriting through the loop; FD-105 (the SCM_RIGHTS translation trusts the guest's cmsg_len), FD-106 (sendto's single-call form of the trait) and FD-107 (recvmsg's silent scatter drop) filed | New test testSendmsgBadBuffer64Syscalls (x64 suite; RED on the base — crossing sendmsg returned 200 with 200 bytes held by the peer, good+bad segments returned 24, unmapped iov array returned 0, sendmmsg good,bad returned 2; GREEN on the fix); host reference programs measured first (sendmsg/sendmmsg all-or-nothing matrix incl. crossing, message-boundary and descriptor-order cases; sendto and recvmsg companions); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the closing commit 4363174fa); JS unit 348/0 (the socket64-message slice mock extended for the validation's descriptor/page-flag surface). Record: `docs/reports/fd101-sendmsg-efault-20261102.md`; evidence `test-results/fd101/` |
+| `lane-fd102-104` | FD-105: the SCM_RIGHTS translation trusted the guest's cmsg_len — now an under-header or past-controllen length and a count over the host's 253 cap answer -EINVAL before anything is sent, and accepted messages translate into a new extension area past the 64 KB scratch message so 253 records no longer overwrite the gathered payload; FD-106: sendto's dispatcher branch validates its buffer (descriptor answers first, then the clamped range readable) and answers -EFAULT with nothing sent; FD-107: sys_recvmsg64 validates its import in the host's order (descriptor answers, readable msghdr, -EMSGSIZE over 1024 segments, readable iov array) and its scatter validates each range page-piece by page-piece as it copies, answering -EFAULT at the first unwritable range with the prefix delivered; FD-111 (recvfrom's silent scatter), FD-112 (the control chain past the first header), FD-113 (the recvmsg name copyback) and FD-114 (datagram sendto reported sent but never delivered) filed | New x64 tests testSendmsgCmsgLen64Syscalls, testSendtoBadBuffer64Syscalls, testRecvmsgBadBuffer64Syscalls (RED on the base — past-controllen cmsg_len values sent their descriptors, the 253-record translation corrupted the payload in scratch, an under-header length killed its case, sendto delivered 16 fabricated bytes from an unmapped buffer and 200 from a crossing one, recvmsg reported 100 delivered into a half-unwritable scatter and recvmmsg reported 2 for a good+bad pair; GREEN on the fix); host reference programs measured first (cmsg_len shapes incl. the 253/254 cap and the chain-slack shape, recvmsg partial/crossing/peek/iovlen shapes); full native suites serial: main 668/668 and x64 73/73, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = 9b6c993d9, wasm 4180f7cd); JS unit 348/0 (socket64-message slice mock extended; reviewed silent-failure allowance 115 -> 117). Record: `docs/reports/fd102-fd104-message-faults-20261102.md`; evidence `test-results/fd102-104/` |
+| `lane-fd97` | FD-97: the 64-bit single-call write paths (sys_write64/sys_pwrite64) fabricate zero bytes for an unreadable guest buffer — now write only the guest-readable prefix and answer -EFAULT when no byte is readable, under the host's measured prefix contract; FD-101 (the sendmsg gather form of the trait) filed | New test testWriteBadBuffer64Syscalls (x64 suite; RED on the base — write from an unmapped buffer returned 16 with 16 zero bytes landed, crossing write returned 200, writev with a bad second segment returned 24; GREEN on the fix); host reference programs measured first (write/pwrite bad-buffer matrix incl. the short-count prefix cases; sendmsg matrix for FD-101); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the fixing commit); JS unit 348/0. Record: `docs/reports/fd97-single-call-write-efault-20261102.md`; evidence `test-results/fd97/` |
+
+| `lane-fd92-93` | FD-103: the 32-bit dispatcher's readv (145) wired over a new KObject/KProcess readv — host-order validation (descriptor, mode, iovcnt range, iovec pointer) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-93: the write family answers EBADF on a descriptor that cannot be written, in the host's validation order, at every site the entry names (KProcess::write/writev/pwrite64 — the last gaining the mode check whose absence let the backing layer swallow the host's EBADF into a silent 0 — sys_write64's descriptor+mode gate ahead of its zero-count return, sys_writev64's validation block, sys_pwrite64 reordered offset-first, the 32-bit dispatcher's pwrite64 offset check); FD-94 (pwritev/pwritev2 undispatched), FD-95 (read family's bad-descriptor/negative-offset order) and FD-96 (32-bit writev's partial-error return shape) filed | New tests testReadv32Syscall (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS), testWriteFamilyWrongMode (both suites) and testWriteFamily64Syscalls (x64 suite), all RED on the base for the recorded reasons and GREEN with the fix; host-kernel reference programs measured first (write-family matrix incl. zero counts and the validation orderings; the positioned family's offset-before-descriptor order across pread/pwrite/preadv/pwritev); full native suites serial: main 670/670 and x64 71/71, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `bcc8a852`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd92-fd93-readv-write-family-20261102.md`; evidence `test-results/fd92-93/` |
+| `lane-fd98` | FD-98: the 32-bit dispatcher's preadv (333) and preadv2 (377) wired over a new KProcess::preadv walking pread64 — host-order validation measured fresh (offset EINVAL ahead of the descriptor check, except preadv2's -1 file-position mode; wrong-mode EBADF ahead of the iovcnt range check; the iovec array EFAULT ahead of the flags check, which runs last with the measured read mask 0x3f) and FD-83's contract of exactly one IN_ACCESS per successful call, 0-byte successes included; FD-99 (64-bit preadv2's -1 refusal and 0x1f mask) and FD-100 (the family's flags-check order) filed | New test testPreadv32Dispatch (main suite; real int 0x80 dispatch — RED on the base, every call -ENOSYS, GREEN with the fix); host-kernel reference programs measured first (preadv/preadv2 validation, position-mode, flags-mask and IN_ACCESS matrices, plus the pwritev2 order addendum); full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha 86dfb5830, wasm 5c0d85fc, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd98-preadv32-20261102.md`; evidence `test-results/fd98/` |
+| `lane-fd99-100` | FD-99: sys_preadv64 takes preadv2's offset -1 as the file-position mode and the full defined read flag mask 0x3f, with the host's validation order throughout (offset validity ahead of the descriptor check; the iovec array check now a range check) -- FD-95 interaction recorded in CL-62. FD-100: the v2 flags check runs last, below the iovcnt range and iovec array checks, in sys_preadv64, sys_pwritev64 and KProcess::pwritev; the wrong-mode + range/array combinations characterized for FD-84's/FD-93's composition | Extended testPreadv64Syscalls sections 10-11 and testPwritev64Syscalls section 11 (x64 suite) and testPwritev32Dispatch section 2b (main suite) -- RED on the base with the filed signatures, GREEN with the fix; full native suites serial: main 671/671 and x64 70/70, 0 FAILED; browser build 'Browser export verified' (git_sha fad85c19c, wasm 52da72d5, support archive c4dbe35986a5 unchanged); JS unit 348/0. Record: `docs/reports/fd99-fd100-preadv2-family-order-20261102.md`; evidence `test-results/fd99-100/` |
+| `lane-fd86` | FD-86: no Arial family on the 64-bit stack — prefix64 carried no Fonts\Replacements entry, the mechanism the 32-bit stack serves Arial through; canonical-set staging step `stage-font-alias64.py` (the 32-bit edit imported, so the stacks cannot drift) bakes `"Arial"="DejaVu Sans"` into prefix64, checker drift coverage added, win32-fonts suite test extended to x64, payload re-pinned as `runtime-assets-20261103` | win32-fonts PASS both architectures (x64 `ARIAL=0` — `ARIAL=1 METRICS=1 RESULT 0`; x86 unregressed); checker RED on this gap alone pre-fix, green after; bootstrap --check 0 failures; clean --local bootstrap from the new archive reproduces the replacement; Gecko stage `MSHTML: RESULT 0`, zero abort lines (long-window evidence run); JS 348/0; wasm unchanged. Record: `docs/reports/fd86-arial-prefix64-20261103.md` |
+
+| `lane-fd23res` | FD-23 CLOSED (residue): `select` (23) implemented through the core factored out of `pselect6` (with the host's pre-checks, which also correct `pselect6`); `pidfd_getfd` (438) in the host's check order; `futex_waitv` (449) on both ABIs over the futex machinery (i386 table extended to 462 slots); per-number dispositions for every unimplemented number on both ABIs (404 entries, census-audited); FD-109 and FD-110 filed | Host-kernel reference programs measured first (select/pidfd/futex_waitv matrices; evidence `test-results/fd23res/hostref/`); new tests fail on the base for the recorded reasons and pass with the fix: x64 suite 72 tests, main suite 669 tests, 0 FAILED serial, RED runs show exactly the new tests failing (-ENOSYS); census: x86-64 implemented 199 -> 202, stubbed {334} only, i386 gap fully dispositioned (undispositioned 0, stale 0); browser build 'Browser export verified' (wasm c290559e). Record: `docs/reports/fd23-residue-20261102.md`; evidence `test-results/fd23res/` |
+| `lane-fd85b` | FD-85 continuation: the remaining silence sub-split measured — the ALSA leg serves writei clients at full scale (new alsatone fixture, four format/access modes), winealsa hands libasound an unbroken stream of zeros on every device including libasound's null (file-plugin dump, validated against the native client in-session), the traced client side is healthy (single AudioClient, 26 GetBuffer / 24 ReleaseBuffer of the full buffer), and the identical fixture on the 32-bit Wine stack is heard through the same emulator and chain — the defect is convicted to the 64-bit Wine payload's mmdevapi → winealsa render path (FD-85 stays open on payload-fix terms); FD-90 filed (the chain's mmap face stalls after one buffer: the OSS playback pointer never advances) | Six preserved diag sessions (`test-results/fd85b/`): writei tone at the input (S16 peak 12000) and page (peak 0.4550); Wine dumps 72,192 / 100,224 / 33,792 Float32 frames, 0 non-zero, three runs; x86 OpenAL heard (26,763 non-zero, peak 0.2269); mmap cycles: first commit lands full-scale (n=8192), avail 0 thereafter; dist 'Browser export verified' on the base build (this lane changes no emulator code). Record: `docs/reports/fd85b-audio-bisection-20261102.md` |
+| `lane-fd90` | FD-90: the OSS position face reported the write position and a constant 0 delay, so the ALSA mmap face stalled after one buffer and position readings were incoherent — GETOPTR/GETODELAY now derive from a played counter sourced from the bwPump ring consumer; SNDCTL_DSP_RESET no longer clobbers the hw_params-negotiated stream geometry at prepare; the reported position is slew-limited to half a buffer per read (the guest plugin's pointer callback consumes count_info.ptr alone, which aliases when a non-paced sink drains a buffer between reads) | Suite test alsa-mmap-stream: RED on the base build with the recorded signature (avail 4096,0,0,0,0,0,0,0), GREEN on the fixed build (s16mmap 18,432 frames / floatmmap 22,528 committed across the cycles; writei avail+delay coherent, summing to 4096); audio-tone PASS; common-dependencies identical to a base-tip control build under the same box load; native serial main 0 FAILED, x64 0 FAILED; legacy JS only the standing FD-64 four. Record: `docs/reports/fd90-oss-position-20261102.md`; evidence `test-results/fd90/` |
+| `lane-fd88` | FD-88 NARROWED to its proven blocker (no code change): the class is re-gated from 'translation stack' to the serving browser — the vendored translator serves the class exactly, and the project's Chromium (145) cannot populate an arrayed texture binding at any API surface; both mirrors' by-name refusals stay as the correct fail-closed behaviour, with the in-project closing terms specified for when the browser link lands. FD-92 filed (the fixup's output for the captured module is not spirv-val clean — synthesized pointer types spliced ahead of OpTypeBool) | Minimal fixtures in the captured module's own form (committed as `testdata/spirv/fd88-*`): a translator matrix over eight array/index/capability variants proves the cap-29 DECLARATION is the only translator tripwire, and the data-dependent runtime-array form translates with its index expression preserved. Captured module: declaration stripped + the FD-92 ordering repaired → the translator accepts the whole type/global section; its next refusal is an OpIAddCarry that cone analysis proves sits outside all seven array chains. Browser probes (probe-slot, the project's Chromium): sized binding-array modules compile; layout counts are accepted but not honoured ('only provides 1 elements'); the createBindGroup array resource throws at WebIDL; duplicate entries are rejected. Record: `docs/reports/fd88-binding-array-blocker-20261102.md`; evidence `test-results/fd88/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -3342,7 +4866,6 @@ dead-start fix and needs composition care.
   `lane-cleanlog32`, `lane-cleanlog-ksubsys`,
   `lane-cleanweb`). Proof: those lanes' records. They close
   fully when the branches merge.
-
 
 - **CL-06 — First-time visitors could not reliably start a
   program on the first attempt (was FD-01). VOID —
@@ -3717,6 +5240,250 @@ dead-start fix and needs composition care.
   so the closure rests on the fix being present in the
   shipped bytes and the fixed build certifying live,
   the same terms as FD-01's closure (CL-17).
+
+- **CL-52 — The 64-bit message-sending
+  gather answers for unreadable guest
+  memory: sys_sendmsg64 validates the whole
+  import in the host's order and answers
+  EFAULT with nothing sent when any byte of
+  the msghdr, name, iov array, control
+  header, rights array or segment data is
+  unreadable, EMSGSIZE when the iov count
+  is over the host's limit, and the
+  descriptor answers (EBADF, ENOTSOCK)
+  before every copy fault (FD-101).**
+  *(Provisional number, filed on lane-fd101,
+  2026-11-02 — CL-40..CL-51 are held by
+  unmerged lanes off this same base (fd66,
+  fd65, fd85, fd87, fd64, fd05, fd82, fd78,
+  fd83-84, fd92, fd92mmap, fd92-93, fd94-96,
+  fd90, fd97); the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd101`, commits `7eed978a9`
+  (test), `f70b16116` (fix) and `4363174fa`
+  (slice-test surface). The validation runs
+  ahead of the gather in the host's import
+  order, using the readable-prefix helper
+  FD-97 introduced (defined beside its
+  caller on this branch; the two branches'
+  copies are identical, and the merge
+  keeps one): a segment must be readable
+  over its whole contributed range, because
+  the host's sendmsg is all-or-nothing —
+  measured first
+  (`test-results/fd101/hostref-sendmsg-fd101.c`,
+  host kernel 6.17.0-1020-oracle): any
+  unreadable byte in any nonzero segment
+  answers -EFAULT with nothing delivered,
+  including a segment crossing from a
+  readable page into an unmapped one (no
+  short-count prefix, unlike the write
+  family); zero-length segments are skipped
+  even with unreadable bases; sendmmsg
+  sends the messages before a bad one and
+  reports their count. Proof: new test
+  testSendmsgBadBuffer64Syscalls (x64
+  suite) RED on the base with the filed
+  signatures and GREEN on the fix; full
+  native suites serial — main 668/668, x64
+  70/70; browser build verified (BUILD_INFO
+  git_sha = `4363174fa`); JS unit 348/0.
+  Filed from this lane: FD-102, FD-103,
+  FD-104. Record:
+  `docs/reports/fd101-sendmsg-efault-20261102.md`.
+
+- **CL-53 — The 64-bit sendmsg SCM_RIGHTS
+  translation validates the guest's
+  cmsg_len before deriving the descriptor
+  count: under the header size or past
+  msg_controllen answers -EINVAL, as does
+  a count over the host's 253 cap, and
+  accepted messages translate into an
+  extension area past the 64 KB scratch
+  message instead of the 448-byte area
+  whose overrun overwrote the gathered
+  payload (FD-102).** *(Provisional
+  number, filed on lane-fd102-104,
+  2026-11-02 — CL-40..CL-52 are held by
+  unmerged lanes off this same base; the
+  merge lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd102-104`, commits `dcd1e3a8a`
+  (test), `9fb96348d` (fix) and
+  `9b6c993d9` (slice surface). Measured
+  first
+  (`test-results/fd102-104/hostref-cmsglen-fd102.c`,
+  host kernel 6.17.0-1020-oracle): lengths
+  0/8/12/15 answer -EINVAL, a length past
+  controllen answers -EINVAL, unaligned
+  lengths truncate the count (18 -> 0,
+  22 -> 1), 253 descriptors land, 254
+  answers -EINVAL, and the length
+  validation precedes any data fault. The
+  receive side's existing 28-record
+  translation bound is unchanged — a
+  253-descriptor message arrives as 28
+  descriptors with MSG_CTRUNC, pinned by
+  the new test. Proof: new test
+  testSendmsgCmsgLen64Syscalls (x64
+  suite) RED on the base (past-controllen
+  lengths sent their descriptors, the
+  253-record translation corrupted the
+  payload it shared the scratch with, an
+  under-header length escaped the scratch
+  and killed its case) and GREEN on the
+  fix; full native suites serial — main
+  668/668, x64 73/73; browser build
+  verified (BUILD_INFO git_sha =
+  `9b6c993d9`, wasm 4180f7cd); JS unit
+  348/0. Record:
+  `docs/reports/fd102-fd104-message-faults-20261102.md`.
+
+- **CL-54 — The 64-bit sendto answers
+  for unreadable guest memory: the
+  dispatcher branch runs the descriptor
+  answers (-EBADF, -ENOTSOCK) first,
+  then requires exactly the clamped
+  range it is about to copy to be
+  readable, else -EFAULT with nothing
+  sent (FD-103).** *(Provisional number,
+  filed on lane-fd102-104, 2026-11-02 —
+  CL-40..CL-52 are held by unmerged
+  lanes off this same base; the merge
+  lane's audit settles the final
+  number.)* Fixed on branch
+  `lane-fd102-104`, commits `dcd1e3a8a`
+  (test), `9fb96348d` (fix) and
+  `9b6c993d9` (slice surface). The host
+  contract is the FD-101 lane's
+  measurement
+  (`test-results/fd101/hostref-sendto-fd101.c`):
+  unmapped and crossing buffers answer
+  -EFAULT with nothing delivered, stream
+  and datagram alike, and the descriptor
+  answer precedes the fault. The existing
+  giant-message clamp applies before the
+  validation, so the pre-existing
+  truncation of oversized sends is
+  preserved. (The filed entry names a
+  sys_sendto64 function; the code is the
+  dispatcher's sendto/recvfrom case
+  block, and the fix lives there.)
+  Proof: new test
+  testSendtoBadBuffer64Syscalls RED on
+  the base (an unmapped stream buffer
+  delivered 16 fabricated bytes, a
+  crossing buffer delivered 200, a
+  datagram reported 16 sent) and GREEN
+  on the fix; suites and build as CL-53.
+  Record:
+  `docs/reports/fd102-fd104-message-faults-20261102.md`.
+
+- **CL-55 — The 64-bit recvmsg scatter
+  never silently drops received bytes:
+  the import is validated in the host's
+  order (descriptor answers, readable
+  msghdr, -EMSGSIZE for an iovlen over
+  1024, readable iov array), and the
+  scatter validates each segment
+  page-piece by page-piece as it copies,
+  answering -EFAULT at the first
+  unwritable range with everything
+  before it delivered (FD-104).**
+  *(Provisional number, filed on
+  lane-fd102-104, 2026-11-02 — CL-40..CL-52
+  are held by unmerged lanes off this
+  same base; the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd102-104`, commits
+  `dcd1e3a8a` (test), `9fb96348d` (fix)
+  and `9b6c993d9` (slice surface).
+  Measured first
+  (`test-results/fd102-104/hostref-recvmsg2-fd104.c`,
+  host kernel 6.17.0-1020-oracle,
+  extending the FD-101 lane's companion):
+  an unwritable buffer answers -EFAULT;
+  a bad range the received bytes never
+  reach does not fault (a 40-byte
+  datagram into [good 50][bad 50]
+  succeeds); MSG_PEEK faults the same
+  way and consumes nothing; iovlen 1025
+  answers -EMSGSIZE; an unreadable
+  msghdr or iov array answers -EFAULT.
+  Validating the ranges before the
+  receive (the filing's suggested shape)
+  is wrong against that measurement —
+  the host faults only on ranges the
+  bytes actually reach — so the scatter
+  validates as it copies, with the
+  received count known. Two boundaries
+  are settled, not papered over: on
+  stream sockets the host leaves the
+  data queued after a faulted call, but
+  the socket object consumes into
+  scratch with no pushback and no peek,
+  so the -EFAULT answer and the
+  delivered prefix match while the
+  queue's survival diverges (datagram
+  consumption matches exactly); and a
+  receive buffer on a page the guest
+  mapped read-only from birth is a legal
+  write target under this memory model
+  (commit-on-write — only unmapped
+  pages and guest-mprotect restrictions
+  are denied), the same predicate
+  FD-97's write family settled on. The
+  new test pins both boundaries. Proof:
+  new test testRecvmsgBadBuffer64Syscalls
+  RED on the base (100 reported
+  delivered into a half-unwritable
+  scatter, a crossing segment reported
+  200, recvmmsg reported 2 for a
+  good+bad pair, iovlen 1025 not
+  -EMSGSIZE) and GREEN on the fix;
+  suites and build as CL-53. Filed from
+  this lane: FD-105, FD-106, FD-107,
+  FD-108. Record:
+  `docs/reports/fd102-fd104-message-faults-20261102.md`.
+- **CL-56 — The 64-bit single-call write
+  paths answer for unreadable guest buffers:
+  only the guest-readable prefix is written,
+  and a fully unreadable buffer answers
+  EFAULT (FD-97).** *(Provisional number,
+  filed on lane-fd97, 2026-11-02 — CL-40..
+  CL-50 are held by unmerged lanes off this
+  same base (fd66, fd65, fd85, fd87, fd64,
+  fd05, fd82, fd78, fd83-84, fd92, fd92mmap,
+  fd92-93, fd94-96, fd90); the merge lane's
+  audit settles the final number.)* Fixed
+  on branch `lane-fd97`, commits `6d7c28d00`
+  (test) and `c734fe89d` (fix). A new helper
+  (sys_guestReadablePrefix64) counts the
+  leading readable bytes of the buffer page
+  by page under the same predicate the
+  copy's own access check applies;
+  sys_write64 writes only the prefix and
+  returns its EFAULT at the write point,
+  after the descriptor and mode answers (the
+  host's measured order: a bad fd with a bad
+  buffer answers EBADF); sys_pwrite64 does
+  the same after its own answers; writev
+  inherits the shape through sys_write64.
+  The host contract was measured first
+  (`test-results/fd97/hostref-fd97.c`):
+  fully unreadable -EFAULT with nothing
+  written; a readable prefix written as a
+  short count (96 of 200; 1 of 2 at a page's
+  last byte); count 0 with a bad buffer
+  returns 0; a PROT_WRITE-only buffer lands
+  its real bytes. Proof: new test
+  testWriteBadBuffer64Syscalls (x64 suite)
+  RED on the base with the filed signatures
+  and GREEN on the fix; full native suites
+  serial — main 668/668, x64 70/70; browser
+  build verified (BUILD_INFO git_sha = the
+  fixing commit); JS unit 348/0. Record:
+  `docs/reports/fd97-single-call-write-efault-20261102.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
@@ -4650,3 +6417,1011 @@ its lane and is not a defect, for the stated reason:
   capture now honestly reports. Record:
   `docs/reports/fd85-audio-leg-20261102.md`;
   evidence: `test-results/fd85/`.
+
+- **CL-43 — The second-wave sibling classes are
+  served in the fixup layer, with the mirror
+  admitting exactly the same classes (FD-89).**
+  *(Numbered provisionally by the FD-87 lane,
+  2026-11-02 — CL-40 and CL-41 stand provisionally
+  on the fd66 and fd65 branches; the composing
+  merge verifies the sequence by audit.)* Fixed on
+  branch `lane-fd87`. spirvfix gains R18
+  (`strip-dead-descriptors`: DescriptorSet/Binding
+  variables in the descriptor storage classes with
+  zero operand-aware uses are deleted with their
+  decorations, entry-point interface entries and
+  orphaned types, and RuntimeDescriptorArray is
+  dropped when no runtime array survives) and R19
+  (`strip-stray-sampled-image-array-dynamic-indexing`:
+  capability 29 is deleted when no
+  image/sampled-image array survives), and its
+  descriptor-array orphan sweep now bounds the
+  OpExtInst instruction-number word (the FD-78
+  position this lane proved live). The bridge
+  audit names capability 29
+  (SampledImageArrayDynamicIndexing), admits it
+  exactly when every used image/sampled-image
+  runtime array is R15a-servable and no fixed-size
+  image array exists, treats zero-use descriptor
+  array variables as dead in both the array verdict
+  and the skip-5302 simulation (whose scan bounds
+  the same ExtInst word), and no longer lets a dead
+  array variable gate the texel mirrors. Proof: the
+  two captured modules are committed fixtures — the
+  2,340-byte module's fixed form carries only the
+  Shader capability and translates end to end; the
+  369,400-byte module's fixed form drops
+  SampledBuffer (508 texel fetches widened) and
+  keeps exactly FD-88's pair; new JS suite
+  `spirvfix-fd87.test.mjs` 5/5; corpus green over
+  all 74 modules with every newly-firing rewrite
+  independently verified against the raw modules;
+  native run-native 60 PASS including three new
+  guards; JS unit suite 351/0; citation audit 352
+  rows, 0 drift; browser build 'Browser export
+  verified', wasm `f66e592c`. Owed, in FD-70's
+  clause form: the two pipelines' creations
+  succeeding in vivo on a shipped build, which
+  belongs to the deploy gate that carries the
+  composing merge — and which now gates only on
+  FD-88 and FD-72 for these pipelines. Record:
+  `docs/reports/fd87-godot-sibling-classes-20261102.md`.
+
+- **CL-44 — Four legacy-suite subtests threw
+  'DESC_SET has 132 trailing bytes' against the
+  current V2 protocol fixtures (was FD-64).**
+  Closed on branch `lane-fd64` in `9d132afc7`.
+  This number is PROVISIONAL: CL-40/41/42 are
+  provisionally taken by in-flight lanes'
+  uncomposed records; the composing merge
+  verifies and renumbers by audit (the FD-63
+  precedent). FD-64's fifth subtest (the spirvfix
+  corpus conversion) had already been resolved by
+  the FD-62 lane's measured corpus re-baseline
+  (`ea7283041`) and kept green by the FD-70
+  composition's fixture enrollment (`bf2ce6bbf`).
+  For the four: the fixture in
+  web/tests/vkwebgpu-v2.test.mjs was the stale
+  side — it encoded the superseded DESC_SET
+  header (u8 count) and a descriptor array as one
+  entry with count 3, while docs/vulkan-protocol.md
+  §0x08, the bridge writer (emitDescSet: u8
+  setIndex, u8 pad, u16 nBind; applyDescWrite
+  stores one Binding per element, count 1), the
+  vk-protocol.mjs reader and the suite's
+  vk-desc-set-wire.test.mjs all carry the current
+  contract. The correction is test-file only: the
+  fixture writes the current header and
+  per-element array entries, and the decode
+  assertions assert that contract (five bindings
+  in set 0; binding 1 as elements [0,1,2], each
+  count 1, kind 2). A second stale expectation
+  the throw had masked — the decoded sampler
+  object's shape — was updated to the current
+  decoder contract (the ADDR mapping for the
+  fixture's CLAMP_TO_BORDER / MIRROR_CLAMP_TO_EDGE
+  modes, plus the raw addrModeU/V/W fields the
+  border-emulation feature added in `26ffedefa`,
+  pinned by vk-border-emulation.test.mjs); no
+  assertion was dropped and no served behaviour
+  changed. Proof: web/tests/vkwebgpu-v2.test.mjs
+  20/20; full legacy group 115 passed / 0 failed
+  (baseline 110/4 — the standing failing set is
+  empty); suite-unit group 348/0 and
+  tools/run-tests.mjs ALL TESTS PASSED on the
+  built tree (browser build in-lane, wasm
+  d631d254, byte-identical to the shipped
+  build's). Sabotage:
+  restoring the stale u8-count header in a
+  scratch copy returns the same four failures
+  (220 trailing bytes over the five current
+  entries). Record:
+  `docs/reports/fd64-legacy-descset-20261102.md`;
+  evidence `test-results/fd64/`.
+
+- **CL-45 — A guest that fills its file-descriptor
+  table now gets EMFILE instead of killing the
+  emulator (FD-05).** *(Filed provisionally as
+  CL-44 on lane-fd05, 2026-11-02 — CL-40..CL-43
+  are held provisionally by parallel branches
+  (the FD-66, FD-65, FD-85, FD-87 and FD-64
+  filings); the composing merge verifies by
+  audit and renumbers if needed.)*
+  Fixed on branch `lane-fd05`. The panic had
+  exactly one caller: `allocFileDescriptor` is
+  the only path into `getNextFileDescriptorHandle`,
+  so the allocation contract changed at that
+  single point — the scan returns
+  MAX_NUMBER_OF_FILES as its "none available"
+  sentinel and the allocator returns no
+  descriptor — instead of the ~50-site rewrite
+  the entry estimated. Two call sites
+  (pidfd_open, createPidFdForProcess) already
+  implemented exactly this null contract and
+  were unreachable only because the panic fired
+  first; the remaining 20 production callers
+  were audited one by one and now propagate the
+  kernel's answer: open, dup, memfd, epoll,
+  inotify, timerfd, eventfd, signalfd and
+  socket creation return -EMFILE; F_DUPFD with
+  a minimum at/past the ceiling returns
+  -EINVAL (the host's distinction); dup2/dup3
+  targets at/past the ceiling return -EBADF,
+  so explicit targets can no longer grow the
+  table past the advertised RLIMIT_NOFILE;
+  socketpair stays atomic (the first
+  descriptor is closed when the second cannot
+  be allocated); SCM_RIGHTS installs what fits
+  and marks the rest MSG_CTRUNC; the unix
+  accept requeues its pending connection, the
+  loopback accept pre-checks and requeues, and
+  the host accept pre-checks and, in the
+  lost-race case only, closes the consumed
+  host descriptor. Exhaustion logs one
+  `BW64-FAIL fd-table-exhausted ... outcome=returned-EMFILE`
+  line per process. Characterized residuals,
+  none of them a crash: the native accepts
+  answer EMFILE on entry when the table is
+  already full rather than after a connection
+  becomes pending (the unix accept keeps its
+  blocking shape); internal explicit-handle
+  allocations (fork's table copy, stdio setup)
+  bypass the ceiling by construction and can
+  only carry handles the process already
+  legally holds. Proof: new test
+  testFdTableExhaustion in both native suites
+  drives a process to the ceiling through dup,
+  checks every creator family, the exact
+  ceiling boundary, and recovery after one
+  close — RED on the base (the fill hit the
+  panic: in the forked harness the test was
+  each suite's single failure, its child dead
+  at the panic line; un-forked, the suite
+  process died at the test), GREEN with the
+  fix: native serial main 669/669 and x64
+  70/70, 0 FAILED, exactly one exhaustion log
+  line per run. Browser build on the fixed
+  tree: BUILD COMPLETE with "Browser export
+  verified" (wasm `ea3bdaa0…`, support archive
+  `c4dbe35986a5…` unchanged); JS unit 348/0
+  (the three source-slice tests whose mock
+  errno tables predated the new returns —
+  fs-file-create, browser-network,
+  unix-connect-handoff — gained `K_EMFILE=24`
+  in their mocks and pass with the edited
+  functions exercised in their harnesses); JS
+  legacy 110/4, FD-64's standing set on this
+  base. Record:
+  `docs/reports/fd05-fd-table-exhaustion-20261102.md`;
+  evidence `test-results/fd05/`.
+
+- **CL-46 — No liveness scan in the SPIR-V serving
+  layer counts a literal word as an id reference:
+  every sweep routes through operand-aware
+  positions (FD-78).** *(Provisional number,
+  assigned on lane-fd78, 2026-11-02; CL-40…CL-44
+  are held by the fd66 / fd65 / fd85 / fd87 / fd64 /
+  fd05 lane branches — the merge lane renumbers
+  by audit if the composition order differs.)*
+  Fixed on branch `lane-fd78` off integ
+  `cc1d89ab3`. The operand-aware walker gained an
+  enumerating sibling (`operandRefIds` in
+  `tools/spirvfix/spirvfix.mjs`,
+  `r15::operandRefIds` in
+  `source/vulkan/vk64bridge.cpp`) — a word counts
+  as a reference exactly where the per-op walker
+  finds one — plus its missing OpExecutionModeId
+  case; the descriptor-array orphan sweep, the
+  storage-image type prune, the R15b root-cone
+  sweep, the texel-orphan scan, the
+  specialized-alias scan and the bridge's
+  skip-5302 simulation now route through it, each
+  keeping its existing op exclusions. Positions
+  covered: VectorShuffle components,
+  CompositeExtract / CompositeInsert indices,
+  OpSwitch case literals, OpLine words, the
+  OpArrayLength structure index, the leading
+  literals of OpFunction / OpVariable, constant
+  values and type widths in the prune, and the
+  ExtInst instruction number — the last subsumes
+  the FD-87 lane's targeted bound at those two
+  scans; the merge lane resolves the overlap by
+  audit. Audited and deliberately unchanged:
+  `stripDeadUndefs` (the raw scan is its
+  documented fail-closed contract), the
+  fail-closed veto scans, and the OpGroupDecorate
+  family at the walker's default. Proof: new JS
+  suite file
+  `web/tests/suite/unit/spirvfix-fd78.test.mjs`
+  (31 checks — per-position walker tests, mutation
+  guards on the FD-70 fixture, two new assembled
+  prune fixtures
+  `testdata/spirv/fd78-prune-constant.spv` /
+  `fd78-prune-function.spv`, and cone / texel /
+  alias mutation guards on captured modules),
+  every mutation guard RED on the base scans and
+  GREEN with the fix by direct experiment; native
+  guard in `tools/vkd3d/tests/vk64_native_test.cpp`
+  (nine literal carriers, a function-control
+  carrier, a genuine-reference control) RED on the
+  base bridge, GREEN with the fix, full native
+  suite green; spirvfix corpus tests 10/10; full
+  JS unit suite 349 passed, 0 failed; the lane build
+  completed with Browser export verified (wasm
+  `c9a30661`). The register's drifted line
+  citations were re-pinned; the citation audit
+  reports 0 drift. Record:
+  `docs/reports/fd78-literal-positions-20261102.md`.
+
+- **CL-47 — spirvfix's fixed output for the captured
+  Godot module validates cleanly: synthesized
+  definitions are spliced behind the definitions
+  they reference (FD-92).** *(Filed provisionally
+  as CL-45 on lane-fd92, 2026-11-02 — CL-40..CL-44
+  are held provisionally by parallel branches (the
+  FD-66, FD-65, FD-85, FD-87, FD-64 and FD-05
+  filings); the composing merge verifies by audit
+  and renumbers if needed.)*
+  Fixed on branch `lane-fd92` (commit 89ac92ff9).
+  The defect: rules spliced synthesized types and
+  constants at the first-variable anchor without
+  regard to dependencies on module types defined
+  later in the type section; in the captured
+  369,400-byte Godot module, lower-mid-shader-
+  discard's pointer-to-bool types landed at
+  instruction 299, ahead of the OpTypeBool at 333
+  they reference, and spirv-val rejected the fixed
+  module. The fix adds `defsSplicePos`, which
+  computes the earliest splice position at or after
+  a rule's anchor that follows every module
+  definition the new instructions reference, and
+  applies it at the three intra-type-section splice
+  sites (lower-mid-shader-discard,
+  strip-point-builtins, the texel-pointer rewrite).
+  Proof: spirv-val clean on the captured module's
+  fixed output (the base output fails with the
+  filed error verbatim); the output is a pure
+  reordering of the base output (instruction
+  word-multiset identical over 18,352 instructions —
+  the module's meaning is unchanged) and the
+  translator's verdict is unchanged; the 72-module
+  fixture corpus is byte-identical to the base with
+  applied sets unchanged and the corpus gate green
+  at 10/10; new guard
+  `web/tests/suite/unit/spirvfix-fd92.test.mjs` is
+  RED on the base and GREEN with the fix. Record:
+  `docs/reports/fd92-spirvfix-splice-ordering-20261102.md`;
+  evidence `test-results/fd92/`.
+
+- **CL-48 -- A 64-bit guest's file-backed mappings
+  now participate in FD-79's close-event deferral:
+  the event is held while any materialized mapping
+  of the description is live and delivered at its
+  last death (FD-82).** *(Filed provisionally as
+  CL-45 on lane-fd82, 2026-11-02 -- CL-40..CL-44
+  are held provisionally by parallel branches
+  (the FD-66, FD-65, FD-85, FD-87, FD-64 and FD-05
+  filings); the composing merge verifies by audit
+  and renumbers if needed.)* Fixed on branch
+  `lane-fd82`. The 64-bit file-mmap path
+  (sys_mmap64_file) materializes a file mapping as
+  copied pages (MAP_PRIVATE) or registry-shared
+  pages (MAP_SHARED) inside KMemory64, which kept
+  no record of which open description a mapping
+  belonged to, so the description's close signal
+  always saw a zero live count and the event was
+  delivered at fd close. KMemory64 now keeps a
+  per-address-space table of its live file mappings
+  (start page -> page count + the KFile, pinned for
+  the mapping's lifetime exactly as the
+  demand-paged path's MappedFile pins it):
+  sys_mmap64_file counts the birth at the
+  description for both materializations, and
+  deaths are reported before the pages are
+  invalidated or replaced -- from munmap, from
+  overwrite by a later mapping (anonymous or
+  shared-file), from mremap (a shrink trims the
+  entry through the munmap path; a grow or move
+  re-notes the resulting range, counting the new
+  birth before the source is released so the live
+  total never dips through zero), from fork (the
+  child inherits the table without re-counting
+  births -- deaths are counted across the twins
+  and saturate at zero, the FD-79 fork model --
+  with DONTFORK pages detached in the child
+  without releasing), and from destruction of the
+  address space (exec replacement and teardown).
+  Boundaries, stated exactly: the fork corner
+  inherits FD-79's stated boundary (the event can
+  arrive when the first sharer's pages are gone
+  rather than the last; early, never lost); a
+  mapping duplicated by mremap's zero-length
+  shared-page path counts as a second live mapping
+  of the description; mappings the emulator's own
+  loader makes (not through a guest descriptor)
+  are outside the contract, as on the demand-paged
+  path. One correction to FD-82's filed text: the
+  demand-paged path's deferral closure is CL-38,
+  not CL-36. Proof: new test
+  testCloseWriteDeferral64 in the x64 native suite,
+  driving the real 64-bit syscall dispatch (mmap /
+  munmap / close) -- seven cases: shared-writable
+  deferral, private-read NOWRITE deferral, two
+  mappings of one description, unmap-before-close,
+  plain close, overwrite by an anonymous MAP_FIXED
+  mapping, and a partial unmap of a two-page
+  mapping -- RED on the base (ten assertions
+  failing: the event fired at fd close in every
+  deferral case and never arrived at the mapping's
+  death; the unmap-before-close and plain-close
+  guards passed), GREEN with the fix; full native
+  suites serial main 668/668 and x64 70/70,
+  0 FAILED (x64 baseline 69 + this test; the test
+  lives in the x64 suite because the materialized
+  path exists only in the 64-bit build -- the
+  shared contract's main-suite guard remains
+  testCloseWriteDeferral); JS unit 348 passed /
+  0 failed; browser build on the fixed tree
+  (clean-bootstrap staging from this base's pinned
+  runtime-assets-20261101 archive, 13 assets
+  verified): 'Browser export verified' / BUILD
+  COMPLETE, wasm 551ec728, support archive
+  c4dbe35986a5 unchanged. Record:
+  `docs/reports/fd82-materialized-mmap-close-deferral-20261102.md`;
+  evidence `test-results/fd82/`.
+
+- **CL-49 — readv generates exactly one IN_ACCESS
+  per successful call, 0-byte successes included
+  (FD-83).** *(Provisional number, filed on
+  lane-fd83-84, 2026-11-02 — CL-40..CL-44 are held
+  by the unmerged fd66, fd65, fd85/fd87, fd64 and
+  fd05 lanes off this same base; the merge lane's
+  audit settles the final number.)* Fixed on branch
+  `lane-fd83-84`, commits `0332ee82f` (tests),
+  `3459a7d20` (fix) and `bdbac75a5` (silent-failure
+  baseline review). The host contract was
+  re-measured first (host kernel
+  6.17.0-1020-oracle): exactly one IN_ACCESS per
+  successful readv — one segment or three, data or
+  0 bytes (at EOF, with iovcnt 0, with
+  all-zero-length segments) — none on failure, and
+  a call that reads bytes before a later segment
+  fails returns the bytes as a success and
+  generates the event. `sys_readv64` previously
+  walked its segments through `sys_read64`, whose
+  per-segment notification fires only when bytes
+  move: 0-byte successes generated nothing, and the
+  one-event shape for multi-segment reads held only
+  by accident of the inotify queue coalescing
+  consecutive identical events; the walk also
+  carried no validation of its own (an out-of-range
+  iovcnt was never EINVAL; iovcnt 0 on a
+  non-readable descriptor returned a silent 0). The
+  fix validates in the host's order (bad descriptor
+  EBADF, wrong mode EBADF — CL-46, iovcnt range
+  EINVAL, null iovec with iovcnt > 0 EFAULT), walks
+  the segments under a new
+  `KInotify::SuppressAccessNotifications` scope
+  (thread-local RAII depth, checked in
+  notifyAccessed), and raises one IN_ACCESS on
+  success; plain read/pread keep FD-59's
+  silence-at-0, and the FD-59 disposition comments
+  in kinotify/kfile now state the vectored
+  exception. Proof: testPreadv64Syscalls (x64
+  native suite) section 10 — RED on the base (the
+  0-byte shapes generated no event; the iovcnt
+  range and iovcnt-0 mode cases answered wrong),
+  GREEN with the fix across the multi-segment
+  walk, the short final segment, all three 0-byte
+  shapes, the failure set, and a plain-read
+  control that stays silent; full native suites
+  serial main 668/668 and x64 69/69, 0 FAILED;
+  browser build on the fixed tree verified (wasm
+  `2601ef69`, support archive unchanged); JS unit
+  348/0, legacy 110/4 (FD-64's standing set on
+  this base). Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.
+
+- **CL-50 — The positioned/plain read family
+  answers EBADF on a descriptor that cannot be
+  read (FD-84).** *(Provisional number, filed on
+  lane-fd83-84, 2026-11-02 — see CL-45's note.)*
+  Fixed on branch `lane-fd83-84`, commits
+  `0332ee82f` (tests), `3459a7d20` (fix) and
+  `bdbac75a5` (silent-failure baseline review).
+  The host contract was re-measured first: read,
+  pread, readv, preadv and preadv2 on an O_WRONLY
+  descriptor answer EBADF — for count 0 and
+  iovcnt 0 as well, and ahead of the buffer check;
+  a negative offset in the positioned family
+  answers EINVAL ahead of the mode answer; in
+  preadv/preadv2 the mode answer precedes the
+  iovcnt range check and the unknown-flag
+  EOPNOTSUPP. The answer is now -EBADF at
+  `sys_read64`, at `sys_pread64Impl` (whose
+  negative-offset check the fix places ahead of
+  the mode, also giving plain pread64 the host's
+  order), in `sys_preadv64` (fd, offset, mode,
+  flags, iovcnt), in `KProcess::read`, and in
+  `KProcess::pread64`, which previously carried
+  no mode check at all and fell through to the
+  backing read — the backing layer swallows the
+  host's EBADF into a silent 0, visible in the
+  RED logs as a `BW64-FAIL host-read errno=9`
+  line beside a 0 return to the guest. Proof:
+  testPreadv64Syscalls (x64 native suite)
+  section 9 — the write-only case the FD-80 lane
+  pinned at -EINVAL, rewritten to the eleven-
+  assertion host matrix (both orderings, the
+  zero-count cases, no event on failure) — and
+  testChmodAccessHardLink's FD-84 section through
+  the KProcess API (plain read, zero-length read,
+  pread64) in both native suites; RED on the base
+  (the x64 run failed 20 assertions across the
+  new sections 9-10, the FD-84 KProcess
+  assertions failing in both suites), GREEN with
+  the fix; full native suites serial main 668/668
+  and x64 69/69, 0 FAILED; browser build
+  verified, JS as CL-45. The write family's
+  mirror divergence was measured alongside and
+  filed as FD-93 rather than widened into this
+  fix. Record:
+  `docs/reports/fd83-fd84-read-family-20261102.md`;
+  evidence `test-results/fd83-84/`.
+
+- **CL-51 -- A failed 64-bit file mapping now
+  leaves nothing mapped and nothing reserved:
+  when the content read that follows the map in
+  sys_mmap64_file fails, the established range is
+  torn down before the error is returned
+  (FD-92).** *(Filed provisionally as CL-46 on
+  lane-fd92mmap, 2026-11-02 -- CL-40..CL-45 are
+  held provisionally by parallel branches (the
+  FD-66, FD-65, FD-85, FD-87, FD-64, FD-05 and
+  FD-82 filings); the composing merge verifies by
+  audit and renumbers if needed. The defect
+  number FD-92 is kept exactly as carried from
+  lane-fd82's register, where the FD-82 lane
+  filed it: the same number is used by unrelated
+  entries on two other sibling branches --
+  lane-fd92 carries an FD-92 for a spirvfix
+  output-ordering defect, and branch lane-fd92-93
+  is chartered on the FD-92 / FD-93 numbers -- so
+  the merge audit must settle which entry keeps
+  FD-92.)* Fixed on branch `lane-fd92mmap`.
+  sys_mmap64_file materializes a file mapping in
+  two phases: it establishes the mapping first
+  (mmapReserveAndMap for addr==0,
+  mmapAnonymousFixed otherwise; for MAP_SHARED it
+  reserves the range and then reads a seed buffer
+  before installing the shared pages), and only
+  then copies the file content in with positioned
+  reads. Both content-read error returns -- the
+  private branch's copy loop and the shared
+  branch's seed loop (the latter only with
+  addr==0, where the reservation already exists)
+  -- returned the read's errno with the
+  established range left mapped and reserved. A
+  guest that trusted the failure believed the
+  range unmapped; an access there succeeded
+  instead of faulting, and the range was
+  unavailable for reuse. Both sites now release
+  the established range through KMemory64::munmap
+  before returning the error: the private branch
+  unmaps [aligned, aligned+mapLen)
+  unconditionally (that span covers both of its
+  establishment forms), the shared branch unmaps
+  only the range it reserved. Composition with
+  FD-82's accounting (lane-fd82, CL-48) is by
+  construction: lane-fd82 counts the private
+  mapping's birth before the content read and
+  reports mapping deaths from KMemory64::munmap,
+  so this teardown releases the birth as well;
+  in the shared branch lane-fd82 counts the
+  birth only after the shared pages are
+  installed, so the seed-failure teardown has no
+  birth to release. Boundaries, stated exactly:
+  for an explicit-address map over a live
+  mapping, the prior contents were already
+  destroyed by the map phase's zeroing (the
+  pre-existing two-phase materialization
+  contract, which snapshots only the partial
+  head/tail pages), so teardown leaves the range
+  unmapped rather than resurrecting the prior
+  mapping -- 'nothing mapped' is the failed-host-
+  mmap contract the entry specifies, and that is
+  what the guest now observes; mmapSharedFile's
+  own failure return after a successful seed
+  read is a separate contract (its callers
+  include loader paths) and is not changed here.
+  The trigger is exercised at the interface the
+  defect lives at: the in-tree file backings
+  currently fold host read errors into a 0 (EOF)
+  answer, so no real file in the tree makes the
+  positioned read return an errno today;
+  KFile::preadNative's contract nonetheless
+  forwards the backing's result verbatim and its
+  callers (this function, sys_pread64's core)
+  are written against (S32)result < 0 as the
+  error answer, so the test drives that contract
+  with an open description whose readNative
+  serves a pattern up to a byte budget and then
+  returns -EIO. Proof: new test
+  testMmap64FileReadFailure in the x64 native
+  suite -- five cases (explicit-address private
+  failure on the first byte, explicit-address
+  private failure after one served page, a
+  never-failing control that maps and serves its
+  content, addr==0 private failure, addr==0
+  shared seed failure; the addr==0 cases locate
+  the reservation through a control allocation
+  at the mmap cursor) driving the real 64-bit
+  syscall dispatch -- RED on the base (the four
+  failure cases each reported their range still
+  mapped: 0x100000000, 0x100100000, 0x700003000,
+  0x700008000; the control passed), GREEN with
+  the fix; full native suites serial main
+  668/668 and x64 70/70, 0 FAILED (x64 baseline
+  69 + this test); JS unit 348 passed / 0
+  failed; browser build on the fixed tree
+  (clean-bootstrap staging from this base's
+  pinned runtime-assets-20261101 archive, 13
+  assets restored and verified, --check PASS
+  including the FD-73 retained-archive line):
+  'Browser export verified' / BUILD COMPLETE,
+  build git_sha e37fa3c04, wasm 16abfc4c,
+  support archive c4dbe35986a5 unchanged.
+  Record:
+  `docs/reports/fd92-failed-mmap64-teardown-20261102.md`;
+  evidence `test-results/fd92mmap/`.
+
+- **CL-57 — The 32-bit dispatcher's readv is wired
+  with the host's validation and FD-83's
+  one-IN_ACCESS-per-success contract (FD-92).**
+  *(Provisional number, filed on lane-fd92-93,
+  2026-11-02 — CL-40..CL-44 are held by the
+  unmerged fd66, fd65, fd85/fd87, fd64 and fd05
+  lanes and CL-45/CL-46 by lane-fd83-84, all off
+  this same base; the merge lane's audit settles
+  the final number. The FD-92 number is the filing
+  lane's, carried exactly; an unrelated
+  shader-fixup entry on branch `lane-fd92` uses the
+  same number, flagged in this lane's record.)*
+  Fixed on branch `lane-fd92-93`, commits
+  `48bb12b1c` (tests) and `8d2da6430` (fix). Slot
+  145 was null and answered -ENOSYS. The fix
+  dispatches it to KProcess::readv over a new
+  KObject::readv walk: validation in the host's
+  order (bad descriptor EBADF, wrong mode EBADF,
+  iovcnt outside 0..IOV_MAX EINVAL, null iovec
+  with iovcnt > 0 EFAULT); the walk skips
+  zero-length segments, returns the bytes already
+  read when a later segment fails, and ends at a
+  short segment; exactly one IN_ACCESS is
+  generated per successful call — the byte-moving
+  case through the file layer's per-segment
+  events coalesced by the inotify queue, the
+  0-byte case (at EOF, with iovcnt 0, with
+  all-zero-length segments) raised by
+  KProcess::readv. Proof: new test
+  testReadv32Syscall in the main native suite
+  drives the real int 0x80 dispatch — RED on the
+  base (all 20 assertions failing, every call
+  -ENOSYS), GREEN with the fix; full native suites
+  serial main 670/670 and x64 71/71, 0 FAILED;
+  browser build 'Browser export verified' (wasm
+  `bcc8a852`). Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.
+
+- **CL-58 — The write family answers EBADF on a
+  descriptor that cannot be written, in the host's
+  validation order (FD-93).** *(Provisional number,
+  filed on lane-fd92-93, 2026-11-02, on the same
+  terms as CL-47.)* Fixed on branch `lane-fd92-93`,
+  commits `48bb12b1c` (tests), `8d2da6430` (fix)
+  and `0acf72a4b` (silent-failure baseline
+  review). The host contract was measured first
+  (host kernel 6.17.0-1020-oracle, extending the
+  filing lane's matrix): write, pwrite and writev
+  on an O_RDONLY descriptor answer EBADF, for
+  count 0 and iovcnt 0 as well; writev's mode
+  answer precedes its iovcnt-range and
+  iovec-pointer answers; a negative offset in the
+  positioned family answers EINVAL ahead of both
+  the descriptor and the mode answers. The base
+  answered -EINVAL at KProcess::write,
+  KProcess::writev, sys_write64's gate and
+  sys_pwrite64; returned a silent 0 from
+  KProcess::pwrite64 (no mode check — the backing
+  write's host EBADF swallowed by the backing
+  layer, visible in the RED log), from sys_write64
+  at count 0 (its gate sat behind the zero-count
+  return) and from sys_writev64 at iovcnt 0 (no
+  validation of its own); and took a guest fault
+  at address 0 for writev with a null iovec at the
+  KProcess layer. The fix answers EBADF at every
+  named site and adds the missing validation in
+  the measured order. Proof: new tests
+  testWriteFamilyWrongMode (both suites) and
+  testWriteFamily64Syscalls (x64 suite) — RED on
+  the base, GREEN with the fix; full native suites
+  serial main 670/670 and x64 71/71, 0 FAILED;
+  browser build 'Browser export verified' (wasm
+  `bcc8a852`). Record:
+  `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
+  evidence `test-results/fd92-93/`.
+
+- **CL-59 — The positioned vectored writes are
+  wired on both dispatchers with the host's
+  validation order and return shape (FD-94).**
+  *(Provisional number, filed on lane-fd94-96,
+  2026-11-02 — CL-40..CL-48 are held by the
+  unmerged fd66, fd65, fd85/fd87, fd64, fd05,
+  fd83-84 and fd92-93 lanes off this same base;
+  the merge lane's audit settles the final
+  number. The FD-94/FD-96 numbers are the filing
+  lane's, carried exactly.)*
+  Fixed on branch `lane-fd94-96`, commits
+  `c060e0613` (tests; build corrections
+  `f9a8fdeef`, `84e5feca7`) and `d528d792b`
+  (fix). 64-bit: new sys_pwritev64 dispatches
+  296/328 over the pwrite64 core; 32-bit: new
+  KProcess::pwritev dispatches table slots
+  334/378 over KProcess::pwrite64. Validation
+  in the measured order: a negative offset is
+  EINVAL ahead of the descriptor check, except
+  pwritev2's offset -1 — the file-position mode
+  (write at the current position and advance
+  it); the descriptor check (EBADF) precedes
+  the pwritev2 flags check (EOPNOTSUPP for bits
+  outside the defined RWF mask 0x3f — measured:
+  0x20 NOAPPEND is defined and accepted on the
+  host, unlike the read side's 0x1f; NOWAIT is
+  accepted by the emulator per the preadv2
+  precedent, though this host's /tmp filesystem
+  answers EOPNOTSUPP for it as a per-filesystem
+  capability) and the iovcnt range check
+  (EINVAL outside 0..1024); a bad iovec array
+  with iovcnt > 0 is EFAULT. RWF_APPEND writes
+  at end of file, ignoring the offset, and
+  leaves the position untouched outside the -1
+  mode. Segment buffers are range-checked per
+  segment because the core's guest copy
+  zero-fills an unreadable buffer instead of
+  failing (FD-97); a later segment's failure
+  returns the bytes already written; the walk
+  raises exactly one watcher-visible IN_MODIFY
+  (per-segment events coalesce in the inotify
+  queue, as on the host). The read-only
+  descriptor answer stays the write family's
+  house -EINVAL (the host's EBADF divergence
+  is FD-93's registered territory, exactly as
+  FD-92's test pins the read side). Proof:
+  testPwritev64Syscalls (x64 suite) and
+  testPwritev32Dispatch (main suite), RED on
+  the base with -ENOSYS on every call and GREEN
+  on the fix; full suites serial — main
+  670/670, x64 70/70; browser build
+  'Browser export verified'; JS unit 348/0
+  (the silent-failure baseline for syscall64.cpp
+  is bumped 115 -> 118 with this lane — the
+  counted returns are the new function's
+  guest-validation errno answers; the merge
+  audit should expect 119 once lane-fd92-93's
+  116 bump composes).
+  Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+- **CL-60 — The 32-bit vectored write returns
+  the bytes already written when a later
+  segment fails (FD-96).** *(Provisional
+  number, filed on lane-fd94-96, 2026-11-02 —
+  numbering as in CL-49; the merge lane's audit
+  settles the final number.)*
+  Fixed on branch `lane-fd94-96`, commits
+  `c060e0613` (tests) and `d528d792b` (fix).
+  KObject::writev (source/kernel/kobject.cpp)
+  returned the failing segment's error result
+  regardless of bytes already written; it now
+  returns the accumulated count when any
+  segment wrote, and the error only when
+  nothing was written — the host's shape
+  (measured: a good 3-byte first segment and a
+  bad second returns 3) and the shape the
+  64-bit walk already had. The old kwarn's
+  'TODO file pointer' wording goes with it;
+  the walk's short-write accumulate-and-
+  continue behaviour is unchanged. KObject::
+  writev's only caller is KProcess::writev, so
+  the change is contained to the 32-bit
+  dispatcher's writev (146); the new 32-bit
+  pwritev walk has the same return shape by
+  construction. Proof: testWritevPartialError
+  (main suite) drives the walk over a KEvent
+  whose counter admits one 8-byte segment and
+  refuses the next — RED on the base (returned
+  -EAGAIN where 8 was owed) and GREEN on the
+  fix, with the first-segment-fails and
+  all-good boundaries pinned; full suites
+  serial — main 670/670, x64 70/70.
+  Record:
+  `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
+  evidence `test-results/fd94-96/`.
+
+- **CL-61 — The 32-bit dispatcher's positioned
+  vectored reads are wired with the host's
+  validation order and FD-83's notification
+  contract (FD-98).** *(Provisional number,
+  filed on lane-fd98, 2026-11-02 — CL-40..CL-50
+  are held by the unmerged fd66, fd65,
+  fd85/fd87, fd64, fd05, fd83-84, fd92-93 and
+  fd94-96 lanes off this same base; the merge
+  lane's audit settles the final number.)*
+  Fixed on branch `lane-fd98`, commits
+  `8edaaaea2` (test) and `86dfb5830` (fix).
+  New KProcess::preadv dispatches table slots
+  333/377 over KProcess::pread64. Validation
+  in the order measured fresh on the host
+  kernel for this lane: a negative offset is
+  EINVAL ahead of the descriptor check, except
+  preadv2's offset -1 — the file-position mode
+  (read at the current position and advance
+  it); a descriptor that cannot be read is
+  EBADF, ahead of the iovcnt range check
+  (EINVAL outside 0..1024); the iovec array
+  check (EFAULT for a null/unmapped array with
+  iovcnt > 0) precedes the preadv2 flags check
+  (EOPNOTSUPP outside the defined RWF mask
+  0x3f), which runs last. A later segment's
+  failure returns the bytes already read; a
+  short read ends the walk; the file position
+  is untouched outside the -1 mode. Exactly
+  one IN_ACCESS per successful call, 0-byte
+  successes included (FD-83's contract): a
+  byte-moving walk notifies per segment
+  through the file layer and the queue
+  coalesces; a success that moved no bytes
+  raises it in KProcess::preadv, FD-92's readv
+  shape. The mode answer is EBADF from this
+  wiring's own gate, ahead of FD-84's
+  in-flight core fix; the two agree once
+  FD-84 composes, since the walk's per-segment
+  core is one of FD-84's named sites.
+  FD-95 interaction: for the (bad descriptor,
+  negative offset) pair this wiring answers
+  EINVAL — the host's side of FD-95's open
+  question, the same side FD-93/FD-94 took for
+  the write family; if the merge lane settles
+  FD-95 descriptor-first instead, the offset
+  check in KProcess::preadv moves behind the
+  descriptor check (one reorder) and this
+  closure's pinned case flips with it.
+  Proof: testPreadv32Dispatch (main suite,
+  real int 0x80 dispatch) — RED on the base
+  (every call -ENOSYS; the full assertion
+  battery failed) and GREEN on the fix; full
+  suites serial — main 671/671, x64 70/70;
+  browser build 'Browser export verified'
+  (BUILD_INFO git_sha `86dfb5830`, wasm
+  `5c0d85fc`, support archive `c4dbe35986a5`
+  unchanged); JS unit 348/0, no silent-failure
+  baseline change. Record:
+  `docs/reports/fd98-preadv32-20261102.md`;
+  evidence `test-results/fd98/`.
+
+- **CL-62 — The 64-bit dispatcher's preadv2
+  takes its file-position offset and the full
+  defined read flag mask (FD-99).** *(Provisional
+  number, filed on lane-fd99-100, 2026-11-02 —
+  CL-52 is left unused: a sibling lane's
+  report claimed it for FD-101, but that
+  claim could not be verified on disk (no
+  lane register carries a CL-52 closure, and
+  the report's cited commits do not exist in
+  the repository — checked 2026-11-02);
+  CL-53/CL-54 were verified free on every
+  lane register. The audit settles the final
+  number.)*
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix).
+  sys_preadv64 refused preadv2's offset -1
+  outright (EINVAL) and rejected the defined
+  flag RWF_NOAPPEND (0x20) as EOPNOTSUPP (mask
+  0x1f); the host reads at the current position
+  and advances it for -1 and accepts every flag
+  in the read mask 0x3f. sys_preadv64 now
+  implements the -1 file-position mode (the
+  walk starts at the descriptor's position and
+  seeks it forward by the bytes read; exactly
+  one IN_ACCESS, as the rest of the family),
+  accepts 0x3f, and takes the host's validation
+  order throughout: offset validity ahead of
+  the descriptor check (plain preadv on a bad
+  descriptor with offset -1 answers EINVAL;
+  preadv2 answers EBADF there, -1 being valid
+  for it), the descriptor check ahead of the
+  iovcnt range and iovec array checks, the
+  flags check last (FD-100's order, applied to
+  this arm here). Its iovec array check is now
+  a range check like the write side's, so an
+  unmapped array answers EFAULT instead of
+  reading as zero-length segments. FD-95
+  interaction: the offset-first order takes
+  the host's side of FD-95's open question for
+  the preadv arm, as CL-61 did for the 32-bit
+  arm; if the merge lane settles FD-95
+  descriptor-first, this arm's offset check
+  moves behind the descriptor check and the
+  pinned bad-descriptor cases flip with it.
+  Proof: testPreadv64Syscalls sections 10-11
+  (x64 suite) — RED on the base (offset -1
+  -EINVAL, no bytes, position unmoved; 0x20
+  -EOPNOTSUPP; the bad-descriptor order cases
+  answered from the wrong side) and GREEN on
+  the fix; full suites serial — main 671/671,
+  x64 70/70; browser build 'Browser export
+  verified' (BUILD_INFO git_sha `fad85c19c`,
+  wasm `52da72d5`, support archive
+  `c4dbe35986a5` unchanged); JS unit 348/0, no
+  silent-failure baseline change. Record:
+  `docs/reports/fd99-fd100-preadv2-family-order-20261102.md`;
+  evidence `test-results/fd99-100/`.
+
+- **CL-63 — The positioned vectored family's
+  v2 flags check runs last, below the iovcnt
+  range and iovec array checks (FD-100).**
+  *(Provisional number, as in CL-53.)*
+  Fixed on branch `lane-fd99-100`, commits
+  `9e1b617c7` (tests) and `fad85c19c` (fix).
+  sys_preadv64, sys_pwritev64 and
+  KProcess::pwritev all tested the v2 flags
+  ahead of the iovcnt range check and the
+  iovec array check, answering EOPNOTSUPP for
+  (out-of-range iovcnt + undefined flag) and
+  (null/unmapped array + undefined flag); the
+  host answers EINVAL and EFAULT there. The
+  flags test now runs below both checks in
+  each of the three (in sys_preadv64 as part
+  of FD-99's restructure). KProcess::preadv
+  already used the measured order and is
+  untouched. Two neighbouring combinations
+  were measured during this lane and
+  deliberately left: in the two 64-bit arms
+  the mode answer comes from the walk's
+  per-segment core, behind the range/array
+  checks, so a wrong-mode descriptor with an
+  out-of-range iovcnt or a bad array answers
+  EINVAL/EFAULT where the host answers
+  EBADF — on the read side a facet of FD-84
+  (whose fix owns the core's mode gate; an
+  addendum on FD-84's entry records the
+  combination), on the write side part of
+  FD-93's composition; both are named here so
+  the merge lane sees them. Proof: the
+  flags-last pins in testPreadv64Syscalls
+  section 11, testPwritev64Syscalls section
+  11 and testPwritev32Dispatch section 2b —
+  RED on the base (every combination
+  -EOPNOTSUPP) and GREEN on the fix; shared
+  suite, browser and JS figures as in CL-53.
+  Record and evidence as in CL-53.
+- **CL-64 — The 64-bit stack served no Arial family:
+  prefix64 carried no font replacement entry, the
+  mechanism the 32-bit stack serves Arial through
+  (FD-86).**
+  *(Filed provisionally as CL-55 on lane-fd86,
+  2026-11-03 — a sweep of the lane registers that
+  day showed CL-50–CL-54 claimed, CL-54 highest;
+  the composing merge verifies the number by
+  audit.)*
+  Fixed on branch `lane-fd86` in `a3349c4cb`. The
+  new canonical-set staging step
+  `tools/rootfs64/stage-font-alias64.py`, wired into
+  `apply-runtime-poststeps.sh` after
+  `stage-fonts64.sh`, writes `"Arial"="DejaVu Sans"`
+  into prefix64's `user.reg` under
+  `[Software\Wine\Fonts\Replacements]`, importing the
+  edit (`configure_replacements`) from
+  `tools/browser/stage-wine32-fonts.py` so the two
+  stacks cannot drift in shape; it refuses to stage
+  an alias whose target face is absent from
+  `glibc-rootfs64.zip`. The completeness checker
+  gains the matching drift check, and the shipped
+  win32-fonts suite test now runs both architectures
+  (it ran x86 only, which is why the gap was
+  invisible), its assertion unchanged. The payload
+  was re-pinned as release `runtime-assets-20261103`
+  (only `prefix64.zip` changed); a clean bootstrap
+  from the new retained archive reproduces the
+  replacement, and `bootstrap.py --check` passes
+  (0 failures, 1 standing skip). Proof: the checker
+  failed on this gap alone before the fix; the
+  extended win32-fonts test reproduced the filed
+  x64 signature (`ARIAL=0 METRICS=0 RESULT 4`, x86
+  leg green) and passes on the fixed build on both
+  architectures; the Gecko stage prints `MSHTML:
+  RESULT 0` with zero abort lines — the shipped
+  test green at the stage on a load-gated run
+  after two contention-bound attempts at its
+  180 s stage window (see the record); JS unit
+  348/0; the wasm is
+  byte-identical to the base build. Record:
+  `docs/reports/fd86-arial-prefix64-20261103.md`;
+  evidence: `test-results/fd86/`.
+
+- **CL-65 — FD-23's residue is closed: `select`,
+  `pidfd_getfd` and `futex_waitv` are implemented to the
+  host-measured contracts, and every unimplemented
+  system call on both ABIs carries a recorded
+  disposition (FD-23).** *(Provisional number, filed on
+  `lane-fd23res` 2026-11-02; settles at the merge audit —
+  integ's settled series ends at CL-39 and sibling
+  branches hold provisional CL-40..CL-51.)* Fixed on
+  branch `lane-fd23res`, commit `096d5b3e3`. The host
+  contracts were measured first (raw-syscall reference
+  programs, 6.17.0-1020-oracle; sources and outputs in
+  the lane evidence): select writes back the remaining
+  time and answers EBADF for a bad descriptor in any set;
+  pidfd_getfd checks flags before the pidfd, answers
+  ESRCH for a terminated target and EPERM across owners,
+  and installs FD_CLOEXEC over the shared description;
+  futex_waitv answers with the woken entry's index,
+  validates the whole array before pinning, and treats
+  its timeout as absolute in the named clock. The
+  implementation: select runs on a core factored out of
+  pselect6 (which gains the same host pre-checks and is
+  corrected by them; pselect6 never writes its timespec
+  back, as on the host; select's nfds is capped at the
+  emulator's 1024-descriptor sets, a stated boundary);
+  pidfd_getfd dispatches beside pidfd_open in the host's
+  check order; futex_waitv parks one futex slot per entry
+  on a shared condition with registration under the
+  pending-wake lock so a racing wake is consumed from
+  the pending table with its index, and the i386 table
+  is extended from 440 to 462 slots so 449 dispatches at
+  all. The long tail is dispositioned in
+  `tools/conformance/syscall_dispositions.json` (404
+  entries in seven categories, each with a reason and a
+  route), audited by the census tool: undispositioned 0,
+  stale 0; census on the fixed tree reads x86-64
+  implemented 202, stubbed {334 `rseq`} only, missing
+  160; i386 dispatched 206, gap 244. `rseq`'s deliberate
+  loud `-ENOSYS` is unchanged — its prerequisite is
+  filed as FD-102 — and the 64-bit pselect6's ignored
+  signal mask is filed as FD-103. Proof: new native
+  tests testSelectSyscall, testPidfdGetfdSyscall and
+  testFutexWaitvSyscall (x64 suite) and
+  testFutexWaitv32Syscall (main suite) — RED on the base
+  (the base answers -ENOSYS: the three x64 tests are the
+  x64 suite's only failures, the 32-bit test the main
+  suite's only failure) and GREEN with the fix; full
+  native suites serial x64 72 tests and main 669 tests,
+  0 FAILED; browser build 'Browser export verified'
+  (wasm c290559e). Record:
+  `docs/reports/fd23-residue-20261102.md`; evidence
+  `test-results/fd23res/`.
+- **CL-66 — The ALSA chain's mmap face delivered one
+  buffer then stalled: the OSS position face reported
+  the write position and a constant 0 delay.**
+  GETOPTR / GETODELAY now derive from a played counter
+  sourced from the bwPump ring consumer; SNDCTL_DSP_RESET
+  no longer clobbers the hw_params-negotiated stream
+  geometry at prepare; the reported position is
+  slew-limited to half a buffer per read. Fixed on
+  branch `lane-fd90` (proof test `223cb8fbf`, fix
+  `dd00eee9b`, proof adjustments `adb032921`): the
+  alsa-mmap-stream suite test is RED on the base with
+  the recorded signature (avail 4096,0,0,0,0,0,0,0) and
+  GREEN on the fix (s16mmap 18,432 frames / floatmmap
+  22,528 committed across the cycles; writei avail +
+  delay coherent, summing to 4096); audio-tone PASS;
+  native suites serial, main and x64, 0 FAILED. Record:
+  `docs/reports/fd90-oss-position-20261102.md`;
+  evidence `test-results/fd90/`. (The lane recorded its
+  closure in FD-90's entry and Section B only; this
+  record was written by the batch-3 merge audit, which
+  also settled its number — the lane's provisional
+  CL-45.)

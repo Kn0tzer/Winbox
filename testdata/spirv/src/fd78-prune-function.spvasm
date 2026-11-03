@@ -1,0 +1,26 @@
+; FD-78 guard fixture (prune-dead-storage-image-types): a format-less
+; storage image type whose only wrapper is a Uniform pointer type
+; (id %7) referenced by NOTHING except a helper OpFunction whose
+; FunctionControl mask word numerically equals the wrapper's id. The
+; prune's raw-word liveness scan counted the leading literal, so the
+; wrapper (and through it the image type) survived; the operand-aware
+; scan (operandRefIds) counts only OpFunction's function-type id.
+OpCapability Shader
+OpCapability StorageImageWriteWithoutFormat
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%uint = OpTypeInt 32 0
+%img = OpTypeImage %float 2D 0 0 0 2 Unknown
+%ptr = OpTypePointer Uniform %img
+%main = OpFunction %void None %fn
+%l = OpLabel
+OpReturn
+OpFunctionEnd
+%helper = OpFunction %void Inline|DontInline|Pure %fn
+%hl = OpLabel
+OpReturn
+OpFunctionEnd

@@ -255,6 +255,7 @@ disposition now:
 | Regenerating `docs/known-gaps/runtime-artifact-manifest.md` after any zip change | the manifest | Run by `apply-runtime-poststeps.sh` from the final zip bytes; drift fails checker test `manifest matches shipped zips` |
 | Re-pinning `tools/browser/runtime-assets.json` + rebuilding the retained archive after zip changes | the pins | Still manual (it is the act of publishing new canonical bytes), but `bootstrap.py --check` now runs the completeness checker after the pin comparison, so re-pinning an incomplete set fails verification instead of blessing it; since FD-73 the checker also verifies the retained archive against the file pins, so re-pinning the files without rebuilding the archive fails verification too |
 | `tools/browser/stage-wine32-fonts.py` (prefix font aliases) | exported `dist/runtime` prefixes only | Already automated: `build.mjs` runs it on every export; it never touches the canonical set, so it is deliberately not part of the finisher |
+| `tools/rootfs64/stage-font-alias64.py` (prefix64 Arial replacement, FD-86) | `prefix64.zip` (web/runtime + dist copy) | Run by `apply-runtime-poststeps.sh`; the canonical prefix64 carries the `"Arial"="DejaVu Sans"` replacement in its user.reg, pinned by checker test `prefix64 Arial font replacement (FD-86)` and re-pinned in release `runtime-assets-20261103` |
 
 Mechanisms, smallest change per choke point:
 
@@ -689,6 +690,53 @@ in two runs. That test's downstream audio-capture
 stage is filed separately as FD-85, and the missing
 Arial family on this stack as FD-86. Record:
 `docs/reports/fd65-gecko-fonts-20261102.md`.
+
+
+### FD-86 addendum (2026-11-03, lane-fd86)
+
+The 64-bit prefix shipped with no
+`[Software\Wine\Fonts\Replacements]` entry at all, so
+family-name lookups for Arial found nothing on the
+64-bit stack even after FD-65 restored real text:
+the win32-fonts fixture reads `FAMILIES=10 TAHOMA=1
+ARIAL=0`. The 32-bit stack serves Arial through
+exactly that mechanism — `stage-wine32-fonts.py`
+writes `"Arial"="DejaVu Sans"` into prefix32 at
+export — and the 64-bit stack had no counterpart.
+
+Fix, on `lane-fd86` (hashes in the register closure):
+new canonical-set staging step
+`tools/rootfs64/stage-font-alias64.py`, wired into
+`apply-runtime-poststeps.sh` after
+`stage-fonts64.sh`, writes the same replacement into
+prefix64's `user.reg`, reusing the 32-bit edit
+(`configure_replacements` imported from
+`stage-wine32-fonts.py`) so the two stacks cannot
+drift in shape; it refuses to stage an alias whose
+target face is absent from `glibc-rootfs64.zip`. The
+completeness checker gains the matching
+`prefix64 Arial font replacement (FD-86)` check, and
+the shipped win32-fonts suite test now runs both
+architectures (it ran x86 only, which is why the gap
+was invisible). The runtime payload was re-pinned as
+release `runtime-assets-20261103`
+(`browser-runtime-20261103.tar`, 514,426,880 B,
+`ba510043…`, retained at
+`/home/ubuntu/backups/winbox-runtime-assets-20261103/`);
+only `prefix64.zip` changed (19,133,895 B,
+`b1bfa64e…`); a clean bootstrap from the new archive
+restores and verifies the set and reproduces the
+replacement. Guest proof on the fixed build:
+win32-fonts PASS on both architectures — x64 now
+reads `ARIAL=1 METRICS=1 RESULT 0`, x86 unregressed;
+the common-dependencies Gecko stage prints
+`MSHTML: TITLE boxedwine gecko`, `MSHTML: TEXT
+embedded html works`, `MSHTML: RESULT 0` with zero
+abort and zero missing-font lines in the shipped
+test itself (load-gated third run; two earlier runs
+were contention-bound at the stage's 180 s window
+— see the record). Record:
+`docs/reports/fd86-arial-prefix64-20261103.md`.
 
 
 ## GStreamer split finish (2026-10-25, split audit/finish lane)

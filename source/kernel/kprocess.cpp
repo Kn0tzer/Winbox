@@ -748,8 +748,13 @@ U32 KProcess::getNextFileDescriptorHandle(int after) {
             return i;
         }
     }
-    kpanic_fmt("KProcess::getNextFileDescriptorHandle %s ran out of file handles", name.c_str());
-    return -1;
+    // FD-05: a full table (or a minimum at/past the ceiling) is a
+    // normal guest-visible condition, not an invariant violation:
+    // a real kernel answers EMFILE and the guest lives.
+    // MAX_NUMBER_OF_FILES is the "none available" sentinel;
+    // allocFileDescriptor, the only caller, turns it into a null
+    // result, and its callers answer -EMFILE.
+    return MAX_NUMBER_OF_FILES;
 }
 
 KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {    
@@ -757,6 +762,18 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
 
     if (handle<0) {
         handle = this->getNextFileDescriptorHandle(afterHandle);
+        if (handle>=(S32)MAX_NUMBER_OF_FILES) {
+            // FD-05: table full -- return no descriptor; every caller
+            // answers -EMFILE (the pidfd paths already did). Logged
+            // once per process: exhaustion is a legitimate guest
+            // outcome, but it must not be silent, and a guest retry
+            // loop must not flood the log either.
+            if (!this->fdTableExhaustionLogged) {
+                this->fdTableExhaustionLogged = true;
+                kwarn_fmt("BW64-FAIL fd-table-exhausted process=%s outcome=returned-EMFILE", name.c_str());
+            }
+            return nullptr;
+        }
     }
     KFileDescriptorPtr result = std::make_shared<KFileDescriptor>(shared_from_this(), kobject, accessFlags, descriptorFlags, handle);
     
@@ -840,6 +857,9 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
         kobject = std::make_shared<KFile>(openNode);
     }
     result = this->allocFileDescriptor(kobject, accessFlags, descriptorFlags, handle, afterHandle);
+    if (!result) {
+        return -K_EMFILE;
+    }
     return 0;
 }
 
@@ -1448,7 +1468,11 @@ U32 KProcess::dup(U32 fildes) {
     if (!fd) {
         return -K_EBADF;
     }
-    return this->allocFileDescriptor(fd->kobject, fd->accessFlags, 0, -1, 0)->handle; // do not copy file descriptor flags
+    KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, 0, -1, 0); // do not copy file descriptor flags
+    if (!result) {
+        return -K_EMFILE;
+    }
+    return result->handle;
 }
 
 U32 KProcess::rmdir(BString path) {
@@ -1827,8 +1851,11 @@ U32 KProcess::read(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen)
     if (!fd) {
         return -K_EBADF;
     }
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host, ahead of the buffer check and of any zero-length
+    // return (measured on the 6.17 host kernel).
     if (!fd->canRead()) {
-        return -K_EINVAL;
+        return -K_EBADF;
     }
     if (!memory->canWrite(bufferAddress, bufferLen)) {
         return -K_EFAULT;
@@ -1886,7 +1913,7 @@ U32 KProcess::write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen
         return -K_EBADF;
     }
     if (!fd->canWrite()) {
-        return -K_EINVAL;
+        return -K_EBADF; // FD-93: the host's wrong-mode answer (was -K_EINVAL)
     }
     if (!memory->canRead(bufferAddress, bufferLen)) {
         return -K_EFAULT;
@@ -1948,6 +1975,13 @@ U32 KProcess::dup2(FD fildes, FD fildes2) {
     }
     if (fildes == fildes2) {
         return fildes;
+    }
+    if (fildes2>=(FD)MAX_NUMBER_OF_FILES) {
+        // FD-05: the ceiling the guest sees as RLIMIT_NOFILE bounds
+        // explicit targets too; Linux answers EBADF past it. Without
+        // this check dup2 could grow the table past the limit the
+        // guest was told it has.
+        return -K_EBADF;
     }
     KFileDescriptorPtr fd2 = this->getFileDescriptor(fildes2);
     if (fd2) {        
@@ -3340,10 +3374,187 @@ U32 KProcess::writev(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
         return -K_EBADF;
     }
     if (!fd->canWrite()) {
+        return -K_EBADF; // FD-93: the host's wrong-mode answer (was -K_EINVAL)
+    }
+    // FD-93: the walk's own validation, in the host's order (mode
+    // ahead of both, measured on the 6.17 host kernel) -- without
+    // it an out-of-range iovcnt was never EINVAL here and a null
+    // iovec took a guest fault inside the walk instead of EFAULT.
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
         return -K_EINVAL;
     }
+    if (iovcnt > 0 && iov == 0) {
+        return -K_EFAULT;
+    }
     patchWbEvt(thread, fd, iov, iovcnt);
-    return fd->kobject->writev(thread, iov, iovcnt);    
+    return fd->kobject->writev(thread, iov, iovcnt);
+}
+
+// FD-92: the 32-bit dispatcher's readv forwards here (the 64-bit
+// dispatcher walks its own in sys_readv64). Validation mirrors
+// sys_readv64's, in the host's order (measured for FD-83 on the
+// 6.17 host kernel): bad descriptor EBADF, wrong mode EBADF,
+// iovcnt outside 0..IOV_MAX EINVAL, null iovec with iovcnt > 0
+// EFAULT. The notification contract is FD-83's: exactly one
+// IN_ACCESS per successful call, 0-byte successes included. A
+// byte-moving walk notifies per segment through the file layer
+// and the inotify queue coalesces those into one observable
+// event, so only a success that moved no bytes raises it here.
+U32 KProcess::readv(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    if (!fd->canRead()) {
+        return -K_EBADF;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    if (iovcnt > 0 && iov == 0) {
+        return -K_EFAULT;
+    }
+    U32 result = fd->kobject->readv(thread, iov, iovcnt);
+    if ((S32)result == 0) {
+        std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (file && file->openFile && file->openFile->node) {
+            KInotify::notifyAccessed(file->openFile->node.get());
+        }
+    }
+    return result;
+}
+
+
+// FD-94: positioned vectored write for the 32-bit dispatcher
+// (pwritev 334 / pwritev2 378), walking this->pwrite64 per segment.
+// The validation order and return shape follow the host behaviour
+// measured for FD-94 (see the register entry): a negative offset
+// is EINVAL ahead of the descriptor check, except that pwritev2's
+// offset -1 is the file-position mode; the descriptor check
+// precedes the iovcnt range check and the iovec array check; the
+// flags check runs last (EOPNOTSUPP outside the defined RWF mask
+// 0x3f) (FD-100); RWF_APPEND writes at end of file; a later
+// segment's failure returns the bytes already written.
+U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPwritev2) {
+    S64 off = (S64)offset;
+    bool useFilePos = isPwritev2 && off == -1;
+    if (!useFilePos && off < 0) {
+        return -K_EINVAL;
+    }
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check, ahead of the iovcnt range and iovec
+    // array checks, mirroring KProcess::preadv and the host.
+    if (!fd->canWrite()) {
+        return -K_EBADF;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    KMemory* memory = thread->memory;
+    if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
+        return -K_EFAULT;
+    }
+    if (isPwritev2 && (flags & ~0x3f)) {
+        return -K_EOPNOTSUPP;
+    }
+    bool append = isPwritev2 && (flags & 0x10); // RWF_APPEND
+    S64 base = off;
+    if (append) {
+        if (fd->kobject->type == KTYPE_FILE) {
+            base = fd->kobject->length();
+        }
+    } else if (useFilePos) {
+        base = fd->kobject->getPos();
+    }
+    U32 total = 0;
+    U32 err = 0;
+    for (S32 i = 0; i < iovcnt; i++) {
+        U32 segBase = memory->readd(iov + i * 8);
+        U32 len = memory->readd(iov + i * 8 + 4);
+        if (len == 0) continue;
+        U32 wrote = this->pwrite64(thread, handle, segBase, len, (U64)(base + (S64)total));
+        if ((S32)wrote < 0) { err = wrote; break; }
+        total += wrote;
+        if (wrote < len) break; // short write
+    }
+    if (useFilePos && total > 0) {
+        fd->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && (S32)err < 0) {
+        return err;
+    }
+    return total;
+}
+// FD-98: positioned vectored read for the 32-bit dispatcher
+// (preadv 333 / preadv2 377), walking this->pread64 per segment.
+// The validation order and return shape follow the host behaviour
+// measured for FD-98 (see the register entry): a negative offset
+// is EINVAL ahead of the descriptor check, except that
+// preadv2's offset -1 is the file-position mode (read at the
+// current position and advance it); a descriptor that cannot be
+// read is EBADF, ahead of the iovcnt range check; the iovec
+// array check (EFAULT) precedes the preadv2 flags check
+// (EOPNOTSUPP outside the defined RWF mask 0x3f), which runs
+// last. A later segment's failure returns the bytes already
+// read. The notification contract is FD-83's: exactly one
+// IN_ACCESS per successful call, 0-byte successes included — a
+// byte-moving walk notifies per segment through the file layer
+// and the inotify queue coalesces those into one observable
+// event, so only a success that moved no bytes raises it here
+// (the shape FD-92's readv established).
+U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPreadv2) {
+    S64 off = (S64)offset;
+    bool useFilePos = isPreadv2 && off == -1;
+    if (!useFilePos && off < 0) {
+        return -K_EINVAL;
+    }
+    KFileDescriptorPtr fd = this->getFileDescriptor(handle);
+    if (fd == nullptr) {
+        return -K_EBADF;
+    }
+    if (!fd->canRead()) {
+        return -K_EBADF;
+    }
+    if (iovcnt < 0 || iovcnt > 1024) { // IOV_MAX
+        return -K_EINVAL;
+    }
+    KMemory* memory = thread->memory;
+    if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
+        return -K_EFAULT;
+    }
+    if (isPreadv2 && (flags & ~0x3f)) {
+        return -K_EOPNOTSUPP;
+    }
+    S64 base = useFilePos ? fd->kobject->getPos() : off;
+    U32 total = 0;
+    U32 err = 0;
+    for (S32 i = 0; i < iovcnt; i++) {
+        U32 segBase = memory->readd(iov + i * 8);
+        U32 len = memory->readd(iov + i * 8 + 4);
+        if (len == 0) continue;
+        U32 got = this->pread64(thread, handle, segBase, len, (U64)(base + (S64)total));
+        if ((S32)got < 0) { err = got; break; }
+        total += got;
+        if (got < len) break; // short read: EOF / drained
+    }
+    if (useFilePos && total > 0) {
+        fd->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && (S32)err < 0) {
+        return err;
+    }
+    if (total == 0) {
+        std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (file && file->openFile && file->openFile->node) {
+            KInotify::notifyAccessed(file->openFile->node.get());
+        }
+    }
+    return total;
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
@@ -3369,7 +3580,11 @@ U32 KProcess::memfd_create(BString name, U32 flags) {
     if (!(flags & 2)) { // MFD_ALLOW_SEALING	
         openNode->addSeals(K_F_SEAL_SEAL);
     }
-    return this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0)->handle;
+    KFileDescriptorPtr result = this->allocFileDescriptor(kobject, K_O_RDWR, descriptorFlags, -1, 0);
+    if (!result) {
+        return -K_EMFILE;
+    }
+    return result->handle;
 }
 
 // Rate-limited "valid Linux request that this emulator cannot model" logger.
@@ -3608,6 +3823,13 @@ U32 KProcess::pread64(KThread* thread, FD fildes, U32 address, U32 len, U64 offs
     if (openNode->node->isDirectory()) {
         return -K_EISDIR;
     }
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host (measured on the 6.17 host kernel). Without this
+    // check the positioned read fell through to the backing read,
+    // whose host error the backing layer swallows into a silent 0.
+    if (!fd->canRead()) {
+        return -K_EBADF;
+    }
     if (!this->memory->canWrite(address, len)) {
         return -K_EFAULT;
     }
@@ -3631,6 +3853,19 @@ U32 KProcess::pwrite64(KThread* thread, FD fildes, U32 address, U32 len, U64 off
 
     if (openNode->node->isDirectory()) {
         return -K_EISDIR;
+    }
+    // FD-93: the positioned-write family's remaining validation,
+    // in the host's order (measured on the 6.17 host kernel): a
+    // negative offset answers -EINVAL ahead of the mode answer,
+    // and a descriptor that cannot be written answers -EBADF.
+    // Without the mode check the call fell through to the backing
+    // write, whose host EBADF the backing layer swallows into a
+    // silent 0.
+    if ((S64)offset < 0) {
+        return -K_EINVAL;
+    }
+    if (!fd->canWrite()) {
+        return -K_EBADF;
     }
     if (!this->memory->canRead(address, len)) {
         return -K_EFAULT;
@@ -3743,11 +3978,23 @@ U32 KProcess::fcntrl(KThread* thread, FD fildes, U32 cmd, U32 arg) {
             return 0;
         }
         case K_F_DUPFD: {
+            if (arg>=MAX_NUMBER_OF_FILES) {
+                return -K_EINVAL; // Linux: a minimum at/past RLIMIT_NOFILE is EINVAL, not EMFILE
+            }
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);        
+            if (!result) {
+                return -K_EMFILE;
+            }
             return result->handle;
         }
         case K_F_DUPFD_CLOEXEC: {
+            if (arg>=MAX_NUMBER_OF_FILES) {
+                return -K_EINVAL; // Linux: a minimum at/past RLIMIT_NOFILE is EINVAL, not EMFILE
+            }
             KFileDescriptorPtr result = this->allocFileDescriptor(fd->kobject, fd->accessFlags, fd->descriptorFlags, -1, arg);
+            if (!result) {
+                return -K_EMFILE;
+            }
             result->descriptorFlags=FD_CLOEXEC;
             return result->handle;
         }
@@ -3881,6 +4128,9 @@ U32 KProcess::set_thread_area(KThread* thread, U32 info) {
 U32 KProcess::epollcreate(U32 size, U32 flags) {
     std::shared_ptr<KObject> o = std::make_shared<KEPoll>();
     KFileDescriptorPtr result = this->allocFileDescriptor(o, K_O_RDWR, flags, -1, 0);
+    if (!result) {
+        return -K_EMFILE;
+    }
     return result->handle;
 }
 
@@ -4322,8 +4572,11 @@ U32 KProcess::inotify_init1(U32 flags) {
     // presenting with delivery live -- is recorded with FD-38.
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KInotify> o = std::make_shared<KInotify>((flags & K_O_NONBLOCK) == 0);
-    KInotify::registerInstance(o);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (!fd) {
+        return -K_EMFILE;
+    }
+    KInotify::registerInstance(o);
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags |= FD_CLOEXEC;
     }
@@ -4361,6 +4614,9 @@ U32 KProcess::timerfd_create(U32 clockid, U32 flags) {
     if (flags & ~(K_O_CLOEXEC | K_O_NONBLOCK)) return -K_EINVAL;
     std::shared_ptr<KTimer> o = std::make_shared<KTimer>(clockid);
     KFileDescriptorPtr fd = allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+    if (!fd) {
+        return -K_EMFILE;
+    }
 
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags |= FD_CLOEXEC;

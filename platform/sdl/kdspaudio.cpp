@@ -71,6 +71,17 @@ public:
 	void setFragmentSize(U32 size) override;
 	U32 getBufferSize() override {return this->getGuestQueuedAudioSizeWant();}
 	U32 getBufferCapacity() override { return DSP_BUFFER_SIZE;}
+	U32 getQueuedBytes() override {
+#ifdef __EMSCRIPTEN__
+		// bwPump: the real queue is the JS-side ring, measured from the
+		// consumer's read index (getRingQueuedBytesWant). The inherited
+		// figure is a wall-clock estimate that does not track the ring.
+		if (this->bwPump && this->ringUsed) return this->getRingQueuedBytesWant();
+#endif
+		return this->getBufferSize();
+	}
+	U32 getRingQueuedBytesWant();
+	void pushToRing(const Uint8* bytes, Uint32 byteLen);
 	bool isBwPump() override {
 #ifdef __EMSCRIPTEN__
 		return this->bwPump;
@@ -174,6 +185,15 @@ public:
 	SDL_AudioDeviceID deviceId = 0;
 	U32 realQueuedWant = 0;
 	U32 lastRealQueuedTime = 0;
+#ifdef __EMSCRIPTEN__
+	// bwPump ring accounting for this voice: got-format frames pushed to
+	// the JS ring since openAudio, and the ring read index at openAudio.
+	// played = pushed - (readNow - readBase), in the ring consumer's own
+	// units — the playback motion GETOPTR reports (FD-90).
+	std::atomic<Uint64> ringFramesPushed{0};
+	std::atomic<Uint32> ringReadBase{0};
+	bool ringUsed = false; // this voice feeds the ring, not the SDL queue
+#endif
 	std::vector<U8> silenceBuffer;
 
 	U32 getEstimatedRealQueuedWant() {
@@ -360,14 +380,37 @@ static Uint32 bwAudioRingUsed() {
 	return used > BW_RING_FRAMES ? BW_RING_FRAMES : used;
 }
 
+static Uint32 bwAudioPushJs(const Uint8* bytes, Uint32 byteLen);
+
+// Queue depth of this voice in writeAudio input (want) units, measured
+// from the ring consumer's read index: frames pushed by this voice that
+// the page has not played yet, converted at the stream's rate ratio.
+// Frames the consumer dropped to make room count as consumed (they
+// left the queue), as do frames discarded by a later openAudio reset.
+U32 KDspAudioSdl::getRingQueuedBytesWant() {
+	Uint32 readNow = bwRingRead.load(std::memory_order_acquire);
+	U64 consumed = (U64)(readNow - this->ringReadBase.load(std::memory_order_acquire));
+	U64 pushed = this->ringFramesPushed.load(std::memory_order_acquire);
+	U64 queuedFrames = pushed > consumed ? pushed - consumed : 0;
+	U32 wantFrameBytes = bytesPerSampleWant() * this->want.channels;
+	if (!this->got.freq || !wantFrameBytes) return 0;
+	U64 bytes = (queuedFrames * (U64)this->want.freq * wantFrameBytes) / this->got.freq;
+	return bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : (U32)bytes;
+}
+
+void KDspAudioSdl::pushToRing(const Uint8* bytes, Uint32 byteLen) {
+	this->ringUsed = true;
+	this->ringFramesPushed += bwAudioPushJs(bytes, byteLen);
+}
+
 // Push interleaved F32 frames into the ring. Single producer. Channels above
 // stereo are downmixed to two outputs by averaging even and odd source lanes.
-static void bwAudioPushJs(const Uint8* bytes, Uint32 byteLen) {
+static Uint32 bwAudioPushJs(const Uint8* bytes, Uint32 byteLen) {
 	Uint32 sourceChannels = bwInputChannels;
 	Uint32 outputChannels = bwRingChannels;
-	if (!sourceChannels || !outputChannels) return;
+	if (!sourceChannels || !outputChannels) return 0;
 	Uint32 frames = byteLen / (4 * sourceChannels);
-	if (!frames || !bwBridgeArmed) return;
+	if (!frames || !bwBridgeArmed) return 0;
 	const float* samples = (const float*)bytes;
 	Uint32 w = bwRingWrite.load(std::memory_order_relaxed);
 	Uint32 r;
@@ -417,6 +460,7 @@ static void bwAudioPushJs(const Uint8* bytes, Uint32 byteLen) {
 		}
 		klog_fmt("bwPump: first push %u frames peak=%.4f", frames, peak);
 	}
+	return frames;
 }
 #endif
 // Voices whose closeAudio was called while audio was still queued to SDL.
@@ -534,6 +578,10 @@ void KDspAudioSdl::openAudio(U32 format, U32 freq, U32 channels) {
 	// SDL's emscripten driver pump does not deliver audio in this build;
 	// feed our own Web Audio bridge instead.
 	bwRingRead.store(bwRingWrite.load(std::memory_order_acquire), std::memory_order_release);
+	// Position accounting for this voice starts at the reset ring.
+	this->ringReadBase.store(bwRingRead.load(std::memory_order_acquire), std::memory_order_release);
+	this->ringFramesPushed.store(0, std::memory_order_release);
+	this->ringUsed = false;
 	bwAudioEnsureBridge(this->got.freq, this->got.channels);
 	this->bwPump = true;
 	klog_fmt("bwPump: bridge armed");
@@ -665,7 +713,7 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 			int got = SDL_AudioStreamGet(this->stream, this->streamBuffer.data(), available);
 			if (got > 0) {
 #ifdef __EMSCRIPTEN__
-				if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(this->streamBuffer.data(), (Uint32)got);
+				if (this->bwPump && this->got.format == AUDIO_F32LSB) this->pushToRing(this->streamBuffer.data(), (Uint32)got);
 				else
 #endif
 				SDL_QueueAudio(this->deviceId, this->streamBuffer.data(), got);
@@ -687,13 +735,13 @@ U32 KDspAudioSdl::writeAudio(U8* data, U32 len) {
 		memcpy(this->cvt.buf, data, len);
 		SDL_ConvertAudio(&this->cvt);
 #ifdef __EMSCRIPTEN__
-		if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(this->cvt.buf, (Uint32)this->cvt.len_cvt);
+		if (this->bwPump && this->got.format == AUDIO_F32LSB) this->pushToRing(this->cvt.buf, (Uint32)this->cvt.len_cvt);
 		else
 #endif
 		SDL_QueueAudio(this->deviceId, this->cvt.buf, this->cvt.len_cvt);
 	} else {
 #ifdef __EMSCRIPTEN__
-		if (this->bwPump && this->got.format == AUDIO_F32LSB) bwAudioPushJs(data, len);
+		if (this->bwPump && this->got.format == AUDIO_F32LSB) this->pushToRing(data, len);
 		else
 #endif
 		SDL_QueueAudio(this->deviceId, data, len);

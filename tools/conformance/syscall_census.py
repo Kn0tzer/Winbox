@@ -33,6 +33,18 @@ Three-way classification (added for the FD-23 disposition pass):
   bounds-checks and answers -ENOSYS).
 
 Usage: syscall_census.py --source-dir DIR --unistd32 PATH --out DIR
+         [--dispositions PATH]
+
+The dispositions file (default: syscall_dispositions.json beside this
+tool) records, per ABI and number, why each still-unimplemented syscall
+is absent: a category (legacy-dead, superseded, privilege-surface,
+subsystem-absent, identity-model, ordinary-unimplemented,
+modern-unconsumed) and the route by which it would be served. The census
+audits the file both ways: gap numbers with no entry are reported as
+"undispositioned" (the queue is not fully dispositioned until that count
+is 0), and entries for numbers that are no longer in the gap — because
+they were implemented meanwhile — are reported as "stale" so the entry
+is removed rather than silently drifting from reality.
 """
 import argparse
 import json
@@ -195,11 +207,36 @@ def census_i386(path, unistd32):
     }
 
 
+def audit_dispositions(report, dispositions):
+    """Cross-check the dispositions file against the measured gap."""
+    for arch, r in report.items():
+        gap = {}
+        gap.update(r.get("missing", {}))
+        gap.update(r.get("beyond_table", {}))
+        entries = dispositions.get(arch, {}) if dispositions else {}
+        undispositioned = {nr: gap[nr] for nr in sorted(gap) if str(nr) not in entries}
+        stale = {}
+        for nr_str, entry in entries.items():
+            try:
+                nr = int(nr_str)
+            except ValueError:
+                continue
+            if nr not in gap:
+                stale[nr] = entry.get("name", "?") if isinstance(entry, dict) else "?"
+        r["undispositioned_count"] = len(undispositioned)
+        r["undispositioned"] = undispositioned
+        r["stale_dispositions_count"] = len(stale)
+        r["stale_dispositions"] = {nr: stale[nr] for nr in sorted(stale)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source-dir", required=True)
     ap.add_argument("--unistd32", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--dispositions", default=None,
+                    help="path to syscall_dispositions.json "
+                         "(default: beside this tool)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     kdir = os.path.join(args.source_dir, "source", "kernel")
@@ -207,13 +244,23 @@ def main():
         "x86_64": census_x64(os.path.join(kdir, "syscall64.cpp")),
         "i386": census_i386(os.path.join(kdir, "syscall.cpp"), args.unistd32),
     }
+    disp_path = args.dispositions or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "syscall_dispositions.json")
+    dispositions = None
+    if os.path.exists(disp_path):
+        with open(disp_path) as f:
+            dispositions = json.load(f)
+    audit_dispositions(report, dispositions)
     with open(os.path.join(args.out, "syscall-census.json"), "w") as f:
         json.dump(report, f, indent=1, sort_keys=True)
     for arch, r in report.items():
-        print(arch, "->", {k: v for k, v in r.items() if k not in ("missing", "beyond_table")},
+        print(arch, "->", {k: v for k, v in r.items() if k not in ("missing", "beyond_table", "undispositioned", "stale_dispositions")},
               file=sys.stderr)
         miss = r.get("missing", {})
         print("  missing sample:", ", ".join(f"{nr}:{n}" for nr, n in list(miss.items())[:50]),
+              file=sys.stderr)
+        print("  undispositioned:", r["undispositioned_count"],
+              " stale dispositions:", r["stale_dispositions_count"],
               file=sys.stderr)
 
 

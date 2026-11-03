@@ -690,7 +690,6 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
                 recordPendingWakeLocked(this->process->id, ramAddress);
             }
         }
-        //klog_fmt("    %x/%x futux wake finished addr=%x op=%x val=%x ram=%x count=%d", id, process->id, addr, op, value, (U32)ramAddress, count);
         return count;
     } else {
         if (bw64RecoverEnabled()) {
@@ -699,6 +698,192 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
         }
         kwarn_fmt("syscall __NR_futex op %d not implemented", op);
         return -1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// futex_waitv (449) shared machinery.
+//
+// A waitv call parks on up to 128 futexes at once and reports WHICH one was
+// woken (its 0-based index), which the single-futex slot model does not
+// express directly. The bridge: register one ordinary slot per entry, all
+// sharing ONE fresh BoxedWineCondition created for this call, each with
+// mask 0xFFFFFFFF so plain WAKE and any WAKE_BITSET both reach it (the
+// kernel queues waitv waiters with MATCH_ANY). The waiter sleeps on the
+// shared condition; any slot's wake flag names the woken index. The shared
+// condition is deliberately left installed on the slots when they are
+// freed: freeFutex does not restore conditions and a later allocation of
+// the slot assigns none either, so the stale shared condition is inert —
+// while "restoring" one would race a WAKE that already captured it.
+//
+// Registration (consume-pendings + allocate + assign condition + set mask)
+// happens entirely under gPendingWakeMutex, the bucket lock both WAKE
+// paths hold across their scan + record, in the same lock order
+// (gPendingWakeMutex -> per-slot cond), so a wake can neither slip between
+// the pending check and registration nor observe a half-assigned slot.
+namespace {
+
+bool waitvWordsMatch(const KThread::FutexWaitvEntry* entries, U32 nr) {
+    for (U32 i = 0; i < nr; i++) {
+        if (std::atomic_ref<U32>(*entries[i].word).load(std::memory_order_seq_cst) != entries[i].val) {
+            return false;
+        }
+    }
+    return true;
+}
+
+S32 waitvWokenIndex(struct futex** slots, U32 nr) {
+    for (U32 i = 0; i < nr; i++) {
+        if (slots[i] && slots[i]->wake) {
+            return (S32)i;
+        }
+    }
+    return -1;
+}
+
+void freeWaitvSlots(struct futex** slots, U32 nr) {
+    for (U32 i = 0; i < nr; i++) {
+        if (slots[i]) {
+            freeFutex(slots[i]);
+            slots[i] = nullptr;
+        }
+    }
+}
+
+// Find this thread's already-registered waitv slots (single-threaded
+// re-entry after a park, where the syscall restarts from the top): one
+// unclaimed slot per entry, all sharing one condition, all marked waiting.
+bool claimWaitvSlots(KThread* thread, const KThread::FutexWaitvEntry* entries, U32 nr, struct futex** slots) {
+    bool claimed[MAX_FUTEXES] = {};
+    BOXEDWINE_CONDITION shared;
+    for (U32 i = 0; i < nr; i++) {
+        struct futex* found = nullptr;
+        for (int s = 0; s < MAX_FUTEXES; s++) {
+            if (claimed[s] || system_futex[s].thread != thread || !system_futex[s].waiting ||
+                system_futex[s].address != entries[i].key) {
+                continue;
+            }
+            if (i > 0 && !(system_futex[s].cond == shared)) {
+                continue;
+            }
+            found = &system_futex[s];
+            claimed[s] = true;
+            break;
+        }
+        if (!found) {
+            return false;
+        }
+        if (i == 0) {
+            shared = found->cond;
+        }
+        slots[i] = found;
+    }
+    return true;
+}
+
+// Register one slot per entry. The caller has already compared every word.
+// Returns the woken entry's index (>= 0) when a pending wake was consumed
+// instead of parking, -1 when the slots were registered, or a negative
+// errno.
+S32 registerWaitvSlots(KThread* thread, const KThread::FutexWaitvEntry* entries, U32 nr, U32 expireTimeInMillies, struct futex** slots, BOXEDWINE_CONDITION& sharedOut) {
+    std::lock_guard<std::mutex> pendingLk(gPendingWakeMutex);
+    for (U32 i = 0; i < nr; i++) {
+        if (consumePendingWakeLocked(thread->process->id, entries[i].key)) {
+            return (S32)i;
+        }
+    }
+    U32 freeCount = 0;
+    for (int s = 0; s < MAX_FUTEXES; s++) {
+        if (!system_futex[s].thread) {
+            freeCount++;
+        }
+    }
+    if (freeCount < nr) {
+        // allocFutex kpanics on a full table; a waitv this wide has no host
+        // analogue failure (the kernel allocates per-waiter), so answer
+        // -ENOMEM instead of taking the emulator down.
+        return -K_ENOMEM;
+    }
+    sharedOut = std::make_shared<BoxedWineCondition>(B("futex_waitv"));
+    for (U32 i = 0; i < nr; i++) {
+        slots[i] = allocFutex(thread, entries[i].key, expireTimeInMillies);
+        slots[i]->cond = sharedOut;
+        slots[i]->mask = 0xFFFFFFFF; // the kernel queues waitv waiters MATCH_ANY
+    }
+    return -1;
+}
+
+} // namespace
+
+// futex_waitv, 32-bit guest. Mirrors KThread::futex's WAIT conventions: a
+// delivered signal answers -K_CONTINUE, termination -K_EINTR, and the
+// BOXEDWINE_CONDITION_WAIT macros park/return in single-threaded builds
+// (the registration then survives for the re-executed syscall to claim).
+U32 KThread::futexWaitv(const FutexWaitvEntry* entries, U32 nr, U32 expireTimeInMillies) {
+    struct futex* slots[128] = {};
+    if (!claimWaitvSlots(this, entries, nr, slots)) {
+        if (!waitvWordsMatch(entries, nr)) {
+            return -K_EAGAIN;
+        }
+        if (process->getThreadCount() <= 1) {
+            return -K_EWOULDBLOCK;
+        }
+        BOXEDWINE_CONDITION shared;
+        S32 reg = registerWaitvSlots(this, entries, nr, expireTimeInMillies, slots, shared);
+        if (reg >= 0) {
+            return (U32)reg;
+        }
+        if (reg != -1) {
+            return (U32)reg;
+        }
+        // Re-check the words now that the slots are registered, mirroring
+        // futex64's fresh-wait recheck: a word that moved in the gap means
+        // the condition we meant to wait for is already gone.
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(shared);
+        if (!waitvWordsMatch(entries, nr)) {
+            freeWaitvSlots(slots, nr);
+            return -K_EAGAIN;
+        }
+    }
+    BOXEDWINE_CONDITION shared = slots[0]->cond;
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(shared);
+    const U32 expireMs = slots[0]->expireTimeInMillies;
+    for (U32 i = 0; i < nr; i++) {
+        slots[i]->waiting = true;
+    }
+    while (true) {
+        if (this->pendingSignals) {
+            if (runSignals()) {
+                freeWaitvSlots(slots, nr);
+                return -K_CONTINUE;
+            }
+        }
+        S32 woken = waitvWokenIndex(slots, nr);
+        if (woken >= 0) {
+            freeWaitvSlots(slots, nr);
+            return (U32)woken;
+        }
+        if (expireMs < 0x7FFFFFFF) {
+            S32 diff = (S32)expireMs - KSystem::getMilliesSinceStart();
+            if (diff <= 0) {
+                freeWaitvSlots(slots, nr);
+                return -K_ETIMEDOUT;
+            }
+            BOXEDWINE_CONDITION_WAIT_TIMEOUT(shared, (U32)diff);
+        } else {
+            BOXEDWINE_CONDITION_WAIT(shared);
+        }
+#ifdef BOXEDWINE_MULTI_THREADED
+        if (this->terminating) {
+            freeWaitvSlots(slots, nr);
+            return -K_EINTR;
+        }
+        if (KThread::currentThread()->startSignal) {
+            KThread::currentThread()->startSignal = false;
+            freeWaitvSlots(slots, nr);
+            return -K_CONTINUE;
+        }
+#endif
     }
 }
 
@@ -1233,6 +1418,100 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3)
         return (S64)firstWoke + secondWoke;
     }
     return unsupportedFutexOperation64(op, cmd);
+}
+
+// futex_waitv, 64-bit guest. Mirrors futex64's WAIT conventions: a
+// delivered signal answers -K_EINTR via the 64-bit delivery path, and in
+// single-threaded builds a park answers K_FUTEX64_PARKED with the
+// registration left in place for the re-executed syscall to claim.
+S64 KThread::futexWaitv64(const FutexWaitvEntry* entries, U32 nr, U32 expireTimeInMillies) {
+    struct futex* slots[128] = {};
+    if (!claimWaitvSlots(this, entries, nr, slots)) {
+        if (!waitvWordsMatch(entries, nr)) {
+            return -K_EAGAIN;
+        }
+        if (process->getThreadCount() <= 1) {
+            return -K_EWOULDBLOCK;
+        }
+        BOXEDWINE_CONDITION shared;
+        S32 reg = registerWaitvSlots(this, entries, nr, expireTimeInMillies, slots, shared);
+        if (reg >= 0) {
+            return reg;
+        }
+        if (reg != -1) {
+            return reg;
+        }
+        // Re-check the words now that the slots are registered, mirroring
+        // futex64's fresh-wait recheck: a word that moved in the gap means
+        // the condition we meant to wait for is already gone.
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(shared);
+        if (!waitvWordsMatch(entries, nr)) {
+            freeWaitvSlots(slots, nr);
+            return -K_EAGAIN;
+        }
+    }
+    BOXEDWINE_CONDITION shared = slots[0]->cond;
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(shared);
+    const U32 expireMs = slots[0]->expireTimeInMillies;
+    for (U32 i = 0; i < nr; i++) {
+        slots[i]->waiting = true;
+    }
+#ifdef BOXEDWINE_MULTI_THREADED
+    while (true) {
+        if (this->pendingSignals) {
+            bool delivered;
+            if (this->cpu64) {
+                delivered = this->cpu64->interruptSyscallWithSignal(false);
+            } else {
+                delivered = runSignals();
+            }
+            if (delivered) {
+                freeWaitvSlots(slots, nr);
+                return -K_EINTR;
+            }
+        }
+        S32 woken = waitvWokenIndex(slots, nr);
+        if (woken >= 0) {
+            freeWaitvSlots(slots, nr);
+            return woken;
+        }
+        if (expireMs < 0x7FFFFFFF) {
+            S32 diff = (S32)expireMs - KSystem::getMilliesSinceStart();
+            if (diff <= 0) {
+                freeWaitvSlots(slots, nr);
+                return -K_ETIMEDOUT;
+            }
+            shared->waitWithTimeout(boxedWineCriticalSection, this->cpu64 && (U32)diff > 200 ? 200 : (U32)diff);
+        } else if (this->cpu64) {
+            shared->waitWithTimeout(boxedWineCriticalSection, 200);
+        } else {
+            shared->wait(boxedWineCriticalSection);
+        }
+        if (this->terminating) {
+            freeWaitvSlots(slots, nr);
+            return -K_EINTR;
+        }
+    }
+#else
+    {
+        S32 woken = waitvWokenIndex(slots, nr);
+        if (woken >= 0) {
+            freeWaitvSlots(slots, nr);
+            return woken;
+        }
+        if (expireMs < 0x7FFFFFFF) {
+            S32 diff = (S32)expireMs - KSystem::getMilliesSinceStart();
+            if (diff <= 0) {
+                freeWaitvSlots(slots, nr);
+                return -K_ETIMEDOUT;
+            }
+            shared->waitWithTimeout((U32)diff);
+        } else {
+            shared->wait();
+        }
+        return K_FUTEX64_PARKED;
+    }
+#endif
 }
 #endif
 

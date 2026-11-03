@@ -1,0 +1,21 @@
+; FD-78 guard fixture (prune-dead-storage-image-types): a format-less
+; storage image type referenced by NOTHING except an OpConstant whose
+; VALUE equals the type's id (%6). The prune's liveness scan
+; counted raw words, constant values included, so the type survived
+; and its stray capability stayed; the operand-aware scan
+; (operandRefIds) does not count a constant's value words.
+OpCapability Shader
+OpCapability StorageImageWriteWithoutFormat
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%float = OpTypeFloat 32
+%uint = OpTypeInt 32 0
+%img = OpTypeImage %float 2D 0 0 0 2 Unknown
+%c = OpConstant %uint 6
+%main = OpFunction %void None %fn
+%l = OpLabel
+OpReturn
+OpFunctionEnd

@@ -316,6 +316,11 @@ export function idOperandUseIndex(byId, ins, id) {
     }
     case 16:                  // OpExecutionMode: entry id; mode + params are literals
       return hitAt(0);
+    case 331: {               // OpExecutionModeId: entry id, mode literal,
+                              // then id parameters (constants)
+      const h = hitAt(0); if (h >= 0) return h;
+      return scanIds(2, n);
+    }
     case 71:                  // OpDecorate: target id; decoration + params are literals
       return hitAt(0);
     case 72:                  // OpMemberDecorate: struct id; member / decoration / values are literals
@@ -418,6 +423,66 @@ export function idOperandUseIndex(byId, ins, id) {
       return scanIds(start, n);
     }
   }
+}
+// operandRefIds(byId, ins): the enumerating sibling of
+// idOperandUseIndex -- the set of id VALUES `ins` references in
+// id-typed operand positions, under exactly the walker's per-op
+// table (a value is in the set iff the walker finds it). The
+// module-wide liveness sweeps build their live sets from this
+// enumeration instead of scanning raw words: a literal word that
+// happens to equal a swept id -- an ExtInst instruction number, a
+// VectorShuffle component, a CompositeExtract / CompositeInsert
+// index, an OpSwitch case literal, an OpLine line number, the
+// leading literals of OpFunction / OpVariable, an OpArrayLength
+// index, a storage-class word -- is not a reference, and counting
+// it keeps a dead type or variable alive one layer past its true
+// blocker (FD-78: FD-70's literal-reference class, closed at every
+// remaining position the FD-70 / FD-87 fixes named). The resultType
+// word is NOT included: each sweep counts it under its own
+// discipline, as before. Unlisted opcodes keep the walker's
+// default (every operand word), so the enumeration is never
+// narrower than the historical scan for an unmodelled layout.
+export function operandRefIds(byId, ins) {
+  const refs = new Set();
+  for (let k = 0; k < ins.words.length; k++) {
+    const v = ins.words[k];
+    if (!refs.has(v) && idOperandUseIndex(byId, ins, v) >= 0) refs.add(v);
+  }
+  return refs;
+}
+// --- dependency-safe splice position for synthesized definitions --------
+// SPIR-V requires a definition to precede every use, but nothing groups
+// the type section: a valid module may define a type AFTER its first
+// global variable (the captured Godot module defines OpTypeBool there).
+// A rule that splices synthesized types/constants at the first-variable
+// anchor therefore emits uses ahead of their definitions whenever a
+// referenced type sits past that anchor, and spirv-val rejects the
+// output ('requires a previous definition', FD-92). defsSplicePos
+// returns the earliest position at or after `anchor` that still follows
+// every module definition the new instructions reference (grammar-aware,
+// via idOperandUseIndex; a constant's resultType is its type word). Ids
+// the block itself defines are the caller's to order and do not
+// constrain the position. The position only ever moves later, and never
+// needs to pass the first function (every referenced definition precedes
+// it), so output that was valid before is byte-identical.
+function defsSplicePos(mod, adds, anchor) {
+  const defAt = new Map(), byId = new Map();
+  mod.insns.forEach((ins, idx) => {
+    if (ins.resultId != null && !defAt.has(ins.resultId)) { defAt.set(ins.resultId, idx); byId.set(ins.resultId, ins); }
+  });
+  const own = new Set();
+  for (const ins of adds) if (ins.resultId != null) own.add(ins.resultId);
+  let pos = anchor;
+  const after = id => {
+    if (id == null || own.has(id)) return;
+    const at = defAt.get(id);
+    if (at != null && at + 1 > pos) pos = at + 1;
+  };
+  for (const ins of adds) {
+    after(ins.resultType);
+    for (const w of new Set(ins.words)) if (idOperandUseIndex(byId, ins, w) >= 0) after(w);
+  }
+  return pos;
 }
 // --- R1: split combined SampledImage uniforms -------------------------------
 // A UniformConstant variable of OpTypeSampledImage becomes an image uniform
@@ -1087,7 +1152,8 @@ function stripPointBuiltins(mod, log) {
     entry.words = entry.words.slice(0, start).concat(entry.words.slice(start).filter(id => !ids.has(id)));
   }
   const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constants);
+  const at = firstVariable < 0 ? mod.insns.length : firstVariable;
+  mod.insns.splice(defsSplicePos(mod, constants, at), 0, ...constants);
   log.push(`spirvfix: stripped ${decorations.filter(i => i.words[2] === 1).length} PointSize output(s) and replaced ${pointLoadCount} point builtin load(s)`);
   return true;
 }
@@ -1269,14 +1335,18 @@ function lowerMidShaderDiscards(mod, log, protectedKills = new Set()) {
   const localVariables = new Map();
   if (sites.length) for (const id of entryFunctions) localVariables.set(id, newId());
 
-  if (boolTypeAdd) {
-    const firstConstant = mod.insns.findIndex(i => [41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 59, 54].includes(i.op));
-    mod.insns.splice(firstConstant < 0 ? mod.insns.length : firstConstant, 0, boolTypeAdd);
+  // The synthesized globals form one dependency-ordered block (the bool
+  // type, its constants, pointers to it). A module may define a
+  // referenced type after its first global variable -- the captured
+  // Godot module defines OpTypeBool there -- so the block is placed
+  // behind every module definition it references; splicing the pointer
+  // types at the first-variable anchor emitted them ahead of OpTypeBool
+  // and the output failed spirv-val (FD-92).
+  const globalAdds = [...(boolTypeAdd ? [boolTypeAdd] : []), ...constantAdds, ...typeAdds];
+  if (globalAdds.length) {
+    const anchor = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
+    mod.insns.splice(defsSplicePos(mod, globalAdds, anchor < 0 ? mod.insns.length : anchor), 0, ...globalAdds);
   }
-  const firstVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstVariable < 0 ? mod.insns.length : firstVariable, 0, ...constantAdds);
-  const firstGlobalVariable = mod.insns.findIndex(i => i.op === Op.Variable || i.op === Op.Function);
-  mod.insns.splice(firstGlobalVariable < 0 ? mod.insns.length : firstGlobalVariable, 0, ...typeAdds);
   const firstFunction = mod.insns.findIndex(i => i.op === Op.Function);
   mod.insns.splice(firstFunction < 0 ? mod.insns.length : firstFunction, 0, privateVariable);
 
@@ -1686,7 +1756,11 @@ function pruneSpecializedAliases(mod, log) {
   for (const ins of mod.insns) {
     if (ins.op === Op.Function) inFunc = true;
     if (ins.op === Op.FunctionEnd) inFunc = false;
-    if (inFunc) for (const word of ins.words.slice(ins.resultType ? 2 : 0)) referenced.add(word);
+    // FD-78: operand-aware (operandRefIds) -- a literal word inside
+    // a function body (a VectorShuffle component, an OpLine line
+    // number, the OpFunction control mask) equal to a variable's id
+    // is not a use of the variable.
+    if (inFunc) for (const r of operandRefIds(byId, ins)) referenced.add(r);
   }
   const unused = new Set(mod.insns.filter(i => i.op === Op.Variable && i.words[2] === SC.UniformConstant
     && !referenced.has(i.resultId)).map(i => i.resultId));
@@ -2621,6 +2695,8 @@ function sweepTexelOrphans(mod, converted) {
   // names do not reference, header/directive words are literals or
   // enums, and the constant family's operand words are literal values
   // (its resultType word still counts).
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
   const referencedOutside = id => {
     for (const ins of mod.insns) {
       if (ins.resultId != null && closure.has(ins.resultId)) continue;
@@ -2630,8 +2706,11 @@ function sweepTexelOrphans(mod, converted) {
       if (ins.resultType === id) return true;
       if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
           ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 || ins.op === 52) continue;
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) if (ins.words[k] === id) return true;
+      // FD-78: operand-aware (operandRefIds). This scan previously
+      // also counted OpTypeInt / OpTypeFloat width words and the
+      // memory-access family's trailing group; the walker's table
+      // bounds those positions too.
+      if (operandRefIds(byId, ins).has(id)) return true;
     }
     return false;
   };
@@ -2779,7 +2858,13 @@ export function texelPointersToStorageBuffers(mod, log) {
   mod.insns = mod.insns.filter(i => !drop.has(i));
   if (addTypes.length) {
     const atVar = mod.insns.findIndex(i => i.op === Op.Variable);
-    mod.insns.splice(atVar < 0 ? mod.insns.length : atVar, 0, ...addTypes);
+    // The first variable need not follow every type (FD-92): keep the
+    // synthesized types behind the module definitions they reference.
+    // Each referenced element type precedes the converted variable whose
+    // own pointer chain names it; the block can pass an earlier converted
+    // variable only when a module interleaves fresh type definitions
+    // between two converted variables, a shape no corpus module carries.
+    mod.insns.splice(defsSplicePos(mod, addTypes, atVar < 0 ? mod.insns.length : atVar), 0, ...addTypes);
   }
   r15SpliceAdditions(mod, addAnnot, [], addNames);
   sweepTexelOrphans(mod, converted);
@@ -4831,6 +4916,7 @@ export function specializeDescriptorArrays(mod, log) {
   let swept = true;
   while (swept) {
     swept = false;
+    const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
     const live = new Set();
     for (const ins of mod.insns) {
       if (ins.op === Op.Decorate || ins.op === Op.MemberDecorate || ins.op === Op.Name || ins.op === Op.MemberName) continue;
@@ -4859,28 +4945,24 @@ export function specializeDescriptorArrays(mod, log) {
       // OpTypeInt / OpTypeFloat carry only literals (width, signedness)
       // after their result id -- never references, for the same reason.
       if (ins.op === 21 || ins.op === 22) continue;
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      // The memory-access family (OpLoad / OpStore / OpCopyMemory /
-      // OpCopyMemorySized) appends a MemoryAccess operand group -- a
-      // literal mask word, an Aligned literal, scope ids -- after its
-      // pointer/object/size ids. Those trailing words are not type
-      // references either: counting them lets an Aligned literal equal
-      // to a dead type's id keep that type alive, the same failure
-      // shape as the constant family above (captured Godot modules
-      // godot-vs-4000ddfd359efb05 and godot-vs-ebac7e2d70a20d62: an
-      // OpLoad Aligned 16 through a root-descriptor pointer kept the
-      // specialized-away descriptor runtime-array type %16 alive, so
-      // the capability strip never ran and the post-specialization
-      // texel conversion still saw the image type as array-owned).
-      // The group's scope ids name constants, never the array /
-      // pointer types this sweep deletes, so bounding the scan at the
-      // group start loses no real reference. Mirrored in the bridge
-      // audit's skip5302 simulation.
-      let end = ins.words.length;
-      if (ins.op === Op.Load) end = Math.min(end, start + 1);
-      else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
-      else if (ins.op === 64) end = Math.min(end, start + 3);
-      for (let k = start; k < end; k++) live.add(ins.words[k]);
+      // FD-78: the scan is operand-aware (operandRefIds, on the
+      // idOperandUseIndex table) instead of a raw word scan bounded
+      // by hand. The hand bounds this replaces -- the memory-access
+      // family's trailing group (an OpLoad Aligned 16 kept the
+      // specialized-away type %16 alive in the captured Godot
+      // modules godot-vs-4000ddfd359efb05 and
+      // godot-vs-ebac7e2d70a20d62) -- are the walker's cases for
+      // those ops, and the same enumeration now also bounds every
+      // other literal position the raw scan counted: the ExtInst
+      // instruction number, VectorShuffle components,
+      // CompositeExtract / CompositeInsert indices, OpSwitch case
+      // literals, OpLine words, the leading literals of OpFunction
+      // / OpVariable, the OpArrayLength index and storage-class
+      // words. The group's scope ids name constants, never the
+      // array / pointer types this sweep deletes, so counting them
+      // as references (the walker does) loses nothing here.
+      // Mirrored in the bridge audit's skip5302 simulation.
+      for (const r of operandRefIds(byId, ins)) live.add(r);
     }
     const dead = new Set();
     for (const ins of mod.insns) {
@@ -4984,6 +5066,7 @@ function pruneDeadStorageImageTypes(mod, log) {
     if (ins.op === Op.TypeImage && ins.words[6] === 2 && ins.words[7] === 0) candidates.push(ins.resultId);
   }
   if (!candidates.length) return false;
+  const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
   const live = new Set();
   const wrappers = new Map(); // wrapper type id -> wrapped (child) type id
   for (const ins of mod.insns) {
@@ -4997,8 +5080,13 @@ function pruneDeadStorageImageTypes(mod, log) {
         ins.op === Op.EntryPoint || ins.op === Op.ExecutionMode || ins.op === Op.Capability) continue;
     if (ins.op === Op.TypeImage || wrappers.has(ins.resultId ?? -1)) continue; // types are users only through the wrapper fixpoint below
     if (ins.resultType != null) live.add(ins.words[0]);
-    const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-    for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+    // FD-78: operand-aware (operandRefIds). This scan previously
+    // counted every operand word -- constant values, type widths
+    // and the memory-access group included -- so a literal equal to
+    // a candidate's id kept the format-less type (and its stray
+    // capabilities) alive exactly as in the orphan sweep's
+    // FD-70 failure shape.
+    for (const r of operandRefIds(byId, ins)) live.add(r);
   }
   let grew = true;
   while (grew) {
@@ -5260,6 +5348,7 @@ export function rewriteRootDescriptors(mod, log) {
   let grew = true;
   while (grew) {
     grew = false;
+    const byId = new Map(mod.insns.filter(i => i.resultId != null).map(i => [i.resultId, i]));
     const live = new Set();
     for (const ins of mod.insns) {
       if (drop.has(ins)) continue;
@@ -5270,8 +5359,11 @@ export function rewriteRootDescriptors(mod, log) {
       // alone). The labels of dropped ids are removed below.
       if (wordModule && (ins.op === 5 || ins.op === 6)) continue;
       if (ins.resultType != null) live.add(ins.words[0]);
-      const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
-      for (let k = start; k < ins.words.length; k++) live.add(ins.words[k]);
+      // FD-78: operand-aware (operandRefIds) -- a literal word
+      // (an OpLine line number, a VectorShuffle component, a
+      // constant value in a surviving instruction) equal to a cone
+      // instruction's id is not a use of the cone instruction.
+      for (const r of operandRefIds(byId, ins)) live.add(r);
     }
     for (const ins of mod.insns) {
       if (drop.has(ins) || !sweepOps.has(ins.op) || ins.resultId == null) continue;
@@ -5347,6 +5439,152 @@ function stripDeadUndefs(mod, log) {
   return true;
 }
 
+
+// R18 "strip-dead-descriptors" (FD-87): vkd3d-proton / dxil-spirv emit a
+// module-wide descriptor header -- every root-signature resource is
+// declared in every module, used or not. A descriptor variable
+// (DescriptorSet/Binding-decorated, in UniformConstant / Uniform /
+// StorageBuffer storage) that no instruction references is dead weight
+// the translation stack cannot carry: its runtime array keeps the
+// RuntimeDescriptorArray declaration alive and a Dim=Buffer element
+// type keeps SampledBuffer alive, so the bridge audit refuses the
+// module for resources it never touches (captured Godot module
+// godot-fs-f1b4e0027d98e2e4: a fragment shader whose body reads only
+// push constants, refused for SampledBuffer + RuntimeDescriptorArray
+// over a texel heap array, an SSBO-offsets block and a bindless-CBV
+// array it never accesses). The variable, its decorations and its name
+// are deleted, the entry-point interface listing is spliced the way
+// R15a splices it, and a dead-type sweep then removes the type
+// instructions the deletion orphaned (pointer / array / runtime-array
+// / struct / image / sampler / sampled-image), iterated to a fixpoint:
+// the struct cascade matters, because a dead block variable's member
+// runtime array is referenced by its struct type, which is referenced
+// only by the dead variable's pointer type. When no runtime-array type
+// survives, the RuntimeDescriptorArray declaration is stripped (the
+// condition R15a's tail applies); SampledBuffer / ImageBuffer are left
+// to R12X, whose no-Dim=Buffer-type condition the sweep now satisfies.
+// Deadness is operand-aware (idOperandUseIndex) over the whole module
+// with the metadata families skipped: any genuine use -- a load, a
+// chain, a copy, a phi, a call argument -- keeps the variable, so the
+// failure mode of a wrong verdict is a continued refusal, never a
+// mistranslation. The bridge audit mirrors the verdict: its array
+// analysis treats a zero-use descriptor array as removed, and the
+// texel mirrors do the same (FD-87).
+const R18_METADATA_OPS = new Set([2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 15, 16, 17, 71, 72, 73, 74, 75]);
+const R18_DEAD_TYPE_OPS = new Set([25, 26, 27, 28, 29, 30, 32]);
+// Id references of one instruction under the orphan-sweep discipline
+// (the specializeDescriptorArrays sweep's scan, with the OpExtInst
+// instruction-number word bounded the same way, and the leading
+// literals of OpVariable / OpFunction bounded to their single id
+// operand): the resultType word counts; the constant family's and
+// OpTypeInt / OpTypeFloat's operand words are literals; the
+// memory-access family's trailing group is bounded at its start.
+function r18RefIds(ins) {
+  if (R18_METADATA_OPS.has(ins.op)) return [];
+  const refs = [];
+  if (ins.resultType != null) refs.push(ins.words[0]);
+  if (ins.op === 41 || ins.op === 42 || ins.op === 43 || ins.op === 44 ||
+      ins.op === 45 || ins.op === 46 || ins.op === 50 || ins.op === 51 ||
+      ins.op === 52) return refs;
+  if (ins.op === 21 || ins.op === 22) return refs;
+  const start = ins.resultType != null ? 2 : ins.resultId != null ? 1 : 0;
+  if (ins.op === Op.Function) { if (ins.words.length > start + 1) refs.push(ins.words[start + 1]); return refs; }
+  let end = ins.words.length;
+  if (ins.op === Op.Load) end = Math.min(end, start + 1);
+  else if (ins.op === Op.Store || ins.op === 63) end = Math.min(end, start + 2);
+  else if (ins.op === 64) end = Math.min(end, start + 3);
+  const scanStart = ins.op === Op.Variable ? start + 1 : start;
+  for (let k = scanStart; k < end; k++) {
+    if (ins.op === 12 && k === 3) continue; // OpExtInst instruction number: a literal
+    refs.push(ins.words[k]);
+  }
+  return refs;
+}
+function stripDeadDescriptors(mod, log) {
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  const decorated = new Set();
+  for (const ins of mod.insns)
+    if (ins.op === Op.Decorate && (ins.words[1] === Dec.DescriptorSet || ins.words[1] === Dec.Binding)) decorated.add(ins.words[0]);
+  const deadVars = [];
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.Variable || !decorated.has(ins.resultId)) continue;
+    const sc = ins.words[2];
+    if (sc !== 0 && sc !== 2 && sc !== 12) continue; // UniformConstant / Uniform / StorageBuffer
+    let used = false;
+    for (const u of mod.insns) {
+      if (u === ins || R18_METADATA_OPS.has(u.op)) continue;
+      if (idOperandUseIndex(byId, u, ins.resultId) >= 0) { used = true; break; }
+    }
+    if (!used) deadVars.push(ins);
+  }
+  if (!deadVars.length) return false;
+  const deadIds = new Set(deadVars.map(v => v.resultId));
+  const drop = new Set(deadVars);
+  for (const ins of mod.insns)
+    if ((ins.op === Op.Decorate || ins.op === Op.Name) && deadIds.has(ins.words[0])) drop.add(ins);
+  mod.insns = mod.insns.filter(i => !drop.has(i));
+  if ((mod.header?.version ?? 0) >= 0x00010400) {
+    for (const ins of mod.insns) {
+      if (ins.op !== Op.EntryPoint) continue;
+      const tail = r15EntryPointTail(ins);
+      ins.words = ins.words.slice(0, tail).concat(ins.words.slice(tail).filter(id => !deadIds.has(id)));
+    }
+  }
+  // Dead-type sweep, iterated to a fixpoint: a type dies when no
+  // surviving instruction references it; decorations and names
+  // targeting a dead type die with it.
+  let swept = true;
+  while (swept) {
+    swept = false;
+    const live = new Set();
+    for (const ins of mod.insns) for (const r of r18RefIds(ins)) live.add(r);
+    const dead = new Set();
+    for (const ins of mod.insns)
+      if (R18_DEAD_TYPE_OPS.has(ins.op) && ins.resultId != null && !live.has(ins.resultId)) dead.add(ins.resultId);
+    if (dead.size) {
+      mod.insns = mod.insns.filter(i => {
+        if (i.resultId != null && dead.has(i.resultId) && R18_DEAD_TYPE_OPS.has(i.op)) return false;
+        if ((i.op === Op.Decorate || i.op === Op.MemberDecorate || i.op === Op.Name || i.op === Op.MemberName) && dead.has(i.words[0])) return false;
+        return true;
+      });
+      swept = true;
+    }
+  }
+  if (!mod.insns.some(i => i.op === Op.TypeRuntimeArray)) {
+    mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 5302));
+  }
+  for (const v of deadVars) log.push('spirvfix: stripped dead descriptor variable %' + v.resultId + ' (declared, never referenced)');
+  return true;
+}
+
+// R19 "strip-stray-sampled-image-array-dynamic-indexing" (FD-87): the
+// SampledImageArrayDynamicIndexing capability (29) exists only to
+// license dynamically indexing an array of images / sampled images.
+// naga rejects the bare declaration outright, so a module whose image
+// arrays have all been specialized away (R15a) or stripped as dead
+// (R18) -- or which never carried one, the dxbc-spirv module-header
+// form -- still dies at translation for a construct it no longer
+// contains. The declaration is stripped exactly when no OpTypeArray /
+// OpTypeRuntimeArray over an image or sampled-image element type
+// survives; a surviving image array keeps the declaration, and the
+// bridge audit keeps the named refusal (mirrored: the audit admits 29
+// under the same survival condition). Fixed-size image arrays are NOT
+// served by this rule: they survive, and keep the refusal.
+function stripStraySampledImageArrayDynamicIndexing(mod, log) {
+  if (!mod.insns.some(i => i.op === Op.Capability && i.words[0] === 29)) return false;
+  const byId = new Map();
+  for (const ins of mod.insns) if (ins.resultId != null) byId.set(ins.resultId, ins);
+  for (const ins of mod.insns) {
+    if (ins.op !== Op.TypeArray && ins.op !== Op.TypeRuntimeArray) continue;
+    const elem = byId.get(ins.words[1]);
+    if (elem && (elem.op === Op.TypeImage || elem.op === Op.TypeSampledImage)) return false;
+  }
+  mod.insns = mod.insns.filter(i => !(i.op === Op.Capability && i.words[0] === 29));
+  log.push('spirvfix: stripped stray SampledImageArrayDynamicIndexing capability (no image array survives)');
+  return true;
+}
+
 export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const log = [], applied = [];
@@ -5356,6 +5594,9 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   } catch (e) {
     return { bytes: u8, applied, log: ['parse failed: ' + (e.message || e)] };
   }
+  try {
+    if (stripDeadDescriptors(mod, log)) applied.push('strip-dead-descriptors');
+  } catch (e) { log.push('R18 failed: ' + (e.message || e)); }
   try {
     if (texelPointersToStorageBuffers(mod, log)) applied.push('texel-pointer-to-storage-buffer');
     if (texelBuffersTo2D(mod, log)) applied.push('texel-buffer-to-2d');
@@ -5458,6 +5699,9 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
     if (splitSpecializedCloneBindings(mod, log)) applied.push('specialized-binding-split');
   } catch (e) { log.push('R15a-split failed: ' + (e.message || e)); }
   try {
+    if (stripStraySampledImageArrayDynamicIndexing(mod, log)) applied.push('strip-stray-sampled-image-array-dynamic-indexing');
+  } catch (e) { log.push('R19 failed: ' + (e.message || e)); }
+  try {
     if (pruneDeadStorageImageTypes(mod, log)) applied.push('prune-dead-storage-image-types');
   } catch (e) { log.push('R14-prune failed: ' + (e.message || e)); }
   if (!applied.length) return { bytes: u8, applied, log };
@@ -5468,4 +5712,4 @@ export function applySpirvFix(bytes, { specOverrides, storageFormats } = {}) {
   }
 }
 
-export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types'];
+export const REWRITES = ['texel-pointer-to-storage-buffer', 'texel-buffer-to-2d', 'storage-texel-buffer-to-2d', 'strip-unused-texel-buffer-capabilities', 'quad-ops-to-shuffle', 'split-combined-sampler', 'fold-spec-constants', 'strip-point-builtins', 'tail-demote-to-kill', 'lower-mid-shader-discard', 'replace-draw-parameters', 'strip-draw-parameters', 'strip-index-decorations', 'strip-float-controls', 'strip-unused-physical-storage-buffer', 'prune-specialized-aliases', 'flat-integer-varyings', 'fragment-layer-to-zero', 'uniform-block-to-storage', 'storage-image-format', 'descriptor-array-specialize', 'root-descriptor-bda', 'strip-dead-undefs', 'specialized-binding-split', 'prune-dead-storage-image-types', 'strip-dead-descriptors', 'strip-stray-sampled-image-array-dynamic-indexing'];

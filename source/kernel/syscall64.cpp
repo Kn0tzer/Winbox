@@ -218,6 +218,8 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_process_vm_writev 311
 #define X64_SYS_pidfd_send_signal 424
 #define X64_SYS_pidfd_open        434
+#define X64_SYS_pidfd_getfd       438
+#define X64_SYS_futex_waitv       449
 #define X64_SYS_membarrier        324
 #define X64_SYS_timerfd_create    283
 #define X64_SYS_inotify_init      253
@@ -255,6 +257,8 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_readv             19
 #define X64_SYS_preadv            295
 #define X64_SYS_preadv2           327
+#define X64_SYS_pwritev           296
+#define X64_SYS_pwritev2          328
 #define X64_SYS_select            23
 #define X64_SYS_chmod             90
 #define X64_SYS_fchmod            91
@@ -466,14 +470,55 @@ static void ripSamplerNotePeRead(CPU64* cpu, const KFileDescriptorPtr& fdesc,
     if (ripModules) ripSamplerNoteModule((int)cpu->thread->process->id, dst, len, path.c_str());
 }
 
+// FD-97: the number of leading bytes of the guest range [addr, addr+len)
+// that are readable, page by page, under the same predicate the access
+// check inside KMemory64::memcpyFromGuest applies (the page is mapped
+// and carries READ; pages mapped write-only carry READ too under the
+// x86 write-implies-read flag rule, so they count as readable exactly
+// as they do for the host's copy_from_user and for the guest's own
+// loads). memcpyFromGuest zero-fills its whole destination when that
+// check fails for any part of the range; the single-call write paths
+// use this prefix to answer like the host instead — a short count for
+// a readable prefix, EFAULT when no byte is readable.
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len);
+
 static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
+    // FD-93: the host validates the descriptor and its mode ahead
+    // of the zero-count return (measured on the 6.17 host kernel:
+    // write on a bad or read-only descriptor answers EBADF even
+    // with count 0). The body's own gate below is reached only
+    // after the buffer copy and answered EINVAL; this call used
+    // to return a silent 0 for both wrong shapes. The fd 1/2
+    // carve-out matches the body's: a missing descriptor there is
+    // the console tee's business, not an error.
+    if (cpu->thread && cpu->thread->process) {
+        KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+        if (!fdesc) {
+            if (fd != 1 && fd != 2) return (U64)-K_EBADF;
+        } else if (!fdesc->canWrite()) {
+            return (U64)-K_EBADF;
+        }
+    }
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large writes for any
     // caller that doesn't loop on a short return). 256MB is plenty for the temp
     // buffer while still bounding a pathological count.
     if (count > (256ULL << 20)) count = 256ULL << 20;
+    // FD-97: memcpyFromGuest zero-fills its whole destination when any
+    // part of the guest range fails its access check, so a write from an
+    // unreadable address used to land fabricated zero bytes and report
+    // success. The host faults the copy at the first unreadable page: a
+    // readable prefix is written as a short count, and EFAULT is
+    // answered only when no byte is readable (measured on the host
+    // kernel — test-results/fd97/hostref-fd97). Write only the readable
+    // prefix; the EFAULT answer itself is returned at the write point
+    // below, after the descriptor and mode answers, matching the host's
+    // order (a bad fd with a bad buffer answers EBADF).
+    const U64 readable = sys_guestReadablePrefix64(cpu->memory, buf, count);
+    const bool badBuffer = readable == 0;
+    count = readable;
     std::vector<U8> buffer((size_t)count + 1);
-    cpu->memory->memcpyFromGuest(buffer.data(), buf, count);
+    if (count) cpu->memory->memcpyFromGuest(buffer.data(), buf, count);
     buffer[count] = 0;
     if (fd == 1 || fd == 2) {
         // Tee stdout/stderr to host console so ld-linux + glibc diagnostics
@@ -622,8 +667,9 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
         return (U64)-9; // -EBADF
     }
     if (!fdesc->canWrite()) {
-        return (U64)-K_EINVAL;
+        return (U64)-K_EBADF; // FD-93: host's wrong-mode answer (was -K_EINVAL)
     }
+    if (badBuffer) return (U64)-K_EFAULT;
     U32 wrote = fdesc->kobject->writeNative(buffer.data(), (U32)count);
     // A connected stream socket whose peer object is TRANSIENTLY unreferenced
     // under boot-time fd-table churn returns -K_EWOULDBLOCK (see
@@ -1409,7 +1455,10 @@ static U64 sys_read64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canRead()) return (U64)-K_EINVAL;
+    // FD-84: a descriptor that cannot be read answers -EBADF on
+    // the host, ahead of the zero-count return (measured on the
+    // 6.17 host kernel; see sys_pread64Impl for the family order).
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Clamp only to a sane ceiling (was a 1MB cap — too small: wine's PE loader
     // reads whole multi-MB sections in one read() and doesn't loop on a short
@@ -1519,6 +1568,7 @@ static U64 sys_signalfd64(CPU64* cpu, S32 fdNumber, U64 maskAddress, U64 maskSiz
     } else {
         auto signal = std::make_shared<KSignal>();
         descriptor = process->allocFileDescriptor(signal, K_O_RDONLY, 0, -1, 0);
+        if (!descriptor) return (U64)-K_EMFILE;
     }
     if (flags & K_O_CLOEXEC) descriptor->descriptorFlags |= FD_CLOEXEC;
     else if (fdNumber >= 0) descriptor->descriptorFlags &= ~FD_CLOEXEC;
@@ -1786,7 +1836,14 @@ static U64 sys_pread64Impl(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset, b
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canRead()) return (U64)-K_EINVAL;
+    // FD-84: the host's validation order for the positioned-read
+    // family, measured on the 6.17 host kernel: a negative offset
+    // answers -EINVAL ahead of the descriptor's mode, and a
+    // descriptor that cannot be read answers -EBADF ahead of the
+    // zero-count return. (preadv validates its own offset first;
+    // the check here is what gives plain pread64 the same order.)
+    if ((S64)offset < 0) return (U64)-K_EINVAL;
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Do NOT cap `count`: wine's PE loader preads an ENTIRE section in one call
     // (HxD's .text is ~5.3MB) and does NOT loop on a short return, so a small cap
@@ -1847,39 +1904,57 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     return sys_pread64Impl(cpu, fd, buf, count, offset, true);
 }
 
-// preadv / preadv2 (FD-80) -- vectored positioned reads over the same
-// positioned-read core as pread64. Host behaviour measured on the
-// box's 6.17 kernel: segments fill in order at successive offsets and
-// the file position does not move; a short read ends the walk;
-// IN_ACCESS is generated exactly once per successful call, including
-// calls that return 0 (at EOF, or with iovcnt 0) -- the vectored path
-// differs from pread/read there, which stay silent when no bytes
-// move. Any negative offset (including -1: there is no readv
-// fallback), a negative iovcnt, or iovcnt > IOV_MAX is EINVAL; an
-// unknown preadv2 flag bit is EOPNOTSUPP; every defined RWF flag
-// (HIPRI/DSYNC/SYNC/NOWAIT/APPEND, mask 0x1f) is accepted on a read.
+// preadv / preadv2 (FD-80; FD-99/FD-100) -- vectored positioned
+// reads over the same positioned-read core as pread64. Host
+// behaviour measured on the box's 6.17 kernel: segments fill in
+// order at successive offsets and the file position does not move;
+// a short read ends the walk; IN_ACCESS is generated exactly once
+// per successful call, including calls that return 0 (at EOF, or
+// with iovcnt 0) -- the vectored path differs from pread/read
+// there, which stay silent when no bytes move. Validation order:
+// a negative offset is EINVAL ahead of the descriptor check --
+// except that preadv2's offset -1 is the file-position mode (read
+// at the current position and advance it, as pwritev2's -1 does);
+// the descriptor check (EBADF) precedes the iovcnt range check
+// (EINVAL outside [0, IOV_MAX]) and the iovec array check (EFAULT
+// for a null or unmapped array with iovcnt > 0); the preadv2 flags
+// check runs LAST (EOPNOTSUPP for bits outside the defined RWF
+// mask 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/NOAPPEND -- every
+// defined flag is accepted on a read).
 static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPreadv2) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    bool useFilePos = isPreadv2 && offset == -1;
+    if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (isPreadv2 && (flags & ~0x1FULL)) return (U64)-K_EOPNOTSUPP;
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check -- a descriptor that cannot be read
+    // answers -EBADF ahead of the iovcnt range and iovec array
+    // checks, as the host's does (measured for FD-98/FD-84);
+    // without this gate the answer deferred to the walk's
+    // per-segment core, behind both checks.
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
-    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
-    if (offset < 0) return (U64)-K_EINVAL;
-    if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    if (isPreadv2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    S64 basePos = useFilePos ? fdesc->kobject->getPos() : offset;
     U64 total = 0;
     S64 err = 0;
     for (S32 i = 0; i < cnt; i++) {
-        U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
+        U64 segBase = cpu->memory->readq(iov + (U64)i * 16 + 0);
         U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
         if (len == 0) continue;
-        S64 got = (S64)sys_pread64Impl(cpu, fd, base, len, (U64)(offset + (S64)total), false);
+        S64 got = (S64)sys_pread64Impl(cpu, fd, segBase, len, (U64)(basePos + (S64)total), false);
         if (got < 0) { err = got; break; }
         total += (U64)got;
         if ((U64)got < len) break; // short read: EOF / drained
     }
     if (total == 0 && err < 0) return (U64)err;
+    if (useFilePos && total > 0) {
+        fdesc->kobject->seek(basePos + (S64)total);
+    }
     // Exactly one IN_ACCESS per successful call (see the header
     // comment); the per-segment reads above ran with notification
     // suppressed so a multi-segment read cannot stack them up.
@@ -1896,12 +1971,25 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
 // save-pos/seek/write/restore over the KObject layer, mirroring sys_pread64.
 static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    // FD-93: the host's validation order for the positioned-write
+    // family, measured on the 6.17 host kernel: a negative offset
+    // answers -EINVAL ahead of both the descriptor and the mode
+    // answers (it does so even for a bad descriptor), and the
+    // mode answer is -EBADF.
+    if ((S64)offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
-    if (!fdesc->canWrite()) return (U64)-K_EINVAL;
+    if (!fdesc->canWrite()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large pwrites).
     if (count > (256ULL << 20)) count = 256ULL << 20;
+    // FD-97: the same fabricated-zeros trait as sys_write64 — write
+    // only the guest-readable prefix, and answer EFAULT when no byte
+    // is readable. The descriptor and mode answers above keep their
+    // order ahead of the fault answer, as on the host.
+    const U64 readable = sys_guestReadablePrefix64(cpu->memory, buf, count);
+    if (readable == 0) return (U64)-K_EFAULT;
+    count = readable;
     std::vector<U8> tmp((size_t)count);
     cpu->memory->memcpyFromGuest(tmp.data(), buf, (U32)count);
     S64 savedPos = fdesc->kobject->getPos();
@@ -1909,6 +1997,73 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     U32 wrote = fdesc->kobject->writeNative(tmp.data(), (U32)count);
     fdesc->kobject->seek(savedPos);
     return (U64)(S64)(S32)wrote;
+}
+
+
+// pwritev / pwritev2 (FD-94) -- vectored positioned writes over the
+// same positioned-write core as pwrite64. Host behaviour measured on
+// the box's 6.17 kernel (test-results/fd94-96/hostref-pwritev*.c):
+// segments are written in order at successive offsets and the file
+// position does not move; a short write ends the walk; a later
+// segment's failure returns the bytes already written, never the
+// error (the writev partial shape). Validation order: a negative
+// offset is EINVAL ahead of the descriptor check -- except that
+// pwritev2's offset -1 is the file-position mode (write at the
+// current position and advance it), so only an offset below -1 is
+// EINVAL there. The descriptor check (EBADF) precedes the iovcnt
+// range check (EINVAL outside [0, IOV_MAX]) and the iovec array
+// check (EFAULT for a null or unmapped array with iovcnt > 0);
+// the pwritev2 flags check runs LAST (EOPNOTSUPP for bits outside
+// the defined RWF mask 0x3f: HIPRI/DSYNC/SYNC/NOWAIT/APPEND/
+// NOAPPEND) (FD-100). RWF_APPEND writes at end of file, ignoring
+// the offset, and leaves the position untouched outside the -1
+// mode. Segment buffers are range-checked before each segment's
+// write: the core's guest copy zero-fills an unreadable buffer
+// instead of failing, which would fabricate bytes the host never
+// writes (the single-call paths keep that trait -- FD-97).
+static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPwritev2) {
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
+    bool useFilePos = isPwritev2 && offset == -1;
+    if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
+    KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+    if (!fdesc) return (U64)-9; // -EBADF
+    // FD-95 (batch-3 merge decision): the mode answer sits with
+    // the descriptor check -- a descriptor that cannot be
+    // written answers -EBADF ahead of the iovcnt range and
+    // iovec array checks, as the host's does; this aligns the
+    // vectored write with the write family's settled contract
+    // (FD-93) at the wrapper as well as in the pwrite64 core.
+    if (!fdesc->canWrite()) return (U64)-K_EBADF;
+    S32 cnt = (S32)iovcnt;
+    if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+    if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    bool append = isPwritev2 && (flags & 0x10ULL); // RWF_APPEND
+    S64 base = offset;
+    if (append) {
+        std::shared_ptr<KFile> pkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+        if (pkfile) base = pkfile->length();
+    } else if (useFilePos) {
+        base = fdesc->kobject->getPos();
+    }
+    U64 total = 0;
+    S64 err = 0;
+    for (S32 i = 0; i < cnt; i++) {
+        U64 segBase = cpu->memory->readq(iov + (U64)i * 16 + 0);
+        U64 len     = cpu->memory->readq(iov + (U64)i * 16 + 8);
+        if (len == 0) continue;
+        if (!sys_rangeHasPermission64(cpu->memory, segBase, len, K64_PAGE_READ)) { err = -K_EFAULT; break; }
+        S64 wrote = (S64)sys_pwrite64(cpu, fd, segBase, len, (U64)(base + (S64)total));
+        if (wrote < 0) { err = wrote; break; }
+        total += (U64)wrote;
+        if ((U64)wrote < len) break; // short write
+    }
+    if (useFilePos && total > 0) {
+        fdesc->kobject->seek(base + (S64)total);
+    }
+    if (total == 0 && err < 0) return (U64)err;
+    return total;
 }
 
 // writeStatBuf64 — write the x86-64 Linux struct stat (144 bytes) into
@@ -2185,7 +2340,16 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
             U64 total = 0;
             while (total < mapLen) {
                 U32 n = kfile->preadNative(seedBuf.data() + total, (S64)(fileBase + total), (U32)(mapLen - total));
-                if ((S32)n < 0) return (U64)(S64)(S32)n;
+                if ((S32)n < 0) {
+                    // FD-92: with addr==0 the range is already
+                    // reserved and mapped (mmapReserveAndMap
+                    // above); a failed mmap leaves nothing
+                    // reserved, so release it before returning
+                    // the error. With an explicit address nothing
+                    // has been established yet at this point.
+                    if (reserved) cpu->memory->munmap(aligned, mapLen);
+                    return (U64)(S64)(S32)n;
+                }
                 if (n == 0) break;
                 total += n;
             }
@@ -2195,6 +2359,10 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
                                             kfile->openFile->node->path.c_str(),
                                             fileBase, seedBuf.data(), (U64)seedBuf.size());
         if ((S64)r < 0) return r;
+        // FD-82: count the mapping against its open description so
+        // the description's close event defers to the mapping's death
+        // (FD-79's contract), as on the demand-paged path.
+        cpu->memory->noteFileMapping(aligned, mapLen, kfile);
         if (kfile->openFile->node) {
             if (ripSamplerModuleTrackingEnabled()) {
                 ripSamplerNoteModule((int)cpu->thread->process->id, aligned, mapLen,
@@ -2248,6 +2416,11 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         if (!headSave.empty()) cpu->memory->memcpyToGuest(aligned, headSave.data(), head);
         if (!tailSave.empty()) cpu->memory->memcpyToGuest(fileEnd, tailSave.data(), tail);
     }
+    // FD-82: the mapping is established (reserved above, or mapped by
+    // mmapAnonymousFixed); record it against the description before
+    // the content copy, so the description's close event defers to
+    // the mapping's death (FD-79's contract).
+    cpu->memory->noteFileMapping(aligned, mapLen, kfile);
     // Read [offset, offset+length) and copy into [addr, addr+length).
     // KFile's positioned read holds the same filePosMutex as ordinary reads
     // and lseek. The global file-read lock alone cannot exclude lseek, and
@@ -2263,7 +2436,19 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
         U64 total = 0;
         while (total < length) {
             U32 n = kfile->preadNative(buf.data() + total, (S64)(offset + total), (U32)(length - total));
-            if ((S32)n < 0) return (U64)(S64)(S32)n;
+            if ((S32)n < 0) {
+                // FD-92: the mapping is already established here
+                // (mmapAnonymousFixed above, or the addr==0
+                // reservation), but a failed host mmap leaves
+                // nothing mapped -- tear the range back down
+                // before returning the error, so no live pages
+                // hide behind a failure return. Where the
+                // description accounting of FD-82 is present,
+                // this munmap is also what releases the mapping's
+                // birth from its open description.
+                cpu->memory->munmap(aligned, mapLen);
+                return (U64)(S64)(S32)n;
+            }
             if (n == 0) break; // EOF / no progress
             total += n;
         }
@@ -2310,6 +2495,21 @@ static U64 sys_mmap64_file(CPU64* cpu, U64 addr, U64 length, U64 prot,
 // writev — iterate the iovec array, calling write per segment. Each iovec
 // entry on x86-64 is { u64 base; u64 len }.
 static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
+    // FD-93: validate like sys_readv64 does, in the host's order
+    // (measured on the 6.17 host kernel): bad descriptor EBADF,
+    // wrong mode EBADF, iovcnt outside 0..IOV_MAX EINVAL, null
+    // iovec with iovcnt > 0 EFAULT. The walk itself only ever
+    // reached sys_write64 segment by segment, so iovcnt 0 on a
+    // read-only descriptor returned a silent 0 and an
+    // out-of-range iovcnt was never EINVAL.
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    {
+        KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+        if (!fdesc) return (U64)-K_EBADF;
+        if (!fdesc->canWrite()) return (U64)-K_EBADF;
+        if ((S64)iovcnt < 0 || iovcnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+        if (iovcnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    }
     U64 total = 0;
     for (U64 i = 0; i < iovcnt; i++) {
         U64 base = cpu->memory->readq(iov + i * 16 + 0);
@@ -2333,18 +2533,51 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
 // the first segment's error if nothing was read. wine/wineserver read
 // server replies through readv, so a missing impl silently breaks the IPC
 // reply path (was -ENOSYS).
+//
+// FD-83 / FD-84 (host behaviour measured on the 6.17 kernel,
+// test-results/fd83-84/): a successful readv generates exactly one
+// IN_ACCESS -- a multi-segment walk included -- and a 0-byte success
+// (at EOF, with iovcnt 0, or with all-zero-length segments) generates
+// one too, where plain read/pread stay silent. The walk therefore
+// runs under KInotify::SuppressAccessNotifications (the per-segment
+// plain-read path would otherwise raise one event per segment) and
+// raises the single event itself on success; a call that fails
+// outright generates none, and a call that read bytes before a
+// later segment failed returns the byte count as a success, event
+// included. Validation mirrors sys_preadv64 and the host's order:
+// bad descriptor EBADF, then a descriptor that cannot be read
+// EBADF (FD-84 -- iovcnt 0 included: the host mode-checks before
+// the call can succeed), then the iovcnt range EINVAL, then a
+// null iovec EFAULT.
 static U64 sys_readv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
+    if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
+    KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
+    if (!fdesc) return (U64)-9; // -EBADF
+    if (!fdesc->canRead()) return (U64)-K_EBADF;
+    S32 cnt = (S32)iovcnt;
+    if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
+    if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
     U64 total = 0;
-    for (U64 i = 0; i < iovcnt; i++) {
-        U64 base = cpu->memory->readq(iov + i * 16 + 0);
-        U64 len  = cpu->memory->readq(iov + i * 16 + 8);
-        if (len == 0) continue;
-        S64 got = (S64)sys_read64(cpu, fd, base, len);
-        if (got < 0) {
-            return total > 0 ? total : (U64)got;
+    S64 err = 0;
+    {
+        KInotify::SuppressAccessNotifications suppress;
+        for (S32 i = 0; i < cnt; i++) {
+            U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
+            U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
+            if (len == 0) continue;
+            S64 got = (S64)sys_read64(cpu, fd, base, len);
+            if (got < 0) { err = got; break; }
+            total += (U64)got;
+            if ((U64)got < len) break; // short read: EOF / drained
         }
-        total += (U64)got;
-        if ((U64)got < len) break; // short read: EOF / drained
+    }
+    if (total == 0 && err < 0) return (U64)err;
+    // Exactly one IN_ACCESS per successful call (see the header
+    // comment); descriptors that are not files have no node to
+    // notify, exactly as in sys_preadv64.
+    std::shared_ptr<KFile> rkfile = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+    if (rkfile && rkfile->openFile && rkfile->openFile->node) {
+        KInotify::notifyAccessed(rkfile->openFile->node.get());
     }
     return total;
 }
@@ -3346,6 +3579,17 @@ static U32 bounceSockaddrTo32(CPU64* cpu, U64 src64, U32 len, U32* outLenAddr) {
 #define MSG_SCRATCH_IOV     32
 #define MSG_SCRATCH_CMSG    64
 #define MSG_SCRATCH_DATA    512
+// FD-102: a host SCM_RIGHTS message may carry up to 253 descriptors
+// (SCM_MAX_FD, measured); at 16 bytes per translated record that is
+// 4048 bytes -- far past the 448-byte cmsg area between
+// MSG_SCRATCH_CMSG and MSG_SCRATCH_DATA, and writing that many records
+// there would run over the gathered payload. The send-side rights
+// translation therefore emits its records into an extension area past
+// the data area, and the scratch mapping grows to cover it. The data
+// area itself is unchanged: the 32-bit slow paths in syscall.cpp
+// hardcode the same +512 layout over this scratch.
+#define MSG_SCRATCH_CMSG_BIG   (64 * 1024)
+#define MSG_SCRATCH_TOTAL      (MSG_SCRATCH_CMSG_BIG + 253 * 16)
 // Per-THREAD (see bounceSockaddrTo32's note): a per-process msg scratch is
 // corrupted when sibling threads sendmsg/recvmsg concurrently.
 static std::unordered_map<U32, U32> g_msgScratchByThread;
@@ -3354,7 +3598,7 @@ U32 msgScratch(KThread* thread) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
     auto it = g_msgScratchByThread.find(thread->id);
     if (it != g_msgScratchByThread.end()) return it->second;
-    U32 addr = thread->memory->mmap(thread, 0, MSG_SCRATCH_BYTES,
+    U32 addr = thread->memory->mmap(thread, 0, MSG_SCRATCH_TOTAL,
         K_PROT_READ | K_PROT_WRITE, K_MAP_ANONYMOUS | K_MAP_PRIVATE, -1, 0);
     if (!addr) return 0;
     g_msgScratchByThread[thread->id] = addr;
@@ -3388,9 +3632,73 @@ void bw64InvalidateScratchForThread(U32 threadId) {
 // into one scratch blob, translates any SCM_RIGHTS cmsg, builds a 32-bit msghdr
 // in scratch, and calls the 32-bit ksendmsg (reusing all the AF_UNIX queue +
 // fd-passing logic).
+// FD-97: the number of leading bytes of the guest range [addr, addr+len)
+// that are readable, page by page, under the same predicate the access
+// check inside KMemory64::memcpyFromGuest applies (the page is mapped
+// and carries READ; pages mapped write-only carry READ too under the
+// x86 write-implies-read flag rule, so they count as readable exactly
+// as they do for the host's copy_from_user and for the guest's own
+// loads). memcpyFromGuest zero-fills its whole destination when that
+// check fails for any part of the range; the single-call write paths
+// use this prefix to answer like the host instead — a short count for
+// a readable prefix, EFAULT when no byte is readable.
+static U64 sys_guestReadablePrefix64(KMemory64* memory, U64 addr, U64 len) {
+    if (!memory) return 0;
+    U64 readable = 0;
+    while (readable < len) {
+        const U64 at = addr + readable;
+        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
+        if (!(flags & K64_PAGE_MAPPED) || !(flags & K64_PAGE_READ)) break;
+        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
+        if (chunk > len - readable) chunk = len - readable;
+        readable += chunk;
+    }
+    return readable;
+}
+
+// FD-104: the write-side mirror of sys_guestReadablePrefix64 -- the
+// number of leading bytes of [addr, addr+len) that a guest write may
+// land on, page by page, under the same predicate the access check
+// inside KMemory64::memcpyToGuest applies for writes (the page is
+// mapped, and lacking WRITE denies the write only when the guest
+// imposed the page's current permissions itself, K64_PAGE_ENFORCED).
+// memcpyToGuest silently writes nothing when that check fails for any
+// part of the range; the receive scatter below uses this prefix to
+// answer like the host instead of reporting undelivered bytes as
+// received.
+static U64 sys_guestWritablePrefix64(KMemory64* memory, U64 addr, U64 len) {
+    if (!memory) return 0;
+    U64 writable = 0;
+    while (writable < len) {
+        const U64 at = addr + writable;
+        const U32 flags = memory->getPageFlags(at >> K64_PAGE_SHIFT);
+        if (!(flags & K64_PAGE_MAPPED) ||
+            (!(flags & K64_PAGE_WRITE) && (flags & K64_PAGE_ENFORCED))) break;
+        U64 chunk = K64_PAGE_SIZE - (at & K64_PAGE_MASK);
+        if (chunk > len - writable) chunk = len - writable;
+        writable += chunk;
+    }
+    return writable;
+}
+
 static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     KThread* thread = cpu->thread;
     if (!thread || !thread->process) return (U64)-K_ENOSYS;
+    // FD-101: the host answers the descriptor checks before it imports
+    // any of the message (EBADF / ENOTSOCK precede every copy fault),
+    // but ksendmsg reaches them only after the gather below -- so run
+    // them here, with the same tests ksendmsg itself applies.
+    KFileDescriptorPtr fdesc = thread->process->getFileDescriptor((U32)fd);
+    if (!fdesc) return (U64)-K_EBADF;
+    if (fdesc->kobject->type != KTYPE_NATIVE_SOCKET &&
+        fdesc->kobject->type != KTYPE_UNIX_SOCKET) return (U64)-K_ENOTSOCK;
+    // FD-101: the msghdr itself is imported before any of its fields
+    // are read. The reads below go through accessors that report an
+    // unreadable range as zeros, which would turn an unreadable msghdr
+    // into a silently successful empty send; the host faults the
+    // import (-EFAULT, measured).
+    if (sys_guestReadablePrefix64(cpu->memory, msg64, 56) < 56)
+        return (U64)-K_EFAULT;
     U32 base = msgScratch(thread);
     if (!base) return (U64)-K_EFAULT;
     KMemory* m32 = thread->memory;
@@ -3398,6 +3706,14 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     const U64 name64 = cpu->memory->readq(msg64);
     const U32 nameLength = name64 ? cpu->memory->readd(msg64 + 8) : 0;
     if (nameLength > 256) return (U64)-K_EINVAL;
+    // FD-101: the name is imported before the data, and the host
+    // faults an unreadable one even on a connected socket. The bounce
+    // copies through the zero-fill accessor (its contract is shared
+    // with the other socket calls), so the range is checked here
+    // instead of changing the bounce.
+    if (nameLength &&
+        sys_guestReadablePrefix64(cpu->memory, name64, nameLength) < nameLength)
+        return (U64)-K_EFAULT;
     const U32 name32 = nameLength ? bounceSockaddrTo32(cpu, name64, nameLength, nullptr) : 0;
     if (nameLength && !name32) return (U64)-K_EFAULT;
 
@@ -3405,6 +3721,44 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     U64 iovlen  = cpu->memory->readq(msg64 + 24);
     U64 control = cpu->memory->readq(msg64 + 32);
     U64 ctllen  = cpu->memory->readq(msg64 + 40);
+
+    // FD-101: the iov array is imported whole, before any segment is
+    // copied: an iovlen over UIO_MAXIOV answers -EMSGSIZE on the host
+    // and an unreadable array -EFAULT (both measured).
+    if (iovlen > 1024) return (U64)-K_EMSGSIZE;
+    if (iovlen &&
+        sys_guestReadablePrefix64(cpu->memory, iov, 16 * iovlen) < 16 * iovlen)
+        return (U64)-K_EFAULT;
+    // FD-101: the control area's header is imported before the data
+    // too; the translation below reads it through the same zero-fill
+    // accessors, so an unreadable header would be silently dropped.
+    if (control && ctllen >= 16 &&
+        sys_guestReadablePrefix64(cpu->memory, control, 16) < 16)
+        return (U64)-K_EFAULT;
+    // FD-102: when the first cmsg is SCM_RIGHTS, its guest-supplied
+    // cmsg_len is validated here -- ahead of the gather, matching the
+    // host's order (the cmsg answers precede the segment faults,
+    // measured). A length under the 16-byte header or past the
+    // declared controllen answers -EINVAL on the host, as does a
+    // descriptor count over the host's 253 (SCM_MAX_FD). The
+    // translation below takes its count only from this validated
+    // length; it previously trusted cmsg_len outright, so a short
+    // length underflowed the count to roughly 2^30 records written
+    // unboundedly past the scratch cmsg area, and a merely oversized
+    // length overran the same area the same way.
+    U32 rightsFds = 0;
+    bool hasRights = false;
+    if (control && ctllen >= 16) {
+        const U64 clen  = cpu->memory->readq(control + 0);
+        const U32 level = cpu->memory->readd(control + 8);
+        const U32 type  = cpu->memory->readd(control + 12);
+        if (level == K_SOL_SOCKET && type == K_SCM_RIGHTS) {
+            if (clen < 16 || clen > ctllen) return (U64)-K_EINVAL;
+            rightsFds = (U32)((clen - 16) / 4);
+            if (rightsFds > 253) return (U64)-K_EINVAL;
+            hasRights = true;
+        }
+    }
 
     // Gather all iov segments into the scratch data buffer.
     U32 dataAddr = base + MSG_SCRATCH_DATA;
@@ -3416,6 +3770,17 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
         if (l == 0) continue;
         if (total + l > dataCap) l = dataCap - total;
         if (l == 0) break;
+        // FD-101: a segment the guest memory cannot read must not be
+        // sent as fabricated zeros (memcpyFromGuest zero-fills on a
+        // failed access check). The message paths are all-or-nothing
+        // on the host for every socket type -- a fully unreadable
+        // segment, a readable prefix running into an unreadable page,
+        // and a bad segment after a good one all answer -EFAULT with
+        // nothing sent (measured) -- so any unreadable byte in the
+        // range this segment contributes faults the whole call here,
+        // before ksendmsg is reached.
+        if (sys_guestReadablePrefix64(cpu->memory, b, l) < l)
+            return (U64)-K_EFAULT;
         std::vector<U8> tmp((size_t)l);
         cpu->memory->memcpyFromGuest(tmp.data(), b, (U32)l);
         m32->memcpy(dataAddr + total, tmp.data(), (U32)l);
@@ -3430,26 +3795,29 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     m32->writed(base + MSG_SCRATCH_HDR + 8, base + MSG_SCRATCH_IOV); // msg_iov
     m32->writed(base + MSG_SCRATCH_HDR + 12, total ? 1 : 0);       // msg_iovlen
     U32 ctl32 = 0, ctllen32 = 0;
-    if (control && ctllen >= 16) {
+    if (hasRights) {
         // Translate SCM_RIGHTS: 64-bit cmsg {len(0),level(8),type(12),fds(16..)}.
         // The object's recv side reads 16-byte cmsg records with the fd at +12,
-        // i.e. one fd per 16 bytes. Emit that compact form into the cmsg area.
-        U64 clen  = cpu->memory->readq(control + 0);
-        U32 level = cpu->memory->readd(control + 8);
-        U32 type  = cpu->memory->readd(control + 12);
-        if (level == K_SOL_SOCKET && type == K_SCM_RIGHTS) {
-            U32 nfds = (U32)((clen - 16) / 4);
-            U32 cm = base + MSG_SCRATCH_CMSG;
-            for (U32 i = 0; i < nfds; i++) {
-                U32 hostFd = cpu->memory->readd(control + 16 + 4 * i);
-                m32->writed(cm + 16 * i + 0, 16);            // cmsg_len
-                m32->writed(cm + 16 * i + 4, K_SOL_SOCKET);  // cmsg_level
-                m32->writed(cm + 16 * i + 8, K_SCM_RIGHTS);  // cmsg_type
-                m32->writed(cm + 16 * i + 12, hostFd);       // fd
-            }
-            ctl32 = cm;
-            ctllen32 = nfds * 16;
+        // i.e. one fd per 16 bytes. Emit that compact form into the extended
+        // cmsg area (FD-102: up to 253 records never fit the 448 bytes
+        // between MSG_SCRATCH_CMSG and the data area).
+        const U32 nfds = rightsFds;
+        // FD-101: the fd array is read element by element below
+        // through the zero-fill accessor, so an unreadable
+        // element would be passed on as fd 0; the host faults
+        // the import (-EFAULT, measured).
+        if (sys_guestReadablePrefix64(cpu->memory, control + 16, 4ULL * nfds) < 4ULL * nfds)
+            return (U64)-K_EFAULT;
+        U32 cm = base + MSG_SCRATCH_CMSG_BIG;
+        for (U32 i = 0; i < nfds; i++) {
+            U32 hostFd = cpu->memory->readd(control + 16 + 4 * i);
+            m32->writed(cm + 16 * i + 0, 16);            // cmsg_len
+            m32->writed(cm + 16 * i + 4, K_SOL_SOCKET);  // cmsg_level
+            m32->writed(cm + 16 * i + 8, K_SCM_RIGHTS);  // cmsg_type
+            m32->writed(cm + 16 * i + 12, hostFd);       // fd
         }
+        ctl32 = cm;
+        ctllen32 = nfds * 16;
     }
     m32->writed(base + MSG_SCRATCH_HDR + 16, ctl32);              // msg_control
     m32->writed(base + MSG_SCRATCH_HDR + 20, ctllen32);          // msg_controllen
@@ -3480,6 +3848,21 @@ static U64 sys_sendmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
 static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     KThread* thread = cpu->thread;
     if (!thread || !thread->process) return (U64)-K_ENOSYS;
+    // FD-104: the host answers the descriptor checks and the msghdr
+    // import faults before anything is received -- EBADF / ENOTSOCK
+    // precede the buffer faults, an unreadable msghdr answers
+    // -EFAULT (all measured) -- but krecvmsg reaches its descriptor
+    // checks only after the receive, and the import below read the
+    // header through accessors that report an unreadable range as
+    // zeros, which turned an unreadable msghdr into a silently
+    // successful empty receive. Run the descriptor tests krecvmsg
+    // itself applies, and the header import, here.
+    KFileDescriptorPtr fdesc = thread->process->getFileDescriptor((U32)fd);
+    if (!fdesc) return (U64)-K_EBADF;
+    if (fdesc->kobject->type != KTYPE_NATIVE_SOCKET &&
+        fdesc->kobject->type != KTYPE_UNIX_SOCKET) return (U64)-K_ENOTSOCK;
+    if (sys_guestReadablePrefix64(cpu->memory, msg64, 56) < 56)
+        return (U64)-K_EFAULT;
     // BW64_WSCONC: wineserver reads protocol requests via recvmsg (SCM creds/fds),
     // so the concurrency witness must cover this path too — sys_read64's hook
     // alone reported 0 because the request stream never flows through read().
@@ -3515,6 +3898,17 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     U64 iovlen  = cpu->memory->readq(msg64 + 24);
     U64 control = cpu->memory->readq(msg64 + 32);
     U64 ctllen  = cpu->memory->readq(msg64 + 40);
+
+    // FD-104: the segment count is bounded before the walks below
+    // trust it -- an iovlen over UIO_MAXIOV answers -EMSGSIZE on the
+    // host (measured), and the unbounded count previously made the
+    // capacity walk and the scatter walk read the guest's array for
+    // as long as the guest claimed. The array itself is imported
+    // whole before the receive (-EFAULT, measured).
+    if (iovlen > 1024) return (U64)-K_EMSGSIZE;
+    if (iovlen &&
+        sys_guestReadablePrefix64(cpu->memory, iov, 16 * iovlen) < 16 * iovlen)
+        return (U64)-K_EFAULT;
 
     // Total receive capacity across all iov segments, capped to the scratch buf.
     U32 dataAddr = base + MSG_SCRATCH_DATA;
@@ -3556,6 +3950,51 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     }
     if ((S32)rc < 0) return (U64)(S64)(S32)rc;
 
+    // FD-104: scatter the received bytes back into the 64-bit iov
+    // segments, validating each segment's range before its copy.
+    // The scatter previously went through KMemory64::memcpyToGuest,
+    // which writes nothing when its access check fails, so bytes
+    // already consumed from the socket into scratch vanished while
+    // the return value reported them delivered. The host answers
+    // -EFAULT for an unwritable receive range (measured): segments
+    // ahead of the bad one keep their bytes, and the call faults at
+    // the first range the copy cannot land on, ahead of the name and
+    // flag writebacks below. Consumption is settled per the same
+    // measurement: a datagram is consumed by the failed call exactly
+    // as on the host -- krecvmsg has already dequeued it. On a
+    // stream socket the host leaves the data queued; that is the
+    // one settled divergence, because the object's receive consumes
+    // into scratch with no pushback and the arriving amount cannot
+    // be known before the receive (the object implements no peek
+    // for this path) -- recorded with FD-104's closure.
+    // MSG_TRUNC may return the full datagram length, exceeding bytes buffered.
+    U32 remaining = std::min<U32>(rc, want);
+    U32 off = 0;
+    for (U64 i = 0; i < iovlen && remaining; i++) {
+        U64 b = cpu->memory->readq(iov + 16 * i);
+        U64 l = cpu->memory->readq(iov + 16 * i + 8);
+        U32 chunk = (U32)((l < remaining) ? l : remaining);
+        if (chunk) {
+            // Validate and copy page by page: the bytes
+            // ahead of the first unwritable page land, exactly as
+            // the host's copy leaves them before its fault.
+            std::vector<U8> tmp(chunk);
+            m32->memcpy(tmp.data(), dataAddr + off, chunk);
+            U32 done = 0;
+            while (done < chunk) {
+                const U64 at = b + done;
+                U32 piece = (U32)std::min<U64>(chunk - done,
+                                               K64_PAGE_SIZE - (at & K64_PAGE_MASK));
+                if (sys_guestWritablePrefix64(cpu->memory, at, piece) < piece)
+                    return (U64)-K_EFAULT;
+                cpu->memory->memcpyToGuest(at, tmp.data() + done, piece);
+                done += piece;
+            }
+            off += chunk;
+            remaining -= chunk;
+        }
+    }
+
     const U32 outNameLength = m32->readd(base + MSG_SCRATCH_HDR + 4);
     if (name64) {
         const U32 count = std::min<U32>(std::min<U32>(nameLength, outNameLength), 256);
@@ -3567,23 +4006,6 @@ static U64 sys_recvmsg64(CPU64* cpu, U64 fd, U64 msg64, U64 flags) {
     }
     cpu->memory->writed(msg64 + 8, outNameLength);
     cpu->memory->writed(msg64 + 48, m32->readd(base + MSG_SCRATCH_HDR + 24));
-
-    // Scatter the received bytes back into the 64-bit iov segments.
-    // MSG_TRUNC may return the full datagram length, exceeding bytes buffered.
-    U32 remaining = std::min<U32>(rc, want);
-    U32 off = 0;
-    for (U64 i = 0; i < iovlen && remaining; i++) {
-        U64 b = cpu->memory->readq(iov + 16 * i);
-        U64 l = cpu->memory->readq(iov + 16 * i + 8);
-        U32 chunk = (U32)((l < remaining) ? l : remaining);
-        if (chunk) {
-            std::vector<U8> tmp(chunk);
-            m32->memcpy(tmp.data(), dataAddr + off, chunk);
-            cpu->memory->memcpyToGuest(b, tmp.data(), chunk);
-            off += chunk;
-            remaining -= chunk;
-        }
-    }
 
     // Translate any received SCM_RIGHTS fds (32-bit object wrote 16-byte cmsg
     // records, fd at +12) into the 64-bit cmsg the guest provided.
@@ -4767,6 +5189,183 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 }
 #endif
 
+// FD-23 residue: the shared readiness core behind select (23) and
+// pselect6 (270). kpoll() is the emulator's real readiness/blocking engine;
+// this translates the fd_set bitmaps into a pollfd array, runs kpoll, and
+// translates the revents back. timeoutMs follows kpoll's convention
+// (0 == non-blocking, >0xF0000000 == wait forever). When
+// remainingWritebackAddr is nonzero (select), the unslept remainder of the
+// caller's timeout — totalTimeoutUs microseconds at entry — is written
+// back there after every completed wait, timeout expiry and interruption
+// included: Linux select() returns the time left in the caller's timeval.
+// The sets are written back only on success. A descriptor named in any set
+// that is not open answers -EBADF before any waiting, as the host does;
+// the previous pselect6-only implementation let a bad descriptor read as
+// merely unready. nfds is capped at the 1024 descriptors these fd_set
+// buffers can hold; the host itself has no such cap.
+static S64 sys_select_core64(CPU64* cpu, S32 nfds, U64 rfdsAddr, U64 wfdsAddr, U64 efdsAddr, U32 timeoutMs, U64 remainingWritebackAddr, U64 totalTimeoutUs) {
+    KProcessPtr process = cpu->thread->process;
+    KMemory64* memory = cpu->memory;
+    if (nfds < 0 || nfds > 1024) {
+        return -K_EINVAL;
+    }
+    U32 setBytes = ((U32)nfds + 7) / 8;
+    if (setBytes > 0) {
+        if (rfdsAddr && !sys_rangeHasPermission64(memory, rfdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+        if (wfdsAddr && !sys_rangeHasPermission64(memory, wfdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+        if (efdsAddr && !sys_rangeHasPermission64(memory, efdsAddr, setBytes, K64_PAGE_READ)) return -K_EFAULT;
+    }
+    U8 rset[128] = {0}, wset[128] = {0}, eset[128] = {0};
+    if (rfdsAddr) memory->memcpyFromGuest(rset, rfdsAddr, setBytes);
+    if (wfdsAddr) memory->memcpyFromGuest(wset, wfdsAddr, setBytes);
+    if (efdsAddr) memory->memcpyFromGuest(eset, efdsAddr, setBytes);
+    auto isSet = [](const U8* s, U32 fd) { return (s[fd >> 3] >> (fd & 7)) & 1; };
+    for (S32 fd = 0; fd < nfds; fd++) {
+        if ((rfdsAddr && isSet(rset, (U32)fd)) || (wfdsAddr && isSet(wset, (U32)fd)) || (efdsAddr && isSet(eset, (U32)fd))) {
+            if (!process->getFileDescriptor((FD)fd)) {
+                return -K_EBADF;
+            }
+        }
+    }
+    // Build a pollfd array (8 bytes each: {int fd; short events; short
+    // revents}) — one entry per fd that appears in any set. POLLIN=1,
+    // POLLOUT=4, POLLPRI=2 per Linux poll.h.
+    struct PFD { S32 fd; U16 ev; U16 rev; };
+    PFD pfds[1024];
+    U32 npoll = 0;
+    for (U32 fd = 0; fd < (U32)nfds; fd++) {
+        U16 ev = 0;
+        if (rfdsAddr && isSet(rset, fd)) ev |= 0x0001; // POLLIN
+        if (wfdsAddr && isSet(wset, fd)) ev |= 0x0004; // POLLOUT
+        if (efdsAddr && isSet(eset, fd)) ev |= 0x0002; // POLLPRI
+        if (ev) { pfds[npoll].fd = (S32)fd; pfds[npoll].ev = ev; pfds[npoll].rev = 0; npoll++; }
+    }
+    // Run kpoll via the 32-bit scratch (same path the poll/ppoll case uses).
+    U64 startUs = KSystem::getMicroCounter();
+    U32 scratch = bounceSockaddrTo32(cpu, 0, 0, nullptr);
+    if (!scratch) {
+        return -K_EFAULT;
+    }
+    S32 rc;
+    if (npoll == 0) {
+        rc = (S32)kpoll(cpu->thread, scratch, 0, timeoutMs);
+    } else {
+        U8 tmp[K_PAGE_SIZE] = {0};
+        for (U32 i = 0; i < npoll; i++) {
+            U8* e = tmp + i * 8;
+            *(U32*)e = (U32)pfds[i].fd;
+            *(U16*)(e + 4) = pfds[i].ev;
+            *(U16*)(e + 6) = 0;
+        }
+        cpu->thread->memory->memcpy(scratch, tmp, npoll * 8);
+        rc = (S32)kpoll(cpu->thread, scratch, npoll, timeoutMs);
+        cpu->thread->memory->memcpy(tmp, scratch, npoll * 8);
+        for (U32 i = 0; i < npoll; i++) pfds[i].rev = *(U16*)(tmp + i * 8 + 6);
+    }
+    if (remainingWritebackAddr) {
+        U64 elapsedUs = KSystem::getMicroCounter() - startUs;
+        U64 remainingUs = totalTimeoutUs > elapsedUs ? totalTimeoutUs - elapsedUs : 0;
+        memory->writeq(remainingWritebackAddr, remainingUs / 1000000);
+        memory->writeq(remainingWritebackAddr + 8, remainingUs % 1000000);
+    }
+    if (rc < 0) {
+        return rc;
+    }
+    // Translate revents back into freshly-zeroed fd_sets and count ready
+    // fds (select returns the total number of ready bits across all sets).
+    U8 outR[128] = {0}, outW[128] = {0}, outE[128] = {0};
+    U32 readyCount = 0;
+    for (U32 i = 0; i < npoll; i++) {
+        U32 fd = (U32)pfds[i].fd; U16 rev = pfds[i].rev;
+        if (rfdsAddr && (rev & (0x0001 | 0x0010))) { outR[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }   // POLLIN|POLLHUP
+        if (wfdsAddr && (rev & 0x0004)) { outW[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }              // POLLOUT
+        if (efdsAddr && (rev & (0x0002 | 0x0008))) { outE[fd>>3] |= (U8)(1<<(fd&7)); readyCount++; }   // POLLPRI|POLLERR
+    }
+    if (rfdsAddr) memory->memcpyToGuest(rfdsAddr, outR, setBytes);
+    if (wfdsAddr) memory->memcpyToGuest(wfdsAddr, outW, setBytes);
+    if (efdsAddr) memory->memcpyToGuest(efdsAddr, outE, setBytes);
+    return readyCount;
+}
+
+// FD-23 residue: futex_waitv (449). Validation and the absolute-timeout
+// conversion follow the host-measured contract: the per-call flags must
+// be 0; nr must be in [1,128]; clockid is CLOCK_REALTIME (0) or
+// CLOCK_MONOTONIC (1) and the timeout is absolute in that clock; every
+// entry must be a U32 futex (the 2-bit size field must be FUTEX_32), val
+// must fit 32 bits, __reserved must be 0, uaddr must be 4-byte aligned;
+// an unmapped waiters array or futex word answers -EFAULT. Parse
+// validation of ALL entries precedes any address pinning, as on the host.
+// The wait itself lives in KThread::futexWaitv64.
+static U64 sys_futex_waitv64(CPU64* cpu, U64 waitersAddr, U64 nrArg, U64 flags, U64 timeoutAddr, U64 clockid) {
+    if (flags != 0) return (U64)-K_EINVAL;
+    if (nrArg < 1 || nrArg > 128) return (U64)-K_EINVAL;
+    if (clockid != 0 && clockid != 1) return (U64)-K_EINVAL;
+    if (!cpu->memory) return (U64)-K_EFAULT;
+    U32 expireMs = 0xFFFFFFFF;
+    if (timeoutAddr) {
+        if (!sys_rangeHasPermission64(cpu->memory, timeoutAddr, 16, K64_PAGE_READ)) return (U64)-K_EFAULT;
+        S64 sec = (S64)cpu->memory->readq(timeoutAddr);
+        U64 nsec = cpu->memory->readq(timeoutAddr + 8);
+        if (sec < 0 || nsec >= 1000000000ULL) return (U64)-K_EINVAL;
+        U64 deadlineMs = (U64)sec * 1000 + nsec / 1000000;
+        if (clockid == 0) {
+            // Convert the wall-clock deadline onto the millies-since-start
+            // clock the futex machinery waits on, by delta from now (the
+            // same pattern as futex64's PI timeout conversion).
+            U64 nowMs = KSystem::getSystemTimeAsMicroSeconds() / 1000;
+            deadlineMs = deadlineMs >= nowMs
+                ? KSystem::getMilliesSinceStart() + (deadlineMs - nowMs)
+                : 0; // already past: reads as expired at the first poll
+        }
+        expireMs = deadlineMs > 0xFFFFFFFE ? 0xFFFFFFFE : (U32)deadlineMs;
+    }
+    if (!sys_rangeHasPermission64(cpu->memory, waitersAddr, nrArg * 24, K64_PAGE_READ)) return (U64)-K_EFAULT;
+    U64 vals[128];
+    U64 addrs[128];
+    U32 eflags[128];
+    for (U32 i = 0; i < (U32)nrArg; i++) {
+        U64 base = waitersAddr + (U64)i * 24;
+        vals[i] = cpu->memory->readq(base);
+        addrs[i] = cpu->memory->readq(base + 8);
+        eflags[i] = cpu->memory->readd(base + 16);
+        U32 reserved = cpu->memory->readd(base + 20);
+        if (reserved != 0) return (U64)-K_EINVAL;
+        if (eflags[i] & ~0x87) return (U64)-K_EINVAL; // valid: size 0x03 | FUTEX2_NUMA 0x04 | FUTEX_PRIVATE 0x80
+        if ((eflags[i] & 0x03) != 0x02) return (U64)-K_EINVAL; // FUTEX_32 only
+        if (vals[i] > 0xFFFFFFFFULL) return (U64)-K_EINVAL;
+        if (addrs[i] & 3) return (U64)-K_EINVAL;
+    }
+    if (cpu->thread && cpu->thread->process && cpu->thread->process->memory64) {
+        KMemory64* mem = cpu->thread->process->memory64;
+        KThread::FutexWaitvEntry entries[128];
+        for (U32 i = 0; i < (U32)nrArg; i++) {
+            // futex64 keys its table on the host RAM pointer for every
+            // futex (a 64-bit process's pointers are process-unique), so
+            // waitv entries key the same way or wakes would never match.
+            if (!sys_rangeHasPermission64(cpu->memory, addrs[i], 4, K64_PAGE_READ)) return (U64)-K_EFAULT;
+            U32* word = (U32*)mem->getRamPtr(addrs[i], 4);
+            if (!word) return (U64)-K_EFAULT;
+            entries[i].key = (U64)word;
+            entries[i].word = word;
+            entries[i].val = (U32)vals[i];
+        }
+        S64 r = cpu->thread->futexWaitv64(entries, (U32)nrArg, expireMs);
+        if (r == K_FUTEX64_PARKED) {
+            cpu->reExecuteSyscall = true;
+            cpu->yield = true;
+            return cpu->reg[X64_RAX].u64;
+        }
+        return (U64)r;
+    }
+    // Threadless fallback (--x64-run-elf / selftest): no thread to park.
+    // Compare like sys_futex64's stub: a match would block, which the stub
+    // answers with the would-block placeholder.
+    for (U32 i = 0; i < (U32)nrArg; i++) {
+        if (cpu->memory->readd(addrs[i]) != (U32)vals[i]) return (U64)-K_EAGAIN;
+    }
+    return (U64)-K_EAGAIN;
+}
+
 void ksyscall64(CPU64* cpu) {
     if (!cpu) return;
 #ifdef __EMSCRIPTEN__
@@ -4995,6 +5594,28 @@ void ksyscall64(CPU64* cpu) {
             std::shared_ptr<KPidFd> object = std::make_shared<KPidFd>(target, false);
             const U32 descriptorFlags = (a2 & O_CLOEXEC) ? FD_CLOEXEC : 0;
             KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(object, K_O_RDWR, descriptorFlags, -1, 0);
+            ret = result ? result->handle : (U64)-K_EMFILE;
+            break;
+        }
+        case X64_SYS_pidfd_getfd: {
+            // pidfd_getfd(pidfd, fd, flags). Host-measured answer order
+            // (FD-23): flags are validated before the pidfd is looked at;
+            // a descriptor that is not a pidfd, or a target descriptor
+            // that does not exist, answers -EBADF; a terminated target
+            // answers -ESRCH (zombie and reaped alike); a target owned by
+            // a different user answers -EPERM. Success installs the SAME
+            // open file description in the caller with FD_CLOEXEC set.
+            if (a3 != 0) { ret = (U64)-K_EINVAL; break; }
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
+            KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+            std::shared_ptr<KPidFd> pidfd = descriptor ? std::dynamic_pointer_cast<KPidFd>(descriptor->kobject) : nullptr;
+            if (!pidfd) { ret = (U64)-K_EBADF; break; }
+            KProcessPtr target = pidfd->process();
+            if (!target || target->isTerminated()) { ret = (U64)-K_ESRCH; break; }
+            if (target->userId != cpu->thread->process->userId) { ret = (U64)-K_EPERM; break; }
+            KFileDescriptorPtr source = target->getFileDescriptor((FD)(S32)a2);
+            if (!source) { ret = (U64)-K_EBADF; break; }
+            KFileDescriptorPtr result = cpu->thread->process->allocFileDescriptor(source->kobject, source->accessFlags, FD_CLOEXEC, -1, 0);
             ret = result ? result->handle : (U64)-K_EMFILE;
             break;
         }
@@ -5847,6 +6468,25 @@ void ksyscall64(CPU64* cpu) {
             U32 cap = MSG_SCRATCH_BYTES - MSG_SCRATCH_DATA;
             U64 len = a3; if (len > cap) len = cap;
             if (nr == X64_SYS_sendto) {
+                // FD-103: the host answers the descriptor checks
+                // before it imports the buffer (-ENOTSOCK on a file
+                // precedes the fault, measured), and a buffer the
+                // guest memory cannot read answers -EFAULT with
+                // nothing delivered, on stream and datagram sockets
+                // alike (measured). The chunked copy below goes
+                // through the zero-filling memcpyFromGuest, so an
+                // unreadable buffer was previously sent as fabricated
+                // zeros and the call reported success -- FD-101's
+                // trait in the single-call form. Run ksendto's own
+                // descriptor tests first, then validate exactly the
+                // clamped range the copy will read.
+                KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((U32)a1);
+                if (!fdesc) { ret = (U64)-K_EBADF; break; }
+                if (fdesc->kobject->type != KTYPE_NATIVE_SOCKET &&
+                    fdesc->kobject->type != KTYPE_UNIX_SOCKET) { ret = (U64)-K_ENOTSOCK; break; }
+                if (sys_guestReadablePrefix64(cpu->memory, a2, len) < len) {
+                    ret = (U64)-K_EFAULT; break;
+                }
                 U8 tmp[4096];
                 U64 off = 0;
                 // copy guest buffer -> 32-bit scratch in chunks
@@ -6185,6 +6825,9 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_futex:
             ret = sys_futex64(cpu, a1, (U32)a2, (U32)a3, a4, a5, (U32)a6);
             break;
+        case X64_SYS_futex_waitv:
+            ret = sys_futex_waitv64(cpu, a1, a2, a3, a4, a5);
+            break;
         case X64_SYS_poll:
         case X64_SYS_ppoll: {
             // poll(fds, nfds, timeout_ms) / ppoll(fds, nfds, timespec*, sigmask).
@@ -6252,88 +6895,24 @@ void ksyscall64(CPU64* cpu) {
         }
         case X64_SYS_pselect6: {
             // pselect6(nfds, readfds*, writefds*, exceptfds*, timespec*, sigmask).
-            // We have no native select, but kpoll() is the real readiness/blocking
-            // engine. Translate the fd_set bitmaps into a pollfd array, run kpoll,
-            // then translate the revents back into the fd_sets. Without this, wine
-            // (winex11/msg-loop) spins on pselect6=ENOSYS and never reaches GL.
+            // Served by the shared select core (sys_select_core64). The
+            // sigmask argument (a6) is NOT applied: the emulator has no
+            // pselect-style atomic mask swap in its 64-bit signal plumbing,
+            // so a guest passing one gets plain select behaviour rather
+            // than masked waiting (recorded on the defect register).
             if (!cpu->thread || !cpu->thread->process || !cpu->thread->memory) {
                 ret = (U64)-K_ENOSYS; break;
             }
-            U32 nfds = (U32)a1;          // highest fd + 1
-            U64 rfdsAddr = a2, wfdsAddr = a3, efdsAddr = a4, tsAddr = a5;
-            if (nfds > 1024) { ret = (U64)-K_EINVAL; break; }
-
-            // Timeout: a5 is a timespec* (NULL == infinite). Match kpoll's
-            // convention (0 == non-blocking, >0xF0000000 == infinite).
             U32 timeoutMs;
-            if (tsAddr == 0) {
-                timeoutMs = 0xFFFFFFFFu;
+            if (a5 == 0) {
+                timeoutMs = 0xFFFFFFFFu; // NULL timespec == wait forever
             } else {
-                U64 sec  = cpu->memory->readq(tsAddr);
-                U64 nsec = cpu->memory->readq(tsAddr + 8);
+                if (!sys_rangeHasPermission64(cpu->memory, a5, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                U64 sec  = cpu->memory->readq(a5);
+                U64 nsec = cpu->memory->readq(a5 + 8);
                 timeoutMs = (U32)(sec * 1000 + nsec / 1000000);
             }
-
-            // Read the three fd_set bitmaps (each (nfds+7)/8 bytes, capped to the
-            // 128-byte/1024-fd standard). 0 addr == that set not requested.
-            U32 setBytes = (nfds + 7) / 8;
-            if (setBytes > 128) setBytes = 128;
-            U8 rset[128] = {0}, wset[128] = {0}, eset[128] = {0};
-            if (rfdsAddr) cpu->memory->memcpyFromGuest(rset, rfdsAddr, setBytes);
-            if (wfdsAddr) cpu->memory->memcpyFromGuest(wset, wfdsAddr, setBytes);
-            if (efdsAddr) cpu->memory->memcpyFromGuest(eset, efdsAddr, setBytes);
-
-            auto isSet = [](const U8* s, U32 fd) { return (s[fd >> 3] >> (fd & 7)) & 1; };
-
-            // Build a pollfd array (8 bytes each: {int fd; short events; short revents})
-            // — one entry per fd that appears in any set. POLLIN=1, POLLOUT=4,
-            // POLLPRI=2 (the select events) per Linux poll.h.
-            struct PFD { S32 fd; U16 ev; U16 rev; };
-            PFD pfds[1024];
-            U32 npoll = 0;
-            for (U32 fd = 0; fd < nfds && npoll < 1024; fd++) {
-                U16 ev = 0;
-                if (rfdsAddr && isSet(rset, fd)) ev |= 0x0001; // POLLIN
-                if (wfdsAddr && isSet(wset, fd)) ev |= 0x0004; // POLLOUT
-                if (efdsAddr && isSet(eset, fd)) ev |= 0x0002; // POLLPRI
-                if (ev) { pfds[npoll].fd = (S32)fd; pfds[npoll].ev = ev; pfds[npoll].rev = 0; npoll++; }
-            }
-
-            // Run kpoll via the 32-bit scratch (same path the poll/ppoll case uses).
-            S32 rc;
-            U32 scratch = bounceSockaddrTo32(cpu, 0, 0, nullptr);
-            if (!scratch) { ret = (U64)-K_EFAULT; break; }
-            if (npoll == 0) {
-                rc = (S32)kpoll(cpu->thread, scratch, 0, timeoutMs);
-            } else {
-                U8 tmp[K_PAGE_SIZE] = {0};
-                for (U32 i = 0; i < npoll; i++) {
-                    U8* e = tmp + i * 8;
-                    *(U32*)e = (U32)pfds[i].fd;
-                    *(U16*)(e + 4) = pfds[i].ev;
-                    *(U16*)(e + 6) = 0;
-                }
-                cpu->thread->memory->memcpy(scratch, tmp, npoll * 8);
-                rc = (S32)kpoll(cpu->thread, scratch, npoll, timeoutMs);
-                cpu->thread->memory->memcpy(tmp, scratch, npoll * 8);
-                for (U32 i = 0; i < npoll; i++) pfds[i].rev = *(U16*)(tmp + i * 8 + 6);
-            }
-            if (rc < 0) { ret = (U64)(S64)rc; break; }
-
-            // Translate revents back into freshly-zeroed fd_sets and count ready fds
-            // (select returns the total number of ready bits across all sets).
-            U8 outR[128] = {0}, outW[128] = {0}, outE[128] = {0};
-            U32 readyCount = 0;
-            for (U32 i = 0; i < npoll; i++) {
-                U32 fd = (U32)pfds[i].fd; U16 rev = pfds[i].rev;
-                if (rfdsAddr && (rev & (0x0001 | 0x0010 /*POLLHUP*/ ))) { outR[fd>>3] |= (1<<(fd&7)); readyCount++; }
-                if (wfdsAddr && (rev & 0x0004)) { outW[fd>>3] |= (1<<(fd&7)); readyCount++; }
-                if (efdsAddr && (rev & (0x0002 | 0x0008 /*POLLERR*/))) { outE[fd>>3] |= (1<<(fd&7)); readyCount++; }
-            }
-            if (rfdsAddr) cpu->memory->memcpyToGuest(rfdsAddr, outR, setBytes);
-            if (wfdsAddr) cpu->memory->memcpyToGuest(wfdsAddr, outW, setBytes);
-            if (efdsAddr) cpu->memory->memcpyToGuest(efdsAddr, outE, setBytes);
-            ret = (U64)readyCount;
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, 0, 0);
             break;
         }
         case X64_SYS_sched_yield:
@@ -6723,9 +7302,42 @@ void ksyscall64(CPU64* cpu) {
             // preadv2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-80.
             ret = sys_preadv64(cpu, a1, a2, a3, a4, a5, a6, true);
             break;
-        case X64_SYS_select:
-            ret = unimplementedSyscall64(nr);
+        case X64_SYS_pwritev:
+            // pwritev(fd, iov, iovcnt, pos_l, pos_h) — FD-94.
+            ret = sys_pwritev64(cpu, a1, a2, a3, a4, a5, 0, false);
             break;
+        case X64_SYS_pwritev2:
+            // pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags) — FD-94.
+            ret = sys_pwritev64(cpu, a1, a2, a3, a4, a5, a6, true);
+            break;
+        case X64_SYS_select: {
+            // select(nfds, readfds*, writefds*, exceptfds*, timeval*).
+            // Served by the shared select core (sys_select_core64); unlike
+            // pselect6, select writes the unslept remainder of the timeout
+            // back into the caller's timeval (host-measured, FD-23).
+            if (!cpu->thread || !cpu->thread->process || !cpu->thread->memory) {
+                ret = (U64)-K_ENOSYS; break;
+            }
+            U32 timeoutMs = 0xFFFFFFFFu;
+            U64 totalTimeoutUs = 0;
+            if (a5 != 0) {
+                if (!sys_rangeHasPermission64(cpu->memory, a5, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                S64 sec = (S64)cpu->memory->readq(a5);
+                S64 usec = (S64)cpu->memory->readq(a5 + 8);
+                if (sec < 0 || usec < 0) { ret = (U64)-K_EINVAL; break; }
+                // An oversized usec is normalized by the host, not refused:
+                // folding both fields into one microsecond total does that.
+                totalTimeoutUs = (U64)sec * 1000000 + (U64)usec;
+                if (totalTimeoutUs == 0) {
+                    timeoutMs = 0;
+                } else {
+                    U64 ms = (totalTimeoutUs + 999) / 1000;
+                    timeoutMs = ms > 0xF0000000 ? 0xFFFFFFFFu : (U32)ms;
+                }
+            }
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, a5, totalTimeoutUs);
+            break;
+        }
         case X64_SYS_chmod: {  // chmod(path, mode)
             BString path = readGuestString64(cpu, a1);
             ret = (U64)(S64)(S32)cpu->thread->process->chmod(path, (U32)a2);

@@ -65,6 +65,7 @@ public:
     virtual U32 write(KThread* thread, U32 buffer, U32 len);
     virtual U32 writeNative(U8* buffer, U32 len)=0;
     virtual U32 writev(KThread* thread, U32 iov, S32 iovcnt);
+    virtual U32 readv(KThread* thread, U32 iov, S32 iovcnt);
     virtual U32 read(KThread* thread, U32 buffer, U32 len);
     virtual U32 readNative(U8* buffer, U32 len)=0;
     virtual U32 stat(KProcess* process, U32 address, bool is64)=0;

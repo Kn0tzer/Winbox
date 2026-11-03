@@ -298,6 +298,9 @@ U32 syscall_signalfd4(KThread* thread, S32 fildes, U32 mask, U32 maskSize, U32 f
     } else {
         std::shared_ptr<KSignal> o = std::make_shared<KSignal>();
         fd =  thread->process->allocFileDescriptor(o, K_O_RDONLY, 0, -1, 0);
+        if (!fd) {
+            return -K_EMFILE;
+        }
     }    
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags|=FD_CLOEXEC;

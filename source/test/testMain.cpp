@@ -63,6 +63,7 @@ void testBStringIndexOf();
 void testCondStartWaitTime();
 void testFutex32WakeRace();
 void testMsyncLockOrder();
+void testFdTableExhaustion();
 void testThreadLifetimeTeardown();
 void testSyscall64DispatchGuard();
 void testGuestCpuTopology();
@@ -78,6 +79,8 @@ void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
 void testGetrandom32Syscall();
+void testReadv32Syscall();
+void testFutexWaitv32Syscall();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
@@ -112,7 +115,11 @@ void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testChmodAccessHardLink();
+void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
+void testPwritev32Dispatch();
+void testPreadv32Dispatch();
+void testWritevPartialError();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
 #ifdef BOXEDWINE_GUEST_X64
@@ -123,11 +130,23 @@ void testEpollPwait2Syscall();
 void testEpollPwaitSyscall();
 void testDup3Syscall();
 void testAccept4Syscall();
+void testSelectSyscall();
+void testPidfdGetfdSyscall();
+void testFutexWaitvSyscall();
 void testMadvise64Effects();
 void testPidfd64Syscalls();
 void testInotify64Syscalls();
 void testExeSpawnSignal64();
 void testPreadv64Syscalls();
+void testCloseWriteDeferral64();
+void testMmap64FileReadFailure();
+void testSendmsgBadBuffer64Syscalls();
+void testSendmsgCmsgLen64Syscalls();
+void testSendtoBadBuffer64Syscalls();
+void testRecvmsgBadBuffer64Syscalls();
+void testWriteBadBuffer64Syscalls();
+void testWriteFamily64Syscalls();
+void testPwritev64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -172,6 +191,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
+    {testFdTableExhaustion, "Test fd table exhaustion returns EMFILE (FD-05)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
     {testTimerfdCore, "Test timerfd descriptor and expiration semantics"},
     {testUnixSocketOptions, "Test Unix socket SOL_SOCKET options"},
@@ -189,10 +209,22 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
+    {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
+    {testSendmsgBadBuffer64Syscalls, "Test x64 sendmsg/sendmmsg from unreadable guest buffers"},
+    {testSendmsgCmsgLen64Syscalls, "Test x64 sendmsg SCM_RIGHTS cmsg_len validation"},
+    {testSendtoBadBuffer64Syscalls, "Test x64 sendto to unreadable guest buffers"},
+    {testRecvmsgBadBuffer64Syscalls, "Test x64 recvmsg scatter to unwritable guest buffers"},
+    {testWriteBadBuffer64Syscalls, "Test x64 write/pwrite64 from unreadable guest buffers"},
+    {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
+    {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
     {testAccept4Syscall, "Test x64 accept4 syscall"},
+    {testSelectSyscall, "Test x64 select syscall"},
+    {testPidfdGetfdSyscall, "Test x64 pidfd_getfd syscall"},
+    {testFutexWaitvSyscall, "Test x64 futex_waitv syscall"},
     {testMadvise64Effects, "Test x64 madvise side effects"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
     {testInotify64Syscalls, "Test x64 inotify syscalls and watch management"},
@@ -206,6 +238,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEvents, "Test inotify event delivery end to end"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testSignalfd64Syscalls, "Test x64 signalfd create and update"},
@@ -846,6 +879,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
+    {testFdTableExhaustion, "Test fd table exhaustion returns EMFILE (FD-05)"},
     {testThreadLifetimeTeardown, "Test FD-44 thread lifetime: signal delivery racing teardown"},
 #ifdef BOXEDWINE_MULTI_THREADED
     {testLockedInc, "Test Multi-threaded locked inc"},
@@ -855,6 +889,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
+    {testReadv32Syscall, "Test 32-bit readv dispatch and notification contract (FD-92)"},
+    {testFutexWaitv32Syscall, "Test 32-bit futex_waitv syscall"},
     {testMlock32Syscalls, "Test 32-bit memory lock syscall ABI"},
     {testSchedAffinity32Syscalls, "Test 32-bit scheduler affinity ABI"},
     {testMremap32Syscall, "Test 32-bit mremap fixed and DONTUNMAP semantics"},
@@ -892,7 +928,11 @@ const TestEntry TEST_ENTRIES[] = {
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
+    {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
+    {testPwritev32Dispatch, "Test 32-bit pwritev and pwritev2 dispatch"},
+    {testPreadv32Dispatch, "Test 32-bit preadv and preadv2 dispatch"},
+    {testWritevPartialError, "Test 32-bit writev partial-error return shape (FD-96)"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
 #ifdef BOXEDWINE_GUEST_X64
@@ -900,6 +940,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
+    {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
+    {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},
+    {testPwritev64Syscalls, "Test x64 pwritev and pwritev2 syscalls"},
     {testPidfd64Syscalls, "Test x64 pidfd_open/send_signal syscalls"},
 #endif
     {testInetDatagramLoopback, "Test AF_INET UDP loopback socket"},

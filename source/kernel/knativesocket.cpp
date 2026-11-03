@@ -1910,6 +1910,11 @@ U32 KNativeSocketObject::takeLoopbackStreamConnection(std::shared_ptr<KNativeSoc
 U32 KNativeSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U32 address, U32 len, U32 flags) {
     if (this->loopbackDatagram) return -K_EOPNOTSUPP;
     if (this->loopbackStream && (this->loopbackPort || this->nativeSocket < 0)) {
+        // FD-05: answer EMFILE before dequeueing when the table is
+        // already full; on Linux the connection stays queued.
+        if (thread->process->getNextFileDescriptorHandle(0)>=MAX_NUMBER_OF_FILES) {
+            return -K_EMFILE;
+        }
         std::shared_ptr<KNativeSocketObject> accepted;
         U32 dequeueResult = this->takeLoopbackStreamConnection(accepted, (flags & K_O_NONBLOCK) != 0);
         if ((S32)dequeueResult < 0) return dequeueResult;
@@ -1927,10 +1932,26 @@ U32 KNativeSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U
         KFileDescriptorPtr resultFD = thread->process->allocFileDescriptor(accepted, accessFlags,
                                                                            (flags & FD_CLOEXEC) ? FD_CLOEXEC : 0,
                                                                            -1, 0);
+        if (!resultFD) {
+            // FD-05: lost a race for the final slot after dequeueing;
+            // requeue the connection so a later accept can take it.
+            {
+                std::lock_guard<std::mutex> lock(this->loopbackStreamMutex);
+                this->loopbackAcceptQueue.push_front(accepted);
+            }
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(this->readingCond);
+            BOXEDWINE_CONDITION_SIGNAL_ALL(this->readingCond);
+            return -K_EMFILE;
+        }
         this->error = 0;
         return resultFD->handle;
     }
 
+    // FD-05: answer EMFILE before consuming a host connection when
+    // the table is already full.
+    if (KThread::currentThread()->process->getNextFileDescriptorHandle(0)>=MAX_NUMBER_OF_FILES) {
+        return -K_EMFILE;
+    }
     struct sockaddr_in addr = {};
     socklen_t addrlen = sizeof(struct sockaddr);
     KMemory* memory = thread->memory;
@@ -1941,6 +1962,13 @@ U32 KNativeSocketObject::accept(KThread* thread, const KFileDescriptorPtr& fd, U
     if (result>=0) {
         std::shared_ptr<KNativeSocketObject> s = std::make_shared<KNativeSocketObject>(this->domain, this->type, this->protocol);
         KFileDescriptorPtr resultFD = KThread::currentThread()->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
+        if (!resultFD) {
+            // FD-05: lost a race for the final slot after the host
+            // accept consumed the connection; close it rather than
+            // leak the host descriptor, and answer EMFILE.
+            ::close(result);
+            return -K_EMFILE;
+        }
 
         if (flags & FD_CLOEXEC) {
             resultFD->descriptorFlags|=FD_CLOEXEC;

@@ -52,7 +52,7 @@ const EXPECTED = {
   'atomic-texel-heap-valueform.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
   'atomic-texel-heap-weak.spv': ["strip-unused-physical-storage-buffer"],
   'atomic-texel-heap.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
-  'd3d12-cs-texel-heap-multisig.spv': ["descriptor-array-specialize", "texel-buffer-to-2d"],
+  'd3d12-cs-texel-heap-multisig.spv': ["strip-dead-descriptors", "descriptor-array-specialize", "texel-buffer-to-2d"],
   'd3d12-cs-texel-heap-storage-coherent.spv': ["descriptor-array-specialize", "storage-texel-buffer-to-2d"],
   'd3d12-cs-texel-heap-storage.spv': ["descriptor-array-specialize", "storage-texel-buffer-to-2d"],
   'd3d12-cs-uav-heap-write-unknown-pass1.spv': ["strip-float-controls", "strip-unused-physical-storage-buffer", "descriptor-array-specialize"],
@@ -78,19 +78,31 @@ const EXPECTED = {
   'dxvk-live/dxvk-meta-resolve-f.frag.spv': ["fold-spec-constants", "fragment-layer-to-zero"],
   'dxvk-live/present.frag.spv': ["split-combined-sampler", "fold-spec-constants"],
   'dxvk-live/present.vert.spv': [],
-  'dxvk-live/tri9.frag.spv': ["fold-spec-constants", "strip-point-builtins", "tail-demote-to-kill"],
+  'dxvk-live/tri9.frag.spv': ["strip-dead-descriptors", "fold-spec-constants", "strip-point-builtins", "tail-demote-to-kill"],
   'dxvk-live/tri9.vert.spv': ["fold-spec-constants", "strip-point-builtins"],
   'dxvk-live/tropics-dxbc.vert.spv': ["strip-point-builtins", "strip-draw-parameters", "strip-float-controls"],
   'fd70-aligned-literal-negative.spv': [],
   'fd70-aligned-literal-sweep.spv': ["descriptor-array-specialize"],
   'fd70-aligned-literal-twin.spv': ["descriptor-array-specialize"],
-  'godot-cs-21fc48e37911e9a5.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
-  'godot-cs-40b0cb95dde9567e.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
-  'godot-cs-9347f1b2426929e0.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
-  'godot-cs-ba9896b53ac1c77f.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split"],
-  'godot-cs-c9c003a7487b6126.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "descriptor-array-specialize", "specialized-binding-split", "prune-dead-storage-image-types"],
-  'godot-cs-e1ca507c951cf536.spv': ["strip-unused-physical-storage-buffer", "prune-specialized-aliases", "prune-dead-storage-image-types"],
+  'fd78-prune-constant.spv': ["prune-dead-storage-image-types"],
+  'fd78-prune-function.spv': ["prune-dead-storage-image-types"],
+  'fd88-g_rt_push.spv': ["strip-dead-descriptors", "descriptor-array-specialize", "strip-stray-sampled-image-array-dynamic-indexing"],
+  'fd88-h_rt_data.spv': ["descriptor-array-specialize"],
+  'fd88-i_fx_data.spv': ["descriptor-array-specialize"],
+  'fd88-j_fx_const.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
+  'fd88-k_rt_const.spv': ["strip-dead-descriptors", "descriptor-array-specialize", "strip-stray-sampled-image-array-dynamic-indexing"],
+  'fd88-l_rt_data_nocap29.spv': ["descriptor-array-specialize"],
+  'fd88-m_fx_push.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
+  'fd88-n_rt_push_nocap29.spv': ["strip-dead-descriptors", "descriptor-array-specialize"],
+  'godot-cs-21fc48e37911e9a5.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-40b0cb95dde9567e.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-9347f1b2426929e0.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-ba9896b53ac1c77f.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-c9c003a7487b6126.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "specialized-binding-split"],
+  'godot-cs-e1ca507c951cf536.spv': ["strip-dead-descriptors", "strip-unused-physical-storage-buffer"],
   'godot-fs-atomic-texel-heap.spv': ["strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-pointer-to-storage-buffer", "strip-unused-texel-buffer-capabilities"],
+  'godot-fs-f1b4e0027d98e2e4.spv': ["strip-dead-descriptors", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "strip-unused-physical-storage-buffer"],
+  'godot-fs-f2b738c259a79b4a.spv': ["lower-mid-shader-discard", "prune-specialized-aliases", "descriptor-array-specialize", "root-descriptor-bda", "texel-buffer-to-2d", "specialized-binding-split"],
   'godot-vs-4000ddfd359efb05.spv': ["replace-draw-parameters", "descriptor-array-specialize", "root-descriptor-bda", "texel-buffer-to-2d"],
   'godot-vs-ebac7e2d70a20d62.spv': ["replace-draw-parameters", "descriptor-array-specialize", "root-descriptor-bda", "texel-buffer-to-2d"],
   'godot-vs-heap-plus-cbv-heap.spv': ["replace-draw-parameters", "strip-unused-physical-storage-buffer", "descriptor-array-specialize", "texel-buffer-to-2d"],
@@ -139,6 +151,7 @@ const REFUSED = {
   'godot-cs-ba9896b53ac1c77f.spv': /StorageImageReadWithoutFormat/,
   'godot-cs-c9c003a7487b6126.spv': /StorageImageReadWithoutFormat/,
   'godot-fs-atomic-texel-heap.spv': /UnsupportedBuiltIn\(23\)/,
+  'godot-fs-f2b738c259a79b4a.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
   // FD-70 lane fixtures (enrolled at composition, merge-fd70): the
   // synthetic sweep fixtures exist for the creation/audit contract;
   // on the translation side their root load carries an Aligned
@@ -150,6 +163,14 @@ const REFUSED = {
   'fd70-aligned-literal-negative.spv': /InvalidOperandCount\(Load, 6\)/,
   'fd70-aligned-literal-sweep.spv': /InvalidOperandCount\(Load, 6\)/,
   'fd70-aligned-literal-twin.spv': /InvalidOperandCount\(Load, 6\)/,
+  // FD-88 corpus (batch-3 re-baseline): these three genuinely use
+  // sampled-image-array dynamic indexing -- the capability is
+  // admitted at module creation and stays as a passenger, and the
+  // translator refuses it (spirvfix-fd87.test.mjs pins the same
+  // refusal); the rest of the fd88 set converts.
+  'fd88-h_rt_data.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
+  'fd88-i_fx_data.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
+  'fd88-m_fx_push.spv': /UnsupportedCapability\(SampledImageArrayDynamicIndexing\)/,
 };
 
 // Without the pre-pass, naga rejects the combined-sampler fragment shaders:
@@ -184,7 +205,7 @@ test('every corpus module converts through toWGSL(spirv) with the pre-pass', asy
     const wgsl = await toWGSL('spirv', bytesOf(f), stageOf(f));
     assert.ok(typeof wgsl === 'string' && wgsl.length > 0, `${f}: empty WGSL`);
   }
-  assert.deepEqual([...seen].sort(), ["descriptor-array-specialize", "flat-integer-varyings", "fold-spec-constants", "fragment-layer-to-zero", "prune-dead-storage-image-types", "prune-specialized-aliases", "replace-draw-parameters", "root-descriptor-bda", "specialized-binding-split", "split-combined-sampler", "storage-texel-buffer-to-2d", "strip-dead-undefs", "strip-draw-parameters", "strip-float-controls", "strip-point-builtins", "strip-unused-physical-storage-buffer", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "texel-buffer-to-2d", "texel-pointer-to-storage-buffer"]);
+  assert.deepEqual([...seen].sort(), ["descriptor-array-specialize", "flat-integer-varyings", "fold-spec-constants", "fragment-layer-to-zero", "lower-mid-shader-discard", "prune-dead-storage-image-types", "prune-specialized-aliases", "replace-draw-parameters", "root-descriptor-bda", "specialized-binding-split", "split-combined-sampler", "storage-texel-buffer-to-2d", "strip-dead-descriptors", "strip-dead-undefs", "strip-draw-parameters", "strip-float-controls", "strip-point-builtins", "strip-stray-sampled-image-array-dynamic-indexing", "strip-unused-physical-storage-buffer", "strip-unused-texel-buffer-capabilities", "tail-demote-to-kill", "texel-buffer-to-2d", "texel-pointer-to-storage-buffer"]);
 });
 
 test('pre-pass is idempotent; clean modules pass through byte-identical', () => {
@@ -195,7 +216,11 @@ test('pre-pass is idempotent; clean modules pass through byte-identical', () => 
   // interaction; the page applies exactly one pass, so shipped output is
   // the first-pass result). Recorded in docs/known-gaps/vulkan.md with the
   // capability-audit row; a spirvfix fixpoint fix is a separate lane.
-  for (const f of modules.filter(f => !f.startsWith('dxvk-live/'))) {
+  // The FD-87 Godot captures are in the same class:
+  // godot-fs-f1b4e0027d98e2e4's tail-demote-to-kill output and
+  // godot-fs-f2b738c259a79b4a's lower-mid-shader-discard output are
+  // re-lowered on a second pass.
+  for (const f of modules.filter(f => !f.startsWith('dxvk-live/') && f !== 'godot-fs-f1b4e0027d98e2e4.spv' && f !== 'godot-fs-f2b738c259a79b4a.spv')) {
     const raw = bytesOf(f);
     const once = applySpirvFix(raw);
     const twice = applySpirvFix(once.bytes);

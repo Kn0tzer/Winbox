@@ -53,6 +53,8 @@ test('REWRITES exports every rule', () => {
     'strip-dead-undefs',
     'specialized-binding-split',
     'prune-dead-storage-image-types',
+    'strip-dead-descriptors',
+    'strip-stray-sampled-image-array-dynamic-indexing',
   ]);
 });
 
@@ -144,6 +146,17 @@ const storageModule = (extraVars = []) => buildModule([
   { op: 59, words: [12, 13, 0] },                // OpVariable %13
   decorate(13, 34, 0), decorate(13, 33, 2),      // set 0, binding 2
   ...extraVars,
+  // FD-87: a minimal function that loads the variable, so it is a
+  // genuinely USED storage image. Without a use, R18 strips it as a
+  // dead descriptor before R14 ever sees it (the correct behaviour
+  // for real modules; these fixtures model the used form).
+  { op: 19, words: [20] },                       // OpTypeVoid %20
+  { op: 33, words: [21, 20] },                   // OpTypeFunction %21
+  { op: 54, words: [20, 22, 0, 21] },            // OpFunction %22
+  { op: 248, words: [23] },                      // OpLabel %23
+  { op: 61, words: [11, 24, 13] },               // OpLoad %24 = %13
+  { op: 253, words: [] },                        // OpReturn
+  { op: 56, words: [] },                         // OpFunctionEnd
 ]);
 const imageTypeOf = (bytes) => parseSpirv(bytes).insns.find(i => i.op === 25);
 const hasCap = (bytes, c) => parseSpirv(bytes).insns.some(i => i.op === 17 && i.words[0] === c);
@@ -179,6 +192,9 @@ test('R14 NEGATIVE: variables of one type disagreeing on format are refused', ()
     { op: 59, words: [12, 14, 0] },               // second OpVariable %14 of the same image type
     decorate(14, 34, 0), decorate(14, 33, 3),     // set 0, binding 3
   ]);
+  // Keep %14 live as well (FD-87 R18): insert its load before OpReturn.
+  const retAt = mod.insns.findIndex(i => i.op === 253);
+  mod.insns.splice(retAt, 0, { op: 61, words: [11, 25, 14] });
   const r = applySpirvFix(serializeSpirv(mod), { storageFormats: '0:2=4;0:3=15' }); // Rgba8 vs R8: conflict
   assert.ok(!r.applied.includes('storage-image-format'));
   assert.equal(imageTypeOf(r.bytes).words[7], 0);

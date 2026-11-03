@@ -27,7 +27,7 @@ test('concurrent O_CREAT opens publish one shared inode', () => {
 #include <thread>
 using U32=unsigned;using S32=int;
 constexpr int K_O_CREAT=64,K_O_TMPFILE=0x400000,K_O_ACCMODE=3,K_O_WRONLY=1,K_O_RDWR=2,K_O_RDONLY=0;
-constexpr int K_ENOENT=2,K_EINVAL=22,K_EISDIR=21;
+constexpr int K_ENOENT=2,K_EINVAL=22,K_EISDIR=21,K_EMFILE=24;
 #define B(s) BString(s)
 #define EXT_MIXED ".mixed"
 #define kwarn(...) ((void)0)

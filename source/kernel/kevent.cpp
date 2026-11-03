@@ -176,6 +176,9 @@ U32 syscall_eventfd2(KThread* thread, U32 initialValue, U32 flags) {
     std::shared_ptr<KEvent> o = std::make_shared<KEvent>();
     o->counter = initialValue;
     fd = thread->process->allocFileDescriptor(o, K_O_RDWR, 0, -1, 0);
+    if (!fd) {
+        return (U32)-K_EMFILE;
+    }
 
     if (flags & K_O_CLOEXEC) {
         fd->descriptorFlags |= FD_CLOEXEC;

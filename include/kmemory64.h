@@ -24,6 +24,7 @@ class KProcess;
 class KThread;
 class KMemory64;
 class CPU64;
+class KFile;
 
 // Set only while CPU64 executes one interpreter instruction. Kernel copies
 // run with this context cleared so invalid syscall buffers remain EFAULT paths.
@@ -173,6 +174,18 @@ public:
     // desyncs → wineserver release_object refcount underflow. addr is page-aligned.
     U64 mmapSharedFile(U64 addr, U64 len, U32 prot, U64 fileIdentity, const char* path, U64 fileOffset,
                        const U8* fileBytes, U64 fileBytesLen);
+
+    // FD-82: record a file-backed mapping the 64-bit file-mmap path
+    // (sys_mmap64_file) has just established over [addr, addr+len), so
+    // the mapping participates in FD-79's close-event deferral exactly
+    // as a demand-paged mapping does: the birth is counted at the open
+    // description, and the entry created here is released when the
+    // mapping dies -- munmap, overwrite by a later mapping, an mremap
+    // move, fork non-inheritance, or destruction of this address
+    // space. Any file mapping the new one replaces is released after
+    // the birth is counted, so the description's live total never
+    // dips through zero mid-operation.
+    void noteFileMapping(U64 addr, U64 len, const std::shared_ptr<KFile>& file);
 
     // Atomically pick a free address range AND map it, so two guest threads of
     // the same process (sharing this KMemory64) can never be handed overlapping
@@ -387,6 +400,35 @@ private:
     // Add/trim/remove range bookkeeping. Callers must hold mmapMutex.
     void rangeInsertLocked(U64 startPage, U64 pageCount, U32 prot, U8 kind);
     void rangeRemoveLocked(U64 startPage, U64 pageCount);
+
+    // FD-82: live file-backed mappings of this address space, keyed by
+    // start PAGE number, ordered and non-overlapping (the same
+    // discipline as `ranges`, but covering every address, not only
+    // the mmap region -- loader-fixed file maps live below it).
+    // Guarded by mmapMutex. Each entry holds the open description its
+    // pages were counted against at birth (noteFileMapping).
+    // The entry pins the KFile (and with it the open description)
+    // for exactly the mapping's lifetime, as the demand-paged path's
+    // MappedFile does: the description can be closed and its last
+    // descriptor dropped while the mapping is still live.
+    struct FileMapping64 { U64 pageCount; std::shared_ptr<KFile> file; };
+    std::map<U64, FileMapping64> fileMappings;
+    // Remove the file-mapping entries overlapping
+    // [pageStart, pageStart+pageCount), splitting entries at the
+    // edges; the dying page counts are appended to `detached` (one
+    // pair per contiguous piece, per description) instead of being
+    // reported inline, so a caller replacing the range with a mapping
+    // of the same description can count the new birth before the old
+    // pages are released. Caller holds mmapMutex.
+    void detachFileMappingsLocked(U64 pageStart, U64 pageCount,
+                                  std::vector<std::pair<std::shared_ptr<KFile>, U64>>& detached);
+    // detachFileMappingsLocked + report the deaths to the
+    // descriptions immediately. Caller holds mmapMutex.
+    void releaseFileMappingsLocked(U64 pageStart, U64 pageCount);
+    // True when every page of [pageStart, pageStart+pageCount) is a
+    // live file mapping of ONE description, which is returned via
+    // `out`. Caller holds mmapMutex.
+    bool fileMappingCoverLocked(U64 pageStart, U64 pageCount, std::shared_ptr<KFile>& out);
 
     K64Page* getOrAllocPage(U64 pageNum, U32 flagsIfNew);
     // Allocate (if absent) AND commit a page's backing buffer atomically under
