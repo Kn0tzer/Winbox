@@ -129,12 +129,12 @@ void bwStepDumpTail() {
     }
 }
 
-U32 ksocket(U32 domain, U32 type, U32 protocol) {
+U32 ksocket(KThread* thread, U32 domain, U32 type, U32 protocol) {
+    if (!thread || !thread->process) {
+        return -K_ENOSYS;
+    }
     if (bwStepDiagEnabled()) {
-        KThread* stepThread = KThread::currentThread();
-        if (stepThread) {
-            bwStepNote(7, stepThread->process->id, stepThread->id);
-        }
+        bwStepNote(7, thread->process->id, thread->id);
     }
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
     // Offline by default. The launcher sets this host-only flag together with
@@ -157,7 +157,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
 #endif
     if (domain==K_AF_UNIX) {
         const bool sockDiag = bwPairDiagEnabled();
-        KThread* diagThread = sockDiag ? KThread::currentThread() : nullptr;
+        KThread* diagThread = sockDiag ? thread : nullptr;
         if (sockDiag) {
             klog_fmt("BW64-DIAG sock obj-new pid=%u tid=%u type=%u",
                      diagThread->process->id, diagThread->id, type);
@@ -168,7 +168,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
             klog_fmt("BW64-DIAG sock obj-made pid=%u tid=%u",
                      diagThread->process->id, diagThread->id);
         }
-        KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        KFileDescriptorPtr result = thread->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         if (sockDiag) {
             bwStepNote(9, diagThread->process->id, diagThread->id);
         }
@@ -182,7 +182,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
         return result->handle;
     } else if (domain == K_AF_NETLINK) {
         std::shared_ptr<KNetLinkObject> kSocket = std::make_shared<KNetLinkObject>(domain, type, protocol);
-        KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        KFileDescriptorPtr result = thread->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         if (!result) {
             return -K_EMFILE;
         }
@@ -192,7 +192,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
         if (s->error) {
             return s->error;
         } else {
-            KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
+            KFileDescriptorPtr result = thread->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
             if (!result) {
                 return -K_EMFILE;
             }
@@ -510,7 +510,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     if (pairDiag) {
         bwStepNote(6, diagPid, diagTid);
     }
-    fd1 = ksocket(af, type, protocol);
+    fd1 = ksocket(thread, af, type, protocol);
     if (pairDiag) {
         bwStepNote(10, diagPid, diagTid);
         klog_fmt("BW64-DIAG pair s1 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd1);
@@ -521,7 +521,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     if (pairDiag) {
         bwStepNote(11, diagPid, diagTid);
     }
-    fd2 = ksocket(af, type, protocol);
+    fd2 = ksocket(thread, af, type, protocol);
     if (pairDiag) {
         bwStepNote(12, diagPid, diagTid);
         klog_fmt("BW64-DIAG pair s2 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd2);

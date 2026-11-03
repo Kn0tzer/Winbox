@@ -6539,7 +6539,7 @@ void ksyscall64(CPU64* cpu) {
             // strip them for ksocket and apply via fcntl after.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U32 sockType = (U32)a2 & 0xFF;
-            FD sfd = (FD)(S32)ksocket((U32)a1, sockType, (U32)a3);
+            FD sfd = (FD)(S32)ksocket(cpu->thread, (U32)a1, sockType, (U32)a3);
             kwarnSocketCreateFailure(cpu->thread, (U32)a1, (U32)a2, (U32)a3, (S32)sfd, "socket");
             if ((S32)sfd >= 0) {
                 if ((U32)a2 & 0x80000) cpu->thread->process->fcntrl(cpu->thread, sfd, K_F_SETFD, FD_CLOEXEC);

@@ -126,7 +126,12 @@
 #define K_TCP_TIMESTAMP		24
 #define K_TCP_NOTSENT_LOWAT	25	
 
-U32 ksocket(U32 domain, U32 type, U32 protocol);
+// FD-127: the owning thread is explicit. Socket creation allocates the
+// descriptor in the owner's process; taking the process from the
+// ambient current thread instead mis-files the descriptor when the
+// call is serviced under a different thread binding (unix-side
+// dispatch), and deadlocked there.
+U32 ksocket(KThread* thread, U32 domain, U32 type, U32 protocol);
 void kwarnSocketCreateFailure(KThread* thread, U32 domain, U32 type, U32 protocol, S32 result, const char* operation);
 U32 kbind(KThread* thread, U32 socket, U32 address, U32 len);
 U32 kconnect(KThread* thread, U32 socket, U32 address, U32 len);
