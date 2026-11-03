@@ -7548,7 +7548,15 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_chmod: {  // chmod(path, mode)
+            // FD-126 (host-measured): a null path answers -EFAULT and
+            // an empty path -ENOENT, both ahead of any lookup. The
+            // shared reader maps null to "", and "" resolves to the
+            // directory node itself in the path resolver, so without
+            // these guards the null shape took the empty-path route
+            // (its answer then depended on the working directory).
+            if (!a1) { ret = (U64)-K_EFAULT; break; }
             BString path = readGuestString64(cpu, a1);
+            if (path.length() == 0) { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->chmod(path, (U32)a2);
             break;
         }
@@ -7556,7 +7564,15 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)cpu->thread->process->fchmod((FD)a1, (U32)a2);
             break;
         case 268: {            // fchmodat(dirfd, path, mode, flags)
+            // FD-126 (host-measured): as for chmod -- a null path
+            // answers -EFAULT and an empty path -ENOENT, both ahead
+            // of flag handling and dirfd resolution, which the host
+            // orders after the path copy-in (an unopened dirfd with
+            // a null path still answers -EFAULT, with an empty path
+            // still -ENOENT).
+            if (!a2) { ret = (U64)-K_EFAULT; break; }
             BString path = readGuestString64(cpu, a2);
+            if (path.length() == 0) { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->fchmodat((FD)a1, path, (U32)a3, (U32)a4);
             break;
         }
