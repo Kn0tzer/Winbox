@@ -1075,7 +1075,9 @@ do not close the entry until they land.
 
 - **FD-23 — Large parts of the system-call surface have no
   dispatch at all, and the disposition pass has not been
-  done.** *(Medium)* Counted by census: on the 64-bit side,
+  done.** *(Medium)* **CLOSED 2026-11-02 — the residue left
+  open below is closed on `lane-fd23res`; see CL-52
+  (provisional number, pending the merge audit).** Counted by census: on the 64-bit side,
   168 of 363 named system calls have no dispatch case; on the
   32-bit side, 223 table slots are null and numbers 440–461
   (including `futex_waitv`) fall off the end of the table.
@@ -1107,6 +1109,85 @@ do not close the entry until they land.
   `futex_waitv` (449, both ABIs; no observed asks). `io_uring`
   (425-427) is dispositioned ENOSYS-correct (a subsystem, not a
   call; guests probe and fall back by design).
+  **Residue closed 2026-11-02 (lane `lane-fd23res`;
+  record `docs/reports/fd23-residue-20261102.md`; closure
+  CL-52).** The three named routes are implemented to
+  host-measured contracts: `select` (23) via the core
+  factored out of `pselect6` — with the descriptor and
+  readability pre-checks both calls were missing (which
+  also corrects `pselect6`), timeval validation, and the
+  remaining-time write-back the host performs; `pidfd_getfd`
+  (438) in the host's check order; `futex_waitv` (449) on
+  both ABIs over the futex machinery (one slot per entry on
+  a shared condition, registration under the pending-wake
+  lock, the woken index as the answer), with the i386 table
+  extended to 462 slots so the number dispatches at all.
+  The per-number disposition of the long tail is done:
+  `tools/conformance/syscall_dispositions.json` carries a
+  category, a reason and a route for every unimplemented
+  number on both ABIs (404 entries), and the census tool
+  audits it — undispositioned 0, stale 0. Census on the
+  fixed tree: x86-64 implemented 202, stubbed {334 `rseq`}
+  only, missing 160; i386 dispatched 206, gap 244.
+  `rseq` itself is unchanged — the loud refusal stands —
+  and its prerequisite is filed as FD-102. Two findings
+  from the lane are filed as FD-103.
+- **FD-102 — `rseq` cannot be served honestly until the
+  64-bit signal-delivery path honours the abort
+  contract.** *(Medium)* FD-23's entry records why `rseq`
+  (334) stays a loud `-ENOSYS`: a registration without
+  abort-on-signal handling would silently corrupt per-cpu
+  data on signal delivery. This entry names the missing
+  machinery so the refusal has a closing condition, not
+  just a rationale. What is absent: when a signal is
+  delivered to a 64-bit thread that has a registered rseq
+  area, nothing inspects whether the interrupted program
+  counter sits inside the registered critical section,
+  and nothing redirects execution to the section's abort
+  handler with the abort signature in place; the same
+  inspection is owed on preemption and on any
+  thread-migration point the emulator introduces. A guest
+  (glibc registers rseq unconditionally) that is resumed
+  inside an aborted critical section would read and write
+  per-cpu state under a stale cpu id with no fault and no
+  log — exactly the silent-corruption shape the refusal
+  exists to prevent. Closing terms: the 64-bit signal
+  path (frame setup in the syscall/signal layer) checks
+  the registered rseq area's critical-section range on
+  delivery, and on a hit redirects to the abort IP with
+  the kernel's abort signature and clears the section;
+  proven by a native test that registers rseq, enters a
+  critical section in guest code, delivers a signal, and
+  observes the abort handler running with the signature
+  — failing on the current code because delivery ignores
+  the area entirely. Only then may 334 be reconsidered,
+  as its own lane with its own host-measured contract.
+- **FD-103 — The 64-bit `pselect6` ignores its signal-mask
+  argument entirely, and never validates its timespec.**
+  *(Medium)* Found on the FD-23 residue lane
+  (2026-11-02), which factored `pselect6`'s body into the
+  core `select` now shares. The dispatch case reads five
+  arguments; the sixth (the `{sigset_t*, size_t}` pair)
+  is never touched: the mask is not applied for the
+  duration of the wait, not restored after it, and its
+  pointer and size are never validated — a guest that
+  blocks a signal around the wait (the standard
+  race-free pattern pselect exists for) runs the whole
+  wait with the signal unblocked, so the very race the
+  call exists to prevent can fire. The timespec's
+  nanosecond field is likewise never range-checked
+  (values >= 1e9 are folded into the wait instead of
+  answering `-EINVAL` as the host does). Closing terms:
+  apply the guest mask for the wait and restore the
+  previous mask on every exit, in the signal layer's own
+  terms; validate the mask pointer and size with the
+  host's answers (`-EFAULT` / `-EINVAL` as the host
+  does); range-check the timespec; prove with a native
+  test that delivers the blocked signal during the wait
+  and observes it pending until return, and that a bad
+  mask size and an out-of-range timespec answer as the
+  host's do — failing on the current code because the
+  argument is never read.
 - **FD-24 — No game controller exists for guests.** *(Medium)*
   There is no guest joystick device at all: controller queries
   return "device not connected" for every slot. The entry
@@ -4400,6 +4481,8 @@ is behavioural, is re-proven there.
 | `lane-fd86` | FD-86: no Arial family on the 64-bit stack — prefix64 carried no Fonts\Replacements entry, the mechanism the 32-bit stack serves Arial through; canonical-set staging step `stage-font-alias64.py` (the 32-bit edit imported, so the stacks cannot drift) bakes `"Arial"="DejaVu Sans"` into prefix64, checker drift coverage added, win32-fonts suite test extended to x64, payload re-pinned as `runtime-assets-20261103` | win32-fonts PASS both architectures (x64 `ARIAL=0` — `ARIAL=1 METRICS=1 RESULT 0`; x86 unregressed); checker RED on this gap alone pre-fix, green after; bootstrap --check 0 failures; clean --local bootstrap from the new archive reproduces the replacement; Gecko stage `MSHTML: RESULT 0`, zero abort lines (long-window evidence run); JS 348/0; wasm unchanged. Record: `docs/reports/fd86-arial-prefix64-20261103.md` |
 | `lane-fd86` | FD-86: no Arial family on the 64-bit stack — prefix64 carried no Fonts\Replacements entry, the mechanism the 32-bit stack serves Arial through; canonical-set staging step `stage-font-alias64.py` (the 32-bit edit imported, so the stacks cannot drift) bakes `"Arial"="DejaVu Sans"` into prefix64, checker drift coverage added, win32-fonts suite test extended to x64, payload re-pinned as `runtime-assets-20261103` | win32-fonts PASS both architectures (x64 `ARIAL=0` — `ARIAL=1 METRICS=1 RESULT 0`; x86 unregressed); checker RED on this gap alone pre-fix, green after; bootstrap --check 0 failures; clean --local bootstrap from the new archive reproduces the replacement; Gecko stage `MSHTML: RESULT 0`, zero abort lines (shipped test, load-gated run); JS 348/0; wasm unchanged. Record: `docs/reports/fd86-arial-prefix64-20261103.md` |
 
+| `lane-fd23res` | FD-23 CLOSED (residue): `select` (23) implemented through the core factored out of `pselect6` (with the host's pre-checks, which also correct `pselect6`); `pidfd_getfd` (438) in the host's check order; `futex_waitv` (449) on both ABIs over the futex machinery (i386 table extended to 462 slots); per-number dispositions for every unimplemented number on both ABIs (404 entries, census-audited); FD-102 and FD-103 filed | Host-kernel reference programs measured first (select/pidfd/futex_waitv matrices; evidence `test-results/fd23res/hostref/`); new tests fail on the base for the recorded reasons and pass with the fix: x64 suite 72 tests, main suite 669 tests, 0 FAILED serial, RED runs show exactly the new tests failing (-ENOSYS); census: x86-64 implemented 199 -> 202, stubbed {334} only, i386 gap fully dispositioned (undispositioned 0, stale 0); browser build 'Browser export verified' (wasm c290559e). Record: `docs/reports/fd23-residue-20261102.md`; evidence `test-results/fd23res/` |
+
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
 (signalfd4) two ways — the queue's recorded decision is the
@@ -6944,3 +7027,55 @@ its lane and is not a defect, for the stated reason:
   byte-identical to the base build. Record:
   `docs/reports/fd86-arial-prefix64-20261103.md`;
   evidence: `test-results/fd86/`.
+
+- **CL-52 — FD-23's residue is closed: `select`,
+  `pidfd_getfd` and `futex_waitv` are implemented to the
+  host-measured contracts, and every unimplemented
+  system call on both ABIs carries a recorded
+  disposition (FD-23).** *(Provisional number, filed on
+  `lane-fd23res` 2026-11-02; settles at the merge audit —
+  integ's settled series ends at CL-39 and sibling
+  branches hold provisional CL-40..CL-51.)* Fixed on
+  branch `lane-fd23res`, commit `096d5b3e3`. The host
+  contracts were measured first (raw-syscall reference
+  programs, 6.17.0-1020-oracle; sources and outputs in
+  the lane evidence): select writes back the remaining
+  time and answers EBADF for a bad descriptor in any set;
+  pidfd_getfd checks flags before the pidfd, answers
+  ESRCH for a terminated target and EPERM across owners,
+  and installs FD_CLOEXEC over the shared description;
+  futex_waitv answers with the woken entry's index,
+  validates the whole array before pinning, and treats
+  its timeout as absolute in the named clock. The
+  implementation: select runs on a core factored out of
+  pselect6 (which gains the same host pre-checks and is
+  corrected by them; pselect6 never writes its timespec
+  back, as on the host; select's nfds is capped at the
+  emulator's 1024-descriptor sets, a stated boundary);
+  pidfd_getfd dispatches beside pidfd_open in the host's
+  check order; futex_waitv parks one futex slot per entry
+  on a shared condition with registration under the
+  pending-wake lock so a racing wake is consumed from
+  the pending table with its index, and the i386 table
+  is extended from 440 to 462 slots so 449 dispatches at
+  all. The long tail is dispositioned in
+  `tools/conformance/syscall_dispositions.json` (404
+  entries in seven categories, each with a reason and a
+  route), audited by the census tool: undispositioned 0,
+  stale 0; census on the fixed tree reads x86-64
+  implemented 202, stubbed {334 `rseq`} only, missing
+  160; i386 dispatched 206, gap 244. `rseq`'s deliberate
+  loud `-ENOSYS` is unchanged — its prerequisite is
+  filed as FD-102 — and the 64-bit pselect6's ignored
+  signal mask is filed as FD-103. Proof: new native
+  tests testSelectSyscall, testPidfdGetfdSyscall and
+  testFutexWaitvSyscall (x64 suite) and
+  testFutexWaitv32Syscall (main suite) — RED on the base
+  (the base answers -ENOSYS: the three x64 tests are the
+  x64 suite's only failures, the 32-bit test the main
+  suite's only failure) and GREEN with the fix; full
+  native suites serial x64 72 tests and main 669 tests,
+  0 FAILED; browser build 'Browser export verified'
+  (wasm c290559e). Record:
+  `docs/reports/fd23-residue-20261102.md`; evidence
+  `test-results/fd23res/`.
