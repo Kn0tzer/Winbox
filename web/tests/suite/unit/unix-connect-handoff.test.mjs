@@ -34,7 +34,7 @@ using U32=uint32_t; using U16=uint16_t; using S32=int32_t;
 constexpr int K_EINVAL=22,K_EISCONN=106,K_ENOENT=2,K_ECONNREFUSED=111,K_EINTR=4,K_CONTINUE=1000,K_EINPROGRESS=115,K_EAFNOSUPPORT=97,K_EWOULDBLOCK=11,K_ECONNABORTED=103,K_EMFILE=24;
 constexpr int K_ENAMETOOLONG=36;
 constexpr int K_EPROTOTYPE=71;
-constexpr int K_AF_UNIX=1,K_SOCK_DGRAM=2,K_SOCK_STREAM=1,KTYPE_UNIX_SOCKET=3,K_O_RDWR=2,K_O_NONBLOCK=2048,FD_CLOEXEC=1;
+constexpr int K_AF_UNIX=1,K_SOCK_DGRAM=2,K_SOCK_STREAM=1,K_SOCK_SEQPACKET=5,KTYPE_UNIX_SOCKET=3,K_O_RDWR=2,K_O_NONBLOCK=2048,FD_CLOEXEC=1;
 #define BOXEDWINE_MULTI_THREADED
 struct Condition {std::mutex m;std::condition_variable cv;std::atomic<int> waits{0};};
 #define BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(c) std::unique_lock<std::mutex> boxedWineCriticalSection((c)->m)
@@ -64,7 +64,7 @@ struct KUnixSocketObject:KObject {
  KUnixSocketObject(int d,int t,int p):domain(d),protocol(p){type=t;}
  ~KUnixSocketObject();
  int domain,protocol,type;U32 pid=0;bool blocking=true,connected=false,inClosed=false,outClosed=false;
- std::string abstractName;bool abstractRegistered=false;bool oneWayPeerLink=false;
+ std::string abstractName;bool abstractRegistered=false;bool oneWayPeerLink=false;bool peerCloseRefusalPending=false;bool oneWayRefusalSpent=false;
  std::shared_ptr<FsNode> node;std::queue<int> msgs;
 
  struct{U16 family=0;char data[108]={};}destAddress;
