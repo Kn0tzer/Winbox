@@ -3675,7 +3675,9 @@ do not close the entry until they land.
 - **FD-101 — The 64-bit sendmsg path gathers
   segment data from unreadable guest buffers
   as fabricated zeros instead of answering
-  EFAULT.** *(Low. Filed by the FD-97 lane,
+  EFAULT. FIXED 2026-11-02 on branch
+  `lane-fd101` — see CL-52.** *(Was Low.
+  Filed by the FD-97 lane,
   2026-11-02; the number follows FD-100 on
   lane-fd98's register and is provisional
   until the merge lane's audit.)* Found
@@ -3707,6 +3709,119 @@ do not close the entry until they land.
   the gather loop in sys_sendmsg64 on this
   base.
 
+  Fixed in commits `7eed978a9` (test),
+  `f70b16116` (fix) and `4363174fa`
+  (slice-test surface) — see CL-52. The
+  closing contract was settled by measurement
+  before fixing
+  (`test-results/fd101/hostref-sendmsg-fd101.c`
+  with sendto and recvmsg companions, host
+  kernel 6.17.0-1020-oracle): the host's
+  sendmsg is all-or-nothing — any unreadable
+  byte in any nonzero segment answers
+  -EFAULT with nothing delivered, including
+  a segment that starts readable and crosses
+  into an unmapped page (no short-count
+  prefix, unlike FD-97's write contract);
+  the descriptor answers precede the copy
+  faults, and an iovlen over the host's
+  1024 answers -EMSGSIZE. Record:
+  `docs/reports/fd101-sendmsg-efault-20261102.md`;
+  evidence `test-results/fd101/`.
+
+
+- **FD-102 — The 64-bit sendmsg SCM_RIGHTS
+  translation trusts the guest's cmsg_len:
+  a length under the header size, or past
+  the control area, makes the translation
+  loop run unboundedly past its scratch
+  area.** *(Low. Filed by the FD-101 lane,
+  2026-11-02; provisional until the merge
+  lane's audit.)* Found fixing FD-101: in
+  sys_sendmsg64's ancillary translation
+  (source/kernel/syscall64.cpp) the rights
+  count is derived from the guest-supplied
+  cmsg_len alone — nfds = (clen - 16) / 4 —
+  with no check that the length covers the
+  header or stays inside msg_controllen. A
+  cmsg_len under 16 underflows the count to
+  roughly 2^30 descriptors; the loop then
+  reads guest words and writes 16-byte
+  records into and far past the per-thread
+  scratch cmsg area, and a merely oversized
+  length overruns the same way. Code
+  evidence on this base; not exercised
+  against the running emulator (by
+  construction the failure is a hang or
+  scratch corruption). The FD-101 fix
+  validates the rights array's readability
+  only when clen >= 16 and deliberately
+  does not clamp the count — that is this
+  defect, on the wineserver fd-passing
+  path, left for its owning lane. Fix
+  shape: reject or clamp a cmsg_len under
+  the header size or beyond the remaining
+  controllen before the count is derived.
+
+- **FD-103 — The 64-bit single-call socket
+  send (sendto) copies its guest buffer
+  through the same zero-filling accessor
+  with no readability check: an unreadable
+  buffer is sent as fabricated zeros and
+  the call reports success.** *(Low. Filed
+  by the FD-101 lane, 2026-11-02;
+  provisional until the merge lane's
+  audit.)* sys_sendto64
+  (source/kernel/syscall64.cpp) copies the
+  buffer through KMemory64::memcpyFromGuest
+  in chunks before the send, so it carries
+  FD-101's trait in the single-call form;
+  it does not share the msghdr gather, so
+  it is filed separately rather than fixed
+  with FD-101. The host contract is
+  measured
+  (`test-results/fd101/hostref-sendto-fd101.c`,
+  host kernel 6.17.0-1020-oracle): unmapped
+  and page-crossing sendto buffers answer
+  -EFAULT with nothing delivered on stream
+  and datagram sockets alike, and the
+  descriptor answer (-ENOTSOCK on a file)
+  precedes the fault. Fix shape: validate
+  the buffer's full range before the copy,
+  mirroring FD-101's checks and ordering.
+
+- **FD-104 — The 64-bit recvmsg scatter
+  drops received bytes silently when a
+  guest segment is unwritable: the data is
+  consumed from the socket and the call
+  reports it delivered.** *(Low. Filed by
+  the FD-101 lane, 2026-11-02; provisional
+  until the merge lane's audit.)* Found
+  auditing FD-101's mirror direction:
+  sys_recvmsg64
+  (source/kernel/syscall64.cpp) receives
+  into scratch through krecvmsg —
+  consuming the message — then scatters to
+  the guest iov through
+  KMemory64::memcpyToGuest, which returns
+  silently when its access check fails, so
+  an unmapped or unwritable segment loses
+  the bytes while the return value reports
+  them received. The host answers -EFAULT
+  for an unwritable receive buffer, and
+  the consumption differs by socket type
+  (measured,
+  `test-results/fd101/hostref-recvmsg-fd101.c`,
+  host kernel 6.17.0-1020-oracle): on a
+  stream socket the data survives the
+  failed call and a following recvmsg
+  returns it; on a datagram socket the
+  failed call consumes the datagram. The
+  receive direction's fix needs its own
+  design (validate the scatter ranges
+  before krecvmsg consumes, and settle the
+  stream/datagram difference), left for
+  the owning lane.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -3757,6 +3872,7 @@ is behavioural, is re-proven there.
 | `lane-fd83-84` | FD-83: readv generates exactly one IN_ACCESS per successful call, 0-byte successes included (the walk's per-segment notifications suppressed under a KInotify scope, one event raised on success; the walk gains its own fd/mode/iovcnt/iovec validation in the host's order); FD-84: the positioned/plain read family answers EBADF on a descriptor that cannot be read, in the host's validation order (negative offset EINVAL first in the positioned core; preadv's mode answer ahead of its flag and iovcnt checks; KProcess::pread64 gains the mode check it lacked — it had fallen through to the backing read, whose host EBADF the backing layer swallowed into a silent 0); FD-92 (32-bit readv is a null dispatch slot) and FD-93 (the write family's mirror of FD-84, host-measured) filed | Extensions to testPreadv64Syscalls (x64 suite; RED on the base — 20 assertion failures across the new sections, spanning both defects) and testChmodAccessHardLink (both suites; RED on the base — the three FD-84 KProcess assertions); host-kernel reference programs measured first (readv event matrix incl. multi-segment, partial-success and zero-length shapes; wrong-mode matrices for the read and write families incl. zero counts and the validation orderings); full native suites serial: main 668/668 and x64 69/69, 0 FAILED; browser build on the fixed tree: BUILD COMPLETE, 'Browser export verified' (wasm `2601ef69`); JS unit 348/0 (silent-failure baseline for syscall64.cpp reviewed 115 -> 116), legacy 110/4 (FD-64's standing set on this base, unchanged). Record: `docs/reports/fd83-fd84-read-family-20261102.md`; evidence `test-results/fd83-84/` |
 
 | `lane-fd92mmap` | FD-92: sys_mmap64_file establishes a 64-bit file mapping (or the addr==0 reservation) before copying the file content in; when that content read failed, the syscall returned the error but left the pages mapped and the range reserved, where a failed host mmap leaves nothing mapped -- both content-read error returns (the private branch's copy loop, and the shared branch's seed read after an addr==0 reservation) now tear the established range down through KMemory64::munmap before returning the error | New test testMmap64FileReadFailure in the x64 native suite, driving the real 64-bit syscall dispatch against an open description whose positioned reads fail on command (immediately, partway through the copy, and as the shared seed read; a never-failing control maps and serves its content): RED on the base (the four failure cases each left their range mapped), GREEN with the fix; full native suites serial: main 668/668, x64 70/70, 0 FAILED; JS unit 348 passed / 0 failed; browser build 'Browser export verified' / BUILD COMPLETE (build git_sha e37fa3c04, wasm 16abfc4c, support archive c4dbe35986a5 unchanged). Record: `docs/reports/fd92-failed-mmap64-teardown-20261102.md`; evidence `test-results/fd92mmap/` |
+| `lane-fd101` | FD-101: the 64-bit sendmsg gather (sys_sendmsg64) fabricates zero bytes for unreadable guest segment memory — now the whole message import is validated in the host's order (descriptor answers first, then msghdr/name/iov array/control/segments) and answers -EFAULT with nothing sent, -EMSGSIZE for an iovlen over 1024, sendmmsg inheriting through the loop; FD-102 (the SCM_RIGHTS translation trusts the guest's cmsg_len), FD-103 (sendto's single-call form of the trait) and FD-104 (recvmsg's silent scatter drop) filed | New test testSendmsgBadBuffer64Syscalls (x64 suite; RED on the base — crossing sendmsg returned 200 with 200 bytes held by the peer, good+bad segments returned 24, unmapped iov array returned 0, sendmmsg good,bad returned 2; GREEN on the fix); host reference programs measured first (sendmsg/sendmmsg all-or-nothing matrix incl. crossing, message-boundary and descriptor-order cases; sendto and recvmsg companions); full native suites serial: main 668/668 and x64 70/70, 0 FAILED; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = the closing commit 4363174fa); JS unit 348/0 (the socket64-message slice mock extended for the validation's descriptor/page-flag surface). Record: `docs/reports/fd101-sendmsg-efault-20261102.md`; evidence `test-results/fd101/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -4191,6 +4307,57 @@ dead-start fix and needs composition care.
   so the closure rests on the fix being present in the
   shipped bytes and the fixed build certifying live,
   the same terms as FD-01's closure (CL-17).
+
+- **CL-52 — The 64-bit message-sending
+  gather answers for unreadable guest
+  memory: sys_sendmsg64 validates the whole
+  import in the host's order and answers
+  EFAULT with nothing sent when any byte of
+  the msghdr, name, iov array, control
+  header, rights array or segment data is
+  unreadable, EMSGSIZE when the iov count
+  is over the host's limit, and the
+  descriptor answers (EBADF, ENOTSOCK)
+  before every copy fault (FD-101).**
+  *(Provisional number, filed on lane-fd101,
+  2026-11-02 — CL-40..CL-51 are held by
+  unmerged lanes off this same base (fd66,
+  fd65, fd85, fd87, fd64, fd05, fd82, fd78,
+  fd83-84, fd92, fd92mmap, fd92-93, fd94-96,
+  fd90, fd97); the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd101`, commits `7eed978a9`
+  (test), `f70b16116` (fix) and `4363174fa`
+  (slice-test surface). The validation runs
+  ahead of the gather in the host's import
+  order, using the readable-prefix helper
+  FD-97 introduced (defined beside its
+  caller on this branch; the two branches'
+  copies are identical, and the merge
+  keeps one): a segment must be readable
+  over its whole contributed range, because
+  the host's sendmsg is all-or-nothing —
+  measured first
+  (`test-results/fd101/hostref-sendmsg-fd101.c`,
+  host kernel 6.17.0-1020-oracle): any
+  unreadable byte in any nonzero segment
+  answers -EFAULT with nothing delivered,
+  including a segment crossing from a
+  readable page into an unmapped one (no
+  short-count prefix, unlike the write
+  family); zero-length segments are skipped
+  even with unreadable bases; sendmmsg
+  sends the messages before a bad one and
+  reports their count. Proof: new test
+  testSendmsgBadBuffer64Syscalls (x64
+  suite) RED on the base with the filed
+  signatures and GREEN on the fix; full
+  native suites serial — main 668/668, x64
+  70/70; browser build verified (BUILD_INFO
+  git_sha = `4363174fa`); JS unit 348/0.
+  Filed from this lane: FD-102, FD-103,
+  FD-104. Record:
+  `docs/reports/fd101-sendmsg-efault-20261102.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
