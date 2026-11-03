@@ -499,7 +499,21 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
             return (U64)-K_EBADF;
         }
     }
-    if (count == 0) return 0;
+    // FD-116: a zero-length write is not a no-op at the dispatcher.
+    // Measured on the host (test-results/fd116-117/hostref-fd116.c):
+    // the descriptor checks still run (an unknown descriptor
+    // answers -EBADF, a wrong-mode one this family's mode answer),
+    // a buffer address outside the user range answers -EFAULT,
+    // and on a datagram socket the call queues a real empty
+    // datagram that the peer's recv returns 0 for -- the same
+    // datagram the 32-bit write and sendmsg (FD-112) already
+    // queue. This dispatcher used to return 0 on a zero count
+    // before the descriptor was even resolved, so the kobject
+    // never saw the call. A zero count now falls through the
+    // common path: nothing is copied in, the gates below run,
+    // and writeNative(buffer, 0) queues the empty datagram on a
+    // datagram socket and answers 0 with nothing queued on every
+    // other object.
     // Ceiling only (was a 1MB cap that silently truncated large writes for any
     // caller that doesn't loop on a short return). 256MB is plenty for the temp
     // buffer while still bounding a pathological count.
@@ -669,7 +683,21 @@ static U64 sys_write64(CPU64* cpu, U64 fd, U64 buf, U64 count) {
     if (!fdesc->canWrite()) {
         return (U64)-K_EBADF; // FD-93: host's wrong-mode answer (was -K_EINVAL)
     }
-    if (badBuffer) return (U64)-K_EFAULT;
+    if (count == 0) {
+        if (buf > 0x00007FFFFFFFFFFFULL) {
+            // FD-116: the host's zero-length import still validates
+            // the buffer address itself: NULL and unmapped user
+            // addresses queue the empty datagram, an address outside
+            // the user range answers -EFAULT with nothing queued
+            // (hostref-fd116.c). There are no bytes to copy, so this
+            // range check is the whole buffer validation for an
+            // empty write; nonzero counts keep the copy path's
+            // standing behaviour.
+            return (U64)-K_EFAULT;
+        }
+    } else if (badBuffer) {
+        return (U64)-K_EFAULT;
+    }
     U32 wrote = fdesc->kobject->writeNative(buffer.data(), (U32)count);
     // A connected stream socket whose peer object is TRANSIENTLY unreferenced
     // under boot-time fd-table churn returns -K_EWOULDBLOCK (see
