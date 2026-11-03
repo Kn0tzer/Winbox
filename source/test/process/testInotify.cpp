@@ -5630,13 +5630,24 @@ void testWriteZeroLength64Syscalls() {
             closePair(p);
         }
     }
-    // A stream socket whose peer is gone answers -EPIPE.
+    // A stream socket whose peer is gone answers -EPIPE. The
+    // socket layer keys its broken-pipe split (a clean -EPIPE
+    // for a 64-bit thread vs the 32-bit SIGPIPE path) on the
+    // current thread's process width, so flag the shared test
+    // process 64-bit for this case, as a real 64-bit guest
+    // process would be (the testDevInputJoystick pattern).
     {
         Pair p;
         if (makePair(1, p)) {
             process->close(p.rx);
-            if (write0(p.tx, bufAt) != -K_EPIPE) {
-                testFail("write0 on a stream socket with a closed peer: want -EPIPE");
+            bool was64 = process->is64Bit;
+            process->is64Bit = true;
+            S64 w0 = write0(p.tx, bufAt);
+            S64 w1 = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            process->is64Bit = was64;
+            if (w0 != -K_EPIPE || w1 != -K_EPIPE) {
+                testFail("stream socket with a closed peer: write0 %lld, write1 %lld (want -EPIPE, -EPIPE)",
+                         (long long)w0, (long long)w1);
             }
             process->close(p.tx);
         }
