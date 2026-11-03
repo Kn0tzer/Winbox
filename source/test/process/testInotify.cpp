@@ -6376,6 +6376,13 @@ void testSocketStateAnswers64Syscalls() {
         }
     };
 
+    // Keep one descriptor open for the whole test so no tested
+    // socket lands on descriptor 0: the 64-bit dispatcher answers
+    // a read on descriptor 0 itself (its host-stdin convention,
+    // sys_read64 returns 0), which would mask the socket layer's
+    // own answers on the read cases below.
+    S32 anchorFd = sock(2 /*SOCK_DGRAM*/);
+
     // ---- FD-120: drained datagram reads after the peer closes ----
     {
         Pair p;
