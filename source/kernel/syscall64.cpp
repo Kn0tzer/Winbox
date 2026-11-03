@@ -8,6 +8,7 @@
  */
 
 #include "boxedwine.h"
+#include "bwstepdiag.h"
 #include "kinotify.h"
 #include "drvinittrace.h"
 
@@ -5323,6 +5324,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                  ramOwnerTid, (unsigned long long)ramOwnerMs);
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
+    if (bwStepDiagEnabled()) {
+        bwStepDumpTail();
+    }
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);
     bw64UnlockLog();
     return 1;
@@ -6934,12 +6938,14 @@ void ksyscall64(CPU64* cpu) {
             // thread; the matching step lines live in ksocketpairFds.
             const bool pipeDiag = bwThreadDumpEnabled();
             if (pipeDiag) {
+                bwStepNote(1, cpu->thread->process->id, cpu->thread->id);
                 klog_fmt("BW64-DIAG pipe2 enter pid=%u tid=%u nr=%d fds=0x%llx flags=0x%llx",
                          cpu->thread->process->id, cpu->thread->id, (int)nr,
                          (unsigned long long)a1, (unsigned long long)a2);
             }
             S32 rc = ksocketpairFds(cpu->thread, K_AF_UNIX, K_SOCK_STREAM, 0, passFlags, fd1, fd2);
             if (pipeDiag) {
+                bwStepNote(16, cpu->thread->process->id, cpu->thread->id);
                 klog_fmt("BW64-DIAG pipe2 pair-returned pid=%u tid=%u rc=%d fd1=%u fd2=%u",
                          cpu->thread->process->id, cpu->thread->id, (int)rc, (U32)fd1, (U32)fd2);
             }
@@ -6947,6 +6953,7 @@ void ksyscall64(CPU64* cpu) {
             cpu->memory->writed(a1, (U32)fd1);
             cpu->memory->writed(a1 + 4, (U32)fd2);
             if (pipeDiag) {
+                bwStepNote(17, cpu->thread->process->id, cpu->thread->id);
                 klog_fmt("BW64-DIAG pipe2 exit pid=%u tid=%u",
                          cpu->thread->process->id, cpu->thread->id);
             }

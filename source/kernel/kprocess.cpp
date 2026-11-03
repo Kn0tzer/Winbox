@@ -16,6 +16,7 @@
  *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
+#include "bwstepdiag.h"
 #include "boxedwine.h"
 #include "drvinittrace.h"
 #include "kinotify.h"
@@ -757,8 +758,19 @@ U32 KProcess::getNextFileDescriptorHandle(int after) {
     return MAX_NUMBER_OF_FILES;
 }
 
-KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {    
+KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>& kobject, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle) {
+    // FD-127 step-ring notes (BW_THREAD_DUMP-gated): bracket the
+    // fd-table lock acquisition and the body so a caller blocked
+    // inside descriptor allocation is visible in the thread dump.
+    const bool allocDiag = bwStepDiagEnabled();
+    const U32 allocDiagTid = (allocDiag && KThread::currentThread()) ? KThread::currentThread()->id : 0;
+    if (allocDiag) {
+        bwStepNote(19, this->id, allocDiagTid);
+    }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(fdsMutex());
+    if (allocDiag) {
+        bwStepNote(21, this->id, allocDiagTid);
+    }
 
     if (handle<0) {
         handle = this->getNextFileDescriptorHandle(afterHandle);
@@ -772,6 +784,9 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
                 this->fdTableExhaustionLogged = true;
                 kwarn_fmt("BW64-FAIL fd-table-exhausted process=%s outcome=returned-EMFILE", name.c_str());
             }
+            if (allocDiag) {
+                bwStepNote(20, this->id, allocDiagTid);
+            }
             return nullptr;
         }
     }
@@ -782,6 +797,9 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
         Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
             return kobject->selfFd();
         });
+    }
+    if (allocDiag) {
+        bwStepNote(20, this->id, allocDiagTid);
     }
     return result;
 }
