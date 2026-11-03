@@ -5839,9 +5839,37 @@ void ksyscall64(CPU64* cpu) {
             // persisted the data. (a1=dirfd, a2=path, a3=times, a4=flags.)
             // FD-131: an empty path still answers -ENOENT, as the host
             // does; "" with AT_EMPTY_PATH is the fd form and keeps the
-            // success answer, as does a null path (never dereferenced).
+            // success answer.
+            // FD-136: a null path answers the raw kernel's per-shape
+            // matrix, measured at the raw syscall level
+            // (test-results/fd136-138/hostref-fd136b.c; glibc's wrapper
+            // answers -EINVAL for every null shape without issuing the
+            // call, which is where the FD-132-era claim came from):
+            // the kernel copies the times first, so an unreadable
+            // times pointer faults ahead of every other verdict; flag
+            // bits outside AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer
+            // -EINVAL; the current-directory shape faults on the name
+            // fetch; any other flag with a null path answers -EINVAL;
+            // with flags 0 an unopened descriptor answers -EBADF and
+            // an open one succeeds (the descriptor form — this stub
+            // applies no times on any shape, so the success answer is
+            // the whole behaviour here).
             ret = 0;
-            if (a2 && !(a4 & 0x1000) &&
+            if (a3 && !sys_rangeHasPermission64(cpu->memory, a3, 32, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+            } else if (!a2) {
+                if (a4 & ~(0x100 | 0x1000)) {
+                    ret = (U64)-K_EINVAL;
+                } else if ((S32)a1 == K_AT_FDCWD) {
+                    ret = (U64)-K_EFAULT;
+                } else if (a4 != 0) {
+                    ret = (U64)-K_EINVAL;
+                } else if (!cpu->thread || !cpu->thread->process) {
+                    ret = (U64)-K_ENOSYS;
+                } else if (!cpu->thread->process->getFileDescriptor((FD)(S32)a1)) {
+                    ret = (U64)-K_EBADF;
+                }
+            } else if (!(a4 & 0x1000) &&
                 sys_rangeHasPermission64(cpu->memory, a2, 1, K64_PAGE_READ) &&
                 cpu->memory->readb(a2) == 0) {
                 ret = (U64)-K_ENOENT;

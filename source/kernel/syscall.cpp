@@ -1901,7 +1901,7 @@ static U32 syscall_sync_file_range(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_utimensat(CPU* cpu, U32 eipCount) {
-    if (!ARG2) return -K_EINVAL; // FD-132: the host answers -EINVAL for a null path at utimensat in every shape (the kernel special-cases the null filename before any name fetch or descriptor resolution)
+    if (!ARG2) return cpu->thread->process->utimensatNullPath(ARG1, ARG3, ARG4, false); // FD-136: a null path answers the raw kernel's per-shape matrix, not one -EINVAL (the FD-132 guard rested on glibc's wrapper refusing the null path in userspace; re-measured raw in test-results/fd136-138)
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "utimensat dirfd=%d path=%X(%s) times=%X flags=%X", ARG1, ARG2, path.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->utimesat(ARG1, path, ARG3, ARG4, false);
@@ -1931,7 +1931,7 @@ static U32 syscall_timerfd_gettime(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_utimensat_time64(CPU* cpu, U32 eipCount) {
-    if (!ARG2) return -K_EINVAL; // FD-132: the host answers -EINVAL for a null path at utimensat in every shape (the kernel special-cases the null filename before any name fetch or descriptor resolution)
+    if (!ARG2) return cpu->thread->process->utimensatNullPath(ARG1, ARG3, ARG4, true); // FD-136: same null-path matrix as utimensat (see syscall_utimensat)
     BString path = cpu->memory->readString(ARG2);
     SYS_LOG1(SYSCALL_FILE, cpu, "utimensat_time64 dirfd=%d path=%X(%s) times=%X flags=%X", ARG1, ARG2, path.c_str(), ARG3, ARG4);
     U32 result = cpu->thread->process->utimesat(ARG1, path, ARG3, ARG4, true);

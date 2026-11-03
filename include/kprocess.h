@@ -351,6 +351,10 @@ public:
     U32 utimes(BString path, U32 times);
     U32 utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64);
     U32 utimesat64(FD dirfd, BString path, U32 times, U32 flags);
+    // FD-136: utimensat with a null path, answered per the raw
+    // kernel's per-shape matrix (see kprocess.cpp).
+    U32 utimensatNullPath(FD dirfd, U32 times, U32 flags, bool time64);
+    U32 setNodeTimes(const std::shared_ptr<FsNode>& node, U32 times, bool time64);
     U32 write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
     U32 writev(KThread* thread, FD handle, U32 iov, S32 iovcnt);
     U32 readv(KThread* thread, FD handle, U32 iov, S32 iovcnt);

@@ -3644,6 +3644,10 @@ U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
     if (flags & ~MEMFD_SUPPORTED_FLAGS) return (U32)-K_EINVAL;
+    // FD-138: the host refuses names longer than 249 chars with
+    // -EINVAL (the kernel's MFD_NAME_MAX_LEN), measured at the raw
+    // syscall level; a name at the limit still creates.
+    if (name.length() > 249) return (U32)-K_EINVAL;
     // Each memfd needs its own inode identity: the 64-bit MAP_SHARED page
     // registry is keyed by (inode, file page), so a constant id would alias
     // unrelated memfds (e.g. wine's server sections vs libpulse's shm pool)
@@ -4612,6 +4616,10 @@ U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64
     if (!node) {
         return -K_ENOENT;
     } 
+    return setNodeTimes(node, times, time64);
+}
+
+U32 KProcess::setNodeTimes(const std::shared_ptr<FsNode>& node, U32 times, bool time64) {
     U64 lastAccessTime = 0;
     U32 lastAccessTimeNano = 0;
     U64 lastModifiedTime =  0;
@@ -4651,6 +4659,44 @@ U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64
         }
     }
     return node->setTimes(lastAccessTime, lastAccessTimeNano, lastModifiedTime, lastModifiedTimeNano);
+}
+
+// FD-136: utimensat with a null path. The raw kernel's per-shape
+// answers, measured at the raw syscall level on the host
+// (test-results/fd136-138/hostref-fd136b.c) after the FD-132-era
+// -EINVAL-in-every-shape claim turned out to be glibc's wrapper
+// refusing the null path in userspace without issuing the call:
+// flag bits outside AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer
+// -EINVAL ahead of everything; the current-directory shape
+// faults on the name fetch (-EFAULT); any other flag with a null
+// path answers -EINVAL; with flags 0 an unopened descriptor
+// answers -EBADF and an open one is the descriptor form
+// (futimens' shape) and succeeds, applying the times.
+U32 KProcess::utimensatNullPath(FD dirfd, U32 times, U32 flags, bool time64) {
+    if (flags & ~(0x100 | 0x1000)) { // outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH
+        return -K_EINVAL;
+    }
+    if (dirfd == -100) { // AT_FDCWD: no descriptor form against the cwd
+        return -K_EFAULT;
+    }
+    if (flags != 0) {
+        return -K_EINVAL;
+    }
+    KFileDescriptorPtr fd = getFileDescriptor(dirfd);
+    if (!fd) {
+        return -K_EBADF;
+    }
+    // The descriptor form: apply the times to the descriptor's
+    // node where it has one. The kernel answers success for every
+    // open descriptor in this shape (files, directories, pipes,
+    // memfds all measured or equivalent inodes), so a descriptor
+    // whose node stores no times (a pipe, a memfd) still answers
+    // success; the application is best-effort there.
+    std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
+    if (file && file->openFile && file->openFile->node) {
+        setNodeTimes(file->openFile->node, times, time64);
+    }
+    return 0;
 }
 
 U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
