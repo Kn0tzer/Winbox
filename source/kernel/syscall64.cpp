@@ -6872,8 +6872,18 @@ void ksyscall64(CPU64* cpu) {
             // client can block forever. The name is a guest pointer, so read
             // it through the 64-bit memory interface.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (!a1) {
+                // FD-137: a null name faults on the host (-EFAULT);
+                // skipping the copy for a null pointer erased it to
+                // the empty string, and an empty name is legal and
+                // creates the file. The host validates the flags
+                // before the name copy, so invalid flags answer
+                // -EINVAL first.
+                ret = (U64)(((U32)a2 & ~KProcess::MEMFD_SUPPORTED_FLAGS) ? -K_EINVAL : -K_EFAULT);
+                break;
+            }
             char name[256] = {0};
-            if (a1) cpu->memory->memcpyFromGuest(name, a1, sizeof(name) - 1);
+            cpu->memory->memcpyFromGuest(name, a1, sizeof(name) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
             break;
         }

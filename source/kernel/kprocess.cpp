@@ -3643,8 +3643,7 @@ U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset
 }
 
 U32 KProcess::memfd_create(BString name, U32 flags) {
-    constexpr U32 supportedFlags = 1u /*MFD_CLOEXEC*/ | 2u /*MFD_ALLOW_SEALING*/;
-    if (flags & ~supportedFlags) return (U32)-K_EINVAL;
+    if (flags & ~MEMFD_SUPPORTED_FLAGS) return (U32)-K_EINVAL;
     // Each memfd needs its own inode identity: the 64-bit MAP_SHARED page
     // registry is keyed by (inode, file page), so a constant id would alias
     // unrelated memfds (e.g. wine's server sections vs libpulse's shm pool)

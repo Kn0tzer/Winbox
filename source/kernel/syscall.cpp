@@ -2021,6 +2021,14 @@ static U32 syscall_getrandom(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_memfd_create(CPU* cpu, U32 eipCount) {
+    if (!ARG1) {
+        // FD-137: a null name faults on the host (-EFAULT), but
+        // readString erases it to the empty string -- and an
+        // empty name is legal and creates the file. The host
+        // validates the flags before the name copy, so invalid
+        // flags answer -EINVAL first.
+        return (ARG2 & ~KProcess::MEMFD_SUPPORTED_FLAGS) ? (U32)-K_EINVAL : (U32)-K_EFAULT;
+    }
     BString name = cpu->memory->readString(ARG1);
     SYS_LOG1(SYSCALL_FILE, cpu, "name=%X(%s) flags=%X", ARG1, name.c_str(), ARG2);
     U32 result = cpu->thread->process->memfd_create(name, ARG2);
