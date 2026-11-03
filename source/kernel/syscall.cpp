@@ -1368,6 +1368,7 @@ static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
 static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
+    if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
@@ -1393,6 +1394,7 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
+    if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false);

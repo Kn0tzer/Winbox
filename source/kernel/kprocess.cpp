@@ -1158,6 +1158,11 @@ std::shared_ptr<FsNode> KProcess::findInPath(BString path) {
 }
 
 U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, const std::vector<BString>& envs) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node;
     FsOpenNode* openNode = nullptr;
     BString interpreter;
@@ -1476,6 +1481,11 @@ U32 KProcess::dup(U32 fildes) {
 }
 
 U32 KProcess::rmdir(BString path) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
 
     if (!node)
@@ -1501,6 +1511,11 @@ static BString rewriteServerDirPath(const BString& path, bool is64Bit) {
 }
 
 U32 KProcess::mkdir(BString path) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);   
     if (node) {
@@ -1516,6 +1531,11 @@ U32 KProcess::mkdir(BString path) {
 }
 
 U32 KProcess::rename(BString from, BString to) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (from.length() == 0 || to.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);    
     if (!node)
         return -K_ENOENT;
@@ -1530,6 +1550,11 @@ U32 KProcess::rename(BString from, BString to) {
 }
 
 U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (from.length() == 0 || to.length() == 0) {
+        return -K_ENOENT;
+    }
     BString currentDirectory;
     U32 result = this->getCurrentDirectoryFromDirFD(olddirfd, currentDirectory);
     if (result)
@@ -1575,6 +1600,11 @@ static S32 internalAccess(std::shared_ptr<FsNode> node, U32 flags) {
 }
 
 U32 KProcess::access(BString path, U32 mode) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     return internalAccess(node, mode); 
@@ -1600,6 +1630,11 @@ U32 KProcess::lseek(FD fildes, S32 offset, U32 whence) {
 }
 
 U32 KProcess::chmod(BString path, U32 mode) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
         return -K_ENOENT;
@@ -1628,6 +1663,11 @@ U32 KProcess::fchmod(FD fildes, U32 mode) {
 }
 
 U32 KProcess::fchmodat(FD dirfd, BString path, U32 mode, U32 flags) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     BString dir;
     U32 result = 0;
     if (path.charAt(0) != '/')
@@ -1649,6 +1689,11 @@ U32 KProcess::fchmodat(FD dirfd, BString path, U32 mode, U32 flags) {
 }
 
 U32 KProcess::chdir(BString path) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node)
@@ -1666,6 +1711,11 @@ U32 KProcess::chdir(BString path) {
 }
 
 U32 KProcess::unlinkFile(BString path) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
@@ -1679,6 +1729,11 @@ U32 KProcess::unlinkFile(BString path) {
 }
 
 U32 KProcess::link(BString from, BString to) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (from.length() == 0 || to.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
     std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
 
@@ -1836,6 +1891,11 @@ U32 KProcess::close(FD fildes) {
 }
 
 U32 KProcess::open(BString path, U32 flags) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     KFileDescriptorPtr fd;
         
@@ -2046,6 +2106,11 @@ U32 KProcess::getrusuage(KThread* thread, U32 who, U32 usage) {
 }
 
 U32 symlinkInDirectory(BString currentDirectory, BString target, BString linkpath) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (target.length() == 0 || linkpath.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node;
 
     node = Fs::getNodeFromLocalPath(currentDirectory, linkpath, false);
@@ -2076,6 +2141,11 @@ U32 symlinkInDirectory(BString currentDirectory, BString target, BString linkpat
 }
 
 U32 KProcess::symlinkat(BString target, FD dirfd, BString linkpath) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (target.length() == 0 || linkpath.length() == 0) {
+        return -K_ENOENT;
+    }
     BString currentDirectory;
     U32 result = this->getCurrentDirectoryFromDirFD(dirfd, currentDirectory);
     if (result)
@@ -2088,6 +2158,11 @@ U32 KProcess::symlink(BString target, BString linkpath) {
 }
 
 U32 KProcess::readlinkInDirectory(BString currentDirectory, BString path, U32 buffer, U32 bufSize) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     // :TODO: move these to the virtual filesystem
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, path, false);
     if (!node || !node->isLink())
@@ -2145,6 +2220,11 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
 #define FS_FREE_SIZE 96636764160l
 
 U32 KProcess::statfs(BString path, U32 address) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
@@ -2164,6 +2244,11 @@ U32 KProcess::statfs(BString path, U32 address) {
 }
 
 U32 KProcess::statfs64(BString path, U32 address) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
     if (!node) {
         return -K_ENOENT;
@@ -3891,6 +3976,11 @@ U32 KProcess::getcwd(U32 buffer, U32 size) {
 }
 
 U32 KProcess::stat64(BString path, U32 buffer) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, &isLink);
@@ -3903,6 +3993,11 @@ U32 KProcess::stat64(BString path, U32 buffer) {
 }
 
 U32 KProcess::lstat64(BString path, U32 buffer) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
     if (!node) {
@@ -4159,6 +4254,11 @@ U32 KProcess::epollwait(KThread* thread, FD epfd, U32 events, U32 maxevents, U32
 }
 
 U32 KProcess::utimes(BString path, U32 times) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
 
     if (!node) {
@@ -4200,6 +4300,11 @@ U32 KProcess::getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory) 
 }
 
 U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
@@ -4218,6 +4323,11 @@ U32 KProcess::openat(FD dirfd, BString path, U32 flags) {
 }
 
 U32 KProcess::mkdirat(U32 dirfd, BString path, U32 mode) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
@@ -4339,6 +4449,11 @@ void KProcess::writeStatX(KMemory* memory, U32 buf, U32 id, U32 rdev, U32 hardLi
     memory->writed(buf, 0);           // stx_dio_offset_align
 }
 U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0 && !(flags & K_AT_EMPTY_PATH)) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
@@ -4388,6 +4503,12 @@ U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
 }
 
 U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
+
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0 && !(flag & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
+        return -K_ENOENT;
+    }
     BString dir;
     U32 result = 0;
     
@@ -4414,6 +4535,11 @@ U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
 }
 
 U32 KProcess::unlinkat(FD dirfd, BString path, U32 flags) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
+    }
     path = rewriteServerDirPath(path, this->is64Bit);
     BString dir;
     U32 result = 0;
@@ -4443,7 +4569,13 @@ U32 KProcess::unlinkat(FD dirfd, BString path, U32 flags) {
     }
 }
 
-U32 KProcess::faccessat(U32 dirfd, BString path, U32 mode, U32 flags) {    
+U32 KProcess::faccessat(U32 dirfd, BString path, U32 mode, U32 flags) {
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0 && !(flags & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
+        return -K_ENOENT;
+    }
+    
     BString dir;
     U32 result = 0;
     
@@ -4463,6 +4595,12 @@ U32 KProcess::faccessat(U32 dirfd, BString path, U32 mode, U32 flags) {
 #define K_UTIME_OMIT 0x3ffffffe
 
 U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64) {
+
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0 && !(flags & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
+        return -K_ENOENT;
+    }
     BString dir;
     U32 result = 0;
     
@@ -4517,6 +4655,12 @@ U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64
 }
 
 U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
+
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0 && !(flags & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
+        return -K_ENOENT;
+    }
     BString dir;
     U32 result = 0;
 
@@ -4590,6 +4734,11 @@ U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
     KFileDescriptorPtr descriptor = this->getFileDescriptor(fd);
     if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
         return -K_EBADF;
+    }
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path.length() == 0) {
+        return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, (mask & K_IN_DONT_FOLLOW) == 0);

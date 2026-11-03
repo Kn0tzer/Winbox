@@ -1625,6 +1625,9 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
     if (!pathAddr) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path[0] == '\0') return (U64)-K_ENOENT;
     KProcess* process = cpu->thread->process.get();
     // /proc/self/exe (and /proc/<pid>/exe): the kernel exposes the executable as
     // a magic symlink. wine's loader open()s/realpath()s it to find its install
@@ -2191,6 +2194,7 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
             if (!path[pathLength]) break;
         }
         if (pathLength == sizeof(path)) return (U64)-K_ENAMETOOLONG;
+        if (pathLength == 0) return (U64)-K_ENOENT; // FD-131: the empty answer precedes dirfd resolution, as the host answers
         BString base = process->fsContext->currentDirectory;
         if ((S32)dirfd != -100 && path[0] != '/') {
             KFileDescriptorPtr directory = process->getFileDescriptor((FD)dirfd);
@@ -2241,6 +2245,7 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     if (!pathAddr || !statbuf) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    if (path[0] == '\0') return (U64)-2; // FD-131: -ENOENT for an empty path, as the host answers
     BString bpath = BString::copy(path);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
         cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink);
@@ -2773,6 +2778,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
     if (!pathAddr || !buf || sz == 0) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    if (path[0] == '\0') return (U64)-K_ENOENT; // FD-131: empty path, as the host answers
     KProcess* proc = cpu->thread->process.get();
     BString pidExe = B("/proc/") + BString::valueOf(proc->id) + B("/exe");
     BString resolved;
@@ -5831,7 +5837,15 @@ void ksyscall64(CPU64* cpu) {
             // made it retry (43+ calls seen). We don't model per-file mtime
             // precisely, so report success — the cache write itself already
             // persisted the data. (a1=dirfd, a2=path, a3=times, a4=flags.)
+            // FD-131: an empty path still answers -ENOENT, as the host
+            // does; "" with AT_EMPTY_PATH is the fd form and keeps the
+            // success answer, as does a null path (never dereferenced).
             ret = 0;
+            if (a2 && !(a4 & 0x1000) &&
+                sys_rangeHasPermission64(cpu->memory, a2, 1, K64_PAGE_READ) &&
+                cpu->memory->readb(a2) == 0) {
+                ret = (U64)-K_ENOENT;
+            }
             break;
         case X64_SYS_set_robust_list:
         case X64_SYS_fadvise64:
@@ -6186,6 +6200,9 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_statfs:
             // a1 = path (ignored — same lie for every fs), a2 = struct statfs*
+            // FD-131: an empty path answers -ENOENT, as the host does.
+            if (a1 && sys_rangeHasPermission64(cpu->memory, a1, 1, K64_PAGE_READ) &&
+                cpu->memory->readb(a1) == 0) { ret = (U64)-K_ENOENT; break; }
             ret = sys_statfs64_common(cpu, a2);
             break;
         case X64_SYS_fstatfs:
@@ -6248,6 +6265,10 @@ void ksyscall64(CPU64* cpu) {
             U64 pathArg = (nr == X64_SYS_access) ? a1 : a2;
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT; faccessat2 with
+            // AT_EMPTY_PATH is the fd form and keeps resolving (the
+            // working directory for AT_FDCWD).
+            if (path[0] == '\0' && !(nr == X64_SYS_faccessat2 && (a4 & 0x1000))) { ret = (U64)-2; break; }
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
                 cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
             ret = n ? 0 : (U64)-2;
@@ -6264,6 +6285,8 @@ void ksyscall64(CPU64* cpu) {
             U64 pathArg = (nr == X64_SYS_mkdir) ? a1 : a2;
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT, as the host does.
+            if (pathArg && path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString full = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                            BString::copy(path));
             ret = (U64)(S64)(S32)cpu->thread->process->mkdir(full);
@@ -6285,6 +6308,10 @@ void ksyscall64(CPU64* cpu) {
             cpu->memory->memcpyFromGuest(target, a1, sizeof(target) - 1);
             U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
             cpu->memory->memcpyFromGuest(linkpath, linkArg, sizeof(linkpath) - 1);
+            // FD-131: an empty target or an empty linkpath answers
+            // -ENOENT, as the host does.
+            if (a1 && target[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+            if (linkArg && linkpath[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString fullLink = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                                BString::copy(linkpath));
             ret = (U64)(S64)(S32)cpu->thread->process->symlink(
@@ -6313,6 +6340,11 @@ void ksyscall64(CPU64* cpu) {
             char newp[1024] = {0};
             cpu->memory->memcpyFromGuest(oldp, oldArg, sizeof(oldp) - 1);
             cpu->memory->memcpyFromGuest(newp, newArg, sizeof(newp) - 1);
+            // FD-131: an empty old or new path answers -ENOENT, as
+            // the host does; linkat with AT_EMPTY_PATH on the old path
+            // is the fd form and keeps its current answer.
+            if (oldArg && oldp[0] == '\0' && !(nr == X64_SYS_linkat && (a5 & 0x1000))) { ret = (U64)-K_ENOENT; break; }
+            if (newArg && newp[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString fullOld = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(oldp));
             BString fullNew = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
@@ -6766,6 +6798,9 @@ void ksyscall64(CPU64* cpu) {
             U64 pathArg = (nr == X64_SYS_unlink) ? a1 : a2;
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT, as the host does
+            // (the join below would name the working directory itself).
+            if (pathArg && path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->unlinkFile(
                 BString(Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                         BString::copy(path))));
