@@ -6936,7 +6936,7 @@ void ksyscall64(CPU64* cpu) {
             // production runs are untouched. Entry/exit brackets around
             // the pair creation and the fd writeback name the calling
             // thread; the matching step lines live in ksocketpairFds.
-            const bool pipeDiag = bwThreadDumpEnabled();
+            const bool pipeDiag = bwStepDiagEnabled();
             if (pipeDiag) {
                 bwStepNote(1, cpu->thread->process->id, cpu->thread->id);
                 klog_fmt("BW64-DIAG pipe2 enter pid=%u tid=%u nr=%d fds=0x%llx flags=0x%llx",
