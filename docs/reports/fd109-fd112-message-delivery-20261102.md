@@ -8,6 +8,26 @@ path, and the FD-107 test fixture correction below). Host
 reference programs and outputs in `test-results/fd109-112/`
 (host kernel 6.17.0-1020-oracle).
 
+Numbering note for the merge audit: FD-109..112 (and the
+FD-113..115 filed from this lane) are this branch's lineage
+numbers, inherited from the filings on `lane-fd105-108`. On
+the batch-3 composed register those numbers are taken by
+other entries; this branch is not renumbered, and the audit
+renumbers these entries fresh in filing order when the
+branch composes. The mapping by substance, in filing order:
+this branch's FD-109 = recvmsg reports a fabricated source
+name for queued messages; FD-110 = data queued as a message
+is invisible to the plain read/recvfrom paths; FD-111 =
+datagrams addressed to a named peer have no delivery route
+(addressed sendto and datagram connect); FD-112 = a
+zero-length datagram sent with sendmsg is silently dropped.
+The lane's own filings follow the same order: FD-113 = a
+closed pathname socket answers ENOENT where the host
+answers ECONNREFUSED; FD-114 = stream write/sendmsg byte
+order across the emulator's two receive stores; FD-115 =
+writev queues one datagram per segment instead of one per
+gather.
+
 Work note: this lane's first staging area was lost when the
 local machine rebooted mid-session (its /tmp was wiped before
 any product edit had been pushed to the box). Every edit was
