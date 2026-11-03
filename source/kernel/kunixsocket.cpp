@@ -1454,6 +1454,47 @@ U32 KUnixSocketObject::sendto(KThread* thread, const KFileDescriptorPtr& fd, U32
         }
         return -K_EINVAL;
     }
+    // FD-108: a datagram send on a connected pair queues a real
+    // datagram on the peer, mirroring sendmsg's queueing tail. This
+    // previously routed every send to the stream write path, whose
+    // datagram branch discards the payload and returns the length,
+    // so the send was reported but never delivered. A datagram
+    // socket whose peer was never linked (a named socket reached
+    // through connect(), which sets the connected flag without
+    // linking a peer object) keeps the fall-through below: there
+    // is no queue to deliver to.
+    if (this->type == K_SOCK_DGRAM) {
+        std::shared_ptr<KUnixSocketObject> con = this->connection.lock();
+        if (con) {
+            const bool noSignal = (flags & K_MSG_NOSIGNAL) != 0;
+            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(con->lockCond);
+            if (this->outClosed) {
+                return writePipeClosed(thread, noSignal);
+            }
+            KMemory* memory = thread->memory;
+            std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
+            msg->senderPid = thread->process->id;
+            msg->senderUid = thread->process->userId;
+            msg->senderGid = thread->process->groupId;
+            std::vector<U8> packet;
+            packet.reserve(length);
+            for (U32 i = 0; i < length; i++) packet.push_back(memory->readb(message + i));
+            const U32 kept = con->applySocketFilter(packet.data(), length);
+            if (length && !kept) {
+                // Linux reports the submitted length for filtered packets.
+                return length;
+            }
+            msg->data.push_back((U8)kept);
+            msg->data.push_back((U8)(kept >> 8));
+            msg->data.push_back((U8)(kept >> 16));
+            msg->data.push_back((U8)(kept >> 24));
+            msg->data.insert(msg->data.end(), packet.begin(), packet.begin() + kept);
+            con->msgs.push(msg);
+            BOXEDWINE_CONDITION_SIGNAL_ALL(con->lockCond);
+            con->notifyAsyncReady(K_POLL_IN);
+            return length;
+        }
+    }
     // Connected send: the write path is the data path. MSG_NOSIGNAL is
     // accepted but not honored (the write path applies write()'s
     // SIGPIPE behavior), and MSG_DONTWAIT is accepted with the socket's

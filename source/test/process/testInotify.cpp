@@ -5073,13 +5073,17 @@ void testReadv32Syscall() {
 // reports the full byte count and the bytes are gone. Host contract
 // measured in test-results/fd105-108/hostref-name-fd107.c (N5/N6) and
 // the filing lane's P10/P11: an unwritable buffer answers -EFAULT,
-// stream data survives the failed call, a datagram is consumed, and
-// a buffer crossing into unwritable memory faults with the writable
-// prefix delivered. Coverage boundary: the emulator's datagram queue
-// is reachable only through recvmsg (read/recvfrom drain only the
-// stream buffer), so the datagram half of the host shape is pinned
-// by FD-104's recvmsg cases; the copyback fixed here is the shared
-// single-call path and is type-agnostic.
+// and a buffer crossing into unwritable memory faults with the
+// writable prefix delivered. Consumption follows FD-104's settled
+// shape: the object receive consumes into scratch with no pushback,
+// so a faulted plain receive consumes the bytes on a stream socket
+// too (the host leaves them queued -- the one settled divergence),
+// while MSG_PEEK consumes nothing on either. Coverage boundary: the
+// emulator's datagram queue is reachable only through recvmsg
+// (read/recvfrom drain only the stream buffer), so the datagram
+// half of the host shape is pinned by FD-104's recvmsg cases; the
+// copyback fixed here is the shared single-call path and is
+// type-agnostic.
 void testRecvfromBadBuffer64Syscalls() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
@@ -5173,17 +5177,18 @@ void testRecvfromBadBuffer64Syscalls() {
             closePair(p);
         }
     }
-    // Unwritable buffer: -EFAULT, and the stream data survives the
-    // failed call (the host consumes into its own buffer, then the
-    // copy faults without losing the bytes).
+    // Unwritable buffer: -EFAULT. The bytes are consumed by the
+    // failed call -- FD-104's settled divergence (the object
+    // receive consumes into scratch with no pushback; the host
+    // leaves stream data queued).
     {
         Pair p;
         if (makePair(p)) {
             invoke(1, (U64)(U32)p.tx, textAt, 16, 0);
             S64 r = invoke(45, (U64)(U32)p.rx, unmapped, 16, 0);
             S64 r2 = invoke(45, (U64)(U32)p.rx, recvAt, 512, 0);
-            if (r != -K_EFAULT || r2 != 16 || !guestEq(recvAt, text, 16)) {
-                testFail("stream recvfrom to an unmapped buffer returned %lld then %lld (want -EFAULT then the surviving 16 bytes)",
+            if (r != -K_EFAULT || r2 != -K_EWOULDBLOCK) {
+                testFail("stream recvfrom to an unmapped buffer returned %lld then %lld (want -EFAULT, then -EWOULDBLOCK: consumed per FD-104's settled shape)",
                          (long long)r, (long long)r2);
             }
             closePair(p);
@@ -5868,7 +5873,7 @@ void testSendtoDatagram64Syscalls() {
     {
         Pair p;
         if (makePair(2, p)) {
-            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 16, 1 /*MSG_DONTWAIT*/, 0, 0);
+            S64 s = invoke6(44, (U64)(U32)p.tx, textAt, 16, 0x40 /*MSG_DONTWAIT*/, 0, 0);
             std::string got;
             S64 r = recvOne(p.rx, 512, got);
             if (s != 16 || r != 16 || got != std::string(textA, 16)) {
