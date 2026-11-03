@@ -3615,12 +3615,14 @@ void testRecvmsgNameCopyback64Syscalls() {
     auto makePair = [&](Pair& p) {
         p.rx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
         U32 rl = writePathAddr(saAt, "/fd107r");
+        invoke(87, saAt + 2, 0, 0, 0); // unlink first: a closed socket's node outlives it (FD-113), as on the host
         if (p.rx < 0 || invoke(49, (U64)(U32)p.rx, saAt, rl, 0) != 0) {
             testFail("recvmsg-name test could not bind its receiver");
             return false;
         }
         p.tx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
         U32 sl = writePathAddr(saAt, "/fd107sender-long-name");
+        invoke(87, saAt + 2, 0, 0, 0); // unlink first (FD-113)
         if (p.tx < 0 || invoke(49, (U64)(U32)p.tx, saAt, sl, 0) != 0) {
             testFail("recvmsg-name test could not bind its sender");
             return false;
@@ -4062,6 +4064,7 @@ void testRecvmsgSenderName64Syscalls() {
     auto boundReceiver = [&]() -> S32 {
         S32 rx = dgram();
         U32 len = writePathAddr(bindAt, "/fd109r");
+        invoke(87, bindAt + 2, 0, 0, 0); // unlink first (FD-113)
         if (rx < 0 || invoke(49, (U64)(U32)rx, bindAt, len, 0) != 0) {
             testFail("recvmsg-sender-name test could not bind its receiver");
             return -1;
@@ -4110,6 +4113,7 @@ void testRecvmsgSenderName64Syscalls() {
         S32 rx = boundReceiver();
         S32 tx = dgram();
         U32 bl = writePathAddr(bindAt, "/fd109s");
+        invoke(87, bindAt + 2, 0, 0, 0); // unlink first (FD-113)
         U32 dl = writePathAddr(destAt, "/fd109r");
         if (rx >= 0 && tx >= 0 && invoke(49, (U64)(U32)tx, bindAt, bl, 0) == 0) {
             S64 s = invoke6(44, (U64)(U32)tx, bufAt, 4, 0, destAt, dl);
@@ -5116,6 +5120,8 @@ void testStreamWriteSendmsgOrder64Syscalls() {
         memory->writeq(rhdrAt + 32, rctlAt);
         memory->writeq(rhdrAt + 40, 2048);
         memory->writeq(rctlAt, 0);
+        memory->writeq(rctlAt + 8, 0);
+        memory->writeq(rctlAt + 16, 0);
         S64 rc = invoke(47, (U64)(U32)rx, rhdrAt, 0, 0);
         out.clear();
         if (rc > 0) {
