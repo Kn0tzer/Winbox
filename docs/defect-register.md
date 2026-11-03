@@ -970,6 +970,45 @@ do not close the entry until they land.
   `tools/guest-fixtures/winmm-tone.c`. Record:
   `docs/reports/fd85-audio-leg-20261102.md`; evidence:
   `test-results/fd85/`.
+  **Addendum 2026-11-03 (lane-fd85pay, second attempt):
+  the break is located, and it is not in the audio
+  chain.** An instrumented self-built mmdevapi/winealsa
+  pair (PE-side and unix-side buffer scans at every
+  release) plus raw WASAPI fixtures prove the whole
+  audio path sound on this stack: polling, event-
+  callback and worker-thread clients, including a
+  full-ring 1536-frame client, all deliver their
+  samples through the shipped driver to the page
+  capture. A native ALSA client through the exact
+  winealsa chain is likewise heard. The OpenAL run is
+  the only silent one, and the instrumented driver
+  reads its render buffer as zeros at release on the
+  client's own thread. An instrumented OpenAL Soft
+  1.25.2 build then shows why: its mixer renders
+  zeros because the buffer it uploads from is zeros —
+  the upload copy's source span (52,920 bytes, the
+  fixture's own sine table, pointer identical on both
+  sides of the call) reads as all zeros inside
+  `alBufferData`, and the fixture's own readback of
+  its table is likewise all zeros. The samples never
+  persist in the client's own memory; that loss is
+  the emulator defect filed as FD-87, with a pure
+  Win32 minimal repro needing no audio at all. Every
+  payload layer is thereby exonerated — driver,
+  winealsa/ALSA/OSS chain, bwPump, page capture, the
+  OpenAL DLL (stock MSVC binary, a config-forced
+  scalar run, and a from-source scalar rebuild all
+  behave identically) — and no payload rebuild or
+  replacement can close FD-85, because no audio
+  module can recover samples that were never in the
+  client's buffer. FD-85 stays open, gated on FD-87.
+  The identical fixture on the 32-bit stack is heard,
+  matching FD-87's 64-bit scope. Evidence:
+  `test-results/fd85pay/` (diag runs e31-e56, the
+  instrumented-driver and instrumented-OpenAL
+  records) and
+  `docs/reports/fd85pay-audio-conviction-20261103.md`.
+
 - **FD-86 — No Arial family on the 64-bit stack:
   family-name lookups for Arial find nothing.
   FIXED 2026-11-03 — see CL-55.** *(Was
@@ -1036,6 +1075,61 @@ do not close the entry until they land.
   full account in CL-42. What the test still fails on
   after this fix is FD-85's remaining defect, a
   different layer.
+- **FD-87 — 64-bit guest writes interleaved with
+  repeated cross-module calls are lost to later
+  reads: the memory reads back as zeros although
+  immediate in-loop readbacks verify every write.**
+  *(High — silent data loss in the 64-bit memory
+  serving; any guest program that fills a buffer
+  across repeated library calls can silently read
+  back zeros. Filed 2026-11-03 by lane-fd85pay as
+  the convicted blocker behind FD-85. The repro is
+  a pure Win32 console program: no audio, no Wine
+  audio modules, nothing downstream of the writes
+  themselves.)* Minimal repro (sources committed as
+  `tools/guest-fixtures/fpprobe6.c` and
+  `fpprobe7.c`; built binaries and run records in
+  `test-results/fd85pay/fixtures/` and
+  `test-results/suite-fd85pay-diag25/`,
+  `test-results/suite-fd85pay-diag26/`): a static
+  double array is filled `db[i] = i*0.01` in a
+  call-free loop and verified; a second loop
+  computes `s = sin(db[i])` (msvcrt), stores `s`
+  into a second static array, and reads it back
+  immediately — the readback matches `s` for all
+  1000 iterations, mismatch count 0, for both a
+  direct store and a memcpy store — yet after the
+  loop every stored value reads as 0.0, and a
+  `.data` accumulator summed over the same calls
+  reads back 0.0000 against a true sum of
+  184.1776. Controls in the same fixtures:
+  individual `sin` calls with memory arguments are
+  correct (including sin(100.0) = -0.506366, so
+  range reduction works); integer and double
+  stores in call-free loops persist and read back
+  correctly after the loop; an accumulator across
+  calls to a local noinline function, and across
+  `fabs`, is exact; per-iteration `sin` values
+  passed straight to printf are correct; constants
+  from the pool, `.rdata` and `.data` all load
+  exactly. The loss needs the combination —
+  repeated cross-module calls interleaved with the
+  writes — and is shape-sensitive rather than a
+  clean page discard: with a printf inside the
+  loop the accumulator survives partially (71.8690
+  of 184.1776). The 32-bit stack does not show it
+  (the identical OpenAL fixture's tone is heard
+  there). This one mechanism explains FD-85 end to
+  end. Closing terms: the 64-bit memory serving
+  fixed such that the repro's post-loop readbacks
+  return the stored values, FD-85's audio stage
+  then passes unloosened, and the native and JS
+  suites stay green. *(Numbered FD-87 on
+  lane-fd85pay against this branch's register,
+  whose highest entry was FD-86; the number is
+  claimed on sibling branches for unrelated items,
+  so the composing merge renumbers by audit.)*
+
 ### Programs that hang, exit, or crash (cause uncharacterized)
 
 - **FD-20 — Gang Beasts' engine process exits during startup
