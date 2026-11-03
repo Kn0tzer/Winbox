@@ -51,6 +51,10 @@ tools/rootfs64/stage-fonts32.sh
 # 64-bit DejaVu faces incl. the Serif pair (web/runtime and dist/runtime);
 # the 64-bit rootfs carried no faces at all (FD-65).
 tools/rootfs64/stage-fonts64.sh
+# 64-bit Arial alias: prefix64's user.reg carries the Wine font
+# replacement "Arial"="DejaVu Sans" (the mechanism the 32-bit stack
+# gets from stage-wine32-fonts.py at export; FD-86).
+python3 tools/rootfs64/stage-font-alias64.py
 # 32-bit ALSA->OSS bridge: OSS plugins into wine32.zip, asound.conf +
 # /usr/share/alsa into glibc-rootfs32.zip.
 tools/rootfs64/stage-alsa32.sh web/runtime

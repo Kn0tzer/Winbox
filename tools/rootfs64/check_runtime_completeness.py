@@ -56,6 +56,12 @@ artifacts and the *source* payloads, offline:
      already ships, plus the Serif pair — the 64-bit rootfs carried no
      faces at all, so 64-bit font enumeration found no usable serif
      and Wine Gecko aborted at startup (FD-65).
+  4c. prefix64.zip's user.reg carries the Wine font replacement
+     "Arial"="DejaVu Sans" ([Software\\Wine\\Fonts\\Replacements])
+     and the replacement target face ships in glibc-rootfs64.zip, so
+     the 64-bit stack serves the Arial family (FD-86); the 32-bit
+     stack serves it through the same replacement, written into its
+     exported prefix by tools/browser/stage-wine32-fonts.py.
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
      the download cache exists, the cached deb's ttc matches the pin.
   6. When build-prefix64.sh output exists (tools/rootfs64/dist/), its
@@ -599,6 +605,23 @@ def t_fonts64():
             assert sha(z.read(entry)) == FONTS64_PINS[name], f'{entry} bytes != pin'
 
 
+def t_prefix64_arial():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'stage_wine32_fonts', ROOT / 'tools/browser/stage-wine32-fonts.py')
+    fonts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fonts)
+    with zipfile.ZipFile(RUNTIME / 'prefix64.zip') as z:
+        registry = z.read('home/username/.wine/user.reg')
+    assert fonts.configure_replacements(registry) == registry, \
+        'prefix64.zip user.reg: Arial font replacement missing or drifted (FD-86)'
+    assert b'"Arial"="DejaVu Sans"' in registry, \
+        'prefix64.zip user.reg: "Arial"="DejaVu Sans" replacement missing (FD-86)'
+    with zipfile.ZipFile(RUNTIME / 'glibc-rootfs64.zip') as z:
+        assert 'usr/share/fonts/truetype/dejavu/DejaVuSans.ttf' in z.namelist(), \
+            'glibc-rootfs64.zip: DejaVuSans.ttf (the Arial replacement target) missing'
+
+
 def t_cjk_pin():
     text = (ROOT / 'tools/browser/stage-dependencies.py').read_text()
     assert CJK_TTC_SHA in text, 'stage-dependencies.py lost the CJK ttc pin'
@@ -648,6 +671,7 @@ if __name__ == '__main__':
     check('ALSA-to-OSS bridge members (staging-tree anchored, both arches)', t_alsa_bridge)
     check('fonts32 faces (source + shipped zip)', t_fonts32)
     check('fonts64 faces (source + shipped zip)', t_fonts64)
+    check('prefix64 Arial font replacement (FD-86)', t_prefix64_arial)
     check('CJK font pin', t_cjk_pin)
     check('prefix64 built artifact sections', t_prefix64_built)
     print(f'{len(FAILURES)} failures, {len(SKIPS)} skips')
