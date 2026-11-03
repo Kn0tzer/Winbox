@@ -3526,6 +3526,30 @@ void testRecvmsgNameCopyback64Syscalls() {
     if (!process->memory64) process->memory64 = new KMemory64(process.get());
     KMemory64* memory = process->memory64;
 
+    // FD-109 fixture correction (lane-fd109-112): the sender below
+    // is bound to a pathname, so the queued message carries a real
+    // sender address and the name copyback has bytes to land. The
+    // original socketpair fixture's sender was unnamed; its
+    // reported length on the base was the offered capacity only
+    // through FD-109's fabrication, and with the fabrication fixed
+    // the reported length is 0, the copyback is empty, and the
+    // unwritable-target scenarios cannot fault -- the host faults
+    // only when a name is actually copied (FD-107's own host
+    // reference used a named sender).
+    char dirTemplate[] = "/tmp/bw64fd107XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("recvmsg-name test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
     constexpr U64 dataPage = 0x71000000ULL;
     constexpr U64 namePage = 0x72000000ULL;
     if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
@@ -3578,13 +3602,34 @@ void testRecvmsgNameCopyback64Syscalls() {
     memory->memcpyToGuest(textAt, text, 16);
 
     struct Pair { S32 tx = 0, rx = 0; };
+    // A bound receiver and a bound, connected sender (FD-111's
+    // datagram connect). The sender's name is 22 bytes long, so
+    // its reported address (25 bytes) crosses a page end placed
+    // 16 bytes ahead of the unwritable page in the scenario below.
+    constexpr U64 saAt = dataPage + 0x300;
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1); // AF_UNIX
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
     auto makePair = [&](Pair& p) {
-        if (invoke(53, 1, 2 /*SOCK_DGRAM*/, 0, svAt) != 0) {
-            testFail("recvmsg-name test could not create a datagram socketpair");
+        p.rx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        U32 rl = writePathAddr(saAt, "/fd107r");
+        if (p.rx < 0 || invoke(49, (U64)(U32)p.rx, saAt, rl, 0) != 0) {
+            testFail("recvmsg-name test could not bind its receiver");
             return false;
         }
-        p.tx = (S32)memory->readd(svAt);
-        p.rx = (S32)memory->readd(svAt + 4);
+        p.tx = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        U32 sl = writePathAddr(saAt, "/fd107sender-long-name");
+        if (p.tx < 0 || invoke(49, (U64)(U32)p.tx, saAt, sl, 0) != 0) {
+            testFail("recvmsg-name test could not bind its sender");
+            return false;
+        }
+        U32 dl = writePathAddr(saAt, "/fd107r");
+        if (invoke(42, (U64)(U32)p.tx, saAt, dl, 0) != 0) {
+            testFail("recvmsg-name test could not connect its sender");
+            return false;
+        }
         if (invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0) != 0) {
             testFail("recvmsg-name test could not set the receiver nonblocking");
             return false;

@@ -413,9 +413,6 @@ U32 KUnixSocketObject::writeNative(U8* buffer, U32 len) {
             return -K_EPIPE;
         }
         KThread* thread = KThread::currentThread();
-        if (!thread) {
-            return -K_EPIPE;
-        }
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(dest->lockCond);
         U32 result = queueDatagramLocked(thread, dest, buffer, len);
         BOXEDWINE_CONDITION_SIGNAL_ALL(dest->lockCond);
@@ -1412,9 +1409,14 @@ std::shared_ptr<KUnixSocketObject> KUnixSocketObject::resolveNamedPeer(KThread* 
 
 U32 KUnixSocketObject::queueDatagramLocked(KThread* thread, const std::shared_ptr<KUnixSocketObject>& dest, const U8* packet, U32 len) {
     std::shared_ptr<KSocketMsg> msg = std::make_shared<KSocketMsg>();
-    msg->senderPid = thread->process->id;
-    msg->senderUid = thread->process->userId;
-    msg->senderGid = thread->process->groupId;
+    // thread may be null when the queueing caller is the native
+    // write path off a non-guest thread; the credential fields are
+    // informational then and stay 0.
+    if (thread) {
+        msg->senderPid = thread->process->id;
+        msg->senderUid = thread->process->userId;
+        msg->senderGid = thread->process->groupId;
+    }
     msg->senderAddr = this->localAddr;
     const U32 kept = dest->applySocketFilter(packet, len);
     if (len && !kept) {
@@ -1991,18 +1993,25 @@ U32 KUnixSocketObject::recvfrom(KThread* thread, const KFileDescriptorPtr& fd, U
     // FD-109/FD-110: the data path is the same plain read, but the
     // source report is the address the read actually consumed from
     // -- the queued message's recorded sender, or the connected
-    // peer's bound address for stream-buffer bytes. This used to
-    // report family + length 2 unconditionally (logged as an
-    // approximation of the unbound-peer answer); measured on the
-    // host, an unnamed source reports length 0 and copies nothing,
-    // a named one reports its full length with the copy truncated
-    // to the guest's capacity (hostref-names-fd109.c,
-    // hostref-tail-fd111.c in test-results/fd109-112/).
+    // peer's bound address for stream-buffer bytes. Measured on the
+    // host (hostref-names-fd109.c, hostref-tail-fd111.c,
+    // hostref-stream-addr.c in test-results/fd109-112/): an unnamed
+    // source reports length 0 and copies nothing -- EXCEPT the
+    // single-call recv on a connected stream socket, which answers
+    // family with length 2 for its unnamed peer (the datagram
+    // entries report 0). This entry point used to report family +
+    // length 2 for everything, which happened to match only that
+    // one case.
     ReadSource source;
     U32 result = read(thread, buffer, length, flags, &source);
     if ((S32)result >= 0 && address_len) {
         KMemory* memory = thread->memory;
-        const U32 full = (U32)source.senderAddr.size();
+        U32 full = (U32)source.senderAddr.size();
+        if (full == 0 && this->type == K_SOCK_STREAM && this->connection.lock()) {
+            memory->writew(address, K_AF_UNIX);
+            memory->writed(address_len, 2);
+            return result;
+        }
         const U32 copy = std::min(memory->readd(address_len), full);
         if (copy) {
             memory->memcpy(address, source.senderAddr.data(), copy);
