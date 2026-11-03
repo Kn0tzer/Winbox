@@ -1517,6 +1517,10 @@ void KUnixSocketObject::flushRecvBufferToQueueLocked(KThread* thread, KUnixSocke
     sender->queueStreamBytesLocked(thread, this, bytes.data(), buffered);
 }
 
+bool KUnixSocketObject::isRecordType() const {
+    return this->type == K_SOCK_DGRAM || this->type == K_SOCK_SEQPACKET;
+}
+
 U32 KUnixSocketObject::peerCloseSendAnswer(KThread* thread, bool noSignal) {
     // FD-119 (host-measured, test-results/fd118-119/): on a datagram
     // pair, closing the peer makes the survivor's FIRST connected

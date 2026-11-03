@@ -184,7 +184,7 @@ protected:
     // FD-118: datagram and seqpacket sockets are both record
     // sockets: a send queues one message and a read takes one
     // message, boundaries preserved.
-    bool isRecordType() const { return this->type == K_SOCK_DGRAM || this->type == K_SOCK_SEQPACKET; }
+    bool isRecordType() const;
     // FD-119: the send answer when a record socket has no live
     // peer object: the one-shot -ECONNREFUSED after a peer close
     // (datagram), -EPIPE for a seqpacket socket whose write side
