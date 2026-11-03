@@ -5443,6 +5443,222 @@ void testWritevDatagram64Syscalls() {
         }
     }
 }
+
+// FD-116: a plain zero-length write on a 64-bit datagram socket
+// queues a real empty datagram, behind the descriptor checks the
+// host runs first. Host contract (measured,
+// test-results/fd116-117/hostref-fd116.c, kernel
+// 6.17.0-1020-oracle): write(fd, buf, 0) on a connected datagram
+// socket returns 0 and the peer's recv returns 0 for an empty
+// datagram; an unknown descriptor answers -EBADF; a wrong-mode
+// descriptor answers the mode answer (this tree's write family
+// answers -K_EINVAL, the nonzero path's standing value); a
+// buffer address outside the user range answers -EFAULT with
+// nothing queued, while NULL and unmapped user addresses queue
+// the empty datagram; an unconnected datagram socket answers
+// -ENOTCONN; a stream socket queues nothing and answers 0, and
+// a stream socket whose peer is gone answers -EPIPE. On the
+// base, sys_write64 returns 0 on a zero count before resolving
+// the descriptor, so every case below that expects a queue or
+// an error fails.
+void testWriteZeroLength64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    constexpr U64 dataPage = 0x7d000000ULL;
+    constexpr U64 unmapped = 0x6200000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("write-zero-length test could not map its fixture page");
+        return;
+    }
+    if (memory->getPageFlags(unmapped >> K64_PAGE_SHIFT)) {
+        testFail("write-zero-length test fixture address is unexpectedly mapped");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    memory->memcpyToGuest(bufAt, "Z", 1);
+
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) {
+        if (invoke(53, 1, type, 0, svAt) != 0) {
+            testFail("write-zero-length test could not create a socketpair (type %u)", type);
+            return false;
+        }
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        invoke6(72, (U64)(U32)p.rx, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0);
+        return true;
+    };
+    auto closePair = [&](Pair& p) {
+        process->close(p.tx);
+        process->close(p.rx);
+    };
+    auto write0 = [&](S32 fd, U64 buf) -> S64 {
+        return invoke(1, (U64)(U32)fd, buf, 0, 0);
+    };
+    auto recvRc = [&](S32 fd) -> S64 {
+        return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0);
+    };
+    // A zero-length write that must queue exactly one empty
+    // datagram: write answers 0, the first recv answers 0 (the
+    // empty datagram), the next answers -EWOULDBLOCK.
+    auto expectEmptyDatagram = [&](Pair& p, S64 w, const char* label) {
+        S64 r1 = recvRc(p.rx);
+        S64 r2 = recvRc(p.rx);
+        if (w != 0 || r1 != 0 || r2 != -K_EWOULDBLOCK) {
+            testFail("%s: write0 %lld, recv %lld, next %lld (want 0, 0, -EWOULDBLOCK)",
+                     label, (long long)w, (long long)r1, (long long)r2);
+        }
+    };
+    // A zero-length write that must queue nothing.
+    auto expectNothingQueued = [&](Pair& p, S64 w, S64 wantW, const char* label) {
+        S64 r1 = recvRc(p.rx);
+        if (w != wantW || r1 != -K_EWOULDBLOCK) {
+            testFail("%s: write0 %lld, recv %lld (want %lld, -EWOULDBLOCK)",
+                     label, (long long)w, (long long)r1, (long long)wantW);
+        }
+    };
+
+    // Connected datagram pair, valid buffer: one empty datagram
+    // per zero-length write.
+    {
+        Pair p;
+        if (makePair(2 /*SOCK_DGRAM*/, p)) {
+            S64 w = write0(p.tx, bufAt);
+            expectEmptyDatagram(p, w, "dgram write0 valid buffer");
+            w = write0(p.tx, bufAt);
+            expectEmptyDatagram(p, w, "dgram write0 valid buffer, second");
+            closePair(p);
+        }
+    }
+    // NULL and unmapped user buffers queue the empty datagram
+    // too: a zero-length import checks only that the address is
+    // a user address.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = write0(p.tx, 0);
+            expectEmptyDatagram(p, w, "dgram write0 NULL buffer");
+            w = write0(p.tx, unmapped);
+            expectEmptyDatagram(p, w, "dgram write0 unmapped buffer");
+            closePair(p);
+        }
+    }
+    // A buffer address outside the user range answers -EFAULT
+    // and queues nothing.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            S64 w = write0(p.tx, 0xFFFFFFFFFFFFFFFFULL);
+            expectNothingQueued(p, w, -K_EFAULT, "dgram write0 buffer -1");
+            closePair(p);
+        }
+    }
+    // The descriptor checks run before the queue: an unknown
+    // descriptor answers -EBADF (the base answered 0).
+    if (write0(9999, bufAt) != -K_EBADF) {
+        testFail("write0 on an unknown descriptor: want -EBADF");
+    }
+    // A wrong-mode descriptor answers the write family's mode
+    // answer and queues nothing; a write-only descriptor over
+    // the same socket queues the empty datagram.
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            KFileDescriptorPtr txDesc = process->getFileDescriptor((FD)p.tx);
+            if (!txDesc) {
+                testFail("write-zero-length test could not fetch the pair descriptor");
+            } else {
+                KFileDescriptorPtr roDesc = process->allocFileDescriptor(txDesc->kobject, K_O_RDONLY, 0, -1, 0);
+                S64 w = write0(roDesc->handle, bufAt);
+                expectNothingQueued(p, w, -K_EINVAL, "dgram write0 read-only descriptor");
+                process->close(roDesc->handle);
+                KFileDescriptorPtr woDesc = process->allocFileDescriptor(txDesc->kobject, K_O_WRONLY, 0, -1, 0);
+                w = write0(woDesc->handle, bufAt);
+                expectEmptyDatagram(p, w, "dgram write0 write-only descriptor");
+                process->close(woDesc->handle);
+            }
+            closePair(p);
+        }
+    }
+    // An unconnected datagram socket answers -ENOTCONN.
+    {
+        S32 fd = (S32)invoke(41, 1, 2 /*SOCK_DGRAM*/, 0, 0);
+        if (fd < 0) {
+            testFail("write-zero-length test could not create a datagram socket");
+        } else {
+            if (write0(fd, bufAt) != -K_ENOTCONN) {
+                testFail("write0 on an unconnected datagram socket: want -ENOTCONN");
+            }
+            process->close(fd);
+        }
+    }
+    // A stream socket queues nothing and answers 0.
+    {
+        Pair p;
+        if (makePair(1 /*SOCK_STREAM*/, p)) {
+            S64 w = write0(p.tx, bufAt);
+            expectNothingQueued(p, w, 0, "stream write0");
+            closePair(p);
+        }
+    }
+    // A stream socket whose peer is gone answers -EPIPE.
+    {
+        Pair p;
+        if (makePair(1, p)) {
+            process->close(p.rx);
+            if (write0(p.tx, bufAt) != -K_EPIPE) {
+                testFail("write0 on a stream socket with a closed peer: want -EPIPE");
+            }
+            process->close(p.tx);
+        }
+    }
+    // A datagram socket whose peer is gone: the object is
+    // destroyed with the descriptor, so the write answers
+    // -ENOTCONN, the same answer the nonzero write gives on
+    // this tree (the host's one-shot -ECONNREFUSED for the
+    // first send after a peer close is the socket layer's
+    // peer accounting for every count, not this dispatcher's
+    // zero-count shape).
+    {
+        Pair p;
+        if (makePair(2, p)) {
+            process->close(p.rx);
+            if (write0(p.tx, bufAt) != -K_ENOTCONN) {
+                testFail("write0 on a datagram socket with a closed peer: want -ENOTCONN");
+            }
+            process->close(p.tx);
+        }
+    }
+}
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both

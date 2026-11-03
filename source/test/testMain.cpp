@@ -158,6 +158,7 @@ void testSendmsgZeroLength64Syscalls();
 void testStalePathnameSocket64Syscalls();
 void testStreamWriteSendmsgOrder64Syscalls();
 void testWritevDatagram64Syscalls();
+void testWriteZeroLength64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -240,6 +241,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testStalePathnameSocket64Syscalls, "Test x64 sendto/connect to a closed pathname socket"},
     {testStreamWriteSendmsgOrder64Syscalls, "Test x64 stream write/sendmsg byte order"},
     {testWritevDatagram64Syscalls, "Test x64 writev gathering on a datagram socket"},
+    {testWriteZeroLength64Syscalls, "Test x64 zero-length plain write on a datagram socket"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
