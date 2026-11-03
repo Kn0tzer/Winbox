@@ -790,13 +790,27 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
             return nullptr;
         }
     }
+    if (allocDiag) {
+        bwStepNote(22, this->id, allocDiagTid);
+    }
     KFileDescriptorPtr result = std::make_shared<KFileDescriptor>(shared_from_this(), kobject, accessFlags, descriptorFlags, handle);
-    
+    if (allocDiag) {
+        bwStepNote(23, this->id, allocDiagTid);
+    }
     this->fds.set(handle, result);
+    if (allocDiag) {
+        bwStepNote(24, this->id, allocDiagTid);
+    }
     if (fdNode) {
+        if (allocDiag) {
+            bwStepNote(25, this->id, allocDiagTid);
+        }
         Fs::addDynamicLinkFile(fdNode->path+"/"+BString::valueOf(handle), k_mdev(0, 0), fdNode, false, [kobject] {
             return kobject->selfFd();
         });
+        if (allocDiag) {
+            bwStepNote(26, this->id, allocDiagTid);
+        }
     }
     if (allocDiag) {
         bwStepNote(20, this->id, allocDiagTid);

@@ -17,6 +17,7 @@
  */
 
 #include "boxedwine.h"
+#include "bwstepdiag.h"
 #include "kinotify.h"
 
 #include "kstat.h"
@@ -246,14 +247,24 @@ U32 FsNode::getChildCount() {
 }
 
 void FsNode::addChild(std::shared_ptr<FsNode> node, bool notify) {
+    const bool stepDiag = bwStepDiagEnabled();
     this->loadChildren();
+    if (stepDiag) {
+        bwStepNote(27, 0, 0);
+    }
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(this->childrenByNameMutex);
     this->childrenByName.set(node->name, node);
     node->removedFromParent.store(false, std::memory_order_release);
     this->childrenVersion.fetch_add(1, std::memory_order_relaxed);
 #ifdef BW64_HAS_KINOTIFY
     if (notify && !this->childrenLoadInProgress) {
+        if (stepDiag) {
+            bwStepNote(28, 0, 0);
+        }
         KInotify::notifyChildAdded(this, node.get());
+        if (stepDiag) {
+            bwStepNote(36, 0, 0);
+        }
     }
 #endif
 }

@@ -38,6 +38,21 @@
 //   19 KProcess::allocFileDescriptor enter (before the fd-table lock)
 //   21 KProcess::allocFileDescriptor lock acquired
 //   20 KProcess::allocFileDescriptor about to return
+//   22 allocFileDescriptor: handle chosen (about to build descriptor)
+//   23 allocFileDescriptor: descriptor built (about to store it)
+//   24 allocFileDescriptor: descriptor stored (before the /proc link)
+//   25 allocFileDescriptor: /proc link about to be added
+//   26 allocFileDescriptor: /proc link added
+//   27 FsNode::addChild: children loaded (before the children lock)
+//   28 FsNode::addChild: child stored (before the inotify notify)
+//   36 FsNode::addChild: inotify notify returned
+//   29 KInotify::notifyChildAdded enter
+//   30 KInotify::sweepAll: instance snapshot taken, at least one live
+//   31 KInotify::sweepAll: no live instances
+//   32 KInotify::sweepAll: about to sweep one instance
+//   33 KInotify::sweepAll: one instance swept
+//   34 KInotify::sweep: before the instance condition lock
+//   35 KInotify::sweep: instance condition lock acquired
 
 bool bwStepDiagEnabled();
 void bwStepNote(unsigned int step, unsigned int pid, unsigned int tid);

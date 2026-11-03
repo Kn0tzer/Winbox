@@ -97,15 +97,21 @@ struct BwStepRec {
     U32 step;
     U32 pid;
     U32 tid;
+    U32 check;
 };
 constexpr U32 BW_STEP_RING_SIZE = 256;
 BwStepRec bwStepRing[BW_STEP_RING_SIZE];
 std::atomic<U32> bwStepSeq{0};
+U32 bwStepCheck(U32 seq, U32 step, U32 pid, U32 tid) {
+    return (seq * 2654435761u) ^ (step * 97u) ^ (pid << 8) ^ tid ^ 0x5eed1234u;
+}
 } // namespace
 
 void bwStepNote(unsigned int step, unsigned int pid, unsigned int tid) {
     U32 s = bwStepSeq.fetch_add(1, std::memory_order_relaxed);
-    bwStepRing[s % BW_STEP_RING_SIZE] = BwStepRec{s, step, pid, tid};
+    BwStepRec rec{s, step, pid, tid, 0};
+    rec.check = bwStepCheck(s, step, pid, tid);
+    bwStepRing[s % BW_STEP_RING_SIZE] = rec;
 }
 
 void bwStepDumpTail() {
@@ -113,8 +119,13 @@ void bwStepDumpTail() {
     U32 from = seq > 40 ? seq - 40 : 0;
     for (U32 i = from; i < seq; i++) {
         const BwStepRec& r = bwStepRing[i % BW_STEP_RING_SIZE];
-        klog_fmt("BW64-DIAG step-ring seq=%u step=%u pid=%u tid=%u",
-                 r.seq, r.step, r.pid, r.tid);
+        if (r.seq == i && r.check == bwStepCheck(r.seq, r.step, r.pid, r.tid)) {
+            klog_fmt("BW64-DIAG step-ring seq=%u step=%u pid=%u tid=%u",
+                     r.seq, r.step, r.pid, r.tid);
+        } else if (r.seq == i) {
+            klog_fmt("BW64-DIAG step-ring seq=%u TORN step=%u pid=%u tid=%u",
+                     r.seq, r.step, r.pid, r.tid);
+        }
     }
 }
 

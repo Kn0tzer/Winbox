@@ -18,6 +18,7 @@
 
 #include "boxedwine.h"
 #include "kinotify.h"
+#include "bwstepdiag.h"
 
 #include <atomic>
 
@@ -342,8 +343,15 @@ void KInotify::queueLocked(S32 wd, U32 mask, U32 cookie, const BString& name) {
 
 void KInotify::sweep(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie) {
     std::vector<U32> dropWds;
+    const bool stepDiag = bwStepDiagEnabled();
+    if (stepDiag) {
+        bwStepNote(34, 0, 0);
+    }
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(waitCond);
+        if (stepDiag) {
+            bwStepNote(35, 0, 0);
+        }
         for (auto& entry : this->watches) {
             Watch& watch = entry.second;
             std::shared_ptr<FsNode> watched = watch.node.lock();
@@ -394,6 +402,7 @@ void KInotify::registerInstance(const std::shared_ptr<KInotify>& instance) {
 }
 
 void KInotify::sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BString& childName, bool childIsDir, U32 selfType, U32 cookie) {
+    const bool stepDiag = bwStepDiagEnabled();
     std::vector<std::shared_ptr<KInotify>> live;
     {
         BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(KInotify::instancesMutex);
@@ -410,14 +419,26 @@ void KInotify::sweepAll(FsNode* parent, FsNode* subject, U32 childType, const BS
             anyInstance.store(false, std::memory_order_release);
         }
     }
+    if (stepDiag) {
+        bwStepNote(live.empty() ? 31 : 30, 0, 0);
+    }
     for (auto& instance : live) {
+        if (stepDiag) {
+            bwStepNote(32, 0, 0);
+        }
         instance->sweep(parent, subject, childType, childName, childIsDir, selfType, cookie);
+        if (stepDiag) {
+            bwStepNote(33, 0, 0);
+        }
     }
 }
 
 void KInotify::notifyChildAdded(FsNode* parent, FsNode* child) {
     if (!parent || !child) {
         return;
+    }
+    if (bwStepDiagEnabled()) {
+        bwStepNote(29, 0, 0);
     }
     sweepAll(parent, nullptr, K_IN_CREATE, child->name, child->isDirectory(), 0, 0);
 }
