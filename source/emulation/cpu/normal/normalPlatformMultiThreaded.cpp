@@ -36,6 +36,10 @@ static void platformThread(CPU* cpu) {
     platformInitExceptionHandling();
 #endif
     KThread::setCurrentThread(cpu->thread);
+    // FD-128: register this host thread's identity so currentThread()
+    // can recover it if the runningThread TLS slot is overwritten (see
+    // KThread::currentThread). The guard unregisters on every exit path.
+    KThread::PlatformThreadIdentityRegistration identityRegistration(cpu->thread);
     KProcessPtr process = KSystem::getProcess(cpu->thread->process->id);
 
 #ifdef BOXEDWINE_GUEST_X64

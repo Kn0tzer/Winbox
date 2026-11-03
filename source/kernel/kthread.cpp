@@ -43,6 +43,53 @@
 
 thread_local KThread* KThread::runningThread;
 
+// FD-128: host-thread -> guest-thread identity registry. Each platform
+// thread records its KThread here at start (keyed by pthread_self(), an
+// identity assigned by the pthread implementation rather than by a
+// writable TLS slot). KThread::currentThread() falls back to this
+// registry when the runningThread TLS slot holds a value that cannot be
+// a KThread (see the comment there). The registry mutex is a leaf lock:
+// it is never held across any other call.
+#ifdef BOXEDWINE_MULTI_THREADED
+#include <pthread.h>
+#include <unordered_map>
+namespace {
+std::mutex& fd128RegistryMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::unordered_map<void*, KThread*>& fd128Registry() {
+    static std::unordered_map<void*, KThread*> registry;
+    return registry;
+}
+} // namespace
+
+KThread* bwCurrentThreadRegistryLookup() {
+    std::lock_guard<std::mutex> lock(fd128RegistryMutex());
+    auto it = fd128Registry().find((void*)pthread_self());
+    return it == fd128Registry().end() ? nullptr : it->second;
+}
+
+void KThread::registerPlatformThread(KThread* thread) {
+    std::lock_guard<std::mutex> lock(fd128RegistryMutex());
+    fd128Registry()[(void*)pthread_self()] = thread;
+}
+
+void KThread::unregisterPlatformThread() {
+    std::lock_guard<std::mutex> lock(fd128RegistryMutex());
+    fd128Registry().erase((void*)pthread_self());
+}
+#else
+KThread* bwCurrentThreadRegistryLookup() {
+    return nullptr;
+}
+void KThread::registerPlatformThread(KThread*) {
+}
+void KThread::unregisterPlatformThread() {
+}
+#endif
+
+
 KThread::~KThread() {
     for (auto& callback : callbacksOnExit) {
         callback(id);
