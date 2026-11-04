@@ -152,7 +152,7 @@ export default class JitbenchTest extends ProbeTest {
               // available, the full latch and generated-code
               // assertions in the else branch apply.
               result.engineUnavailable = engine.reason || `engine '${engine.engine}' unavailable in this build`;
-              assert.equal(engine.blocksEntered, 0, `${fixture.name}: unavailable engine reports no generated code entered`);
+              assert.equal(engine.blocksEntered ?? 0, 0, `${fixture.name}: unavailable engine reports no generated code entered`);
             } else {
               assert.equal(Boolean(engine.enabled), jit === '1', `${fixture.name}: requested JIT mode latched`);
               if (jit === '1') {
