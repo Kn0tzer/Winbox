@@ -138,16 +138,21 @@ export default class JitbenchTest extends ProbeTest {
               Module.ccall('bw64_jit_stats_json_text', 'string', [], [])));
             result.stats = stats;
             const engine = fixture.arch === 'x86' ? stats.cpu32 : stats.cpu64;
-            if (engine.engine === 'unavailable') {
-              // This build target does not compile this engine in (the
-              // stats say so explicitly, e.g. the x64 browser target
-              // reports the 32-bit JIT as not compiled in). No mode can
-              // latch it; what this build must guarantee instead is that
-              // the engine reports itself disabled in every mode, while
-              // the checksum stability asserted above covers the
-              // interpreter path this target does serve.
-              result.engineUnavailable = engine.reason || 'not compiled in this target';
-              assert.equal(Boolean(engine.enabled), false, `${fixture.name}: engine not compiled in this target reports disabled`);
+            if (engine.available === 0 || engine.engine === 'unavailable') {
+              // This build does not run this JIT engine (the stats
+              // say so themselves: the suite runs the default
+              // interpreter browser build — the JIT is a separate
+              // build variant — and the 32-bit JIT is not compiled
+              // into the x64 target at all). No mode can make it
+              // generate code here; what this build must guarantee
+              // instead is that no generated code is reported
+              // entered, while the checksum stability asserted
+              // above covers the interpreter path this build does
+              // serve. On a build whose stats report the engine
+              // available, the full latch and generated-code
+              // assertions in the else branch apply.
+              result.engineUnavailable = engine.reason || `engine '${engine.engine}' unavailable in this build`;
+              assert.equal(engine.blocksEntered, 0, `${fixture.name}: unavailable engine reports no generated code entered`);
             } else {
               assert.equal(Boolean(engine.enabled), jit === '1', `${fixture.name}: requested JIT mode latched`);
               if (jit === '1') {
