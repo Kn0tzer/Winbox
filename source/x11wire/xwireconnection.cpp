@@ -1622,14 +1622,13 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                                  (int)srv.pointerGrabPointerMode,
                                  (unsigned)srv.pointerConfineWindow);
                     }
-                    // Do not freeze at grab time: under GrabModeSync the
-                    // first pointer event must still be delivered (the
-                    // delivery loop re-freezes after each delivered event
-                    // while a sync grab is active, and AllowEvents
-                    // releases the queue one event at a time). Freezing
-                    // here deadlocked pointer input for the session: no
-                    // event ever reached the grabbing client, so it never
-                    // had a reason to call AllowEvents.
+                    // Do not freeze at grab time either: sync grabs do
+                    // not freeze pointer event flow in this server (see
+                    // the delivery loop — GrabModeSync is treated as
+                    // GrabModeAsync here, matching the native X11
+                    // layer's settled policy). Freezing at grab time
+                    // deadlocked pointer input for the whole session:
+                    // no event ever reached the grabbing client.
                 }
             }
             uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
@@ -2577,12 +2576,18 @@ void XWireConnection::deliverInputEvents() {
                      (int)local.x, (int)local.y, (unsigned)target, (unsigned)mask);
         }
         sendInputEvent(code, target, local, tgtX, tgtY);
-        if (!isKey) {
-            std::lock_guard<std::mutex> registryLock(srv.regMutex);
-            if (srv.pointerGrabClient == clientIdBase && srv.pointerGrabPointerMode == 1) {
-                srv.pointerFrozen = true;
-            }
-        }
+        // No re-freeze after delivery under a GrabModeSync grab. The
+        // project's native X11 layer settled this policy (x11common:
+        // "XGrabPointer GrabModeSync is treated as GrabModeAsync:
+        // pointer events are not frozen until XAllowEvents"), and the
+        // measured guest behavior matches it: Wine's clipping grab is
+        // GrabModeSync, yet the guest never sends XAllowEvents (zero
+        // opcode-35 requests in full captured sessions), so freezing
+        // after the first delivered event stalls every later core
+        // pointer event in the frozen queue for the life of the grab
+        // — button releases and clicks simply never arrive. The
+        // AllowEvents handler and frozen queue remain for clients
+        // that do drive the sync protocol explicitly.
     }
 }
 
