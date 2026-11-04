@@ -121,6 +121,10 @@ void testStatxAtEmptyPathProcessApi();
 void testUtimensatFlags32Syscalls();
 void testNotDir32Syscalls();
 void testNotDirProcessApi();
+void testXattrPathResolve32Syscalls();
+void testReadlinkMissing32Syscalls();
+void testTrailingNotDir32Syscalls();
+void testLinkBareDestination32();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
@@ -179,6 +183,9 @@ void testStatfsResolve64Syscalls();
 void testFstatfsDescriptor64Syscalls();
 void testUtimensatFlags64Syscalls();
 void testNotDir64Syscalls();
+void testReadlinkMissing64Syscalls();
+void testTrailingNotDir64Syscalls();
+void testRmdir64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -322,6 +329,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testFstatfsDescriptor64Syscalls, "Test x64 fstatfs answers -EBADF for a descriptor that is not open; any open descriptor keeps the fabricated answer"},
     {testUtimensatFlags64Syscalls, "Test x64 utimensat answers -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH on non-null paths; a path through a file answers -ENOTDIR"},
     {testNotDir64Syscalls, "Test x64 a path through a non-directory answers -ENOTDIR at the path calls; a missing prefix stays -ENOENT"},
+    {testReadlinkMissing64Syscalls, "Test x64 readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
+    {testTrailingNotDir64Syscalls, "Test x64 a path whose final component is erased by normalization (a.txt/, a.txt/., a.txt/..) answers -ENOTDIR; the same markers through directories keep resolving"},
+    {testRmdir64Syscalls, "Test x64 rmdir answers the host's verdicts instead of -ENOSYS"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {
@@ -1025,6 +1035,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testUtimensatFlags32Syscalls, "Test 32-bit utimensat/utimensat_time64 answer -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH and leave the times untouched"},
     {testNotDir32Syscalls, "Test 32-bit a path through a non-directory answers -ENOTDIR at the path calls"},
     {testNotDirProcessApi, "Test a path through a non-directory answers -ENOTDIR through the KProcess API; controls unchanged"},
+    {testXattrPathResolve32Syscalls, "Test 32-bit xattr path forms resolve their target before the attribute verdicts (-ENOENT / -ENOTDIR / -ENODATA)"},
+    {testReadlinkMissing32Syscalls, "Test 32-bit readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
+    {testTrailingNotDir32Syscalls, "Test 32-bit a path whose final component is erased by normalization answers -ENOTDIR at the path calls"},
+    {testLinkBareDestination32, "Test a hard link to a bare filename in the working directory succeeds"},
 };
 #endif
 
