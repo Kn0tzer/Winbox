@@ -1614,7 +1614,14 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     srv.pointerGrabPointerMode = req[10];
                     srv.pointerGrabKeyboardMode = req[11];
                     srv.pointerGrabCursor = rd32(req + 16);
-                    srv.pointerFrozen = req[10] == 1; // GrabModeSync
+                    // Do not freeze at grab time: under GrabModeSync the
+                    // first pointer event must still be delivered (the
+                    // delivery loop re-freezes after each delivered event
+                    // while a sync grab is active, and AllowEvents
+                    // releases the queue one event at a time). Freezing
+                    // here deadlocked pointer input for the session: no
+                    // event ever reached the grabbing client, so it never
+                    // had a reason to call AllowEvents.
                 }
             }
             uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
