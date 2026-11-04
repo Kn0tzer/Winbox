@@ -64,6 +64,7 @@ struct FsNode:std::enable_shared_from_this<FsNode>{
  Children childrenByName;
  FsNode(BString path):path(path),name(path.substr(path.rfind('/')+1)){}
  void loadChildren(){}
+ bool isDirectory(){return true;}
  bool isDynamicLink(){return dynamic;}
  bool isLink(){return dynamic||!link.empty();}
  BString getLink(){return link;}
@@ -90,7 +91,7 @@ struct Fs {
    parts.emplace_back(path.substr(start,end-start));start=end+1;
   }
  }
- static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString&,const BString&,std::shared_ptr<FsNode>*,std::vector<BString>*,bool,bool*);
+ static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString&,const BString&,std::shared_ptr<FsNode>*,std::vector<BString>*,bool,bool*,bool* =nullptr);
  static std::shared_ptr<FsNode> get(const BString& path,bool follow=true){return getNodeFromLocalPath("",path,nullptr,nullptr,follow,nullptr);}
 };
 std::shared_ptr<FsNode> Fs::rootNode;
