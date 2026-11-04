@@ -1614,6 +1614,14 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     srv.pointerGrabPointerMode = req[10];
                     srv.pointerGrabKeyboardMode = req[11];
                     srv.pointerGrabCursor = rd32(req + 16);
+                    if (getenv("BW64_XWIRE")) {
+                        klog_fmt("XWire grab: client=0x%x win=0x%x mask=0x%x ownerEvents=%d pointerMode=%d confine=0x%x",
+                                 clientIdBase, (unsigned)window,
+                                 (unsigned)srv.pointerGrabEventMask,
+                                 (int)srv.pointerGrabOwnerEvents,
+                                 (int)srv.pointerGrabPointerMode,
+                                 (unsigned)srv.pointerConfineWindow);
+                    }
                     // Do not freeze at grab time: under GrabModeSync the
                     // first pointer event must still be delivered (the
                     // delivery loop re-freezes after each delivered event
@@ -2500,6 +2508,13 @@ void XWireConnection::deliverInputEvents() {
                 if (!xwireRoutePointerGrab(true, srv.pointerGrabClient, srv.pointerGrabWindow,
                         srv.pointerGrabEventMask, srv.pointerGrabOwnerEvents, clientIdBase,
                         normalOwner, mask, wantMask, target, mask)) {
+                    if (getenv("BW64_XWIRE")) {
+                        klog_fmt("XWire input: drop code=%d type=%d at grab routing (grabClient=0x%x grabWin=0x%x grabMask=0x%x ownerEvents=%d normalTarget=0x%x normalMask=0x%x wantMask=0x%x)",
+                                 (int)code, (int)ev.type, (unsigned)srv.pointerGrabClient,
+                                 (unsigned)srv.pointerGrabWindow, (unsigned)srv.pointerGrabEventMask,
+                                 (int)srv.pointerGrabOwnerEvents, (unsigned)normalTarget,
+                                 (unsigned)mask, (unsigned)wantMask);
+                    }
                     target = 0;
                 } else if (target != normalTarget) {
                     auto grabIt = srv.windows.find(target);
@@ -2514,7 +2529,24 @@ void XWireConnection::deliverInputEvents() {
         // connection writes events to its own client socket). If the topmost hit
         // belongs to another connection, that connection's own pump will service
         // it; skip here to avoid writing a foreign window id down our socket.
-        if ((target & ~clientIdMask) != clientIdBase) continue;
+        // Exception: an event routed by THIS connection's own pointer grab is
+        // reported to the grabbing client — this connection — even when the
+        // grab window belongs to another connection (Wine grabs the pointer
+        // on the root window for cursor clipping, and the root is owned by
+        // the session's first connection). Dropping those silently lost
+        // every button press for the grabbing guest.
+        bool ownGrabTarget = false;
+        {
+            std::lock_guard<std::mutex> lk(srv.regMutex);
+            ownGrabTarget = srv.pointerGrabClient == clientIdBase && target == srv.pointerGrabWindow;
+        }
+        if ((target & ~clientIdMask) != clientIdBase && !ownGrabTarget) {
+            if (getenv("BW64_XWIRE") && !isKey) {
+                klog_fmt("XWire input: drop code=%d type=%d foreign target=0x%x (this client=0x%x)",
+                         (int)code, (int)ev.type, (unsigned)target, clientIdBase);
+            }
+            continue;
+        }
 
         // event-x/y are relative to the TARGET window: host coord minus the
         // target's host origin (target root origin minus base origin). For
@@ -2525,7 +2557,13 @@ void XWireConnection::deliverInputEvents() {
         local.x = eff.x - ((int)tgtX - (int)baseX);
         local.y = eff.y - ((int)tgtY - (int)baseY);
 
-        if (!isKey && !(mask & wantMask)) continue;
+        if (!isKey && !(mask & wantMask)) {
+            if (getenv("BW64_XWIRE")) {
+                klog_fmt("XWire input: drop code=%d type=%d mask=0x%x wantMask=0x%x target=0x%x",
+                         (int)code, (int)ev.type, (unsigned)mask, (unsigned)wantMask, (unsigned)target);
+            }
+            continue;
+        }
         // Announce EnterNotify when the pointer crosses into a new target window;
         // winex11 tracks the pointer window via crossing events (a click without
         // it defocuses the control / menus don't track).
