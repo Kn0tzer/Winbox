@@ -3109,7 +3109,14 @@ static void captureStageSpec(U64 specVa, StageSpec& out) {
     if (!specVa) return;
     Vk64SpecInfo si = {};
     VK64_DROP_IF(return, !readStruct(specVa, si));
-    VK64_DROP_IF(return, !si.mapEntryCount || si.mapEntryCount > 16);
+    // An empty VkSpecializationInfo (mapEntryCount 0, arrays null -- the
+    // per-stage default DXVK attaches) is a legal no-op: nothing to
+    // capture, the pipeline keeps the shader's defaults, so it must not
+    // count or log as a drop (FD-153). Once entries are claimed, the
+    // guards below stay loud: over-cap counts, and the entry array or
+    // data those entries require being absent.
+    if (!si.mapEntryCount) return;
+    VK64_DROP_IF(return, si.mapEntryCount > 16);
     VK64_DROP_IF(return, !si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256);
     std::vector<Vk64SpecMapEntry> mes;
     readArray(si.pMapEntries, si.mapEntryCount, mes);
@@ -4602,7 +4609,12 @@ void fillImageFormatProps(VkImageFormatProperties* p, U32 format, U32 imageType 
 // ---------------------------------------------------------------------------
 void resolveFrame(CmdBuf* st, U64* uboOut, U64* uboSize, U64* viewOut, U64* sampOut) {
     *uboOut = 0; *uboSize = 0; *viewOut = 0; *sampOut = 0;
-    DescSet* s0 = st->sets[0] ? objOf<DescSet>(st->sets[0], K_SET, "resolveFrame") : nullptr;
+    // No set bound at slot 0 is a legal shape (a frame whose shaders use
+    // no root descriptors): the outputs keep their zero defaults and
+    // nothing is lost, so it must not count or log as a drop (FD-153).
+    // A recorded set id that no longer resolves stays loud below.
+    if (!st->sets[0]) return;
+    DescSet* s0 = objOf<DescSet>(st->sets[0], K_SET, "resolveFrame");
     VK64_DROP_IF(return, !s0);
     for (const auto& kv : s0->els) {
         const Binding& b = kv.second;
@@ -9785,8 +9797,15 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         vk64DynamicAudit(ri.viewMask, ri.renderAreaOffsetX, ri.renderAreaOffsetY, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
+            // A null depth/stencil pointer is the legal "no such
+            // attachment" shape (a colour-only pass): this helper runs
+            // unconditionally for both slots and nothing is lost, so it
+            // must not count or log as a drop (FD-153). An attachment
+            // that is present but over capacity or unreadable stays
+            // loud below.
+            if (!address) return;
             VkRenderingAttachmentInfo att = {};
-            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att));
+            VK64_DROP_IF(return, fb->natt >= VK64_MAX_ATTACH || !readStruct(address, att));
             auto* view = objOf<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
             VK64_DROP_IF(return, !view);
             vk64AuditAttachmentView(view);
@@ -11391,7 +11410,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
                     TE top[3] = {};
                     for (U64 i = 0; i < VkProfAcc::kTrapSlots; i++) {
                         double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
-                        VK64_DROP_IF(continue, w <= 0);
+                        if (w <= 0) continue;  // profiling bookkeeping: an idle trap slot is not a dropped guest command (FD-153)
                         for (int k = 0; k < 3; k++) if (w > top[k].w) {
                             for (int m = 2; m > k; m--) top[m] = top[m-1];
                             top[k] = {i, w, c};
@@ -13811,7 +13830,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
             src = info.srcBuffer; dst = info.dstImage;
             count = info.regionCount; regions = info.pRegions;
         }
-        VK64_DROP_IF(return 0, count > 1024 || !regions);
+        // A zero region count is an empty copy -- nothing is recorded
+        // and nothing is lost (the 64-bit handlers treat it the same
+        // way), so an absent array only drops when regions are claimed
+        // (FD-153). The over-cap count stays loud.
+        VK64_DROP_IF(return 0, count > 1024 || (!regions && count));
         auto record = [&](const auto& r) {
             Cmd c; c.kind = CMD_COPY_B2I; c.a = src; c.b = dst;
             c.copy.srcBuffer = src; c.copy.dstImage = dst;
@@ -13853,7 +13876,9 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         U64 src = args.a[1], dst = args.a[3];
         U32 count = args.a[4], regions = args.a[5];
         const bool copy2 = fnId != VK64_fn_vkCmdCopyImageToBuffer;
-        VK64_DROP_IF(return 0, count > 1024 || !regions);
+        // Zero regions: empty copy, no drop -- see the buffer->image
+        // handler above (FD-153).
+        VK64_DROP_IF(return 0, count > 1024 || (!regions && count));
         auto record = [&](const auto& r) {
             Cmd c; c.kind = CMD_COPY_I2B; c.a = src; c.b = dst;
             c.copyI2B.srcImage = src; c.copyI2B.dstBuffer = dst;
@@ -14179,8 +14204,11 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         vk64DynamicAudit(ri.viewMask, ri.renderArea.offset.x, ri.renderArea.offset.y, ri.layerCount);
         Cmd c; c.kind = CMD_BEGIN_RP; c.a = rpId; c.b = fbId;
         auto attachment = [&](U64 address, bool depth) {
+            // Null depth/stencil pointer: the legal "no such attachment"
+            // shape -- see the 64-bit handler (FD-153).
+            if (!address) return;
             vk32abi::VkRenderingAttachmentInfo att = {};
-            VK64_DROP_IF(return, !address || fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att));
+            VK64_DROP_IF(return, fb->natt >= VK64_MAX_ATTACH || !readStruct32(address, att));
             auto* view = objOf32<ImageView>(att.imageView, K_IMAGEVIEW, "vkCmdBeginRendering");
             VK64_DROP_IF(return, !view);
             vk64AuditAttachmentView(view);
@@ -14427,7 +14455,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
                     TE top[3] = {};
                     for (U64 i = 0; i < VkProfAcc::kTrapSlots; i++) {
                         double w = pa.trapWall[i]; U64 c = pa.trapCnt[i];
-                        VK64_DROP_IF(continue, w <= 0);
+                        if (w <= 0) continue;  // profiling bookkeeping: an idle trap slot is not a dropped guest command (FD-153)
                         for (int k = 0; k < 3; k++) if (w > top[k].w) {
                             for (int m = 2; m > k; m--) top[m] = top[m-1];
                             top[k] = {i, w, c};
