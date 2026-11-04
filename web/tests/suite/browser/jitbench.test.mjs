@@ -138,11 +138,23 @@ export default class JitbenchTest extends ProbeTest {
               Module.ccall('bw64_jit_stats_json_text', 'string', [], [])));
             result.stats = stats;
             const engine = fixture.arch === 'x86' ? stats.cpu32 : stats.cpu64;
-            assert.equal(Boolean(engine.enabled), jit === '1', `${fixture.name}: requested JIT mode latched`);
-            if (jit === '1') {
-              assert.ok(engine.blocksEntered > 0, `${fixture.name}: generated code was entered`);
-              if (fixture.arch === 'x86') assert.ok(engine.blocksEmitted > 0, `${fixture.name}: CPU32 blocks emitted`);
-              else assert.ok(engine.insnsEmitted > 0, `${fixture.name}: CPU64 instructions emitted`);
+            if (engine.engine === 'unavailable') {
+              // This build target does not compile this engine in (the
+              // stats say so explicitly, e.g. the x64 browser target
+              // reports the 32-bit JIT as not compiled in). No mode can
+              // latch it; what this build must guarantee instead is that
+              // the engine reports itself disabled in every mode, while
+              // the checksum stability asserted above covers the
+              // interpreter path this target does serve.
+              result.engineUnavailable = engine.reason || 'not compiled in this target';
+              assert.equal(Boolean(engine.enabled), false, `${fixture.name}: engine not compiled in this target reports disabled`);
+            } else {
+              assert.equal(Boolean(engine.enabled), jit === '1', `${fixture.name}: requested JIT mode latched`);
+              if (jit === '1') {
+                assert.ok(engine.blocksEntered > 0, `${fixture.name}: generated code was entered`);
+                if (fixture.arch === 'x86') assert.ok(engine.blocksEmitted > 0, `${fixture.name}: CPU32 blocks emitted`);
+                else assert.ok(engine.insnsEmitted > 0, `${fixture.name}: CPU64 instructions emitted`);
+              }
             }
             rows.push({ fixture: fixture.name, mode: jit, coldMs: samples[0].ms,
               warmMedianMs: median(samples.slice(1).map(sample => sample.ms)) });
