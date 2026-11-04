@@ -61,7 +61,7 @@ disassembly.
 
 It downloads the pinned tarball (sha256-verified), applies the patch
 with `git apply`, assembles a private sysroot from pinned bookworm
-i386 debs (freetype/fontconfig headers + link libraries — the host
+i386 debs (freetype/fontconfig/vulkan headers + link libraries — the host
 has no i386 dev packages; the versions match the guest's runtime
 libraries), builds a native tools tree and a `--host=i686-linux-gnu`
 tree, and copies `win32u.so` here, printing its sha256 for
@@ -76,7 +76,7 @@ four shipped `wine32.zip` member hashes) and pinned in
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| win32u.so | 1497428 | b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760 |
+| win32u.so | 1502028 | 9d538e799c0b88b2c7ee1e15b9d71a979414d65de878459470d6395c12542df8 |
 
 Staged into `wine32.zip` by `tools/rootfs32/build-wine32-base.sh`
 (substitution right after the deb tree is copied in, so the
@@ -84,3 +84,12 @@ Staged into `wine32.zip` by `tools/rootfs32/build-wine32-base.sh`
 and shipped by `tools/rootfs32/regen-wine32-zip.sh`, whose
 member-by-member verification sanctions exactly these four members
 differing from the previously shipped zip, each at this pin.
+
+The win32u backport is built WITH Vulkan support (FD-149): the i686
+configure carries the bookworm libvulkan development files in its
+private sysroot and exports `__wine_get_vulkan_driver`, because
+win32u is where Wine's Vulkan driver interface lives — a module
+built `--without-vulkan` answers every graphics-driver load with
+"Wine was built without Vulkan support" and no 32-bit Vulkan (hence
+no DXVK D3D9) session can start. The build script fails closed if
+the product carries that stub string or lacks the SONAME marker.
