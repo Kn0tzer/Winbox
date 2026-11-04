@@ -82,10 +82,32 @@ bool k64CheckGuestAccess(const KMemory64* memory, U64 addr, U64 len, bool write)
 // Forward-declared: defined in kmemory64.cpp, logs via klog_fmt when BW64_BSSDIAG is set.
 // Declared here so K64Page methods (in this header) can log buffer changes.
 void bssBufDiagLog(const char* op, const void* oldPtr, const void* newPtr);
+
 static inline bool bssBufDiagOn() {
     static int cached = -1;
     if (cached < 0) cached = std::getenv("BW64_BSSDIAG") ? 1 : 0;
     return cached != 0;
+}
+
+// FD-129: page backing buffers are allocated from a dedicated
+// arena (kmemory64.cpp), never from the general heap: in the
+// browser build, heap allocations for fresh page buffers were
+// measured landing inside live host threads' stack/TLS spans
+// during guest memory bursts, so the commit's zeroing and the
+// guest's stores wrote into thread-local state (the
+// runningThread slot corruption of FD-128/FD-129). The arena's
+// chunks are obtained once and never freed, so its slots can
+// never alias memory the runtime later hands to a thread, and
+// no thread span can be carved out of an arena chunk.
+// k64BackingArenaAlloc returns nullptr when the arena is
+// disabled (BW64_PAGE_ARENA=0) or cannot grow; commit() then
+// falls back to new U8[] and remembers the provenance.
+U8* k64BackingArenaAlloc();
+void k64BackingArenaFree(U8* p);
+static inline void k64FreeBacking(U8* ptr, bool fromArena) {
+    if (!ptr) return;
+    if (fromArena) k64BackingArenaFree(ptr);
+    else delete[] ptr;
 }
 struct K64Page {
     U8* data = nullptr;
@@ -96,18 +118,25 @@ struct K64Page {
     // same file page, so wineserver's writes are visible to clients and vice
     // versa. We must NOT delete[] or reallocate a borrowed buffer.
     bool dataShared = false;
+    // FD-129: true when `data` came from the backing arena
+    // (k64BackingArenaAlloc) rather than new U8[].
+    bool dataArena = false;
     // Cached accesses and kernel references can still hold a previous private
     // backing pointer during a mapping change. Retain it until this page dies;
     // invalidating a cache does not end an access already in flight.
-    std::vector<std::unique_ptr<U8[]>> retiredBacking;
+    // Each entry is (buffer, fromArena) with the buffer's provenance.
+    std::vector<std::pair<U8*, bool>> retiredBacking;
     ~K64Page() {
         if (bssBufDiagOn() && data) bssBufDiagLog("dtor", data, nullptr);
-        if (!dataShared) delete[] data;
+        if (!dataShared) k64FreeBacking(data, dataArena);
+        for (const auto& rb : retiredBacking) k64FreeBacking(rb.first, rb.second);
     }
     // Allocate + zero the backing buffer on first write/commit. Idempotent.
     U8* commit() {
         if (!data) {
-            data = new U8[K64_PAGE_SIZE];
+            data = k64BackingArenaAlloc();
+            dataArena = data != nullptr;
+            if (!data) data = new U8[K64_PAGE_SIZE];
             ::memset(data, 0, K64_PAGE_SIZE);
             if (bssBufDiagOn()) bssBufDiagLog("commit", nullptr, data);
         }
@@ -116,9 +145,10 @@ struct K64Page {
     // Point this page at a process-shared backing buffer (not owned here).
     void adoptShared(U8* shared) {
         U8* old = data;
-        if (data && !dataShared) retiredBacking.emplace_back(data);
+        if (data && !dataShared) retiredBacking.emplace_back(data, dataArena);
         data = shared;
         dataShared = true;
+        dataArena = false;
         if (bssBufDiagOn()) bssBufDiagLog("adoptShared", old, shared);
     }
     // Drop the backing buffer (munmap / PROT_NONE). The slot survives; a later
@@ -126,9 +156,10 @@ struct K64Page {
     // shared buffer is detached (not freed — the registry owns it).
     void decommit() {
         U8* old = data;
-        if (data && !dataShared) retiredBacking.emplace_back(data);
+        if (data && !dataShared) retiredBacking.emplace_back(data, dataArena);
         data = nullptr;
         dataShared = false;
+        dataArena = false;
         if (bssBufDiagOn() && old) bssBufDiagLog("decommit", old, nullptr);
     }
     bool committed() const { return data != nullptr; }

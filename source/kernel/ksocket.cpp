@@ -73,7 +73,69 @@ BString socketAddressName(KMemory* memory, U32 address, U32 len) {
     return B("Unknown address family");
 }
 
-U32 ksocket(U32 domain, U32 type, U32 protocol) {
+#include "bwstepdiag.h"
+#include <atomic>
+
+// FD-127 step-ring diagnostics (see include/bwstepdiag.h). The gate is
+// the same switch as the guest thread dump, so the instrumentation
+// exists only in diagnostic captures.
+bool bwStepDiagEnabled() {
+    static const bool enabled = []() {
+        const char* value = getenv("BW_THREAD_DUMP");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+namespace {
+bool bwPairDiagEnabled() {
+    return bwStepDiagEnabled();
+}
+
+struct BwStepRec {
+    U32 seq;
+    U32 step;
+    U32 pid;
+    U32 tid;
+    U32 check;
+};
+constexpr U32 BW_STEP_RING_SIZE = 256;
+BwStepRec bwStepRing[BW_STEP_RING_SIZE];
+std::atomic<U32> bwStepSeq{0};
+U32 bwStepCheck(U32 seq, U32 step, U32 pid, U32 tid) {
+    return (seq * 2654435761u) ^ (step * 97u) ^ (pid << 8) ^ tid ^ 0x5eed1234u;
+}
+} // namespace
+
+void bwStepNote(unsigned int step, unsigned int pid, unsigned int tid) {
+    U32 s = bwStepSeq.fetch_add(1, std::memory_order_relaxed);
+    BwStepRec rec{s, step, pid, tid, 0};
+    rec.check = bwStepCheck(s, step, pid, tid);
+    bwStepRing[s % BW_STEP_RING_SIZE] = rec;
+}
+
+void bwStepDumpTail() {
+    U32 seq = bwStepSeq.load(std::memory_order_relaxed);
+    U32 from = seq > 40 ? seq - 40 : 0;
+    for (U32 i = from; i < seq; i++) {
+        const BwStepRec& r = bwStepRing[i % BW_STEP_RING_SIZE];
+        if (r.seq == i && r.check == bwStepCheck(r.seq, r.step, r.pid, r.tid)) {
+            klog_fmt("BW64-DIAG step-ring seq=%u step=%u pid=%u tid=%u",
+                     r.seq, r.step, r.pid, r.tid);
+        } else if (r.seq == i) {
+            klog_fmt("BW64-DIAG step-ring seq=%u TORN step=%u pid=%u tid=%u",
+                     r.seq, r.step, r.pid, r.tid);
+        }
+    }
+}
+
+U32 ksocket(KThread* thread, U32 domain, U32 type, U32 protocol) {
+    if (!thread || !thread->process) {
+        return -K_ENOSYS;
+    }
+    if (bwStepDiagEnabled()) {
+        bwStepNote(7, thread->process->id, thread->id);
+    }
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_GUEST_X64)
     // Offline by default. The launcher sets this host-only flag together with
     // a fixed same-origin SOCKFS relay before libc reads the environment.
@@ -94,15 +156,22 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
     }
 #endif
     if (domain==K_AF_UNIX) {
+        const bool sockDiag = bwStepDiagEnabled();
         std::shared_ptr<KUnixSocketObject> kSocket = std::make_shared<KUnixSocketObject>(domain, type, protocol);
-        KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        if (sockDiag) {
+            bwStepNote(8, thread->process->id, thread->id);
+        }
+        KFileDescriptorPtr result = thread->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        if (sockDiag) {
+            bwStepNote(9, thread->process->id, thread->id);
+        }
         if (!result) {
             return -K_EMFILE;
         }
         return result->handle;
     } else if (domain == K_AF_NETLINK) {
         std::shared_ptr<KNetLinkObject> kSocket = std::make_shared<KNetLinkObject>(domain, type, protocol);
-        KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
+        KFileDescriptorPtr result = thread->process->allocFileDescriptor(kSocket, K_O_RDWR, 0, -1, 0);
         if (!result) {
             return -K_EMFILE;
         }
@@ -112,7 +181,7 @@ U32 ksocket(U32 domain, U32 type, U32 protocol) {
         if (s->error) {
             return s->error;
         } else {
-            KFileDescriptorPtr result = KThread::currentThread()->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
+            KFileDescriptorPtr result = thread->process->allocFileDescriptor(s, K_O_RDWR, 0, -1, 0);
             if (!result) {
                 return -K_EMFILE;
             }
@@ -393,19 +462,59 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     std::shared_ptr<KUnixSocketObject> s1;
     std::shared_ptr<KUnixSocketObject> s2;
 
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(thread->process->fdsMutex());
+    // FD-127 diagnostic instrumentation (BW_THREAD_DUMP-gated, see
+    // bwPairDiagEnabled): the fd-table lock acquisition is bracketed so
+    // a caller that never gets the lock is distinguishable from one
+    // blocked inside the wiring, and a busy lock is named before the
+    // blocking wait begins.
+    const bool pairDiag = bwPairDiagEnabled();
+    const U32 diagPid = thread->process->id;
+    const U32 diagTid = thread->id;
+    if (pairDiag) {
+        bwStepNote(2, diagPid, diagTid);
+        klog_fmt("BW64-DIAG pair enter pid=%u tid=%u af=%u type=%u flags=0x%x",
+                 diagPid, diagTid, af, type, flags);
+    }
+    std::unique_lock<std::recursive_mutex> lock(thread->process->fdsMutex(), std::defer_lock);
+    if (pairDiag) {
+        if (!lock.try_lock()) {
+            bwStepNote(3, diagPid, diagTid);
+            klog_fmt("BW64-DIAG pair lock-busy pid=%u tid=%u", diagPid, diagTid);
+            lock.lock();
+        }
+        bwStepNote(4, diagPid, diagTid);
+        klog_fmt("BW64-DIAG pair locked pid=%u tid=%u", diagPid, diagTid);
+        bwStepNote(5, diagPid, diagTid);
+        bwStepNote(42, (U32)((unsigned long)&thread->process->fdsMutex() >> 4), diagPid);
+    } else {
+        lock.lock();
+    }
 
     if (af!=K_AF_UNIX) {
         return -K_EAFNOSUPPORT;
     }
-    if (type!=K_SOCK_DGRAM && type!=K_SOCK_STREAM) {
+    if (type!=K_SOCK_DGRAM && type!=K_SOCK_STREAM && type!=K_SOCK_SEQPACKET) {
         return -K_EINVAL;
     }
-    fd1 = ksocket(af, type, protocol);
+    if (pairDiag) {
+        bwStepNote(6, diagPid, diagTid);
+    }
+    fd1 = ksocket(thread, af, type, protocol);
+    if (pairDiag) {
+        bwStepNote(10, diagPid, diagTid);
+        klog_fmt("BW64-DIAG pair s1 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd1);
+    }
     if ((S32)fd1 < 0) {
         return (S32)fd1;
     }
-    fd2 = ksocket(af, type, protocol);
+    if (pairDiag) {
+        bwStepNote(11, diagPid, diagTid);
+    }
+    fd2 = ksocket(thread, af, type, protocol);
+    if (pairDiag) {
+        bwStepNote(12, diagPid, diagTid);
+        klog_fmt("BW64-DIAG pair s2 pid=%u tid=%u fd=%d", diagPid, diagTid, (S32)fd2);
+    }
     if ((S32)fd2 < 0) {
         // socketpair is atomic on Linux: both descriptors or
         // neither, so the first descriptor is closed again here.
@@ -417,6 +526,9 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     s1 = std::dynamic_pointer_cast<KUnixSocketObject>(f1->kobject);
     s2 = std::dynamic_pointer_cast<KUnixSocketObject>(f2->kobject);
 
+    if (pairDiag) {
+        bwStepNote(13, diagPid, diagTid);
+    }
     s1->connection = s2;
     s2->connection = s1;
     s1->connected = true;
@@ -434,6 +546,12 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     }
     if (flags & ~(K_O_CLOEXEC|K_O_NONBLOCK)) {
         kwarn_fmt("Unknow flags sent to pipe2: %X", flags);
+    }
+    if (pairDiag) {
+        bwStepNote(14, diagPid, diagTid);
+        klog_fmt("BW64-DIAG pair wired pid=%u tid=%u fd1=%u fd2=%u",
+                 diagPid, diagTid, (U32)fd1, (U32)fd2);
+        bwStepNote(15, diagPid, diagTid);
     }
     outFd1 = fd1;
     outFd2 = fd2;

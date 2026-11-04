@@ -9962,7 +9962,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         // page as a render-pass clear of the matching GPU texture subresources.
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearDepthStencilImage");
         VK64_DROP_IF(return 0, !cb || !objOf<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
-        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
+        if ((U32)args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem->memcpyFromGuest(&value, args.a[3], sizeof(value));
         Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
@@ -10395,7 +10395,11 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         }
         std::vector<ClearRangeArg> ranges;
         if (args.a[4] && args.a[5]) {
-            if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
+            // The range count is a Vulkan uint32_t: only the slot's low 32
+            // bits are the value. (Measured: a guest clear with one range
+            // arrived with high bits set in the slot; comparing the raw
+            // slot here overflowed the frame and the draw never landed.)
+            if ((U32)args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
             readArray(args.a[5], (U32)args.a[4], ranges);
         }
         if (ranges.empty()) ranges.push_back({0x1u, 0, 0xFFFFFFFFu, 0, 0xFFFFFFFFu});
@@ -10426,7 +10430,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = cbOf(args.a[0], "vkCmdClearAttachments");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
+        if ((U32)args.a[1] > 8 || (U32)args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray(args.a[4], (U32)args.a[3], c.clearRects);
@@ -12362,7 +12366,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         // (cmdBuf, image, layout, pDepthStencil*, rangeCount, pRanges*)
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearDepthStencilImage");
         VK64_DROP_IF(return 0, !cb || !objOf32<Image>(args.a[1], K_IMAGE, "vkCmdClearDepthStencilImage"));
-        if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
+        if ((U32)args.a[4] > 64) { vk64FrameOverflow("vkCmdClearDepthStencilImage with more than 64 ranges"); return 0; }
         struct { float depth; U32 stencil; } value = {1.0f, 0};
         if (args.a[3]) g_mem32->memcpyFromGuest(&value, (U32)args.a[3], sizeof(value));
         Cmd c; c.kind = CMD_CLEAR_DS_IMAGE; c.a = args.a[1];
@@ -13588,7 +13592,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         VK64_DROP_IF(return 0, im->memOff >= dmem->size);
         std::vector<ClearRangeArg> ranges;
         if (args.a[4] && args.a[5]) {
-            if (args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
+            if ((U32)args.a[4] > 64) { vk64FrameOverflow("vkCmdClearColorImage with more than 64 ranges"); return 0; }
             readArray32((U32)args.a[5], (U32)args.a[4], ranges);
         }
         if (ranges.empty()) ranges.push_back({0x1u, 0, 0xFFFFFFFFu, 0, 0xFFFFFFFFu});
@@ -13618,7 +13622,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     case VK64_fn_vkCmdClearAttachmentsKHR: {
         CmdBuf* cb = objOf32<CmdBuf>(args.a[0], K_CMDBUF, "vkCmdClearAttachments");
         VK64_DROP_IF(return 0, !cb);
-        if (args.a[1] > 8 || args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
+        if ((U32)args.a[1] > 8 || (U32)args.a[3] > 4096) { vk64FrameOverflow("vkCmdClearAttachments with more than 8 attachments or 4096 rects"); return 0; }
         Cmd c; c.kind = CMD_CLEAR_ATTACHMENTS;
         readArray32(args.a[2], (U32)args.a[1], c.clearAttachments);
         readArray32(args.a[4], (U32)args.a[3], c.clearRects);

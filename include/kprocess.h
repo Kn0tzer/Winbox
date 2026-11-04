@@ -351,12 +351,22 @@ public:
     U32 utimes(BString path, U32 times);
     U32 utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64);
     U32 utimesat64(FD dirfd, BString path, U32 times, U32 flags);
+    // FD-136: utimensat with a null path, answered per the raw
+    // kernel's per-shape matrix (see kprocess.cpp).
+    U32 utimensatNullPath(FD dirfd, U32 times, U32 flags, bool time64);
+    U32 setNodeTimes(const std::shared_ptr<FsNode>& node, U32 times, bool time64);
     U32 write(KThread* thread, FD fildes, U32 bufferAddress, U32 bufferLen);
     U32 writev(KThread* thread, FD handle, U32 iov, S32 iovcnt);
     U32 readv(KThread* thread, FD handle, U32 iov, S32 iovcnt);
     U32 pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPwritev2);
     U32 preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset, U32 flags, bool isPreadv2);
     U32 sendFile(U32 outFd, U32 inFd, U32 offset, U32 count);
+    // The memfd_create flags the process layer accepts
+    // (MFD_CLOEXEC | MFD_ALLOW_SEALING). Shared with the syscall
+    // dispatchers: the host validates the flags word before it
+    // faults a null name copy, so a dispatcher answering for a
+    // null name needs the same flags verdict (FD-137).
+    static constexpr U32 MEMFD_SUPPORTED_FLAGS = 1u | 2u;
     U32 memfd_create(BString name, U32 flags);
     U32 timerfd_create(U32 clockid, U32 flags);
     U32 inotify_init1(U32 flags);

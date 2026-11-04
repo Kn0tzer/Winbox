@@ -34,7 +34,7 @@ using U32=uint32_t; using U16=uint16_t; using S32=int32_t;
 constexpr int K_EINVAL=22,K_EISCONN=106,K_ENOENT=2,K_ECONNREFUSED=111,K_EINTR=4,K_CONTINUE=1000,K_EINPROGRESS=115,K_EAFNOSUPPORT=97,K_EWOULDBLOCK=11,K_ECONNABORTED=103,K_EMFILE=24;
 constexpr int K_ENAMETOOLONG=36;
 constexpr int K_EPROTOTYPE=71;
-constexpr int K_AF_UNIX=1,K_SOCK_DGRAM=2,K_SOCK_STREAM=1,KTYPE_UNIX_SOCKET=3,K_O_RDWR=2,K_O_NONBLOCK=2048,FD_CLOEXEC=1;
+constexpr int K_AF_UNIX=1,K_SOCK_DGRAM=2,K_SOCK_STREAM=1,K_SOCK_SEQPACKET=5,KTYPE_UNIX_SOCKET=3,K_O_RDWR=2,K_O_NONBLOCK=2048,FD_CLOEXEC=1;
 #define BOXEDWINE_MULTI_THREADED
 struct Condition {std::mutex m;std::condition_variable cv;std::atomic<int> waits{0};};
 #define BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(c) std::unique_lock<std::mutex> boxedWineCriticalSection((c)->m)
@@ -64,7 +64,8 @@ struct KUnixSocketObject:KObject {
  KUnixSocketObject(int d,int t,int p):domain(d),protocol(p){type=t;}
  ~KUnixSocketObject();
  int domain,protocol,type;U32 pid=0;bool blocking=true,connected=false,inClosed=false,outClosed=false;
- std::string abstractName;bool abstractRegistered=false;bool oneWayPeerLink=false;
+ bool listening=false;
+ std::string abstractName;bool abstractRegistered=false;bool oneWayPeerLink=false;bool peerCloseRefusalPending=false;bool oneWayRefusalSpent=false;
  std::shared_ptr<FsNode> node;std::queue<int> msgs;
 
  struct{U16 family=0;char data[108]={};}destAddress;
@@ -113,7 +114,7 @@ std::shared_ptr<KUnixSocketObject> KUnixSocketObject::resolveNamedPeer(KThread* 
 void handoff(bool pendingRetry){
  KMemory memory;Process process;KThread thread{&memory,&process};
  const U16 family=K_AF_UNIX;std::memcpy(memory.bytes,&family,2);std::memcpy(memory.bytes+2,"socket",7);
- auto listener=std::make_shared<KUnixSocketObject>(1,1,0);Fs::node=std::make_shared<FsNode>();Fs::node->kobject=listener;
+ auto listener=std::make_shared<KUnixSocketObject>(1,1,0);listener->listening=true;Fs::node=std::make_shared<FsNode>();Fs::node->kobject=listener;
  auto client=std::make_shared<KUnixSocketObject>(1,1,0);
  auto fd=process.allocFileDescriptor(client,2,0,-1,0);
  if(pendingRetry){client->blocking=false;assert(int32_t(client->connect(&thread,fd,0,9))==-K_EINPROGRESS);}

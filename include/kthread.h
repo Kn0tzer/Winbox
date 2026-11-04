@@ -64,6 +64,10 @@ public:
 
 typedef std::shared_ptr<KThreadGlContext> KThreadGlContextPtr;
 
+// FD-128: registry of host-thread -> guest-thread identity, recorded
+// by each platform thread at start (see KThread::registerPlatformThread).
+// currentThread() consults it when the TLS slot fails validation.
+KThread* bwCurrentThreadRegistryLookup();
 class KThread {
 public:
     KThread(U32 id, const KProcessPtr& process);
@@ -238,8 +242,41 @@ public:
     OpenGLVetexPointer glInterleavedArray;
     U32 marshalIndex = 0;
 
-    inline static KThread* currentThread() {return runningThread;}
+    inline static KThread* currentThread() {
+        KThread* thread = runningThread;
+        // FD-128: in the browser build the TLS slot holding
+        // runningThread can be overwritten with a small integer
+        // during heavy Vulkan bridge activity (observed values
+        // 0x25/0x9 in place of the worker's KThread pointer; no
+        // setCurrentThread call is involved). Every consumer of the
+        // current-thread identity then operates on low static
+        // memory: condition waits publish waitingCond there, and
+        // alignment-checked atomics on the "thread's" fields --
+        // the shared_ptr release in BoxedWineCondition::wait and
+        // the fault-stage markers in KFile::preadNative -- trap
+        // with "operation does not support unaligned accesses",
+        // killing the worker in the first frames' image work.
+        // A genuine KThread is heap allocated: 8-aligned and above
+        // the static region. When the slot fails that test, fall
+        // back to the identity this host thread registered at
+        // platform-thread start and heal the slot with it.
+        if (thread && ((size_t)thread < 0x100000 || ((size_t)thread & 7) != 0)) {
+            KThread* registered = bwCurrentThreadRegistryLookup();
+            if (registered) {
+                runningThread = registered;
+                return registered;
+            }
+        }
+        return thread;
+    }
+    static void registerPlatformThread(KThread* thread);
+    static void unregisterPlatformThread();
 	inline static void setCurrentThread(KThread* thread) { runningThread = thread; }
+	// FD-128: see currentThread() above.
+	struct PlatformThreadIdentityRegistration {
+		explicit PlatformThreadIdentityRegistration(KThread* thread) { registerPlatformThread(thread); }
+		~PlatformThreadIdentityRegistration() { unregisterPlatformThread(); }
+	};
 
     BOXEDWINE_CONDITION waitingCond = nullptr;    
     // FD-77 fault-stage marker: while this thread is inside the

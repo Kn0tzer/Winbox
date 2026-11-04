@@ -81,6 +81,8 @@ void testClone3Abi32();
 void testGetrandom32Syscall();
 void testReadv32Syscall();
 void testFutexWaitv32Syscall();
+void testNullPath32Syscalls();
+void testMemfdNullName32Syscalls();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
 void testMremap32Syscall();
@@ -114,6 +116,8 @@ void testAsyncSigio();
 void testDnsLoopbackService();
 void testDevDspCapture();
 void testInotifyEventsProcessApi();
+void testEmptyPathProcessApi();
+void testStatxAtEmptyPathProcessApi();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
@@ -159,6 +163,16 @@ void testStalePathnameSocket64Syscalls();
 void testStreamWriteSendmsgOrder64Syscalls();
 void testWritevDatagram64Syscalls();
 void testWriteZeroLength64Syscalls();
+void testSeqpacket64Syscalls();
+void testDatagramPeerCloseRefusal64Syscalls();
+void testSocketStateAnswers64Syscalls();
+void testPeerClosedStreamSendmsg64Syscalls();
+void testChmodNullPath64Syscalls();
+void testEmptyPath64Syscalls();
+void testNullPath64Syscalls();
+void testMemfdNullName64Syscalls();
+void testXattrResolve64Syscalls();
+void testStatfsResolve64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -242,6 +256,16 @@ const TestEntry TEST_ENTRIES[] = {
     {testStreamWriteSendmsgOrder64Syscalls, "Test x64 stream write/sendmsg byte order"},
     {testWritevDatagram64Syscalls, "Test x64 writev gathering on a datagram socket"},
     {testWriteZeroLength64Syscalls, "Test x64 zero-length plain write on a datagram socket"},
+    {testSeqpacket64Syscalls, "Test x64 SOCK_SEQPACKET unix sockets keep record boundaries end to end"},
+    {testDatagramPeerCloseRefusal64Syscalls, "Test x64 datagram send to a just-closed peer answers ECONNREFUSED once, then ENOTCONN"},
+    {testSocketStateAnswers64Syscalls, "Test x64 socket state answers: drained datagram reads, unconnected receives, non-listening connect, connected stream addressed sends"},
+    {testPeerClosedStreamSendmsg64Syscalls, "Test x64 peer-closed stream sendmsg answers -EPIPE; never-connected stays -ENOTCONN"},
+    {testChmodNullPath64Syscalls, "Test x64 chmod/fchmodat null path answers -EFAULT; empty path stays -ENOENT"},
+    {testEmptyPath64Syscalls, "Test x64 empty path answers -ENOENT at the path calls; AT_EMPTY_PATH fd forms keep working"},
+    {testNullPath64Syscalls, "Test x64 null path answers -EFAULT at the open-coded path cases; empty path keeps -ENOENT; utimensat null path answers the raw per-shape matrix (FD-136)"},
+    {testMemfdNullName64Syscalls, "Test x64 memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
+    {testXattrResolve64Syscalls, "Test x64 xattr cases resolve their path/descriptor before answering; entry order flags, name, resolution"},
+    {testStatfsResolve64Syscalls, "Test x64 statfs resolves its path: null -EFAULT, unresolvable -ENOENT, resolvable keeps the fabricated answer"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -951,6 +975,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
     {testInotifyEventsProcessApi, "Test inotify event delivery through the KProcess API"},
+    {testEmptyPathProcessApi, "Test empty path answers -ENOENT through the KProcess API; AT_EMPTY_PATH fd forms keep working"},
+    {testStatxAtEmptyPathProcessApi, "Test KProcess::statx with AT_EMPTY_PATH and a non-empty path stats the named path"},
+    {testNullPath32Syscalls, "Test 32-bit null path answers -EFAULT through the string reader path; utimensat null path answers the raw per-shape matrix (FD-136)"},
+    {testMemfdNullName32Syscalls, "Test 32-bit memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},

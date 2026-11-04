@@ -95,6 +95,17 @@ public:
     std::string abstractName;
     bool abstractRegistered = false;
     bool oneWayPeerLink = false;
+    // FD-119: peer-close accounting for datagram sends. The pair
+    // destructor sets peerCloseRefusalPending on a datagram
+    // survivor: the host answers its first send after the peer's
+    // close -ECONNREFUSED and later sends -ENOTCONN, so a closed
+    // peer must be remembered distinctly from never having
+    // connected. A one-way link (FD-111) has no back-pointer for
+    // the destructor to mark, so that shape spends its refusal
+    // lazily instead (oneWayRefusalSpent), at the first send that
+    // finds the peer gone.
+    bool peerCloseRefusalPending = false;
+    bool oneWayRefusalSpent = false;
 
     static U32 unixsocket_write_native_nowait(const std::shared_ptr<KObject>& obj, U8* value, int len);
 
@@ -170,6 +181,15 @@ protected:
     // (or this->lockCond when there is no peer) and signals it
     // afterwards.
     U32 sendDatagramToPeer(KThread* thread, const std::shared_ptr<KUnixSocketObject>& con, const U8* packet, U32 len);
+    // FD-118: datagram and seqpacket sockets are both record
+    // sockets: a send queues one message and a read takes one
+    // message, boundaries preserved.
+    bool isRecordType() const;
+    // FD-119: the send answer when a record socket has no live
+    // peer object: the one-shot -ECONNREFUSED after a peer close
+    // (datagram), -EPIPE for a seqpacket socket whose write side
+    // is closed, else -ENOTCONN.
+    U32 peerCloseSendAnswer(KThread* thread, bool noSignal);
     // FD-114: queue already-filtered stream bytes as a payload-only
     // message on dest, recorded as sent by this socket. The plain
     // write paths use it when dest's message queue is non-empty, so

@@ -8,6 +8,7 @@
  */
 
 #include "boxedwine.h"
+#include "bwstepdiag.h"
 #include "kinotify.h"
 #include "drvinittrace.h"
 
@@ -1625,6 +1626,9 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
     if (!pathAddr) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    // FD-131: an empty path answers -ENOENT on the host; unguarded it
+    // resolves to the directory node itself in the shared resolver.
+    if (path[0] == '\0') return (U64)-K_ENOENT;
     KProcess* process = cpu->thread->process.get();
     // /proc/self/exe (and /proc/<pid>/exe): the kernel exposes the executable as
     // a magic symlink. wine's loader open()s/realpath()s it to find its install
@@ -2191,6 +2195,7 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
             if (!path[pathLength]) break;
         }
         if (pathLength == sizeof(path)) return (U64)-K_ENAMETOOLONG;
+        if (pathLength == 0) return (U64)-K_ENOENT; // FD-131: the empty answer precedes dirfd resolution, as the host answers
         BString base = process->fsContext->currentDirectory;
         if ((S32)dirfd != -100 && path[0] != '/') {
             KFileDescriptorPtr directory = process->getFileDescriptor((FD)dirfd);
@@ -2241,6 +2246,7 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     if (!pathAddr || !statbuf) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    if (path[0] == '\0') return (U64)-2; // FD-131: -ENOENT for an empty path, as the host answers
     BString bpath = BString::copy(path);
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
         cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink);
@@ -2545,6 +2551,8 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
         if ((S64)iovcnt < 0 || iovcnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
         if (iovcnt > 0 && iov == 0) return (U64)-K_EFAULT;
     }
+    // FD-118: a seqpacket socket takes the same gather -- one
+    // writev, one record (host-measured).
     // FD-115: on a datagram unix socket the host queues ONE datagram
     // for the whole gather; the per-segment loop below queues one
     // per segment through sys_write64 -> writeNative. Gather into a
@@ -2560,7 +2568,7 @@ static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
     if (iovcnt > 0 && cpu->thread && cpu->thread->process) {
         KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
         std::shared_ptr<KUnixSocketObject> unixSock = fdesc ? std::dynamic_pointer_cast<KUnixSocketObject>(fdesc->kobject) : nullptr;
-        if (unixSock && unixSock->type == K_SOCK_DGRAM) {
+        if (unixSock && (unixSock->type == K_SOCK_DGRAM || unixSock->type == K_SOCK_SEQPACKET)) {
             if (!fdesc->canWrite()) {
                 return (U64)-K_EBADF;
             }
@@ -2771,6 +2779,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
     if (!pathAddr || !buf || sz == 0) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
+    if (path[0] == '\0') return (U64)-K_ENOENT; // FD-131: empty path, as the host answers
     KProcess* proc = cpu->thread->process.get();
     BString pidExe = B("/proc/") + BString::valueOf(proc->id) + B("/exe");
     BString resolved;
@@ -5315,6 +5324,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
                  ramOwnerTid, (unsigned long long)ramOwnerMs);
     }
     if (getenv("BW64_CRASHRING")) crashRingDump("thread-dump");
+    if (bwStepDiagEnabled()) {
+        bwStepDumpTail();
+    }
     klog_fmt("BW_THREAD_DUMP end dumped=%u skipped-lock=%u", dumped, skippedLock);
     bw64UnlockLog();
     return 1;
@@ -5829,7 +5841,43 @@ void ksyscall64(CPU64* cpu) {
             // made it retry (43+ calls seen). We don't model per-file mtime
             // precisely, so report success — the cache write itself already
             // persisted the data. (a1=dirfd, a2=path, a3=times, a4=flags.)
+            // FD-131: an empty path still answers -ENOENT, as the host
+            // does; "" with AT_EMPTY_PATH is the fd form and keeps the
+            // success answer.
+            // FD-136: a null path answers the raw kernel's per-shape
+            // matrix, measured at the raw syscall level
+            // (test-results/fd136-138/hostref-fd136b.c; glibc's wrapper
+            // answers -EINVAL for every null shape without issuing the
+            // call, which is where the FD-132-era claim came from):
+            // the kernel copies the times first, so an unreadable
+            // times pointer faults ahead of every other verdict; flag
+            // bits outside AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer
+            // -EINVAL; the current-directory shape faults on the name
+            // fetch; any other flag with a null path answers -EINVAL;
+            // with flags 0 an unopened descriptor answers -EBADF and
+            // an open one succeeds (the descriptor form — this stub
+            // applies no times on any shape, so the success answer is
+            // the whole behaviour here).
             ret = 0;
+            if (a3 && !sys_rangeHasPermission64(cpu->memory, a3, 32, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT;
+            } else if (!a2) {
+                if (a4 & ~(0x100 | 0x1000)) {
+                    ret = (U64)-K_EINVAL;
+                } else if ((S32)a1 == K_AT_FDCWD) {
+                    ret = (U64)-K_EFAULT;
+                } else if (a4 != 0) {
+                    ret = (U64)-K_EINVAL;
+                } else if (!cpu->thread || !cpu->thread->process) {
+                    ret = (U64)-K_ENOSYS;
+                } else if (!cpu->thread->process->getFileDescriptor((FD)(S32)a1)) {
+                    ret = (U64)-K_EBADF;
+                }
+            } else if (!(a4 & 0x1000) &&
+                sys_rangeHasPermission64(cpu->memory, a2, 1, K64_PAGE_READ) &&
+                cpu->memory->readb(a2) == 0) {
+                ret = (U64)-K_ENOENT;
+            }
             break;
         case X64_SYS_set_robust_list:
         case X64_SYS_fadvise64:
@@ -5909,6 +5957,10 @@ void ksyscall64(CPU64* cpu) {
             // default /home/username, so that "." stat failed with ENOENT and
             // wine reported "could not find the prefix". Route to KProcess::chdir.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string and take
+            // the empty route.
+            if (!a1) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->chdir(BString::copy(path));
@@ -6183,37 +6235,90 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_statx64(cpu, a1, a2, a3, a4, a5);
             break;
         case X64_SYS_statfs:
-            // a1 = path (ignored — same lie for every fs), a2 = struct statfs*
+            // a1 = path, a2 = struct statfs*. The fabricated
+            // statistics stand for any resolvable path, but the path
+            // is resolved first, as the host does (FD-135,
+            // host-measured in test-results/fd133-135/): a null path
+            // faults -EFAULT and an unresolvable one -- an empty
+            // path (FD-131), a missing one, a dangling symlink --
+            // answers -ENOENT. The process layer's own statfs
+            // methods resolve the same way. Without a process there
+            // is no filesystem to resolve against, and the
+            // fabricated answer stands as before.
+            if (cpu->thread && cpu->thread->process) {
+                if (!a1) { ret = (U64)-K_EFAULT; break; }
+                char path[1024] = {0};
+                cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
+                if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
+                    cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
+                if (!node) { ret = (U64)-K_ENOENT; break; }
+            }
             ret = sys_statfs64_common(cpu, a2);
             break;
         case X64_SYS_fstatfs:
             // a1 = fd (ignored), a2 = struct statfs*
             ret = sys_statfs64_common(cpu, a2);
             break;
-        // Extended attributes: our guest FS has none. get*xattr -> -ENODATA
-        // ("attribute does not exist"), the answer Linux gives for a file with
-        // no xattrs — this is what wine's ntdll probes for and tolerates. The
-        // set*/list*/remove* variants likewise report "unsupported/empty".
-        // Without these, wine64 startup tripped the unimplemented-syscall path
-        // (#191 getxattr) during prefix/service bring-up.
-        case 191: // getxattr
-        case 192: // lgetxattr
-        case 193: // fgetxattr
-            ret = (U64)-K_ENODATA;
-            break;
-        case 194: // listxattr
-        case 195: // llistxattr
-        case 196: // flistxattr
-            ret = 0; // empty attribute list
-            break;
+        // Extended attributes: our guest FS has none. Once the
+        // target is resolved, get*xattr answers -ENODATA ("attribute
+        // does not exist"), the answer Linux gives for a file with
+        // no xattrs — this is what wine's ntdll probes for and
+        // tolerates; the set*/remove* variants likewise report
+        // "unsupported" and the list* variants an empty list.
+        // Without these, wine64 startup tripped the
+        // unimplemented-syscall path (#191 getxattr) during
+        // prefix/service bring-up.
+        // FD-133: the cases used to answer without ever resolving
+        // the path or descriptor they name. The host resolves first,
+        // in this order (host-measured, test-results/fd133-135/):
+        // the set forms validate their flags word (-EINVAL for bits
+        // outside XATTR_CREATE|XATTR_REPLACE), every name-taking
+        // form copies the attribute name (-EFAULT for a null name,
+        // ahead of the path and descriptor verdicts alike), and
+        // only then is the target resolved — a null path -EFAULT,
+        // an unresolvable path (empty, missing, or for the
+        // following forms a dangling symlink) -ENOENT, a bad
+        // descriptor -EBADF. Without a process there is no
+        // filesystem to resolve against and the stub answers stand
+        // as before.
         case 188: // setxattr
         case 189: // lsetxattr
         case 190: // fsetxattr
+        case 191: // getxattr
+        case 192: // lgetxattr
+        case 193: // fgetxattr
+        case 194: // listxattr
+        case 195: // llistxattr
+        case 196: // flistxattr
         case 197: // removexattr
         case 198: // lremovexattr
         case 199: // fremovexattr
-            ret = (U64)-K_ENOTSUP;
+        {
+            const bool isSetForm = (nr == 188 || nr == 189 || nr == 190);
+            const bool isFdForm = (nr == 190 || nr == 193 || nr == 196 || nr == 199);
+            const bool hasName = (nr != 194 && nr != 195 && nr != 196);
+            const bool follows = (nr == 188 || nr == 191 || nr == 194 || nr == 197);
+            if (isSetForm && (a5 & ~(U64)0x3)) { ret = (U64)-K_EINVAL; break; }
+            if (hasName && !a2) { ret = (U64)-K_EFAULT; break; }
+            if (cpu->thread && cpu->thread->process) {
+                if (isFdForm) {
+                    if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
+                } else {
+                    if (!a1) { ret = (U64)-K_EFAULT; break; }
+                    char path[1024] = {0};
+                    cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
+                    if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
+                        cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows);
+                    if (!node) { ret = (U64)-K_ENOENT; break; }
+                }
+            }
+            if (nr == 191 || nr == 192 || nr == 193) ret = (U64)-K_ENODATA;
+            else if (nr == 194 || nr == 195 || nr == 196) ret = 0; // empty attribute list
+            else ret = (U64)-K_ENOTSUP;
             break;
+        }
         case X64_SYS_lseek:
             ret = sys_lseek64(cpu, a1, a2, a3);
             break;
@@ -6244,8 +6349,16 @@ void ksyscall64(CPU64* cpu) {
             // Standalone runner (no KProcess) -> ENOENT, matching ld.so probes.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-2; break; }
             U64 pathArg = (nr == X64_SYS_access) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host -- for
+            // faccessat2 even with AT_EMPTY_PATH (there is no null
+            // descriptor form); the copy below would erase it to "".
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT; faccessat2 with
+            // AT_EMPTY_PATH is the fd form and keeps resolving (the
+            // working directory for AT_FDCWD).
+            if (path[0] == '\0' && !(nr == X64_SYS_faccessat2 && (a4 & 0x1000))) { ret = (U64)-2; break; }
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
                 cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
             ret = n ? 0 : (U64)-2;
@@ -6260,8 +6373,13 @@ void ksyscall64(CPU64* cpu) {
             // writes into the native (writable) root overlay.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 pathArg = (nr == X64_SYS_mkdir) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string.
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT, as the host does.
+            if (pathArg && path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString full = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                            BString::copy(path));
             ret = (U64)(S64)(S32)cpu->thread->process->mkdir(full);
@@ -6278,11 +6396,18 @@ void ksyscall64(CPU64* cpu) {
             // when initializing the prefix. target is arg1; linkpath is arg2
             // (symlink) or arg3 (symlinkat, dirfd=arg2 is AT_FDCWD/absolute).
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
+            // FD-132: a null target or linkpath answers -EFAULT on
+            // the host; the copies below would erase either to "".
+            if (!a1 || !linkArg) { ret = (U64)-K_EFAULT; break; }
             char target[1024] = {0};
             char linkpath[1024] = {0};
             cpu->memory->memcpyFromGuest(target, a1, sizeof(target) - 1);
-            U64 linkArg = (nr == X64_SYS_symlink) ? a2 : a3;
             cpu->memory->memcpyFromGuest(linkpath, linkArg, sizeof(linkpath) - 1);
+            // FD-131: an empty target or an empty linkpath answers
+            // -ENOENT, as the host does.
+            if (a1 && target[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+            if (linkArg && linkpath[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString fullLink = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                                BString::copy(linkpath));
             ret = (U64)(S64)(S32)cpu->thread->process->symlink(
@@ -6307,10 +6432,19 @@ void ksyscall64(CPU64* cpu) {
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 oldArg = (nr == X64_SYS_link) ? a1 : a2;
             U64 newArg = (nr == X64_SYS_link) ? a2 : a4;
+            // FD-132: a null old or new path answers -EFAULT on the
+            // host (linkat has no null descriptor form either); the
+            // copies below would erase either to "".
+            if (!oldArg || !newArg) { ret = (U64)-K_EFAULT; break; }
             char oldp[1024] = {0};
             char newp[1024] = {0};
             cpu->memory->memcpyFromGuest(oldp, oldArg, sizeof(oldp) - 1);
             cpu->memory->memcpyFromGuest(newp, newArg, sizeof(newp) - 1);
+            // FD-131: an empty old or new path answers -ENOENT, as
+            // the host does; linkat with AT_EMPTY_PATH on the old path
+            // is the fd form and keeps its current answer.
+            if (oldArg && oldp[0] == '\0' && !(nr == X64_SYS_linkat && (a5 & 0x1000))) { ret = (U64)-K_ENOENT; break; }
+            if (newArg && newp[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             BString fullOld = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                               BString::copy(oldp));
             BString fullNew = Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
@@ -6340,6 +6474,9 @@ void ksyscall64(CPU64* cpu) {
             char from[1024] = {0};
             char to[1024] = {0};
             if (nr == X64_SYS_rename) {
+                // FD-132: a null path answers -EFAULT on the host;
+                // the copies below would erase it to "".
+                if (!a1 || !a2) { ret = (U64)-K_EFAULT; break; }
                 cpu->memory->memcpyFromGuest(from, a1, sizeof(from) - 1);
                 cpu->memory->memcpyFromGuest(to,   a2, sizeof(to) - 1);
                 ret = (U64)(S64)(S32)cpu->thread->process->rename(
@@ -6351,6 +6488,9 @@ void ksyscall64(CPU64* cpu) {
                 }
                 FD olddirfd = (FD)(S32)a1;
                 FD newdirfd = (FD)(S32)a3;
+                // FD-132: a null path answers -EFAULT on the host;
+                // the copies below would erase it to "".
+                if (!a2 || !a4) { ret = (U64)-K_EFAULT; break; }
                 cpu->memory->memcpyFromGuest(from, a2, sizeof(from) - 1);
                 cpu->memory->memcpyFromGuest(to,   a4, sizeof(to) - 1);
                 ret = (U64)(S64)(S32)cpu->thread->process->renameat(
@@ -6399,7 +6539,7 @@ void ksyscall64(CPU64* cpu) {
             // strip them for ksocket and apply via fcntl after.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U32 sockType = (U32)a2 & 0xFF;
-            FD sfd = (FD)(S32)ksocket((U32)a1, sockType, (U32)a3);
+            FD sfd = (FD)(S32)ksocket(cpu->thread, (U32)a1, sockType, (U32)a3);
             kwarnSocketCreateFailure(cpu->thread, (U32)a1, (U32)a2, (U32)a3, (S32)sfd, "socket");
             if ((S32)sfd >= 0) {
                 if ((U32)a2 & 0x80000) cpu->thread->process->fcntrl(cpu->thread, sfd, K_F_SETFD, FD_CLOEXEC);
@@ -6762,8 +6902,16 @@ void ksyscall64(CPU64* cpu) {
             // (unlinkat, dirfd AT_FDCWD/absolute). Route to KProcess::unlinkFile.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
             U64 pathArg = (nr == X64_SYS_unlink) ? a1 : a2;
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string (which
+            // resolved to the working directory itself and answered
+            // success on the base).
+            if (!pathArg) { ret = (U64)-K_EFAULT; break; }
             char path[1024] = {0};
             cpu->memory->memcpyFromGuest(path, pathArg, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT, as the host does
+            // (the join below would name the working directory itself).
+            if (pathArg && path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->unlinkFile(
                 BString(Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
                                         BString::copy(path))));
@@ -6783,10 +6931,32 @@ void ksyscall64(CPU64* cpu) {
             if (pipeFlags & 0x80000) passFlags |= K_O_CLOEXEC;  // O_CLOEXEC
             if (pipeFlags & 0x800)   passFlags |= K_O_NONBLOCK; // O_NONBLOCK
             FD fd1 = 0, fd2 = 0;
+            // FD-127 diagnostic instrumentation: active only when the
+            // thread-dump diagnostic is enabled (BW_THREAD_DUMP=1), so
+            // production runs are untouched. Entry/exit brackets around
+            // the pair creation and the fd writeback name the calling
+            // thread; the matching step lines live in ksocketpairFds.
+            const bool pipeDiag = bwStepDiagEnabled();
+            if (pipeDiag) {
+                bwStepNote(1, cpu->thread->process->id, cpu->thread->id);
+                klog_fmt("BW64-DIAG pipe2 enter pid=%u tid=%u nr=%d fds=0x%llx flags=0x%llx",
+                         cpu->thread->process->id, cpu->thread->id, (int)nr,
+                         (unsigned long long)a1, (unsigned long long)a2);
+            }
             S32 rc = ksocketpairFds(cpu->thread, K_AF_UNIX, K_SOCK_STREAM, 0, passFlags, fd1, fd2);
+            if (pipeDiag) {
+                bwStepNote(16, cpu->thread->process->id, cpu->thread->id);
+                klog_fmt("BW64-DIAG pipe2 pair-returned pid=%u tid=%u rc=%d fd1=%u fd2=%u",
+                         cpu->thread->process->id, cpu->thread->id, (int)rc, (U32)fd1, (U32)fd2);
+            }
             if (rc) { ret = (U64)(S64)rc; break; }
             cpu->memory->writed(a1, (U32)fd1);
             cpu->memory->writed(a1 + 4, (U32)fd2);
+            if (pipeDiag) {
+                bwStepNote(17, cpu->thread->process->id, cpu->thread->id);
+                klog_fmt("BW64-DIAG pipe2 exit pid=%u tid=%u",
+                         cpu->thread->process->id, cpu->thread->id);
+            }
             ret = 0;
             break;
         }
@@ -6806,8 +6976,18 @@ void ksyscall64(CPU64* cpu) {
             // client can block forever. The name is a guest pointer, so read
             // it through the 64-bit memory interface.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (!a1) {
+                // FD-137: a null name faults on the host (-EFAULT);
+                // skipping the copy for a null pointer erased it to
+                // the empty string, and an empty name is legal and
+                // creates the file. The host validates the flags
+                // before the name copy, so invalid flags answer
+                // -EINVAL first.
+                ret = (U64)(((U32)a2 & ~KProcess::MEMFD_SUPPORTED_FLAGS) ? -K_EINVAL : -K_EFAULT);
+                break;
+            }
             char name[256] = {0};
-            if (a1) cpu->memory->memcpyFromGuest(name, a1, sizeof(name) - 1);
+            cpu->memory->memcpyFromGuest(name, a1, sizeof(name) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->memfd_create(BString::copy(name), (U32)a2);
             break;
         }
@@ -6821,8 +7001,22 @@ void ksyscall64(CPU64* cpu) {
             break;
         case X64_SYS_inotify_add_watch: {
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            if (!a2) {
+                // FD-132: a null path answers -EFAULT on the host,
+                // but the descriptor is validated first (a bad one
+                // answers -EBADF) -- the order KProcess applies to
+                // the empty path (FD-131), mirrored here because
+                // the null pointer never reaches that layer.
+                KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor((FD)a1);
+                if (!descriptor || !descriptor->kobject || descriptor->kobject->type != KTYPE_INOTIFY) {
+                    ret = (U64)-K_EBADF;
+                } else {
+                    ret = (U64)-K_EFAULT;
+                }
+                break;
+            }
             char path[1024] = {0};
-            if (a2) cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
+            cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
             ret = (U64)(S64)(S32)cpu->thread->process->inotify_add_watch((S32)a1, BString::copy(path), (U32)a3);
             break;
         }
@@ -7546,7 +7740,15 @@ void ksyscall64(CPU64* cpu) {
             break;
         }
         case X64_SYS_chmod: {  // chmod(path, mode)
+            // FD-126 (host-measured): a null path answers -EFAULT and
+            // an empty path -ENOENT, both ahead of any lookup. The
+            // shared reader maps null to "", and "" resolves to the
+            // directory node itself in the path resolver, so without
+            // these guards the null shape took the empty-path route
+            // (its answer then depended on the working directory).
+            if (!a1) { ret = (U64)-K_EFAULT; break; }
             BString path = readGuestString64(cpu, a1);
+            if (path.length() == 0) { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->chmod(path, (U32)a2);
             break;
         }
@@ -7554,7 +7756,15 @@ void ksyscall64(CPU64* cpu) {
             ret = (U64)(S64)(S32)cpu->thread->process->fchmod((FD)a1, (U32)a2);
             break;
         case 268: {            // fchmodat(dirfd, path, mode, flags)
+            // FD-126 (host-measured): as for chmod -- a null path
+            // answers -EFAULT and an empty path -ENOENT, both ahead
+            // of flag handling and dirfd resolution, which the host
+            // orders after the path copy-in (an unopened dirfd with
+            // a null path still answers -EFAULT, with an empty path
+            // still -ENOENT).
+            if (!a2) { ret = (U64)-K_EFAULT; break; }
             BString path = readGuestString64(cpu, a2);
+            if (path.length() == 0) { ret = (U64)-K_ENOENT; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->fchmodat((FD)a1, path, (U32)a3, (U32)a4);
             break;
         }

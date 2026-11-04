@@ -4666,8 +4666,14 @@ void testNamedDatagram64Syscalls() {
             S32 srx = (S32)memory->readd(svAt + 4);
             dl = writePathAddr(destAt, "/fd111i");
             S64 s = invoke6(44, (U64)(U32)stx, bufAt, 4, 0, destAt, dl);
-            if (s != -K_EOPNOTSUPP) {
-                testFail("stream sendto with a destination returned %lld (want -EOPNOTSUPP)", (long long)s);
+            // FD-123 reconciliation: the pair end staged here is a
+            // CONNECTED stream socket, whose addressed sendto the
+            // host answers -EISCONN; FD-111's -EOPNOTSUPP is the
+            // host's answer for an UNCONNECTED stream socket (its
+            // measurement did not record the state) and is pinned
+            // in that shape by the FD-123 test.
+            if (s != -K_EISCONN) {
+                testFail("stream sendto with a destination returned %lld (want -EISCONN for the connected pair end, FD-123)", (long long)s);
             }
             process->close(stx);
             process->close(srx);
@@ -5652,24 +5658,1764 @@ void testWriteZeroLength64Syscalls() {
             process->close(p.tx);
         }
     }
-    // A datagram socket whose peer is gone: the object is
-    // destroyed with the descriptor, so the write answers
-    // -ENOTCONN, the same answer the nonzero write gives on
-    // this tree (the host's one-shot -ECONNREFUSED for the
-    // first send after a peer close is the socket layer's
-    // peer accounting for every count, not this dispatcher's
-    // zero-count shape).
+    // A datagram socket whose peer just closed: the host answers
+    // the first send after the close -ECONNREFUSED and later
+    // sends -ENOTCONN (FD-119, host-measured); the zero-count
+    // write follows the same peer accounting as every other send.
     {
         Pair p;
         if (makePair(2, p)) {
             process->close(p.rx);
-            if (write0(p.tx, bufAt) != -K_ENOTCONN) {
-                testFail("write0 on a datagram socket with a closed peer: want -ENOTCONN");
+            S64 w0 = write0(p.tx, bufAt);
+            S64 w1 = write0(p.tx, bufAt);
+            if (w0 != -K_ECONNREFUSED || w1 != -K_ENOTCONN) {
+                testFail("write0 on a datagram socket with a closed peer: %lld, %lld (want -ECONNREFUSED, -ENOTCONN)",
+                         (long long)w0, (long long)w1);
             }
             process->close(p.tx);
         }
     }
 }
+
+void testSeqpacket64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd118XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("seqpacket test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x70000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("seqpacket test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 lenAt  = dataPage + 0x980;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    constexpr U64 riovAt = dataPage + 0x1480;
+    memory->memcpyToGuest(bufAt + 0x00, "abc", 3);
+    memory->memcpyToGuest(bufAt + 0x10, "de", 2);
+    memory->memcpyToGuest(bufAt + 0x20, "0123456789", 10);
+    memory->memcpyToGuest(bufAt + 0x40, "12", 2);
+    memory->memcpyToGuest(bufAt + 0x48, "345", 3);
+    memory->memcpyToGuest(bufAt + 0x60, "zz", 2);
+    memory->memcpyToGuest(bufAt + 0x70, "bk", 2);
+    memory->memcpyToGuest(bufAt + 0x80, "r1", 2);
+    memory->memcpyToGuest(bufAt + 0x88, "r2", 2);
+    memory->memcpyToGuest(bufAt + 0x90, "N", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](Pair& p) -> bool {
+        if (invoke(53, 1, 5 /*SOCK_SEQPACKET*/, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.rx);
+        return true;
+    };
+    auto recvStr = [&](S32 fd, std::string& out) -> S64 {
+        S64 rc = invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0);
+        out.clear();
+        if (rc > 0) {
+            std::vector<U8> buf((size_t)rc);
+            memory->memcpyFromGuest(buf.data(), recvAt, (U64)rc);
+            out.assign((const char*)buf.data(), (size_t)rc);
+        }
+        return rc;
+    };
+    auto expectRecord = [&](S32 fd, const char* want, const char* label) {
+        std::string got;
+        S64 r = recvStr(fd, got);
+        if (r != (S64)strlen(want) || got != want) {
+            testFail("%s: recv %lld (%s), want %lld (%s)", label, (long long)r, got.c_str(),
+                     (long long)strlen(want), want);
+        }
+    };
+    auto expectWouldBlock = [&](S32 fd, const char* label) {
+        std::string got;
+        S64 r = recvStr(fd, got);
+        if (r != -K_EWOULDBLOCK) {
+            testFail("%s: recv %lld, want -EWOULDBLOCK", label, (long long)r);
+        }
+    };
+    auto sendmsgIov = [&](S32 fd, U64 nameAtArg, U32 nameLen, std::vector<std::pair<U64, U64>> segs) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, nameAtArg);
+        memory->writed(hdrAt + 8, nameLen);
+        for (size_t i = 0; i < segs.size(); i++) {
+            memory->writeq(iovAt + i * 16, segs[i].first);
+            memory->writeq(iovAt + i * 16 + 8, segs[i].second);
+        }
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, (U64)segs.size());
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+
+    // A seqpacket pair is created without refusal, writes keep their record
+    // boundaries, a short read truncates and discards the rest of the record,
+    // and a zero-length write is delivered as an empty record.
+    {
+        Pair p;
+        if (!makePair(p)) {
+            testFail("SOCK_SEQPACKET socketpair was refused");
+        } else {
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x00, 3, 0) != 3) testFail("seqpacket write of abc failed");
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x10, 2, 0) != 2) testFail("seqpacket write of de failed");
+            expectRecord(p.rx, "abc", "first record keeps its boundary");
+            expectRecord(p.rx, "de", "second record keeps its boundary");
+            expectWouldBlock(p.rx, "pair drained after two records");
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x20, 10, 0) != 10) testFail("seqpacket write of 10 bytes failed");
+            S64 tr = invoke6(45, (U64)(U32)p.rx, recvAt, 4, 0, 0, 0);
+            std::string tgot;
+            if (tr > 0) {
+                std::vector<U8> buf((size_t)tr);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)tr);
+                tgot.assign((const char*)buf.data(), (size_t)tr);
+            }
+            if (tr != 4 || tgot != "0123") testFail("truncated record: recv %lld (%s), want 4 (0123)", (long long)tr, tgot.c_str());
+            expectWouldBlock(p.rx, "rest of a truncated record is discarded");
+            if (invoke(1, (U64)(U32)p.tx, bufAt, 0, 0) != 0) testFail("seqpacket zero-length write failed");
+            std::string got;
+            S64 zr = recvStr(p.rx, got);
+            if (zr != 0) testFail("empty record: recv %lld, want 0", (long long)zr);
+            expectWouldBlock(p.rx, "empty record consumed exactly once");
+            // writev gathers its segments into ONE record.
+            memory->writeq(iovAt + 0, bufAt + 0x40);
+            memory->writeq(iovAt + 8, 2);
+            memory->writeq(iovAt + 16, bufAt + 0x48);
+            memory->writeq(iovAt + 24, 3);
+            if (invoke(20, (U64)(U32)p.tx, iovAt, 2, 0) != 5) testFail("seqpacket writev failed");
+            expectRecord(p.rx, "12345", "writev arrives as one record");
+            expectWouldBlock(p.rx, "writev produced exactly one record");
+            // sendmsg gathers too, a zero-length sendmsg is an empty record,
+            // and recvmsg reports an unnamed source (namelen 0).
+            if (sendmsgIov(p.tx, 0, 0, {{bufAt + 0x40, 2}, {bufAt + 0x48, 3}}) != 5) testFail("seqpacket sendmsg failed");
+            if (sendmsgIov(p.tx, 0, 0, {{bufAt, 0}}) != 0) testFail("seqpacket zero-length sendmsg failed");
+            for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+            memory->writeq(riovAt, recvAt);
+            memory->writeq(riovAt + 8, 64);
+            memory->writeq(hdrAt + 16, riovAt);
+            memory->writeq(hdrAt + 24, 1);
+            memory->writed(hdrAt + 8, 128);
+            S64 mr = invoke(47, (U64)(U32)p.rx, hdrAt, 0, 0);
+            std::string mgot;
+            if (mr > 0) {
+                std::vector<U8> buf((size_t)mr);
+                memory->memcpyFromGuest(buf.data(), recvAt, (U64)mr);
+                mgot.assign((const char*)buf.data(), (size_t)mr);
+            }
+            if (mr != 5 || mgot != "12345") testFail("recvmsg record: %lld (%s), want 5 (12345)", (long long)mr, mgot.c_str());
+            if (memory->readd(hdrAt + 8) != 0) testFail("recvmsg source namelen %u, want 0 (unnamed)", memory->readd(hdrAt + 8));
+            std::string got2;
+            S64 zr2 = recvStr(p.rx, got2);
+            if (zr2 != 0) testFail("sendmsg empty record: recv %lld, want 0", (long long)zr2);
+            // MSG_PEEK shows the front record without consuming it.
+            if (invoke(1, (U64)(U32)p.tx, bufAt + 0x00, 3, 0) != 3) testFail("seqpacket write for peek failed");
+            S64 pk = invoke6(45, (U64)(U32)p.rx, recvAt, 64, 2 /*MSG_PEEK*/, 0, 0);
+            if (pk != 3) testFail("MSG_PEEK returned %lld, want 3", (long long)pk);
+            expectRecord(p.rx, "abc", "peeked record is still delivered");
+            expectWouldBlock(p.rx, "pair drained after peek case");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // An addressed send on a CONNECTED seqpacket socket ignores the address
+    // and delivers to the connected peer (host-measured); on an UNCONNECTED
+    // seqpacket socket every send answers -ENOTCONN.
+    {
+        S32 bound = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/sppeer");
+        if (bound < 0 || invoke(49, (U64)(U32)bound, addrAt, alen, 0) != 0) {
+            testFail("seqpacket test could not bind its datagram peer");
+        } else {
+            nonblock(bound);
+            Pair p;
+            if (!makePair(p)) {
+                testFail("SOCK_SEQPACKET socketpair was refused (addressed case)");
+            } else {
+                S64 rc = invoke6(44, (U64)(U32)p.tx, bufAt + 0x90, 1, 0, addrAt, alen);
+                if (rc != 1) testFail("connected seqpacket sendto-with-address: %lld, want 1 (address ignored)", (long long)rc);
+                expectRecord(p.rx, "N", "addressed send on a connected seqpacket lands on the pair peer");
+                std::string none;
+                S64 nr = recvStr(bound, none);
+                if (nr != -K_EWOULDBLOCK) testFail("named datagram peer received %lld from a connected seqpacket sendto, want nothing", (long long)nr);
+                process->close(p.tx);
+                process->close(p.rx);
+            }
+            S32 lone = sock(5 /*SOCK_SEQPACKET*/);
+            if (lone < 0) {
+                testFail("seqpacket test could not create an unconnected socket");
+            } else {
+                if (invoke(1, (U64)(U32)lone, bufAt + 0x90, 1, 0) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket write: want -ENOTCONN");
+                if (invoke6(44, (U64)(U32)lone, bufAt + 0x90, 1, 0, addrAt, alen) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket sendto-with-address: want -ENOTCONN");
+                if (sendmsgIov(lone, addrAt, alen, {{bufAt + 0x90, 1}}) != -K_ENOTCONN)
+                    testFail("unconnected seqpacket sendmsg-with-name: want -ENOTCONN");
+                process->close(lone);
+            }
+            process->close(bound);
+        }
+    }
+
+    // A seqpacket listener accepts a seqpacket client and records flow over
+    // the accepted socket; a connect whose type differs from the bound
+    // socket's answers -EPROTOTYPE.
+    {
+        S32 server = sock(5 /*SOCK_SEQPACKET*/);
+        U32 slen = writePathAddr(addrAt, "/spsrv");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, slen, 0) != 0 ||
+            invoke(50, (U64)(U32)server, 4, 0, 0) != 0) {
+            testFail("seqpacket test could not bind/listen its server");
+        } else {
+            S32 client = sock(5 /*SOCK_SEQPACKET*/);
+            nonblock(client);
+            S64 crc = invoke(42, (U64)(U32)client, addrAt, slen, 0);
+            if (crc != 0 && crc != -K_EINPROGRESS) testFail("seqpacket connect: %lld, want 0 or -EINPROGRESS", (long long)crc);
+            // Only accept when the connect queued: a blocking accept
+            // with no pending connection would wait forever (on the
+            // base this case must fail, not hang).
+            memory->writed(lenAt, 128);
+            S64 acc = (crc == 0 || crc == -K_EINPROGRESS) ? invoke(43, (U64)(U32)server, addrAt + 0x100, lenAt, 0) : -1;
+            if (acc < 0) {
+                testFail("seqpacket accept: %lld", (long long)acc);
+            } else {
+                S32 accepted = (S32)acc;
+                nonblock(accepted);
+                if (invoke(1, (U64)(U32)client, bufAt + 0x60, 2, 0) != 2) testFail("client write over accepted connection failed");
+                if (invoke(1, (U64)(U32)client, bufAt, 0, 0) != 0) testFail("client empty write over accepted connection failed");
+                expectRecord(accepted, "zz", "accepted socket receives the record");
+                std::string got;
+                S64 zr = recvStr(accepted, got);
+                if (zr != 0) testFail("accepted socket empty record: recv %lld, want 0", (long long)zr);
+                if (invoke(1, (U64)(U32)accepted, bufAt + 0x70, 2, 0) != 2) testFail("accepted socket write back failed");
+                expectRecord(client, "bk", "client receives the reply record");
+                process->close(accepted);
+                process->close(client);
+            }
+            // Cross-type connects are refused with -EPROTOTYPE.
+            S32 stServer = sock(1 /*SOCK_STREAM*/);
+            U32 tlen = writePathAddr(addrAt, "/stlsn");
+            if (stServer < 0 || invoke(49, (U64)(U32)stServer, addrAt, tlen, 0) != 0 ||
+                invoke(50, (U64)(U32)stServer, 4, 0, 0) != 0) {
+                testFail("seqpacket test could not bind/listen its stream server");
+            } else {
+                // Nonblocking clients: on a tree without the type
+                // check a mismatched connect queues as pending and
+                // a blocking client would wait forever -- the case
+                // must fail there, not hang.
+                S32 spClient = sock(5 /*SOCK_SEQPACKET*/);
+                nonblock(spClient);
+                S64 m1 = invoke(42, (U64)(U32)spClient, addrAt, tlen, 0);
+                if (m1 != -K_EPROTOTYPE) testFail("seqpacket connect to a stream listener: %lld, want -EPROTOTYPE", (long long)m1);
+                process->close(spClient);
+                S32 stClient = sock(1 /*SOCK_STREAM*/);
+                nonblock(stClient);
+                writePathAddr(addrAt, "/spsrv");
+                S64 m2 = invoke(42, (U64)(U32)stClient, addrAt, slen, 0);
+                if (m2 != -K_EPROTOTYPE) testFail("stream connect to a seqpacket listener: %lld, want -EPROTOTYPE", (long long)m2);
+                process->close(stClient);
+                process->close(stServer);
+            }
+            process->close(server);
+        }
+    }
+
+    // Shutdown and peer close: after shutdown(SHUT_WR) own writes answer
+    // -EPIPE; after the peer closes, queued records drain, reads then answer
+    // 0 (end of stream), and writes answer -EPIPE on the first and later
+    // sends alike (no datagram-style one-shot refusal for seqpacket).
+    {
+        Pair p;
+        if (!makePair(p)) {
+            testFail("SOCK_SEQPACKET socketpair was refused (shutdown case)");
+        } else {
+            if (invoke(48, (U64)(U32)p.tx, 1 /*SHUT_WR*/, 0, 0) != 0) testFail("seqpacket shutdown failed");
+            bool was64 = context.thread->process->is64Bit;
+            context.thread->process->is64Bit = true;
+            S64 w = invoke(1, (U64)(U32)p.tx, bufAt + 0x90, 1, 0);
+            context.thread->process->is64Bit = was64;
+            if (w != -K_EPIPE) testFail("seqpacket write after SHUT_WR: %lld, want -EPIPE", (long long)w);
+            std::string got;
+            S64 er = recvStr(p.rx, got);
+            if (er != 0) testFail("seqpacket read after peer SHUT_WR with empty queue: %lld, want 0 (end of stream)", (long long)er);
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+        Pair q;
+        if (!makePair(q)) {
+            testFail("SOCK_SEQPACKET socketpair was refused (peer-close case)");
+        } else {
+            if (invoke(1, (U64)(U32)q.tx, bufAt + 0x80, 2, 0) != 2) testFail("seqpacket write r1 failed");
+            if (invoke(1, (U64)(U32)q.tx, bufAt + 0x88, 2, 0) != 2) testFail("seqpacket write r2 failed");
+            process->close(q.tx);
+            expectRecord(q.rx, "r1", "first queued record drains after peer close");
+            expectRecord(q.rx, "r2", "second queued record drains after peer close");
+            std::string got;
+            S64 er = recvStr(q.rx, got);
+            if (er != 0) testFail("seqpacket read after drain: %lld, want 0 (end of stream)", (long long)er);
+            bool was64 = context.thread->process->is64Bit;
+            context.thread->process->is64Bit = true;
+            S64 w1 = invoke(1, (U64)(U32)q.rx, bufAt + 0x90, 1, 0);
+            S64 w2 = invoke(1, (U64)(U32)q.rx, bufAt + 0x90, 1, 0);
+            context.thread->process->is64Bit = was64;
+            if (w1 != -K_EPIPE || w2 != -K_EPIPE)
+                testFail("seqpacket writes after peer close: %lld, %lld; want -EPIPE, -EPIPE", (long long)w1, (long long)w2);
+            process->close(q.rx);
+        }
+    }
+}
+
+void testDatagramPeerCloseRefusal64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd119XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("peer-close refusal test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x72000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("peer-close refusal test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    memory->memcpyToGuest(bufAt + 0x00, "a", 1);
+    memory->memcpyToGuest(bufAt + 0x10, "z", 1);
+    memory->memcpyToGuest(bufAt + 0x20, "W", 1);
+    memory->memcpyToGuest(bufAt + 0x30, "L", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](Pair& p) -> bool {
+        if (invoke(53, 1, 2 /*SOCK_DGRAM*/, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto sendmsgOne = [&](S32 fd, U64 dataAt, U64 len) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(iovAt, dataAt);
+        memory->writeq(iovAt + 8, len);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto writevOne = [&](S32 fd, U64 dataAt, U64 len) -> S64 {
+        memory->writeq(iovAt, dataAt);
+        memory->writeq(iovAt + 8, len);
+        return invoke(20, (U64)(U32)fd, iovAt, 1, 0);
+    };
+    auto expectRefusalThenNotConn = [&](S64 first, S64 second, const char* label) {
+        if (first != -K_ECONNREFUSED || second != -K_ENOTCONN) {
+            testFail("%s: first send %lld, second %lld; want -ECONNREFUSED then -ENOTCONN",
+                     label, (long long)first, (long long)second);
+        }
+    };
+
+    // The host answers the first send after a peer close with
+    // -ECONNREFUSED and later sends with -ENOTCONN, on every connected send
+    // path; the one-shot is per-socket, not per-path.
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (write case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 t = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "write after peer close");
+            if (t != -K_ENOTCONN) testFail("third write after peer close: %lld, want -ENOTCONN", (long long)t);
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (sendto case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke6(44, (U64)(U32)p.tx, bufAt, 1, 0, 0, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "sendto spends the refusal, write is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (sendmsg case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = sendmsgOne(p.tx, bufAt, 1);
+            S64 s = invoke6(44, (U64)(U32)p.tx, bufAt, 1, 0, 0, 0);
+            expectRefusalThenNotConn(f, s, "sendmsg spends the refusal, sendto is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (writev case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = writevOne(p.tx, bufAt, 1);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "writev spends the refusal, write is next");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (zero-length case)"); }
+        else {
+            process->close(p.rx);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 0, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "zero-length write spends the refusal");
+            process->close(p.tx);
+        }
+    }
+    // Receiving what the peer queued before closing does not spend the
+    // refusal. The drained-read answer pinned here was the standing 0
+    // when this lane ran; the host answers -EWOULDBLOCK for a drained
+    // datagram survivor (FD-120, whose lane corrected this pin to the
+    // host answer).
+    {
+        Pair p;
+        if (!makePair(p)) { testFail("datagram pair failed (recv-first case)"); }
+        else {
+            if (invoke(1, (U64)(U32)p.rx, bufAt + 0x10, 1, 0) != 1) testFail("peer write before close failed");
+            process->close(p.rx);
+            S64 r = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
+            if (r != 1) testFail("queued datagram not delivered after peer close: %lld", (long long)r);
+            S64 r2 = invoke6(45, (U64)(U32)p.tx, recvAt, 64, 0, 0, 0);
+            if (r2 != -K_EWOULDBLOCK) testFail("drained datagram survivor read: %lld, want -EWOULDBLOCK (FD-120)", (long long)r2);
+            S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+            expectRefusalThenNotConn(f, s, "receiving first does not spend the refusal");
+            process->close(p.tx);
+        }
+    }
+    // A never-connected datagram socket keeps the plain -ENOTCONN.
+    {
+        S32 lone = sock(2 /*SOCK_DGRAM*/);
+        if (lone < 0) { testFail("could not create a datagram socket (control case)"); }
+        else {
+            S64 w = invoke(1, (U64)(U32)lone, bufAt, 1, 0);
+            if (w != -K_ENOTCONN) testFail("never-connected datagram write: %lld, want -ENOTCONN", (long long)w);
+            process->close(lone);
+        }
+    }
+    // A one-way connected datagram socket (connected to a bound pathname
+    // peer) shows the same one-shot when that peer closes.
+    {
+        S32 bound = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer");
+        if (bound < 0 || invoke(49, (U64)(U32)bound, addrAt, alen, 0) != 0) {
+            testFail("peer-close refusal test could not bind its pathname peer");
+        } else {
+            nonblock(bound);
+            S32 sender = sock(2 /*SOCK_DGRAM*/);
+            if (sender < 0 || invoke(42, (U64)(U32)sender, addrAt, alen, 0) != 0) {
+                testFail("one-way datagram connect failed");
+            } else {
+                if (invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0) != 1) testFail("one-way write before close failed");
+                S64 r = invoke6(45, (U64)(U32)bound, recvAt, 64, 0, 0, 0);
+                if (r != 1) testFail("bound peer did not receive the one-way datagram: %lld", (long long)r);
+                process->close(bound);
+                S64 f = invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0);
+                S64 s = invoke(1, (U64)(U32)sender, bufAt + 0x20, 1, 0);
+                S64 t = invoke6(44, (U64)(U32)sender, bufAt + 0x20, 1, 0, 0, 0);
+                expectRefusalThenNotConn(f, s, "one-way connected write after peer close");
+                if (t != -K_ENOTCONN) testFail("one-way sendto after the refusal was spent: %lld, want -ENOTCONN", (long long)t);
+                process->close(sender);
+            }
+            if (bound >= 0) { /* already closed above when the case ran */ }
+        }
+    }
+    // An addressed send to a live third peer succeeds and does not spend
+    // the connected refusal.
+    {
+        S32 live = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dglive");
+        if (live < 0 || invoke(49, (U64)(U32)live, addrAt, alen, 0) != 0) {
+            testFail("peer-close refusal test could not bind its live peer");
+        } else {
+            nonblock(live);
+            Pair p;
+            if (!makePair(p)) { testFail("datagram pair failed (addressed-spend case)"); }
+            else {
+                process->close(p.rx);
+                S64 a = invoke6(44, (U64)(U32)p.tx, bufAt + 0x30, 1, 0, addrAt, alen);
+                if (a != 1) testFail("addressed sendto to a live peer: %lld, want 1", (long long)a);
+                S64 r = invoke6(45, (U64)(U32)live, recvAt, 64, 0, 0, 0);
+                if (r != 1) testFail("live peer did not receive the addressed datagram: %lld", (long long)r);
+                S64 f = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+                S64 s = invoke(1, (U64)(U32)p.tx, bufAt, 1, 0);
+                expectRefusalThenNotConn(f, s, "addressed send does not spend the refusal");
+                process->close(p.tx);
+            }
+            process->close(live);
+        }
+    }
+}
+
+
+// FD-120..FD-123: socket state answers, host-measured on the box's
+// kernel (test-results/fd120-123/hostref-fd120-123.c and
+// hostref-fd120-123b.c):
+//   FD-120 a datagram survivor whose pair peer closed answers
+//     -EWOULDBLOCK for a drained read on every receive path --
+//     datagram has no end of stream. The seqpacket and stream
+//     survivors keep their 0 (end of stream) controls.
+//   FD-121 a receive on a socket that is not connected answers
+//     -EINVAL for stream (fresh, listening, or connect in flight
+//     alike), -ENOTCONN for seqpacket, and -EWOULDBLOCK for
+//     datagram, on the read, recvfrom and recvmsg paths alike.
+//   FD-122 a connect to a bound but not listening socket answers
+//     -ECONNREFUSED at once, blocking and nonblocking alike, and
+//     queues nothing a later listen could accept.
+//   FD-123 an addressed send on a connected stream socket answers
+//     -EISCONN (sendto and sendmsg alike; a peer's death does not
+//     change it), and on a never-connected stream socket it
+//     answers -EOPNOTSUPP -- FD-111's measurement, which was the
+//     unconnected shape.
+void testSocketStateAnswers64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd120XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("socket state answers test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x7B000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("socket state answers test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    memory->memcpyToGuest(bufAt + 0x00, "q", 1);
+    memory->memcpyToGuest(bufAt + 0x10, "r1", 2);
+    memory->memcpyToGuest(bufAt + 0x20, "s", 1);
+    memory->memcpyToGuest(bufAt + 0x30, "N", 1);
+
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) -> bool {
+        if (invoke(53, 1, type, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto recvfromOnce = [&](S32 fd) -> S64 { return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0); };
+    auto readOnce = [&](S32 fd) -> S64 { return invoke(0, (U64)(U32)fd, recvAt, 64, 0); };
+    auto recvmsgOnce = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(iovAt, recvAt);
+        memory->writeq(iovAt + 8, 64);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(47, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto sendtoAddr = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        return invoke6(44, (U64)(U32)fd, bufAt + 0x30, 1, 0, addrAt, alen);
+    };
+    auto sendmsgNamed = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, addrAt);
+        memory->writed(hdrAt + 8, alen);
+        memory->writeq(iovAt, bufAt + 0x30);
+        memory->writeq(iovAt + 8, 1);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, 0, 0);
+    };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+
+    // Keep one descriptor open for the whole test so no tested
+    // socket lands on descriptor 0: the 64-bit dispatcher answers
+    // a read on descriptor 0 itself (its host-stdin convention,
+    // sys_read64 returns 0), which would mask the socket layer's
+    // own answers on the read cases below.
+    S32 anchorFd = sock(2 /*SOCK_DGRAM*/);
+
+    // ---- FD-120: drained datagram reads after the peer closes ----
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-120 queued case)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt, 1, 0), 1, "FD-120 peer write before close");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 1, "FD-120 queued datagram delivered after peer close");
+            if (memory->readb(recvAt) != 'q') testFail("FD-120 queued datagram payload wrong");
+            expectEq(recvfromOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram recvfrom");
+            expectEq(recvmsgOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram recvmsg");
+            expectEq(readOnce(p.tx), -K_EWOULDBLOCK, "FD-120 drained datagram read");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-120 empty case)"); }
+        else {
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), -K_EWOULDBLOCK, "FD-120 datagram survivor, nothing ever queued");
+            process->close(p.tx);
+        }
+    }
+    {
+        // Control: a seqpacket survivor keeps end of stream.
+        Pair p;
+        if (!makePair(5 /*SOCK_SEQPACKET*/, p)) { testFail("seqpacket pair failed (FD-120 control)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x10, 2, 0), 2, "FD-120 control seqpacket record write");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 2, "FD-120 control seqpacket queued record");
+            expectEq(recvfromOnce(p.tx), 0, "FD-120 control seqpacket drained read stays end of stream");
+            process->close(p.tx);
+        }
+    }
+    {
+        // Control: a stream survivor keeps end of stream.
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-120 control)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x20, 1, 0), 1, "FD-120 control stream write");
+            process->close(p.rx);
+            expectEq(recvfromOnce(p.tx), 1, "FD-120 control stream queued byte");
+            expectEq(recvfromOnce(p.tx), 0, "FD-120 control stream drained read stays end of stream");
+            process->close(p.tx);
+        }
+    }
+
+    // ---- FD-121: receives on sockets that are not connected ----
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        if (s < 0) { testFail("could not create a stream socket (FD-121)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EINVAL, "FD-121 unconnected stream recvfrom");
+            expectEq(readOnce(s), -K_EINVAL, "FD-121 unconnected stream read");
+            expectEq(recvmsgOnce(s), -K_EINVAL, "FD-121 unconnected stream recvmsg");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(5 /*SOCK_SEQPACKET*/);
+        if (s < 0) { testFail("could not create a seqpacket socket (FD-121)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_ENOTCONN, "FD-121 unconnected seqpacket recvfrom");
+            expectEq(recvmsgOnce(s), -K_ENOTCONN, "FD-121 unconnected seqpacket recvmsg");
+            process->close(s);
+        }
+    }
+    {
+        // Standing correct shape: an unconnected datagram socket
+        // receives from anyone, so an empty one would block.
+        S32 s = sock(2 /*SOCK_DGRAM*/);
+        if (s < 0) { testFail("could not create a datagram socket (FD-121 control)"); }
+        else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EWOULDBLOCK, "FD-121 control unconnected datagram recvfrom");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lst");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-121)");
+        } else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_EINVAL, "FD-121 listening stream recvfrom");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(5 /*SOCK_SEQPACKET*/);
+        U32 alen = writePathAddr(addrAt, "/lsq");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening seqpacket socket (FD-121)");
+        } else {
+            nonblock(s);
+            expectEq(recvfromOnce(s), -K_ENOTCONN, "FD-121 listening seqpacket recvfrom");
+            process->close(s);
+        }
+    }
+
+    // ---- FD-122: connect to a bound but not listening socket ----
+    {
+        S32 server = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/nlstr");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0) {
+            testFail("could not stage a non-listening stream socket (FD-122)");
+        } else {
+            S32 client = sock(1 /*SOCK_STREAM*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_ECONNREFUSED,
+                     "FD-122 stream connect to a non-listening socket");
+            // The refused connect queues nothing: a later listen has
+            // nothing to accept.
+            expectEq(invoke(50, (U64)(U32)server, 4, 0, 0), 0, "FD-122 listen after the refused connect");
+            nonblock(server);
+            expectEq(invoke(43, (U64)(U32)server, 0, 0, 0), -K_EWOULDBLOCK,
+                     "FD-122 nothing pending after the refused connect");
+            process->close(client);
+            process->close(server);
+        }
+    }
+    {
+        S32 server = sock(5 /*SOCK_SEQPACKET*/);
+        U32 alen = writePathAddr(addrAt, "/nlseq");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0) {
+            testFail("could not stage a non-listening seqpacket socket (FD-122)");
+        } else {
+            S32 client = sock(5 /*SOCK_SEQPACKET*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_ECONNREFUSED,
+                     "FD-122 seqpacket connect to a non-listening socket");
+            process->close(client);
+            process->close(server);
+        }
+    }
+    {
+        // Control: a listening destination still pairs.
+        S32 server = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lstr");
+        if (server < 0 || invoke(49, (U64)(U32)server, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)server, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-122 control)");
+        } else {
+            S32 client = sock(1 /*SOCK_STREAM*/);
+            nonblock(client);
+            expectEq(invoke(42, (U64)(U32)client, addrAt, alen, 0), -K_EINPROGRESS,
+                     "FD-122 control connect to a listener pends (standing emulator shape)");
+            nonblock(server);
+            S64 accepted = invoke(43, (U64)(U32)server, 0, 0, 0);
+            if (accepted < 0) testFail("FD-122 control accept of the pending client: %lld", (long long)accepted);
+            else process->close((S32)accepted);
+            process->close(client);
+            process->close(server);
+        }
+    }
+
+    // ---- FD-123: addressed sends on stream sockets ----
+    {
+        S32 dgpeer = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer");
+        if (dgpeer < 0 || invoke(49, (U64)(U32)dgpeer, addrAt, alen, 0) != 0) {
+            testFail("could not stage the addressed datagram peer (FD-123)");
+        } else {
+            nonblock(dgpeer);
+            Pair p;
+            if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-123)"); }
+            else {
+                expectEq(sendtoAddr(p.tx, "/dgpeer"), -K_EISCONN, "FD-123 connected stream sendto with a destination");
+                expectEq(sendmsgNamed(p.tx, "/dgpeer"), -K_EISCONN, "FD-123 connected stream sendmsg with a name");
+                expectEq(recvfromOnce(p.rx), -K_EWOULDBLOCK, "FD-123 nothing delivered to the pair peer");
+                expectEq(recvfromOnce(dgpeer), -K_EWOULDBLOCK, "FD-123 nothing delivered to the named peer");
+                process->close(p.rx);
+                expectEq(sendtoAddr(p.tx, "/dgpeer"), -K_EISCONN,
+                         "FD-123 peer-closed stream survivor sendto with a destination");
+                expectEq(sendmsgNamed(p.tx, "/dgpeer"), -K_EISCONN,
+                         "FD-123 peer-closed stream survivor sendmsg with a name");
+                process->close(p.tx);
+            }
+            S32 u = sock(1 /*SOCK_STREAM*/);
+            if (u < 0) { testFail("could not create an unconnected stream socket (FD-123)"); }
+            else {
+                // FD-111's measurement: the unconnected shape.
+                expectEq(sendtoAddr(u, "/dgpeer"), -K_EOPNOTSUPP, "FD-123 unconnected stream sendto with a destination");
+                expectEq(sendmsgNamed(u, "/dgpeer"), -K_EOPNOTSUPP, "FD-123 unconnected stream sendmsg with a name");
+                process->close(u);
+            }
+            process->close(dgpeer);
+        }
+    }
+}
+void testPeerClosedStreamSendmsg64Syscalls() {
+    // FD-124 (host-measured, test-results/fd124/hostref-fd124.c):
+    // on a stream pair, after the peer closes, the survivor's
+    // sendmsg with no header destination answers -EPIPE -- at any
+    // length, including zero -- as do its sendto without an
+    // address, its plain send, its write and its sendmmsg; a
+    // never-connected stream socket's sendmsg answers -ENOTCONN.
+    // The emulator's sendmsg answered -ENOTCONN for both shapes:
+    // its no-peer branch did not distinguish never-connected from
+    // peer-died for stream, though FD-118 gave seqpacket's sendmsg
+    // exactly that distinction. The neighbouring answers are
+    // pinned as controls: the seqpacket survivor's -EPIPE
+    // (FD-118), the datagram survivor's one-shot -ECONNREFUSED
+    // then -ENOTCONN through sendmsg (FD-119), the addressed
+    // survivor sendmsg's -EISCONN (FD-123), the shutdown shapes,
+    // and healthy-pair delivery.
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd124XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("peer-closed stream sendmsg test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    constexpr U64 dataPage = 0x7C000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, 4 * K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("peer-closed stream sendmsg test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto invoke6 = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5, U64 a6) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 bufAt  = dataPage + 0x000;
+    constexpr U64 recvAt = dataPage + 0x400;
+    constexpr U64 svAt   = dataPage + 0x800;
+    constexpr U64 addrAt = dataPage + 0x900;
+    constexpr U64 iovAt  = dataPage + 0x1000;
+    constexpr U64 hdrAt  = dataPage + 0x1400;
+    constexpr U64 vecAt  = dataPage + 0x1800;
+    memory->memcpyToGuest(bufAt + 0x40, "x", 1);
+
+    constexpr U64 kNoSignal = 0x4000; // MSG_NOSIGNAL
+    auto writePathAddr = [&](U64 at, const char* path) -> U32 {
+        memory->writew(at, 1);
+        memory->memcpyToGuest(at + 2, path, strlen(path) + 1);
+        return (U32)(2 + strlen(path) + 1);
+    };
+    auto sock = [&](U32 type) -> S32 { return (S32)invoke(41, 1, type, 0, 0); };
+    auto nonblock = [&](S32 fd) { invoke6(72, (U64)(U32)fd, 4 /*F_SETFL*/, 0x800 /*O_NONBLOCK*/, 0, 0, 0); };
+    struct Pair { S32 tx = 0, rx = 0; };
+    auto makePair = [&](U32 type, Pair& p) -> bool {
+        if (invoke(53, 1, type, 0, svAt) != 0) return false;
+        p.tx = (S32)memory->readd(svAt);
+        p.rx = (S32)memory->readd(svAt + 4);
+        nonblock(p.tx);
+        nonblock(p.rx);
+        return true;
+    };
+    auto stageHdr = [&](U64 name, U32 namelen, U64 len) {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        memory->writeq(hdrAt + 0, name);
+        memory->writed(hdrAt + 8, namelen);
+        memory->writeq(iovAt, bufAt + 0x40);
+        memory->writeq(iovAt + 8, len);
+        memory->writeq(hdrAt + 16, iovAt);
+        memory->writeq(hdrAt + 24, 1);
+    };
+    auto sendmsgNoName = [&](S32 fd, U64 flags, U64 len) -> S64 {
+        stageHdr(0, 0, len);
+        return invoke(46, (U64)(U32)fd, hdrAt, flags, 0);
+    };
+    auto sendmsgEmpty = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 56; i += 8) memory->writeq(hdrAt + i, 0);
+        return invoke(46, (U64)(U32)fd, hdrAt, kNoSignal, 0);
+    };
+    auto sendmsgNamed = [&](S32 fd, const char* path) -> S64 {
+        U32 alen = writePathAddr(addrAt, path);
+        stageHdr(addrAt, alen, 1);
+        return invoke(46, (U64)(U32)fd, hdrAt, kNoSignal, 0);
+    };
+    auto sendmmsgOne = [&](S32 fd) -> S64 {
+        for (U32 i = 0; i < 64; i += 8) memory->writeq(vecAt + i, 0);
+        memory->writeq(iovAt, bufAt + 0x40);
+        memory->writeq(iovAt + 8, 1);
+        memory->writeq(vecAt + 16, iovAt);
+        memory->writeq(vecAt + 24, 1);
+        return invoke(307, (U64)(U32)fd, vecAt, 1, kNoSignal);
+    };
+    auto recvfromOnce = [&](S32 fd) -> S64 { return invoke6(45, (U64)(U32)fd, recvAt, 64, 0, 0, 0); };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+
+    // Same anchor as the sibling tests: no tested socket may land
+    // on descriptor 0 (the dispatcher's host-stdin convention).
+    S32 anchorFd = sock(2 /*SOCK_DGRAM*/);
+    (void)anchorFd;
+
+    // ---- Healthy pair: unnamed sendmsg delivers, zero-length queues nothing ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 healthy case)"); }
+        else {
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), 1, "FD-124 healthy stream sendmsg delivers");
+            expectEq(recvfromOnce(p.rx), 1, "FD-124 healthy stream peer receives");
+            if (memory->readb(recvAt) != 'x') testFail("FD-124 healthy stream payload wrong");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), 0, "FD-124 healthy stream zero-length sendmsg");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // ---- FD-124: the peer-closed stream survivor ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 survivor case)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 survivor sendmsg with no name");
+            expectEq(sendmsgNoName(p.tx, 0, 1), -K_EPIPE,
+                     "FD-124 survivor sendmsg with no name, no NOSIGNAL");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), -K_EPIPE,
+                     "FD-124 survivor zero-length sendmsg");
+            expectEq(sendmsgEmpty(p.tx), -K_EPIPE,
+                     "FD-124 survivor sendmsg with an empty iovec");
+            expectEq(sendmmsgOne(p.tx), -K_EPIPE,
+                     "FD-124 survivor sendmmsg");
+            // Neighbouring send paths on the same survivor: the
+            // host gives the same broken-pipe answer on each, and
+            // the write family already gives it here. The socket
+            // layer keys its broken-pipe split (a clean -EPIPE
+            // for a 64-bit thread vs the 32-bit SIGPIPE path) on
+            // the process width, so flag the shared test process
+            // 64-bit for the write cases, as a real 64-bit guest
+            // process would be (the FD-116 test's pattern).
+            bool was64 = process->is64Bit;
+            process->is64Bit = true;
+            expectEq(invoke6(44, (U64)(U32)p.tx, bufAt + 0x40, 1, kNoSignal, 0, 0), -K_EPIPE,
+                     "FD-124 survivor sendto with no address");
+            expectEq(invoke(1, (U64)(U32)p.tx, bufAt + 0x40, 1, 0), -K_EPIPE,
+                     "FD-124 survivor plain write");
+            expectEq(invoke(1, (U64)(U32)p.tx, bufAt + 0x40, 0, 0), -K_EPIPE,
+                     "FD-124 survivor zero-length write");
+            memory->writeq(iovAt, bufAt + 0x40);
+            memory->writeq(iovAt + 8, 1);
+            expectEq(invoke(20, (U64)(U32)p.tx, iovAt, 1, 0), -K_EPIPE,
+                     "FD-124 survivor writev");
+            process->is64Bit = was64;
+            process->close(p.tx);
+        }
+    }
+    {
+        // Unread data from the peer does not change the answer.
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 unread case)"); }
+        else {
+            expectEq(invoke(1, (U64)(U32)p.rx, bufAt + 0x40, 1, 0), 1, "FD-124 peer write before close");
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 survivor with unread data sendmsg");
+            process->close(p.tx);
+        }
+    }
+
+    // ---- Shutdown shapes around the same call ----
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 peer-shutWR case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.rx, 1 /*SHUT_WR*/, 0, 0), 0, "FD-124 peer shutdown write side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), 1,
+                     "FD-124 sendmsg to a peer that shut only its write side still delivers");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 peer-shutRD case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.rx, 0 /*SHUT_RD*/, 0, 0), 0, "FD-124 peer shutdown read side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 sendmsg to a peer that shut its read side");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 own-shutWR case)"); }
+        else {
+            expectEq(invoke(48, (U64)(U32)p.tx, 1 /*SHUT_WR*/, 0, 0), 0, "FD-124 own shutdown write side");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 sendmsg after shutting the own write side");
+            process->close(p.tx);
+            process->close(p.rx);
+        }
+    }
+
+    // ---- Never connected: -ENOTCONN stands ----
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        if (s < 0) { testFail("could not create a stream socket (FD-124 fresh case)"); }
+        else {
+            expectEq(sendmsgNoName(s, kNoSignal, 1), -K_ENOTCONN, "FD-124 fresh stream sendmsg");
+            expectEq(sendmsgNoName(s, kNoSignal, 0), -K_ENOTCONN, "FD-124 fresh stream zero-length sendmsg");
+            process->close(s);
+        }
+    }
+    {
+        S32 s = sock(1 /*SOCK_STREAM*/);
+        U32 alen = writePathAddr(addrAt, "/lst124");
+        if (s < 0 || invoke(49, (U64)(U32)s, addrAt, alen, 0) != 0 || invoke(50, (U64)(U32)s, 4, 0, 0) != 0) {
+            testFail("could not stage a listening stream socket (FD-124)");
+        } else {
+            expectEq(sendmsgNoName(s, kNoSignal, 1), -K_ENOTCONN, "FD-124 listening stream sendmsg");
+            process->close(s);
+        }
+    }
+
+    // ---- Sibling distinctions preserved through sendmsg ----
+    {
+        Pair p;
+        if (!makePair(5 /*SOCK_SEQPACKET*/, p)) { testFail("seqpacket pair failed (FD-124 control)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_EPIPE,
+                     "FD-124 control seqpacket survivor sendmsg (FD-118)");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 0), -K_EPIPE,
+                     "FD-124 control seqpacket survivor zero-length sendmsg (FD-118)");
+            process->close(p.tx);
+        }
+    }
+    {
+        Pair p;
+        if (!makePair(2 /*SOCK_DGRAM*/, p)) { testFail("datagram pair failed (FD-124 control)"); }
+        else {
+            process->close(p.rx);
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_ECONNREFUSED,
+                     "FD-124 control datagram survivor first sendmsg (FD-119)");
+            expectEq(sendmsgNoName(p.tx, kNoSignal, 1), -K_ENOTCONN,
+                     "FD-124 control datagram survivor second sendmsg (FD-119)");
+            process->close(p.tx);
+        }
+    }
+    {
+        // FD-123 control: a destination in the header on the
+        // survivor still answers -EISCONN; the name is staged
+        // against a bound datagram peer and never resolved.
+        S32 dgpeer = sock(2 /*SOCK_DGRAM*/);
+        U32 alen = writePathAddr(addrAt, "/dgpeer124");
+        if (dgpeer < 0 || invoke(49, (U64)(U32)dgpeer, addrAt, alen, 0) != 0) {
+            testFail("could not stage the named peer (FD-124 control)");
+        } else {
+            Pair p;
+            if (!makePair(1 /*SOCK_STREAM*/, p)) { testFail("stream pair failed (FD-124 named control)"); }
+            else {
+                process->close(p.rx);
+                expectEq(sendmsgNamed(p.tx, "/dgpeer124"), -K_EISCONN,
+                         "FD-124 control survivor sendmsg with a name (FD-123)");
+                process->close(p.tx);
+            }
+            process->close(dgpeer);
+        }
+    }
+
+    process->close(anchorFd);
+}
+
+void testChmodNullPath64Syscalls() {
+    // FD-126 (host-measured, test-results/fd126/hostref-fd126.c):
+    // a path system call given a null path pointer answers
+    // -EFAULT on the host, where an empty path answers -ENOENT.
+    // The 64-bit dispatcher's shared guest-string reader maps a
+    // null pointer to the empty string, so a null path takes the
+    // empty-path route: the path resolver returns the directory
+    // node itself for an empty full path, so here (working
+    // directory "/") both shapes answered 0 on the base and
+    // chmodded the directory; in the browser self-test whose
+    // filing measured -ENOENT, the working directory's own path
+    // did not resolve, so the same route answered -ENOENT there.
+    // Both shapes are pinned to the host's answers. Host answers (box
+    // kernel, raw fchmodat): chmod(NULL) -EFAULT, chmod("")
+    // -ENOENT; fchmodat(any dirfd, NULL, any flags) -EFAULT --
+    // including under AT_EMPTY_PATH and with an unopened dirfd,
+    // so the fault precedes both flag handling and dirfd
+    // resolution; fchmodat(dirfd, "", AT_EMPTY_PATH) -ENOENT
+    // (the legacy fchmodat gives an empty name the plain lookup
+    // answer even with the flag), pinned here as a control so
+    // the null fix cannot overshoot into empty-path handling.
+    // The reader's other consumers are not this defect:
+    // execve's path is already guarded to -EFAULT in the
+    // dispatcher, and the argv/envp walk never passes a null
+    // element pointer to the reader.
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd126XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("chmod null-path test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    // The fixture file, created through the process API against
+    // the swapped root.
+    KFileDescriptorPtr created;
+    U32 result = process->openFile(B("/"), B("/a.txt"), K_O_RDWR | K_O_CREAT, created);
+    if ((S32)result < 0 || !created) {
+        testFail("chmod null-path test could not create /a.txt: %d", (S32)result);
+        return;
+    }
+    process->close(created->handle);
+
+    // A real dirfd for the fixture root.
+    KFileDescriptorPtr dirDesc;
+    result = process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc);
+    if ((S32)result < 0 || !dirDesc) {
+        testFail("chmod null-path test could not open its fixture dir: %d", (S32)result);
+        return;
+    }
+    const U64 dirfd = (U64)(U32)dirDesc->handle;
+
+    constexpr U64 dataPage = 0x7E000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("chmod null-path test could not map its fixture page");
+        process->close(dirDesc->handle);
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto expectEq = [&](S64 got, S64 want, const char* label) {
+        if (got != want) {
+            testFail("%s: got %lld, want %lld", label, (long long)got, (long long)want);
+        }
+    };
+    auto expectMode = [&](U32 want, const char* label) {
+        std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(process->fsContext->currentDirectory, B("/a.txt"), true);
+        if (!node || (node->getStatMode() & 07777) != want) {
+            testFail("%s: mode did not land (want %04o)", label, want);
+        }
+    };
+
+    constexpr U64 nameAt  = dataPage + 0x000; // "a.txt"
+    constexpr U64 emptyAt = dataPage + 0x100; // ""
+    memory->memcpyToGuest(nameAt, "a.txt", 6);
+    memory->memcpyToGuest(emptyAt, "", 1);
+
+    constexpr U64 AT_FDCWD = (U64)-100;
+    constexpr U64 AT_EMPTY_PATH = 0x1000;
+
+    // chmod (90): the filed shape and its controls.
+    expectEq(invoke(90, 0, 0644, 0, 0), -K_EFAULT, "chmod(NULL)");
+    expectEq(invoke(90, emptyAt, 0644, 0, 0), -K_ENOENT, "chmod(\"\")");
+    expectEq(invoke(90, nameAt, 0600, 0, 0), 0, "chmod(\"a.txt\", 0600)");
+    expectMode(0600, "chmod(\"a.txt\", 0600)");
+
+    // fchmodat (268): a null path answers -EFAULT at every
+    // dirfd/flags combination the host was measured on; the
+    // empty path keeps -ENOENT, including under AT_EMPTY_PATH.
+    expectEq(invoke(268, AT_FDCWD, 0, 0644, 0), -K_EFAULT, "fchmodat(AT_FDCWD, NULL)");
+    expectEq(invoke(268, AT_FDCWD, emptyAt, 0644, 0), -K_ENOENT, "fchmodat(AT_FDCWD, \"\")");
+    expectEq(invoke(268, dirfd, 0, 0644, 0), -K_EFAULT, "fchmodat(dirfd, NULL)");
+    expectEq(invoke(268, dirfd, 0, 0644, AT_EMPTY_PATH), -K_EFAULT, "fchmodat(dirfd, NULL, AT_EMPTY_PATH)");
+    expectEq(invoke(268, 4096, 0, 0644, 0), -K_EFAULT, "fchmodat(unopened dirfd, NULL)");
+    expectEq(invoke(268, dirfd, emptyAt, 0644, AT_EMPTY_PATH), -K_ENOENT, "fchmodat(dirfd, \"\", AT_EMPTY_PATH)");
+    expectEq(invoke(268, dirfd, nameAt, 0640, 0), 0, "fchmodat(dirfd, \"a.txt\", 0640)");
+    expectMode(0640, "fchmodat(dirfd, \"a.txt\", 0640)");
+
+    process->close(dirDesc->handle);
+}
+
+// FD-131: an empty path answers -ENOENT at the path calls generally,
+// matching the host. The FD-126 lane fixed chmod/fchmodat at the two
+// 64-bit dispatcher sites (CL-76); the shared resolver still resolves
+// "" to the working-directory node, so every other path call answered
+// as if the directory had been named (open("") opened the directory,
+// stat("") stat'ed it, mkdir("") answered -EEXIST, and so on). This
+// test stages an empty path at the representative 64-bit calls and
+// pins the host's answers, including the deliberate exemptions:
+// the AT_EMPTY_PATH fd forms keep working, and a bad descriptor
+// paired with an empty path keeps the descriptor's own answer where
+// the host resolves the descriptor first (inotify) while the empty
+// answer precedes descriptor resolution where the host checks the
+// path first (statx; the newfstatat bad-fd pin rides the standing
+// unsupported-dirfd route, which already answers -ENOENT).
+void testEmptyPath64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd131XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("FD-131 guest test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    auto createFile = [&](BString path) -> bool {
+        KFileDescriptorPtr desc;
+        if (process->openFile(B("/"), path, K_O_RDWR | K_O_CREAT, desc) != 0 || !desc) return false;
+        process->close(desc->handle);
+        return true;
+    };
+    if (process->mkdir(B("/d")) != 0 || process->mkdir(B("/sac1")) != 0 || process->mkdir(B("/sac2")) != 0 ||
+        !createFile(B("/a.txt")) || !createFile(B("/d/inner")) ||
+        process->symlink(B("a.txt"), B("/ln")) != 0 || process->chdir(B("/")) != 0) {
+        testFail("failed to stage the FD-131 fixture");
+        return;
+    }
+    KFileDescriptorPtr dirDesc, subdirDesc, fileDesc;
+    if (process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc) != 0 || !dirDesc ||
+        process->openFile(B("/"), B("/d"), K_O_RDONLY, subdirDesc) != 0 || !subdirDesc ||
+        process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("failed to open FD-131 fixture descriptors");
+        return;
+    }
+    const U64 dirfd = (U64)(U32)dirDesc->handle;
+    const U64 subdirfd = (U64)(U32)subdirDesc->handle;
+
+    constexpr U64 dataPage = 0x7E000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("FD-131 guest test could not map its fixture page");
+        return;
+    }
+    constexpr U64 atFdcwd = (U64)-100;
+    auto putStr = [&](U64 at, const char* s) {
+        memory->memcpyToGuest(at, s, strlen(s) + 1);
+    };
+    const U64 aTxtAt = dataPage;
+    const U64 emptyAt = dataPage + 0x100;
+    const U64 slashAt = dataPage + 0x180;
+    const U64 tgtAt = dataPage + 0x200;
+    const U64 xAt = dataPage + 0x280;
+    const U64 sac1At = dataPage + 0x300;
+    const U64 sac2At = dataPage + 0x380;
+    const U64 lnAt = dataPage + 0x400;
+    const U64 emptyLinkAt = dataPage + 0x500;
+    const U64 argvAt = dataPage + 0x600;
+    const U64 envpAt = dataPage + 0x680;
+    const U64 bufAt = dataPage + 0x800;
+    const U64 rlBufAt = dataPage + 0xC00;
+    putStr(aTxtAt, "/a.txt");
+    putStr(emptyAt, "");
+    putStr(slashAt, "/");
+    putStr(tgtAt, "tgt");
+    putStr(xAt, "x");
+    putStr(sac1At, "/sac1");
+    putStr(sac2At, "/sac2");
+    putStr(lnAt, "/ln");
+    putStr(emptyLinkAt, "emptylink");
+    {
+        U64 argv[2] = {tgtAt, 0};
+        U64 envp[1] = {0};
+        memory->memcpyToGuest(argvAt, argv, sizeof(argv));
+        memory->memcpyToGuest(envpAt, envp, sizeof(envp));
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5 = 0, U64 a6 = 0) -> S64 {
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        cpu.reg[X64_RAX].setU64(nr);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto expectEq = [&](const char* what, S64 got, S64 want) {
+        if (got != want) {
+            testFail("%s returned %lld (expected %lld)", what, (long long)got, (long long)want);
+        }
+    };
+    auto expectFd = [&](const char* what, S64 got) {
+        if (got < 0) {
+            testFail("%s returned %lld (expected a descriptor)", what, (long long)got);
+        } else {
+            invoke(3, (U64)got, 0, 0, 0); // close
+        }
+    };
+
+    // Controls: real paths keep working, the FD-126 answers hold, and
+    // the AT_EMPTY_PATH fd forms keep operating on the descriptor.
+    expectFd("open(/a.txt)", invoke(2, aTxtAt, 0, 0, 0));
+    expectEq("stat(/a.txt)", invoke(4, aTxtAt, bufAt, 0, 0), 0);
+    expectEq("chmod empty path (FD-126 control)", invoke(90, emptyAt, 0644, 0, 0), -K_ENOENT);
+    expectEq("fchmodat empty path (FD-126 control)", invoke(268, dirfd, emptyAt, 0644, 0), -K_ENOENT);
+    expectEq("readlink(/ln)", invoke(89, lnAt, rlBufAt, 256, 0), 5);
+    expectEq("newfstatat AT_EMPTY_PATH fd form", invoke(262, dirfd, emptyAt, bufAt, 0x1000), 0);
+    expectEq("statx AT_EMPTY_PATH fd form", invoke(332, subdirfd, emptyAt, 0x1000, 0x7ff, bufAt), 0);
+    expectEq("faccessat2 AT_EMPTY_PATH cwd form", invoke(439, atFdcwd, emptyAt, 0, 0x1000), 0);
+    expectEq("utimensat AT_EMPTY_PATH stub form", invoke(280, atFdcwd, emptyAt, 0, 0x1000), 0);
+    expectEq("inotify_add_watch bad fd empty path", invoke(254, 4096, emptyAt, 0xFFF, 0), -K_EBADF);
+
+    // The filed shapes: an empty path answers -ENOENT.
+    expectEq("open empty", invoke(2, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("open empty O_CREAT", invoke(2, emptyAt, 65, 0, 0), -K_ENOENT);
+    expectEq("openat cwd empty", invoke(257, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    // openat against a real dirfd already answers -ENOENT on the base
+    // through the unsupported-relative-dirfd route; pin that it stays.
+    expectEq("openat dirfd empty (standing route)", invoke(257, subdirfd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("stat empty", invoke(4, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq("lstat empty", invoke(6, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq("newfstatat cwd empty", invoke(262, atFdcwd, emptyAt, bufAt, 0), -K_ENOENT);
+    expectEq("newfstatat badfd empty (standing route)", invoke(262, 4096, emptyAt, bufAt, 0), -K_ENOENT);
+    expectEq("statx cwd empty", invoke(332, atFdcwd, emptyAt, 0, 0x7ff, bufAt), -K_ENOENT);
+    expectEq("statx badfd empty (path precedes fd)", invoke(332, 4096, emptyAt, 0, 0x7ff, bufAt), -K_ENOENT);
+    expectEq("access empty", invoke(21, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("faccessat empty", invoke(269, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("faccessat2 empty no flag", invoke(439, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("mkdir empty", invoke(83, emptyAt, 0755, 0, 0), -K_ENOENT);
+    expectEq("mkdirat empty", invoke(258, atFdcwd, emptyAt, 0755, 0), -K_ENOENT);
+    expectEq("rename to empty", invoke(82, aTxtAt, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("link from empty", invoke(86, emptyAt, xAt, 0, 0), -K_ENOENT);
+    expectEq("link to empty", invoke(86, aTxtAt, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("linkat from empty", invoke(265, subdirfd, emptyAt, atFdcwd, xAt, 0), -K_ENOENT);
+    expectEq("symlink empty linkpath", invoke(88, tgtAt, emptyAt, 0, 0), -K_ENOENT);
+    {
+        S64 r = invoke(88, emptyAt, emptyLinkAt, 0, 0);
+        expectEq("symlink empty target", r, -K_ENOENT);
+        process->unlinkFile(B("/emptylink")); // the base creates it; keep the fixture clean either way
+    }
+    expectEq("symlinkat empty linkpath", invoke(266, tgtAt, subdirfd, emptyAt, 0), -K_ENOENT);
+    expectEq("readlink empty", invoke(89, emptyAt, rlBufAt, 256, 0), -K_ENOENT);
+    expectEq("readlinkat empty", invoke(267, atFdcwd, emptyAt, rlBufAt, 256), -K_ENOENT);
+    expectEq("chdir empty", invoke(80, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("execve empty", invoke(59, emptyAt, argvAt, envpAt, 0), -K_ENOENT);
+    expectEq("utimensat empty no flag", invoke(280, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("statfs empty", invoke(137, emptyAt, bufAt, 0, 0), -K_ENOENT);
+    {
+        S64 ifd = invoke(294, 0, 0, 0, 0);
+        if (ifd < 0) {
+            testFail("inotify_init1 returned %lld", (long long)ifd);
+        } else {
+            expectEq("inotify_add_watch empty", invoke(254, (U64)ifd, emptyAt, 0xFFF, 0), -K_ENOENT);
+            S64 wd = invoke(254, (U64)ifd, aTxtAt, 0xFFF, 0);
+            if (wd < 1) testFail("inotify_add_watch(/a.txt) returned %lld (expected a watch descriptor)", (long long)wd);
+            invoke(3, (U64)ifd, 0, 0, 0);
+        }
+    }
+
+    // Destructive shapes last, staged against sacrificial directories:
+    // on the base an empty unlink/rename resolves to the working
+    // directory itself, so the working directory is a throwaway one.
+    expectEq("chdir /sac1", invoke(80, sac1At, 0, 0, 0), 0);
+    expectEq("unlink empty", invoke(87, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("unlinkat empty", invoke(263, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+    expectEq("chdir / (restore)", invoke(80, slashAt, 0, 0, 0), 0);
+    expectEq("chdir /sac2", invoke(80, sac2At, 0, 0, 0), 0);
+    expectEq("rename from empty", invoke(82, emptyAt, xAt, 0, 0), -K_ENOENT);
+    expectEq("chdir / (restore 2)", invoke(80, slashAt, 0, 0, 0), 0);
+
+    process->close(fileDesc->handle);
+    process->close(subdirDesc->handle);
+    process->close(dirDesc->handle);
+}
+
+
+void testNullPath64Syscalls() {
+    // FD-132 (host-measured, test-results/fd132/hostref-fd132.c): a
+    // null path pointer answers -EFAULT on the host at the path
+    // calls, but the 64-bit dispatcher's open-coded cases copied the
+    // path with memcpyFromGuest and carried no null guard, so a null
+    // pointer took FD-131's empty route and answered -ENOENT. The
+    // exceptions are measured too: newfstatat/statx treat NULL with
+    // AT_EMPTY_PATH as the descriptor form (already honoured by the
+    // stat helpers here), and faccessat2/fchmodat/linkat have NO
+    // null descriptor form -- NULL faults even with AT_EMPTY_PATH.
+    // utimensat's null matrix is per-shape (FD-136, re-measured at
+    // the raw syscall level in test-results/fd136-138/): it HAS a
+    // null descriptor form, succeeding with flags 0 on an open
+    // descriptor; the rows are pinned at the end of this test.
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd132XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("FD-132 guest test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    auto createFile = [&](BString path) -> bool {
+        KFileDescriptorPtr desc;
+        if (process->openFile(B("/"), path, K_O_RDWR | K_O_CREAT, desc) != 0 || !desc) return false;
+        process->close(desc->handle);
+        return true;
+    };
+    if (process->mkdir(B("/d")) != 0 || !createFile(B("/a.txt")) ||
+        process->symlink(B("a.txt"), B("/ln")) != 0 || process->chdir(B("/")) != 0) {
+        testFail("failed to stage the FD-132 fixture");
+        return;
+    }
+    KFileDescriptorPtr dirDesc, subdirDesc, fileDesc;
+    if (process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc) != 0 || !dirDesc ||
+        process->openFile(B("/"), B("/d"), K_O_RDONLY, subdirDesc) != 0 || !subdirDesc ||
+        process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("failed to open FD-132 fixture descriptors");
+        return;
+    }
+    const U64 dirfd = (U64)(U32)dirDesc->handle;
+    const U64 subdirfd = (U64)(U32)subdirDesc->handle;
+    const U64 filefd = (U64)(U32)fileDesc->handle;
+
+    constexpr U64 dataPage = 0x7E000000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("FD-132 guest test could not map its fixture page");
+        return;
+    }
+    constexpr U64 atFdcwd = (U64)-100;
+    constexpr U64 atEmptyPath = 0x1000;
+    auto putStr = [&](U64 at, const char* s) {
+        memory->memcpyToGuest(at, s, strlen(s) + 1);
+    };
+    const U64 aTxtAt = dataPage;
+    const U64 emptyAt = dataPage + 0x100;
+    const U64 tgtAt = dataPage + 0x200;
+    const U64 xAt = dataPage + 0x280;
+    const U64 newDirAt = dataPage + 0x300;
+    const U64 argvAt = dataPage + 0x600;
+    const U64 envpAt = dataPage + 0x680;
+    const U64 bufAt = dataPage + 0x800;
+    const U64 rlBufAt = dataPage + 0xC00;
+    putStr(aTxtAt, "/a.txt");
+    putStr(emptyAt, "");
+    putStr(tgtAt, "tgt");
+    putStr(xAt, "x");
+    putStr(newDirAt, "/newdir");
+    {
+        U64 argv[2] = {tgtAt, 0};
+        U64 envp[1] = {0};
+        memory->memcpyToGuest(argvAt, argv, sizeof(argv));
+        memory->memcpyToGuest(envpAt, envp, sizeof(envp));
+    }
+    const U64 timesAt = dataPage + 0xE00;
+    {
+        U64 times[4] = {1500000000ULL, 123000000ULL, 1600000000ULL, 456000000ULL};
+        memory->memcpyToGuest(timesAt, times, sizeof(times));
+    }
+
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5 = 0, U64 a6 = 0) -> S64 {
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        cpu.reg[X64_RDX].setU64(a3);
+        cpu.reg[X64_R10].setU64(a4);
+        cpu.reg[X64_R8].setU64(a5);
+        cpu.reg[X64_R9].setU64(a6);
+        cpu.reg[X64_RAX].setU64(nr);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+    auto expectEq = [&](const char* what, S64 got, S64 want) {
+        if (got != want) {
+            testFail("%s returned %lld (expected %lld)", what, (long long)got, (long long)want);
+        }
+    };
+    auto expectFd = [&](const char* what, S64 got) {
+        if (got < 0) {
+            testFail("%s returned %lld (expected a descriptor)", what, (long long)got);
+        } else {
+            invoke(3, (U64)got, 0, 0, 0); // close
+        }
+    };
+
+    // Controls: the helper-routed calls already fault a null path,
+    // the stat helpers already honour the NULL descriptor form, and
+    // real and empty paths keep their established answers.
+    expectFd("open(/a.txt)", invoke(2, aTxtAt, 0, 0, 0));
+    expectEq("open null (helper control)", invoke(2, 0, 0, 0, 0), -K_EFAULT);
+    expectEq("stat null (helper control)", invoke(4, 0, bufAt, 0, 0), -K_EFAULT);
+    expectEq("readlink null (helper control)", invoke(89, 0, rlBufAt, 256, 0), -K_EFAULT);
+    expectEq("chmod null (FD-126 control)", invoke(90, 0, 0644, 0, 0), -K_EFAULT);
+    expectEq("fchmodat null (FD-126 control)", invoke(268, atFdcwd, 0, 0644, 0), -K_EFAULT);
+    expectEq("execve null (control)", invoke(59, 0, argvAt, envpAt, 0), -K_EFAULT);
+    expectEq("newfstatat null AT_EMPTY_PATH fd form", invoke(262, filefd, 0, bufAt, atEmptyPath), 0);
+    expectEq("newfstatat null no flag", invoke(262, atFdcwd, 0, bufAt, 0), -K_EFAULT);
+    expectEq("newfstatat null AT_EMPTY_PATH bad fd", invoke(262, 4096, 0, bufAt, atEmptyPath), -K_EBADF);
+    expectEq("statx null AT_EMPTY_PATH fd form", invoke(332, filefd, 0, atEmptyPath, 0x7ff, bufAt), 0);
+    expectEq("statx null no flag", invoke(332, atFdcwd, 0, 0, 0x7ff, bufAt), -K_EFAULT);
+    expectEq("access real path", invoke(21, aTxtAt, 0, 0, 0), 0);
+    expectEq("access empty stays -ENOENT", invoke(21, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("mkdir empty stays -ENOENT", invoke(83, emptyAt, 0755, 0, 0), -K_ENOENT);
+    expectEq("mkdir real path", invoke(83, newDirAt, 0755, 0, 0), 0);
+    expectEq("unlink empty stays -ENOENT", invoke(87, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("chdir empty stays -ENOENT", invoke(80, emptyAt, 0, 0, 0), -K_ENOENT);
+    expectEq("faccessat2 empty no flag stays -ENOENT", invoke(439, atFdcwd, emptyAt, 0, 0), -K_ENOENT);
+
+    // The filed shapes: a null path at the open-coded cases answers
+    // -EFAULT, on either side of the two-path calls.
+    expectEq("access null", invoke(21, 0, 0, 0, 0), -K_EFAULT);
+    expectEq("faccessat null", invoke(269, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("faccessat2 null", invoke(439, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("faccessat2 null AT_EMPTY_PATH (no null fd form)", invoke(439, filefd, 0, 0, atEmptyPath), -K_EFAULT);
+    expectEq("mkdir null", invoke(83, 0, 0755, 0, 0), -K_EFAULT);
+    expectEq("mkdirat null", invoke(258, atFdcwd, 0, 0755, 0), -K_EFAULT);
+    expectEq("symlink null target", invoke(88, 0, xAt, 0, 0), -K_EFAULT);
+    expectEq("symlink null linkpath", invoke(88, tgtAt, 0, 0, 0), -K_EFAULT);
+    expectEq("symlinkat null target", invoke(266, 0, subdirfd, xAt, 0), -K_EFAULT);
+    expectEq("symlinkat null linkpath", invoke(266, tgtAt, subdirfd, 0, 0), -K_EFAULT);
+    expectEq("link null from", invoke(86, 0, xAt, 0, 0), -K_EFAULT);
+    expectEq("link null to", invoke(86, aTxtAt, 0, 0, 0), -K_EFAULT);
+    expectEq("linkat null from", invoke(265, subdirfd, 0, atFdcwd, xAt, 0), -K_EFAULT);
+    expectEq("linkat null from AT_EMPTY_PATH (no null fd form)", invoke(265, filefd, 0, atFdcwd, xAt, atEmptyPath), -K_EFAULT);
+    expectEq("linkat null to", invoke(265, atFdcwd, aTxtAt, atFdcwd, 0, 0), -K_EFAULT);
+    expectEq("rename null from", invoke(82, 0, xAt, 0, 0), -K_EFAULT);
+    expectEq("rename null to", invoke(82, aTxtAt, 0, 0, 0), -K_EFAULT);
+    expectEq("renameat null from", invoke(264, atFdcwd, 0, atFdcwd, xAt), -K_EFAULT);
+    expectEq("renameat null to", invoke(264, atFdcwd, aTxtAt, atFdcwd, 0), -K_EFAULT);
+    expectEq("renameat2 null from flags 0", invoke(316, atFdcwd, 0, atFdcwd, xAt, 0), -K_EFAULT);
+    expectEq("unlink null", invoke(87, 0, 0, 0, 0), -K_EFAULT);
+    expectEq("unlinkat null", invoke(263, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("chdir null", invoke(80, 0, 0, 0, 0), -K_EFAULT);
+    {
+        S64 ifd = invoke(294, 0, 0, 0, 0);
+        if (ifd < 0) {
+            testFail("inotify_init1 returned %lld", (long long)ifd);
+        } else {
+            expectEq("inotify_add_watch null", invoke(254, (U64)ifd, 0, 0xFFF, 0), -K_EFAULT);
+            expectEq("inotify_add_watch bad fd null (descriptor first)", invoke(254, 4096, 0, 0xFFF, 0), -K_EBADF);
+            invoke(3, (U64)ifd, 0, 0, 0);
+        }
+    }
+
+    // utimensat with a null path answers the raw kernel's per-shape
+    // matrix (FD-136, host-measured at the raw syscall level in
+    // test-results/fd136-138/hostref-fd136b.c): the kernel copies
+    // the times first, so an unreadable times pointer faults ahead
+    // of every other verdict; flag bits outside
+    // AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH answer -EINVAL; the
+    // current-directory shape faults on the name fetch; any other
+    // flag with a null path answers -EINVAL; with flags 0 an
+    // unopened descriptor answers -EBADF and an open one is the
+    // descriptor form and succeeds. (This dispatcher does not apply
+    // times on any shape, so the descriptor form pins the success
+    // answer alone.)
+    expectEq("utimensat null AT_FDCWD", invoke(280, atFdcwd, 0, 0, 0), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_EMPTY_PATH", invoke(280, atFdcwd, 0, 0, atEmptyPath), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD AT_SYMLINK_NOFOLLOW", invoke(280, atFdcwd, 0, 0, 0x100), -K_EFAULT);
+    expectEq("utimensat null AT_FDCWD invalid flags", invoke(280, atFdcwd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null dirfd fd form (null times)", invoke(280, dirfd, 0, 0, 0), 0);
+    expectEq("utimensat null filefd fd form (valid times)", invoke(280, filefd, 0, timesAt, 0), 0);
+    expectEq("utimensat null filefd fd form (null times)", invoke(280, filefd, 0, 0, 0), 0);
+    expectEq("utimensat null AT_EMPTY_PATH fd shape", invoke(280, filefd, 0, 0, atEmptyPath), -K_EINVAL);
+    expectEq("utimensat null AT_SYMLINK_NOFOLLOW fd shape", invoke(280, filefd, 0, 0, 0x100), -K_EINVAL);
+    expectEq("utimensat null invalid flags fd shape", invoke(280, filefd, 0, 0, 0x2000), -K_EINVAL);
+    expectEq("utimensat null unopened", invoke(280, 4096, 0, 0, 0), -K_EBADF);
+    expectEq("utimensat null unopened AT_EMPTY_PATH", invoke(280, 4096, 0, 0, atEmptyPath), -K_EINVAL);
+    expectEq("utimensat null bad times fd shape", invoke(280, filefd, 0, 0x1000, 0), -K_EFAULT);
+    expectEq("utimensat null bad times beats invalid flags", invoke(280, atFdcwd, 0, 0x1000, 0x2000), -K_EFAULT);
+
+    process->close(dirDesc->handle);
+    process->close(subdirDesc->handle);
+    process->close(fileDesc->handle);
+}
+
 #endif
 
 // FD-94: 32-bit pwritev (334) / pwritev2 (378). On the base both
@@ -6304,6 +8050,139 @@ void testWritevPartialError() {
 // Native-suite variant: same event contract driven through the
 // width-agnostic KProcess API (the x64 test above drives the syscall
 // layer; the KProcess methods are what both syscall layers forward to).
+// FD-131: the KProcess-level half of the empty-path answers. The
+// guest test (testEmptyPath64Syscalls) covers the 64-bit dispatcher
+// surface; this one pins the process-API methods both dispatchers
+// funnel into, including the calls only the 32-bit side reaches this
+// way (rmdir, utimes, the *at family through KProcess) and the
+// ordering the host measures: the empty answer precedes descriptor
+// resolution at fchmodat/mkdirat/statx/fstatat64/renameat, while
+// inotify_add_watch and readlinkat resolve the descriptor first and
+// keep answering -EBADF for a bad descriptor with an empty path.
+// The AT_EMPTY_PATH fd forms keep working throughout.
+void testEmptyPathProcessApi() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    char dirTemplate[] = "/tmp/bw64fd131apiXXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("mkdtemp failed for FD-131 process-api test");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    auto createFile = [&](BString path) -> bool {
+        KFileDescriptorPtr desc;
+        if (process->openFile(B("/"), path, K_O_RDWR | K_O_CREAT, desc) != 0 || !desc) return false;
+        process->close(desc->handle);
+        return true;
+    };
+    if (process->mkdir(B("/d")) != 0 || process->mkdir(B("/sac")) != 0 ||
+        !createFile(B("/a.txt")) || !createFile(B("/d/inner")) ||
+        process->symlink(B("a.txt"), B("/ln")) != 0 || process->chdir(B("/")) != 0) {
+        testFail("failed to stage the FD-131 API fixture");
+        return;
+    }
+    KFileDescriptorPtr dirDesc;
+    if (process->openFile(B("/"), B("/"), K_O_RDONLY, dirDesc) != 0 || !dirDesc) {
+        testFail("failed to open the FD-131 API fixture directory");
+        return;
+    }
+    const FD dirfd = dirDesc->handle;
+    constexpr U32 bufAt = TEST_HEAP_ADDRESS + 0x600;
+    constexpr FD atFdcwd = (FD)-100;
+
+    auto expectEq = [&](const char* what, S32 got, S32 want) {
+        if (got != want) {
+            testFail("%s returned %d (expected %d)", what, got, want);
+        }
+    };
+    auto expectPath = [&](const char* what, U32 got) {
+        expectEq(what, (S32)got, -K_ENOENT);
+    };
+
+    // Controls: absolute paths keep working.
+    expectEq("chdir(/) control", (S32)process->chdir(B("/")), 0);
+    expectEq("stat64(/a.txt) control", (S32)process->stat64(B("/a.txt"), bufAt), 0);
+    expectEq("access(/a.txt) control", (S32)process->access(B("/a.txt"), 0), 0);
+
+    // The filed shapes at the process API.
+    expectPath("open empty", process->open(B(""), K_O_RDONLY));
+    expectPath("openat cwd empty", process->openat(atFdcwd, B(""), K_O_RDONLY));
+    expectPath("access empty", process->access(B(""), 0));
+    expectPath("chdir empty", process->chdir(B("")));
+    expectPath("chmod empty", process->chmod(B(""), 0644));
+    expectPath("fchmodat cwd empty", process->fchmodat(atFdcwd, B(""), 0644, 0));
+    expectPath("fchmodat badfd empty (path precedes fd)", process->fchmodat((FD)4096, B(""), 0644, 0));
+    expectPath("stat64 empty", process->stat64(B(""), bufAt));
+    expectPath("lstat64 empty", process->lstat64(B(""), bufAt));
+    expectPath("fstatat64 cwd empty", process->fstatat64(atFdcwd, B(""), bufAt, 0));
+    expectPath("fstatat64 badfd empty (path precedes fd)", process->fstatat64((FD)4096, B(""), bufAt, 0));
+    expectEq("fstatat64 AT_EMPTY_PATH fd form", (S32)process->fstatat64(dirfd, B(""), bufAt, 0x1000), 0);
+    expectPath("statx cwd empty", process->statx(atFdcwd, B(""), 0, 0x7ff, bufAt));
+    expectPath("statx badfd empty (path precedes fd)", process->statx((FD)4096, B(""), 0, 0x7ff, bufAt));
+    expectEq("statx AT_EMPTY_PATH fd form", (S32)process->statx(dirfd, B(""), 0x1000, 0x7ff, bufAt), 0);
+    expectPath("faccessat cwd empty", process->faccessat((U32)-100, B(""), 0, 0));
+    expectEq("faccessat AT_EMPTY_PATH fd form", (S32)process->faccessat((U32)dirfd, B(""), 0, 0x1000), 0);
+    expectPath("rmdir empty", process->rmdir(B("")));
+    expectPath("mkdir empty", process->mkdir(B("")));
+    expectPath("mkdirat cwd empty", process->mkdirat(atFdcwd, B(""), 0755));
+    expectPath("mkdirat badfd empty (path precedes fd)", process->mkdirat((FD)4096, B(""), 0755));
+    expectPath("rename from empty", process->rename(B(""), B("x")));
+    expectPath("rename to empty", process->rename(B("/a.txt"), B("")));
+    expectPath("renameat from empty", process->renameat(atFdcwd, B(""), atFdcwd, B("x")));
+    expectPath("renameat to empty bad newdirfd (path precedes fd)", process->renameat(atFdcwd, B("a.txt"), (FD)4096, B("")));
+    expectPath("link from empty", process->link(B(""), B("x")));
+    expectPath("link to empty", process->link(B("/a.txt"), B("")));
+    expectPath("symlink empty linkpath", process->symlink(B("tgt"), B("")));
+    {
+        U32 r = process->symlink(B(""), B("/emptylink"));
+        expectPath("symlink empty target", r);
+        if (r == 0) process->unlinkFile(B("/emptylink")); // the base creates it; keep the fixture clean
+    }
+    expectPath("readlink empty", process->readlink(B(""), bufAt, 256));
+    expectEq("readlinkat badfd empty (fd precedes path)", (S32)process->readlinkat((FD)4096, B(""), bufAt, 256), -K_EBADF);
+    {
+        std::vector<BString> args{B("tgt")};
+        std::vector<BString> envs;
+        expectPath("execve empty", process->execve(context.thread, B(""), args, envs));
+    }
+    expectPath("utimes empty", process->utimes(B(""), 0));
+    expectPath("utimesat cwd empty", process->utimesat(atFdcwd, B(""), 0, 0, false));
+    expectEq("utimesat AT_EMPTY_PATH fd form", (S32)process->utimesat(dirfd, B(""), 0, 0x1000, false), 0);
+    expectPath("statfs empty", process->statfs(B(""), bufAt));
+    expectPath("statfs64 empty", process->statfs64(B(""), bufAt));
+    {
+        S32 ifd = (S32)process->inotify_init1(0);
+        if (ifd < 0) {
+            testFail("inotify_init1 returned %d", ifd);
+        } else {
+            expectPath("inotify_add_watch empty", process->inotify_add_watch(ifd, B(""), 0xFFF));
+            expectEq("inotify_add_watch badfd empty (fd precedes path)", (S32)process->inotify_add_watch((FD)4096, B(""), 0xFFF), -K_EBADF);
+            U32 wd = process->inotify_add_watch(ifd, B("/a.txt"), 0xFFF);
+            if ((S32)wd < 1) testFail("inotify_add_watch(/a.txt) returned %d (expected a watch descriptor)", (S32)wd);
+            process->close(ifd);
+        }
+    }
+
+    // Destructive shapes last, against a sacrificial working
+    // directory: on the base an empty unlink resolves to the working
+    // directory node itself.
+    expectEq("chdir /sac", (S32)process->chdir(B("/sac")), 0);
+    expectPath("unlinkFile empty", process->unlinkFile(B("")));
+    expectPath("unlinkat cwd empty", process->unlinkat(atFdcwd, B(""), 0));
+    expectEq("chdir / (restore)", (S32)process->chdir(B("/")), 0);
+
+    process->close(dirDesc->handle);
+}
+
 void testInotifyEventsProcessApi() {
     TestContext& context = testContext();
     KProcessPtr process = context.process;
@@ -7675,3 +9554,4 @@ void testReadv32Syscall() {
 
 
 #endif
+
