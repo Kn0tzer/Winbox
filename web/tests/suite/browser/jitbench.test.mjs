@@ -69,8 +69,13 @@ function collectSamples(lines, from, fixture) {
 async function bootBenchmarkGuest(test, page, { arch, jit }) {
   const from = test.consoleLines.length;
   test.testedArchitectures.add(arch);
+  // The launcher maps ?jit=1 to the 64-bit engine only and explicitly
+  // latches the 32-bit engine off; the 32-bit engine follows ?jit32.
+  // Benchmark modes are per-engine requests, so drive both parameters
+  // from the mode: jit=1 must latch cpu32 on for the x86 fixture exactly
+  // as it latches cpu64 on for the x64 fixture (jit=0 forces both off).
   const params = new URLSearchParams({ p: 'cmd /c echo vkboot', session: '1', persist: '0', fresh: '1',
-    arch, jit, winedbg: '+debugstr', ...extraUrlParams() });
+    arch, jit, jit32: jit, winedbg: '+debugstr', ...extraUrlParams() });
   await page.goto(`${test._server.url}/runtime/index.html?${params}`);
   await test.waitForPageFn(page, () => globalThis.bwRuntime?.call('bw64_session_ready', [], []) === 1, 600000);
   // The benchmark guest prints to debugstr and creates no windows. Wait for
