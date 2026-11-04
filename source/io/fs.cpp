@@ -353,6 +353,60 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
     if (fullpath.length()==0 || fullpath=="/")
         return Fs::rootNode;
 
+    if (notDir) {
+        // FD-159: a trailing "/", "/." or "/.." steps INTO the
+        // path's final component, so on the host that component
+        // must be a directory: "a.txt/", "a.txt/." and "a.txt/.."
+        // answer -ENOTDIR. The walk below cannot form that
+        // verdict -- the trailing component is stripped by
+        // getFullPath ("/."), skipped as an empty part ("/"), or
+        // erased together with its predecessor by cleanPath
+        // ("/..") -- so judge the anchor component here, before
+        // the cache lookup can hand back the erased resolution.
+        // Only callers asking for the notDir verdict pay for the
+        // extra resolution; every other caller is unchanged.
+        int marker = 0; // 1 = trailing '/', 2 = trailing '/.', 3 = trailing '/..'
+        BString anchor;
+        if (path.length() >= 3 && path.substr(path.length() - 3) == "/..") {
+            marker = 3;
+            anchor = path.substr(0, path.length() - 3);
+        } else if (path.length() >= 2 && path.substr(path.length() - 2) == "/.") {
+            marker = 2;
+            anchor = path.substr(0, path.length() - 2);
+        } else if (path.length() > 1 && path.substr(path.length() - 1) == "/") {
+            marker = 1;
+            anchor = path;
+            while (anchor.length() > 1 && anchor.substr(anchor.length() - 1) == "/") {
+                anchor = anchor.substr(0, anchor.length() - 1);
+            }
+        }
+        if (marker && anchor.length() > 0) {
+            bool anchorNotDir = false;
+            std::shared_ptr<FsNode> anchorNode = Fs::getNodeFromLocalPath(currentDirectory, anchor, nullptr, nullptr, true, nullptr, &anchorNotDir);
+            if (anchorNode) {
+                if (!anchorNode->isDirectory()) {
+                    *notDir = true;
+                    return nullptr;
+                }
+                // A directory anchor: the ordinary walk below
+                // produces the caller's answer.
+            } else if (anchorNotDir) {
+                // The anchor itself descends through a file.
+                *notDir = true;
+                return nullptr;
+            } else if (marker == 3) {
+                // A plain-missing anchor under "/..": the erased
+                // pair would let the walk resolve the path as if
+                // the anchor existed, where the host answers
+                // -ENOENT (a miss with the flag left clear). A
+                // plain-missing anchor under '/' or '/.' falls
+                // through: the walk looks the anchor up itself
+                // and misses the same way.
+                return nullptr;
+            }
+        }
+    }
+
     // Negative cache entries can't fill lastNode/missingParts, so only allow
     // them when the caller doesn't need miss details. A caller asking for
     // the notDir verdict needs the real walk too: a cached miss cannot say
@@ -486,7 +540,16 @@ std::shared_ptr<FsNode> Fs::addRootDirectoryNode(const BString& path, const BStr
 }
 
 BString Fs::getParentPath(const BString& path) {
-    return path.substr(0, path.lastIndexOf('/', path.length()-2));
+    int pos = path.lastIndexOf('/', path.length()-2);
+    if (pos == -1) {
+        // FD-161: a slash-less path is a bare filename in the
+        // working directory, whose parent is that directory (the
+        // empty relative path). substr(0, -1) returned the whole
+        // string, so a parent lookup for "hl.txt" resolved the
+        // not-yet-existing destination itself and missed.
+        return B("");
+    }
+    return path.substr(0, pos);
 }
 
 BString Fs::getNativeParentPath(const BString& path) {
