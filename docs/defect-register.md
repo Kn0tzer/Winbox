@@ -3957,6 +3957,85 @@ do not close the entry until they land.
   deploy, which will carry the FD-127, FD-128
   and FD-129 fixes (CL-100, CL-101, CL-102).
 
+  Update (batch-5 deploy, 2026-11-03, build
+  `19babd34a`): the owed in-vivo run was made
+  once on the shipped build, with the
+  lineage-committed capture driver
+  (`web/tests/fd128-godot.mjs`) in the FD-128
+  lane's capture configuration (warmed archive,
+  vktrace on, vkd3d shader dumps to the guest
+  home, guest thread dumps on, 1,200 s deadline)
+  pointed at the public live site, so the bytes
+  under test are the shipped ones (the driver's
+  recorded stamp is the shipped stamp:
+  `19babd34a` / wasm `05298a62`, dirty 0).
+  Evidence: `test-results/deploy-batch5-20261103/`
+  (godot-proof/, godot-driver-out.log); the full
+  account is in
+  `docs/reports/deploy-batch5-20261103.md`. The
+  demo booted (banner at 97.6 s) and - for the
+  first time in a deploy-side run - its window
+  mapped, at 148.8 s; the FD-127 park does not
+  occur on the shipped build. 155
+  vkCreateShaderModule creations succeeded (143
+  distinct module hashes; the first, at 130.6 s,
+  is the 1,216 B module, hash `f598618b6233f21a`,
+  the same first module as the branch captures).
+  Exactly 2 creations were refused, both the
+  FD-72 helper-invocation module (5,704 B, hash
+  `0b3b4d8cc939485a`), logged REFUSED with result
+  -8 (VK_ERROR_FEATURE_NOT_PRESENT) at 177.5 s
+  and 178.2 s - refused by name under FD-75, as
+  designed. The bridge trapped 6
+  vkCreateGraphicsPipelines calls and 130
+  vkCreateComputePipelines calls; the only
+  failed pipeline attempts in the run are the
+  guest's own two Create(Graphics)PipelineState
+  errors (0x80004005, at 177.5 s and 178.2 s),
+  each the direct consequence of one FD-72
+  refusal. 6 vkQueueSubmit2 calls (0 plain
+  vkQueueSubmit); 5 vkAllocateMemory, 32
+  vkCreateImage, 10 vkCreateBuffer, 355
+  vkCreatePipelineLayout. No vkCreateSwapchainKHR
+  and no vkQueuePresentKHR occurred; the metrics
+  present count reached 2 and the Vulkan present
+  count stayed 0, and the final display was the
+  mapped window without rendered frames (5,701
+  lit pixels, 0.44% non-dark) - the guest settles
+  into the downstream shader-retry cycle (module
+  and compute-pipeline creations recurred
+  intermittently to at least 1,170.7 s without
+  changing any outcome). The run's 8,674-line
+  console carries 0 BW64-FAIL lines; the driver's
+  CDP exception watch captured no wasm trap (no
+  exceptions file) - the FD-128 death does not
+  occur on the shipped build; the guest was alive
+  and executing at the 1,200 s deadline (driver
+  exit 0). 5 bridge DROPPED lines, all
+  destroy-of-unknown-object guards (1
+  vkDestroySemaphore, 4 vkDestroyPipelineCache).
+  Verdict on CL-43's clause, stated plainly: NOT
+  discharged on its exact terms. Neither of the
+  clause's two modules was created in this run -
+  no 369,400-byte and no 2,340-byte creation
+  appears (0 occurrences of either size) - so
+  their in-vivo creation on a shipped build
+  remains unmeasured: this capture's guest reaches
+  the FD-72 module first, is refused there, and
+  cycles without reaching the phase that produced
+  those modules in the FD-70-era run. What the run
+  settles: on the shipped build the demo passes
+  every blocker this lineage fixed (FD-127's park,
+  FD-128's trap, FD-129's writer - CL-100, CL-101,
+  CL-102) with its window mapped and the
+  module/pipeline account above, and the only
+  in-vivo pipeline failures remaining in the
+  capture are FD-72's. One attempt was made and no
+  second, per this clause's one-run-per-deploy
+  pattern; the clause stays owed, its remaining
+  gate now FD-72 (with FD-74 and FD-88 behind it,
+  per FD-55's entry).
+
 - **FD-88 — A descriptor array indexed by a value
   loaded from GPU memory cannot be specialized;
   the array, its RuntimeDescriptorArray
@@ -5044,6 +5123,20 @@ do not close the entry until they land.
   shipped builds is now 1 wedged in 20 measured
   first-visit x86 starts. The entry stays open on
   its closing terms.
+  **Update (batch-4 and batch-5 deploys,
+  2026-11-03):** the batch-4 deploy's checks
+  (build `600da7651`) added 5 further clean
+  first-visit x86 starts (5/5 certified, census
+  0 BW64-FAIL), bringing the tally to 1 wedged
+  in 25; the batch-5 deploy's checks (build
+  `19babd34a`, deploy record
+  `docs/reports/deploy-batch5-20261103.md`) added
+  5 more (5/5 certified, handle `0x10052` every
+  time, certified-ready median 21.8 s, 0
+  BW64-FAIL in the boots' consoles). The running
+  tally on shipped builds is now 1 wedged in 30
+  measured first-visit x86 starts. The entry
+  stays open on its closing terms.
 
 - **FD-123 — A zero-length plain write on
   a 64-bit datagram socket queues nothing,
