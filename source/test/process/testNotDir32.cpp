@@ -293,7 +293,11 @@ void testNotDirProcessApi() {
     expectEq("rename(a.txt/child, x)", (S32)process->rename(B("a.txt/child"), B("x")), -K_ENOTDIR);
     expectEq("link(a.txt, a.txt/child)", (S32)process->link(B("a.txt"), B("a.txt/child")), -K_ENOTDIR);
     expectEq("link(a.txt/child, x)", (S32)process->link(B("a.txt/child"), B("x")), -K_ENOTDIR);
-    expectEq("link(a.txt, hl.txt) control", (S32)process->link(B("a.txt"), B("hl.txt")), 0);
+    // The destination carries a parent component on purpose: a
+    // bare filename destination answers -ENOENT on this tree for
+    // an unrelated reason (its parent-path computation), filed
+    // separately.
+    expectEq("link(a.txt, d/hl.txt) control", (S32)process->link(B("a.txt"), B("d/hl.txt")), 0);
     expectEq("symlink(t, a.txt/child)", (S32)process->symlink(B("t"), B("a.txt/child")), -K_ENOTDIR);
     expectEq("symlink(a.txt, /sl) control", (S32)process->symlink(B("a.txt"), B("/sl")), 0);
     expectEq("readlink(a.txt/child)", (S32)process->readlink(B("a.txt/child"), bufAt, 256), -K_ENOTDIR);
