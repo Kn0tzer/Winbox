@@ -36,7 +36,11 @@ export default class Jit64Test extends ProbeTest {
       // dispatch gate so the 10–15M instruction benchmark reaches compiled code.
       await this.bootGuest(page, { arch: 'x64', jit, jitwarm: '0', winedbg: '+debugstr' });
       await this.waitForLog(page, /session: persistent pins spawned; Wine owns service initialization/, 120000, bootFrom);
-      await this.waitForLog(page, /CPU64: exit_group syscall, status=0 .*wineboot\.exe--init/, 120000, bootFrom);
+      // commandLineForLog renders the NUL-separated argv with spaces, so
+      // the logged command line reads "wineboot.exe --init"; an earlier
+      // pattern demanded "wineboot.exe--init" adjacency, which that
+      // rendering can never produce.
+      await this.waitForLog(page, /CPU64: exit_group syscall, status=0 .*wineboot\.exe --init/, 120000, bootFrom);
       await this.stageFile(page, 'jitbench64.exe', await guestFixture('jitbench64-pe', 'x64'));
       const from = await this.spawnGuest(page, 'jitbench64.exe', { arch: 'x64', env: 'WINEDEBUG=+debugstr' });
       await this.waitForLog(page, /BW_JITBENCH64 sample=3/, 120000, from);
