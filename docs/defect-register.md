@@ -5707,7 +5707,9 @@ do not close the entry until they land.
   compilation succeed, the draw
   completes without error, and the
   readback shows nothing drawn
-  (LIT=0).** *(Filed by the FD-145
+  (LIT=0). FIXED 2026-11-03 on
+  branch `lane-d3d11lit` — see
+  CL-103.** *(Filed by the FD-145
   settlement lane, 2026-11-03;
   provisional until the merge
   lane's audit.)* Measured
@@ -5744,7 +5746,45 @@ do not close the entry until they land.
   D3D10/11 draws land in the render
   target the tests read back, and
   the three tests pass standalone.
-  Filed, not fixed.
+  Closing account (lane-d3d11lit,
+  2026-11-03): the failing tests' one
+  hard signal was a single
+  bridge-recover warning — the page
+  tier rejecting the draw's frame
+  because its FRAME_BEGIN header
+  carried the frame-overflow flag.
+  Instrumented measurement convicted
+  the source: `vkCmdClearColorImage`
+  (DXVK's init-image clear of the new
+  render target; its only call site
+  passes rangeCount 1, and the range
+  array read back as exactly one
+  range) reached the handler with
+  the count slot holding
+  0x200000000001 — the true uint32
+  count in the low half, unrelated
+  bits above — and the guard
+  `args.a[4] > 64` compared the full
+  slot, fired the overflow, and
+  poisoned the frame; the pending
+  readback then never completed and
+  the guest read back zeroes. A
+  uint32 parameter's high slot half
+  is not data: the bridge truncates
+  at 245 other call sites, including
+  the readArray on the same handler's
+  next line. The same raw-slot
+  comparison sat in all six
+  frame-overflow count guards (clear
+  colour, clear depth/stencil, clear
+  attachments; both ABIs). Fix
+  `738d882ca` (composed as
+  `129e739cf`) compares the
+  (U32)-truncated count at all six;
+  caps and the loud refusal of
+  genuinely over-cap counts are
+  unchanged. Fixed on branch
+  `lane-d3d11lit` — see CL-103.
 
 - **FD-148 — The D3D9 comprehensive
   browser test fails: a DXVK clear
@@ -6593,6 +6633,48 @@ do not close the entry until they land.
   diag-diag6 carry the slot/monitor evidence).
   Fixed on branch `lane-fd129` — see CL-102.
 
+- **FD-153 — The Vulkan bridge's drop logging
+  reports two legal no-op shapes as dropped
+  guest commands.** *(Low — behaviour is
+  faithful in both shapes; the harm is
+  diagnostic: drop lines are the bridge's
+  honesty signal for refused guest work, and
+  these false positives masked this lane's
+  real signal. Filed by the lane-d3d11lit
+  lane, 2026-11-03, from its instrumented
+  captures; number is that branch's next
+  after its FD-130 (the D3D10/11 entry,
+  composed FD-147) and is settled here as
+  FD-153 — the defect is the drop log's two
+  no-op shapes.)* Measured on the DXVK
+  D3D11 route:
+  (1) `vkCmdBeginRendering`'s attachment
+  helper runs unconditionally for the depth
+  and stencil slots, and its `!address` guard
+  logs a DROPPED line for each null pointer —
+  on a colour-only pass (measured colors=1,
+  pDepth=0x0, pStencil=0x0) that is two drop
+  lines for a pass that loses nothing.
+  (2) `captureStageSpec` log-drops the whole
+  vkCreateGraphicsPipelines call when a stage's
+  VkSpecializationInfo is empty (mapEntryCount
+  0, null pointers — DXVK's per-stage default):
+  there is nothing to capture, and the pipeline
+  is created correctly with the shader's
+  defaults. Consoles for the D3D10/11 defect
+  (FD-147) read as render-pass and pipeline
+  loss while the single operative signal was
+  one bridge-recover warning. Closing terms:
+  neither shape counts or logs as a drop (an
+  informational line that cannot be mistaken
+  for a drop is acceptable); genuine refusals
+  — null structures the API requires, over-cap
+  counts, unreadable guest memory — stay loud;
+  and a survey of the VK64_DROP_IF sites for
+  the same no-op-shape pattern (a helper
+  invoked with a legal null/empty input)
+  is part of the close. Filed, not fixed.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 These are findings whose fixes are written and proven on their
@@ -6675,7 +6757,8 @@ is behavioural, is re-proven there.
 | `lane-fd133-135` | *(Batch-5 settled numbers: closures CL-97, CL-98, CL-99; filings FD-152, FD-140. Row text keeps the lane's own numbers.)* FD-133: the 64-bit xattr cases (188-199) resolve their target before answering — the set forms validate their flags word (-EINVAL for bits outside CREATE|REPLACE), every name-taking form faults a null name (-EFAULT, ahead of the path and descriptor verdicts), then the path is resolved (null -EFAULT; empty, missing, or — for the following forms — dangling -ENOENT; the l-forms resolve the link itself) or the descriptor is checked (-EBADF) — and only a resolved target reaches the kept stub answers (get -ENODATA, list 0, set/remove -ENOTSUP); FD-134: KProcess::statx substitutes the descriptor's path only for an empty path under AT_EMPTY_PATH, so a non-empty path stats the named path; FD-135: the 64-bit statfs case resolves its path first (null -EFAULT, unresolvable -ENOENT, resolvable keeps the fabricated statistics); FD-139 (the 64-bit fstatfs case ignores its descriptor) and FD-140 (a path through a non-directory answers -ENOENT where the host answers -ENOTDIR) filed | New tests testXattrResolve64Syscalls and testStatfsResolve64Syscalls (x64) and testStatxAtEmptyPathProcessApi (main), RED on the base (37 + 3 guest assertions and 4 process-API assertions failing with the stub/substituted answers; every control passing) and GREEN on the fix; host reference programs measured first at the raw-syscall level (test-results/fd133-135/hostref-fd133-135.c and companions: the xattr resolution matrix and its entry order — flags, name copy, resolution — the statfs matrix, the statx AT_EMPTY_PATH contract); full native suites serial: main 672/672 and x64 95/95, 0 FAILED; JS unit 348 passed / 0 failed; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha = d8ca8945a, wasm bd6816da, staged archive c4dbe35986a5 as pinned); the known-gaps audit --check passes. Record: `docs/reports/fd133-135-xattr-statfs-statx-20261103.md`; evidence `test-results/fd133-135/` |
 | `lane-fd127fix` | *(Batch-5 settled numbers: FD-127 closed as CL-100; filing FD-128 keeps its number.)* FD-127 CLOSED (closure number settles at composition): socket creation took the descriptor's owning process from the ambient current thread; serviced under the unix-side dispatch binding, that process is a degenerate id-0 object whose fd-table mutex sits at linear address ~0x10, and descriptor allocation deadlocked re-acquiring it inside the fd-table handle scan - the Godot demo's device-setup thread creation (a pipe2 from Wine's NtCreateThreadEx) never returned. `ksocket` now takes the owning thread explicitly and allocates in that thread's process at all three creation sites (AF_UNIX, AF_NETLINK, AF_INET); the socketpair helper and the 32/64-bit socket handlers pass the thread they are servicing (fix `f670bd7de`; the step-ring instrument that convicted it is retained, gated on BW_THREAD_DUMP=1) | Conviction by the gated step ring across the lane's diag1-diag4 captures on the batch-4 code line: healthy allocations complete the full span on the real table (mutex at a heap address, handle returned); the frozen call's ring stops after the allocation lock on the id-0 object (mutex address bits 1, about 0x10) with the handle scan's own lock never acquired, host CPU flat (blocked, not spinning). Fixed build, same capture (diag6, tip `f6f010eb4`, BUILD_INFO dirty 0): caps 257.6 s -> first vkCreateShaderModule 261.6 s (1,216 B, hash f598618b6233f21a) -> pipelines create (32 traps) -> first window mapped 299.3 s, guest progressing; native suites serial main 675/675 and x64 95/95, 0 FAILED; JS unit 352/0 (the two harness updates the change required are in the branch); browser build 'Browser export verified'. FD-128 filed (the demo's next blocker: a worker unaligned-access trap after the window maps). Record: `docs/reports/fd127-ksocket-owner-fix-20261103.md`; evidence `test-results/fd127/` |
 | `lane-fd128` | *(Batch-5 settled numbers: FD-128 closed as CL-101; filing FD-129 keeps its number.)* FD-128 CLOSED (closure number settles at composition): with FD-127 fixed, the Godot demo's servicing worker died ~1-2 s after the window mapped on an unaligned-access trap. The trapping operations are the shared_ptr release inside `BoxedWineCondition::wait` (`i32.atomic.rmw.add` on the previous `waitingCond` control-block word; profiling-build CDP stack + disassembly, capture diag-prof) and, in repeat captures, the `FaultStageScope` atomic loads in `KFile::preadNative` — both consume `KThread::currentThread()`, and on the dying worker that value had been overwritten in its TLS slot with a small integer (0x25, then 0x9; the slot's only legitimate writer, `setCurrentThread`, never carried the value — tripwire-proven; a 1 kHz slot monitor watched it change at Vulkan-call frequency during the first vkAllocateMemory/vkCreateImage burst). Identity consumers then operated on low static memory (the "waitingCond" pair landed in the static string table). `KThread::currentThread()` now validates the slot (a genuine KThread is heap-allocated: 8-aligned, above the static region) and falls back to the identity the host thread registered for itself at platform-thread start (pthread_self()-keyed registry, RAII registration in `platformThread`), healing the slot (fix `849a55412`; the slot writer itself is filed separately as FD-129) | Fixed build, same capture (diag-fix1; standard build of the committed tree, BUILD_INFO dirty 0, wasm sha256 511e3151cdb9 — byte-identical to the capture build): banner 154.4 s -> window mapped 227.4 s -> **no trap** (no exceptions file; zero "unaligned" in the full console) -> guest alive and working at the 1,200 s deadline (elapsed 1,212.3 s), passing the filed death point (window +1.0/+1.4/+2.2 s across the three unfixed captures) by ~983 s. Pipeline account toward FD-89/CL-43 (full account in the lane record): 93 shader modules created, zero refusals; 6 graphics + 68 compute pipelines; 6 vkQueueSubmit + 6 vkQueueSubmit2; 3 bridge DROPPED lines total (vs 8,386 in the FD-62-era baseline); the FD-72 helper-invocation module met in vivo at 337.6 s and refused by name under FD-75; no swapchain/present — the first present remains gated on FD-72/FD-70 per FD-55's entry, and the guest settles into the downstream shader-retry cycle that entry holds open. Native suites serial main 675/675 and x64 95/95, 0 FAILED; JS unit 352/0; browser build 'Browser export verified'. Record: `docs/reports/fd128-current-thread-identity-20261103.md`; evidence `test-results/fd128/` |
-| `lane-fd129` | *(Batch-5 settled numbers: FD-129 closed as CL-102.)* FD-129 CLOSED (closure number settles at composition): the writer that overwrote guest workers' `runningThread` TLS slots with small integers during the graphics burst is the emulator's own guest-memory allocation. Instrumented pre-fix captures (branch `lane-fd129pre`, the pre-FD-128 tree) attribute it exactly: a slot registers with its genuine KThread pointer; a burst of `K64Page::commit()` calls follows, each allocating a fresh guest page's 4 KB backing buffer with `new U8[K64_PAGE_SIZE]`, and in the browser build those heap allocations land inside live host threads' stack/TLS spans — an allocation-order ring shows the page commits marching across the heap until one fresh buffer lands exactly over a live slot (buffer base = slot - 0x170, on two different victim threads in two independent captures). `commit()` then memsets the new buffer, zeroing the slot, and the guest stores ordinary data through the now-aliased page: two attributed stores via the TLB fast-path write funnel from the graphics-servicing guest thread (pid 10 tid 11) — 8 bytes of 0xffffffffffffffff onto one slot's page during vkAllocateDescriptorSets/vkUpdateDescriptorSets, and 4 bytes of 0x242424 onto the other's during vkGetBufferDeviceAddress, the same value/call pairing FD-128's lane saw — after which identity consumers read the garbage, as FD-128 measured. Fix `f94ceb4c5`: page backing buffers come from a dedicated arena (16 MB chunks obtained once and never freed; mutex-guarded free list; per-buffer provenance so each buffer returns to its own allocator; heap fallback only when the arena is disabled via BW64_PAGE_ARENA=0 or cannot grow) — an arena slot can never alias a live thread's span, and no thread span can be carved from an arena chunk, closing the class in both directions. FD-128's `currentThread()` validation is untouched and is now defence in depth, as the filing's closing terms envisaged. The memory64-backing-lifetime unit test's standalone slice was adapted to the new allocator interface (declarations moved inside the sliced header region; the test stubs the arena to its heap fallback, keeping its retain/free assertions on the real code under ASan). | Identification evidence (pre-fix tree, full slot surveillance + allocation ring): `wt-fd129pre/test-results/fd129pre/diag1` and `diag3` — diag3 final tallies REG 37, STOMP 14, WATCH 23 with the two live-slot hits above, guest alive at the 1,200 s deadline. Post-fix surveillance of the unmodified FD-128 tip was already silent (diag1 ~500 s, diag2 full 1,200 s: CORRUPT/ZERO/STOMP/WATCH/BRACKET all 0), consistent with the transient, burst-local nature of the aliasing. Decisive proof — the same Godot capture with the full diagnostic applied on top of the fix (diag commit since reverted; branch tip is the fix): `test-results/fd129/proof1` — banner 100.5 s → window mapped 152.6 s → guest alive and working at the 1,200 s deadline (elapsed 1,205.4 s); 36 slots registered; **CORRUPT 0, ZERO 0, STOMP 0, WATCH 0, BRACKET 0, SCAN 0** across the whole correlated burst (339 vkGetPhysicalDeviceFormatProperties2, 167 vkAllocateMemory/vkCreateImage-class calls). Native suites serial on the fixed tip: main 675/675 and x64 95/95, 0 FAILED (run twice — before and after the header-consistency amend — same result); JS unit 352 passed / 0 failed; browser build 'Browser export verified' (fixed wasm sha256 4453757f0699b527). No new defects filed by this lane: the only anomalies met were artefacts of the lane's own diagnostics (a monitor polling freed threads' recycled TLS) and a pre-existing infrastructure pin rotation, neither a product defect. Record: `docs/reports/fd129-page-backing-arena-20261103.md`; evidence `test-results/fd129/` |
+| `lane-fd129` | *(Batch-5 settled numbers: FD-129 closed as CL-102.)* FD-129 CLOSED (closure number settles at composition): the writer that overwrote guest workers' `runningThread` TLS slots with small integers during the graphics burst is the emulator's own guest-memory allocation. Instrumented pre-fix captures (branch `lane-fd129pre`, the pre-FD-128 tree) attribute it exactly: a slot registers with its genuine KThread pointer; a burst of `K64Page::commit()` calls follows, each allocating a fresh guest page's 4 KB backing buffer with `new U8[K64_PAGE_SIZE]`, and in the browser build those heap allocations land inside live host threads' stack/TLS spans — an allocation-order ring shows the page commits marching across the heap until one fresh buffer lands exactly over a live slot (buffer base = slot - 0x170, on two different victim threads in two independent captures). `commit()` then memsets the new buffer, zeroing the slot, and the guest stores ordinary data through the now-aliased page: two attributed stores via the TLB fast-path write funnel from the graphics-servicing guest thread (pid 10 tid 11) — 8 bytes of 0xffffffffffffffff onto one slot's page during vkAllocateDescriptorSets/vkUpdateDescriptorSets, and 4 bytes of 0x242424 onto the other's during vkGetBufferDeviceAddress, the same value/call pairing FD-128's lane saw — after which identity consumers read the garbage, as FD-128 measured. Fix `f94ceb4c5`: page backing buffers come from a dedicated arena (16 MB chunks obtained once and never freed; mutex-guarded free list; per-buffer provenance so each buffer returns to its own allocator; heap fallback only when the arena is disabled via BW64_PAGE_ARENA=0 or cannot grow) — an arena slot can never alias a live thread's span, and no thread span can be carved from an arena chunk, closing the class in both directions. FD-128's `currentThread()` validation is untouched and is now defence in depth, as the filing's closing terms envisaged. The memory64-backing-lifetime unit test's standalone slice was adapted to the new allocator interface (declarations moved inside the sliced header region; the test stubs the arena to its heap fallback, keeping its retain/free assertions on the real code under ASan). | Identification evidence (pre-fix tree, full slot surveillance + allocation ring): `wt-fd129pre/test-results/fd129pre/diag1` and `diag3` — diag3 final tallies REG 37, STOMP 14, WATCH 23 with the two live-slot hits above, guest alive at the 1,200 s deadline. Post-fix surveillance of the unmodified FD-128 tip was already silent (diag1 ~500 s, diag2 full 1,200 s: CORRUPT/ZERO/STOMP/WATCH/BRACKET all 0), consistent with the transient, burst-local nature of the aliasing. Decisive proof — the same Godot capture with the full diagnostic applied on top of the fix (diag commit since reverted; branch tip is the fix): `test-results/fd129/proof1` — banner 100.5 s → window mapped 152.6 s → guest alive and working at the 1,200 s deadline (elapsed 1,205.4 s); 36 slots registered; **CORRUPT 0, ZERO 0, STOMP 0, WATCH 0, BRACKET 0, SCAN 0** across the whole correlated burst (339 vkGetPhysicalDeviceFormatProperties2, 167 vkAllocateMemory/vkCreateImage-class calls). Native suites serial on the fixed tip: main 675/675 and x64 95/95, 0 FAILED (run twice — before and after the header-consistency amend — same result); JS unit 352 passed / 0 failed; browser build 'Browser export verified' (fixed wasm sha256 4453757f0699b527). No new defects filed by this lane: the only anomalies met were artefacts of the lane's own diagnostics (a monitor polling freed threads' recycled TLS) and a pre-existing infrastructure pin rotation, neither a product defect. Record: `docs/reports/fd129-page-backing-arena-20261103.md`; evidence `test-results/fd129/` and `wt-fd129pre/test-results/fd129pre/` |
+| `lane-d3d11lit` | *(Batch-5 settled numbers: the D3D10/11 draws defect closed as CL-103 under composed FD-147; filing FD-153. Row text keeps the lane's own numbers.)* FD-130 CLOSED (closure number settles at composition; the defect is the D3D10/11 LIT=0 draws, filed on lane-fd125-ab's register as its lineage FD-127): the Vulkan bridge's frame-overflow guards for the image/attachment clear calls compared the raw 64-bit trap slot against their count caps, but the Vulkan counts are uint32 — only the slot's low half is the value. Measured: DXVK's init-image vkCmdClearColorImage (its only call site passes rangeCount 1; the range array read back as exactly one range) arrived with the count slot holding 0x200000000001, the guard fired vk64FrameOverflow, the flag rode the next frame's FRAME_BEGIN header, the page tier rejected the whole 4460-byte draw frame, the pending readback never completed, and the guest mapped zeroes — LIT=0 on d3d10-comprehensive, d3d11-triangle and d3d11-comprehensive, while D3D12 (which never issues the guarded calls) passed. Fix `738d882ca`: all six guards (clear colour, clear depth/stencil, clear attachments; 64- and 32-bit dispatchers) compare the (U32)-truncated count; caps and the loud refusal of genuine over-cap counts unchanged. | Base for this lane is lane-fd129 tip `ea93a6ef3`, not the bare integ tip: the first unmodified-integ reproduction was consumed by the already-filed FD-127 thread-creation freeze (console preserved), and on `ea93a6ef3` (build byte-identical to the FD-129 lane's, wasm 4453757f) d3d11-triangle fails with the full chain (overflow warning, LIT=0). Fixed build (738d882ca, wasm d3937eb9, BUILD_INFO dirty 0, 'Browser export verified'): d3d11-triangle PASS (LIT=8192, RESULT 0), d3d11-comprehensive PASS (LIT=8192; the identical 4460-byte frame renders), d3d10-comprehensive PASS (`tri10: LIT=8192`, RESULT 0), d3d12-comprehensive PASS (control). Native suites serial main 675/675 and x64 95/95, 0 FAILED; JS unit 352/0, legacy 115/0; known-gaps audit: no undeclared gaps. FD-131 filed (the drop log's two no-op shapes, found while exonerating this defect's console signals). Record: `docs/reports/d3d1011-draws-land-nothing-20261103.md`; evidence `test-results/fd127dxvk/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -9250,6 +9333,75 @@ dead-start fix and needs composition care.
   `docs/reports/fd129-page-backing-arena-20261103.md`;
   evidence `test-results/fd129/` and
   `wt-fd129pre/test-results/fd129pre/`.
+
+- **CL-103 — FD-147 closed: the
+  Vulkan bridge's frame-overflow
+  count guards for the image and
+  attachment clear calls compared
+  the raw 64-bit trap slot against
+  their count caps, but the Vulkan
+  counts are uint32 — only the
+  slot's low half is the value — so
+  a legal clear whose slot carried
+  unrelated high bits fired the
+  overflow, the flag poisoned the
+  draw's frame, the page tier
+  rejected the whole frame, and
+  D3D10/D3D11 draws landed nothing
+  (LIT=0) while the D3D12 route,
+  which never issues the guarded
+  calls, passed.** *(Settled at the
+  batch-5 composition; the lane
+  closed the defect on its own
+  register under its FD-130, the
+  same defect the settlement lane
+  filed and this register carries
+  as FD-147 — substance-keyed at
+  the audit.)* Fixed on branch
+  `lane-d3d11lit` in `738d882ca`
+  (composed as `129e739cf`): all
+  six guards (vkCmdClearColorImage,
+  vkCmdClearDepthStencilImage,
+  vkCmdClearAttachments; 64- and
+  32-bit dispatchers) compare the
+  (U32)-truncated count; caps and
+  the loud refusal of genuinely
+  over-cap counts are unchanged.
+  Measured conviction: DXVK's
+  init-image vkCmdClearColorImage
+  (its only call site passes
+  rangeCount 1; the range array
+  read back as exactly one range)
+  arrived with the count slot
+  holding 0x200000000001.
+  Proof: on the lane's base
+  (lane-fd129 tip `ea93a6ef3`, build
+  byte-identical to the FD-129
+  lane's, wasm 4453757f)
+  d3d11-triangle fails with the
+  full chain (overflow warning,
+  LIT=0); on the fixed build (wasm
+  d3937eb9, BUILD_INFO dirty 0,
+  'Browser export verified'):
+  d3d11-triangle PASS (LIT=8192,
+  RESULT 0), d3d11-comprehensive
+  PASS (LIT=8192; the identical
+  4460-byte frame renders),
+  d3d10-comprehensive PASS
+  (`tri10: LIT=8192`, RESULT 0),
+  d3d12-comprehensive PASS
+  (control). Native suites serial
+  main 675/675 and x64 95/95, 0
+  FAILED; JS unit 352/0, legacy
+  115/0; known-gaps audit: no
+  undeclared gaps. The composed
+  tree's batch-5 gate re-runs the
+  three D3D tests; see the batch-5
+  merge record. Filed from this
+  lane: FD-153. Record:
+  `docs/reports/d3d1011-draws-land-nothing-20261103.md`;
+  evidence `test-results/fd127dxvk/`
+  in the lane's worktree.
 
 ## Appendix — examined and deliberately NOT registered
 
