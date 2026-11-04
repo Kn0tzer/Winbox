@@ -71,6 +71,8 @@ test('real X11 pointer handlers preserve exclusive ownership and release on unma
 #include <cstring>
 #include <mutex>
 #include <map>
+#include <cstdlib>
+void klog_fmt(const char*, ...){}
 enum{X_GrabPointer=26,X_UngrabPointer=27,X_UnmapWindow=10,X_DestroyWindow=4};
 struct Window{bool mapped=false,isRoot=false;};
 struct XWireServer{std::mutex regMutex;std::map<uint32_t,Window> windows;uint32_t presentWindow=0,focusWindow=0,pointerGrabClient=0,pointerGrabWindow=0,pointerConfineWindow=0,pointerGrabEventMask=0,pointerGrabCursor=0;bool pointerGrabOwnerEvents=false,pointerFrozen=false;uint8_t pointerGrabPointerMode=0,pointerGrabKeyboardMode=0;void clearPointerGrab(){pointerGrabClient=pointerGrabWindow=pointerConfineWindow=pointerGrabEventMask=pointerGrabCursor=0;pointerGrabOwnerEvents=false;pointerGrabPointerMode=pointerGrabKeyboardMode=0;pointerFrozen=false;}void schedulePresent(){}static XWireServer& instance(){static XWireServer s;return s;}};
@@ -83,7 +85,7 @@ int main(){
  dispatch(X_GrabPointer,0x400000,0x600001);assert(reply[1]==3 && s.pointerGrabClient==0);
  dispatch(X_GrabPointer,0x400000,0x400001);assert(reply[0]==1 && reply[1]==0 && reply[2]==0x34 && reply[3]==0x12 && s.pointerGrabClient==0x400000);
  assert(s.pointerConfineWindow==0);
- dispatch(X_GrabPointer,0x400000,0x400001,0x400001,true,0x0048,1,0,0x400010);assert(reply[1]==0 && s.pointerConfineWindow==0x400001);assert(s.pointerGrabOwnerEvents&&s.pointerGrabEventMask==0x0048&&s.pointerGrabPointerMode==1&&s.pointerGrabCursor==0x400010&&s.pointerFrozen);
+ dispatch(X_GrabPointer,0x400000,0x400001,0x400001,true,0x0048,1,0,0x400010);assert(reply[1]==0 && s.pointerConfineWindow==0x400001);assert(s.pointerGrabOwnerEvents&&s.pointerGrabEventMask==0x0048&&s.pointerGrabPointerMode==1&&s.pointerGrabCursor==0x400010&&!s.pointerFrozen);
  dispatch(X_GrabPointer,0x600000,0x260);assert(reply[1]==1 && s.pointerGrabClient==0x400000);
  dispatch(X_UngrabPointer,0x600000,0);assert(s.pointerGrabClient==0x400000);
  dispatch(X_GrabPointer,0x400000,0x260);assert(reply[1]==0 && s.pointerGrabWindow==0x260);
@@ -177,11 +179,12 @@ int main(){
   } finally { rmSync(dir, {recursive:true, force:true}); }
 });
 
-test('SDL relative movement advances the queried cursor position after recentering', () => {
+test('SDL relative movement advances the queried cursor position on delivery, not at queue time', () => {
   const src = readFileSync(new URL('../../../../source/x11wire/xwirepresentSDL.cpp', import.meta.url), 'utf8');
   const motion = src.match(/case SDL_MOUSEMOTION:[\s\S]*?\n                break;/)?.[0];
   const warp = src.match(/    void warpPointer\(int x, int y\) override \{[\s\S]*?\n    \}/)?.[0].replace(' override', '');
-  assert.ok(motion); assert.ok(warp);
+  const noted = src.match(/    void noteDeliveredPointer\(int x, int y\) override \{[\s\S]*?\n    \}/)?.[0].replace(' override', '');
+  assert.ok(motion); assert.ok(warp); assert.ok(noted);
   const dir = mkdtempSync(join(tmpdir(), 'bw64-relative-position-'));
   try {
     writeFileSync(join(dir, 'check.cpp'), `
@@ -191,10 +194,12 @@ struct XWireInputEvent{enum{EvMotion,EvMotionRel}type;int x=0,y=0,state=0;bool w
 enum{SDL_MOUSEMOTION=1};bool relative=false;bool SDL_GetRelativeMouseMode(){return relative;}int sdlModState(){return 0;}
 struct Sink{std::mutex pointerMutex;int lastX=0,lastY=0;XWireInputEvent last;void push(XWireInputEvent e){last=e;}
 ${warp}
+${noted}
 void move(int x,int y,int dx,int dy){struct{struct{int x,y,xrel,yrel;}motion;}e={{x,y,dx,dy}};XWireInputEvent ie;switch(SDL_MOUSEMOTION){${motion}}}
 };
 int main(){Sink s;s.move(100,80,100,80);assert(s.lastX==100 && s.lastY==80 && s.last.type==XWireInputEvent::EvMotion);
- s.warpPointer(512,320);relative=true;s.move(0,0,20,-5);assert(s.lastX==532 && s.lastY==315 && s.last.x==20 && s.last.y==-5 && s.last.type==XWireInputEvent::EvMotionRel);
+ s.warpPointer(512,320);relative=true;s.move(0,0,20,-5);assert(s.lastX==512 && s.lastY==320 && s.last.x==20 && s.last.y==-5 && s.last.type==XWireInputEvent::EvMotionRel);
+ s.noteDeliveredPointer(532,315);assert(s.lastX==532 && s.lastY==315);
  s.warpPointer(512,320);s.move(0,0,0,0);assert(s.lastX==512 && s.lastY==320);
  relative=false;s.move(200,160,20,30);assert(s.lastX==200 && s.lastY==160 && s.last.type==XWireInputEvent::EvMotion);
 }
