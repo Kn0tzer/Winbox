@@ -80,6 +80,11 @@ public:
     // Browsers cannot warp their physical cursor; subsequent SDL deltas still
     // move this position, so SetCursorPos/GetCursorPos recentering stays valid.
     virtual void warpPointer(int x, int y) {}
+    // Bookkeeping only (unlike warpPointer, queues no event): the
+    // delivering connection reports the pointer position each motion
+    // event was delivered at, so lastPointer() is always the last
+    // delivered position and never includes queued relative deltas.
+    virtual void noteDeliveredPointer(int x, int y) {}
 
     // Main-thread (doMainLoop): present the most recent submitted frame and pump
     // the host event queue into the input queue. No-op when nothing changed.

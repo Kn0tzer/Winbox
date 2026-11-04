@@ -2451,6 +2451,14 @@ void XWireConnection::deliverInputEvents() {
         } else if (ev.type == XWireInputEvent::EvMotion) {
             if (relInit) { relInit = false; } // absolute motion resyncs
         }
+        if (motion && g_xwirePresentSink) {
+            // The connection owns the pointer position for motion events:
+            // publish the position this event delivers at, so the sink's
+            // tracked pointer (event stamping, QueryPointer, the seed for
+            // the next relative stream) is the last delivered position and
+            // never includes queued-but-undelivered relative deltas.
+            g_xwirePresentSink->noteDeliveredPointer(eff.x, eff.y);
+        }
         // Wine enables root RawMotion while clipping. Its raw handler sends the
         // relative hardware input; a core motion for the same sample would
         // generate a second, absolute movement and lose motion at screen edges.
