@@ -52,11 +52,16 @@ From `project/emscripten`:
     make wasm64-selftest
 
 Output is `Build/Wasm64SelfTest/boxedwine64-selftest.js` (+ `.wasm`), a plain Node
-target (no SDL canvas / shell HTML). Run the self-test:
+target (no SDL canvas / shell HTML). Run the self-test from a `.cjs` copy: the
+repository's package.json is `type: module`, under which Node refuses the
+CommonJS Emscripten shell under its `.js` name ("require is not defined in ES
+module scope"). scripts/build-jit-wasm.sh gives the JIT variant of this target
+the same treatment:
 
-    node Build/Wasm64SelfTest/boxedwine64-selftest.js --x64-selftest
+    cp Build/Wasm64SelfTest/boxedwine64-selftest.js Build/Wasm64SelfTest/boxedwine64-selftest.cjs
+    node Build/Wasm64SelfTest/boxedwine64-selftest.cjs --x64-selftest
 
-It prints `=== self-test summary: 234 passed, 0 failed ===` and exits 0; any
+It prints `=== self-test summary: N passed, 0 failed ===` and exits 0; any
 failure makes it exit non-zero (`runX64SelfTest()` returns the failed count).
 
 
