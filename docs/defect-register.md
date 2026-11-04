@@ -5883,7 +5883,9 @@ do not close the entry until they land.
   browser test fails: a DXVK clear
   never reaches the browser
   compositor with its final red
-  colour.** *(Filed by the FD-145
+  colour. FIXED 2026-11-04 on
+  branch `lane-fd148-149` — see
+  CL-109.** *(Filed by the FD-145
   settlement lane, 2026-11-03;
   provisional until the merge
   lane's audit.)* Measured
@@ -5910,8 +5912,63 @@ do not close the entry until they land.
   Closing terms: the clear reaches
   the compositor as the test
   stages it, and d3d9-comprehensive
-  passes standalone. Filed, not
-  fixed.
+  passes standalone. Closing
+  account (lane-fd148-149,
+  2026-11-04): the failure is in
+  the emulator's Vulkan serving,
+  not in the guest or the test.
+  The per-pass readback diagnostic
+  showed the clear submission's
+  target reading back constant
+  [232,40,100,255] — the clear
+  landed exactly — while the
+  present blit sampled that same
+  texture yet the swapchain target
+  read ~black (1 non-black pixel).
+  DXVK's swapchain blitter (the
+  D3D9 presenter's path) creates
+  its sampler with usePixelCoord =
+  VK_TRUE — Vulkan's
+  unnormalizedCoordinates — with
+  CLAMP_TO_BORDER addressing: it
+  samples in texel space
+  (0..640 x 0..480). The bridge
+  marshalled the flag in the guest
+  struct but its Sampler record
+  dropped it, and neither the wire
+  protocol nor the page tier had
+  any unnormalised handling, so
+  the page tier sampled with
+  normalised WebGPU coordinates
+  far outside [0,1] and its
+  border-colour emulation masked
+  everything to the border colour
+  except a sub-texel corner — the
+  observed signature. Fix
+  `5ac7f7431` carries the flag end
+  to end: the bridge stores it on
+  the Sampler record from both
+  vkCreateSampler ABIs and appends
+  it to the SAMPLER record, the
+  wire protocol decodes it, and
+  the page tier divides the
+  affected sample calls'
+  coordinates (and
+  textureSampleGrad gradients) by
+  the texture dimensions in a
+  per-draw WGSL pipeline variant,
+  ahead of the border rewrite; the
+  record-layout test pin is
+  updated in `82e3ebb51`. Base
+  FAIL (219,863 ms; redDominant 4)
+  → fixed PASS (all three stages
+  RESULT 0, redDominant 722,880),
+  controls d3d11-triangle,
+  d3d11-comprehensive,
+  d3d10-comprehensive and
+  d3d12-comprehensive PASS on the
+  same build. Fixed on branch
+  `lane-fd148-149` — see CL-109.
 
 - **FD-149 — The 32-bit D3D9 browser
   test (d3d9-32) never reaches its
@@ -5920,7 +5977,9 @@ do not close the entry until they land.
   surface error, and the staged
   clear program's CAPTURE_READY
   never appears inside the test's
-  300 s wait.** *(Filed by the FD-145
+  300 s wait. FIXED 2026-11-04 on
+  branch `lane-fd148-149` — see
+  CL-110.** *(Filed by the FD-145
   settlement lane, 2026-11-03;
   provisional until the merge
   lane's audit.)* Measured
@@ -5948,7 +6007,52 @@ do not close the entry until they land.
   Closing terms: the 32-bit D3D9
   clear program reaches its
   capture and d3d9-32 passes
-  standalone. Filed, not fixed.
+  standalone. Closing account
+  (lane-fd148-149, 2026-11-04):
+  the cause is the project's own
+  32-bit payload build. The
+  shipped 32-bit win32u.so is the
+  FD-02 backport (sha256
+  b2d9d135...), and the stub
+  string "built without Vulkan
+  support" exists only in that
+  module; the 64-bit module and
+  the rest of the 32-bit tree are
+  Vulkan-capable. The backport's
+  build script configured its
+  i686 tree --without-vulkan: its
+  private sysroot carried only
+  the freetype/fontconfig deb
+  closure and its fail-closed
+  markers checked only the font
+  defines, so the FD-02 rebuild
+  silently lost the stock module's
+  Vulkan driver entry (win32u is
+  where that entry lives). Fix
+  `6e3dba081`: the i686 sysroot
+  gains the sha256-pinned bookworm
+  libvulkan dev+runtime debs,
+  SONAME_LIBVULKAN joins the
+  fail-closed configure markers,
+  and the build refuses a product
+  carrying the stub string; the
+  rebuilt module (sha256
+  9d538e79..., 1,502,028 bytes)
+  restaged through the sanctioned
+  regen path into
+  runtime-assets-20261104. Base
+  FAIL (CAPTURE_READY never seen
+  in 300 s) → fixed d3d9-32 PASS
+  (62,685 ms; the presented clear
+  reads redDominant 722,880; zero
+  stub lines in the console), and
+  the 32-bit session still boots
+  through desktop initialisation
+  and runs all three staged
+  programs, so the FD-02 fix the
+  backport exists for is intact.
+  Fixed on branch `lane-fd148-149`
+  — see CL-110.
 
 - **FD-150 — The cpu32-jit-growth
   browser test fails on the
@@ -6095,6 +6199,8 @@ do not close the entry until they land.
   and `basecheck-node-target-build.log`
   in the FD-145 restage lane's
   worktree. Filed, not fixed.
+  Fixed on branch
+  `lane-fd151` — see CL-105.
 
 - **FD-131 — An empty path given
   to a path system call resolves to
@@ -6484,6 +6590,8 @@ do not close the entry until they land.
   answers -EINVAL on both dispatchers
   for non-null paths too, proven by
   guest tests. Filed, not fixed.
+  Fixed on branch `lane-fd139-152`
+  — see CL-107.
 
 - **FD-152 — The 64-bit dispatcher's
   fstatfs case answers its fabricated
@@ -6510,7 +6618,9 @@ do not close the entry until they land.
   for a descriptor that is not open
   and keeps the fabricated answer
   for open ones, proven by a guest
-  test. Filed, not fixed.
+  test. Filed, not fixed. Fixed
+  on branch `lane-fd139-152` — see
+  CL-106.
 
 - **FD-140 — A path through a
   non-directory answers -ENOENT
@@ -6541,7 +6651,8 @@ do not close the entry until they land.
   calls, with the resolver's other
   consumers' answers unchanged,
   proven by guest tests. Filed,
-  not fixed.
+  not fixed. Fixed on branch
+  `lane-fd139-152` — see CL-108.
 
 - **FD-127 — The Godot demo's main thread parks
   inside D3D12 device setup: a thread creation's
@@ -6767,6 +6878,36 @@ do not close the entry until they land.
   the same no-op-shape pattern (a helper
   invoked with a legal null/empty input)
   is part of the close. Filed, not fixed.
+  Closing account (lane-fd153,
+  2026-11-04): both filed shapes are
+  silent now — the attachment helpers
+  (both ABIs) return ahead of the
+  guard on a null pointer, and
+  captureStageSpec returns on
+  mapEntryCount 0 ahead of its (still
+  loud) over-cap and claimed-but-absent
+  guards. The survey the filing
+  required found three more instances
+  of the same pattern, all fixed in
+  the same change: resolveFrame
+  dropped when descriptor set 0 was
+  never bound (a recorded-but-stale
+  set id stays loud), the 32-bit
+  buffer/image copy guards dropped a
+  zero-region copy with a null array
+  (regions claimed with no array stay
+  loud), and the VKPROF trap scans
+  counted idle slots as drops with
+  profiling enabled (now a plain skip;
+  the census's only removals,
+  257 -> 255 sites). Every other
+  guarded site in the census was
+  classified genuine and is unchanged.
+  The survey's one opposite-sign find
+  — the 32-bit specialization
+  capture's silent header guard — is
+  filed as FD-155. Fixed on branch
+  `lane-fd153` — see CL-104.
 - **FD-154 — Five browser-suite tests fail
   identically on the batch-4 base and the
   batch-5 composed tree in the current suite
@@ -6820,6 +6961,259 @@ do not close the entry until they land.
   (composed runs) and its `control-base/`
   subdir (base runs and the base build log).
   Filed, not fixed.
+
+- **FD-155 — The 32-bit specialization
+  capture discards guest input
+  silently.** *(Low — the served
+  behaviour is correct (nothing is
+  captured; the pipeline keeps the
+  shader's defaults); the harm is the
+  silence itself: refused guest work in
+  the bridge is reported, never dropped
+  quietly, and this is the one capture
+  path that can refuse without a line.
+  Filed by the FD-153 lane, 2026-11-04,
+  from its VK64_DROP_IF census
+  survey.)* `captureStageSpec32`'s
+  header guard is a plain
+  `if (...) return;` — no log line, no
+  drop counter: on the 32-bit path an
+  unreadable VkSpecializationInfo, a
+  mapEntryCount over the capture cap
+  of 16, and claimed entries whose
+  map-entry array or data is absent
+  all discard the guest's
+  specialization info silently. The
+  64-bit twin (`captureStageSpec`)
+  reports all three through
+  VK64_DROP_IF, and the 32-bit
+  function's own per-entry guards
+  report too; only its header is mute.
+  (The empty shape — mapEntryCount 0 —
+  is silent on both paths and correct:
+  a legal no-op, per FD-153.) Closing
+  terms: the three header refusals
+  report through the same drop channel
+  as the 64-bit path, and a native
+  test pins the loud cases on the
+  32-bit path. Filed, not fixed.
+
+- **FD-156 — The MEMORY64 variant of
+  the Node self-test target (make
+  wasm64-selftest-mem64) does not
+  compile: the SDL audio bridge's
+  EM_ASM block casts ring-buffer
+  pointers to int, which a 64-bit
+  pointer build rejects.** *(Low.
+  Filed by the FD-151 lane,
+  2026-11-03; provisional until
+  the merge lane's audit.)*
+  Building the target fails at
+  platform/sdl/kdspaudio.cpp:371 —
+  "cast from pointer to smaller
+  type 'int' loses information" at
+  both pointer arguments of the
+  EM_ASM call that arms the audio
+  worklet bridge ((int)&bwRingWrite,
+  (int)&bwRingRead). Under
+  -sMEMORY64=1 pointers are 64-bit,
+  so the casts cannot compile; the
+  wasm32-host targets (wasm64-
+  selftest, the browser build)
+  accept them. It is the build's
+  only error site. Pre-existing on
+  the integration tip by
+  construction: the file is
+  byte-identical there, and the
+  FD-151 lane's diff does not touch
+  it or its inputs. Closing terms:
+  the mem64 target compiles and
+  its run is reported. Evidence:
+  `test-results/fd151/build-mem64.log`
+  in the FD-151 lane's worktree.
+
+- **FD-157 — The 32-bit extended-
+  attribute calls do not resolve
+  their target path for attribute
+  names outside the DOSATTRIB
+  special case, answering -ENOTSUP
+  where the host answers -ENOENT
+  for a missing path and -ENODATA
+  for an existing file.**
+  *(Low. Filed by the FD-139-152
+  lane, 2026-11-04; provisional
+  until the merge lane's audit.)*
+  Found while grounding FD-140's
+  host matrix (raw syscalls,
+  test-results/fd139-152/
+  hostref-fd139-152c.c): the host
+  answers getxattr("missing",
+  "user.x") -ENOENT and
+  getxattr("a.txt", "user.x")
+  -ENODATA; the 32-bit dispatcher's
+  getxattr/lgetxattr/setxattr/
+  lsetxattr/listxattr/llistxattr/
+  removexattr/lremovexattr cases
+  resolve only for the user.
+  DOSATTRIB name (the FD-133 fix)
+  and answer -ENOTSUP (-38) for
+  every other name, resolved or
+  not. The 64-bit dispatcher
+  resolves first and answers
+  -ENODATA for a missing attribute
+  on an existing file; its
+  missing-path answer is -ENOENT
+  (now -ENOTDIR through a file, per
+  CL-108). Closing terms: the
+  32-bit xattr cases answer
+  -ENOENT for a path that does not
+  resolve (and -ENOTDIR for one
+  descending through a file) and
+  -ENODATA for an unresolved
+  attribute name on a file that
+  does resolve, proven by guest
+  tests; the -ENOTSUP answer for
+  names the emulator does not
+  model on files it does resolve
+  may stay where the host's
+  -ENODATA is not the measured
+  answer for that name class.
+  Filed, not fixed.
+
+- **FD-158 — readlink and
+  readlinkat answer -EINVAL for a
+  path that does not exist, on
+  both dispatchers; the host
+  answers -ENOENT.** *(Low. Filed
+  by the FD-139-152 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)*
+  KProcess::readlinkInDirectory
+  returns -EINVAL for any
+  resolution miss (the same answer
+  it gives a resolved non-link),
+  and the 64-bit dispatcher's
+  readlink helper does the same;
+  host-measured at the raw syscall
+  level (test-results/fd139-152/
+  hostref-fd139-152c.c):
+  readlinkat of a missing path
+  answers -ENOENT, of an existing
+  non-link -EINVAL. CL-108 taught
+  both sites the -ENOTDIR case
+  only; the plain-missing case
+  stays -EINVAL. Closing terms:
+  readlink/readlinkat of a
+  missing path answers -ENOENT on
+  both dispatchers, of an existing
+  non-link stays -EINVAL, proven
+  by guest tests. Filed, not
+  fixed.
+
+- **FD-159 — A path whose final
+  component is erased by
+  normalization (a trailing "/",
+  "/." or "/.." through a regular
+  file) resolves to the file
+  itself where the host answers
+  -ENOTDIR.** *(Low. Filed by the
+  FD-139-152 lane, 2026-11-04;
+  provisional until the merge
+  lane's audit.)* Host-measured
+  (raw syscalls, test-results/
+  fd139-152/hostref-fd139-152.c):
+  statfs("a.txt/"), statfs
+  ("a.txt/."), statfs("a.txt/..")
+  all answer -ENOTDIR. The guest's
+  printed observations on the
+  FD-140 lane's base (testNotDir64
+  run, test-results/fd139-152/
+  red-x64.log) answer 0 for all
+  three: the resolver's path
+  normalization drops the trailing
+  component before the walk, so
+  no walk step ever looks inside
+  the file and CL-108's verdict
+  cannot form. Distinct mechanism
+  from FD-140 (there the walk
+  itself stops inside the file);
+  left open deliberately so the
+  normalization change is scoped
+  on its own. Closing terms:
+  "a.txt/", "a.txt/." and
+  "a.txt/.." answer -ENOTDIR at
+  the path calls while ".", "..",
+  and trailing-slash paths through
+  real directories keep their
+  current answers, proven by
+  guest tests. Filed, not fixed.
+
+- **FD-160 — The 64-bit
+  dispatcher's rmdir (84) has no
+  case: it answers -ENOSYS
+  ("unimplemented syscall #84")
+  for every path.** *(Low. Filed
+  by the FD-139-152 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)* Found
+  by this lane's 64-bit -ENOTDIR
+  guest test: rmdir of any path
+  logs the unimplemented line and
+  answers -ENOSYS, where the
+  host answers by shape (0 for
+  an empty directory, -ENOTDIR
+  through a file, -ENOENT for a
+  missing path — raw-measured in
+  this lane's host matrix) and
+  the 32-bit dispatcher routes
+  the call to KProcess::rmdir,
+  which implements it, as does
+  the 64-bit mkdir case beside
+  it. Closing terms: rmdir at
+  the 64-bit dispatcher routes
+  to KProcess::rmdir like the
+  neighbouring cases and answers
+  the host's verdicts, proven by
+  a guest test. Filed, not fixed.
+
+- **FD-161 — A hard link whose
+  destination is a bare filename
+  in the working directory
+  answers -ENOENT even when the
+  source exists.** *(Low. Filed
+  by the FD-139-152 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)*
+  KProcess::link resolves the
+  destination's parent through
+  Fs::getParentPath of the raw
+  destination; for a slash-less
+  name that computation yields
+  the name itself
+  (lastIndexOf finds no slash
+  and substr(0, -1) returns the
+  whole string), so the parent
+  lookup resolves the
+  not-yet-existing destination
+  and misses. Measured on the
+  FD-140 lane's base and fixed
+  trees alike (its process-API
+  link control): link("a.txt",
+  "hl.txt") answers -ENOENT;
+  the host creates the link.
+  rename and symlink compute the
+  full path first and do not
+  share the shape. Unrelated to
+  FD-140 (no non-directory is
+  involved); found by that
+  lane's control. Closing terms:
+  link to a bare filename in the
+  working directory succeeds,
+  and the other getParentPath
+  consumers are audited for the
+  same slash-less shape, proven
+  by guest tests. Filed, not
+  fixed.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -6905,6 +7299,10 @@ is behavioural, is re-proven there.
 | `lane-fd128` | *(Batch-5 settled numbers: FD-128 closed as CL-101; filing FD-129 keeps its number.)* FD-128 CLOSED (closure number settles at composition): with FD-127 fixed, the Godot demo's servicing worker died ~1-2 s after the window mapped on an unaligned-access trap. The trapping operations are the shared_ptr release inside `BoxedWineCondition::wait` (`i32.atomic.rmw.add` on the previous `waitingCond` control-block word; profiling-build CDP stack + disassembly, capture diag-prof) and, in repeat captures, the `FaultStageScope` atomic loads in `KFile::preadNative` — both consume `KThread::currentThread()`, and on the dying worker that value had been overwritten in its TLS slot with a small integer (0x25, then 0x9; the slot's only legitimate writer, `setCurrentThread`, never carried the value — tripwire-proven; a 1 kHz slot monitor watched it change at Vulkan-call frequency during the first vkAllocateMemory/vkCreateImage burst). Identity consumers then operated on low static memory (the "waitingCond" pair landed in the static string table). `KThread::currentThread()` now validates the slot (a genuine KThread is heap-allocated: 8-aligned, above the static region) and falls back to the identity the host thread registered for itself at platform-thread start (pthread_self()-keyed registry, RAII registration in `platformThread`), healing the slot (fix `849a55412`; the slot writer itself is filed separately as FD-129) | Fixed build, same capture (diag-fix1; standard build of the committed tree, BUILD_INFO dirty 0, wasm sha256 511e3151cdb9 — byte-identical to the capture build): banner 154.4 s -> window mapped 227.4 s -> **no trap** (no exceptions file; zero "unaligned" in the full console) -> guest alive and working at the 1,200 s deadline (elapsed 1,212.3 s), passing the filed death point (window +1.0/+1.4/+2.2 s across the three unfixed captures) by ~983 s. Pipeline account toward FD-89/CL-43 (full account in the lane record): 93 shader modules created, zero refusals; 6 graphics + 68 compute pipelines; 6 vkQueueSubmit + 6 vkQueueSubmit2; 3 bridge DROPPED lines total (vs 8,386 in the FD-62-era baseline); the FD-72 helper-invocation module met in vivo at 337.6 s and refused by name under FD-75; no swapchain/present — the first present remains gated on FD-72/FD-70 per FD-55's entry, and the guest settles into the downstream shader-retry cycle that entry holds open. Native suites serial main 675/675 and x64 95/95, 0 FAILED; JS unit 352/0; browser build 'Browser export verified'. Record: `docs/reports/fd128-current-thread-identity-20261103.md`; evidence `test-results/fd128/` |
 | `lane-fd129` | *(Batch-5 settled numbers: FD-129 closed as CL-102.)* FD-129 CLOSED (closure number settles at composition): the writer that overwrote guest workers' `runningThread` TLS slots with small integers during the graphics burst is the emulator's own guest-memory allocation. Instrumented pre-fix captures (branch `lane-fd129pre`, the pre-FD-128 tree) attribute it exactly: a slot registers with its genuine KThread pointer; a burst of `K64Page::commit()` calls follows, each allocating a fresh guest page's 4 KB backing buffer with `new U8[K64_PAGE_SIZE]`, and in the browser build those heap allocations land inside live host threads' stack/TLS spans — an allocation-order ring shows the page commits marching across the heap until one fresh buffer lands exactly over a live slot (buffer base = slot - 0x170, on two different victim threads in two independent captures). `commit()` then memsets the new buffer, zeroing the slot, and the guest stores ordinary data through the now-aliased page: two attributed stores via the TLB fast-path write funnel from the graphics-servicing guest thread (pid 10 tid 11) — 8 bytes of 0xffffffffffffffff onto one slot's page during vkAllocateDescriptorSets/vkUpdateDescriptorSets, and 4 bytes of 0x242424 onto the other's during vkGetBufferDeviceAddress, the same value/call pairing FD-128's lane saw — after which identity consumers read the garbage, as FD-128 measured. Fix `f94ceb4c5`: page backing buffers come from a dedicated arena (16 MB chunks obtained once and never freed; mutex-guarded free list; per-buffer provenance so each buffer returns to its own allocator; heap fallback only when the arena is disabled via BW64_PAGE_ARENA=0 or cannot grow) — an arena slot can never alias a live thread's span, and no thread span can be carved from an arena chunk, closing the class in both directions. FD-128's `currentThread()` validation is untouched and is now defence in depth, as the filing's closing terms envisaged. The memory64-backing-lifetime unit test's standalone slice was adapted to the new allocator interface (declarations moved inside the sliced header region; the test stubs the arena to its heap fallback, keeping its retain/free assertions on the real code under ASan). | Identification evidence (pre-fix tree, full slot surveillance + allocation ring): `wt-fd129pre/test-results/fd129pre/diag1` and `diag3` — diag3 final tallies REG 37, STOMP 14, WATCH 23 with the two live-slot hits above, guest alive at the 1,200 s deadline. Post-fix surveillance of the unmodified FD-128 tip was already silent (diag1 ~500 s, diag2 full 1,200 s: CORRUPT/ZERO/STOMP/WATCH/BRACKET all 0), consistent with the transient, burst-local nature of the aliasing. Decisive proof — the same Godot capture with the full diagnostic applied on top of the fix (diag commit since reverted; branch tip is the fix): `test-results/fd129/proof1` — banner 100.5 s → window mapped 152.6 s → guest alive and working at the 1,200 s deadline (elapsed 1,205.4 s); 36 slots registered; **CORRUPT 0, ZERO 0, STOMP 0, WATCH 0, BRACKET 0, SCAN 0** across the whole correlated burst (339 vkGetPhysicalDeviceFormatProperties2, 167 vkAllocateMemory/vkCreateImage-class calls). Native suites serial on the fixed tip: main 675/675 and x64 95/95, 0 FAILED (run twice — before and after the header-consistency amend — same result); JS unit 352 passed / 0 failed; browser build 'Browser export verified' (fixed wasm sha256 4453757f0699b527). No new defects filed by this lane: the only anomalies met were artefacts of the lane's own diagnostics (a monitor polling freed threads' recycled TLS) and a pre-existing infrastructure pin rotation, neither a product defect. Record: `docs/reports/fd129-page-backing-arena-20261103.md`; evidence `test-results/fd129/` and `wt-fd129pre/test-results/fd129pre/` |
 | `lane-d3d11lit` | *(Batch-5 settled numbers: the D3D10/11 draws defect closed as CL-103 under composed FD-147; filing FD-153. Row text keeps the lane's own numbers.)* FD-130 CLOSED (closure number settles at composition; the defect is the D3D10/11 LIT=0 draws, filed on lane-fd125-ab's register as its lineage FD-127): the Vulkan bridge's frame-overflow guards for the image/attachment clear calls compared the raw 64-bit trap slot against their count caps, but the Vulkan counts are uint32 — only the slot's low half is the value. Measured: DXVK's init-image vkCmdClearColorImage (its only call site passes rangeCount 1; the range array read back as exactly one range) arrived with the count slot holding 0x200000000001, the guard fired vk64FrameOverflow, the flag rode the next frame's FRAME_BEGIN header, the page tier rejected the whole 4460-byte draw frame, the pending readback never completed, and the guest mapped zeroes — LIT=0 on d3d10-comprehensive, d3d11-triangle and d3d11-comprehensive, while D3D12 (which never issues the guarded calls) passed. Fix `738d882ca`: all six guards (clear colour, clear depth/stencil, clear attachments; 64- and 32-bit dispatchers) compare the (U32)-truncated count; caps and the loud refusal of genuine over-cap counts unchanged. | Base for this lane is lane-fd129 tip `ea93a6ef3`, not the bare integ tip: the first unmodified-integ reproduction was consumed by the already-filed FD-127 thread-creation freeze (console preserved), and on `ea93a6ef3` (build byte-identical to the FD-129 lane's, wasm 4453757f) d3d11-triangle fails with the full chain (overflow warning, LIT=0). Fixed build (738d882ca, wasm d3937eb9, BUILD_INFO dirty 0, 'Browser export verified'): d3d11-triangle PASS (LIT=8192, RESULT 0), d3d11-comprehensive PASS (LIT=8192; the identical 4460-byte frame renders), d3d10-comprehensive PASS (`tri10: LIT=8192`, RESULT 0), d3d12-comprehensive PASS (control). Native suites serial main 675/675 and x64 95/95, 0 FAILED; JS unit 352/0, legacy 115/0; known-gaps audit: no undeclared gaps. FD-131 filed (the drop log's two no-op shapes, found while exonerating this defect's console signals). Record: `docs/reports/d3d1011-draws-land-nothing-20261103.md`; evidence `test-results/fd127dxvk/` |
+| `lane-fd153` | *(Batch-6 settled numbers: FD-153 closed as CL-104; the FD-155 filing keeps its number.)* FD-153 CLOSED (closure number settles at composition): the Vulkan bridge's drop logging reported legal no-op shapes as dropped guest commands — the vkCmdBeginRendering attachment helper's `!address` clause on a colour-only pass (both ABIs), captureStageSpec's lumped empty/over-cap guard on DXVK's per-stage default VkSpecializationInfo, resolveFrame's unbound-set-0 lookup, the 32-bit copy guards' zero-region-with-null-array case, and the VKPROF trap scans counting idle slots as drops. All five now return ahead of the guard or skip without the macro; genuine refusals (over-cap counts, claimed-but-absent arrays and data, unreadable structs, unresolvable views and set ids) stay loud, and the rest of the 257-site census was surveyed and classified genuine, unchanged. Census 257 -> 255 (the two VKPROF sites), pin updated in `vk-drop-macro-guard.test.mjs`. FD-155 filed (captureStageSpec32's silent header guard — the survey's opposite-sign find). | New native FD-153 section (five PASS lines), RED on the unmodified bridge at the colour-only drop assertion, GREEN on the fix; run-native 67 PASS; native suites serial main 679/679 and x64 105/105, 0 FAILED; browser build 'Browser export verified' (wasm 7a0f9ba4, BUILD_INFO git_sha a8720731e, staged archive c4dbe35986a5 as pinned); JS unit 352/0, legacy 115/0; citation audit 352 rows, 0 drift (46 cited lines re-pinned). Record: `docs/reports/fd153-drop-log-noop-shapes-20261104.md`; evidence `test-results/fd153/` |
+| `lane-fd151` | *(Batch-6 settled numbers: FD-151 closed as CL-105; its filing is FD-156.)* FD-151: the Node wasm64-selftest target compiles again — in the single-threaded configuration BOXEDWINE_MUTEX is void* with empty lock/unlock macros, and two sites written against the multi-threaded configuration touched the type directly (faultstage.h's MemoryDemandLock, the filed site; ksocket.cpp's socketpair descriptor bracket, surfaced on the rebuild) — both now use the configuration's own idioms, multi-threaded behaviour byte-identical; the self-test's two standing failing cases were stale staging (the chmod null-path case expected the pre-FD-126 -ENOENT where the dispatcher now answers -EFAULT; the ENOSYS case included pidfd_getfd, which is implemented and answers -EBADF for a non-pidfd) and are restaged to the host-measured answers; the target's documented run instructions corrected (the .js invocation cannot run under the repo's type:module package.json). FD-155 filed (the mem64 variant's separate compile break in the SDL audio bridge). | Host reference program measured first at the raw syscall (hostref-fd151.c, aarch64 asm-generic numbers): fchmodat null -EFAULT / empty -ENOENT; pidfd_getfd non-pidfd -EBADF, invalid flags -EINVAL first. Standard build: target compiles, self-test 953 passed / 0 failed, exit 0. Speed-engine build (scripts/build-jit-wasm.sh's exact recipe, isolated build dir): compiles; 953/0 interpreted; 953/0 with emitted execution (JIT64 blocks=319 insns=816, WASM64 entered=319 rejected=0, mode table). The only output difference in JIT mode is three added METRICS telemetry lines (wall-clock cadence), characterised in the record, not a defect. Native suites serial: main 0 FAILED (679 OK lines, 382s), x64 0 FAILED (105 OK lines, 28s); JS unit 352 passed / 0 failed; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha fae50a27e, dirty 0, wasm 2fd905f6, archive c4dbe35986a5); suite browser cpu64-selftest PASS. Record: `docs/reports/fd151-node-selftest-target-20261103.md`; evidence `test-results/fd151/` |
+| `lane-fd139-152` | *(Batch-6 settled numbers: FD-152 closed as CL-106, FD-139 as CL-107, FD-140 as CL-108; filings FD-157 to FD-161.)* FD-152 CLOSED (see CL-104), FD-139 CLOSED (see CL-105), FD-140 CLOSED (see CL-106); filings FD-155, FD-156, FD-157, FD-158, FD-159 (lane numbers, provisional). FD-152: the 64-bit dispatcher's fstatfs case (138) shared the statfs helper and ignored its descriptor, answering the fabricated statistics for any descriptor; it now checks the descriptor first (host order: -EBADF ahead of even the buffer fault) and keeps the fabricated answer for any open one. FD-139: utimensat flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH answered -EINVAL on the host for every path shape (raw-syscall measured: the kernel validates the flags word ahead of the name fetch, after the times copy-in) but only the null-path shapes validated on the guest; the 64-bit stub hoists the verdict ahead of its path branches with the FD-136 null matrix unchanged, and KProcess::utimesat/utimesat64 validate at entry, so a refused call no longer applies the times. FD-140: Fs::getNodeFromLocalPath gains an optional notDir out-report — a miss whose stopping parent is not a directory — and the guest-boundary path calls on both dispatchers translate it to -ENOTDIR (resolver, process API and both dispatchers' own resolution sites; creation-under-a-file is refused before any node is fabricated; parent verdicts are judged on followed resolutions so symlinked directories still work); callers that do not ask are unchanged and asking callers always walk, since a cached miss cannot carry the verdict. Fix `00d8f5369` on tests `c178a704e`. | Host measured first at the raw syscall level (asm-generic numbers, strace-verified): fstatfs answers 0 for any open descriptor and -EBADF for -1, 9999 and a just-closed descriptor, with the descriptor verdict ahead of the buffer fault; the utimensat flags verdict precedes the name fetch for every shape and follows the times copy-in; -ENOTDIR is uniform across 20+ path calls for a regular-file prefix, with missing-prefix -ENOENT and symlink-to-dir controls (evidence `test-results/fd139-152/hostref-fd139-152{,b,c}.c/.out`). RED on base `7a2308cd6`: main — exactly the three new tests failing (54 assertions: utimensat rows answering 0/-ENOENT and the refused call applying the times; ENOTDIR rows answering -ENOENT and kin); x64 — exactly the three new tests failing (39 assertions, the fstatfs rows answering 0/-EFAULT among them). GREEN on the fix: native suites serial main 682/682 and x64 108/108, 0 FAILED; JS unit 352 passed / 0 failed; browser build 'Browser export verified' (BUILD_INFO git_sha `e8f120b22`, wasm sha256 c6499c3c, staged archive `c4dbe35986a5` as pinned); known-gaps audit `--check` passes. Record: `docs/reports/fd139-140-152-enotdir-utimensat-flags-fstatfs-20261104.md`; evidence `test-results/fd139-152/` |
+| `lane-fd148-149` | *(Batch-6 settled numbers: FD-148 closed as CL-109, FD-149 as CL-110.)* FD-148 CLOSED + FD-149 CLOSED (closure numbers settle at composition; lane-local CL-104/CL-105): FD-148 — the emulator's Vulkan stack dropped the guest's unnormalizedCoordinates sampler flag (DXVK's D3D9 present blit samples the rendered image in texel space through a usePixelCoord sampler with CLAMP_TO_BORDER addressing), so the presented swapchain reached the compositor ~black although the clear landed exactly in its render target; fix `5ac7f7431` carries the flag from both vkCreateSampler ABIs through the bridge SAMPLER record and the wire protocol into a per-draw WGSL coordinate rewrite in the page tier (record-layout test pin `82e3ebb51`; Vulkan-register citation re-pins `57651cfea`). FD-149 — the shipped 32-bit win32u backport was configured --without-vulkan by its own build script (its sysroot carried only the font deb closure and its fail-closed markers checked only font defines), so every 32-bit session failed its Vulkan graphics-driver load and no 32-bit D3D9 capture ever became ready; fix `6e3dba081` rebuilds the module with the sha256-pinned bookworm libvulkan sysroot debs, a SONAME_LIBVULKAN fail-closed marker and a stub-string product check, restaged through regen-wine32-zip.sh into runtime-assets-20261104. | Base (integ tip `7a2308cd6`, wasm 05298a62): d3d9-comprehensive FAIL (219,863 ms; redDominant 4 vs >100000 required), d3d9-32 FAIL (CAPTURE_READY never seen in 300 s; stub error + VK_KHR_surface abort in the console). Fixed build (wasm 2eccd757, 'Browser export verified'): d3d9-comprehensive PASS (all three stages RESULT 0, redDominant 722880; re-run PASS on the final restaged tree), d3d9-32 PASS (62,685 ms, redDominant 722880, zero stub lines), controls d3d11-triangle / d3d11-comprehensive / d3d10-comprehensive / d3d12-comprehensive PASS. Native suites serial main + x64 both 0 FAILED; JS unit 353/0; runtime completeness gate 0 failures; bootstrap verifies the new retained archive (13 files). No new defects filed: the settlement run's intermittent 632x1 swapchain extent collapse was not reproduced on the current base and is recorded as observed-not-reproduced in the lane record. Record: `docs/reports/fd148-fd149-d3d9-20261104.md`; evidence `test-results/fd148-149/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -9547,6 +9945,445 @@ dead-start fix and needs composition care.
   lane: FD-153. Record:
   `docs/reports/d3d1011-draws-land-nothing-20261103.md`;
   evidence `test-results/fd127dxvk/`
+  in the lane's worktree.
+
+- **CL-104 — FD-153 closed: the
+  Vulkan bridge's drop log no longer
+  reports legal no-op shapes as dropped
+  guest commands — a colour-only
+  rendering pass's null depth/stencil
+  attachment pointers, a stage's empty
+  VkSpecializationInfo, a frame whose
+  descriptor set 0 was never bound, a
+  zero-region 32-bit copy with a null
+  region array, and the profiling trap
+  scan's idle slots.** *(Provisional
+  number, filed on lane-fd153,
+  2026-11-04 — the merge lane's audit
+  settles the final number.)* Fixed on
+  branch `lane-fd153`, commits
+  `f31f44d15` (tests), `a8720731e`
+  (fix + census pin): the attachment
+  helpers and captureStageSpec return
+  ahead of their guards on the legal
+  null/empty input (over-cap counts,
+  claimed-but-absent arrays and data,
+  unreadable structs stay loud);
+  resolveFrame returns when no set is
+  bound at slot 0 (a stale recorded id
+  stays loud); the 32-bit copy guards
+  drop only on an over-cap count or a
+  claimed-but-absent array; the
+  VKPROF scans skip idle slots without
+  the macro — the census's only
+  removals (VK64_DROP_IF sites
+  257 -> 255, `continue` 63 -> 61,
+  pin updated in
+  `vk-drop-macro-guard.test.mjs`).
+  Proof: new native FD-153 section
+  (five PASS lines) RED on the base
+  (aborts at the colour-only drop
+  assertion) and GREEN on the fix;
+  run-native 67 PASS; native suites
+  serial main 679/679 and x64 105/105,
+  0 FAILED; browser build 'Browser
+  export verified' (wasm `7a0f9ba4`,
+  BUILD_INFO git_sha `a8720731e`);
+  JS unit 352/0, legacy 115/0;
+  citation audit 352 rows, 0 drift
+  (46 cited lines shifted by the fix
+  and re-pinned). Filed from this
+  lane: FD-155 (the 32-bit
+  specialization capture's silent
+  header guard — the survey's
+  opposite-sign find). Record:
+  `docs/reports/fd153-drop-log-noop-shapes-20261104.md`;
+  evidence `test-results/fd153/` in
+  the lane's worktree.
+
+- **CL-105 — FD-151 closed: the Node
+  wasm64-selftest target compiles
+  again, and the cpu64 self-test
+  reports full marks on the standard
+  and speed-engine (JIT) builds.**
+  Fixed on branch `lane-fd151` in
+  `7d422cb8f` (fixture restaging
+  `20129b456`; run-instruction
+  correction `fae50a27e`). The build
+  break was a configuration family,
+  not the single filed site: the
+  target builds without
+  BOXEDWINE_MULTI_THREADED, where
+  synchronization.h typedefs
+  BOXEDWINE_MUTEX to void* with
+  empty lock/unlock macros, and two
+  call sites written against the
+  multi-threaded configuration
+  touched the type directly —
+  faultstage.h's MemoryDemandLock
+  (the filed site) and ksocket.cpp's
+  socketpair descriptor bracket
+  (surfaced on the rebuild). Both
+  now use the configuration's own
+  idioms (the LOCK/UNLOCK macros;
+  an #ifdef BOXEDWINE_MULTI_THREADED
+  bracket of the tryGetFileDescriptor
+  shape), so multi-threaded
+  behaviour is byte-identical. The
+  self-test's two standing failing
+  cases were stale test staging,
+  the product correct in both: the
+  chmod null-path case expected the
+  pre-FD-126 -ENOENT where the
+  dispatcher now answers -EFAULT
+  (host-measured at the raw syscall:
+  fchmodat(AT_FDCWD, NULL) answers
+  -EFAULT, the empty path -ENOENT),
+  and the ENOSYS case included
+  pidfd_getfd, which is implemented
+  and answers -EBADF for a
+  non-pidfd descriptor (host-measured
+  the same way; the flags-first
+  -EINVAL order also matches).
+  Runs: standard build 953 passed /
+  0 failed; the speed-engine build
+  953/0 interpreted and 953/0 with
+  emitted execution verified
+  (blocks=319 insns=816 entered=319
+  rejected=0). Native suites serial,
+  0 FAILED (main 679 OK lines, x64
+  105); JS unit 352/0; browser build
+  verified (BUILD_INFO git_sha
+  fae50a27e, dirty 0, wasm
+  2fd905f6); the suite's browser
+  cpu64-selftest PASS. Files FD-156
+  (the mem64 variant's separate
+  compile break). Record:
+  `docs/reports/fd151-node-selftest-target-20261103.md`;
+  evidence `test-results/fd151/`.
+
+- **CL-106 — FD-152 closed: the
+  64-bit dispatcher's descriptor-
+  form filesystem-statistics call
+  (fstatfs, 138) shared the path
+  form's helper and ignored its
+  descriptor, answering the
+  fabricated statistics for any
+  descriptor, valid or not.**
+  Fixed on branch `lane-fd139-152`
+  in `00d8f5369`: the case checks
+  the descriptor against the
+  process first (any open
+  descriptor — file, directory,
+  pipe, socket — keeps the
+  fabricated answer; a descriptor
+  that is not open answers
+  -EBADF, ahead of the helper's
+  null-buffer -EFAULT, matching
+  the host's ordering and the
+  process layer's own fstatfs64);
+  without a process the fabricated
+  answer stands, as in statfs.
+  Host measured at the raw
+  syscall level (test-results/
+  fd139-152/hostref-fd139-152.c):
+  fstatfs answers 0 for every
+  open descriptor kind, -EBADF
+  for -1, 9999 and a just-closed
+  descriptor, -EFAULT for an open
+  descriptor with a null buffer,
+  -EBADF when both are wrong.
+  Proof: guest test
+  testFstatfsDescriptor64Syscalls
+  (tests `c178a704e`) fails on the
+  base with the four descriptor
+  rows answering 0 or -EFAULT and
+  passes on the fix; native
+  suites serial main 682/682 and
+  x64 108/108, 0 FAILED; JS unit
+  352 passed / 0 failed; browser build 'Browser
+  export verified' (BUILD_INFO
+  git_sha `e8f120b22`, wasm sha256
+  c6499c3c, staged archive
+  `c4dbe35986a5` as pinned);
+  known-gaps audit `--check`
+  passes. Record:
+  `docs/reports/fd139-140-152-enotdir-utimensat-flags-fstatfs-20261104.md`;
+  evidence `test-results/fd139-152/`.
+
+- **CL-107 — FD-139 closed:
+  utimensat accepted flag bits
+  outside AT_SYMLINK_NOFOLLOW |
+  AT_EMPTY_PATH on non-null paths
+  on both dispatchers, answering
+  success (and, on the 32-bit
+  process path, applying the
+  times) where the host answers
+  -EINVAL.** Fixed on branch
+  `lane-fd139-152` in `00d8f5369`:
+  the 64-bit stub hoists the
+  flags verdict ahead of its
+  path branches (the times
+  copy-in still precedes it; the
+  FD-136 null-path matrix is
+  unchanged answer-for-answer),
+  and KProcess::utimesat and
+  utimesat64 validate the word
+  at entry, before the FD-131
+  empty-path guard and any
+  resolution. Host measured at
+  the raw syscall level,
+  strace-verified
+  (test-results/fd139-152/
+  hostref-fd139-152.c): valid
+  path with 0x2000/0x1/0x800/-1
+  answers -EINVAL; a missing
+  path, an empty path, a
+  through-file path and a
+  dirfd-relative path with
+  0x2000 all answer -EINVAL
+  (the verdict precedes the name
+  fetch); an unreadable times
+  pointer with 0x2000 answers
+  -EFAULT (the copy-in precedes
+  the verdict); null times with
+  0x2000 answers -EINVAL. Proof:
+  guest tests
+  testUtimensatFlags64Syscalls
+  and testUtimensatFlags32Syscalls
+  (tests `c178a704e`) fail on the
+  base (rows answering 0 or
+  -ENOENT; the refused 32-bit
+  call demonstrably changed the
+  fixture's mtime) and pass on
+  the fix, including the pin
+  that a refused call leaves the
+  times untouched; suites and
+  gates as in CL-106. Record and
+  evidence as in CL-106.
+
+- **CL-108 — FD-140 closed: a
+  path through a non-directory
+  answered -ENOENT at the path
+  calls where the host answers
+  -ENOTDIR.** Fixed on branch
+  `lane-fd139-152` in `00d8f5369`:
+  Fs::getNodeFromLocalPath gains
+  an optional notDir out-report
+  (set when the walk stops
+  because a component was looked
+  up inside a node that is not a
+  directory); callers that do
+  not pass it are unchanged, and
+  a caller that asks always
+  walks (a cached miss cannot
+  carry the verdict). The
+  guest-boundary path calls
+  translate the miss: the
+  process API (stat64/lstat64,
+  the statfs pair, statx,
+  fstatat64, access/faccessat,
+  chmod/fchmodat, chdir,
+  unlink/unlinkat, rmdir,
+  mkdir/mkdirat, rename/
+  renameat, link, symlink,
+  readlink, utimes/utimesat,
+  inotify_add_watch, open/
+  openat including the create
+  path — refused before any
+  node is fabricated under a
+  file — and execve), the
+  64-bit dispatcher's own
+  resolution sites (statfs,
+  statx, the stat family,
+  readlink, the xattr cases,
+  the access family) and the
+  32-bit DOSATTRIB xattr
+  branches. Parent verdicts are
+  judged on followed
+  resolutions, so creation
+  through a symlinked directory
+  still works (control-pinned).
+  The resolver's other consumers
+  (loader, socket layer, sysfs,
+  startup) do not ask and are
+  unchanged. Host measured at
+  the raw syscall level
+  (test-results/fd139-152/
+  hostref-fd139-152{,b}.c):
+  -ENOTDIR uniform across 20+
+  calls for a regular-file
+  prefix (including through a
+  symlink to a file, deeper
+  nesting, and dirfd-relative
+  forms); missing prefix
+  -ENOENT; through a symlink to
+  a directory succeeds. Two
+  carve-outs, filed rather than
+  folded in: the 64-bit
+  utimensat stub probes only
+  absolute and working-
+  directory-relative paths (its
+  descriptor-relative shapes
+  keep the stub's standing
+  success answer), and the
+  normalization-erased shapes
+  ("a.txt/", "a.txt/.",
+  "a.txt/..") are FD-159. Proof:
+  guest tests testNotDir64Syscalls,
+  testNotDir32Syscalls and
+  testNotDirProcessApi (tests
+  `c178a704e`) fail on the base
+  (69 assertions across the
+  suites, answering -ENOENT and
+  kin; two further RED rows in
+  the same tests were traced to
+  unrelated pre-existing
+  defects — the unimplemented
+  64-bit rmdir case and the
+  bare-filename link
+  destination, filed as FD-160
+  and FD-161 — and their rows
+  were corrected in `e8f120b22`)
+  and pass on the fix;
+  suites and gates as in CL-106.
+  Filed from this lane: FD-157
+  (32-bit xattr cases do not
+  resolve for non-DOSATTRIB
+  names), FD-158 (readlink of a
+  missing path answers -EINVAL),
+  FD-159 (normalization-erased
+  -ENOTDIR shapes), FD-160 (the
+  64-bit dispatcher's rmdir has
+  no case), FD-161 (link to a
+  bare filename answers
+  -ENOENT). Record and
+  evidence as in CL-106.
+
+- **CL-109 — FD-148 closed: the
+  emulator's Vulkan stack dropped
+  the guest's unnormalised-
+  coordinate sampler flag, so
+  DXVK's D3D9 present blit — which
+  samples the rendered image in
+  texel space through a
+  usePixelCoord sampler — read
+  out of range everywhere except a
+  sub-texel corner, and the
+  swapchain reached the compositor
+  ~black although the guest's
+  clear had landed in its render
+  target exactly.** *(Lane
+  closure; the number settles at
+  the next composition.)* Fixed on
+  branch `lane-fd148-149` in
+  `5ac7f7431` (test pin
+  `82e3ebb51`): the bridge stores
+  the flag on its Sampler record
+  from both vkCreateSampler ABIs
+  and appends it to the SAMPLER
+  record; `web/vk-protocol.mjs`
+  decodes it when bytes remain;
+  the page tier divides the
+  affected sample calls'
+  coordinates (and textureSampleGrad
+  gradients) by the texture
+  dimensions in a per-draw WGSL
+  pipeline variant keyed on the
+  frame's sampler set, applied
+  ahead of the border-colour
+  rewrite so its [0,1] tests see
+  normalised coordinates. Proof:
+  on the base (integ tip
+  `7a2308cd6`, wasm 05298a62)
+  d3d9-comprehensive FAILs
+  (219,863 ms; redDominant 4
+  against >100000 required; the
+  per-pass readback diagnostic
+  showed the cleared target
+  constant [232,40,100,255] while
+  the presented swapchain read
+  ~black); on the fixed build
+  (wasm 2eccd757, 'Browser export
+  verified') d3d9-comprehensive
+  PASSes with all three stages
+  RESULT 0 and redDominant
+  722,880, and d3d11-triangle,
+  d3d11-comprehensive,
+  d3d10-comprehensive and
+  d3d12-comprehensive PASS as
+  controls. Native suites serial
+  main and x64 both 0 FAILED; JS
+  unit 353/0, including the new
+  vk-unnorm-emulation suite (7/7).
+  The line shifts the fix caused
+  in the Vulkan gap register's
+  citations are re-pinned in
+  `57651cfea` (audit classification
+  at exact parity with the base:
+  232 MATCH / 14 MATCH-INHERITED /
+  99 UNCHECKABLE / 7 EXEMPT).
+  Record:
+  `docs/reports/fd148-fd149-d3d9-20261104.md`;
+  evidence `test-results/fd148-149/`
+  in the lane's worktree.
+
+- **CL-110 — FD-149 closed: the
+  shipped 32-bit win32u module was
+  the project's own backport,
+  configured --without-vulkan by
+  its build script, so it carried
+  the built-without-Vulkan stub at
+  the Vulkan driver entry: every
+  32-bit session failed its
+  graphics-driver load, Wine
+  reported no Vulkan graphics
+  driver, DXVK aborted on
+  VK_KHR_surface, and the 32-bit
+  D3D9 capture never became
+  ready.** *(Lane closure; the
+  number settles at the next
+  composition.)* Fixed on branch
+  `lane-fd148-149` in `6e3dba081`:
+  the backport build's i686
+  sysroot now carries the bookworm
+  libvulkan dev+runtime debs
+  (sha256-pinned in the script),
+  SONAME_LIBVULKAN joins its
+  fail-closed configure markers,
+  and the build refuses a product
+  carrying the stub string. The
+  rebuilt module (sha256
+  9d538e79..., 1,502,028 bytes;
+  exports the Vulkan driver entry,
+  dlopens libvulkan.so.1, which
+  the guest tree already ships)
+  restaged through
+  regen-wine32-zip.sh — member
+  verification identical except
+  the four win32u members at the
+  new pin — into the retained
+  archive runtime-assets-20261104
+  (514,457,600 bytes, sha256
+  3c80c8a1...); the runtime
+  completeness gate passes with 0
+  failures and the bootstrap
+  verifies all 13 assets. Proof:
+  on the base, d3d9-32 FAILs
+  (CAPTURE_READY never seen within
+  300 s; console carries the stub
+  error and the VK_KHR_surface
+  abort); on the fixed build
+  d3d9-32 PASSes (62,685 ms; the
+  presented clear reads
+  redDominant 722,880; zero stub
+  lines in the console) and
+  d3d9-comprehensive re-run PASSes
+  on the same tree. Native suites
+  serial main and x64 both 0
+  FAILED; JS unit 353/0. Record:
+  `docs/reports/fd148-fd149-d3d9-20261104.md`;
+  evidence `test-results/fd148-149/`
   in the lane's worktree.
 
 ## Appendix — examined and deliberately NOT registered
