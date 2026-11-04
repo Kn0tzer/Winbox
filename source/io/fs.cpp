@@ -139,8 +139,8 @@ std::shared_ptr<FsNode> Fs::addDynamicLinkFile(const BString& path, U32 rdev, co
     return result;
 }
 
-std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory, const BString& path, bool followLink, bool* isLink) {
-    return Fs::getNodeFromLocalPath(currentDirectory, path, nullptr, nullptr, followLink, isLink);
+std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory, const BString& path, bool followLink, bool* isLink, bool* notDir) {
+    return Fs::getNodeFromLocalPath(currentDirectory, path, nullptr, nullptr, followLink, isLink, notDir);
 }
 
 bool Fs::isPathCacheEnabled() {
@@ -344,15 +344,20 @@ bool cleanPath(std::vector<BString>& parts) {
     return true;
 }
 
-std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory, const BString& path, std::shared_ptr<FsNode>* lastNode, std::vector<BString>* missingParts, bool followLink, bool* isLink) {
+std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory, const BString& path, std::shared_ptr<FsNode>* lastNode, std::vector<BString>* missingParts, bool followLink, bool* isLink, bool* notDir) {
     BString fullpath = Fs::getFullPath(currentDirectory, path);
+    if (notDir) {
+        *notDir = false;
+    }
 
     if (fullpath.length()==0 || fullpath=="/")
         return Fs::rootNode;
 
     // Negative cache entries can't fill lastNode/missingParts, so only allow
-    // them when the caller doesn't need miss details.
-    bool allowNegative = (lastNode == nullptr && missingParts == nullptr);
+    // them when the caller doesn't need miss details. A caller asking for
+    // the notDir verdict needs the real walk too: a cached miss cannot say
+    // whether the component that stopped it sat under a directory.
+    bool allowNegative = (lastNode == nullptr && missingParts == nullptr && notDir == nullptr);
     std::shared_ptr<FsNode> cachedNode;
     if (Fs::lookupPathCache(fullpath, followLink, allowNegative, isLink, cachedNode)) {
         return cachedNode;
@@ -398,6 +403,13 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
             }
             if (lastNode) {
                 *lastNode = nodes.back();
+            }
+            if (notDir && !parentNode->isDirectory()) {
+                // The walk stopped because a component was looked up
+                // inside a node that is not a directory. On the host
+                // such a path answers -ENOTDIR, where a component that
+                // is simply missing answers -ENOENT.
+                *notDir = true;
             }
             if (allowNegative && !traversedDynamicLink && v0 == v1) {
                 Fs::storeNegativePathCache(fullpath, followLink, parentNode, v1);
