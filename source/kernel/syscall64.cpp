@@ -6231,40 +6231,90 @@ void ksyscall64(CPU64* cpu) {
             ret = sys_statx64(cpu, a1, a2, a3, a4, a5);
             break;
         case X64_SYS_statfs:
-            // a1 = path (ignored — same lie for every fs), a2 = struct statfs*
-            // FD-131: an empty path answers -ENOENT, as the host does.
-            if (a1 && sys_rangeHasPermission64(cpu->memory, a1, 1, K64_PAGE_READ) &&
-                cpu->memory->readb(a1) == 0) { ret = (U64)-K_ENOENT; break; }
+            // a1 = path, a2 = struct statfs*. The fabricated
+            // statistics stand for any resolvable path, but the path
+            // is resolved first, as the host does (FD-135,
+            // host-measured in test-results/fd133-135/): a null path
+            // faults -EFAULT and an unresolvable one -- an empty
+            // path (FD-131), a missing one, a dangling symlink --
+            // answers -ENOENT. The process layer's own statfs
+            // methods resolve the same way. Without a process there
+            // is no filesystem to resolve against, and the
+            // fabricated answer stands as before.
+            if (cpu->thread && cpu->thread->process) {
+                if (!a1) { ret = (U64)-K_EFAULT; break; }
+                char path[1024] = {0};
+                cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
+                if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
+                    cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
+                if (!node) { ret = (U64)-K_ENOENT; break; }
+            }
             ret = sys_statfs64_common(cpu, a2);
             break;
         case X64_SYS_fstatfs:
             // a1 = fd (ignored), a2 = struct statfs*
             ret = sys_statfs64_common(cpu, a2);
             break;
-        // Extended attributes: our guest FS has none. get*xattr -> -ENODATA
-        // ("attribute does not exist"), the answer Linux gives for a file with
-        // no xattrs — this is what wine's ntdll probes for and tolerates. The
-        // set*/list*/remove* variants likewise report "unsupported/empty".
-        // Without these, wine64 startup tripped the unimplemented-syscall path
-        // (#191 getxattr) during prefix/service bring-up.
-        case 191: // getxattr
-        case 192: // lgetxattr
-        case 193: // fgetxattr
-            ret = (U64)-K_ENODATA;
-            break;
-        case 194: // listxattr
-        case 195: // llistxattr
-        case 196: // flistxattr
-            ret = 0; // empty attribute list
-            break;
+        // Extended attributes: our guest FS has none. Once the
+        // target is resolved, get*xattr answers -ENODATA ("attribute
+        // does not exist"), the answer Linux gives for a file with
+        // no xattrs — this is what wine's ntdll probes for and
+        // tolerates; the set*/remove* variants likewise report
+        // "unsupported" and the list* variants an empty list.
+        // Without these, wine64 startup tripped the
+        // unimplemented-syscall path (#191 getxattr) during
+        // prefix/service bring-up.
+        // FD-133: the cases used to answer without ever resolving
+        // the path or descriptor they name. The host resolves first,
+        // in this order (host-measured, test-results/fd133-135/):
+        // the set forms validate their flags word (-EINVAL for bits
+        // outside XATTR_CREATE|XATTR_REPLACE), every name-taking
+        // form copies the attribute name (-EFAULT for a null name,
+        // ahead of the path and descriptor verdicts alike), and
+        // only then is the target resolved — a null path -EFAULT,
+        // an unresolvable path (empty, missing, or for the
+        // following forms a dangling symlink) -ENOENT, a bad
+        // descriptor -EBADF. Without a process there is no
+        // filesystem to resolve against and the stub answers stand
+        // as before.
         case 188: // setxattr
         case 189: // lsetxattr
         case 190: // fsetxattr
+        case 191: // getxattr
+        case 192: // lgetxattr
+        case 193: // fgetxattr
+        case 194: // listxattr
+        case 195: // llistxattr
+        case 196: // flistxattr
         case 197: // removexattr
         case 198: // lremovexattr
         case 199: // fremovexattr
-            ret = (U64)-K_ENOTSUP;
+        {
+            const bool isSetForm = (nr == 188 || nr == 189 || nr == 190);
+            const bool isFdForm = (nr == 190 || nr == 193 || nr == 196 || nr == 199);
+            const bool hasName = (nr != 194 && nr != 195 && nr != 196);
+            const bool follows = (nr == 188 || nr == 191 || nr == 194 || nr == 197);
+            if (isSetForm && (a5 & ~(U64)0x3)) { ret = (U64)-K_EINVAL; break; }
+            if (hasName && !a2) { ret = (U64)-K_EFAULT; break; }
+            if (cpu->thread && cpu->thread->process) {
+                if (isFdForm) {
+                    if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
+                } else {
+                    if (!a1) { ret = (U64)-K_EFAULT; break; }
+                    char path[1024] = {0};
+                    cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
+                    if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
+                        cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows);
+                    if (!node) { ret = (U64)-K_ENOENT; break; }
+                }
+            }
+            if (nr == 191 || nr == 192 || nr == 193) ret = (U64)-K_ENODATA;
+            else if (nr == 194 || nr == 195 || nr == 196) ret = 0; // empty attribute list
+            else ret = (U64)-K_ENOTSUP;
             break;
+        }
         case X64_SYS_lseek:
             ret = sys_lseek64(cpu, a1, a2, a3);
             break;

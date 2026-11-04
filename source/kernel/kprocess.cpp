@@ -4463,7 +4463,13 @@ U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
 
     if (path.startsWith("/") || (flags & K_AT_EMPTY_PATH)) {
         result = getCurrentDirectoryFromDirFD(dirfd, dir);
-        if (result == 0 && (flags & K_AT_EMPTY_PATH)) {
+        if (result == 0 && (flags & K_AT_EMPTY_PATH) && path.length() == 0) {
+            // FD-134: AT_EMPTY_PATH makes the descriptor itself the
+            // target only for an empty path. With a non-empty path
+            // the host stats the named path relative to the
+            // descriptor, so the substitution is the empty form's
+            // alone (an empty path without the flag was refused
+            // above).
             path = dir;
             dir = BString::empty;
         }
