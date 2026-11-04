@@ -215,12 +215,13 @@ test('render-target cache keys alias by VkImage identity', () => {
 
   const sampler = frame.samplers.get('0000000000005a5a');
   assert.deepEqual(sampler, {
-    mag: 'linear', min: 'linear', mipmap: 'linear',
+    mag: 'linear', min: 'linear', mipmap: 'linear', unnorm: false,
     // Fixture modes are U=3 (CLAMP_TO_BORDER), V=3, W=4
     // (MIRROR_CLAMP_TO_EDGE): ADDR collapses border to clamp-to-edge and
     // mirror-clamp to mirror-repeat, and the raw modes ride along for the
     // page tier's border emulation (FD-64: expectation updated to the
-    // current decoder contract).
+    // current decoder contract; FD-148 added the unnorm field, false
+    // for this ordinary sampler).
     addrU: 'clamp-to-edge', addrV: 'clamp-to-edge', addrW: 'mirror-repeat',
     addrModeU: 3, addrModeV: 3, addrModeW: 4,
     maxAnisotropy: 8, anisotropyEnable: true, compareEnable: true, compareOp: 3,
