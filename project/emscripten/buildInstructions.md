@@ -100,12 +100,16 @@ From `project/emscripten`:
 
     make wasm64-selftest-mem64
 
-**Requires a Memory64-capable engine: Node v24+** (Emscripten's wasm64 output
-refuses to run on older Node). Run it:
+**Requires a Memory64-capable engine: Node v24+** (Node 22 rejects the
+module at instantiation -- its V8 refuses the 64-bit table limits the
+wasm64 output declares). Run it from a `.cjs` copy, for the same
+`type: module` reason as the wasm32 self-test above:
 
-    node Build/Wasm64SelfTestMem64/boxedwine64-selftest-mem64.js --x64-selftest
+    cp Build/Wasm64SelfTestMem64/boxedwine64-selftest-mem64.js Build/Wasm64SelfTestMem64/boxedwine64-selftest-mem64.cjs
+    node Build/Wasm64SelfTestMem64/boxedwine64-selftest-mem64.cjs --x64-selftest
 
-Same `234 passed, 0 failed` result as the wasm32 self-test.
+Same `=== self-test summary: N passed, 0 failed ===` result as the wasm32
+self-test, and the same exit-code contract.
 
 
 ## 64-bit guest in the browser (`wasm64-mt`)
