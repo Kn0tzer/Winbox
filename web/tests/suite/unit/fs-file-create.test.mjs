@@ -27,7 +27,7 @@ test('concurrent O_CREAT opens publish one shared inode', () => {
 #include <thread>
 using U32=unsigned;using S32=int;
 constexpr int K_O_CREAT=64,K_O_TMPFILE=0x400000,K_O_ACCMODE=3,K_O_WRONLY=1,K_O_RDWR=2,K_O_RDONLY=0;
-constexpr int K_ENOENT=2,K_EINVAL=22,K_EISDIR=21,K_EMFILE=24;
+constexpr int K_ENOENT=2,K_EINVAL=22,K_EISDIR=21,K_EMFILE=24,K_ENOTDIR=20;
 #define B(s) BString(s)
 #define EXT_MIXED ".mixed"
 #define kwarn(...) ((void)0)
@@ -57,7 +57,7 @@ struct Fs{
  static inline std::atomic<int> lookups{0},ids{1};
  static inline std::barrier firstMisses{2};
  static inline auto parent=std::make_shared<FsNode>();
- static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString&,const BString& path,bool){
+ static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString&,const BString& path,bool,bool* =nullptr,bool* =nullptr){
   if(path=="/tmp")return parent;
   if(lookups.fetch_add(1)<2){firstMisses.arrive_and_wait();return {};}
   std::lock_guard guard(treeMutex);return child;

@@ -475,6 +475,13 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
         klog_fmt("BW64-DIAG pair enter pid=%u tid=%u af=%u type=%u flags=0x%x",
                  diagPid, diagTid, af, type, flags);
     }
+    // In single-threaded builds fdsMutex() is the platform's dummy
+    // handle and there is no fd-table lock to take (every other
+    // fds-table user runs unlocked via the empty critical-section
+    // macro), so the whole acquisition bracket -- the lock object,
+    // its contention probe and the lock-state notes -- exists only
+    // in the multi-threaded configuration.
+#ifdef BOXEDWINE_MULTI_THREADED
     std::unique_lock<std::recursive_mutex> lock(thread->process->fdsMutex(), std::defer_lock);
     if (pairDiag) {
         if (!lock.try_lock()) {
@@ -489,6 +496,7 @@ S32 ksocketpairFds(KThread* thread, U32 af, U32 type, U32 protocol, U32 flags, F
     } else {
         lock.lock();
     }
+#endif
 
     if (af!=K_AF_UNIX) {
         return -K_EAFNOSUPPORT;

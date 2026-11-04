@@ -2164,6 +2164,254 @@ int main() {
     puts("PASS: command-pool isolation, child destruction, full reset, virtual destruction");
     puts("PASS: WithCount viewport/scissor core+EXT and coherent mapped ranges");
 
+    // FD-153: the bridge's drop log is its honesty signal -- a DROPPED
+    // line (and the drop counter) must mean a guest command was actually
+    // lost. Legal no-op shapes lose nothing and must not move
+    // vk64BridgeDropCount(): a colour-only dynamic rendering pass (null
+    // depth/stencil attachment pointers), an empty VkSpecializationInfo
+    // on a pipeline stage (the per-stage default: mapEntryCount 0, null
+    // arrays), a frame whose descriptor set 0 was never bound, and a
+    // zero-region 32-bit copy. Genuine refusals stay loud: claimed spec
+    // entries with absent data, over-cap spec counts, a depth attachment
+    // whose view does not resolve, a stale bound set id, and copy regions
+    // claimed with no array.
+    {
+        U64 devId; createObj<Device>(K_DEVICE, devId);
+        const U64 fx = memory.mmapReserveAndMap(8192, 3);
+        // --- 64-bit vkCmdBeginRendering attachment shapes ---
+        U64 imgId; auto* img = createObj<Image>(K_IMAGE, imgId);
+        img->format = 44; img->samples = 1; img->w = 64; img->h = 64;
+        U64 viewId; auto* view = createObj<ImageView>(K_IMAGEVIEW, viewId);
+        view->image = imgId; view->format = 44; view->aspect = 1;
+        U64 dimgId; auto* dimg = createObj<Image>(K_IMAGE, dimgId);
+        dimg->format = 124; dimg->samples = 1; dimg->w = 64; dimg->h = 64;
+        U64 dviewId; auto* dview = createObj<ImageView>(K_IMAGEVIEW, dviewId);
+        dview->image = dimgId; dview->format = 124; dview->aspect = 2;
+        auto putAtt = [&](U64 at, U64 viewH) {
+            U8 att[72] = {};
+            memcpy(att + 16, &viewH, 8);              // imageView
+            const U32 loadOp = 1; memcpy(att + 44, &loadOp, 4);
+            memory.memcpyToGuest(at, att, sizeof(att));
+        };
+        auto putRendering = [&](U64 at, U32 nColor, U64 colorAt, U64 depthAt, U64 stencilAt) {
+            U8 ri[72] = {};
+            auto p32 = [&](size_t off, U32 v) { memcpy(ri + off, &v, 4); };
+            auto p64 = [&](size_t off, U64 v) { memcpy(ri + off, &v, 8); };
+            p32(28, 64); p32(32, 64);                 // renderArea extent
+            p32(36, 1);                               // layerCount
+            p32(44, nColor);                          // colorAttachmentCount
+            p64(48, colorAt); p64(56, depthAt); p64(64, stencilAt);
+            memory.memcpyToGuest(at, ri, sizeof(ri));
+        };
+        U64 cbId; auto* cb = createObj<CmdBuf>(K_CMDBUF, cbId);
+        auto fbNatt = [&]() {
+            auto* fb = objOf<Framebuffer>(cb->dynamicObjects.back(), K_FRAMEBUFFER, "test");
+            assert(fb);
+            return fb->natt;
+        };
+        putAtt(fx + 0, viewId);
+        // Colour-only: null depth AND null stencil pointers are the
+        // legal "no such attachment" shape -- nothing is dropped.
+        putRendering(fx + 128, 1, fx + 0, 0, 0);
+        U32 d0 = vk64BridgeDropCount();
+        vkCmdBeginRendering(cbId, (void*)(fx + 128));
+        assert(vk64BridgeDropCount() == d0);
+        assert(fbNatt() == 1);
+        vkCmdEndRendering(cbId);
+        // Colour + a real depth attachment: served, still no drop.
+        putAtt(fx + 256, dviewId);
+        putRendering(fx + 384, 1, fx + 0, fx + 256, 0);
+        d0 = vk64BridgeDropCount();
+        vkCmdBeginRendering(cbId, (void*)(fx + 384));
+        assert(vk64BridgeDropCount() == d0);
+        assert(fbNatt() == 2);
+        vkCmdEndRendering(cbId);
+        // A depth attachment that IS present but whose view does not
+        // resolve is a genuine loss and stays loud.
+        putAtt(fx + 512, 0x0BADB002);
+        putRendering(fx + 640, 1, fx + 0, fx + 512, 0);
+        d0 = vk64BridgeDropCount();
+        vkCmdBeginRendering(cbId, (void*)(fx + 640));
+        assert(vk64BridgeDropCount() == d0 + 1);
+        assert(fbNatt() == 1);
+        vkCmdEndRendering(cbId);
+        puts("PASS: FD-153 colour-only pass drops nothing; bogus depth view stays loud");
+
+        // --- 64-bit specialization capture shapes (graphics VS stage) ---
+        // The guest VkSpecializationInfo image in the bridge's read
+        // layout: mapEntryCount@0, pMapEntries@8, dataSize@16, pData@24;
+        // a map entry is constantID@0, offset@4, size@8 (U64).
+        const U64 specVa = fx + 1536, entVa = fx + 1664, dataVa = fx + 2048;
+        memory.writed(dataVa, 0x11223344);
+        auto putSpec = [&](U32 count, U64 entries, U64 dataSize, U64 data) {
+            U8 si[32] = {};
+            memcpy(si + 0, &count, 4); memcpy(si + 8, &entries, 8);
+            memcpy(si + 16, &dataSize, 8); memcpy(si + 24, &data, 8);
+            memory.memcpyToGuest(specVa, si, sizeof(si));
+        };
+        auto putEntry = [&](U32 id, U32 off, U64 size) {
+            U8 e[16] = {};
+            memcpy(e + 0, &id, 4); memcpy(e + 4, &off, 4); memcpy(e + 8, &size, 8);
+            memory.memcpyToGuest(entVa, e, sizeof(e));
+        };
+        auto makePipeWithSpec = [&]() {
+            VkPipelineShaderStageCreateInfo stage{};
+            stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+            stage.pSpecializationInfo = specVa;
+            memory.memcpyToGuest(fx + 1024, &stage, sizeof(stage));
+            VkPipelineInputAssemblyStateCreateInfo ia{};
+            ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            memory.memcpyToGuest(fx + 1152, &ia, sizeof(ia));
+            VkGraphicsPipelineCreateInfo gp{};
+            gp.stageCount = 1; gp.pStages = fx + 1024;
+            gp.pInputAssemblyState = fx + 1152;
+            memory.memcpyToGuest(fx + 1280, &gp, sizeof(gp));
+            memory.writeq(fx + 1408, 0);
+            const S64 rc = (S64)vkCreateGraphicsPipelines(devId, 0, 1, (void*)(fx + 1280), nullptr, (void*)(fx + 1408));
+            assert(rc == VK_SUCCESS);
+            auto* p = objOf<Pipeline>(memory.readq(fx + 1408), K_PIPELINE, "test");
+            assert(p);
+            return p;
+        };
+        // Empty spec (count 0, null arrays): legal no-op -- the pipeline
+        // keeps the shader's defaults; nothing captured, nothing dropped.
+        { putSpec(0, 0, 0, 0); d0 = vk64BridgeDropCount();
+          auto* p = makePipeWithSpec();
+          assert(vk64BridgeDropCount() == d0);
+          assert(p->vsSpec.n == 0); }
+        // One real entry: captured verbatim, no drop.
+        { putEntry(3, 0, 4); putSpec(1, entVa, 4, dataVa);
+          d0 = vk64BridgeDropCount();
+          auto* p = makePipeWithSpec();
+          assert(vk64BridgeDropCount() == d0);
+          assert(p->vsSpec.n == 1);
+          assert(p->vsSpec.entries[0].constantID == 3 && p->vsSpec.entries[0].size == 4);
+          U32 v; memcpy(&v, p->vsSpec.entries[0].value, 4); assert(v == 0x11223344); }
+        // Over-cap count: genuine refusal, stays loud, nothing captured.
+        { putSpec(17, entVa, 4, dataVa);
+          d0 = vk64BridgeDropCount();
+          auto* p = makePipeWithSpec();
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->vsSpec.n == 0); }
+        // Entries claimed but the data they require is absent: loud.
+        { putEntry(3, 0, 4); putSpec(1, entVa, 4, 0);
+          d0 = vk64BridgeDropCount();
+          auto* p = makePipeWithSpec();
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->vsSpec.n == 0); }
+        puts("PASS: FD-153 empty specialization drops nothing; claimed-but-broken spec stays loud");
+
+        // --- resolveFrame with descriptor set 0 unbound / stale / bound ---
+        U64 rcbId; auto* rcb = createObj<CmdBuf>(K_CMDBUF, rcbId);
+        U64 ubo = 99, uboSize = 99, vw = 99, samp = 99;
+        d0 = vk64BridgeDropCount();
+        resolveFrame(rcb, &ubo, &uboSize, &vw, &samp);
+        assert(vk64BridgeDropCount() == d0);          // never bound: legal
+        assert(ubo == 0 && uboSize == 0 && vw == 0 && samp == 0);
+        rcb->sets[0] = 0x0BADB003;                    // recorded but stale
+        d0 = vk64BridgeDropCount();
+        resolveFrame(rcb, &ubo, &uboSize, &vw, &samp);
+        assert(vk64BridgeDropCount() == d0 + 1);      // stays loud
+        U64 setId; auto* set = createObj<DescSet>(K_SET, setId);
+        Binding& rb = set->els[DescKey(0, 0)];
+        rb.binding = 0; rb.obj = 1234; rb.range = 64;
+        rcb->sets[0] = setId;
+        d0 = vk64BridgeDropCount();
+        resolveFrame(rcb, &ubo, &uboSize, &vw, &samp);
+        assert(vk64BridgeDropCount() == d0);
+        assert(ubo == 1234 && uboSize == 64);
+        puts("PASS: FD-153 unbound set 0 resolves silently; stale set id stays loud");
+
+        // --- 32-bit shapes (same rules on the i386 ABI) ---
+        U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+        const U64 fx32 = memory32.mmapReserveAndMap(8192, 3);
+        // Colour-only BeginRendering on the 32-bit handler.
+        U64 img32Id; auto* img32 = createObj32<Image>(K_IMAGE, img32Id);
+        img32->format = 44; img32->samples = 1; img32->w = 64; img32->h = 64;
+        U64 view32Id; auto* view32 = createObj32<ImageView>(K_IMAGEVIEW, view32Id);
+        view32->image = img32Id; view32->format = 44; view32->aspect = 1;
+        vk32abi::VkRenderingAttachmentInfo att32{};
+        att32.imageView = (vk32abi::VkImageView)view32Id;
+        att32.loadOp = vk32abi::VK_ATTACHMENT_LOAD_OP_CLEAR;
+        memory32.memcpyToGuest(fx32 + 1024, &att32, sizeof(att32));
+        vk32abi::VkRenderingInfo ri32{};
+        ri32.sType = vk32abi::VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri32.renderArea.extent.width = 64; ri32.renderArea.extent.height = 64;
+        ri32.layerCount = 1; ri32.colorAttachmentCount = 1;
+        ri32.pColorAttachments = (U32)(fx32 + 1024);
+        memory32.memcpyToGuest(fx32 + 1152, &ri32, sizeof(ri32));
+        U64 cb32Id; auto* cb32 = createObj32<CmdBuf>(K_CMDBUF, cb32Id);
+        { VK32Args a{}; a.a[0] = cb32Id; a.a[1] = fx32 + 1152;
+          d0 = vk64BridgeDropCount();
+          (void)call32(VK64_fn_vkCmdBeginRendering, a);
+          assert(vk64BridgeDropCount() == d0);
+          auto* fb32 = objOf32<Framebuffer>(cb32->dynamicObjects.back(), K_FRAMEBUFFER, "test");
+          assert(fb32 && fb32->natt == 1); }
+        // 32-bit compute specialization: the empty shape was already
+        // silent here -- pin that it stays silent and uncaptured, and
+        // that a real entry is captured.
+        auto makePipe32WithSpec = [&](const vk32abi::VkSpecializationInfo& si) {
+            memory32.memcpyToGuest(fx32 + 1536, &si, sizeof(si));
+            vk32abi::VkComputePipelineCreateInfo cci{};
+            cci.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.pSpecializationInfo = (U32)(fx32 + 1536);
+            memory32.memcpyToGuest(fx32 + 1664, &cci, sizeof(cci));
+            memory32.writeq(fx32 + 1792, 0);
+            VK32Args a{}; a.a[0] = dev32Id; a.a[2] = 1; a.a[3] = fx32 + 1664; a.a[5] = fx32 + 1792;
+            assert((S64)call32(VK64_fn_vkCreateComputePipelines, a) == VK_SUCCESS);
+            auto* p = objOf32<Pipeline>(memory32.readq(fx32 + 1792), K_PIPELINE, "test");
+            assert(p);
+            return p;
+        };
+        { vk32abi::VkSpecializationInfo si{};
+          d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0);
+          assert(p->csSpec.n == 0); }
+        { vk32abi::VkSpecializationMapEntry e{}; e.constantID = 5; e.offset = 0; e.size = 4;
+          memory32.memcpyToGuest(fx32 + 2048, &e, sizeof(e));
+          memory32.writed(fx32 + 2176, 0xAABBCCDD);
+          vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 1;
+          si.pMapEntries = (U32)(fx32 + 2048); si.dataSize = 4; si.pData = (U32)(fx32 + 2176);
+          d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0);
+          assert(p->csSpec.n == 1 && p->csSpec.entries[0].constantID == 5);
+          U32 v; memcpy(&v, p->csSpec.entries[0].value, 4); assert(v == 0xAABBCCDD); }
+        puts("PASS: FD-153 32-bit colour-only pass and empty spec drop nothing");
+        // Zero-region 32-bit copies: an empty copy records nothing and
+        // drops nothing; regions claimed with no array stay loud.
+        U64 cb32bId; auto* cb32b = createObj32<CmdBuf>(K_CMDBUF, cb32bId);
+        vk32abi::VkCopyBufferToImageInfo2 cpy{};
+        cpy.sType = vk32abi::VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
+        cpy.regionCount = 0; cpy.pRegions = 0;
+        memory32.memcpyToGuest(fx32 + 2304, &cpy, sizeof(cpy));
+        { VK32Args a{}; a.a[0] = cb32bId; a.a[1] = fx32 + 2304;
+          d0 = vk64BridgeDropCount();
+          assert((S64)call32(VK64_fn_vkCmdCopyBufferToImage2KHR, a) == 0);
+          assert(vk64BridgeDropCount() == d0);
+          assert(cb32b->cmds.empty()); }
+        cpy.regionCount = 1;
+        memory32.memcpyToGuest(fx32 + 2304, &cpy, sizeof(cpy));
+        { VK32Args a{}; a.a[0] = cb32bId; a.a[1] = fx32 + 2304;
+          d0 = vk64BridgeDropCount();
+          assert((S64)call32(VK64_fn_vkCmdCopyBufferToImage2KHR, a) == 0);
+          assert(vk64BridgeDropCount() == d0 + 1); }
+        { VK32Args a{}; a.a[0] = cb32bId; a.a[4] = 0; a.a[5] = 0;   // count 0, no array
+          d0 = vk64BridgeDropCount();
+          assert((S64)call32(VK64_fn_vkCmdCopyImageToBuffer2KHR, a) == 0);
+          assert(vk64BridgeDropCount() == d0);
+          assert(cb32b->cmds.empty()); }
+        { VK32Args a{}; a.a[0] = cb32bId; a.a[4] = 1; a.a[5] = 0;   // claimed, no array
+          d0 = vk64BridgeDropCount();
+          assert((S64)call32(VK64_fn_vkCmdCopyImageToBuffer2KHR, a) == 0);
+          assert(vk64BridgeDropCount() == d0 + 1); }
+        puts("PASS: FD-153 zero-region 32-bit copies drop nothing; claimed-without-array stays loud");
+    }
+
     // GUARD (silent drop): features the bridge cannot honour are reported by
     // vk64Unsupported() under a stable feature name and answered with the
     // right VkResult. A test that finds these counters at zero means the

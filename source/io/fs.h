@@ -71,7 +71,7 @@ class FsFileNode;
 class Fs {
 public:   
     static bool initFileSystem(const BString& rootPath);
-    static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, bool followLink, bool* isLink=nullptr);    
+    static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, bool followLink, bool* isLink=nullptr, bool* notDir=nullptr);    
     static std::shared_ptr<FsFileNode> addFileNode(const BString& path, const BString& link, const BString& nativePath, bool isDirectory, const std::shared_ptr<FsNode>& parent);
     // FD-60: like addFileNode, but the new node carries an existing
     // node's id, so two names report one inode (hard-link identity).
@@ -166,7 +166,7 @@ public:
 private:
     friend class KUnixSocketObject;
 
-    static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, std::shared_ptr<FsNode>* lastNode, std::vector<BString>* missingParts, bool followLink, bool* isLink= nullptr);
+    static std::shared_ptr<FsNode> getNodeFromLocalPath(const BString& currentDirectory, const BString& path, std::shared_ptr<FsNode>* lastNode, std::vector<BString>* missingParts, bool followLink, bool* isLink= nullptr, bool* notDir=nullptr);
 
     static std::atomic_int nextNodeId;
 

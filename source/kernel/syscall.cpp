@@ -1390,9 +1390,10 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true);
+        bool notDir = false;
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true, nullptr, &notDir);
         if (!file) {
-            result = -K_ENOENT;
+            result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
             BString attr = Fs::getDosAttrib(file);
             if (attr.length() == 0) {
@@ -1417,9 +1418,10 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
     if (!ARG2) return -K_EFAULT; // FD-132: a null attribute name faults on the host, once the path has resolved
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
-        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false);
+        bool notDir = false;
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false, nullptr, &notDir);
         if (!file) {
-            result = -K_ENOENT;
+            result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
             BString attr = Fs::getDosAttrib(file);
             if (attr.length() == 0) {

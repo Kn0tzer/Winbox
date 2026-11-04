@@ -225,7 +225,7 @@ echo "=== win32u backport substitution (FD-02) ==="
 # undefined __isoc23_* symbols, so it does not enter the injection
 # set derived in the patchelf step; the build script asserts that.)
 BACKPORT32="$HERE/wine10-backports-i386/win32u.so"
-BACKPORT32_SHA="b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760"
+BACKPORT32_SHA="9d538e799c0b88b2c7ee1e15b9d71a979414d65de878459470d6395c12542df8"
 [ -f "$BACKPORT32" ] || { echo "build-wine32-base: win32u backport missing: $BACKPORT32 (build it with tools/rootfs32/build-wine10-win32u.sh)" >&2; exit 2; }
 got="$(sha256sum "$BACKPORT32" | cut -d' ' -f1)"
 [ "$got" = "$BACKPORT32_SHA" ] || { echo "build-wine32-base: win32u backport hash mismatch: $got != $BACKPORT32_SHA" >&2; exit 1; }

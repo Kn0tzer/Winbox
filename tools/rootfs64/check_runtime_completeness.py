@@ -232,7 +232,7 @@ def t_vkd3d_payloads32():
 # live in the unix half. Built WITH freetype/fontconfig compiled in
 # (the stock module dlopens both libraries and the guest ships both).
 # Re-pins are deliberate, as with the backports above.
-WINE10_BACKPORT32_SHA = 'b2d9d135150b42a4785775451d5c296677bfb3d0dfaa6c57654a710c1dea7760'
+WINE10_BACKPORT32_SHA = '9d538e799c0b88b2c7ee1e15b9d71a979414d65de878459470d6395c12542df8'
 WINE10_BACKPORT32_MEMBERS = (
     'opt/wine-stable/lib/wine/i386-unix/win32u.so',
     'opt/wine-stable/lib/wine/i386-unix/win32u.dll.so',

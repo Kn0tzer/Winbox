@@ -552,7 +552,7 @@ private:
     U32 openFileDescriptor(BString currentDirectory, BString localPath, U32 accessFlags, U32 descriptorFlags, S32 handle, U32 afterHandle, KFileDescriptorPtr& result);    
     void setupCommandlineNode();
     void initStdio();
-    std::shared_ptr<FsNode> findInPath(BString path);
+    std::shared_ptr<FsNode> findInPath(BString path, bool* notDir = nullptr);
     U32 readlinkInDirectory(BString currentDirectory, BString path, U32 buffer, U32 bufSize);
     void onExec(KThread* thread);
     U32 getCurrentDirectoryFromDirFD(FD dirfd, BString& currentDirectory);

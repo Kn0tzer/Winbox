@@ -121,7 +121,7 @@ public:
             savedSinceMs = thread->faultStageSinceMs.load(std::memory_order_relaxed);
             thread->setFaultStage(FS_MEM_LOCK, thread->faultPage.load(std::memory_order_relaxed));
         }
-        mem->mutex.lock();
+        BOXEDWINE_MUTEX_LOCK(mem->mutex);
         claim();
         if (thread) {
             thread->setFaultStage(FS_MEM_WORK, thread->faultPage.load(std::memory_order_relaxed));
@@ -129,7 +129,7 @@ public:
     }
     ~MemoryDemandLock() {
         releaseClaim();
-        mem->mutex.unlock();
+        BOXEDWINE_MUTEX_UNLOCK(mem->mutex);
         if (thread) {
             thread->faultStage.store(savedStage, std::memory_order_release);
             thread->faultStageSinceMs.store(savedSinceMs, std::memory_order_relaxed);

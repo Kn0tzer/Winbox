@@ -34,6 +34,17 @@
 # scanning for exactly those; a new hit would drift it), and the
 # module must link ntdll.so.
 #
+# Vulkan is compiled IN, deliberately, for the same reason as the
+# fonts: the WineHQ stock module serves win32u's Vulkan driver entry
+# (its vulkan_init_once dlopens libvulkan.so.1, which the guest
+# ships), and the first version of this build configured
+# --without-vulkan, silently replacing that entry with the
+# "built without Vulkan support" stub -- no 32-bit guest could
+# create a Vulkan surface at all (defect register FD-149). The
+# sysroot therefore also carries the bookworm libvulkan dev+runtime
+# debs, SONAME_LIBVULKAN joins the fail-closed configure markers,
+# and the product is checked for the stub string.
+#
 # After it runs, re-pin the new sha256 in
 # tools/rootfs64/check_runtime_completeness.py (WINE10_BACKPORT32_PINS),
 # in build-wine32-base.sh (BACKPORT32_SHA), and in
@@ -66,6 +77,8 @@ SYSROOT_DEBS=(
     "libbrotli1_1.0.9-2+b6_i386.deb|75b14942a601dbac638595a9d827f91c12a9f95fb7503f2dc5471fcf57bd4bc1|http://deb.debian.org/debian/pool/main/b/brotli/libbrotli1_1.0.9-2+b6_i386.deb"
     "libbz2-1.0_1.0.8-5+b1_i386.deb|275c8f3e8d82f0c58f286e7ec0ca3001380895906be1f1f5b4d929f4469a54a2|http://deb.debian.org/debian/pool/main/b/bzip2/libbz2-1.0_1.0.8-5+b1_i386.deb"
     "libexpat1_2.5.0-1+deb12u2_i386.deb|002fa75e3acfa317aee466c83e4f709db027d25110d2c548fd9483e196e3659d|http://deb.debian.org/debian/pool/main/e/expat/libexpat1_2.5.0-1+deb12u2_i386.deb"
+    "libvulkan-dev_1.3.239.0-1_i386.deb|1488026b1ee2f6f29743d304cdaa9e7990e55d9b361043848e872eb68fdf8503|http://deb.debian.org/debian/pool/main/v/vulkan-loader/libvulkan-dev_1.3.239.0-1_i386.deb"
+    "libvulkan1_1.3.239.0-1_i386.deb|a0b91b40d5e6cd29993a66f0a922d455cebdcf770f43ca14c60916c3bdc18284|http://deb.debian.org/debian/pool/main/v/vulkan-loader/libvulkan1_1.3.239.0-1_i386.deb"
 )
 
 for tool in curl dpkg-deb make flex bison i686-linux-gnu-gcc pkg-config git readelf sha256sum; do
@@ -131,7 +144,7 @@ i686-linux-gnu-pkg-config --modversion freetype2 fontconfig >/dev/null || {
     echo "build-wine10-win32u: sysroot pkg-config probe failed" >&2; exit 1; }
 
 WITHOUTS="--without-x --without-gnutls --without-gstreamer --without-dbus \
---without-sdl --without-vulkan --without-opengl --without-osmesa \
+--without-sdl --without-opengl --without-osmesa \
 --without-alsa --without-pulse --without-cups --without-udev \
 --without-usb --without-sane --without-gphoto --without-krb5 \
 --without-ldap --without-openal --without-pcap --without-v4l2"
@@ -153,12 +166,12 @@ mkdir -p "$WORK/i686-build"
 cd "$WORK/i686-build"
 if [ ! -f Makefile ]; then
     # shellcheck disable=SC2086
-    CFLAGS="-O1" LDFLAGS="-Wl,-rpath-link,$SYSROOT/usr/lib/i386-linux-gnu -Wl,-rpath-link,$SYSROOT/lib/i386-linux-gnu" \
+    CFLAGS="-O1" LDFLAGS="-L$SYSROOT/usr/lib/i386-linux-gnu -L$SYSROOT/lib/i386-linux-gnu -Wl,-rpath-link,$SYSROOT/usr/lib/i386-linux-gnu -Wl,-rpath-link,$SYSROOT/lib/i386-linux-gnu" \
         "$WORK/wine/configure" --host=i686-linux-gnu \
         --with-wine-tools="$WORK/tools-build" --disable-tests \
         $WITHOUTS > configure.log 2>&1
 fi
-for marker in HAVE_FREETYPE SONAME_LIBFREETYPE SONAME_LIBFONTCONFIG; do
+for marker in HAVE_FREETYPE SONAME_LIBFREETYPE SONAME_LIBFONTCONFIG SONAME_LIBVULKAN; do
     grep -q "#define $marker" include/config.h || {
         echo "build-wine10-win32u: configure did not define $marker — refusing to ship a degraded module" >&2
         exit 1; }
@@ -169,6 +182,10 @@ mkdir -p "$OUT"
 cp "$WORK/i686-build/dlls/win32u/win32u.so" "$OUT/win32u.so"
 if readelf --dyn-syms -W "$OUT/win32u.so" | grep " UND " | grep -q "__isoc23"; then
     echo "build-wine10-win32u: built module carries undefined __isoc23_* symbols — would drift the base build's injection set" >&2
+    exit 1
+fi
+if grep -aq "built without Vulkan support" "$OUT/win32u.so"; then
+    echo "build-wine10-win32u: built module carries the no-Vulkan stub -- configure lost Vulkan" >&2
     exit 1
 fi
 readelf -dW "$OUT/win32u.so" | grep -q "NEEDED.*ntdll\.so" || {

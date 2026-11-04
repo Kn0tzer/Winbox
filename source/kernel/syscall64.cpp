@@ -2207,8 +2207,9 @@ static U64 sys_statx64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 mask,
             base = directoryFile->openFile->node->path;
         }
         bool isLink = false;
-        node = Fs::getNodeFromLocalPath(base, BString::copy(path), !(flags & AT_SYMLINK_NOFOLLOW), &isLink);
-        if (!node) return (U64)-K_ENOENT;
+        bool notDir = false;
+        node = Fs::getNodeFromLocalPath(base, BString::copy(path), !(flags & AT_SYMLINK_NOFOLLOW), &isLink, &notDir);
+        if (!node) return notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT;
         if (node->isLink() || isLink) flags |= AT_SYMLINK_NOFOLLOW;
     }
 
@@ -2248,14 +2249,15 @@ static U64 sys_stat_path64(CPU64* cpu, U64 pathAddr, U64 statbuf, bool followSym
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
     if (path[0] == '\0') return (U64)-2; // FD-131: -ENOENT for an empty path, as the host answers
     BString bpath = BString::copy(path);
+    bool notDir = false;
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
-        cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink);
+        cpu->thread->process->fsContext->currentDirectory, bpath, followSymlink, nullptr, &notDir);
     if (getenv("BW64_SYSTRACE")) {
         klog_fmt("sys_stat_path64: '%s' (cwd='%s') -> %s", path,
                  cpu->thread->process->fsContext->currentDirectory.c_str(),
                  node ? "OK" : "ENOENT");
     }
-    if (!node) return (U64)-2; // -ENOENT
+    if (!node) return notDir ? (U64)-K_ENOTDIR : (U64)-2; // -ENOENT
     U64 size  = node->length();
     U32 mode  = node->getStatMode();
     U64 ino   = node->id;
@@ -2795,8 +2797,10 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
                pidExe == path) {
         resolved = proc->exe;
     } else {
+        bool notDir = false;
         std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-            proc->fsContext->currentDirectory, BString::copy(path), false);
+            proc->fsContext->currentDirectory, BString::copy(path), false, nullptr, &notDir);
+        if (!n && notDir) return (U64)-K_ENOTDIR; // a prefix component is not a directory
         if (!n || !n->isLink()) return (U64)-22; // -EINVAL on non-symlink
         resolved = n->link;
     }
@@ -5858,13 +5862,27 @@ void ksyscall64(CPU64* cpu) {
             // an open one succeeds (the descriptor form — this stub
             // applies no times on any shape, so the success answer is
             // the whole behaviour here).
+            // FD-139: the flags verdict is not null-path-only — the
+            // kernel validates the flags word ahead of the name fetch
+            // for every shape (host-measured at the raw syscall
+            // level, test-results/fd139-152/), so it is hoisted ahead
+            // of the path branches below; every FD-136 null-shape
+            // answer is unchanged, and the times copy-in still
+            // precedes it, as on the host.
+            // FD-140: a non-null path whose prefix component is not
+            // a directory answers -ENOTDIR. This stub resolves
+            // nothing, but that one verdict is decidable for the
+            // shapes it can base unambiguously (an absolute path,
+            // or one relative to the working directory); a plain
+            // miss keeps the stub's success answer, and a path
+            // relative to another descriptor is not probed.
             ret = 0;
             if (a3 && !sys_rangeHasPermission64(cpu->memory, a3, 32, K64_PAGE_READ)) {
                 ret = (U64)-K_EFAULT;
+            } else if (a4 & ~(0x100 | 0x1000)) {
+                ret = (U64)-K_EINVAL;
             } else if (!a2) {
-                if (a4 & ~(0x100 | 0x1000)) {
-                    ret = (U64)-K_EINVAL;
-                } else if ((S32)a1 == K_AT_FDCWD) {
+                if ((S32)a1 == K_AT_FDCWD) {
                     ret = (U64)-K_EFAULT;
                 } else if (a4 != 0) {
                     ret = (U64)-K_EINVAL;
@@ -5877,6 +5895,17 @@ void ksyscall64(CPU64* cpu) {
                 sys_rangeHasPermission64(cpu->memory, a2, 1, K64_PAGE_READ) &&
                 cpu->memory->readb(a2) == 0) {
                 ret = (U64)-K_ENOENT;
+            } else if (cpu->thread && cpu->thread->process) {
+                char path[1024] = {0};
+                cpu->memory->memcpyFromGuest(path, a2, sizeof(path) - 1);
+                if (path[0] != '\0' && (path[0] == '/' || (S32)a1 == K_AT_FDCWD)) {
+                    bool notDir = false;
+                    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
+                        cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
+                    if (!node && notDir) {
+                        ret = (U64)-K_ENOTDIR;
+                    }
+                }
             }
             break;
         case X64_SYS_set_robust_list:
@@ -6250,14 +6279,28 @@ void ksyscall64(CPU64* cpu) {
                 char path[1024] = {0};
                 cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
                 if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                bool notDir = false;
                 std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
-                    cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
-                if (!node) { ret = (U64)-K_ENOENT; break; }
+                    cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
+                if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
             }
             ret = sys_statfs64_common(cpu, a2);
             break;
         case X64_SYS_fstatfs:
-            // a1 = fd (ignored), a2 = struct statfs*
+            // a1 = fd, a2 = struct statfs*. FD-152: the descriptor
+            // is checked first, as the host does (host-measured in
+            // test-results/fd139-152/): a descriptor that is not
+            // open answers -EBADF — ahead of even the buffer fault —
+            // and any open descriptor (file, directory, pipe,
+            // socket) keeps the fabricated answer. The process
+            // layer's own fstatfs64 checks the same way. Without a
+            // process there is nothing to check against and the
+            // fabricated answer stands, as in statfs.
+            if (cpu->thread && cpu->thread->process &&
+                !cpu->thread->process->getFileDescriptor((FD)(S32)a1)) {
+                ret = (U64)-K_EBADF;
+                break;
+            }
             ret = sys_statfs64_common(cpu, a2);
             break;
         // Extended attributes: our guest FS has none. Once the
@@ -6309,9 +6352,10 @@ void ksyscall64(CPU64* cpu) {
                     char path[1024] = {0};
                     cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
                     if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+                    bool notDir = false;
                     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
-                        cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows);
-                    if (!node) { ret = (U64)-K_ENOENT; break; }
+                        cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows, nullptr, &notDir);
+                    if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
                 }
             }
             if (nr == 191 || nr == 192 || nr == 193) ret = (U64)-K_ENODATA;
@@ -6359,9 +6403,10 @@ void ksyscall64(CPU64* cpu) {
             // AT_EMPTY_PATH is the fd form and keeps resolving (the
             // working directory for AT_FDCWD).
             if (path[0] == '\0' && !(nr == X64_SYS_faccessat2 && (a4 & 0x1000))) { ret = (U64)-2; break; }
+            bool notDir = false;
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-                cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true);
-            ret = n ? 0 : (U64)-2;
+                cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
+            ret = n ? 0 : (notDir ? (U64)-K_ENOTDIR : (U64)-2);
             break;
         }
         case X64_SYS_mkdir:

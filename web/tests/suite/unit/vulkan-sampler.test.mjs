@@ -36,14 +36,14 @@ ${writePayload}
 int main() {
   Sampler s; s.mag=1; s.min=1; s.mipmap=1; s.addrU=0; s.addrV=3; s.addrW=4;
   s.maxAniso=6; s.anisotropyEnable=1; s.compareEnable=1; s.compareOp=6;
-  s.mipLodBias=1.25f; s.minLod=0.5f; s.maxLod=17.0f; s.borderColor=5;
+  s.mipLodBias=1.25f; s.minLod=0.5f; s.maxLod=17.0f; s.borderColor=5; s.unnorm=1;
   ChunkWriter writer; writeSamplerRecordPayload(writer,0x5a5a,s);
   std::fwrite(writer.bytes.data(),1,writer.bytes.size(),stdout);
 }
 `);
     execFileSync('c++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', source, '-o', binary]);
     const payload = new Uint8Array(execFileSync(binary));
-    assert.equal(payload.byteLength, 68);
+    assert.equal(payload.byteLength, 72);
     const frame = decodeV2Frame([
       { type: V2_REC.FRAME_BEGIN, payload: new Uint8Array([1,0,0,0,4,0,0,0,4,0,0,0,0,0,0,0]) },
       { type: V2_REC.SAMPLER, payload },
@@ -54,7 +54,7 @@ int main() {
       addrU: 'repeat', addrV: 'clamp-to-edge', addrW: 'mirror-repeat',
       addrModeU: 0, addrModeV: 3, addrModeW: 4,
       maxAnisotropy: 6, anisotropyEnable: true, compareEnable: true, compareOp: 6,
-      mipLodBias: 1.25, minLod: 0.5, maxLod: 17, borderColor: 5,
+      mipLodBias: 1.25, minLod: 0.5, maxLod: 17, borderColor: 5, unnorm: true,
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

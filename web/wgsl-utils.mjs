@@ -814,3 +814,126 @@ export function rewriteBorderSamplersWGSL(wgsl, plan) {
   }
   return changed ? out + code.slice(last) : wgsl;
 }
+
+/**
+ * Plan for emulating Vulkan unnormalizedCoordinates samplers. WebGPU
+ * samplers always interpret sample coordinates as normalised [0,1]; a
+ * guest sampler created with unnormalizedCoordinates = VK_TRUE instead
+ * receives texel-space coordinates (DXVK's swapchain blitter samples
+ * with src_offset + src_extent * uv through exactly such a sampler).
+ * The bridge forwards the flag on the sampler record; the pipeline
+ * becomes a per-draw variant whose shaders divide the coordinates of
+ * sample calls on the planned samplers by the sampled texture's size.
+ * Keyed by sampler variable name, like the border plan.
+ * @param {Array<object>} decls shader resource declarations
+ * @param {(d: object) => object | null} resolveSampler sampler record lookup
+ */
+export function unnormPlanForDecls(decls, resolveSampler) {
+  const plan = new Map();
+  for (const d of decls || []) {
+    if (d.type !== 'sampler' && d.type !== 'sampler_comparison') continue;
+    if (d.arrayCount > 1) continue; // calls index the array; left unrewritten
+    const s = resolveSampler(d);
+    if (!s || !s.unnorm) continue;
+    plan.set(d.name, { group: d.group, binding: d.binding });
+  }
+  return plan;
+}
+
+/** Cache-key material for an unnormalised-sampler plan. */
+export function unnormPlanSignature(plan) {
+  return [...plan.values()]
+    .map(p => 'g' + p.group + 'b' + p.binding)
+    .sort().join('|');
+}
+
+const UNNORM_SAMPLE_FNS = BORDER_SAMPLE_FNS;
+const UNNORM_CALL_RE = new RegExp('\\b(' + UNNORM_SAMPLE_FNS.join('|') + ')\\s*\\(', 'g');
+
+function unnormDimsExpr(texVar, texType, levelArg) {
+  const tm = /^texture_(depth_)?(1d|2d_array|2d|3d|cube_array|cube)(?:<(\w+)>)?/.exec(texType);
+  if (!tm) return null;
+  const dim = tm[2];
+  if (dim === 'cube' || dim === 'cube_array') return null; // direction vectors, never texel-space
+  const dims = levelArg != null
+    ? `textureDimensions(${texVar}, u32(${levelArg}))`
+    : `textureDimensions(${texVar})`;
+  if (dim === '1d') return `f32(${dims})`;
+  if (dim === '3d') return `vec3<f32>(${dims})`;
+  return `vec2<f32>(${dims})`;
+}
+
+function unnormWrapCall(fn, args, texType) {
+  const texVar = (args[0] || '').trim();
+  const coords = (args[2] || '').trim();
+  if (!texVar || !coords) return null;
+  const isArray = /_(2d_array|cube_array)/.test(texType);
+  const isLevel = fn === 'textureSampleLevel' || fn === 'textureSampleCompareLevel';
+  const levelArg = isLevel ? (args[isArray ? 4 : 3] || '').trim() : null;
+  if (isLevel && !levelArg) return null;
+  const dims = unnormDimsExpr(texVar, texType, levelArg);
+  if (!dims) return null;
+  const out = args.slice();
+  out[2] = `((${coords}) / ${dims})`;
+  if (fn === 'textureSampleGrad') {
+    // Gradients of an unnormalised coordinate are texel-space too; scale
+    // them with the coordinate so the selected mip matches the guest's.
+    const ddx = (args[3] || '').trim(), ddy = (args[4] || '').trim();
+    if (!ddx || !ddy) return null;
+    out[3] = `((${ddx}) / ${dims})`;
+    out[4] = `((${ddy}) / ${dims})`;
+  }
+  return fn + '(' + out.map(a => a.trim()).join(', ') + ')';
+}
+
+/**
+ * Divide the coordinate (and gradient) arguments of every sampled-image
+ * call on a planned sampler variable by the sampled texture's dimensions,
+ * converting the guest's texel-space coordinates into the normalised
+ * coordinates WebGPU requires. Calls on other samplers, gathers, loads
+ * and cube textures are left byte-identical, as is the whole input when
+ * the plan is empty. On unbalanced input the original text is returned.
+ * Apply BEFORE rewriteBorderSamplersWGSL: the border range test then
+ * sees the normalised coordinates it expects.
+ * @param {string} wgsl
+ * @param {Map<string, object>} plan from unnormPlanForDecls
+ */
+export function rewriteUnnormalizedSamplersWGSL(wgsl, plan) {
+  if (!plan || plan.size === 0) return wgsl;
+  const code = String(wgsl);
+  const texTypes = new Map();
+  for (const d of scanWgslResources(code))
+    if (d.type.startsWith('texture_') && !d.type.startsWith('texture_storage')) texTypes.set(d.name, d.type);
+  const sites = [];
+  UNNORM_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = UNNORM_CALL_RE.exec(code))) {
+    const openIdx = UNNORM_CALL_RE.lastIndex - 1;
+    const args = [];
+    let depth = 1, start = openIdx + 1, i = start;
+    for (; i < code.length && depth; i++) {
+      const c = code[i];
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (!depth) args.push(code.slice(start, i)); }
+      else if (c === ',' && depth === 1) { args.push(code.slice(start, i)); start = i + 1; }
+      else if (c === ';' || c === '{' || c === '}') return wgsl;
+    }
+    if (depth) return wgsl;
+    sites.push({ start: m.index, end: i, fn: m[1], args });
+    UNNORM_CALL_RE.lastIndex = openIdx + 1;
+  }
+  let out = '', last = 0, consumedUntil = -1, changed = false;
+  for (const site of sites) {
+    if (site.start < consumedUntil) continue;
+    if (site.args.length < 3) continue;
+    const entry = plan.get((site.args[1] || '').trim());
+    if (!entry) continue;
+    const texType = texTypes.get((site.args[0] || '').trim());
+    if (!texType) continue;
+    const wrapped = unnormWrapCall(site.fn, site.args, texType);
+    if (!wrapped) continue;
+    out += code.slice(last, site.start) + wrapped;
+    last = site.end; consumedUntil = site.end; changed = true;
+  }
+  return changed ? out + code.slice(last) : wgsl;
+}

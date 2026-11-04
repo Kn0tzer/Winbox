@@ -849,9 +849,12 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
     std::shared_ptr<FsNode> node;
     std::shared_ptr<KObject> kobject;
 
-    node = Fs::getNodeFromLocalPath(currentDirectory, localPath, true);
+    bool notDir = false;
+    node = Fs::getNodeFromLocalPath(currentDirectory, localPath, true, nullptr, &notDir);
     if (!node && (accessFlags & (K_O_CREAT|K_O_TMPFILE))==0) {
-        return -K_ENOENT;
+        // FD-140: a prefix component that is not a directory
+        // answers -ENOTDIR on the host, not -ENOENT.
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     if (accessFlags & K_O_TMPFILE) {
         if ((accessFlags & K_O_ACCMODE)!=K_O_WRONLY && (accessFlags & K_O_ACCMODE)!=K_O_RDWR) {
@@ -878,9 +881,17 @@ U32 KProcess::openFileDescriptor(BString currentDirectory, BString localPath, U3
             BString fullPath = Fs::getFullPath(currentDirectory, localPath);
             BString parentPath = Fs::getParentPath(fullPath);
             BString fileName = Fs::getFileNameFromPath(fullPath);
-            std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true);
+            bool parentNotDir = false;
+            std::shared_ptr<FsNode> parent = Fs::getNodeFromLocalPath(B(""), parentPath, true, nullptr, &parentNotDir);
             if (!parent) {
-                return -K_ENOENT;
+                return parentNotDir ? -K_ENOTDIR : -K_ENOENT;
+            }
+            if (!parent->isDirectory()) {
+                // The parent component resolved to a file: creating
+                // a child under it answers -ENOTDIR on the host
+                // (FD-140); the code below would otherwise fabricate
+                // a node under the file.
+                return -K_ENOTDIR;
             }
             BString nativePath = Fs::getNativePathFromParentAndLocalFilename(parent, fileName);
             std::shared_ptr<FsNode> mixedSibling = parent->getChildByNameIgnoreCase(fileName);
@@ -1193,8 +1204,17 @@ U32 KProcess::alarm(U32 seconds) {
     return 0;
 }
 
-std::shared_ptr<FsNode> KProcess::findInPath(BString path) {
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+std::shared_ptr<FsNode> KProcess::findInPath(BString path, bool* notDir) {
+    bool directNotDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &directNotDir);
+    if (notDir) {
+        // Only the direct resolution's verdict is reported: a name
+        // with a slash in it is resolved directly by the host (no
+        // PATH search), and a bare name cannot stop under a file in
+        // the working directory. PATH-directory misses keep the
+        // plain not-found answer.
+        *notDir = directNotDir;
+    }
 
     if (!node && !path.startsWith('/')) {
         for( const auto& n : this->path ) {
@@ -1239,9 +1259,10 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
             this->systemProcess = true;
         }
     }
-    node = this->findInPath(path);
+    bool notDir = false;
+    node = this->findInPath(path, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     openNode = ElfLoader::inspectNode(this->fsContext->currentDirectory, node, loader, interpreter, interpreterArgs);
     if (!openNode) {
@@ -1535,10 +1556,11 @@ U32 KProcess::rmdir(BString path) {
     if (path.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false, nullptr, &notDir);
 
     if (!node)
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     return node->removeDir();
 }
 
@@ -1566,15 +1588,21 @@ U32 KProcess::mkdir(BString path) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);   
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false, nullptr, &notDir);
     if (node) {
         return -K_EEXIST;
     }
+    if (notDir) {
+        // FD-140: the path descends through a non-directory.
+        return -K_ENOTDIR;
+    }
     BString fullpath = Fs::getFullPath(this->fsContext->currentDirectory, path);
     BString parentPath = Fs::getParentPath(fullpath);
-    node = Fs::getNodeFromLocalPath(B(""), parentPath, false); 
+    bool parentNotDir = false;
+    node = Fs::getNodeFromLocalPath(B(""), parentPath, false, nullptr, &parentNotDir);
     if (!node) {
-        return -K_ENOENT;
+        return parentNotDir ? -K_ENOTDIR : -K_ENOENT;
     }
     return Fs::makeLocalDirs(fullpath);
 }
@@ -1585,10 +1613,22 @@ U32 KProcess::rename(BString from, BString to) {
     if (from.length() == 0 || to.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);    
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false, nullptr, &notDir);
     if (!node)
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     BString fullPath = Fs::getFullPath(this->fsContext->currentDirectory, to);
+    // FD-140: the destination's parent must be a directory too;
+    // FsNode::rename resolves it internally and its answer for a
+    // through-file destination depends on the native filesystem.
+    bool toNotDir = false;
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(B(""), Fs::getParentPath(fullPath), true, nullptr, &toNotDir);
+    if (!toParentNode) {
+        return toNotDir ? -K_ENOTDIR : -K_ENOENT;
+    }
+    if (!toParentNode->isDirectory()) {
+        return -K_ENOTDIR;
+    }
     U32 result = node->rename(fullPath);
     if (result == 0) {
         std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(from), false);
@@ -1609,14 +1649,25 @@ U32 KProcess::renameat(FD olddirfd, BString from, FD newdirfd, BString to) {
     if (result)
         return result;
 
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, from, false);    
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, from, false, nullptr, &notDir);
     if (!node)
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     BString fromDirectory = currentDirectory;
     result = this->getCurrentDirectoryFromDirFD(newdirfd, currentDirectory);
     if (result)
         return result;
     BString fullPath = Fs::getFullPath(currentDirectory, to);
+    // FD-140: the destination's parent must be a directory too
+    // (see rename()).
+    bool toNotDir = false;
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(B(""), Fs::getParentPath(fullPath), true, nullptr, &toNotDir);
+    if (!toParentNode) {
+        return toNotDir ? -K_ENOTDIR : -K_ENOENT;
+    }
+    if (!toParentNode->isDirectory()) {
+        return -K_ENOTDIR;
+    }
     result = node->rename(fullPath);
     if (result == 0) {
         std::shared_ptr<FsNode> fromParent = Fs::getNodeFromLocalPath(fromDirectory, Fs::getParentPath(from), false);
@@ -1655,8 +1706,12 @@ U32 KProcess::access(BString path, U32 mode) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
-    return internalAccess(node, mode); 
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
+    if (!node && notDir) {
+        return -K_ENOTDIR;
+    }
+    return internalAccess(node, mode);
 }
 
 U32 KProcess::lseek(FD fildes, S32 offset, U32 whence) {
@@ -1684,9 +1739,10 @@ U32 KProcess::chmod(BString path, U32 mode) {
     if (path.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
     if (!node)
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     return this->chmodNode(node, mode);
 }
 
@@ -1724,9 +1780,10 @@ U32 KProcess::fchmodat(FD dirfd, BString path, U32 mode, U32 flags) {
     if (result)
         return result;
     bool noFollow = (flags & 0x100) != 0; // AT_SYMLINK_NOFOLLOW
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, !noFollow);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, !noFollow, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     if (noFollow && node->isLink()) {
         // Host truth (measured on the host kernel): fchmodat with
@@ -1744,9 +1801,10 @@ U32 KProcess::chdir(BString path) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
     if (!node)
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     if (!node->isDirectory())
         return -K_ENOTDIR;
     // Use the resolved node path, not the unresolved input path, so that
@@ -1766,9 +1824,10 @@ U32 KProcess::unlinkFile(BString path) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     if (!node->remove()) {
         kwarn_fmt("failed to remove file: errno=%d", errno);
@@ -1783,11 +1842,12 @@ U32 KProcess::link(BString from, BString to) {
     if (from.length() == 0 || to.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false);
+    bool fromNotDir = false;
+    std::shared_ptr<FsNode> fromNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, from, false, nullptr, &fromNotDir);
     std::shared_ptr<FsNode> toNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, to, false);
 
     if (!fromNode) {
-        return -K_ENOENT;
+        return fromNotDir ? -K_ENOTDIR : -K_ENOENT;
     }
     if (toNode) {
         return -K_EEXIST;
@@ -1807,9 +1867,18 @@ U32 KProcess::link(BString from, BString to) {
     if (!fromFile) {
         return -K_EPERM;
     }
-    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false);
+    bool toNotDir = false;
+    std::shared_ptr<FsNode> toParentNode = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), false, nullptr, &toNotDir);
     if (!toParentNode) {
-        return -K_ENOENT;
+        return toNotDir ? -K_ENOTDIR : -K_ENOENT;
+    }
+    // FD-140: the new name's parent must be a directory. Judge it
+    // on a followed resolution of the same parent path: the
+    // unfollowed node above can be a symlink, whose own directory
+    // flag is false even when its target is a directory.
+    std::shared_ptr<FsNode> toParentFollowed = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, Fs::getParentPath(to), true);
+    if (toParentFollowed && !toParentFollowed->isDirectory()) {
+        return -K_ENOTDIR;
     }
     fromFile->ensurePathIsLocal(true);
     BString toNativePath = Fs::getNativePathFromParentAndLocalFilename(toParentNode, Fs::getFileNameFromPath(to));
@@ -2168,10 +2237,18 @@ U32 symlinkInDirectory(BString currentDirectory, BString target, BString linkpat
     }
     BString fullPath = Fs::getFullPath(currentDirectory, linkpath);
     BString parentPath = Fs::getParentPath(fullPath);
-    std::shared_ptr<FsNode> parentNode = Fs::getNodeFromLocalPath(B(""), parentPath, true);
+    bool parentNotDir = false;
+    std::shared_ptr<FsNode> parentNode = Fs::getNodeFromLocalPath(B(""), parentPath, true, nullptr, &parentNotDir);
 
     if (!parentNode) {
-        return -K_ENOENT;
+        return parentNotDir ? -K_ENOTDIR : -K_ENOENT;
+    }
+    if (!parentNode->isDirectory()) {
+        // FD-140: the new link's parent must be a directory; the
+        // code below would otherwise fabricate the link node under
+        // a file. (The parent is resolved followed, so a symlink
+        // to a directory passes, as it should.)
+        return -K_ENOTDIR;
     }
     node = Fs::addFileNode(fullPath, target, Fs::getNativePathFromParentAndLocalFilename(parentNode, Fs::getFileNameFromPath(linkpath))+EXT_LINK, false, parentNode);
 
@@ -2213,7 +2290,10 @@ U32 KProcess::readlinkInDirectory(BString currentDirectory, BString path, U32 bu
         return -K_ENOENT;
     }
     // :TODO: move these to the virtual filesystem
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, path, false);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, path, false, nullptr, &notDir);
+    if (!node && notDir)
+        return -K_ENOTDIR;
     if (!node || !node->isLink())
         return -K_EINVAL;
     U32 len = (U32)node->getLink().length();
@@ -2274,9 +2354,10 @@ U32 KProcess::statfs(BString path, U32 address) {
     if (path.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     memory->writed(address, 0xEF53); // f_type (EXT3)
     memory->writed(address + 4, FS_BLOCK_SIZE); // f_bsize
@@ -2298,9 +2379,10 @@ U32 KProcess::statfs64(BString path, U32 address) {
     if (path.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     memory->writed(address, 0xEF53); // f_type (EXT3)
     memory->writed(address + 4, FS_BLOCK_SIZE); // f_bsize
@@ -4035,9 +4117,10 @@ U32 KProcess::stat64(BString path, U32 buffer) {
     }
     path = rewriteServerDirPath(path, this->is64Bit);
     bool isLink = false;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, &isLink);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, &isLink, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     U64 len = node->length();
     KSystem::writeStat(this, node->path, buffer, true, 1, node->id, node->getStatMode(), node->rdev, len, 4096, (len + 4095) / 4096, node->lastModified(), node->getHardLinkCount());
@@ -4051,11 +4134,12 @@ U32 KProcess::lstat64(BString path, U32 buffer) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, false, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
- 
+
     U64 len = 0;
     U32 mode = 0;
 
@@ -4311,11 +4395,12 @@ U32 KProcess::utimes(BString path, U32 times) {
     if (path.length() == 0) {
         return -K_ENOENT;
     }
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, true, nullptr, &notDir);
 
     if (!node) {
-        return -K_ENOENT;
-    } else {        
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
+    } else {
         U64 lastAccessTime = 0;
         U32 lastAccessTimeNano = 0;
         U64 lastModifiedTime =  0;
@@ -4540,10 +4625,11 @@ U32 KProcess::statx(FD dirfd, BString path, U32 flags, U32 mask, U32 buf) {
         return result;
     }        
     bool isLink = false;
+    bool notDir = false;
 
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100) == 0, &isLink);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100) == 0, &isLink, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
 
     U64 len = node->length();
@@ -4576,10 +4662,11 @@ U32 KProcess::fstatat64(FD dirfd, BString path, U32 buf, U32 flag) {
     if (result)
         return result;
     bool isLink = false;
+    bool notDir = false;
 
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flag & 0x100)==0, &isLink);
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flag & 0x100)==0, &isLink, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
 
     U64 len = node->length();
@@ -4607,9 +4694,10 @@ U32 KProcess::unlinkat(FD dirfd, BString path, U32 flags) {
 
     if (result)
         return result;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, false);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, false, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     if (flags & 0x200) { // unlinkat AT_REMOVEDIR
         if (!node->isDirectory()) {
@@ -4642,10 +4730,11 @@ U32 KProcess::faccessat(U32 dirfd, BString path, U32 mode, U32 flags) {
 
     if (result)
         return result;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100)==0);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100)==0, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
-    }  
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
+    }
     return internalAccess(node, mode);
 }
 
@@ -4654,6 +4743,16 @@ U32 KProcess::faccessat(U32 dirfd, BString path, U32 mode, U32 flags) {
 
 U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64) {
 
+    // FD-139: flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH
+    // answer -EINVAL on the host for every path shape — the kernel
+    // validates the flags word ahead of the name fetch (host-measured
+    // at the raw syscall level, test-results/fd139-152/), so the
+    // verdict precedes even the empty-path answer below. The null
+    // path never reaches this function (it is routed to
+    // utimensatNullPath, which validates the same word).
+    if (flags & ~(0x100 | 0x1000)) {
+        return -K_EINVAL;
+    }
     // FD-131: an empty path answers -ENOENT on the host; unguarded it
     // resolves to the directory node itself in the shared resolver.
     if (path.length() == 0 && !(flags & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
@@ -4661,16 +4760,17 @@ U32 KProcess::utimesat(FD dirfd, BString path, U32 times, U32 flags, bool time64
     }
     BString dir;
     U32 result = 0;
-    
+
     if (path.charAt(0) != '/')
         result = getCurrentDirectoryFromDirFD(dirfd, dir);
 
     if (result)
         return result;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100)==0);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100)==0, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
-    } 
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
+    }
     return setNodeTimes(node, times, time64);
 }
 
@@ -4756,6 +4856,10 @@ U32 KProcess::utimensatNullPath(FD dirfd, U32 times, U32 flags, bool time64) {
 
 U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 
+    // FD-139: the flags verdict, as in utimesat above.
+    if (flags & ~(0x100 | 0x1000)) {
+        return -K_EINVAL;
+    }
     // FD-131: an empty path answers -ENOENT on the host; unguarded it
     // resolves to the directory node itself in the shared resolver.
     if (path.length() == 0 && !(flags & 0x1000)) { // 0x1000 = AT_EMPTY_PATH fd form
@@ -4769,9 +4873,10 @@ U32 KProcess::utimesat64(FD dirfd, BString path, U32 times, U32 flags) {
 
     if (result)
         return result;
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100) == 0);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(dir, path, (flags & 0x100) == 0, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     U64 lastAccessTime = 0;
     U32 lastAccessTimeNano = 0;
@@ -4841,9 +4946,10 @@ U32 KProcess::inotify_add_watch(S32 fd, BString path, U32 mask) {
         return -K_ENOENT;
     }
     path = rewriteServerDirPath(path, this->is64Bit);
-    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, (mask & K_IN_DONT_FOLLOW) == 0);
+    bool notDir = false;
+    std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(this->fsContext->currentDirectory, path, (mask & K_IN_DONT_FOLLOW) == 0, nullptr, &notDir);
     if (!node) {
-        return -K_ENOENT;
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
     std::shared_ptr<KInotify> inotify = std::dynamic_pointer_cast<KInotify>(descriptor->kobject);
     return (U32)inotify->addWatch(node, mask);

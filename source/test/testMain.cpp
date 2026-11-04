@@ -118,6 +118,9 @@ void testDevDspCapture();
 void testInotifyEventsProcessApi();
 void testEmptyPathProcessApi();
 void testStatxAtEmptyPathProcessApi();
+void testUtimensatFlags32Syscalls();
+void testNotDir32Syscalls();
+void testNotDirProcessApi();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
@@ -173,6 +176,9 @@ void testNullPath64Syscalls();
 void testMemfdNullName64Syscalls();
 void testXattrResolve64Syscalls();
 void testStatfsResolve64Syscalls();
+void testFstatfsDescriptor64Syscalls();
+void testUtimensatFlags64Syscalls();
+void testNotDir64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -313,6 +319,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
     {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
     {testClone64AltstackReset, "Test x64 clone sigaltstack reset for CLONE_VM children"},
+    {testFstatfsDescriptor64Syscalls, "Test x64 fstatfs answers -EBADF for a descriptor that is not open; any open descriptor keeps the fabricated answer"},
+    {testUtimensatFlags64Syscalls, "Test x64 utimensat answers -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH on non-null paths; a path through a file answers -ENOTDIR"},
+    {testNotDir64Syscalls, "Test x64 a path through a non-directory answers -ENOTDIR at the path calls; a missing prefix stays -ENOENT"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {
@@ -1013,6 +1022,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testSgdtSidtStores, "CPU32 SGDT/SIDT store values on all engines"},
     {testJitLockedOps, "CPU32 LOCK ops through JIT-compiled blocks"},
     {testUd2DefaultDisposition, "CPU32 UD2 with SIG_DFL in a subprocess"},
+    {testUtimensatFlags32Syscalls, "Test 32-bit utimensat/utimensat_time64 answer -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH and leave the times untouched"},
+    {testNotDir32Syscalls, "Test 32-bit a path through a non-directory answers -ENOTDIR at the path calls"},
+    {testNotDirProcessApi, "Test a path through a non-directory answers -ENOTDIR through the KProcess API; controls unchanged"},
 };
 #endif
 

@@ -5502,24 +5502,26 @@ int runX64SelfTest() {
         });
     }
 
-    // chmod → -ENOENT (rax=90, null path). FD-125: the case used to
+    // chmod → -EFAULT (rax=90, null path). FD-125: the case used to
     // expect a no-op success, a disposition from before FD-58
-    // implemented chmod for real. Per the FD-125 settlement the case
-    // expects the implemented layer's real answer for the staged call:
-    // a null path reads as the empty path and answers -ENOENT. (The
-    // host answers -EFAULT for a null path; that divergence is
-    // FD-126.) Staging an existing path instead is not available to
-    // this fixture: its CPU runs in isolation with no thread/process,
-    // so no path resolves here -- measured with a stack-built "/"
-    // staging, which answered the same -ENOENT.
+    // implemented chmod for real; the FD-125 settlement then staged
+    // it at the layer's answer of the day, -ENOENT (a null path read
+    // as the empty path). FD-126 closed the divergence that staging
+    // recorded: the host answers -EFAULT for a null path (the
+    // copy-in faults ahead of any lookup, while an empty path
+    // answers -ENOENT), and the dispatcher now guards the null
+    // shape ahead of the shared reader, so -EFAULT is the layer's
+    // answer and this case pins it. Staging an existing path
+    // instead is not available to this fixture: its CPU runs in
+    // isolation with no thread/process, so no path resolves here.
     {
         std::vector<U8> code = {
             0x48, 0xC7, 0xC0, 0x5A, 0x00, 0x00, 0x00,                     // mov rax, 90
             0x48, 0x31, 0xFF, 0x48, 0x31, 0xF6,                           // rdi=rsi=0
             0x0F, 0x05,
         };
-        runAndCheck(r, "chmod → -ENOENT (null path)", withExit(code), [](CPU64& c) {
-            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFFEULL;
+        runAndCheck(r, "chmod → -EFAULT (null path)", withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == 0xFFFFFFFFFFFFFFF2ULL;
         });
     }
 
@@ -9112,19 +9114,39 @@ int runX64SelfTest() {
     runMemorySyscallValidation(r);
     runPrctlSyscallValidation(r);
     runUnmappedSamePageFetchFault(r);
-    // io_uring and pidfd_getfd are deliberately rejected by the central
-    // once-per-number syscall logger. Keep syscall-layer errno coverage for
-    // every operation so they cannot drift into silent success.
-    for (U32 syscallNumber : {334u, 425u, 426u, 427u, 438u}) {
+    // rseq and the io_uring operations are deliberately rejected by
+    // the central once-per-number syscall logger. Keep syscall-layer
+    // errno coverage for every operation so they cannot drift into
+    // silent success.
+    for (U32 syscallNumber : {334u, 425u, 426u, 427u}) {
         std::vector<U8> code = {
             0xB8, (U8)syscallNumber, (U8)(syscallNumber >> 8),
             (U8)(syscallNumber >> 16), (U8)(syscallNumber >> 24), // mov eax, nr
             0x0F, 0x05,                                           // syscall
             0x49, 0x89, 0xC7,                                     // mov r15, rax
         };
-        runAndCheck(r, "unsupported io_uring/pidfd_getfd syscall returns ENOSYS",
+        runAndCheck(r, "unsupported rseq/io_uring syscall returns ENOSYS",
                     withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == (U64)-K_ENOSYS;
+        });
+    }
+    // pidfd_getfd (438) is NOT in the rejected set: it is implemented
+    // (FD-23's host-measured answer order -- flags first, then the
+    // descriptor checks). Staged here with descriptor 0 and no
+    // thread/process at all, the descriptor check answers -EBADF,
+    // which is also the host's answer for a descriptor that is not a
+    // pidfd (or is closed). This case used to sit in the ENOSYS loop
+    // above, staged when the number was still rejected centrally;
+    // the implementation made that expectation stale.
+    {
+        std::vector<U8> code = {
+            0xB8, 0xB6, 0x01, 0x00, 0x00,                         // mov eax, 438
+            0x0F, 0x05,                                           // syscall
+            0x49, 0x89, 0xC7,                                     // mov r15, rax
+        };
+        runAndCheck(r, "pidfd_getfd → -EBADF (descriptor not a pidfd)",
+                    withExit(code), [](CPU64& c) {
+            return c.reg[X64_R15].u64 == (U64)-K_EBADF;
         });
     }
     auto membarrierCode = [](U32 command) {
