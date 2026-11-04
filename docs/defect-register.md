@@ -6674,6 +6674,59 @@ do not close the entry until they land.
   the same no-op-shape pattern (a helper
   invoked with a legal null/empty input)
   is part of the close. Filed, not fixed.
+- **FD-154 — Five browser-suite tests fail
+  identically on the batch-4 base and the
+  batch-5 composed tree in the current suite
+  environment.** *(Medium — none of the five
+  is a batch-5 regression (each reproduced
+  on an unmodified build of the base
+  `0c7e2f3fa`, same box and conditions,
+  2026-11-04), but each is a real red test
+  whose cause is unmeasured; filed by the
+  batch-5 merge lane from its gate so the
+  failures live on this queue and not only
+  in the merge record.)* Measured at the
+  batch-5 gate (composed wasm `05298a62`;
+  control build of the batch-4 tip,
+  BUILD_EXIT 0, 'Browser export verified'):
+  (1) winsock-http: the guest's TCP connect
+  never reaches the harness's loopback relay
+  (relay stats accepted 0, zero bytes both
+  ways) and `BW_TCP connected_event=1` never
+  prints — identical on base; three composed
+  attempts, one base attempt.
+  (2) input-mouse-rel: the guest's RAW
+  sequence print never arrives within 30 s —
+  identical on base.
+  (3) input-fullscreen: the harness's click
+  on the canvas times out on Playwright's
+  element-stability wait — identical on
+  base.
+  (4) jit64: the wineboot exit_group pattern
+  is not seen within its 120 s window (test
+  durations 128–129 s on both trees) —
+  identical on base; the fd133-135 lane
+  measured this test passing on its own tree
+  in its own gate, so the failure is
+  environment- or condition-shaped, not a
+  code regression in either direction.
+  (5) jitbench: its 'requested JIT mode
+  latched' assertion fails — identical on
+  base; both trees' attempts ran above the
+  test's own one-minute load guard of 4, so
+  its numbers are invalid under its own
+  rules on both. Closing terms: each test
+  passes in the suite environment on a
+  current build, or is shown to be gated on
+  a named external condition and re-scoped
+  accordingly; the winsock-http item closes
+  only with relay stats showing the connect
+  crossing (accepted 1 or more, bytes both
+  ways). Evidence:
+  `test-results/merge-batch5-20261103/`
+  (composed runs) and its `control-base/`
+  subdir (base runs and the base build log).
+  Filed, not fixed.
 
 ## B. Fixed on a lane branch — awaiting merge
 
