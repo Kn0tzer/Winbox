@@ -2901,6 +2901,9 @@ inline bool vk64MemRangeCleanSince(const DeviceMemory* m, U64 epoch, U64 off, U6
 struct BufferView : Obj { U64 buffer = 0; U32 format = 0; U64 offset = 0, range = 0; };
 struct Sampler : Obj {
     U32 mag = 0, min = 0, mipmap = 0, addrU = 0, addrV = 0, addrW = 0;
+    U32 unnorm = 0; // VkSamplerCreateInfo.unnormalizedCoordinates: guest
+                    // sample coordinates are texel-space, not [0,1]; the
+                    // page tier emulates by dividing by the texture size.
     U32 anisotropyEnable = 0, compareEnable = 0, compareOp = 7, borderColor = 0;
     float mipLodBias = 0.0f, maxAniso = 1.0f, minLod = 0.0f, maxLod = 32.0f;
 };
@@ -4942,6 +4945,7 @@ static void writeSamplerRecordPayload(ChunkWriter& p, U64 id, const Sampler& s) 
     p.u32(0x314d4153u); // SAM1
     p.u32(s.addrW); p.f32(s.mipLodBias); p.u32(s.anisotropyEnable);
     p.u32(s.compareEnable); p.u32(s.compareOp); p.f32(s.minLod); p.f32(s.maxLod); p.u32(s.borderColor);
+    p.u32(s.unnorm); // appended after SAM1 tail: decoders read it only when bytes remain
 }
 static void emitColorBlend(const Pipeline& pipe, ChunkWriter& p) {
     p.u32(0x31444e42u); // BND1: attachment blend equations and write masks
@@ -8932,7 +8936,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
-        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor; s->unnorm = ci.unnormalizedCoordinates ? 1 : 0;
         wr64(args.a[3], id);
         return VK_SUCCESS;
     }
@@ -12871,7 +12875,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
         s->addrU = ci.addressModeU; s->addrV = ci.addressModeV; s->addrW = ci.addressModeW;
         s->mipLodBias = ci.mipLodBias; s->anisotropyEnable = ci.anisotropyEnable;
         s->maxAniso = ci.maxAnisotropy; s->compareEnable = ci.compareEnable; s->compareOp = ci.compareOp;
-        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor;
+        s->minLod = ci.minLod; s->maxLod = ci.maxLod; s->borderColor = ci.borderColor; s->unnorm = ci.unnormalizedCoordinates ? 1 : 0;
         wr64_32(args.a[3], id);
         return VK_SUCCESS;
     }

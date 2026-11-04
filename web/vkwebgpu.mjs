@@ -20,6 +20,7 @@ import {
   planGroupRemap, rewriteGuestGroupDeclWGSL,
   rewriteReadOnlyStorageToSampled,
   borderPlanForDecls, borderPlanSignature, rewriteBorderSamplersWGSL,
+  unnormPlanForDecls, unnormPlanSignature, rewriteUnnormalizedSamplersWGSL,
 } from './wgsl-utils.mjs';
 // web/vkwebgpu.mjs — the BROWSER PAGE TIER for the vk64 trap boundary: the
 // consumer for the FRAME-JSON manifest that source/vulkan/vk64bridge.cpp hops
@@ -2178,6 +2179,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     // with the border select; it is keyed on the resolved plan further down.
     // With no border sampler bound anywhere, the base path is unchanged.
     const borderPre = sets ? frameHasBorderSampler(sets) : false;
+    const unnormPre = sets ? frameHasUnnormalizedSampler(sets) : false;
     // Typed-UAV variant: a shader with storage-image variables translates
     // differently per bound UAV format (spirvfix R14 injects the view's
     // format), so -- like the border variant below -- the pipeline is keyed
@@ -2187,7 +2189,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     const fsStorageSig = sets && fsmPre ? storageSignatureFor(fsmPre.code, sets, pushBlock) : '';
     let effKey = key;
     if (vsStorageSig || fsStorageSig) effKey = key + ':storage:vs[' + vsStorageSig + ']fs[' + fsStorageSig + ']';
-    if (!borderPre) {
+    if (!borderPre && !unnormPre) {
       if (pipelines.has(effKey)) return pipelines.get(effKey);
       if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
     }
@@ -2251,6 +2253,28 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
     for (const d of decls) if (d.addr === "uniform" || d.addr.startsWith("storage")) {
       const s = uniformSizes.get(d.group + ":" + d.binding);
       if (s) d.minSize = s;
+    }
+    // Unnormalised-sampler variant (unnormalizedCoordinates): WebGPU
+    // samplers are always normalised, so sample calls on such a sampler
+    // get their texel-space coordinates divided by the texture size in
+    // the shader. Applied before the border rewrite so its [0,1] range
+    // test sees normalised coordinates. Layouts/declarations unchanged.
+    if (unnormPre) {
+      const plan = unnormPlanForDecls(decls, d => {
+        const sHex = samplerIdForDecl(sets, d.group, d);
+        return sHex ? F.samplers.get(sHex) || null : null;
+      });
+      if (plan.size) {
+        effKey = effKey + '|unnorm:' + unnormPlanSignature(plan);
+        if (pipelines.has(effKey)) return pipelines.get(effKey);
+        if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
+        vsR = { ...vsR, code: rewriteUnnormalizedSamplersWGSL(vsR.code, plan) };
+        fsR = { ...fsR, code: rewriteUnnormalizedSamplersWGSL(fsR.code, plan) };
+      } else {
+        // An unnormalised sampler is bound, but this shader does not sample with it.
+        if (pipelines.has(effKey)) return pipelines.get(effKey);
+        if (pipelineFailures.has(effKey)) return { skip: pipelineFailures.get(effKey) };
+      }
     }
     // Border variant: resolve each sampler declaration against the current
     // descriptor sets (the same resolution bind groups use) and, when a
@@ -2583,6 +2607,22 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> 
         if (!id) continue;
         const s = F.samplers.get(id);
         if (s && (s.addrModeU === 3 || s.addrModeV === 3 || s.addrModeW === 3)) return true;
+      }
+    }
+    return false;
+  }
+
+  // True when any descriptor binding in the current sets resolves to a
+  // sampler the guest created with unnormalizedCoordinates (the protocol
+  // record's unnorm flag). Gates the per-draw unnormalised pipeline
+  // variant, mirroring frameHasBorderSampler.
+  function frameHasUnnormalizedSampler(sets) {
+    for (const set of sets.values()) {
+      for (const b of set.bindings || []) {
+        const id = b.kind === 3 ? b.obj : b.kind === 2 ? b.range : null;
+        if (!id) continue;
+        const s = F.samplers.get(id);
+        if (s && s.unnorm) return true;
       }
     }
     return false;

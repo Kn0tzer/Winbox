@@ -1161,6 +1161,9 @@ export function decodeV2Frame(records, counters = {}) {
           addrW = r.u32(); mipLodBias = r.f32(); anisotropyEnable = !!r.u32();
           compareEnable = !!r.u32(); compareOp = r.u32(); minLod = r.f32(); maxLod = r.f32(); borderColor = r.u32();
         }
+        // Appended after the SAM1 tail (unnormalizedCoordinates): records
+        // written before the field existed end exactly at borderColor.
+        const unnorm = r.left ? !!r.u32() : false;
         r.done('SAMPLER');
         frame.samplers.set(id, {
           mag: FILTER[mag] || 'nearest', min: FILTER[min] || 'nearest', mipmap: FILTER[mipmap] || 'nearest',
@@ -1170,7 +1173,7 @@ export function decodeV2Frame(records, counters = {}) {
           // border sampling in the shader and needs the unmapped modes.
           addrModeU: addrU, addrModeV: addrV, addrModeW: addrW,
           maxAnisotropy: Math.max(1, Math.min(16, Math.round(maxAniso) || 1)),
-          anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor,
+          anisotropyEnable, compareEnable, compareOp, mipLodBias, minLod, maxLod, borderColor, unnorm,
         });
         break;
       }
