@@ -21,6 +21,7 @@ const fixtures = {
   'fd167-setupapi64': ['tools/guest-fixtures/fd167-setupapi64.c'],
   'fd169-crt64': ['tools/guest-fixtures/fd169-crt64.c', '-lm'],
   'fd169-crt32': ['tools/guest-fixtures/fd169-crt32.c', '-lm'],
+  'fd170-contracts64': ['tools/guest-fixtures/fd170-contracts64.c'],
   // Deterministic 64-bit integer/branch/memory workload with a checksum. The
   // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
   // syscalls) share the same source and print the same checksum for the same
