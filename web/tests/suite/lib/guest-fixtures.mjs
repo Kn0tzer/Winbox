@@ -14,6 +14,10 @@ const fixtures = {
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   'dbwin-echo': ['tools/guest-fixtures/dbwin-echo.c', '-lkernel32'],
+  'fd167-contracts32': ['tools/guest-fixtures/fd167-contracts32.c', '-loleaut32'],
+  'fd167-contracts64': ['tools/guest-fixtures/fd167-contracts64.c'],
+  'fd167-msvcp64': ['tools/guest-fixtures/fd167-msvcp64.c'],
+  'fd167-setupapi64': ['tools/guest-fixtures/fd167-setupapi64.c'],
   // Deterministic 64-bit integer/branch/memory workload with a checksum. The
   // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
   // syscalls) share the same source and print the same checksum for the same
