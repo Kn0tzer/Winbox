@@ -16,11 +16,16 @@ import assert from 'node:assert/strict';
 // the log; (2) it boots slowly but keeps making progress (and spends
 // time with a lazy fetch in flight) — no alarm may fire, and when its
 // window maps and paints, startup completes normally; (3) it stalls
-// before the desktop handshake completes — no report may fire, because
-// nothing has booted yet; (4) before the handshake, one guest thread
+// before the desktop handshake at the FD-77 scale — no report may
+// fire, because the pre-handshake rules demand far stronger evidence
+// than a 90-second stall; (4) before the handshake, one guest thread
 // loops on delivered memory faults (the FD-115 wedge shape) — the
 // start must end as a reported failure once that thread's printed
-// fault lines reach the loop threshold, and not before. This fixture
+// fault lines reach the loop threshold, and not before; (5) before
+// the handshake, no guest process makes any progress across
+// consecutive thread dumps (the FD-165 shape) — the start must end
+// as a reported failure, while one progressing process anywhere in
+// the dump keeps it unreported. This fixture
 // proves surfacing behaviour only; guest compatibility is covered by
 // the real-boot checks.
 
@@ -34,15 +39,19 @@ const GLUE = `(function () {
   window.__bwShape = { pid: 42, running: 9, min: 90000, inflight: 0 };
   window.__bwDumpCalls = 0;
   function dumpLines(s) {
-    return [
+    var lines = [
       'BW_THREAD_DUMP begin maxTid=120',
       'BW_THREAD_DUMP pid=' + s.pid + ' tid=100 state=running syscall=-(#0) args=0x0,0x0,0x0,0x0,0x0,0x0 rip=0x7f0 wait=- eax=0x0 noprogress_ms=' + s.min + ' fstage=mem-lock fstage_ms=' + s.min + ' fpage=0x8dd3',
       'BW_THREAD_DUMP pid=' + s.pid + ' tid=101 state=blocked syscall=read(#0) args=0xc,0x0,0x0,0x0,0x0,0x0 rip=0x7f1 wait=KUnixSocketObject::lockCond eax=0x0 noprogress_ms=0 fstage=none fstage_ms=0 fpage=0x0',
-      'BW_THREAD_DUMP proc pid=' + s.pid + ' running=' + s.running + ' min_noprogress_ms=' + s.min + ' memmutex_owner_tid=100 memmutex_owner_ms=' + s.min,
-      'BW_THREAD_DUMP proxyfetch inflight=' + s.inflight + ' oldest_tid=0 oldest_ms=0',
-      'BW_THREAD_DUMP ramalloc owner_tid=0 owner_ms=0',
-      'BW_THREAD_DUMP end dumped=70 skipped-lock=0'
+      'BW_THREAD_DUMP proc pid=' + s.pid + ' running=' + s.running + ' min_noprogress_ms=' + s.min + ' memmutex_owner_tid=100 memmutex_owner_ms=' + s.min
     ];
+    (window.__bwExtraProcs || []).forEach(function (p) {
+      lines.push('BW_THREAD_DUMP proc pid=' + p.pid + ' running=' + p.running + ' min_noprogress_ms=' + p.min + ' memmutex_owner_tid=0 memmutex_owner_ms=0');
+    });
+    lines.push('BW_THREAD_DUMP proxyfetch inflight=' + s.inflight + ' oldest_tid=0 oldest_ms=0');
+    lines.push('BW_THREAD_DUMP ramalloc owner_tid=0 owner_ms=0');
+    lines.push('BW_THREAD_DUMP end dumped=70 skipped-lock=0');
+    return lines;
   }
   M.ccall = function (name) {
     if (name === 'bw64_dump_guest_threads') {
@@ -165,7 +174,7 @@ try {
     const before = await frame.evaluate(() => window.__bwDumpCalls);
     await frame.waitForFunction(n => window.__bwDumpCalls >= n + 3, before, { timeout: 10000 });
     await noFailure('a pre-handshake stall was reported');
-    checks.push('A stall before the desktop handshake completes is not reported — the session has not booted yet');
+    checks.push('A stall before the desktop handshake at the FD-77 scale is not reported — the pre-handshake rules demand far stronger evidence');
     await stop();
   }
 
@@ -190,6 +199,35 @@ try {
     assert.ok(log.includes('pid=71') && log.includes('tid=76'), 'FAIL line names the looping thread');
     await page.screenshot({ path: dir + '/fault-loop-failure.png' });
     checks.push('A pre-handshake delivered-fault loop from one guest thread ends the start as a reported failure at the threshold; bursts below it and faults spread across threads raise no alarm');
+    await stop();
+  }
+
+  // Scenario 5: a pre-handshake start where no guest process makes
+  // any progress (FD-165) is a reported failed start; one progressing
+  // process anywhere in the dump keeps it unreported.
+  {
+    const frame = await launch();
+    await frame.evaluate(shape => { window.__bwShape = shape; }, { pid: 10, running: 1, min: 780078, inflight: 0 });
+    await frame.evaluate(procs => { window.__bwExtraProcs = procs; }, [
+      { pid: 12, running: 1, min: 780078 },
+      { pid: 14, running: 1, min: 4000 },
+    ]);
+    const aliveBefore = await frame.evaluate(() => window.__bwDumpCalls);
+    await frame.waitForFunction(n => window.__bwDumpCalls >= n + 3, aliveBefore, { timeout: 10000 });
+    await noFailure('a pre-handshake start with one progressing process was reported');
+    await frame.evaluate(procs => { window.__bwExtraProcs = procs; }, [
+      { pid: 12, running: 1, min: 780078 },
+      { pid: 14, running: 1, min: 780078 },
+    ]);
+    await page.waitForFunction(() => document.getElementById('loadingTitle').textContent === 'The program stopped', null, { timeout: 20000 });
+    assert.match(await page.locator('#status').textContent(), /did not finish starting/);
+    assert.match(await page.locator('#status').textContent(), /stopped making progress/);
+    assert.match(await page.locator('#status').textContent(), /reported as failed/);
+    const log = await page.locator('#log').textContent();
+    assert.ok(log.includes('BW64-FAIL component=launcher.session reason=prehandshake-no-progress'), 'FAIL line in the session log');
+    assert.ok(log.includes('min_noprogress_ms=780078'), 'FAIL line carries the dump signal');
+    await page.screenshot({ path: dir + '/prehandshake-no-progress-failure.png' });
+    checks.push('A pre-handshake start where no guest process makes progress ends as a reported failure; one progressing process anywhere in the dump raises no alarm');
     await stop();
   }
 
