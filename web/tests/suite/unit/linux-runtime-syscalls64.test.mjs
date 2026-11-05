@@ -25,7 +25,7 @@ constexpr U32 K_EFAULT=14,K_EINVAL=22,K_EINTR=4,K_CONTINUE=0x7ffffffe;
 constexpr U32 X64_CLOCK_REALTIME=0,X64_CLOCK_MONOTONIC=1,X64_CLOCK_BOOTTIME=7,X64_CLOCK_TAI=11,X64_TIMER_ABSTIME=1;
 struct Memory {std::unordered_map<U64,U64> q;U64 readq(U64 a){return q[a];}void writed(U64,U32){}void writeq(U64,U64){}};
 struct KThread {U64 slept=0;U32 nanoSleep(U64 n){slept=n;return 0;}};
-struct CPU64 {Memory* memory;KThread* thread;};
+struct CPU64 {Memory* memory;KThread* thread;U64 affinityMask=3;};
 struct KSystem {static U64 getSystemTimeAsMicroSeconds(){return 10'000'000;}static U32 getMilliesSinceStart(){return 20000;}};
 ${extractSourceRange(source, start,end)}
 int main(){Memory m;KThread t;CPU64 c{&m,&t};
@@ -46,7 +46,7 @@ int main(){Memory m;KThread t;CPU64 c{&m,&t};
   }
 });
 
-test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
+test('x64 getcpu reports the first allowed vCPU of the thread and the single NUMA node', () => {
   const source = readFileSync(join(repoRoot, 'source/kernel/syscall64.cpp'), 'utf8');
   const start = source.indexOf('static U64 sys_getcpu64(');
   const end = source.indexOf('// clock_gettime(clk, struct timespec*)', start);
@@ -60,9 +60,9 @@ test('x64 getcpu reports the single emulated CPU and NUMA node', () => {
 #include <cstdint>
 using U64=uint64_t;using S64=int64_t;using U32=uint32_t;using U8=uint8_t;constexpr U32 K_EFAULT=14;
 struct Memory {U32 cpu=99,node=99;void writed(U64 a,U32 v){if(a==4)cpu=v;else if(a==8)node=v;}};
-struct CPU64 {Memory* memory;};
+struct CPU64 {Memory* memory;U64 affinityMask=3;};
 ${extractSourceRange(source, start,end)}
-int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cpu==0&&m.node==0);assert(sys_getcpu64(&c,4,0,0)==0&&m.cpu==0);assert(sys_getcpu64(&c,0,0,0)==0);}
+int main(){Memory m;CPU64 c{&m};assert(sys_getcpu64(&c,4,8,1234)==0);assert(m.cpu==0&&m.node==0);assert(sys_getcpu64(&c,4,0,0)==0&&m.cpu==0);assert(sys_getcpu64(&c,0,0,0)==0);c.affinityMask=2;assert(sys_getcpu64(&c,4,8,0)==0&&m.cpu==1&&m.node==0);c.affinityMask=1;assert(sys_getcpu64(&c,4,0,0)==0&&m.cpu==0);}
 `);
     const build = spawnSync('c++', ['-std=c++20', join(dir, 'check.cpp'), '-o', join(dir, 'check')], { encoding: 'utf8' });
     assert.equal(build.status, 0, build.stderr);
