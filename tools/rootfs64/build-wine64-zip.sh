@@ -94,7 +94,7 @@ for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll; do
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll; do
     if [ ! -f "$WINE8BP64/$dll" ]; then
         echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
         exit 1
@@ -358,7 +358,13 @@ done
 # wine8-backports-x86_64/README.md for provenance and the pinned hashes;
 # check_runtime_completeness.py enforces them. Hard failure, not a
 # warning, for the same reason as the winehq10 backports above.
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll; do
+#
+# The same loop also stages the FD-170 whole-DLL backports
+# (bluetoothapis.dll, winusb.dll, netutils.dll): Wine 8.0 ships those
+# three as pure spec-stub modules; the backports carry Wine 10.0's own
+# implementations (plus the FD-167 no-device contract bodies) rebuilt
+# from the pinned 8.0 tree via wine8-fd170-contracts.patch.
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll; do
     if [ -f "$WINE8BP64/$dll" ]; then
         cp "$WINE8BP64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"

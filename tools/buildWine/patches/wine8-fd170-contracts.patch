@@ -1,0 +1,1638 @@
+diff --git a/dlls/bluetoothapis/Makefile.in b/dlls/bluetoothapis/Makefile.in
+index 51b2871..80e4ac8 100644
+--- a/dlls/bluetoothapis/Makefile.in
++++ b/dlls/bluetoothapis/Makefile.in
+@@ -1,3 +1,9 @@
+ MODULE    = bluetoothapis.dll
++IMPORTLIB = bluetoothapis
++IMPORTS   = setupapi
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
++
++C_SRCS = \
++	main.c \
++	sdp.c
+diff --git a/dlls/bluetoothapis/bluetoothapis.spec b/dlls/bluetoothapis/bluetoothapis.spec
+index 39354b8..e08594d 100644
+--- a/dlls/bluetoothapis/bluetoothapis.spec
++++ b/dlls/bluetoothapis/bluetoothapis.spec
+@@ -1,69 +1,69 @@
+ @ stub BluetoothAddressToString
+ @ stub BluetoothDisconnectDevice
+-@ stub BluetoothEnableDiscovery
+-@ stub BluetoothEnableIncomingConnections
++@ stdcall BluetoothEnableDiscovery(ptr long)
++@ stdcall BluetoothEnableIncomingConnections(ptr long)
+ @ stub BluetoothEnumerateInstalledServices
+ @ stub BluetoothEnumerateInstalledServicesEx
+ @ stub BluetoothEnumerateLocalServices
+ @ stub BluetoothFindBrowseGroupClose
+ @ stub BluetoothFindClassIdClose
+-@ stub BluetoothFindDeviceClose
++@ stdcall BluetoothFindDeviceClose(ptr)
+ @ stub BluetoothFindFirstBrowseGroup
+ @ stub BluetoothFindFirstClassId
+-@ stub BluetoothFindFirstDevice
++@ stdcall BluetoothFindFirstDevice(ptr ptr)
+ @ stub BluetoothFindFirstProfileDescriptor
+ @ stub BluetoothFindFirstProtocolDescriptorStack
+ @ stub BluetoothFindFirstProtocolEntry
+-@ stub BluetoothFindFirstRadio
++@ stdcall BluetoothFindFirstRadio(ptr ptr)
+ @ stub BluetoothFindFirstService
+ @ stub BluetoothFindFirstServiceEx
+ @ stub BluetoothFindNextBrowseGroup
+ @ stub BluetoothFindNextClassId
+-@ stub BluetoothFindNextDevice
++@ stdcall BluetoothFindNextDevice(ptr ptr)
+ @ stub BluetoothFindNextProfileDescriptor
+ @ stub BluetoothFindNextProtocolDescriptorStack
+ @ stub BluetoothFindNextProtocolEntry
+-@ stub BluetoothFindNextRadio
++@ stdcall BluetoothFindNextRadio(ptr ptr)
+ @ stub BluetoothFindNextService
+ @ stub BluetoothFindProfileDescriptorClose
+ @ stub BluetoothFindProtocolDescriptorStackClose
+ @ stub BluetoothFindProtocolEntryClose
+-@ stub BluetoothFindRadioClose
++@ stdcall BluetoothFindRadioClose(ptr)
+ @ stub BluetoothFindServiceClose
+ @ stub BluetoothGATTAbortReliableWrite
+ @ stub BluetoothGATTBeginReliableWrite
+ @ stub BluetoothGATTEndReliableWrite
+-@ stub BluetoothGATTGetCharacteristicValue
+-@ stub BluetoothGATTGetCharacteristics
++@ stdcall BluetoothGATTGetCharacteristicValue(ptr ptr long ptr ptr long)
++@ stdcall BluetoothGATTGetCharacteristics(ptr ptr long ptr ptr long)
+ @ stub BluetoothGATTGetDescriptorValue
+-@ stub BluetoothGATTGetDescriptors
++@ stdcall BluetoothGATTGetDescriptors(ptr ptr long ptr ptr long)
+ @ stub BluetoothGATTGetIncludedServices
+-@ stub BluetoothGATTGetServices
+-@ stub BluetoothGATTRegisterEvent
+-@ stub BluetoothGATTSetCharacteristicValue
+-@ stub BluetoothGATTSetDescriptorValue
+-@ stub BluetoothGATTUnregisterEvent
++@ stdcall BluetoothGATTGetServices(ptr long ptr ptr long)
++@ stdcall BluetoothGATTRegisterEvent(ptr long ptr ptr ptr ptr)
++@ stdcall BluetoothGATTSetCharacteristicValue(ptr ptr ptr int64 long)
++@ stdcall BluetoothGATTSetDescriptorValue(ptr ptr ptr int64 long)
++@ stdcall BluetoothGATTUnregisterEvent(ptr long)
+ @ stub BluetoothGetDeviceInfo
+ @ stub BluetoothGetLocalServiceInfo
+-@ stub BluetoothGetRadioInfo
++@ stdcall BluetoothGetRadioInfo(ptr ptr)
+ @ stub BluetoothGetServicePnpInstance
+-@ stub BluetoothIsConnectable
++@ stdcall BluetoothIsConnectable(ptr)
+ @ stub BluetoothIsDiscoverable
+ @ stub BluetoothIsVersionAvailable
+ @ stub BluetoothRegisterForAuthentication
+-@ stub BluetoothRegisterForAuthenticationEx
++@ stdcall BluetoothRegisterForAuthenticationEx(ptr ptr ptr ptr)
+ @ stub BluetoothRemoveDevice
+-@ stub BluetoothSdpEnumAttributes
+-@ stub BluetoothSdpGetAttributeValue
+-@ stub BluetoothSdpGetContainerElementData
+-@ stub BluetoothSdpGetElementData
++@ stdcall BluetoothSdpEnumAttributes(ptr long ptr ptr)
++@ stdcall BluetoothSdpGetAttributeValue(ptr long long ptr)
++@ stdcall BluetoothSdpGetContainerElementData(ptr long ptr ptr)
++@ stdcall BluetoothSdpGetElementData(ptr long ptr)
+ @ stub BluetoothSdpGetString
+ @ stub BluetoothSendAuthenticationResponse
+ @ stub BluetoothSendAuthenticationResponseEx
+ @ stub BluetoothSetLocalServiceInfo
+ @ stub BluetoothSetServiceState
+ @ stub BluetoothSetServiceStateEx
+-@ stub BluetoothUnregisterAuthentication
++@ stdcall BluetoothUnregisterAuthentication(long)
+ @ stub BluetoothUpdateDeviceRecord
+ @ stub BthpCheckForUnsupportedGuid
+ @ stub BthpCleanupBRDeviceNode
+diff --git a/dlls/bluetoothapis/main.c b/dlls/bluetoothapis/main.c
+new file mode 100644
+index 0000000..ff96892
+--- /dev/null
++++ b/dlls/bluetoothapis/main.c
+@@ -0,0 +1,463 @@
++/*
++ * Bluetooth APIs
++ *
++ * Copyright 2016 Austin English
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ *
++ */
++
++#include <stdarg.h>
++#include <windef.h>
++#include <winbase.h>
++#include <winuser.h>
++#include <winreg.h>
++
++#include "wine/debug.h"
++#include "bthsdpdef.h"
++#include "bluetoothapis.h"
++#include "bluetoothleapis.h"
++#include "setupapi.h"
++
++#include "initguid.h"
++#include "bthdef.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(bluetoothapis);
++
++struct bluetooth_find_radio_handle
++{
++    HDEVINFO devinfo;
++    DWORD idx;
++};
++
++/*********************************************************************
++ *  BluetoothFindFirstDevice
++ */
++HBLUETOOTH_DEVICE_FIND WINAPI BluetoothFindFirstDevice(BLUETOOTH_DEVICE_SEARCH_PARAMS *params,
++                                                       BLUETOOTH_DEVICE_INFO *info)
++{
++    FIXME("(%p %p): stub!\n", params, info);
++    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
++    return NULL;
++}
++
++/*********************************************************************
++ *  BluetoothFindFirstRadio
++ */
++HBLUETOOTH_RADIO_FIND WINAPI BluetoothFindFirstRadio( BLUETOOTH_FIND_RADIO_PARAMS *params, HANDLE *radio )
++{
++    struct bluetooth_find_radio_handle *find;
++    HANDLE device_ret;
++    DWORD err;
++
++    TRACE( "(%p, %p)\n", params, radio );
++
++    if (!params)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return NULL;
++    }
++    if (params->dwSize != sizeof( *params ))
++    {
++        SetLastError( ERROR_REVISION_MISMATCH );
++        return NULL;
++    }
++    if (!(find = calloc( 1, sizeof( *find ) )))
++    {
++        SetLastError( ERROR_OUTOFMEMORY );
++        return NULL;
++    }
++
++    find->devinfo = SetupDiGetClassDevsW( &GUID_BTHPORT_DEVICE_INTERFACE, NULL, NULL,
++                                          DIGCF_PRESENT | DIGCF_DEVICEINTERFACE );
++    if (find->devinfo == INVALID_HANDLE_VALUE)
++    {
++        free( find );
++        return NULL;
++    }
++
++    if (BluetoothFindNextRadio( find, &device_ret ))
++    {
++        *radio = device_ret;
++        return find;
++    }
++
++    err = GetLastError();
++    BluetoothFindRadioClose( find );
++    SetLastError( err );
++    return NULL;
++}
++
++/*********************************************************************
++ *  BluetoothFindRadioClose
++ */
++BOOL WINAPI BluetoothFindRadioClose( HBLUETOOTH_RADIO_FIND find_handle )
++{
++    struct bluetooth_find_radio_handle *find = find_handle;
++
++    TRACE( "(%p)\n", find_handle );
++
++    if (!find_handle)
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++
++    SetupDiDestroyDeviceInfoList( find->devinfo );
++    free( find );
++    SetLastError( ERROR_SUCCESS );
++    return TRUE;
++}
++
++/*********************************************************************
++ *  BluetoothFindDeviceClose
++ */
++BOOL WINAPI BluetoothFindDeviceClose(HBLUETOOTH_DEVICE_FIND find)
++{
++    FIXME("(%p): stub!\n", find);
++    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothFindNextRadio
++ */
++BOOL WINAPI BluetoothFindNextRadio( HBLUETOOTH_RADIO_FIND find_handle, HANDLE *radio )
++{
++    char buffer[sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) + MAX_PATH * sizeof( WCHAR )];
++    struct bluetooth_find_radio_handle *find = find_handle;
++    SP_DEVICE_INTERFACE_DETAIL_DATA_W *iface_detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_W *)buffer;
++    SP_DEVICE_INTERFACE_DATA iface_data;
++    HANDLE device_ret;
++    BOOL found;
++
++    TRACE( "(%p, %p)\n", find_handle, radio );
++
++    if (!find_handle)
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++
++    iface_detail->cbSize = sizeof( *iface_detail );
++    iface_data.cbSize = sizeof( iface_data );
++    found = FALSE;
++    while (SetupDiEnumDeviceInterfaces( find->devinfo, NULL, &GUID_BTHPORT_DEVICE_INTERFACE, find->idx++,
++                                        &iface_data ))
++    {
++        if (!SetupDiGetDeviceInterfaceDetailW( find->devinfo, &iface_data, iface_detail, sizeof( buffer ), NULL,
++                                               NULL ))
++            continue;
++        device_ret = CreateFileW( iface_detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
++                                  FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
++        if (device_ret != INVALID_HANDLE_VALUE)
++        {
++            found = TRUE;
++            break;
++        }
++    }
++
++    if (found)
++        *radio = device_ret;
++
++    return found;
++}
++
++/*********************************************************************
++ *  BluetoothGetRadioInfo
++ */
++DWORD WINAPI BluetoothGetRadioInfo(HANDLE radio, PBLUETOOTH_RADIO_INFO info)
++{
++    FIXME("(%p, %p): stub!\n", radio, info);
++    return ERROR_CALL_NOT_IMPLEMENTED;
++}
++
++/*********************************************************************
++ *  BluetoothFindNextDevice
++ */
++BOOL WINAPI BluetoothFindNextDevice(HBLUETOOTH_DEVICE_FIND find, BLUETOOTH_DEVICE_INFO *info)
++{
++    FIXME("(%p, %p): stub!\n", find, info);
++    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothRegisterForAuthenticationEx
++ */
++DWORD WINAPI BluetoothRegisterForAuthenticationEx(const BLUETOOTH_DEVICE_INFO *info, HBLUETOOTH_AUTHENTICATION_REGISTRATION *out,
++                                                  PFN_AUTHENTICATION_CALLBACK_EX callback, void *param)
++{
++    FIXME("(%p, %p, %p, %p): stub!\n", info, out, callback, param);
++    return ERROR_CALL_NOT_IMPLEMENTED;
++}
++
++/*********************************************************************
++ *  BluetoothUnregisterAuthentication
++ */
++BOOL WINAPI BluetoothUnregisterAuthentication(HBLUETOOTH_AUTHENTICATION_REGISTRATION handle)
++{
++    FIXME("(%p): stub!\n", handle);
++    if (!handle) SetLastError(ERROR_INVALID_HANDLE);
++    return FALSE;
++}
++
++/*********************************************************************
++ *  Bluetooth radio helpers
++ *
++ * This runtime has no Bluetooth radio stack: radio enumeration (via
++ * BluetoothFindFirstRadio/BluetoothFindNextRadio, which walk the
++ * setupapi device interfaces) is always empty here, so no handle a
++ * caller can hold names a radio, and no LE device handle can exist.
++ * The functions below still run the documented validation, in the same
++ * order as the native implementation, so callers get the answers a
++ * radio-less machine gives.
++ */
++
++static BOOL radio_handle_is_valid( HANDLE radio )
++{
++    BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++    HBLUETOOTH_RADIO_FIND find;
++    HANDLE found = NULL;
++
++    find = BluetoothFindFirstRadio( &params, &found );
++    if (!find)
++        return FALSE;
++    for (;;)
++    {
++        HANDLE current = found;
++
++        if (current == radio)
++        {
++            CloseHandle( current );
++            BluetoothFindRadioClose( find );
++            return TRUE;
++        }
++        CloseHandle( current );
++        if (!BluetoothFindNextRadio( find, &found ))
++            break;
++    }
++    BluetoothFindRadioClose( find );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothEnableDiscovery
++ */
++BOOL WINAPI BluetoothEnableDiscovery( HANDLE radio, BOOL enable )
++{
++    TRACE( "(%p, %d)\n", radio, enable );
++
++    if (!radio)
++    {
++        /* A NULL radio means "every radio"; enumeration finds none. */
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    FIXME( "radio stack not available\n" );
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothEnableIncomingConnections
++ */
++BOOL WINAPI BluetoothEnableIncomingConnections( HANDLE radio, BOOL enable )
++{
++    TRACE( "(%p, %d)\n", radio, enable );
++
++    if (!radio)
++    {
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    FIXME( "radio stack not available\n" );
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothIsConnectable
++ */
++BOOL WINAPI BluetoothIsConnectable( HANDLE radio )
++{
++    TRACE( "(%p)\n", radio );
++
++    if (!radio)
++    {
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        /* No connectable radio can exist without a radio stack. */
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    return FALSE;
++}
++
++/*********************************************************************
++ *  Bluetooth GATT client functions
++ *
++ * Argument validation mirrors the native implementation's order.  The
++ * device step itself cannot succeed here: no Bluetooth LE device stack
++ * exists in this runtime, so no handle can name an LE device, and the
++ * native driver call fails for such a handle with ERROR_INVALID_HANDLE.
++ */
++
++HRESULT WINAPI BluetoothGATTGetServices( HANDLE device, USHORT count, BTH_LE_GATT_SERVICE *services,
++                                         USHORT *actual, ULONG flags )
++{
++    TRACE( "(%p, %u, %p, %p, %#lx)\n", device, count, services, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (!!services != !!count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetCharacteristics( HANDLE device, BTH_LE_GATT_SERVICE *service, USHORT count,
++                                                BTH_LE_GATT_CHARACTERISTIC *characteristics, USHORT *actual,
++                                                ULONG flags )
++{
++    TRACE( "(%p, %p, %u, %p, %p, %#lx)\n", device, service, count, characteristics, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (characteristics && !count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetDescriptors( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                            USHORT count, BTH_LE_GATT_DESCRIPTOR *descriptors, USHORT *actual,
++                                            ULONG flags )
++{
++    TRACE( "(%p, %p, %u, %p, %p, %#lx)\n", device, characteristic, count, descriptors, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (descriptors && !count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetCharacteristicValue( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                                    ULONG size, BTH_LE_GATT_CHARACTERISTIC_VALUE *value,
++                                                    USHORT *actual, ULONG flags )
++{
++    TRACE( "(%p, %p, %lu, %p, %p, %#lx)\n", device, characteristic, size, value, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!characteristic || !(size || value || actual) || (size && size < sizeof( *value )))
++        return E_INVALIDARG;
++    if (size && !value)
++        return E_POINTER;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTSetCharacteristicValue( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                                    BTH_LE_GATT_CHARACTERISTIC_VALUE *value,
++                                                    BTH_LE_GATT_RELIABLE_WRITE_CONTEXT context, ULONG flags )
++{
++    TRACE( "(%p, %p, %p, %s, %#lx)\n", device, characteristic, value,
++           wine_dbgstr_longlong( context ), flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!characteristic || !value)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTSetDescriptorValue( HANDLE device, BTH_LE_GATT_DESCRIPTOR *descriptor,
++                                                BTH_LE_GATT_DESCRIPTOR_VALUE *value,
++                                                BTH_LE_GATT_RELIABLE_WRITE_CONTEXT context, ULONG flags )
++{
++    TRACE( "(%p, %p, %p, %s, %#lx)\n", device, descriptor, value,
++           wine_dbgstr_longlong( context ), flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!descriptor || !value)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTRegisterEvent( HANDLE device, BTH_LE_GATT_EVENT_TYPE type, void *params,
++                                           PFNBLUETOOTH_GATT_EVENT_CALLBACK callback, void *context,
++                                           BLUETOOTH_GATT_EVENT_HANDLE *event_handle )
++{
++    TRACE( "(%p, %d, %p, %p, %p, %p)\n", device, type, params, callback, context, event_handle );
++
++    if (!event_handle)
++        return E_POINTER;
++    if (!callback)
++        return E_INVALIDARG;
++    if (!device)
++        return E_HANDLE;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTUnregisterEvent( BLUETOOTH_GATT_EVENT_HANDLE event_handle, ULONG flags )
++{
++    TRACE( "(%p, %#lx)\n", event_handle, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    /* Event handles are minted only by BluetoothGATTRegisterEvent, which
++       cannot succeed without an LE device stack. */
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
+diff --git a/dlls/bluetoothapis/sdp.c b/dlls/bluetoothapis/sdp.c
+new file mode 100644
+index 0000000..315f38a
+--- /dev/null
++++ b/dlls/bluetoothapis/sdp.c
+@@ -0,0 +1,415 @@
++/*
++ * SDP APIs
++ *
++ * Copyright 2024 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ *
++ */
++
++#include <stdarg.h>
++#include <windef.h>
++#include <winbase.h>
++#include <winternl.h>
++
++#include "wine/debug.h"
++#include "bthsdpdef.h"
++#include "bluetoothapis.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL( bluetoothapis );
++
++#define BTH_READ_UINT16( s ) RtlUshortByteSwap( *(USHORT *)(s) )
++#define BTH_READ_UINT32( s ) RtlUlongByteSwap( *(ULONG *)(s) )
++#define BTH_READ_UINT64( s ) RtlUlonglongByteSwap( *(ULONGLONG *)(s) )
++
++#define SDP_SIZE_DESC_1_BYTE 0
++#define SDP_SIZE_DESC_2_BYTES 1
++#define SDP_SIZE_DESC_4_BYTES 2
++#define SDP_SIZE_DESC_8_BYTES 3
++#define SDP_SIZE_DESC_16_BYTES 4
++#define SDP_SIZE_DESC_NEXT_UINT8 5
++#define SDP_SIZE_DESC_NEXT_UINT16 6
++#define SDP_SIZE_DESC_NEXT_UINT32 7
++
++static void bth_read_uint128( BYTE *s, SDP_ULARGE_INTEGER_16 *v )
++{
++    v->HighPart = BTH_READ_UINT64( s );
++    v->LowPart = BTH_READ_UINT64( s + 8 );
++}
++
++static BYTE data_elem_type( BYTE elem ) { return (elem & 0xf8) >> 3; }
++static BYTE data_elem_size_desc( BYTE elem ) { return elem & 0x7; }
++
++#define SDP_ELEMENT_IS_UINT16( d ) ( (d)->type == SDP_TYPE_UINT && (d)->specificType == SDP_ST_UINT16 )
++#define SDP_ELEMENT_IS_ATTRID( d ) SDP_ELEMENT_IS_UINT16((d))
++
++/* Read the data element's size/length as described by the size descriptor, starting from stream. Only
++ * valid for SDP_SIZE_DESC_NEXT_* types. */
++static BOOL sdp_elem_read_var_size( BYTE *stream, ULONG stream_size, SIZE_T *read, BYTE size_desc,
++                                    UINT32 *size )
++{
++    switch (size_desc)
++    {
++    case SDP_SIZE_DESC_NEXT_UINT8:
++        if (stream_size < sizeof( UINT8 )) return FALSE;
++        *size = *stream;
++        *read += sizeof( UINT8 );
++        return TRUE;
++    case SDP_SIZE_DESC_NEXT_UINT16:
++        if (stream_size < sizeof( UINT16 )) return FALSE;
++        *size = BTH_READ_UINT16( stream );
++        *read += sizeof( UINT16 );
++        return TRUE;
++    case SDP_SIZE_DESC_NEXT_UINT32:
++        if (stream_size < sizeof( UINT32 )) return FALSE;
++        *size = BTH_READ_UINT32( stream );
++        *read += sizeof( UINT32 );
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++
++const static SDP_SPECIFICTYPE SDP_BASIC_TYPES[4][5] = {
++    [SDP_TYPE_UINT] =
++        {
++            [SDP_SIZE_DESC_1_BYTE] = SDP_ST_UINT8,
++            [SDP_SIZE_DESC_2_BYTES] = SDP_ST_UINT16,
++            [SDP_SIZE_DESC_4_BYTES] = SDP_ST_UINT32,
++            [SDP_SIZE_DESC_8_BYTES] = SDP_ST_UINT64,
++            [SDP_SIZE_DESC_16_BYTES] = SDP_ST_UINT128,
++        },
++    [SDP_TYPE_INT] =
++        {
++            [SDP_SIZE_DESC_1_BYTE] = SDP_ST_INT8,
++            [SDP_SIZE_DESC_2_BYTES] = SDP_ST_INT16,
++            [SDP_SIZE_DESC_4_BYTES] = SDP_ST_INT32,
++            [SDP_SIZE_DESC_8_BYTES] = SDP_ST_INT64,
++            [SDP_SIZE_DESC_16_BYTES] = SDP_ST_INT128,
++        },
++    [SDP_TYPE_UUID] =
++        {
++            [SDP_SIZE_DESC_2_BYTES] = SDP_ST_UUID16,
++            [SDP_SIZE_DESC_4_BYTES] = SDP_ST_UUID32,
++            [SDP_SIZE_DESC_16_BYTES] = SDP_ST_UUID128,
++        },
++};
++
++static BOOL sdp_read_specific_type( BYTE *stream, ULONG stream_size, SDP_SPECIFICTYPE st,
++                                    SDP_ELEMENT_DATA *data, SIZE_T *read )
++{
++    switch (st)
++    {
++    case SDP_ST_UINT8:
++    case SDP_ST_INT8:
++        if (stream_size < sizeof( UINT8 )) return FALSE;
++        data->data.uint8 = *stream;
++        *read += sizeof( UINT8 );
++        break;
++    case SDP_ST_UINT16:
++    case SDP_ST_INT16:
++    case SDP_ST_UUID16:
++        if (stream_size < sizeof( UINT16 )) return FALSE;
++        data->data.uint16 = BTH_READ_UINT16( stream );
++        *read += sizeof( UINT16 );
++        break;
++    case SDP_ST_UINT32:
++    case SDP_ST_INT32:
++        if (stream_size < sizeof( UINT32 )) return FALSE;
++        data->data.uint32 = BTH_READ_UINT32( stream );
++        *read += sizeof( UINT32 );
++        break;
++    case SDP_ST_UINT64:
++    case SDP_ST_INT64:
++        if (stream_size < sizeof( UINT64 )) return FALSE;
++        data->data.uint64 = BTH_READ_UINT64( stream );
++        *read += sizeof( UINT64 );
++        break;
++    case SDP_ST_UINT128:
++    case SDP_ST_INT128:
++    case SDP_ST_UUID128:
++        if (stream_size < sizeof( SDP_ULARGE_INTEGER_16 )) return FALSE;
++        bth_read_uint128( stream, &data->data.uint128 );
++        *read += sizeof( SDP_ULARGE_INTEGER_16 );
++        break;
++    default:
++        return FALSE;
++    }
++
++    return TRUE;
++}
++
++static DWORD sdp_read_element_data( BYTE *stream, ULONG stream_size, SDP_ELEMENT_DATA *data,
++                                    SIZE_T *read )
++{
++    BYTE type, size_desc, elem;
++    SDP_SPECIFICTYPE st;
++
++    if (stream_size < sizeof( BYTE )) return ERROR_INVALID_PARAMETER;
++
++    elem = *stream;
++    type = data_elem_type( elem );
++    size_desc = data_elem_size_desc( elem );
++
++    stream += sizeof( BYTE );
++    *read += sizeof( BYTE );
++    stream_size -= sizeof( BYTE );
++
++    memset( data, 0, sizeof( *data ) );
++    switch (type)
++    {
++    case SDP_TYPE_NIL:
++        if (size_desc != 0) return ERROR_INVALID_PARAMETER;
++
++        data->type = type;
++        data->specificType = SDP_ST_NONE;
++        break;
++    case SDP_TYPE_UINT:
++    case SDP_TYPE_INT:
++    case SDP_TYPE_UUID:
++        if (size_desc > SDP_SIZE_DESC_16_BYTES) return ERROR_INVALID_PARAMETER;
++
++        st = SDP_BASIC_TYPES[type][size_desc];
++        if (st == SDP_ST_NONE) return ERROR_INVALID_PARAMETER;
++
++        if (!sdp_read_specific_type( stream, stream_size, st, data, read ))
++            return ERROR_INVALID_PARAMETER;
++
++        data->type = type;
++        data->specificType = st;
++        break;
++    case SDP_TYPE_BOOLEAN:
++        if (size_desc != SDP_SIZE_DESC_1_BYTE) return ERROR_INVALID_PARAMETER;
++        if (stream_size < sizeof( BYTE )) return ERROR_INVALID_PARAMETER;
++
++        data->type = type;
++        data->specificType = SDP_ST_NONE;
++        data->data.booleanVal = *stream;
++        *read += sizeof( BYTE );
++        break;
++    case SDP_TYPE_STRING:
++    case SDP_TYPE_URL:
++    case SDP_TYPE_SEQUENCE:
++    case SDP_TYPE_ALTERNATIVE:
++    {
++        UINT32 elems_size;
++        SIZE_T size_read = 0;
++
++        if (!(size_desc >= SDP_SIZE_DESC_NEXT_UINT8 && size_desc <= SDP_SIZE_DESC_NEXT_UINT32))
++            return ERROR_INVALID_PARAMETER;
++        if (!sdp_elem_read_var_size( stream, stream_size, &size_read, size_desc, &elems_size ))
++            return ERROR_INVALID_PARAMETER;
++
++        stream_size -= size_read;
++        if (type == SDP_TYPE_STRING || type == SDP_TYPE_URL)
++            stream += size_read;
++
++        if (stream_size < elems_size) return ERROR_INVALID_PARAMETER;
++
++        data->type = type;
++        data->specificType = SDP_ST_NONE;
++        if (type == SDP_TYPE_STRING || type == SDP_TYPE_URL)
++        {
++            data->data.string.value = stream;
++            data->data.string.length = elems_size;
++        }
++        else
++        {
++            /* For sequence and alternative containers, the stream should begin at the container
++             * header. */
++            data->data.sequence.value = stream - sizeof( BYTE );
++            data->data.sequence.length = elems_size + *read + size_read;
++        }
++        *read += size_read + elems_size;
++        break;
++    }
++    default:
++        return ERROR_INVALID_PARAMETER;
++    }
++
++    return ERROR_SUCCESS;
++}
++
++/*********************************************************************
++ *  BluetoothSdpGetElementData
++ */
++DWORD WINAPI BluetoothSdpGetElementData( BYTE *stream, ULONG stream_size, SDP_ELEMENT_DATA *data )
++{
++    SIZE_T read = 0;
++
++    TRACE( "(%p, %lu, %p)\n", stream, stream_size, data );
++
++    if (stream == NULL || stream_size < sizeof( BYTE ) || data == NULL)
++        return ERROR_INVALID_PARAMETER;
++
++    return sdp_read_element_data( stream, stream_size, data, &read );
++}
++
++/*********************************************************************
++ *  BluetoothSdpGetContainerElementData
++ */
++DWORD WINAPI BluetoothSdpGetContainerElementData( BYTE *stream, ULONG stream_size,
++                                                  HBLUETOOTH_CONTAINER_ELEMENT *handle,
++                                                  SDP_ELEMENT_DATA *data )
++{
++    BYTE *cursor;
++    DWORD result;
++    SIZE_T read = 0;
++
++    TRACE( "(%p, %lu, %p, %p)\n", stream, stream_size, handle, data );
++
++    if (stream == NULL || stream_size < sizeof( BYTE ) || handle == NULL || data == NULL)
++        return ERROR_INVALID_PARAMETER;
++
++    cursor = (BYTE *)(*handle);
++
++    if (cursor == NULL)
++    {
++        BYTE header, type, size_desc;
++        UINT32 elems_size = 0;
++        SIZE_T read = 0;
++
++        header = *stream;
++        type = data_elem_type( header );
++        size_desc = data_elem_size_desc( header );
++
++        if (type != SDP_TYPE_SEQUENCE && type != SDP_TYPE_ALTERNATIVE)
++            return ERROR_INVALID_PARAMETER;
++        if (!(size_desc >= SDP_SIZE_DESC_NEXT_UINT8 && size_desc <= SDP_SIZE_DESC_NEXT_UINT32))
++            return ERROR_INVALID_PARAMETER;
++
++        stream++;
++        if (!sdp_elem_read_var_size( stream, stream_size, &read, size_desc, &elems_size ))
++            return ERROR_INVALID_PARAMETER;
++
++        stream += read;
++        stream_size -= read;
++    }
++    else
++    {
++        if (cursor < stream) return ERROR_INVALID_PARAMETER;
++        if (cursor == (stream + stream_size)) return ERROR_NO_MORE_ITEMS;
++
++        stream = cursor;
++        stream_size = stream_size - (cursor - stream);
++    }
++    result = sdp_read_element_data( stream, stream_size, data, &read );
++    if (result != ERROR_SUCCESS) return result;
++
++    stream += read;
++    TRACE( "handle=%p\n", stream );
++    *handle = stream;
++    return ERROR_SUCCESS;
++}
++
++/*********************************************************************
++ *  BluetoothSdpEnumAttributes
++ */
++BOOL WINAPI BluetoothSdpEnumAttributes( BYTE *stream, ULONG stream_size,
++                                        PFN_BLUETOOTH_ENUM_ATTRIBUTES_CALLBACK callback, void *param )
++{
++    SDP_ELEMENT_DATA data = {0};
++    DWORD result;
++    HBLUETOOTH_CONTAINER_ELEMENT cursor = NULL;
++
++    TRACE( "(%p, %ld, %p, %p)\n", stream, stream_size, callback, param );
++
++    if (stream == NULL || callback == NULL) return ERROR_INVALID_PARAMETER;
++
++    result = BluetoothSdpGetElementData( stream, stream_size, &data );
++    if (result != ERROR_SUCCESS)
++    {
++        SetLastError( ERROR_INVALID_DATA );
++        return FALSE;
++    }
++
++    switch (data.type)
++    {
++    case SDP_TYPE_SEQUENCE:
++    case SDP_TYPE_ALTERNATIVE:
++        break;
++    default:
++        SetLastError( ERROR_INVALID_DATA );
++        return FALSE;
++    }
++
++    for (;;)
++    {
++        SDP_ELEMENT_DATA attrid = {0};
++        SDP_ELEMENT_DATA attr = {0};
++        BYTE *raw_attr_stream;
++
++        result = BluetoothSdpGetContainerElementData( data.data.sequence.value,
++                                                      data.data.sequence.length, &cursor, &attrid );
++        if (result == ERROR_NO_MORE_ITEMS) return TRUE;
++        if (result || !SDP_ELEMENT_IS_ATTRID( &attrid ))
++        {
++            SetLastError( ERROR_INVALID_DATA );
++            return FALSE;
++        }
++
++        raw_attr_stream = cursor;
++        result = BluetoothSdpGetContainerElementData( data.data.sequence.value,
++                                                      data.data.sequence.length, &cursor, &attr );
++        if (result != ERROR_SUCCESS)
++        {
++            SetLastError( ERROR_INVALID_DATA );
++            return FALSE;
++        }
++        if (!callback( attrid.data.uint16, raw_attr_stream, ((BYTE *)cursor - raw_attr_stream),
++                       param ))
++            return TRUE;
++    }
++}
++
++struct get_attr_value_data
++{
++    USHORT attr_id;
++    BYTE *attr_stream;
++    ULONG stream_size;
++};
++
++static BOOL WINAPI get_attr_value_callback( ULONG attr_id, BYTE *stream, ULONG stream_size,
++                                            void *params )
++{
++    struct get_attr_value_data *args = params;
++    if (attr_id == args->attr_id)
++    {
++        args->attr_stream = stream;
++        args->stream_size = stream_size;
++        return FALSE;
++    }
++    return TRUE;
++}
++
++/*********************************************************************
++ *  BluetoothSdpGetAttributeValue
++ */
++DWORD WINAPI BluetoothSdpGetAttributeValue( BYTE *stream, ULONG stream_size, USHORT attr_id,
++                                            SDP_ELEMENT_DATA *data )
++{
++    struct get_attr_value_data args = {0};
++
++    TRACE( "(%p %lu %u %p)\n", stream, stream_size, attr_id, data );
++
++    if (stream == NULL || data == NULL) return ERROR_INVALID_PARAMETER;
++
++    args.attr_id = attr_id;
++    if (!BluetoothSdpEnumAttributes( stream, stream_size, get_attr_value_callback, &args ))
++        return ERROR_INVALID_PARAMETER;
++    if (!args.attr_stream) return ERROR_FILE_NOT_FOUND;
++
++    return BluetoothSdpGetElementData( args.attr_stream, args.stream_size, data );
++}
+diff --git a/dlls/netutils/Makefile.in b/dlls/netutils/Makefile.in
+index 8b16b2e..0def2bf 100644
+--- a/dlls/netutils/Makefile.in
++++ b/dlls/netutils/Makefile.in
+@@ -1,3 +1,7 @@
+ MODULE    = netutils.dll
++IMPORTLIB = netutils
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
++
++C_SRCS = \
++	main.c
+diff --git a/dlls/netutils/main.c b/dlls/netutils/main.c
+new file mode 100644
+index 0000000..daf56bd
+--- /dev/null
++++ b/dlls/netutils/main.c
+@@ -0,0 +1,105 @@
++/*
++ * Copyright 2001 Mike McCormack
++ * Copyright 2002 Andriy Palamarchuk
++ * Copyright 2003 Juan Lang
++ * Copyright 2005,2006 Paul Vriens
++ * Copyright 2006 Robert Reif
++ * Copyright 2013 Hans Leidekker for CodeWeavers
++ * Copyright 2020 Dmitry Timoshkov
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "lm.h"
++#include "wine/debug.h"
++#include "wine/list.h"
++#include "initguid.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(netutils);
++
++/************************************************************
++ *                NetApiBufferAllocate  (NETUTILS.@)
++ */
++NET_API_STATUS WINAPI NetApiBufferAllocate(DWORD ByteCount, LPVOID* Buffer)
++{
++    TRACE("(%ld, %p)\n", ByteCount, Buffer);
++
++    if (Buffer == NULL) return ERROR_INVALID_PARAMETER;
++    *Buffer = HeapAlloc(GetProcessHeap(), 0, ByteCount);
++    if (*Buffer)
++        return NERR_Success;
++    else
++        return GetLastError();
++}
++
++/************************************************************
++ *                NetApiBufferFree  (NETUTILS.@)
++ */
++NET_API_STATUS WINAPI NetApiBufferFree(LPVOID Buffer)
++{
++    TRACE("(%p)\n", Buffer);
++    HeapFree(GetProcessHeap(), 0, Buffer);
++    return NERR_Success;
++}
++
++/************************************************************
++ *                NetApiBufferReallocate  (NETUTILS.@)
++ */
++NET_API_STATUS WINAPI NetApiBufferReallocate(LPVOID OldBuffer, DWORD NewByteCount,
++                                             LPVOID* NewBuffer)
++{
++    TRACE("(%p, %ld, %p)\n", OldBuffer, NewByteCount, NewBuffer);
++    if (NewByteCount)
++    {
++        if (OldBuffer)
++            *NewBuffer = HeapReAlloc(GetProcessHeap(), 0, OldBuffer, NewByteCount);
++        else
++            *NewBuffer = HeapAlloc(GetProcessHeap(), 0, NewByteCount);
++        return *NewBuffer ? NERR_Success : GetLastError();
++    }
++    else
++    {
++        if (!HeapFree(GetProcessHeap(), 0, OldBuffer)) return GetLastError();
++        *NewBuffer = 0;
++        return NERR_Success;
++    }
++}
++
++/************************************************************
++ *                NetApiBufferSize  (NETUTILS.@)
++ */
++NET_API_STATUS WINAPI NetApiBufferSize(LPVOID Buffer, LPDWORD ByteCount)
++{
++    DWORD dw;
++
++    TRACE("(%p, %p)\n", Buffer, ByteCount);
++    if (Buffer == NULL)
++        return ERROR_INVALID_PARAMETER;
++    dw = HeapSize(GetProcessHeap(), 0, Buffer);
++    TRACE("size: %ld\n", dw);
++    if (dw != 0xFFFFFFFF)
++        *ByteCount = dw;
++    else
++        *ByteCount = 0;
++
++    return NERR_Success;
++}
+diff --git a/dlls/netutils/netutils.spec b/dlls/netutils/netutils.spec
+index ff022af..a6a4319 100644
+--- a/dlls/netutils/netutils.spec
++++ b/dlls/netutils/netutils.spec
+@@ -1,9 +1,9 @@
+-@ stub NetApiBufferAllocate
+-@ stub NetApiBufferFree
+-@ stub NetApiBufferReallocate
+-@ stub NetApiBufferSize
++@ stdcall NetApiBufferAllocate(long ptr)
++@ stdcall NetApiBufferFree(ptr)
++@ stdcall NetApiBufferReallocate(ptr long ptr)
++@ stdcall NetApiBufferSize(ptr ptr)
+ @ stub NetRemoteComputerSupports
+-@ stub NetapipBufferAllocate
++@ stdcall NetapipBufferAllocate(long ptr) NetApiBufferAllocate
+ @ stub NetpIsComputerNameValid
+ @ stub NetpIsDomainNameValid
+ @ stub NetpIsGroupNameValid
+diff --git a/dlls/winusb/main.c b/dlls/winusb/main.c
+index 52682a5..56b5942 100644
+--- a/dlls/winusb/main.c
++++ b/dlls/winusb/main.c
+@@ -34,3 +34,119 @@ BOOL WINAPI WinUsb_Free(WINUSB_INTERFACE_HANDLE handle)
+     FIXME( "(%p) - stub\n", handle );
+     return TRUE;
+ }
++
++/***********************************************************************
++ *           WinUsb device contract
++ *
++ * This runtime has no WinUSB device stack: no device can be driven by
++ * WinUSB, so no interface handle can ever be minted and every device
++ * handle fails WinUsb_Initialize the way a handle that does not belong
++ * to a WinUSB device fails it natively.  The functions validate their
++ * out-parameters first, in the native order, then report the invalid
++ * handle instead of raising the stub exception.
++ */
++
++/***********************************************************************
++ *           WinUsb_Initialize (winusb.@)
++ */
++BOOL WINAPI WinUsb_Initialize( HANDLE device_handle, PWINUSB_INTERFACE_HANDLE interface_handle )
++{
++    TRACE( "(%p, %p)\n", device_handle, interface_handle );
++
++    if (!interface_handle)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *interface_handle = NULL;
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_GetAssociatedInterface (winusb.@)
++ */
++BOOL WINAPI WinUsb_GetAssociatedInterface( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR index,
++                                           PWINUSB_INTERFACE_HANDLE associated_handle )
++{
++    TRACE( "(%p, %u, %p)\n", interface_handle, index, associated_handle );
++
++    if (!associated_handle)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *associated_handle = NULL;
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_GetOverlappedResult (winusb.@)
++ */
++BOOL WINAPI WinUsb_GetOverlappedResult( WINUSB_INTERFACE_HANDLE interface_handle, OVERLAPPED *overlapped,
++                                        DWORD *transferred, BOOL wait )
++{
++    TRACE( "(%p, %p, %p, %d)\n", interface_handle, overlapped, transferred, wait );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ControlTransfer (winusb.@)
++ */
++BOOL WINAPI WinUsb_ControlTransfer( WINUSB_INTERFACE_HANDLE interface_handle, WINUSB_SETUP_PACKET setup,
++                                    UCHAR *buffer, ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %p, %lu, %p, %p)\n", interface_handle, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ReadPipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_ReadPipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id, UCHAR *buffer,
++                             ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %#x, %p, %lu, %p, %p)\n", interface_handle, pipe_id, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_WritePipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_WritePipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id, const UCHAR *buffer,
++                              ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %#x, %p, %lu, %p, %p)\n", interface_handle, pipe_id, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ResetPipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_ResetPipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id )
++{
++    TRACE( "(%p, %#x)\n", interface_handle, pipe_id );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_SetCurrentAlternateSetting (winusb.@)
++ */
++BOOL WINAPI WinUsb_SetCurrentAlternateSetting( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR setting )
++{
++    TRACE( "(%p, %u)\n", interface_handle, setting );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
+diff --git a/dlls/winusb/winusb.spec b/dlls/winusb/winusb.spec
+index a0b57d5..6844013 100644
+--- a/dlls/winusb/winusb.spec
++++ b/dlls/winusb/winusb.spec
+@@ -1,22 +1,22 @@
+ @ stub WinUsb_AbortPipe
+-@ stub WinUsb_ControlTransfer
++@ stdcall WinUsb_ControlTransfer(ptr long long ptr long ptr ptr)
+ @ stub WinUsb_FlushPipe
+ @ stdcall WinUsb_Free(ptr)
+-@ stub WinUsb_GetAssociatedInterface
++@ stdcall WinUsb_GetAssociatedInterface(ptr long ptr)
+ @ stub WinUsb_GetCurrentAlternateSetting
+ @ stub WinUsb_GetDescriptor
+-@ stub WinUsb_GetOverlappedResult
++@ stdcall WinUsb_GetOverlappedResult(ptr ptr ptr long)
+ @ stub WinUsb_GetPipePolicy
+ @ stub WinUsb_GetPowerPolicy
+-@ stub WinUsb_Initialize
++@ stdcall WinUsb_Initialize(ptr ptr)
+ @ stub WinUsb_ParseConfigurationDescriptor
+ @ stub WinUsb_ParseDescriptors
+ @ stub WinUsb_QueryDeviceInformation
+ @ stub WinUsb_QueryInterfaceSettings
+ @ stub WinUsb_QueryPipe
+-@ stub WinUsb_ReadPipe
+-@ stub WinUsb_ResetPipe
+-@ stub WinUsb_SetCurrentAlternateSetting
++@ stdcall WinUsb_ReadPipe(ptr long ptr long ptr ptr)
++@ stdcall WinUsb_ResetPipe(ptr long)
++@ stdcall WinUsb_SetCurrentAlternateSetting(ptr long)
+ @ stub WinUsb_SetPipePolicy
+ @ stub WinUsb_SetPowerPolicy
+-@ stub WinUsb_WritePipe
++@ stdcall WinUsb_WritePipe(ptr long ptr long ptr ptr)
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 54cbf4d..1f2e24e 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -55,6 +55,9 @@ SOURCES = \
+ 	bits5_0.idl \
+ 	bitsmsg.h \
+ 	bluetoothapis.h \
++	bluetoothleapis.h \
++	bthdef.h \
++	bthledef.h \
+ 	bthsdpdef.h \
+ 	cderr.h \
+ 	cdosys.idl \
+diff --git a/include/bluetoothapis.h b/include/bluetoothapis.h
+index fd90b73..d3b5c94 100644
+--- a/include/bluetoothapis.h
++++ b/include/bluetoothapis.h
+@@ -110,6 +110,49 @@ typedef struct _BLUETOOTH_SELECT_DEVICE_PARAMS {
+ 
+ typedef BOOL (WINAPI *PFN_AUTHENTICATION_CALLBACK)(void *, PBLUETOOTH_DEVICE_INFO);
+ 
++#define BLUETOOTH_DEVICE_INFO BLUETOOTH_DEVICE_INFO_STRUCT
++
++typedef BLUETOOTH_DEVICE_INFO *PBLUETOOTH_DEVICE_INFO;
++
++typedef enum _BLUETOOTH_AUTHENTICATION_METHOD {
++    BLUETOOTH_AUTHENTICATION_METHOD_LEGACY = 0x1,
++    BLUETOOTH_AUTHENTICATION_METHOD_OOB,
++    BLUETOOTH_AUTHENTICATION_METHOD_NUMERIC_COMPARISON,
++    BLUETOOTH_AUTHENTICATION_METHOD_PASSKEY_NOTIFICATION,
++    BLUETOOTH_AUTHENTICATION_METHOD_PASSKEY,
++} BLUETOOTH_AUTHENTICATION_METHOD, *PBLUETOOTH_AUTHENTICATION_METHOD;
++
++typedef enum _BLUETOOTH_IO_CAPABILITY {
++    BLUETOOTH_IO_CAPABILITY_DISPLAYONLY = 0x00,
++    BLUETOOTH_IO_CAPABILITY_DISPLAYYESNO = 0x01,
++    BLUETOOTH_IO_CAPABILITY_KEYBOARDONLY = 0x02,
++    BLUETOOTH_IO_CAPABILITY_NOINPUTNOOUTPUT = 0x03,
++    BLUETOOTH_IO_CAPABILITY_UNDEFINED = 0xff,
++} BLUETOOTH_IO_CAPABILITY;
++
++typedef enum _BLUETOOTH_AUTHENTICATION_REQUIREMENTS{
++    BLUETOOTH_MITM_ProtectionNotRequired = 0,
++    BLUETOOTH_MITM_ProtectionRequired = 0x1,
++    BLUETOOTH_MITM_ProtectionNotRequiredBonding = 0x2,
++    BLUETOOTH_MITM_ProtectionRequiredBonding = 0x3,
++    BLUETOOTH_MITM_ProtectionNotRequiredGeneralBonding = 0x4,
++    BLUETOOTH_MITM_ProtectionRequiredGeneralBonding = 0x5,
++    BLUETOOTH_MITM_ProtectionNotDefined = 0xff,
++} BLUETOOTH_AUTHENTICATION_REQUIREMENTS;
++
++typedef struct _BLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS {
++    BLUETOOTH_DEVICE_INFO deviceInfo;
++    BLUETOOTH_AUTHENTICATION_METHOD authenticationMethod;
++    BLUETOOTH_IO_CAPABILITY ioCapability;
++    BLUETOOTH_AUTHENTICATION_REQUIREMENTS authenticationRequirements;
++    union{
++        ULONG Numeric_Value;
++        ULONG Passkey;
++    };
++} BLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS, *PBLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS;
++
++typedef BOOL (CALLBACK *PFN_AUTHENTICATION_CALLBACK_EX)(void *, BLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS *);
++
+ typedef struct _SDP_ELEMENT_DATA {
+     SDP_TYPE type;
+     SDP_SPECIFICTYPE specificType;
+@@ -182,7 +225,8 @@ DWORD WINAPI BluetoothGetDeviceInfo(HANDLE, BLUETOOTH_DEVICE_INFO *);
+ DWORD WINAPI BluetoothGetRadioInfo(HANDLE, PBLUETOOTH_RADIO_INFO);
+ BOOL  WINAPI BluetoothIsConnectable(HANDLE);
+ BOOL  WINAPI BluetoothIsDiscoverable(HANDLE);
+-DWORD WINAPI BluetoothRegisterForAuthentication(BLUETOOTH_DEVICE_INFO *, HBLUETOOTH_AUTHENTICATION_REGISTRATION *, PFN_AUTHENTICATION_CALLBACK, void  *);
++DWORD WINAPI BluetoothRegisterForAuthentication(const BLUETOOTH_DEVICE_INFO *, HBLUETOOTH_AUTHENTICATION_REGISTRATION *, PFN_AUTHENTICATION_CALLBACK, void  *);
++DWORD WINAPI BluetoothRegisterForAuthenticationEx(const BLUETOOTH_DEVICE_INFO *, HBLUETOOTH_AUTHENTICATION_REGISTRATION *, PFN_AUTHENTICATION_CALLBACK_EX, void *);
+ DWORD WINAPI BluetoothRemoveDevice(BLUETOOTH_ADDRESS *);
+ #define BluetoothEnumAttributes BluetoothSdpEnumAttributes
+ BOOL  WINAPI BluetoothSdpEnumAttributes(BYTE  *, ULONG, PFN_BLUETOOTH_ENUM_ATTRIBUTES_CALLBACK, void  *);
+diff --git a/include/bluetoothleapis.h b/include/bluetoothleapis.h
+new file mode 100644
+index 0000000..31321fb
+--- /dev/null
++++ b/include/bluetoothleapis.h
+@@ -0,0 +1,53 @@
++/*
++ * Copyright 2025 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __BLUETOOTHLEAPIS_H
++#define __BLUETOOTHLEAPIS_H
++
++#include <bthledef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++HRESULT WINAPI BluetoothGATTGetServices( HANDLE, USHORT, BTH_LE_GATT_SERVICE *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTGetCharacteristics( HANDLE, BTH_LE_GATT_SERVICE *, USHORT, BTH_LE_GATT_CHARACTERISTIC *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTGetCharacteristicValue( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, ULONG, BTH_LE_GATT_CHARACTERISTIC_VALUE *, USHORT *, ULONG );
++
++/* The descriptor and event types are only ever passed by pointer in this
++ * implementation; their layouts are defined by the Bluetooth LE stack,
++ * which is not present here. */
++typedef struct _BTH_LE_GATT_DESCRIPTOR BTH_LE_GATT_DESCRIPTOR, *PBTH_LE_GATT_DESCRIPTOR;
++typedef struct _BTH_LE_GATT_DESCRIPTOR_VALUE BTH_LE_GATT_DESCRIPTOR_VALUE, *PBTH_LE_GATT_DESCRIPTOR_VALUE;
++typedef UINT64 BTH_LE_GATT_RELIABLE_WRITE_CONTEXT;
++typedef enum _BTH_LE_GATT_EVENT_TYPE
++{
++    CharacteristicValueChangedEvent = 0,
++} BTH_LE_GATT_EVENT_TYPE;
++typedef HANDLE BLUETOOTH_GATT_EVENT_HANDLE;
++typedef void (CALLBACK *PFNBLUETOOTH_GATT_EVENT_CALLBACK)( BTH_LE_GATT_EVENT_TYPE, void *, void * );
++
++HRESULT WINAPI BluetoothGATTGetDescriptors( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, USHORT, BTH_LE_GATT_DESCRIPTOR *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTSetCharacteristicValue( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, BTH_LE_GATT_CHARACTERISTIC_VALUE *, BTH_LE_GATT_RELIABLE_WRITE_CONTEXT, ULONG );
++HRESULT WINAPI BluetoothGATTSetDescriptorValue( HANDLE, BTH_LE_GATT_DESCRIPTOR *, BTH_LE_GATT_DESCRIPTOR_VALUE *, BTH_LE_GATT_RELIABLE_WRITE_CONTEXT, ULONG );
++HRESULT WINAPI BluetoothGATTRegisterEvent( HANDLE, BTH_LE_GATT_EVENT_TYPE, void *, PFNBLUETOOTH_GATT_EVENT_CALLBACK, void *, BLUETOOTH_GATT_EVENT_HANDLE * );
++HRESULT WINAPI BluetoothGATTUnregisterEvent( BLUETOOTH_GATT_EVENT_HANDLE, ULONG );
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/include/bthdef.h b/include/bthdef.h
+new file mode 100644
+index 0000000..d71b2e0
+--- /dev/null
++++ b/include/bthdef.h
+@@ -0,0 +1,59 @@
++/*
++ * Copyright (C) 2024 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __BTHDEF_H__
++#define __BTHDEF_H__
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++DEFINE_GUID( GUID_BTHPORT_DEVICE_INTERFACE, 0x850302a, 0xb344, 0x4fda, 0x9b, 0xe9, 0x90, 0x57, 0x6b,
++             0x8d, 0x46, 0xf0 );
++
++DEFINE_GUID( GUID_BLUETOOTH_RADIO_INTERFACE, 0x92383b0e, 0xf90e, 0x4ac9, 0x8d, 0x44, 0x8c, 0x2d,
++             0x0d, 0x0e, 0xbd, 0xa2 );
++
++typedef ULONG BTH_COD;
++
++#define BTH_MAX_NAME_SIZE  (248)
++
++#define BDIF_ADDRESS   0x00000001
++#define BDIF_COD       0x00000002
++#define BDIF_NAME      0x00000004
++#define BDIF_PAIRED    0x00000008
++#define BDIF_PERSONAL  0x00000010
++#define BDIF_CONNECTED 0x00000020
++
++#define BDIF_SSP_SUPPORTED      0x00000100
++#define BDIF_SSP_PAIRED         0x00000200
++#define BDIF_SSP_MITM_PROTECTED 0x00000200
++
++typedef struct _BTH_DEVICE_INFO
++{
++    ULONG flags;
++    BTH_ADDR address;
++    BTH_COD classOfDevice;
++    CHAR name[BTH_MAX_NAME_SIZE];
++} BTH_DEVICE_INFO, *PBTH_DEVICE_INFO;
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __BTHDEF_H__ */
+diff --git a/include/bthledef.h b/include/bthledef.h
+new file mode 100644
+index 0000000..aa2121c
+--- /dev/null
++++ b/include/bthledef.h
+@@ -0,0 +1,98 @@
++/*
++ * Copyright 2025 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __BTHLEDEFS_H
++#define __BTHLEDEFS_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define BLUETOOTH_GATT_FLAG_NONE                   0
++#define BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_DEVICE 0x0004
++#define BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_CACHE  0x0008
++
++typedef struct _BTH_LE_UUID
++{
++    BOOLEAN IsShortUuid;
++    union
++    {
++        USHORT ShortUuid;
++        GUID LongUuid;
++    } Value;
++} BTH_LE_UUID, *PBTH_LE_UUID;
++
++typedef struct _BTH_LE_GATT_SERVICE
++{
++    BTH_LE_UUID ServiceUuid;
++    USHORT AttributeHandle;
++} BTH_LE_GATT_SERVICE, *PBTH_LE_GATT_SERVICE;
++
++typedef struct _BTH_LE_GATT_CHARACTERISTIC
++{
++    USHORT ServiceHandle;
++    BTH_LE_UUID CharacteristicUuid;
++    USHORT AttributeHandle;
++    USHORT CharacteristicValueHandle;
++    BOOLEAN IsBroadcastable;
++    BOOLEAN IsReadable;
++    BOOLEAN IsWritable;
++    BOOLEAN IsWritableWithoutResponse;
++    BOOLEAN IsSignedWritable;
++    BOOLEAN IsNotifiable;
++    BOOLEAN IsIndicatable;
++    BOOLEAN HasExtendedProperties;
++} BTH_LE_GATT_CHARACTERISTIC, *PBTH_LE_GATT_CHARACTERISTIC;
++
++typedef struct _BTH_LE_GATT_CHARACTERISTIC_VALUE
++{
++    ULONG DataSize;
++    UCHAR Data[1];
++} BTH_LE_GATT_CHARACTERISTIC_VALUE, *PBTH_LE_GATT_CHARACTERISTIC_VALUE;
++
++DEFINE_GUID( GUID_BLUETOOTHLE_DEVICE_INTERFACE, 0x781aee18, 0x7733, 0x4ce4, 0xad, 0xd0, 0x91, 0xf4, 0x1c, 0x67, 0xb5, 0x92 );
++DEFINE_GUID( GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE, 0x6e3bb679, 0x4372, 0x40c8, 0x9e, 0xaa, 0x45, 0x09, 0xdf, 0x26, 0x0c, 0xd8 );
++DEFINE_GUID( BTH_LE_ATT_BLUETOOTH_BASE_GUID, 0, 0, 0x1000, 0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb );
++
++FORCEINLINE BOOLEAN IsBthLEUuidMatch( BTH_LE_UUID u1, BTH_LE_UUID u2 )
++{
++    GUID full1, full2;
++
++    if (u1.IsShortUuid && u2.IsShortUuid)
++        return u1.Value.ShortUuid == u2.Value.ShortUuid;
++
++    if (u1.IsShortUuid)
++    {
++        full1 = BTH_LE_ATT_BLUETOOTH_BASE_GUID;
++        full1.Data1 = u1.Value.ShortUuid;
++    }
++    else
++        full1 = u1.Value.LongUuid;
++    if (u2.IsShortUuid)
++    {
++        full2 = BTH_LE_ATT_BLUETOOTH_BASE_GUID;
++        full2.Data1 = u2.Value.ShortUuid;
++    }
++    else
++        full2 = u2.Value.LongUuid;
++    return !memcmp( &full1, &full2, sizeof( full1 ) );
++}
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/include/winusb.h b/include/winusb.h
+index 77b686b..7a244c1 100644
+--- a/include/winusb.h
++++ b/include/winusb.h
+@@ -25,7 +25,24 @@ extern "C" {
+ 
+ typedef PVOID WINUSB_INTERFACE_HANDLE, *PWINUSB_INTERFACE_HANDLE;
+ 
++typedef struct _WINUSB_SETUP_PACKET
++{
++    UCHAR RequestType;
++    UCHAR Request;
++    USHORT Value;
++    USHORT Index;
++    USHORT Length;
++} WINUSB_SETUP_PACKET, *PWINUSB_SETUP_PACKET;
++
++BOOL WINAPI WinUsb_Initialize(HANDLE, PWINUSB_INTERFACE_HANDLE);
+ BOOL WINAPI WinUsb_Free(WINUSB_INTERFACE_HANDLE);
++BOOL WINAPI WinUsb_GetAssociatedInterface(WINUSB_INTERFACE_HANDLE, UCHAR, PWINUSB_INTERFACE_HANDLE);
++BOOL WINAPI WinUsb_GetOverlappedResult(WINUSB_INTERFACE_HANDLE, OVERLAPPED *, DWORD *, BOOL);
++BOOL WINAPI WinUsb_ControlTransfer(WINUSB_INTERFACE_HANDLE, WINUSB_SETUP_PACKET, UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_ReadPipe(WINUSB_INTERFACE_HANDLE, UCHAR, UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_WritePipe(WINUSB_INTERFACE_HANDLE, UCHAR, const UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_ResetPipe(WINUSB_INTERFACE_HANDLE, UCHAR);
++BOOL WINAPI WinUsb_SetCurrentAlternateSetting(WINUSB_INTERFACE_HANDLE, UCHAR);
+ 
+ #ifdef __cplusplus
+ }

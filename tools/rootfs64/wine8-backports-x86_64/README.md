@@ -49,6 +49,7 @@ in no binary at all (FD-01, reopened per FD-43):
 | `tools/buildWine/patches/wine8-fd167-contracts.patch` | FD-167 contract backports in `msvcp140` and `setupapi`: `?_Xbad_function_call@std@@YAXXZ`, `?_XGetLastError@std@@YAXXZ` and `?_Throw_C_error@std@@YAXH@Z` become real throwing implementations (upstream Wine master's bodies, backported together with the `system_error` error-code member, the `bad_function_call` class data, and the error-category objects for msvcp140), and `SetupDiGetDeviceInterfaceAlias` becomes a real lookup over the device's registered interfaces. A bundled demo library (an Xbox services thunks DLL) imports the three throw helpers; calling a spec stub kills the guest process. `?_Throw_Cpp_error@std@@YAXH@Z` remains a stub: no authoritative semantics for it exist in any open source consulted. |
 | `tools/buildWine/patches/wine8-win32u-desktop-wait.patch` | Desktop-init patience in `win32u`: `get_desktop_window`'s `NtUserWaitForInputIdle` for the just-started desktop process goes from 10 s to 300 s (the wait still returns immediately if the process exits), so the server-side fabricated desktop window is not created under a healthy-but-slow desktop; and `load_desktop_driver` retries its publication probe (desktop-window guid property + `GraphicsDriver`/`DriverError` registry values) every 500 ms for up to 300 s instead of latching the null driver on the first missing probe. A named driver or a driver error remains a definitive, immediate answer; only a missing publication is retried. Export surface is byte-identical to the Debian build's (1321 exports, verified). |
 | `tools/buildWine/patches/wine8-win32u-fd168-backports.patch` | FD-168 win32u stub draw-down: real implementations of `NtUserAlterWindowStyle`, `NtUserBuildHimcList`, `NtUserBuildNameList`, `NtUserBuildPropList`, `NtUserGetClipCursor`, `NtUserGetPointerType`, `NtUserGetThreadState`, `NtUserQueryDisplayConfig`, `NtUserQueryWindow`, `NtUserRegisterWindowMessage`, `NtGdiGetMiterLimit`, `NtGdiSetMiterLimit`, `NtGdiIcmBrushInfo` (spec stubs become `-syscall` entries; the syscall table grows 276 -> 289). `NtUserBuildNameList` loops this tree's index-based `enum_winstation`/`enum_desktop` server requests (upstream's single-call request does not exist in this vintage); `NtUserQueryDisplayConfig` maps upstream's source/GPU walk onto this tree's adapter/monitor model; `NtUserRegisterWindowMessage` uses this tree's single server atom table (`add_atom`). The `NtUserGetClipCursor` header inline over `NtUserCallOneParam` is replaced by the real export (the dispatch case stays, so clients built against the inline are unaffected). |
+| `tools/buildWine/patches/wine8-fd170-contracts.patch` | FD-170 whole-DLL backports. Wine 8.0 builds `bluetoothapis`, `winusb` and `netutils` as pure spec-stub modules (95/96, 21/22 and 22/22 named exports are stubs). The patch gives the three real code from the project's pinned newer sources: `bluetoothapis` gains Wine 10.0's own `main.c`/`sdp.c` (radio enumeration over setupapi, SDP stream parsing) plus the GATT/radio contract bodies `wine10-fd167-contracts.patch` proved on the i386 side, and the headers they need (`bluetoothapis.h` at its 10.0 state, new `bthdef.h`, upstream `bluetoothleapis.h`/`bthledef.h`); `winusb` gains the same FD-167 no-device contract bodies (FALSE + ERROR_INVALID_HANDLE, out-parameters validated first); `netutils` gains Wine 10.0's `main.c` (the `NetApiBuffer*` process-heap buffer functions). The base stays the identical Wine 8.0 source for everything else, so there is no version skew. Guest proof: `web/tests/suite/browser/fd170-contracts64.test.mjs`. |
 
 Because the base is the identical Wine 8.0 source — not a newer Wine —
 there is no version skew against the tree's unix side or
@@ -87,12 +88,12 @@ sha256 of these exact files, verified by
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| user32.dll | 2002112 | 3c495fc6ae4a2bcac424107100359fe4a95f9cc8db0f5568f2e7707f07edf72d |
-| kernelbase.dll | 1588877 | 3e8b4283df0c9e71dd3fef5c67ceb2aa9740d4faf57dd58d83357b87d65ebf90 |
-| kernel32.dll | 859511 | d3d35f7a3488aa59a80c115d458d7be4d76bcceda79bdd9eaae35bc5ccb41de8 |
-| iphlpapi.dll | 380852 | c9b9faf78c0ec4372a26f043f4d0d16dc363961d7cbd4fd8b42f0e13560ad283 |
-| win32u.dll | 354218 | 21f5e5438a19fc157643f54b75d798e10ada2a1674e8976120b37d958f063870 |
-| win32u.so | 1479712 | b2aa883bfb47627ff63c6be97e4da54de45b46ef159c3c29a13ad91ac18f7ec0 |
+| user32.dll | 2002112 | 5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219 |
+| kernelbase.dll | 1588877 | 344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85 |
+| kernel32.dll | 859511 | e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793 |
+| iphlpapi.dll | 380852 | 2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86 |
+| win32u.dll | 354218 | 49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708 |
+| win32u.so | 1479712 | d382cefb32fbe71d7e52349da06c478a22c03bde2b38d8e6bfb4eaff42ef2608 |
 | msvcp140.dll | 1152763 | c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a |
 | setupapi.dll | 731113 | c7e1555da0fedb6153044bb823185a995f268903bfe55c4cf26193c80ede6d21 |
 | ucrtbase.dll | 1074308 | 6f790d4721f8562c021bfddbb77cdf5da686e64507d02741888fdcc156c057d9 |
@@ -104,6 +105,9 @@ sha256 of these exact files, verified by
 | msvcr100.dll | 955401 | 49dc3a015b4be2d16f7629d106845fd84d4966be23a13e9d82c0caf90bf6997c |
 | msvcr110.dll | 984872 | c82bf206e4e93ba8c12113bcad3a67ca8988347f78a66def81921270e7872a69 |
 | msvcr120.dll | 1064870 | 89054bd4059865c9b2c404f817f3ad9fa7913676fc9c4e98185fd17f2a53dbfb |
+| bluetoothapis.dll | 86807 | 306a2b6fea134bc0e553272c04200301925d3f78b9428820d10e7f7342ea8f78 |
+| winusb.dll | 64851 | cb65e30f375e3d05544c6c6c0e2a4dea44c364bf68c77bf5bd93a18fa33cd987 |
+| netutils.dll | 61069 | 47652b97794e174c3a0574b04ca621b4665516abc67db18b1c0023ec112beb83 |
 
 Staged into `wine64.zip` by `tools/rootfs64/build-wine64-zip.sh`
 (container path) and `tools/rootfs64/stage-wine8-backports.sh`

@@ -46,8 +46,9 @@ PATCHES=(
     wine8-fd167-contracts.patch
     wine8-win32u-fd168-backports.patch
     wine8-msvcrt-fd169-crt.patch
+    wine8-fd170-contracts.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120)
+DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
@@ -59,6 +60,12 @@ if [ ! -d "$WORK/wine" ]; then
 fi
 cd "$WORK/wine"
 git checkout -- .  # pristine tag state before (re)applying the patches
+# checkout alone does not remove files a patch ADDED on a previous run
+# (the FD-170 patch adds headers + DLL sources); a re-run would then die
+# in git apply with "already exists". Clean the two patched areas so the
+# reset really is pristine. This tree is a build-scratch clone by
+# design; nothing else may live in it.
+git clean -fdq -- dlls include
 for p in "${PATCHES[@]}"; do
     git apply "$REPO/tools/buildWine/patches/$p"
     echo "--- applied $p ---"

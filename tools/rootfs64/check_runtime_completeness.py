@@ -144,6 +144,12 @@ WINE8_BACKPORT_PINS = {
     'msvcr100.dll': '49dc3a015b4be2d16f7629d106845fd84d4966be23a13e9d82c0caf90bf6997c',
     'msvcr110.dll': 'c82bf206e4e93ba8c12113bcad3a67ca8988347f78a66def81921270e7872a69',
     'msvcr120.dll': '89054bd4059865c9b2c404f817f3ad9fa7913676fc9c4e98185fd17f2a53dbfb',
+    # FD-170 whole-DLL backports (wine8-fd170-contracts.patch): Wine
+    # 10.0's bluetoothapis + the FD-167 contract bodies, the FD-167
+    # winusb no-device contracts, Wine 10.0's netutils NetApiBuffer*.
+    'bluetoothapis.dll': '306a2b6fea134bc0e553272c04200301925d3f78b9428820d10e7f7342ea8f78',
+    'winusb.dll': 'cb65e30f375e3d05544c6c6c0e2a4dea44c364bf68c77bf5bd93a18fa33cd987',
+    'netutils.dll': '47652b97794e174c3a0574b04ca621b4665516abc67db18b1c0023ec112beb83',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
