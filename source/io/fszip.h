@@ -72,6 +72,18 @@ public:
     // exec routing landed alongside Milestone D rootfs work.
     bool guestIs64 = false;
 
+    // Contents of this zip's root-level `fullfills.txt` / `depends.txt`
+    // entries, captured by init() during the central-directory walk it
+    // already performs (empty when the entry is absent, unreadable or
+    // corrupt). StartupArgs resolves zip dependencies from these instead
+    // of scanning every archive's central directory twice more with
+    // readFileFromZip before init: the walk visits the same entries in
+    // the same order and the capture applies the same first-exact-match,
+    // full-read and CRC rules, so the bytes are identical and the extra
+    // scans (measured at ~5 s of a cold browser start) are pure waste.
+    BString fullfillsContent;
+    BString dependsContent;
+
     // Opens a fresh, independent decompression stream positioned at the start
     // of the entry at central-directory offset zipOffset. The caller owns the
     // handle (unzCloseCurrentFile + unzClose when done). Returns nullptr on

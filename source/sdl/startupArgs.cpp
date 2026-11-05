@@ -324,35 +324,6 @@ bool StartUpArgs::apply() {
 #endif
 
     klog_fmt("Using root directory: %s", root.c_str());
-#ifdef BOXEDWINE_ZLIB
-    std::vector<BString> fullfilled;
-    for (auto& zip : zips) {
-        BString fullfills;
-        FsZip::readFileFromZip(zip, B("fullfills.txt"), fullfills);
-        if (fullfills.length()) {
-            fullfilled.push_back(fullfills);
-        }
-    }
-    std::vector<BString> depends;
-    for (auto& zip : zips) {
-        BString depend;
-        FsZip::readFileFromZip(zip, B("depends.txt"), depend);
-        if (depend.length() && !vectorContainsIgnoreCase(depends, depend) && !vectorContainsIgnoreCase(zips, depend) && !vectorContainsIgnoreCase(fullfilled, depend)) {
-            BString originalDepend = depend;
-            if (!Fs::doesNativePathExist(depend)) {
-                BString parentPath = Fs::getNativeParentPath(zip);
-                depend = parentPath.stringByApppendingPath(depend);
-            }
-            if (!Fs::doesNativePathExist(depend)) {
-                klog_fmt("%s depends on %s, and %s could not be found", zip.c_str(), originalDepend.c_str(), originalDepend.c_str());
-            }
-            depends.push_back(depend);
-        }
-    }
-    if (depends.size()) {
-        zips.insert(zips.end(), depends.begin(), depends.end());
-    }
-#endif
     for (auto& zip : zips) {
         klog_fmt("Using zip file system: %s", zip.c_str());
     }
@@ -378,6 +349,49 @@ bool StartUpArgs::apply() {
         openZips.push_back(fsZip);
         U64 endTime = KSystem::getMicroCounter();
         klog_fmt("Loaded %s in %d ms", zip.c_str(), (U32)(endTime - startTime) / 1000);
+    }
+
+    // Zip dependency declarations (fullfills.txt / depends.txt) were
+    // captured by FsZip::init during its central-directory walk, so they
+    // are resolved here, after the listed zips are initialized, instead
+    // of by a separate pre-init scan of every archive. The predicates
+    // and ordering mirror the old scan exactly: `fullfilled` collects
+    // every listed zip's declaration in list order; a dependency is
+    // appended when it is not already listed, fulfilled or queued; and
+    // dependency zips are initialized after the listed ones, in
+    // discovery order. A dependency zip's own declarations are not
+    // followed, as before.
+    {
+        std::vector<BString> fullfilled;
+        for (auto& fsZip : openZips) {
+            if (fsZip->fullfillsContent.length()) {
+                fullfilled.push_back(fsZip->fullfillsContent);
+            }
+        }
+        std::vector<BString> depends;
+        for (size_t zi = 0; zi < zips.size(); ++zi) {
+            BString depend = openZips[zi]->dependsContent;
+            if (depend.length() && !vectorContainsIgnoreCase(depends, depend) && !vectorContainsIgnoreCase(zips, depend) && !vectorContainsIgnoreCase(fullfilled, depend)) {
+                BString originalDepend = depend;
+                if (!Fs::doesNativePathExist(depend)) {
+                    BString parentPath = Fs::getNativeParentPath(zips[zi]);
+                    depend = parentPath.stringByApppendingPath(depend);
+                }
+                if (!Fs::doesNativePathExist(depend)) {
+                    klog_fmt("%s depends on %s, and %s could not be found", zips[zi].c_str(), originalDepend.c_str(), originalDepend.c_str());
+                }
+                depends.push_back(depend);
+            }
+        }
+        for (auto& depend : depends) {
+            klog_fmt("Using zip file system: %s", depend.c_str());
+            U64 startTime = KSystem::getMicroCounter();
+            std::shared_ptr<FsZip> fsZip = std::make_shared<FsZip>();
+            fsZip->init(depend, B(""));
+            openZips.push_back(fsZip);
+            U64 endTime = KSystem::getMicroCounter();
+            klog_fmt("Loaded %s in %d ms", depend.c_str(), (U32)(endTime - startTime) / 1000);
+        }
     }
 
     std::shared_ptr<FsNode> wineVersionNode = Fs::getNodeFromLocalPath(B(""), B("/wineVersion.txt"), false);
