@@ -17,8 +17,12 @@ import assert from 'node:assert/strict';
 // time with a lazy fetch in flight) — no alarm may fire, and when its
 // window maps and paints, startup completes normally; (3) it stalls
 // before the desktop handshake completes — no report may fire, because
-// nothing has booted yet. This fixture proves surfacing behaviour
-// only; guest compatibility is covered by the real-boot checks.
+// nothing has booted yet; (4) before the handshake, one guest thread
+// loops on delivered memory faults (the FD-115 wedge shape) — the
+// start must end as a reported failure once that thread's printed
+// fault lines reach the loop threshold, and not before. This fixture
+// proves surfacing behaviour only; guest compatibility is covered by
+// the real-boot checks.
 
 const dir = 'test-results/fd77-stall-surfacing';
 await mkdir(dir, { recursive: true });
@@ -162,6 +166,30 @@ try {
     await frame.waitForFunction(n => window.__bwDumpCalls >= n + 3, before, { timeout: 10000 });
     await noFailure('a pre-handshake stall was reported');
     checks.push('A stall before the desktop handshake completes is not reported — the session has not booted yet');
+    await stop();
+  }
+
+  // Scenario 4: a pre-handshake delivered-fault loop (FD-115) is a
+  // reported failed start, not an endless wait.
+  {
+    const frame = await launch();
+    const fault = (tid, count) => 'BW64-FAIL guest-memfault32 pid=71 tid=' + tid +
+      ' addr=0xfffffd08 eip=0x10584384 err=2 delivered=1 count=' + count;
+    await frame.evaluate(lines => window.__bwEmit(lines),
+      Array.from({ length: 31 }, (_, i) => fault(76, i + 1)));
+    await noFailure('a burst of delivered faults below the loop threshold was reported');
+    await frame.evaluate(lines => window.__bwEmit(lines),
+      [77, 78, 79].flatMap(tid => Array.from({ length: 16 }, (_, i) => fault(tid, i + 1))));
+    await noFailure('faults spread across other threads were reported as one thread looping');
+    await frame.evaluate(line => window.__bwEmit([line]), fault(76, 32));
+    await page.waitForFunction(() => document.getElementById('loadingTitle').textContent === 'The program stopped', null, { timeout: 20000 });
+    assert.match(await page.locator('#status').textContent(), /did not finish starting/);
+    assert.match(await page.locator('#status').textContent(), /reported as failed/);
+    const log = await page.locator('#log').textContent();
+    assert.ok(log.includes('BW64-FAIL component=launcher.session reason=prehandshake-fault-loop'), 'FAIL line in the session log');
+    assert.ok(log.includes('pid=71') && log.includes('tid=76'), 'FAIL line names the looping thread');
+    await page.screenshot({ path: dir + '/fault-loop-failure.png' });
+    checks.push('A pre-handshake delivered-fault loop from one guest thread ends the start as a reported failure at the threshold; bursts below it and faults spread across threads raise no alarm');
     await stop();
   }
 
