@@ -351,6 +351,11 @@ public:
         state = sdlModState();
     }
 
+    void noteDeliveredPointer(int x, int y) override {
+        std::lock_guard<std::mutex> lk(pointerMutex);
+        lastX = x; lastY = y;
+    }
+
     void warpPointer(int x, int y) override {
         std::lock_guard<std::mutex> lk(pointerMutex);
         lastX = x; lastY = y;
@@ -508,7 +513,13 @@ public:
                     // accumulates them into a virtual absolute position.
                     ie.type = XWireInputEvent::EvMotionRel;
                     ie.x = e.motion.xrel; ie.y = e.motion.yrel;
-                    lastX += ie.x; lastY += ie.y;
+                    // Do not advance lastX/lastY here: the connection owns
+                    // the virtual pointer position for relative streams and
+                    // reports each delivered position back through
+                    // noteDeliveredPointer(). Advancing here as well made
+                    // the connection's seed (which reads lastPointer)
+                    // include this delta a second time, doubling the first
+                    // motion of every relative stream.
                 } else {
                     lastX = e.motion.x; lastY = e.motion.y;
                     ie.type = XWireInputEvent::EvMotion;
@@ -564,7 +575,12 @@ public:
     void injectEvent(const XWireInputEvent& ie) {
         std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent e2 = ie;
-        if (e2.type == XWireInputEvent::EvMotionRel) { lastX += e2.x; lastY += e2.y; }
+        if (e2.type == XWireInputEvent::EvMotionRel) {
+            // As in forwardSdlEvent: relative deltas do not advance the
+            // tracked pointer; the delivering connection owns the virtual
+            // position and reports delivered positions back through
+            // noteDeliveredPointer().
+        }
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }
@@ -646,6 +662,11 @@ public:
         state = sdlModState();
     }
 
+    void noteDeliveredPointer(int x, int y) override {
+        std::lock_guard<std::mutex> lk(pointerMutex);
+        lastX = x; lastY = y;
+    }
+
     void warpPointer(int x, int y) override {
         std::lock_guard<std::mutex> lk(pointerMutex);
         lastX = x; lastY = y;
@@ -682,7 +703,13 @@ public:
                     // accumulates them into a virtual absolute position.
                     ie.type = XWireInputEvent::EvMotionRel;
                     ie.x = e.motion.xrel; ie.y = e.motion.yrel;
-                    lastX += ie.x; lastY += ie.y;
+                    // Do not advance lastX/lastY here: the connection owns
+                    // the virtual pointer position for relative streams and
+                    // reports each delivered position back through
+                    // noteDeliveredPointer(). Advancing here as well made
+                    // the connection's seed (which reads lastPointer)
+                    // include this delta a second time, doubling the first
+                    // motion of every relative stream.
                 } else {
                     lastX = e.motion.x; lastY = e.motion.y;
                     ie.type = XWireInputEvent::EvMotion;
@@ -737,7 +764,12 @@ public:
     void injectEvent(const XWireInputEvent& ie) {
         std::lock_guard<std::mutex> pointerLock(pointerMutex);
         XWireInputEvent e2 = ie;
-        if (e2.type == XWireInputEvent::EvMotionRel) { lastX += e2.x; lastY += e2.y; }
+        if (e2.type == XWireInputEvent::EvMotionRel) {
+            // As in forwardSdlEvent: relative deltas do not advance the
+            // tracked pointer; the delivering connection owns the virtual
+            // position and reports delivered positions back through
+            // noteDeliveredPointer().
+        }
         if (e2.type == XWireInputEvent::EvMotion) { lastX = e2.x; lastY = e2.y; }
         if (e2.type == XWireInputEvent::EvButtonDown ||
             e2.type == XWireInputEvent::EvButtonUp) { lastX = e2.x; lastY = e2.y; }

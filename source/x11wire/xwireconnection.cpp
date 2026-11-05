@@ -1614,7 +1614,21 @@ void XWireConnection::processOneRequest(const uint8_t* req, uint32_t len) {
                     srv.pointerGrabPointerMode = req[10];
                     srv.pointerGrabKeyboardMode = req[11];
                     srv.pointerGrabCursor = rd32(req + 16);
-                    srv.pointerFrozen = req[10] == 1; // GrabModeSync
+                    if (getenv("BW64_XWIRE")) {
+                        klog_fmt("XWire grab: client=0x%x win=0x%x mask=0x%x ownerEvents=%d pointerMode=%d confine=0x%x",
+                                 clientIdBase, (unsigned)window,
+                                 (unsigned)srv.pointerGrabEventMask,
+                                 (int)srv.pointerGrabOwnerEvents,
+                                 (int)srv.pointerGrabPointerMode,
+                                 (unsigned)srv.pointerConfineWindow);
+                    }
+                    // Do not freeze at grab time either: sync grabs do
+                    // not freeze pointer event flow in this server (see
+                    // the delivery loop — GrabModeSync is treated as
+                    // GrabModeAsync here, matching the native X11
+                    // layer's settled policy). Freezing at grab time
+                    // deadlocked pointer input for the whole session:
+                    // no event ever reached the grabbing client.
                 }
             }
             uint8_t r[32] = {0}; r[0] = 1; r[1] = status;
@@ -2451,6 +2465,14 @@ void XWireConnection::deliverInputEvents() {
         } else if (ev.type == XWireInputEvent::EvMotion) {
             if (relInit) { relInit = false; } // absolute motion resyncs
         }
+        if (motion && g_xwirePresentSink) {
+            // The connection owns the pointer position for motion events:
+            // publish the position this event delivers at, so the sink's
+            // tracked pointer (event stamping, QueryPointer, the seed for
+            // the next relative stream) is the last delivered position and
+            // never includes queued-but-undelivered relative deltas.
+            g_xwirePresentSink->noteDeliveredPointer(eff.x, eff.y);
+        }
         // Wine enables root RawMotion while clipping. Its raw handler sends the
         // relative hardware input; a core motion for the same sample would
         // generate a second, absolute movement and lose motion at screen edges.
@@ -2485,6 +2507,13 @@ void XWireConnection::deliverInputEvents() {
                 if (!xwireRoutePointerGrab(true, srv.pointerGrabClient, srv.pointerGrabWindow,
                         srv.pointerGrabEventMask, srv.pointerGrabOwnerEvents, clientIdBase,
                         normalOwner, mask, wantMask, target, mask)) {
+                    if (getenv("BW64_XWIRE")) {
+                        klog_fmt("XWire input: drop code=%d type=%d at grab routing (grabClient=0x%x grabWin=0x%x grabMask=0x%x ownerEvents=%d normalTarget=0x%x normalMask=0x%x wantMask=0x%x)",
+                                 (int)code, (int)ev.type, (unsigned)srv.pointerGrabClient,
+                                 (unsigned)srv.pointerGrabWindow, (unsigned)srv.pointerGrabEventMask,
+                                 (int)srv.pointerGrabOwnerEvents, (unsigned)normalTarget,
+                                 (unsigned)mask, (unsigned)wantMask);
+                    }
                     target = 0;
                 } else if (target != normalTarget) {
                     auto grabIt = srv.windows.find(target);
@@ -2499,7 +2528,24 @@ void XWireConnection::deliverInputEvents() {
         // connection writes events to its own client socket). If the topmost hit
         // belongs to another connection, that connection's own pump will service
         // it; skip here to avoid writing a foreign window id down our socket.
-        if ((target & ~clientIdMask) != clientIdBase) continue;
+        // Exception: an event routed by THIS connection's own pointer grab is
+        // reported to the grabbing client — this connection — even when the
+        // grab window belongs to another connection (Wine grabs the pointer
+        // on the root window for cursor clipping, and the root is owned by
+        // the session's first connection). Dropping those silently lost
+        // every button press for the grabbing guest.
+        bool ownGrabTarget = false;
+        {
+            std::lock_guard<std::mutex> lk(srv.regMutex);
+            ownGrabTarget = srv.pointerGrabClient == clientIdBase && target == srv.pointerGrabWindow;
+        }
+        if ((target & ~clientIdMask) != clientIdBase && !ownGrabTarget) {
+            if (getenv("BW64_XWIRE") && !isKey) {
+                klog_fmt("XWire input: drop code=%d type=%d foreign target=0x%x (this client=0x%x)",
+                         (int)code, (int)ev.type, (unsigned)target, clientIdBase);
+            }
+            continue;
+        }
 
         // event-x/y are relative to the TARGET window: host coord minus the
         // target's host origin (target root origin minus base origin). For
@@ -2510,7 +2556,13 @@ void XWireConnection::deliverInputEvents() {
         local.x = eff.x - ((int)tgtX - (int)baseX);
         local.y = eff.y - ((int)tgtY - (int)baseY);
 
-        if (!isKey && !(mask & wantMask)) continue;
+        if (!isKey && !(mask & wantMask)) {
+            if (getenv("BW64_XWIRE")) {
+                klog_fmt("XWire input: drop code=%d type=%d mask=0x%x wantMask=0x%x target=0x%x",
+                         (int)code, (int)ev.type, (unsigned)mask, (unsigned)wantMask, (unsigned)target);
+            }
+            continue;
+        }
         // Announce EnterNotify when the pointer crosses into a new target window;
         // winex11 tracks the pointer window via crossing events (a click without
         // it defocuses the control / menus don't track).
@@ -2524,12 +2576,18 @@ void XWireConnection::deliverInputEvents() {
                      (int)local.x, (int)local.y, (unsigned)target, (unsigned)mask);
         }
         sendInputEvent(code, target, local, tgtX, tgtY);
-        if (!isKey) {
-            std::lock_guard<std::mutex> registryLock(srv.regMutex);
-            if (srv.pointerGrabClient == clientIdBase && srv.pointerGrabPointerMode == 1) {
-                srv.pointerFrozen = true;
-            }
-        }
+        // No re-freeze after delivery under a GrabModeSync grab. The
+        // project's native X11 layer settled this policy (x11common:
+        // "XGrabPointer GrabModeSync is treated as GrabModeAsync:
+        // pointer events are not frozen until XAllowEvents"), and the
+        // measured guest behavior matches it: Wine's clipping grab is
+        // GrabModeSync, yet the guest never sends XAllowEvents (zero
+        // opcode-35 requests in full captured sessions), so freezing
+        // after the first delivered event stalls every later core
+        // pointer event in the frozen queue for the life of the grab
+        // — button releases and clicks simply never arrive. The
+        // AllowEvents handler and frozen queue remain for clients
+        // that do drive the sync protocol explicitly.
     }
 }
 

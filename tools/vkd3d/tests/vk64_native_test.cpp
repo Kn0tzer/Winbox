@@ -2412,6 +2412,89 @@ int main() {
         puts("PASS: FD-153 zero-region 32-bit copies drop nothing; claimed-without-array stays loud");
     }
 
+    // FD-155: the 32-bit specialization capture's header guard was a
+    // plain silent return -- the one capture path that could refuse
+    // guest work with no log line and no counter movement. Its
+    // refusals now report through VK64_DROP_IF exactly like the 64-bit
+    // twin (whose loud shapes FD-153 pinned): an unreadable
+    // VkSpecializationInfo, a mapEntryCount over the capture cap of
+    // 16, and claimed entries whose map-entry array or data is absent.
+    // The served shapes keep FD-153's behaviour: an empty spec is a
+    // silent no-op and a valid entry is captured verbatim.
+    {
+        U64 dev32Id; createObj32<Device>(K_DEVICE, dev32Id);
+        const U64 fx32 = memory32.mmapReserveAndMap(8192, 3);
+        auto makePipe32WithSpec = [&](const vk32abi::VkSpecializationInfo& si) {
+            memory32.memcpyToGuest(fx32 + 1536, &si, sizeof(si));
+            vk32abi::VkComputePipelineCreateInfo cci{};
+            cci.sType = vk32abi::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            cci.stage.sType = vk32abi::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cci.stage.stage = vk32abi::VK_SHADER_STAGE_COMPUTE_BIT;
+            cci.stage.pSpecializationInfo = (U32)(fx32 + 1536);
+            memory32.memcpyToGuest(fx32 + 1664, &cci, sizeof(cci));
+            memory32.writeq(fx32 + 1792, 0);
+            VK32Args a{}; a.a[0] = dev32Id; a.a[2] = 1; a.a[3] = fx32 + 1664; a.a[5] = fx32 + 1792;
+            assert((S64)call32(VK64_fn_vkCreateComputePipelines, a) == VK_SUCCESS);
+            auto* p = objOf32<Pipeline>(memory32.readq(fx32 + 1792), K_PIPELINE, "test");
+            assert(p);
+            return p;
+        };
+        // Served shape (control): one real entry, captured verbatim,
+        // no drop -- the loud pins below are measured against this.
+        { vk32abi::VkSpecializationMapEntry e{}; e.constantID = 7; e.offset = 0; e.size = 4;
+          memory32.memcpyToGuest(fx32 + 2048, &e, sizeof(e));
+          memory32.writed(fx32 + 2176, 0x0D15EA5E);
+          vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 1;
+          si.pMapEntries = (U32)(fx32 + 2048); si.dataSize = 4; si.pData = (U32)(fx32 + 2176);
+          U32 d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0);
+          assert(p->csSpec.n == 1 && p->csSpec.entries[0].constantID == 7);
+          U32 v; memcpy(&v, p->csSpec.entries[0].value, 4); assert(v == 0x0D15EA5E); }
+        // Over-cap count: loud, nothing captured.
+        { vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 17;
+          si.pMapEntries = (U32)(fx32 + 2048); si.dataSize = 4; si.pData = (U32)(fx32 + 2176);
+          U32 d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->csSpec.n == 0); }
+        // Entries claimed but the data they require is absent: loud.
+        { vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 1;
+          si.pMapEntries = (U32)(fx32 + 2048); si.dataSize = 4; si.pData = 0;
+          U32 d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->csSpec.n == 0); }
+        // Entries claimed but the map-entry array is absent: loud.
+        { vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 1;
+          si.pMapEntries = 0; si.dataSize = 4; si.pData = (U32)(fx32 + 2176);
+          U32 d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->csSpec.n == 0); }
+        // Entries claimed with a zero data size: loud (same guard).
+        { vk32abi::VkSpecializationInfo si{}; si.mapEntryCount = 1;
+          si.pMapEntries = (U32)(fx32 + 2048); si.dataSize = 0; si.pData = (U32)(fx32 + 2176);
+          U32 d0 = vk64BridgeDropCount();
+          auto* p = makePipe32WithSpec(si);
+          assert(vk64BridgeDropCount() == d0 + 1);
+          assert(p->csSpec.n == 0); }
+        puts("PASS: FD-155 32-bit specialization header refusals are loud; served shapes unchanged");
+        // Direct pins on the capture entry: a null spec pointer is the
+        // legal no-spec shape and stays silent; a spec pointer whose
+        // struct cannot be read (no guest memory bound) is a refusal
+        // and drops loudly, like the 64-bit twin's read guard.
+        { StageSpec out; U32 d0 = vk64BridgeDropCount();
+          captureStageSpec32(0, out);
+          assert(vk64BridgeDropCount() == d0 && out.n == 0); }
+        { StageSpec out; U32 d0 = vk64BridgeDropCount();
+          KMemory* savedMem32 = g_mem32; g_mem32 = nullptr;
+          captureStageSpec32((U32)(fx32 + 1536), out);
+          g_mem32 = savedMem32;
+          assert(vk64BridgeDropCount() == d0 + 1 && out.n == 0); }
+        puts("PASS: FD-155 null spec pointer stays silent; unreadable spec drops loudly");
+    }
+
     // GUARD (silent drop): features the bridge cannot honour are reported by
     // vk64Unsupported() under a stable feature name and answered with the
     // right VkResult. A test that finds these counters at zero means the

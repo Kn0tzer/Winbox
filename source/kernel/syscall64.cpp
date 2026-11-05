@@ -133,6 +133,7 @@ U32 createPidFdForClone64(KThread* thread, U32 processId) {
 #define X64_SYS_faccessat         269
 #define X64_SYS_faccessat2        439
 #define X64_SYS_mkdir             83
+#define X64_SYS_rmdir             84
 #define X64_SYS_mkdirat           258
 #define X64_SYS_symlink           88
 #define X64_SYS_symlinkat         266
@@ -2801,7 +2802,20 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
         std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
             proc->fsContext->currentDirectory, BString::copy(path), false, nullptr, &notDir);
         if (!n && notDir) return (U64)-K_ENOTDIR; // a prefix component is not a directory
-        if (!n || !n->isLink()) return (U64)-22; // -EINVAL on non-symlink
+        if (!n) return (U64)-K_ENOENT; // FD-158: a missing path; only a resolved non-link keeps -EINVAL
+        if (!n->isLink()) return (U64)-22; // -EINVAL on non-symlink
+        BString pathString = BString::copy(path);
+        if (pathString.endsWith("/") || pathString.endsWith("/.") || pathString.endsWith("/..")) {
+            // FD-159: a trailing marker steps through the link
+            // and judges its target, so a link to a directory
+            // answers -EINVAL here (the target is not a link)
+            // where the unmarked path answers the target string.
+            // A link to a non-directory was already answered
+            // -ENOTDIR by the resolver's anchor judgment.
+            bool targetNotDir = false;
+            std::shared_ptr<FsNode> target = Fs::getNodeFromLocalPath(proc->fsContext->currentDirectory, pathString, true, nullptr, &targetNotDir);
+            if (target && target->isDirectory()) return (U64)-22; // -EINVAL
+        }
         resolved = n->link;
     }
     U64 toCopy = (U64)resolved.length();
@@ -6432,6 +6446,27 @@ void ksyscall64(CPU64* cpu) {
                 klog_fmt("sys_mkdir64: '%s' full='%s' -> %d", path, full.c_str(),
                          (int)(S32)ret);
             }
+            break;
+        }
+        case X64_SYS_rmdir: {
+            // rmdir(path). FD-160: this case was missing entirely,
+            // so every 64-bit rmdir answered -ENOSYS ("unimplemented
+            // syscall #84"). Route to the existing KProcess rmdir,
+            // which answers the host's verdicts (an empty directory
+            // 0, a file -ENOTDIR, a missing path -ENOENT, a
+            // non-empty directory -ENOTEMPTY), the way the 32-bit
+            // dispatcher and the mkdir case beside it already do.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            // FD-132: a null path answers -EFAULT on the host; the
+            // copy below would erase it to the empty string.
+            if (!a1) { ret = (U64)-K_EFAULT; break; }
+            char path[1024] = {0};
+            cpu->memory->memcpyFromGuest(path, a1, sizeof(path) - 1);
+            // FD-131: an empty path answers -ENOENT, as the host does.
+            if (path[0] == '\0') { ret = (U64)-K_ENOENT; break; }
+            ret = (U64)(S64)(S32)cpu->thread->process->rmdir(
+                BString(Fs::getFullPath(cpu->thread->process->fsContext->currentDirectory,
+                                        BString::copy(path))));
             break;
         }
         case X64_SYS_symlink:

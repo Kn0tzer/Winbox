@@ -275,6 +275,8 @@ static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
 	bwInputChannels = sourceChannels;
 	bwSourceRate = sourceRate;
 	// Idempotent per AudioContext; recreates if SDL made a new context.
+	// The ring addresses go to JS as pointers (sig 'p', the byte offset
+	// $0 already uses): an (int) cast cannot hold a MEMORY64 pointer.
 	EM_ASM({
 		var SDL2 = Module['SDL2'] || (Module['SDL2'] = {});
 		var ctx = SDL2.audioContext;
@@ -368,7 +370,7 @@ static void bwAudioEnsureBridge(Uint32 sourceRate, Uint32 sourceChannels) {
 			SDL2.bwNode = node;
 			SDL2.bwAudioWorklet = false;
 		}
-	}, bwRing, (int)&bwRingWrite, (int)&bwRingRead, BW_RING_FRAMES, bwRingChannels, bwSourceRate);
+	}, bwRing, &bwRingWrite, &bwRingRead, BW_RING_FRAMES, bwRingChannels, bwSourceRate);
 	bwBridgeArmed = true;
 }
 

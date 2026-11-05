@@ -12055,9 +12055,20 @@ inline void vk32_writeRequirements(U32 out, U64 size) {
 }
 
 static void captureStageSpec32(U32 va, StageSpec& out) {
+    if (!va) return;
     vk32abi::VkSpecializationInfo si = {};
-    if (!readStruct32(va, si) || !si.mapEntryCount || si.mapEntryCount > 16 ||
-        !si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256) return;
+    VK64_DROP_IF(return, !readStruct32(va, si));
+    // An empty VkSpecializationInfo (mapEntryCount 0, arrays null -- the
+    // per-stage default DXVK attaches) is a legal no-op: nothing to
+    // capture, the pipeline keeps the shader's defaults, so it must not
+    // count or log as a drop (FD-153). Once entries are claimed, the
+    // guards below stay loud: over-cap counts, and the entry array or
+    // data those entries require being absent (FD-155; this header was
+    // a plain silent return, the one capture path that could refuse
+    // guest work without a line).
+    if (!si.mapEntryCount) return;
+    VK64_DROP_IF(return, si.mapEntryCount > 16);
+    VK64_DROP_IF(return, !si.pMapEntries || !si.pData || !si.dataSize || si.dataSize > 256);
     std::vector<vk32abi::VkSpecializationMapEntry> entries;
     readArray32(si.pMapEntries, si.mapEntryCount, entries);
     std::vector<U8> data(si.dataSize);

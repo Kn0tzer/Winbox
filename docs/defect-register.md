@@ -7032,7 +7032,133 @@ do not close the entry until they land.
   `test-results/merge-batch5-20261103/`
   (composed runs) and its `control-base/`
   subdir (base runs and the base build log).
-  Filed, not fixed.
+  Adjudicated 2026-11-04 by the FD-154 lane (worktree `wt-fd154`,
+  branch `lane-fd154`, base `3ea2fd97d`; lane record
+  `docs/reports/fd154-adjudication-20261104.md`; evidence
+  `test-results/fd154/` on that tree — stock base runs, focused
+  probes, fixed-build runs). Per item:
+  (1) winsock-http — PRODUCT defect, FIXED (`d26f606a1`): every
+  AF_INET stream socket in the browser build is marked
+  `loopbackStream`, and `KNativeSocketObject::connect` refused any
+  loopback destination with no guest listener internally, never
+  using the socket's native transport — which, with the relay
+  enabled, is the only path to the harness relay (the fixture
+  connects to 127.0.0.1:80 by design). The guest printed
+  `connect=-1 error=10061` and the relay saw no connection at all
+  (accepted 0). All other data-path predicates already treated
+  such a socket as native; connect() now falls through to the
+  native connect when no guest listener exists and a native
+  transport is present. Proof on the fixed build: test passes,
+  relay stats accepted 1, 76 bytes guest→TCP, 324 bytes back —
+  this item's closing term is met.
+  (2) input-mouse-rel — PRODUCT defect, FIXED (`3cce91bcb`): both
+  relative-motion producers advanced the sink's tracked pointer
+  by the delta at queue time, and the delivering connection
+  seeded its virtual position from that pointer and added the
+  delta again — the first motion of every relative stream
+  arrived doubled (injected 100,50 → guest RAW 200,100, measured
+  with the product's `BW64_XWIRE` log). Producers no longer
+  advance the pointer for relative events; the connection owns
+  the virtual position and reports deliveries back through a new
+  bookkeeping-only `noteDeliveredPointer()`. Proof: test passes
+  on the fixed build, both architectures.
+  (3) input-fullscreen — HARNESS defect over a PRODUCT defect,
+  both FIXED. Filed failure (locator click timeout): the guest's
+  ClipCursor makes the page take pointer lock, which a real
+  browser grants only on a user gesture but the headless harness
+  grants immediately; under lock, Playwright's hit test reports
+  the body intercepting the canvas while `elementFromPoint`
+  returns the canvas, and dispatched clicks arrive at (0,0) — a
+  neutral control page in the same browser clicks correctly.
+  Harness fix (`e482eb6a6`): the test keeps the browser unlocked
+  and delivers the press through the injection channel at the
+  same point. Underneath it, a product defect in three layers,
+  all in the XWire grab path, all fixed: pointer input for a
+  cursor-clipping guest blacked out entirely (keys flowed; no
+  pointer event was ever delivered). (i) A GrabModeSync grab
+  froze input at grab time, so no first event could ever reach
+  the grabbing client (`f610e90b2`). (ii) Events routed by the
+  connection's own grab were dropped as foreign-target: Wine
+  grabs the pointer on the root window (grab log: win=0x600001,
+  mask=0x4c, ownerEvents=0, pointerMode=sync), and the root is
+  owned by the session's first connection — X reports grab
+  events to the grabbing client, so own-grab targets are now
+  exempt from the drop (`dbe7705f3`, which also logs grab
+  parameters and every pointer-path drop reason under
+  `BW64_XWIRE`; the drops were silent). (iii) The delivery loop
+  re-froze after the first delivered event under a sync grab,
+  but this client never sends XAllowEvents (zero opcode-35
+  requests in full captured sessions), so every later core
+  pointer event stalled in the frozen queue for the life of
+  the grab; the native X11 layer's settled policy treats
+  GrabModeSync as GrabModeAsync for exactly this reason, and
+  the XWire loop now matches it (`25471296c`). Proof: the test
+  passes on the fixed build, both architectures; the guest
+  prints the moved pointer, BUTTON UP, and the clipped
+  1500-count move exactly once.
+  (4) jit64 — HARNESS defect, FIXED (`189f6b302`): the
+  wineboot exit wait demanded `wineboot.exe--init` adjacency,
+  but `commandLineForLog()` renders argv space-joined by
+  construction (`wineboot.exe --init`); the demanded substring
+  occurs zero times in the full gate console while the boot
+  itself completes correctly (pins spawned, wineboot exits 0).
+  Pattern now matches the rendered form; with it, runs advance
+  past the wineboot wait on the unmodified product. The same
+  availability scoping as item (5) applies to this test's own
+  generated-code assertion (`41de3c327`): the suite build is
+  the interpreter target and the stats report the JIT
+  unavailable in it. With both harness fixes the test passes
+  end to end on the current build (both modes, all samples,
+  checksum `8b527b4986bdaccf`). Its benchmark stage's waits
+  remain load-paced on the shared box, as this filing noted.
+  (5) jitbench — HARNESS defects, FIXED (`b99c92154`,
+  `260545f5b`, `1d2c059d8`, `87d9e021b`): the launcher maps
+  `?jit=1` to CPU64 only and latches CPU32 off; CPU32 follows
+  `?jit32`, which the benchmark boot never passed, so the x86
+  mode-1 latch assertion failed by construction. The boot now
+  drives `jit32` from the mode. Second, the engines are not
+  there to latch in the suite's build: the suite runs the
+  default interpreter browser build (the JIT is a separate
+  build variant) and the 32-bit JIT is not compiled into the
+  x64 target at all — the product's own stats say so
+  (`available` 0; cpu32: `"reason":"32-bit JIT not compiled in
+  this target"`; cpu64 stays `engine:"interp"` with zero
+  blocks entered). The test now gates its JIT assertions on
+  the stats reporting the engine available, and otherwise
+  asserts the consistent story (no generated code reported
+  entered; checksum stability still covers the interpreter);
+  JIT-variant builds keep the full assertions. Whether the
+  shipped build should switch to the JIT variant is a build
+  decision outside this filing. Benchmark numbers remain
+  load-gated by the test's own guard
+  (`BW_TEST_JITBENCH_MAX_LOAD`, default 4) on the shared box.
+  Two extracted-handler unit contracts in
+  `xwire-pointer-grab.test.mjs` encoded the pre-fix grab and
+  sink semantics (a sync grab freezes pointer state; the sink
+  advances its tracked position at queue time) and were updated
+  to the measured contracts (`58f759879`). Suites on the lane
+  tip: JS unit 353 passed / 0 failed; native x64 108 tests,
+  0 FAILED in the gate-standard serial mode (the threaded mode
+  shows the known pre-existing topology failure and teardown
+  crash other lanes have recorded; serial is the standard).
+  Native main suite on the lane tip: 682 tests, 0 FAILED, gate-standard serial mode.
+  Closing account (batch-7 merge
+  audit, 2026-11-04): the lane's
+  adjudication meets every closing
+  term of this entry -- each of the
+  five tests passes on the fixed
+  build in the suite environment,
+  jitbench's generated-code
+  assertions are re-scoped to the
+  named external condition the
+  terms allow (the engines are not
+  compiled into the suite's build),
+  and winsock-http closes with the
+  relay stats showing the connect
+  crossing (accepted 1, 76 bytes
+  guest-to-TCP, 324 bytes back).
+  Closed at this composition --
+  see CL-118.
 
 - **FD-155 — The 32-bit specialization
   capture discards guest input
@@ -7068,7 +7194,27 @@ do not close the entry until they land.
   report through the same drop channel
   as the 64-bit path, and a native
   test pins the loud cases on the
-  32-bit path. Filed, not fixed.
+  32-bit path. Closing account
+  (lane-fd155, 2026-11-04): the
+  header is restructured to mirror
+  the 64-bit twin -- a null spec
+  pointer and an empty
+  VkSpecializationInfo return
+  silently (the legal no-spec and
+  no-op shapes), while the three
+  refusals report through
+  VK64_DROP_IF: an unreadable
+  struct, a mapEntryCount over the
+  cap of 16, and claimed entries
+  whose map-entry array or data is
+  absent (null array, null data,
+  zero or over-256 data size). The
+  drop census grows 255 -> 258 (the
+  three new return-action sites;
+  pin updated in
+  vk-drop-macro-guard.test.mjs).
+  Fixed on branch `lane-fd155` --
+  see CL-111.
 
 - **FD-156 — The MEMORY64 variant of
   the Node self-test target (make
@@ -7076,7 +7222,9 @@ do not close the entry until they land.
   compile: the SDL audio bridge's
   EM_ASM block casts ring-buffer
   pointers to int, which a 64-bit
-  pointer build rejects.** *(Low.
+  pointer build rejects. FIXED
+  2026-11-04 on branch `lane-fd156`
+  -- see CL-112.** *(Low.
   Filed by the FD-151 lane,
   2026-11-03; provisional until
   the merge lane's audit.)*
@@ -7103,6 +7251,45 @@ do not close the entry until they land.
   its run is reported. Evidence:
   `test-results/fd151/build-mem64.log`
   in the FD-151 lane's worktree.
+  Fixed on branch `lane-fd156` in
+  `3ee906b3a` (run instructions
+  corrected in `b4d3f2e8f`): the two
+  casts are dropped and the ring
+  index addresses go to EM_ASM as
+  pointers -- the treatment the
+  ring base at $0 already gets.
+  Emscripten gives every pointer
+  type the sig `p`, which the
+  MEMORY64 runtime's argument
+  reader delivers to JS as a plain
+  Number holding the byte offset
+  the bridge's JS consumes; a
+  uintptr_t cast would have taken
+  sig `j` and arrived as a raw
+  BigInt. The target compiles
+  (MAKE_EXIT=0) and its run is
+  reported: the box's Node 22
+  rejects the module at
+  instantiation (its V8 refuses
+  the 64-bit table limits), so the
+  run used an official Node
+  v24.11.0 whose tarball sha256
+  verified against the release
+  sums -- 953 passed, 0 failed,
+  exit 0, the same standard as the
+  other variants. The standard
+  variant still builds and runs
+  953/0; native suites serial main
+  682 and x64 108, 0 FAILED; JS
+  unit 353/0, legacy 115/0;
+  browser build verified
+  (BUILD_INFO git_sha `b4d3f2e8f`,
+  dirty 0, wasm `aba69204...`).
+  Record:
+  `docs/reports/fd156-mem64-selftest-target-20261104.md`;
+  evidence `test-results/fd156/`.
+  Fixed on branch `lane-fd156`
+  -- see CL-112.
 
 - **FD-157 — The 32-bit extended-
   attribute calls do not resolve
@@ -7150,7 +7337,42 @@ do not close the entry until they land.
   may stay where the host's
   -ENODATA is not the measured
   answer for that name class.
-  Filed, not fixed.
+  Filed, not fixed. Closing
+  account (lane-fd157-161,
+  2026-11-04): closed on this
+  branch -- see CL-113. The
+  eight path forms now resolve
+  before answering: getxattr and
+  lgetxattr resolve every name
+  (a miss answers -ENOENT, a
+  path through a file -ENOTDIR,
+  an unresolved attribute on a
+  resolved file -ENODATA), and
+  setxattr, lsetxattr, listxattr,
+  llistxattr, removexattr and
+  lremovexattr -- previously
+  unhandled slots answering
+  -ENOSYS -- share one helper
+  that validates the set forms'
+  flags word first, then
+  resolves, answering -ENOTSUP
+  (set/remove) or an empty list
+  (list) for a resolved target,
+  matching the 64-bit
+  dispatcher's standing
+  contract. The host matrix also
+  corrected this lane's entry
+  order: a null attribute name
+  faults ahead of the path
+  verdicts (measured: getxattr
+  of an empty path with a null
+  name answers -EFAULT, not
+  -ENOENT), and getxattr and
+  lgetxattr now check the name
+  before the empty-path verdict.
+  The descriptor forms' own
+  verdicts are a separate
+  filing (FD-162).
 
 - **FD-158 — readlink and
   readlinkat answer -EINVAL for a
@@ -7180,7 +7402,17 @@ do not close the entry until they land.
   both dispatchers, of an existing
   non-link stays -EINVAL, proven
   by guest tests. Filed, not
-  fixed.
+  fixed. Closing account
+  (lane-fd157-161, 2026-11-04):
+  closed on this branch -- see
+  CL-114. Both resolver sites
+  split the missing case from
+  the resolved-non-link case:
+  a missing path answers
+  -ENOENT, a resolved non-link
+  keeps -EINVAL, and the
+  through-a-file case keeps
+  -ENOTDIR.
 
 - **FD-159 — A path whose final
   component is erased by
@@ -7219,6 +7451,40 @@ do not close the entry until they land.
   real directories keep their
   current answers, proven by
   guest tests. Filed, not fixed.
+  Closing account
+  (lane-fd157-161, 2026-11-04):
+  closed on this branch -- see
+  CL-115. The resolver itself
+  now judges the anchor: in
+  Fs::getNodeFromLocalPath, when
+  the caller asks for the
+  notDir verdict and the raw
+  path ends in "/", "/." or
+  "/..", the component before
+  the marker is resolved first;
+  a non-directory anchor sets
+  the notDir verdict, a missing
+  anchor under "/.." answers
+  the plain miss the erased
+  pair used to skip, and a
+  directory anchor falls
+  through to the ordinary walk.
+  The same marker at readlink
+  steps through the link and
+  judges its target (a link to
+  a directory answers -EINVAL,
+  to a file -ENOTDIR), measured
+  on the host in this lane and
+  handled at both readlink
+  sites. The audit the filing's
+  mechanism implied found the
+  mid-path form of the same
+  erasure (a ".." after a
+  missing or non-directory
+  component in the middle of a
+  path), which is a different
+  mechanism and is filed
+  separately as FD-164.
 
 - **FD-160 — The 64-bit
   dispatcher's rmdir (84) has no
@@ -7247,6 +7513,17 @@ do not close the entry until they land.
   neighbouring cases and answers
   the host's verdicts, proven by
   a guest test. Filed, not fixed.
+  Closing account
+  (lane-fd157-161, 2026-11-04):
+  closed on this branch -- see
+  CL-116. The 64-bit dispatcher
+  gained the missing rmdir case
+  (84), routed to
+  KProcess::rmdir like the
+  32-bit dispatcher, with the
+  null-path (-EFAULT) and
+  empty-path (-ENOENT) verdicts
+  the neighbouring cases carry.
 
 - **FD-161 — A hard link whose
   destination is a bare filename
@@ -7285,7 +7562,163 @@ do not close the entry until they land.
   consumers are audited for the
   same slash-less shape, proven
   by guest tests. Filed, not
-  fixed.
+  fixed. Closing account
+  (lane-fd157-161, 2026-11-04):
+  closed on this branch -- see
+  CL-117. Fs::getParentPath of
+  a slash-less path now returns
+  the empty relative path (the
+  working directory) instead of
+  the string itself. The audit
+  the closing terms required
+  covered every getParentPath
+  consumer: the absolute-path
+  callers (executable lookup,
+  open-create, mkdir, rename's
+  destination, symlink, the
+  unix-socket bind path, the
+  startup-argument scan, the
+  container UI) always hold a
+  slash and are unchanged; the
+  rename/renameat inotify
+  parent lookups and the
+  zip-mount caller take the
+  same slash-less shape and
+  now name the working-
+  directory node, matching the
+  host; the local-directory
+  builder treats the empty
+  parent as the no-op it
+  already was for the root.
+
+- **FD-162 — The 32-bit
+  dispatcher's xattr descriptor
+  forms answer the emulator-
+  private -EBADFD (77) for an
+  unopened descriptor, where the
+  host answers -EBADF (9); and
+  flistxattr answers -ENOTSUP
+  without consulting its
+  descriptor at all.** *(Low.
+  Filed by the FD-157-161 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)*
+  Host-measured at the raw
+  syscall level in this lane's
+  matrix (test-results/
+  fd157-161/hostref-fd157-161
+  .out): fgetxattr, fsetxattr,
+  flistxattr and fremovexattr of
+  descriptor 9999 all answer
+  -EBADF on the host. The 32-bit
+  handlers answer -K_EBADFD for
+  the three forms that look the
+  descriptor up, and flistxattr
+  returns -K_ENOTSUP
+  unconditionally. The 64-bit
+  dispatcher answers -EBADF for
+  the same shapes (its FD-133
+  block checks the descriptor),
+  so this is a 32-bit-only
+  divergence. The descriptor
+  forms sit outside FD-157's
+  eight path forms; found while
+  measuring that filing's host
+  matrix. Closing terms: the
+  four 32-bit descriptor forms
+  answer -EBADF for an unopened
+  descriptor (and flistxattr of
+  a valid descriptor answers
+  the empty list), proven by
+  guest tests. Filed, not fixed.
+
+- **FD-163 — An xattr name in a
+  namespace the emulator does
+  not model answers -ENODATA on
+  a resolved file, where the
+  host answers -ENOTSUP (the
+  namespace itself is not
+  supported).** *(Low. Filed by
+  the FD-157-161 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)*
+  Host-measured at the raw
+  syscall level in this lane's
+  matrix: getxattr of an
+  existing file with the name
+  "bogus.x" answers -ENOTSUP on
+  the host (an unknown namespace
+  is rejected before the
+  attribute lookup), while a
+  well-formed name in a known
+  namespace ("user.x") answers
+  -ENODATA. Both dispatchers
+  answer -ENODATA for every
+  unresolved name on a resolved
+  file, so a guest cannot tell
+  "namespace unsupported" from
+  "attribute absent". FD-157's
+  closing terms allowed -ENOTSUP
+  to stay only where the host's
+  -ENODATA is not the measured
+  answer; for unmodelled-
+  namespace names the host's
+  measured answer is -ENOTSUP,
+  so the case belongs to a
+  namespace-validity rule, not
+  to FD-157's resolution fix.
+  Closing terms: getxattr-class
+  calls with a name outside the
+  modelled namespaces answer
+  -ENOTSUP on a resolved file on
+  both dispatchers, proven by
+  guest tests. Filed, not fixed.
+
+- **FD-164 — A ".." component
+  away from the end of a path is
+  disposed of textually, without
+  the component before it ever
+  being resolved: "missing/../
+  a.txt" resolves as "a.txt" and
+  "a.txt/../d" resolves as "d",
+  where the host answers -ENOENT
+  and -ENOTDIR; and a bare ".."
+  at the root answers -ENOENT in
+  the guest where the host
+  answers 0 (the root's parent
+  is itself).** *(Low. Filed by
+  the FD-157-161 lane,
+  2026-11-04; provisional until
+  the merge lane's audit.)*
+  Host-measured at the raw
+  syscall level in this lane's
+  matrix (statfs): a ".." after
+  a missing component answers
+  -ENOENT and after a regular
+  file -ENOTDIR, because the
+  host resolves each component
+  as it walks. The guest's
+  cleanPath erases each ".."
+  together with its predecessor
+  before any lookup (the same
+  erasure FD-159 covers at the
+  END of a path; FD-159's
+  resolver fix judges only the
+  trailing marker, so the rest
+  of the family survives it --
+  observed in this lane's guest
+  tests, which print the three
+  shapes answering with the
+  erased resolution). Closing
+  terms: a non-trailing ".."
+  whose predecessor does not
+  resolve answers -ENOENT, one
+  whose predecessor resolves to
+  a non-directory answers
+  -ENOTDIR, and ".." at the root
+  resolves to the root, at the
+  path calls, proven by guest
+  tests. Filed, not fixed.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -7375,6 +7808,10 @@ is behavioural, is re-proven there.
 | `lane-fd151` | *(Batch-6 settled numbers: FD-151 closed as CL-105; its filing is FD-156.)* FD-151: the Node wasm64-selftest target compiles again — in the single-threaded configuration BOXEDWINE_MUTEX is void* with empty lock/unlock macros, and two sites written against the multi-threaded configuration touched the type directly (faultstage.h's MemoryDemandLock, the filed site; ksocket.cpp's socketpair descriptor bracket, surfaced on the rebuild) — both now use the configuration's own idioms, multi-threaded behaviour byte-identical; the self-test's two standing failing cases were stale staging (the chmod null-path case expected the pre-FD-126 -ENOENT where the dispatcher now answers -EFAULT; the ENOSYS case included pidfd_getfd, which is implemented and answers -EBADF for a non-pidfd) and are restaged to the host-measured answers; the target's documented run instructions corrected (the .js invocation cannot run under the repo's type:module package.json). FD-155 filed (the mem64 variant's separate compile break in the SDL audio bridge). | Host reference program measured first at the raw syscall (hostref-fd151.c, aarch64 asm-generic numbers): fchmodat null -EFAULT / empty -ENOENT; pidfd_getfd non-pidfd -EBADF, invalid flags -EINVAL first. Standard build: target compiles, self-test 953 passed / 0 failed, exit 0. Speed-engine build (scripts/build-jit-wasm.sh's exact recipe, isolated build dir): compiles; 953/0 interpreted; 953/0 with emitted execution (JIT64 blocks=319 insns=816, WASM64 entered=319 rejected=0, mode table). The only output difference in JIT mode is three added METRICS telemetry lines (wall-clock cadence), characterised in the record, not a defect. Native suites serial: main 0 FAILED (679 OK lines, 382s), x64 0 FAILED (105 OK lines, 28s); JS unit 352 passed / 0 failed; browser build BUILD COMPLETE 'Browser export verified' (BUILD_INFO git_sha fae50a27e, dirty 0, wasm 2fd905f6, archive c4dbe35986a5); suite browser cpu64-selftest PASS. Record: `docs/reports/fd151-node-selftest-target-20261103.md`; evidence `test-results/fd151/` |
 | `lane-fd139-152` | *(Batch-6 settled numbers: FD-152 closed as CL-106, FD-139 as CL-107, FD-140 as CL-108; filings FD-157 to FD-161.)* FD-152 CLOSED (see CL-104), FD-139 CLOSED (see CL-105), FD-140 CLOSED (see CL-106); filings FD-155, FD-156, FD-157, FD-158, FD-159 (lane numbers, provisional). FD-152: the 64-bit dispatcher's fstatfs case (138) shared the statfs helper and ignored its descriptor, answering the fabricated statistics for any descriptor; it now checks the descriptor first (host order: -EBADF ahead of even the buffer fault) and keeps the fabricated answer for any open one. FD-139: utimensat flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH answered -EINVAL on the host for every path shape (raw-syscall measured: the kernel validates the flags word ahead of the name fetch, after the times copy-in) but only the null-path shapes validated on the guest; the 64-bit stub hoists the verdict ahead of its path branches with the FD-136 null matrix unchanged, and KProcess::utimesat/utimesat64 validate at entry, so a refused call no longer applies the times. FD-140: Fs::getNodeFromLocalPath gains an optional notDir out-report — a miss whose stopping parent is not a directory — and the guest-boundary path calls on both dispatchers translate it to -ENOTDIR (resolver, process API and both dispatchers' own resolution sites; creation-under-a-file is refused before any node is fabricated; parent verdicts are judged on followed resolutions so symlinked directories still work); callers that do not ask are unchanged and asking callers always walk, since a cached miss cannot carry the verdict. Fix `00d8f5369` on tests `c178a704e`. | Host measured first at the raw syscall level (asm-generic numbers, strace-verified): fstatfs answers 0 for any open descriptor and -EBADF for -1, 9999 and a just-closed descriptor, with the descriptor verdict ahead of the buffer fault; the utimensat flags verdict precedes the name fetch for every shape and follows the times copy-in; -ENOTDIR is uniform across 20+ path calls for a regular-file prefix, with missing-prefix -ENOENT and symlink-to-dir controls (evidence `test-results/fd139-152/hostref-fd139-152{,b,c}.c/.out`). RED on base `7a2308cd6`: main — exactly the three new tests failing (54 assertions: utimensat rows answering 0/-ENOENT and the refused call applying the times; ENOTDIR rows answering -ENOENT and kin); x64 — exactly the three new tests failing (39 assertions, the fstatfs rows answering 0/-EFAULT among them). GREEN on the fix: native suites serial main 682/682 and x64 108/108, 0 FAILED; JS unit 352 passed / 0 failed; browser build 'Browser export verified' (BUILD_INFO git_sha `e8f120b22`, wasm sha256 c6499c3c, staged archive `c4dbe35986a5` as pinned); known-gaps audit `--check` passes. Record: `docs/reports/fd139-140-152-enotdir-utimensat-flags-fstatfs-20261104.md`; evidence `test-results/fd139-152/` |
 | `lane-fd148-149` | *(Batch-6 settled numbers: FD-148 closed as CL-109, FD-149 as CL-110.)* FD-148 CLOSED + FD-149 CLOSED (closure numbers settle at composition; lane-local CL-104/CL-105): FD-148 — the emulator's Vulkan stack dropped the guest's unnormalizedCoordinates sampler flag (DXVK's D3D9 present blit samples the rendered image in texel space through a usePixelCoord sampler with CLAMP_TO_BORDER addressing), so the presented swapchain reached the compositor ~black although the clear landed exactly in its render target; fix `5ac7f7431` carries the flag from both vkCreateSampler ABIs through the bridge SAMPLER record and the wire protocol into a per-draw WGSL coordinate rewrite in the page tier (record-layout test pin `82e3ebb51`; Vulkan-register citation re-pins `57651cfea`). FD-149 — the shipped 32-bit win32u backport was configured --without-vulkan by its own build script (its sysroot carried only the font deb closure and its fail-closed markers checked only font defines), so every 32-bit session failed its Vulkan graphics-driver load and no 32-bit D3D9 capture ever became ready; fix `6e3dba081` rebuilds the module with the sha256-pinned bookworm libvulkan sysroot debs, a SONAME_LIBVULKAN fail-closed marker and a stub-string product check, restaged through regen-wine32-zip.sh into runtime-assets-20261104. | Base (integ tip `7a2308cd6`, wasm 05298a62): d3d9-comprehensive FAIL (219,863 ms; redDominant 4 vs >100000 required), d3d9-32 FAIL (CAPTURE_READY never seen in 300 s; stub error + VK_KHR_surface abort in the console). Fixed build (wasm 2eccd757, 'Browser export verified'): d3d9-comprehensive PASS (all three stages RESULT 0, redDominant 722880; re-run PASS on the final restaged tree), d3d9-32 PASS (62,685 ms, redDominant 722880, zero stub lines), controls d3d11-triangle / d3d11-comprehensive / d3d10-comprehensive / d3d12-comprehensive PASS. Native suites serial main + x64 both 0 FAILED; JS unit 353/0; runtime completeness gate 0 failures; bootstrap verifies the new retained archive (13 files). No new defects filed: the settlement run's intermittent 632x1 swapchain extent collapse was not reproduced on the current base and is recorded as observed-not-reproduced in the lane record. Record: `docs/reports/fd148-fd149-d3d9-20261104.md`; evidence `test-results/fd148-149/` |
+| `lane-fd155` | *(Batch-7 settled numbers: FD-155 closed as CL-111.)* FD-155 CLOSED (closure number settles at composition): the 32-bit specialization capture's header guard silently discarded refused guest input — an unreadable VkSpecializationInfo, a mapEntryCount over the capture cap of 16, and claimed entries whose map-entry array or data is absent — where the 64-bit twin reports all three through VK64_DROP_IF. The header now mirrors the 64-bit path (fix `5bd07e141`): null pointer and empty spec return silently as legal no-ops, the three refusals drop loudly; VK64_DROP_IF census 255 -> 258, pin updated in vk-drop-macro-guard.test.mjs. | New native FD-155 section (two PASS lines), RED on the unmodified bridge at the over-cap drop assertion, GREEN on the fix; run-native 69 PASS; native suites serial main 682 OK / 0 FAILED and x64 108 OK / 0 FAILED; browser build 'Browser export verified' (wasm e0b6f721, BUILD_INFO git_sha 0dc8a0c7f, staged archive c4dbe35986a5 as pinned); JS unit 353/0, legacy 115/0; citation audit 352 rows, 0 drift (two re-pins). Record: `docs/reports/fd155-capturespec32-silent-header-20261104.md`; evidence `test-results/fd155/` |
+| `lane-fd156` | *(Batch-7 settled numbers: FD-156 closed as CL-112.)* FD-156 CLOSED (closure number settles at composition): the MEMORY64 variant of the Node wasm64-selftest target compiles again -- the SDL audio bridge's bridge-arming EM_ASM call cast the ring index addresses (&bwRingWrite, &bwRingRead) to int, which a 64-bit-pointer build rejects; both now go as pointers (sig 'p', delivered to JS as the Number byte offset, the treatment the ring base at $0 already gets), byte-identical values on wasm32 hosts; the target's run instructions corrected to the .cjs form with the measured Node-version behaviour. No new defects filed. | Base (integ tip `3ea2fd97d`): build fails at platform/sdl/kdspaudio.cpp:371, the two filed cast errors in both compilations of the file, no other error site. Fixed: `make wasm64-selftest-mem64` MAKE_EXIT=0; run under official Node v24.11.0 (tarball sha256 verified against the release SHASUMS256.txt; the box's Node 22.22.3 rejects the module at instantiation -- 64-bit table limits) **953 passed, 0 failed**, exit 0. Standard variant build + run 953/0; native suites serial main 682 tests 0 FAILED, x64 108 tests 0 FAILED; JS unit 353/0, legacy 115/0; browser build 'Browser export verified' (BUILD_INFO git_sha `b4d3f2e8f`, dirty 0, wasm aba69204..., archive c4dbe35986a5). Record: `docs/reports/fd156-mem64-selftest-target-20261104.md`; evidence `test-results/fd156/` |
+| `lane-fd157-161` | *(Batch-7 settled numbers: FD-157 closed as CL-113, FD-158 as CL-114, FD-159 as CL-115, FD-160 as CL-116, FD-161 as CL-117; filings FD-162 to FD-164 keep their numbers.)* *(Provisional numbers: closures settle at the next composition.)* FD-157 CLOSED + FD-158 CLOSED + FD-159 CLOSED + FD-160 CLOSED + FD-161 CLOSED (lane-local CL-111..CL-115): FD-157 -- the 32-bit dispatcher's xattr path forms resolved only for the modelled DOSATTRIB name and had no handlers at all for six of the eight forms; all eight now resolve before answering (miss -ENOENT, through a file -ENOTDIR, unresolved attribute -ENODATA; the set/remove forms keep -ENOTSUP and the list forms an empty list for a resolved target), and a null attribute name faults ahead of the path verdicts as the host's entry order measures. FD-158 -- readlink/readlinkat of a missing path answers -ENOENT on both dispatchers; a resolved non-link keeps -EINVAL. FD-159 -- a path whose final component is erased by normalization ("a.txt/", "a.txt/.", "a.txt/..") answers -ENOTDIR: the resolver judges the anchor component when the caller asks for the notDir verdict. FD-160 -- the 64-bit dispatcher's rmdir (84) gained its missing case, routed to KProcess::rmdir. FD-161 -- Fs::getParentPath of a slash-less path returns the working directory, so a hard link to a bare filename succeeds; every other consumer audited. New filings from this lane's measurements: FD-162 (the 32-bit xattr descriptor forms answer the emulator-private -EBADFD for an unopened descriptor, and flistxattr never consults its descriptor), FD-163 (an unmodelled xattr namespace answers -ENODATA where the host answers -ENOTSUP), FD-164 (the mid-path erased-.. family). | Tests `c22bc6805`, fix `7239fe69c` on base `3ea2fd97d`: RED -- the seven new guest tests fail on the base for the filed reasons (evidence `test-results/fd157-161/red-main.log`, `red-x64.log`); GREEN -- targeted tests pass and the full native suites run serially with 0 FAILED (main 686 tests, x64 111 tests); JS unit suite 353/0; browser build 'Browser export verified' on the fixed tree. Host behaviour measured first at the raw syscall level (asm-generic numbers, strace cross-checked): `test-results/fd157-161/hostref-fd157-161.out`. Record: `docs/reports/fd157-161-path-verdicts-20261104.md`; evidence `test-results/fd157-161/` |
+| `lane-fd154` | *(Batch-7 settled numbers: FD-154 closed as CL-118.)* FD-154 ADJUDICATED + CLOSED: the five browser-suite failures from the batch-5 gate, each identified to a product or harness cause and fixed. winsock-http PRODUCT (fix `d26f606a1`): browser-build INET sockets are marked loopbackStream and connect() refused loopback destinations internally, never using the native transport that reaches the relay; it now falls through to the native connect when no guest listener exists. input-mouse-rel PRODUCT (fix `3cce91bcb`): both relative-motion producers advanced the sink's tracked pointer at queue time and the delivering connection added the delta again, doubling the first motion of every stream (injected 100,50 -> guest 200,100); producers no longer advance, and deliveries are reported back through the new noteDeliveredPointer(). input-fullscreen HARNESS over three PRODUCT layers: harness `e482eb6a6` keeps the page unlocked (headless grants ClipCursor's pointer lock without a gesture and clicks under lock arrive at (0,0)) and delivers the press through the injection channel; product `f610e90b2` (a GrabModeSync grab froze input at grab time), `dbe7705f3` (grab-routed events dropped as foreign-target because Wine grabs on the root window owned by another connection -- own-grab targets now deliver on the grabbing connection, and grab parameters plus every pointer-path drop reason log under BW64_XWIRE), `25471296c` (the delivery loop re-froze after the first event under a sync grab while this client never sends XAllowEvents -- sync grabs treated as async, matching the native X11 layer). jit64 HARNESS (`189f6b302`, `41de3c327`): the wineboot wait demanded `wineboot.exe--init`, a substring the space-joined argv rendering never produces; pattern fixed and the generated-code assertion gated on engine availability. jitbench HARNESS (`b99c92154`, `260545f5b`, `1d2c059d8`, `87d9e021b`): the boot never passed ?jit32 so CPU32 mode-1 could never latch, and the suite's interpreter-target build has no JIT engine to latch; assertions gate on the stats' availability report, JIT-variant builds keep the full assertions. Two xwire-pointer-grab unit contracts updated to the measured semantics (`58f759879`). | All five reproduced stock on the unmodified base `3ea2fd97d` first. Fixed build (wasm `3b3fd4f9`): winsock-http passes with relay stats accepted 1, 76 bytes up / 324 down; input-mouse-rel and input-fullscreen pass on both architectures (the guest prints the move, BUTTON UP, and the clipped 1500-count move exactly once); jit64 passes end to end in both modes; the jitbench focused run passes. JS unit 353/0; native suites serial main 682 tests 0 FAILED, x64 108 tests 0 FAILED. Whether the shipped build should switch to the JIT variant is flagged in the lane record as a build decision outside this filing. Record: `docs/reports/fd154-adjudication-20261104.md`; evidence `test-results/fd154/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -10456,6 +10893,367 @@ dead-start fix and needs composition care.
   FAILED; JS unit 353/0. Record:
   `docs/reports/fd148-fd149-d3d9-20261104.md`;
   evidence `test-results/fd148-149/`
+  in the lane's worktree.
+
+- **CL-111 — FD-155 closed: the
+  32-bit specialization capture
+  discarded refused guest input
+  silently — its header guard was
+  one lumped plain return shared by
+  the legal empty shape and three
+  genuine refusals (an unreadable
+  VkSpecializationInfo, a
+  mapEntryCount over the capture cap
+  of 16, and claimed entries whose
+  map-entry array or data is
+  absent), where the 64-bit twin
+  reports all three through
+  VK64_DROP_IF.** *(Lane closure; the
+  number settles at the next
+  composition.)* Fixed on branch
+  `lane-fd155` in `5bd07e141`:
+  captureStageSpec32's header now
+  mirrors captureStageSpec — the
+  null-pointer and empty-spec shapes
+  return ahead of the guards (legal
+  no-ops, silent per FD-153) and the
+  three refusals drop loudly through
+  VK64_DROP_IF; census 255 -> 258
+  sites, pin updated in
+  vk-drop-macro-guard.test.mjs.
+  Proof: new native FD-155 section
+  (tests `64dbe21e5`) — RED on the
+  unmodified bridge (aborts at the
+  over-cap drop assertion, line
+  2459, after the served control pin
+  passes;
+  `test-results/fd155/red-native.log`),
+  GREEN on the fix (run-native 69
+  PASS, 67 standing + 2 new;
+  `test-results/fd155/green-native.log`):
+  through vkCreateComputePipelines
+  the over-cap, absent-data,
+  absent-array and zero-data-size
+  shapes each drop +1 with nothing
+  captured and a valid entry is
+  captured verbatim with no drop;
+  direct pins keep the null spec
+  pointer silent and make the
+  unreadable struct drop +1. Native
+  suites serial main 682 OK / 0
+  FAILED and x64 108 OK / 0 FAILED;
+  JS unit 353/0, legacy 115/0;
+  browser build 'Browser export
+  verified' (wasm `e0b6f721`,
+  BUILD_INFO git_sha `0dc8a0c7f`);
+  citation audit 352 rows, 0 drift
+  (two re-pins, `0dc8a0c7f`). No new
+  defects filed. Record:
+  `docs/reports/fd155-capturespec32-silent-header-20261104.md`;
+  evidence `test-results/fd155/` in
+  the lane's worktree.
+
+- **CL-112 -- FD-156 closed: the
+  MEMORY64 variant of the Node
+  self-test target did not compile
+  because the SDL audio bridge's
+  EM_ASM call cast the ring index
+  addresses to int, a width a
+  64-bit-pointer build cannot
+  narrow to.** *(Lane closure; the
+  number settles at the next
+  composition.)* Fixed on branch
+  `lane-fd156` in `3ee906b3a` (run
+  instructions corrected in
+  `b4d3f2e8f`): the addresses go to
+  EM_ASM as pointers (sig `p`, the
+  byte offset the ring base at $0
+  already uses), which the MEMORY64
+  runtime delivers to JS as a plain
+  Number. Proof: the base build
+  fails with exactly the two filed
+  errors at kdspaudio.cpp:371 and
+  no other error site; the fixed
+  build is MAKE_EXIT=0, and the
+  run under Node v24.11.0 (the
+  box's Node 22 refuses the
+  module's 64-bit table limits at
+  instantiation) reports 953
+  passed, 0 failed, exit 0 -- the
+  other variants' standard. The
+  standard variant still builds
+  and runs 953/0; native suites
+  serial main 682 / x64 108, 0
+  FAILED; JS unit 353/0, legacy
+  115/0; browser build 'Browser
+  export verified' (BUILD_INFO
+  git_sha `b4d3f2e8f`, dirty 0,
+  wasm `aba69204...`). Record:
+  `docs/reports/fd156-mem64-selftest-target-20261104.md`;
+  evidence `test-results/fd156/`
+  in the lane's worktree.
+
+- **CL-113 — FD-157 closed: the
+  32-bit dispatcher's xattr path
+  forms did not resolve their
+  target (and six of the eight
+  forms had no handlers at all).**
+  *(Lane closure; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd157-161` in `7239fe69c`
+  (tests `c22bc6805`): getxattr and
+  lgetxattr resolve every name (a
+  miss -ENOENT, through a file
+  -ENOTDIR, an unresolved
+  attribute on a resolved file
+  -ENODATA), and setxattr,
+  lsetxattr, listxattr, llistxattr,
+  removexattr and lremovexattr
+  share one helper that follows
+  the host's measured entry order
+  (set-form flags -EINVAL first,
+  null path -EFAULT, null name
+  -EFAULT, empty path -ENOENT,
+  then resolution), answering
+  -ENOTSUP (set/remove) or an
+  empty list (list) for a resolved
+  target. Proof: the guest test
+  fails on the base with the filed
+  answers (-ENOTSUP for the get
+  forms, -ENOSYS for the six
+  unhandled forms) and passes with
+  the fix; native suites serial
+  main 686 and x64 111, both 0
+  FAILED; JS unit 353/0; browser
+  build 'Browser export verified'
+  (wasm fdc06d01). Host behaviour
+  measured first at the raw
+  syscall level: `test-results/
+  fd157-161/hostref-fd157-161.out`
+  in the lane's worktree. Record:
+  `docs/reports/fd157-161-path-
+  verdicts-20261104.md`.
+
+- **CL-114 — FD-158 closed:
+  readlink and readlinkat answered
+  -EINVAL for a path that does not
+  exist, on both dispatchers.**
+  *(Lane closure; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd157-161` in `7239fe69c`
+  (tests `c22bc6805`): both resolver
+  sites (KProcess::
+  readlinkInDirectory and the
+  64-bit dispatcher's
+  sys_readlink64) split the missing
+  case (-ENOENT) from the resolved
+  non-link case (-EINVAL, kept);
+  the through-a-file case keeps
+  -ENOTDIR. Proof: the guest tests
+  fail on the base (-EINVAL for a
+  missing path on both dispatchers)
+  and pass with the fix; suite
+  tallies as in CL-113. Record:
+  `docs/reports/fd157-161-path-
+  verdicts-20261104.md`.
+
+- **CL-115 — FD-159 closed: a path
+  whose final component is erased
+  by normalization (a trailing
+  "/", "/." or "/.." through a
+  regular file) resolved to the
+  file itself where the host
+  answers -ENOTDIR.** *(Lane
+  closure; the number settles at
+  the next composition.)* Fixed on
+  branch `lane-fd157-161` in
+  `7239fe69c` (tests `c22bc6805`): the
+  resolver (Fs::
+  getNodeFromLocalPath) judges the
+  anchor component before the
+  marker when the caller asks for
+  the notDir verdict -- a
+  non-directory anchor sets the
+  verdict, a plain-missing anchor
+  under "/.." misses, a directory
+  anchor falls through to the
+  ordinary walk -- and both
+  readlink sites judge a marked
+  link's followed target (-EINVAL
+  to a directory, -ENOTDIR to a
+  file). Proof: the guest tests
+  fail on the base (the shapes
+  resolve to the file and answer
+  0; readlink of a marked link
+  returns its target string) and
+  pass with the fix; suite tallies
+  as in CL-113. The mid-path form
+  of the same erasure is filed
+  separately as FD-164. Record:
+  `docs/reports/fd157-161-path-
+  verdicts-20261104.md`.
+
+- **CL-116 — FD-160 closed: the
+  64-bit dispatcher's rmdir (84)
+  had no case and answered -ENOSYS
+  for every path.** *(Lane
+  closure; the number settles at
+  the next composition.)* Fixed on
+  branch `lane-fd157-161` in
+  `7239fe69c` (tests `c22bc6805`): the
+  dispatcher gained the case,
+  routed to KProcess::rmdir with
+  the neighbouring cases'
+  null-path (-EFAULT) and
+  empty-path (-ENOENT) verdicts.
+  Proof: the guest test fails on
+  the base (-ENOSYS for every
+  shape, with the dispatcher's
+  'unimplemented syscall #84' log
+  line) and passes with the fix;
+  suite tallies as in CL-113.
+  Record: `docs/reports/fd157-161-
+  path-verdicts-20261104.md`.
+
+- **CL-117 — FD-161 closed: a hard
+  link whose destination is a bare
+  filename in the working directory
+  answered -ENOENT even when the
+  source exists.** *(Lane closure;
+  the number settles at the next
+  composition.)* Fixed on branch
+  `lane-fd157-161` in `7239fe69c`
+  (tests `c22bc6805`): Fs::
+  getParentPath of a slash-less
+  path returns the empty relative
+  path (the working directory)
+  instead of the string itself;
+  every other consumer audited
+  (the absolute-path callers are
+  unchanged; the rename inotify
+  parent lookups take the same
+  shape and now name the working-
+  directory node, as the host
+  does). Proof: the guest test
+  fails on the base (-ENOENT, no
+  native destination created) and
+  passes with the fix (the link is
+  created, shares the source's
+  inode, and a repeat answers
+  -EEXIST); suite tallies as in
+  CL-113. Record: `docs/reports/
+  fd157-161-path-verdicts-
+  20261104.md`.
+
+- **CL-118 — FD-154 closed: the
+  five browser-suite failures
+  filed at the batch-5 gate
+  (winsock-http, input-mouse-rel,
+  input-fullscreen, jit64 and
+  jitbench), each adjudicated to
+  a product or harness cause and
+  fixed.** *(Merge-audit closure:
+  the lane annotated FD-154 with
+  per-item verdicts rather than
+  adding a closure.)* Fixed on
+  branch `lane-fd154`.
+  winsock-http — PRODUCT,
+  `d26f606a1` (composed
+  `41a1fa6f8`): every browser-build
+  INET socket is marked
+  loopbackStream and connect()
+  refused loopback destinations
+  internally, never using the
+  native transport that reaches
+  the relay; it now falls through
+  to the native connect when no
+  guest listener exists. Proof:
+  the test passes and the relay
+  reports accepted 1, 76 bytes
+  guest-to-TCP, 324 bytes back --
+  the filing's closing term for
+  this item. input-mouse-rel —
+  PRODUCT, `3cce91bcb` (composed
+  `431376004`): both relative-
+  motion producers advanced the
+  sink's tracked pointer at queue
+  time and the delivering
+  connection added the delta
+  again, doubling the first motion
+  of every stream (injected 100,50
+  -> guest 200,100); producers no
+  longer advance and the
+  connection reports deliveries
+  back through the new
+  noteDeliveredPointer().
+  input-fullscreen — HARNESS over
+  three PRODUCT layers: harness
+  `e482eb6a6` (composed
+  `0582a2310`) keeps the page
+  unlocked (headless grants
+  ClipCursor's pointer lock
+  without a gesture, and clicks
+  under lock arrive at (0,0)) and
+  delivers the press through the
+  injection channel; product
+  `f610e90b2` (composed
+  `a6f21e248`) -- a GrabModeSync
+  grab no longer freezes input at
+  grab time; `dbe7705f3` (composed
+  `310300ce1`) -- own-grab pointer
+  events deliver on the grabbing
+  connection instead of dropping
+  as foreign-target (Wine grabs on
+  the root window, owned by
+  another connection), and grab
+  parameters plus every
+  pointer-path drop reason now log
+  under BW64_XWIRE; `25471296c`
+  (composed `d1067de50`) -- sync
+  grabs are treated as async in
+  the delivery loop, matching the
+  native X11 layer, since this
+  client never sends XAllowEvents.
+  jit64 — HARNESS, `189f6b302` +
+  `41de3c327` (composed
+  `354a94df6` and `f05288921`): the
+  wineboot wait demanded the
+  substring `wineboot.exe--init`,
+  which the space-joined argv
+  rendering never produces; the
+  pattern matches the rendered
+  form and the generated-code
+  assertion gates on engine
+  availability. jitbench —
+  HARNESS, `b99c92154` +
+  `260545f5b` + `1d2c059d8` +
+  `87d9e021b` (composed
+  `d1a9638ee`, `eca29cf14`,
+  `e213fa86c` and `bb88bfcc4`): the
+  boot never passed ?jit32, so
+  CPU32 mode-1 could never latch,
+  and the suite's interpreter-
+  target build has no JIT engine
+  to latch; assertions now gate on
+  the stats' availability report
+  and JIT-variant builds keep the
+  full assertions. Two
+  xwire-pointer-grab unit
+  contracts updated to the
+  measured semantics (`58f759879`,
+  composed `df7356eb7`). Proof:
+  all five reproduced stock on the
+  unmodified base `3ea2fd97d`
+  first; on the fixed build all
+  five pass (the input tests on
+  both architectures); JS unit
+  353/0; native suites serial main
+  682 tests 0 FAILED, x64 108
+  tests 0 FAILED. Record:
+  `docs/reports/fd154-adjudication-20261104.md`;
+  evidence `test-results/fd154/`
   in the lane's worktree.
 
 ## Appendix — examined and deliberately NOT registered

@@ -1383,10 +1383,10 @@ static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
+    if (!ARG2) return -K_EFAULT; // FD-157: the host fetches the attribute name ahead of the path verdicts (a null name faults even for an empty or missing path)
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
-    if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
-    if (!ARG2) return -K_EFAULT; // FD-132: a null attribute name faults on the host, once the path has resolved
+    if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
 
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
@@ -1405,6 +1405,19 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
                 result = -K_ERANGE;
             }
         }
+    } else {
+        // FD-157: every other name resolves its target first. A
+        // missing path answers -ENOENT, a path through a file
+        // -ENOTDIR, and an attribute the resolved file does not
+        // have -ENODATA (the emulator models no xattrs beyond
+        // DOSATTRIB), instead of -ENOTSUP for all three shapes.
+        bool notDir = false;
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true, nullptr, &notDir);
+        if (!file) {
+            result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
+        } else {
+            result = -K_ENODATA;
+        }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getxattr: path=%s name=%s result = %x\n", path.c_str(), name.c_str(), result);
     return result;
@@ -1412,10 +1425,10 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
+    if (!ARG2) return -K_EFAULT; // FD-157: the host fetches the attribute name ahead of the path verdicts (a null name faults even for an empty or missing path)
     BString path = cpu->memory->readString(ARG1);
     BString name = cpu->memory->readString(ARG2);
-    if (path.length() == 0) return -K_ENOENT; // FD-131: the host resolves the path before the name
-    if (!ARG2) return -K_EFAULT; // FD-132: a null attribute name faults on the host, once the path has resolved
+    if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
         bool notDir = false;
@@ -1432,6 +1445,16 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
             } else {
                 result = -K_ERANGE;
             }
+        }
+    } else {
+        // FD-157: as in getxattr, with the link itself as the
+        // target (no following).
+        bool notDir = false;
+        std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false, nullptr, &notDir);
+        if (!file) {
+            result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
+        } else {
+            result = -K_ENODATA;
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "lgetxattr: path=%s name=%s result=%x\n", path.c_str(), name.c_str(), result);
@@ -1489,6 +1512,72 @@ static U32 syscall_fremovexattr(CPU* cpu, U32 eipCount) {
     }
 
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "fremovexattr: fd=%d name=%s result = %x\n", ARG1, name.c_str(), result);
+    return result;
+}
+
+// FD-157: the remaining 32-bit xattr path forms (setxattr,
+// lsetxattr, listxattr, llistxattr, removexattr, lremovexattr)
+// had no handlers at all and answered -ENOSYS for every input,
+// resolved or not. The host's entry order, measured at the raw
+// syscall level, runs: the set forms validate their flags word
+// (-EINVAL for bits outside XATTR_CREATE|XATTR_REPLACE) ahead of
+// everything; a null path faults; a null attribute name faults
+// ahead of the path verdicts; an empty path answers -ENOENT;
+// then the target resolves (a miss answers -ENOENT, a path
+// through a file -ENOTDIR). Only then does the attribute verdict
+// apply, and since the emulator models no xattrs the resolved
+// answers are the standing ones the 64-bit dispatcher gives:
+// -ENOTSUP for the set/remove forms, an empty list (0) for the
+// list forms.
+static U32 xattrPathForm32(CPU* cpu, bool followLink, bool isSetForm, bool hasName, U32 resolvedAnswer) {
+    if (isSetForm && (ARG5 & ~(U32)0x3)) {
+        return -K_EINVAL;
+    }
+    if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
+    if (hasName && !ARG2) return -K_EFAULT; // the name is fetched ahead of the path verdicts
+    BString path = cpu->memory->readString(ARG1);
+    if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
+    bool notDir = false;
+    std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, followLink, nullptr, &notDir);
+    if (!file) {
+        return notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
+    }
+    return resolvedAnswer;
+}
+
+static U32 syscall_setxattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, true, true, true, (U32)-K_ENOTSUP);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "setxattr: result=%x\n", result);
+    return result;
+}
+
+static U32 syscall_lsetxattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, false, true, true, (U32)-K_ENOTSUP);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "lsetxattr: result=%x\n", result);
+    return result;
+}
+
+static U32 syscall_listxattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, true, false, false, 0);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "listxattr: result=%x\n", result);
+    return result;
+}
+
+static U32 syscall_llistxattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, false, false, false, 0);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "llistxattr: result=%x\n", result);
+    return result;
+}
+
+static U32 syscall_removexattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, true, false, true, (U32)-K_ENOTSUP);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "removexattr: result=%x\n", result);
+    return result;
+}
+
+static U32 syscall_lremovexattr(CPU* cpu, U32 eipCount) {
+    U32 result = xattrPathForm32(cpu, false, false, true, (U32)-K_ENOTSUP);
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "lremovexattr: result=%x\n", result);
     return result;
 }
 
@@ -2507,17 +2596,17 @@ static const SyscallFunc syscallFunc[] = {
     nullptr,                  // 223
     syscall_gettid,     // 224 __NR_gettid
     nullptr,                  // 225
-    nullptr,                  // 226
-    nullptr,                  // 227
+    syscall_setxattr,   // 226 __NR_setxattr
+    syscall_lsetxattr,  // 227 __NR_lsetxattr
     syscall_fsetxattr,  // 228 __NR_fsetxattr
     syscall_getxattr,   // 229
     syscall_lgetxattr,  // 230
     syscall_fgetxattr,  // 231 __NR_fgetxattr
-    nullptr,                  // 232
-    nullptr,                  // 233
+    syscall_listxattr,  // 232 __NR_listxattr
+    syscall_llistxattr, // 233 __NR_llistxattr
     syscall_flistxattr, // 234 __NR_flistxattr
-    nullptr,                  // 235
-    nullptr,                  // 236
+    syscall_removexattr,      // 235 __NR_removexattr
+    syscall_lremovexattr,     // 236 __NR_lremovexattr
     syscall_fremovexattr,     // 237
     nullptr,                  // 238 __NR_tkill
     syscall_sendfile64,       // 239

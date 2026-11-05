@@ -1685,10 +1685,6 @@ U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, 
         if (isGuestLoopbackAddress(destination)) {
             if (this->loopbackStreamConnected) return -K_EISCONN;
             if (!destinationPort) return -K_ECONNREFUSED;
-            if (!this->loopbackPort) {
-                U32 bound = this->bindLoopbackStream(0x7f000001u, 0);
-                if ((S32)bound < 0) return bound;
-            }
             std::shared_ptr<KNativeSocketObject> listener;
             {
                 std::lock_guard<std::mutex> lock(g_loopbackTcpMutex);
@@ -1699,45 +1695,58 @@ U32 KNativeSocketObject::connect(KThread* thread, const KFileDescriptorPtr& fd, 
                 }
             }
             const U32 normalizedDestination = destination ? destination : 0x7f000001u;
-            if (!listener || !listener->listening ||
+            if (!listener && this->nativeSocket >= 0) {
+                // No guest serves this loopback port, but this socket also
+                // carries a live native transport (the browser build's
+                // network relay): the destination is the relay's to answer,
+                // exactly as for a non-loopback destination below. Leave the
+                // loopback identity unbound, so the data-path predicates
+                // keep treating this socket as native, and fall through to
+                // the native connect.
+            } else if (!listener || !listener->listening ||
                 (listener->loopbackAddress && listener->loopbackAddress != normalizedDestination)) {
                 this->error = K_ECONNREFUSED;
                 return -K_ECONNREFUSED;
+            } else if (!this->loopbackPort) {
+                U32 bound = this->bindLoopbackStream(0x7f000001u, 0);
+                if ((S32)bound < 0) return bound;
             }
-            std::shared_ptr<KNativeSocketObject> accepted =
-                std::make_shared<KNativeSocketObject>(this->domain, this->type, this->protocol);
-            if (accepted->nativeSocket >= 0) {
-                closesocket(accepted->nativeSocket);
-                accepted->nativeSocket = -1;
-            }
-            accepted->loopbackStream = true;
-            accepted->loopbackStreamConnected = true;
-            accepted->connected = true;
-            accepted->loopbackAddress = listener->loopbackAddress;
-            accepted->loopbackPort = listener->loopbackPort;
-            accepted->loopbackPeerAddress = this->loopbackAddress ? this->loopbackAddress : 0x7f000001u;
-            accepted->loopbackPeerPort = this->loopbackPort;
-            accepted->loopbackStreamPeer = std::dynamic_pointer_cast<KNativeSocketObject>(shared_from_this());
-            this->loopbackPeerAddress = normalizedDestination;
-            this->loopbackPeerPort = destinationPort;
-            this->loopbackStreamPeer = accepted;
-            this->loopbackStreamConnected = true;
-            this->connected = true;
-            {
-                std::lock_guard<std::mutex> lock(listener->loopbackStreamMutex);
-                if (listener->loopbackAcceptQueue.size() >= std::max<U32>(1, listener->loopbackStreamBacklog)) {
-                    this->loopbackStreamPeer.reset();
-                    this->loopbackStreamConnected = false;
-                    this->connected = false;
-                    this->error = K_ECONNREFUSED;
-                    return -K_ECONNREFUSED;
+            if (listener) {
+                std::shared_ptr<KNativeSocketObject> accepted =
+                    std::make_shared<KNativeSocketObject>(this->domain, this->type, this->protocol);
+                if (accepted->nativeSocket >= 0) {
+                    closesocket(accepted->nativeSocket);
+                    accepted->nativeSocket = -1;
                 }
-                listener->loopbackAcceptQueue.push_back(accepted);
+                accepted->loopbackStream = true;
+                accepted->loopbackStreamConnected = true;
+                accepted->connected = true;
+                accepted->loopbackAddress = listener->loopbackAddress;
+                accepted->loopbackPort = listener->loopbackPort;
+                accepted->loopbackPeerAddress = this->loopbackAddress ? this->loopbackAddress : 0x7f000001u;
+                accepted->loopbackPeerPort = this->loopbackPort;
+                accepted->loopbackStreamPeer = std::dynamic_pointer_cast<KNativeSocketObject>(shared_from_this());
+                this->loopbackPeerAddress = normalizedDestination;
+                this->loopbackPeerPort = destinationPort;
+                this->loopbackStreamPeer = accepted;
+                this->loopbackStreamConnected = true;
+                this->connected = true;
+                {
+                    std::lock_guard<std::mutex> lock(listener->loopbackStreamMutex);
+                    if (listener->loopbackAcceptQueue.size() >= std::max<U32>(1, listener->loopbackStreamBacklog)) {
+                        this->loopbackStreamPeer.reset();
+                        this->loopbackStreamConnected = false;
+                        this->connected = false;
+                        this->error = K_ECONNREFUSED;
+                        return -K_ECONNREFUSED;
+                    }
+                    listener->loopbackAcceptQueue.push_back(accepted);
+                }
+                BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(listener->readingCond);
+                BOXEDWINE_CONDITION_SIGNAL_ALL(listener->readingCond);
+                this->error = 0;
+                return 0;
             }
-            BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(listener->readingCond);
-            BOXEDWINE_CONDITION_SIGNAL_ALL(listener->readingCond);
-            this->error = 0;
-            return 0;
         }
         if (this->nativeSocket < 0) return -K_EHOSTUNREACH;
     } else if (this->loopbackStream && this->nativeSocket < 0) {

@@ -2294,8 +2294,23 @@ U32 KProcess::readlinkInDirectory(BString currentDirectory, BString path, U32 bu
     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(currentDirectory, path, false, nullptr, &notDir);
     if (!node && notDir)
         return -K_ENOTDIR;
-    if (!node || !node->isLink())
+    if (!node)
+        return -K_ENOENT; // FD-158: a missing path answers -ENOENT on the host; only a resolved non-link keeps -EINVAL
+    if (!node->isLink())
         return -K_EINVAL;
+    if (path.endsWith("/") || path.endsWith("/.") || path.endsWith("/..")) {
+        // FD-159: a trailing marker steps through the link and
+        // judges its target, so a link to a directory answers
+        // -EINVAL here (the target is not a link) where the
+        // unmarked path answers the target string. A link to a
+        // non-directory was already answered -ENOTDIR by the
+        // resolver's anchor judgment.
+        bool targetNotDir = false;
+        std::shared_ptr<FsNode> target = Fs::getNodeFromLocalPath(currentDirectory, path, true, nullptr, &targetNotDir);
+        if (target && target->isDirectory()) {
+            return -K_EINVAL;
+        }
+    }
     U32 len = (U32)node->getLink().length();
     if (len>bufSize)
         len = bufSize;
