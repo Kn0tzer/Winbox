@@ -1534,7 +1534,12 @@ static U64 sys_nanosleep64(CPU64* cpu, U64 requestAddr, bool clockSleep,
 // The emulator exposes one virtual processor and one NUMA node.
 static U64 sys_getcpu64(CPU64* cpu, U64 cpuPtr, U64 nodePtr, U64 /*cachePtr*/) {
     if (!cpu || !cpu->memory) return (U64)(S64)-K_EFAULT;
-    if (cpuPtr) cpu->memory->writed(cpuPtr, 0);
+    // vCPUs are an affinity abstraction, not pinned execution slots, so
+    // there is no truer "current CPU" to report than the first CPU the
+    // thread is allowed to run on: for a thread pinned to vCPU 1 alone
+    // that is the only correct answer, and for any other thread vCPU 0
+    // is a valid online answer. Node is the single NUMA node, 0.
+    if (cpuPtr) cpu->memory->writed(cpuPtr, cpu->affinityMask ? (U32)__builtin_ctzll(cpu->affinityMask) : 0);
     if (nodePtr) cpu->memory->writed(nodePtr, 0);
     return 0;
 }
