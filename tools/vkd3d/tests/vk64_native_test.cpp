@@ -823,6 +823,20 @@ int main() {
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)");
     }
+    // ---- vkGetPhysicalDeviceMemoryProperties (64-bit): the device-local
+    // heap advertises 4 GiB, the same figure the 32-bit ABI above already
+    // pins. The two ABIs disagreed (2 GiB here, 4 GiB there) until the
+    // 2026-11 machine-definition raise; the heap behind the figure is
+    // guest RAM, which the same raise sized at 4 GiB.
+    {
+        VK64Args mp{}; mp.a[1] = 32768;
+        assert(vk64_test_trap(VK64_fn_vkGetPhysicalDeviceMemoryProperties, &mp) == VK_SUCCESS);
+        assert(memory.readd(32768 + 260) == 2);                 // memoryHeapCount
+        assert(memory.readq(32768 + 264) == 0x100000000ULL);    // heap 0 size: 4 GiB
+        assert(memory.readd(32768 + 272) == 0x1);               // heap 0 flags: DEVICE_LOCAL
+        assert(memory.readq(32768 + 280) == 0x100000000ULL);    // heap 1 size: 4 GiB
+        puts("PASS: Vulkan64 memory properties advertise a 4 GiB device-local heap");
+    }
     // ---- vkCmdCopyImageToBuffer (32-bit): the recorded CopyI2B must carry
     // the region fields for every trap form (campaign 4.66). The handler
     // used to record an all-zero CopyI2B (only c.a/c.b set), so

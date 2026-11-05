@@ -27,16 +27,19 @@ void testSchedAffinity32Syscalls() {
         testRunCPU();
         return (S32)context.cpu->reg[0].u32;
     };
-    S32 setSmall = invoke(241, 0, 4, maskAddress, 3); // CPU 0 plus offline CPU 1.
+    S32 setSmall = invoke(241, 0, 4, maskAddress, 3); // Both vCPUs.
     S32 setLarge = invoke(241, 0, 16, maskAddress, 1);
     if (setSmall != 0 || setLarge != 0) {
         testFail("32-bit sched_setaffinity did not accept an online CPU bit: %d / %d", setSmall, setLarge);
     }
-    if (invoke(241, 0, 4, maskAddress, 2) != -K_EINVAL) {
+    if (invoke(241, 0, 4, maskAddress, 2) != 0) {
+        testFail("32-bit sched_setaffinity did not accept vCPU 1 alone");
+    }
+    if (invoke(241, 0, 4, maskAddress, 4) != -K_EINVAL) {
         testFail("32-bit sched_setaffinity accepted a mask with no online CPUs");
     }
-    if (invoke(242, 0, 4, maskAddress) != 4 || context.memory->readd(maskAddress) != 1) {
-        testFail("32-bit sched_getaffinity did not return the kernel mask width and CPU 0");
+    if (invoke(242, 0, 4, maskAddress) != 4 || context.memory->readd(maskAddress) != 3) {
+        testFail("32-bit sched_getaffinity did not return the kernel mask width and both vCPUs");
     }
     if (invoke(241, 0, 3, maskAddress) != -K_EINVAL ||
         invoke(242, 0, 4, 0x71000000u) != -K_EFAULT ||
