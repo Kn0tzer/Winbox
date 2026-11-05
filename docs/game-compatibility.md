@@ -12,6 +12,14 @@ a claim about the build named here, not about any other checkout.
 "Mapped" means Wine opened a window. A title/menu or playable state
 requires its own screenshot evidence.
 
+_Update 2026-11-05:_ the live build has changed many times since the
+sweep (it now serves the batch-7 build, commit `4006ddb58`). The rows
+below have **not** been re-measured on the current build; they remain
+the last full-sweep evidence. Two rows carried "not yet merged or
+deployed" notes from lane work — both fixes have since been composed
+and shipped in later batches, and those rows are updated in place
+below. A fresh sweep is the only way to move the other rows.
+
 ## Working (9)
 
 | Demo | Verified status |
@@ -33,8 +41,8 @@ requires its own screenshot evidence.
 | Gang Beasts | Never shows a frame — across the site's own restarts plus two fresh attempts. Behind the starting screen, the game stalls during engine startup. |
 | Quake III Arena | No frame in 12 minutes on one attempt; a frozen, garbled smear of geometry on the other. |
 | Mindustry † | The bundled Java runtime starts, prints one warning, then goes quiet at the same point in both attempts. Lane diagnosis (`docs/reports/mindustry-jvm-stall-20261030.md` on branch `lane-mindustry`): not a deadlock and not a load failure — the Java engine itself keeps executing; whether it is looping or crawling through startup is the open question. |
-| Al-Khaser † | Crash dialog on both attempts: the checker crashes instead of reporting. The crash class is fixed on branch `lane-alkhaser-int2d` (record: that worktree's `test-results/alkhaser-int2d/REPORT.md`) — through the website path the checker now passes the point where it died and completes its debugger-detection section, stopping later at a separate documented failure. Not yet merged or deployed. |
-| Godot Squash the Creeps † | Starts and works through its graphics setup, but never shows a frame in two 12-minute attempts. On branch `lane-firstframe` (record: that worktree's `test-results/firstframe-20261030/REPORT.md`) its D3D12 driver now fully initializes through the website path; exactly one shader module still blocks the first frame. Not yet merged or deployed. |
+| Al-Khaser † | Crash dialog on both attempts: the checker crashes instead of reporting. The crash class is fixed on branch `lane-alkhaser-int2d` (record: that worktree's `test-results/alkhaser-int2d/REPORT.md`) — through the website path the checker now passes the point where it died and completes its debugger-detection section, stopping later at a separate documented failure. That fix has since been merged and shipped (batches after 2026-10-30); the demo itself has not been re-run end-to-end on the current live build. |
+| Godot Squash the Creeps † | Starts and works through its graphics setup, but never shows a frame in two 12-minute attempts. On branch `lane-firstframe` (record: that worktree's `test-results/firstframe-20261030/REPORT.md`) its D3D12 driver now fully initializes through the website path; exactly one shader module still blocks the first frame. That work has since been merged and shipped, and on the current shipped build the demo opens its window and builds its graphics pipelines — the same single shader module still blocks the first frame, because the browser's shader language has no equivalent for one operation it uses (register FD-72). |
 | Unigine Tropics | A window opens behind the scenes; no frame is ever displayed, two attempts. |
 
 ## Verification recipe
