@@ -105,6 +105,7 @@ void testMemfdSeals();
 void testMemfdNodeOps();
 void testFsReadNativeFile();
 void testFsZipReadBadCrc();
+void testFsZipDeclCapture();
 void testFsZipExtractCorrupt();
 void testFsFileOpenNodeIoErrors();
 void testEventfdFlags();
@@ -247,6 +248,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
     {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipDeclCapture, "Test FsZip declaration capture matches scan"},
     {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
     {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
@@ -993,6 +995,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
     {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipDeclCapture, "Test FsZip declaration capture matches scan"},
     {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
     {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},

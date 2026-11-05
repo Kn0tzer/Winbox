@@ -200,6 +200,176 @@ void testFsZipReadBadCrc() {
 #endif
 }
 
+namespace {
+
+struct DeclTestEntry {
+    const char* name;
+    const char* payload;
+    bool badCrc;
+};
+
+// Writes a stored (uncompressed) multi-entry zip with correct local and
+// central headers; entries flagged badCrc get a deliberately wrong CRC.
+bool writeMultiStoredZip(const char* path, const DeclTestEntry* entries, U32 count) {
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        return false;
+    }
+    U32 offsets[16];
+    for (U32 i = 0; i < count; i++) {
+        const U32 nameLen = (U32)strlen(entries[i].name);
+        const U32 dataLen = (U32)strlen(entries[i].payload);
+        U32 crc = testCrc32((const U8*)entries[i].payload, dataLen);
+        if (entries[i].badCrc) {
+            crc ^= 0xFFFFFFFF;
+        }
+        offsets[i] = (U32)ftell(f);
+        put32(f, 0x04034b50);
+        put16(f, 20);        // version needed
+        put16(f, 0);         // flags
+        put16(f, 0);         // method: stored
+        put16(f, 0);         // mod time
+        put16(f, 0x21);      // mod date
+        put32(f, crc);
+        put32(f, dataLen);   // compressed size
+        put32(f, dataLen);   // uncompressed size
+        put16(f, nameLen);
+        put16(f, 0);         // extra length
+        fwrite(entries[i].name, 1, nameLen, f);
+        fwrite(entries[i].payload, 1, dataLen, f);
+    }
+    const U32 cdOffset = (U32)ftell(f);
+    for (U32 i = 0; i < count; i++) {
+        const U32 nameLen = (U32)strlen(entries[i].name);
+        const U32 dataLen = (U32)strlen(entries[i].payload);
+        U32 crc = testCrc32((const U8*)entries[i].payload, dataLen);
+        if (entries[i].badCrc) {
+            crc ^= 0xFFFFFFFF;
+        }
+        put32(f, 0x02014b50);
+        put16(f, 20);        // version made by
+        put16(f, 20);        // version needed
+        put16(f, 0);         // flags
+        put16(f, 0);         // method: stored
+        put16(f, 0);         // mod time
+        put16(f, 0x21);      // mod date
+        put32(f, crc);
+        put32(f, dataLen);
+        put32(f, dataLen);
+        put16(f, nameLen);
+        put16(f, 0);         // extra length
+        put16(f, 0);         // comment length
+        put16(f, 0);         // disk number start
+        put16(f, 0);         // internal attributes
+        put32(f, 0);         // external attributes
+        put32(f, offsets[i]);
+        fwrite(entries[i].name, 1, nameLen, f);
+    }
+    const U32 cdSize = (U32)ftell(f) - cdOffset;
+    put32(f, 0x06054b50);
+    put16(f, 0);
+    put16(f, 0);
+    put16(f, count);
+    put16(f, count);
+    put32(f, cdSize);
+    put32(f, cdOffset);
+    put16(f, 0);
+    fclose(f);
+    return true;
+}
+
+} // namespace
+
+// FsZip::init captures the root-level fullfills.txt / depends.txt
+// declarations during the central-directory walk it already performs,
+// so StartupArgs no longer scans every archive twice before init. The
+// capture must agree with FsZip::readFileFromZip on the same archive:
+// the first exact root-level name match wins, subdirectory namesakes do
+// not count, and a corrupt entry counts as absent.
+void testFsZipDeclCapture() {
+#ifdef BOXEDWINE_ZLIB
+    char rootPath[256];
+    snprintf(rootPath, sizeof(rootPath), "/tmp/bw64-fsdecl-root-%d", (int)getpid());
+    Fs::initFileSystem(B(rootPath));
+
+    char zipPath[256];
+    snprintf(zipPath, sizeof(zipPath), "/tmp/bw64-fsdecl-%d.zip", (int)getpid());
+    const DeclTestEntry entries[] = {
+        { "sub/fullfills.txt", "decoy", false },
+        { "depends.txt", "dep.zip", false },
+        { "fullfills.txt", "provider", false },
+        { "depends.txt", "second.zip", false },
+        { "a.txt", "hello", false },
+    };
+    if (!writeMultiStoredZip(zipPath, entries, 5)) {
+        testFail("could not write declaration test zip %s", zipPath);
+        Fs::shutDown();
+        rmdir(rootPath);
+        return;
+    }
+    BString viaScan;
+    if (!FsZip::readFileFromZip(B(zipPath), B("fullfills.txt"), viaScan) || viaScan != B("provider")) {
+        testFail("readFileFromZip fullfills.txt = %s, expected provider", viaScan.c_str());
+    }
+    if (!FsZip::readFileFromZip(B(zipPath), B("depends.txt"), viaScan) || viaScan != B("dep.zip")) {
+        testFail("readFileFromZip depends.txt = %s, expected dep.zip", viaScan.c_str());
+    }
+    {
+        std::shared_ptr<FsZip> zip = std::make_shared<FsZip>();
+        if (!zip->init(B(zipPath), B(""))) {
+            testFail("FsZip::init failed on declaration test zip");
+        } else {
+            if (zip->fullfillsContent != B("provider")) {
+                testFail("captured fullfills = %s, expected provider", zip->fullfillsContent.c_str());
+            }
+            if (zip->dependsContent != B("dep.zip")) {
+                testFail("captured depends = %s, expected dep.zip", zip->dependsContent.c_str());
+            }
+        }
+    }
+    unlink(zipPath);
+
+    // No declarations: both captures stay empty.
+    char plainPath[256];
+    snprintf(plainPath, sizeof(plainPath), "/tmp/bw64-fsdecl-plain-%d.zip", (int)getpid());
+    const DeclTestEntry plain[] = { { "a.txt", "hello", false } };
+    if (!writeMultiStoredZip(plainPath, plain, 1)) {
+        testFail("could not write plain test zip %s", plainPath);
+    } else {
+        std::shared_ptr<FsZip> zip = std::make_shared<FsZip>();
+        if (!zip->init(B(plainPath), B(""))) {
+            testFail("FsZip::init failed on plain test zip");
+        } else if (zip->fullfillsContent.length() || zip->dependsContent.length()) {
+            testFail("plain zip captured declarations: %s / %s", zip->fullfillsContent.c_str(), zip->dependsContent.c_str());
+        }
+        unlink(plainPath);
+    }
+
+    // Corrupt declaration entry: treated as absent by both readers.
+    char badPath[256];
+    snprintf(badPath, sizeof(badPath), "/tmp/bw64-fsdecl-bad-%d.zip", (int)getpid());
+    const DeclTestEntry bad[] = { { "fullfills.txt", "provider", true } };
+    if (!writeMultiStoredZip(badPath, bad, 1)) {
+        testFail("could not write corrupt declaration test zip %s", badPath);
+    } else {
+        BString result = B("sentinel");
+        if (FsZip::readFileFromZip(B(badPath), B("fullfills.txt"), result)) {
+            testFail("readFileFromZip accepted a corrupt fullfills.txt");
+        }
+        std::shared_ptr<FsZip> zip = std::make_shared<FsZip>();
+        if (!zip->init(B(badPath), B(""))) {
+            testFail("FsZip::init failed on corrupt declaration test zip");
+        } else if (zip->fullfillsContent.length()) {
+            testFail("corrupt fullfills.txt captured as %s", zip->fullfillsContent.c_str());
+        }
+        unlink(badPath);
+    }
+
+    Fs::shutDown();
+    rmdir(rootPath);
+#endif
+}
+
 // An entry whose deflate stream is garbage makes unzReadCurrentFile
 // return a negative error code. The extraction loops used to store that
 // in a U32 and hand it to fwrite as a length; afterwards a partial file
