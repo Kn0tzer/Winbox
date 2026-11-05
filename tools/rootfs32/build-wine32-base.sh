@@ -232,6 +232,37 @@ got="$(sha256sum "$BACKPORT32" | cut -d' ' -f1)"
 cp "$BACKPORT32" "$OUT/opt/wine-stable/lib/wine/i386-unix/win32u.so"
 echo "win32u backport substituted: sha256 verified"
 
+echo "=== FD-167 contract backport substitution ==="
+# Seven PE modules are not the deb's either: they are the in-tree
+# backport build (tools/rootfs32/wine10-fd167-i386/, produced by
+# build-wine10-fd167.sh from the pinned wine-10.0 source plus the
+# FD-167 contract patch), carrying real implementations for the
+# demo-reachable exports the deb ships as spec stubs (defect register
+# FD-167): the bluetoothapis GATT/radio entries, the bthprops.cpl
+# forwards, the winusb entries, MFCreateDeviceSource,
+# MFCreateMediaBufferWrapper, VariantCompare and EvtRender.
+# Substituted here, before the patchelf step and the usr/ re-layout,
+# so every shipped copy carries the fixed bytes. Fail-closed on the
+# pins, like the win32u backport above.
+FD167_DIR="$HERE/wine10-fd167-i386"
+FD167_PINS="bluetoothapis.dll=8ecb95b3feb654c63b70bc76459bc96974653422d309e619a35166e764d598c6
+bthprops.cpl=72a28006aa12165bea114afd39cd20590a8b4570c2ed57ec9b2a5716d4e8cd2e
+mf.dll=9babdf82f66204521efa1f8c5a7dbae9ef3ac183059b6355e5806e504ed7d5c4
+mfplat.dll=fa96363d4d1aeb474dc10543e8771188a06aac35d18ca7040dcec9dcd4f673f7
+propsys.dll=f39cbd2072635db066497d0f10cc4d512b15bac0375a13e311f0ec40ac3ae7a0
+wevtapi.dll=1c5d1890ff8fe50b29b62cd735ded3985313cd77a660b42d8c5a9d786f9185c5
+winusb.dll=984757871bde57acae11c31eae97b2fb4e3d7de9868c40bed95b526dc87bfa7f"
+for entry in $FD167_PINS; do
+    f="${entry%%=*}"; pin="${entry#*=}"
+    src="$FD167_DIR/$f"
+    [ -f "$src" ] || { echo "build-wine32-base: FD-167 backport missing: $src (build it with tools/rootfs32/build-wine10-fd167.sh)" >&2; exit 2; }
+    got="$(sha256sum "$src" | cut -d' ' -f1)"
+    [ "$got" = "$pin" ] || { echo "build-wine32-base: FD-167 backport hash mismatch for $f: $got != $pin" >&2; exit 1; }
+    cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$f"
+done
+echo "FD-167 backports substituted: sha256 verified"
+
+
 
 echo "=== extracting the two preserved members from the shipped zip ==="
 python3 - "$SHIPPED" "$OUT/.extract" <<'EOF'

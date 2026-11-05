@@ -128,6 +128,11 @@ WINE8_BACKPORT_PINS = {
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
     'win32u.so': 'd382cefb32fbe71d7e52349da06c478a22c03bde2b38d8e6bfb4eaff42ef2608',
+    # FD-167: the MSVC runtime throw helpers a bundled demo library
+    # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
+    # stubs (see wine8-backports-x86_64/README.md).
+    'msvcp140.dll': 'c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a',
+    'setupapi.dll': 'c7e1555da0fedb6153044bb823185a995f268903bfe55c4cf26193c80ede6d21',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
@@ -251,6 +256,35 @@ def t_wine10_backport32_source_and_zip():
         assert name in members, f'{name} missing from shipped wine32.zip'
         assert sha(members[name]) == WINE10_BACKPORT32_SHA, \
             f'{name} in wine32.zip != pinned 32-bit win32u backport bytes'
+
+
+# FD-167: seven Wine 10.0 PE modules rebuilt from the same pinned
+# wine-10.0 source with the FD-167 contract patch (real implementations
+# for demo-reachable spec stubs; see wine10-fd167-i386/README.md).
+# Substituted into wine32.zip by build-wine32-base.sh, fail-closed.
+WINE10_FD167_PINS32 = {
+    'bluetoothapis.dll': '8ecb95b3feb654c63b70bc76459bc96974653422d309e619a35166e764d598c6',
+    'bthprops.cpl': '72a28006aa12165bea114afd39cd20590a8b4570c2ed57ec9b2a5716d4e8cd2e',
+    'mf.dll': '9babdf82f66204521efa1f8c5a7dbae9ef3ac183059b6355e5806e504ed7d5c4',
+    'mfplat.dll': 'fa96363d4d1aeb474dc10543e8771188a06aac35d18ca7040dcec9dcd4f673f7',
+    'propsys.dll': 'f39cbd2072635db066497d0f10cc4d512b15bac0375a13e311f0ec40ac3ae7a0',
+    'wevtapi.dll': '1c5d1890ff8fe50b29b62cd735ded3985313cd77a660b42d8c5a9d786f9185c5',
+    'winusb.dll': '984757871bde57acae11c31eae97b2fb4e3d7de9868c40bed95b526dc87bfa7f',
+}
+
+
+def t_wine10_fd167_32_source_and_zip():
+    for name, pin in WINE10_FD167_PINS32.items():
+        src = ROOT / 'tools/rootfs32/wine10-fd167-i386' / name
+        assert sha(src.read_bytes()) == pin, \
+            f'{name} (FD-167 32-bit backport) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE10_FD167_PINS32.items():
+        member = 'opt/wine-stable/lib/wine/i386-windows/' + name
+        assert member in members, f'{member} missing from shipped wine32.zip'
+        assert sha(members[member]) == pin, \
+            f'{member} in wine32.zip != pinned FD-167 backport bytes'
 
 
 def t_wine8_backports_source_and_zip():

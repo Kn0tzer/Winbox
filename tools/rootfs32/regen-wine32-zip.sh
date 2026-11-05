@@ -131,7 +131,11 @@ print("vkd3d32 payload applied to scratch zip")
 PYEOF
 echo "=== [4/5] member-by-member verification vs the shipped zip ==="
 BACKPORT32_SHA="$(sha256sum "$HERE/wine10-backports-i386/win32u.so" | cut -d' ' -f1)"
-python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" "$BACKPORT32_SHA" <<'EOF'
+FD167_ARGS=()
+for f in bluetoothapis.dll bthprops.cpl mf.dll mfplat.dll propsys.dll wevtapi.dll winusb.dll; do
+    FD167_ARGS+=("opt/wine-stable/lib/wine/i386-windows/$f=$(sha256sum "$HERE/wine10-fd167-i386/$f" | cut -d' ' -f1)")
+done
+python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" "$BACKPORT32_SHA" "${FD167_ARGS[@]}" <<'EOF'
 import hashlib, sys, zipfile
 def census(path):
     with zipfile.ZipFile(path) as z:
@@ -139,6 +143,7 @@ def census(path):
                 for i in z.infolist()}
 old, new = census(sys.argv[1]), census(sys.argv[2])
 pin = sys.argv[3]
+fd167 = dict(arg.split("=", 1) for arg in sys.argv[4:])
 backport = {
     "opt/wine-stable/lib/wine/i386-unix/win32u.so",
     "opt/wine-stable/lib/wine/i386-unix/win32u.dll.so",
@@ -147,8 +152,9 @@ backport = {
 }
 only_old = sorted(set(old) - set(new))
 only_new = sorted(set(new) - set(old))
-diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport)
+diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport and k not in fd167)
 bad = sorted(k for k in backport if k not in new or new[k][1] != pin)
+bad += sorted(f"{k} (FD-167)" for k, want in fd167.items() if k not in new or new[k][1] != want)
 print(f"shipped {len(old)} members, regenerated {len(new)} members")
 for k in only_old: print(f"  MISSING in regen: {k}")
 for k in only_new: print(f"  EXTRA in regen:   {k}")
@@ -156,7 +162,7 @@ for k in diff: print(f"  DIFFERS:          {k} shipped={old[k]} regen={new[k]}")
 for k in bad: print(f"  BACKPORT MEMBER NOT AT PIN: {k} regen={new.get(k)} expected sha256={pin}")
 if only_old or only_new or diff or bad:
     raise SystemExit("regen-wine32-zip: member verification FAILED (see above)")
-print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin")
+print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin and the seven FD-167 backport members at their in-tree pins")
 EOF
 
 echo "=== [5/5] completeness gate (in-tree, scratch web/runtime set) ==="
