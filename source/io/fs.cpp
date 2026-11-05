@@ -333,8 +333,13 @@ bool cleanPath(std::vector<BString>& parts) {
             continue;
         }
         if (parts[i]=="..") {
-            if (i==0)
-                return false;
+            if (i==0) {
+                // FD-164: a ".." at the root stays at the root (the
+                // root's parent is itself on the host), so the
+                // component clamps instead of failing the walk.
+                parts.erase(parts.begin()+i, parts.begin()+i+1);
+                continue;
+            }
             parts.erase(parts.begin()+i-1, parts.begin()+i+1);
             i--;
             continue;
@@ -403,6 +408,70 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
                 // through: the walk looks the anchor up itself
                 // and misses the same way.
                 return nullptr;
+            }
+        }
+
+        // FD-164: a ".." away from the end of the path is stepped
+        // through on the host, not erased together with its
+        // predecessor before any lookup (the erasure cleanPath
+        // performs below, which the trailing-marker rule above
+        // cannot see). The predecessor must resolve -- a miss
+        // answers -ENOENT -- and must be a directory once links
+        // are followed -- a regular file, or a link to one,
+        // answers -ENOTDIR. Judge each non-trailing ".." by
+        // resolving the path ahead of it; that resolution is this
+        // same function, so a ".." inside the prefix is judged by
+        // the same rule and a trailing marker inside it by the
+        // FD-159 rule. Only callers asking for the notDir verdict
+        // pay for the extra resolutions.
+        {
+            BString scanPath = path;
+            if (scanPath.startsWith("/")) {
+                scanPath = scanPath.substr(1);
+            }
+            std::vector<BString> comps;
+            scanPath.split('/', comps);
+            // The last component that names something: a ".." at
+            // or after it is the trailing marker judged above.
+            int lastMeaningful = -1;
+            for (int j = (int)comps.size() - 1; j >= 0; j--) {
+                if (comps[j].length() > 0 && comps[j] != ".") {
+                    lastMeaningful = j;
+                    break;
+                }
+            }
+            for (int i = 0; i < lastMeaningful; i++) {
+                if (comps[i] != "..") {
+                    continue;
+                }
+                // Rebuild the path ahead of this "..".
+                BString prefix;
+                for (int j = 0; j < i; j++) {
+                    if (j > 0) {
+                        prefix += "/";
+                    }
+                    prefix += comps[j];
+                }
+                if (prefix.length() == 0) {
+                    // The ".." steps out of the starting directory
+                    // itself, which is a directory by construction.
+                    continue;
+                }
+                if (path.startsWith("/")) {
+                    prefix = "/" + prefix;
+                }
+                bool prefixNotDir = false;
+                std::shared_ptr<FsNode> prefixNode = Fs::getNodeFromLocalPath(currentDirectory, prefix, nullptr, nullptr, true, nullptr, &prefixNotDir);
+                if (!prefixNode) {
+                    if (prefixNotDir) {
+                        *notDir = true;
+                    }
+                    return nullptr;
+                }
+                if (!prefixNode->isDirectory()) {
+                    *notDir = true;
+                    return nullptr;
+                }
             }
         }
     }

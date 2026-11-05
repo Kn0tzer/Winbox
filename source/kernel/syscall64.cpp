@@ -3216,6 +3216,34 @@ static U64 sys_sched_setaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 mask
 // and 255-byte filenames, zero free/total — glibc tolerates the lie.
 #define X64_TMPFS_MAGIC 0x01021994
 
+// FD-163: the xattr namespace classifier for the get forms,
+// mirroring xattrGetNameVerdict32 in syscall.cpp (kept in
+// step by hand, as the two dispatchers are separate
+// translation units). On a resolved target: a name whose
+// prefix has no handler answers -ENOTSUP; a recognised
+// namespace (user.*, trusted.*, security.*,
+// system.posix_acl_access, system.posix_acl_default) with an
+// absent attribute answers -ENODATA; a recognised prefix
+// with an empty attribute part answers -EINVAL.
+// Host-measured at the raw syscall level
+// (test-results/fd162-164/hostref-fd162-164.out and
+// hostref-fd163b/c/d.out).
+static U64 xattrGetNameVerdict64(const BString& name) {
+    if (name.startsWith("user.")) {
+        return name.length() == 5 ? (U64)-K_EINVAL : (U64)-K_ENODATA;
+    }
+    if (name.startsWith("trusted.")) {
+        return name.length() == 8 ? (U64)-K_EINVAL : (U64)-K_ENODATA;
+    }
+    if (name.startsWith("security.")) {
+        return name.length() == 9 ? (U64)-K_EINVAL : (U64)-K_ENODATA;
+    }
+    if (name == "system.posix_acl_access" || name == "system.posix_acl_default") {
+        return (U64)-K_ENODATA;
+    }
+    return (U64)-K_ENOTSUP;
+}
+
 static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
     if (!bufPtr) return (U64)-K_EFAULT;
     if (!cpu->memory) return (U64)-K_EFAULT;
@@ -6323,6 +6351,9 @@ void ksyscall64(CPU64* cpu) {
         // no xattrs — this is what wine's ntdll probes for and
         // tolerates; the set*/remove* variants likewise report
         // "unsupported" and the list* variants an empty list.
+        // FD-163 amends the get forms' resolved answer below:
+        // it is the namespace verdict (see xattrGetNameVerdict64),
+        // not a blanket -ENODATA.
         // Without these, wine64 startup tripped the
         // unimplemented-syscall path (#191 getxattr) during
         // prefix/service bring-up.
@@ -6358,6 +6389,20 @@ void ksyscall64(CPU64* cpu) {
             const bool follows = (nr == 188 || nr == 191 || nr == 194 || nr == 197);
             if (isSetForm && (a5 & ~(U64)0x3)) { ret = (U64)-K_EINVAL; break; }
             if (hasName && !a2) { ret = (U64)-K_EFAULT; break; }
+            // FD-163: the fetched name's empty case answers
+            // -ERANGE at fetch time, ahead of the path and
+            // descriptor verdicts alike (host-measured,
+            // test-results/fd162-164/hostref-fd163d.out); the
+            // name is also what the get forms' resolved answer
+            // is classified by.
+            BString xattrName;
+            if (hasName) {
+                char nameBuf[256] = {0};
+                cpu->memory->memcpyFromGuest(nameBuf, a2, sizeof(nameBuf) - 1);
+                xattrName = BString::copy(nameBuf);
+                if (xattrName.length() == 0) { ret = (U64)-K_ERANGE; break; }
+            }
+            bool targetResolved = false;
             if (cpu->thread && cpu->thread->process) {
                 if (isFdForm) {
                     if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
@@ -6371,8 +6416,15 @@ void ksyscall64(CPU64* cpu) {
                         cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows, nullptr, &notDir);
                     if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
                 }
+                targetResolved = true;
             }
-            if (nr == 191 || nr == 192 || nr == 193) ret = (U64)-K_ENODATA;
+            if (nr == 191 || nr == 192 || nr == 193) {
+                // FD-163: on a resolved target the get forms
+                // answer the namespace verdict; without a
+                // process there was nothing to resolve and the
+                // stub -ENODATA stands as before (FD-133).
+                ret = targetResolved ? xattrGetNameVerdict64(xattrName) : (U64)-K_ENODATA;
+            }
             else if (nr == 194 || nr == 195 || nr == 196) ret = 0; // empty attribute list
             else ret = (U64)-K_ENOTSUP;
             break;
