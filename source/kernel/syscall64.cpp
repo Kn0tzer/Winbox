@@ -3406,6 +3406,12 @@ static U64 xattrSetOnNode64(CPU64* cpu, const std::shared_ptr<FsNode>& node, con
         return (U64)-K_EPERM;
     }
     if (xattrIsAclName64(name)) {
+        // ACL values are not modelled: the host would accept
+        // a conforming ACL, so this refusal is reported, not
+        // silent. (-EINVAL is the host's answer to a non-ACL
+        // value, which is all a guest can be refused for here
+        // without the guest-visible answer changing.)
+        klog_fmt("BW64-FAIL xattr set %s: posix ACL values are not modelled; answered -EINVAL", name.c_str());
         return (U64)-K_EINVAL;
     }
     U64 verdict = xattrWriteNameVerdict64(name);
