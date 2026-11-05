@@ -42,7 +42,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 38, "coverage table has %u entries, want 38", n);
+    CHECK(n == 40, "coverage table has %u entries, want 40", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -770,12 +770,15 @@ static void testCompileStream() {
         0x31, 0xC0,
         0xB9, 0x0A, 0x00, 0x00, 0x00,
         0x48, 0x01, 0xC8,
-        0x48, 0xFF, 0xC9, // DEC rcx = FF /1 — interpreter handles, JIT: unknown->stop
+        0x48, 0xFF, 0xC9, // DEC rcx = FF /1 — fast since the INCDEC round
     };
     Jit64Op ops[16];
     U32 n = jit64CompileStream(0x400000, prog, sizeof(prog), ops, 16, true);
-    // 31C0 (xor, fast) + B9 (mov-imm, fast) + 4801C8 (add, fast), then stop at FF (unknown).
-    CHECK(n == 3, "compileStream n=%u want 3", n);
+    // 31C0 (xor, fast) + B9 (mov-imm, fast) + 4801C8 (add, fast) + 48FFC9
+    // (dec rcx, fast): the whole loop body is one block now.
+    CHECK(n == 4, "compileStream n=%u want 4", n);
+    CHECK(ops[3].kind == J64_INCDEC && ops[3].sub == 1 && ops[3].size == 8 &&
+          ops[3].plan == JIT64_FAST, "op3 dec kind=%d sub=%d size=%d", ops[3].kind, ops[3].sub, ops[3].size);
     CHECK(ops[0].kind == J64_ALU_RM_R && ops[0].plan == JIT64_FAST, "op0 kind=%d", ops[0].kind);
     CHECK(ops[1].kind == J64_MOV_R_IMM, "op1 kind=%d", ops[1].kind);
     CHECK(ops[2].kind == J64_ALU_RM_R && ops[2].size == 8, "op2 kind=%d size=%d", ops[2].kind, ops[2].size);
@@ -1234,6 +1237,74 @@ static void testX87NeverJitted() {
 
 // --- emitted-block structure: terminators, hotness, generation lookups ---
 
+static void testIncDec() {
+    Jit64Op op;
+    // Sizes from prefixes: REX.W -> 8, 0x66 -> 2, plain -> 4.
+    CHECK(decodeOne({0x48, 0xFF, 0xC1}, op) && op.kind == J64_INCDEC && op.size == 8 &&
+          op.sub == 0 && op.rmIndex == 1, "inc rcx size=%d", op.size);
+    CHECK(decodeOne({0x66, 0xFF, 0xCA}, op) && op.kind == J64_INCDEC && op.size == 2 &&
+          op.sub == 1 && op.rmIndex == 2, "dec dx size=%d", op.size);
+    // Memory forms: RIP-relative (the census-hot ff 05 shape) and based.
+    CHECK(decodeOne({0xFF, 0x05, 0x10, 0x00, 0x00, 0x00}, op) && op.kind == J64_INCDEC &&
+          op.isMem && op.sub == 0 && op.size == 4 && op.ea.ripRel &&
+          op.ea.ripRelTarget == 0x400000 + 6 + 0x10, "ff 05 inc dword [rip] decode");
+    CHECK(decodeOne({0x48, 0xFF, 0x43, 0x08}, op) && op.kind == J64_INCDEC &&
+          op.isMem && op.size == 8 && op.ea.baseReg == 3 && op.ea.disp == 8,
+          "inc qword [rbx+8] decode");
+    // FE: 8-bit forms; /2.. must not decode.
+    CHECK(decodeOne({0xFE, 0xC0}, op) && op.kind == J64_INCDEC && op.size == 1 &&
+          op.sub == 0 && op.rmIndex == 0, "fe inc al decode");
+    CHECK(decodeOne({0xFE, 0x4B, 0x10}, op) && op.kind == J64_INCDEC && op.size == 1 &&
+          op.sub == 1 && op.isMem, "fe dec byte [rbx+0x10] decode");
+    CHECK(!decodeOne({0xFE, 0xD0}, op), "fe /2 decoded");
+    CHECK(!decodeOne({0xFE, 0xF8}, op), "fe /7 decoded");
+    // Plans: plain forms fast; LOCK falls back; FS memory falls back;
+    // 8-bit high-byte register forms (AH) stay interpreter-served.
+    Jit64Op a = dec(0x400000, {0xFF, 0xC0});
+    CHECK(a.plan == JIT64_FAST, "inc eax plan fallback");
+    Jit64Op b = dec(0x400000, {0xFF, 0x05, 0x10, 0x00, 0x00, 0x00});
+    CHECK(b.plan == JIT64_FAST, "inc [rip] plan fallback");
+    {
+        Jit64Op o = dec(0x400000, {0xFF, 0xC0});
+        jit64Classify(o, true, false);
+        CHECK(o.plan == JIT64_FALLBACK, "lock inc plan fast");
+    }
+    {
+        Jit64Op o = dec(0x400000, {0x64, 0xFF, 0x03}); // inc dword fs:[rbx]
+        CHECK(o.isMem && o.plan == JIT64_FALLBACK, "fs inc mem plan fast");
+    }
+    {
+        Jit64Op o = dec(0x400000, {0xFE, 0xC4}); // inc ah
+        CHECK(o.plan == JIT64_FALLBACK, "inc ah plan fast");
+    }
+    {
+        Jit64Op o = dec(0x400000, {0x40, 0xFE, 0xC4}); // inc spl (REX present)
+        CHECK(o.plan == JIT64_FAST, "inc spl plan fallback");
+    }
+    // Not a terminator: a stream flows through INC/DEC mid-block.
+    {
+        Jit64Op ops[24];
+        U32 n = jit64CompileStream(0x400000,
+            (const U8[]){0x48, 0x89, 0xC8, 0xFF, 0xC0, 0x90}, 6, ops, 24, true);
+        CHECK(n == 3 && ops[1].kind == J64_INCDEC && ops[2].kind == J64_NOP,
+              "stream through inc n=%u", n);
+    }
+    // Emission accepts reg and mem forms at every size.
+    CHECK(emitOk({0xFF, 0xC0}), "inc eax block rejected");
+    CHECK(emitOk({0x48, 0xFF, 0xC9}), "dec rcx block rejected");
+    CHECK(emitOk({0x66, 0xFF, 0xCA}), "dec dx block rejected");
+    CHECK(emitOk({0xFE, 0xC0}), "inc al block rejected");
+    CHECK(emitOk({0xFF, 0x05, 0x10, 0x00, 0x00, 0x00}), "inc [rip] block rejected");
+    CHECK(emitOk({0xFE, 0x4B, 0x10}), "dec byte [rbx+0x10] block rejected");
+    // Store classification: memory INC/DEC may store; register forms not.
+    {
+        Jit64Op m = dec(0x400000, {0xFF, 0x05, 0x10, 0x00, 0x00, 0x00});
+        CHECK(jit64BlockMayStore(&m, 1), "inc mem mayStore false");
+        Jit64Op r = dec(0x400000, {0xFF, 0xC0});
+        CHECK(!jit64BlockMayStore(&r, 1), "inc reg mayStore true");
+    }
+}
+
 static void testFFIndirectEmission() {
     Jit64Op op;
     // FF /2 register form: call *rax (the census's ff d0 shape).
@@ -1283,11 +1354,13 @@ static void testFFIndirectEmission() {
     CHECK(decodeOne({0xFF, 0x15, 0x10, 0x00, 0x00, 0x00}, op) &&
           op.kind == J64_CALL_IND && op.isMem && op.len == 6 && op.ea.ripRel &&
           op.ea.ripRelTarget == 0x400000 + 6 + 0x10, "ff 15 call *[rip] ea");
-    // The other FF groups must NOT decode: /0 INC, /1 DEC, /3 far CALL,
-    // /5 far JMP, /7 — the interpreter serves /0 /1 and #GP-faults /3 /5
-    // at decode; none may reach the emitter.
-    CHECK(!decodeOne({0xFF, 0xC0}, op), "ff /0 inc decoded");
-    CHECK(!decodeOne({0xFF, 0xC8}, op), "ff /1 dec decoded");
+    // INC/DEC (/0 /1) decode as J64_INCDEC (INCDEC round); the other
+    // unserved FF groups must NOT decode: /3 far CALL, /5 far JMP, /7
+    // #GP-fault at decode in the interpreter; none may reach the emitter.
+    CHECK(decodeOne({0xFF, 0xC0}, op) && op.kind == J64_INCDEC && op.sub == 0 &&
+          op.size == 4 && !op.isMem && op.rmIndex == 0, "ff /0 inc eax decode");
+    CHECK(decodeOne({0xFF, 0xC8}, op) && op.kind == J64_INCDEC && op.sub == 1 &&
+          op.size == 4 && !op.isMem && op.rmIndex == 0, "ff /1 dec eax decode");
     CHECK(!decodeOne({0xFF, 0xD8}, op), "ff /3 far call reg decoded");
     CHECK(!decodeOne({0xFF, 0x18}, op), "ff /3 far call mem decoded");
     CHECK(!decodeOne({0xFF, 0xE8}, op), "ff /5 far jmp reg decoded");
@@ -1722,6 +1795,7 @@ int main(int argc, char** argv) {
     testImulEmission();
     testGrp3Emission();
     testFFIndirectEmission();
+    testIncDec();
     testStringEmission();
     testX87NeverJitted();
     testTerminatorEmission();

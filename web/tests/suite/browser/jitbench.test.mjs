@@ -18,6 +18,7 @@ const MAX_ONE_MINUTE_LOAD = Number(process.env.BW_TEST_JITBENCH_MAX_LOAD || 4);
 const ALL_FIXTURES = [
   { name: 'jitbench32', fixture: 'jitbench32-pe', arch: 'x86', pattern: /BW_JITBENCH32 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH32 sample=3 / },
   { name: 'jitbench64', fixture: 'jitbench64-pe', arch: 'x64', pattern: /BW_JITBENCH64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_JITBENCH64 sample=3 / },
+  { name: 'incprobe64', fixture: 'incprobe64-pe', arch: 'x64', pattern: /BW_INCPROBE64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+) passes=(\d+)/, donePattern: /BW_INCPROBE64 sample=3 / },
   { name: 'jitbenchmix-x86', fixture: 'jitbenchmix-pe', arch: 'x86', pattern: /BW_JITBENCHMIX arch=x86 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+)/, donePattern: /BW_JITBENCHMIX arch=x86 sample=3 / },
   { name: 'jitbenchmix-x64', fixture: 'jitbenchmix-pe', arch: 'x64', pattern: /BW_JITBENCHMIX arch=x64 sample=(\d+) ms=([\d.]+) checksum=([a-f0-9]+)/, donePattern: /BW_JITBENCHMIX arch=x64 sample=3 / },
 ];

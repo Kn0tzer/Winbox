@@ -70,6 +70,8 @@ void section(Bytes& module, U8 id, const Bytes& contents) {
 constexpr U32 F_CF = 0, F_PF = 2, F_AF = 4, F_ZF = 6, F_SF = 7, F_OF = 11;
 constexpr U32 F_ALU_MASK = (1u << F_CF) | (1u << F_PF) | (1u << F_AF) |
                           (1u << F_ZF) | (1u << F_SF) | (1u << F_OF); // 0x8D5
+constexpr U32 F_INCDEC_MASK = F_ALU_MASK & ~(1u << F_CF); // 0x8D4: INC/DEC
+                          // set OF/SF/ZF/AF/PF but preserve CF.
 // Shift flag bits written by SHL/SHR/SAR: CF/PF/ZF/SF/OF. AF is NOT touched
 // by shifts (unlike ALU ops), so it stays out of the merge mask.
 constexpr U32 F_SHIFT_MASK = (1u << F_CF) | (1u << F_PF) |
@@ -221,7 +223,7 @@ void orFlagBit(Bytes& body, U32 shift) {
 // values; sb is the width sign bit. Mirrors cpu64.cpp flagsAdd/flagsSub/
 // flagsLogic exactly: CF/OF/AF formulas, SZP on the masked result, and AF
 // cleared for logic ops.
-void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic) {
+void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic, U32 mergeMask = F_ALU_MASK) {
     const bool isAdd = !isLogic && (sub == 0 || sub == 2);
     const bool isSub = !isLogic && (sub == 3 || sub == 5 || sub == 7);
     i64Const(body, 0);
@@ -293,11 +295,19 @@ void emitFlags(Bytes& body, U8 sub, U64 sb, bool isLogic) {
     body.push_back(0x85); // ^ 1
     body.push_back(0xA7); // i32.wrap_i64: test results are i32
     orFlagBit(body, F_PF);
+    // The merge below ORs L_F in whole, so first confine L_F to the
+    // merge mask: bits outside it (for INC/DEC, the computed CF) must
+    // not leak into RFLAGS. A no-op for the full ALU mask, whose L_F
+    // bits are exactly the mask bits.
+    local(body, 0x20, L_F);
+    i64Const(body, mergeMask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_F);
     // rflags = ((rflags | MASK) ^ MASK) | (i32)L_F  ==  (rflags & ~MASK) | L_F.
     local(body, 0x20, L_RFLAGS);
-    i32Const(body, F_ALU_MASK);
+    i32Const(body, mergeMask);
     body.push_back(0x72); // i32.or
-    i32Const(body, F_ALU_MASK);
+    i32Const(body, mergeMask);
     body.push_back(0x73); // i32.xor
     local(body, 0x20, L_F);
     body.push_back(0xA7); // i32.wrap_i64
@@ -648,6 +658,50 @@ void emitMemWrite(Bytes& body, U32 addrLocal, U32 valLocal, U32 size, U32 faultD
     emitFaultCheck(body, faultDepth, restoreFlags);
 }
 
+// Emit one INC/DEC r/m (FF /0 /1, FE /0 /1): a read-modify-write of the
+// operand by 1. Flags follow ADD/SUB of 1 through emitFlags with a merge
+// mask that excludes CF, so the incoming carry survives -- the one bit
+// INC/DEC must not touch. Publishes inline (the GPR local or guest
+// memory); the dispatcher's store-generation check keys off
+// jit64OpWritesMemory like every other RMW form. Memory fault ordering
+// matches the ALU memory path: a faulting read publishes nothing, and a
+// faulting write exits before the epilogue store-back.
+void emitIncDec(Bytes& body, const Jit64Op& op) {
+    const U64 mask = widthMask(op.size);
+    const U64 sb = widthSB(op.size);
+    if (op.isMem) {
+        emitEA(body, op);                 // L_T1 = effective address
+        emitMemRead(body, L_T1, op.size); // -> L_R
+        local(body, 0x20, L_R);
+        i64Const(body, mask);
+        body.push_back(0x83); // i64.and
+        local(body, 0x21, L_A);
+    } else {
+        emitReadOperand(body, op, op.rmIndex, L_A);
+    }
+    i64Const(body, 1);
+    local(body, 0x21, L_B);
+    local(body, 0x20, L_A);
+    local(body, 0x20, L_B);
+    body.push_back(op.sub == 0 ? 0x7C : 0x7D); // i64.add / i64.sub
+    i64Const(body, mask);
+    body.push_back(0x83); // i64.and
+    local(body, 0x21, L_R);
+    emitFlags(body, op.sub == 0 ? 0 : 5, sb, false, F_INCDEC_MASK);
+    if (op.isMem) {
+        emitMemWrite(body, L_T1, L_R, op.size);
+    } else if (op.size == 1) {
+        emitWriteByte(body, op, op.rmIndex, L_R);
+    } else if (op.size == 2) {
+        emitWriteWord(body, op.rmIndex, L_R);
+    } else {
+        // 32-bit results zero-extend (L_R is already width-masked);
+        // 64-bit results are the full register.
+        local(body, 0x20, L_R);
+        local(body, 0x21, op.rmIndex + 1);
+    }
+}
+
 // True if this op can write guest memory. The emitter runs the inline
 // page-generation check after every such op, so a store into a page that
 // holds decoded blocks stops the module at the NEXT instruction -- the same
@@ -664,6 +718,8 @@ bool jit64OpWritesMemory(const Jit64Op& op) {
         return op.isMem && op.sub != 7;
     case J64_GRP3:       // TEST (/0), MUL (/4), DIV/IDIV (/6 /7) write no memory
         return op.isMem && (op.sub == 2 || op.sub == 3);
+    case J64_INCDEC:     // INC/DEC r/m is a read-modify-write
+        return op.isMem;
     case J64_SETCC:
         return op.isMem;
     case J64_BT:         // BT writes no memory
@@ -1277,6 +1333,7 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
         case J64_IMUL_1OP:
         case J64_IMUL_3OP:
         case J64_GRP3:
+        case J64_INCDEC:
             widthOk = (op.size == 1 || op.size == 2 || op.size == 4 || op.size == 8);
             break;
         case J64_CBW:
@@ -1360,7 +1417,8 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // emitMemRead, so their fault placement matches the
             // interpreter's loadRM exactly.
             bool memInd = op.kind == J64_CALL_IND || op.kind == J64_JMP_IND;
-            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt && !memSse && !memInd) || !widthOk) return false;
+            bool memIncDec = op.kind == J64_INCDEC;
+            if ((!memAlu && !memLea && !memStack && !memMov && !memGrp3 && !memShift && !memCmov && !memMovImm && !memSetcc && !memBt && !memSse && !memInd && !memIncDec) || !widthOk) return false;
             if (op.ea.seg != 0) return false; // FS/GS: interpreter-only
             if (op.ea.baseReg != 0xFF && op.ea.baseReg >= 16) return false;
             if (op.ea.idxReg != 0xFF && op.ea.idxReg >= 16) return false;
@@ -1538,6 +1596,14 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // mode; RET imm16 (C2) and far/indirect forms never decode to
             // these kinds.
             if (!op.len) return false;
+            break;
+        case J64_INCDEC:
+            // FF /0 /1 and FE /0 /1: sub = 0 (INC) / 1 (DEC); size 1/2/4/8
+            // (FE is always 1). rmIndex is 0xFF for memory forms.
+            if (op.sub > 1) return false;
+            if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return false;
+            if (!op.len) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
             break;
         case J64_CALL_IND:
         case J64_JMP_IND:
@@ -1839,6 +1905,11 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // MOVD/MOVQ: publishes the XMM local (load) or the GPR local /
             // guest memory (store) inline.
             emitSseMovd(body, op);
+            break;
+        case J64_INCDEC:
+            // INC/DEC: read-modify-write published inline by emitIncDec
+            // (GPR local or guest memory); no L_R publish here.
+            emitIncDec(body, op);
             break;
         case J64_PUSH:
         case J64_POP: {

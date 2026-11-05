@@ -139,6 +139,11 @@ enum Jit64Kind : U8 {
                         // register or the qword at the EA (always 64-bit);
                         // rip = target, no stack effect. Block terminator
                         // (owns RIP). No flags touched.
+    J64_INCDEC = 38,    // FF /0 INC, FF /1 DEC r/m (sizes 2/4/8 from the
+                        // prefixes) and FE /0 INC, FE /1 DEC r/m8 (size 1):
+                        // sub = 0 (INC) / 1 (DEC). r/m read-modify-write;
+                        // OF/SF/ZF/AF/PF from the result like ADD/SUB of 1,
+                        // CF preserved. Register and memory forms.
     J64_UNKNOWN = 255
 };
 

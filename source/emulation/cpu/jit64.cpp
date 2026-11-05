@@ -102,6 +102,8 @@ static const Jit64CoveredOpcode kCovered[] = {
     // read-modify-write, not a transfer).
     { "FF CALL r/m",         0xFF, 0x00, J64_CALL_IND },    // 36 (FF /2; reg + mem forms)
     { "FF JMP r/m",          0xFF, 0x00, J64_JMP_IND },     // 37 (FF /4; reg + mem forms)
+    { "FF INC/DEC r/m",      0xFF, 0x00, J64_INCDEC },      // 38 (FF /0 /1; sizes 2/4/8; CF preserved)
+    { "FE INC/DEC r/m8",     0xFE, 0x00, J64_INCDEC },      // 39 (FE /0 /1; 8-bit form)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -750,14 +752,28 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
     // the operand is always a full 64-bit target and 0x66 is ignored;
     // the classifier keeps 0x66 forms on the interpreter anyway, exactly
     // like /6 below. Far CALL/JMP (/3 /5) #GP-fault at decode in the
-    // interpreter; INC/DEC (/0 /1) and the remaining groups stay
-    // undecoded here: the stream truncates and the interpreter runs
-    // them, the established convention.
+    // interpreter and stay undecoded here, as do the remaining groups:
+    // the stream truncates and the interpreter runs them, the
+    // established convention.
+    // INC/DEC r/m (FF /0 /1): plain read-modify-write on the operand
+    // (size from the prefixes: 2/4/8); flags like ADD/SUB of 1 except
+    // CF, which is preserved. The frame-floor census follow-up: ff 05
+    // (INC dword ptr [rip+disp]) accounted for most of the FF group's
+    // remaining reject weight after the /2 /4 round.
     if (op == 0xFF) {
         U8 rf; bool rr; U8 ri; bool hm;
         U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
         if (!ml) return false;
         const U8 group = rf & 0x7;
+        if (group == 0 || group == 1) {
+            out.kind = J64_INCDEC;
+            out.sub = group;
+            out.size = size;
+            out.len = (U8)(opOff + 1 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+            return true;
+        }
         if (group == 2 || group == 4) {
             out.kind = group == 2 ? J64_CALL_IND : J64_JMP_IND;
             out.sub = group;
@@ -771,6 +787,24 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
         out.kind = J64_PUSH;
         out.sub = 2; // r/m form
         out.size = 8;
+        out.len = (U8)(opOff + 1 + ml);
+        out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+        if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
+        return true;
+    }
+    // INC/DEC r/m8 (FE /0 /1): the 8-bit form of J64_INCDEC. 0x66 and
+    // REX.W do not change the operand size (REX still re-maps the byte
+    // registers, which scanModRM/the emitter's byte paths handle). The
+    // remaining FE groups stay undecoded (truncation convention).
+    if (op == 0xFE) {
+        U8 rf; bool rr; U8 ri; bool hm;
+        U32 ml = scanModRM(bytes + opOff + 1, byteCount - (opOff + 1), p, rf, rr, ri, hm);
+        if (!ml) return false;
+        const U8 group = rf & 0x7;
+        if (group != 0 && group != 1) return false;
+        out.kind = J64_INCDEC;
+        out.sub = group;
+        out.size = 1;
         out.len = (U8)(opOff + 1 + ml);
         out.regField = rf; out.rmIndex = ri; out.isMem = hm;
         if (hm) decodeEA(bytes + opOff + 1, p, ripBase + opOff + 1, 0, out.ea);
@@ -1099,6 +1133,20 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         // via the generic segment guard. Far forms (/3 /5) never decode.
         if (op.size != 8) return;
         if (op.kind == J64_CALL_IND ? op.sub != 2 : op.sub != 4) return;
+        op.plan = JIT64_FAST;
+        return;
+    case J64_INCDEC:
+        // FF /0 /1 (sizes 2/4/8) and FE /0 /1 (size 1). The generic
+        // guards above already declined LOCK/REP prefixes and FS/GS
+        // memory operands, and the osize16 guard admits size 2.
+        // 8-bit register-direct forms naming AH/BH/CH/DH (rm 4..7, no
+        // REX) stay interpreter-only, the same conservative decline as
+        // J64_MOV_RM_IMM (C6): the high-byte paths carry a latent-bug
+        // history in this emitter and 64-bit code rarely uses them.
+        if (op.sub > 1) return;
+        if (op.size != 1 && op.size != 2 && op.size != 4 && op.size != 8) return;
+        if (op.size == 1 && !op.rexPresent && !op.isMem &&
+            op.rmIndex >= 4 && op.rmIndex <= 7) return;
         op.plan = JIT64_FAST;
         return;
     case J64_TEST_RM_R:
@@ -1609,6 +1657,9 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             // (sub 6/7) never do (they write RAX/RDX, wasm locals, or
             // only read the r/m operand).
             if (op.isMem && (op.sub == 2 || op.sub == 3)) return true;
+            break;
+        case J64_INCDEC:
+            if (op.isMem) return true;
             break;
         case J64_PUSH:
             return true; // stack store; a pathological rsp could hit code
