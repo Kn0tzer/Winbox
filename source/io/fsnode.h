@@ -26,6 +26,11 @@
 // on windows one.txt and One.txt are the same file but on Linux they are different
 #define EXT_MIXED ".mixed"
 #define EXT_DOSATTRIB ".user.DOSATTRIB"
+// FD-165: generic xattr sidecars are named "<file>" EXT_XATTR
+// "<encoded name>" beside the file they describe; directory
+// listings never surface them (FsNode::loadChildren skips the
+// marker, the way it skips EXT_DOSATTRIB).
+#define EXT_XATTR ".bw64xattr."
 #define EXT_LINK ".link"
 
 class FsOpenNode;

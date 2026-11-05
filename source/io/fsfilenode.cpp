@@ -148,6 +148,7 @@ bool FsFileNode::remove() {
     if (exists) {
         BString dosAttrib = nativePath + EXT_DOSATTRIB;
         unlink(dosAttrib.c_str());
+        Fs::deleteXAttrSidecars(nativePath);
         result = unlink(nativePath.c_str()) == 0;        
     }
     // if the file failed to be deleted and it exists then its because someone else has it open, 
@@ -548,6 +549,7 @@ U32 FsFileNode::rename(BString path) {
                 BString dosAttribDst = nativePath + EXT_DOSATTRIB;
                 ::rename(dosAttrib.c_str(), dosAttribDst.c_str());
             }
+            Fs::moveXAttrSidecars(this->nativePath, nativePath);
             this->removeNodeFromParent(false);
 #ifdef BOXEDWINE_ZLIB
             if (zipNode) {
