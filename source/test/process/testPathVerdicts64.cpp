@@ -84,6 +84,19 @@ struct FixturePV64 {
     static constexpr U64 fileMidAt    = dataPage + 0x740; // "a.txt/../d"
     static constexpr U64 emptyStrAt   = dataPage + 0x780; // ""
     static constexpr U64 bufAt        = dataPage + 0x800; // out buffers
+    static constexpr U64 bogusAt      = dataPage + 0xA00; // "bogus.x"
+    static constexpr U64 trustedAt    = dataPage + 0xA40; // "trusted.x"
+    static constexpr U64 nameUserAt   = dataPage + 0xA80; // "user.x"
+    static constexpr U64 bareUserAt   = dataPage + 0xAC0; // "user."
+    static constexpr U64 aclAt        = dataPage + 0xB00; // "system.posix_acl_access"
+    static constexpr U64 systemAt     = dataPage + 0xB80; // "system.x"
+    static constexpr U64 dMidAt       = dataPage + 0xBC0; // "d/../a.txt"
+    static constexpr U64 ldMidAt      = dataPage + 0xC00; // "ld/../a.txt"
+    static constexpr U64 lnMidAt      = dataPage + 0xC40; // "ln/../d"
+    static constexpr U64 innerMidAt   = dataPage + 0xC80; // "d/inner/../../a.txt"
+    static constexpr U64 deepMidAt    = dataPage + 0xCC0; // "d/../../a.txt"
+    static constexpr U64 relRootMidAt = dataPage + 0xD00; // "../a.txt"
+    static constexpr U64 absRootMidAt = dataPage + 0xD40; // "/../a.txt"
 
     FixturePV64() {
         TestContext& context = testContext();
@@ -150,6 +163,19 @@ struct FixturePV64 {
         memory->memcpyToGuest(missMidAt, "missing/../a.txt", 17);
         memory->memcpyToGuest(fileMidAt, "a.txt/../d", 11);
         memory->memcpyToGuest(emptyStrAt, "", 1);
+        memory->memcpyToGuest(bogusAt, "bogus.x", 8);
+        memory->memcpyToGuest(trustedAt, "trusted.x", 10);
+        memory->memcpyToGuest(nameUserAt, "user.x", 7);
+        memory->memcpyToGuest(bareUserAt, "user.", 6);
+        memory->memcpyToGuest(aclAt, "system.posix_acl_access", 24);
+        memory->memcpyToGuest(systemAt, "system.x", 9);
+        memory->memcpyToGuest(dMidAt, "d/../a.txt", 11);
+        memory->memcpyToGuest(ldMidAt, "ld/../a.txt", 12);
+        memory->memcpyToGuest(lnMidAt, "ln/../d", 8);
+        memory->memcpyToGuest(innerMidAt, "d/inner/../../a.txt", 20);
+        memory->memcpyToGuest(deepMidAt, "d/../../a.txt", 14);
+        memory->memcpyToGuest(relRootMidAt, "../a.txt", 9);
+        memory->memcpyToGuest(absRootMidAt, "/../a.txt", 10);
         ok = true;
     }
 
@@ -248,11 +274,8 @@ void testTrailingNotDir64Syscalls() {
     expectEq(f.invoke(137, FixturePV64::dotSlashAt, buf), 0, "statfs(./) control");
     expectEq(f.invoke(137, FixturePV64::dotOnlyAt, buf), 0, "statfs(.) control");
     expectEq(f.invoke(137, FixturePV64::rootAt, buf), 0, "statfs(/) control");
-    // Printed observation, not pinned: a bare ".." at the root is
-    // the same cleaning family's root anchor, not this filing's
-    // trailing-marker shape; the host answers 0.
-    printf("FD-159 observation: statfs(\"..\") at the root -> %lld (host: 0)\n",
-           (long long)f.invoke(137, FixturePV64::dotdotOnlyAt, buf));
+    // A bare ".." at the root is pinned by
+    // testMidDotDot64Syscalls (FD-164).
     expectEq(f.invoke(89, FixturePV64::ldTrailAt, buf, 256), -K_EINVAL, "readlink(ld/): the marker steps through the link; its target is a directory, not a link");
     expectEq(f.invoke(89, FixturePV64::lnTrailAt, buf, 256), -K_ENOTDIR, "readlink(ln/): the marker steps through the link into a regular file");
 
@@ -263,15 +286,78 @@ void testTrailingNotDir64Syscalls() {
     expectEq(f.invoke(137, FixturePV64::missDotAt, buf), -K_ENOENT, "statfs(missing/.) control");
     expectEq(f.invoke(137, FixturePV64::missDotdotAt, buf), -K_ENOENT, "statfs(missing/..)");
 
-    // Printed observations, not pinned: an erased ".." pair in the
-    // MIDDLE of a path is a neighbouring mechanism (the walk's
-    // part cleaning drops the pair before any lookup); the host
-    // answers -ENOENT for "missing/../a.txt" and -ENOTDIR for
-    // "a.txt/../d". Filed separately from this lane.
-    printf("FD-159 observation: statfs(\"missing/../a.txt\") -> %lld (host: -ENOENT)\n",
-           (long long)f.invoke(137, FixturePV64::missMidAt, buf));
-    printf("FD-159 observation: statfs(\"a.txt/../d\") -> %lld (host: -ENOTDIR)\n",
-           (long long)f.invoke(137, FixturePV64::fileMidAt, buf));
+    // The erased ".." pair in the MIDDLE of a path is pinned by
+    // testMidDotDot64Syscalls (FD-164).
+}
+
+void testXattrNamespace64Syscalls() {
+    FixturePV64 f;
+    if (!f.ok) {
+        testFail("xattr namespace test could not stage its fixture");
+        return;
+    }
+    const U64 buf = FixturePV64::bufAt;
+
+    // FD-163, host-measured at the raw syscall level
+    // (test-results/fd162-164/hostref-fd162-164.out and
+    // hostref-fd163b/c/d.out): the namespace verdict on a
+    // resolved target -- an unhandled prefix answers -ENOTSUP,
+    // a recognised namespace with an absent attribute -ENODATA,
+    // a bare recognised prefix -EINVAL, an empty name -ERANGE
+    // at fetch time ahead of the target verdicts.
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::bogusAt, buf, 256), -K_ENOTSUP, "getxattr(a.txt, bogus.x)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::trustedAt, buf, 256), -K_ENODATA, "getxattr(a.txt, trusted.x)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::systemAt, buf, 256), -K_ENOTSUP, "getxattr(a.txt, system.x)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::aclAt, buf, 256), -K_ENODATA, "getxattr(a.txt, system.posix_acl_access)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::bareUserAt, buf, 256), -K_EINVAL, "getxattr(a.txt, user.)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::emptyStrAt, buf, 256), -K_ERANGE, "getxattr(a.txt, \"\")");
+    expectEq(f.invoke(191, FixturePV64::missingAt, FixturePV64::bogusAt, buf, 256), -K_ENOENT, "getxattr(missing, bogus.x): resolution precedes the namespace");
+    expectEq(f.invoke(191, FixturePV64::lnAt, FixturePV64::bogusAt, buf, 256), -K_ENOTSUP, "getxattr(ln, bogus.x) follows");
+    expectEq(f.invoke(192, FixturePV64::aTxtAt, FixturePV64::bogusAt, buf, 256), -K_ENOTSUP, "lgetxattr(a.txt, bogus.x)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::emptyStrAt, FixturePV64::bogusAt, 1, 0), -K_ERANGE, "setxattr(a.txt, \"\"): the fetch verdict reaches the set forms");
+
+    // The descriptor form follows the same rule after its own
+    // verdicts; the name fetch precedes the descriptor verdict.
+    KFileDescriptorPtr fileDesc;
+    if (f.process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("xattr namespace test could not open its file");
+        return;
+    }
+    const U64 fileFd = fileDesc->handle;
+    expectEq(f.invoke(193, fileFd, FixturePV64::bogusAt, buf, 256), -K_ENOTSUP, "fgetxattr(fd, bogus.x)");
+    expectEq(f.invoke(193, fileFd, FixturePV64::nameUserAt, buf, 256), -K_ENODATA, "fgetxattr(fd, user.x) control");
+    expectEq(f.invoke(193, fileFd, FixturePV64::bareUserAt, buf, 256), -K_EINVAL, "fgetxattr(fd, user.)");
+    expectEq(f.invoke(193, 9999, FixturePV64::emptyStrAt, buf, 256), -K_ERANGE, "fgetxattr(9999, \"\"): the fetch verdict precedes the descriptor");
+    expectEq(f.invoke(193, 9999, FixturePV64::bogusAt, buf, 256), -K_EBADF, "fgetxattr(9999, bogus.x) control");
+    f.process->close(fileDesc->handle);
+}
+
+void testMidDotDot64Syscalls() {
+    FixturePV64 f;
+    if (!f.ok) {
+        testFail("mid-dotdot test could not stage its fixture");
+        return;
+    }
+    const U64 buf = FixturePV64::bufAt;
+
+    // FD-164, host-measured at the raw syscall level
+    // (test-results/fd162-164/hostref-fd162-164.out): a ".." in
+    // the middle of a path is stepped through -- a missing
+    // predecessor answers -ENOENT, a non-directory predecessor
+    // -ENOTDIR -- and a ".." at the root stays at the root.
+    expectEq(f.invoke(137, FixturePV64::missMidAt, buf), -K_ENOENT, "statfs(missing/../a.txt)");
+    expectEq(f.invoke(137, FixturePV64::fileMidAt, buf), -K_ENOTDIR, "statfs(a.txt/../d)");
+    expectEq(f.invoke(137, FixturePV64::dMidAt, buf), 0, "statfs(d/../a.txt) control");
+    expectEq(f.invoke(137, FixturePV64::ldMidAt, buf), 0, "statfs(ld/../a.txt) through a link to a directory");
+    expectEq(f.invoke(137, FixturePV64::lnMidAt, buf), -K_ENOTDIR, "statfs(ln/../d) through a link to a file");
+    expectEq(f.invoke(137, FixturePV64::innerMidAt, buf), -K_ENOTDIR, "statfs(d/inner/../../a.txt)");
+    expectEq(f.invoke(137, FixturePV64::deepMidAt, buf), 0, "statfs(d/../../a.txt) clamps at the root");
+    expectEq(f.invoke(137, FixturePV64::dotdotOnlyAt, buf), 0, "statfs(..) at the root");
+    expectEq(f.invoke(137, FixturePV64::absRootMidAt, buf), 0, "statfs(/../a.txt)");
+    expectEq(f.invoke(137, FixturePV64::relRootMidAt, buf), 0, "statfs(\"../a.txt\") from the root");
+    expectEq(f.invoke(4, FixturePV64::missMidAt, buf), -K_ENOENT, "stat(missing/../a.txt)");
+    expectEq(f.invoke(191, FixturePV64::missMidAt, FixturePV64::nameUserAt, buf, 256), -K_ENOENT, "getxattr(missing/../a.txt, user.x)");
+    expectEq(f.invoke(191, FixturePV64::fileMidAt, FixturePV64::nameUserAt, buf, 256), -K_ENOTDIR, "getxattr(a.txt/../d, user.x)");
 }
 
 void testRmdir64Syscalls() {

@@ -125,6 +125,9 @@ void testXattrPathResolve32Syscalls();
 void testReadlinkMissing32Syscalls();
 void testTrailingNotDir32Syscalls();
 void testLinkBareDestination32();
+void testXattrDescriptor32Syscalls();
+void testXattrNamespace32Syscalls();
+void testMidDotDot32Syscalls();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
@@ -186,6 +189,8 @@ void testNotDir64Syscalls();
 void testReadlinkMissing64Syscalls();
 void testTrailingNotDir64Syscalls();
 void testRmdir64Syscalls();
+void testXattrNamespace64Syscalls();
+void testMidDotDot64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
@@ -332,6 +337,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testReadlinkMissing64Syscalls, "Test x64 readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
     {testTrailingNotDir64Syscalls, "Test x64 a path whose final component is erased by normalization (a.txt/, a.txt/., a.txt/..) answers -ENOTDIR; the same markers through directories keep resolving"},
     {testRmdir64Syscalls, "Test x64 rmdir answers the host's verdicts instead of -ENOSYS"},
+    {testXattrNamespace64Syscalls, "Test x64 xattr names in an unmodelled namespace answer -ENOTSUP on a resolved target; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testMidDotDot64Syscalls, "Test x64 a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #else
 const TestEntry TEST_ENTRIES[] = {
@@ -1039,6 +1046,9 @@ const TestEntry TEST_ENTRIES[] = {
     {testReadlinkMissing32Syscalls, "Test 32-bit readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
     {testTrailingNotDir32Syscalls, "Test 32-bit a path whose final component is erased by normalization answers -ENOTDIR at the path calls"},
     {testLinkBareDestination32, "Test a hard link to a bare filename in the working directory succeeds"},
+    {testXattrDescriptor32Syscalls, "Test 32-bit xattr descriptor forms answer -EBADF for an unopened descriptor and flistxattr of a valid descriptor answers the empty list"},
+    {testXattrNamespace32Syscalls, "Test 32-bit xattr names in an unmodelled namespace answer -ENOTSUP on a resolved file; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testMidDotDot32Syscalls, "Test 32-bit a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #endif
 
