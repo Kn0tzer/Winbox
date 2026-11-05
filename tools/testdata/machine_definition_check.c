@@ -114,6 +114,10 @@ int main(void) {
             int getOk = sched_getaffinity(0, sizeof(back), &back) == 0;
             check(getOk && CPU_COUNT(&back) == 1 && CPU_ISSET(1, &back),
                   "affinity reads back as exactly vCPU 1", 11);
+            unsigned int cur = 99;
+            int cpuOk = getcpu(&cur, NULL) == 0;
+            check(cpuOk && cur == 1,
+                  "getcpu reports vCPU 1 while pinned to vCPU 1 alone", 16);
             sched_setaffinity(0, sizeof(set), &set);
         }
     }
