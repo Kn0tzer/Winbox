@@ -1330,7 +1330,6 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
     this->memLockedBytes = 0;
     this->memLockAllFuture = false;
 
-#ifdef BOXEDWINE_GUEST_X64
     // execvReset() just wiped this process's 32-bit KMemory, which holds the
     // per-thread IPC bounce/scratch pages (sockaddr + msghdr) cached by thread
     // id in syscall64.cpp. Drop those cache entries so the next socket bounce
@@ -1343,7 +1342,6 @@ U32 KProcess::execve(KThread* thread, BString path, std::vector<BString>& args, 
             bw64InvalidateScratchForThread(t.key);
         }
     }
-#endif
 
 #ifdef BOXEDWINE_GUEST_X64
     // 64-bit re-exec (wine64 re-execs itself / spawns wineserver). The prior

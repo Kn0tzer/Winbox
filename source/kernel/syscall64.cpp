@@ -12,6 +12,76 @@
 #include "kinotify.h"
 #include "drvinittrace.h"
 
+#include <unordered_map>
+#include <mutex>
+
+// --- Shared per-thread IPC scratch (all guest widths) --------------------
+// The message scratch below is used by the 32-bit dispatcher's
+// sendmsg/recvmsg slow paths (syscall.cpp) as well as by the 64-bit
+// dispatcher's message bounce in the gated region of this file, so it,
+// the two scratch caches, their mutex, and the cache-invalidation entry
+// point live OUTSIDE the BOXEDWINE_GUEST_X64 gate: a build without the
+// 64-bit dispatcher still needs them (the native release build failed
+// to link without them, FD-33). The sockaddr bounce cache is declared
+// here because the invalidation entry point clears it too; the bounce
+// function itself stays in the gated region, its only user.
+static std::unordered_map<U32, U32> g_socketScratchByThread;
+static BOXEDWINE_MUTEX g_scratchMutex;
+
+// Ensure a multi-page scratch region in the 64-bit process's (otherwise unused)
+// 32-bit KMemory, big enough for a synthesized 32-bit msghdr + iovec + cmsg +
+// a data buffer. Same per-process caching rationale as bounceSockaddrTo32.
+// Layout within the region:
+//   +0      : 32-bit msghdr (28 bytes: name,namelen,iov,iovlen,control,controllen,flags)
+//   +32     : one 32-bit iovec {base,len}
+//   +64     : cmsg area (up to a few SCM_RIGHTS fds)
+//   +256    : socklen/len scratch
+//   +512 .. : data buffer (region size - 512)
+#define MSG_SCRATCH_BYTES   (64 * 1024)
+#define MSG_SCRATCH_HDR     0
+#define MSG_SCRATCH_IOV     32
+#define MSG_SCRATCH_CMSG    64
+#define MSG_SCRATCH_DATA    512
+// FD-102: a host SCM_RIGHTS message may carry up to 253 descriptors
+// (SCM_MAX_FD, measured); at 16 bytes per translated record that is
+// 4048 bytes -- far past the 448-byte cmsg area between
+// MSG_SCRATCH_CMSG and MSG_SCRATCH_DATA, and writing that many records
+// there would run over the gathered payload. The send-side rights
+// translation therefore emits its records into an extension area past
+// the data area, and the scratch mapping grows to cover it. The data
+// area itself is unchanged: the 32-bit slow paths in syscall.cpp
+// hardcode the same +512 layout over this scratch.
+#define MSG_SCRATCH_CMSG_BIG   (64 * 1024)
+#define MSG_SCRATCH_TOTAL      (MSG_SCRATCH_CMSG_BIG + 253 * 16)
+// Per-THREAD (see bounceSockaddrTo32's note): a per-process msg scratch is
+// corrupted when sibling threads sendmsg/recvmsg concurrently.
+static std::unordered_map<U32, U32> g_msgScratchByThread;
+U32 msgScratch(KThread* thread) {
+    if (!thread || !thread->memory || !thread->process) return 0;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
+    auto it = g_msgScratchByThread.find(thread->id);
+    if (it != g_msgScratchByThread.end()) return it->second;
+    U32 addr = thread->memory->mmap(thread, 0, MSG_SCRATCH_TOTAL,
+        K_PROT_READ | K_PROT_WRITE, K_MAP_ANONYMOUS | K_MAP_PRIVATE, -1, 0);
+    if (!addr) return 0;
+    g_msgScratchByThread[thread->id] = addr;
+    return addr;
+}
+
+// Invalidate the cached per-thread 32-bit IPC scratch addresses for a thread.
+// MUST be called whenever that thread's 32-bit KMemory is wiped — i.e. on
+// execve (execvReset frees the process's 32-bit mappings, including the scratch
+// page). Without this the cache hands back a stale address that is no longer
+// mapped, and the next sockaddr/msg bounce faults in KMemory::performOnMemory
+// ("failed to get ram"). This surfaced once the persistent-session spawn path
+// ran a guest through preloader->wine64 execs on a non-main worker: the scratch
+// was mmap'd before an execve and reused after it. See KProcess::execve.
+void bw64InvalidateScratchForThread(U32 threadId) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
+    g_socketScratchByThread.erase(threadId);
+    g_msgScratchByThread.erase(threadId);
+}
+
 #ifdef BOXEDWINE_GUEST_X64
 
 #include "syscall64.h"
@@ -3672,8 +3742,6 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
 // the result is a malformed request that corrupts wineserver's heap ("unsorted
 // double linked list"). So cache (threadId -> addr) and mmap a fresh region the
 // first time each thread needs one. KThread::id is unique and stable.
-static std::unordered_map<U32, U32> g_socketScratchByThread;
-static BOXEDWINE_MUTEX g_scratchMutex;
 static U32 bounceSockaddrTo32(CPU64* cpu, U64 src64, U32 len, U32* outLenAddr) {
     KThread* thread = cpu->thread;
     if (!thread || !thread->memory || !thread->process) return 0;
@@ -3705,59 +3773,6 @@ static U32 bounceSockaddrTo32(CPU64* cpu, U64 src64, U32 len, U32* outLenAddr) {
     return addr;
 }
 
-// Ensure a multi-page scratch region in the 64-bit process's (otherwise unused)
-// 32-bit KMemory, big enough for a synthesized 32-bit msghdr + iovec + cmsg +
-// a data buffer. Same per-process caching rationale as bounceSockaddrTo32.
-// Layout within the region:
-//   +0      : 32-bit msghdr (28 bytes: name,namelen,iov,iovlen,control,controllen,flags)
-//   +32     : one 32-bit iovec {base,len}
-//   +64     : cmsg area (up to a few SCM_RIGHTS fds)
-//   +256    : socklen/len scratch
-//   +512 .. : data buffer (region size - 512)
-#define MSG_SCRATCH_BYTES   (64 * 1024)
-#define MSG_SCRATCH_HDR     0
-#define MSG_SCRATCH_IOV     32
-#define MSG_SCRATCH_CMSG    64
-#define MSG_SCRATCH_DATA    512
-// FD-102: a host SCM_RIGHTS message may carry up to 253 descriptors
-// (SCM_MAX_FD, measured); at 16 bytes per translated record that is
-// 4048 bytes -- far past the 448-byte cmsg area between
-// MSG_SCRATCH_CMSG and MSG_SCRATCH_DATA, and writing that many records
-// there would run over the gathered payload. The send-side rights
-// translation therefore emits its records into an extension area past
-// the data area, and the scratch mapping grows to cover it. The data
-// area itself is unchanged: the 32-bit slow paths in syscall.cpp
-// hardcode the same +512 layout over this scratch.
-#define MSG_SCRATCH_CMSG_BIG   (64 * 1024)
-#define MSG_SCRATCH_TOTAL      (MSG_SCRATCH_CMSG_BIG + 253 * 16)
-// Per-THREAD (see bounceSockaddrTo32's note): a per-process msg scratch is
-// corrupted when sibling threads sendmsg/recvmsg concurrently.
-static std::unordered_map<U32, U32> g_msgScratchByThread;
-U32 msgScratch(KThread* thread) {
-    if (!thread || !thread->memory || !thread->process) return 0;
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
-    auto it = g_msgScratchByThread.find(thread->id);
-    if (it != g_msgScratchByThread.end()) return it->second;
-    U32 addr = thread->memory->mmap(thread, 0, MSG_SCRATCH_TOTAL,
-        K_PROT_READ | K_PROT_WRITE, K_MAP_ANONYMOUS | K_MAP_PRIVATE, -1, 0);
-    if (!addr) return 0;
-    g_msgScratchByThread[thread->id] = addr;
-    return addr;
-}
-
-// Invalidate the cached per-thread 32-bit IPC scratch addresses for a thread.
-// MUST be called whenever that thread's 32-bit KMemory is wiped — i.e. on
-// execve (execvReset frees the process's 32-bit mappings, including the scratch
-// page). Without this the cache hands back a stale address that is no longer
-// mapped, and the next sockaddr/msg bounce faults in KMemory::performOnMemory
-// ("failed to get ram"). This surfaced once the persistent-session spawn path
-// ran a guest through preloader->wine64 execs on a non-main worker: the scratch
-// was mmap'd before an execve and reused after it. See KProcess::execve.
-void bw64InvalidateScratchForThread(U32 threadId) {
-    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(g_scratchMutex);
-    g_socketScratchByThread.erase(threadId);
-    g_msgScratchByThread.erase(threadId);
-}
 
 // 64-bit struct offsets (x86-64):
 //   msghdr {name(0); namelen(8); iov(16); iovlen(24); control(32); controllen(40); flags(48)}  =56

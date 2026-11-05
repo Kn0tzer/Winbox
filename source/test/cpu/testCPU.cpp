@@ -272,7 +272,7 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
         return;
     }
 
-    ensureParallelContexts(workerCount);
+    ensureParallelContexts(1);
 
     std::atomic<size_t> nextEntry(0);
     std::mutex printMutex;
@@ -322,7 +322,16 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
         }
     };
 
-    if (workerCount == 1) {
+    // The isolated run: every test in `indices` executes in a forked
+    // child of the calling process (or in-process with
+    // BW64_TEST_NO_FORK=1). Returns how many of the tests failed.
+    // Verdict lines are printed as the tests run; the return value
+    // carries the count because inside a parallel shard process
+    // (below) failed() only updates that process's private counter,
+    // so the parent recovers the count from here. The body is the
+    // serial suite's own path, unchanged.
+    auto runIsolated = [&](const std::vector<size_t>& indices) -> U32 {
+        U32 failures = 0;
 #ifdef BOXEDWINE_HOST_EXCEPTIONS
         // The JIT uses host faults to fall back for unaligned guest atomics.
         platformInitExceptionHandling();
@@ -346,7 +355,7 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
         // path for bisection.
         if (!getenv("BW64_TEST_NO_FORK")) {
             fflush(stdout);
-            for (size_t i = 0; i < entryCount; ++i) {
+            for (size_t i : indices) {
                 pid_t pid = fork();
                 if (pid == 0) {
                     runEntry(0, i);
@@ -360,7 +369,7 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
                     std::lock_guard<std::mutex> lock(printMutex);
                     printf("%s ... FAILED\n  harness could not fork a child process for this test (%s)\n", entries[i].name, strerror(errno));
                     fflush(stdout);
-                    failed("%s", entries[i].name);
+                    failed("%s", entries[i].name); failures++;
                     continue;
                 }
                 int status = 0;
@@ -372,38 +381,180 @@ void testRunParallel(const TestEntry* entries, size_t entryCount, U32 workerCoun
                     std::lock_guard<std::mutex> lock(printMutex);
                     printf("%s ... FAILED\n  harness lost track of this test's child process (%s)\n", entries[i].name, strerror(errno));
                     fflush(stdout);
-                    failed("%s", entries[i].name);
+                    failed("%s", entries[i].name); failures++;
                 } else if (WIFEXITED(status)) {
                     // The child printed its own result line through
                     // runEntry; the parent only keeps the count.
                     if (WEXITSTATUS(status) != 0) {
-                        failed("%s", entries[i].name);
+                        failed("%s", entries[i].name); failures++;
                     }
                 } else if (WIFSIGNALED(status)) {
                     std::lock_guard<std::mutex> lock(printMutex);
                     printf("%s ... FAILED\n  test process died with signal %d before it could report a result\n", entries[i].name, WTERMSIG(status));
                     fflush(stdout);
-                    failed("%s", entries[i].name);
+                    failed("%s", entries[i].name); failures++;
                 } else {
                     std::lock_guard<std::mutex> lock(printMutex);
                     printf("%s ... FAILED\n  test process ended abnormally (wait status %d)\n", entries[i].name, status);
                     fflush(stdout);
-                    failed("%s", entries[i].name);
+                    failed("%s", entries[i].name); failures++;
                 }
             }
             runningParallelTest = false;
             currentContext = nullptr;
-            return;
+            return failures;
         }
 #endif
-        for (size_t i = 0; i < entryCount; ++i) {
+        for (size_t i : indices) {
             runEntry(0, i);
+            if (currentContext && currentContext->failed) {
+                failures++;
+            }
         }
         runningParallelTest = false;
         currentContext = nullptr;
+        return failures;
+    };
+
+    if (workerCount == 1) {
+        std::vector<size_t> all(entryCount);
+        for (size_t i = 0; i < entryCount; ++i) {
+            all[i] = i;
+        }
+        runIsolated(all);
         return;
     }
 
+#if defined(__linux__) && defined(BOXEDWINE_POSIX) && !defined(__EMSCRIPTEN__)
+    if (!getenv("BW64_TEST_NO_SHARD")) {
+        // FD-32: parallel workers used to be threads inside this one
+        // process, and the multi-worker run died with SIGSEGV inside the
+        // first handful of tests: the tests share the emulator's global
+        // state, and FD-41 records why even sequential tests cannot
+        // safely share a process, let alone concurrent ones. Parallelism
+        // here is therefore process sharding instead: fork workerCount
+        // shard processes, hand each a strided slice of the entries, and
+        // let every shard run its slice through the exact isolated path
+        // above -- each test still gets its own forked child of a
+        // process holding only its own slice's history. A shard's
+        // stdout/stderr go to a file the parent replays in shard order,
+        // and its failure count returns over a pipe; a shard that dies
+        // before reporting fails every test it owned, loudly, so the
+        // final total can never silently shrink. BW64_TEST_NO_SHARD=1
+        // restores the in-process thread path for bisection.
+        U32 shardCount = (U32)std::min<size_t>(workerCount, entryCount);
+        printf("running %zu tests in %u parallel shard processes\n", entryCount, shardCount);
+        fflush(stdout);
+        struct Shard {
+            pid_t pid;
+            int pipeFd;
+            int outFd;
+            char outPath[64];
+            size_t assigned;
+        };
+        std::vector<Shard> shards;
+        fflush(stdout);
+        fflush(stderr);
+        for (U32 s = 0; s < shardCount; ++s) {
+            std::vector<size_t> indices;
+            for (size_t i = s; i < entryCount; i += shardCount) {
+                indices.push_back(i);
+            }
+            char pathTemplate[] = "/tmp/bw64test-shard-XXXXXX";
+            int outFd = mkstemp(pathTemplate);
+            int pipeFds[2] = {-1, -1};
+            if (outFd < 0 || pipe(pipeFds) != 0) {
+                // Could not set this shard up: run its slice here,
+                // serially, rather than dropping the tests.
+                if (outFd >= 0) {
+                    close(outFd);
+                    unlink(pathTemplate);
+                }
+                runIsolated(indices);
+                continue;
+            }
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(pipeFds[0]);
+                dup2(outFd, STDOUT_FILENO);
+                dup2(outFd, STDERR_FILENO);
+                close(outFd);
+                U32 failures = runIsolated(indices);
+                const char* p = reinterpret_cast<const char*>(&failures);
+                size_t left = sizeof(failures);
+                while (left) {
+                    ssize_t n = write(pipeFds[1], p, left);
+                    if (n <= 0) {
+                        break;
+                    }
+                    p += n;
+                    left -= (size_t)n;
+                }
+                fflush(stdout);
+                fflush(stderr);
+                // _exit: inherited emulator state must not run atexit
+                // handlers or static destructors a second time.
+                _exit(0);
+            }
+            close(pipeFds[1]);
+            if (pid < 0) {
+                close(pipeFds[0]);
+                close(outFd);
+                unlink(pathTemplate);
+                runIsolated(indices);
+                continue;
+            }
+            Shard shard;
+            shard.pid = pid;
+            shard.pipeFd = pipeFds[0];
+            shard.outFd = outFd;
+            shard.assigned = indices.size();
+            snprintf(shard.outPath, sizeof(shard.outPath), "%s", pathTemplate);
+            shards.push_back(shard);
+        }
+        for (Shard& shard : shards) {
+            U32 failures = 0;
+            size_t got = 0;
+            char* p = reinterpret_cast<char*>(&failures);
+            while (got < sizeof(failures)) {
+                ssize_t n = read(shard.pipeFd, p + got, sizeof(failures) - got);
+                if (n < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (n <= 0) {
+                    break;
+                }
+                got += (size_t)n;
+            }
+            close(shard.pipeFd);
+            int status = 0;
+            pid_t waited;
+            do {
+                waited = waitpid(shard.pid, &status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (got != sizeof(failures)) {
+                printf("parallel shard process %d died before reporting (wait status %d): its %zu tests are counted as failed\n", (int)shard.pid, status, shard.assigned);
+                fflush(stdout);
+                failures = (U32)shard.assigned;
+            }
+            for (U32 k = 0; k < failures; ++k) {
+                failed("shard result");
+            }
+            lseek(shard.outFd, 0, SEEK_SET);
+            char buffer[8192];
+            ssize_t n;
+            while ((n = read(shard.outFd, buffer, sizeof(buffer))) > 0) {
+                fwrite(buffer, 1, (size_t)n, stdout);
+            }
+            close(shard.outFd);
+            unlink(shard.outPath);
+        }
+        fflush(stdout);
+        return;
+    }
+#endif
+
+    ensureParallelContexts(workerCount);
     std::vector<std::thread> workers;
 
     for (U32 i = 0; i < workerCount; ++i) {
