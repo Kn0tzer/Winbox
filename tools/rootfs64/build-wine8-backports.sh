@@ -43,8 +43,9 @@ PATCHES=(
     wine8-kernelbase-copyfile2.patch
     wine8-iphlpapi-anycast-table.patch
     wine8-win32u-desktop-wait.patch
+    wine8-fd167-contracts.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi win32u)
+DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
