@@ -208,3 +208,43 @@ test('the watchdog is wired into the runtime lifecycle and both print paths', ()
   assert.ok(launcher.includes('if (param("unimpldump") === "1") ENV["BW64_UNIMPLDUMP"] = "1";'),
     'the probe rigs\u2019 launcher patch marker is intact');
 });
+
+function faultLine({ pid = 71, tid = 76, addr = '0xfffffd08', eip = '0x10584384', count = 1 } = {}) {
+  return `BW64-FAIL guest-memfault32 pid=${pid} tid=${tid} addr=${addr} eip=${eip} err=2 delivered=1 count=${count}`;
+}
+
+test('a pre-handshake delivered-fault loop is reported as a failed start, not an endless wait', () => {
+  const w = makeWatchdog();
+  // The FD-115 shape: one winedevice thread takes delivered faults at one
+  // instruction, over and over, before the desktop handshake completes.
+  for (let i = 1; i <= 31; i++) w.print(faultLine({ count: i }));
+  assert.deepEqual(w.reported, [], 'a burst of delivered faults is not yet a loop');
+  w.print(faultLine({ count: 32 }));
+  assert.equal(w.reported.length, 1);
+  assert.match(w.reported[0], /did not finish starting/);
+  assert.match(w.reported[0], /reported as failed/);
+  const fail = w.runtimeLogs.find(l => l.startsWith('BW64-FAIL ') && l.includes('reason=prehandshake-fault-loop'));
+  assert.ok(fail, 'a BW64-FAIL prehandshake-fault-loop line is on the session log');
+  assert.match(fail, /pid=71/);
+  assert.match(fail, /tid=76/);
+  // The report happens once even if the loop keeps printing.
+  for (let i = 33; i <= 64; i++) w.print(faultLine({ count: i }));
+  assert.equal(w.reported.length, 1);
+});
+
+test('delivered faults after the handshake, or spread across threads, never convict the start', () => {
+  const w = makeWatchdog();
+  w.boot();
+  for (let i = 1; i <= 40; i++) w.print(faultLine({ count: i }));
+  assert.deepEqual(w.reported, [], 'post-handshake faults belong to the running session, not to a failed start');
+  const v = makeWatchdog();
+  for (let t = 0; t < 4; t++) for (let i = 1; i <= 16; i++) v.print(faultLine({ tid: 76 + t, count: i }));
+  assert.deepEqual(v.reported, [], 'faults spread across threads are not one thread looping');
+});
+
+test('a single delivered fault and undelivered faults never convict', () => {
+  const w = makeWatchdog();
+  w.print(faultLine({ count: 1 }));
+  for (let i = 1; i <= 40; i++) w.print(faultLine({ count: i }).replace('delivered=1', 'delivered=0'));
+  assert.deepEqual(w.reported, []);
+});
