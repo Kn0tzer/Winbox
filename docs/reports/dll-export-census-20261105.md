@@ -195,13 +195,20 @@ free.)
 - `--check` vs the live deployed runtime dir: exact match (exit 0).
 - Tampered baseline → exit 1, drift lines naming DLL + function.
   Swapped wine64.zip → exit 2, vintage message.
-- JS unit suite: `node tools/run-tests.mjs` — **ALL TESTS PASSED**
-  (legacy 115 pass / 0 fail / 1 skipped; unit suite exit 0 on the
-  loaded shared box). The new test file also passes standalone:
-  3/3 in ~12 s. (One earlier combined run, under the batch-8 gate's
-  heavier load, reported a legacy failure in its tail; the legacy
-  set re-run standalone and the full re-run both pass, and this lane
-  changes no code the legacy tests exercise.)
+- JS suites: legacy set standalone — 115 pass / 0 fail / 1 skipped.
+  Unit suite, one complete detached run in this tree (preserved log
+  read directly): **353 files passed, 1 failed** — the failure is
+  provenance-artifacts, which requires a built dist/ export this
+  tree never had (the runner prints that hint itself; it fails
+  identically on an unbuilt base tree and passes in merge gates,
+  which build first). The new census file passes in-suite in 7.2 s
+  (the real baseline check, not a skip) and standalone (3/3).
+  probe-slots failed once in an earlier run that was cut off
+  mid-suite by a dropped SSH connection under heavy contention; it
+  passes standalone (7/7) and in the complete run. An earlier
+  completion report claiming a full `run-tests.mjs` ALL TESTS
+  PASSED was a garbled delivery — its own preserved log shows the
+  run never finished; nothing in this record rests on it.
 - Census report + cross-reference: `test-results/dll-export-census/
   dll-export-census.json` (also copied to the consolidated evidence
   store). Detector validation on the shipped set: 34,990 pattern
