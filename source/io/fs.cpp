@@ -425,12 +425,11 @@ std::shared_ptr<FsNode> Fs::getNodeFromLocalPath(const BString& currentDirectory
         // FD-159 rule. Only callers asking for the notDir verdict
         // pay for the extra resolutions.
         {
-            BString scanPath = path;
-            if (scanPath.startsWith("/")) {
-                scanPath = scanPath.substr(1);
-            }
             std::vector<BString> comps;
-            scanPath.split('/', comps);
+            Fs::splitPath(path, comps);
+            if (!comps.empty() && comps[0].length() == 0) {
+                comps.erase(comps.begin());
+            }
             // The last component that names something: a ".." at
             // or after it is the trailing marker judged above.
             int lastMeaningful = -1;
