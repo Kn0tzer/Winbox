@@ -48,6 +48,65 @@ python3 tools/conformance/pe_census.py \
   --out test-results/pe-census
 ```
 
+## dll_export_census.py — the export-implementation surface
+
+`pe_census.py` proves an imported function EXISTS in the staged
+runtime. This census proves what the resolved export actually is.
+Wine marks unimplemented exports in its spec files as `stub`, and its
+build tool generates each one as the same tiny body that calls
+`__wine_spec_unimplemented_stub` with the DLL's and function's own
+names — so a stub is statically decidable, and self-validating: the
+census counts a stub only when the name strings embedded in the body
+match the export exactly (on the shipped set: 34,990 pattern hits, 0
+unvalidated). Everything else with a body counts as provided (real
+code, import thunks, win32u's syscall entries), forwarders count as
+provided by their target, and data exports count as provided (they
+are the implementation). Semi-stubs implemented in C with a plausible
+return value are not statically visible; see the tool's docstring.
+
+The censused input set is fixed: `wine64.zip` + `wine32.zip` (the
+system libraries) plus the two prefix zips, whose override copies win
+their (arch, DLL) pair in sorted order, as in `pe_census.py`. The
+committed baseline (`dll_export_baseline.json`) is the census of the
+currently shipped vintage, with the full per-function stub lists.
+
+Run the census (with the demo cross-reference when a games dir is
+given):
+
+```sh
+python3 tools/conformance/dll_export_census.py \
+  --runtime-dir /home/ubuntu/kn0tzer/winbox/runtime \
+  --games-dir /home/ubuntu/kn0tzer/games \
+  --out test-results/dll-export-census
+```
+
+Check a tree against the baseline (0 = exact match, 1 = drift,
+2 = different wine vintage):
+
+```sh
+python3 tools/conformance/dll_export_census.py \
+  --runtime-dir web/runtime --check \
+  --baseline tools/conformance/dll_export_baseline.json
+```
+
+The check also runs inside the JS unit suite
+(`web/tests/suite/unit/dll-export-census.test.mjs`) whenever the
+runtime zips are staged. A change that resolves a stub — or a
+restage that changes the libraries — regenerates the baseline in
+the same change:
+
+```sh
+python3 tools/conformance/dll_export_census.py \
+  --runtime-dir web/runtime \
+  --write-baseline tools/conformance/dll_export_baseline.json
+```
+
+First results (2026-11-05, shipped batch-7 vintage): 161,676 named
+exports across 1,171 DLL tables; 127,920 (79.1%) real implementations
+or forwarders; 33,756 (20.9%) validated unimplemented stubs, filed as
+FD-167..FD-171. No demo program imports a stub on its static load
+path. See `docs/reports/dll-export-census-20261105.md`.
+
 ## syscall_census.py — the kernel surface
 
 The emulator's Linux kernel answers the syscalls Wine and glibc issue.
