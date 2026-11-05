@@ -1776,9 +1776,9 @@ static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {
     if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
     if (size < 4 || size > 1024) return -K_EINVAL;
     if (!mask || !cpu->memory->canRead(mask, 4)) return -K_EFAULT;
-    // One virtual CPU is online. Offline bits are ignored like the kernel does;
-    // at least one online CPU must remain selected.
-    if (!(cpu->memory->readd(mask) & 1)) return -K_EINVAL;
+    // Two virtual CPUs are online. Offline bits are ignored like the kernel
+    // does; at least one online CPU must remain selected.
+    if (!(cpu->memory->readd(mask) & ((1U << KSystem::guestCpuCount()) - 1))) return -K_EINVAL;
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=%u mask=%X result=0\n", pid, size, mask);
     return 0;
 }
@@ -1789,7 +1789,7 @@ static U32 syscall_sched_getaffinity(CPU* cpu, U32 eipCount) {
     if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
     if (size < 4 || size > 1024) return -K_EINVAL;
     if (!mask || !cpu->memory->canWrite(mask, 4)) return -K_EFAULT;
-    cpu->memory->writed(mask, 1);
+    cpu->memory->writed(mask, (1U << KSystem::guestCpuCount()) - 1);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%u mask=%X result=4\n", pid, size, mask);
     return 4;
 }

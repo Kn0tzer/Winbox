@@ -3262,10 +3262,13 @@ static U64 sys_sched_setaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 mask
     if (cpusetsize < 8 || cpusetsize > 1024) return (U64)-K_EINVAL;
     if (!maskPtr || !cpu->memory) return (U64)-K_EFAULT;
     if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
-    // Only virtual CPU 0 is online. Linux drops offline CPUs from the
-    // requested mask, but rejects a request that has no online CPU selected.
-    if ((cpu->memory->readq(maskPtr) & 1) == 0) return (U64)-K_EINVAL;
-    cpu->affinityMask = 1;
+    // Virtual CPUs 0..guestCpuCount()-1 are online. Linux drops offline
+    // CPUs from the requested mask, but rejects a request that has no
+    // online CPU selected.
+    U64 onlineMask = (1ULL << KSystem::guestCpuCount()) - 1;
+    U64 requested = cpu->memory->readq(maskPtr) & onlineMask;
+    if (requested == 0) return (U64)-K_EINVAL;
+    cpu->affinityMask = requested;
     return 0;
 }
 

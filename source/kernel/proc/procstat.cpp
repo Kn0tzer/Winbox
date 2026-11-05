@@ -24,9 +24,11 @@
 #include <string.h>
 
 FsOpenNode* openProcStat(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
-    // The guest topology has exactly one CPU (KSystem::guestCpuCount), so a
-    // host /proc/stat passthrough must not leak cpu1..cpuN lines: keep the
-    // aggregate line, re-emit it as cpu0, and pass the non-cpu lines through.
+    // The guest topology is KSystem::guestCpuCount vCPUs, so a host
+    // /proc/stat passthrough must not leak the host's cpuN lines: keep the
+    // aggregate line, re-emit one synthetic per-CPU line per guest vCPU
+    // (per-vCPU counters are not separately accounted, so each mirrors the
+    // aggregate), and pass the non-cpu lines through.
     BString raw = Platform::procStat();
     BString aggregate;
     std::vector<BString> lines;
@@ -39,7 +41,10 @@ FsOpenNode* openProcStat(const std::shared_ptr<FsNode>& node, U32 flags, U32 dat
     if (aggregate.length()) {
         BString result;
         result += aggregate; result += "\n";
-        result += B("cpu0") + (aggregate.c_str() + 3); result += "\n";
+        for (U32 i = 0; i < KSystem::guestCpuCount(); i++) {
+            BString label = B("cpu"); label += i;
+            result += label + (aggregate.c_str() + 3); result += "\n";
+        }
         for (const BString& line : lines) {
             if (line.length() && !line.startsWith("cpu")) {
                 result += line; result += "\n";

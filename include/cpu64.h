@@ -60,7 +60,7 @@ public:
     U32   rflags = 0x202; // IF | reserved bit 1
     U64   fsbase = 0;     // x86-64: set via arch_prctl(ARCH_SET_FS)
     U64   gsbase = 0;
-    U64   affinityMask = 1; // the virtual machine exposes one schedulable CPU
+    U64   affinityMask = 0x3; // the virtual machine exposes two schedulable vCPUs (bits 0-1)
     U32   numaPolicyMode = 0; // the virtual machine exposes one NUMA node (0)
     U64   numaNodeMask = 1;
     U64   currentInstructionRip = 0;

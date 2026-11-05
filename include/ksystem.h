@@ -96,7 +96,7 @@ public:
 #ifdef BOXEDWINE_MULTI_THREADED
     static U32 cpuAffinityCountForApp;
 #endif
-    // The virtual machine exposes exactly one schedulable guest CPU (see
+    // The virtual machine exposes two schedulable guest vCPUs (see
     // CPU64::affinityMask). Every guest-visible topology surface (sched
     // affinity, /proc/cpuinfo, /sys/devices/system/cpu, /proc/stat) must
     // agree on this count; the host CPU count is never guest-visible.

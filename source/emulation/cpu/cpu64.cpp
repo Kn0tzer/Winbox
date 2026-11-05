@@ -3486,8 +3486,9 @@ dsp_55:
                 break;
             case 0x1: {
                 a = (6 << 8) | (15 << 4) | 3; // family 6 stepping 3
-                // EBX: eight 8-byte CLFLUSH units; one logical processor.
-                b = (8u << 8) | (1u << 16);
+                // EBX: eight 8-byte CLFLUSH units; logical processors per
+                // package = the guest vCPU count.
+                b = (8u << 8) | ((U32)KSystem::guestCpuCount() << 16);
                 // ECX: SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT.
                 c = (1u << 0) | (1u << 9) | (1u << 13) | (1u << 19) |
                     (1u << 20) | (1u << 23);
