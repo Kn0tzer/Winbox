@@ -127,6 +127,7 @@ void testTrailingNotDir32Syscalls();
 void testLinkBareDestination32();
 void testXattrDescriptor32Syscalls();
 void testXattrNamespace32Syscalls();
+void testXattrWriteClassify32Syscalls();
 void testMidDotDot32Syscalls();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
@@ -190,6 +191,7 @@ void testReadlinkMissing64Syscalls();
 void testTrailingNotDir64Syscalls();
 void testRmdir64Syscalls();
 void testXattrNamespace64Syscalls();
+void testXattrWriteClassify64Syscalls();
 void testMidDotDot64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
@@ -338,6 +340,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTrailingNotDir64Syscalls, "Test x64 a path whose final component is erased by normalization (a.txt/, a.txt/., a.txt/..) answers -ENOTDIR; the same markers through directories keep resolving"},
     {testRmdir64Syscalls, "Test x64 rmdir answers the host's verdicts instead of -ENOSYS"},
     {testXattrNamespace64Syscalls, "Test x64 xattr names in an unmodelled namespace answer -ENOTSUP on a resolved target; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testXattrWriteClassify64Syscalls, "Test x64 xattr set/remove forms classify names as the host does (bare prefix -EINVAL, unknown namespace -ENOTSUP, link user.* -EPERM, ACL remove a no-op) and store recognised names with CREATE/REPLACE verdicts"},
     {testMidDotDot64Syscalls, "Test x64 a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #else
@@ -1048,6 +1051,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testLinkBareDestination32, "Test a hard link to a bare filename in the working directory succeeds"},
     {testXattrDescriptor32Syscalls, "Test 32-bit xattr descriptor forms answer -EBADF for an unopened descriptor and flistxattr of a valid descriptor answers the empty list"},
     {testXattrNamespace32Syscalls, "Test 32-bit xattr names in an unmodelled namespace answer -ENOTSUP on a resolved file; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testXattrWriteClassify32Syscalls, "Test 32-bit xattr set/remove forms classify names as the host does (bare prefix -EINVAL, unknown namespace -ENOTSUP, link user.* -EPERM, ACL remove a no-op) and store recognised names with CREATE/REPLACE verdicts"},
     {testMidDotDot32Syscalls, "Test 32-bit a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #endif

@@ -262,7 +262,10 @@ void testXattrResolve64Syscalls() {
 
     // setxattr (188): flags validation precedes the name copy,
     // which precedes path resolution (all host-measured).
-    expectEq(invoke(188, absAt, attrAt, valAt, 1, 0), -K_ENOTSUP, "setxattr(/a.txt) control");
+    // FD-165: a recognised name on a resolved target is stored
+    // (the host answers 0); the full classification is pinned
+    // by testXattrWriteClassify64Syscalls.
+    expectEq(invoke(188, absAt, attrAt, valAt, 1, 0), 0, "setxattr(/a.txt) control");
     expectEq(invoke(188, missingAt, attrAt, valAt, 1, 0), -K_ENOENT, "setxattr(missing)");
     expectEq(invoke(188, emptyAt, attrAt, valAt, 1, 0), -K_ENOENT, "setxattr(\"\")");
     expectEq(invoke(188, 0, attrAt, valAt, 1, 0), -K_EFAULT, "setxattr(NULL path)");
@@ -273,11 +276,12 @@ void testXattrResolve64Syscalls() {
     expectEq(invoke(188, absAt, 0, valAt, 1, 0x10), -K_EINVAL, "setxattr(/a.txt, NULL name, bad flags) flags precede name");
 
     // lsetxattr (189).
-    expectEq(invoke(189, absAt, attrAt, valAt, 1, 0), -K_ENOTSUP, "lsetxattr(/a.txt) control");
+    expectEq(invoke(189, absAt, attrAt, valAt, 1, 0), 0, "lsetxattr(/a.txt) control");
     expectEq(invoke(189, missingAt, attrAt, valAt, 1, 0), -K_ENOENT, "lsetxattr(missing)");
 
-    // removexattr (197) / lremovexattr (198).
-    expectEq(invoke(197, absAt, attrAt, 0, 0, 0), -K_ENOTSUP, "removexattr(/a.txt) control");
+    // removexattr (197) / lremovexattr (198): user.test was
+    // stored by the set controls above, so its removal succeeds.
+    expectEq(invoke(197, absAt, attrAt, 0, 0, 0), 0, "removexattr(/a.txt) control");
     expectEq(invoke(197, missingAt, attrAt, 0, 0, 0), -K_ENOENT, "removexattr(missing)");
     expectEq(invoke(197, emptyAt, attrAt, 0, 0, 0), -K_ENOENT, "removexattr(\"\")");
     expectEq(invoke(197, 0, attrAt, 0, 0, 0), -K_EFAULT, "removexattr(NULL path)");
@@ -292,11 +296,11 @@ void testXattrResolve64Syscalls() {
     expectEq(invoke(193, badFd, 0, bufAt, 64, 0), -K_EFAULT, "fgetxattr(bad fd, NULL name) name precedes fd");
     expectEq(invoke(196, fileFd, bufAt, 64, 0, 0), 0, "flistxattr(fd) control");
     expectEq(invoke(196, badFd, bufAt, 64, 0, 0), -K_EBADF, "flistxattr(bad fd)");
-    expectEq(invoke(190, fileFd, attrAt, valAt, 1, 0), -K_ENOTSUP, "fsetxattr(fd) control");
+    expectEq(invoke(190, fileFd, attrAt, valAt, 1, 0), 0, "fsetxattr(fd) control");
     expectEq(invoke(190, badFd, attrAt, valAt, 1, 0), -K_EBADF, "fsetxattr(bad fd)");
     expectEq(invoke(190, badFd, attrAt, valAt, 1, 0x10), -K_EINVAL, "fsetxattr(bad fd, bad flags) flags precede fd");
     expectEq(invoke(190, fileFd, 0, valAt, 1, 0), -K_EFAULT, "fsetxattr(fd, NULL name)");
-    expectEq(invoke(199, fileFd, attrAt, 0, 0, 0), -K_ENOTSUP, "fremovexattr(fd) control");
+    expectEq(invoke(199, fileFd, attrAt, 0, 0, 0), 0, "fremovexattr(fd) control");
     expectEq(invoke(199, badFd, attrAt, 0, 0, 0), -K_EBADF, "fremovexattr(bad fd)");
 
     process->close(fileDesc->handle);
