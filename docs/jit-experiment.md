@@ -1,11 +1,14 @@
 # CPU JIT implementation
 
+_Status: design and implementation notes from the JIT's first implementation phase (last edited 2026-10-19). The engines described shipped and have been measured many times since; the milestone table near the end is the original plan's, kept as history, not a current progress report. For the JIT's current state, read the defect register (`docs/defect-register.md`) and the dated performance records in `docs/reports/`. The documentation map is `docs/INDEX.md`._
+
+
 The combined runtime includes both the 32-bit guest WASM JIT and the independent
 CPU64 emitter. Build it with `BW64_BUILD_TARGET=wasm64-mt-jit bash tools/bw64-build.sh`.
 The public runtime parameter `jit=1` requests both engines; `jit=0` disables both.
 In the launcher, choose **Settings → CPU JIT → On (experimental)**. The saved
 choice applies when you next start or restart a program. It defaults to Off.
-The combined build is deployed at [Winbox](https://kn0tzer.work.gd/wine). See the
+The combined build is deployed at [Winbox](https://kn0tzer.work.gd/winbox). See the
 [validation report](reports/winbox-jit-20261018.md) for measured costs and coverage.
 
 The 32-bit backend emits integer and SSE operations. Its x87 backend uses a

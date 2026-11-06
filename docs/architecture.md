@@ -27,4 +27,4 @@ Program internet access is off by default. Enabling it in Settings applies at th
 
 See [the test catalog](../web/tests/CATALOG.md) for commands and evidence levels, [the wire format](vulkan-protocol.md) for Vulkan transport, and [game compatibility](game-compatibility.md) for the latest recorded gameplay limits. API registration tests establish dispatch coverage; they cannot establish correct pixels or playable games.
 
-Writable browser state currently persists through IndexedDB. OPFS appears in test names and requested coverage, but no OPFS implementation is present; the test catalog records that gap.
+Writable browser state persists through IndexedDB and OPFS: `web/storage.mjs` owns the IndexedDB side (metadata, saves, overlays), and `web/files.mjs` stages imported file data in OPFS.

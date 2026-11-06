@@ -1,5 +1,8 @@
 # Folder access
 
+_Design record, October 2026 build-out: the requirements this feature was built to, written before it shipped. Not the behavior guide — how the two folder modes behave today is owned by `docs/folder-access-modes.md`. Kept as evidence of intent; the documentation map is `docs/INDEX.md`._
+
+
 User-authorized capability: offer a persistent choice between copying a folder
 into browser storage and reading a user-selected folder through File System
 Access. Explain both choices before selection; never silently substitute one.

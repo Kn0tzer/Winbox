@@ -1,5 +1,8 @@
 # Launcher replacement
 
+_Design record, October 2026 build-out: the requirements the replacement launcher was built to. The launcher has long since shipped; its dated outcome record is `docs/reports/launcher-redesign-20261017.md`, and current behavior is the shipped launcher itself. Kept as evidence of intent; the documentation map is `docs/INDEX.md`._
+
+
 The launcher replaces all existing page markup, styles and application UI code.
 The emulator, graphics bridges and local library data remain reusable engines.
 
