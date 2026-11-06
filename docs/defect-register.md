@@ -9131,6 +9131,27 @@ do not close the entry until they land.
   against the census baseline, 2026-11-06; evidence
   `docs/reports/fd167-64fix-20261106.md`.
 
+- **FD-191 — `CM_Locate_DevNodeW` is an unimplemented stub that
+  returns failure unconditionally, and the stub census never
+  covered it.** *(Medium)* The function is exported by the shipped
+  `setupapi.dll` (its name is present in the shipped binary), but
+  Wine 8.0 implements it in `dlls/setupapi/stubs.c` as a FIXME stub
+  returning `CR_FAILURE` unconditionally, so any guest program that
+  locates a device node through it always fails. The stub census
+  never listed it (it is not a spec stub, so it appears in neither
+  the 64-bit nor the 32-bit `setupapi.dll` stub lists), which is why
+  FD-171 missed it. The FD-171 guest fixture documents the gap in
+  its own source and works around it by obtaining the device handle
+  through the working SetupDi path, so the fixture passes without
+  ever exercising the stub. Closing terms: implement the function
+  (upstream's cfgmgr32 device-node tree backported) or prove the
+  stub claim wrong, proven by a guest call returning a real device
+  node. Found by the fd171-contracts-fix lane during the batch-9
+  gate and verified by the coordinator (export present in the
+  shipped DLL; absent from both census stub lists; fixture
+  workaround documented in `tools/guest-fixtures/fd171-contracts.c`),
+  2026-11-06.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
