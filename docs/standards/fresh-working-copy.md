@@ -7,15 +7,15 @@ test — with no payload bytes copied.
 ## Steps
 
 1. **Read the current integration tip; never guess it.** In the main
-   repository (`/home/ubuntu/boxedwine64`):
+   repository (`/home/ubuntu/winbox-project/repo/boxedwine64`):
 
        git log -1 --format='%H %s' integ/winbox-20261022b
 
 2. **Create the worktree on a lane branch.** Naming is fixed: the
-   tree is `/home/ubuntu/wt-<name>`, the branch is `lane-<name>`.
+   tree is `/home/ubuntu/winbox-project/worktrees/wt-<name>`, the branch is `lane-<name>`.
 
-       cd /home/ubuntu/boxedwine64
-       git worktree add /home/ubuntu/wt-<name> -b lane-<name> integ/winbox-20261022b
+       cd /home/ubuntu/winbox-project/repo/boxedwine64
+       git worktree add /home/ubuntu/winbox-project/worktrees/wt-<name> -b lane-<name> integ/winbox-20261022b
 
    Never work on `master`, and never create a worktree from another
    lane's branch unless your task is explicitly stacked on it (say so
@@ -23,11 +23,11 @@ test — with no payload bytes copied.
 
 3. **Prepare the copy — one step.** Run the installed prep script:
 
-       /home/ubuntu/scripts/winbox-wt-prep.sh /home/ubuntu/wt-<name>
+       /home/ubuntu/winbox-project/scripts/winbox-wt-prep.sh /home/ubuntu/winbox-project/worktrees/wt-<name>
 
    The script is the standard; do not replace its steps by hand. It:
    - verifies the shared build-material store
-     (`/home/ubuntu/boxedwine64-shared`) against your tree's committed
+     (`/home/ubuntu/winbox-project/store`) against your tree's committed
      pins (`tools/browser/runtime-assets.json`, 13 files) and against
      the store's own `SHA256SUMS` — any mismatch aborts before
      anything is linked; an abort means stop and report, never work
@@ -55,7 +55,7 @@ test — with no payload bytes copied.
 
 - Payload paths in your tree are **links into a read-only store**.
   To modify a payload, replace its link with a real copy first:
-  `rm <path> && cp -a /home/ubuntu/boxedwine64-shared/<store-path> <path>`.
+  `rm <path> && cp -a /home/ubuntu/winbox-project/store/<store-path> <path>`.
   Never write through a link.
 - **Never run `tools/browser/stage-vendor.mjs` in a prepared tree.**
   `web/vendor` is a link into the main repository; staging writes
@@ -64,7 +64,7 @@ test — with no payload bytes copied.
   the project's dependency set; a fresh resolve produces a different
   set that is known to break the test tooling.
 - The prep script lives outside version control at
-  `/home/ubuntu/scripts/winbox-wt-prep.sh` (the store verification
+  `/home/ubuntu/winbox-project/scripts/winbox-wt-prep.sh` (the store verification
   makes a stale or edited copy fail loudly rather than silently).
   Record the script's sha256 in your verification notes when you
   rely on it for a gate.

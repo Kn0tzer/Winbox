@@ -23,7 +23,7 @@ artifacts and the *source* payloads, offline:
      exactly the pinned file set, and every member's size/SHA256
      matches its file pin (FD-73). Resolves the retained archive via
      BW64_ASSETS_ARCHIVE, defaulting to the box's retained copy under
-     /home/ubuntu/backups/winbox-runtime-assets-*/ named by the
+     /home/ubuntu/winbox-project/backups/winbox-runtime-assets-*/ named by the
      manifest itself; skips loudly when no retained copy exists (the
      download / --local restore path verifies the same agreement at
      restore time).
@@ -383,14 +383,14 @@ def assets_archive_path():
     # archive. BW64_ASSETS_ARCHIVE points at an archive directly (the
     # BW64_SUPPORT_DIR pattern); the default is the box's retained
     # copy, found by the manifest's own archive name under
-    # /home/ubuntu/backups/winbox-runtime-assets-*/ so a re-pinned
+    # /home/ubuntu/winbox-project/backups/winbox-runtime-assets-*/ so a re-pinned
     # generation is located without editing this checker.
     override = os.environ.get('BW64_ASSETS_ARCHIVE')
     if override:
         return Path(override)
     manifest = json.loads(
         (ROOT / 'tools/browser/runtime-assets.json').read_text())
-    found = sorted(Path('/home/ubuntu/backups').glob(
+    found = sorted(Path('/home/ubuntu/winbox-project/backups').glob(
         f'winbox-runtime-assets-*/{manifest["archive"]["name"]}'))
     return found[-1] if found else None
 
@@ -409,7 +409,7 @@ def t_assets_archive():
     archive = assets_archive_path()
     if archive is None:
         skip('retained runtime-assets archive agrees with the file pins (FD-73)',
-             'no retained archive found under /home/ubuntu/backups; '
+             'no retained archive found under /home/ubuntu/winbox-project/backups; '
              'bootstrap.py verifies the same agreement at restore time '
              'on the download / --local path')
         return

@@ -25,7 +25,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
         echo "stage-fonts64: $archive already carries the Serif face — skipping"
         continue
     fi
-    backup="/home/ubuntu/backups/winbox-fonts64-$stamp"
+    backup="/home/ubuntu/winbox-project/evidence/winbox-fonts64-$stamp"
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$runtime")-glibc-rootfs64.zip"
     python3 - "$archive" "$SOURCE" <<'EOF'

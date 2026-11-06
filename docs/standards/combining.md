@@ -50,7 +50,7 @@ deploy is a separate procedure that starts from a verified merge.
 - **Full gate, once per batch boundary and at queue end:** a fresh
   dist rebuild of the composed tree from a clean bootstrap —
   restore the newest retained canonical runtime archive
-  (`/home/ubuntu/backups/winbox-runtime-assets-<yyyymmdd>/`, named
+  (`/home/ubuntu/winbox-project/backups/winbox-runtime-assets-<yyyymmdd>/`, named
   by date only; lane-suffixed archives are lane artifacts, never
   the gate source) with `tools/browser/bootstrap.py --local
   <archive>` and require `bootstrap.py --check` at 0 failures

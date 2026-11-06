@@ -111,7 +111,7 @@ partway has failed, however many PASS lines precede the abort.
 
 ## 7. The automated checking queue
 
-    /home/ubuntu/checks-ci/submit-check <lane-branch>
+    /home/ubuntu/winbox-project/checks/submit-check <lane-branch>
 
 - This is the **only door** into the queue. It takes the branch tip
   from the main repository (adding the reviewed `.woodpecker.yml`

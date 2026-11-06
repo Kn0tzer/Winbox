@@ -3,8 +3,8 @@
 # stage it under $OUT/rootfs32/, zip glibc-rootfs32.zip.
 #
 # PROVENANCE (2026-10-28, sysroot32 lane): this script survived ONLY as
-# an untracked copy in /home/ubuntu/backups/wine32-stage-20261020/ when
-# /home/ubuntu/wine32-stage was deleted; it is restored here verbatim
+# an untracked copy in /home/ubuntu/winbox-project/evidence/wine32-stage-20261020/ when
+# /home/ubuntu/winbox-project/staging/wine32-stage was deleted; it is restored here verbatim
 # except that IMG/OUT are environment-parameterizable (defaults are the
 # historical paths) and this header. The zip it produces is the BASE
 # glibc-rootfs32.zip; the shipped artifact additionally carries the
@@ -13,8 +13,8 @@
 # post-steps (fonts, DejaVu faces, ALSA config). See
 # docs/reports/sysroot32-regeneration-20261028.md.
 set -euo pipefail
-IMG="${BW32_IMG386:-/home/ubuntu/wine32-stage/img386}"
-OUT="${BW32_STAGE_OUT:-/home/ubuntu/wine32-stage}"
+IMG="${BW32_IMG386:-/home/ubuntu/winbox-project/staging/wine32-stage/img386}"
+OUT="${BW32_STAGE_OUT:-/home/ubuntu/winbox-project/staging/wine32-stage}"
 STAGE="$OUT/rootfs32"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 

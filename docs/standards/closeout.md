@@ -38,13 +38,13 @@ the preserved evidence. Nothing else.
 2. **Preserve the evidence.** Copy your tree's `test-results/`
    into the consolidated evidence store:
 
-       /home/ubuntu/backups/winbox-evidence-consolidated-20261101/<tree-name>/
+       /home/ubuntu/winbox-project/evidence/winbox-evidence-consolidated-20261101/<tree-name>/
 
    with a `REMOVAL-INFO.txt` naming the tree, branch, tip commit,
    date, and what was preserved.
 3. **Remove the tree** (from the main repository):
 
-       git worktree remove /home/ubuntu/wt-<name>
+       git worktree remove /home/ubuntu/winbox-project/worktrees/wt-<name>
 
    It must succeed without `--force`. If git refuses, something
    uncommitted remains — go back to the preconditions and account
