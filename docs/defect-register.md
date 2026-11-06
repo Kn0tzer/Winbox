@@ -9112,6 +9112,25 @@ do not close the entry until they land.
   gamepad lane, 2026-11-06; evidence
   `docs/reports/fd24-gamepad-20261106.md`.
 
+- **FD-190 — The 32-bit `setupapi.dll` still ships
+  `SetupDiGetDeviceInterfaceAlias` as an unimplemented stub, and the
+  32-bit guest fixture never tests it.** *(Medium)*
+  The 64-bit side is real: FD-167 implemented the alias function
+  there and the 64-bit fixture's alias checks pass. On the 32-bit
+  side the function is still a validated stub (census baseline:
+  `x86/setupapi.dll` carries 242 stubs and
+  `SetupDiGetDeviceInterfaceAlias` is among them, while the 64-bit
+  table no longer lists it), and the 32-bit guest fixture
+  `fd167-contracts32` contains no alias checks at all, so the
+  32-bit fixture passed without ever exercising this path — the
+  32-bit side was never validated. Closing terms: implement the
+  32-bit alias function with the same genuine behaviour as the
+  64-bit one and add alias checks to the 32-bit fixture, proven by
+  the fixture passing with the checks. Found by the fd167-64fix
+  lane during the batch-9 gate and verified by the coordinator
+  against the census baseline, 2026-11-06; evidence
+  `docs/reports/fd167-64fix-20261106.md`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
