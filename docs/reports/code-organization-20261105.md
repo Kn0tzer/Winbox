@@ -163,7 +163,7 @@ Other surveys that came back clean:
   job (Xlib implementations plus their dispatch table) — not a
   split candidate.
 
-## Proposed, not landed (with the evidence)
+## Proposed, not landed (with the evidence) — all six decided in the follow-up pass below
 
 1. **`source/emulation/cpu/ops.h` cluster (5,215 lines).**
    `ops.h` (3,753 lines) and `setcc.h` (450) are never `#include`d
@@ -228,3 +228,138 @@ Other surveys that came back clean:
   `project/linux/Build/`, `project/emscripten/Build/`,
   `__pycache__`); evidence logs remain in `test-results/codeorg/`.
 - Never pushed; no other tree was modified.
+- Follow-up pass (same day): branch `lane-codeorg-decisions` continues
+  from this lane’s tip `74957e749` in worktree
+  `/home/ubuntu/winbox-project/worktrees/wt-codeorg-decisions` and
+  decides all six proposals below. Its commits: `0ab0103d7` (proposal 1
+  removal + register citation), plus the record-amendment commit that
+  adds the decisions section. Evidence logs in
+  `test-results/codeorg-decisions/` in that worktree. Never pushed.
+
+## Proposal decisions — follow-up pass (2026-11-05)
+
+Every proposal above is decided here, on its evidence. One was carried
+out; five are closed where they stood, each with its deciding evidence
+and reason. No product defect was found in this pass, so nothing was
+filed on the defect register.
+
+### 1. `ops.h` cluster — DECIDED: removed (carried out)
+
+Commit `0ab0103d7` deletes `ops.h`, `setcc.h`, `incdec.h`, `pushpop.h`,
+`strings_op.h`, `shift_op.h` (5,215 lines) and repoints the one
+load-bearing citation.
+
+The conflict the original pass left open is adjudicated as follows.
+Commit `76a91f702` describes ops.h’s SIDT/SGDT handlers as the live
+interpreter’s, aligned deliberately to the established values (SIDT
+limit 1023 base 0; SGDT limit 0x7f base 0). Those exact values are
+stored by `normal_sidt` / `normal_sgdt` in
+`source/emulation/cpu/normal/normalCPU.cpp` (lines 332 and 340),
+which are registered in `normalOps[]` and dispatched in the
+interpreter switch; `testSgdtSidtStores` exercises those engines, not
+ops.h. The commit’s ops.h edit was inert and its effective part was
+the JIT change in the same commit. The mechanical evidence stands
+uncontradicted: the six files are `#include`d by nothing (exhaustive
+search two ways — `git grep` over every tracked file and a full-tree
+text search; the only outside mentions are two prose references and
+one test comment), appear in no build dependency file, and `ops.h`
+cannot compile at all because its `#include "arith.h"` resolves
+nowhere in the tree. The four satellites are included only by `ops.h`
+itself; the `shift.h` / `strings.h` they include stay, as they are
+live (`srcgen.cpp` emits an include of `shift.h` into generated
+sources).
+
+Proof, to the standard of the landed work: the full suite set on the
+removal tree matches this record’s branch-tip results exactly —
+browser build "Browser export verified" (exit 0), native main 689
+tests 0 FAILED, native x64 113 tests 0 FAILED, vkd3d run-native
+69 PASS / 0 FAIL, JS legacy 115 pass / 0 fail, JS unit 353 passed /
+0 failed (fully green with `dist/` built, including the known-gaps
+audit test and `tools/known-gaps-audit.mjs --check` standalone,
+exit 0). Stronger still: because the removed files were never
+compiled, the built program is byte-identical to this lane’s own
+build of the unmodified tip — wasm sha256 `79a9482621…`, the
+same hash recorded above. Zero compiled bytes changed.
+
+One citation had to move with the removal:
+`docs/known-gaps/kernel.md`’s SIDT/SGDT row cited
+`ops.h:3536-3575` as the fix location; it now cites
+`normal/normalCPU.cpp:332-347` and credits the live handlers, which
+is where the fix’s values actually live. Two prose mentions of
+ops.h remain standing and are still true as history: a comment in
+`source/test/cpu/testMisc.cpp` ("the legacy ops.h handlers stored
+0/0") and `docs/jit-experiment.md` (a design record, which by the
+documentation rules is not edited).
+
+### 2. `wine10-clean-boot*.mjs` duplicates — DECIDED: kept (closed)
+
+Deciding evidence: `web/tests/diagnostics/README.md` documents this
+family as retained historical experiments. It names
+`wine10-clean-boot.mjs` and `wine10-clean-boot-tmp.mjs` as "the
+retained" entrypoints, notes a third identical copy was retained on
+purpose, and states the set is historical experiments to inspect
+before running, not a regression suite. The pair’s byte-identity
+was re-verified this pass (md5 `00248acfaa5d…`, both files). A
+documented retention decision governs these files; deleting one twin
+would contradict that decision, and an organization pass does not
+override a recorded decision on duplication alone. Revisit only by
+revisiting the README decision explicitly.
+
+### 3. `powerOf2` duplicated helper — DECIDED: kept as-is (closed)
+
+The original evidence re-verified: the two static copies
+(`source/util/bheap.cpp:22`, `source/util/bnativeheap.cpp:24`) are
+byte-identical 8-line helpers, and each file includes only
+`boxedwine.h` and its own header, so no existing shared home exists.
+This pass adds the deciding fact: the name `powerOf2` is already
+taken by a third, semantically different function
+(`source/util/bstring.cpp:60` — `int` argument, level counted from
+`SMALLEST_LEVEL`). Hoisting the heap helper into any shared scope
+would put two same-named functions with different meanings side by
+side — worse organization than the duplication — and making one
+heap include the other’s header would invent a false dependency
+between unrelated allocators. Revisit trigger unchanged: a third
+user of the *same* semantics.
+
+### 4. stb_image unused format loaders — DECIDED: out of scope (closed)
+
+Choosing which image formats the product keeps changes what programs
+running on the system can load, so the `STBI_NO_*` configuration is a
+product decision, not organization; under the current pause on
+development it is not carried out here. Verified this pass:
+`stbi_load`’s only callers are `source/util/player.cpp` (twice) and
+`source/ui/opengl/platformhelper.cpp`, loading user-supplied files
+— the format set is observable behavior. The vendored file itself
+was not edited; per the original proposal, the wrapper configuration
+is the right lever when a product decision is taken.
+
+### 5. `syscall.cpp` / `syscall64.cpp` splits — DECIDED: not carried out (closed)
+
+Both tests the landed `kprocess` split met fail here, on evidence
+re-verified this pass. (a) Single coherent job per file: each file
+is one guest-syscall surface for one width (entry points: the
+in-file `syscallFunc` dispatch table; `ksyscall64`), and its size is
+the breadth of that one job, not several unrelated jobs. (b) No
+zero-change seam: dispatch lives inside the same files (`static
+const SyscallFunc syscallFunc[]` at `syscall.cpp:2100`; the
+`ksyscall64` switch in `syscall64.cpp`), and the files carry 195 and
+102 file-local statics respectively, so every extracted handler
+would need a linkage change plus a new declaration — the split
+cannot meet the byte-identical-move, no-header-change standard the
+landed split was held to. A change of that shape belongs to a
+dedicated development effort with its own proof cycle if it is ever
+wanted, not to organization tidy-up under the development pause.
+
+### 6. `common_sse.cpp` helpers — DECIDED: kept (closed)
+
+Deciding evidence: the helpers are declared in
+`source/emulation/cpu/common/common_sse.h`, which sits in the live
+include chain of the x86-host JIT (`source/emulation/cpu/jit/jitCallSSE.h`
+includes `../common/common_sse.h`). This box is aarch64
+(`uname -m`), where that host path is not built or exercised, so the
+only available evidence — absence from aarch64 objects — cannot
+distinguish dead code from host-conditional code; the compiler-warning
+survey that proved the rest of the tree clean was itself only run in
+the two aarch64 native configurations. Removal is unprovable on this
+machine and risks breaking x86-host builds that cannot be compiled
+here. Closed as unprovable with the available evidence, not as dead.
