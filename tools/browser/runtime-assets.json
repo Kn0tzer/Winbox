@@ -31,8 +31,8 @@
   },
   {
    "path": "web/runtime/wine32.zip",
-   "bytes": 231609042,
-   "sha256": "cdba91dd24d626004364bce5b05dcd8b34ee7cd2da4ebcd5113492611c8cc2a9"
+   "bytes": 231609052,
+   "sha256": "128952652c5c7e6a47044e33d168ff703464b889652d52ab5c2f76f223108e47"
   },
   {
    "path": "web/runtime/prefix32.zip",
