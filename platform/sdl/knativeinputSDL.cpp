@@ -561,6 +561,278 @@ void KNativeInputSDL::processCustomEvents(std::function<bool(bool isKeyDown, int
     }
 }
 
+
+// ---- Game controller feed -------------------------------------------------
+// The kernel exposes exactly one evdev gamepad (/dev/input/event5,
+// DevInputJoystick in source/kernel/devs/devinput.cpp); onGamepadButton /
+// onGamepadAxis are its host-feed entry points and nothing fed them, so the
+// device sat at rest forever and no guest ever saw a live controller. This
+// pump owns host controllers the way it owns the keyboard and mouse: SDL
+// events are translated to the evdev codes the kernel device speaks.
+// SDL_GameController events (normalized through SDL's standard mapping;
+// under Emscripten they originate from the browser Gamepad API) are the
+// primary path. A device SDL cannot classify as a game controller falls
+// back to raw joystick events read in the W3C standard-gamepad layout,
+// with its triggers degraded to digital 0/255 (the raw joystick API
+// exposes no analog trigger value). Only the FIRST controller is fed:
+// the kernel models a single pad. On removal the guest is fed a neutral
+// state first, so a disconnected pad never leaves a button stuck down.
+
+namespace {
+
+SDL_GameController* bwPadController = nullptr;
+SDL_Joystick* bwPadJoystick = nullptr;
+SDL_JoystickID bwPadInstance = -1;
+bool bwHatUp = false, bwHatDown = false, bwHatLeft = false, bwHatRight = false;
+
+void bwFeedHat() {
+    onGamepadAxis(K_ABS_HAT0X, bwHatRight ? 1 : (bwHatLeft ? -1 : 0));
+    onGamepadAxis(K_ABS_HAT0Y, bwHatDown ? 1 : (bwHatUp ? -1 : 0));
+}
+
+void bwFeedHatDirection(U32 direction, bool down) {
+    // direction: 0=up 1=down 2=left 3=right
+    if (direction == 0) bwHatUp = down;
+    else if (direction == 1) bwHatDown = down;
+    else if (direction == 2) bwHatLeft = down;
+    else bwHatRight = down;
+    bwFeedHat();
+}
+
+void bwFeedTrigger(U32 axis, S32 value) {
+    // SDL controller triggers rest at 0 and reach 32767; the evdev
+    // triggers are bytes 0..255.
+    if (value < 0) value = 0;
+    onGamepadAxis(axis, value * 255 / 32767);
+}
+
+void bwFeedDigitalTrigger(U32 axis, bool down) {
+    onGamepadAxis(axis, down ? 255 : 0);
+}
+
+U32 bwEvdevButton(SDL_GameControllerButton button) {
+    switch (button) {
+        case SDL_CONTROLLER_BUTTON_A: return K_BTN_SOUTH;
+        case SDL_CONTROLLER_BUTTON_B: return K_BTN_EAST;
+        case SDL_CONTROLLER_BUTTON_X: return K_BTN_WEST;
+        case SDL_CONTROLLER_BUTTON_Y: return K_BTN_NORTH;
+        case SDL_CONTROLLER_BUTTON_BACK: return K_BTN_SELECT;
+        case SDL_CONTROLLER_BUTTON_GUIDE: return K_BTN_MODE;
+        case SDL_CONTROLLER_BUTTON_START: return K_BTN_START;
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK: return K_BTN_THUMBL;
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return K_BTN_THUMBR;
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return K_BTN_TL;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return K_BTN_TR;
+        default: return 0;
+    }
+}
+
+void bwFeedNeutralState() {
+    for (U32 code = K_BTN_SOUTH; code <= K_BTN_THUMBR; code++) {
+        onGamepadButton(code, false);
+    }
+    bwHatUp = bwHatDown = bwHatLeft = bwHatRight = false;
+    bwFeedHat();
+    onGamepadAxis(K_ABS_X, 0);
+    onGamepadAxis(K_ABS_Y, 0);
+    onGamepadAxis(K_ABS_Z, 0);
+    onGamepadAxis(K_ABS_RX, 0);
+    onGamepadAxis(K_ABS_RY, 0);
+    onGamepadAxis(K_ABS_RZ, 0);
+}
+
+void bwSyncControllerState() {
+    // A button or stick may already be held when the device opens;
+    // EVIOCGKEY/EVIOCGABS readers in the guest must see the true state,
+    // not wait for the next change.
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+        SDL_GameControllerButton button = (SDL_GameControllerButton)b;
+        bool down = SDL_GameControllerGetButton(bwPadController, button) != 0;
+        if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) bwHatUp = down;
+        else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) bwHatDown = down;
+        else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) bwHatLeft = down;
+        else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) bwHatRight = down;
+        else {
+            U32 code = bwEvdevButton(button);
+            if (code) onGamepadButton(code, down);
+        }
+    }
+    bwFeedHat();
+    for (int a = 0; a < SDL_CONTROLLER_AXIS_MAX; a++) {
+        SDL_GameControllerAxis axis = (SDL_GameControllerAxis)a;
+        S32 value = SDL_GameControllerGetAxis(bwPadController, axis);
+        switch (axis) {
+            case SDL_CONTROLLER_AXIS_LEFTX: onGamepadAxis(K_ABS_X, value); break;
+            case SDL_CONTROLLER_AXIS_LEFTY: onGamepadAxis(K_ABS_Y, value); break;
+            case SDL_CONTROLLER_AXIS_RIGHTX: onGamepadAxis(K_ABS_RX, value); break;
+            case SDL_CONTROLLER_AXIS_RIGHTY: onGamepadAxis(K_ABS_RY, value); break;
+            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: bwFeedTrigger(K_ABS_Z, value); break;
+            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: bwFeedTrigger(K_ABS_RZ, value); break;
+            default: break;
+        }
+    }
+}
+
+void bwSyncJoystickState() {
+    // W3C standard layout indices for the fallback path.
+    static const U32 kButtons[] = {K_BTN_SOUTH, K_BTN_EAST, K_BTN_WEST, K_BTN_NORTH,
+        K_BTN_TL, K_BTN_TR, 0, 0, K_BTN_SELECT, K_BTN_START, K_BTN_THUMBL, K_BTN_THUMBR};
+    int count = SDL_JoystickNumButtons(bwPadJoystick);
+    for (int i = 0; i < count && i < 17; i++) {
+        bool down = SDL_JoystickGetButton(bwPadJoystick, i) != 0;
+        if (i == 6) bwFeedDigitalTrigger(K_ABS_Z, down);
+        else if (i == 7) bwFeedDigitalTrigger(K_ABS_RZ, down);
+        else if (i == 12) bwHatUp = down;
+        else if (i == 13) bwHatDown = down;
+        else if (i == 14) bwHatLeft = down;
+        else if (i == 15) bwHatRight = down;
+        else if (i == 16) onGamepadButton(K_BTN_MODE, down);
+        else if (i < (int)(sizeof(kButtons) / sizeof(kButtons[0])) && kButtons[i]) onGamepadButton(kButtons[i], down);
+    }
+    bwFeedHat();
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 0) onGamepadAxis(K_ABS_X, SDL_JoystickGetAxis(bwPadJoystick, 0));
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 1) onGamepadAxis(K_ABS_Y, SDL_JoystickGetAxis(bwPadJoystick, 1));
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 2) onGamepadAxis(K_ABS_RX, SDL_JoystickGetAxis(bwPadJoystick, 2));
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 3) onGamepadAxis(K_ABS_RY, SDL_JoystickGetAxis(bwPadJoystick, 3));
+}
+
+void bwOpenPad(int index) {
+    if (bwPadInstance >= 0) {
+        return; // one pad is already fed; the kernel models exactly one
+    }
+    if (SDL_IsGameController(index)) {
+        bwPadController = SDL_GameControllerOpen(index);
+        if (bwPadController) {
+            SDL_Joystick* stick = SDL_GameControllerGetJoystick(bwPadController);
+            bwPadInstance = stick ? SDL_JoystickInstanceID(stick) : -1;
+            klog_fmt("Gamepad feed: controller '%s' opened (instance %d)", SDL_GameControllerName(bwPadController), (int)bwPadInstance);
+            bwSyncControllerState();
+            return;
+        }
+    }
+    bwPadJoystick = SDL_JoystickOpen(index);
+    if (bwPadJoystick) {
+        bwPadInstance = SDL_JoystickInstanceID(bwPadJoystick);
+        klog_fmt("Gamepad feed: joystick '%s' opened as fallback (instance %d)", SDL_JoystickName(bwPadJoystick), (int)bwPadInstance);
+        bwSyncJoystickState();
+    }
+}
+
+void bwClosePad(SDL_JoystickID instance) {
+    if (instance != bwPadInstance) {
+        return;
+    }
+    bwFeedNeutralState();
+    if (bwPadController) {
+        SDL_GameControllerClose(bwPadController);
+        bwPadController = nullptr;
+    }
+    if (bwPadJoystick) {
+        SDL_JoystickClose(bwPadJoystick);
+        bwPadJoystick = nullptr;
+    }
+    bwPadInstance = -1;
+    klog_fmt("Gamepad feed: controller removed (instance %d)", (int)instance);
+}
+
+// Returns true when the event belonged to the controller feed.
+bool bwHandlePadEvent(SDL_Event* e) {
+    switch (e->type) {
+        case SDL_JOYDEVICEADDED:
+            bwOpenPad(e->jdevice.which);
+            return true;
+        case SDL_JOYDEVICEREMOVED:
+            bwClosePad(e->jdevice.which);
+            return true;
+        case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONUP: {
+            if (!bwPadController || e->cbutton.which != bwPadInstance) return true;
+            bool down = e->type == SDL_CONTROLLERBUTTONDOWN;
+            SDL_GameControllerButton button = (SDL_GameControllerButton)e->cbutton.button;
+            if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) bwFeedHatDirection(0, down);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) bwFeedHatDirection(1, down);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) bwFeedHatDirection(2, down);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) bwFeedHatDirection(3, down);
+            else {
+                U32 code = bwEvdevButton(button);
+                if (code) onGamepadButton(code, down);
+            }
+            return true;
+        }
+        case SDL_CONTROLLERAXISMOTION: {
+            if (!bwPadController || e->caxis.which != bwPadInstance) return true;
+            switch ((SDL_GameControllerAxis)e->caxis.axis) {
+                case SDL_CONTROLLER_AXIS_LEFTX: onGamepadAxis(K_ABS_X, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_LEFTY: onGamepadAxis(K_ABS_Y, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_RIGHTX: onGamepadAxis(K_ABS_RX, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_RIGHTY: onGamepadAxis(K_ABS_RY, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_TRIGGERLEFT: bwFeedTrigger(K_ABS_Z, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: bwFeedTrigger(K_ABS_RZ, e->caxis.value); break;
+                default: break;
+            }
+            return true;
+        }
+        case SDL_JOYBUTTONDOWN:
+        case SDL_JOYBUTTONUP: {
+            // With a GameController open, SDL also emits raw events for
+            // the same device; the controller events carry it, so the raw
+            // copies are consumed and ignored to avoid double-feeding.
+            if (bwPadController) return true;
+            if (!bwPadJoystick || e->jbutton.which != bwPadInstance) return false;
+            bool down = e->type == SDL_JOYBUTTONDOWN;
+            switch (e->jbutton.button) {
+                case 0: onGamepadButton(K_BTN_SOUTH, down); break;
+                case 1: onGamepadButton(K_BTN_EAST, down); break;
+                case 2: onGamepadButton(K_BTN_WEST, down); break;
+                case 3: onGamepadButton(K_BTN_NORTH, down); break;
+                case 4: onGamepadButton(K_BTN_TL, down); break;
+                case 5: onGamepadButton(K_BTN_TR, down); break;
+                case 6: bwFeedDigitalTrigger(K_ABS_Z, down); break;
+                case 7: bwFeedDigitalTrigger(K_ABS_RZ, down); break;
+                case 8: onGamepadButton(K_BTN_SELECT, down); break;
+                case 9: onGamepadButton(K_BTN_START, down); break;
+                case 10: onGamepadButton(K_BTN_THUMBL, down); break;
+                case 11: onGamepadButton(K_BTN_THUMBR, down); break;
+                case 12: bwFeedHatDirection(0, down); break;
+                case 13: bwFeedHatDirection(1, down); break;
+                case 14: bwFeedHatDirection(2, down); break;
+                case 15: bwFeedHatDirection(3, down); break;
+                case 16: onGamepadButton(K_BTN_MODE, down); break;
+                default: break;
+            }
+            return true;
+        }
+        case SDL_JOYAXISMOTION: {
+            if (bwPadController) return true;
+            if (!bwPadJoystick || e->jaxis.which != bwPadInstance) return false;
+            switch (e->jaxis.axis) {
+                case 0: onGamepadAxis(K_ABS_X, e->jaxis.value); break;
+                case 1: onGamepadAxis(K_ABS_Y, e->jaxis.value); break;
+                case 2: onGamepadAxis(K_ABS_RX, e->jaxis.value); break;
+                case 3: onGamepadAxis(K_ABS_RY, e->jaxis.value); break;
+                default: break;
+            }
+            return true;
+        }
+        case SDL_JOYHATMOTION: {
+            if (bwPadController) return true;
+            if (!bwPadJoystick || e->jhat.which != bwPadInstance) return false;
+            if (e->jhat.hat == 0) {
+                bwHatUp = (e->jhat.value & SDL_HAT_UP) != 0;
+                bwHatDown = (e->jhat.value & SDL_HAT_DOWN) != 0;
+                bwHatLeft = (e->jhat.value & SDL_HAT_LEFT) != 0;
+                bwHatRight = (e->jhat.value & SDL_HAT_RIGHT) != 0;
+                bwFeedHat();
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
 bool KNativeInputSDL::handlSdlEvent(SDL_Event* e) {
 #ifdef BOXEDWINE_RECORDER
     if (Player::instance) {
@@ -579,6 +851,9 @@ bool KNativeInputSDL::handlSdlEvent(SDL_Event* e) {
             return true;
         }
         return false;
+    }
+    if (bwHandlePadEvent(e)) {
+        return true;
     }
 #ifdef BOXEDWINE_GUEST_X64
     // When the in-process X11 wire server owns the host window (64-bit wine GUI),

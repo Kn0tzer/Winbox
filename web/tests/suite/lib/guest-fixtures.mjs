@@ -7,6 +7,7 @@ const root = resolve(import.meta.dirname, '../../../..');
 const fixtures = {
   'launcher-ready': ['tools/guest-fixtures/launcher-ready.c', '-luser32'],
   'input-witness': ['tools/guest-fixtures/input-witness.c', '-luser32'],
+  'gamepad-witness': ['tools/guest-fixtures/gamepad-witness.c', '-ldinput8', '-ldxguid', '-lole32', '-luser32'],
   'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
   'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],
   'win32u-fd168': ['tools/guest-fixtures/win32u-fd168.c', '-luser32', '-lgdi32', '-limm32'],

@@ -55,6 +55,10 @@ bool KNativeSystem::init(VideoOption videoOption, bool allowAudio) {
 
     if (videoOption != VIDEO_NO_WINDOW) {
         flags |= SDL_INIT_VIDEO;
+        // Host game controllers feed the kernel's evdev gamepad from the
+        // SDL event pump (see the controller feed in knativeinputSDL.cpp);
+        // the subsystems must be live for device events to be generated.
+        flags |= SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
     }
     if (allowAudio
 #if defined(__EMSCRIPTEN__) && defined(BOXEDWINE_WEB_WORKER)

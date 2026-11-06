@@ -31,6 +31,8 @@ void sysAddFrameBuffer(const std::shared_ptr<FsNode>& sysNode, const std::shared
 
 void sysAddMouse(const std::shared_ptr<FsNode>& busNode, const std::shared_ptr<FsNode>& devicesNode);
 
+void sysAddInput(const std::shared_ptr<FsNode>& sysNode, const std::shared_ptr<FsNode>& devicesNode, const std::shared_ptr<FsNode>& rootNode);
+
 void createSysfs(const std::shared_ptr<FsNode> rootNode) {
     std::shared_ptr<FsNode> sysNode = Fs::getNodeFromLocalPath(B(""), B("/sys"), true);
 
@@ -44,6 +46,7 @@ void createSysfs(const std::shared_ptr<FsNode> rootNode) {
 
     sysAddMouse(busNode, devicesNode);
     sysAddFrameBuffer(sysNode, devicesNode);
+    sysAddInput(sysNode, devicesNode, rootNode);
 
     std::shared_ptr<FsNode> devicesSystemNode = Fs::addFileNode(B("/sys/devices/system"), B(""), B(""), true, devicesNode);
     std::shared_ptr<FsNode> cpuNode = Fs::addFileNode(B("/sys/devices/system/cpu"), B(""), B(""), true, devicesSystemNode);

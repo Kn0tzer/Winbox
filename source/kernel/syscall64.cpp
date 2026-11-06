@@ -3466,9 +3466,26 @@ static U64 xattrRemoveOnNode64(const std::shared_ptr<FsNode>& node, const BStrin
 }
 
 static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
+// FD-172: the f_type names the filesystem the node lives on, as
+// in the 32-bit process layer (bw64StatfsMagicForPath there): the
+// synthetic /sys and /proc trees report their own magics --
+// libudev's device verification refuses any device whose sysfs
+// path does not statfs as SYSFS_MAGIC -- and everything else
+// keeps the fabricated tmpfs answer.
+static U32 bw64StatfsMagicForPath64(const BString& path, U32 fallback) {
+    if (path == B("/sys") || path.startsWith("/sys/")) {
+        return 0x62656572; // SYSFS_MAGIC
+    }
+    if (path == B("/proc") || path.startsWith("/proc/")) {
+        return 0x9fa0; // PROC_SUPER_MAGIC
+    }
+    return fallback;
+}
+
+static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr, U32 fType = X64_TMPFS_MAGIC) {
     if (!bufPtr) return (U64)-K_EFAULT;
     if (!cpu->memory) return (U64)-K_EFAULT;
-    cpu->memory->writeq(bufPtr +  0, X64_TMPFS_MAGIC); // f_type
+    cpu->memory->writeq(bufPtr +  0, fType); // f_type
     cpu->memory->writeq(bufPtr +  8, 4096);            // f_bsize
     cpu->memory->writeq(bufPtr + 16, 0);               // f_blocks
     cpu->memory->writeq(bufPtr + 24, 0);               // f_bfree
@@ -6491,6 +6508,8 @@ void ksyscall64(CPU64* cpu) {
                 std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
                     cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
                 if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
+                ret = sys_statfs64_common(cpu, a2, bw64StatfsMagicForPath64(node->path, X64_TMPFS_MAGIC));
+                break;
             }
             ret = sys_statfs64_common(cpu, a2);
             break;
@@ -6504,10 +6523,17 @@ void ksyscall64(CPU64* cpu) {
             // layer's own fstatfs64 checks the same way. Without a
             // process there is nothing to check against and the
             // fabricated answer stands, as in statfs.
-            if (cpu->thread && cpu->thread->process &&
-                !cpu->thread->process->getFileDescriptor((FD)(S32)a1)) {
-                ret = (U64)-K_EBADF;
-                break;
+            if (cpu->thread && cpu->thread->process) {
+                KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+                if (!fdesc) {
+                    ret = (U64)-K_EBADF;
+                    break;
+                }
+                std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+                if (kf && kf->openFile && kf->openFile->node) {
+                    ret = sys_statfs64_common(cpu, a2, bw64StatfsMagicForPath64(kf->openFile->node->path, X64_TMPFS_MAGIC));
+                    break;
+                }
             }
             ret = sys_statfs64_common(cpu, a2);
             break;

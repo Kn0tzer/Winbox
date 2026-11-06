@@ -2361,6 +2361,41 @@ U32 KProcess::ftruncate64(FD fildes, U64 length) {
 #define FS_SIZE 107374182400l
 #define FS_FREE_SIZE 96636764160l
 
+// FD-172: statfs f_type must name the filesystem the node actually
+// lives on. The synthetic /sys and /proc trees are separate
+// filesystems on a real host and report their own magics --
+// libudev's device verification (sd_device_set_syspath) refuses
+// every device whose sysfs path does not statfs as SYSFS_MAGIC,
+// which is how the flat EXT3 answer hid all synthetic devices
+// from Wine's controller discovery (the FD-24 chain). Everything
+// outside those trees keeps the standing EXT3 answer.
+#define BW64_SYSFS_MAGIC 0x62656572
+#define BW64_PROCFS_MAGIC 0x9fa0
+
+static U32 bw64StatfsMagicForPath(const BString& path, U32 fallback) {
+    if (path == B("/sys") || path.startsWith("/sys/")) {
+        return BW64_SYSFS_MAGIC;
+    }
+    if (path == B("/proc") || path.startsWith("/proc/")) {
+        return BW64_PROCFS_MAGIC;
+    }
+    return fallback;
+}
+
+static U32 bw64StatfsMagicForNode(const std::shared_ptr<FsNode>& node, U32 fallback) {
+    return node ? bw64StatfsMagicForPath(node->path, fallback) : fallback;
+}
+
+static U32 bw64StatfsMagicForFd(const KFileDescriptorPtr& fd, U32 fallback) {
+    if (fd) {
+        std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (kf && kf->openFile && kf->openFile->node) {
+            return bw64StatfsMagicForPath(kf->openFile->node->path, fallback);
+        }
+    }
+    return fallback;
+}
+
 U32 KProcess::statfs(BString path, U32 address) {
     // FD-131: an empty path answers -ENOENT on the host; unguarded it
     // resolves to the directory node itself in the shared resolver.
@@ -2372,7 +2407,7 @@ U32 KProcess::statfs(BString path, U32 address) {
     if (!node) {
         return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
-    memory->writed(address, 0xEF53); // f_type (EXT3)
+    memory->writed(address, bw64StatfsMagicForNode(node, 0xEF53)); // f_type
     memory->writed(address + 4, FS_BLOCK_SIZE); // f_bsize
     memory->writed(address + 8, FS_SIZE / FS_BLOCK_SIZE); // f_blocks
     memory->writed(address + 16, FS_FREE_SIZE / FS_BLOCK_SIZE); // f_bfree
@@ -2397,7 +2432,7 @@ U32 KProcess::statfs64(BString path, U32 address) {
     if (!node) {
         return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
-    memory->writed(address, 0xEF53); // f_type (EXT3)
+    memory->writed(address, bw64StatfsMagicForNode(node, 0xEF53)); // f_type
     memory->writed(address + 4, FS_BLOCK_SIZE); // f_bsize
     memory->writeq(address + 8, FS_SIZE / FS_BLOCK_SIZE); // f_blocks
     memory->writeq(address + 16, FS_FREE_SIZE / FS_BLOCK_SIZE); // f_bfree
@@ -2417,7 +2452,7 @@ U32 KProcess::fstatfs64(FD fildes, U32 address) {
     if (!fd) {
         return -K_EBADF;
     }
-    memory->writed(address, 0xEF53); // f_type (EXT3)
+    memory->writed(address, bw64StatfsMagicForFd(fd, 0xEF53)); // f_type
     memory->writed(address + 4, FS_BLOCK_SIZE); // f_bsize
     memory->writeq(address + 8, FS_SIZE / FS_BLOCK_SIZE); // f_blocks
     memory->writeq(address + 16, FS_FREE_SIZE / FS_BLOCK_SIZE); // f_bfree
