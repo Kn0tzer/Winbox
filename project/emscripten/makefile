@@ -219,6 +219,30 @@ CXX = em++
 TARGET_EXEC ?= boxedwine.html
 PROJDIR := $(realpath $(CURDIR)/../..)
 TEST_BUILD_DIR ?= ./build/build_test
+
+# --- Compiler cache -------------------------------------------------------
+# When ccache is installed, route compiles through it so a source file
+# compiled once on this machine -- in any working copy -- is reused
+# instead of recompiled while its inputs and flags are unchanged. ccache
+# keys on the preprocessed source; CCACHE_BASEDIR relativises paths under
+# this tree's root so identical files in different working copies hash
+# alike (the rules pass absolute source paths, which would otherwise make
+# every copy miss). The shared cache directory prepared by
+# winbox-wt-prep.sh is used when it exists; otherwise ccache's per-user
+# default applies, which is still shared by every copy built as that
+# user. BW64_CCACHE=0 turns this off; CC/CXX given on the make command
+# line win over this block.
+ifeq ($(BW64_CCACHE),)
+BW64_CCACHE := $(if $(shell command -v ccache 2>/dev/null),1,0)
+endif
+ifeq ($(BW64_CCACHE),1)
+export CCACHE_BASEDIR ?= $(PROJDIR)
+ifneq ($(wildcard /home/ubuntu/boxedwine64-cache/ccache),)
+export CCACHE_DIR ?= /home/ubuntu/boxedwine64-cache/ccache
+endif
+CC := ccache $(CC)
+CXX := ccache $(CXX)
+endif
 $(info MAKEFLAGS $(MAKE_FLAGS))
 
 SOURCES += $(wildcard $(PROJDIR)/source/sdl/*.cpp)
