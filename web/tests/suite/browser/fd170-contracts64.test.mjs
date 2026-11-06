@@ -9,11 +9,15 @@ import { guestFixture } from '../lib/guest-fixtures.mjs';
 // no RESULT line prints.
 export default class Fd170Contracts64Test extends ProbeTest {
   constructor() {
-    // 900000 = the ProbeTest default: ProbeTest passes this value as
-    // the probe-slot wait budget too, and on the shared box the slot
-    // queue alone can exceed 300 s (two FD-170 RED attempts died in
-    // the queue at exactly 300 s without ever starting).
-    super({ tag: 'fd170-contracts64', timeoutMs: 900000 });
+    // ProbeTest passes this value as the probe-slot wait budget too.
+    // At 300 s two attempts died in the slot queue without starting;
+    // at the 900 s ProbeTest default a run acquired a slot but the
+    // guest was still in its boot sequence (vkboot stage) when the
+    // 960 s hung-probe cap fired, at load 13-19 on the shared 4-core
+    // box. The fixture itself needs under a minute once launched
+    // (and has its own 120 s result wait below); 1800 s is sized to
+    // the measured queue + boot reality, not to the fixture.
+    super({ tag: 'fd170-contracts64', timeoutMs: 1800000 });
     this.guestArchitectures = ['x64'];
   }
   async run({ page }) {
