@@ -156,6 +156,16 @@ payload links. Lane trees should add paths explicitly, never
 
 ## State at close
 
-Two commits on `lane-docslib` (library reorganization; this
-record). Working tree stripped of generated state. Nothing pushed,
-nothing deployed.
+Three commits on `lane-docslib` (library reorganization; index
+completion and this record, with its addendum). Working tree
+stripped of generated state. Nothing pushed, nothing deployed.
+
+_Addendum (same evening): during final cleanup this lane deleted
+the whole `test-results/` directory to remove its own test scratch,
+not noticing the directory also holds tracked record files. The
+branch was never affected — nothing was committed after the
+deletion — and the tracked content was restored in full from git
+in the same session; the final tree check shows zero modified or
+deleted tracked files. The lesson matches the process note above:
+in this tree, generated state and tracked records share directory
+names, so cleanup must name exact paths, never whole directories._
