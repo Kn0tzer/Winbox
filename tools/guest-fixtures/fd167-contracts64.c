@@ -254,7 +254,7 @@ static void test_setupapi(HMODULE s)
     gle = GetLastError();
     sprintf(d, "ret=%d gle=%08lx", ok, (unsigned long)gle);
     report("SetupDiGetDeviceInterfaceAlias A->C absent",
-           ok == FALSE && gle == 0xE00002C7 /*ERROR_NO_SUCH_DEVICE_INTERFACE*/, d);
+           ok == FALSE && gle == 0xE0000225 /*ERROR_NO_SUCH_DEVICE_INTERFACE (setupapi.h: APPLICATION_ERROR_MASK|ERROR_SEVERITY_ERROR|0x225)*/, d);
 
     memset(&alias, 0, sizeof(alias));
     alias.cbSize = 4;

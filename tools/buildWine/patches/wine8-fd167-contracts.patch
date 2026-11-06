@@ -239,6 +239,36 @@ index 8ceaa91..7dd5890 100644
  #endif
      EXCEPTION_VTABLE(failure,
              VTABLE_ADD_FUNC(MSVCP_failure_vector_dtor)
+@@ -1418,21 +1548,28 @@ void init_exception(void *base)
+     init_failure_rtti(base);
+     init_bad_cast_rtti(base);
+     init_range_error_rtti(base);
++#if _MSVCP_VER > 90
++    init_bad_function_call_rtti(base);
++#endif
+ 
+     init_exception_cxx(base);
+     init_bad_alloc_cxx(base);
+     init_logic_error_cxx_type_info(base);
+     init_length_error_cxx(base);
+     init_out_of_range_cxx(base);
+     init_invalid_argument_cxx(base);
+     init_runtime_error_cxx(base);
+ #if _MSVCP_VER > 110
+     init__System_error_cxx_type_info(base);
+ #endif
+ #if _MSVCP_VER > 90
+     init_system_error_cxx_type_info(base);
++    init_system_error_cxx(base);
+ #endif
+     init_failure_cxx(base);
+     init_range_error_cxx(base);
++#if _MSVCP_VER > 90
++    init_bad_function_call_cxx(base);
++#endif
+ #endif
+ }
+ 
 diff --git a/dlls/msvcp90/misc.c b/dlls/msvcp90/misc.c
 index 103eca6..b398a2b 100644
 --- a/dlls/msvcp90/misc.c

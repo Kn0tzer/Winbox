@@ -131,7 +131,7 @@ WINE8_BACKPORT_PINS = {
     # FD-167: the MSVC runtime throw helpers a bundled demo library
     # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
     # stubs (see wine8-backports-x86_64/README.md).
-    'msvcp140.dll': '047e402df1e1635dec359016289bbb95b606a9bf2489940c89ce6bf254085936',
+    'msvcp140.dll': '8525ebf0220f595714acef764ba6e3fc2e542edbe158a43fad1ebf7cc2c8b940',
     # (setupapi.dll is pinned below, in the FD-171 block: the composed
     # build carries both the FD-167 SetupDiGetDeviceInterfaceAlias and the
     # FD-171 CM_* family in it, so its bytes differ from either lane's.)
