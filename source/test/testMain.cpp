@@ -122,6 +122,7 @@ void testStatxAtEmptyPathProcessApi();
 void testUtimensatFlags32Syscalls();
 void testNotDir32Syscalls();
 void testNotDirProcessApi();
+void testStatfsMagicByMount32Calls();
 void testXattrPathResolve32Syscalls();
 void testReadlinkMissing32Syscalls();
 void testTrailingNotDir32Syscalls();
@@ -185,6 +186,8 @@ void testNullPath64Syscalls();
 void testMemfdNullName64Syscalls();
 void testXattrResolve64Syscalls();
 void testStatfsResolve64Syscalls();
+void testStatfsMagicByMount64Syscalls();
+void testStatfsMagicByMount32Calls();
 void testFstatfsDescriptor64Syscalls();
 void testUtimensatFlags64Syscalls();
 void testNotDir64Syscalls();
@@ -288,6 +291,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNullName64Syscalls, "Test x64 memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
     {testXattrResolve64Syscalls, "Test x64 xattr cases resolve their path/descriptor before answering; entry order flags, name, resolution"},
     {testStatfsResolve64Syscalls, "Test x64 statfs resolves its path: null -EFAULT, unresolvable -ENOENT, resolvable keeps the fabricated answer"},
+    {testStatfsMagicByMount64Syscalls, "FD-172: x64 statfs/fstatfs report SYSFS_MAGIC under /sys, PROC_SUPER_MAGIC under /proc, tmpfs elsewhere"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -1048,6 +1052,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testUtimensatFlags32Syscalls, "Test 32-bit utimensat/utimensat_time64 answer -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH and leave the times untouched"},
     {testNotDir32Syscalls, "Test 32-bit a path through a non-directory answers -ENOTDIR at the path calls"},
     {testNotDirProcessApi, "Test a path through a non-directory answers -ENOTDIR through the KProcess API; controls unchanged"},
+    {testStatfsMagicByMount32Calls, "FD-172: 32-bit statfs/statfs64 report the same per-tree magics, EXT3 elsewhere"},
     {testXattrPathResolve32Syscalls, "Test 32-bit xattr path forms resolve their target before the attribute verdicts (-ENOENT / -ENOTDIR / -ENODATA)"},
     {testReadlinkMissing32Syscalls, "Test 32-bit readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
     {testTrailingNotDir32Syscalls, "Test 32-bit a path whose final component is erased by normalization answers -ENOTDIR at the path calls"},

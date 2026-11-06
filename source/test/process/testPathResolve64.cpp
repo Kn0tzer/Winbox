@@ -393,6 +393,97 @@ void testStatfsResolve64Syscalls() {
            (long long)invoke(137, childAt, bufAt));
 }
 
+// FD-172: statfs/fstatfs name the filesystem a node lives on --
+// the synthetic /sys tree reports SYSFS_MAGIC and /proc reports
+// PROC_SUPER_MAGIC, everything else keeps the fabricated tmpfs
+// answer. libudev's device verification refuses any device whose
+// sysfs path does not statfs as SYSFS_MAGIC, so the flat answer
+// hid the synthetic gamepad (FD-24) from guest discovery.
+void testStatfsMagicByMount64Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+    if (!process->memory64) process->memory64 = new KMemory64(process.get());
+    KMemory64* memory = process->memory64;
+
+    char dirTemplate[] = "/tmp/bw64fd172XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        testFail("statfs-magic test could not create its fixture dir");
+        return;
+    }
+    std::shared_ptr<FsFileNode> previousRoot = Fs::rootNode;
+    struct RootRestore {
+        std::shared_ptr<FsFileNode> previous;
+        ~RootRestore() { Fs::rootNode = previous; Fs::clearPathCache(); }
+    } rootRestore{previousRoot};
+    Fs::rootNode = std::make_shared<FsFileNode>(1, 0, B("/"), B(""), BString::copy(dir), true, true, nullptr);
+    Fs::clearPathCache();
+
+    KFileDescriptorPtr sysFile, plainFile;
+    if (process->mkdir(B("/sys")) != 0 ||
+        process->mkdir(B("/proc")) != 0 ||
+        process->mkdir(B("/plain")) != 0 ||
+        process->openFile(B("/"), B("/sys/probe"), K_O_RDWR | K_O_CREAT, sysFile) != 0 || !sysFile ||
+        process->openFile(B("/"), B("/plain/probe"), K_O_RDWR | K_O_CREAT, plainFile) != 0 || !plainFile ||
+        process->chdir(B("/")) != 0) {
+        testFail("statfs-magic test could not stage its fixture");
+        return;
+    }
+
+    constexpr U64 dataPage = 0x7E100000ULL;
+    if (!memory->getPageFlags(dataPage >> K64_PAGE_SHIFT) &&
+        memory->mmapAnonymousFixed(dataPage, K64_PAGE_SIZE, 3) != dataPage) {
+        testFail("statfs-magic test could not map its fixture page");
+        return;
+    }
+    CPU64 cpu(memory);
+    cpu.thread = context.thread;
+    auto invoke = [&](U64 nr, U64 a1, U64 a2) -> S64 {
+        cpu.reg[X64_RAX].setU64(nr);
+        cpu.reg[X64_RDI].setU64(a1);
+        cpu.reg[X64_RSI].setU64(a2);
+        ksyscall64(&cpu);
+        return (S64)cpu.reg[X64_RAX].u64;
+    };
+
+    constexpr U64 sysAt   = dataPage + 0x000; // "/sys"
+    constexpr U64 sysSubAt = dataPage + 0x080; // "/sys/probe"
+    constexpr U64 procAt  = dataPage + 0x100; // "/proc"
+    constexpr U64 plainAt = dataPage + 0x180; // "/plain"
+    constexpr U64 rootAt  = dataPage + 0x200; // "/"
+    constexpr U64 bufAt   = dataPage + 0x400; // struct statfs out
+    memory->memcpyToGuest(sysAt, "/sys", 5);
+    memory->memcpyToGuest(sysSubAt, "/sys/probe", 11);
+    memory->memcpyToGuest(procAt, "/proc", 6);
+    memory->memcpyToGuest(plainAt, "/plain", 7);
+    memory->memcpyToGuest(rootAt, "/", 2);
+
+    auto expectType = [&](U64 pathAt, U64 want, const char* label) {
+        if (invoke(137, pathAt, bufAt) != 0) {
+            testFail("%s: statfs did not succeed", label);
+            return;
+        }
+        U64 got = memory->readq(bufAt);
+        if (got != want) testFail("%s: f_type got 0x%llx, want 0x%llx", label, (unsigned long long)got, (unsigned long long)want);
+    };
+    expectType(sysAt, 0x62656572, "statfs(/sys)");
+    expectType(sysSubAt, 0x62656572, "statfs(/sys/probe)");
+    expectType(procAt, 0x9fa0, "statfs(/proc)");
+    expectType(plainAt, 0x01021994, "statfs(/plain)");
+    expectType(rootAt, 0x01021994, "statfs(/)");
+
+    // fstatfs (138) follows the descriptor's node the same way.
+    if (invoke(138, sysFile->handle, bufAt) != 0 || memory->readq(bufAt) != 0x62656572) {
+        testFail("fstatfs(fd on /sys/probe) did not report SYSFS_MAGIC");
+    }
+    if (invoke(138, plainFile->handle, bufAt) != 0 || memory->readq(bufAt) != 0x01021994) {
+        testFail("fstatfs(fd on /plain/probe) did not keep the tmpfs answer");
+    }
+    process->close(sysFile->handle);
+    process->close(plainFile->handle);
+}
+
 #endif
+
 
 #endif
