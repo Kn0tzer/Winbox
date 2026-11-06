@@ -3465,7 +3465,6 @@ static U64 xattrRemoveOnNode64(const std::shared_ptr<FsNode>& node, const BStrin
     return (U64)(S64)(S32)Fs::removeXAttr(node, name);
 }
 
-static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
 // FD-172: the f_type names the filesystem the node lives on, as
 // in the 32-bit process layer (bw64StatfsMagicForPath there): the
 // synthetic /sys and /proc trees report their own magics --
