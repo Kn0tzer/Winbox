@@ -18,32 +18,33 @@ Substituted into the wine32 payload by
 fail-closed) and verified against `wine32.zip` by
 `tools/rootfs64/check_runtime_completeness.py`
 (`WINE10_FD171_PINS32`). Note propsys.dll and mf.dll are also in the
-FD-167 set; at composition the later substitution wins and both
-lanes' pins must be reconciled — FD-171's propsys carries only
-PropVariantGetStringElem beyond stock 10.0, FD-167's carries its
-VariantCompare fix; the composed tree needs a propsys build with
-both (the two patches touch disjoint functions).
+FD-167 set; neither lane's build is substituted for them — the
+combined FD-167+FD-171 build
+(`tools/rootfs32/wine10-fd167-fd171-i386/`, both patches applied)
+carries both lanes' functions (FD-171's PropVariantGetStringElem and
+MFTranscodeGetAudioOutputAvailableTypes plus FD-167's VariantCompare
+fix and MFCreateDeviceSource) and is substituted last by the
+combined step in `build-wine32-base.sh`. The single-lane propsys/mf
+builds in this directory are superseded and no longer pinned.
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| cfgmgr32.dll | 69490 | 4d4ca217b8b4173e6e821b7860f07c3eb388930fb58eb7a84d847fb6b4fd5957 |
-| combase.dll | 611120 | da03dcd0f19e0759844f6d2e38d65a5e8f85ea15da43417202dba7f0e2db99dc |
-| cryptext.dll | 64776 | 1ed21bab40c9aa95e5fc8998d14d5e164445b46a5d0d52d4bc2b8ef148826253 |
-| d2d1.dll | 817432 | e5c89536f398c95f47a87eadbfd896c8afe631614ac62555eae5015e49c3071d |
-| hid.dll | 79121 | 616c678dbd7a349e50839e231ea3b1a578994cdcd4513fad05bbbbb4b547d816 |
-| kernel32.dll | 830764 | 46c41b95b74dde715a59b10cceff6d44fc1db1acab4c61c64265fa7e05645995 |
-| kernelbase.dll | 1603777 | 1847ac4136515dc43b178d9849b4ddab44e3b8469d627787e9d3372a5f545676 |
-| mf.dll | 789094 | 352432760c5ca11ba162eb01e4591252c9e4b4e677ea1d270a6df270ab1a58dd |
-| mscms.dll | 437213 | 1c313f89f88bc3b94546115f85a81bf25f4c3f18886d5c2bc9881ad1a3e71328 |
-| ntdll.dll | 819619 | 1f326d17feba65f46e1119f243b7dc8d83adf6be575c74f14945d57bc89f27cc |
-| pdh.dll | 99424 | 693de5a82e04d87e9458136df7b553c6165dea188aed364be69f6c0154b28daa |
-| prntvpt.dll | 106893 | 3a5285c8d0a6fc48762e463ddd80530b54d6fd939d752f98e96e86abec0f4bec |
-| propsys.dll | 388325 | 7e776f6d3de7a35ec5a99d42386929ffd1cc13bf6eac530271013f18529fba29 |
-| setupapi.dll | 766368 | 3b878c2dbdde59020851f67a279ce9d7faf1b0a2dca6c3eac84e6cf8f09fddf6 |
-| sspicli.dll | 64250 | 6540168dfc8e4c56f9f74f89d357e916cac98c368c7fb43f7e974d0d6e19745a |
-| vcomp.dll | 98669 | 1481435300757f8b202b1c7ec85394fcf9e80984b3c041dfa149c7e7edc48aac |
-| vcomp100.dll | 98669 | 4e534f2cc7dfe02f8b076cee55fa7ddd5dbc58ecfb76b9ae08d48ba9ffb90e48 |
-| vcomp110.dll | 98671 | b862859ed8ffa3a7bda913b1fb289ecc4eb21af4087d4df1216dc3470e847ade |
-| vcomp120.dll | 98671 | c5eec207a56fceb4fa4efdca97090d210c6df305c1f5729f1b70cfa99ccaa7e6 |
-| vcomp140.dll | 98671 | a66fc0452544a4ea11cca519ed9c091a077f5fd22c4bada303058930c331fa98 |
-| vcomp90.dll | 40936 | 1574571555952b734472aa338f35e9259a56c12c31dc77932d851b06b7ce3ccf |
+| cfgmgr32.dll | 69490 | 9aad4b1c185244d184a2087fe9e6f367e89fa201652d7b55437b4fd537301c60 |
+| combase.dll | 611120 | cca9be3845f46d616c5c2fd0d31d9153fc9ccf40e09b651f6f003dbe5b97696e |
+| cryptext.dll | 64776 | 7783edb4d30d4e71f98687222c4d1874c5830a28a0134d02b14f2e215ce3c119 |
+| d2d1.dll | 817432 | b549db04f4811d67407993588f72134a32aaec7e555f9bd1d6285d81ae04cde3 |
+| hid.dll | 79121 | ca37389cc7f4646f488163128d6110a80688496b8c0399e70838d1a7f308f69b |
+| kernel32.dll | 830764 | 35628e12975ab305abd6785c371acdf1a1f302b26f7dc454053d5b56d7fa0607 |
+| kernelbase.dll | 1603777 | d50f6a31710f8241483ceca281796b53d27db7c3fc02a485c835b94d25b70c53 |
+| mscms.dll | 437213 | 99c8c3006511653e276d9a00016f7ce1a58f8214a8c2f0e91fbf54744ddbefcc |
+| ntdll.dll | 819619 | 2da0bf73e03d6ecbbece6e2b92985bbfda75e73e1ed465d6c452d3a0e2b7fc90 |
+| pdh.dll | 99424 | d386d02950cb2c9f0c3d5cb85b74858d4d4c47b7bf9b17bbbcdff5d232501bc0 |
+| prntvpt.dll | 106893 | 636d13280be1256bd1b8f3c6c84aa465ca6fafbbd65d0959e1b980db3d5ff6c2 |
+| setupapi.dll | 766368 | 50615e6394c3169848f0f3b076a5cf1d9c2ecf767f149ff395c5b12996606ed9 |
+| sspicli.dll | 64250 | 1d7daa3e8e377e4950baeeb402100ffcae0cd256ab1e213c737f10a445890a9e |
+| vcomp.dll | 98669 | c42871b35a25fa777cdda468e58caea7fa911580fd818ab88c74612ec9f7892f |
+| vcomp100.dll | 98669 | 25ffbfd9726c5db96bff35a4e0e0640ec9ba126f736e390029b7370d88874d7f |
+| vcomp110.dll | 98671 | bed64f70d41d408aab3885a02fd3cfbe0013aa75bcb242b5a7ea40a72d62a995 |
+| vcomp120.dll | 98671 | 0566b5fb2121c984f6629e8f9810b78974e15bded8787f653fd27bb070e4206d |
+| vcomp140.dll | 98671 | d2ccda0b5c74d7b7d3f518af3cb0be28525e9255d1cd9c96917ee2ebc19892c0 |
+| vcomp90.dll | 40936 | bb48278533d3beea3f4962913309dc35c7ae6aac0904aa1dcb119feb63ec8d87 |

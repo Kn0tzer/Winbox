@@ -233,25 +233,25 @@ cp "$BACKPORT32" "$OUT/opt/wine-stable/lib/wine/i386-unix/win32u.so"
 echo "win32u backport substituted: sha256 verified"
 
 echo "=== FD-167 contract backport substitution ==="
-# Seven PE modules are not the deb's either: they are the in-tree
+# Five PE modules are not the deb's either: they are the in-tree
 # backport build (tools/rootfs32/wine10-fd167-i386/, produced by
 # build-wine10-fd167.sh from the pinned wine-10.0 source plus the
 # FD-167 contract patch), carrying real implementations for the
 # demo-reachable exports the deb ships as spec stubs (defect register
 # FD-167): the bluetoothapis GATT/radio entries, the bthprops.cpl
-# forwards, the winusb entries, MFCreateDeviceSource,
-# MFCreateMediaBufferWrapper, VariantCompare and EvtRender.
+# forwards, the winusb entries, MFCreateMediaBufferWrapper and
+# EvtRender. (MFCreateDeviceSource and VariantCompare live in mf.dll
+# and propsys.dll, which the FD-171 lane also touches: those two are
+# substituted by the combined FD-167+FD-171 step below, not here.)
 # Substituted here, before the patchelf step and the usr/ re-layout,
 # so every shipped copy carries the fixed bytes. Fail-closed on the
 # pins, like the win32u backport above.
 FD167_DIR="$HERE/wine10-fd167-i386"
-FD167_PINS="bluetoothapis.dll=8ecb95b3feb654c63b70bc76459bc96974653422d309e619a35166e764d598c6
-bthprops.cpl=72a28006aa12165bea114afd39cd20590a8b4570c2ed57ec9b2a5716d4e8cd2e
-mf.dll=9babdf82f66204521efa1f8c5a7dbae9ef3ac183059b6355e5806e504ed7d5c4
-mfplat.dll=fa96363d4d1aeb474dc10543e8771188a06aac35d18ca7040dcec9dcd4f673f7
-propsys.dll=f39cbd2072635db066497d0f10cc4d512b15bac0375a13e311f0ec40ac3ae7a0
-wevtapi.dll=1c5d1890ff8fe50b29b62cd735ded3985313cd77a660b42d8c5a9d786f9185c5
-winusb.dll=984757871bde57acae11c31eae97b2fb4e3d7de9868c40bed95b526dc87bfa7f"
+FD167_PINS="bluetoothapis.dll=0c721de46d5ad968123f61fa6b1805d319788d4aa19984e72e905e1d51e830b7
+bthprops.cpl=174235d2bcdaf40d5ab06175ae86cd97f2d98a2e49b6970dc36830b46a47969d
+mfplat.dll=f7f5fe208c5b2880b2cc61596755dc39ea978a556674132fa36f485ab65472ac
+wevtapi.dll=a1f83e6c12b69bcbc86a4f5c1d7478eb7381ca10c92df6af6326292104295747
+winusb.dll=7f98aec40cc2bbd930ea0ff5036671ba5606d7d2fcdbf4f0b82047a47527e499"
 for entry in $FD167_PINS; do
     f="${entry%%=*}"; pin="${entry#*=}"
     src="$FD167_DIR/$f"
@@ -270,15 +270,15 @@ echo "=== FD-169 CRT substitution (i386) ==="
 # Fail-closed on the pins, like the win32u substitution above.
 FD169_DIR="$HERE/wine10-fd169-i386"
 declare -A FD169_SHA32=(
-  [msvcr100.dll]=f15f7a9b6eb6ce7e0fa921a3343f91cac34f808ee443eda609630ce0f81dab9d
-  [msvcr110.dll]=2b5bff73c1e77843723e3335c106a53b9ae4119839aceb16d610ebe61d7299c5
-  [msvcr120.dll]=0e4ba5e74c22db4de9a8889d89d247b708e8ba657029b75b5f7dd1f9dbb58b92
-  [msvcr70.dll]=1d5c6c16b3d095039142037a92256cd660f00fa29ecaddd07ef0722b2130f6b7
-  [msvcr71.dll]=60ac37db454b821d6245fce39830e37126a065f0386f836d98d4e89bf9565b41
-  [msvcr80.dll]=7aa234283cd4c0dd378540184db724360a189d47013ae4259d4622c2f19ecd7c
-  [msvcr90.dll]=c3f3062bb3ba6e5084da24ad66dd5dec18cc3633e0fb0b166d54a0d5a827dada
-  [msvcrt.dll]=f3cebbf0855200a772733b1d0aa431fdd77cea78b1cb03b6427311921ca98cec
-  [ucrtbase.dll]=7c1782913e4c865252348fd38cbb402bc3d8dd6bd6bf088501d4ffbaa3c5264c
+  [msvcr100.dll]=29007c22d0081fe2f499a8eb0d1341449bdd58c3d47a8c5e197b85910a0b3322
+  [msvcr110.dll]=e2e0a731b4b92de404420f00c88cde465a5303f51e2ce106016911fff70d5b8f
+  [msvcr120.dll]=0819776bd30bf6cb2e2e041af96f3df82c94410049d582decf7a2c6ef90a1dbf
+  [msvcr70.dll]=cad2f54a8fb5654f5bc42290e2d6ed21789e59e7ccd9bca4c1e0c5947c2ef6a9
+  [msvcr71.dll]=05e32b5f829b5d1bbdc9f4e028d3fc52d3ae27cdecffb4e519ce7d3decfc2af8
+  [msvcr80.dll]=f4cbb861805987dee5b5d27612298510ba6ffe6c95dc9bf93c06a5a8a7bdcc82
+  [msvcr90.dll]=501ceebce97c19dc2bf47e6b6a82ccf2fbd00f2644ffd8f21917f40c8741213c
+  [msvcrt.dll]=6bb88c48aeba9b92b12dd9b0c61554996758a5b00f94c7aca561bdc2af0e5a72
+  [ucrtbase.dll]=fa99ad18033d40d26d567749e25cd8e60c6986ed2c14fdeb07c59ac4ad0b1c17
 )
 for dll in "${!FD169_SHA32[@]}"; do
   src="$FD169_DIR/$dll"
@@ -289,37 +289,35 @@ for dll in "${!FD169_SHA32[@]}"; do
 done
 echo "FD-169 CRT DLLs substituted: 9 sha256 verified"
 echo "=== FD-171 i386 PE substitution ==="
-# 21 PE DLLs rebuilt from the pinned wine-10.0 source with the FD-171
+# 19 PE DLLs rebuilt from the pinned wine-10.0 source with the FD-171
 # contract backports (tools/rootfs32/wine10-fd171-i386/, produced by
 # build-wine10-fd171.sh), replacing the deb builds that answer 96
 # long-tail exports with winebuild stubs (register FD-171). Same
 # fail-closed pin discipline as the win32u backport above. propsys
-# and mf also appear in the FD-167 substitution; whichever runs last
-# wins, and composition must reconcile the two lanes' pins (see the
-# wine10-fd171-i386 README).
+# and mf also appear in the FD-167 set; neither lane's build is
+# substituted for them — the combined FD-167+FD-171 build below
+# carries both lanes' functions (see wine10-fd167-fd171-i386/README.md).
 FD171_DIR="$HERE/wine10-fd171-i386"
 FD171_SHA32=(
-    "cfgmgr32.dll 4d4ca217b8b4173e6e821b7860f07c3eb388930fb58eb7a84d847fb6b4fd5957"
-    "combase.dll da03dcd0f19e0759844f6d2e38d65a5e8f85ea15da43417202dba7f0e2db99dc"
-    "cryptext.dll 1ed21bab40c9aa95e5fc8998d14d5e164445b46a5d0d52d4bc2b8ef148826253"
-    "d2d1.dll e5c89536f398c95f47a87eadbfd896c8afe631614ac62555eae5015e49c3071d"
-    "hid.dll 616c678dbd7a349e50839e231ea3b1a578994cdcd4513fad05bbbbb4b547d816"
-    "kernel32.dll 46c41b95b74dde715a59b10cceff6d44fc1db1acab4c61c64265fa7e05645995"
-    "kernelbase.dll 1847ac4136515dc43b178d9849b4ddab44e3b8469d627787e9d3372a5f545676"
-    "mf.dll 352432760c5ca11ba162eb01e4591252c9e4b4e677ea1d270a6df270ab1a58dd"
-    "mscms.dll 1c313f89f88bc3b94546115f85a81bf25f4c3f18886d5c2bc9881ad1a3e71328"
-    "ntdll.dll 1f326d17feba65f46e1119f243b7dc8d83adf6be575c74f14945d57bc89f27cc"
-    "pdh.dll 693de5a82e04d87e9458136df7b553c6165dea188aed364be69f6c0154b28daa"
-    "prntvpt.dll 3a5285c8d0a6fc48762e463ddd80530b54d6fd939d752f98e96e86abec0f4bec"
-    "propsys.dll 7e776f6d3de7a35ec5a99d42386929ffd1cc13bf6eac530271013f18529fba29"
-    "setupapi.dll 3b878c2dbdde59020851f67a279ce9d7faf1b0a2dca6c3eac84e6cf8f09fddf6"
-    "sspicli.dll 6540168dfc8e4c56f9f74f89d357e916cac98c368c7fb43f7e974d0d6e19745a"
-    "vcomp.dll 1481435300757f8b202b1c7ec85394fcf9e80984b3c041dfa149c7e7edc48aac"
-    "vcomp100.dll 4e534f2cc7dfe02f8b076cee55fa7ddd5dbc58ecfb76b9ae08d48ba9ffb90e48"
-    "vcomp110.dll b862859ed8ffa3a7bda913b1fb289ecc4eb21af4087d4df1216dc3470e847ade"
-    "vcomp120.dll c5eec207a56fceb4fa4efdca97090d210c6df305c1f5729f1b70cfa99ccaa7e6"
-    "vcomp140.dll a66fc0452544a4ea11cca519ed9c091a077f5fd22c4bada303058930c331fa98"
-    "vcomp90.dll 1574571555952b734472aa338f35e9259a56c12c31dc77932d851b06b7ce3ccf"
+    "cfgmgr32.dll 9aad4b1c185244d184a2087fe9e6f367e89fa201652d7b55437b4fd537301c60"
+    "combase.dll cca9be3845f46d616c5c2fd0d31d9153fc9ccf40e09b651f6f003dbe5b97696e"
+    "cryptext.dll 7783edb4d30d4e71f98687222c4d1874c5830a28a0134d02b14f2e215ce3c119"
+    "d2d1.dll b549db04f4811d67407993588f72134a32aaec7e555f9bd1d6285d81ae04cde3"
+    "hid.dll ca37389cc7f4646f488163128d6110a80688496b8c0399e70838d1a7f308f69b"
+    "kernel32.dll 35628e12975ab305abd6785c371acdf1a1f302b26f7dc454053d5b56d7fa0607"
+    "kernelbase.dll d50f6a31710f8241483ceca281796b53d27db7c3fc02a485c835b94d25b70c53"
+    "mscms.dll 99c8c3006511653e276d9a00016f7ce1a58f8214a8c2f0e91fbf54744ddbefcc"
+    "ntdll.dll 2da0bf73e03d6ecbbece6e2b92985bbfda75e73e1ed465d6c452d3a0e2b7fc90"
+    "pdh.dll d386d02950cb2c9f0c3d5cb85b74858d4d4c47b7bf9b17bbbcdff5d232501bc0"
+    "prntvpt.dll 636d13280be1256bd1b8f3c6c84aa465ca6fafbbd65d0959e1b980db3d5ff6c2"
+    "setupapi.dll 50615e6394c3169848f0f3b076a5cf1d9c2ecf767f149ff395c5b12996606ed9"
+    "sspicli.dll 1d7daa3e8e377e4950baeeb402100ffcae0cd256ab1e213c737f10a445890a9e"
+    "vcomp.dll c42871b35a25fa777cdda468e58caea7fa911580fd818ab88c74612ec9f7892f"
+    "vcomp100.dll 25ffbfd9726c5db96bff35a4e0e0640ec9ba126f736e390029b7370d88874d7f"
+    "vcomp110.dll bed64f70d41d408aab3885a02fd3cfbe0013aa75bcb242b5a7ea40a72d62a995"
+    "vcomp120.dll 0566b5fb2121c984f6629e8f9810b78974e15bded8787f653fd27bb070e4206d"
+    "vcomp140.dll d2ccda0b5c74d7b7d3f518af3cb0be28525e9255d1cd9c96917ee2ebc19892c0"
+    "vcomp90.dll bb48278533d3beea3f4962913309dc35c7ae6aac0904aa1dcb119feb63ec8d87"
 )
 for entry in "${FD171_SHA32[@]}"; do
     dll="${entry%% *}"; want="${entry##* }"
@@ -329,6 +327,29 @@ for entry in "${FD171_SHA32[@]}"; do
     cp "$FD171_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-171 i386 DLLs substituted: sha256 verified"
+echo "=== FD-167+FD-171 combined i386 PE substitution ==="
+# propsys.dll and mf.dll are touched by both lanes with disjoint
+# functions (FD-167 VariantCompare / MFCreateDeviceSource, FD-171
+# PropVariantGetStringElem / MFTranscodeGetAudioOutputAvailableTypes),
+# so the single-lane builds each lose the other lane's function. The
+# combined build (tools/rootfs32/wine10-fd167-fd171-i386/, produced by
+# build-wine10-fd167-fd171.sh from the pinned wine-10.0 source with
+# BOTH patches applied) is substituted last, so every shipped copy
+# carries both lanes' functions. Fail-closed on the pins, like the
+# substitutions above.
+FD167FD171_DIR="$HERE/wine10-fd167-fd171-i386"
+FD167FD171_SHA32=(
+    "mf.dll 6446d89d9e11e3542b3191743e67d195914aa6acce64036756f52535ac7e946e"
+    "propsys.dll b0b3e7f2303328d23aa3319c8f97a9491f8346115ef8caf36dd733b4557cf784"
+)
+for entry in "${FD167FD171_SHA32[@]}"; do
+    dll="${entry% *}"; want="${entry##* }"
+    [ -f "$FD167FD171_DIR/$dll" ] || { echo "build-wine32-base: FD-167+FD-171 DLL missing: $FD167FD171_DIR/$dll (build it with tools/rootfs32/build-wine10-fd167-fd171.sh)" >&2; exit 2; }
+    got="$(sha256sum "$FD167FD171_DIR/$dll" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "build-wine32-base: FD-167+FD-171 $dll hash mismatch: $got != $want" >&2; exit 1; }
+    cp "$FD167FD171_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-167+FD-171 combined i386 DLLs substituted: sha256 verified"
 
 
 echo "=== extracting the two preserved members from the shipped zip ==="

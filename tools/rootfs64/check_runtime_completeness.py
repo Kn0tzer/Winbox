@@ -119,65 +119,67 @@ WINEHQ_PINS = {
 # a rebuild that changes bytes fails here until the new bytes are reviewed
 # and pinned.
 WINE8_BACKPORT_PINS = {
-    'user32.dll': '5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219',
-    'kernelbase.dll': '88a997d9525eb187735e7bbad3db33871fda0d2e3fd1701150f77732c1115ed7',
-    'kernel32.dll': 'fec1c2dd4993730e407e005ef8aca175fbb406e38cf4b6ccb59ccc4f3cc9f253',
-    'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
-    'win32u.dll': '49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708',
+    'user32.dll': 'b7b39a1b3daa48ffc273328359340f210bbca996ea2135ee130c7e93005da338',
+    'kernelbase.dll': '5d94b2639e2e408da5fc4fd2fc27466b990ced859603ef3e123ff4ef85c3f251',
+    'kernel32.dll': 'ccf67fb5bba80af571952c5beefae8c4ca9f92ca4787da9a2424fc4a49fcd2e1',
+    'iphlpapi.dll': '1653f8600391d81727a9391cffbed3c5f9bad2a76564c5fd4f2029dc815b4f80',
+    'win32u.dll': 'ebe6c559f25127132723f713cea5e8d93304206ca81a2ed91fab3ed112523884',
     # The unix half of win32u (FD-01): the desktop-wait patch lives in
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
-    'win32u.so': 'b2aa883bfb47627ff63c6be97e4da54de45b46ef159c3c29a13ad91ac18f7ec0',
+    'win32u.so': '71bf6dbb9944b420236310b65fe81087598afa484d74eb8047c4d4141f474405',
     # FD-167: the MSVC runtime throw helpers a bundled demo library
     # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
     # stubs (see wine8-backports-x86_64/README.md).
-    'msvcp140.dll': 'c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a',
-    # (setupapi.dll is pinned below, in the FD-171 block: the FD-171 patch re-pins it.)
+    'msvcp140.dll': '047e402df1e1635dec359016289bbb95b606a9bf2489940c89ce6bf254085936',
+    # (setupapi.dll is pinned below, in the FD-171 block: the composed
+    # build carries both the FD-167 SetupDiGetDeviceInterfaceAlias and the
+    # FD-171 CM_* family in it, so its bytes differ from either lane's.)
     # FD-169: the Microsoft C runtime family, rebuilt from the same
     # patched Wine 8.0 tree (wine8-msvcrt-fd169-crt.patch).
-    'ucrtbase.dll': '6f790d4721f8562c021bfddbb77cdf5da686e64507d02741888fdcc156c057d9',
-    'msvcrt.dll': '23bad1e9016e8f3f95ba5784a6a1ad383f4d9cc65a21e6aafddc4fbda1a78f84',
-    'msvcr70.dll': '33a64d83cefcaba027c2a4d00e1ce1d5fdc81de3fcc7eabb719dec5b817cb3b2',
-    'msvcr71.dll': '6e37ada00292280e3e4dc21d6d4432fa331a057ecbf31e00399d19e33f425a38',
-    'msvcr80.dll': '8cb9576ab57bc10b8010268572a1410cf62f15b7faee5202ed58e2ae6a45d0f8',
-    'msvcr90.dll': 'b68c1d96070e6dae7a366616cb717c8278886f7dd902b0e1ce5e3687537e1728',
-    'msvcr100.dll': '49dc3a015b4be2d16f7629d106845fd84d4966be23a13e9d82c0caf90bf6997c',
-    'msvcr110.dll': 'c82bf206e4e93ba8c12113bcad3a67ca8988347f78a66def81921270e7872a69',
-    'msvcr120.dll': '89054bd4059865c9b2c404f817f3ad9fa7913676fc9c4e98185fd17f2a53dbfb',
+    'ucrtbase.dll': 'daed274b229dfc1c5d9ae5780dfab75d361796243c0432088b171dae1f63bbd7',
+    'msvcrt.dll': 'f64900841b15e7d577d2ec610578e0ee2f01ebf9de4c148aad5431ee03f030c0',
+    'msvcr70.dll': 'e7b1b1a68f16ade508a32aa2523f32ff60b2a196ff4697fd72c61c2e05ec68e5',
+    'msvcr71.dll': '534758d16a7a3d9aa8de1a94db3dc019871405a0a9e8cdbe0e3e850f9942474d',
+    'msvcr80.dll': 'eae4c063710b284dde64d13a533e579d714e6cb6aefc53015aca76746dbcfe82',
+    'msvcr90.dll': '208802fc10e132186444bfe4992f0c96c7093291ec114cd412affbc258bb622b',
+    'msvcr100.dll': '97243e6863c1bb7d8faeceae715aa5b550c7ab2f7586ad7c125de4533807b996',
+    'msvcr110.dll': 'd260db9d92628d9d8ed74b058c2b29a4b449eabbe4d6f3ddb2a341be559e8649',
+    'msvcr120.dll': '33f46fac7eab905612bcf3c8d290f0842a4d28d359059f72c09acd422cfa623e',
     # FD-170 whole-DLL backports (wine8-fd170-contracts.patch): Wine
     # 10.0's bluetoothapis + the FD-167 contract bodies, the FD-167
     # winusb no-device contracts, Wine 10.0's netutils NetApiBuffer*.
-    'bluetoothapis.dll': '306a2b6fea134bc0e553272c04200301925d3f78b9428820d10e7f7342ea8f78',
-    'winusb.dll': 'cb65e30f375e3d05544c6c6c0e2a4dea44c364bf68c77bf5bd93a18fa33cd987',
-    'netutils.dll': '47652b97794e174c3a0574b04ca621b4665516abc67db18b1c0023ec112beb83',
+    'bluetoothapis.dll': '8e53bf81f6d734d47a0eb4fdd0cecadf88e76afa92714842c2804407ecbf57c7',
+    'winusb.dll': '1135959a3ff6b46e31d539a4ef0a79a8882c622bc1217ad78f17ae2833bd742f',
+    'netutils.dll': '696531741bb38ecf06ba0f708340aea8b6838a59f381654bb2f4401c0aa1fa92',
     # FD-171 (2026-11-05): the long-tail contract backports
     # (wine8-fd171-contracts.patch). kernelbase/kernel32 above are
     # re-pinned for the same patch (HeapSummary, ReadConsoleInputEx,
     # RegisterWaitForInputIdle); user32/iphlpapi/win32u keep their
     # previous bytes — the patch does not touch them.
-    'cfgmgr32.dll': 'de32069c5562bb4d7fb57c8de4c0ab6e0fd940d1e754bc86495b142ff2340bee',
-    'combase.dll': '828a6d296a1c46583324911937462bf21b775d49888c46414ded7b3182457768',
-    'cryptext.dll': 'cb897bfb1e7122d1dc0a574b097a4d08e0226844e502a7e90e1587d6869bf0f7',
-    'd2d1.dll': 'b87c20b0908b61aaad2c21cc883e901e35faf890b99ce80e44e7a9d9a7a784c5',
-    'hid.dll': 'a5795479085ec099901273f0583a4b8d622f915db567b540964e35fe846c716f',
-    'mf.dll': '15bb37e3d6db3218df846682d3f79c451bb2cc79f69d27a100377958630746de',
-    'mfplat.dll': 'bf7a2cf2c6724da2213d2f3ceaa0b4bc792c7832da7d19ef2adae5ce3de06987',
-    'mscms.dll': '296b37a014cda1728220b840bb3ac72c56366d7d7b24240cd1a9ebaf0cebdbc8',
-    'ntdll.dll': '135d3c3b2117936ccc6773670fb137bc8fd2d350d1f37e84e450f22ada16e279',
-    'pdh.dll': '0f16f4093bedc3894664900d6ee12d10b9fc5fba3b44f43eb5ba47bb8c57421f',
-    'prntvpt.dll': '0e96ce6ad036ed3e17177787955c78a43367f7944569d0b29d7e997bca0689f3',
-    'propsys.dll': '1f8a8649e1837f4234f7f37d41d0b1f7e1488329579ab0eaa57c990419e08425',
-    'setupapi.dll': '7ffe5a9f0bbfe1b428e2e96c40f45fa0baf19cd4e69487f99bf7ea38fd42957e',
-    'sspicli.dll': 'dce75850ff63c0e8c11aae05739257cc0560c1fb3b45b4fc52ee0153ed3b0f3f',
-    'vcomp.dll': 'b164aec2af0a0936c43ba653f35d91507227dfad8336730c6062f2b9774a67e9',
-    'vcomp100.dll': '1a3a4f216bb413a68fa4868221a6e1d14a959a289ec8b5a509ca21865249e20d',
-    'vcomp110.dll': 'b44f61c85c5e2f309be6f89124bbb1def44695d68229978bd159efaa5ec580a9',
-    'vcomp120.dll': '03bd7092fce7df74e9d87a6c4582b0ca417cbd2d40e83d5d9e33f35cffaa18de',
-    'vcomp140.dll': '88e7a6a4c1195e63ac924efbf94ba30a4827b3159628045a53b54cfb42513bb7',
-    'vcomp90.dll': '3c0f54d483861ce9a847259542be75c3fa2dd23d6c8286765ac210310a48b191',
-    'windows.networking.dll': 'bcf5885a09f89e2a0f9c96d7ef54f72fab8ae8d80ac654d6f90c4bae363fe7b0',
-    'wintypes.dll': '04fd8a385c971b0bdb279a57a23c935bd52de6cb3dc5bead0dbf63343fe8083f',
-    'wofutil.dll': 'eec4b55338da63f0517468906644952eab2f31525f95859fa3f18002655efeeb',
+    'cfgmgr32.dll': '4df21c0d34e66b103c8039dd5faa5e941ca6b8a91872f8d858bfa3ff58171514',
+    'combase.dll': 'f6051d5d254e888fd190692462fd2e897cc1619dd9e2c7ba8733a33093140cad',
+    'cryptext.dll': 'ab6e0b932923e4db5a757f0546e11cfd3a237b80fc106126da30221dee51b8d7',
+    'd2d1.dll': '39330324596932e5290c62f329ee39c67ce748e6bff1c44f1dff06974cf4a294',
+    'hid.dll': '16b08432e431c4dc9c0bc8bd637f6ded3b691556437334a18ab2a735b57939e8',
+    'mf.dll': 'f61db07e215a171fc53dfe111324acea9e4f3699f3d4458cd87227205dee208b',
+    'mfplat.dll': '84a8d777a398ceec8cd63d5072a09fd7a634a2d4e081836999f48a6a2070d2e6',
+    'mscms.dll': 'e1616c36ea928b5058187e454ef676cc0243ca6d091767d9ad30515bacd89958',
+    'ntdll.dll': '904c4e6107acb560d7bd3f7690efb6baf8a2d8e2fea08150719e7989233dd0bb',
+    'pdh.dll': 'df56ea38553a8ae6ef07d4db44f949c57f5fdb883bf2ae2c6c29a46d9ac51330',
+    'prntvpt.dll': 'afb5b277b57688931ac95170bea45ead1495bc9d941c424de53cc656910663a1',
+    'propsys.dll': '6f5c0e0b534cd29c127bc7a470285c9bb6aff35a9c39ca6f8b84952512a0a32c',
+    'setupapi.dll': '661d8fa545f6793f903196081d82eb1a3aeffbd888342b990e71768bffa08c73',
+    'sspicli.dll': 'db2d5a16a94abf7c3fc8d6726415598ccbba91d2838f9f45e9cf0e67504846e8',
+    'vcomp.dll': '29e766d4382d2374526f4516d9b67c87a1d35edfc5a808b0a3bd92693b4db97c',
+    'vcomp100.dll': 'a264b5c4b94bc4919b54189469b6eb23d979f38491362c8a5562c5668b070f7d',
+    'vcomp110.dll': 'd2e0461eabc57f27162e6d31fa380b2c7e7faa81873914803c429c400ac2eef4',
+    'vcomp120.dll': '31c21ec9642e09edacd982f934403fafdb64f3f27f8c2ed5f32f27061284e313',
+    'vcomp140.dll': 'fedbfc38b1ac96500cad4767c2a4ff9d4189a74640b9a56b1d6564e73264bcd0',
+    'vcomp90.dll': '9a6dcc07ee03f51ba16bc5a34993fc15f1666f909505d5f6284427d3f88ab53b',
+    'windows.networking.dll': '26e57eae67a5005f9716bfc4fcd91aa13172ddef9197b7703a13e69dd632dda9',
+    'wintypes.dll': '50b105d1b7725f4fb6147f923539b54fd16af621c007ecefc5f324dee48693ba',
+    'wofutil.dll': '924ff1fd2c1c688a7433290b211e05e0fb2c7426f097e40937a7ee4fdfe9e1f1',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
@@ -308,13 +310,11 @@ def t_wine10_backport32_source_and_zip():
 # for demo-reachable spec stubs; see wine10-fd167-i386/README.md).
 # Substituted into wine32.zip by build-wine32-base.sh, fail-closed.
 WINE10_FD167_PINS32 = {
-    'bluetoothapis.dll': '8ecb95b3feb654c63b70bc76459bc96974653422d309e619a35166e764d598c6',
-    'bthprops.cpl': '72a28006aa12165bea114afd39cd20590a8b4570c2ed57ec9b2a5716d4e8cd2e',
-    'mf.dll': '9babdf82f66204521efa1f8c5a7dbae9ef3ac183059b6355e5806e504ed7d5c4',
-    'mfplat.dll': 'fa96363d4d1aeb474dc10543e8771188a06aac35d18ca7040dcec9dcd4f673f7',
-    'propsys.dll': 'f39cbd2072635db066497d0f10cc4d512b15bac0375a13e311f0ec40ac3ae7a0',
-    'wevtapi.dll': '1c5d1890ff8fe50b29b62cd735ded3985313cd77a660b42d8c5a9d786f9185c5',
-    'winusb.dll': '984757871bde57acae11c31eae97b2fb4e3d7de9868c40bed95b526dc87bfa7f',
+    'bluetoothapis.dll': '0c721de46d5ad968123f61fa6b1805d319788d4aa19984e72e905e1d51e830b7',
+    'bthprops.cpl': '174235d2bcdaf40d5ab06175ae86cd97f2d98a2e49b6970dc36830b46a47969d',
+    'mfplat.dll': 'f7f5fe208c5b2880b2cc61596755dc39ea978a556674132fa36f485ab65472ac',
+    'wevtapi.dll': 'a1f83e6c12b69bcbc86a4f5c1d7478eb7381ca10c92df6af6326292104295747',
+    'winusb.dll': '7f98aec40cc2bbd930ea0ff5036671ba5606d7d2fcdbf4f0b82047a47527e499',
 }
 
 
@@ -334,15 +334,15 @@ def t_wine10_fd167_32_source_and_zip():
 # FD-169 patch, tools/rootfs32/build-wine10-fd169.sh) substituted into
 # wine32.zip by build-wine32-base.sh. Re-pins are deliberate.
 WINE10_FD169_PINS32 = {
-    'msvcr100.dll': 'f15f7a9b6eb6ce7e0fa921a3343f91cac34f808ee443eda609630ce0f81dab9d',
-    'msvcr110.dll': '2b5bff73c1e77843723e3335c106a53b9ae4119839aceb16d610ebe61d7299c5',
-    'msvcr120.dll': '0e4ba5e74c22db4de9a8889d89d247b708e8ba657029b75b5f7dd1f9dbb58b92',
-    'msvcr70.dll': '1d5c6c16b3d095039142037a92256cd660f00fa29ecaddd07ef0722b2130f6b7',
-    'msvcr71.dll': '60ac37db454b821d6245fce39830e37126a065f0386f836d98d4e89bf9565b41',
-    'msvcr80.dll': '7aa234283cd4c0dd378540184db724360a189d47013ae4259d4622c2f19ecd7c',
-    'msvcr90.dll': 'c3f3062bb3ba6e5084da24ad66dd5dec18cc3633e0fb0b166d54a0d5a827dada',
-    'msvcrt.dll': 'f3cebbf0855200a772733b1d0aa431fdd77cea78b1cb03b6427311921ca98cec',
-    'ucrtbase.dll': '7c1782913e4c865252348fd38cbb402bc3d8dd6bd6bf088501d4ffbaa3c5264c',
+    'msvcr100.dll': '29007c22d0081fe2f499a8eb0d1341449bdd58c3d47a8c5e197b85910a0b3322',
+    'msvcr110.dll': 'e2e0a731b4b92de404420f00c88cde465a5303f51e2ce106016911fff70d5b8f',
+    'msvcr120.dll': '0819776bd30bf6cb2e2e041af96f3df82c94410049d582decf7a2c6ef90a1dbf',
+    'msvcr70.dll': 'cad2f54a8fb5654f5bc42290e2d6ed21789e59e7ccd9bca4c1e0c5947c2ef6a9',
+    'msvcr71.dll': '05e32b5f829b5d1bbdc9f4e028d3fc52d3ae27cdecffb4e519ce7d3decfc2af8',
+    'msvcr80.dll': 'f4cbb861805987dee5b5d27612298510ba6ffe6c95dc9bf93c06a5a8a7bdcc82',
+    'msvcr90.dll': '501ceebce97c19dc2bf47e6b6a82ccf2fbd00f2644ffd8f21917f40c8741213c',
+    'msvcrt.dll': '6bb88c48aeba9b92b12dd9b0c61554996758a5b00f94c7aca561bdc2af0e5a72',
+    'ucrtbase.dll': 'fa99ad18033d40d26d567749e25cd8e60c6986ed2c14fdeb07c59ac4ad0b1c17',
 }
 
 
@@ -361,27 +361,25 @@ def t_wine10_fd169_crt32_source_and_zip():
 # tools/rootfs32/wine10-fd171-i386/README.md), substituted into the
 # wine32 payload by build-wine32-base.sh under the same pins.
 WINE10_FD171_PINS32 = {
-    'cfgmgr32.dll': '4d4ca217b8b4173e6e821b7860f07c3eb388930fb58eb7a84d847fb6b4fd5957',
-    'combase.dll': 'da03dcd0f19e0759844f6d2e38d65a5e8f85ea15da43417202dba7f0e2db99dc',
-    'cryptext.dll': '1ed21bab40c9aa95e5fc8998d14d5e164445b46a5d0d52d4bc2b8ef148826253',
-    'd2d1.dll': 'e5c89536f398c95f47a87eadbfd896c8afe631614ac62555eae5015e49c3071d',
-    'hid.dll': '616c678dbd7a349e50839e231ea3b1a578994cdcd4513fad05bbbbb4b547d816',
-    'kernel32.dll': '46c41b95b74dde715a59b10cceff6d44fc1db1acab4c61c64265fa7e05645995',
-    'kernelbase.dll': '1847ac4136515dc43b178d9849b4ddab44e3b8469d627787e9d3372a5f545676',
-    'mf.dll': '352432760c5ca11ba162eb01e4591252c9e4b4e677ea1d270a6df270ab1a58dd',
-    'mscms.dll': '1c313f89f88bc3b94546115f85a81bf25f4c3f18886d5c2bc9881ad1a3e71328',
-    'ntdll.dll': '1f326d17feba65f46e1119f243b7dc8d83adf6be575c74f14945d57bc89f27cc',
-    'pdh.dll': '693de5a82e04d87e9458136df7b553c6165dea188aed364be69f6c0154b28daa',
-    'prntvpt.dll': '3a5285c8d0a6fc48762e463ddd80530b54d6fd939d752f98e96e86abec0f4bec',
-    'propsys.dll': '7e776f6d3de7a35ec5a99d42386929ffd1cc13bf6eac530271013f18529fba29',
-    'setupapi.dll': '3b878c2dbdde59020851f67a279ce9d7faf1b0a2dca6c3eac84e6cf8f09fddf6',
-    'sspicli.dll': '6540168dfc8e4c56f9f74f89d357e916cac98c368c7fb43f7e974d0d6e19745a',
-    'vcomp.dll': '1481435300757f8b202b1c7ec85394fcf9e80984b3c041dfa149c7e7edc48aac',
-    'vcomp100.dll': '4e534f2cc7dfe02f8b076cee55fa7ddd5dbc58ecfb76b9ae08d48ba9ffb90e48',
-    'vcomp110.dll': 'b862859ed8ffa3a7bda913b1fb289ecc4eb21af4087d4df1216dc3470e847ade',
-    'vcomp120.dll': 'c5eec207a56fceb4fa4efdca97090d210c6df305c1f5729f1b70cfa99ccaa7e6',
-    'vcomp140.dll': 'a66fc0452544a4ea11cca519ed9c091a077f5fd22c4bada303058930c331fa98',
-    'vcomp90.dll': '1574571555952b734472aa338f35e9259a56c12c31dc77932d851b06b7ce3ccf',
+    'cfgmgr32.dll': '9aad4b1c185244d184a2087fe9e6f367e89fa201652d7b55437b4fd537301c60',
+    'combase.dll': 'cca9be3845f46d616c5c2fd0d31d9153fc9ccf40e09b651f6f003dbe5b97696e',
+    'cryptext.dll': '7783edb4d30d4e71f98687222c4d1874c5830a28a0134d02b14f2e215ce3c119',
+    'd2d1.dll': 'b549db04f4811d67407993588f72134a32aaec7e555f9bd1d6285d81ae04cde3',
+    'hid.dll': 'ca37389cc7f4646f488163128d6110a80688496b8c0399e70838d1a7f308f69b',
+    'kernel32.dll': '35628e12975ab305abd6785c371acdf1a1f302b26f7dc454053d5b56d7fa0607',
+    'kernelbase.dll': 'd50f6a31710f8241483ceca281796b53d27db7c3fc02a485c835b94d25b70c53',
+    'mscms.dll': '99c8c3006511653e276d9a00016f7ce1a58f8214a8c2f0e91fbf54744ddbefcc',
+    'ntdll.dll': '2da0bf73e03d6ecbbece6e2b92985bbfda75e73e1ed465d6c452d3a0e2b7fc90',
+    'pdh.dll': 'd386d02950cb2c9f0c3d5cb85b74858d4d4c47b7bf9b17bbbcdff5d232501bc0',
+    'prntvpt.dll': '636d13280be1256bd1b8f3c6c84aa465ca6fafbbd65d0959e1b980db3d5ff6c2',
+    'setupapi.dll': '50615e6394c3169848f0f3b076a5cf1d9c2ecf767f149ff395c5b12996606ed9',
+    'sspicli.dll': '1d7daa3e8e377e4950baeeb402100ffcae0cd256ab1e213c737f10a445890a9e',
+    'vcomp.dll': 'c42871b35a25fa777cdda468e58caea7fa911580fd818ab88c74612ec9f7892f',
+    'vcomp100.dll': '25ffbfd9726c5db96bff35a4e0e0640ec9ba126f736e390029b7370d88874d7f',
+    'vcomp110.dll': 'bed64f70d41d408aab3885a02fd3cfbe0013aa75bcb242b5a7ea40a72d62a995',
+    'vcomp120.dll': '0566b5fb2121c984f6629e8f9810b78974e15bded8787f653fd27bb070e4206d',
+    'vcomp140.dll': 'd2ccda0b5c74d7b7d3f518af3cb0be28525e9255d1cd9c96917ee2ebc19892c0',
+    'vcomp90.dll': 'bb48278533d3beea3f4962913309dc35c7ae6aac0904aa1dcb119feb63ec8d87',
 }
 
 
@@ -395,6 +393,33 @@ def t_wine10_fd171_source_and_zip():
         hits = [n for n in members if n.endswith('/' + name)]
         assert hits, f'{name} missing from shipped wine32.zip'
         assert sha(members[hits[0]]) == pin, f'{name} in wine32.zip != pinned FD-171 bytes'
+
+
+# The FD-167 + FD-171 combined i386 PE set: propsys.dll and mf.dll
+# are touched by both lanes with disjoint functions (FD-167
+# VariantCompare / MFCreateDeviceSource, FD-171
+# PropVariantGetStringElem / MFTranscodeGetAudioOutputAvailableTypes),
+# so neither single-lane build carries both. The combined build
+# (tools/rootfs32/build-wine10-fd167-fd171.sh, both patches applied to
+# the pinned wine-10.0 source) is the only source of these two members
+# in wine32.zip; the single-lane builds stay in their lane dirs but
+# are no longer substituted (see build-wine32-base.sh).
+WINE10_FD167_FD171_PINS32 = {
+    'mf.dll': '6446d89d9e11e3542b3191743e67d195914aa6acce64036756f52535ac7e946e',
+    'propsys.dll': 'b0b3e7f2303328d23aa3319c8f97a9491f8346115ef8caf36dd733b4557cf784',
+}
+
+
+def t_wine10_fd167_fd171_32_source_and_zip():
+    for name, pin in WINE10_FD167_FD171_PINS32.items():
+        src = ROOT / 'tools/rootfs32/wine10-fd167-fd171-i386' / name
+        assert sha(src.read_bytes()) == pin, f'{name} (FD-167+FD-171 i386) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE10_FD167_FD171_PINS32.items():
+        member = f'opt/wine-stable/lib/wine/i386-windows/{name}'
+        assert member in members, f'{member} missing from shipped wine32.zip'
+        assert sha(members[member]) == pin, f'{name} in wine32.zip != pinned FD-167+FD-171 bytes'
 
 
 def t_wine8_backports_source_and_zip():
@@ -801,6 +826,10 @@ def t_prefix64_built():
 if __name__ == '__main__':
     check('winehq backports (source + shipped zip)', t_winehq_source_and_zip)
     check('wine8 loader backports (source + shipped zip)', t_wine8_backports_source_and_zip)
+    check('FD-167 i386 PE backports (source + shipped zip)', t_wine10_fd167_32_source_and_zip)
+    check('FD-169 i386 CRT rebuilds (source + shipped zip)', t_wine10_fd169_crt32_source_and_zip)
+    check('FD-171 i386 PE backports (source + shipped zip)', t_wine10_fd171_source_and_zip)
+    check('FD-167+FD-171 combined i386 PE (source + shipped zip)', t_wine10_fd167_fd171_32_source_and_zip)
     check('wine10 win32u backport 32-bit (source + shipped zip)', t_wine10_backport32_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)

@@ -23,7 +23,13 @@
 #      packages, or FREETYPE_CFLAGS/FREETYPE_LIBS and
 #      FONTCONFIG_CFLAGS/FONTCONFIG_LIBS pointing at a sysroot); the
 #      post-build check below fails loudly if the products are not in
-#      the binary. The guest runtime already carries the matching
+#      the binary. With a sysroot, also export
+#      LDFLAGS="-Wl,-rpath-link,<sysroot>/usr/lib/x86_64-linux-gnu":
+#      without it the freetype link test fails on libfreetype's
+#      transitive libpng16 ("checking for -lfreetype... not found")
+#      even with the FREETYPE_* variables set, and configure aborts
+#      (seen on the 2026-11-06 batch-9 rebuild; the FD-168 lane's
+#      sysroot build carried that LDFLAGS). The guest runtime already carries the matching
 #      runtime libraries (libfreetype.so.6, libfontconfig.so.1 and
 #      their dependency chain in the prefix64 overlay).
 # Everything compiles with the host's native toolchain — deliberately NOT

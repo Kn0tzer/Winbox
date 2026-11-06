@@ -24,3 +24,12 @@ their sha256 pins. `tools/rootfs32/build-wine32-base.sh` substitutes
 them into the rebuilt wine32.zip fail-closed against those pins, the
 same way it substitutes the win32u backport. The census that found the
 stubs is FD-167's record (tools/conformance/dll_export_baseline.json).
+
+Note: `mf.dll` and `propsys.dll` in this directory are the single-lane
+FD-167 builds (MFCreateDeviceSource, VariantCompare). The FD-171 lane
+also touches both DLLs, so neither single-lane build is substituted
+into wine32.zip any more: the combined FD-167+FD-171 build
+(`tools/rootfs32/wine10-fd167-fd171-i386/`, both patches applied)
+carries both lanes' functions and is substituted last (see
+`build-wine32-base.sh` and `check_runtime_completeness.py`
+`WINE10_FD167_FD171_PINS32`).
