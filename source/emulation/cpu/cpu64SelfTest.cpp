@@ -357,7 +357,7 @@ void runMemorySyscallValidation(TestResult& r) {
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; });
     runAndCheck(r, "sched_getaffinity returns the virtual CPU mask", call(204, 0, 8, STACK_PAGE + 0x300),
                 [](CPU64& c) {
-        return c.reg[X64_R15].u64 == 8 && c.memory->readq(STACK_TOP - 0xD00) == 1;
+        return c.reg[X64_R15].u64 == 8 && c.memory->readq(STACK_TOP - 0xD00) == 3;
     }, [](CPU64& c) { c.memory->writeq(STACK_TOP - 0xD00, ~0ULL); });
     runAndCheck(r, "set_mempolicy rejects an unavailable node mask", call(238, 2, STACK_PAGE + 0x300, 1),
                 [](CPU64& c) { return c.reg[X64_R15].u64 == (U64)-K_EINVAL; },
@@ -1461,7 +1461,7 @@ int runX64SelfTest() {
         };
         runAndCheck(r, "CPUID leaf 1 topology and feature bits", withExit(code), [](CPU64& c) {
             return c.memory->readd(CODE_BASE + 0x800) == ((6u << 8) | (15u << 4) | 3u) &&
-                   c.memory->readd(CODE_BASE + 0x804) == ((8u << 8) | (1u << 16)) &&
+                   c.memory->readd(CODE_BASE + 0x804) == ((8u << 8) | (2u << 16)) &&
                    c.memory->readd(CODE_BASE + 0x808) == ((1u << 0) | (1u << 9) |
                        (1u << 13) | (1u << 19) | (1u << 20) | (1u << 23)) &&
                    c.memory->readd(CODE_BASE + 0x80C) == ((1u<<0)|(1u<<4)|(1u<<5)|
@@ -6863,7 +6863,7 @@ int runX64SelfTest() {
 
     // ----- sched_getaffinity / sched_setaffinity (Milestone B2) -----
 
-    // T: sched_getaffinity(0, 8, [rsp]) returns 8 and mask[0]=1.
+    // T: sched_getaffinity(0, 8, [rsp]) returns 8 and mask=3 (both vCPUs online).
     // Pack r14 with the written mask value so the verifier can read it.
     {
         std::vector<U8> code = {
@@ -6878,12 +6878,12 @@ int runX64SelfTest() {
             0x48, 0x89, 0xE2,                                           // mov rdx, rsp
             0x0F, 0x05,
             // stash return value (8) in r14 via the mask we just wrote
-            0x4C, 0x8B, 0x34, 0x24,                                     // mov r14, [rsp]   (should be 1)
+            0x4C, 0x8B, 0x34, 0x24,                                     // mov r14, [rsp]   (should be 3)
             0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 16
         };
-        runAndCheck(r, "sched_getaffinity returns 8, mask=1", withExit(code), [](CPU64& c) {
+        runAndCheck(r, "sched_getaffinity returns 8, mask=3", withExit(code), [](CPU64& c) {
             return c.reg[X64_R15].u64 == 8ULL  // return value
-                && c.reg[X64_R14].u64 == 1ULL; // written mask
+                && c.reg[X64_R14].u64 == 3ULL; // written mask (both vCPUs)
         });
     }
 
