@@ -1,8 +1,8 @@
 # Documentation index
 
-_The map of everything written down about this project: where it
-lives, what owns each subject, and what kind of truth each document
-carries. Start at `docs/WINBOX-STATUS.md` for where the current
+_The map of everything written down about this project (this
+file: `docs/INDEX.md`): where it lives, what owns each subject,
+and what kind of truth each document carries. Start at `docs/WINBOX-STATUS.md` for where the current
 truth lives; this index is how the library itself is organized._
 
 Three kinds of document, three different rules:
@@ -86,6 +86,13 @@ mechanically verified listing is the "Complete listing" section of
 `frametime-profile-pong2/` (timing method and ranked measurements),
 `d3d9-complex/`, `wine32-final/`, `dirty-tree-inventory-20261008/`.
 
+A few records live committed under `test-results/` rather than
+here; they are named in `docs/reports/README.md`:
+`test-results/alkhaser-int2d/REPORT.md`,
+`test-results/frontier-review-20261031/REVIEW.md` (with its raw
+review text, `test-results/frontier-review-20261031/claude-raw.md`),
+and `test-results/site-chromium-20261030/REPORT.md`.
+
 Two records are read by tests and must keep working:
 `d3d-conformance-MATRIX.md` (consumed by the D3D entirety and game
 capability tests) and `winbox-metrics-contract-20261018.md` (the
@@ -96,28 +103,42 @@ frame-metrics contract).
 Project-owned notes that live beside the tool they describe. Most
 are dated results or method records, not living documents.
 
-- `tools/vkd3d/` — the vkd3d port's working papers:
-  `CURRENT_STATUS.md`, `FEASIBILITY.md`, `ICD_WORK_ITEMS.md`,
-  `PROBE_PLAN.md`, `BUILD.md`, `bda-research/r15-design-draft.md`,
-  `patches/README.md`, `probe/PROBE_RESULT.md`,
-  `probe/VULKAN1_DLL_README.md`.
+- The vkd3d port's working papers: `tools/vkd3d/CURRENT_STATUS.md`,
+  `tools/vkd3d/FEASIBILITY.md`, `tools/vkd3d/ICD_WORK_ITEMS.md`,
+  `tools/vkd3d/PROBE_PLAN.md`, `tools/vkd3d/BUILD.md`,
+  `tools/vkd3d/bda-research/r15-design-draft.md`,
+  `tools/vkd3d/patches/README.md`, `tools/vkd3d/probe/PROBE_RESULT.md`,
+  `tools/vkd3d/probe/VULKAN1_DLL_README.md`,
+  `tools/vkd3d/tests/README.md`.
+- `tools/dxvk/BUILD.md` — how the DXVK payload is built.
 - `tools/cpu-diff/METHOD.md` and `tools/cpu-diff/BUGS.md` — the CPU
   differential method and its found-bug list;
   `tools/cpu-diff32/README.md` — the 32-bit variant.
-- `tools/bench/` — dated benchmark results: `jit64-results.md`,
-  `jit-results-r2.md`, `jit-results-r3.md`, `mem64-results.md`.
-  Bench tools write here; treat contents as records.
-- `tools/conformance/README.md`, `tools/d3dtests/README.md`,
-  `tools/openglTest/README.md`, `tools/regression/README.md`,
-  `tools/vkcov/METHOD.md`, `tools/browser/README.md` — per-tool
-  notes.
-- `testdata/spirv/` — fixture notes: `dxvk-live/README.md`,
-  `geometry/README.md`, `rejected/README.md`,
-  `subgroup/README.md`.
+- Dated benchmark results (bench tools write here; treat contents
+  as records): `tools/bench/jit64-results.md`,
+  `tools/bench/jit-results-r2.md`, `tools/bench/jit-results-r3.md`,
+  `tools/bench/mem64-results.md`.
+- Per-tool notes: `tools/conformance/README.md`,
+  `tools/d3dtests/README.md`, `tools/openglTest/README.md`,
+  `tools/regression/README.md`, `tools/vkcov/METHOD.md`,
+  `tools/browser/README.md`.
+- Rootfs payload notes: `tools/rootfs64/README.md`,
+  `tools/rootfs64/fonts32/README.md`,
+  `tools/rootfs64/fonts64/README.md`,
+  `tools/rootfs64/wine8-backports-x86_64/README.md`,
+  `tools/rootfs64/winehq10-x86_64/README.md`, and
+  `tools/rootfs32/wine10-backports-i386/README.md` (the Wine 10
+  backport set for the 32-bit rootfs: what was backported and why).
+- SPIR-V fixture notes: `testdata/spirv/dxvk-live/README.md`,
+  `testdata/spirv/geometry/README.md`,
+  `testdata/spirv/rejected/README.md`,
+  `testdata/spirv/subgroup/README.md`.
 - `project/emscripten/buildInstructions.md` — emscripten build
   notes; points at `BUILD_PROTOCOL.md` for coordination.
-- `tools/rootfs32/wine10-backports-i386/README.md` — the Wine 10
-  backport set for the 32-bit rootfs: what was backported and why.
+- Test-area notes beside the test catalog: `web/tests/README.md`,
+  `web/tests/AUDIO_VERIFY_README.md`,
+  `web/tests/diagnostics/README.md`,
+  `web/tests/parallel-probe-README.md`, `web/tests/suite/README.md`.
 
 ## Not project documentation
 

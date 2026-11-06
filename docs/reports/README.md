@@ -83,6 +83,16 @@ under `test-results/` directly (for example
 `test-results/site-chromium-20261030/`). Regression source recovered
 from probe output lives in `tools/regression/` and `testdata/`.
 
+## Naming notes
+
+- Two merge records carry "batch 3" in the name. The batch-3
+  composition record is `merge-batch3-20261102.md` (21 branches).
+  `merge-batch3-20261031.md` is an earlier, smaller merge (the
+  FD-47 readiness hardening, FD-39, and FD-23) whose title also
+  says batch; it is not the batch-3 record.
+- `d3d9-complex/REPORT-draft.md` is a working draft;
+  `d3d9-complex/REPORT.md` is the final record.
+
 ## Complete listing
 
 Every record in this directory, generated from the tree on 2026-11-05 and re-verified mechanically by the documentation checks described in `docs-library-20261105.md`. Curated highlights are in the sections above; this listing is the complete set.
