@@ -1,0 +1,5 @@
+=== BW64-BUILD START 2026-11-06T01:39:19+00:00 ===
+ 01:39:19 up 35 days,  7:32, 15 users,  load average: 4.75, 6.74, 7.28
+/dev/sda1       193G  181G   13G  94% /
+[bw64-build] waiting for build lock (owner=lane-incbuild pid=3283673)
+[bw64-build] waiting for probes to drain (build lock not held)

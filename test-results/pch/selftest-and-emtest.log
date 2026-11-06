@@ -1,0 +1,55 @@
+=== BUILD-JIT-WASM SELFTEST START 2026-11-06T02:12:27+00:00 ===
+ 02:12:27 up 35 days,  8:05, 23 users,  load average: 10.39, 12.01, 11.25
+=== [1/5] native phase-1 unit tests (g++ gate) ===
+PASS: CPU64 destruction releases JIT state and cached ops
+PASS: CPU64 destruction releases JIT state and cached ops
+jit64 phase-1 unit tests\n  841 passed, 0 failed
+jit64gen.inc in sync.
+jit64_gen_tests: compared=0 skipped=31304 failures=0
+OK: all generated emitters byte-identical
+--- jit64 block-invalidation tests (section 14.3) ---
+FAIL: interp invalidate-test build; see /tmp/bw64-jit-build/inv_build_interp.log
+real=168.919 user=72.003 sys=4.533
+build-jit-wasm --selftest-only exit: 1
+ 02:15:17 up 35 days,  8:08, 26 users,  load average: 14.73, 13.11, 11.79
+=== EMSCRIPTEN TEST TARGET COMPILE 2026-11-06T02:15:17+00:00 ===
+MAKEFLAGS is -j 3
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/emscripten'
+MAKEFLAGS 
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:75:15: error: no member named 'lock' in 'BoxedWineCondition'
+   75 |         cond->lock();
+      |         ~~~~~~^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:77:15: error: no member named 'unlock' in 'BoxedWineCondition'
+   77 |         cond->unlock();
+      |         ~~~~~~^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:105:43: error: no member named 'startSignal' in 'KThread'
+  105 |     const bool savedStartSignal = thread->startSignal;
+      |                                   ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:113:17: error: no member named 'startSignal' in 'KThread'
+  113 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:151:17: error: no member named 'startSignal' in 'KThread'
+  151 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:189:17: error: no member named 'startSignal' in 'KThread'
+  189 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:198:21: error: no member named 'startSignal' in 'KThread'
+  198 |             thread->startSignal = true;
+      |             ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:203:21: error: no member named 'startSignal' in 'KThread'
+  203 |             thread->startSignal = true;
+      |             ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:275:13: error: no member named 'startSignal' in 'KThread'
+  275 |     thread->startSignal = savedStartSignal;
+      |     ~~~~~~  ^
+9 errors generated.
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testCondWait.cpp.o] Error 1
+make[1]: *** Waiting for unfinished jobs....
+make[1]: Leaving directory '/home/ubuntu/wt-pch/project/emscripten'
+make: *** [makefile:210: test] Error 2
+real=309.797 user=120.624 sys=12.214
+emscripten make test exit: 2
+Build/Test/boxedwine.h.pch
+ 02:20:27 up 35 days,  8:13, 26 users,  load average: 18.40, 16.52, 13.65
+=== SELFTEST+EMTEST DONE 2026-11-06T02:20:27+00:00 ===

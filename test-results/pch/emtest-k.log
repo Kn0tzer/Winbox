@@ -1,0 +1,284 @@
+=== EM TEST -k START 2026-11-06T02:23:58+00:00 ===
+ 02:23:58 up 35 days,  8:17, 21 users,  load average: 12.67, 14.76, 13.57
+MAKEFLAGS is -j 3
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/emscripten'
+MAKEFLAGS 
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:75:15: error: no member named 'lock' in 'BoxedWineCondition'
+   75 |         cond->lock();
+      |         ~~~~~~^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:77:15: error: no member named 'unlock' in 'BoxedWineCondition'
+   77 |         cond->unlock();
+      |         ~~~~~~^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:105:43: error: no member named 'startSignal' in 'KThread'
+  105 |     const bool savedStartSignal = thread->startSignal;
+      |                                   ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:113:17: error: no member named 'startSignal' in 'KThread'
+  113 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:151:17: error: no member named 'startSignal' in 'KThread'
+  151 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:189:17: error: no member named 'startSignal' in 'KThread'
+  189 |         thread->startSignal = false;
+      |         ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:198:21: error: no member named 'startSignal' in 'KThread'
+  198 |             thread->startSignal = true;
+      |             ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:203:21: error: no member named 'startSignal' in 'KThread'
+  203 |             thread->startSignal = true;
+      |             ~~~~~~  ^
+/home/ubuntu/wt-pch/source/test/process/testCondWait.cpp:275:13: error: no member named 'startSignal' in 'KThread'
+  275 |     thread->startSignal = savedStartSignal;
+      |     ~~~~~~  ^
+9 errors generated.
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testCondWait.cpp.o] Error 1
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8113:54: error: no member named 'stat' in 'KProcess'
+ 8113 |     expectEq("stat64(/a.txt) control", (S32)process->stat64(B("/a.txt"), bufAt), 0);
+      |                                             ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8124:41: error: no member named 'stat' in 'KProcess'
+ 8124 |     expectPath("stat64 empty", process->stat64(B(""), bufAt));
+      |                                ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8125:42: error: no member named 'lstat' in 'KProcess'
+ 8125 |     expectPath("lstat64 empty", process->lstat64(B(""), bufAt));
+      |                                 ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:184:17: note: expanded from macro 'lstat64'
+  184 | #define lstat64 lstat
+      |                 ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8126:48: error: no member named 'fstatat' in 'KProcess'
+ 8126 |     expectPath("fstatat64 cwd empty", process->fstatat64(atFdcwd, B(""), bufAt, 0));
+      |                                       ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8127:69: error: no member named 'fstatat' in 'KProcess'
+ 8127 |     expectPath("fstatat64 badfd empty (path precedes fd)", process->fstatat64((FD)4096, B(""), bufAt, 0));
+      |                                                            ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8128:63: error: no member named 'fstatat' in 'KProcess'
+ 8128 |     expectEq("fstatat64 AT_EMPTY_PATH fd form", (S32)process->fstatat64(dirfd, B(""), bufAt, 0x1000), 0);
+      |                                                      ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8394:27: error: no member named 'stat' in 'KProcess'
+ 8394 |         if ((S32)process->stat64(B(path), statAt) < 0) return false;
+      |                  ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8532:23: error: no member named 'pread' in 'KProcess'
+ 8532 |     if ((S32)process->pread64(context.thread, fileFd, bufAt, 5, 0) != 5) {
+      |              ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:213:17: note: expanded from macro 'pread64'
+  213 | #define pread64 pread
+      |                 ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8573:27: error: no member named 'pread' in 'KProcess'
+ 8573 |         if ((S32)process->pread64(context.thread, (FD)wDesc->handle, bufAt, 5, 0) != -K_EBADF) {
+      |                  ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:213:17: note: expanded from macro 'pread64'
+  213 | #define pread64 pread
+      |                 ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:8945:27: error: no member named 'stat' in 'KProcess'
+ 8945 |         if ((S32)process->stat64(B(path), statAt) < 0) return false;
+      |                  ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9276:23: error: no member named 'pwrite' in 'KProcess'
+ 9276 |     if ((S32)process->pwrite64(thread, rfd, bufAt, 3, 0) != -K_EBADF) {
+      |              ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:214:18: note: expanded from macro 'pwrite64'
+  214 | #define pwrite64 pwrite
+      |                  ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9279:23: error: no member named 'pwrite' in 'KProcess'
+ 9279 |     if ((S32)process->pwrite64(thread, rfd, bufAt, 0, 0) != -K_EBADF) {
+      |              ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:214:18: note: expanded from macro 'pwrite64'
+  214 | #define pwrite64 pwrite
+      |                  ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9282:23: error: no member named 'pwrite' in 'KProcess'
+ 9282 |     if ((S32)process->pwrite64(thread, rfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+      |              ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:214:18: note: expanded from macro 'pwrite64'
+  214 | #define pwrite64 pwrite
+      |                  ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9285:23: error: no member named 'pwrite' in 'KProcess'
+ 9285 |     if ((S32)process->pwrite64(thread, wfd, bufAt, 3, (U64)-1) != -K_EINVAL) {
+      |              ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:214:18: note: expanded from macro 'pwrite64'
+  214 | #define pwrite64 pwrite
+      |                  ^
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9298:27: error: no member named 'pwrite' in 'KProcess'
+ 9298 |         if ((S32)process->pwrite64(thread, wfd, bufAt, 3, 5) != 3) {
+      |                  ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/unistd.h:214:18: note: expanded from macro 'pwrite64'
+  214 | #define pwrite64 pwrite
+      |                  ^
+15 errors generated.
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testInotify.cpp.o] Error 1
+/home/ubuntu/wt-pch/source/test/process/testMsyncLockOrder.cpp:136:44: error: no matching constructor for initialization of 'std::unique_lock<std::recursive_mutex>'
+  136 |     std::unique_lock<std::recursive_mutex> memHold(memory->mutex);
+      |                                            ^       ~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:42:52: note: candidate constructor not viable: cannot convert argument of incomplete type 'BOXEDWINE_MUTEX' (aka 'void *') to 'mutex_type &' (aka 'std::recursive_mutex &') for 1st argument
+   42 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI explicit unique_lock(mutex_type& __m)
+      |                                                    ^           ~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:70:3: note: candidate constructor not viable: cannot convert argument of incomplete type 'BOXEDWINE_MUTEX' (aka 'void *') to 'const unique_lock<std::recursive_mutex>' for 1st argument
+   70 |   unique_lock(unique_lock const&)            = delete;
+      |   ^           ~~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:73:43: note: candidate constructor not viable: cannot convert argument of incomplete type 'BOXEDWINE_MUTEX' (aka 'void *') to 'unique_lock<std::recursive_mutex>' for 1st argument
+   73 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(unique_lock&& __u) _NOEXCEPT
+      |                                           ^           ~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:41:43: note: candidate constructor not viable: requires 0 arguments, but 1 was provided
+   41 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock() _NOEXCEPT : __m_(nullptr), __owns_(false) {}
+      |                                           ^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:47:43: note: candidate constructor not viable: requires 2 arguments, but 1 was provided
+   47 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(mutex_type& __m, defer_lock_t) _NOEXCEPT
+      |                                           ^           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:51:43: note: candidate constructor not viable: requires 2 arguments, but 1 was provided
+   51 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(mutex_type& __m, try_to_lock_t)
+      |                                           ^           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:54:43: note: candidate constructor not viable: requires 2 arguments, but 1 was provided
+   54 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(mutex_type& __m, adopt_lock_t)
+      |                                           ^           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:58:43: note: candidate constructor template not viable: requires 2 arguments, but 1 was provided
+   58 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(mutex_type& __m, const chrono::time_point<_Clock, _Duration>& __t)
+      |                                           ^           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/c++/v1/__mutex/unique_lock.h:62:43: note: candidate constructor template not viable: requires 2 arguments, but 1 was provided
+   62 |   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI unique_lock(mutex_type& __m, const chrono::duration<_Rep, _Period>& __d)
+      |                                           ^           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:272:51: error: no member named 'stat' in 'KProcess'
+  272 |     expectEq("stat64(a.txt/child)", (S32)process->stat64(B("a.txt/child"), bufAt), -K_ENOTDIR);
+      |                                          ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:273:61: error: no member named 'stat' in 'KProcess'
+  273 |     expectEq("stat64(missing/child) control", (S32)process->stat64(B("missing/child"), bufAt), -K_ENOENT);
+      |                                                    ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:274:53: error: no member named 'stat' in 'KProcess'
+  274 |     expectEq("stat64(a.txt) control", (S32)process->stat64(B("a.txt"), bufAt), 0);
+      |                                            ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:275:76: error: no member named 'stat' in 'KProcess'
+  275 |     expectEq("stat64(ln/child) through a symlink to a file", (S32)process->stat64(B("ln/child"), bufAt), -K_ENOTDIR);
+      |                                                                   ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:276:83: error: no member named 'stat' in 'KProcess'
+  276 |     expectEq("stat64(ld/inner) through a symlink to a dir control", (S32)process->stat64(B("ld/inner"), bufAt), 0);
+      |                                                                          ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:277:52: error: no member named 'lstat' in 'KProcess'
+  277 |     expectEq("lstat64(a.txt/child)", (S32)process->lstat64(B("a.txt/child"), bufAt), -K_ENOTDIR);
+      |                                           ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:184:17: note: expanded from macro 'lstat64'
+  184 | #define lstat64 lstat
+      |                 ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:308:61: error: no member named 'fstatat' in 'KProcess'
+  308 |     expectEq("fstatat64(dirfd, inner/child)", (S32)process->fstatat64(dirFd, B("inner/child"), bufAt, 0), -K_ENOTDIR);
+      |                                                    ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:309:54: error: no member named 'fstatat' in 'KProcess'
+  309 |     expectEq("fstatat64(a.txt/child)", (S32)process->fstatat64(atFdcwd, B("a.txt/child"), bufAt, 0), -K_ENOTDIR);
+      |                                             ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+/home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp:310:63: error: no member named 'fstatat' in 'KProcess'
+  310 |     expectEq("fstatat64(dirfd, inner) control", (S32)process->fstatat64(dirFd, B("inner"), bufAt, 0), 0);
+      |                                                      ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:185:19: note: expanded from macro 'fstatat64'
+  185 | #define fstatat64 fstatat
+      |                   ^
+9 errors generated.
+1 error generated.
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testNotDir32.cpp.o] Error 1
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testMsyncLockOrder.cpp.o] Error 1
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:332:56: error: no member named 'stat' in 'KProcess'
+  332 |     expectEq32("process stat64(a.txt/)", (S32)process->stat64(B("a.txt/"), bufAt), -K_ENOTDIR);
+      |                                               ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:333:57: error: no member named 'stat' in 'KProcess'
+  333 |     expectEq32("process stat64(a.txt/.)", (S32)process->stat64(B("a.txt/."), bufAt), -K_ENOTDIR);
+      |                                                ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:334:58: error: no member named 'stat' in 'KProcess'
+  334 |     expectEq32("process stat64(a.txt/..)", (S32)process->stat64(B("a.txt/.."), bufAt), -K_ENOTDIR);
+      |                                                 ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:335:61: error: no member named 'stat' in 'KProcess'
+  335 |     expectEq32("process stat64(ld/) control", (S32)process->stat64(B("ld/"), bufAt), 0);
+      |                                                    ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:336:62: error: no member named 'stat' in 'KProcess'
+  336 |     expectEq32("process stat64(d/..) control", (S32)process->stat64(B("d/.."), bufAt), 0);
+      |                                                     ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:369:66: error: no member named 'stat' in 'KProcess'
+  369 |     expectEq32("stat64(hl.txt) sees the new name", (S32)process->stat64(B("hl.txt"), bufAt), 0);
+      |                                                         ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:517:66: error: no member named 'stat' in 'KProcess'
+  517 |     expectEq32("process stat64(missing/../a.txt)", (S32)process->stat64(B("missing/../a.txt"), bufAt), -K_ENOENT);
+      |                                                         ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+/home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp:518:60: error: no member named 'stat' in 'KProcess'
+  518 |     expectEq32("process stat64(a.txt/../d)", (S32)process->stat64(B("a.txt/../d"), bufAt), -K_ENOTDIR);
+      |                                                   ~~~~~~~~~^
+/opt/emsdk/upstream/emscripten/cache/sysroot/include/sys/stat.h:182:16: note: expanded from macro 'stat64'
+  182 | #define stat64 stat
+      |                ^
+8 errors generated.
+make[1]: *** [makefile:366: Build/Test//home/ubuntu/wt-pch/source/test/process/testPathVerdicts32.cpp.o] Error 1
+/home/ubuntu/wt-pch/source/test/process/testThreadLifetime.cpp:182:9: error: void function 'phase2VictimMain' should not return a value [-Wreturn-mismatch]
+  182 |         BOXEDWINE_CONDITION_WAIT(cond);
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/project/emscripten/../../include/../source/util/synchronization.h:148:40: note: expanded from macro 'BOXEDWINE_CONDITION_WAIT'
+  148 | #define BOXEDWINE_CONDITION_WAIT(cond) return (cond)->wait()
+      |                                        ^      ~~~~~~~~~~~~~~
+1 error generated.
+make[1]: *** [makefile:365: Build/Test//home/ubuntu/wt-pch/source/test/process/testThreadLifetime.cpp.o] Error 1
+make[1]: Target 'Build/Test/boxedwine.html' not remade because of errors.
+make[1]: Leaving directory '/home/ubuntu/wt-pch/project/emscripten'
+make: *** [makefile:210: test] Error 2
+make test -k exit: 2
+source/test/process/testCondWait.cpp.o] Error
+source/test/process/testInotify.cpp.o] Error
+source/test/process/testMsyncLockOrder.cpp.o] Error
+source/test/process/testNotDir32.cpp.o] Error
+source/test/process/testPathVerdicts32.cpp.o] Error
+source/test/process/testThreadLifetime.cpp.o] Error
+ 02:29:22 up 35 days,  8:22, 22 users,  load average: 13.73, 14.92, 14.07
+=== EM TEST -k DONE 2026-11-06T02:29:22+00:00 ===
