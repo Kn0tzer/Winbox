@@ -263,6 +263,38 @@ do not close the entry until they land.
   machine-definition raise), never to per-program workarounds.
   Evidence: `docs/reports/broad-conformance-analysis-20261030.md`
   §1.
+  **Update 2026-11-05 — floors (c) and (d) raised on
+  `lane-machine-definition`; FD-03 stays OPEN for (a) and (b).**
+  (c) The machine definition is now 4 GiB of RAM and 2 vCPUs, each
+  from its single existing source (`KSystem::guestRamInfo`,
+  `KSystem::guestCpuCount`); every guest-visible face follows —
+  sysinfo on both ABIs, /proc/meminfo, /proc/cpuinfo, /proc/stat,
+  sysfs, both sched-affinity ABIs, the 64-bit CPUID
+  logical-processor field, and getcpu (which now reports the first
+  vCPU in the thread's affinity mask instead of a hardcoded 0);
+  faces that hardcoded one CPU were fixed individually (see the
+  lane record). (d) The Vulkan bridge's
+  64-bit device-local heap is 4 GiB, matching guest RAM and the
+  32-bit bridge's existing advertisement; the single-allocation
+  cap stays 2 GiB, because one allocation is backed by one WebGPU
+  buffer. The raise is exercised, not just advertised: the new
+  guest fixture `tools/testdata/machine_definition_check.c` checks
+  each answer and then uses it — a 2 GiB mmap (twice the old
+  advertised total) committed and verified page by page, affinity
+  pinned to vCPU 1 alone and read back, CPUID cross-checked
+  against sysconf. (a) and (b) are unchanged, and the record is
+  plain about why: no OpenCL ICD or CUDA runtime exists in a
+  browser to exercise, and AVX/AVX2 cannot be delivered — the
+  emulator has no YMM register state, no XSAVE machinery, and no
+  VEX decoding in either engine, so advertising it would be a
+  claim the first AVX instruction would disprove; the fixture
+  pins the CPUID AVX bit clear so the negative cannot silently
+  flip. Proof: native suites 686/686 and 111/111 serial,
+  run-native 70 PASS, fixture ALL PASS, x64 smoke 27/27, browser
+  build 'Browser export verified', JS 353/0 + legacy 115/0,
+  citation audit 352 rows 0 drift. Record:
+  `docs/reports/fd03-machine-definition-20261105.md`; evidence
+  `test-results/machine/`.
 - **FD-04 — Networking gaps (campaign parked by directive; gaps
   inventoried and verified).** *(Medium)* What works: opt-in IPv4
   TCP through the relay, connect-by-name. What does not exist:
@@ -831,6 +863,42 @@ do not close the entry until they land.
   latent asymmetry, not a proven failure. Evidence:
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`
   ("also observed, not a blocker").
+  **Closed 2026-11-05 — see CL-119.**
+  The focused test the 2026-11-05
+  audit (its item L2) asked for
+  settles it: the KHR spelling IS
+  served on the 64-bit guest path.
+  The 64-bit guest shim resolves
+  `vkGetPhysicalDeviceProperties2KHR`
+  — and the Features2 and
+  MemoryProperties2 KHR spellings —
+  to real alias wrappers that
+  forward to the core wrappers, so
+  a 64-bit guest's KHR call reaches
+  the bridge under the core fn id;
+  the 64-bit switch needs no KHR
+  case because no 64-bit producer
+  emits the KHR id. (The 32-bit
+  shim traps the KHR id itself,
+  which is why the 32-bit
+  dispatcher carries the paired
+  cases.) Proof: a GUARD section in
+  the native bridge test calls
+  through the pointer the shim's
+  proc-address lookup returns for
+  each KHR name and pins the core
+  trap id plus byte-identical
+  answers (root struct and pNext
+  chain) against the core name,
+  for all three query pairs;
+  run-native 70 PASS, exit 0, on
+  branch `lane-audit-l1l2` (test
+  commit `64e7e3c0e`). The one real
+  residue found on the way — the
+  lookup returns different
+  function addresses for a KHR
+  name and its core spelling — is
+  filed separately as FD-166.
 
 - **FD-65 — Wine Gecko aborts with "unable to find a usable
   font (serif)"; the MSHTML fixture never reports.
@@ -1427,15 +1495,43 @@ do not close the entry until they land.
   host's do — failing on the current code because the
   argument is never read.
 - **FD-24 — No game controller exists for guests.** *(Medium)*
-  There is no guest joystick device at all: controller queries
-  return "device not connected" for every slot. The entry
-  waits on a kernel deliverable (a guest joystick device with
-  an event queue, plus a host-feed entry point); the page/SDL
-  wiring follows on that landing. One tested game is proven
-  not to need it (keyboard is a first-class join device
-  there); the class of controller-first games does.
-  Evidence: `docs/known-gaps/coverage.md` (gamepad / XInput
-  row).
+  The kernel half landed in round 3B: a guest evdev gamepad at
+  `/dev/input/event5` (15 buttons, 6 axes, Xbox-360 identity
+  045e:028e) with host-feed entry points, proven natively by
+  `testDevInputJoystick`. The gamepad lane (branch
+  `lane-gamepad`, 2026-11-05/06) delivered the rest of the
+  emulator's own chain: the SDL layer opens the first host
+  controller (SDL_GameController when classifiable, raw
+  joystick in the standard layout otherwise) and feeds the
+  kernel entry points, with a full-state sync on open and a
+  neutral state on removal — the feed is live in the browser
+  build. Guest discovery is carried too: a synthetic `/sys`
+  input class (`source/kernel/sys/sysinput.cpp`), statfs
+  naming the `/sys` and `/proc` trees with their real
+  filesystem magics (FD-172, closed as CL-125), and the udev
+  data a real system would hold for the device, synthesised
+  because no udev daemon runs in the guest. The purpose-built
+  witness (`tools/guest-fixtures/gamepad-witness.c`,
+  `web/tests/suite/browser/input-gamepad.test.mjs`) polls
+  XInput and DirectInput in the guest.
+  What still keeps a program from seeing the pad sits inside
+  the guest's Wine layer, in two separately filed defects: on
+  the 32-bit side every registration exists and the PlugPlay
+  service runs, but the bus driver fails to initialise like
+  every other kernel driver in this emulator (FD-173); on
+  the 64-bit side the shipped prefix carries no PlugPlay or
+  bus registration at all (FD-174). This entry stays open on
+  those two closings; when they land, the witness test is
+  the proof.
+  Carried limits, by design: one controller only (the kernel
+  models a single pad; XInput slots 1–3 truthfully report
+  not connected); the legacy WinMM joystick interface is not
+  carried (no `/dev/input/js0` exists — the kernel lane's
+  recorded decision, and no current consumer uses the legacy
+  driver); force feedback is not carried (the device
+  advertises none).
+  Evidence: `docs/reports/fd24-gamepad-20261106.md`;
+  `docs/known-gaps/coverage.md` (gamepad / XInput rows).
 - **FD-25 — The instruments that would find unknown gaps are
   only partly built.** *(Medium)* Proposed by the
   broad-conformance lane and not yet in place: a full-spec
@@ -1458,6 +1554,23 @@ do not close the entry until they land.
   that would aim it has not been built. Evidence:
   `docs/reports/frame-floor-investigation-20261027.md`;
   `docs/reports/portal-perf-profile-baseline-20261026.md`.
+
+  *Progress 2026-11-05 (lane `lane-perf2`): one reject family
+  closed. The fast engine now compiles FF /0 INC, FF /1 DEC,
+  FE /0 INC and FE /1 DEC (all sizes, register and memory forms)
+  instead of refusing every block containing one — the FF family
+  was the largest single reject family in the October census and
+  the coverage table's own note named `ff 05` as most of its
+  remaining weight. On a controlled guest bench (100k passes of an
+  8-wide INC/DEC timing loop per sample), the fast engine went
+  from 1.6-1.8x SLOWER than the interpreter (warm medians 491 /
+  958 ms against interpreter 310 / 546 ms) to 2.9-3.2x FASTER
+  (89 / 102 ms against 287 / 298 ms), checksum identical in every
+  mode; Doom presented 132 frames in the demo-matrix window
+  against 13 before (different machine load; corroboration, not
+  the controlled figure). FD-26 stays OPEN: guest execution is
+  still the ceiling and most reject families remain. Record:
+  `docs/reports/perf-incdec-fastpath-20261105.md`.*
 
 - **FD-38 — Directory-notification (inotify) delivery:
   semantics fixed, the enablement park found (a poll/sweep
@@ -3265,6 +3378,45 @@ do not close the entry until they land.
   arrive without a warmed archive. Evidence:
   `test-results/fd55prewarm/`; record:
   `docs/reports/fd55-prewarm-packaging-20261101.md`.
+
+  **GENERAL COLD-START SEGMENT MEASURED AND SHRUNK —
+  this entry stays open** (lane-fd71, 2026-11-05;
+  record:
+  `docs/reports/fd71-startup-decl-scans-20261105.md`).
+  The Godot portion above is untouched by this lane
+  and still waits on FD-55. The general cold start
+  every program pays on a first visit was attributed
+  on the standard start measurement (fresh profile
+  per boot): of a 47.6 s x86 boot at load 4.4, the
+  file-system setup window was ~12.6 s, and inside
+  it the startup code scanned every archive's
+  central directory twice before initializing —
+  looking for `fullfills.txt`, then `depends.txt`
+  dependency declarations — at a measured 4,970 ms,
+  returning nothing: none of the seven shipped
+  archives contains either file (enumerated
+  directly). Fix `c0397ec11`: the declarations are
+  now captured during the directory walk
+  `FsZip::init` already performs (first exact
+  root-level match, same full-read + CRC rules; a
+  corrupt entry counts as absent) and resolved
+  after the listed zips initialize, with the old
+  predicates and ordering unchanged, pinned by the
+  new native test `testFsZipDeclCapture`
+  (`7ac6802ab`; subdirectory namesake ignored,
+  first duplicate wins, corrupt counts as absent).
+  Proof: interleaved boot-rate A/B (base wasm
+  `9b51d601` vs fixed `c70cc5b7`, x86) medians
+  28,054 ms → 24,863 ms ready (−11.4%), all three
+  pairs faster, 6/6 starts succeeded; JS unit
+  353/0; native main 690/0; x64 start on the fixed
+  build succeeded (419.1 s at load ~17–22). Also
+  measured and rejected in the same record:
+  switching the default engine build to JIT for
+  startup (a JIT boot exhausted the 420 s harness
+  budget, still progressing, against a 53.5 s base
+  start the same round). The walk that remains in
+  `FsZip::init` is filed as FD-166.
 
 - **FD-72 — The vendored shader translator cannot
   ingest a BuiltIn HelperInvocation variable in any
@@ -5125,7 +5277,9 @@ do not close the entry until they land.
   shipped build can wedge before the desktop
   handshake: a winedevice-host guest thread loops
   on a delivered memory fault, the desktop never
-  opens, and the start fails silently.** *(Medium.
+  opens, and the start fails silently.
+  FIXED 2026-11-05 on branch
+  `lane-fd115` — see CL-127.** *(Medium.
   Filed by the wedge-incidence lane, 2026-11-02,
   as FD-103 — the next free number on the
   register that lane based on. That number was
@@ -5269,6 +5423,65 @@ do not close the entry until they land.
   shipped builds is now 1 wedged in 35 measured
   first-visit x86 starts. The entry stays open
   on its closing terms.
+
+  **Update (FD-115 lane, 2026-11-05):**
+  the fault's mechanism was not
+  identified — the 2026-11-02 instance
+  remains the only capture of the
+  fault-loop shape, on a build several
+  batches old, and the shape did not
+  recur in this lane's measured starts.
+  The entry closes on its second
+  closing term: a pre-handshake stall
+  of this shape is now surfaced as a
+  reported failure. Fix `de0144c72` on
+  branch `lane-fd115`: the launcher's
+  stall watchdog counts printed
+  delivered-fault lines (BW64-FAIL
+  guest-memfault32, delivered=1) per
+  guest thread before the desktop
+  handshake completes; at 32 lines
+  from one thread it reports the start
+  as failed (BW64-FAIL
+  component=launcher.session
+  reason=prehandshake-fault-loop, with
+  the user-facing failure page) instead
+  of an endless wait. The count clears
+  at the handshake; faults spread
+  across threads never convict. Proof:
+  unit tests RED on the base, GREEN
+  with the fix (stall-watchdog.test.mjs);
+  the shaped-session probe's fault-loop
+  scenario passes against the built
+  dist; JS unit suite 353/0 on the
+  fixed tree. Series (identical
+  protocol: fresh profile per boot,
+  bwretry=2, 900 s window, FD-47
+  classification): against the live
+  shipped batch-7 build, 19 measured
+  first-visit x86 starts — 18 certified
+  and one silent stall of the different
+  FD-165 shape (no fault lines; filed
+  and closed separately, CL-120); the
+  fault-loop shape did not recur, so
+  the shipped-build tally for this
+  shape is now 1 wedged in 54 measured
+  starts. On fixed builds: 34/34
+  measured certified on the build
+  carrying only this fix (`4ce0dc424`;
+  one further boot never started — a
+  harness probe-slot timeout on the
+  shared box), and 36/36 certified on
+  the final lane build (`b7f5d4003`,
+  this fix plus FD-165's), with 0
+  BW64-FAIL and 0 guest-memfault32
+  lines in every preserved console and
+  0 restarts; any recurrence on such a
+  build now ends as a reported failure.
+  Record:
+  `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`;
+  evidence `test-results/fd115/` — see
+  CL-127.
 
 - **FD-123 — A zero-length plain write on
   a 64-bit datagram socket queues nothing,
@@ -7877,6 +8090,1027 @@ do not close the entry until they land.
   carry it) and aligned with the
   measurement, proven by guest
   tests. Filed, not fixed.
+ Closing
+  account (lane-fd165,
+  2026-11-05): closed on this
+  branch -- see CL-122. The
+  set/remove forms' name handling
+  was measured at the raw syscall
+  level (four rounds, including
+  the descriptor remove form for
+  the modelled name on a file
+  that does not carry it, which
+  answers -ENODATA) and aligned
+  with the measurement: the set
+  forms copy their value ahead of
+  the target verdicts (a null
+  value with a nonzero size
+  answers -EFAULT); on a resolved
+  target an unknown family and
+  system.* outside the posix_acl
+  names answer -ENOTSUP, a bare
+  recognised prefix answers
+  -EINVAL, a posix_acl set
+  answers -EINVAL and its remove
+  on a file or directory is a
+  no-op success, and on the link
+  itself every user.* name
+  answers -EPERM. Recognised
+  namespaces are stored (one
+  native sidecar per attribute),
+  so the host's 0 reads back
+  through the get/list forms,
+  with CREATE answering -EEXIST
+  and REPLACE -ENODATA. Fixes
+  `a2899c5b5` and `37dba7b69`;
+  guest tests
+  testXattrWriteClassify32Syscalls
+  and
+  testXattrWriteClassify64Syscalls
+  red on the base, green on the
+  fix. Record: `docs/reports/
+  fd165-xattr-write-
+  classification-20261105.md`.
+
+- **FD-166 — A first-visit 32-bit
+  start of a shipped build can stall
+  before the desktop handshake with
+  no fault lines at all: the earliest
+  guest processes stop making any
+  guest progress while every other
+  thread blocks, and the start fails
+  silently. FIXED 2026-11-05 on branch
+  `lane-fd115` — see CL-128.**
+  *(Medium. Filed and fixed by the
+  FD-115 lane, 2026-11-05; the number
+  is the next free on the register
+  that lane based on and settles at
+  the next composition.)* Observed
+  once, during that lane's
+  reproduction series against the
+  live shipped batch-7 build
+  `4006ddb58` / wasm `c0af957a`,
+  measured through the public route
+  with FD-115's filing protocol
+  (fresh profile per boot, bwretry=2,
+  900 s window, FD-47 classification):
+  boot 10 of 20, result class "other",
+  pageReady false, note "budget
+  exhausted", wall 901,559 ms. Its
+  preserved console (2,373 lines,
+  `test-results/fd115/repro-live-batch7/boot-10/console.log`
+  in the lane tree) carries 0
+  BW64-FAIL lines and 0
+  guest-memfault32 lines — not
+  FD-115's shape. Explorer was opened
+  (twice) but no deskpin READY line
+  ever printed. Across the console's
+  14 thread dumps, the session's
+  three earliest processes (pids 10,
+  12, 14) each show one running
+  thread with min_noprogress_ms
+  growing to 780078 — no guest
+  progress for the final 780 s —
+  their step-rings cycling the same
+  emulator steps, while all 25 other
+  dumped threads sat blocked in
+  socket reads
+  (wait=KUnixSocketObject::lockCond),
+  no fetch in flight, no
+  memory-mutex owner. No failure was
+  surfaced: FD-77's surfacing
+  convicts only after the handshake,
+  and FD-115's only on delivered
+  faults. No mechanism is claimed
+  for the underlying guest stall;
+  none is visible in the console.
+  The series' other 18 measured
+  starts certified (median 58.9 s);
+  measured incidence for this shape
+  on shipped builds: 1 in 19 in this
+  series. Closing terms: a
+  pre-handshake stall of this shape
+  is surfaced to the user as a
+  reported failure instead of an
+  endless wait — met by the fix in
+  CL-128. Lane record:
+  `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`.
+
+- **FD-167 — Forty function pairs that shipped demo programs import
+  resolve to unimplemented stubs: the program loads, and the named
+  feature path fails when exercised.** *(Medium. Filed by the
+  DLL-export-census lane, 2026-11-05; provisional until the merge
+  lane's audit.)* Measured by the export-implementation census
+  (`tools/conformance/dll_export_census.py`; evidence
+  `test-results/dll-export-census/dll-export-census.json`). No demo
+  imports a stub on its static load path (in-closure regular imports:
+  0 across all 15 demos); every hit is a delay import or an import of
+  a dynamically loaded library. Chromium's chrome.dll delay-imports
+  35 stub functions: Bluetooth GATT (bluetoothapis ×8, bthprops.cpl
+  ×3), the ESENT Jet engine (×12), Media Foundation (mf
+  MFCreateDeviceSource, mfplat MFCreateMediaBufferWrapper), wevtapi
+  EvtRender, WinUSB (×8), propsys VariantCompare. Gang Beasts' Xbox/
+  Party plugin DLLs regularly import four msvcp140 error-path helpers
+  (std::_Throw_C_error, std::_Throw_Cpp_error, std::_XGetLastError,
+  std::_Xbad_function_call — family overlap with FD-169). Mindustry's
+  steam_api64.dll regularly imports setupapi
+  SetupDiGetDeviceInterfaceAlias. Closing terms: each pair either
+  implemented in the shipped libraries (the census re-run shows it
+  resolved and the baseline is regenerated in the same change) or
+  proven unreachable from the importing program, with the reason
+  recorded here. Filed, not fixed.
+  **Disposition (2026-11-05, `lane-fd167`):** 39 of the 40 pairs meet
+  a closing term on this branch. Twenty-seven are implemented in the
+  shipped libraries (census re-run resolves them in the
+  architectures the demos use; baseline regenerated in the same
+  change): bluetoothapis GATT \u00d78 + bthprops.cpl \u00d73 (documented
+  no-radio contract), winusb \u00d78 (documented no-device contract),
+  mf MFCreateDeviceSource (upstream's implementation), mfplat
+  MFCreateMediaBufferWrapper (a genuine offset/length window over an
+  existing buffer), propsys VariantCompare, wevtapi EvtRender
+  (upstream's not-implemented answer instead of a stub death),
+  msvcp140 \u00d73 (the throw helpers, upstream bodies backported), and
+  setupapi SetupDiGetDeviceInterfaceAlias (a genuine lookup). The
+  twelve ESENT Jet pairs are proven unreachable: their only caller
+  in any shipped demo is Chromium's legacy-Edge profile importer
+  (the call sites sit among that importer's own strings), which runs
+  only against a legacy EdgeHTML profile's ESENT WebCache database
+  on an explicit browser-data import; the shipped demo carries no
+  such profile and no such action, and upstream Wine has never
+  implemented esent (336/336 named stubs), so there is no reachable
+  path and no upstream behaviour to mirror. The remaining pair,
+  msvcp140 `?_Throw_Cpp_error@std@@YAXH@Z`, is neither implemented
+  nor proven unreachable and is refiled as FD-172. Proof and full
+  account: `docs/reports/fd167-demo-reachable-stub-contracts-20261105.md`.
+- **FD-172 — msvcp140 `?_Throw_Cpp_error@std@@YAXH@Z` remains an
+  unimplemented stub: no authoritative semantics for it exist in any
+  open source consulted.** *(Low. Filed by the FD-167 lane,
+  2026-11-05 as that entry's remainder; provisional until the merge
+  lane's audit.)* The function is one of the four MSVC helpers a
+  Gang Beasts plugin DLL imports (FD-167); the other three are
+  implemented there. Wine master and ReactOS both ship this export
+  as a stub, it does not appear in Microsoft's open STL sources, and
+  its argument's enumeration appears in no public header, so there
+  is nothing to mirror: guessing which C++ exception it throws would
+  hand the guest a silent wrong answer instead of the stub's loud
+  failure. Closing terms: implement it once an authoritative
+  source for its semantics exists (a public header, a documented
+  enumeration, or a behavioural reference from the real DLL), proven
+  by a guest test like FD-167's; until then it stays a stub and the
+  census keeps it counted. Filed, not fixed.
+- **FD-168 — win32u.dll carries 2,037 validated unimplemented stubs
+  (926 x86-64 + 1,111 i386): 1,572 NtUser*/NtGdi* names plus 465
+  composition/display/Dxgk-family names a program can call and be
+  answered "unimplemented".** *(Medium. Filed by the DLL-export-
+  census lane, 2026-11-05; provisional.)* Measured by the
+  export-implementation census; the exact list is the win32u rows of
+  `tools/conformance/dll_export_baseline.json`. The working NtUser/
+  NtGdi surface uses the syscall-entry shape and is not in this
+  count (the census distinguishes the two generated shapes and
+  validates every counted stub against the name string embedded in
+  its own body: 34,990 hits, 0 unvalidated, across the shipped set).
+  Closing terms: drawn down family by family — implementation in
+  the Wine build (a rootfs restage) or a recorded per-family
+  disposition that no guest can reach the family in this
+  environment; each draw-down regenerates the census baseline in
+  the same change. Filed, not fixed.
+
+  *Addendum — first draw-down (lane-fd168, 2026-11-05; partial, the
+  entry stays open).* Fourteen x86-64 names are now real syscall
+  implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-backports.patch`,
+  restaged runtime, re-pinned hashes, census baseline regenerated in
+  the same change): NtUserAlterWindowStyle, NtUserBuildHimcList,
+  NtUserBuildNameList, NtUserBuildPropList, NtUserGetClipCursor,
+  NtUserGetCurrentInputMessageSource, NtUserGetPointerType,
+  NtUserGetThreadState, NtUserQueryDisplayConfig, NtUserQueryWindow,
+  NtUserRegisterWindowMessage, NtGdiGetMiterLimit,
+  NtGdiSetMiterLimit, NtGdiIcmBrushInfo. Census effect: x86-64
+  win32u stubs 926 -> 912; i386 unchanged at 1,111; FD-168 total
+  2,037 -> 2,023; shipped-set named stubs 33,756 -> 33,742; only
+  x64/win32u.dll changed across all 1,171 tables. Proof: guest test
+  `win32u-fd168` PASS — 17 checks calling the previously stubbed
+  exports directly and cross-checking each answer against the
+  user32/gdi32/imm32 counterpart or documented contract, all ok=1,
+  fixture RESULT 0 (the run also caught and fixed a real bug: the
+  miter-limit pair must use Wine 10's DWORD bit-pattern parameter
+  form, not the FLOAT form Wine 8's stale header declares); JS unit
+  suite 354 passed / 0 failed on the final tree; legacy 115/0;
+  completeness checker and bootstrap 0 failures. Key reachability
+  fact: across every shipped DLL on both architectures, zero of the
+  2,037 names is imported by any other shipped DLL — all reachability
+  is a guest calling win32u directly. Dispositions for the remaining
+  2,023, each recorded rather than left silent: (a) 31 NtGdiDdDDI*
+  names are implemented upstream only inside Wine 10's
+  Vulkan-backed D3DKMT layer (`dlls/win32u/d3dkmt.c`), which has no
+  Wine 8 counterpart and which the emulator's DXVK/vkd3d path does
+  not use; gdi32 exposes no D3DKMT surface here. (b) Six names are
+  blocked on machinery this vintage does not have: NtUserSwitchDesktop
+  (no `set_input_desktop` wineserver request; wineserver ships from
+  the vendor build, shared with the 32-bit side), NtUserNotifyIMEStatus
+  (no `pNotifyIMEStatus` in Wine 8's user-driver interface),
+  NtUserSetWindowFNID (no `set_window_fnid` request, no `fnid` field),
+  NtUserModifyUserStartupInfoFlags (the flags word it mutates is a
+  win32u-side cache introduced upstream later; nothing here reads it),
+  NtUserGetPointerDeviceRects (no pointer-device model; upstream's own
+  body returns an error for any real device handle), NtGdiMakeFontDir
+  (depends on upstream's restructured font engine; Win16-era API).
+  (c) Eight names have only FIXME semi-stub bodies upstream that
+  return success-shaped constants without doing the work
+  (NtUserEnableMouseInPointer, NtUserIsMouseInPointerEnabled,
+  NtUserGetPointerInfoList, NtUserRegisterTouchPadCapable,
+  NtUserInitializeTouchInjection, NtUserGetWindowDisplayAffinity,
+  NtUserIsChildWindowDpiMessageEnabled, NtGdiCancelDC) — porting them
+  would fake the draw-down, so they stay stubs until a real
+  implementation is possible. (d) One name, NtUserSendInteracsetive-
+  ControlHapticsReport, is a misspelling in Wine 8's own spec that
+  upstream removed; no caller can exist for it. (e) The remaining 866
+  x86-64 names are still unimplemented in current upstream Wine —
+  the largest cluster (215) is the compositor/input-compositor
+  internal surface whose counterparty processes (dwm.exe and the
+  Windows composition stack) do not exist in Wine's architecture,
+  followed by the NtGdiDdDDI* kernel-graphics surface (153, same
+  disposition family as (a)) and long tails of NtUser*/NtGdi*
+  getters, setters and registration calls with no upstream body to
+  port and no importer in the shipped set. (f) The i386 side's 1,111
+  stubs ship from the vendor Wine 10.0 package build; this project
+  has no i386 PE-substitution pipeline (only win32u.so is rebuilt),
+  and the 35 names Wine 10 implements are already real on i386
+  because the shipped i386 DLL is that build. FD-168 stays open at
+  2,023 with these dispositions. Record:
+  `docs/reports/fd168-win32u-drawdown-20261105.md`.
+- **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
+  validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
+  ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
+  Filed by the DLL-export-census lane, 2026-11-05; provisional.)*
+  Measured by the export-implementation census; the exact list is
+  in `tools/conformance/dll_export_baseline.json`. Any MSVC-built
+  program whose code paths reach these functions — C++ streams,
+  complex arithmetic, concurrency runtime, locale and conversion
+  helpers — is answered "unimplemented" at call time; the four
+  Gang Beasts imports of FD-167 are this family's demo-visible tip.
+  Closing terms: family-by-family implementation or substitution
+  of the shipped CRT DLLs with functional builds, proven per family
+  by a guest test that calls the previously stubbed functions and
+  by the census re-run with the baseline regenerated in the same
+  change. Filed, not fixed.
+  Progress (2026-11-06, lane-fd169): the C-runtime family is
+  discharged. 1,634 of the 10,698 stub slots are genuinely
+  implemented (916 x86-64 + 718 x86), proven per DLL by the
+  regenerated census (total stub slots 34,990 -> 33,356, named
+  stubs 32,122; baseline drops by exactly the resolved count and
+  the census unit gate passes) and at guest level by
+  fd169-crt64 / fd169-crt32 (54 behavioural checks each: RESULT 0
+  on the new runtime; the x86-64 fixture dies on the pre-change
+  runtime with no RESULT line -- negative control run against the
+  retained pre-stage wine64.zip). Per-DLL stub counts are in
+  docs/reports/fd169-crt-family-20261105.md. What remains in this
+  entry, each with its reason in that record: the concurrency
+  runtime (concrt140 + the same names inside msvcr100/110/120),
+  the mixed-mode msvcm80/90 assemblies, the legacy msvcp60/70/71
+  STL ABIs, the msvcp90-source family remainders (codecvt, iostream
+  and time facets), msvcp140_2's special-function set,
+  msvcp140_atomic_wait (incl. the tzdb functions, which have no
+  data source in the browser build), vcruntime140's exception
+  machinery, the msvcrtd debug heap, the __crt* UCRT/compiler
+  plumbing, and a short tail of functions whose contracts are not
+  publicly pinned (_getsystime/_setsystime, the _d/_f/_ld libm
+  helpers, the _mbcasemap data export). FD-172 (filed by this
+  lane) covers a neighbouring gap the census cannot see: complex
+  helpers missing outright from the versioned DLLs' export lists.
+  This entry stays open for the remainder families above.
+- **FD-170 — Ninety shipped DLL tables are ≥90% unimplemented stubs
+  (6,734 named stubs, excluding the win32u and CRT families filed
+  separately): entire subsystems a program can load but never use —
+  esent.dll is 336/336 named stubs in both architectures (the Jet
+  database engine does not exist), msasn1 259/266, adsldpc 175/175,
+  wdscore 159/159, bluetoothapis 95/96, winusb 21/22, plus dx8vb,
+  mprapi, fwpuclnt, clusapi, regapi, samlib and 78 more.**
+  *(Medium. Filed by the DLL-export-census lane, 2026-11-05;
+  provisional.)* Measured by the export-implementation census; the
+  exact table list and stub lists are in
+  `tools/conformance/dll_export_baseline.json`. Chromium's ESENT
+  and Bluetooth imports (FD-167) land here. Closing terms: a
+  per-DLL decision recorded here — implemented, substituted, or
+  accepted as a documented absence (for hardware- and
+  service-bound subsystems a browser build may never be able to
+  provide); the census keeps the list exact meanwhile, and any
+  draw-down regenerates the baseline in the same change.
+  **DISCHARGED on `lane-fd170` per those terms — see CL-131**
+  (Batch-9 settled number: CL-131. FD-167 is not discharged — it stays
+  open: 39 of 40 pairs meet a closing term and the 40th is refiled as
+  FD-172.)
+  Record: `docs/reports/fd170-whole-dll-decisions-20261105.md`.
+  Method: the stub state of all 50 DLLs was measured in all three
+  Wine vintages the project can draw on (shipped 8.0, shipped 10.0,
+  upstream master); for 49 of the 50 it is essentially identical in
+  all three — upstream has never implemented them anywhere, so
+  there is nothing authoritative to mirror. Implemented on the x64
+  side, where an authoritative source exists
+  (`wine8-fd170-contracts.patch` in the Wine 8.0 backport pipeline,
+  hash-pinned fail-closed; census-verified against the built
+  binaries): bluetoothapis 95 → 71 named stubs (Wine 10.0's own
+  radio/SDP code backported + the FD-167 no-radio/no-device
+  contract bodies; the x86 side was drawn down by FD-167), winusb
+  21 → 13 (the FD-167 no-device contract bodies; x86 likewise
+  FD-167's), netutils 22 → 17 (Wine 10.0's `NetApiBuffer*`
+  heap-buffer functions). The remainders of those three stay stub:
+  bluetoothapis's device/SDP-object layer is stub even on master
+  (72 of 97) pending upstream's winebth driver work; winusb's
+  descriptor/policy layer is libusb-backed upstream and the
+  sandbox has no USB device backend; netutils's other 17 are
+  server-service utilities stub in every vintage. Guest proof:
+  `fd170-contracts64.test.mjs` is committed on the branch; its
+  verdict is owed to the batch-9 gate — every attempt on
+  2026-11-05/06 died in the shared probe queue or in a guest boot
+  that outlasted the hung-probe cap at load 13–19 (preserved logs
+  in the record), the same handling FD-167's x64 side received.
+  Documented absences (47 DLLs; the missing substrate in each
+  case; per-DLL counts and evidence in the record): esent — a full
+  embedded database engine, never implemented upstream in any
+  vintage (336/336 on master); msasn1 — a whole ASN.1 encoding
+  runtime: upstream implements 7 of 266 in every vintage and the
+  rest has no authoritative open implementation to mirror (the
+  FD-172 standard: unmirrorable semantics stay stub, not
+  guessed); adsldpc — Active Directory directory service; apphelp
+  — the system shim database (a Windows data artifact this
+  runtime does not ship) plus in-process patching machinery;
+  fwpuclnt — the kernel filtering platform / BFE service; clusapi
+  and resutils — the failover-cluster service; mprapi and rtutils
+  — the RRAS service; samlib — the SAM/LSA service; sppc — the
+  software-protection/activation service and its infrastructure;
+  winsta — the session-manager service (the runtime has one
+  session by construction); localspl, ntprint, printui — the
+  print spooler (no spooler, no printers); vssapi — the
+  volume-shadow-copy service and snapshot drivers (no
+  block-device layer); feclient — the EFS service; wiaservc —
+  the WIA service and imaging hardware; dhcpcsvc and dhcpcsvc6 —
+  the DHCP client service (guest networking is the emulator's
+  relay; upstream stubs the whole DLL in every vintage including
+  the trivial initialize pair, and implementing the pair alone
+  would fake a service that cannot answer); ktmw32 — the kernel
+  transaction manager; tbs — TPM hardware; hal — the hardware
+  layer itself; d3d8thk — display-driver kernel thunks (graphics
+  here is the WebGPU/WebGL bridges); slbcsp and sccbase —
+  smart-card hardware; traffic — the kernel packet scheduler;
+  msdrm and drmclien — DRM/RMS license infrastructure and
+  protected-content paths; twinapi.appcore, appxdeploymentclient
+  and coremessaging — the UWP/WinRT app model and its deployment
+  service; msls31 — a full text-layout engine never implemented
+  upstream; dx8vb — the retired DirectX 8 VB automation layer;
+  atmlib — retired ATM networking hardware; regapi — the NT-era
+  registry API superseded by advapi32 (provided); utildll and
+  svrapi — retired LAN Manager surfaces; npptools — NetWare-era
+  provider tools; w32skrnl — the 16-bit WOW layer (the CPU core
+  is long-mode only; no 16-bit subsystem can exist beneath it);
+  rasdlg — RAS dial-up UI and service; wmasf — the ASF media
+  runtime superseded by Media Foundation (provided); tdh — ETW
+  provider metadata (no provider registry is kept); odbcbcp —
+  SQL Server bulk copy (needs the SQL Server driver and a
+  server; odbc32 itself is provided); bcp47langs — WinRT
+  globalization data (upstream 2 of 71 on master); magnification
+  — the desktop magnifier/compositor stack; wdscore —
+  undocumented setup-scoring internals. Census after this
+  change: 33,719 named stubs total (was 33,756; exactly the 37
+  resolved), the FD-170 remainder 6,697, baseline regenerated in
+  the same change, runtime assets re-cut as
+  `runtime-assets-20261105-fd170`.
+
+- **FD-171 — The remaining stub long tail: 14,287 validated
+  unimplemented stubs spread over the mostly-implemented shipped
+  DLLs (setupapi 263+265 across arches, rpcrt4 214+214, combase
+  175+166, sechost 120+120, ntdll 113+111, kernel32 89+97, shell32
+  69+69, gdi32 67+68, and several hundred further tables), under a
+  standing guard: the export-implementation census fails its check
+  on any new stub in the shipped libraries.** *(Low. Filed by the
+  DLL-export-census lane, 2026-11-05; provisional.)* Totals for the
+  shipped batch-7 vintage: 161,676 named exports across 1,171 DLL
+  tables; 127,920 (79.1%) are real implementations or forwarders to
+  one; 33,756 (20.9%) are validated stubs — partitioned disjointly
+  as FD-168 (2,037) + FD-169 (10,698) + FD-170 (6,734) + this entry
+  (14,287). The exact per-function list is
+  `tools/conformance/dll_export_baseline.json`, guarded by
+  `tools/conformance/dll_export_census.py --check` and by
+  `web/tests/suite/unit/dll-export-census.test.mjs`. Closing terms:
+  this entry closes when the long tail is dispositioned DLL by DLL
+  (implemented, or accepted with a recorded reason) — until then it
+  is the register's standing measure of the unimplemented surface,
+  and it may only shrink: a resolved stub is recorded by
+  regenerating the baseline in the fixing change, and a new stub
+  fails the check until it is filed here or fixed. Filed as the
+  standing census entry, not fixed.
+  **FD-171 lane update (2026-11-05, lane-fd171):** the long tail is
+  now dispositioned function by function in
+  `tools/conformance/dll_export_dispositions_fd171.json` (all
+  14,287 entries: 203 implemented by this lane, 19 implemented by
+  the sibling FD-167 lane on the same census base, the rest left
+  with a recorded reason — 12,303 still stubs in upstream Wine
+  master c42c1532, 1,381 absent from upstream's spec entirely, and
+  the remainder in named blocked/rejected categories). The 203
+  implementations (config-manager family in setupapi/cfgmgr32,
+  ntdll splay generic tables + fast activation-context calls,
+  propsys conversions, pdh formatted counter arrays, combase
+  HSTRING marshaling + fail-fast entry points, kernelbase/kernel32
+  HeapSummary + ReadConsoleInputEx + RegisterWaitForInputIdle, and
+  the single-function DLLs) ship as
+  `tools/buildWine/patches/wine8-fd171-contracts.patch` (x86-64,
+  Wine 8.0 backports) and `wine10-fd171-contracts.patch` (i386,
+  Wine 10.0), staged hash-pinned into both wine zips; the census
+  baseline is regenerated in this change and drops by exactly the
+  203 resolved (33,756 -> 33,553 named stubs), with zero new stubs.
+  Proven by the guest contract fixtures
+  `web/tests/suite/browser/fd171-contracts64.test.mjs` /
+  `fd171-contracts32.test.mjs`. Record:
+  `docs/reports/fd171-long-tail-20261105.md`. The standing guard
+  (census `--check` + the JS census unit test) is unchanged and
+  remains this entry's enforcement. The lane claims the entry's
+  closing terms are met (dispositioned DLL by DLL with recorded
+  reasons); final closure settles at the merge audit, which must
+  also reconcile the propsys/mf overlap with FD-167's pins (the two
+  lanes' backports touch disjoint functions in those DLLs).
+
+
+- **FD-175 — The JIT statistics text export truncates at 3072
+  bytes, so on any full Wine boot the statistics JSON is
+  unparseable and consumers silently lose the engine counters.**
+  *(Low. Filed by the performance lane, 2026-11-05; provisional
+  until the merge lane's audit.)* `bw64_jit_stats_json_text()`
+  renders into a `static thread_local char text[3072]` in both
+  build flavors (`source/emulation/cpu/wasm/wasmJitStats.cpp`,
+  `source/emulation/cpu/jit64wasm_runtime.cpp`). After a real
+  boot the JSON (driven by the reject census) exceeds 3072 bytes;
+  `JSON.parse` of the result throws "Unterminated string in JSON
+  at position 3071" (observed in vivo, suite run
+  `perf2-bench-before`, which completed its samples and then
+  failed on the stats read). `web/tests/suite/browser/
+  jitbench.test.mjs` reads stats through this export, so its
+  recorded cpu64 stats are the ones at risk. The buffer export
+  `bw64_jit_stats_json(char*, int)` is unaffected; consumers can
+  also read the same counters from the runtime's METRICS console
+  lines. Filed, not fixed.
+
+- **FD-176 — The block-invalidation differential gate no longer
+  links: `scripts/build-jit-wasm.sh` fails on the integration
+  tip, so the invalidation tests currently have no working build
+  path.** *(Medium. Filed by the performance lane, 2026-11-05;
+  provisional until the merge lane's audit.)* The script's
+  standalone recipe predates the FD-82 / FD-129 cross-references:
+  linking `jit64_invalidate_tests.cpp` now reports undefined
+  references to `FsOpenNode::noteMappedPagesReleased` (from
+  `kmemory64.cpp`) and `bwCurrentThreadRegistryLookup()` (gate
+  log `inv_build_interp.log`, 2026-11-05). Adding the defining
+  translation units only moves the gap (`KInotify::notifyClosed`,
+  `BoxedWineCondition` ctor/dtor, then `FsNode::linkGroupMembers`,
+  `removeTimer`, `scheduleThread`): the recipe needs the kernel
+  core set, or the tests need to move into a harness that already
+  links it. The tests themselves were not run by this lane for
+  exactly this reason. Filed, not fixed.
+
+- **FD-177 — `FsZip::init` still walks each
+  archive's central directory entry by entry
+  through the lazy fetch layer, at ~0.3 ms per
+  entry: 1,606 ms of the standard x86 cold start
+  across 5,677 entries in four archives.**
+  *(Low — first-visit startup speed. Filed by
+  lane-fd71, 2026-11-05, from the FD-71 phase
+  attribution; record:
+  `docs/reports/fd71-startup-decl-scans-20261105.md`;
+  evidence: `test-results/fd71/`.)* The walk is
+  the one the node index is built from, so it
+  cannot be deleted like the declaration scans
+  FD-71's lane removed; but the central directory
+  is contiguous at the end of each archive, so
+  fetching it in bulk and parsing it in memory —
+  instead of one small proxied read per entry
+  through the browser lazy layer — should remove
+  most of the cost. The per-entry figures come
+  from an instrumented build's segment timers
+  (support archive: 1,219 ms of entry-info reads
+  for 3,542 entries; wine32: 322 ms for 1,926).
+  Closing terms: an init that obtains the
+  directory in bulk, with before/after segment
+  timings and the standard start measurement
+  taken the same way, and identical node trees
+  (the native suite plus a boot on each shipped
+  archive set). Filed, not fixed.
+
+- **FD-178 — Fresh-worktree setup
+  duplicated ~2 GB of generated
+  payload inputs into every tree,
+  and the shipped prep helper no
+  longer performs the ritual it
+  documents.** *(Low. Filed and
+  fixed by the shared-build-store
+  lane, 2026-11-05; numbering
+  provisional until the merge
+  audit.)* Every new working copy
+  needed the same generated
+  inputs — the pinned runtime
+  zips and Slang assets, the DXVK
+  and vkd3d build outputs, the
+  `tools/rootfs64` payload
+  extractions (gecko, mono32,
+  gstreamer32/64, openal,
+  cjk-font) and the
+  `tools/browser` tool payloads
+  (zig, disasm) — copied in per
+  tree: 1,981,059,339 real bytes
+  measured for one freshly
+  prepared tree, and 14 trees
+  held 12,255,216,359 bytes of
+  real copies between them. The
+  helper script exits 1 partway
+  on a fresh tree (its donor
+  checkout no longer holds
+  several payload dirs), never
+  listed the gstreamer payloads
+  or vkd3d build.w32, sourced
+  DXVK from a stale checkout (a
+  tree assembled from it fails
+  the build's manifest gate: the
+  support pack it produces is
+  not the pinned c4dbe35986a5),
+  and overwrote the tree's
+  runtime-assets manifest with
+  stale 20261013 pins.
+  Closing terms: the payloads
+  live once in a shared store,
+  verified against the project's
+  committed pins before use; a
+  fresh tree consumes them by
+  link in one documented step
+  and builds and passes the
+  ordinary suites exactly as a
+  tree set up the old way,
+  proven side by side; the
+  setup documentation no longer
+  describes the per-copy ritual.
+  FIXED on branch
+  `lane-sharedbuild` — see
+  CL-125.
+
+- **FD-179 — Proc-address lookup
+  returns different function
+  addresses for a KHR spelling and
+  its core spelling.** *(Low.
+  Filed by the audit-follow-up
+  lane, 2026-11-05, from the FD-19
+  test's first run.)* In the
+  64-bit guest shim, the lookup
+  table's entry for a promoted
+  query's KHR name carries that
+  name's own alias wrapper, so
+  `vkGetInstanceProcAddr` returns
+  one address for
+  `vkGetPhysicalDeviceProperties2KHR`
+  and a different one for
+  `vkGetPhysicalDeviceProperties2`
+  (likewise the Features2 and
+  MemoryProperties2 pairs). Both
+  addresses are served and answer
+  identically (proven by the FD-19
+  guard test, CL-119), so no wrong
+  answer has been observed; the
+  gap is the pointer identity
+  itself — the shim's own comment
+  states an ICD must return the
+  same pointer for both names, and
+  a guest that compares pointers
+  would see two functions where a
+  real driver shows one.
+  Measured: the native bridge
+  test's first FD-19 run failed
+  exactly on the pointer-equality
+  assertion (evidence
+  `test-results/audit-l1l2/runnative-3.log`
+  in the lane's worktree). Closing
+  terms: the lookup returns
+  identical pointers for promoted
+  alias pairs, proven by the
+  native bridge test. Filed, not
+  fixed. *(Numbered FD-179
+  provisionally on this branch —
+  FD-165 was claimed by
+  lane-fd162-164; settles at the
+  next composition.)*
+
+- **FD-180 — A 32-bit benchmark
+  guest boot can die in a
+  delivered-fault loop, and the
+  host's fault path recurses until
+  the page's stack is
+  exhausted.** *(Medium — a
+  running session dies outright;
+  the fault path is general, not
+  benchmark-specific. Filed by the
+  audit-follow-up lane, 2026-11-05,
+  discharging the batch-7 merge
+  record's note that the one-off
+  trap should be filed on its own
+  evidence if it recurs — the
+  2026-11-05 audit's item L1.)*
+  Measured in a bounded repetition
+  series on the batch-7 build
+  (wasm `c0af957a`, identical to
+  the batch-7 gate build): seven
+  jitbenchmix-x86 boots completed
+  cleanly (four samples each,
+  checksum `b8476f000fa05ee2`),
+  and the eighth (JIT mode 1) died
+  during the benchmark's run. The
+  guest thread (pid 81, tid 86)
+  faulted first at
+  addr=eip=`0x10584384` (err=0),
+  then wrote repeatedly at
+  `0xfffffd08` with eip unchanged
+  (err=2), every fault delivered
+  (delivered=1) and none
+  recovering: 65 BW64-FAIL
+  guest-memfault32 lines, the
+  instrument's printed count
+  reaching 1024, all in this one
+  boot (the other seven had
+  none). On the host side the
+  worker then died with "Uncaught
+  RangeError: Maximum call stack
+  size exceeded", its stack a
+  repeating three-frame wasm
+  cycle (functions 716, 1366,
+  516) — fault delivery recursing
+  per fault until the JavaScript
+  stack ran out. The batch-7
+  gate's standalone re-run saw one
+  "memory access out of bounds"
+  wasm trap on this same fixture's
+  first boot; that exact signature
+  did not recur in this series,
+  and whether the two are one
+  defect is unproven — they are
+  recorded together here because
+  the fixture, the class (a boot
+  dying inside the emulator) and
+  the fault machinery are shared.
+  FD-115's wedged shipped-build
+  run likewise looped on delivered
+  faults; identity unproven.
+  Evidence:
+  `test-results/audit-l1/jitbench.json`
+  and
+  `test-results/suite-audit-l1/console.log`
+  in the lane's worktree. Closing
+  terms: the fault path stops
+  delivering a non-recovering
+  fault indefinitely (the guest
+  thread ends as a reported
+  failure and the page survives),
+  and a repeated mix-fixture
+  series of at least this size
+  completes with no fault-loop
+  boot. Filed, not fixed.
+  *(Numbered FD-180 provisionally
+  on this branch; settles at the
+  next composition.)*
+
+- **FD-181 — A 64-bit benchmark
+  guest, spawned into a healthy
+  session, can produce no output
+  at all: its only thread parks
+  in a socket-condition wait and
+  never runs.** *(Medium-Low as
+  measured — the shape is a guest
+  process start stalling, which
+  is product-path machinery, but
+  every observation so far was
+  taken under heavy shared-box
+  load, which is recorded with
+  each attempt and not excluded.
+  Filed by the audit-follow-up
+  lane, 2026-11-05, from the same
+  L1 repetition series as
+  FD-167.)* Three attempts at a
+  jitbenchmix-x64 boot series on
+  the batch-7 build (wasm
+  `c0af957a`) each stopped at the
+  first boot: the session booted,
+  the benchmark was spawned, and
+  no benchmark output appeared
+  within the harness's 180 s wait
+  (zero BW_JITBENCHMIX lines; no
+  fault, trap or page-error lines
+  either). The hang diagnostic
+  shows the benchmark process
+  (pid 10) with its single thread
+  WAITING on
+  `KUnixSocketObject::lockCond`
+  in two of the three attempts
+  (RUNNING, unresolved, in the
+  first). Invocation 1-minute
+  loads: 15.1, 19.6, 12.2. The
+  same fixture passed both modes
+  in the batch-7 gate's focused
+  re-run, so this is intermittent,
+  not deterministic. Evidence:
+  `test-results/audit-l1x64*/jitbench.json`
+  and
+  `test-results/suite-audit-l1x64*/console.log`
+  in the lane's worktree. Closing
+  terms: a repeated x64 mix
+  series completes on a quiet
+  box, or a stall is captured
+  together with the server-side
+  state the thread is waiting on
+  and the cause is fixed or the
+  wait bounded and reported.
+  Filed, not fixed. *(Numbered
+  FD-181 provisionally on this
+  branch; settles at the next
+  composition.)*
+
+- **FD-182 — The MSVC complex-multiply helper family is missing
+  outright from the versioned C runtime DLLs: `_Cmulcc`, `_Cmulcr`,
+  `_FCmulcc`, `_FCmulcr`, `_LCmulcc`, `_LCmulcr` are not exported at
+  all by the shipped msvcr120 (either architecture), and the same
+  family plus `_Cbuild`, `_FCbuild`, `_LCbuild` is absent from
+  msvcr70/71/80/90/100/110 and from msvcrt.** *(Low. Filed by the
+  FD-169 lane, 2026-11-05, from guest-proof fallout.)* These are not
+  stubs — the export names do not exist in the shipped DLLs, because
+  Wine's spec files for those DLLs never listed them, although the
+  real Microsoft DLLs export them and the implementations already
+  exist in Wine's shared msvcrt source (ucrtbase exports the whole
+  family and the FD-169 guest fixtures prove it there). A program
+  importing them from a versioned CRT fails to load. Found when the
+  FD-169 fixture called `_Cmulcc` through a NULL pointer on
+  msvcr120. Closing terms: add the spec lines (the code is already
+  in the tree; mind the `_MSVCR_VER>=120` guard on the complex
+  chunk for the older DLLs), rebuild through the FD-169 pipelines,
+  re-pin, regenerate the census baseline (named-export counts grow;
+  stub counts unchanged), and prove with the FD-169 fixtures'
+  complex group resolving the exports in the versioned DLLs too.
+  Filed, not fixed.
+
+- **FD-183 — setupapi's pre-existing config-manager layer is hollow:
+  roughly twenty CM_* functions that the census counts as
+  implemented are semi-stubs returning success with empty results.**
+  *(Medium. Filed by the FD-171 lane, 2026-11-05.)* In the shipped
+  Wine 8.0 `dlls/setupapi/stubs.c` (and the Wine 10.0 equivalent),
+  the non-`_Ex` config-manager functions that predate FD-171's work
+  answer CR_SUCCESS without touching the device tree:
+  `CM_Get_Device_ID_List{A,W}` returns an empty list,
+  `CM_Get_Device_ID_List_Size{A,W}` reports the empty list's size,
+  `CM_Get_Child` / `CM_Get_Child_Ex`, `CM_Locate_DevNode{A,W,ExA,ExW}`,
+  `CM_Get_Device_Interface_List_Size{A,W,ExA,ExW}`,
+  `CM_Create_DevNode{A,W}`, `CM_Connect_Machine{A,W}`,
+  `CM_Get_DevNode_Registry_Property*`, `CM_Get_DevNode_Status*` and
+  `CM_Request_Device_Eject*` have the same shape (FIXME + success or
+  empty success). Any guest that enumerates devices through the
+  classic (non-Ex) entry points is silently told there are no
+  devices. Invisible to the export census, which only detects
+  winebuild stub bodies. Found when the FD-171 lane implemented the
+  `_Ex` family against the registry device model and read the
+  neighbouring layer. Fix route: reimplement the classic entry
+  points over the same registry model FD-171 used for the `_Ex`
+  family (the `_Ex` implementations in
+  `tools/buildWine/patches/wine8-fd171-contracts.patch` are the
+  template: machine handle NULL == local machine), or forward them
+  to the `_Ex` forms where the signatures allow.
+
+- **FD-173 — A fresh working
+  copy's first build compiles
+  every file from scratch, even
+  though the project's builds are
+  byte-for-byte reproducible and
+  an already-built copy's builds
+  are incremental.** *(Medium.
+  Filed by the incremental-build
+  lane, 2026-11-05; provisional
+  until the merge lane's audit.)*
+  Measured on the base: in an
+  already-built copy the standard
+  build recompiles 0 files with
+  no change and exactly 1 file
+  after a one-file change, so the
+  compiler layer was never the
+  problem. The full compile is
+  paid at the copy lifecycle:
+  `project/emscripten/Build/` is
+  ignored, every lane starts in a
+  fresh worktree with no build
+  directory, finished trees are
+  stripped of theirs, and the one
+  preparation step linked the
+  generated payload inputs from
+  the shared store but did
+  nothing for build outputs.
+  Closing terms: a seeded fresh
+  copy's first build after a
+  one-file change recompiles only
+  that change, its program file
+  is byte-identical to a
+  from-scratch build of the same
+  tree at the same source state,
+  and the standard suites pass on
+  the result. Fixed on the lane
+  as CL-126.
+
+- **FD-174 — The preparation
+  step's payload links show up as
+  untracked files, inflating the
+  changed-file count the build
+  records as provenance.**
+  *(Low. Filed and fixed by the
+  incremental-build lane,
+  2026-11-05; provisional until
+  the merge lane's audit.)*
+  `.gitignore` names the
+  generated payload directories
+  in trailing-slash form, which
+  matches real directories only;
+  since the shared-store
+  preparation step links those
+  directories in as symlinks,
+  every prepared copy showed 13
+  untracked entries, and
+  BUILD_INFO.json's
+  git_dirty_files counted them
+  (14 recorded for a tree with
+  exactly one real change).
+  Fixed on the lane in commit
+  `1dae2e9d5`: the same paths are
+  also ignored without the
+  trailing slash, matching both
+  forms; a prepared tree's status
+  then shows only real changes,
+  and the first build after the
+  fix recorded git_dirty_files 2
+  for a tree with exactly two
+  genuine modifications.
+
+- **FD-184 — A core CPU header defines two-letter
+  macros that poison later header inclusions.**
+  *(Low, tooling)* `source/emulation/cpu/common/cpu.h`
+  defines `u16`/`h16`/`u8`/`h8` as macros for the
+  register union's member spellings (`#define h8 byte[1]`
+  and family, cpu.h:147-150). Any translation unit that
+  has seen the boxedwine.h chain and afterwards includes
+  headers that use those spellings as ordinary
+  identifiers fails to compile: asmjit's `a64operand.h`
+  declares a member function `Vec h8()`, which the macro
+  rewrites into an array declaration. Demonstrated
+  2026-11-05 by the lane-pch build: an early form of
+  that lane's change forced the chain into asmjit's own
+  `unicompiler_a64.cpp` / `unicompiler_x86.cpp` and both
+  died with `error: declaration of 'byte' as array of
+  functions` at cpu.h:148 (evidence:
+  `test-results/pch/pch-native.log`, the first failed
+  run). No translation unit in the tree fails today -
+  verified: no project source includes asmjit headers
+  directly, and the two library units above never see
+  the chain - but the landmine is armed for any future
+  include-order change, unity build, or header refactor.
+  Closing terms: the four macros gone or made
+  collision-proof (scoped spellings at the use sites, or
+  push/pop_macro discipline around third-party includes
+  that need the names), with the full native and
+  browser builds and suites green, plus a compile
+  fixture that includes the asmjit headers after the
+  boxedwine.h chain. Filed, not fixed. Number
+  provisional: sibling branches carry provisional
+  filings through FD-172, and the composition audit
+  settles final numbers by substance.
+- **FD-185 — The Emscripten `test` target does not
+  compile: six test units need the multi-threaded
+  configuration the target never defines.** *(Medium,
+  tooling)* `project/emscripten`'s `test` target
+  compiles TEST_SOURCES - the same test units the
+  native test build compiles with
+  BOXEDWINE_MULTI_THREADED defined - without that
+  define (its flags are `-D__TEST -DASMJIT_STATIC`).
+  Six units in `source/test/process/` use members that
+  exist only in the multi-threaded configuration and
+  fail: testCondWait.cpp (BoxedWineCondition::lock and
+  unlock, KThread::startSignal), testInotify.cpp,
+  testNotDir32.cpp and testPathVerdicts32.cpp
+  (KProcess::stat), testMsyncLockOrder.cpp (a lock
+  constructor over the configuration's mutex type),
+  testThreadLifetime.cpp (a configuration-dependent
+  return statement). Measured 2026-11-05 by the
+  lane-pch census: `make test -k` built everything else
+  (432 objects, including every precompiled-header
+  consumer) and failed on exactly these six; each of
+  the six fails identically when compiled plainly with
+  the target's own flags, so the breakage is
+  pre-existing and unrelated to that lane's change
+  (evidence: `test-results/pch/emtest-k.log`; record:
+  `docs/reports/pch-build-20261105.md`). The
+  `wasm32-jit-selftest` target shares the source list
+  and the same missing define and is expected to fail
+  identically; not separately measured. The target is
+  in no standing gate, which is how it rotted
+  unnoticed. Closing terms: the six units compile in
+  the target - by configuration guards in the units,
+  by the target defining the configuration it actually
+  runs, or by the target's source list excluding units
+  that cannot apply - and the target links; or the
+  target is removed as dead with its references cleaned
+  up. Filed, not fixed. Number provisional (see
+  FD-173's note).
+
+- **FD-186 — Compiling the
+  project recompiled every
+  source file from scratch, in
+  every working copy, every
+  time.** *(Low. Filed and fixed
+  by the build-cache lane,
+  2026-11-05; numbering
+  provisional until the merge
+  audit.)* A full browser build
+  compiles 270 translation
+  units and a native
+  configuration ~377, and none
+  of it was remembered: every
+  lane's fresh working copy —
+  and every repeat build — paid
+  the full compile again on the
+  shared 4-core box (one browser
+  build measured at 1,434 s at
+  the loads in the lane record).
+  Closing terms: a compile whose
+  inputs and flags are unchanged
+  returns the remembered result,
+  machine-wide across working
+  copies; proven by before/after
+  timings under recorded loads,
+  a byte-identical product file,
+  and the standard suites
+  passing on the result; a first
+  build with an empty cache
+  still works; the setup rides
+  the existing worktree
+  preparation step so future
+  copies get it automatically.
+  FIXED on branch
+  `lane-buildcache` — see
+  CL-132.
+
+- **FD-187 — statfs named one flat filesystem for every path, which
+  hid every synthetic device from guest udev. The 32-bit process
+  layer answered f_type 0xEF53 (EXT3) everywhere and the 64-bit
+  layer the tmpfs magic everywhere. The guest's libudev verifies a
+  device's sysfs path by requiring fstatfs to report SYSFS_MAGIC
+  there (measured by disassembling the staged libudev: its
+  set-syspath verification refuses the device otherwise), so every
+  synthetic device — the gamepad included — was rejected before
+  enumeration. All four entry points (32-bit
+  statfs/statfs64/fstatfs, 64-bit statfs64/fstatfs64) now report
+  SYSFS_MAGIC (0x62656572) for nodes under `/sys` and
+  PROC_SUPER_MAGIC (0x9fa0) under `/proc`, keeping the previous
+  answers elsewhere. CLOSED — see CL-133. Filed and fixed by the
+  gamepad lane, 2026-11-06. Record:
+  `docs/reports/fd24-gamepad-20261106.md`.
+
+- **FD-188 — Kernel-mode Wine drivers fail to initialise in
+  the emulator.** *(High)*
+  Every attempt to load a kernel-mode driver in a guest
+  session fails the same way: ZwLoadDriver answers c0000142
+  (STATUS_DLL_INIT_FAILED) for MountMgr, nsiproxy, NDIS and
+  wineusb, and a guest-side StartService for the WineBus
+  driver returns error 1114 (ERROR_DLL_INIT_FAILED). The
+  failures appear in preserved session logs from unmodified
+  builds (wt-fd169's crt32/crt64 suite consoles; the
+  integration tree's dxvk test-results), so the condition
+  predates and is independent of any one lane's changes.
+  Consequence: no PlugPlay device class can appear in a
+  guest — HID devices (game controllers, FD-24) included —
+  because the bus driver that would create them cannot
+  start. The PlugPlay service itself runs (32-bit prefix:
+  state 4) and the bus device and service are registered
+  there; the driver simply never initialises. Closing
+  terms: a guest session in which the standard drivers
+  initialise (or the failing component is identified and
+  its init path repaired), proven by a guest probe that
+  starts the WineBus service successfully and by the FD-24
+  witness then seeing the controller. Filed by the gamepad
+  lane, 2026-11-06, from the measurements in
+  `docs/reports/fd24-gamepad-20261106.md`.
+- **FD-189 — The shipped 64-bit guest prefix has no
+  PlugPlay or bus-driver registration.** *(Medium)*
+  In a 64-bit guest session the PlugPlay, WineBus and
+  WineUsb services do not exist (a guest probe's OpenService
+  answers error 1060 for all three) and the root device
+  enumeration is empty. The shipped `prefix64.zip`'s
+  system.reg contains no PlugPlay or WineBus entries at
+  all; the 32-bit `prefix32.zip` carries them (its guest
+  probe shows PlugPlay running and both bus services
+  registered, stopped). So on the 64-bit side the
+  plug-and-play stack is absent before any driver question
+  arises (FD-173 is the separate driver-initialisation
+  defect that also blocks the 32-bit side). Closing terms:
+  the 64-bit prefix (or its in-session initialisation)
+  registers the PlugPlay service and the ROOT\\WINE bus
+  devices the way the 32-bit one does, proven by the same
+  guest probe reporting the services present. Filed by the
+  gamepad lane, 2026-11-06; evidence
+  `docs/reports/fd24-gamepad-20261106.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -7907,6 +9141,7 @@ is behavioural, is re-proven there.
 
 | Branch | What it fixes | Proof on the branch |
 | --- | --- | --- |
+| `lane-perf2` | *(Batch-9 settled numbers: filings FD-175, FD-176.)* FD-26 (partial): the fast engine compiles FF/FE INC/DEC instead of falling back block-wide (see the FD-26 progress note) | Guest bench warm medians: fast engine 491/958 ms before -> 89/102 ms after (interpreter 310/546 -> 287/298 in the same runs), checksum identical across modes and builds; native jit64 tests 873/0; emitted-code differential 314/0; native main 686/0, x64 111/0; JS unit 353/0; Doom demo-matrix: mapped + gameplay, 132 frames presented (13 before, different load). Record: `docs/reports/perf-incdec-fastpath-20261105.md` |
 | `lane-firstvisit` | FD-01: the desktop-initialization impatience defects (Wine win32u backport — wait raised, announcement check retries) | Fresh-profile before 0/6 → after 6/6; JS 333/0; native 648/0; completeness 0 failures |
 | `lane-fd55` | FD-61: the shader-capability audit's specialization sweep counted buffer-content runtime arrays against the RuntimeDescriptorArray capability and rejected servable modules (fix in the bridge audit + mirror comments; vulkan register citations re-pinned) | Standalone C++ classifier on the captured modules: both flip admit 0→1, a genuinely unservable module stays 0; new unit test spirvfix-r15-buffer-arrays 3/3 (sabotage-checked); in-vivo demo run: capability rejections 3 → 2 and both modules now create (the 2 remaining failures are FD-62); dist 'Browser export verified', completeness 0 failures; JS suite 345/0 |
 | `lane-cleanlog` (pathfinder) | The campaign pattern standard; guest memory faults were logged nowhere; 11 system calls panicked on unsupported arguments by default; launcher downloads did not retry | Native 648/0 serial |
@@ -7934,6 +9169,7 @@ is behavioural, is re-proven there.
 | `lane-fd77b` | FD-77 CONVICTED + FIXED: the silent freeze is an ABBA deadlock — msync held the mapped-files mutex across a writeback that demand-faults guest pages (memory mutex second), against the demand path's memory -> mapped-files order; the specified fault-stage instrument + mutex owner records were built and the first armed run parked into a capture that names both halves; fix snapshots the mapping and writes back after release | Fault-stage instrument `3ca9decf4` (citation audit 352 rows / 0 drift; instrumented build compiles, wasm 5ebee420); deterministic test testMsyncLockOrder RED on unfixed code -> GREEN with the fix `52ee264c7`; native serial main 666/666, x64 65/65; JS 348/348; fixed browser build compiles (wasm 646f85cc); consumer 6/6 mapped, 0 parks. Record: `docs/reports/fd77-msync-abba-20261101.md`; evidence `test-results/fd77b/` |
 | `lane-fd72` | FD-75: the SPIR-V audit now refuses helper-invocation reads (BuiltIn HelperInvocation / OpIsHelperInvocationEXT) by name at vkCreateShaderModule (`spirv-builtin-helper-invocation`) instead of admitting modules whose draws the page tier would drop at pipeline translation; FD-72's boundary proven with primary evidence and its entry rewritten (stays OPEN on translator-stack terms); FD-74 filed (translator validator rejects fragment SampleMask builtins) | Native GUARD (both spellings refuse + counter, FragCoord neighbour admits, sabotage-verified); full native run green; JS unit at the integ baseline (347 passed, only the two dist-state audits failing on the unbuilt tree); legacy 110/4 standing set; citations zero drift; dist 'Browser export verified' with the support archive byte-identical; in vivo: the byte-identified Godot module refused at creation by name + hash (the run's only refusals), zero page-tier translation failures. Record: `docs/reports/fd72-helper-invocation-boundary-20261101.md` |
 | `lane-fd81-linktmp` | FD-81: link() refused every temp-file-to-lock-name link in the browser build (the Emscripten backing stores have no hard-link operation; EMLINK on all of them - 57 per 32-bit boot on fontconfig cache locks, per the FD-58..60 deploy record) - now served at the emulator layer by sharing the source's backing path (one backing file, shared node id and link group; group-aware link counts, unlink and rename); native builds and symlink sources unchanged | New test testTempFileLinkPattern in both suites (the pattern end to end + a host-side backing census; sabotage-checked both ways); full native suites serial: main 666/666, x64 65/65, 0 FAILED; dist 'Browser export verified' (git_sha b0b3a70d3); in vivo boot32-vkboot PASS: 0 BW64-FAIL lines, 5 BW64-INFO hard-link lines on the deploy record's exact fontconfig files. Record: `docs/reports/fd81-temp-link-pattern-20261101.md`; evidence `test-results/fd81/` |
+| `lane-gamepad` | *(Batch-9 settled numbers: FD-187 closed as CL-133; filings FD-188, FD-189.)* FD-24 ADVANCED, NOT CLOSED + FD-187 CLOSED (lane-local CL-133) + FD-188 FILED + FD-189 FILED: the emulator's controller chain is complete — SDL host feed into the kernel evdev gamepad, a synthetic /sys input class, statfs naming the /sys and /proc trees with their real magics (FD-187), and the device's udev data synthesised — with the purpose-built witness (XInput + DirectInput) as the proof vehicle; guest visibility remains blocked inside Wine by FD-188 (kernel drivers fail to initialise: ZwLoadDriver c0000142 / StartService error 1114, present on unmodified builds too) and FD-189 (the shipped 64-bit prefix has no PlugPlay/bus registration). | Commits `6b6186d93` + `bcff6378b` on base `48d27952a`; native suites serial, 0 FAILED (main 690 tests, x64 114 tests) (including the two new FD-187 pinning tests); JS unit suite 353/0; browser build 'Browser export verified' (wasm `42bd5a2a…`). Guest measurements: the SDL feed opens the simulated pad in the browser build; libudev enumerates the gamepad after the statfs fix; the WineBus service start fails with error 1114 on the 32-bit side, and the bus services do not exist (error 1060, empty root enumeration) on the 64-bit side. Record: `docs/reports/fd24-gamepad-20261106.md` |
 | `lane-fd63` | FD-63 CONVICTED + FIXED: the METRICS emission gate counted presents, Vulkan frame completions, GL and audio calls as activity but not syscall dispatch, so a session that stopped presenting had every later window discarded unreported by the no-activity branch — the panel froze at the last present-driven snapshot while the session executed on; the gate now counts syscall dispatch as activity | New section of the native metrics selftest drives six successive syscall-only intervals against the real registry: RED on unfixed code (24 PASS, exactly the two FD-63 assertions FAIL) -> GREEN with the fix `6d711e6a6`; writer fixture reproduced byte-identically modulo clock fields (committed fixture unchanged); reader contract + panel tests 21/21; browser build 'Browser export verified' / BUILD COMPLETE, wasm 1809b7d7, support c4dbe35986a5 unchanged. Record: `docs/reports/fd63-metrics-emission-20261101.md`; evidence `test-results/fd63/` |
 | `lane-fd79-80` | FD-79: a file description's close event (IN_CLOSE_WRITE / IN_CLOSE_NOWRITE) is delivered at the host's moment — held while any mapping of the description is live, delivered at the last unmap (the emulator lost it in-session: destructor-driven close, pinned by the mapping entries and the system file cache); FD-80: the 64-bit dispatcher's preadv (295) and preadv2 (327) wired over pread64's factored core with the host's validation and one-IN_ACCESS-per-success shape; FD-82 (64-bit materialized mappings outside the deferral), FD-83 (readv silent on 0-byte success) and FD-84 (wrong-mode reads answer EINVAL, host EBADF) filed | New tests testCloseWriteDeferral (both suites; RED on the base — five arrival assertions failing; the first fix version missed write-fault CopyOnWrite pages and the test caught it) and testPreadv64Syscalls (x64 suite; RED on the base dispatch — 'unimplemented syscall #295/#327', -ENOSYS); host-kernel reference programs measured first (close-event matrix, preadv/preadv2 validation and notification matrices); full native suites serial: main 668/668 and x64 68/68, 0 FAILED; browser build compiles on the fixed tree (see the lane record). Record: `docs/reports/fd79-fd80-kernel-semantics-20261101.md`; evidence `test-results/fd79-80/` |
 | `lane-fd66` | FD-66: `setupReadbacks` discarded still-pending readback plans without freeing their heap blocks (latent — every production submit pairs setup with completion, so the discard was reachable only from the harness's planning sections), and the harness's sanitizer flavour reported the fixture's abandoned blocks so it could never finish clean | RED on the base reproduced the filed measurement exactly (LeakSanitizer 1,132 bytes in 5 allocations from setupReadbacks, exit 1); GREEN fixed: sanitizer flavour 57 PASS, exit 0, zero leak reports, via the standard runner too (its sanitizer run budget raised to 180 s); sabotage (prologue alone reverted) reopens exactly 328 bytes in 2 allocations; native serial 667/667 + 66/66; JS 348/0; citations 352/0 after re-pins; browser build BUILD COMPLETE (wasm df27c5e0…). Record: `docs/reports/fd66-readback-disposal-20261101.md`; evidence `test-results/fd66/` |
@@ -7992,6 +9228,28 @@ is behavioural, is re-proven there.
 | `lane-fd154` | *(Batch-7 settled numbers: FD-154 closed as CL-118.)* FD-154 ADJUDICATED + CLOSED: the five browser-suite failures from the batch-5 gate, each identified to a product or harness cause and fixed. winsock-http PRODUCT (fix `d26f606a1`): browser-build INET sockets are marked loopbackStream and connect() refused loopback destinations internally, never using the native transport that reaches the relay; it now falls through to the native connect when no guest listener exists. input-mouse-rel PRODUCT (fix `3cce91bcb`): both relative-motion producers advanced the sink's tracked pointer at queue time and the delivering connection added the delta again, doubling the first motion of every stream (injected 100,50 -> guest 200,100); producers no longer advance, and deliveries are reported back through the new noteDeliveredPointer(). input-fullscreen HARNESS over three PRODUCT layers: harness `e482eb6a6` keeps the page unlocked (headless grants ClipCursor's pointer lock without a gesture and clicks under lock arrive at (0,0)) and delivers the press through the injection channel; product `f610e90b2` (a GrabModeSync grab froze input at grab time), `dbe7705f3` (grab-routed events dropped as foreign-target because Wine grabs on the root window owned by another connection -- own-grab targets now deliver on the grabbing connection, and grab parameters plus every pointer-path drop reason log under BW64_XWIRE), `25471296c` (the delivery loop re-froze after the first event under a sync grab while this client never sends XAllowEvents -- sync grabs treated as async, matching the native X11 layer). jit64 HARNESS (`189f6b302`, `41de3c327`): the wineboot wait demanded `wineboot.exe--init`, a substring the space-joined argv rendering never produces; pattern fixed and the generated-code assertion gated on engine availability. jitbench HARNESS (`b99c92154`, `260545f5b`, `1d2c059d8`, `87d9e021b`): the boot never passed ?jit32 so CPU32 mode-1 could never latch, and the suite's interpreter-target build has no JIT engine to latch; assertions gate on the stats' availability report, JIT-variant builds keep the full assertions. Two xwire-pointer-grab unit contracts updated to the measured semantics (`58f759879`). | All five reproduced stock on the unmodified base `3ea2fd97d` first. Fixed build (wasm `3b3fd4f9`): winsock-http passes with relay stats accepted 1, 76 bytes up / 324 down; input-mouse-rel and input-fullscreen pass on both architectures (the guest prints the move, BUTTON UP, and the clipped 1500-count move exactly once); jit64 passes end to end in both modes; the jitbench focused run passes. JS unit 353/0; native suites serial main 682 tests 0 FAILED, x64 108 tests 0 FAILED. Whether the shipped build should switch to the JIT variant is flagged in the lane record as a build decision outside this filing. Record: `docs/reports/fd154-adjudication-20261104.md`; evidence `test-results/fd154/` |
 | `lane-fd162-164` | *(Batch-8 settled numbers: FD-162 closed as CL-119, FD-163 as CL-120, FD-164 as CL-121; filing FD-165 keeps its number.)* *(Provisional numbers: closures settle at the next composition.)* FD-162 CLOSED + FD-163 CLOSED + FD-164 CLOSED (lane-local CL-119..CL-121): FD-162 -- the 32-bit xattr descriptor forms answered the emulator-private -EBADFD for an unopened descriptor and flistxattr never consulted its descriptor; the four forms now share the host's entry order (flags, name fetch, descriptor -EBADF) and flistxattr answers the empty list for an open descriptor. FD-163 -- the xattr get forms answered -ENODATA for every name on a resolved target; both dispatchers now classify the fetched name (unmodelled prefix -ENOTSUP, recognised namespace with an absent attribute -ENODATA, a bare recognised prefix -EINVAL) and the empty name answers -ERANGE at fetch time. FD-164 -- a ".." away from the end of a path was erased with its predecessor sight unseen; the resolver now judges each non-trailing ".." by resolving the path ahead of it when the notDir verdict is asked, and ".." clamps at the root. New filing from this lane's measurements: FD-165 (the set/remove forms' namespace classification, unmeasured and unmodelled). | Tests `ec62ca78e`, fixes `9b4ce67b1` + `872d1b474` on base `4006ddb58`: RED -- the five new guest tests fail on the base for the filed reasons (evidence `test-results/fd162-164/red-main.log`, `red-x64.log`); GREEN -- full native suites run serially with 0 FAILED (main 689 tests, x64 113 tests); JS unit suite 353/0; browser build 'Browser export verified' on the fixed tree (wasm `0e5fa5dee8b2`). Host behaviour measured first at the raw syscall level (asm-generic numbers, strace cross-checked): `test-results/fd162-164/hostref-fd162-164.out`, `hostref-fd163b/c/d.out`. Record: `docs/reports/fd162-164-xattr-namespaces-dotdot-20261105.md`; evidence `test-results/fd162-164/` |
 | `lane-buildrel` | *(Batch-8 settled numbers: FD-31 closed as CL-122, FD-32 as CL-123, FD-33 as CL-124.)* *(Provisional numbers: closures settle at the next composition.)* FD-33 CLOSED + FD-32 CLOSED + FD-31 CLOSED (lane-local CL-119..CL-121): FD-33 -- the native release build failed to link on three symbols defined behind the 64-bit-guest gate (msgScratch, tickXWirePresent, hasMainThreadWork); the message scratch, its caches and the execve invalidation move ahead of the gate in syscall64.cpp, the kprocess invalidation call is ungated, the multi-threaded mainloop guards its wire-present calls like the single-threaded one, and the test build's msgScratch stub (returning 0, silently routing tests to a fallback) is deleted so tests link the real scratch; part (b), the filed JIT compile error, is not reproduced on the current tree (the threshold helper's outside uses already carry the guard; the configuration's full compile is error-free). FD-32/FD-31 -- multi-worker native suite runs were in-process threads and died exit 139 (main suite after 2 tests amid a runaway guest-memfault loop; 64-bit suite after 79 of 111 at the clone tests); parallel runs are now process shards, each shard running a strided slice through the serial mode's unchanged fork-per-test isolated path, output replayed in shard order, failure counts returned over a pipe, a dead shard failing all its tests loudly. | Fix `05ab65469` on base `4006ddb58`: release build RED on base (the three undefined symbols at link) -> GREEN (links, binary starts and shuts down cleanly); all five native configurations build exit 0 (release, test, x64, x64-test, x64-cache); browser build 'Browser export verified' on the same commit (wasm `7daab6b2`, BUILD_INFO dirty 0). Suites: main serial 686/0, 4 shards 686/0, default 686/0, preserved thread path exit 139 after 2; x64 serial 111/0, default shards 111/0, 4 shards 111/0 twice with one futex-race flake in a third run at load 13-17 (test 6/6 standalone; failing log preserved). All runs on the shared box, loads recorded per log. Record: `docs/reports/buildrel-fd31-32-33-20261105.md`; evidence `test-results/buildrel/` |
+| `lane-sharedbuild` | *(Batch-9 settled numbers: FD-178 closed as CL-125.)* FD-178: generated payload inputs (~2 GB per tree) deduplicated into one shared pin-verified store, linked not copied; the prep helper fixed (it failed partway on a fresh tree, sourced DXVK from a stale checkout, and overwrote the tree's runtime-assets manifest with stale 20261013 pins) | Side-by-side fresh trees of integ 48d27952a: byte-identical product wasm 9b51d60101ab, both BUILD COMPLETE with the pinned archive c4dbe35986a5 verified; JS suites — old-way tree ALL TESTS PASSED (legacy exit 0, unit 353/0), new-way tree legacy exit 0 and unit 349/4 in a full run under heavier box load, the 4 failures (boot-progress-snapshot + three x11 tests, none reading a payload path) all passing on filtered re-runs in the same tree (36/0, 1/0); known-gaps audit exit 0 in both trees; new tree holds 557 real payload bytes vs old tree's 1,981,059,339; store /home/ubuntu/boxedwine64-shared 1,980,622,511 B / 18,718 files, SHA256SUMS self-check OK, 13/13 pins match. Record: `docs/reports/shared-build-store-20261105.md`; evidence `test-results/sharedbuild/` |
+
+| `lane-fd115` | *(Batch-9 settled numbers: FD-115 closed as CL-127; FD-166 filed and closed as CL-128.)* *(Provisional numbers: closures settle at the next composition.)* FD-115 CLOSED (as CL-127) + FD-166 FILED AND CLOSED (as CL-128): the two pre-handshake shapes in which a first-visit 32-bit start could sit as an endless silent wait are now reported failures. FD-115's delivered-fault loop (a winedevice-host thread faulting over and over before the handshake): the launcher's stall watchdog counts printed delivered-fault lines per guest thread before the handshake and reports the start failed at 32 from one thread (reason=prehandshake-fault-loop); the fault's mechanism was not identified — the 2026-11-02 capture remains its only instance (1 in 54 measured shipped-build starts). FD-166, filed from this lane's live capture on shipped batch 7 (a start whose earliest processes showed min_noprogress_ms=780078 in the closing dumps, no fault lines, nothing surfaced): the watchdog also reports a pre-handshake start failed when every process in two consecutive complete dumps has made no guest progress for 300 s with no fetch in flight (reason=prehandshake-no-progress). | Fixes `de0144c72` (FD-115) + `3a4d59793` (FD-166), probes `4ce0dc424` + `b7f5d4003`, on base `4006ddb58`: unit tests RED on the base for both rules, GREEN with the fixes (stall-watchdog.test.mjs 14/14; full JS unit suite 353/0; `npm test` ALL TESTS PASSED); shaped-session probe 5/5 scenarios against the built dist (BUILD COMPLETE 'Browser export verified', git_sha `b7f5d4003`, dirty 0, wasm `c0af957a` unchanged — both fixes are launcher-JS only); first-visit x86 series: live shipped build 19 measured (18 certified, 1 FD-166 silent stall, no fault-loop recurrence), FD-115-only build 34/34 measured certified, final build 36/36 certified; 0 BW64-FAIL and 0 guest-memfault32 lines in every preserved console, 0 restarts. Record: `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`; evidence `test-results/fd115/` |
+
+| `lane-machine-definition` | FD-03 PARTIAL (the entry stays open): floors (c) and (d) raised — machine definition 1 GiB / 1 CPU → 4 GiB / 2 vCPUs from the single KSystem sources with every face made to agree (sysinfo both ABIs, /proc/meminfo, /proc/cpuinfo, /proc/stat, sysfs, both affinity ABIs, CPUID leaf 1), and the Vulkan 64-bit device-local heap 2 GiB → 4 GiB (the single-allocation cap honestly left at 2 GiB). Floors (a) OpenCL/CUDA and (b) AVX/AVX2 recorded as not deliverable in a browser, with the fixture pinning the CPUID AVX bit clear | Tests `a241fdc00` + `c314fd8eb` + `85880ca2c`, fixes `90a2e8ea3` + `938c684d4` (getcpu), citation re-pins `6160ca64c`, JS harness follow-up `5cc01cc9d`, on base `4006ddb58`: RED — main suite fails exactly the two new tests, run-native aborts at the new 4 GiB heap assert, guest fixture reports 5 FAILs on the raised answers; GREEN — native 686/686 + 111/111 serial, run-native 70 PASS, fixture ALL PASS (2 GiB committed and verified page by page; affinity pinned to vCPU 1 alone and read back), smoke 27/27, browser build 'Browser export verified' (wasm `ece9a0f0`), JS 353/0 + legacy 115/0 (116, one skipped), citations 352 rows 0 drift. Record: `docs/reports/fd03-machine-definition-20261105.md`; evidence `test-results/machine/` |
+
+| `lane-dll-census` | Standing export-implementation census built (no emulator code changed): `tools/conformance/dll_export_census.py` classifies every export of the shipped system libraries as real code / forwarder / data / validated unimplemented stub (winebuild's generated stub body, counted only when the module and function name strings embedded in the body match the export exactly), with the census of the shipped batch-7 vintage committed as `tools/conformance/dll_export_baseline.json` and a `--check` ratchet (exit 0 match / 1 drift / 2 new vintage) wired into the JS unit suite. Coverage: 161,676 named exports across 1,171 DLL tables — 127,920 (79.1%) provided, 33,756 (20.9%) validated stubs; no demo program imports a stub on its static load path. Filed FD-167 (40 demo-reachable stub pairs), FD-168 (win32u family, 2,037), FD-169 (CRT family, 10,698), FD-170 (90 whole-DLL-absence tables, 6,734), FD-171 (long tail, 14,287, + the standing guard). | Census self-test GREEN on synthetic x86-64/i386 PEs; `--check` exact match against the gate-archive runtime dir AND against the live deployed runtime dir; tampered baseline fails exit 1 naming DLL+function, swapped wine zip exits 2. Detector validation on the shipped set: 34,990 pattern hits, 0 unvalidated. JS: legacy 115/0 (1 skip); unit suite complete detached run 353 files passed / 1 failed (provenance-artifacts — requires a built dist/ this tree never had, fails identically unbuilt at base); census file PASS in-suite with the real check active (7.2 s) and 3/3 standalone. Record: `docs/reports/dll-export-census-20261105.md`; evidence `test-results/dll-export-census/` |
+| `lane-fd167` | FD-167 disposition — the 40 demo-reachable stub pairs: 27 implemented with real behaviour (Wine 10.0 i386 bodies: bluetoothapis GATT ×8 and bthprops.cpl ×3 under the documented no-radio contract, winusb ×8 under the no-device contract, mf MFCreateDeviceSource and wevtapi EvtRender upstream bodies verbatim, mfplat MFCreateMediaBufferWrapper as a genuine offset/length window over an inner buffer, propsys VariantCompare as the real comparison; Wine 8.0 x86-64 backports: msvcp140 _Throw_C_error, _XGetLastError, _Xbad_function_call from upstream master, setupapi SetupDiGetDeviceInterfaceAlias as a genuine implementation). The 12 esent Jet pairs are proven unreachable in practice (sole caller is Chromium's legacy-Edge profile importer; the shipped demo has no such profile and no import path) and recorded as such. The one remaining pair, msvcp140 _Throw_Cpp_error, has no authoritative semantics in any source and is refiled as FD-172 rather than guessed. Both runtime pipelines gained pins plus checker pins; the retained archive was re-cut as runtime-assets-20261105-fd167 and the manifest re-pinned. Record: `docs/reports/fd167-demo-reachable-stub-contracts-20261105.md`. | Commits 620720f7f, e2d6142ec, 81b45ae65, c8bf5ca89, 152c7cc5b. Runtime-completeness gate 0 failures / 1 skip; census named stubs 33,756 → 33,726, with 27 of 28 implemented pairs resolved in the demo's architecture; JS unit suite 354 passed / 0 failed; browser build "Browser export verified"; 32-bit guest contract fixture PASS (`test-results/fd167/green-run.log`). Open proof item, stated plainly: the 64-bit guest fixture produced no verdict — across a sixteen-attempt requeue loop plus earlier runs it was blocked by probe-slot contention from the batch-8 gate chain and, in the slot-acquiring attempts, by the x86-64 session wedging during boot before the fixture started (thirteen preserved guest consoles); the RED run against the pre-change zips was likewise never captured. Both are owed to the batch-9 gate on a quieter box; the four x86-64 pairs carry build-level proof meanwhile (build export check, objdump at shipped ordinals 623/642/647/345, census resolution). Evidence: `test-results/fd167/`. |
+
+| `lane-fd165` | *(Batch-9 settled numbers: FD-165 closed as CL-129.)* *(Provisional numbers: closures settle at the next composition.)* FD-165 CLOSED (lane-local CL-129): FD-165 -- the set/remove xattr forms answered their standing -ENOTSUP for every name on a resolved target, beyond the one modelled name; both dispatchers now classify names as the host does (unknown family and system.* outside the posix_acl names -ENOTSUP, a bare recognised prefix -EINVAL, a posix_acl set -EINVAL and now log-reported, a posix_acl remove on a file or directory a no-op success, on the link itself user.* -EPERM), the set forms fault on a null value ahead of the target verdicts, and recognised namespaces are stored as native sidecars and read back through the get/list forms with CREATE/REPLACE verdicts. | Tests `09bd3f452`, fixes `a2899c5b5` + `37dba7b69` on base `c4dd96ecd`: RED -- the two new guest tests and the three updated standing tests fail on the base for the filed reasons (evidence `test-results/fd165/red-main.log`, `red-x64.log`); GREEN -- full native suites run serially with 0 FAILED (main 690 tests, x64 114 tests); JS unit suite 353/0; browser build 'Browser export verified' on the fixed tree (wasm `521937b979`). Host behaviour measured first at the raw syscall level (asm-generic numbers, strace cross-checked): `test-results/fd165/hostref-fd165.out`, `hostref-fd165b/c/d.out`. Record: `docs/reports/fd165-xattr-write-classification-20261105.md`; evidence `test-results/fd165/` |
+
+| `lane-audit-l1l2` | *(Batch-9 settled numbers: FD-19 closed as CL-130; filings FD-179, FD-180, FD-181.)* *(Provisional numbers: FD-19 closed as CL-130 — lane-fd162-164 claims CL-130..CL-121 on its branch; filings FD-179, FD-180, FD-181 keep their numbers if free at composition.)* FD-19 CLOSED as DISPROVEN: the 64-bit guest shim resolves the promoted queries' KHR spellings to real alias wrappers that forward to the core wrappers, so a 64-bit guest's KHR call traps under the core fn id and is served; the 32-bit shim traps the KHR id itself, which is why only the 32-bit dispatcher carries the paired cases. New filings: FD-179 (the proc-address lookup returns different addresses for a KHR spelling and its core spelling — both served, answers identical), FD-180 (a 32-bit benchmark boot died in a delivered-fault loop — 65 guest-memfault32 lines at one eip, printed count to 1024 — and the host fault path recursed to a JavaScript stack overflow; the batch-7 gate's one-off 'memory access out of bounds' trap on the same fixture cross-referenced, identity unproven), FD-181 (a 64-bit benchmark guest spawned into a healthy session produced no output in 180 s, its only thread parked in a socket-condition wait, 3 of 3 attempts under recorded heavy load; the gate's focused run passed the fixture, so intermittent). | FD-19: new GUARD section in the native bridge test (`64e7e3c0e`) calling through the shim-returned KHR pointers — core trap id pinned, answers byte-identical to the core names for all three query pairs; run-native 70 PASS, exit 0. L1: bounded repetition series on a build whose wasm `c0af957a` is byte-identical to the batch-7 gate build — x86 mix: 7 clean boots, then the FD-180 fault-loop boot; x64 mix: 3 stalled first-boots (FD-181). Native suites serial main 686 tests 0 FAILED, x64 111 tests 0 FAILED; JS unit 353/0; browser build 'Browser export verified'. Record: `docs/reports/audit-followup-l1-l2-20261105.md`; evidence `test-results/audit-l1l2/`, `test-results/audit-l1/`, `test-results/suite-audit-l1*/` |
+
+| `lane-fd168` | FD-168 first draw-down (all section-A numbers provisional until the batch-9 audit settles them; no CL claimed — FD-168 stays open). Fourteen x86-64 win32u placeholders became real syscall implementations in the Wine 8 backports build (`tools/buildWine/patches/wine8-win32u-fd168-backports.patch`: spec lines to the syscall shape, syscall-table entries, unix-side bodies ported from the newest upstream source and adapted to this vintage's server protocol): NtUserAlterWindowStyle, NtUserBuildHimcList, NtUserBuildNameList, NtUserBuildPropList, NtUserGetClipCursor, NtUserGetCurrentInputMessageSource, NtUserGetPointerType, NtUserGetThreadState, NtUserQueryDisplayConfig, NtUserQueryWindow, NtUserRegisterWindowMessage, NtGdiGetMiterLimit, NtGdiSetMiterLimit, NtGdiIcmBrushInfo. Runtime restaged with re-pinned hashes (checker + README), retained runtime-assets archive rebuilt and re-pinned, census baseline regenerated in the same change: x64 win32u 926 -> 912, i386 1,111 unchanged, FD-168 total 2,037 -> 2,023, shipped named stubs 33,756 -> 33,742, only x64/win32u.dll moved across 1,171 tables. Remaining 2,023 carry recorded per-family dispositions in the FD-168 entry (31 D3DKMT-layer-only, 6 blocked on absent server/driver/state machinery, 8 upstream FIXME semi-stubs not faked, 1 upstream-removed misspelling, 866 never implemented upstream, i386 vendor-build disposition). | Guest test `win32u-fd168` PASS — fixture `tools/guest-fixtures/win32u-fd168.c`, 17 checks, every check ok=1 and RESULT 0 in the run's preserved console log; the first run (16/17) caught the miter-limit pair using Wine 8's stale FLOAT parameter form — rewritten to Wine 10's DWORD bit-pattern form and re-proven 17/17. Census `--check` exit 0; completeness checker + `bootstrap.py --check` 0 failures; dist build "Browser export verified". JS unit suite 354 passed / 0 failed on the final tree; legacy 115/0. Record: `docs/reports/fd168-win32u-drawdown-20261105.md`; evidence `test-results/suite-win32u-fd168/` |
+
+| `lane-fd170` | *(Batch-9 settled numbers: FD-170 discharged as CL-131.)* FD-170 DISCHARGED (provisional CL-131; settles at the batch-9 composition): a recorded per-DLL decision for all 50 whole-DLL-absence DLLs (90 tables, 6,734 named stubs). Implemented on the x64 side via `tools/buildWine/patches/wine8-fd170-contracts.patch` in the Wine 8.0 backport pipeline (built by `tools/rootfs64/build-wine8-backports.sh`, staged by `stage-wine8-backports.sh` / `build-wine64-zip.sh`, hash-pinned fail-closed in `tools/rootfs64/check_runtime_completeness.py`): bluetoothapis 95→71 named stubs (Wine 10.0's radio/SDP code backported + the FD-167 no-radio/no-device contract bodies, with the headers they need), winusb 21→13 (the FD-167 no-device contract bodies), netutils 22→17 (Wine 10.0's `NetApiBuffer*` heap-buffer functions). The other 47 DLLs are accepted as documented absences, each with its concrete missing substrate recorded in the FD-170 entry and the lane record. | Census run against the built binaries differs from the base baseline in exactly those three tables (33,756 → 33,719 named stubs total; FD-170 remainder 6,697); baseline regenerated in the same change, `--check` exit 0. Runtime assets re-cut as `runtime-assets-20261105-fd170`; `bootstrap.py --check` passes (13 files verified, completeness 0 failures). JS unit suite 352 passed / 2 failed — both failures (provenance-artifacts, binary-patch-registry) attributable to the borrowed batch-8 gate dist this lane tested against, not to the change; the census guard test passes. Guest fixture `web/tests/suite/browser/fd170-contracts64.test.mjs` committed; its verdict is owed to the batch-9 gate — every attempt on 2026-11-05/06 died in the shared probe queue or in a guest boot that outlasted the hung-probe cap at load 13–19. Record: `docs/reports/fd170-whole-dll-decisions-20261105.md`; evidence `test-results/fd170/` |
+
+| `lane-incremental-build` | *(Batch-9 settled numbers: FD-173 closed as CL-126; FD-174 fixed.)* *(Provisional numbers: FD-173 closed as CL-126, FD-174 fixed in the same commit; both settle at the next composition.)* FD-173 CLOSED: a fresh working copy's first build compiled all ~270 files from scratch even though builds are byte-for-byte reproducible and an already-built copy is incremental (0 files recompiled with no change, exactly 1 after a one-file change, both measured on the base). The shared store now holds per-commit build seeds; the prep step verifies and installs a seed into fresh copies of that commit, and a publish script stores a seed from any verified clean build. FD-174 FIXED in the same commit: the prep step's payload directory symlinks showed as untracked files (the .gitignore entries were trailing-slash forms, which do not match symlinks) and inflated BUILD_INFO's git_dirty_files; the same paths are now ignored in both forms. | Commit `1dae2e9d5` on base `48d27952a`. Proof (every build's program file sha256 `9b51d60101ab`): fresh unseeded copy, first build 270 files, 2,491 s wall on the shared box; seeded fresh copy + one-file change: 213 s, exactly 1 file recompiled; same seeded tree from scratch: 2,345 s, all 270 files, byte-identical program file, BUILD_INFO git_dirty_files 2 (was 14 for the same tree state before the FD-174 fix); JS unit suite 353/0 and legacy suite 115/0 (1 skipped) on the seeded copy's incremental output; a seedless commit preps exactly as before (note printed, exit 0, no build directory). Record: `docs/reports/incremental-build-seed-20261105.md`; evidence `test-results/incbuild/` |
+
+| `lane-pch` | *(Batch-9 settled numbers: filings FD-184, FD-185.)* Build speed (improvement, no FD closed): both project makefiles precompile the shared `boxedwine.h` chain once per build directory instead of re-parsing it in every one of the 330 project translation units that include it - clang `-include-pch` (project/emscripten/makefile), GCC `.gch` (project/linux/makefile). The precompiled set is computed by membership (project sources under source/ and platform/ only, minus the six sources that do not include the header); third-party sources under lib/ never see it. Generated dependency files make every header in the chain a prerequisite of the precompiled header, so editing one rebuilds it and all consumers. FD-184 and FD-185 filed from this lane's measurements (cpu.h two-letter macros poison later asmjit header inclusions; the Emscripten `test` target does not compile on the base - six multi-threaded-only test units in a non-multi-threaded target, pre-existing). | Base `48d27952a`, code `73e0232cd`. Clean-build compiler CPU (user time from `time`, shared box, loads recorded in the logs): wasm64-mt 853.6s -> 406.2s (-52%), native Test 812.9s -> 405.5s (-50%), native X64Test 943.1s -> 530.4s (-44%). Outputs byte-identical in all three arms (wasm `9b51d60101ab`, JS glue `9fe550765f`, Test binary `fcb1c3d959`, X64Test binary `2ab4830b0c` - same hashes before and after). Native suites serial on the precompiled-header binaries: main 689/0, x64 113/0. JS unit 353/0; legacy 115/0 (1 skip). Full `tools/bw64-build.sh` run on the committed tip produced dist with BUILD_INFO git_sha `73e0232cd` and wasm `9b51d60101ab` (its dirty count 13 is exactly the shared-store prep symlinks; zero tracked modifications). Dependency wiring proven by dry runs: a no-op build schedules 0 compiles; touching one chain header schedules exactly 1 precompiled-header rebuild plus all 189 of its consumers in the wasm64-mt configuration. Emscripten `test` target census: every consumer compiles; the only failures are FD-185's six, identical without the change. Record: `docs/reports/pch-build-20261105.md`; evidence `test-results/pch/` |
+
+| `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -11684,6 +12942,551 @@ dead-start fix and needs composition care.
   evidence `test-results/buildrel/`
   in the lane's worktree.
 
+- **CL-127 — FD-115 closed: a
+  first-visit 32-bit start that
+  wedges before the desktop handshake
+  in a delivered-fault loop is now
+  reported as a failed start instead
+  of an endless wait.** Closed on
+  the entry's second closing term
+  (surfacing); the fault's mechanism
+  was not identified and no fix to
+  the fault itself is claimed — the
+  single 2026-11-02 capture remains
+  the only instance of the shape,
+  which did not recur in 54 measured
+  shipped-build starts or in 70
+  measured starts on builds carrying
+  the surfacing. Fixed on branch
+  `lane-fd115`: fix `de0144c72`,
+  probe `4ce0dc424`. The launcher's
+  stall watchdog counts printed
+  delivered-fault lines per guest
+  thread before the handshake; at 32
+  from one thread the start is
+  reported failed
+  (reason=prehandshake-fault-loop)
+  with the held dump evidence
+  flushed to the session log. Proof:
+  unit tests RED on the base and
+  GREEN with the fix
+  (stall-watchdog.test.mjs); the
+  shaped-session probe passes all
+  five scenarios against the built
+  dist (`b7f5d4003`, BUILD COMPLETE
+  'Browser export verified', wasm
+  unchanged `c0af957a`); JS unit
+  suite 353/0 and `npm test` ALL
+  TESTS PASSED on the fixed tree;
+  first-visit x86 series on fixed
+  builds 34/34 measured certified
+  (FD-115-only build `4ce0dc424`) and
+  36/36 certified (final build
+  `b7f5d4003`), 0 BW64-FAIL and 0
+  guest-memfault32 lines in any
+  preserved console, 0 restarts.
+  Record:
+  `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`;
+  evidence `test-results/fd115/` in
+  the lane's worktree.
+
+- **CL-128 — FD-166 closed: a
+  first-visit start that stalls
+  before the desktop handshake with
+  no guest process making progress
+  is now reported as a failed start
+  instead of an endless wait.** The
+  defect was filed from this lane's
+  live capture on the shipped
+  batch-7 build (see FD-166's entry:
+  boot 10 of the reproduction
+  series, closing dumps at
+  min_noprogress_ms=780078 across
+  the session's earliest processes,
+  no fault lines, no surfacing).
+  Fixed on branch `lane-fd115`: fix
+  `3a4d59793`, probe `b7f5d4003`.
+  The stall watchdog gains a
+  pre-handshake dump rule: before
+  the handshake, when every process
+  in a complete thread dump (footer
+  seen, no lazy fetch in flight) has
+  made no guest progress for
+  300,000 ms and the next dump shows
+  the same, the start is reported
+  failed
+  (reason=prehandshake-no-progress)
+  with the held dump evidence
+  flushed to the session log. One
+  progressing process anywhere, or
+  a fetch in flight, resets the
+  count; the threshold sits far past
+  every healthy start on record (the
+  slowest certified boot in the
+  lane's series took 199 s of wall
+  time at box load 38, and its dumps
+  still showed min_noprogress_ms of
+  0 — the rule measures progress,
+  not wall time). Proof: the three
+  FD-166 unit tests fail on the base
+  launcher and pass with the fix
+  (14/14 in stall-watchdog.test.mjs);
+  the shaped-session probe's
+  pre-handshake no-progress scenario
+  passes against the built dist; the
+  final first-visit series on that
+  build: 36/36 certified, 0
+  BW64-FAIL lines, 0 restarts,
+  median certified-ready 40.3 s. No
+  mechanism is claimed for the
+  underlying guest stall. Record:
+  `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`;
+  evidence `test-results/fd115/` in
+  the lane's worktree.
+
+- **CL-129 — FD-165 closed: the
+  xattr set/remove forms classify
+  names as the host does, and
+  recognised namespaces are
+  stored and read back.**
+  *(Lane-local closure on
+  `lane-fd165`; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd165`: tests
+  `09bd3f452`, fixes `a2899c5b5`
+  and `37dba7b69` on base
+  `c4dd96ecd`. Both dispatchers
+  now run the host's measured
+  entry order for the write
+  forms — flags, name fetch,
+  value copy (a null value with
+  a nonzero size answers
+  -EFAULT ahead of the target
+  verdicts), target resolution —
+  then judge the name: an
+  unknown family and system.*
+  outside the posix_acl names
+  answer -ENOTSUP, a bare
+  recognised prefix
+  (user./trusted./security.)
+  answers -EINVAL, a posix_acl
+  set answers -EINVAL (and now
+  reports in the log: ACL values
+  are unmodelled) and a posix_acl
+  remove on a file or directory
+  is a no-op success, and on the
+  link itself every user.* name
+  answers -EPERM while
+  trusted.*/security.* behave as
+  on a file. Recognised
+  namespaces are stored (one
+  native sidecar per attribute
+  beside the modelled
+  attribute's own; sidecars are
+  hidden from listings and move
+  and delete with their file),
+  honouring CREATE (-EEXIST) and
+  REPLACE (-ENODATA); the
+  get/list forms serve stored
+  values and names with the
+  host's size semantics, and the
+  64-bit get forms serve the
+  modelled user.DOSATTRIB they
+  never had. The 32-bit
+  descriptor set form no longer
+  stores the modelled attribute
+  and still reports -ENOTSUP.
+  Proof: guest tests
+  testXattrWriteClassify32Syscalls
+  and
+  testXattrWriteClassify64Syscalls
+  red on the base (with the three
+  updated standing tests: main 3
+  FAILED, x64 2 FAILED —
+  `test-results/fd165/red-main
+  .log`, `red-x64.log`), green on
+  the fix; full native suites
+  serial with 0 FAILED (main 690
+  tests, x64 114 tests); JS unit
+  suite 353/0; browser build
+  'Browser export verified' on
+  the fixed tree (wasm
+  `521937b979`, built from
+  `37dba7b69` with a clean tree).
+  Host behaviour measured first
+  at the raw syscall level
+  (asm-generic numbers, strace
+  cross-checked):
+  `test-results/fd165/hostref-
+  fd165.out`, `hostref-fd165b/c/d
+  .out`. Record: `docs/reports/
+  fd165-xattr-write-
+  classification-20261105.md`;
+  evidence `test-results/fd165/`.
+
+- **CL-125 — FD-178 closed: fresh
+  worktrees link their generated
+  payload inputs from one shared,
+  pin-verified store instead of
+  copying ~2 GB per tree.** The
+  store `/home/ubuntu/boxedwine64-shared`
+  (1,980,622,511 bytes, 18,718
+  files) holds the six pinned
+  runtime zips and Slang assets
+  — extracted from the retained
+  runtime-assets-20261104
+  archive after its sha256 was
+  verified against the release
+  pin, every file then matching
+  the committed
+  `runtime-assets.json` pins —
+  plus the DXVK build outputs
+  (full-tree digests
+  byte-identical to the pinned
+  wt-fd38 copies), the DXVK
+  install set, the vkd3d runtime
+  sets, the `tools/rootfs64`
+  payload extractions and the
+  zig/disasm payloads, with a
+  MANIFEST.json recording
+  provenance and a SHA256SUMS
+  covering every file.
+  `winbox-wt-prep.sh` (repo copy
+  `tools/winbox-wt-prep.sh`;
+  installed over
+  `/home/ubuntu/scripts/winbox-wt-prep.sh`,
+  the old script kept beside it
+  as `.pre-shared-20261105`)
+  verifies the 13 pins and the
+  full sums before linking,
+  creates 23 payload links plus
+  the node_modules and
+  web/vendor links, and no
+  longer overwrites the
+  runtime-assets manifest.
+  Proof, side by side on integ
+  48d27952a: the old-way tree
+  (1,981,059,339 real payload
+  bytes; its scripted prep
+  failed partway and its
+  main-checkout DXVK failed the
+  build's manifest gate before
+  the pinned-donor correction)
+  and the new-way tree (557 real
+  payload bytes) both reach
+  BUILD COMPLETE with the
+  pinned dependency archive
+  c4dbe35986a5 verified and
+  byte-identical product wasm
+  9b51d60101ab; JS suites run
+  solo per tree — old-way ALL
+  TESTS PASSED (legacy exit 0,
+  unit 353/0), new-way legacy
+  exit 0 and unit 349/4 in a
+  full run under heavier box
+  load, the four failures
+  (boot-progress-snapshot and
+  three x11 tests, none reading
+  a payload path) all passing
+  on filtered re-runs in the
+  same tree (36/0 and 1/0);
+  the known-gaps audit exits 0
+  in both trees (its counts
+  differ only inside the linked
+  payload extractions, which it
+  does not follow symlinks
+  into). A D3D browser
+  conformance run in the new-way
+  tree stayed queued behind
+  other lanes' builds for the
+  whole proof window and was
+  stood down unstarted — not
+  claimed as proof; payload
+  consumption rests on the
+  build's staging checks, the
+  manifest gate and the suites
+  above. Existing trees, the
+  preserved vkd3d source trees
+  and the retained release
+  archives were not touched;
+  adoption is by new trees.
+  Record:
+  `docs/reports/shared-build-store-20261105.md`;
+  evidence `test-results/sharedbuild/`.
+
+- **CL-130 — FD-19 closed as
+  disproven: the KHR spelling of
+  the promoted physical-device
+  properties query IS served on
+  the 64-bit guest path.**
+  *(Provisional number —
+  lane-fd162-164 claims
+  CL-130..CL-121 on its branch;
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-audit-l1l2` (test commit
+  `64e7e3c0e`). The entry said the
+  64-bit Vulkan dispatcher has no
+  `vkGetPhysicalDeviceProperties2KHR`
+  case, unlike its 32-bit sibling.
+  The case is absent — and no
+  64-bit guest can reach the
+  switch under that id: the 64-bit
+  guest shim's proc-address table
+  maps the KHR name to a real
+  alias wrapper that forwards to
+  the core wrapper, so the trap
+  arrives as
+  `VK64_fn_vkGetPhysicalDeviceProperties2`,
+  which the switch serves. The
+  32-bit shim instead traps the
+  KHR id itself, and the 32-bit
+  dispatcher carries the paired
+  cases for exactly that reason.
+  Proof: the native bridge test
+  gained a GUARD section that, for
+  each of the three promoted
+  query pairs (Properties2,
+  Features2, MemoryProperties2),
+  resolves the KHR name through
+  the real shim's
+  `vkGetInstanceProcAddr`, calls
+  through the returned pointer,
+  and pins (a) the trap arriving
+  under the core fn id and (b)
+  byte-identical guest-memory
+  answers against the core name,
+  root struct and pNext chain
+  included, with spot checks that
+  the fills really happened
+  (driver name, timeline-semaphore
+  flag, heap count). run-native
+  70 PASS (69 standing + this
+  section), exit 0; evidence
+  `test-results/audit-l1l2/runnative-5.log`
+  in the lane's worktree. Record:
+  `docs/reports/audit-followup-l1-l2-20261105.md`.
+  The pointer-identity nuance the
+  test's first run exposed is
+  filed as FD-166.
+
+- **CL-131 — FD-170 discharged:
+  ninety shipped DLL tables were
+  ≥90% unimplemented stubs (6,734
+  named stubs over 50 distinct
+  DLLs), and the entry's closing
+  terms required a recorded
+  per-DLL decision —
+  implemented, substituted, or
+  accepted as a documented
+  absence.** Every one of the 50
+  now carries its decision in the
+  FD-170 entry. The stub state of
+  all 50 was measured in Wine
+  8.0, Wine 10.0 and upstream
+  master and is essentially
+  identical in all three for 49
+  of them. Implemented on the
+  x64 side on branch
+  `lane-fd170`, commit
+  `d7fb7340a`
+  (`wine8-fd170-contracts.patch`
+  in the Wine 8.0 backport
+  pipeline, the three DLLs
+  hash-pinned fail-closed and
+  staged into wine64.zip):
+  bluetoothapis 95 → 71 named
+  stubs (Wine 10.0's radio/SDP
+  code + the FD-167 contract
+  bodies), winusb 21 → 13 (the
+  FD-167 no-device contracts),
+  netutils 22 → 17 (Wine 10.0's
+  NetApiBuffer*). Proof: the
+  census run against the built
+  binaries differs from the base
+  baseline in exactly those
+  three tables (33,756 → 33,719
+  named stubs; baseline
+  regenerated in the same
+  change, `--check` exit 0);
+  `bootstrap.py --check` passes
+  on the re-cut
+  `runtime-assets-20261105-fd170`
+  archive; the JS unit suite
+  passes 352 with 2 failures
+  both attributable to the
+  borrowed gate dist this lane
+  tested against (the census
+  guard test itself passes).
+  The guest fixture
+  `fd170-contracts64.test.mjs`
+  is committed; its verdict is
+  owed to the batch-9 gate —
+  every 2026-11-05/06 attempt
+  died in the shared probe queue
+  or in a guest boot that
+  outlasted the hung-probe cap
+  at load 13–19, the same
+  handling FD-167's x64 side
+  received (build-level proof only — the FD-167 lane claims no closure
+  number; FD-167 stays open). The
+  other 47 DLLs are accepted as
+  documented absences, each
+  with its concrete missing
+  substrate recorded in the
+  FD-170 entry (service-bound,
+  hardware-bound, DRM-bound,
+  app-model-bound, or
+  never-implemented-anywhere
+  surfaces). Record:
+  `docs/reports/fd170-whole-dll-decisions-20261105.md`;
+  evidence `test-results/fd170/`
+  in the lane's worktree.
+
+- **CL-126 — FD-173 closed:
+  fresh working copies start
+  from a verified per-commit
+  build seed, so their first
+  build is incremental too.**
+  *(Lane-local closure on
+  `lane-incremental-build`; the
+  number settles at the next
+  composition.)* Fixed on branch
+  `lane-incremental-build`,
+  commit `1dae2e9d5`. The shared
+  store now also holds build
+  seeds (`build-seed/<commit>/`:
+  the verified
+  `project/emscripten/Build/Wasm64Mt`
+  of one exact commit, with a
+  SEED.json recording the commit
+  and the program file's hash);
+  `tools/winbox-wt-prep.sh`
+  verifies and installs the seed
+  into fresh copies of that
+  commit (mirrored source paths
+  relocated to the new tree,
+  dependency files rewritten,
+  timestamps refreshed), and
+  `tools/winbox-publish-build-seed.sh`
+  publishes a seed from any
+  verified clean build, refusing
+  dirty or mismatched ones. A
+  missing or mismatched seed
+  leaves a copy exactly as
+  before. Proof (base and proof
+  trees at `48d27952a`; every
+  build's program file sha256
+  `9b51d60101ab`, the value other
+  lanes recorded for this commit
+  from their own trees): a fresh
+  unseeded copy's first build
+  compiled all 270 files
+  (2,491 s wall on the shared
+  box); in an already-built copy,
+  no-change and one-file-change
+  rebuilds recompiled 0 and
+  exactly 1 files; a seeded fresh
+  copy's first build after the
+  same one-file change took
+  213 s and recompiled exactly 1
+  file (`crc.cpp.o`), and the
+  same seeded tree rebuilt from
+  scratch took 2,345 s, compiled
+  all 270, and produced the
+  byte-identical program file;
+  the JS unit suite passed
+  353/0 and the legacy suite
+  115/0 (1 skipped) on the seeded
+  copy's incremental output; a
+  seedless commit prepared
+  exactly as before. The
+  FD-174 fix rides in the same
+  commit. Record:
+  `docs/reports/incremental-build-seed-20261105.md`;
+  evidence `test-results/incbuild/`
+  in the lane's worktree.
+
+- **CL-132 — FD-186 closed:
+  compiles route through one
+  machine-wide compiler cache
+  shared by every working
+  copy.** ccache 4.9.1 (the
+  box's package) remembers each
+  compile keyed on the
+  preprocessed source and the
+  exact command line; identical
+  guarded blocks in
+  `project/emscripten/makefile`
+  and `project/linux/makefile`
+  prefix CC/CXX with `ccache`
+  when it is installed and
+  `BW64_CCACHE` is not `0`,
+  export `CCACHE_BASEDIR` as
+  the tree's own root (without
+  it the rules' absolute source
+  paths make every copy miss —
+  measured), and use the shared
+  directory
+  `/home/ubuntu/boxedwine64-cache/ccache`
+  when it exists. The worktree
+  preparation step creates that
+  directory and asserts its
+  2.0 GB cap + compression, so
+  future copies are covered
+  automatically. Proof (base
+  `48d27952a`, loads in the
+  record): browser build
+  1,434 s uncached, 1,084 s
+  cold cache, 182 s warm, 175 s
+  for a fresh tree's first
+  build, the product wasm
+  byte-identical in all four
+  (sha256 `9b51d60101ab…`);
+  native release 747 s, 543 s
+  cold, 3 s warm (377/377
+  hits), cached binaries
+  identical to each other and
+  differing from uncached only
+  in embedded source-path
+  annotation strings; suites on
+  the cache-built tree: native
+  main 689 tests 0 FAILED, x64
+  0 FAILED, JS unit 353/0.
+  Record:
+  `docs/reports/build-cache-20261105.md`;
+  evidence
+  `test-results/buildcache/`.
+
+- **CL-133 — FD-187 closed: statfs named one flat
+  filesystem for every path, which hid every synthetic
+  device from guest udev.** *(Lane-local closure on
+  `lane-gamepad`; the number settles at the next
+  composition.)*
+  The 32-bit process layer answered f_type 0xEF53 (EXT3)
+  everywhere and the 64-bit layer the tmpfs magic
+  everywhere. The guest's libudev verifies a device's
+  sysfs path by requiring fstatfs to report SYSFS_MAGIC
+  there (measured by disassembling the staged libudev:
+  its set-syspath verification refuses the device
+  otherwise), so every synthetic device — the gamepad
+  included — was rejected before enumeration. All four
+  entry points (32-bit statfs/statfs64/fstatfs, 64-bit
+  statfs64/fstatfs64) now report SYSFS_MAGIC (0x62656572)
+  for nodes under `/sys` and PROC_SUPER_MAGIC (0x9fa0)
+  under `/proc`, keeping the previous answers elsewhere.
+  Proof: native tests `testStatfsMagicByMount32Calls` and
+  `testStatfsMagicByMount64Syscalls` pin the per-tree
+  magics on both widths (path and descriptor forms);
+  native suites serial, 0 FAILED (main 690 tests, x64 114 tests); JS unit suite
+  353/0; and in the browser build a guest probe then
+  enumerated the gamepad through libudev (device creation
+  from its sysfs path succeeds, subsystem "input") where
+  the unmodified build enumerated nothing. Fix commits
+  `6b6186d93` + `bcff6378b` on base `48d27952a`. Record:
+  `docs/reports/fd24-gamepad-20261106.md`.
+
 ## Appendix — examined and deliberately NOT registered
 
 Recorded so the examination is not lost; each was audited by
@@ -13630,3 +15433,4 @@ its lane and is not a defect, for the stated reason:
   record was written by the batch-3 merge audit, which
   also settled its number — the lane's provisional
   CL-45.)
+
