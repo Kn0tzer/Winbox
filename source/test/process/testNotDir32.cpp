@@ -334,5 +334,37 @@ void testNotDirProcessApi() {
     expectEq("rename(c.txt, c2.txt) control", (S32)process->rename(B("c.txt"), B("c2.txt")), 0);
 }
 
+// FD-172 (32-bit twin of testStatfsMagicByMount64Syscalls): the
+// process-layer statfs/statfs64 report SYSFS_MAGIC under /sys and
+// PROC_SUPER_MAGIC under /proc; other paths keep the EXT3 answer.
+void testStatfsMagicByMount32Calls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    RootSwap32 root;
+    if (!root.ok ||
+        process->mkdir(B("/sys")) != 0 ||
+        process->mkdir(B("/proc")) != 0 ||
+        process->mkdir(B("/plain")) != 0) {
+        testFail("statfs-magic 32 test could not stage its fixture");
+        return;
+    }
+    constexpr U32 bufAt = TEST_HEAP_ADDRESS + 0x600;
+    auto expectType = [&](const BString& path, U32 want, const char* label) {
+        if ((S32)process->statfs(path, bufAt) != 0) {
+            testFail("%s: statfs did not succeed", label);
+            return;
+        }
+        U32 got = context.memory->readd(bufAt);
+        if (got != want) testFail("%s: f_type got 0x%x, want 0x%x", label, got, want);
+    };
+    expectType(B("/sys"), 0x62656572, "statfs(/sys)");
+    expectType(B("/proc"), 0x9fa0, "statfs(/proc)");
+    expectType(B("/plain"), 0xEF53, "statfs(/plain)");
+    if ((S32)process->statfs64(B("/sys"), bufAt) != 0 || context.memory->readd(bufAt) != 0x62656572) {
+        testFail("statfs64(/sys) did not report SYSFS_MAGIC");
+    }
+}
+
 #endif
 #endif

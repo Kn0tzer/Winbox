@@ -66,6 +66,35 @@ unzFile FsZip::openEntryStream(U64 zipOffset) {
 #endif
 }
 
+#ifdef BOXEDWINE_ZLIB
+// Reads the entry recorded in `info` out of an already-open zip handle,
+// applying the same full-read and CRC checks as FsZip::readFileFromZip.
+// Used by FsZip::init to capture the dependency declarations (see
+// fszip.h); a failed or corrupt entry is treated as absent, exactly as
+// a failed readFileFromZip leaves its result empty.
+static void bw64ReadDeclEntry(unzFile zipfile, fsZipInfo& info, const char* name, BString& out) {
+    char* buffer = new char[info.length + 1];
+    unzSetOffset64(zipfile, info.offset);
+    unzOpenCurrentFile(zipfile);
+    int read = unzReadCurrentFile(zipfile, buffer, (unsigned)info.length);
+    if (read < 0 || (U64)read != info.length) {
+        klog_fmt("BW64-FAIL zip-decl entry=%s read=%d expected=%llu outcome=declaration treated as absent", name, read, (unsigned long long)info.length);
+        delete[] buffer;
+        unzCloseCurrentFile(zipfile);
+        return;
+    }
+    buffer[read] = 0;
+    int closeResult = unzCloseCurrentFile(zipfile);
+    if (closeResult != UNZ_OK) {
+        klog_fmt("BW64-FAIL zip-decl entry=%s zerr=%d outcome=corrupt declaration treated as absent", name, closeResult);
+        delete[] buffer;
+        return;
+    }
+    out = BString::copy(buffer);
+    delete[] buffer;
+}
+#endif
+
 bool FsZip::init(BString zipPath, BString mount) {
 #ifdef BOXEDWINE_ZLIB
     BString strippedMount;
@@ -96,6 +125,8 @@ bool FsZip::init(BString zipPath, BString mount) {
             return false;
         }
         fsZipInfo* zipInfo = new fsZipInfo[global_info.number_entry];
+        S32 fullfillsEntry = -1;
+        S32 dependsEntry = -1;
         for (U32 i = 0; i < global_info.number_entry; ++i) {
             unz_file_info file_info = {};
             struct tm tm={0};
@@ -110,6 +141,11 @@ bool FsZip::init(BString zipPath, BString mount) {
             }
             zipInfo[i].filename = BString::copy(tmp);
             zipInfo[i].offset = unzGetOffset64(this->zipfile);
+            if (fullfillsEntry < 0 && strcmp(tmp + 1, "fullfills.txt") == 0) {
+                fullfillsEntry = (S32)i;
+            } else if (dependsEntry < 0 && strcmp(tmp + 1, "depends.txt") == 0) {
+                dependsEntry = (S32)i;
+            }
             Fs::remoteNameToLocal(zipInfo[i].filename); // converts special characters like :
 
             // Layout sniff: a single x86_64 path anywhere in the archive
@@ -153,6 +189,12 @@ bool FsZip::init(BString zipPath, BString mount) {
             zipInfo[i].lastModified = ((U64)mktime(&tm))*1000l;
             
             unzGoToNextFile(this->zipfile);
+        }
+        if (fullfillsEntry >= 0) {
+            bw64ReadDeclEntry(this->zipfile, zipInfo[fullfillsEntry], "fullfills.txt", this->fullfillsContent);
+        }
+        if (dependsEntry >= 0) {
+            bw64ReadDeclEntry(this->zipfile, zipInfo[dependsEntry], "depends.txt", this->dependsContent);
         }
         std::vector<BString> deletedLocalPaths;
         readLinesFromFile(deleteFilePath, deletedLocalPaths);

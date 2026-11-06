@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Merge the Wine 8.0 loader-backport DLLs (tools/rootfs64/
-# wine8-backports-x86_64/: user32, kernelbase, kernel32, iphlpapi, win32u —
+# wine8-backports-x86_64/: user32, kernelbase, kernel32, iphlpapi, win32u,
+# msvcp140, setupapi —
 # rebuilt from the pinned wine-8.0 source with the wine8-*.patch
 # backports) into the shipped wine64.zip archives, REPLACING the Debian
 # wine 8.0 members, WITHOUT a full rootfs rebuild.
@@ -17,7 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
 UNIX_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-unix"
-DLLS=(user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll)
+DLLS=(user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll)
 for dll in "${DLLS[@]}"; do
     [[ -f "$HERE/wine8-backports-x86_64/$dll" ]] || { echo "stage-wine8-backports: missing $HERE/wine8-backports-x86_64/$dll — run tools/rootfs64/build-wine8-backports.sh" >&2; exit 2; }
 done
@@ -61,7 +62,7 @@ EOF
         echo "stage-wine8-backports: $archive already carries the backport DLLs — skipping"
         continue
     fi
-    backup="/home/ubuntu/backups/winbox-wine8-backports-$stamp"
+    backup="/home/ubuntu/winbox-project/evidence/winbox-wine8-backports-$stamp"
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$runtime")-wine64.zip"
     TMP="$(mktemp -d)"

@@ -61,7 +61,7 @@ def main():
         if fonts.configure_replacements(registry) == registry:
             print(f"stage-font-alias64: {archive} already carries the Arial replacement - skipping")
             continue
-        backup = Path("/home/ubuntu/backups") / f"winbox-font-alias64-{stamp}"
+        backup = Path("/home/ubuntu/winbox-project/evidence") / f"winbox-font-alias64-{stamp}"
         backup.mkdir(parents=True, exist_ok=True)
         name = f"{runtime.parent.name}-{runtime.name}-{archive.name}"
         (backup / name).write_bytes(archive.read_bytes())

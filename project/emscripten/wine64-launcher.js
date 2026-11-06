@@ -1589,11 +1589,51 @@
     // convicted is preserved in the log the user can open. The summary
     // lines (begin / proc / proxyfetch / ramalloc / end) are always
     // forwarded.
+    //
+    // FD-115: the dump rule above can only convict AFTER the handshake,
+    // but the one wedged first-visit start on a shipped build never got
+    // that far: a winedevice host thread looped on delivered memory
+    // faults (the preserved console carries 64 consecutive
+    // guest-memfault32 lines from one pid/tid, then the counter's
+    // 1024th line, all at one instruction) while the handshake never
+    // completed, so the start sat as an endless wait. A delivered-fault
+    // loop is countable directly from the session's own output lines:
+    // the emulator prints the first 64 fault lines of a session
+    // unconditionally, and every healthy boot console on record carries
+    // zero. So, before the handshake completes, if one guest thread
+    // accumulates STALL_WATCH_FAULT_LOOP_LINES printed delivered-fault
+    // lines, the start is reported as failed with the same
+    // evidence-preserving shape as the dump rule. Faults after the
+    // handshake belong to the running session (a single delivered fault
+    // there has been observed in a run that continued and finished);
+    // faults spread across threads are not one thread looping.
+    //
+    // FD-165: a second pre-handshake shape was captured on the shipped
+    // batch-7 build (2026-11-05): no fault lines at all — the session's
+    // earliest processes each showed a running thread with
+    // min_noprogress_ms past 780,000 in the closing dumps, every other
+    // thread blocked on socket reads, explorer opened but the deskpin
+    // READY never printed, and the start consumed its whole
+    // observation window as a silent wait. The dump signal itself
+    // separates this shape from a slow start: before the handshake, if
+    // EVERY process in a complete dump (footer seen, no fetch in
+    // flight) has made no guest progress for
+    // STALL_WATCH_PREHANDSHAKE_MIN_NOPROGRESS_MS, and the next dump
+    // shows the same, the start is reported as failed the same way.
+    // The threshold sits far past every healthy start on record
+    // (certified boots complete the handshake in well under two
+    // minutes even on a heavily loaded box); a single progressing
+    // process anywhere in the dump is proof of life and resets the
+    // count.
     var STALL_WATCH_FIRST_DUMP_MS = 90000;
     var STALL_WATCH_DUMP_INTERVAL_MS = 60000;
     var STALL_WATCH_MIN_NOPROGRESS_MS = 60000;
     var STALL_WATCH_MIN_RUNNING = 3;
     var STALL_WATCH_DUMPS_TO_REPORT = 2;
+    var STALL_WATCH_FAULT_LOOP_LINES = 32;
+    var STALL_WATCH_PREHANDSHAKE_MIN_NOPROGRESS_MS = 300000;
+    var stallWatchFaultThreads = {}; // "pid:tid" -> {lines, eip, addr}
+    var stallWatchPreStalledDumps = 0; // consecutive pre-handshake dumps with no progress anywhere
     var stallWatchOn = null; // cached stallWatchEnabled()
     var stallWatchMapped = false;
     var stallWatchReported = false;
@@ -1668,6 +1708,7 @@
         return true;
     }
     function stallWatchObserve(text) {
+        stallWatchFaultLine(text);
         if (text.includes("XWire: first window mapped")) {
             stallWatchMapped = true;
             stallWatchCounts = {};
@@ -1691,6 +1732,40 @@
         }
         if (text.startsWith("BW_THREAD_DUMP end")) stallWatchFinishDump();
     }
+    function stallWatchFaultLine(text) {
+        if (stallWatchReported || stallWatchMapped) return;
+        // The same handshake evidence the dump rule reads: once the
+        // desktop is up, a faulting thread is the running session's
+        // business, never a failed start. Clear the slate so a loop
+        // that straddles the handshake cannot convict afterwards.
+        var booted = sessionDesktopHwndOk && sessionX11Accepts >= 5 && sessionExplorerOpened;
+        if (booted) { stallWatchFaultThreads = {}; return; }
+        var m = /^BW64-FAIL guest-memfault32 pid=(\d+) tid=(\d+) addr=0x([0-9a-f]+) eip=0x([0-9a-f]+) err=\d+ delivered=1 count=\d+/.exec(text);
+        if (!m) return;
+        var key = m[1] + ":" + m[2];
+        var entry = stallWatchFaultThreads[key];
+        if (!entry) entry = stallWatchFaultThreads[key] = { lines: 0, eip: "0x" + m[4], addr: "0x" + m[3] };
+        entry.lines++;
+        entry.eip = "0x" + m[4];
+        entry.addr = "0x" + m[3];
+        if (entry.lines >= STALL_WATCH_FAULT_LOOP_LINES)
+            stallWatchReportFaultLoop(m[1], m[2], entry);
+    }
+    function stallWatchReportFaultLoop(pid, tid, entry) {
+        stallWatchReported = true;
+        stallWatchStop();
+        var held = stallWatchCapture || stallWatchLastDump || [];
+        for (var i = 0; i < held.length; i++)
+            if (window.bwRuntimeLog) window.bwRuntimeLog(held[i]);
+        var fail = "BW64-FAIL component=launcher.session reason=prehandshake-fault-loop pid=" + pid +
+            " tid=" + tid + " fault_lines=" + entry.lines + " eip=" + entry.eip + " addr=" + entry.addr +
+            " detail=one guest thread took repeated delivered memory faults before the desktop handshake completed; the start is reported as failed instead of waiting forever";
+        console.error(fail);
+        if (window.bwRuntimeLog) window.bwRuntimeLog(fail);
+        if (window.bwRuntimeError) window.bwRuntimeError(
+            "Windows did not finish starting: a background service thread faulted over and over before the desktop was ready, so this start is reported as failed instead of waiting forever. " +
+            "The session log is preserved \u2014 open Show logs for the captured evidence, or retry.");
+    }
     function stallWatchFinishDump() {
         var procs = stallWatchDumpProcs;
         var inflight = stallWatchDumpInflight;
@@ -1700,8 +1775,8 @@
         // The same evidence the readiness rules use (FD-47): nothing is
         // a "booted" session until the full handshake has been seen.
         var booted = sessionDesktopHwndOk && sessionX11Accepts >= 5 && sessionExplorerOpened;
-        if (!booted) return;
         if (inflight === null) return; // no footer: not a complete dump; count nothing
+        if (!booted) { stallWatchPrehandshakeDump(procs, inflight); return; }
         if (inflight > 0) { stallWatchCounts = {}; return; }
         var culprit = null;
         var next = {};
@@ -1717,6 +1792,41 @@
         }
         stallWatchCounts = next;
         if (culprit) stallWatchReport(culprit);
+    }
+    function stallWatchPrehandshakeDump(procs, inflight) {
+        // FD-165: a fetch in flight is an explained wait, as in the
+        // FD-77 rule; it also breaks the consecutive count.
+        if (inflight > 0) { stallWatchPreStalledDumps = 0; return; }
+        var pids = Object.keys(procs);
+        var worst = null; // the smallest min_noprogress_ms in the dump
+        for (var i = 0; i < pids.length; i++) {
+            var p = procs[pids[i]];
+            if (worst === null || p.min < worst) worst = p.min;
+        }
+        // No process lines, or any process still making guest progress
+        // inside the threshold, is proof of life: count nothing.
+        if (pids.length === 0 || worst < STALL_WATCH_PREHANDSHAKE_MIN_NOPROGRESS_MS) {
+            stallWatchPreStalledDumps = 0;
+            return;
+        }
+        stallWatchPreStalledDumps++;
+        if (stallWatchPreStalledDumps >= STALL_WATCH_DUMPS_TO_REPORT)
+            stallWatchReportPrehandshake(pids.length, worst);
+    }
+    function stallWatchReportPrehandshake(procCount, minNoprogress) {
+        stallWatchReported = true;
+        stallWatchStop();
+        var held = stallWatchCapture || stallWatchLastDump || [];
+        for (var i = 0; i < held.length; i++)
+            if (window.bwRuntimeLog) window.bwRuntimeLog(held[i]);
+        var fail = "BW64-FAIL component=launcher.session reason=prehandshake-no-progress procs=" + procCount +
+            " min_noprogress_ms=" + minNoprogress + " stall_dumps=" + stallWatchPreStalledDumps +
+            " detail=no guest process made any guest progress across consecutive thread dumps before the desktop handshake completed; the start is reported as failed instead of waiting forever";
+        console.error(fail);
+        if (window.bwRuntimeLog) window.bwRuntimeLog(fail);
+        if (window.bwRuntimeError) window.bwRuntimeError(
+            "Windows did not finish starting: the session stopped making progress before the desktop was ready, so this start is reported as failed instead of waiting forever. " +
+            "The session log is preserved \u2014 open Show logs for the captured evidence, or retry.");
     }
     function stallWatchReport(culprit) {
         stallWatchReported = true;

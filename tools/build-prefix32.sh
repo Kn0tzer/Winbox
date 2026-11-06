@@ -5,17 +5,17 @@
 # browser launcher expects (mirroring prefix64.zip's layout).
 #
 # Prerequisites (on the build box):
-#   /home/ubuntu/wine32-stage/stage            - staged Debian wine32 8.0
-#   /home/ubuntu/wine32-stage/rootfs32         - 32-bit glibc rootfs (ld-linux.so.2)
-#   /home/ubuntu/wine32-stage/img386/usr/i686-w64-mingw32/lib/zlib1.dll
+#   /home/ubuntu/winbox-project/staging/wine32-stage/stage            - staged Debian wine32 8.0
+#   /home/ubuntu/winbox-project/staging/wine32-stage/rootfs32         - 32-bit glibc rootfs (ld-linux.so.2)
+#   /home/ubuntu/winbox-project/staging/wine32-stage/img386/usr/i686-w64-mingw32/lib/zlib1.dll
 #   /lib/ld-linux.so.2 -> rootfs32/lib/ld-linux.so.2 (for the wine ELF INTERP)
 #
 # Output: web/runtime/prefix32.zip
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-STAGE=/home/ubuntu/wine32-stage/stage
-ROOTFS32=/home/ubuntu/wine32-stage/rootfs32
+STAGE=/home/ubuntu/winbox-project/staging/wine32-stage/stage
+ROOTFS32=/home/ubuntu/winbox-project/staging/wine32-stage/rootfs32
 WORK="${WINBOX_PREFIX32_WORK:-/tmp/build-prefix32}"
 PREFIX=$WORK/prefix
 W32ROOT=$WORK/wine32root
@@ -36,7 +36,7 @@ ln -sfn "$STAGE/usr/lib/wine/wineserver32" "$W32ROOT/usr/lib/wine/wineserver"
 # wineboot can complete.
 cp "$STAGE/usr/lib/i386-linux-gnu/wine/i386-windows/zlib1.dll" \
    "$W32ROOT/usr/lib/i386-linux-gnu/wine/i386-windows/zlib1.dll" 2>/dev/null || {
-    cp /home/ubuntu/wine32-stage/img386/usr/i686-w64-mingw32/lib/zlib1.dll \
+    cp /home/ubuntu/winbox-project/staging/wine32-stage/img386/usr/i686-w64-mingw32/lib/zlib1.dll \
        "$W32ROOT/usr/lib/i386-linux-gnu/wine/i386-windows/zlib1.dll"
 }
 

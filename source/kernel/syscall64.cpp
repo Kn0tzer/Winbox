@@ -1534,7 +1534,12 @@ static U64 sys_nanosleep64(CPU64* cpu, U64 requestAddr, bool clockSleep,
 // The emulator exposes one virtual processor and one NUMA node.
 static U64 sys_getcpu64(CPU64* cpu, U64 cpuPtr, U64 nodePtr, U64 /*cachePtr*/) {
     if (!cpu || !cpu->memory) return (U64)(S64)-K_EFAULT;
-    if (cpuPtr) cpu->memory->writed(cpuPtr, 0);
+    // vCPUs are an affinity abstraction, not pinned execution slots, so
+    // there is no truer "current CPU" to report than the first CPU the
+    // thread is allowed to run on: for a thread pinned to vCPU 1 alone
+    // that is the only correct answer, and for any other thread vCPU 0
+    // is a valid online answer. Node is the single NUMA node, 0.
+    if (cpuPtr) cpu->memory->writed(cpuPtr, cpu->affinityMask ? (U32)__builtin_ctzll(cpu->affinityMask) : 0);
     if (nodePtr) cpu->memory->writed(nodePtr, 0);
     return 0;
 }
@@ -3262,10 +3267,13 @@ static U64 sys_sched_setaffinity64(CPU64* cpu, U64 pid, U64 cpusetsize, U64 mask
     if (cpusetsize < 8 || cpusetsize > 1024) return (U64)-K_EINVAL;
     if (!maskPtr || !cpu->memory) return (U64)-K_EFAULT;
     if (!sys_rangeMapped64(cpu, maskPtr, 8)) return (U64)-K_EFAULT;
-    // Only virtual CPU 0 is online. Linux drops offline CPUs from the
-    // requested mask, but rejects a request that has no online CPU selected.
-    if ((cpu->memory->readq(maskPtr) & 1) == 0) return (U64)-K_EINVAL;
-    cpu->affinityMask = 1;
+    // Virtual CPUs 0..guestCpuCount()-1 are online. Linux drops offline
+    // CPUs from the requested mask, but rejects a request that has no
+    // online CPU selected.
+    U64 onlineMask = (1ULL << KSystem::guestCpuCount()) - 1;
+    U64 requested = cpu->memory->readq(maskPtr) & onlineMask;
+    if (requested == 0) return (U64)-K_EINVAL;
+    cpu->affinityMask = requested;
     return 0;
 }
 
@@ -3314,10 +3322,169 @@ static U64 xattrGetNameVerdict64(const BString& name) {
     return (U64)-K_ENOTSUP;
 }
 
-static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr) {
+// FD-165: the set/remove forms' namespace classification and
+// storage, mirroring xattrWriteNameVerdict32 and its companions
+// in syscall.cpp (kept in step by hand). Host-measured at the
+// raw syscall level (test-results/fd165/hostref-fd165*.out):
+// on a resolved target a prefix with no handler answers
+// -ENOTSUP, a bare recognised prefix answers -EINVAL, the two
+// posix_acl names answer -EINVAL to a set carrying a non-ACL
+// value and a remove of them on a file or directory is a
+// no-op success, and on the link itself every user.* name
+// answers -EPERM while trusted.*/security.* behave as on a
+// file. A recognised namespace with an attribute part is
+// stored: CREATE on a present attribute answers -EEXIST,
+// REPLACE on an absent one -ENODATA, and get/list read the
+// stored values back (see xattrServeStoredValue64 and the
+// xattr case in the dispatcher).
+static bool xattrIsAclName64(const BString& name) {
+    return name == "system.posix_acl_access" || name == "system.posix_acl_default";
+}
+
+static U64 xattrWriteNameVerdict64(const BString& name) {
+    if (name.startsWith("user.")) {
+        return name.length() == 5 ? (U64)-K_EINVAL : 0;
+    }
+    if (name.startsWith("trusted.")) {
+        return name.length() == 8 ? (U64)-K_EINVAL : 0;
+    }
+    if (name.startsWith("security.")) {
+        return name.length() == 9 ? (U64)-K_EINVAL : 0;
+    }
+    return (U64)-K_ENOTSUP;
+}
+
+// FD-165: serve a stored attribute's value with the host's
+// getxattr size semantics: a zero size is a length query, an
+// exact fit succeeds, a short buffer answers -ERANGE.
+static U64 xattrServeStoredValue64(CPU64* cpu, const std::vector<U8>& value, U64 bufAddress, U64 bufSize) {
+    if (bufSize == 0) {
+        return (U64)value.size();
+    }
+    if (value.size() > bufSize) {
+        return (U64)-K_ERANGE;
+    }
+    if (value.size() && !bufAddress) {
+        return (U64)-K_EFAULT;
+    }
+    if (value.size()) {
+        cpu->memory->memcpyToGuest(bufAddress, value.data(), (U64)value.size());
+    }
+    return (U64)value.size();
+}
+
+// FD-165: serve the stored attribute names of a resolved
+// target with the host's listxattr size semantics.
+static U64 xattrServeNameList64(CPU64* cpu, const std::shared_ptr<FsNode>& node, U64 listAddress, U64 listSize) {
+    std::vector<BString> names = Fs::listXAttrNames(node);
+    U64 total = 0;
+    for (auto& name : names) {
+        total += name.length() + 1;
+    }
+    if (listSize == 0) {
+        return total;
+    }
+    if (total == 0) {
+        return 0;
+    }
+    if (!listAddress) {
+        return (U64)-K_EFAULT;
+    }
+    if (listSize < total) {
+        return (U64)-K_ERANGE;
+    }
+    U64 offset = 0;
+    for (auto& name : names) {
+        cpu->memory->memcpyToGuest(listAddress + offset, name.c_str(), name.length() + 1);
+        offset += name.length() + 1;
+    }
+    return total;
+}
+
+static U64 xattrSetOnNode64(CPU64* cpu, const std::shared_ptr<FsNode>& node, const BString& name, U64 valueAddress, U64 valueSize, U64 flags) {
+    if (node->isLink() && name.startsWith("user.")) {
+        return (U64)-K_EPERM;
+    }
+    if (xattrIsAclName64(name)) {
+        // ACL values are not modelled: the host would accept
+        // a conforming ACL, so this refusal is reported, not
+        // silent. (-EINVAL is the host's answer to a non-ACL
+        // value, which is all a guest can be refused for here
+        // without the guest-visible answer changing.)
+        klog_fmt("BW64-FAIL xattr set %s: posix ACL values are not modelled; answered -EINVAL", name.c_str());
+        return (U64)-K_EINVAL;
+    }
+    U64 verdict = xattrWriteNameVerdict64(name);
+    if (verdict) {
+        return verdict;
+    }
+    bool exists = name == "user.DOSATTRIB" ? Fs::hasDosAttrib(node) : Fs::hasXAttr(node, name);
+    if ((flags & 0x1) && exists) {
+        return (U64)-K_EEXIST; // XATTR_CREATE
+    }
+    if ((flags & 0x2) && !exists) {
+        return (U64)-K_ENODATA; // XATTR_REPLACE
+    }
+    if (name == "user.DOSATTRIB") {
+        // The modelled attribute stores as a string, the way
+        // the 32-bit form's readString leaves it: the value's
+        // bytes at their explicit length, minus one trailing
+        // NUL when present.
+        U32 len = valueSize > 1024 ? 1024 : (U32)valueSize;
+        std::vector<U8> raw(len);
+        if (len) {
+            cpu->memory->memcpyFromGuest(raw.data(), valueAddress, len);
+        }
+        if (len && raw[len - 1] == 0) {
+            len--;
+        }
+        Fs::setDosAttrib(node, BString::copy((const char*)raw.data(), (int)len));
+        return 0;
+    }
+    std::vector<U8> value((size_t)valueSize);
+    if (valueSize) {
+        cpu->memory->memcpyFromGuest(value.data(), valueAddress, valueSize);
+    }
+    return Fs::setXAttr(node, name, value.data(), (U32)valueSize) ? 0 : (U64)-K_ENOTSUP;
+}
+
+static U64 xattrRemoveOnNode64(const std::shared_ptr<FsNode>& node, const BString& name) {
+    if (node->isLink() && name.startsWith("user.")) {
+        return (U64)-K_EPERM;
+    }
+    if (xattrIsAclName64(name)) {
+        return node->isLink() ? (U64)-K_ENOTSUP : 0;
+    }
+    U64 verdict = xattrWriteNameVerdict64(name);
+    if (verdict) {
+        return verdict;
+    }
+    if (name == "user.DOSATTRIB") {
+        return (U64)(S64)(S32)Fs::removeDosAttrib(node);
+    }
+    return (U64)(S64)(S32)Fs::removeXAttr(node, name);
+}
+
+// FD-172: the f_type names the filesystem the node lives on, as
+// in the 32-bit process layer (bw64StatfsMagicForPath there): the
+// synthetic /sys and /proc trees report their own magics --
+// libudev's device verification refuses any device whose sysfs
+// path does not statfs as SYSFS_MAGIC -- and everything else
+// keeps the fabricated tmpfs answer.
+static U32 bw64StatfsMagicForPath64(const BString& path, U32 fallback) {
+    if (path == B("/sys") || path.startsWith("/sys/")) {
+        return 0x62656572; // SYSFS_MAGIC
+    }
+    if (path == B("/proc") || path.startsWith("/proc/")) {
+        return 0x9fa0; // PROC_SUPER_MAGIC
+    }
+    return fallback;
+}
+
+static U64 sys_statfs64_common(CPU64* cpu, U64 bufPtr, U32 fType = X64_TMPFS_MAGIC) {
     if (!bufPtr) return (U64)-K_EFAULT;
     if (!cpu->memory) return (U64)-K_EFAULT;
-    cpu->memory->writeq(bufPtr +  0, X64_TMPFS_MAGIC); // f_type
+    cpu->memory->writeq(bufPtr +  0, fType); // f_type
     cpu->memory->writeq(bufPtr +  8, 4096);            // f_bsize
     cpu->memory->writeq(bufPtr + 16, 0);               // f_blocks
     cpu->memory->writeq(bufPtr + 24, 0);               // f_bfree
@@ -6340,6 +6507,8 @@ void ksyscall64(CPU64* cpu) {
                 std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
                     cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
                 if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
+                ret = sys_statfs64_common(cpu, a2, bw64StatfsMagicForPath64(node->path, X64_TMPFS_MAGIC));
+                break;
             }
             ret = sys_statfs64_common(cpu, a2);
             break;
@@ -6353,10 +6522,17 @@ void ksyscall64(CPU64* cpu) {
             // layer's own fstatfs64 checks the same way. Without a
             // process there is nothing to check against and the
             // fabricated answer stands, as in statfs.
-            if (cpu->thread && cpu->thread->process &&
-                !cpu->thread->process->getFileDescriptor((FD)(S32)a1)) {
-                ret = (U64)-K_EBADF;
-                break;
+            if (cpu->thread && cpu->thread->process) {
+                KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)(S32)a1);
+                if (!fdesc) {
+                    ret = (U64)-K_EBADF;
+                    break;
+                }
+                std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(fdesc->kobject);
+                if (kf && kf->openFile && kf->openFile->node) {
+                    ret = sys_statfs64_common(cpu, a2, bw64StatfsMagicForPath64(kf->openFile->node->path, X64_TMPFS_MAGIC));
+                    break;
+                }
             }
             ret = sys_statfs64_common(cpu, a2);
             break;
@@ -6368,7 +6544,14 @@ void ksyscall64(CPU64* cpu) {
         // "unsupported" and the list* variants an empty list.
         // FD-163 amends the get forms' resolved answer below:
         // it is the namespace verdict (see xattrGetNameVerdict64),
-        // not a blanket -ENODATA.
+        // not a blanket -ENODATA. FD-165 amends the write side:
+        // the set/remove forms classify the name as the host
+        // does and store recognised namespaces (the get/list
+        // forms read them back); only a target that resolves to
+        // no file node keeps the standing stub answers above.
+        // The entry order gains the host's value-copy fault
+        // (-EFAULT for a null value with a nonzero size, ahead
+        // of the target verdicts).
         // Without these, wine64 startup tripped the
         // unimplemented-syscall path (#191 getxattr) during
         // prefix/service bring-up.
@@ -6417,10 +6600,21 @@ void ksyscall64(CPU64* cpu) {
                 xattrName = BString::copy(nameBuf);
                 if (xattrName.length() == 0) { ret = (U64)-K_ERANGE; break; }
             }
+            // FD-165: the host copies the set forms' value ahead
+            // of the target verdicts: a null value with a nonzero
+            // size faults here, before a missing path or an
+            // unopened descriptor is judged.
+            if (isSetForm && !a3 && a4) { ret = (U64)-K_EFAULT; break; }
             bool targetResolved = false;
+            std::shared_ptr<FsNode> xNode;
             if (cpu->thread && cpu->thread->process) {
                 if (isFdForm) {
-                    if (!cpu->thread->process->getFileDescriptor((FD)a1)) { ret = (U64)-K_EBADF; break; }
+                    KFileDescriptorPtr xfd = cpu->thread->process->getFileDescriptor((FD)a1);
+                    if (!xfd) { ret = (U64)-K_EBADF; break; }
+                    std::shared_ptr<KFile> kf = std::dynamic_pointer_cast<KFile>(xfd->kobject);
+                    if (kf) {
+                        xNode = kf->openFile->node;
+                    }
                 } else {
                     if (!a1) { ret = (U64)-K_EFAULT; break; }
                     char path[1024] = {0};
@@ -6430,6 +6624,7 @@ void ksyscall64(CPU64* cpu) {
                     std::shared_ptr<FsNode> node = Fs::getNodeFromLocalPath(
                         cpu->thread->process->fsContext->currentDirectory, BString::copy(path), follows, nullptr, &notDir);
                     if (!node) { ret = notDir ? (U64)-K_ENOTDIR : (U64)-K_ENOENT; break; }
+                    xNode = node;
                 }
                 targetResolved = true;
             }
@@ -6438,10 +6633,46 @@ void ksyscall64(CPU64* cpu) {
                 // answer the namespace verdict; without a
                 // process there was nothing to resolve and the
                 // stub -ENODATA stands as before (FD-133).
-                ret = targetResolved ? xattrGetNameVerdict64(xattrName) : (U64)-K_ENODATA;
+                // FD-165: a stored attribute is served before
+                // the verdict -- including the modelled
+                // user.DOSATTRIB, which this dispatcher never
+                // special-cased before.
+                bool served = false;
+                if (xNode) {
+                    if (xattrName == "user.DOSATTRIB") {
+                        BString attr = Fs::getDosAttrib(xNode);
+                        if (attr.length()) {
+                            std::vector<U8> value(attr.c_str(), attr.c_str() + attr.length());
+                            ret = xattrServeStoredValue64(cpu, value, a3, a4);
+                            served = true;
+                        }
+                    } else {
+                        std::vector<U8> stored;
+                        if (Fs::getXAttr(xNode, xattrName, stored)) {
+                            ret = xattrServeStoredValue64(cpu, stored, a3, a4);
+                            served = true;
+                        }
+                    }
+                }
+                if (!served) {
+                    ret = targetResolved ? xattrGetNameVerdict64(xattrName) : (U64)-K_ENODATA;
+                }
             }
-            else if (nr == 194 || nr == 195 || nr == 196) ret = 0; // empty attribute list
-            else ret = (U64)-K_ENOTSUP;
+            else if (nr == 194 || nr == 195 || nr == 196) {
+                // FD-165: the list forms serve the stored
+                // names; a target without a file node keeps the
+                // empty list (0).
+                ret = xNode ? xattrServeNameList64(cpu, xNode, a2, a3) : 0;
+            }
+            else if (isSetForm) {
+                // FD-165: the write-side classification and
+                // storage; without a file node the standing
+                // -ENOTSUP remains.
+                ret = xNode ? xattrSetOnNode64(cpu, xNode, xattrName, a3, a4, a5) : (U64)-K_ENOTSUP;
+            }
+            else {
+                ret = xNode ? xattrRemoveOnNode64(xNode, xattrName) : (U64)-K_ENOTSUP;
+            }
             break;
         }
         case X64_SYS_lseek:

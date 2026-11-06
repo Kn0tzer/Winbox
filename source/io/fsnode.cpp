@@ -182,6 +182,11 @@ void FsNode::loadChildren() {
                 if (localPath.endsWith(EXT_DOSATTRIB)) {
                     continue;
                 }
+                if (localPath.contains(EXT_XATTR)) {
+                    // FD-165: a generic xattr sidecar is storage
+                    // for its sibling file, never a guest file.
+                    continue;
+                }
                 if (!localPath.endsWith(EXT_LINK)) {
                     Fs::addFileNode(localPath, B(""), remotePath, n.isDirectory, shared_from_this());
                 } else {

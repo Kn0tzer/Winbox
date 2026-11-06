@@ -1,5 +1,8 @@
 # Chromium HTTP through a same-origin relay
 
+_Design record, October 2026 build-out: the requirements this work was built to, written before it shipped. Not a description of current behavior — the shipped networking differs from the early relay design below, and the plan file it points at no longer exists. Current state: `docs/architecture.md`. Kept as evidence of intent; the documentation map is `docs/INDEX.md`._
+
+
 Capability: `chromium-loopback-http`. Parent objective: make Chromium usable
 inside the existing BoxedWine browser runtime before finishing performance
 work and moving to Portal. This extends CP4 in `tasks/plan.md`.

@@ -103,6 +103,10 @@ void vkCmdSetScissorWithCountEXT(U64, U32, const void*);
 int vkFlushMappedMemoryRanges(U64, U32, const void*);
 int vkInvalidateMappedMemoryRanges(U64, U32, const void*);
 void (*vkGetDeviceProcAddr(U64, const char*))();
+void (*vkGetInstanceProcAddr(U64, const char*))();
+void vkGetPhysicalDeviceProperties2(U64, void*);
+void vkGetPhysicalDeviceFeatures2(U64, void*);
+void vkGetPhysicalDeviceMemoryProperties2(U64, void*);
 int vkCreateCommandPool(U64, const void*, const void*, void*);
 int vkAllocateCommandBuffers(U64, const void*, void*);
 int vkResetCommandPool(U64, U64, U32);
@@ -822,6 +826,20 @@ int main() {
         checkTable(16384 + 8); // memProps sit behind sType + pNext in the *2 struct
         g_mem32 = nullptr; g_mem = &memory;
         puts("PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)");
+    }
+    // ---- vkGetPhysicalDeviceMemoryProperties (64-bit): the device-local
+    // heap advertises 4 GiB, the same figure the 32-bit ABI above already
+    // pins. The two ABIs disagreed (2 GiB here, 4 GiB there) until the
+    // 2026-11 machine-definition raise; the heap behind the figure is
+    // guest RAM, which the same raise sized at 4 GiB.
+    {
+        VK64Args mp{}; mp.a[1] = 32768;
+        assert(vk64_test_trap(VK64_fn_vkGetPhysicalDeviceMemoryProperties, &mp) == VK_SUCCESS);
+        assert(memory.readd(32768 + 260) == 2);                 // memoryHeapCount
+        assert(memory.readq(32768 + 264) == 0x100000000ULL);    // heap 0 size: 4 GiB
+        assert(memory.readd(32768 + 272) == 0x1);               // heap 0 flags: DEVICE_LOCAL
+        assert(memory.readq(32768 + 280) == 0x100000000ULL);    // heap 1 size: 4 GiB
+        puts("PASS: Vulkan64 memory properties advertise a 4 GiB device-local heap");
     }
     // ---- vkCmdCopyImageToBuffer (32-bit): the recorded CopyI2B must carry
     // the region fields for every trap form (campaign 4.66). The handler
@@ -3262,6 +3280,119 @@ int main() {
             assert(vk64BridgeUnsupportedCount("properties2-struct") == propBefore);
             puts("PASS: GUARD Properties2 answers are identical for 32-bit and 64-bit guests (maintenance5, descriptor-indexing, transform-feedback, Vulkan 1.1/1.2/1.3 arms)");
         }
+    // GUARD (FD-19): the KHR spellings of the physical-device queries
+    // promoted to core in Vulkan 1.1 ARE served on the 64-bit guest
+    // path. The register entry said the 64-bit dispatcher has no
+    // vkGetPhysicalDeviceProperties2KHR case; that is literally true
+    // of vk64Bridge's switch and cannot bite: the 64-bit guest shim
+    // resolves each KHR name to a real alias wrapper that forwards
+    // to the core wrapper, so a 64-bit guest's KHR call reaches the
+    // bridge as the core call. The 32-bit shim traps the KHR id
+    // itself, which is why vk32Bridge carries the paired cases and
+    // vk64Bridge needs none. Pins: the KHR names resolve to served
+    // functions (not stubs), the trap arrives under the core id,
+    // and the answers are byte-identical to the core names'.
+    {
+        U64 pdId; createObj<PhysDev>(K_PHYSDEV, pdId);
+        assert(vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceProperties2KHR"));
+        assert(vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceFeatures2KHR"));
+        assert(vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceMemoryProperties2KHR"));
+        assert(vkGetDeviceProcAddr(0, "vkGetPhysicalDeviceProperties2KHR") ==
+               vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceProperties2KHR"));
+        // Properties2 with a Vulkan 1.2 chain node, core vs KHR name.
+        {
+            auto init = [&]() {
+                VkPhysicalDeviceVulkan12Properties v12{};
+                memset(&v12, 0xAA, sizeof(v12));
+                v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+                v12.pNext = 0;
+                memory.memcpyToGuest(12288, &v12, sizeof(v12));
+                VkPhysicalDeviceProperties2 p2{};
+                memset(&p2, 0xAA, sizeof(p2));
+                p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                p2.pNext = 12288;
+                memory.memcpyToGuest(10240, &p2, sizeof(p2));
+            };
+            std::vector<U8> coreRoot(sizeof(VkPhysicalDeviceProperties2)), coreChain(sizeof(VkPhysicalDeviceVulkan12Properties));
+            init();
+            vkGetPhysicalDeviceProperties2(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceProperties2);
+            memory.memcpyFromGuest(coreRoot.data(), 10240, coreRoot.size());
+            memory.memcpyFromGuest(coreChain.data(), 12288, coreChain.size());
+            VkPhysicalDeviceVulkan12Properties v12core;
+            memory.memcpyFromGuest(&v12core, 12288, sizeof(v12core));
+            assert(memcmp(v12core.driverName, "boxedwine", 9) == 0);
+            init();
+            auto khr = reinterpret_cast<void (*)(U64, void*)>(
+                vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceProperties2KHR"));
+            khr(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceProperties2);
+            std::vector<U8> khrRoot(sizeof(VkPhysicalDeviceProperties2)), khrChain(sizeof(VkPhysicalDeviceVulkan12Properties));
+            memory.memcpyFromGuest(khrRoot.data(), 10240, khrRoot.size());
+            memory.memcpyFromGuest(khrChain.data(), 12288, khrChain.size());
+            assert(coreRoot == khrRoot && coreChain == khrChain);
+        }
+        // Features2 with a Vulkan 1.2 chain node, core vs KHR name.
+        {
+            auto init = [&]() {
+                VkPhysicalDeviceVulkan12Features v12{};
+                memset(&v12, 0xAA, sizeof(v12));
+                v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+                v12.pNext = 0;
+                memory.memcpyToGuest(12288, &v12, sizeof(v12));
+                VkPhysicalDeviceFeatures2 f2{};
+                memset(&f2, 0xAA, sizeof(f2));
+                f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                f2.pNext = 12288;
+                memory.memcpyToGuest(10240, &f2, sizeof(f2));
+            };
+            std::vector<U8> coreRoot(sizeof(VkPhysicalDeviceFeatures2)), coreChain(sizeof(VkPhysicalDeviceVulkan12Features));
+            init();
+            vkGetPhysicalDeviceFeatures2(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceFeatures2);
+            memory.memcpyFromGuest(coreRoot.data(), 10240, coreRoot.size());
+            memory.memcpyFromGuest(coreChain.data(), 12288, coreChain.size());
+            VkPhysicalDeviceVulkan12Features v12core;
+            memory.memcpyFromGuest(&v12core, 12288, sizeof(v12core));
+            assert(v12core.timelineSemaphore == VK_TRUE);
+            init();
+            auto khr = reinterpret_cast<void (*)(U64, void*)>(
+                vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceFeatures2KHR"));
+            khr(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceFeatures2);
+            std::vector<U8> khrRoot(sizeof(VkPhysicalDeviceFeatures2)), khrChain(sizeof(VkPhysicalDeviceVulkan12Features));
+            memory.memcpyFromGuest(khrRoot.data(), 10240, khrRoot.size());
+            memory.memcpyFromGuest(khrChain.data(), 12288, khrChain.size());
+            assert(coreRoot == khrRoot && coreChain == khrChain);
+        }
+        // MemoryProperties2, core vs KHR name.
+        {
+            auto init = [&]() {
+                VkPhysicalDeviceMemoryProperties2 p2{};
+                memset(&p2, 0xAA, sizeof(p2));
+                p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+                p2.pNext = 0;
+                memory.memcpyToGuest(10240, &p2, sizeof(p2));
+            };
+            std::vector<U8> coreRoot(sizeof(VkPhysicalDeviceMemoryProperties2));
+            init();
+            vkGetPhysicalDeviceMemoryProperties2(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceMemoryProperties2);
+            memory.memcpyFromGuest(coreRoot.data(), 10240, coreRoot.size());
+            VkPhysicalDeviceMemoryProperties2 mcore;
+            memory.memcpyFromGuest(&mcore, 10240, sizeof(mcore));
+            assert(mcore.memoryProperties.memoryHeapCount > 0);
+            init();
+            auto khr = reinterpret_cast<void (*)(U64, void*)>(
+                vkGetInstanceProcAddr(0, "vkGetPhysicalDeviceMemoryProperties2KHR"));
+            khr(pdId, (void*)10240);
+            assert(lastTrap == VK64_fn_vkGetPhysicalDeviceMemoryProperties2);
+            std::vector<U8> khrRoot(sizeof(VkPhysicalDeviceMemoryProperties2));
+            memory.memcpyFromGuest(khrRoot.data(), 10240, khrRoot.size());
+            assert(coreRoot == khrRoot);
+        }
+        puts("PASS: GUARD KHR spellings of the promoted physical-device queries are served on the 64-bit guest path (FD-19: served alias wrappers, core trap id, byte-identical answers)");
+    }
     {
         // Image views keep their real subresource range and type; non-identity swizzle and
         // render-target mip/layer selection are reported loudly instead of silently dropped.

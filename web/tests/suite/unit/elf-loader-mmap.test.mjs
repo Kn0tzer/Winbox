@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const kmem = readFileSync(join(repoRoot, 'source/kernel/kmemory.cpp'), 'utf8');
-const kproc = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8');
+const kproc = readFileSync(join(repoRoot, 'source/kernel/kprocess.cpp'), 'utf8') +
+  readFileSync(join(repoRoot, 'source/kernel/kprocessclone.cpp'), 'utf8');
 const loader = readFileSync(join(repoRoot, 'source/kernel/loader/loader.cpp'), 'utf8');
 const syscall = readFileSync(join(repoRoot, 'source/kernel/syscall.cpp'), 'utf8');
 const softmmu = readFileSync(join(repoRoot, 'source/emulation/softmmu/soft_rw_page.cpp'), 'utf8');

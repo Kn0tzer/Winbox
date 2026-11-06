@@ -134,6 +134,15 @@ run_one_prebuilt helloVec    "$ROOT/tools/testdata/hello_vec.elf"    42  || fail
 # cpu64SelfTest; HADDPS/HADDPD covered by this probe's end-to-end run.
 run_one_prebuilt helloVec2   "$ROOT/tools/testdata/hello_vec2.elf"   24  || fail=$((fail+1))
 
+# Machine-definition probe (FD-03) -- a real gcc/glibc static binary that
+# checks the advertised machine and then exercises it: sysinfo totalram is
+# 4 GiB, a 2 GiB mmap (twice the old advertised total) is committed and
+# verified page by page, affinity/sysconf/CPUID all report 2 vCPUs,
+# sched_setaffinity to vCPU 1 alone is accepted and reads back, SSE4.2 is
+# advertised (implemented) and AVX is NOT (not implemented -- the bit must
+# stay clear). Exits 0 only if every hard check passes.
+run_one_prebuilt machineDefinition "$ROOT/tools/testdata/machine_definition_check.elf" 0 || fail=$((fail+1))
+
 # Dynamic-link probe — exits with status from libtiny.so::tiny_compute(10).
 # Requires BOXEDWINE64_LIBPATH to point at testdata/ so the in-tree
 # fetcher in cpu64RunElf.cpp finds libtiny.so. This is the closest

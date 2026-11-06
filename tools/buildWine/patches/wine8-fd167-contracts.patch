@@ -1,0 +1,427 @@
+diff --git a/dlls/msvcp140/msvcp140.spec b/dlls/msvcp140/msvcp140.spec
+index dd619c6..b29dcad 100644
+--- a/dlls/msvcp140/msvcp140.spec
++++ b/dlls/msvcp140/msvcp140.spec
+@@ -1623,7 +1623,7 @@
+ @ extern ?_Sync@ios_base@std@@0_NA ios_base_Sync
+ @ cdecl -arch=win32 ?_Syserror_map@std@@YAPBDH@Z(long) _Syserror_map
+ @ cdecl -arch=win64 ?_Syserror_map@std@@YAPEBDH@Z(long) _Syserror_map
+-@ stub ?_Throw_C_error@std@@YAXH@Z
++@ cdecl ?_Throw_C_error@std@@YAXH@Z(long) _Throw_C_error
+ @ stub ?_Throw_Cpp_error@std@@YAXH@Z
+ @ stub -arch=win32 ?_Throw_future_error@std@@YAXABVerror_code@1@@Z
+ @ stub -arch=win64 ?_Throw_future_error@std@@YAXAEBVerror_code@1@@Z
+@@ -1672,12 +1672,12 @@
+ @ cdecl ?_Winerror_map@std@@YAHH@Z(long) _Winerror_map
+ @ cdecl -arch=win32 ?_Winerror_message@std@@YAKKPADK@Z(long ptr long) _Winerror_message
+ @ cdecl -arch=win64 ?_Winerror_message@std@@YAKKPEADK@Z(long ptr long) _Winerror_message
+-@ stub ?_XGetLastError@std@@YAXXZ
++@ cdecl ?_XGetLastError@std@@YAXXZ() _XGetLastError
+ @ cdecl ?_XLgamma@std@@YAMM@Z(float) std__XLgamma_float
+ @ cdecl ?_XLgamma@std@@YANN@Z(double) std__XLgamma_double
+ @ cdecl ?_XLgamma@std@@YAOO@Z(double) std__XLgamma_double
+ @ cdecl ?_Xbad_alloc@std@@YAXXZ() _Xmem
+-@ stub ?_Xbad_function_call@std@@YAXXZ
++@ cdecl ?_Xbad_function_call@std@@YAXXZ() _Xbad_function_call
+ @ cdecl -arch=win32 ?_Xinvalid_argument@std@@YAXPBD@Z(str) _Xinvalid_argument
+ @ cdecl -arch=win64 ?_Xinvalid_argument@std@@YAXPEBD@Z(str) _Xinvalid_argument
+ @ cdecl -arch=win32 ?_Xlength_error@std@@YAXPBD@Z(str) _Xlength_error
+diff --git a/dlls/msvcp90/exception.c b/dlls/msvcp90/exception.c
+index 8ceaa91..7dd5890 100644
+--- a/dlls/msvcp90/exception.c
++++ b/dlls/msvcp90/exception.c
+@@ -17,6 +17,8 @@
+  */
+ 
+ #include <stdarg.h>
++#include <errno.h>
++#include <string.h>
+ 
+ #include "msvcp90.h"
+ #include "windef.h"
+@@ -67,6 +69,8 @@ extern const vtable_ptr failure_vtable;
+ extern const vtable_ptr bad_cast_vtable;
+ /* ??_7range_error@std@@6B@ */
+ extern const vtable_ptr range_error_vtable;
++/* ??_7bad_function_call@std@@6B@ */
++extern const vtable_ptr bad_function_call_vtable;
+ 
+ /* ??0exception@@QAE@ABQBD@Z */
+ /* ??0exception@@QEAA@AEBQEBD@Z */
+@@ -633,11 +637,30 @@ const char* __thiscall MSVCP_runtime_error_what(runtime_error *this)
+ DEFINE_RTTI_DATA1(runtime_error, 0, &exception_rtti_base_descriptor, ".?AVruntime_error@std@@")
+ DEFINE_CXX_DATA1(runtime_error, &exception_cxx_type_info, MSVCP_runtime_error_dtor)
+ 
++#if _MSVCP_VER > 90
++/* The error_category objects themselves live in misc.c; only pointers
++ * to them are stored in the exception objects built here. */
++typedef struct {
++    const vtable_ptr *vtable;
++} error_category;
++
++typedef struct
++{
++    int code;
++    const error_category *category;
++} error_code;
++
++const error_category* __cdecl std_iostream_category(void);
++const error_category* __cdecl std_system_category(void);
++const error_category* __cdecl std_generic_category(void);
++const char *_Winerror_map_str(int err);
++#endif
++
+ /* failure class data */
+ typedef struct {
+     runtime_error base;
+ #if _MSVCP_VER > 90
+-    int err;
++    error_code code;
+ #endif
+ } system_error;
+ typedef system_error _System_error;
+@@ -648,8 +671,8 @@ static failure* MSVCP_failure_ctor( failure *this, exception_name name )
+     TRACE("%p %s\n", this, EXCEPTION_STR(name));
+     MSVCP_runtime_error_ctor(&this->base, name);
+ #if _MSVCP_VER > 90
+-    /* FIXME: set err correctly */
+-    this->err = 0;
++    this->code.code = 1;
++    this->code.category = std_iostream_category();
+ #endif
+     this->base.e.vtable = &failure_vtable;
+     return this;
+@@ -662,7 +685,7 @@ failure* __thiscall failure_copy_ctor(
+     TRACE("%p %p\n", this, rhs);
+     runtime_error_copy_ctor(&this->base, &rhs->base);
+ #if _MSVCP_VER > 90
+-    this->err = rhs->err;
++    this->code = rhs->code;
+ #endif
+     this->base.e.vtable = &failure_vtable;
+     return this;
+@@ -722,7 +745,9 @@ DEFINE_RTTI_DATA4(failure, 0, &system_error_rtti_base_descriptor,
+         &_System_error_rtti_base_descriptor, &runtime_error_rtti_base_descriptor,
+         &exception_rtti_base_descriptor, ".?AVfailure@ios_base@std@@")
+ DEFINE_CXX_TYPE_INFO(_System_error)
+-DEFINE_CXX_TYPE_INFO(system_error);
++DEFINE_CXX_DATA3(system_error, &_System_error_cxx_type_info,
++        &runtime_error_cxx_type_info, &exception_cxx_type_info,
++        MSVCP_runtime_error_dtor)
+ DEFINE_CXX_DATA4(failure, &system_error_cxx_type_info,
+         &_System_error_cxx_type_info, &runtime_error_cxx_type_info,
+         &exception_cxx_type_info, MSVCP_runtime_error_dtor)
+@@ -732,7 +757,8 @@ DEFINE_RTTI_DATA2(system_error, 0, &runtime_error_rtti_base_descriptor,
+ DEFINE_RTTI_DATA3(failure, 0, &system_error_rtti_base_descriptor,
+         &runtime_error_rtti_base_descriptor, &exception_rtti_base_descriptor,
+         ".?AVfailure@ios_base@std@@")
+-DEFINE_CXX_TYPE_INFO(system_error);
++DEFINE_CXX_DATA2(system_error, &runtime_error_cxx_type_info,
++        &exception_cxx_type_info, MSVCP_runtime_error_dtor)
+ DEFINE_CXX_DATA3(failure, &system_error_cxx_type_info, &runtime_error_cxx_type_info,
+         &exception_cxx_type_info, MSVCP_runtime_error_dtor)
+ #else
+@@ -867,6 +893,107 @@ range_error* __thiscall MSVCP_range_error_assign(range_error *this, const range_
+ DEFINE_RTTI_DATA2(range_error, 0, &runtime_error_rtti_base_descriptor, &exception_rtti_base_descriptor, ".?AVrange_error@std@@")
+ DEFINE_CXX_DATA2(range_error, &runtime_error_cxx_type_info, &exception_cxx_type_info, MSVCP_runtime_error_dtor)
+ 
++#if _MSVCP_VER > 90
++/* bad_function_call class data */
++typedef exception bad_function_call;
++
++static bad_function_call* MSVCP_bad_function_call_ctor(bad_function_call *this)
++{
++    static const char *name = "bad function call";
++
++    TRACE("%p\n", this);
++    MSVCP_exception_ctor(this, EXCEPTION_NAME(name));
++    this->vtable = &bad_function_call_vtable;
++    return this;
++}
++
++DEFINE_THISCALL_WRAPPER(bad_function_call_copy_ctor, 8)
++bad_function_call* __thiscall bad_function_call_copy_ctor(bad_function_call *this, const bad_function_call *rhs)
++{
++    TRACE("%p %p\n", this, rhs);
++    exception_copy_ctor(this, rhs);
++    this->vtable = &bad_function_call_vtable;
++    return this;
++}
++
++DEFINE_RTTI_DATA1(bad_function_call, 0, &exception_rtti_base_descriptor, ".?AVbad_function_call@std@@")
++DEFINE_CXX_DATA1(bad_function_call, &exception_cxx_type_info, MSVCP_exception_dtor)
++#endif
++
++#if _MSVCP_VER > 90
++/* ?_Xbad_function_call@std@@YAXXZ */
++void __cdecl _Xbad_function_call(void)
++{
++    exception e;
++
++    TRACE("()\n");
++
++    MSVCP_bad_function_call_ctor(&e);
++    _CxxThrowException(&e, &bad_function_call_cxx_type);
++}
++#endif
++
++#if _MSVCP_VER >= 140
++/* ?_XGetLastError@std@@YAXXZ */
++void __cdecl _XGetLastError(void)
++{
++    int err = GetLastError();
++    system_error se;
++    const char *msg;
++
++    TRACE("() GetLastError()=%d\n", err);
++
++    msg = _Winerror_map_str(err);
++    MSVCP_runtime_error_ctor(&se.base, &msg);
++    se.code.code = err;
++    se.code.category = std_system_category();
++    se.base.e.vtable = &system_error_vtable;
++
++    _CxxThrowException(&se, &system_error_cxx_type);
++}
++#endif
++
++#if _MSVCP_VER > 90
++/* ?_Throw_C_error@std@@YAXH@Z */
++void __cdecl _Throw_C_error(int code)
++{
++    system_error se;
++    const char *msg;
++    errno_t err;
++
++    TRACE("(%d)\n", code);
++
++    switch(code)
++    {
++    case 1:
++    case 2:
++        err = EAGAIN;
++        break;
++    case 3:
++        err = EBUSY;
++        break;
++    case 4:
++        err = EINVAL;
++        break;
++    default:
++#if _MSVCP_VER >= 140
++        abort();
++#else
++        return;
++#endif
++    }
++
++    msg = strerror(err);
++    MSVCP_runtime_error_ctor(&se.base, &msg);
++    se.code.code = err;
++    se.code.category = std_generic_category();
++    se.base.e.vtable = &system_error_vtable;
++
++    _CxxThrowException(&se, &system_error_cxx_type);
++}
++#endif
++
++
+ /* ?_Nomemory@std@@YAXXZ */
+ void __cdecl DECLSPEC_NORETURN _Nomemory(void)
+ {
+@@ -1356,6 +1483,9 @@ __ASM_BLOCK_BEGIN(exception_vtables)
+     EXCEPTION_VTABLE(system_error,
+             VTABLE_ADD_FUNC(MSVCP_failure_vector_dtor)
+             VTABLE_ADD_FUNC(MSVCP_failure_what));
++    EXCEPTION_VTABLE(bad_function_call,
++            VTABLE_ADD_FUNC(MSVCP_exception_vector_dtor)
++            VTABLE_ADD_FUNC(MSVCP_exception_what));
+ #endif
+     EXCEPTION_VTABLE(failure,
+             VTABLE_ADD_FUNC(MSVCP_failure_vector_dtor)
+@@ -1418,21 +1548,28 @@ void init_exception(void *base)
+     init_failure_rtti(base);
+     init_bad_cast_rtti(base);
+     init_range_error_rtti(base);
++#if _MSVCP_VER > 90
++    init_bad_function_call_rtti(base);
++#endif
+ 
+     init_exception_cxx(base);
+     init_bad_alloc_cxx(base);
+     init_logic_error_cxx_type_info(base);
+     init_length_error_cxx(base);
+     init_out_of_range_cxx(base);
+     init_invalid_argument_cxx(base);
+     init_runtime_error_cxx(base);
+ #if _MSVCP_VER > 110
+     init__System_error_cxx_type_info(base);
+ #endif
+ #if _MSVCP_VER > 90
+     init_system_error_cxx_type_info(base);
++    init_system_error_cxx(base);
+ #endif
+     init_failure_cxx(base);
+     init_range_error_cxx(base);
++#if _MSVCP_VER > 90
++    init_bad_function_call_cxx(base);
++#endif
+ #endif
+ }
+ 
+diff --git a/dlls/msvcp90/misc.c b/dlls/msvcp90/misc.c
+index 103eca6..b398a2b 100644
+--- a/dlls/msvcp90/misc.c
++++ b/dlls/msvcp90/misc.c
+@@ -997,11 +997,13 @@ void __cdecl _Cnd_do_broadcast_at_thread_exit(void)
+ 
+ #endif
+ 
+-#if _MSVCP_VER == 100
++#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+ typedef struct {
+     const vtable_ptr *vtable;
+ } error_category;
+ 
++const char *_Winerror_map_str(int err);
++
+ typedef struct {
+     error_category base;
+     const char *type;
+@@ -1101,6 +1103,17 @@ static void system_category_ctor(custom_category *this)
+     this->type = "system";
+ }
+ 
++#if _MSVCP_VER > 100
++DEFINE_THISCALL_WRAPPER(system_category_message, 12)
++basic_string_char* __thiscall system_category_message(const custom_category *this,
++        basic_string_char *ret, int err)
++{
++    const char *msg = _Winerror_map_str(err);
++    if (!msg) return MSVCP_basic_string_char_ctor_cstr(ret, "unknown error");
++    return MSVCP_basic_string_char_ctor_cstr(ret, msg);
++}
++#endif
++
+ /* ?system_category@std@@YAABVerror_category@1@XZ */
+ /* ?system_category@std@@YAAEBVerror_category@1@XZ */
+ const error_category* __cdecl std_system_category(void)
+@@ -1682,11 +1695,16 @@ int __cdecl _Winerror_map(int err)
+ 
+     return 0;
+ }
++
++const char *_Winerror_map_str(int err)
++{
++    return _Syserror_map(_Winerror_map(err));
++}
+ #endif
+ 
+ #if _MSVCP_VER >= 100
+ __ASM_BLOCK_BEGIN(misc_vtables)
+-#if _MSVCP_VER == 100
++#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+     __ASM_VTABLE(iostream_category,
+             VTABLE_ADD_FUNC(custom_category_vector_dtor)
+             VTABLE_ADD_FUNC(custom_category_name)
+@@ -1694,6 +1712,7 @@ __ASM_BLOCK_BEGIN(misc_vtables)
+             VTABLE_ADD_FUNC(custom_category_default_error_condition)
+             VTABLE_ADD_FUNC(custom_category_equivalent)
+             VTABLE_ADD_FUNC(custom_category_equivalent_code));
++#if _MSVCP_VER == 100
+     __ASM_VTABLE(system_category,
+             VTABLE_ADD_FUNC(custom_category_vector_dtor)
+             VTABLE_ADD_FUNC(custom_category_name)
+@@ -1701,6 +1720,16 @@ __ASM_BLOCK_BEGIN(misc_vtables)
+             VTABLE_ADD_FUNC(custom_category_default_error_condition)
+             VTABLE_ADD_FUNC(custom_category_equivalent)
+             VTABLE_ADD_FUNC(custom_category_equivalent_code));
++#endif
++#if _MSVCP_VER >= 140
++    __ASM_VTABLE(system_category,
++            VTABLE_ADD_FUNC(custom_category_vector_dtor)
++            VTABLE_ADD_FUNC(custom_category_name)
++            VTABLE_ADD_FUNC(system_category_message)
++            VTABLE_ADD_FUNC(custom_category_default_error_condition)
++            VTABLE_ADD_FUNC(custom_category_equivalent)
++            VTABLE_ADD_FUNC(custom_category_equivalent_code));
++#endif
+     __ASM_VTABLE(generic_category,
+             VTABLE_ADD_FUNC(custom_category_vector_dtor)
+             VTABLE_ADD_FUNC(custom_category_name)
+@@ -1718,7 +1747,7 @@ __ASM_BLOCK_END
+ void init_misc(void *base)
+ {
+ #ifdef __x86_64__
+-#if _MSVCP_VER == 100
++#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+     init_error_category_rtti(base);
+     init_iostream_category_rtti(base);
+     init_system_category_rtti(base);
+@@ -1729,7 +1758,7 @@ void init_misc(void *base)
+ #endif
+ #endif
+ 
+-#if _MSVCP_VER == 100
++#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+     iostream_category_ctor(&iostream_category);
+     system_category_ctor(&system_category);
+     generic_category_ctor(&generic_category);
+diff --git a/dlls/setupapi/devinst.c b/dlls/setupapi/devinst.c
+index ef7b4dc..7917d67 100644
+--- a/dlls/setupapi/devinst.c
++++ b/dlls/setupapi/devinst.c
+@@ -2850,6 +2850,40 @@ BOOL WINAPI SetupDiDeleteDeviceInterfaceRegKey(HDEVINFO devinfo,
+     return TRUE;
+ }
+ 
++/***********************************************************************
++ *		SetupDiGetDeviceInterfaceAlias (SETUPAPI.@)
++ */
++BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HDEVINFO devinfo, SP_DEVICE_INTERFACE_DATA *iface_data,
++        const GUID *alias_guid, SP_DEVICE_INTERFACE_DATA *alias_data)
++{
++    struct device_iface *iface, *alias;
++    struct device *device;
++
++    TRACE("%p, %p, %s, %p\n", devinfo, iface_data, debugstr_guid(alias_guid), alias_data);
++
++    if (!alias_guid || !alias_data || alias_data->cbSize != sizeof(*alias_data))
++    {
++        SetLastError(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
++
++    if (!(iface = get_device_iface(devinfo, iface_data)))
++        return FALSE;
++
++    device = iface->device;
++    LIST_FOR_EACH_ENTRY(alias, &device->interfaces, struct device_iface, entry)
++    {
++        if (IsEqualGUID(&alias->class, alias_guid))
++        {
++            copy_device_iface_data(alias_data, alias);
++            return TRUE;
++        }
++    }
++
++    SetLastError(ERROR_NO_SUCH_DEVICE_INTERFACE);
++    return FALSE;
++}
++
+ /***********************************************************************
+  *		SetupDiEnumDeviceInterfaces (SETUPAPI.@)
+  *
+diff --git a/dlls/setupapi/setupapi.spec b/dlls/setupapi/setupapi.spec
+index 7578fb2..a23f460 100644
+--- a/dlls/setupapi/setupapi.spec
++++ b/dlls/setupapi/setupapi.spec
+@@ -344,7 +344,7 @@
+ @ stdcall SetupDiGetDeviceInstallParamsW(ptr ptr ptr)
+ @ stdcall SetupDiGetDeviceInstanceIdA(ptr ptr ptr long ptr)
+ @ stdcall SetupDiGetDeviceInstanceIdW(ptr ptr ptr long ptr)
+-@ stub SetupDiGetDeviceInterfaceAlias
++@ stdcall SetupDiGetDeviceInterfaceAlias(ptr ptr ptr ptr)
+ @ stdcall SetupDiGetDeviceInterfaceDetailA(long ptr ptr long ptr ptr)
+ @ stdcall SetupDiGetDeviceInterfaceDetailW(long ptr ptr long ptr ptr)
+ @ stdcall SetupDiGetDevicePropertyW(ptr ptr ptr ptr ptr long ptr long)

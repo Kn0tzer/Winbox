@@ -48,10 +48,10 @@ FsOpenNode* openCpuInfo(const std::shared_ptr<FsNode>& node, U32 flags, U32 data
 			result += "microcode	: 0xc6\n";
 			result += "cpu MHz		: "; result += Platform::getCpuFreqMHz(); result += "\n";
 			result += "cache size	: 1024 KB\n";
-			result += "physical id	: "; result += i; result += "\n";
-			result += "siblings	: 1\n";
-			result += "core id		: 0\n";
-			result += "cpu cores	: 1\n";
+			result += "physical id	: 0\n";
+			result += "siblings	: "; result += count; result += "\n";
+			result += "core id		: "; result += i; result += "\n";
+			result += "cpu cores	: "; result += count; result += "\n";
 			result += "apicid		: "; result += i; result += "\n";
 			result += "initial apicid	: "; result += i; result += "\n";
 			result += "fdiv_bug	: no\n";

@@ -910,3 +910,152 @@ U32 Fs::removeDosAttrib(const std::shared_ptr<FsNode>& file) {
         return -K_ENODATA; // ENOATTR
     }
 }
+bool Fs::hasDosAttrib(const std::shared_ptr<FsNode>& file) {
+    return Fs::doesNativePathExist(file->nativePath + EXT_DOSATTRIB);
+}
+
+// FD-165: the generic xattr sidecar store. The name encoding
+// keeps [A-Za-z0-9._-] as-is and %XX-escapes every other byte
+// ('%' itself included), so decoding is unambiguous and the
+// sidecar is always one plain filename beside the file it
+// describes.
+static BString xattrSidecarSuffix(const BString& name) {
+    static const char* hexDigits = "0123456789ABCDEF";
+    BString out = B(EXT_XATTR);
+    for (U32 i = 0; i < name.length(); i++) {
+        U8 c = (U8)name.charAt((int)i);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+            out += (char)c;
+        } else {
+            out += '%';
+            out += hexDigits[c >> 4];
+            out += hexDigits[c & 0xF];
+        }
+    }
+    return out;
+}
+
+static BString xattrSidecarPath(const std::shared_ptr<FsNode>& file, const BString& name) {
+    return file->nativePath + xattrSidecarSuffix(name);
+}
+
+static BString xattrNameFromEncoded(const BString& encoded) {
+    BString out;
+    auto hexVal = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    U32 i = 0;
+    while (i < encoded.length()) {
+        char c = encoded.charAt((int)i);
+        if (c == '%' && i + 2 < encoded.length()) {
+            int hi = hexVal(encoded.charAt((int)(i + 1)));
+            int lo = hexVal(encoded.charAt((int)(i + 2)));
+            if (hi >= 0 && lo >= 0) {
+                out += (char)((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out += c;
+        i++;
+    }
+    return out;
+}
+
+static std::vector<BString> xattrSidecarPathsFor(const BString& nativePath) {
+    BString base = Fs::getFileNameFromNativePath(nativePath);
+    S32 slash = nativePath.lastIndexOf('/');
+    BString dirPath = slash > 0 ? nativePath.substr(0, slash) : B("/");
+    return Fs::getFilesInNativeDirectoryWhereFileMatches(dirPath, base + EXT_XATTR, BString::empty, false);
+}
+
+bool Fs::hasXAttr(const std::shared_ptr<FsNode>& file, const BString& name) {
+    if (!file->nativePath.length()) {
+        return false;
+    }
+    return Fs::doesNativePathExist(xattrSidecarPath(file, name));
+}
+
+bool Fs::getXAttr(const std::shared_ptr<FsNode>& file, const BString& name, std::vector<U8>& valueOut) {
+    valueOut.clear();
+    if (!file->nativePath.length()) {
+        return false;
+    }
+    BString sidecar = xattrSidecarPath(file, name);
+    if (!Fs::doesNativePathExist(sidecar)) {
+        return false;
+    }
+    U64 size = Fs::getNativeFileSize(sidecar);
+    if (size == 0) {
+        return true; // a present attribute with an empty value
+    }
+    valueOut.resize((size_t)size);
+    U32 read = Fs::readNativeFile(sidecar, valueOut.data(), (U32)size);
+    valueOut.resize(read);
+    return read == size;
+}
+
+bool Fs::setXAttr(const std::shared_ptr<FsNode>& file, const BString& name, const U8* value, U32 valueLen) {
+    if (!file->nativePath.length()) {
+        return false;
+    }
+    BWriteFile w(xattrSidecarPath(file, name), true);
+    if (!w.isOpen()) {
+        // The guest asked for an attribute that will silently
+        // not stick (a backing that cannot hold a sidecar, e.g.
+        // a zip node); say so in the log, as setDosAttrib does.
+        bw64RecoverLogOnce("fs-setxattr-open", "BW64-FAIL fs-xattr outcome=attribute file could not be opened; guest attribute not stored");
+        return false;
+    }
+    if (valueLen) {
+        w.write(value, valueLen);
+    }
+    return true;
+}
+
+U32 Fs::removeXAttr(const std::shared_ptr<FsNode>& file, const BString& name) {
+    if (!file->nativePath.length()) {
+        return -K_ENODATA;
+    }
+    BString sidecar = xattrSidecarPath(file, name);
+    if (Fs::doesNativePathExist(sidecar)) {
+        deleteNativeFile(sidecar);
+        return 0;
+    }
+    return -K_ENODATA; // ENOATTR
+}
+
+std::vector<BString> Fs::listXAttrNames(const std::shared_ptr<FsNode>& file) {
+    std::vector<BString> names;
+    if (file->nativePath.length()) {
+        BString base = Fs::getFileNameFromNativePath(file->nativePath);
+        U32 prefixLen = base.length() + (U32)strlen(EXT_XATTR);
+        for (auto& sidecar : xattrSidecarPathsFor(file->nativePath)) {
+            BString entry = Fs::getFileNameFromNativePath(sidecar);
+            if (entry.length() > prefixLen) {
+                names.push_back(xattrNameFromEncoded(entry.substr((int)prefixLen)));
+            }
+        }
+    }
+    if (Fs::hasDosAttrib(file)) {
+        names.push_back(B("user.DOSATTRIB"));
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+void Fs::deleteXAttrSidecars(const BString& nativePath) {
+    for (auto& sidecar : xattrSidecarPathsFor(nativePath)) {
+        deleteNativeFile(sidecar);
+    }
+}
+
+void Fs::moveXAttrSidecars(const BString& oldNativePath, const BString& newNativePath) {
+    for (auto& sidecar : xattrSidecarPathsFor(oldNativePath)) {
+        BString dst = newNativePath + sidecar.substr((int)oldNativePath.length());
+        ::rename(sidecar.c_str(), dst.c_str());
+    }
+}

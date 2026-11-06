@@ -97,6 +97,15 @@ struct FixturePV64 {
     static constexpr U64 deepMidAt    = dataPage + 0xCC0; // "d/../../a.txt"
     static constexpr U64 relRootMidAt = dataPage + 0xD00; // "../a.txt"
     static constexpr U64 absRootMidAt = dataPage + 0xD40; // "/../a.txt"
+    static constexpr U64 valAt        = dataPage + 0xD80; // "v"
+    static constexpr U64 dosAt        = dataPage + 0xDC0; // "user.DOSATTRIB"
+    static constexpr U64 securityAt   = dataPage + 0xE00; // "security.x"
+    static constexpr U64 bareTrustedAt = dataPage + 0xE40; // "trusted."
+    static constexpr U64 bareSecurityAt = dataPage + 0xE80; // "security."
+    static constexpr U64 bareSystemAt = dataPage + 0xEC0; // "system."
+    static constexpr U64 bareWordAt   = dataPage + 0xF00; // "bogus"
+    static constexpr U64 userYAt      = dataPage + 0xF40; // "user.y"
+    static constexpr U64 aclDefaultAt = dataPage + 0xF80; // "system.posix_acl_default"
 
     FixturePV64() {
         TestContext& context = testContext();
@@ -176,6 +185,15 @@ struct FixturePV64 {
         memory->memcpyToGuest(deepMidAt, "d/../../a.txt", 14);
         memory->memcpyToGuest(relRootMidAt, "../a.txt", 9);
         memory->memcpyToGuest(absRootMidAt, "/../a.txt", 10);
+        memory->memcpyToGuest(valAt, "v", 2);
+        memory->memcpyToGuest(dosAt, "user.DOSATTRIB", 15);
+        memory->memcpyToGuest(securityAt, "security.x", 11);
+        memory->memcpyToGuest(bareTrustedAt, "trusted.", 9);
+        memory->memcpyToGuest(bareSecurityAt, "security.", 10);
+        memory->memcpyToGuest(bareSystemAt, "system.", 8);
+        memory->memcpyToGuest(bareWordAt, "bogus", 6);
+        memory->memcpyToGuest(userYAt, "user.y", 7);
+        memory->memcpyToGuest(aclDefaultAt, "system.posix_acl_default", 25);
         ok = true;
     }
 
@@ -329,6 +347,130 @@ void testXattrNamespace64Syscalls() {
     expectEq(f.invoke(193, fileFd, FixturePV64::bareUserAt, buf, 256), -K_EINVAL, "fgetxattr(fd, user.)");
     expectEq(f.invoke(193, 9999, FixturePV64::emptyStrAt, buf, 256), -K_ERANGE, "fgetxattr(9999, \"\"): the fetch verdict precedes the descriptor");
     expectEq(f.invoke(193, 9999, FixturePV64::bogusAt, buf, 256), -K_EBADF, "fgetxattr(9999, bogus.x) control");
+    f.process->close(fileDesc->handle);
+}
+
+void testXattrWriteClassify64Syscalls() {
+    FixturePV64 f;
+    if (!f.ok) {
+        testFail("xattr write-classify test could not stage its fixture");
+        return;
+    }
+    const U64 buf = FixturePV64::bufAt;
+    const U64 val = FixturePV64::valAt;
+
+    // FD-165, host-measured at the raw syscall level
+    // (test-results/fd165/hostref-fd165*.out): the set/remove
+    // forms classify the name on a resolved target, the way the
+    // get forms already did (FD-163). A prefix with no handler
+    // answers -ENOTSUP; a recognised prefix with an empty
+    // attribute part answers -EINVAL; the two posix_acl names
+    // answer -EINVAL to a set carrying a non-ACL value and a
+    // remove of them on a file or directory is a no-op success.
+    // A recognised namespace with an attribute part is stored:
+    // CREATE on a present attribute answers -EEXIST, REPLACE
+    // on an absent one -ENODATA, and get/list read the stored
+    // values back. On the link itself (the l-forms) every
+    // user.* name answers -EPERM, while trusted.*/security.*
+    // behave as on a file. The value copy faults (-EFAULT for
+    // a null value with a nonzero size) ahead of the target
+    // verdicts, after the flags word and the name fetch.
+
+    // Set-side classification on a resolved file.
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bogusAt, val, 1, 0), -K_ENOTSUP, "setxattr(a.txt, bogus.x) control");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bareWordAt, val, 1, 0), -K_ENOTSUP, "setxattr(a.txt, bogus) a bare word");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::systemAt, val, 1, 0), -K_ENOTSUP, "setxattr(a.txt, system.x)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bareSystemAt, val, 1, 0), -K_ENOTSUP, "setxattr(a.txt, system.)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bareUserAt, val, 1, 0), -K_EINVAL, "setxattr(a.txt, user.)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bareTrustedAt, val, 1, 0), -K_EINVAL, "setxattr(a.txt, trusted.)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::bareSecurityAt, val, 1, 0), -K_EINVAL, "setxattr(a.txt, security.)");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::aclAt, val, 1, 0), -K_EINVAL, "setxattr(a.txt, system.posix_acl_access, v): the value is not an ACL");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::aclDefaultAt, val, 1, 0), -K_EINVAL, "setxattr(a.txt, system.posix_acl_default, v)");
+    expectEq(f.invoke(188, FixturePV64::missingAt, FixturePV64::bareUserAt, val, 1, 0), -K_ENOENT, "setxattr(missing, user.): resolution precedes the classification");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::nameUserAt, 0, 3, 0), -K_EFAULT, "setxattr(a.txt, user.x, NULL value, size 3)");
+    expectEq(f.invoke(188, FixturePV64::missingAt, FixturePV64::nameUserAt, 0, 3, 0), -K_EFAULT, "setxattr(missing, user.x, NULL value, size 3): the value precedes the path");
+
+    // Storage: set, read back, list, remove, CREATE/REPLACE.
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::nameUserAt, val, 1, 0), 0, "setxattr(a.txt, user.x)");
+    S64 gotLen = f.invoke(191, FixturePV64::aTxtAt, FixturePV64::nameUserAt, buf, 256);
+    expectEq(gotLen, 1, "getxattr(a.txt, user.x) reads the set back");
+    if (gotLen == 1) {
+        char v = 0;
+        f.memory->memcpyFromGuest(&v, buf, 1);
+        if (v != 'v') testFail("getxattr(a.txt, user.x) value is not 'v'");
+    }
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::nameUserAt, buf, 0), 1, "getxattr(a.txt, user.x, size 0) is a size query");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::nameUserAt, val, 1, 1), -K_EEXIST, "setxattr(a.txt, user.x, CREATE) on a present attribute");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::userYAt, val, 1, 2), -K_ENODATA, "setxattr(a.txt, user.y, REPLACE) on an absent attribute");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::userYAt, val, 1, 0), 0, "setxattr(a.txt, user.y)");
+    S64 listLen = f.invoke(194, FixturePV64::aTxtAt, buf, 256);
+    expectEq(listLen, 14, "listxattr(a.txt) length");
+    if (listLen == 14) {
+        char names[14] = {};
+        f.memory->memcpyFromGuest(names, buf, 14);
+        if (memcmp(names, "user.x\0user.y\0", 14) != 0) testFail("listxattr(a.txt) bytes are not user.x/user.y");
+    }
+    expectEq(f.invoke(194, FixturePV64::aTxtAt, buf, 0), 14, "listxattr(a.txt, size 0) reports the needed size");
+    expectEq(f.invoke(194, FixturePV64::aTxtAt, buf, 3), -K_ERANGE, "listxattr(a.txt, size 3) is too small");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::nameUserAt), 0, "removexattr(a.txt, user.x)");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::nameUserAt), -K_ENODATA, "removexattr(a.txt, user.x) again: absent");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::nameUserAt, buf, 256), -K_ENODATA, "getxattr(a.txt, user.x) is absent again");
+
+    // Remove-side classification (user.y is still stored).
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::trustedAt), -K_ENODATA, "removexattr(a.txt, trusted.x) absent");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::securityAt), -K_ENODATA, "removexattr(a.txt, security.x) absent");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::bogusAt), -K_ENOTSUP, "removexattr(a.txt, bogus.x) control");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::bareUserAt), -K_EINVAL, "removexattr(a.txt, user.)");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::bareTrustedAt), -K_EINVAL, "removexattr(a.txt, trusted.)");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::bareSystemAt), -K_ENOTSUP, "removexattr(a.txt, system.)");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::aclAt), 0, "removexattr(a.txt, system.posix_acl_access): clearing an ACL is a no-op");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::aclDefaultAt), 0, "removexattr(a.txt, system.posix_acl_default): clearing an ACL is a no-op");
+    expectEq(f.invoke(197, FixturePV64::missingAt, FixturePV64::bogusAt), -K_ENOENT, "removexattr(missing, bogus.x): resolution precedes the classification");
+
+    // The modelled attribute through the 64-bit forms (the
+    // 64-bit dispatcher used to classify it as merely absent).
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::dosAt, val, 1, 0), 0, "setxattr(a.txt, user.DOSATTRIB)");
+    expectEq(f.invoke(191, FixturePV64::aTxtAt, FixturePV64::dosAt, buf, 64), 1, "getxattr(a.txt, user.DOSATTRIB) reads the set back");
+    expectEq(f.invoke(188, FixturePV64::aTxtAt, FixturePV64::dosAt, val, 1, 1), -K_EEXIST, "setxattr(a.txt, user.DOSATTRIB, CREATE) on a present attribute");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::dosAt), 0, "removexattr(a.txt, user.DOSATTRIB)");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::dosAt), -K_ENODATA, "removexattr(a.txt, user.DOSATTRIB) again: absent");
+
+    // The link itself (the l-forms).
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::nameUserAt, val, 1, 0), -K_EPERM, "lsetxattr(ln, user.x): user.* never applies to a link");
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::bareUserAt, val, 1, 0), -K_EPERM, "lsetxattr(ln, user.)");
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::dosAt, val, 1, 0), -K_EPERM, "lsetxattr(ln, user.DOSATTRIB)");
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::bogusAt, val, 1, 0), -K_ENOTSUP, "lsetxattr(ln, bogus.x)");
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::bareTrustedAt, val, 1, 0), -K_EINVAL, "lsetxattr(ln, trusted.)");
+    expectEq(f.invoke(189, FixturePV64::lnAt, FixturePV64::trustedAt, val, 1, 0), 0, "lsetxattr(ln, trusted.x) is stored on the link");
+    expectEq(f.invoke(192, FixturePV64::lnAt, FixturePV64::trustedAt, buf, 256), 1, "lgetxattr(ln, trusted.x) reads it back");
+    expectEq(f.invoke(198, FixturePV64::lnAt, FixturePV64::trustedAt), 0, "lremovexattr(ln, trusted.x)");
+    expectEq(f.invoke(198, FixturePV64::lnAt, FixturePV64::trustedAt), -K_ENODATA, "lremovexattr(ln, trusted.x) again: absent");
+    expectEq(f.invoke(198, FixturePV64::lnAt, FixturePV64::nameUserAt), -K_EPERM, "lremovexattr(ln, user.x)");
+    expectEq(f.invoke(198, FixturePV64::lnAt, FixturePV64::aclAt), -K_ENOTSUP, "lremovexattr(ln, system.posix_acl_access)");
+    expectEq(f.invoke(188, FixturePV64::lnAt, FixturePV64::nameUserAt, val, 1, 0), 0, "setxattr(ln, user.x) follows to a.txt");
+    expectEq(f.invoke(197, FixturePV64::aTxtAt, FixturePV64::nameUserAt), 0, "removexattr(a.txt, user.x) cleanup");
+
+    // A directory is a normal target.
+    expectEq(f.invoke(188, FixturePV64::dAt, FixturePV64::nameUserAt, val, 1, 0), 0, "setxattr(d, user.x)");
+    expectEq(f.invoke(197, FixturePV64::dAt, FixturePV64::nameUserAt), 0, "removexattr(d, user.x)");
+    expectEq(f.invoke(197, FixturePV64::dAt, FixturePV64::aclAt), 0, "removexattr(d, system.posix_acl_access): the no-op clear applies to directories");
+
+    // The descriptor forms (user.y is still stored on a.txt).
+    KFileDescriptorPtr fileDesc;
+    if (f.process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("xattr write-classify test could not open its file");
+        return;
+    }
+    const U64 fileFd = fileDesc->handle;
+    expectEq(f.invoke(190, fileFd, FixturePV64::bareUserAt, val, 1, 0), -K_EINVAL, "fsetxattr(fd, user.)");
+    expectEq(f.invoke(190, fileFd, FixturePV64::aclAt, val, 1, 0), -K_EINVAL, "fsetxattr(fd, system.posix_acl_access, v)");
+    expectEq(f.invoke(190, fileFd, FixturePV64::nameUserAt, 0, 3, 0), -K_EFAULT, "fsetxattr(fd, user.x, NULL value, size 3)");
+    expectEq(f.invoke(190, 9999, FixturePV64::nameUserAt, 0, 3, 0), -K_EFAULT, "fsetxattr(9999, user.x, NULL value, size 3): the value precedes the descriptor");
+    expectEq(f.invoke(199, fileFd, FixturePV64::dosAt), -K_ENODATA, "fremovexattr(fd, user.DOSATTRIB): the modelled name on a file that does not carry it");
+    expectEq(f.invoke(199, fileFd, FixturePV64::bareUserAt), -K_EINVAL, "fremovexattr(fd, user.)");
+    expectEq(f.invoke(199, fileFd, FixturePV64::bogusAt), -K_ENOTSUP, "fremovexattr(fd, bogus.x) control");
+    expectEq(f.invoke(199, fileFd, FixturePV64::aclAt), 0, "fremovexattr(fd, system.posix_acl_access): the no-op clear");
+    expectEq(f.invoke(196, fileFd, buf, 256), 7, "flistxattr(fd) lists the still-stored user.y");
     f.process->close(fileDesc->handle);
 }
 

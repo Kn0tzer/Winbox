@@ -39,7 +39,7 @@
 
 namespace {
 
-// Linux clone flags (see the K_CLONE_* defines in kprocess.cpp).
+// Linux clone flags (see the K_CLONE_* defines in kprocessclone.cpp).
 constexpr U32 C_VM           = 0x100;
 constexpr U32 C_FS           = 0x200;
 constexpr U32 C_FILES        = 0x400;

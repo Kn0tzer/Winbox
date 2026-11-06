@@ -32,7 +32,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
         echo "stage-wine64-payloads: $archive already carries the backport DLLs — skipping"
         continue
     fi
-    backup="/home/ubuntu/backups/winbox-wine64-payloads-$stamp"
+    backup="/home/ubuntu/winbox-project/evidence/winbox-wine64-payloads-$stamp"
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$runtime")-wine64.zip"
     TMP="$(mktemp -d)"

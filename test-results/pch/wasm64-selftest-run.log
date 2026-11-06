@@ -1,0 +1,1939 @@
+Starting ...
+
+=== CPU64 self-test ===
+CPU64: exit syscall, status=0
+  PASS: mov rax, imm64
+CPU64: exit syscall, status=0
+  PASS: add/sub imm8
+CPU64: exit syscall, status=0
+  PASS: mov eax zero-extends
+CPU64: exit syscall, status=0
+  PASS: push/pop rax
+CPU64: exit syscall, status=0
+  PASS: xor sets ZF, jz taken
+CPU64: exit syscall, status=0
+  PASS: JIT repro: cmp r13d,1; jz rel32 (not taken)
+CPU64: exit syscall, status=0
+  PASS: JIT repro: cmp r13d,1; jz rel32 (taken)
+CPU64: exit syscall, status=0
+  PASS: JIT repro: test r12b,2; jnz rel32 (not taken)
+CPU64: exit syscall, status=0
+  PASS: JIT repro: test r12b,2; jnz rel32 (taken)
+  PASS: JIT repro: differential memory overlays isolate writes
+CPU64: exit syscall, status=0
+  PASS: call/ret
+CPU64: exit syscall, status=0
+  PASS: iretq restores rip/rflags/rsp
+CPU64: exit syscall, status=0
+  PASS: lea rax, [rip+0]
+CPU64: exit syscall, status=0
+  PASS: cmp/setg/movzx
+CPU64: exit syscall, status=0
+  PASS: shl rax, 10
+CPU64: exit syscall, status=8386592
+  PASS: rep stosq
+CPU64: exit syscall, status=0
+  PASS: mul rbx (7*6=42)
+CPU64: exit syscall, status=0
+  PASS: cqo + idiv (-100/7)
+CPU64: exit syscall, status=0
+  PASS: divq [rip+disp] (84/2=42, RIP-rel operand)
+CPU64: exit syscall, status=0
+  PASS: testq [rip+disp], imm32 (RIP-rel addr w/ imm)
+CPU64: exit syscall, status=0
+  PASS: xchg rax,rbx
+CPU64: exit syscall, status=0
+  PASS: xlat (AL = [RBX+AL], table[3]=0x40)
+CPU64: exit syscall, status=0
+  PASS: push imm32 / pop rax
+CPU64: exit syscall, status=0
+  PASS: bswap rax
+CPU64: exit syscall, status=0
+  PASS: cmpxchg (match)
+CPU64: exit syscall, status=0
+  PASS: cmpxchg (mismatch loads accumulator, clears ZF)
+CPU64: exit syscall, status=0
+  PASS: xadd rbx, rax
+CPU64: exit syscall, status=0
+  PASS: unaligned lock cmpxchg [rsp+1],ecx
+CPU64: exit syscall, status=0
+  PASS: unaligned lock xadd [rsp+3],eax
+CPU64: exit syscall, status=0
+  PASS: unaligned lock inc qword [rsp+5]
+CPU64: exit syscall, status=0
+  PASS: unaligned xchg [rsp+2],ax
+CPU64: exit syscall, status=0
+  PASS: rol rax, 4
+CPU64: exit syscall, status=0
+  PASS: ror rax, 8
+CPU64: exit syscall, status=0
+  PASS: not rax
+CPU64: exit syscall, status=0
+  PASS: neg rax
+CPU64: exit syscall, status=0
+  PASS: bts rax, 7
+CPU64: exit syscall, status=0
+  PASS: btr rax, 7 (0xFF → 0x7F)
+CPU64: exit syscall, status=0
+  PASS: btc rax, 0 (0 → 1)
+CPU64: exit syscall, status=0
+  PASS: bt+setc (bit 5 of 0x20 → CF=1)
+CPU64: exit syscall, status=0
+  PASS: cmove taken (ZF=1)
+CPU64: exit syscall, status=0
+  PASS: cmovne not taken (ZF=1)
+CPU64: exit syscall, status=0
+  PASS: cmovl taken (-1 < 5 signed)
+CPU64: exit syscall, status=0
+  PASS: cmovb taken (3 < 5 unsigned)
+CPU64: exit syscall, status=0
+  PASS: cmove eax (not taken) zero-extends upper 32
+CPU64: exit syscall, status=0
+  PASS: sete (equal → 1)
+CPU64: exit syscall, status=0
+  PASS: setb (3 < 5 unsigned → 1)
+CPU64: exit syscall, status=0
+  PASS: setl (-1 < 0 signed → 1)
+CPU64: exit syscall, status=0
+  PASS: popcnt rax, rbx (0xFF→8)
+CPU64: exit syscall, status=0
+  PASS: popcnt rax,[rip]
+CPU64: exit syscall, status=0
+  PASS: popcnt zero sets ZF and clears CF/OF
+CPU64: exit syscall, status=0
+  PASS: F3 BSF keeps BSF semantics
+CPU64: exit syscall, status=0
+  PASS: F3 BSF memory keeps BSF semantics
+CPU64: exit syscall, status=0
+  PASS: F3 BSR keeps BSR semantics
+CPU64: exit syscall, status=0
+  PASS: F3 BSR memory keeps BSR semantics
+CPU64: exit syscall, status=0
+  PASS: bsf rax, rbx (0x100→8)
+CPU64: exit syscall, status=0
+  PASS: shld eax, ebx, 4
+CPU64: exit syscall, status=0
+  PASS: rdtsc
+CPU64: exit syscall, status=0
+  PASS: fib(10+1)=89
+CPU64: exit syscall, status=8388352
+  PASS: rep movsb (16B)
+CPU64: exit syscall, status=4194331
+  PASS: repne scasb finds 0x42
+CPU64: exit syscall, status=0
+  PASS: fact(5)=120 (recursive)
+CPU64: exit syscall, status=0
+  PASS: cpuid leaf 1 → EDX bit26 (SSE2)
+CPU64: exit syscall, status=4196352
+  PASS: CPUID leaf 1 topology and feature bits
+CPU64: exit syscall, status=0
+  PASS: CPUID leaf 0 maximum basic leaf is 7
+CPU64: exit syscall, status=0
+  PASS: CPUID leaf 7 subleaf 0 has no extensions
+CPU64: exit syscall, status=4196352
+  PASS: CPUID 0x80000001 long-mode features
+CPU64: exit syscall, status=0
+  PASS: pxor xmm0; movd eax,xmm0 → 0
+CPU64: exit syscall, status=0
+  PASS: movq rax↔xmm1 round trip
+CPU64: exit syscall, status=0
+  PASS: pcmpeqb + pmovmskb → 0xFFAA
+CPU64: exit syscall, status=0
+  PASS: pshufd imm=0 broadcasts low dword
+CPU64: exit syscall, status=0
+  PASS: paddd doubles each dword
+CPU64: exit syscall, status=0
+  PASS: psubd then pcmpgtd vs zero → 0x00000000_FFFFFFFF
+CPU64: exit syscall, status=0
+  PASS: punpcklbw interleaves low bytes
+CPU64: exit syscall, status=0
+  PASS: punpcklqdq sets high lane to src.lo (glibc malloc bug)
+CPU64: exit syscall, status=0
+  PASS: punpckhqdq selects high lanes
+CPU64: exit syscall, status=0
+  PASS: pslld xmm0,4 doubles dwords by 16
+CPU64: exit syscall, status=0
+  PASS: psraw xmm0,2 sign-extends negatives
+CPU64: exit syscall, status=0
+  PASS: pminub picks per-byte minimum
+CPU64: exit syscall, status=0
+  PASS: psubusb saturates byte subtraction at zero
+CPU64: exit syscall, status=0
+  PASS: pmaxsw signed-word max with zero clamps negatives
+CPU64: exit syscall, status=0
+  PASS: psadbw 16×0xFF vs 0 → 2040 per half
+CPU64: exit syscall, status=0
+  PASS: pmullw multiplies low 16 bits of words
+CPU64: exit syscall, status=0
+  PASS: pmuludq unsigned dword multiply 7*5=35
+CPU64: exit syscall, status=0
+  PASS: packuswb saturates words to unsigned bytes
+CPU64: exit syscall, status=0
+  PASS: pmulhuw stores high 16 of unsigned word products
+CPU64: exit syscall, status=0
+  PASS: pslld variable shift by xmm1 count=4
+CPU64: exit syscall, status=0
+  PASS: movmskps extracts 4 sign bits
+CPU64: exit syscall, status=0
+  PASS: std sets DF in rflags (bit 0x400)
+CPU64: exit syscall, status=0
+  PASS: shufps identity imm=0xE4 preserves xmm0.lo
+CPU64: exit syscall, status=0
+  PASS: pextrw lane0
+CPU64: exit syscall, status=0
+  PASS: pinsrw lane2 places word in high dword of low qword
+[guest fd=1 pid=0 ?] hi
+
+CPU64: exit syscall, status=1
+  PASS: write(1,"hi\n",3) end-to-end via syscall
+loadProgram64[selftest]: RELA table at 0x10000200, 3 entries (entsize=24)
+loadProgram64[selftest]: applied 3 RELATIVE relocs (deferred 0 symbol-bound)
+  PASS: applyRelativeRelocations: 3 R_X86_64_RELATIVE entries fixed up
+setupStaticTls: image=[0x20000400..+24] tcb=0x20000418 (fs=0x20000418)
+  PASS: setupStaticTls: image copied, bss zeroed, TCB self-pointer set
+applySymbolRelocations[symtest]: resolved=3 unresolved=0
+  PASS: applySymbolRelocations: 2 RELA + 1 JMPREL resolved against synthetic symtab
+applySymbolRelocations[missing-symtest/RELA]: unresolved 'missing_sym' (type=6)
+applySymbolRelocations[missing-symtest]: resolved=0 unresolved=1
+  PASS: applySymbolRelocations: unresolved symbol reported, destination unchanged
+applySymbolRelocations[copytest]: resolved=1 unresolved=0
+  PASS: applySymbolRelocations: R_X86_64_COPY copies 24 bytes from source DSO
+extractNeededLibraries: 3 DT_NEEDED entries
+  PASS: extractNeededLibraries: 3 DT_NEEDED entries resolved in order
+extractNeededLibraries: no DT_STRTAB — skipping
+  PASS: extractNeededLibraries: empty vector when DT_STRTAB missing
+extractGlobalSymbols: 2 exported symbols (scanned 4 slots)
+  PASS: extractGlobalSymbols: skips LOCAL, exports GLOBAL+WEAK, applies reloc
+extractGlobalSymbols: 0 exported symbols (scanned 2 slots)
+loadProgram64[libfoo.so]: no RELA table — skipping relocation pass
+extractGlobalSymbols: 1 exported symbols (scanned 2 slots)
+applySymbolRelocations[exe]: resolved=1 unresolved=0
+applySymbolRelocations[libfoo.so]: resolved=0 unresolved=0
+linkSharedObjects: 1 libs linked, 1 resolved, 0 unresolved
+  PASS: linkSharedObjects: main JUMP_SLOT for `foo` resolved to libfoo+0x128
+extractNeededLibraries: 1 DT_NEEDED entries
+loadProgram64[libA.so]: no RELA table — skipping relocation pass
+extractNeededLibraries: 1 DT_NEEDED entries
+loadProgram64[libB.so]: no RELA table — skipping relocation pass
+extractNeededLibraries: 0 DT_NEEDED entries
+extractGlobalSymbols: 1 exported symbols (scanned 3 slots)
+extractGlobalSymbols: 1 exported symbols (scanned 3 slots)
+extractGlobalSymbols: 1 exported symbols (scanned 3 slots)
+applySymbolRelocations[exe]: resolved=1 unresolved=0
+applySymbolRelocations[libA.so]: resolved=1 unresolved=0
+applySymbolRelocations[libB.so]: resolved=0 unresolved=0
+linkSharedObjectsRecursive: 2 libs linked (transitive), 2 resolved, 0 unresolved
+  PASS: linkSharedObjectsRecursive: transitive DT_NEEDED resolved foo->libA, bar->libB
+extractGlobalSymbols: missing SYMTAB/STRTAB or non-adjacent layout (symtab=0x0 strtab=0x200)
+  PASS: extractGlobalSymbols: empty when DT_SYMTAB missing
+CPU64: exit syscall, status=0
+  PASS: addsd 2.0 + 3.0 = 5.0
+CPU64: exit syscall, status=0
+  PASS: mulsd 2.0 * 3.0 = 6.0
+CPU64: exit syscall, status=0
+  PASS: subsd 5.0 - 3.0 = 2.0
+CPU64: exit syscall, status=0
+  PASS: divsd 3.0 / 2.0 = 1.5
+CPU64: exit syscall, status=0
+  PASS: sqrtsd sqrt(4.0) = 2.0
+CPU64: exit syscall, status=0
+  PASS: cvtsi2sd int 42 -> 42.0
+CPU64: exit syscall, status=0
+  PASS: cvtsd2si 42.0 -> 42
+CPU64: exit syscall, status=0
+  PASS: ucomisd 5.0 vs 3.0 → CF=0 (greater)
+CPU64: exit syscall, status=0
+  PASS: ucomisd 2.0 vs 5.0 → CF=1 (less)
+CPU64: exit syscall, status=0
+  PASS: ucomisd 5.0 vs 5.0 → ZF=1 (equal)
+CPU64: exit syscall, status=0
+  PASS: cmpps LT -> 1.0<2.0 lane set (movmskps=1)
+CPU64: exit syscall, status=0
+  PASS: cmppd LT -> 2.0<3.0 lane set (movmskpd=1)
+CPU64: exit syscall, status=0
+  PASS: shufps imm8 register
+CPU64: exit syscall, status=0
+  PASS: shufps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: shufps imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: shufpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: shufpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: shufpd imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmpps imm8 register
+CPU64: exit syscall, status=0
+  PASS: cmpps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: cmpps imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmppd imm8 register
+CPU64: exit syscall, status=0
+  PASS: cmppd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: cmppd imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 register
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 register
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 memory
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 NaN/Inf register
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 NaN/Inf register
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 NaN/Inf memory
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 NaN/Inf memory
+CPU64: exit syscall, status=0
+  PASS: cmpss imm8 NaN/Inf RIP-relative
+CPU64: exit syscall, status=0
+  PASS: cmpsd imm8 NaN/Inf RIP-relative
+CPU64: exit syscall, status=0
+  PASS: pinsrw imm8 register
+CPU64: exit syscall, status=0
+  PASS: pinsrw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: pinsrw imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: pextrw imm8 register
+CPU64: exit syscall, status=0
+  PASS: inc m8 register
+CPU64: exit syscall, status=0
+  PASS: inc m8 memory
+CPU64: exit syscall, status=0
+  PASS: inc m8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: dec m8 register
+CPU64: exit syscall, status=0
+  PASS: dec m8 memory
+CPU64: exit syscall, status=0
+  PASS: dec m8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: test f6 imm8 register
+CPU64: exit syscall, status=0
+  PASS: test f6 imm8 memory
+CPU64: exit syscall, status=0
+  PASS: test f6 imm8 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: test f7 imm16 register
+CPU64: exit syscall, status=0
+  PASS: test f7 imm16 memory
+CPU64: exit syscall, status=0
+  PASS: test f7 imm16 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: test f7 imm32 register
+CPU64: exit syscall, status=0
+  PASS: test f7 imm32 memory
+CPU64: exit syscall, status=0
+  PASS: test f7 imm32 RIP-relative
+CPU64: exit syscall, status=0
+  PASS: INC r/m8 register
+CPU64: exit syscall, status=0
+  PASS: LOCK INC m8 [RBX]
+CPU64: exit syscall, status=0
+  PASS: DEC r/m8 register
+CPU64: exit syscall, status=0
+  PASS: LOCK DEC m8 [RBX]
+CPU64: exit syscall, status=0
+  PASS: NOT r/m8 register
+CPU64: exit syscall, status=0
+  PASS: LOCK NOT m8 [RBX]
+CPU64: exit syscall, status=0
+  PASS: NEG r/m8 register
+CPU64: exit syscall, status=0
+  PASS: LOCK NEG m8 [RBX]
+CPU64: exit syscall, status=0
+  PASS: NOT r/m64 register
+CPU64: exit syscall, status=0
+  PASS: LOCK NOT m64 [RBX]
+CPU64: exit syscall, status=0
+  PASS: NEG r/m64 register
+CPU64: exit syscall, status=0
+  PASS: LOCK NEG m64 [RBX]
+CPU64: exit syscall, status=0
+  PASS: BTS r64,rcx
+CPU64: exit syscall, status=0
+  PASS: LOCK BTS [RBX],rcx
+CPU64: exit syscall, status=0
+  PASS: BTS r64,imm8
+CPU64: exit syscall, status=0
+  PASS: LOCK BTS [RBX],imm8
+CPU64: exit syscall, status=0
+  PASS: BTR r64,rcx
+CPU64: exit syscall, status=0
+  PASS: LOCK BTR [RBX],rcx
+CPU64: exit syscall, status=0
+  PASS: BTR r64,imm8
+CPU64: exit syscall, status=0
+  PASS: LOCK BTR [RBX],imm8
+CPU64: exit syscall, status=0
+  PASS: BTC r64,rcx
+CPU64: exit syscall, status=0
+  PASS: LOCK BTC [RBX],rcx
+CPU64: exit syscall, status=0
+  PASS: BTC r64,imm8
+CPU64: exit syscall, status=0
+  PASS: LOCK BTC [RBX],imm8
+CPU64: exit syscall, status=0
+  PASS: register BT register bit offset 40
+CPU64: exit syscall, status=0
+  PASS: BT register bit offset 40 memory
+CPU64: exit syscall, status=0
+  PASS: register BT register bit offset -1
+CPU64: exit syscall, status=0
+  PASS: BT register bit offset -1 memory
+CPU64: exit syscall, status=0
+  PASS: register BT register bit offset 200
+CPU64: exit syscall, status=0
+  PASS: BT register bit offset 200 memory
+CPU64: exit syscall, status=0
+  PASS: register BTS register bit offset 40
+CPU64: exit syscall, status=0
+  PASS: BTS register bit offset 40 memory
+CPU64: exit syscall, status=0
+  PASS: register BTS register bit offset -1
+CPU64: exit syscall, status=0
+  PASS: BTS register bit offset -1 memory
+CPU64: exit syscall, status=0
+  PASS: register BTS register bit offset 200
+CPU64: exit syscall, status=0
+  PASS: BTS register bit offset 200 memory
+CPU64: exit syscall, status=0
+  PASS: register BTR register bit offset 40
+CPU64: exit syscall, status=0
+  PASS: BTR register bit offset 40 memory
+CPU64: exit syscall, status=0
+  PASS: register BTR register bit offset -1
+CPU64: exit syscall, status=0
+  PASS: BTR register bit offset -1 memory
+CPU64: exit syscall, status=0
+  PASS: register BTR register bit offset 200
+CPU64: exit syscall, status=0
+  PASS: BTR register bit offset 200 memory
+CPU64: exit syscall, status=0
+  PASS: register BTC register bit offset 40
+CPU64: exit syscall, status=0
+  PASS: BTC register bit offset 40 memory
+CPU64: exit syscall, status=0
+  PASS: register BTC register bit offset -1
+CPU64: exit syscall, status=0
+  PASS: BTC register bit offset -1 memory
+CPU64: exit syscall, status=0
+  PASS: register BTC register bit offset 200
+CPU64: exit syscall, status=0
+  PASS: BTC register bit offset 200 memory
+CPU64: exit syscall, status=0
+  PASS: LOCK BTS RIP-relative imm8
+CPU64: exit syscall, status=0
+  PASS: LOCK BTR RIP-relative imm8
+CPU64: exit syscall, status=0
+  PASS: LOCK BTC RIP-relative imm8
+CPU64: exit syscall, status=0
+  PASS: MXCSR default is 0x1F80
+CPU64: exit syscall, status=0
+  PASS: CPU64 clone copies MXCSR
+CPU64: exit syscall, status=0
+  PASS: LDMXCSR/STMXCSR memory
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=1
+  PASS: LDMXCSR reserved bits raise #GP
+CPU64: exit syscall, status=0
+  PASS: FXSAVE64/FXRSTOR64 full state round-trip
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI nearest +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI nearest +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI nearest -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI nearest -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI down +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI down +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI down -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI down -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI up +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI up +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI up -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI up -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI zero +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI zero +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI zero -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSS2SI zero -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI nearest +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI nearest +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI nearest -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI nearest -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI down +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI down +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI down -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI down -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI up +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI up +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI up -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI up -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI zero +2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI zero +2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI zero -2.5 register
+CPU64: exit syscall, status=0
+  PASS: CVTSD2SI zero -2.5 memory
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ register lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ memory lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ register lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ memory lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTTPS2DQ register lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTTPS2DQ memory lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTTPS2DQ register lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTTPS2DQ memory lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ register lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ memory lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ register lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ memory lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ register lane set 2
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ memory lane set 2
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ register lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ memory lane set 0
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ register lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ memory lane set 1
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ register lane set 2
+CPU64: exit syscall, status=0
+  PASS: CVTTPD2DQ memory lane set 2
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ nearest register
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ nearest memory
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ down register
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ down memory
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ up register
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ up memory
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ zero register
+CPU64: exit syscall, status=0
+  PASS: CVTPS2DQ zero memory
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ nearest register
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ nearest memory
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ down register
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ down memory
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ up register
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ up memory
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ zero register
+CPU64: exit syscall, status=0
+  PASS: CVTPD2DQ zero memory
+CPU64: exit syscall, status=0
+  PASS: xgetbv(0) → EDX:EAX = 0:3
+CPU64: exit syscall, status=0
+  PASS: rdtscp → ECX = 0 (cpu id)
+CPU64: exit syscall, status=0
+  PASS: pshufb reverses low 8 bytes
+CPU64: exit syscall, status=0
+  PASS: pshufb high-bit ctrl produces zero bytes
+CPU64: exit syscall, status=0
+  PASS: palignr imm=8 shifts concatenated 32B right by 8
+CPU64: exit syscall, status=0
+  PASS: palignr imm=0 copies src to dest
+CPU64: exit syscall, status=0
+  PASS: pcmpeqq low qwords differ → low lane = 0
+CPU64: exit syscall, status=0
+  PASS: pcmpeqq both qwords equal → low lane all-ones
+CPU64: exit syscall, status=0
+  PASS: ptest disjoint bits → ZF=1
+CPU64: exit syscall, status=0
+  PASS: ptest overlapping bits → ZF=0
+CPU64: exit syscall, status=0
+  PASS: pabsd |{-3,5}| = {3,5}
+CPU64: exit syscall, status=0
+  PASS: pabsw |{-1,2,-3,4}| = {1,2,3,4}
+CPU64: exit syscall, status=0
+  PASS: pabsb |signed bytes| = magnitudes
+CPU64: exit syscall, status=0
+  PASS: phaddd {3,10,0,0} self → low lanes {13,0}
+CPU64: exit syscall, status=0
+  PASS: phaddw {1,2,3,4,0,0,0,0} self → low lanes {3,7,0,0}
+CPU64: exit syscall, status=0
+  PASS: psignd {10,10} by {-1,0} → {-10,0}
+CPU64: exit syscall, status=0
+  PASS: psignd {5,5} by {1,1} keeps dst
+CPU64: exit syscall, status=0
+  PASS: phaddsw register
+CPU64: exit syscall, status=0
+  PASS: phaddsw memory
+CPU64: exit syscall, status=0
+  PASS: pmaddubsw register
+CPU64: exit syscall, status=0
+  PASS: pmaddubsw memory
+CPU64: exit syscall, status=0
+  PASS: phsubw register
+CPU64: exit syscall, status=0
+  PASS: phsubw memory
+CPU64: exit syscall, status=0
+  PASS: phsubd register
+CPU64: exit syscall, status=0
+  PASS: phsubd memory
+CPU64: exit syscall, status=0
+  PASS: phsubsw register
+CPU64: exit syscall, status=0
+  PASS: phsubsw memory
+CPU64: exit syscall, status=0
+  PASS: pmulhrsw register
+CPU64: exit syscall, status=0
+  PASS: pmulhrsw memory
+CPU64: exit syscall, status=0
+  PASS: palignr rip-relative imm8 source
+CPU64: exit syscall, status=0
+  PASS: pmulld {2,3}*{7,7} = {14,21}
+CPU64: exit syscall, status=0
+  PASS: pminsd {10,-5} min {4,4} = {4,-5}
+CPU64: exit syscall, status=0
+  PASS: pmaxsd {10,-5} max {4,4} = {10,4}
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendvb register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendvb memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendvps register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendvps memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendvpd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendvpd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_bq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_wd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_wd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_wq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_wq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_dq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovsx_dq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmuldq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmuldq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pcmpeqq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pcmpeqq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 movntdqa register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 packusdw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 packusdw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_bq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_wd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_wd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_wq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_wq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_dq register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmovzx_dq memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminsb register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminsb memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminsd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminsd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminuw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminuw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminud register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pminud memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxsb register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxsb memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxsd register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxsd memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxuw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxuw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxud register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmaxud memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmulld register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pmulld memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 phminposuw register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 phminposuw memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 PTEST register flags
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 PTEST memory flags
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundss imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 roundsd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 blendpd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pblendw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 c0 00 48 89 43 20 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=2
+  PASS: SSE4.1 pextrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 43 20 00 49 89 c7 48 c7 c0 3c 00 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=3
+  PASS: SSE4.1 pextrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 c0 07 48 89 43 20 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=4
+  PASS: SSE4.1 pextrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 43 20 07 49 89 c7 48 c7 c0 3c 00 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=5
+  PASS: SSE4.1 pextrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 c0 ff 48 89 43 20 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=6
+  PASS: SSE4.1 pextrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 16 43 20 ff 49 89 c7 48 c7 c0 3c 00 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=7
+  PASS: SSE4.1 pextrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pextrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 extractps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrb imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 insertps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 c0 00 0f 11 03 49 89 c7 48 c7 c0 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=8
+  PASS: SSE4.1 pinsrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 43 10 00 0f 11 03 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=9
+  PASS: SSE4.1 pinsrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 c0 07 0f 11 03 49 89 c7 48 c7 c0 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=10
+  PASS: SSE4.1 pinsrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 43 10 07 0f 11 03 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=11
+  PASS: SSE4.1 pinsrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 register
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 c0 ff 0f 11 03 49 89 c7 48 c7 c0 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=12
+  PASS: SSE4.1 pinsrd_q imm8 register REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 memory
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400003 bytes=48 66 0f 3a 22 43 10 ff 0f 11 03 49 89 c7 48 c7 (rex=0x48 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400003 delivered=0 count=13
+  PASS: SSE4.1 pinsrd_q imm8 memory REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 pinsrd_q imm8 RIP REX.W
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dpps imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 dppd imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.1 mpsadbw imm8 RIP
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRM register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRM memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRM RIP-relative
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRI register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRI memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPESTRI RIP-relative
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRM register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRM memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRM RIP-relative
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRI register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRI memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPISTRI RIP-relative
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPGTQ register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 PCMPGTQ memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r64,r/m8 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r64,r/m8 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m16 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m16 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m32 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r32,r/m32 memory
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r64,r/m64 register
+CPU64: exit syscall, status=0
+  PASS: SSE4.2 CRC32 r64,r/m64 memory
+CPU64: exit syscall, status=0
+  PASS: movshdup {1,2,..} → {2,2,..}
+CPU64: exit syscall, status=0
+  PASS: movsldup {1,2,..} → {1,1,..}
+CPU64: exit syscall, status=0
+  PASS: andpd masks sign bit (fabs idiom)
+CPU64: exit syscall, status=0
+  PASS: orpd ors low qword
+CPU64: exit syscall, status=0
+  PASS: andnpd computes ~dst & src
+CPU64: exit syscall, status=0
+  PASS: addss 2.0f + 3.0f = 5.0f
+CPU64: exit syscall, status=0
+  PASS: mulss 2.0f * 3.0f = 6.0f
+CPU64: exit syscall, status=0
+  PASS: subss 5.0f - 3.0f = 2.0f
+CPU64: exit syscall, status=0
+  PASS: divss 3.0f / 2.0f = 1.5f
+CPU64: exit syscall, status=0
+  PASS: sqrtss sqrt(4.0f) = 2.0f
+CPU64: exit syscall, status=0
+  PASS: cvtsi2ss int 42 -> 42.0f
+CPU64: exit syscall, status=0
+  PASS: cvtss2si 42.0f -> int 42
+CPU64: exit syscall, status=0
+  PASS: ucomiss 5.0f vs 3.0f → CF=0 (greater)
+CPU64: exit syscall, status=0
+  PASS: cvtdq2pd low {3,4} -> {3.0, 4.0}
+CPU64: exit syscall, status=0
+  PASS: cvtpd2dq {3.0, 4.0} -> {3, 4} packed S32
+CPU64: exit syscall, status=0
+  PASS: cvttpd2dq {3.7, -4.7} -> {3, -4} (truncate)
+CPU64: exit syscall, status=0
+  PASS: cvtdq2ps {1,2,0,0} -> {1.0f, 2.0f, 0.0f, 0.0f}
+CPU64: exit syscall, status=0
+  PASS: cvtps2dq {1.0f, 2.0f, 0, 0} -> {1, 2, 0, 0}
+CPU64: exit syscall, status=0
+  PASS: movnti store + load roundtrip preserves 64 bits
+CPU64: exit syscall, status=0
+  PASS: lfence/mfence/sfence are no-ops
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_WAKE_PRIVATE → 0
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_WAIT mismatch → -EAGAIN
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_WAIT match (no-block) → -EAGAIN
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_WAKE_BITSET_PRIVATE → 0
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_WAIT_BITSET match → -EAGAIN
+CPU64: exit syscall, status=8386552
+  PASS: futex WAKE drains accumulated waiters
+CPU64: exit syscall, status=8386528
+  PASS: futex WAKE addr-keyed (no cross-addr drain)
+CPU64: exit syscall, status=8386512
+  PASS: futex WAKE partial drain (val=1, then val=10)
+CPU64: exit syscall, status=8386560
+  PASS: futex FUTEX_REQUEUE → 0
+CPU64: exit syscall, status=8386688
+  PASS: futex CMP_REQUEUE mismatch returns EAGAIN
+CPU64: exit syscall, status=8386720
+  PASS: futex WAKE_OP applies SET operation
+CPU64: exit syscall, status=0
+  PASS: futex uaddr=NULL → -EFAULT
+CPU64: exit syscall, status=8388609
+  PASS: futex unaligned uaddr → -EINVAL
+ksyscall64: unsupported threadless futex operation 6 (op=0x6); returned -ENOSYS
+CPU64: exit syscall, status=8386560
+  PASS: futex unknown op (LOCK_PI) → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: mmap NULL-hint: shared monotonic bump (disjoint maps)
+CPU64: exit syscall, status=0
+  PASS: ptrace syscall → -EPERM
+ksyscall64: unimplemented syscall #9999 (unknown)
+CPU64: exit syscall, status=0
+  PASS: unknown syscall returns -ENOSYS after rate limiting
+CPU64: exit syscall, status=0
+  PASS: pause() → -EINTR
+CPU64: exit syscall, status=-1
+  PASS: wait4(-1) → -ECHILD
+ksyscall64: unimplemented syscall #56 (clone)
+CPU64: exit syscall, status=0
+  PASS: clone(0) → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: getitimer() → -ENOSYS
+CPU64: exit syscall, status=8386304
+  PASS: rt_sigpending writes zero mask
+CPU64: exit syscall, status=8388576
+  PASS: rt_sigpending sigsetsize=4 → -EINVAL
+CPU64: exit syscall, status=8388576
+  PASS: rt_sigtimedwait → -EAGAIN
+CPU64: exit syscall, status=8388576
+  PASS: rt_sigsuspend → -EINTR
+ksyscall64: unimplemented syscall #435 (clone3)
+CPU64: exit syscall, status=0
+  PASS: clone3 → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: pipe(NULL) → -EFAULT
+CPU64: exit syscall, status=8388576
+  PASS: pipe2 → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: eventfd2 → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: epoll_create1 → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: epoll_ctl → -EBADF
+CPU64: exit syscall, status=0
+  PASS: epoll_wait → -EBADF
+CPU64: exit syscall, status=0
+  PASS: getdents64(NULL) → -EFAULT
+CPU64: exit syscall, status=0
+  PASS: select → -ENOSYS
+CPU64: exit syscall, status=0
+  PASS: chmod → -EFAULT (null path)
+CPU64: exit syscall, status=0
+  PASS: fchmod → -EBADF (unopened descriptor)
+CPU64: exit syscall, status=0
+  PASS: x87 FLD/FSTP m64fp round-trip (3.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FADD m64fp (2.0+3.0=5.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FMUL m64fp (2.5*4.0=10.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FLD m32fp + FSTP m64fp (2.5f → 2.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FXCH ST(1) swaps tops
+CPU64: exit syscall, status=0
+  PASS: x87 D8 FMUL ST(0),ST(1) (4.0*2.5=10.0)
+CPU64: exit syscall, status=0
+  PASS: x87 D8 FSUB ST(0),ST(1) (6.0-4.0=2.0)
+CPU64: exit syscall, status=0
+  PASS: x87 DC FSUB ST(1),ST(0) (2.5-4.0=-1.5)
+CPU64: exit syscall, status=0
+  PASS: x87 D9 FXAM classifies -0.0 (C3+C1)
+CPU64: exit syscall, status=0
+  PASS: x87 FLD ST(0) duplicate then FSTP
+CPU64: exit syscall, status=0
+  PASS: x87 FSUB m64fp (10.0-4.0=6.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FSUBR m64fp (4.0-10.0=-6.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FDIV m64fp (10.0/4.0=2.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FDIVR m64fp (4.0/10.0=0.4)
+CPU64: exit syscall, status=0
+  PASS: x87 FCHS (-2.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FABS (|-2.5|=2.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FLD1 (1.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FLDZ (0.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FLD1+FCHS pipeline (1, then -1+1=0)
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 tiny positive epsilon
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 tiny negative epsilon
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 negative zero
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 tiny positive epsilon
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 tiny negative epsilon
+CPU64: exit syscall, status=0
+  PASS: x87 FYL2XP1 negative zero
+CPU64: exit syscall, status=0
+  PASS: x87 FNSTSW AX preserves RAX upper 48 bits
+CPU64: exit syscall, status=0
+  PASS: x87 FILD m32int (42 -> 42.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FILD m32int negative (-7 -> -7.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FISTP m32int (3.7 -> 4 round-nearest)
+CPU64: exit syscall, status=0
+  PASS: x87 FILD m16int (0x1234 -> 4660.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FISTP m16int (100.0 -> 100)
+CPU64: exit syscall, status=0
+  PASS: x87 FILD m64int (0x123456789 -> double)
+CPU64: exit syscall, status=0
+  PASS: x87 FISTP m64int (2.5 -> 2 round-even)
+CPU64: exit syscall, status=0
+  PASS: x87 FCOMI ST(0)>ST(1) clears ZF/CF/PF
+CPU64: exit syscall, status=0
+  PASS: x87 FCOMI ST(0)<ST(1) sets CF=1
+CPU64: exit syscall, status=0
+  PASS: x87 FCOMI ST(0)==ST(1) sets ZF=1
+CPU64: exit syscall, status=0
+  PASS: x87 FCOMIP pops top, new TOS=ST(1)
+CPU64: exit syscall, status=0
+  PASS: x87 FCOM m64fp 10>4 clears C0/C2/C3
+CPU64: exit syscall, status=0
+  PASS: x87 FCOM m64fp 2<5 sets C0=1
+CPU64: exit syscall, status=0
+  PASS: x87 FCOMPP 3==3 sets C3 + pops twice
+BW64-FAIL guest-memfault pid=-1 addr=0x800070 rip=0x40000e err=6 si_code=1 delivered=0 count=1
+  PASS: rt_sigaction install + readback SIGUSR1 handler
+CPU64: exit syscall, status=0
+  PASS: rt_sigaction sig=0 → -EINVAL
+CPU64: exit syscall, status=10
+  PASS: rt_sigaction sigsetsize=16 → -EINVAL
+BW64-FAIL guest-memfault pid=-1 addr=0x800070 rip=0x40000e err=6 si_code=1 delivered=0 count=2
+  PASS: rt_sigaction SIGKILL write ignored
+CPU64: exit syscall, status=2
+  PASS: rt_sigprocmask SIG_SETMASK readback
+CPU64: exit syscall, status=0
+  PASS: rt_sigprocmask SIG_BLOCK accumulates
+CPU64: exit syscall, status=2
+  PASS: rt_sigprocmask strips SIGKILL/SIGSTOP bits
+CPU64: exit syscall, status=0
+  PASS: rt_sigprocmask sigsetsize=4 → -EINVAL
+CPU64: exit syscall, status=0
+  PASS: sigaltstack install + readback ss_sp
+CPU64: exit syscall, status=8388528
+  PASS: sigaltstack SS_DISABLE clears state
+CPU64: exit syscall, status=8388560
+  PASS: sigaltstack size<MINSIGSTKSZ → -ENOMEM
+CPU64: exit syscall, status=8388560
+  PASS: sigaltstack bogus flags → -EINVAL
+CPU64: exit syscall, status=1229782938247303441
+  PASS: rt_sigreturn restores gprs from frame
+CPU64: exit syscall, status=0
+  PASS: rt_sigreturn restores RFLAGS (ZF preserved)
+CPU64: exit syscall, status=0
+  PASS: kill(0, SIGUSR1) delivers to handler, sigreturn unwinds
+CPU64: exit syscall, status=1
+  PASS: tgkill self sig=0 (probe) → 0
+ksyscall64: kill self sig=10 — no handler installed
+CPU64: exit syscall, status=0
+  PASS: kill(self, 10) no handler → 0 (log+drop)
+CPU64: exit syscall, status=0
+  PASS: sched_getaffinity returns 8, mask=1
+CPU64: exit syscall, status=0
+  PASS: sched_getaffinity cpusetsize=0 → -EINVAL
+CPU64: exit syscall, status=0
+  PASS: sched_getaffinity cpusetsize=7 → -EINVAL
+CPU64: exit syscall, status=0
+  PASS: sched_setaffinity(valid) → 0
+CPU64: exit syscall, status=0
+  PASS: statfs writes tmpfs magic + bsize + namelen
+CPU64: exit syscall, status=3
+  PASS: fstatfs writes tmpfs magic + bsize + namelen
+CPU64: exit syscall, status=0
+  PASS: statfs NULL buf → -EFAULT
+CPU64: exit syscall, status=0
+  PASS: synthesized ET_EXEC parses + maps + runs to exit (R15=0xCAFE)
+loadProgram64[a7-pie]: RELA table at 0x6000f0, 1 entries (entsize=24)
+loadProgram64[a7-pie]: applied 1 RELATIVE relocs (deferred 0 symbol-bound)
+CPU64: exit syscall, status=0
+  PASS: PIE+RELATIVE: relocation applied, RIP-rel load reads relocated value
+CPU64: exit syscall, status=0
+  PASS: SysV stack frame: [rsp] == argc (1)
+CPU64: exit syscall, status=0
+  PASS: multi-PT_LOAD with BSS zero-fill (sentinel=0xdeadbeefcafebabe)
+CPU64: exit syscall, status=0
+  PASS: SAHF + LAHF round-trip (0xD5 → 0xD7)
+CPU64: exit syscall, status=0
+  PASS: LAHF after xor (ZF=1, PF=1) → AH=0x46
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x400007 delivered=0 count=14
+  PASS: INT3 yields cleanly (no host crash)
+  PASS: parseBuffer: synthesized ET_EXEC parses to expected fields
+  PASS: parseBuffer: ET_DYN flagged as isPie
+ElfLoader64::parseBuffer: unsupported e_machine 0x28 (only x86-64 is supported in v1)
+  PASS: parseBuffer: rejects non-x86_64 e_machine
+ElfLoader64::parseBuffer: buffer too short (length=8)
+  PASS: parseBuffer: rejects truncated buffer
+BW64-FAIL mprotect op=protect addr=0x90000000 len=4096 prot=1 skipped=1 outcome=partial count=1
+  PASS: KMemory64::mprotect flips flags, skips holes
+  PASS: parseBuffer: PT_GNU_RELRO captured (vaddr=0x100 memsz=0x40)
+  PASS: parseBuffer: PT_GNU_STACK exec=0 captured
+  PASS: parseBuffer: PT_GNU_STACK exec=1 captured
+extractGlobalSymbols: 0 exported symbols (scanned 2 slots)
+loadProgram64[libdiscovery.so]: no RELA table — skipping relocation pass
+extractGlobalSymbols: 1 exported symbols (scanned 2 slots)
+applySymbolRelocations[exe]: resolved=1 unresolved=0
+applySymbolRelocations[libdiscovery.so]: resolved=0 unresolved=0
+linkSharedObjects: 1 libs linked, 1 resolved, 0 unresolved
+CPU64: exit syscall, status=42
+  PASS: end-to-end PLT call — main called discovery_answer through resolved JUMP_SLOT and got 42 (Milestone A)
+CPU64: exit syscall, status=0
+  PASS: FXSAVE/FXRSTOR preserves XMM0 (PLT-resolver FP arg)
+CPU64: exit syscall, status=8388592
+  PASS: getcwd returns length including NUL / ERANGE
+CPU64: exit syscall, status=8388592
+  PASS: getcwd returns length including NUL / ERANGE
+CPU64: exit syscall, status=8388592
+  PASS: getcwd returns length including NUL / ERANGE
+  PASS: PREFETCH(W) decodes displacement without memory access (03)
+  PASS: PREFETCH(W) decodes displacement without memory access (4b)
+  PASS: PREFETCH(W) decodes displacement without memory access (8b)
+  PASS: RET imm16 dispatch/stack cleanup 0
+  PASS: RET imm16 dispatch/stack cleanup 8
+  PASS: RET imm16 dispatch/stack cleanup 256
+  PASS: RSQRTPS register preserves all SIMD lanes
+  PASS: RSQRTPS memory preserves all SIMD lanes
+  PASS: RSQRTSS register preserves all SIMD lanes
+  PASS: RSQRTSS memory preserves all SIMD lanes
+  PASS: RCPPS register preserves all SIMD lanes
+  PASS: RCPPS memory preserves all SIMD lanes
+  PASS: RCPSS register preserves all SIMD lanes
+  PASS: RCPSS memory preserves all SIMD lanes
+  PASS: CMPXCHG8B unequal changes only ZF
+  PASS: CMPXCHG8B equal changes only ZF
+  PASS: CMPXCHG16B unequal changes only ZF
+  PASS: CMPXCHG16B equal changes only ZF
+  PASS: CVTSS2SD converts and preserves upper qword
+  PASS: shared file writer reservation aliases fixed reader
+  PASS: recreated file identity keeps old mappings independent
+  PASS: same file identity aliases across pathname changes
+  PASS: fork preserves reservations and private mapping isolation
+  PASS: fork preserves shared file aliasing in both directions
+  PASS: anonymous replacement detaches the old shared file
+  PASS: runBounded stops within a decoded block
+CPU64: exit syscall, status=0
+  PASS: store patches a later instruction in the same block
+CPU64: exit syscall, status=0
+  PASS: jrcxz taken (rcx=0)
+CPU64: exit syscall, status=0
+  PASS: jrcxz not taken (rcx=1)
+CPU64: exit syscall, status=0
+  PASS: jecxz taken (ecx=0, rcx high bits set)
+CPU64: exit syscall, status=0
+  PASS: jecxz not taken (ecx=1)
+CPU64: exit syscall, status=0
+  PASS: loop taken (rcx=2->1)
+CPU64: exit syscall, status=0
+  PASS: loop not taken (rcx=1->0)
+CPU64: exit syscall, status=0
+  PASS: loop wraps (rcx=0->max, taken)
+CPU64: exit syscall, status=0
+  PASS: loope taken (rcx=2, zf=1)
+CPU64: exit syscall, status=0
+  PASS: loope not taken (zf=0)
+CPU64: exit syscall, status=0
+  PASS: loopne taken (rcx=2, zf=0)
+CPU64: exit syscall, status=0
+  PASS: loopne not taken (zf=1)
+CPU64: exit syscall, status=0
+  PASS: loop 32-bit (67 E2, ecx=0->max, taken)
+CPU64: exit syscall, status=0
+  PASS: loop preserves ZF
+CPU64: exit syscall, status=0
+  PASS: lodsb forward (df=0)
+CPU64: exit syscall, status=0
+  PASS: lodsb backward (df=1)
+CPU64: exit syscall, status=0
+  PASS: lodsw
+CPU64: exit syscall, status=0
+  PASS: lodsd
+CPU64: exit syscall, status=0
+  PASS: lodsq (rex.w)
+CPU64: exit syscall, status=0
+  PASS: lodsb 32-bit (67 AC, esi zero-extends)
+CPU64: exit syscall, status=0
+  PASS: enter level 0, alloc 16
+CPU64: exit syscall, status=0
+  PASS: enter level 0, alloc 0
+CPU64: exit syscall, status=0
+  PASS: enter level 1, alloc 8
+CPU64: exit syscall, status=0
+  PASS: enter level 2
+CPU64: exit syscall, status=0
+  PASS: enter 16-bit (66 C8)
+CPU64: exit syscall, status=0
+  PASS: x87 FADD m32fp (2.5+1.5f=4.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FMUL m32fp (2.5*2.0f=5.0)
+CPU64: exit syscall, status=0
+  PASS: x87 FSUB m32fp (10.0-4.5f=5.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FDIV m32fp (10.0/4.0f=2.5)
+CPU64: exit syscall, status=0
+  PASS: x87 FST m32fp (3.75 -> 0x40700000, no pop)
+CPU64: exit syscall, status=0
+  PASS: sar rax,1 sign-extends (0x8000..->0xC000..)
+CPU64: exit syscall, status=0
+  PASS: shr rax,1 zero-fills (0x8000..->0x4000..)
+CPU64: exit syscall, status=0
+  PASS: shr rax,1 sets CF from last bit
+CPU64: exit syscall, status=0
+  PASS: sar eax,1 32-bit (0x80000000->0xC0000000)
+CPU64: exit syscall, status=0
+  PASS: adc rax,0 with CF=1 (wrap -> 0, CF=1)
+CPU64: exit syscall, status=0
+  PASS: adc rax,1 carry out (-> 1, CF=1)
+CPU64: exit syscall, status=0
+  PASS: sbb rax,3 with CF=1 (5-3-1=1, CF=0)
+CPU64: exit syscall, status=0
+  PASS: sbb rax,0 underflow (-> 0xFFFF.., CF=1)
+CPU64: exit syscall, status=0
+  PASS: inc preserves CF=1
+CPU64: exit syscall, status=0
+  PASS: dec preserves CF=1
+CPU64: exit syscall, status=0
+  PASS: inc 0xFFFF..->0 sets ZF, CF=0
+CPU64: exit syscall, status=0
+  PASS: and rax,rax clears CF+OF
+CPU64: exit syscall, status=0
+  PASS: or rax,rax clears CF+OF
+CPU64: exit syscall, status=0
+  PASS: imul rax,rax,-6 (-7*-6=42)
+CPU64: exit syscall, status=0
+  PASS: imul overflow sets CF+OF
+CPU64: exit syscall, status=0
+  PASS: imul r64,r/m64 overflow sets CF+OF
+CPU64: exit syscall, status=0
+  PASS: movsx rbx,al (0xFF->0xFFFF..FF)
+CPU64: exit syscall, status=0
+  PASS: movsx rbx,ax (0x8000->0xFFFF..8000)
+CPU64: exit syscall, status=0
+  PASS: movsxd rbx,eax (0x80000000->0xFFFFFFFF80000000)
+CPU64: exit syscall, status=0
+  PASS: bsr rax,rbx (0x100->8)
+CPU64: exit syscall, status=0
+  PASS: jnz taken (ZF=0)
+CPU64: exit syscall, status=0
+  PASS: jnz not taken (ZF=1)
+CPU64: exit syscall, status=0
+  PASS: jb taken (3<5 unsigned, CF=1)
+CPU64: exit syscall, status=0
+  PASS: jl taken (-1<5 signed)
+CPU64: exit syscall, status=0
+  PASS: lea rax,[rbx+rcx*4+0x10] SIB (-> 0x101C)
+CPU64: exit syscall, status=0
+  PASS: cmpxchg [rsp],rbx mismatch (ZF=0, rax=mem)
+CPU64: exit syscall, status=0
+  PASS: pushfq/popfq round-trip (ZF|PF)
+CPU64: exit syscall, status=0
+  PASS: test rax,rax sets SF (negative)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400000 delivered=0 count=15
+  PASS: UD2 raises SIGILL at faulting RIP
+BW64-FAIL CPU64: unimpl opcode at RIP=0x400000 bytes=0f b9 c0 00 00 00 00 00 00 00 00 00 00 00 00 00 (rex=0x00 osz=0 asz=0 seg=00 rep=00)
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400000 delivered=0 count=16
+  PASS: unimplemented opcode raises SIGILL
+recover: skipped CPU64 opcode at RIP=0x400000 len=3 bytes=0f b9 c0 b8
+CPU64: exit syscall, status=0
+  PASS: recover skips unknown 0F opcode with ModRM length
+BW64-FAIL guest-fetchfault pid=-1 rip=0x0 mapped=0 err=20 si_code=1 delivered=0 count=1
+  PASS: null indirect call faults at the first unmapped fetch
+BW64-FAIL guest-fetchfault pid=-1 rip=0x401000 mapped=1 err=21 si_code=2 delivered=1 count=2
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x401003 delivered=0 count=17
+  PASS: instruction fetch fault reports SEGV_ACCERR and fault address
+BW64-FAIL guest-memfault pid=-1 addr=0x402000 rip=0x400000 err=5 si_code=2 delivered=1 count=3
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x400103 delivered=0 count=18
+BW64-FAIL guest-memfault pid=-1 addr=0x402000 rip=0x400000 err=5 si_code=2 delivered=1 count=4
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x400103 delivered=0 count=19
+BW64-FAIL guest-memfault pid=-1 addr=0x402000 rip=0x400000 err=7 si_code=2 delivered=1 count=5
+BW64-FAIL guest-insnfault pid=0 sig=5 trap=3 err=0x0 code=1 rip=0x400103 delivered=0 count=20
+  PASS: PROT_NONE/read-only access faults, siginfo, and mprotect transitions
+CPU64: exit syscall, status=8384512
+  PASS: msync validates mapped page and MS_SYNC
+CPU64: exit syscall, status=8384512
+  PASS: msync rejects unsupported flags
+CPU64: exit syscall, status=1879048192
+  PASS: msync rejects unmapped range
+CPU64: exit syscall, status=8384512
+  PASS: mlock accepts mapped range
+BW64-FAIL lockRange op=lock addr=0x70000000 len=4096 page=458752 reason=unmapped outcome=-ENOMEM count=2
+CPU64: exit syscall, status=1879048192
+  PASS: mlock rejects unmapped range
+CPU64: exit syscall, status=8384512
+  PASS: madvise accepts known advice and rejects unknown values
+CPU64: exit syscall, status=8384512
+  PASS: madvise rejects unknown advice
+CPU64: exit syscall, status=8384512
+  PASS: mincore reports mapped resident page
+CPU64: exit syscall, status=1879048192
+  PASS: mincore rejects unmapped guest range
+CPU64: exit syscall, status=8384512
+  PASS: mincore rejects unmapped output vector
+CPU64: exit syscall, status=8385024
+  PASS: getrandom accepts GRND_INSECURE and fills requested bytes
+CPU64: exit syscall, status=8385024
+  PASS: getrandom rejects unsupported flags
+CPU64: exit syscall, status=0
+  PASS: getrandom accepts zero length with a null pointer
+CPU64: exit syscall, status=1879048192
+  PASS: getrandom returns EFAULT for unmapped output
+CPU64: exit syscall, status=0
+  PASS: sched_setaffinity accepts online CPU 0
+CPU64: exit syscall, status=0
+  PASS: sched_setaffinity rejects an empty online mask
+CPU64: exit syscall, status=0
+  PASS: sched_getaffinity returns the virtual CPU mask
+CPU64: exit syscall, status=2
+  PASS: set_mempolicy rejects an unavailable node mask
+CPU64: exit syscall, status=8385536
+  PASS: mbind and get_mempolicy record the supported node policy
+CPU64: exit syscall, status=3
+  PASS: prctl PR_GET_DUMPABLE returns process state
+CPU64: exit syscall, status=23
+  PASS: prctl PR_CAPBSET_READ reports empty capability set
+CPU64: exit syscall, status=23
+  PASS: prctl rejects out-of-range capability
+ksyscall64: prctl option 2147483647 (unknown prctl option) is not supported on this virtual x86 kernel; returned -EINVAL
+CPU64: exit syscall, status=2147483647
+  PASS: prctl unknown option returns EINVAL
+BW64-FAIL guest-fetchfault pid=-1 rip=0x400001 mapped=0 err=20 si_code=1 delivered=0 count=3
+  PASS: munmap invalidates the cached instruction-fetch mapping
+ksyscall64: unimplemented syscall #334 (rseq)
+CPU64: exit syscall, status=0
+  PASS: unsupported rseq/io_uring syscall returns ENOSYS
+ksyscall64: unimplemented syscall #425 (io_uring_setup)
+CPU64: exit syscall, status=0
+  PASS: unsupported rseq/io_uring syscall returns ENOSYS
+ksyscall64: unimplemented syscall #426 (io_uring_enter)
+CPU64: exit syscall, status=0
+  PASS: unsupported rseq/io_uring syscall returns ENOSYS
+ksyscall64: unimplemented syscall #427 (io_uring_register)
+CPU64: exit syscall, status=0
+  PASS: unsupported rseq/io_uring syscall returns ENOSYS
+CPU64: exit syscall, status=0
+  PASS: pidfd_getfd → -EBADF (descriptor not a pidfd)
+CPU64: exit syscall, status=0
+  PASS: membarrier QUERY returns supported command mask
+CPU64: exit syscall, status=1
+  PASS: membarrier GLOBAL executes successfully
+CPU64: exit syscall, status=1073741824
+  PASS: membarrier rejects unknown command
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=21
+  PASS: recover preserves #GP for INSD
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=22
+  PASS: recover preserves #GP for operand-size-prefixed INSW
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=23
+  PASS: recover preserves #GP for HLT
+BW64-FAIL guest-insnfault pid=0 sig=4 trap=6 err=0x0 code=0 rip=0x400000 delivered=0 count=24
+  PASS: recover never skips UD2
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x14a code=0 rip=0x400000 delivered=0 count=25
+  PASS: INT imm8 raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=26
+  PASS: HLT raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=27
+  PASS: CLI raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=28
+  PASS: STI raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=29
+  PASS: INT1 raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=30
+  PASS: IN imm8 forms raise #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=31
+  PASS: IN imm16 form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=32
+  PASS: OUT imm8 forms raise #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=33
+  PASS: OUT imm16 form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=34
+  PASS: IN DX byte form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=35
+  PASS: IN DX word/dword form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=36
+  PASS: OUT DX byte form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=37
+  PASS: OUT DX word/dword form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=38
+  PASS: INS byte form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=39
+  PASS: INS word/dword form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=40
+  PASS: OUTS byte form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=41
+  PASS: OUTS word/dword form raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=42
+  PASS: far CALL direct raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=43
+  PASS: far JMP direct raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=44
+  PASS: far CALL indirect raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=45
+  PASS: far JMP indirect raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=46
+  PASS: RETF imm16 raises #GP
+BW64-FAIL guest-insnfault pid=0 sig=11 trap=13 err=0x0 code=0 rip=0x400000 delivered=0 count=47
+  PASS: RETF raises #GP
+CPU64: exit syscall, status=0
+  PASS: x87 DD /2 FST m64 stores without pop
+CPU64: exit syscall, status=0
+  PASS: x87 D8 /5 FSUBR m32 (5-2=3)
+CPU64: exit syscall, status=0
+  PASS: x87 D8 /7 FDIVR m32 (8/2=4)
+CPU64: exit syscall, status=0
+  PASS: x87 D8 FSUBR ST(0),ST(1)
+CPU64: exit syscall, status=0
+  PASS: x87 D8 FDIVR ST(0),ST(1)
+CPU64: exit syscall, status=0
+  PASS: x87 FLDENV/FNSTENV 28-byte layout
+CPU64: exit syscall, status=0
+  PASS: x87 D9 FA FSQRT m64 input
+CPU64: exit syscall, status=0
+  PASS: x87 D9 E4 FTST sets equal condition
+CPU64: exit syscall, status=0
+  PASS: x87 DF E9 FUCOMIP sets CF and pops
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVB moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVE moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVBE moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVU moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVNB moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVNE moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVNBE moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 FCMOVNU moves on true condition
+CPU64: exit syscall, status=0
+  PASS: x87 DF C1 FFREEP frees and pops
+CPU64: exit syscall, status=0
+  PASS: x87 D9 F6 FDECSTP
+CPU64: exit syscall, status=0
+  PASS: x87 D9 F7 FINCSTP
+CPU64: exit syscall, status=0
+  PASS: x87 DD /6 FNSAVE + DD /4 FRSTOR 108-byte layout
+CPU64: exit syscall, status=0
+  PASS: x87 FISTTP m16 truncates toward zero
+CPU64: exit syscall, status=0
+  PASS: x87 FISTTP m32 truncates toward zero
+CPU64: exit syscall, status=0
+  PASS: x87 FISTTP m64 truncates toward zero
+CPU64: exit syscall, status=0
+  PASS: SSE3 ADDSUBPS register form
+CPU64: exit syscall, status=0
+  PASS: SSE3 ADDSUBPS memory form
+CPU64: exit syscall, status=0
+  PASS: SSE3 HADDPS register form
+CPU64: exit syscall, status=0
+  PASS: SSE3 HSUBPS memory form
+CPU64: exit syscall, status=0
+  PASS: SSE3 ADDSUBPD register form
+CPU64: exit syscall, status=0
+  PASS: SSE3 HADDPD memory form
+CPU64: exit syscall, status=0
+  PASS: SSE3 HSUBPD register form
+CPU64: exit syscall, status=0
+  PASS: SSE3 LDDQU memory form
+CPU64: exit syscall, status=0
+  PASS: SSE3 MOVDDUP duplicates low double
+CPU64: exit syscall, status=0
+  PASS: SSE3 MONITOR is a no-op hint
+CPU64: exit syscall, status=0
+  PASS: SSE3 MWAIT is a no-op hint
+CPU64: exit syscall, status=0
+  PASS: SSE2 PMADDWD register form
+CPU64: exit syscall, status=0
+  PASS: SSE2 PMADDWD memory form
+CPU64: exit syscall, status=0
+  PASS: SSE2 PAVGW register form
+CPU64: exit syscall, status=0
+  PASS: SSE2 PAVGW memory form
+CPU64: exit syscall, status=0
+  PASS: SSE MOVNTPS memory store
+CPU64: exit syscall, status=0
+  PASS: SSE2 MOVNTPD memory store
+CPU64: exit syscall, status=4196352
+  PASS: SSE2 MASKMOVDQU masked bytes to [RDI]
+CPU64: exit syscall, status=0
+  PASS: SSE EMMS empties modeled x87 tags
+CPU64: exit syscall, status=0
+  PASS: MMX PADDQ register form
+CPU64: exit syscall, status=0
+  PASS: MMX PADDQ memory form
+CPU64: exit syscall, status=0
+  PASS: MMX PSHUFW RIP-relative source with imm8
+CPU64: exit syscall, status=0
+  PASS: MMX MOVQ REX.W source and x87 alias state
+CPU64: exit syscall, status=0
+  PASS: MMX PUNPCKLBW interleaves low lanes
+CPU64: exit syscall, status=0
+  PASS: MMX PACKSSDW saturates dword lanes
+CPU64: exit syscall, status=0
+bw64: METRICS {"v":1,"uptimeMs":759,"winMs":500.4,"arch":"x86-64","enabled":true,"present":{"vk":0,"vk32":0,"sdl":0,"count":0,"fps":null,"frameMs":null,"path":"none"},"vk":{"supported":false,"frames":0,"wallMs":0.00,"submitMs":0.00,"trapOtherMs":0.00,"presentMs":0.00,"hopMs":0.00,"bufMs":0.00,"imgMs":0.00,"guestMs":0.00,"trapCalls":0,"hopChunks":0,"hopBytes":0},"vk32":{"supported":false,"frames":0,"wallMs":0.00,"breakdown":false,"reason":"32-bit guest Vulkan presents have no per-trap timers; submit/trap/hop and the guest span are unavailable"},"stages":{"syscall":{"supported":true,"calls":926,"ms":168.03},"gl":{"supported":false,"calls":0,"ms":0.00},"audio":{"supported":true,"calls":0,"ms":0.00,"bytes":0}},"jit":{"cpu32":{"supported":false,"available":false,"engine":null,"enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0},"cpu64":{"supported":true,"available":false,"engine":"off","enabled":false,"blocksEmitted":0,"blocksInstantiated":0,"blocksEntered":0,"instructionsRetired":0,"fallbacks":0,"emitUs":0,"instantiateUs":0}},"unavailable":[{"id":"wine","reason":"guest Win32/ELF code runs inside the emulated CPU; no host boundary"},{"id":"dxvk","reason":"guest-side D3D translation; only its Vulkan calls are host-visible"},{"id":"vkd3d","reason":"guest-side D3D12 translation; no host-visible stage boundary"}]}
+  PASS: MMX PSRLW imm8 shifts each word lane
+CPU64: exit syscall, status=0
+  PASS: MMX PINSRW register source and imm8
+CPU64: exit syscall, status=0
+  PASS: MMX PINSRW memory source and imm8
+CPU64: exit syscall, status=0
+  PASS: MMX PINSRW RIP-relative memory source and imm8
+CPU64: exit syscall, status=0
+  PASS: MMX PEXTRW imm8 extracts selected word
+CPU64: exit syscall, status=0
+  PASS: MMX PMOVMSKB extracts sign bits
+CPU64: exit syscall, status=0
+  PASS: MMX MOVD writes GP register
+CPU64: exit syscall, status=0
+  PASS: MMX MOVQ2DQ transfers MMX to XMM
+CPU64: exit syscall, status=0
+  PASS: MMX MOVDQ2Q transfers XMM to MMX
+CPU64: exit syscall, status=0
+  PASS: MMX CVTPI2PS converts two signed dwords
+CPU64: exit syscall, status=0
+  PASS: MMX CVTPS2PI converts two packed singles
+CPU64: exit syscall, status=0
+  PASS: MMX CVTPI2PD converts two signed dwords
+CPU64: exit syscall, status=0
+  PASS: MMX CVTPD2PI converts two packed doubles
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 0 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 0 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 1 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 1 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 2 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 2 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 3 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 3 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 4 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 4 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 5 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 5 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 6 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 6 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 7 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 7 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 8 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 8 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 9 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 9 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 10 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 10 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 11 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 11 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 28 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 28 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 29 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 29 memory
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 30 register
+CPU64: exit syscall, status=0
+  PASS: MMX SSSE3 30 memory
+CPU64: exit syscall, status=0
+  PASS: MMX PALIGNR register source with imm8
+CPU64: exit syscall, status=0
+  PASS: MMX PALIGNR memory source with imm8
+CPU64: exit syscall, status=0
+  PASS: MMX PALIGNR RIP-relative source with imm8
+=== self-test summary: 953 passed, 0 failed ===
+

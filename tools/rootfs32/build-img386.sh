@@ -43,13 +43,13 @@
 # release's own archive). A hash mismatch aborts before extraction.
 #
 # Usage: build-img386.sh [OUT_DIR]
-#   OUT_DIR defaults to /home/ubuntu/wine32-stage/img386 (the historical
+#   OUT_DIR defaults to /home/ubuntu/winbox-project/staging/wine32-stage/img386 (the historical
 #   path every consumer defaults to). The deb cache lives under
 #   ${BW32_DEB_CACHE:-/tmp/bw32-debs} and is reused across runs.
 #   Set BW32_IMG386_FORCE=1 to rebuild an existing OUT_DIR.
 set -euo pipefail
 
-OUT="${1:-${BW32_IMG386:-/home/ubuntu/wine32-stage/img386}}"
+OUT="${1:-${BW32_IMG386:-/home/ubuntu/winbox-project/staging/wine32-stage/img386}}"
 CACHE="${BW32_DEB_CACHE:-/tmp/bw32-debs}"
 mkdir -p "$CACHE"
 

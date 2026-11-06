@@ -1,0 +1,323 @@
+=== PCH NATIVE START 2026-11-06T01:21:28+00:00 ===
+ 01:21:28 up 35 days,  7:14, 18 users,  load average: 2.14, 3.02, 5.37
+/dev/sda1       193G  187G  6.0G  97% /
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/linux'
+MAKEFLAGS 
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp: In function ‘void testKernelGrace()’:
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:63:39: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   63 |     if (epoll->readNative(scratch, 8) != -K_EINVAL) { testFail("epoll readNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:64:40: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   64 |     if (epoll->writeNative(scratch, 8) != -K_EINVAL) { testFail("epoll writeNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:113:41: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+  113 |     if (sigObj->writeNative(scratch, 8) != -K_EINVAL) { testFail("signalfd writeNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/emulation/cpu/armv8/jitArmV8CodeGen.cpp: In member function ‘void JitArmV8CodeGen::setParams(const std::vector<Jit::DynParam>&)’:
+/home/ubuntu/wt-pch/source/emulation/cpu/armv8/jitArmV8CodeGen.cpp:2847:27: warning: comparison of integer expressions of different signedness: ‘int’ and ‘std::vector<Jit::DynParam>::size_type’ {aka ‘long unsigned int’} [-Wsign-compare]
+ 2847 |         for (int i = 0; i < params.size(); i++) {
+      |                         ~~^~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/io/fsfilenode.cpp:65:17:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kepoll.cpp:188:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kevent.cpp:48:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kinotify.cpp:113:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/knativesocket.cpp:946:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/knetlink.cpp:87:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/ksignal.cpp:74:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kunixsocket.cpp:251:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/opengl/glcommon.cpp:1319:52:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/x11/x11common.cpp: In lambda function:
+/home/ubuntu/wt-pch/source/x11/x11common.cpp:3146:72: warning: comparison of integer expressions of different signedness: ‘int’ and ‘unsigned int’ [-Wsign-compare]
+ 3146 |         if (!matched && screenIndex == requestedScreen && depth->depth == (U32)requestedDepth && visual->c_class == requestedClass) {
+      |                                                           ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/x11common.cpp:2919:18:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/xdrawable.cpp:313:13:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/xwindow.cpp:647:13:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make[1]: Leaving directory '/home/ubuntu/wt-pch/project/linux'
+real=384.538 user=405.486 sys=38.429
+make test exit: 0
+fcb1c3d95925577d0079d27e04ba0362977a98670841f56307564ceafd2d58e9  Build/Test/boxedwine
+0
+=== PCH NATIVE START 2026-11-06T01:21:28+00:00 ===
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/linux'
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp: In function ‘void testKernelGrace()’:
+169M	Build/Test
+/dev/sda1       193G  187G  5.8G  98% /
+uname -m is aarch64
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/linux'
+MAKEFLAGS 
+/home/ubuntu/wt-pch/source/x11/x11common.cpp: In lambda function:
+/home/ubuntu/wt-pch/source/x11/x11common.cpp:3146:72: warning: comparison of integer expressions of different signedness: ‘int’ and ‘unsigned int’ [-Wsign-compare]
+ 3146 |         if (!matched && screenIndex == requestedScreen && depth->depth == (U32)requestedDepth && visual->c_class == requestedClass) {
+      |                                                           ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/x11common.cpp:2919:18:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/xdrawable.cpp:313:13:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11/xwindow.cpp:647:13:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/x11wire/xwirepresentSDL.cpp: In function ‘void {anonymous}::renderLoadingFrame(std::vector<unsigned char>&, int, int, const char*, int, const std::vector<BString>&)’:
+/home/ubuntu/wt-pch/source/x11wire/xwirepresentSDL.cpp:257:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  257 |     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+      |     ^~
+/home/ubuntu/wt-pch/source/x11wire/xwirepresentSDL.cpp:257:27: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  257 |     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+      |                           ^~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/x11wire/xwirepresentSDL.cpp:209:21:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp: In function ‘void testKernelGrace()’:
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:63:39: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   63 |     if (epoll->readNative(scratch, 8) != -K_EINVAL) { testFail("epoll readNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:64:40: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+   64 |     if (epoll->writeNative(scratch, 8) != -K_EINVAL) { testFail("epoll writeNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/test/process/testKernelGrace.cpp:113:41: warning: comparison of integer expressions of different signedness: ‘unsigned int’ and ‘int’ [-Wsign-compare]
+  113 |     if (sigObj->writeNative(scratch, 8) != -K_EINVAL) { testFail("signalfd writeNative must return EINVAL"); return; }
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp: In function ‘void testTempFileLinkPattern()’:
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9064:21: warning: ‘st.testTempFileLinkPattern()::StatInfo::ino’ may be used uninitialized [-Wmaybe-uninitialized]
+ 9064 |             testFail("after unlinking the temp name: ino=%d nlink=%d (expected %d and 1)", st.ino, st.nlink, inoTmp);
+      |             ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9059:18: note: ‘st.testTempFileLinkPattern()::StatInfo::ino’ was declared here
+ 9059 |         StatInfo st;
+      |                  ^~
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9064:21: warning: ‘st.testTempFileLinkPattern()::StatInfo::nlink’ may be used uninitialized [-Wmaybe-uninitialized]
+ 9064 |             testFail("after unlinking the temp name: ino=%d nlink=%d (expected %d and 1)", st.ino, st.nlink, inoTmp);
+      |             ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/source/test/process/testInotify.cpp:9059:18: note: ‘st.testTempFileLinkPattern()::StatInfo::nlink’ was declared here
+ 9059 |         StatInfo st;
+      |                  ^~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/io/fsfilenode.cpp:65:17:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kepoll.cpp:188:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kevent.cpp:48:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kinotify.cpp:113:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/knativesocket.cpp:946:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/knetlink.cpp:87:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/ksignal.cpp:74:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void kwarn_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/kunixsocket.cpp:251:14:   required from here
+../../include/log.h:55:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   55 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:57:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   57 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ../../include/platformBoxedwine.h:194,
+                 from Build/X64Test/pch/boxedwine.h:93:
+../../include/log.h: In instantiation of ‘void klog_fmt(const char*, Args&& ...) [with Args = {}]’:
+/home/ubuntu/wt-pch/source/kernel/syscall64.cpp:2817:17:   required from here
+../../include/log.h:76:34: warning: format not a string literal and no format arguments [-Wformat-security]
+   76 |         auto size = std::snprintf(nullptr, 0, format, std::forward<Args>(args)...);
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../include/log.h:78:22: warning: format not a string literal and no format arguments [-Wformat-security]
+   78 |         std::snprintf(msg.str(), size + 1, format, std::forward<Args>(args)...);
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make[1]: Leaving directory '/home/ubuntu/wt-pch/project/linux'
+real=518.332 user=530.356 sys=42.822
+make x64-test exit: 0
+2ab4830b0cadc9a6c912bdb18127c51f2dafdf19d92687d78f6be438aa373d85  Build/X64Test/boxedwine
+164M	Build/X64Test
+/dev/sda1       193G  188G  5.7G  98% /
+ 01:36:31 up 35 days,  7:29, 17 users,  load average: 6.52, 8.27, 7.79
+=== PCH NATIVE DONE 2026-11-06T01:36:31+00:00 ===

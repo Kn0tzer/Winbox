@@ -52,7 +52,7 @@ console, and composited screenshots with the exact source commit and
 `dist/runtime/BUILD_INFO.json` build ID:
 
 ```sh
-/home/ubuntu/scripts/winbox-wait-load.sh
+/home/ubuntu/winbox-project/scripts/winbox-wait-load.sh
 DEMO=notepad JIT=0 OUT=test-results/game-readiness/notepad-jit0 \
   node web/tests/demo-matrix.mjs
 ```
@@ -64,7 +64,7 @@ modes that the program supports. Quake III and Mindustry can also be probed
 with the GL game probe:
 
 ```sh
-/home/ubuntu/scripts/winbox-wait-load.sh
+/home/ubuntu/winbox-project/scripts/winbox-wait-load.sh
 GAME=q3 OUT=/tmp/winbox-finish/work-p2tests/q3 \
   node tools/bench/gl-game-probe.mjs
 ```

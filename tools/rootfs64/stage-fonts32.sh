@@ -24,7 +24,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
         echo "stage-fonts32: $archive already carries the Mono face — skipping"
         continue
     fi
-    backup="/home/ubuntu/backups/winbox-fonts32-$stamp"
+    backup="/home/ubuntu/winbox-project/evidence/winbox-fonts32-$stamp"
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$runtime")-glibc-rootfs32.zip"
     TMP="$(mktemp -d)"

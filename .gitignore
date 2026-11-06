@@ -38,6 +38,24 @@
 /tools/rootfs64/gecko/
 /tools/rootfs64/openal/
 /tools/rootfs64/cjk-font/
+# The payload entries above (browser/zig, browser/disasm, dxvk, vkd3d and
+# the rootfs64 extractions) use trailing-slash forms, which match real
+# directories only. tools/winbox-wt-prep.sh links those payloads in as
+# symlinks to directories, which a trailing-slash pattern does not match:
+# the links showed up as untracked files and inflated the git_dirty_files
+# count the build records in BUILD_INFO.json (FD-174). The same paths
+# without the trailing slash match both the linked and the copied form.
+/tools/browser/zig
+/tools/browser/disasm
+/tools/dxvk/build.*
+/tools/dxvk/install
+/tools/vkd3d/build.*
+/tools/rootfs64/mono32
+/tools/rootfs64/gstreamer64
+/tools/rootfs64/gstreamer32
+/tools/rootfs64/gecko
+/tools/rootfs64/openal
+/tools/rootfs64/cjk-font
 /tools/BoxedWineRunner/out/
 
 # Probe output stays local; curated reports live in docs/reports/.

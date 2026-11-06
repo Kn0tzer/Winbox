@@ -2594,6 +2594,153 @@ test('fuzz F6/F7 group 3 vs reference (600 cases)', async () => {
   }
 }, 180000);
 
+
+// --- FF/FE INC/DEC reference model (mirrors cpu64.cpp: flags like
+// ADD/SUB of 1 for OF/SF/ZF/AF/PF, CF preserved) ---
+// Encode FF /0 /1 (size 2/4/8) and FE /0 /1 (size 1). EA machinery mirrors
+// encGrp3. Returns { code, ea, sub, size, rm, rexPresent, eaKind }.
+function encIncDec({ sub, size, rm = 0, eaKind = 'reg', base = 0, idx = 1, scale = 0, disp = 0, asize32 = false }) {
+  let r = rm;
+  let rex = 0;
+  if (size === 8) rex |= 0x08;
+  if (eaKind === 'reg' ? r >= 8 : (eaKind !== 'riprel' && base >= 8)) rex |= 0x01;
+  if ((eaKind === 'sib' || eaKind === 'sib32') && idx >= 8) rex |= 0x02;
+  // Size-1 register forms naming rm 4..7: a bare REX makes them
+  // SPL/BPL/SIL/DIL (the AH..BH no-REX forms are classifier-declined and
+  // never reach the emitter, so the fuzz never encodes them).
+  const bareRex = size === 1 && eaKind === 'reg' && r >= 4 && r <= 7;
+  const rexPresent = rex !== 0 || bareRex;
+  const code = [];
+  if (asize32) code.push(0x67);
+  if (size === 2) code.push(0x66);
+  if (rex || bareRex) code.push(0x40 | rex);
+  const prefixLen = code.length;
+  code.push(size === 1 ? 0xFE : 0xFF);
+  const modrmPos = prefixLen + 1;
+  let mod, rmF;
+  const dispBytes = [];
+  const sibBytes = [];
+  if (eaKind === 'reg') { mod = 3; rmF = r & 7; }
+  else if (eaKind === 'riprel') { mod = 0; rmF = 5; }
+  else if (eaKind === 'sib' || eaKind === 'sib32') {
+    rmF = 4;
+    const noBase = eaKind === 'sib32';
+    mod = noBase ? 0 : disp !== 0 ? (disp >= -128 && disp <= 127 ? 1 : 2) : 0;
+    sibBytes.push((scale << 6) | ((idx & 7) << 3) | (noBase ? 5 : (base & 7)));
+  } else {
+    rmF = base & 7;
+    mod = eaKind === 'disp8' ? 1 : eaKind === 'disp32' ? 2 : 0;
+  }
+  if (mod === 1) dispBytes.push(disp & 0xFF);
+  if (mod === 2 || eaKind === 'riprel' || eaKind === 'sib32') dispBytes.push(...little(BigInt(disp) & 0xFFFFFFFFn, 4));
+  code.push((mod << 6) | (sub << 3) | rmF, ...sibBytes, ...dispBytes);
+  const ea = { ripRel: false, ripRelTarget: 0n, baseReg: 0xFF, idxReg: 0xFF, scale: 0, disp: 0n, asize32, seg: 0 };
+  if (eaKind === 'riprel') {
+    ea.ripRel = true;
+    ea.ripRelTarget = (BigInt(modrmPos) + 1n + BigInt(dispBytes.length) + BigInt(sibBytes.length) +
+      BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp)))) & mask64;
+  } else if (eaKind !== 'reg') {
+    if (eaKind === 'sib' || eaKind === 'sib32') {
+      ea.scale = scale;
+      if (eaKind !== 'sib32') ea.baseReg = base;
+      if (!((idx & 7) === 4 && !(rex & 0x02))) ea.idxReg = idx;
+    } else {
+      ea.baseReg = base;
+    }
+    if (mod === 1) ea.disp = BigInt.asIntN(64, BigInt.asIntN(8, BigInt(disp))) & mask64;
+    else if (mod === 2 || eaKind === 'sib32') ea.disp = BigInt.asIntN(64, BigInt.asIntN(32, BigInt(disp))) & mask64;
+  }
+  return { code, ea, sub, size, rm: r, rexPresent, eaKind };
+}
+
+// Differential check: wasm vs JS reference model.
+async function checkIncDec(enc, { regs, rflags = 0x202, memInit = new Map(), rip = 0x12345678ABCDEFF0n }) {
+  const { sub, size } = enc;
+  const refRegs = [...regs];
+  const refMem = makeGuestMem();
+  for (const [k, v] of memInit) refMem.bytes.set(k, v);
+  let a, eaAddr = 0n;
+  if (enc.eaKind === 'reg') {
+    a = memRegRead(refRegs, enc.rm, size, enc.rexPresent);
+  } else {
+    eaAddr = computeEA(enc.ea, refRegs);
+    a = refMem.read(eaAddr, size);
+  }
+  const { r, flags } = refAlu(sub === 0 ? 0 : 5, a, 1n, size);
+  // INC/DEC preserve CF: OF/SF/ZF/AF/PF come from the ADD/SUB-of-1 model
+  // (mask 0x8D4 = the ALU mask without CF); CF and every bit outside the
+  // ALU mask come from the incoming rflags.
+  const refFlags = ((BigInt(rflags) & ~0x8D4n) | (flags & 0x8D4n)) & 0xFFFFFFFFn;
+  if (enc.eaKind === 'reg') memRegWrite(refRegs, enc.rm, size, r, enc.rexPresent);
+  else refMem.write(eaAddr, size, r);
+  const out = await runAluMem(enc.code, { regs: [...regs], rflags, memInit, rip });
+  assert.deepEqual(out.regs, refRegs, 'GPRs');
+  assert.equal(BigInt(out.rflags), refFlags, 'RFLAGS');
+  assert.equal(out.ripOut, (rip + BigInt(enc.code.length)) & mask64, 'RIP');
+  assert.equal(out.entered, 1, 'emitted code must bump blocksEntered');
+  const refKeys = [...refMem.bytes.keys()].map(String).sort();
+  const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+  assert.deepEqual(outKeys, refKeys, 'written addresses');
+  for (const k of refKeys) assert.equal(out.guestMem.bytes.get(BigInt(k)), refMem.bytes.get(BigInt(k)), `mem[${k}]`);
+}
+
+test('INC/DEC edges: OF at the sign boundary, CF preserved both ways', async () => {
+  const regs = baseRegs();
+  regs[0] = 0x7Fn; // inc al: 0x7F -> 0x80, OF=1 SF=1
+  await checkIncDec(encIncDec({ sub: 0, size: 1, rm: 0 }), { regs, rflags: 0x203 }); // CF=1 in
+  await checkIncDec(encIncDec({ sub: 0, size: 1, rm: 0 }), { regs, rflags: 0x202 }); // CF=0 in
+  regs[0] = 0x80000000n; // dec eax: -> 0x7FFFFFFF, OF=1
+  await checkIncDec(encIncDec({ sub: 1, size: 4, rm: 0 }), { regs, rflags: 0x203 });
+  regs[3] = 0x1000n; // inc qword [rbx]: all-ones -> 0, ZF=1, CF preserved
+  const memInit = new Map();
+  for (let b = 0; b < 8; b++) memInit.set(0x1000n + BigInt(b), 0xFF);
+  await checkIncDec(encIncDec({ sub: 0, size: 8, eaKind: 'base', base: 3 }), { regs, rflags: 0x203, memInit });
+  regs[3] = 0x2000n; // dec byte [rbx+8]: 0x00 -> 0xFF, SF=1 AF=1
+  const memInit2 = new Map([[0x2008n, 0x00]]);
+  await checkIncDec(encIncDec({ sub: 1, size: 1, eaKind: 'disp8', base: 3, disp: 8 }), { regs, rflags: 0x202, memInit: memInit2 });
+  regs[2] = 0xDEAD00000FFFn; // inc dx: 0x0FFF -> 0x1000, AF=1, upper bits kept
+  await checkIncDec(encIncDec({ sub: 0, size: 2, rm: 2 }), { regs });
+  regs[1] = 0xFFFFFFFFn; // inc ecx: -> 0 with rcx zero-extended
+  await checkIncDec(encIncDec({ sub: 0, size: 4, rm: 1 }), { regs });
+  regs[4] = 0x12n; // inc spl (REX byte form)
+  await checkIncDec(encIncDec({ sub: 0, size: 1, rm: 4 }), { regs });
+});
+
+test('fuzz FF/FE INC/DEC vs reference (600 cases)', async () => {
+  const rng = mulberry32(0x1DEC ^ 0xFEFF);
+  const flagSets = [0x202, 0x203, 0x8D5, 0x246, 0x202 | 0x800, 0x402, 0x0];
+  for (let i = 0; i < 600; i++) {
+    const sub = pick(rng, [0, 1]);
+    const size = pick(rng, [1, 1, 2, 4, 4, 4, 8, 8]);
+    const useMem = rng() < 0.55;
+    let eaKind = 'reg', rm = 0;
+    let eaParams = {};
+    if (useMem) {
+      const ea = randomEA(rng);
+      eaKind = ea.eaKind;
+      eaParams = ea;
+    } else {
+      rm = Math.floor(rng() * 16);
+    }
+    const enc = encIncDec({ sub, size, rm, eaKind,
+      base: eaParams.base ?? 0, idx: eaParams.idx ?? 1, scale: eaParams.scale ?? 0,
+      disp: eaParams.disp ?? 0, asize32: eaParams.asize32 ?? false });
+    const regs = Array.from({ length: 16 }, () => advVal(rng));
+    const memInit = new Map();
+    if (useMem) {
+      const targetHint = computeEA(enc.ea, regs);
+      for (let b = 0; b < size; b++) memInit.set((targetHint + BigInt(b)) & mask64, Math.floor(rng() * 256));
+    }
+    const rflags = pick(rng, flagSets);
+    try {
+      await checkIncDec(enc, { regs, rflags, memInit });
+    } catch (e) {
+      e.message = `fuzzIncDec i=${i} sub=${sub} size=${size} ea=${eaKind}: ${e.message}`;
+      throw e;
+    }
+  }
+});
+
 // --- F6/F7 group 3 /6 /7 DIV/IDIV execution tests ---
 // Reference model mirrors the interpreter (cpu64.cpp F6/F7 dsp): the only
 // fault is divide-by-zero; the 8-bit form divides AX in 16 bits and

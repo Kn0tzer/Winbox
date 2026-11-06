@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 
 repo = Path(__file__).resolve().parents[2]
-sysroot = Path(os.environ.get('BW32_SYSROOT', '/home/ubuntu/wine32-stage/img386'))
+sysroot = Path(os.environ.get('BW32_SYSROOT', '/home/ubuntu/winbox-project/staging/wine32-stage/img386'))
 assets = {
     'usr/lib/i386-linux-gnu/libfontconfig.so.1': sysroot / 'usr/lib/i386-linux-gnu/libfontconfig.so.1',
     'lib/i386-linux-gnu/libexpat.so.1': sysroot / 'lib/i386-linux-gnu/libexpat.so.1',
@@ -29,7 +29,7 @@ payload['etc/fonts/fonts.conf'] = b'''<?xml version="1.0"?>
 </fontconfig>
 '''
 stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
-backup = Path('/home/ubuntu/backups') / f'bw64-fonts32-{stamp}'
+backup = Path('/home/ubuntu/winbox-project/evidence') / f'bw64-fonts32-{stamp}'
 for runtime in ('dist/runtime', 'web/runtime'):
     archive = repo / runtime / 'glibc-rootfs32.zip'
     with zipfile.ZipFile(archive) as source:

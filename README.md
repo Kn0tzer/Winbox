@@ -5,7 +5,15 @@ Windows apps and games in a browser:
 - Wine
 - OpenGL, Vulkan, and Directx 9-12 all converted to WebGPU
 
+Documentation: [docs/INDEX.md](docs/INDEX.md) is the map of the
+project's documentation; [docs/WINBOX-STATUS.md](docs/WINBOX-STATUS.md)
+says where the current truth lives.
+
 ## Program support
+
+_The headline list. Per-program verified status, with the evidence
+behind each verdict, is owned by
+[docs/game-compatibility.md](docs/game-compatibility.md)._
 - Chromium
 - Notepad
 - Celeste

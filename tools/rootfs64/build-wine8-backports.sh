@@ -23,7 +23,13 @@
 #      packages, or FREETYPE_CFLAGS/FREETYPE_LIBS and
 #      FONTCONFIG_CFLAGS/FONTCONFIG_LIBS pointing at a sysroot); the
 #      post-build check below fails loudly if the products are not in
-#      the binary. The guest runtime already carries the matching
+#      the binary. With a sysroot, also export
+#      LDFLAGS="-Wl,-rpath-link,<sysroot>/usr/lib/x86_64-linux-gnu":
+#      without it the freetype link test fails on libfreetype's
+#      transitive libpng16 ("checking for -lfreetype... not found")
+#      even with the FREETYPE_* variables set, and configure aborts
+#      (seen on the 2026-11-06 batch-9 rebuild; the FD-168 lane's
+#      sysroot build carried that LDFLAGS). The guest runtime already carries the matching
 #      runtime libraries (libfreetype.so.6, libfontconfig.so.1 and
 #      their dependency chain in the prefix64 overlay).
 # Everything compiles with the host's native toolchain — deliberately NOT
@@ -43,8 +49,13 @@ PATCHES=(
     wine8-kernelbase-copyfile2.patch
     wine8-iphlpapi-anycast-table.patch
     wine8-win32u-desktop-wait.patch
+    wine8-fd167-contracts.patch
+    wine8-win32u-fd168-backports.patch
+    wine8-msvcrt-fd169-crt.patch
+    wine8-fd170-contracts.patch
+    wine8-fd171-contracts.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi win32u)
+DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils propsys ntdll cfgmgr32 pdh combase mfplat cryptext d2d1 hid mf mscms prntvpt sspicli vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140 windows.networking wintypes wofutil)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
@@ -56,6 +67,12 @@ if [ ! -d "$WORK/wine" ]; then
 fi
 cd "$WORK/wine"
 git checkout -- .  # pristine tag state before (re)applying the patches
+# checkout alone does not remove files a patch ADDED on a previous run
+# (the FD-170 patch adds headers + DLL sources); a re-run would then die
+# in git apply with "already exists". Clean the two patched areas so the
+# reset really is pristine. This tree is a build-scratch clone by
+# design; nothing else may live in it.
+git clean -fdq -- dlls include
 for p in "${PATCHES[@]}"; do
     git apply "$REPO/tools/buildWine/patches/$p"
     echo "--- applied $p ---"
@@ -87,7 +104,12 @@ if [ ! -f Makefile ]; then
         --without-pcap --without-v4l2 --without-x > configure.log 2>&1
 fi
 targets=(); for d in "${DLLS[@]}"; do targets+=("dlls/$d/$d.dll"); done
-make -j"$(nproc)" "${targets[@]}" > make.log 2>&1
+# Wave 1 first: combase's FD-171 RoFailFast* entry points call
+# RaiseFailFastException, resolved from kernelbase's import library
+# without a declared import edge, so the import-library providers
+# must exist before combase links.
+make -j"$(nproc)" dlls/kernelbase/kernelbase.dll dlls/kernel32/kernel32.dll dlls/ntdll/ntdll.dll > make.log 2>&1
+make -j"$(nproc)" "${targets[@]}" >> make.log 2>&1
 
 mkdir -p "$OUT"
 for d in "${DLLS[@]}"; do

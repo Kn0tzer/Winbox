@@ -115,6 +115,25 @@ public:
     static BString getDosAttrib(const std::shared_ptr<FsNode>& file);
     static void setDosAttrib(const std::shared_ptr<FsNode>& file, const BString& attrib);
     static U32 removeDosAttrib(const std::shared_ptr<FsNode>& file);
+    static bool hasDosAttrib(const std::shared_ptr<FsNode>& file);
+
+    // FD-165: generic extended attributes, stored the way
+    // EXT_DOSATTRIB stores the one modelled attribute -- as
+    // sidecar files beside the node's native file, named
+    // "<nativePath>" EXT_XATTR "<encoded name>" (every byte of
+    // the name outside [A-Za-z0-9._-] written as %XX, so any
+    // guest name maps to one plain filename). user.DOSATTRIB
+    // never comes through here: its own sidecar and accessors
+    // above keep it consistent across every form. A node whose
+    // backing cannot hold a sidecar (zip/virtual) stores
+    // nothing and setXAttr reports false.
+    static bool hasXAttr(const std::shared_ptr<FsNode>& file, const BString& name);
+    static bool getXAttr(const std::shared_ptr<FsNode>& file, const BString& name, std::vector<U8>& valueOut);
+    static bool setXAttr(const std::shared_ptr<FsNode>& file, const BString& name, const U8* value, U32 valueLen);
+    static U32 removeXAttr(const std::shared_ptr<FsNode>& file, const BString& name);
+    static std::vector<BString> listXAttrNames(const std::shared_ptr<FsNode>& file);
+    static void deleteXAttrSidecars(const BString& nativePath);
+    static void moveXAttrSidecars(const BString& oldNativePath, const BString& newNativePath);
 
     static std::shared_ptr<FsFileNode> rootNode;
 	static void shutDown();

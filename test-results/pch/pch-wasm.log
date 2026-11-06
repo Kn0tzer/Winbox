@@ -1,0 +1,79 @@
+=== PCH WASM START 2026-11-06T00:47:28+00:00 ===
+ 00:47:28 up 35 days,  6:40, 19 users,  load average: 9.02, 9.20, 9.30
+/dev/sda1       193G  183G   11G  95% /
+MAKEFLAGS is -j 3
+make[1]: Entering directory '/home/ubuntu/wt-pch/project/emscripten'
+MAKEFLAGS 
+/home/ubuntu/wt-pch/platform/sdl/knativeinputSDL.cpp:47:5: warning: lambda capture 'this' is not used [-Wunused-lambda-capture]
+   47 |     DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ubuntu/wt-pch/platform/sdl/sdlcallback.h:38:63: note: expanded from macro 'DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN'
+   38 | #define DISPATCH_MAIN_THREAD_BLOCK_THIS_BEGIN sdlDispatch([=, this]() -> U32 {
+      |                                                               ^~~~
+1 warning generated.
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:651:74: warning: lambda capture 'newRsp' is not required to be captured for this use [-Wunused-lambda-capture]
+  651 |         runAndCheck(r, "iretq restores rip/rflags/rsp", withExit(code), [newRsp](CPU64& c) {
+      |                                                                          ^~~~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:3424:32: warning: lambda capture 'spec' is not used [-Wunused-lambda-capture]
+ 3424 |                 }, [=, &insn, &spec](CPU64& c) {
+      |                             ~~~^~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:4215:30: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4215 |                     }, [item,data](CPU64& c) {
+      |                             ~^~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:4321:20: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4321 |                 },[data](CPU64& c) {
+      |                    ^~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:4335:20: warning: lambda capture 'data' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4335 |                 },[data](CPU64& c) {
+      |                    ^~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:4448:20: warning: lambda capture 'input' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4448 |                 },[input](CPU64& c) {
+      |                    ^~~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:4468:20: warning: lambda capture 'input' is not required to be captured for this use [-Wunused-lambda-capture]
+ 4468 |                 },[input](CPU64& c) {
+      |                    ^~~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:5132:80: warning: lambda capture 'dst' is not required to be captured for this use [-Wunused-lambda-capture]
+ 5132 |         runAndCheck(r, "futex WAKE_OP applies SET operation", withExit(code), [dst](CPU64& c) {
+      |                                                                                ^~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:6665:18: warning: lambda capture 'sRBX' is not required to be captured for this use [-Wunused-lambda-capture]
+ 6665 |                 [sRBX](CPU64& c) {
+      |                  ^~~~
+/home/ubuntu/wt-pch/source/emulation/cpu/cpu64SelfTest.cpp:8119:96: warning: lambda capture 'SENTINEL' is not required to be captured for this use [-Wunused-lambda-capture]
+ 8119 |         runAndCheck(r, "FXSAVE/FXRSTOR preserves XMM0 (PLT-resolver FP arg)", withExit(code), [SENTINEL](CPU64& c) {
+      |                                                                                                ^~~~~~~~
+10 warnings generated.
+em++: warning: -pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly, see https://github.com/WebAssembly/design/issues/1271 [-Wpthreads-mem-growth]
+make[1]: Leaving directory '/home/ubuntu/wt-pch/project/emscripten'
+real=625.419 user=406.166 sys=23.941
+wasm64-mt make exit: 0
+ 00:57:54 up 35 days,  6:50, 19 users,  load average: 15.29, 13.79, 11.58
+boxedwine-shell.js
+boxedwine.css
+boxedwine.h.pch
+boxedwine.h.pch.d
+boxedwine64.html
+boxedwine64.js
+boxedwine64.wasm
+coi-serviceworker.js
+home
+wine64-launcher.js
+wine64.html
+9b51d60101ab21a39bd88c4c8391512509361dd4845af22b8bc261eaaa6a5241  Build/Wasm64Mt/boxedwine64.wasm
+9fe550765f3bd8a038b25883ba75f9cac6735c55b9552601d2f2b8f54badfe4b  Build/Wasm64Mt/boxedwine64.js
+WASM BYTE-IDENTICAL TO BASELINE
+-rw-r--r-- 1 root root 26056420 Nov  6 00:47 Build/Wasm64Mt/boxedwine.h.pch
+-rw-r--r-- 1 root root     4562 Nov  6 00:47 Build/Wasm64Mt/boxedwine.h.pch.d
+Build/Wasm64Mt/boxedwine.h.pch: ../../include/boxedwine.h \
+  ../../include/platformtypes.h ../../include/../source/util/bstring.h \
+  ../../include/../source/util/bhashtable.h \
+  ../../include/platformBoxedwine.h ../../include/log.h \
+  ../../include/../source/emulation/softmmu/soft_ram.h \
+  ../../include/../source/util/bfile.h \
+  ../../include/../source/util/klist.h ../../include/ktimercallback.h \
+  ../../include/../source/util/synchronization.h \
+  ../../include/../source/util/stringutil.h \
+  ../../include/../source/util/vectorutils.h \
+  ../../include/../source/util/fileutils.h ../../
+54M	Build/Wasm64Mt
+/dev/sda1       193G  183G  9.8G  95% /
+=== PCH WASM DONE 2026-11-06T00:57:54+00:00 ===

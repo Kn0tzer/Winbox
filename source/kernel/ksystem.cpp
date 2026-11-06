@@ -61,7 +61,11 @@ U32 KSystem::cpuAffinityCountForApp = 0;
 #endif
 
 U32 KSystem::guestCpuCount() {
-    return 1;
+    // The emulated machine has 2 vCPUs. Guest threads are host threads
+    // (workers in the browser build), so two guest threads genuinely run
+    // in parallel; every guest-visible topology surface derives from this
+    // one count (sched affinity, /proc/cpuinfo, sysfs, /proc/stat, CPUID).
+    return 2;
 }
 
 BString KSystem::guestCpuList() {
@@ -503,13 +507,14 @@ U32 KSystem::processCount() {
 }
 
 void KSystem::guestRamInfo(U64& totalBytes, U64& freeBytes) {
-    // The emulated machine RAM size: 1 GiB. Guest address spaces are sparse
+    // The emulated machine RAM size: 4 GiB. Guest address spaces are sparse
     // and demand-paged, so this figure defines the machine rather than a
-    // host allocation cap; it is the value the earlier hardcoded sysinfo
-    // and /proc/meminfo faces carried (chosen so the JVM and Wine size
-    // their heaps sanely), now kept in exactly one place. Free RAM is what
+    // host allocation cap; it is the value the sysinfo and /proc/meminfo
+    // faces carry, kept in exactly one place. The 4 GiB figure is honest:
+    // the machine-definition fixture commits and verifies 2 GiB -- twice
+    // the previously advertised total -- page by page. Free RAM is what
     // live processes have not committed, summed over both memory managers.
-    totalBytes = 1024ULL * 1024 * 1024;
+    totalBytes = 4ULL * 1024 * 1024 * 1024;
     U64 committed = 0;
     for (auto& entry : KSystem::processes) {
         const KProcessPtr& process = entry.value;

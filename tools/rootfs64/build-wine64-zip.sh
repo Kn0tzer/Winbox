@@ -94,7 +94,15 @@ for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll; do
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll; do
+    if [ ! -f "$WINE8BP64/$dll" ]; then
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
+        exit 1
+    fi
+done
+# FD-169: the Microsoft C runtime family rebuilt by the same backports
+# build (genuine implementations replacing winebuild stubs).
+for dll in ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll; do
     if [ ! -f "$WINE8BP64/$dll" ]; then
         echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
         exit 1
@@ -350,11 +358,36 @@ done
 # wine8-backports-x86_64/README.md for provenance and the pinned hashes;
 # check_runtime_completeness.py enforces them. Hard failure, not a
 # warning, for the same reason as the winehq10 backports above.
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll; do
+#
+# The same loop also stages the FD-170 whole-DLL backports
+# (bluetoothapis.dll, winusb.dll, netutils.dll): Wine 8.0 ships those
+# three as pure spec-stub modules; the backports carry Wine 10.0's own
+# implementations (plus the FD-167 no-device contract bodies) rebuilt
+# from the pinned 8.0 tree via wine8-fd170-contracts.patch.
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll; do
     if [ -f "$WINE8BP64/$dll" ]; then
         cp "$WINE8BP64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
         echo "--- staging $dll (wine8 loader backport) ---"
+    else
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh;" \
+             "refusing to build a wine64.zip that lacks the module." >&2
+        exit 1
+    fi
+done
+
+# FD-169: stage the rebuilt Microsoft C runtime family over the
+# Debian modules. These are the same Wine 8.0 sources as the rest of
+# the tree; the FD-169 patch turns winebuild stub exports in the CRT
+# family into genuine implementations (see
+# tools/buildWine/patches/wine8-msvcrt-fd169-crt.patch and
+# wine8-backports-x86_64/README.md; hashes pinned in
+# check_runtime_completeness.py).
+for dll in ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll; do
+    if [ -f "$WINE8BP64/$dll" ]; then
+        cp "$WINE8BP64/$dll" \
+            "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
+        echo "--- staging $dll (wine8 FD-169 CRT backport) ---"
     else
         echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh;" \
              "refusing to build a wine64.zip that lacks the module." >&2

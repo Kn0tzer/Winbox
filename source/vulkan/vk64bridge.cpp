@@ -7963,7 +7963,11 @@ void walkProperties2(U64 pNextAddr) {
 void fillMemoryProperties(VkPhysicalDeviceMemoryProperties* p) {
     memset(p, 0, sizeof(*p));
     p->memoryHeapCount = 2;
-    p->memoryHeaps[0].size = 2ull * 1024 * 1024 * 1024;
+    // The device-local heap is backed by guest RAM, so it matches the
+    // machine's 4 GiB (and the 32-bit bridge's existing advertisement).
+    // A single allocation stays capped at 2 GiB (maxMemoryAllocationSize):
+    // one WebGPU buffer is the backing unit, and that is the honest unit.
+    p->memoryHeaps[0].size = 4ull * 1024 * 1024 * 1024;
     p->memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
     p->memoryHeaps[1].size = 4ull * 1024 * 1024 * 1024;
     p->memoryHeaps[1].flags = 0;

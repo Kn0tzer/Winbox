@@ -61,7 +61,8 @@ void testSysinfo64Consistency() {
         testFail("x64 sysinfo returned an error");
         return;
     }
-    if (total0 != 1024ULL * 1024 * 1024 || memUnit != 1 || procs < 1 || free0 == 0 || free0 > total0) {
+    // The machine definition advertises 4 GiB (FD-03); the faces must agree.
+    if (total0 != 4ULL * 1024 * 1024 * 1024 || memUnit != 1 || procs < 1 || free0 == 0 || free0 > total0) {
         testFail("x64 sysinfo baseline is wrong: total=%llu free=%llu procs=%llu mem_unit=%llu",
                  (unsigned long long)total0, (unsigned long long)free0,
                  (unsigned long long)procs, (unsigned long long)memUnit);

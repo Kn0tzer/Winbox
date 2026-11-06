@@ -7,19 +7,30 @@ const root = resolve(import.meta.dirname, '../../../..');
 const fixtures = {
   'launcher-ready': ['tools/guest-fixtures/launcher-ready.c', '-luser32'],
   'input-witness': ['tools/guest-fixtures/input-witness.c', '-luser32'],
+  'gamepad-witness': ['tools/guest-fixtures/gamepad-witness.c', '-ldinput8', '-ldxguid', '-lole32', '-luser32'],
   'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
   'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],
+  'win32u-fd168': ['tools/guest-fixtures/win32u-fd168.c', '-luser32', '-lgdi32', '-limm32'],
   'win32-tcp': ['tools/guest-fixtures/win32-tcp.c', '-lws2_32'],
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
+  'fd171-contracts': ['tools/guest-fixtures/fd171-contracts.c', '-loleaut32', '-lole32', '-ladvapi32'],
   'dbwin-echo': ['tools/guest-fixtures/dbwin-echo.c', '-lkernel32'],
+  'fd167-contracts32': ['tools/guest-fixtures/fd167-contracts32.c', '-loleaut32'],
+  'fd167-contracts64': ['tools/guest-fixtures/fd167-contracts64.c'],
+  'fd167-msvcp64': ['tools/guest-fixtures/fd167-msvcp64.c'],
+  'fd167-setupapi64': ['tools/guest-fixtures/fd167-setupapi64.c'],
+  'fd169-crt64': ['tools/guest-fixtures/fd169-crt64.c', '-lm'],
+  'fd169-crt32': ['tools/guest-fixtures/fd169-crt32.c', '-lm'],
+  'fd170-contracts64': ['tools/guest-fixtures/fd170-contracts64.c'],
   // Deterministic 64-bit integer/branch/memory workload with a checksum. The
   // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
   // syscalls) share the same source and print the same checksum for the same
   // pass count, so a CPU64 interpreter/JIT difference shows up as a differing
   // checksum in either guest format.
   'jitbench64-pe': ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
+  'incprobe64-pe': ['tools/guest-fixtures/incprobe64.c', '-fno-tree-vectorize'],
   'jitbench32-pe': ['tools/guest-fixtures/jitbench32.c', '-fno-tree-vectorize'],
   'jitbenchmix-pe': ['tools/guest-fixtures/jitbenchmix.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],

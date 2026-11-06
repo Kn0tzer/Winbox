@@ -1,5 +1,8 @@
 # Portal stencil rendering
 
+_Design record, October 2026 build-out: the requirements for one graphics repair, written before it shipped. Current behavior lives in the bridge code and the defect register (`docs/defect-register.md`). Kept as evidence of intent; the documentation map is `docs/INDEX.md`._
+
+
 Capability: `portal-stencil`. Depends on the existing per-attachment colour blend
 repair (`3edaffa6e`, `5b2b44c10`). Portal remains ahead of Gang Beasts; optimization
 follows functional acceptance of both. The user has authorized program support

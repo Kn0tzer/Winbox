@@ -1,0 +1,1259 @@
+diff --git a/dlls/win32u/brush.c b/dlls/win32u/brush.c
+index 8523826..fd42c0c 100644
+--- a/dlls/win32u/brush.c
++++ b/dlls/win32u/brush.c
+@@ -191,6 +191,61 @@ BOOL CDECL __wine_get_brush_bitmap_info( HBRUSH handle, BITMAPINFO *info, void *
+ }
+ 
+ 
++/***********************************************************************
++ *           NtGdiIcmBrushInfo    (win32u.@)
++ */
++BOOL WINAPI NtGdiIcmBrushInfo( HDC hdc, HBRUSH handle, BITMAPINFO *info, void *bits,
++                               ULONG *bits_size, UINT *usage, BOOL *unk, UINT mode )
++{
++    BRUSHOBJ *brush;
++    BOOL ret = FALSE;
++
++    if (mode)
++    {
++        FIXME( "unsupported mode %u\n", mode );
++        return FALSE;
++    }
++
++    if (!(brush = GDI_GetObjPtr( handle, NTGDI_OBJ_BRUSH ))) return FALSE;
++
++    if (brush->pattern.info)
++    {
++        if (info)
++        {
++            memcpy( info, brush->pattern.info,
++                    get_dib_info_size( brush->pattern.info, brush->pattern.usage ));
++            if (info->bmiHeader.biBitCount <= 8 && !info->bmiHeader.biClrUsed)
++                fill_default_color_table( info );
++            if (info->bmiHeader.biHeight < 0)
++                info->bmiHeader.biHeight = -info->bmiHeader.biHeight;
++        }
++        if (bits)
++        {
++            /* always return a bottom-up DIB */
++            if (brush->pattern.info->bmiHeader.biHeight < 0)
++            {
++                unsigned int i, width_bytes, height = -brush->pattern.info->bmiHeader.biHeight;
++                char *dst_ptr;
++
++                width_bytes = get_dib_stride( brush->pattern.info->bmiHeader.biWidth,
++                                              brush->pattern.info->bmiHeader.biBitCount );
++                dst_ptr = (char *)bits + (height - 1) * width_bytes;
++                for (i = 0; i < height; i++, dst_ptr -= width_bytes)
++                    memcpy( dst_ptr, (char *)brush->pattern.bits.ptr + i * width_bytes,
++                            width_bytes );
++            }
++            else memcpy( bits, brush->pattern.bits.ptr,
++                         brush->pattern.info->bmiHeader.biSizeImage );
++        }
++        if (bits_size) *bits_size = brush->pattern.info->bmiHeader.biSizeImage;
++        if (usage) *usage = brush->pattern.usage;
++        ret = TRUE;
++    }
++    GDI_ReleaseObj( handle );
++    return ret;
++}
++
++
+ HBRUSH create_brush( const LOGBRUSH *brush )
+ {
+     BRUSHOBJ * ptr;
+diff --git a/dlls/win32u/class.c b/dlls/win32u/class.c
+index 9f3b425..1b584be 100644
+--- a/dlls/win32u/class.c
++++ b/dlls/win32u/class.c
+@@ -615,6 +615,73 @@ ULONG WINAPI NtUserGetAtomName( ATOM atom, UNICODE_STRING *name )
+ /***********************************************************************
+  *	     NtUserGetClassName   (win32u.@)
+  */
++static unsigned int is_integral_atom( const WCHAR *atomstr, ULONG len, RTL_ATOM *ret_atom )
++{
++    RTL_ATOM atom;
++
++    if ((ULONG_PTR)atomstr >> 16)
++    {
++        const WCHAR* ptr = atomstr;
++        if (!len) return STATUS_OBJECT_NAME_INVALID;
++
++        if (*ptr++ == '#')
++        {
++            atom = 0;
++            while (ptr < atomstr + len && *ptr >= '0' && *ptr <= '9')
++            {
++                atom = atom * 10 + *ptr++ - '0';
++            }
++            if (ptr > atomstr + 1 && ptr == atomstr + len) goto done;
++        }
++        if (len > MAX_ATOM_LEN) return STATUS_INVALID_PARAMETER;
++        return STATUS_MORE_ENTRIES;
++    }
++    else if ((atom = LOWORD( atomstr )) >= MAXINTATOM) return STATUS_INVALID_PARAMETER;
++done:
++    if (atom >= MAXINTATOM) atom = 0;
++    if (!(*ret_atom = atom)) return STATUS_INVALID_PARAMETER;
++    return STATUS_SUCCESS;
++}
++
++
++/***********************************************************************
++ *           NtUserRegisterWindowMessage   (win32u.@)
++ */
++ATOM WINAPI NtUserRegisterWindowMessage( UNICODE_STRING *name )
++{
++    unsigned int status;
++    RTL_ATOM atom = 0;
++
++    TRACE( "%s\n", debugstr_us(name) );
++
++    if (!name)
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
++        return 0;
++    }
++
++    status = is_integral_atom( name->Buffer, name->Length / sizeof(WCHAR), &atom );
++    if (status == STATUS_MORE_ENTRIES)
++    {
++        /* this vintage has a single server atom table (add_atom); the
++         * separate user atom table (add_user_atom) only exists in
++         * later vintages, and this tree's own RegisterWindowMessage
++         * goes through the same table via GlobalAddAtom */
++        SERVER_START_REQ( add_atom )
++        {
++            wine_server_add_data( req, name->Buffer, name->Length );
++            status = wine_server_call( req );
++            atom = reply->atom;
++        }
++        SERVER_END_REQ;
++    }
++
++    TRACE( "%s -> %x\n", debugstr_us(name), status == STATUS_SUCCESS ? atom : 0 );
++    set_ntstatus( status );
++    return atom;
++}
++
++
+ INT WINAPI NtUserGetClassName( HWND hwnd, BOOL real, UNICODE_STRING *name )
+ {
+     CLASS *class;
+diff --git a/dlls/win32u/cursoricon.c b/dlls/win32u/cursoricon.c
+index 5ae8861..61d5013 100644
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -198,6 +198,14 @@ BOOL WINAPI NtUserClipCursor( const RECT *rect )
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           NtUserGetClipCursor (win32u.@)
++ */
++BOOL WINAPI NtUserGetClipCursor( RECT *rect )
++{
++    return get_clip_cursor( rect );
++}
++
+ BOOL get_clip_cursor( RECT *rect )
+ {
+     UINT dpi;
+diff --git a/dlls/win32u/dc.c b/dlls/win32u/dc.c
+index 8379cd3..537be5a 100644
+--- a/dlls/win32u/dc.c
++++ b/dlls/win32u/dc.c
+@@ -1134,6 +1134,35 @@ BOOL set_viewport_org( HDC hdc, INT x, INT y, POINT *point )
+  *    xform [O] The xform.
+  *
+  */
++/***********************************************************************
++ *           NtGdiGetMiterLimit  (win32u.@)
++ */
++BOOL WINAPI NtGdiGetMiterLimit( HDC hdc, DWORD *limit )
++{
++    DC *dc;
++
++    if (!(dc = get_dc_ptr( hdc ))) return FALSE;
++    if (limit) *limit = *(DWORD *)&dc->attr->miter_limit;
++    release_dc_ptr( dc );
++    return TRUE;
++}
++
++
++/***********************************************************************
++ *           NtGdiSetMiterLimit  (win32u.@)
++ */
++BOOL WINAPI NtGdiSetMiterLimit( HDC hdc, DWORD limit, DWORD *old_limit )
++{
++    DC *dc;
++
++    if (!(dc = get_dc_ptr( hdc ))) return FALSE;
++    if (old_limit) *old_limit = *(DWORD *)&dc->attr->miter_limit;
++    dc->attr->miter_limit = *(FLOAT *)&limit;
++    release_dc_ptr( dc );
++    return TRUE;
++}
++
++
+ BOOL WINAPI NtGdiGetTransform( HDC hdc, DWORD which, XFORM *xform )
+ {
+     BOOL ret = TRUE;
+diff --git a/dlls/win32u/imm.c b/dlls/win32u/imm.c
+index e9d7c69..9adf8d9 100644
+--- a/dlls/win32u/imm.c
++++ b/dlls/win32u/imm.c
+@@ -24,6 +24,8 @@
+ #pragma makedep unix
+ #endif
+ 
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
+ #include <pthread.h>
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
+@@ -88,6 +90,33 @@ HIMC WINAPI NtUserCreateInputContext( UINT_PTR client_ptr )
+     return handle;
+ }
+ 
++
++/*****************************************************************************
++ *           NtUserBuildHimcList (win32u.@)
++ */
++NTSTATUS WINAPI NtUserBuildHimcList( UINT thread_id, UINT count, HIMC *buffer, UINT *size )
++{
++    HANDLE handle = 0;
++    struct imc *imc;
++
++    TRACE( "thread_id %#x, count %u, buffer %p, size %p\n", thread_id, count, buffer, size );
++
++    if (!buffer) return STATUS_UNSUCCESSFUL;
++    if (!thread_id) thread_id = GetCurrentThreadId();
++
++    *size = 0;
++    user_lock();
++    while (count && (imc = next_user_handle_ptr( &handle, NTUSER_OBJ_IMC )))
++    {
++        if (thread_id != -1 && imc->thread_id != thread_id) continue;
++        buffer[(*size)++] = handle;
++        count--;
++    }
++    user_unlock();
++
++    return STATUS_SUCCESS;
++}
++
+ /******************************************************************************
+  *           NtUserDestroyInputContext   (win32u.@)
+  */
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index fd16d03..cbdb61e 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -331,6 +331,26 @@ SHORT WINAPI NtUserGetAsyncKeyState( INT key )
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           NtUserGetPointerType (win32u.@)
++ */
++BOOL WINAPI NtUserGetPointerType( UINT32 id, POINTER_INPUT_TYPE *type )
++{
++    TRACE( "%u, %p\n", id, type );
++
++    /* pointer id 1 is always the mouse; this vintage's input stack
++     * never registers any other pointer, so every other id is invalid */
++    if (id == 1 && type)
++    {
++        *type = PT_MOUSE;
++        return TRUE;
++    }
++
++    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
++    return FALSE;
++}
++
++
+ /***********************************************************************
+  *           NtUserGetQueueStatus (win32u.@)
+  */
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index f439b7d..5a9bdcf 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1293,6 +1293,71 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+ /**********************************************************************
+  *           NtUserGetGUIThreadInfo  (win32u.@)
+  */
++/***********************************************************************
++ *           NtUserGetThreadState (win32u.@)
++ */
++ULONG_PTR WINAPI NtUserGetThreadState( USERTHREADSTATECLASS cls )
++{
++    GUITHREADINFO info;
++
++    switch (cls)
++    {
++    case UserThreadStateFocusWindow:
++        info.cbSize = sizeof(info);
++        NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
++        return (ULONG_PTR)info.hwndFocus;
++
++    case UserThreadStateActiveWindow:
++        info.cbSize = sizeof(info);
++        NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
++        return (ULONG_PTR)info.hwndActive;
++
++    case UserThreadStateCaptureWindow:
++        info.cbSize = sizeof(info);
++        NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
++        return (ULONG_PTR)info.hwndCapture;
++
++    case UserThreadStateDefaultImeWindow:
++        return (ULONG_PTR)get_default_ime_window( 0 );
++
++    case UserThreadStateDefaultInputContext:
++        return (ULONG_PTR)get_default_input_context();
++
++    case UserThreadStateInputState:
++        return get_input_state();
++
++    case UserThreadStateCursor:
++        return (ULONG_PTR)NtUserGetCursor();
++
++    case UserThreadStateExtraInfo:
++        return get_user_thread_info()->client_info.message_extra;
++
++    case UserThreadStateInSendMessage:
++    {
++        struct user_thread_info *thread_info = get_user_thread_info();
++        return thread_info->receive_info ? thread_info->receive_info->flags : 0;
++    }
++
++    case UserThreadStateMessageTime:
++        return get_user_thread_info()->client_info.message_time;
++
++    case UserThreadStateIsForeground:
++    default:
++        WARN( "unsupported class %u\n", cls );
++        return 0;
++    }
++}
++
++/**********************************************************************
++ *           NtUserGetCurrentInputMessageSource   (win32u.@)
++ */
++BOOL WINAPI NtUserGetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source )
++{
++    *source = get_user_thread_info()->client_info.msg_source;
++    return TRUE;
++}
++
++
+ BOOL WINAPI NtUserGetGUIThreadInfo( DWORD id, GUITHREADINFO *info )
+ {
+     BOOL ret;
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 4e13822..7e84dcd 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -54,6 +54,7 @@ struct user_object
+ 
+ HANDLE alloc_user_handle( struct user_object *ptr, unsigned int type ) DECLSPEC_HIDDEN;
+ void *get_user_handle_ptr( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
++void *next_user_handle_ptr( HANDLE *handle, unsigned int type ) DECLSPEC_HIDDEN;
+ void release_user_handle_ptr( void *ptr ) DECLSPEC_HIDDEN;
+ void *free_user_handle( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
+ 
+diff --git a/dlls/win32u/syscall.c b/dlls/win32u/syscall.c
+index 32812a3..e0f4e8f 100644
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -73,6 +73,7 @@ static void * const syscalls[] =
+     NtGdiGetDCPoint,
+     NtGdiGetFontFileData,
+     NtGdiGetFontFileInfo,
++    NtGdiGetMiterLimit,
+     NtGdiGetNearestPaletteIndex,
+     NtGdiGetPath,
+     NtGdiGetRegionData,
+@@ -81,6 +82,7 @@ static void * const syscalls[] =
+     NtGdiGetSystemPaletteUse,
+     NtGdiGetTransform,
+     NtGdiHfontCreate,
++    NtGdiIcmBrushInfo,
+     NtGdiInitSpool,
+     NtGdiOffsetRgn,
+     NtGdiPathToRegion,
+@@ -95,6 +97,7 @@ static void * const syscalls[] =
+     NtGdiSetColorAdjustment,
+     NtGdiSetMagicColors,
+     NtGdiSetMetaRgn,
++    NtGdiSetMiterLimit,
+     NtGdiSetPixelFormat,
+     NtGdiSetRectRgn,
+     NtGdiSetTextJustification,
+@@ -103,10 +106,14 @@ static void * const syscalls[] =
+     NtGdiTransformPoints,
+     NtUserActivateKeyboardLayout,
+     NtUserAddClipboardFormatListener,
++    NtUserAlterWindowStyle,
+     NtUserAssociateInputContext,
+     NtUserAttachThreadInput,
+     NtUserBeginPaint,
++    NtUserBuildHimcList,
+     NtUserBuildHwndList,
++    NtUserBuildNameList,
++    NtUserBuildPropList,
+     NtUserCallHwnd,
+     NtUserCallHwndParam,
+     NtUserCallMsgFilter,
+@@ -161,11 +168,13 @@ static void * const syscalls[] =
+     NtUserGetCaretPos,
+     NtUserGetClassInfoEx,
+     NtUserGetClassName,
++    NtUserGetClipCursor,
+     NtUserGetClipboardData,
+     NtUserGetClipboardFormatName,
+     NtUserGetClipboardOwner,
+     NtUserGetClipboardSequenceNumber,
+     NtUserGetClipboardViewer,
++    NtUserGetCurrentInputMessageSource,
+     NtUserGetCursor,
+     NtUserGetCursorFrameInfo,
+     NtUserGetCursorInfo,
+@@ -192,6 +201,7 @@ static void * const syscalls[] =
+     NtUserGetMouseMovePointsEx,
+     NtUserGetObjectInformation,
+     NtUserGetOpenClipboardWindow,
++    NtUserGetPointerType,
+     NtUserGetPriorityClipboardFormat,
+     NtUserGetProcessDpiAwarenessContext,
+     NtUserGetProcessWindowStation,
+@@ -206,6 +216,7 @@ static void * const syscalls[] =
+     NtUserGetSystemDpiForProcess,
+     NtUserGetSystemMenu,
+     NtUserGetThreadDesktop,
++    NtUserGetThreadState,
+     NtUserGetTitleBarInfo,
+     NtUserGetUpdateRect,
+     NtUserGetUpdateRgn,
+@@ -239,12 +250,15 @@ static void * const syscalls[] =
+     NtUserPostMessage,
+     NtUserPostThreadMessage,
+     NtUserPrintWindow,
++    NtUserQueryDisplayConfig,
+     NtUserQueryInputContext,
++    NtUserQueryWindow,
+     NtUserRealChildWindowFromPoint,
+     NtUserRedrawWindow,
+     NtUserRegisterClassExWOW,
+     NtUserRegisterHotKey,
+     NtUserRegisterRawInputDevices,
++    NtUserRegisterWindowMessage,
+     NtUserRemoveClipboardFormatListener,
+     NtUserRemoveMenu,
+     NtUserRemoveProp,
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 2269193..8e82a7e 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -32,6 +32,7 @@
+ #include "ntgdi_private.h"
+ #include "ntuser_private.h"
+ #include "devpropdef.h"
++#include "d3dkmdt.h"
+ #include "wine/wingdi16.h"
+ #include "wine/server.h"
+ 
+@@ -2056,6 +2057,285 @@ static struct adapter *find_adapter( UNICODE_STRING *name )
+     return adapter;
+ }
+ 
++
++static const UINT32 qdc_retrieve_flags_mask = QDC_ALL_PATHS | QDC_ONLY_ACTIVE_PATHS | QDC_DATABASE_CURRENT;
++
++static DISPLAYCONFIG_ROTATION get_dc_rotation( const DEVMODEW *devmode )
++{
++    if (devmode->dmFields & DM_DISPLAYORIENTATION)
++        return devmode->dmDisplayOrientation + 1;
++    else
++        return DISPLAYCONFIG_ROTATION_IDENTITY;
++}
++
++static DISPLAYCONFIG_SCANLINE_ORDERING get_dc_scanline_ordering( const DEVMODEW *devmode )
++{
++    if (!(devmode->dmFields & DM_DISPLAYFLAGS))
++        return DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
++    else if (devmode->dmDisplayFlags & DM_INTERLACED)
++        return DISPLAYCONFIG_SCANLINE_ORDERING_INTERLACED;
++    else
++        return DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
++}
++
++static DISPLAYCONFIG_PIXELFORMAT get_dc_pixelformat( DWORD dmBitsPerPel )
++{
++    if ((dmBitsPerPel == 8) || (dmBitsPerPel == 16) ||
++        (dmBitsPerPel == 24) || (dmBitsPerPel == 32))
++        return dmBitsPerPel / 8;
++    else
++        return DISPLAYCONFIG_PIXELFORMAT_NONGDI;
++}
++
++static void set_mode_target_info( DISPLAYCONFIG_MODE_INFO *info, const LUID *gpu_luid, UINT32 target_id,
++                                  UINT32 flags, const DEVMODEW *devmode )
++{
++    DISPLAYCONFIG_TARGET_MODE *mode = &info->targetMode;
++
++    info->infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
++    info->adapterId = *gpu_luid;
++    info->id = target_id;
++
++    /* FIXME: Populate pixelRate/hSyncFreq/totalSize with real data */
++    mode->targetVideoSignalInfo.pixelRate = devmode->dmDisplayFrequency * devmode->dmPelsWidth * devmode->dmPelsHeight;
++    mode->targetVideoSignalInfo.hSyncFreq.Numerator = devmode->dmDisplayFrequency * devmode->dmPelsWidth;
++    mode->targetVideoSignalInfo.hSyncFreq.Denominator = 1;
++    mode->targetVideoSignalInfo.vSyncFreq.Numerator = devmode->dmDisplayFrequency;
++    mode->targetVideoSignalInfo.vSyncFreq.Denominator = 1;
++    mode->targetVideoSignalInfo.activeSize.cx = devmode->dmPelsWidth;
++    mode->targetVideoSignalInfo.activeSize.cy = devmode->dmPelsHeight;
++    if (flags & QDC_DATABASE_CURRENT)
++    {
++        mode->targetVideoSignalInfo.totalSize.cx = 0;
++        mode->targetVideoSignalInfo.totalSize.cy = 0;
++    }
++    else
++    {
++        mode->targetVideoSignalInfo.totalSize.cx = devmode->dmPelsWidth;
++        mode->targetVideoSignalInfo.totalSize.cy = devmode->dmPelsHeight;
++    }
++    mode->targetVideoSignalInfo.videoStandard = D3DKMDT_VSS_OTHER;
++    mode->targetVideoSignalInfo.scanLineOrdering = get_dc_scanline_ordering( devmode );
++}
++
++static void set_path_target_info( DISPLAYCONFIG_PATH_TARGET_INFO *info, const LUID *gpu_luid,
++                                  UINT32 target_id, UINT32 mode_index, UINT32 desktop_mode_index,
++                                  UINT32 flags, const DEVMODEW *devmode )
++{
++    info->adapterId = *gpu_luid;
++    info->id = target_id;
++    if (flags & QDC_VIRTUAL_MODE_AWARE)
++    {
++        info->targetModeInfoIdx = mode_index;
++        info->desktopModeInfoIdx = desktop_mode_index;
++    }
++    else info->modeInfoIdx = mode_index;
++    info->outputTechnology = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL;
++    info->rotation = get_dc_rotation( devmode );
++    info->scaling = DISPLAYCONFIG_SCALING_IDENTITY;
++    info->refreshRate.Numerator = devmode->dmDisplayFrequency;
++    info->refreshRate.Denominator = 1;
++    info->scanLineOrdering = get_dc_scanline_ordering( devmode );
++    info->targetAvailable = TRUE;
++    info->statusFlags = DISPLAYCONFIG_TARGET_IN_USE;
++}
++
++static void set_mode_source_info( DISPLAYCONFIG_MODE_INFO *info, const LUID *gpu_luid,
++                                  UINT32 source_id, const DEVMODEW *devmode )
++{
++    DISPLAYCONFIG_SOURCE_MODE *mode = &info->sourceMode;
++
++    info->infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
++    info->adapterId = *gpu_luid;
++    info->id = source_id;
++
++    mode->width = devmode->dmPelsWidth;
++    mode->height = devmode->dmPelsHeight;
++    mode->pixelFormat = get_dc_pixelformat( devmode->dmBitsPerPel );
++    if (devmode->dmFields & DM_POSITION)
++    {
++        mode->position = devmode->dmPosition;
++    }
++    else
++    {
++        mode->position.x = 0;
++        mode->position.y = 0;
++    }
++}
++
++static void set_mode_desktop_info( DISPLAYCONFIG_MODE_INFO *info, const LUID *gpu_luid, UINT32 target_id,
++                                   const DISPLAYCONFIG_SOURCE_MODE *source_mode )
++{
++    DISPLAYCONFIG_DESKTOP_IMAGE_INFO *mode = &info->desktopImageInfo;
++
++    info->infoType = DISPLAYCONFIG_MODE_INFO_TYPE_DESKTOP_IMAGE;
++    info->adapterId = *gpu_luid;
++    info->id = target_id;
++    mode->PathSourceSize.x = source_mode->width;
++    mode->PathSourceSize.y = source_mode->height;
++    mode->DesktopImageRegion.left = 0;
++    mode->DesktopImageRegion.top = 0;
++    mode->DesktopImageRegion.right = source_mode->width;
++    mode->DesktopImageRegion.bottom = source_mode->height;
++    mode->DesktopImageClip = mode->DesktopImageRegion;
++}
++
++static void set_path_source_info( DISPLAYCONFIG_PATH_SOURCE_INFO *info, const LUID *gpu_luid,
++                                  UINT32 source_id, UINT32 mode_index, UINT32 flags )
++{
++    info->adapterId = *gpu_luid;
++    info->id = source_id;
++    if (flags & QDC_VIRTUAL_MODE_AWARE)
++    {
++        info->sourceModeInfoIdx = mode_index;
++        info->cloneGroupId = DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID;
++    }
++    else info->modeInfoIdx = mode_index;
++    info->statusFlags = DISPLAYCONFIG_SOURCE_IN_USE;
++}
++
++static BOOL source_mode_exists( const DISPLAYCONFIG_MODE_INFO *modes, UINT32 modes_count,
++                                UINT32 source_id, UINT32 *found_mode_index )
++{
++    UINT32 i;
++
++    for (i = 0; i < modes_count; i++)
++    {
++        if (modes[i].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
++            modes[i].id == source_id)
++        {
++            *found_mode_index = i;
++            return TRUE;
++        }
++    }
++    return FALSE;
++}
++
++/***********************************************************************
++ *              NtUserQueryDisplayConfig (win32u.@)
++ *
++ * Adapted to this vintage's display device model: upstream iterates
++ * per-source monitors hanging off GPUs, here each monitor hangs off
++ * an adapter, which plays the source role (adapter id as the source
++ * id, adapter gpu_luid as the adapter LUID), and the current mode
++ * comes from adapter_get_current_settings.
++ */
++LONG WINAPI NtUserQueryDisplayConfig( UINT32 flags, UINT32 *paths_count, DISPLAYCONFIG_PATH_INFO *paths,
++                                      UINT32 *modes_count, DISPLAYCONFIG_MODE_INFO *modes,
++                                      DISPLAYCONFIG_TOPOLOGY_ID *topology_id )
++{
++    ULONG source_index;
++    LONG ret;
++    UINT32 output_id, source_mode_index, path_index = 0, mode_index = 0;
++    const LUID *gpu_luid;
++    DEVMODEW devmode;
++    struct monitor *monitor;
++    DWORD retrieve_flags = flags & qdc_retrieve_flags_mask;
++
++    TRACE( "flags %#x, paths_count %p, paths %p, modes_count %p, modes %p, topology_id %p.\n",
++           flags, paths_count, paths, modes_count, modes, topology_id );
++
++    if (!paths_count || !modes_count)
++        return ERROR_INVALID_PARAMETER;
++
++    if (!*paths_count || !*modes_count)
++        return ERROR_INVALID_PARAMETER;
++
++    if (retrieve_flags != QDC_ALL_PATHS &&
++        retrieve_flags != QDC_ONLY_ACTIVE_PATHS &&
++        retrieve_flags != QDC_DATABASE_CURRENT)
++        return ERROR_INVALID_PARAMETER;
++
++    if (((retrieve_flags == QDC_DATABASE_CURRENT) && !topology_id) ||
++        ((retrieve_flags != QDC_DATABASE_CURRENT) && topology_id))
++        return ERROR_INVALID_PARAMETER;
++
++    if ((flags & ~(qdc_retrieve_flags_mask | QDC_VIRTUAL_MODE_AWARE)))
++    {
++        FIXME( "unsupported flags %#x.\n", flags );
++        return ERROR_INVALID_PARAMETER;
++    }
++
++    if (retrieve_flags != QDC_ONLY_ACTIVE_PATHS)
++        FIXME( "only returning active paths\n" );
++
++    if (topology_id)
++    {
++        FIXME( "setting toplogyid to DISPLAYCONFIG_TOPOLOGY_INTERNAL\n" );
++        *topology_id = DISPLAYCONFIG_TOPOLOGY_INTERNAL;
++    }
++
++    if (!lock_display_devices())
++        return ERROR_GEN_FAILURE;
++
++    ret = ERROR_GEN_FAILURE;
++
++    LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
++    {
++        if (!(monitor->dev.state_flags & DISPLAY_DEVICE_ACTIVE)) continue;
++        if (!monitor->adapter) continue;
++
++        source_index = monitor->adapter->id;
++        gpu_luid = &monitor->adapter->gpu_luid;
++        output_id = monitor->output_id;
++
++        memset( &devmode, 0, sizeof(devmode) );
++        devmode.dmSize = sizeof(devmode);
++        if (!adapter_get_current_settings( monitor->adapter, &devmode ))
++        {
++            goto done;
++        }
++
++        if (path_index == *paths_count || mode_index == *modes_count)
++        {
++            ret = ERROR_INSUFFICIENT_BUFFER;
++            goto done;
++        }
++
++        /* Multiple targets can be driven by the same source, ensure a mode
++         * hasn't already been added for this source.
++         */
++        if (!source_mode_exists( modes, mode_index, source_index, &source_mode_index ))
++        {
++            set_mode_source_info( &modes[mode_index], gpu_luid, source_index, &devmode );
++            source_mode_index = mode_index;
++            if (++mode_index == *modes_count)
++            {
++                ret = ERROR_INSUFFICIENT_BUFFER;
++                goto done;
++            }
++        }
++
++        paths[path_index].flags = DISPLAYCONFIG_PATH_ACTIVE;
++        set_mode_target_info( &modes[mode_index], gpu_luid, output_id, flags, &devmode );
++        if (flags & QDC_VIRTUAL_MODE_AWARE)
++        {
++            paths[path_index].flags |= DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
++            if (++mode_index == *modes_count)
++            {
++                ret = ERROR_INSUFFICIENT_BUFFER;
++                goto done;
++            }
++            set_mode_desktop_info( &modes[mode_index], gpu_luid, output_id, &modes[source_mode_index].sourceMode );
++            set_path_target_info( &paths[path_index].targetInfo, gpu_luid, output_id, mode_index - 1, mode_index,
++                                  flags, &devmode );
++        }
++        else set_path_target_info( &paths[path_index].targetInfo, gpu_luid, output_id, mode_index, ~0u, flags, &devmode );
++        ++mode_index;
++
++        set_path_source_info( &paths[path_index].sourceInfo, gpu_luid, source_index, source_mode_index, flags );
++        path_index++;
++    }
++
++    *paths_count = path_index;
++    *modes_count = mode_index;
++    ret = ERROR_SUCCESS;
++
++done:
++    unlock_display_devices();
++    return ret;
++}
++
+ /***********************************************************************
+  *	     NtUserEnumDisplayDevices    (win32u.@)
+  */
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index c3ed3c0..c25a5e9 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -488,7 +488,7 @@
+ @ stdcall NtGdiGetGlyphOutline(long long long ptr long ptr ptr long)
+ @ stdcall NtGdiGetKerningPairs(long long ptr)
+ @ stub NtGdiGetLinkedUFIs
+-@ stub NtGdiGetMiterLimit
++@ stdcall -syscall NtGdiGetMiterLimit(long ptr)
+ @ stub NtGdiGetMonitorID
+ @ stdcall NtGdiGetNearestColor(long long)
+ @ stdcall -syscall NtGdiGetNearestPaletteIndex(long long)
+@@ -530,7 +530,7 @@
+ @ stub NtGdiHT_Get8BPPFormatPalette
+ @ stub NtGdiHT_Get8BPPMaskPalette
+ @ stdcall -syscall NtGdiHfontCreate(ptr long long long ptr)
+-@ stub NtGdiIcmBrushInfo
++@ stdcall -syscall NtGdiIcmBrushInfo(long long ptr ptr ptr ptr ptr long)
+ @ stub NtGdiInit
+ @ stdcall -syscall NtGdiInitSpool()
+ @ stdcall NtGdiIntersectClipRect(long long long long long)
+@@ -606,7 +606,7 @@
+ @ stub NtGdiSetLinkedUFIs
+ @ stdcall -syscall NtGdiSetMagicColors(long long long)
+ @ stdcall -syscall NtGdiSetMetaRgn(long)
+-@ stub NtGdiSetMiterLimit
++@ stdcall -syscall NtGdiSetMiterLimit(long long ptr)
+ @ stub NtGdiSetOPMSigningKeyAndSequenceNumbers
+ @ stub NtGdiSetPUMPDOBJ
+ @ stdcall NtGdiSetPixel(long long long long)
+@@ -752,7 +752,7 @@
+ @ stdcall -syscall NtUserActivateKeyboardLayout(long long)
+ @ stdcall -syscall NtUserAddClipboardFormatListener(long)
+ @ stub NtUserAddVisualIdentifier
+-@ stub NtUserAlterWindowStyle
++@ stdcall -syscall NtUserAlterWindowStyle(ptr long long)
+ @ stdcall -syscall NtUserAssociateInputContext(long long long)
+ @ stdcall -syscall NtUserAttachThreadInput(long long long)
+ @ stub NtUserAutoPromoteMouseInPointer
+@@ -762,10 +762,10 @@
+ @ stub NtUserBitBltSysBmp
+ @ stub NtUserBlockInput
+ @ stub NtUserBroadcastThemeChangeEvent
+-@ stub NtUserBuildHimcList
++@ stdcall -syscall NtUserBuildHimcList(long long ptr ptr)
+ @ stdcall -syscall NtUserBuildHwndList(long long long long long long ptr ptr)
+-@ stub NtUserBuildNameList
+-@ stub NtUserBuildPropList
++@ stdcall -syscall NtUserBuildNameList(long long ptr ptr)
++@ stdcall -syscall NtUserBuildPropList(long long ptr ptr)
+ @ stub NtUserCalcMenuBar
+ @ stub NtUserCalculatePopupWindowPosition
+ @ stdcall -syscall NtUserCallHwnd(long long)
+@@ -900,7 +900,7 @@
+ @ stdcall -syscall NtUserGetCaretPos(ptr)
+ @ stdcall -syscall NtUserGetClassInfoEx(ptr ptr ptr ptr long)
+ @ stdcall -syscall NtUserGetClassName(long long ptr)
+-@ stub NtUserGetClipCursor
++@ stdcall -syscall NtUserGetClipCursor(ptr)
+ @ stub NtUserGetClipboardAccessToken
+ @ stdcall -syscall NtUserGetClipboardData(long ptr)
+ @ stdcall -syscall NtUserGetClipboardFormatName(long ptr long)
+@@ -911,7 +911,7 @@
+ @ stub NtUserGetControlBrush
+ @ stub NtUserGetControlColor
+ @ stub NtUserGetCurrentDpiInfoForWindow
+-@ stub NtUserGetCurrentInputMessageSource
++@ stdcall -syscall NtUserGetCurrentInputMessageSource(ptr)
+ @ stdcall -syscall NtUserGetCursor()
+ @ stdcall -syscall NtUserGetCursorFrameInfo(long long ptr ptr)
+ @ stdcall -syscall NtUserGetCursorInfo(ptr)
+@@ -974,7 +974,7 @@
+ @ stub NtUserGetPointerInfoList
+ @ stub NtUserGetPointerInputTransform
+ @ stub NtUserGetPointerProprietaryId
+-@ stub NtUserGetPointerType
++@ stdcall -syscall NtUserGetPointerType(long ptr)
+ @ stub NtUserGetPrecisionTouchPadConfiguration
+ @ stdcall -syscall NtUserGetPriorityClipboardFormat(ptr long)
+ @ stdcall -syscall NtUserGetProcessDpiAwarenessContext(long)
+@@ -996,7 +996,7 @@
+ @ stdcall -syscall NtUserGetSystemDpiForProcess(long)
+ @ stdcall -syscall NtUserGetSystemMenu(long long)
+ @ stdcall -syscall NtUserGetThreadDesktop(long)
+-@ stub NtUserGetThreadState
++@ stdcall -syscall NtUserGetThreadState(long)
+ @ stdcall -syscall NtUserGetTitleBarInfo(long ptr)
+ @ stub NtUserGetTopLevelWindow
+ @ stub NtUserGetTouchInputInfo
+@@ -1112,11 +1112,11 @@
+ @ stub NtUserPromotePointer
+ @ stub NtUserQueryActivationObject
+ @ stub NtUserQueryBSDRWindow
+-@ stub NtUserQueryDisplayConfig
++@ stdcall -syscall NtUserQueryDisplayConfig(long ptr ptr ptr ptr ptr)
+ @ stub NtUserQueryInformationThread
+ @ stdcall -syscall NtUserQueryInputContext(long long)
+ @ stub NtUserQuerySendMessage
+-@ stub NtUserQueryWindow
++@ stdcall -syscall NtUserQueryWindow(long long)
+ @ stdcall -syscall NtUserRealChildWindowFromPoint(long long long)
+ @ stub NtUserRealInternalGetMessage
+ @ stub NtUserRealWaitMessageEx
+@@ -1138,7 +1138,7 @@
+ @ stub NtUserRegisterTouchHitTestingWindow
+ @ stub NtUserRegisterTouchPadCapable
+ @ stub NtUserRegisterUserApiHook
+-@ stub NtUserRegisterWindowMessage
++@ stdcall -syscall NtUserRegisterWindowMessage(ptr)
+ @ stdcall NtUserReleaseDC(long long)
+ @ stub NtUserReleaseDwmHitTestWaiters
+ @ stub NtUserRemoteConnect
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index a3ff064..753f470 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -101,6 +101,32 @@ void *get_user_handle_ptr( HANDLE handle, unsigned int type )
+     return ptr;
+ }
+ 
++/***********************************************************************
++ *           next_user_handle_ptr
++ *
++ * Return the next object of the requested type in the process user
++ * handle table, starting the search after *handle (0 to start from
++ * the beginning) and storing the found object's handle back into
++ * *handle. The caller must hold the user lock; the returned pointer
++ * stays valid until the lock is released. Returns NULL when no
++ * further object of the type exists.
++ */
++void *next_user_handle_ptr( HANDLE *handle, unsigned int type )
++{
++    UINT index = *handle ? USER_HANDLE_TO_INDEX( *handle ) + 1 : 0;
++    struct user_object *ptr;
++
++    for (; index < NB_USER_HANDLES; index++)
++    {
++        if (!(ptr = user_handles[index])) continue;
++        if (ptr->type != type) continue;
++        *handle = ptr->handle;
++        return ptr;
++    }
++    return NULL;
++}
++
++
+ /***********************************************************************
+  *           set_user_handle_ptr
+  */
+@@ -1425,6 +1451,113 @@ WORD WINAPI NtUserSetWindowWord( HWND hwnd, INT offset, WORD newval )
+     return set_window_long( hwnd, offset, sizeof(WORD), newval, TRUE );
+ }
+ 
++
++/***********************************************************************
++ *           NtUserAlterWindowStyle (win32u.@)
++ */
++ULONG WINAPI NtUserAlterWindowStyle( HWND hwnd, UINT mask, UINT style )
++{
++    TRACE( "hwnd %p, mask %#x, style %#x\n", hwnd, mask, style );
++    /* FIXME: WS_TABSTOP shouldn't be there but we need it for BM_SETCHECK */
++    mask &= WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | 0x23f;
++    return !!set_window_style( hwnd, style & mask, mask & ~style );
++}
++
++
++/***********************************************************************
++ *           NtUserBuildPropList   (win32u.@)
++ */
++NTSTATUS WINAPI NtUserBuildPropList( HWND hwnd, ULONG count, struct ntuser_property_list *buffer, ULONG *ret_count )
++{
++    property_data_t *data;
++    ULONG i;
++    NTSTATUS status;
++
++    if (!buffer || !ret_count) return STATUS_INVALID_PARAMETER;
++
++    if (!(data = malloc( count * sizeof(*data) ))) return STATUS_NO_MEMORY;
++
++    SERVER_START_REQ( get_window_properties )
++    {
++        req->window = wine_server_user_handle( hwnd );
++        wine_server_set_reply( req, data, count * sizeof(*data) );
++        if (!(status = wine_server_call( req )))
++        {
++            for (i = 0; i < wine_server_reply_size(reply) / sizeof(*data); i++)
++            {
++                buffer[i].data   = data[i].data;
++                buffer[i].atom   = data[i].atom;
++                buffer[i].string = data[i].string;
++            }
++            *ret_count = reply->total;
++            if (reply->total > count) status = STATUS_BUFFER_TOO_SMALL;
++        }
++    }
++    SERVER_END_REQ;
++
++    free( data );
++    return status;
++}
++
++
++/*******************************************************************
++ *           NtUserQueryWindow (win32u.@)
++ */
++HANDLE WINAPI NtUserQueryWindow( HWND hwnd, WINDOWINFOCLASS cls )
++{
++    DWORD pid;
++    GUITHREADINFO info;
++
++    switch (cls)
++    {
++    case WindowProcess:
++    case WindowProcess2:
++        get_window_thread( hwnd, &pid );
++        return UlongToHandle( pid );
++
++    case WindowThread:
++        return UlongToHandle( get_window_thread( hwnd, NULL ));
++
++    case WindowActiveWindow:
++        info.cbSize = sizeof(info);
++        NtUserGetGUIThreadInfo( get_window_thread( hwnd, NULL ), &info );
++        return info.hwndActive;
++
++    case WindowFocusWindow:
++        info.cbSize = sizeof(info);
++        NtUserGetGUIThreadInfo( get_window_thread( hwnd, NULL ), &info );
++        return info.hwndFocus;
++
++    case WindowIsHung:
++    {
++        BOOL is_hung = FALSE;
++        SERVER_START_REQ( is_window_hung )
++        {
++            req->win = wine_server_user_handle( hwnd );
++            is_hung = !wine_server_call_err( req ) && reply->is_hung;
++        }
++        SERVER_END_REQ;
++        return UlongToHandle( is_hung );
++    }
++
++    case WindowIsForegroundThread:
++        return UlongToHandle( get_window_thread( NtUserGetForegroundWindow(), NULL ) ==
++                              get_window_thread( hwnd, NULL ));
++
++    case WindowDefaultImeWindow:
++        return get_default_ime_window( hwnd );
++
++    case WindowDefaultInputContext:
++        /* FIXME: should get it for the specified window */
++        return get_default_input_context();
++
++    case WindowClientBase:
++    default:
++        WARN( "unsupported class %u\n", cls );
++        return 0;
++    }
++}
++
+ /**********************************************************************
+  *           NtUserSetWindowLong (win32u.@)
+  */
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index a59da3a..5913976 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -270,6 +270,83 @@ HDESK WINAPI NtUserOpenInputDesktop( DWORD flags, BOOL inherit, ACCESS_MASK acce
+     return ret;
+ }
+ 
++
++/***********************************************************************
++ *           NtUserBuildNameList   (win32u.@)
++ *
++ * This vintage's server enumerates window stations and desktops one
++ * name per request (enum_winstation / enum_desktop by index), so the
++ * list is built by looping those requests; the buffer layout, count
++ * and size accounting follow the upstream implementation.
++ */
++NTSTATUS WINAPI NtUserBuildNameList( HWINSTA handle, ULONG size, struct ntuser_name_list *list,
++                                     ULONG *ret_size )
++{
++    const ULONG header_size = offsetof( struct ntuser_name_list, strings[1] ); /* header + final null */
++    ULONG capacity, written = 0, count = 0, total = 0;
++    unsigned int index = 0;
++    NTSTATUS status;
++
++    if (size <= header_size) return STATUS_INVALID_HANDLE;
++    capacity = size - header_size;
++
++    for (;;)
++    {
++        WCHAR name[MAX_PATH];
++        ULONG name_bytes = 0;
++
++        if (handle)
++        {
++            SERVER_START_REQ( enum_desktop )
++            {
++                req->winstation = wine_server_obj_handle( handle );
++                req->index = index;
++                wine_server_set_reply( req, name, sizeof(name) - sizeof(WCHAR) );
++                status = wine_server_call( req );
++                if (!status)
++                {
++                    name_bytes = wine_server_reply_size( reply );
++                    index = reply->next;
++                }
++            }
++            SERVER_END_REQ;
++        }
++        else
++        {
++            SERVER_START_REQ( enum_winstation )
++            {
++                req->index = index;
++                wine_server_set_reply( req, name, sizeof(name) - sizeof(WCHAR) );
++                status = wine_server_call( req );
++                if (!status)
++                {
++                    name_bytes = wine_server_reply_size( reply );
++                    index = reply->next;
++                }
++            }
++            SERVER_END_REQ;
++        }
++        if (status == STATUS_NO_MORE_ENTRIES) break;
++        if (status) return status;
++
++        count++;
++        total += name_bytes + sizeof(WCHAR);
++        if (total <= capacity)
++        {
++            memcpy( (char *)list->strings + written, name, name_bytes );
++            written += name_bytes;
++            *(WCHAR *)((char *)list->strings + written) = 0;
++            written += sizeof(WCHAR);
++        }
++    }
++
++    list->size = header_size + written;
++    list->count = count;
++    list->strings[written / sizeof(WCHAR)] = 0;
++    *ret_size = header_size + total;
++    return total <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_TOO_SMALL;
++}
++
+ /***********************************************************************
+  *           NtUserGetObjectInformation   (win32u.@)
+  */
+diff --git a/include/ntgdi.h b/include/ntgdi.h
+index 1aa5cad..5e22419 100644
+--- a/include/ntgdi.h
++++ b/include/ntgdi.h
+@@ -352,7 +352,9 @@ DWORD    WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRIC
+                                       DWORD size, void *buffer, const MAT2 *mat2,
+                                       BOOL ignore_rotation );
+ DWORD    WINAPI NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair );
+-BOOL     WINAPI NtGdiGetMiterLimit( HDC hdc, FLOAT *limit );
++BOOL     WINAPI NtGdiIcmBrushInfo( HDC hdc, HBRUSH handle, BITMAPINFO *info, void *bits,
++                                   ULONG *bits_size, UINT *usage, BOOL *unk, UINT mode );
++BOOL     WINAPI NtGdiGetMiterLimit( HDC hdc, DWORD *limit );
+ COLORREF WINAPI NtGdiGetNearestColor( HDC hdc, COLORREF color );
+ UINT     WINAPI NtGdiGetNearestPaletteIndex( HPALETTE hpalette, COLORREF color );
+ UINT     WINAPI NtGdiGetOutlineTextMetricsInternalW( HDC hdc, UINT cbData,
+@@ -436,7 +438,7 @@ BOOL     WINAPI NtGdiSetDeviceGammaRamp( HDC hdc, void *ptr );
+ DWORD    WINAPI NtGdiSetLayout( HDC hdc, LONG wox, DWORD layout );
+ BOOL     WINAPI NtGdiSetMagicColors( HDC hdc, DWORD magic, ULONG index );
+ INT      WINAPI NtGdiSetMetaRgn( HDC hdc );
+-BOOL     WINAPI NtGdiSetMiterLimit( HDC hdc, FLOAT limit, FLOAT *prev_limit );
++BOOL     WINAPI NtGdiSetMiterLimit( HDC hdc, DWORD limit, DWORD *prev_limit );
+ COLORREF WINAPI NtGdiSetPixel( HDC hdc, INT x, INT y, COLORREF color );
+ BOOL     WINAPI NtGdiSetPixelFormat( HDC hdc, INT format );
+ BOOL     WINAPI NtGdiSetRectRgn( HRGN hrgn, INT left, INT top, INT right, INT bottom );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 7bbe703..8ae4fdc 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -490,6 +490,51 @@ enum wine_internal_message
+ 
+ #define WM_SYSTIMER  0x0118
+ 
++struct ntuser_property_list
++{
++    UINT64  data;
++    ATOM    atom;
++    BOOLEAN string;  /* Wine extension */
++};
++
++struct ntuser_name_list
++{
++    ULONG size;
++    ULONG count;
++    WCHAR strings[1];
++};
++
++/* NtUserQueryWindow info classes */
++typedef enum _WINDOWINFOCLASS
++{
++    WindowProcess,
++    WindowProcess2, /* FIXME: same as WindowProcess? */
++    WindowThread,
++    WindowActiveWindow,
++    WindowFocusWindow,
++    WindowIsHung,
++    WindowClientBase,
++    WindowIsForegroundThread,
++    WindowDefaultImeWindow,
++    WindowDefaultInputContext,
++} WINDOWINFOCLASS;
++
++/* NtUserGetThreadState info classes */
++typedef enum _USERTHREADSTATECLASS
++{
++    UserThreadStateFocusWindow,
++    UserThreadStateActiveWindow,
++    UserThreadStateCaptureWindow,
++    UserThreadStateDefaultImeWindow,
++    UserThreadStateDefaultInputContext,
++    UserThreadStateInputState,
++    UserThreadStateCursor,
++    UserThreadStateExtraInfo,
++    UserThreadStateInSendMessage,
++    UserThreadStateMessageTime,
++    UserThreadStateIsForeground
++} USERTHREADSTATECLASS;
++
+ /* the various structures that can be sent in messages, in platform-independent layout */
+ struct packed_CREATESTRUCTW
+ {
+@@ -645,9 +690,13 @@ struct packed_MDICREATESTRUCTW
+ 
+ HKL     WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags );
+ BOOL    WINAPI NtUserAddClipboardFormatListener( HWND hwnd );
++ULONG   WINAPI NtUserAlterWindowStyle( HWND hwnd, UINT mask, UINT style );
+ UINT    WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags );
+ BOOL    WINAPI NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach );
+ HDC     WINAPI NtUserBeginPaint( HWND hwnd, PAINTSTRUCT *ps );
++NTSTATUS WINAPI NtUserBuildHimcList( UINT thread_id, UINT count, HIMC *buffer, UINT *size );
++NTSTATUS WINAPI NtUserBuildNameList( HWINSTA winsta, ULONG size, struct ntuser_name_list *list, ULONG *ret_size );
++NTSTATUS WINAPI NtUserBuildPropList( HWND hwnd, ULONG count, struct ntuser_property_list *buffer, ULONG *ret_count );
+ NTSTATUS WINAPI NtUserBuildHwndList( HDESK desktop, ULONG unk2, ULONG unk3, ULONG unk4,
+                                      ULONG thread_id, ULONG count, HWND *buffer, ULONG *size );
+ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code );
+@@ -724,6 +773,7 @@ BOOL    WINAPI NtUserGetCaretPos( POINT *point );
+ ATOM    WINAPI NtUserGetClassInfoEx( HINSTANCE instance, UNICODE_STRING *name, WNDCLASSEXW *wc,
+                                      struct client_menu_name *menu_name, BOOL ansi );
+ INT     WINAPI NtUserGetClassName( HWND hwnd, BOOL real, UNICODE_STRING *name );
++BOOL    WINAPI NtUserGetClipCursor( RECT *rect );
+ HANDLE  WINAPI NtUserGetClipboardData( UINT format, struct get_clipboard_params *params );
+ INT     WINAPI NtUserGetClipboardFormatName( UINT format, WCHAR *buffer, INT maxlen );
+ HWND    WINAPI NtUserGetClipboardOwner(void);
+@@ -760,6 +810,7 @@ int     WINAPI NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUS
+ BOOL    WINAPI NtUserGetObjectInformation( HANDLE handle, INT index, void *info,
+                                            DWORD len, DWORD *needed );
+ HWND    WINAPI NtUserGetOpenClipboardWindow(void);
++BOOL    WINAPI NtUserGetPointerType( UINT32 id, POINTER_INPUT_TYPE *type );
+ INT     WINAPI NtUserGetPriorityClipboardFormat( UINT *list, INT count );
+ HWINSTA WINAPI NtUserGetProcessWindowStation(void);
+ HANDLE  WINAPI NtUserGetProp( HWND hwnd, const WCHAR *str );
+@@ -774,6 +825,8 @@ BOOL    WINAPI NtUserGetScrollBarInfo( HWND hwnd, LONG id, SCROLLBARINFO *info )
+ ULONG   WINAPI NtUserGetSystemDpiForProcess( HANDLE process );
+ HMENU   WINAPI NtUserGetSystemMenu( HWND hwnd, BOOL revert );
+ HDESK   WINAPI NtUserGetThreadDesktop( DWORD thread );
++BOOL    WINAPI NtUserGetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source );
++ULONG_PTR WINAPI NtUserGetThreadState( USERTHREADSTATECLASS cls );
+ BOOL    WINAPI NtUserGetTitleBarInfo( HWND hwnd, TITLEBARINFO *info );
+ INT     WINAPI NtUserGetUpdateRgn( HWND hwnd, HRGN hrgn, BOOL erase );
+ BOOL    WINAPI NtUserGetUpdatedClipboardFormats( UINT *formats, UINT size, UINT *out_size );
+@@ -811,14 +864,19 @@ BOOL    WINAPI NtUserPerMonitorDPIPhysicalToLogicalPoint( HWND hwnd, POINT *pt )
+ BOOL    WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
+ BOOL    WINAPI NtUserPostThreadMessage( DWORD thread, UINT msg, WPARAM wparam, LPARAM lparam );
+ BOOL    WINAPI NtUserPrintWindow( HWND hwnd, HDC hdc, UINT flags );
++LONG    WINAPI NtUserQueryDisplayConfig( UINT32 flags, UINT32 *paths_count, DISPLAYCONFIG_PATH_INFO *paths,
++                                         UINT32 *modes_count, DISPLAYCONFIG_MODE_INFO *modes,
++                                         DISPLAYCONFIG_TOPOLOGY_ID *topology_id );
+ UINT_PTR WINAPI NtUserQueryInputContext( HIMC handle, UINT attr );
+ HWND    WINAPI NtUserRealChildWindowFromPoint( HWND parent, LONG x, LONG y );
+ BOOL    WINAPI NtUserRedrawWindow( HWND hwnd, const RECT *rect, HRGN hrgn, UINT flags );
++HANDLE  WINAPI NtUserQueryWindow( HWND hwnd, WINDOWINFOCLASS cls );
+ ATOM    WINAPI NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_STRING *name, UNICODE_STRING *version,
+                                          struct client_menu_name *client_menu_name, DWORD fnid, DWORD flags,
+                                          DWORD *wow );
+ BOOL    WINAPI NtUserRegisterHotKey( HWND hwnd, INT id, UINT modifiers, UINT vk );
+ BOOL    WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT size );
++ATOM    WINAPI NtUserRegisterWindowMessage( UNICODE_STRING *name );
+ INT     WINAPI NtUserReleaseDC( HWND hwnd, HDC hdc );
+ BOOL    WINAPI NtUserRemoveClipboardFormatListener( HWND hwnd );
+ BOOL    WINAPI NtUserRemoveMenu( HMENU menu, UINT id, UINT flags );
+@@ -1024,11 +1082,6 @@ static inline UINT NtUserEnumClipboardFormats( UINT format )
+     return NtUserCallOneParam( format, NtUserCallOneParam_EnumClipboardFormats );
+ }
+ 
+-static inline BOOL NtUserGetClipCursor( RECT *rect )
+-{
+-    return NtUserCallOneParam( (UINT_PTR)rect, NtUserCallOneParam_GetClipCursor );
+-}
+-
+ static inline BOOL NtUserGetCursorPos( POINT *pt )
+ {
+     return NtUserCallOneParam( (UINT_PTR)pt, NtUserCallOneParam_GetCursorPos );

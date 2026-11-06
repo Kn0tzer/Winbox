@@ -105,6 +105,7 @@ void testMemfdSeals();
 void testMemfdNodeOps();
 void testFsReadNativeFile();
 void testFsZipReadBadCrc();
+void testFsZipDeclCapture();
 void testFsZipExtractCorrupt();
 void testFsFileOpenNodeIoErrors();
 void testEventfdFlags();
@@ -121,12 +122,14 @@ void testStatxAtEmptyPathProcessApi();
 void testUtimensatFlags32Syscalls();
 void testNotDir32Syscalls();
 void testNotDirProcessApi();
+void testStatfsMagicByMount32Calls();
 void testXattrPathResolve32Syscalls();
 void testReadlinkMissing32Syscalls();
 void testTrailingNotDir32Syscalls();
 void testLinkBareDestination32();
 void testXattrDescriptor32Syscalls();
 void testXattrNamespace32Syscalls();
+void testXattrWriteClassify32Syscalls();
 void testMidDotDot32Syscalls();
 void testChmodAccessHardLink();
 void testWriteFamilyWrongMode();
@@ -183,6 +186,8 @@ void testNullPath64Syscalls();
 void testMemfdNullName64Syscalls();
 void testXattrResolve64Syscalls();
 void testStatfsResolve64Syscalls();
+void testStatfsMagicByMount64Syscalls();
+void testStatfsMagicByMount32Calls();
 void testFstatfsDescriptor64Syscalls();
 void testUtimensatFlags64Syscalls();
 void testNotDir64Syscalls();
@@ -190,6 +195,7 @@ void testReadlinkMissing64Syscalls();
 void testTrailingNotDir64Syscalls();
 void testRmdir64Syscalls();
 void testXattrNamespace64Syscalls();
+void testXattrWriteClassify64Syscalls();
 void testMidDotDot64Syscalls();
 void testSetitimer64Syscalls();
 void testInotifyEvents();
@@ -245,6 +251,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
     {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipDeclCapture, "Test FsZip declaration capture matches scan"},
     {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
     {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
@@ -284,6 +291,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNullName64Syscalls, "Test x64 memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
     {testXattrResolve64Syscalls, "Test x64 xattr cases resolve their path/descriptor before answering; entry order flags, name, resolution"},
     {testStatfsResolve64Syscalls, "Test x64 statfs resolves its path: null -EFAULT, unresolvable -ENOENT, resolvable keeps the fabricated answer"},
+    {testStatfsMagicByMount64Syscalls, "FD-172: x64 statfs/fstatfs report SYSFS_MAGIC under /sys, PROC_SUPER_MAGIC under /proc, tmpfs elsewhere"},
     {testEpollPwait2Syscall, "Test x64 epoll_pwait2 syscall"},
     {testEpollPwaitSyscall, "Test x64 epoll_pwait syscall"},
     {testDup3Syscall, "Test x64 dup3 syscall"},
@@ -338,6 +346,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTrailingNotDir64Syscalls, "Test x64 a path whose final component is erased by normalization (a.txt/, a.txt/., a.txt/..) answers -ENOTDIR; the same markers through directories keep resolving"},
     {testRmdir64Syscalls, "Test x64 rmdir answers the host's verdicts instead of -ENOSYS"},
     {testXattrNamespace64Syscalls, "Test x64 xattr names in an unmodelled namespace answer -ENOTSUP on a resolved target; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testXattrWriteClassify64Syscalls, "Test x64 xattr set/remove forms classify names as the host does (bare prefix -EINVAL, unknown namespace -ENOTSUP, link user.* -EPERM, ACL remove a no-op) and store recognised names with CREATE/REPLACE verdicts"},
     {testMidDotDot64Syscalls, "Test x64 a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #else
@@ -990,6 +999,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemfdNodeOps, "Test memfd node operation refusals"},
     {testFsReadNativeFile, "Test Fs::readNativeFile error results"},
     {testFsZipReadBadCrc, "Test FsZip entry CRC enforcement"},
+    {testFsZipDeclCapture, "Test FsZip declaration capture matches scan"},
     {testFsZipExtractCorrupt, "Test FsZip corrupt-entry extraction"},
     {testFsFileOpenNodeIoErrors, "Test FsFileOpenNode host IO errors"},
     {testEventfdFlags, "Test eventfd2 flag validation"},
@@ -1042,12 +1052,14 @@ const TestEntry TEST_ENTRIES[] = {
     {testUtimensatFlags32Syscalls, "Test 32-bit utimensat/utimensat_time64 answer -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH and leave the times untouched"},
     {testNotDir32Syscalls, "Test 32-bit a path through a non-directory answers -ENOTDIR at the path calls"},
     {testNotDirProcessApi, "Test a path through a non-directory answers -ENOTDIR through the KProcess API; controls unchanged"},
+    {testStatfsMagicByMount32Calls, "FD-172: 32-bit statfs/statfs64 report the same per-tree magics, EXT3 elsewhere"},
     {testXattrPathResolve32Syscalls, "Test 32-bit xattr path forms resolve their target before the attribute verdicts (-ENOENT / -ENOTDIR / -ENODATA)"},
     {testReadlinkMissing32Syscalls, "Test 32-bit readlink/readlinkat answer -ENOENT for a missing path and keep -EINVAL for a resolved non-link"},
     {testTrailingNotDir32Syscalls, "Test 32-bit a path whose final component is erased by normalization answers -ENOTDIR at the path calls"},
     {testLinkBareDestination32, "Test a hard link to a bare filename in the working directory succeeds"},
     {testXattrDescriptor32Syscalls, "Test 32-bit xattr descriptor forms answer -EBADF for an unopened descriptor and flistxattr of a valid descriptor answers the empty list"},
     {testXattrNamespace32Syscalls, "Test 32-bit xattr names in an unmodelled namespace answer -ENOTSUP on a resolved file; a bare recognised prefix answers -EINVAL; an empty name answers -ERANGE"},
+    {testXattrWriteClassify32Syscalls, "Test 32-bit xattr set/remove forms classify names as the host does (bare prefix -EINVAL, unknown namespace -ENOTSUP, link user.* -EPERM, ACL remove a no-op) and store recognised names with CREATE/REPLACE verdicts"},
     {testMidDotDot32Syscalls, "Test 32-bit a non-trailing .. steps through its predecessor: missing -ENOENT, non-directory -ENOTDIR, at the root stays at the root"},
 };
 #endif

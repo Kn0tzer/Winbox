@@ -32,20 +32,21 @@
 #include "procstat.h"
 #include "syscpuonline.h"
 
-// The virtual machine exposes exactly one schedulable guest CPU
-// (CPU64::affinityMask, sched_getaffinity). Every other guest-visible
-// topology surface must agree with that single-CPU topology no matter how
-// many CPUs the host has: glibc derives _SC_NPROCESSORS_ONLN from
+// The virtual machine exposes the machine definition's schedulable
+// guest CPUs (KSystem::guestCpuCount, 2 since the 2026-11 machine
+// definition raise; CPU64::affinityMask, sched_getaffinity). Every other
+// guest-visible topology surface must agree with that topology no matter
+// how many CPUs the host has: glibc derives _SC_NPROCESSORS_ONLN from
 // /sys/devices/system/cpu/online and _SC_NPROCESSORS_CONF from cpuinfo /
 // the cpuN directories, so a host-count leak on any one surface makes the
 // guest observe two different machine sizes at once.
 void testGuestCpuTopology() {
-    if (KSystem::guestCpuCount() != 1) {
-        testFail("guest CPU topology must expose exactly one vCPU, got %u", KSystem::guestCpuCount());
+    if (KSystem::guestCpuCount() != 2) {
+        testFail("guest CPU topology must expose the defined 2 vCPUs, got %u", KSystem::guestCpuCount());
         return;
     }
-    if (KSystem::guestCpuList() != B("0")) {
-        testFail("guest CPU list must be \"0\", got \"%s\"", KSystem::guestCpuList().c_str());
+    if (KSystem::guestCpuList() != B("0-1")) {
+        testFail("guest CPU list must be \"0-1\", got \"%s\"", KSystem::guestCpuList().c_str());
         return;
     }
     // The open functions require a real FsNode (FsOpenNode registers itself
@@ -64,8 +65,8 @@ void testGuestCpuTopology() {
         return result;
     };
     const std::string online = readAll(openSysCpuOnline(dummyNode, 0, 0));
-    if (online != "0") {
-        testFail("/sys/devices/system/cpu/online must read \"0\", got \"%s\"", online.c_str());
+    if (online != "0-1") {
+        testFail("/sys/devices/system/cpu/online must read \"0-1\", got \"%s\"", online.c_str());
         return;
     }
     const std::string cpuinfo = readAll(openCpuInfo(dummyNode, 0, 0));
@@ -81,14 +82,19 @@ void testGuestCpuTopology() {
         testFail("/proc/cpuinfo processor 0 must report apicid 0");
         return;
     }
+    if (cpuinfo.find("apicid\t\t: 1\n") == std::string::npos) {
+        testFail("/proc/cpuinfo processor 1 must report apicid 1");
+        return;
+    }
     const std::string stat = readAll(openProcStat(dummyNode, 0, 0));
     if (!stat.starts_with("cpu ") || stat.find("\ncpu0 ") == std::string::npos ||
-        stat.find("\ncpu1") != std::string::npos) {
-        testFail("/proc/stat must contain only the aggregate and cpu0 lines");
+        stat.find("\ncpu1 ") == std::string::npos ||
+        stat.find("\ncpu2") != std::string::npos) {
+        testFail("/proc/stat must contain only the aggregate, cpu0, and cpu1 lines");
         return;
     }
     // sysinfo(2) and /proc/meminfo draw from one source
-    // (KSystem::guestRamInfo): 1 GiB total, free = total minus what live
+    // (KSystem::guestRamInfo): 4 GiB total, free = total minus what live
     // processes have committed.
     U64 totalBytes = 0, freeBytes = 0;
     KSystem::guestRamInfo(totalBytes, freeBytes);
@@ -96,7 +102,7 @@ void testGuestCpuTopology() {
     snprintf(expectedTotal, sizeof(expectedTotal), "MemTotal: %llu kB", (unsigned long long)(totalBytes / 1024));
     snprintf(expectedFree, sizeof(expectedFree), "MemFree: %llu kB", (unsigned long long)(freeBytes / 1024));
     const std::string meminfo = readAll(openMemInfo(dummyNode, 0, 0));
-    if (totalBytes != 1024ULL * 1024 * 1024 ||
+    if (totalBytes != 4ULL * 1024 * 1024 * 1024 ||
         meminfo.find(expectedTotal) == std::string::npos ||
         meminfo.find(expectedFree) == std::string::npos) {
         testFail("/proc/meminfo totals must agree with KSystem::guestRamInfo, got \"%s\"", meminfo.c_str());

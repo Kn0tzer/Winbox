@@ -1,0 +1,1460 @@
+diff --git a/dlls/bluetoothapis/bluetoothapis.spec b/dlls/bluetoothapis/bluetoothapis.spec
+index 939072d..e08594d 100644
+--- a/dlls/bluetoothapis/bluetoothapis.spec
++++ b/dlls/bluetoothapis/bluetoothapis.spec
+@@ -1,7 +1,7 @@
+ @ stub BluetoothAddressToString
+ @ stub BluetoothDisconnectDevice
+-@ stub BluetoothEnableDiscovery
+-@ stub BluetoothEnableIncomingConnections
++@ stdcall BluetoothEnableDiscovery(ptr long)
++@ stdcall BluetoothEnableIncomingConnections(ptr long)
+ @ stub BluetoothEnumerateInstalledServices
+ @ stub BluetoothEnumerateInstalledServicesEx
+ @ stub BluetoothEnumerateLocalServices
+@@ -33,21 +33,21 @@
+ @ stub BluetoothGATTAbortReliableWrite
+ @ stub BluetoothGATTBeginReliableWrite
+ @ stub BluetoothGATTEndReliableWrite
+-@ stub BluetoothGATTGetCharacteristicValue
+-@ stub BluetoothGATTGetCharacteristics
++@ stdcall BluetoothGATTGetCharacteristicValue(ptr ptr long ptr ptr long)
++@ stdcall BluetoothGATTGetCharacteristics(ptr ptr long ptr ptr long)
+ @ stub BluetoothGATTGetDescriptorValue
+-@ stub BluetoothGATTGetDescriptors
++@ stdcall BluetoothGATTGetDescriptors(ptr ptr long ptr ptr long)
+ @ stub BluetoothGATTGetIncludedServices
+-@ stub BluetoothGATTGetServices
+-@ stub BluetoothGATTRegisterEvent
+-@ stub BluetoothGATTSetCharacteristicValue
+-@ stub BluetoothGATTSetDescriptorValue
+-@ stub BluetoothGATTUnregisterEvent
++@ stdcall BluetoothGATTGetServices(ptr long ptr ptr long)
++@ stdcall BluetoothGATTRegisterEvent(ptr long ptr ptr ptr ptr)
++@ stdcall BluetoothGATTSetCharacteristicValue(ptr ptr ptr int64 long)
++@ stdcall BluetoothGATTSetDescriptorValue(ptr ptr ptr int64 long)
++@ stdcall BluetoothGATTUnregisterEvent(ptr long)
+ @ stub BluetoothGetDeviceInfo
+ @ stub BluetoothGetLocalServiceInfo
+ @ stdcall BluetoothGetRadioInfo(ptr ptr)
+ @ stub BluetoothGetServicePnpInstance
+-@ stub BluetoothIsConnectable
++@ stdcall BluetoothIsConnectable(ptr)
+ @ stub BluetoothIsDiscoverable
+ @ stub BluetoothIsVersionAvailable
+ @ stub BluetoothRegisterForAuthentication
+diff --git a/dlls/bluetoothapis/main.c b/dlls/bluetoothapis/main.c
+index 076d758..ff96892 100644
+--- a/dlls/bluetoothapis/main.c
++++ b/dlls/bluetoothapis/main.c
+@@ -28,6 +28,7 @@
+ #include "wine/debug.h"
+ #include "bthsdpdef.h"
+ #include "bluetoothapis.h"
++#include "bluetoothleapis.h"
+ #include "setupapi.h"
+ 
+ #include "initguid.h"
+@@ -212,3 +213,251 @@ BOOL WINAPI BluetoothUnregisterAuthentication(HBLUETOOTH_AUTHENTICATION_REGISTRA
+     if (!handle) SetLastError(ERROR_INVALID_HANDLE);
+     return FALSE;
+ }
++
++/*********************************************************************
++ *  Bluetooth radio helpers
++ *
++ * This runtime has no Bluetooth radio stack: radio enumeration (via
++ * BluetoothFindFirstRadio/BluetoothFindNextRadio, which walk the
++ * setupapi device interfaces) is always empty here, so no handle a
++ * caller can hold names a radio, and no LE device handle can exist.
++ * The functions below still run the documented validation, in the same
++ * order as the native implementation, so callers get the answers a
++ * radio-less machine gives.
++ */
++
++static BOOL radio_handle_is_valid( HANDLE radio )
++{
++    BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++    HBLUETOOTH_RADIO_FIND find;
++    HANDLE found = NULL;
++
++    find = BluetoothFindFirstRadio( &params, &found );
++    if (!find)
++        return FALSE;
++    for (;;)
++    {
++        HANDLE current = found;
++
++        if (current == radio)
++        {
++            CloseHandle( current );
++            BluetoothFindRadioClose( find );
++            return TRUE;
++        }
++        CloseHandle( current );
++        if (!BluetoothFindNextRadio( find, &found ))
++            break;
++    }
++    BluetoothFindRadioClose( find );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothEnableDiscovery
++ */
++BOOL WINAPI BluetoothEnableDiscovery( HANDLE radio, BOOL enable )
++{
++    TRACE( "(%p, %d)\n", radio, enable );
++
++    if (!radio)
++    {
++        /* A NULL radio means "every radio"; enumeration finds none. */
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    FIXME( "radio stack not available\n" );
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothEnableIncomingConnections
++ */
++BOOL WINAPI BluetoothEnableIncomingConnections( HANDLE radio, BOOL enable )
++{
++    TRACE( "(%p, %d)\n", radio, enable );
++
++    if (!radio)
++    {
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    FIXME( "radio stack not available\n" );
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/*********************************************************************
++ *  BluetoothIsConnectable
++ */
++BOOL WINAPI BluetoothIsConnectable( HANDLE radio )
++{
++    TRACE( "(%p)\n", radio );
++
++    if (!radio)
++    {
++        BLUETOOTH_FIND_RADIO_PARAMS params = { sizeof( params ) };
++        HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio( &params, &radio );
++
++        if (!find)
++            return FALSE;
++        BluetoothFindRadioClose( find );
++        /* No connectable radio can exist without a radio stack. */
++        return FALSE;
++    }
++    if (!radio_handle_is_valid( radio ))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    return FALSE;
++}
++
++/*********************************************************************
++ *  Bluetooth GATT client functions
++ *
++ * Argument validation mirrors the native implementation's order.  The
++ * device step itself cannot succeed here: no Bluetooth LE device stack
++ * exists in this runtime, so no handle can name an LE device, and the
++ * native driver call fails for such a handle with ERROR_INVALID_HANDLE.
++ */
++
++HRESULT WINAPI BluetoothGATTGetServices( HANDLE device, USHORT count, BTH_LE_GATT_SERVICE *services,
++                                         USHORT *actual, ULONG flags )
++{
++    TRACE( "(%p, %u, %p, %p, %#lx)\n", device, count, services, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (!!services != !!count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetCharacteristics( HANDLE device, BTH_LE_GATT_SERVICE *service, USHORT count,
++                                                BTH_LE_GATT_CHARACTERISTIC *characteristics, USHORT *actual,
++                                                ULONG flags )
++{
++    TRACE( "(%p, %p, %u, %p, %p, %#lx)\n", device, service, count, characteristics, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (characteristics && !count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetDescriptors( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                            USHORT count, BTH_LE_GATT_DESCRIPTOR *descriptors, USHORT *actual,
++                                            ULONG flags )
++{
++    TRACE( "(%p, %p, %u, %p, %p, %#lx)\n", device, characteristic, count, descriptors, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!actual)
++        return E_POINTER;
++    if (descriptors && !count)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTGetCharacteristicValue( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                                    ULONG size, BTH_LE_GATT_CHARACTERISTIC_VALUE *value,
++                                                    USHORT *actual, ULONG flags )
++{
++    TRACE( "(%p, %p, %lu, %p, %p, %#lx)\n", device, characteristic, size, value, actual, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!characteristic || !(size || value || actual) || (size && size < sizeof( *value )))
++        return E_INVALIDARG;
++    if (size && !value)
++        return E_POINTER;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTSetCharacteristicValue( HANDLE device, BTH_LE_GATT_CHARACTERISTIC *characteristic,
++                                                    BTH_LE_GATT_CHARACTERISTIC_VALUE *value,
++                                                    BTH_LE_GATT_RELIABLE_WRITE_CONTEXT context, ULONG flags )
++{
++    TRACE( "(%p, %p, %p, %s, %#lx)\n", device, characteristic, value,
++           wine_dbgstr_longlong( context ), flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!characteristic || !value)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTSetDescriptorValue( HANDLE device, BTH_LE_GATT_DESCRIPTOR *descriptor,
++                                                BTH_LE_GATT_DESCRIPTOR_VALUE *value,
++                                                BTH_LE_GATT_RELIABLE_WRITE_CONTEXT context, ULONG flags )
++{
++    TRACE( "(%p, %p, %p, %s, %#lx)\n", device, descriptor, value,
++           wine_dbgstr_longlong( context ), flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    if (!device)
++        return E_HANDLE;
++    if (!descriptor || !value)
++        return E_INVALIDARG;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTRegisterEvent( HANDLE device, BTH_LE_GATT_EVENT_TYPE type, void *params,
++                                           PFNBLUETOOTH_GATT_EVENT_CALLBACK callback, void *context,
++                                           BLUETOOTH_GATT_EVENT_HANDLE *event_handle )
++{
++    TRACE( "(%p, %d, %p, %p, %p, %p)\n", device, type, params, callback, context, event_handle );
++
++    if (!event_handle)
++        return E_POINTER;
++    if (!callback)
++        return E_INVALIDARG;
++    if (!device)
++        return E_HANDLE;
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
++
++HRESULT WINAPI BluetoothGATTUnregisterEvent( BLUETOOTH_GATT_EVENT_HANDLE event_handle, ULONG flags )
++{
++    TRACE( "(%p, %#lx)\n", event_handle, flags );
++
++    if (flags)
++        FIXME( "Unsupported flags: %#lx\n", flags );
++    /* Event handles are minted only by BluetoothGATTRegisterEvent, which
++       cannot succeed without an LE device stack. */
++    return HRESULT_FROM_WIN32( ERROR_INVALID_HANDLE );
++}
+diff --git a/dlls/bthprops.cpl/bthprops.cpl.spec b/dlls/bthprops.cpl/bthprops.cpl.spec
+index 7fe1d82..d10f5bd 100644
+--- a/dlls/bthprops.cpl/bthprops.cpl.spec
++++ b/dlls/bthprops.cpl/bthprops.cpl.spec
+@@ -5,8 +5,8 @@
+ @ stub BluetoothAuthenticationAgent
+ @ stub BluetoothDisconnectDevice
+ @ stub BluetoothDisplayDeviceProperties
+-@ stub BluetoothEnableDiscovery
+-@ stub BluetoothEnableIncomingConnections
++@ stdcall BluetoothEnableDiscovery(ptr long) bluetoothapis.BluetoothEnableDiscovery
++@ stdcall BluetoothEnableIncomingConnections(ptr long) bluetoothapis.BluetoothEnableIncomingConnections
+ @ stub BluetoothEnumerateInstalledServices
+ @ stub BluetoothEnumerateInstalledServicesEx
+ @ stub BluetoothFindBrowseGroupClose
+@@ -36,7 +36,7 @@
+ @ stub BluetoothFindServiceClose
+ @ stub BluetoothGetDeviceInfo
+ @ stdcall -import BluetoothGetRadioInfo(ptr ptr)
+-@ stub BluetoothIsConnectable
++@ stdcall BluetoothIsConnectable(ptr) bluetoothapis.BluetoothIsConnectable
+ @ stub BluetoothIsDiscoverable
+ @ stub BluetoothIsVersionAvailable
+ @ stub BluetoothMapClassOfDeviceToImageIndex
+diff --git a/dlls/mf/main.c b/dlls/mf/main.c
+index e74a4ae..8dc8a1c 100644
+--- a/dlls/mf/main.c
++++ b/dlls/mf/main.c
+@@ -951,6 +951,18 @@ static const IMFMediaTypeHandlerVtbl simple_type_handler_vtbl =
+     simple_type_handler_GetMajorType,
+ };
+ 
++/***********************************************************************
++ *      MFCreateDeviceSource (mf.@)
++ */
++HRESULT WINAPI MFCreateDeviceSource(IMFAttributes *attributes, IMFMediaSource **source)
++{
++    FIXME("%p %p: stub!\n", attributes, source);
++
++    if (!attributes || !source) return E_INVALIDARG;
++    *source = NULL;
++    return E_NOTIMPL;
++}
++
+ /*******************************************************************************
+  *      MFCreateSimpleTypeHandler (mf.@)
+  */
+diff --git a/dlls/mf/mf.spec b/dlls/mf/mf.spec
+index 9477cdd..bc3817f 100644
+--- a/dlls/mf/mf.spec
++++ b/dlls/mf/mf.spec
+@@ -30,7 +30,7 @@
+ @ stub MFCreateByteCacheFile
+ @ stub MFCreateCacheManager
+ @ stub MFCreateCredentialCache
+-@ stub MFCreateDeviceSource
++@ stdcall MFCreateDeviceSource(ptr ptr)
+ @ stub MFCreateDeviceSourceActivate
+ @ stub MFCreateDrmNetNDSchemePlugin
+ @ stub MFCreateFileBlockMap
+diff --git a/dlls/mfplat/buffer.c b/dlls/mfplat/buffer.c
+index 65fab78..7ac33d2 100644
+--- a/dlls/mfplat/buffer.c
++++ b/dlls/mfplat/buffer.c
+@@ -1628,6 +1628,592 @@ HRESULT WINAPI MFCreateMemoryBuffer(DWORD max_length, IMFMediaBuffer **buffer)
+     return create_1d_buffer(max_length, MF_1_BYTE_ALIGNMENT, buffer);
+ }
+ 
++
++/***********************************************************************
++ *      Media buffer wrapper
++ *
++ * MFCreateMediaBufferWrapper() exposes a byte window of an existing
++ * buffer as a buffer of its own.  The wrapper delegates storage to the
++ * inner buffer: Lock() returns the inner pointer advanced by the
++ * window offset, lengths are the window's, and the optional 2D/DXGI/
++ * service interfaces are offered exactly when the inner buffer offers
++ * them, with returned pointers adjusted by the same offset.
++ */
++struct buffer_wrapper
++{
++    IMFMediaBuffer IMFMediaBuffer_iface;
++    IMF2DBuffer2 IMF2DBuffer2_iface;
++    IMFDXGIBuffer IMFDXGIBuffer_iface;
++    IMFGetService IMFGetService_iface;
++    LONG refcount;
++
++    IMFMediaBuffer *inner;
++    IMF2DBuffer2 *inner_2d;
++    IMFDXGIBuffer *inner_dxgi;
++    IMFGetService *inner_service;
++
++    DWORD offset;
++    DWORD max_length;
++    DWORD current_length;
++};
++
++static inline struct buffer_wrapper *impl_from_IMFMediaBuffer_wrapper(IMFMediaBuffer *iface)
++{
++    return CONTAINING_RECORD(iface, struct buffer_wrapper, IMFMediaBuffer_iface);
++}
++
++static inline struct buffer_wrapper *impl_from_IMF2DBuffer2_wrapper(IMF2DBuffer2 *iface)
++{
++    return CONTAINING_RECORD(iface, struct buffer_wrapper, IMF2DBuffer2_iface);
++}
++
++static inline struct buffer_wrapper *impl_from_IMFDXGIBuffer_wrapper(IMFDXGIBuffer *iface)
++{
++    return CONTAINING_RECORD(iface, struct buffer_wrapper, IMFDXGIBuffer_iface);
++}
++
++static inline struct buffer_wrapper *impl_from_IMFGetService_wrapper(IMFGetService *iface)
++{
++    return CONTAINING_RECORD(iface, struct buffer_wrapper, IMFGetService_iface);
++}
++
++static HRESULT WINAPI buffer_wrapper_QueryInterface(IMFMediaBuffer *iface, REFIID riid, void **out)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++
++    TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), out);
++
++    if (IsEqualIID(riid, &IID_IMFMediaBuffer) || IsEqualIID(riid, &IID_IUnknown))
++    {
++        *out = &wrapper->IMFMediaBuffer_iface;
++    }
++    else if ((IsEqualIID(riid, &IID_IMF2DBuffer) || IsEqualIID(riid, &IID_IMF2DBuffer2)) && wrapper->inner_2d)
++    {
++        *out = &wrapper->IMF2DBuffer2_iface;
++    }
++    else if (IsEqualIID(riid, &IID_IMFDXGIBuffer) && wrapper->inner_dxgi)
++    {
++        *out = &wrapper->IMFDXGIBuffer_iface;
++    }
++    else if (IsEqualIID(riid, &IID_IMFGetService) && wrapper->inner_service)
++    {
++        *out = &wrapper->IMFGetService_iface;
++    }
++    else
++    {
++        WARN("Unsupported %s.\n", debugstr_guid(riid));
++        *out = NULL;
++        return E_NOINTERFACE;
++    }
++
++    IUnknown_AddRef((IUnknown *)*out);
++    return S_OK;
++}
++
++static ULONG WINAPI buffer_wrapper_AddRef(IMFMediaBuffer *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++    ULONG refcount = InterlockedIncrement(&wrapper->refcount);
++
++    TRACE("%p, refcount %lu.\n", wrapper, refcount);
++
++    return refcount;
++}
++
++static ULONG WINAPI buffer_wrapper_Release(IMFMediaBuffer *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++    ULONG refcount = InterlockedDecrement(&wrapper->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        if (wrapper->inner_2d)
++            IMF2DBuffer2_Release(wrapper->inner_2d);
++        if (wrapper->inner_dxgi)
++            IMFDXGIBuffer_Release(wrapper->inner_dxgi);
++        if (wrapper->inner_service)
++            IMFGetService_Release(wrapper->inner_service);
++        IMFMediaBuffer_Release(wrapper->inner);
++        free(wrapper);
++    }
++
++    return refcount;
++}
++
++static HRESULT WINAPI buffer_wrapper_Lock(IMFMediaBuffer *iface, BYTE **data, DWORD *max_length,
++        DWORD *current_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++    BYTE *inner_data;
++    HRESULT hr;
++
++    TRACE("%p, %p %p, %p.\n", iface, data, max_length, current_length);
++
++    if (!data)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMFMediaBuffer_Lock(wrapper->inner, &inner_data, NULL, NULL)))
++        return hr;
++
++    *data = inner_data + wrapper->offset;
++    if (max_length)
++        *max_length = wrapper->max_length;
++    if (current_length)
++        *current_length = wrapper->current_length;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_Unlock(IMFMediaBuffer *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++
++    TRACE("%p.\n", iface);
++
++    return IMFMediaBuffer_Unlock(wrapper->inner);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetCurrentLength(IMFMediaBuffer *iface, DWORD *current_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++
++    TRACE("%p.\n", iface);
++
++    if (!current_length)
++        return E_INVALIDARG;
++
++    *current_length = wrapper->current_length;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_SetCurrentLength(IMFMediaBuffer *iface, DWORD current_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++
++    TRACE("%p, %lu.\n", iface, current_length);
++
++    if (current_length > wrapper->max_length)
++        return E_INVALIDARG;
++
++    wrapper->current_length = current_length;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_GetMaxLength(IMFMediaBuffer *iface, DWORD *max_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFMediaBuffer_wrapper(iface);
++
++    TRACE("%p, %p.\n", iface, max_length);
++
++    if (!max_length)
++        return E_INVALIDARG;
++
++    *max_length = wrapper->max_length;
++
++    return S_OK;
++}
++
++static const IMFMediaBufferVtbl buffer_wrapper_vtbl =
++{
++    buffer_wrapper_QueryInterface,
++    buffer_wrapper_AddRef,
++    buffer_wrapper_Release,
++    buffer_wrapper_Lock,
++    buffer_wrapper_Unlock,
++    buffer_wrapper_GetCurrentLength,
++    buffer_wrapper_SetCurrentLength,
++    buffer_wrapper_GetMaxLength,
++};
++
++static HRESULT WINAPI buffer_wrapper_2d_QueryInterface(IMF2DBuffer2 *iface, REFIID riid, void **out)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    return IMFMediaBuffer_QueryInterface(&wrapper->IMFMediaBuffer_iface, riid, out);
++}
++
++static ULONG WINAPI buffer_wrapper_2d_AddRef(IMF2DBuffer2 *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    return IMFMediaBuffer_AddRef(&wrapper->IMFMediaBuffer_iface);
++}
++
++static ULONG WINAPI buffer_wrapper_2d_Release(IMF2DBuffer2 *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    return IMFMediaBuffer_Release(&wrapper->IMFMediaBuffer_iface);
++}
++
++static HRESULT WINAPI buffer_wrapper_Lock2D(IMF2DBuffer2 *iface, BYTE **scanline0, LONG *pitch)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    HRESULT hr;
++
++    TRACE("%p, %p, %p.\n", iface, scanline0, pitch);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++
++    if (FAILED(hr = IMF2DBuffer_Lock2D(wrapper->inner_2d, scanline0, pitch)))
++        return hr;
++
++    if (scanline0)
++        *scanline0 += wrapper->offset;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_Unlock2D(IMF2DBuffer2 *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++
++    TRACE("%p.\n", iface);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++
++    return IMF2DBuffer_Unlock2D(wrapper->inner_2d);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetScanline0AndPitch(IMF2DBuffer2 *iface, BYTE **scanline0, LONG *pitch)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    HRESULT hr;
++
++    TRACE("%p, %p, %p.\n", iface, scanline0, pitch);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++
++    if (FAILED(hr = IMF2DBuffer_GetScanline0AndPitch(wrapper->inner_2d, scanline0, pitch)))
++        return hr;
++
++    if (scanline0)
++        *scanline0 += wrapper->offset;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_IsContiguousFormat(IMF2DBuffer2 *iface, BOOL *is_contiguous)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++
++    TRACE("%p, %p.\n", iface, is_contiguous);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++
++    return IMF2DBuffer_IsContiguousFormat(wrapper->inner_2d, is_contiguous);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetContiguousLength(IMF2DBuffer2 *iface, DWORD *length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    DWORD inner_length;
++    HRESULT hr;
++
++    TRACE("%p, %p.\n", iface, length);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++    if (!length)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMF2DBuffer_GetContiguousLength(wrapper->inner_2d, &inner_length)))
++        return hr;
++
++    *length = inner_length > wrapper->offset
++            ? min(inner_length - wrapper->offset, wrapper->max_length) : 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_ContiguousCopyTo(IMF2DBuffer2 *iface, BYTE *dest, DWORD dest_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    BYTE *data;
++    HRESULT hr;
++
++    TRACE("%p, %p, %lu.\n", iface, dest, dest_length);
++
++    if (!dest)
++        return E_INVALIDARG;
++    if (dest_length < wrapper->current_length)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMFMediaBuffer_Lock(wrapper->inner, &data, NULL, NULL)))
++        return hr;
++    memcpy(dest, data + wrapper->offset, wrapper->current_length);
++    IMFMediaBuffer_Unlock(wrapper->inner);
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_ContiguousCopyFrom(IMF2DBuffer2 *iface, const BYTE *src, DWORD src_length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    BYTE *data;
++    HRESULT hr;
++
++    TRACE("%p, %p, %lu.\n", iface, src, src_length);
++
++    if (!src)
++        return E_INVALIDARG;
++    if (src_length > wrapper->max_length)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMFMediaBuffer_Lock(wrapper->inner, &data, NULL, NULL)))
++        return hr;
++    memcpy(data + wrapper->offset, src, src_length);
++    IMFMediaBuffer_Unlock(wrapper->inner);
++    wrapper->current_length = src_length;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_Lock2DSize(IMF2DBuffer2 *iface, MF2DBuffer_LockFlags flags,
++        BYTE **scanline0, LONG *pitch, BYTE **start, DWORD *length)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    HRESULT hr;
++
++    TRACE("%p, %#x, %p, %p, %p, %p.\n", iface, flags, scanline0, pitch, start, length);
++
++    if (!wrapper->inner_2d)
++        return E_NOINTERFACE;
++
++    if (FAILED(hr = IMF2DBuffer2_Lock2DSize(wrapper->inner_2d, flags, scanline0, pitch, start, length)))
++        return hr;
++
++    if (scanline0)
++        *scanline0 += wrapper->offset;
++    if (start)
++        *start += wrapper->offset;
++    if (length)
++        *length = min(*length, wrapper->max_length);
++
++    return S_OK;
++}
++
++static HRESULT WINAPI buffer_wrapper_Copy2DTo(IMF2DBuffer2 *iface, IMF2DBuffer2 *dest)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMF2DBuffer2_wrapper(iface);
++    IMFMediaBuffer *dest_buffer;
++    BYTE *src_data, *dest_data;
++    DWORD count;
++    HRESULT hr;
++
++    TRACE("%p, %p.\n", iface, dest);
++
++    if (!dest)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMF2DBuffer2_QueryInterface(dest, &IID_IMFMediaBuffer, (void **)&dest_buffer)))
++        return hr;
++
++    if (SUCCEEDED(hr = IMFMediaBuffer_Lock(wrapper->inner, &src_data, NULL, NULL)))
++    {
++        if (SUCCEEDED(hr = IMFMediaBuffer_Lock(dest_buffer, &dest_data, NULL, NULL)))
++        {
++            count = min(wrapper->current_length, wrapper->max_length);
++            memcpy(dest_data, src_data + wrapper->offset, count);
++            IMFMediaBuffer_Unlock(dest_buffer);
++        }
++        IMFMediaBuffer_Unlock(wrapper->inner);
++    }
++    IMFMediaBuffer_Release(dest_buffer);
++
++    return hr;
++}
++
++static const IMF2DBuffer2Vtbl buffer_wrapper_2d_vtbl =
++{
++    buffer_wrapper_2d_QueryInterface,
++    buffer_wrapper_2d_AddRef,
++    buffer_wrapper_2d_Release,
++    buffer_wrapper_Lock2D,
++    buffer_wrapper_Unlock2D,
++    buffer_wrapper_GetScanline0AndPitch,
++    buffer_wrapper_IsContiguousFormat,
++    buffer_wrapper_GetContiguousLength,
++    buffer_wrapper_ContiguousCopyTo,
++    buffer_wrapper_ContiguousCopyFrom,
++    buffer_wrapper_Lock2DSize,
++    buffer_wrapper_Copy2DTo,
++};
++
++static HRESULT WINAPI buffer_wrapper_dxgi_QueryInterface(IMFDXGIBuffer *iface, REFIID riid, void **out)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++    return IMFMediaBuffer_QueryInterface(&wrapper->IMFMediaBuffer_iface, riid, out);
++}
++
++static ULONG WINAPI buffer_wrapper_dxgi_AddRef(IMFDXGIBuffer *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++    return IMFMediaBuffer_AddRef(&wrapper->IMFMediaBuffer_iface);
++}
++
++static ULONG WINAPI buffer_wrapper_dxgi_Release(IMFDXGIBuffer *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++    return IMFMediaBuffer_Release(&wrapper->IMFMediaBuffer_iface);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetResource(IMFDXGIBuffer *iface, REFIID riid, void **object)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++
++    TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), object);
++
++    if (!wrapper->inner_dxgi)
++        return E_NOINTERFACE;
++
++    return IMFDXGIBuffer_GetResource(wrapper->inner_dxgi, riid, object);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetSubresourceIndex(IMFDXGIBuffer *iface, UINT *index)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++
++    TRACE("%p, %p.\n", iface, index);
++
++    if (!wrapper->inner_dxgi)
++        return E_NOINTERFACE;
++
++    return IMFDXGIBuffer_GetSubresourceIndex(wrapper->inner_dxgi, index);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetUnknown(IMFDXGIBuffer *iface, REFIID guid, REFIID riid, void **object)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++
++    TRACE("%p, %s, %s, %p.\n", iface, debugstr_guid(guid), debugstr_guid(riid), object);
++
++    if (!wrapper->inner_dxgi)
++        return E_NOINTERFACE;
++
++    return IMFDXGIBuffer_GetUnknown(wrapper->inner_dxgi, guid, riid, object);
++}
++
++static HRESULT WINAPI buffer_wrapper_SetUnknown(IMFDXGIBuffer *iface, REFIID guid, IUnknown *data)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFDXGIBuffer_wrapper(iface);
++
++    TRACE("%p, %s, %p.\n", iface, debugstr_guid(guid), data);
++
++    if (!wrapper->inner_dxgi)
++        return E_NOINTERFACE;
++
++    return IMFDXGIBuffer_SetUnknown(wrapper->inner_dxgi, guid, data);
++}
++
++static const IMFDXGIBufferVtbl buffer_wrapper_dxgi_vtbl =
++{
++    buffer_wrapper_dxgi_QueryInterface,
++    buffer_wrapper_dxgi_AddRef,
++    buffer_wrapper_dxgi_Release,
++    buffer_wrapper_GetResource,
++    buffer_wrapper_GetSubresourceIndex,
++    buffer_wrapper_GetUnknown,
++    buffer_wrapper_SetUnknown,
++};
++
++static HRESULT WINAPI buffer_wrapper_service_QueryInterface(IMFGetService *iface, REFIID riid, void **out)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFGetService_wrapper(iface);
++    return IMFMediaBuffer_QueryInterface(&wrapper->IMFMediaBuffer_iface, riid, out);
++}
++
++static ULONG WINAPI buffer_wrapper_service_AddRef(IMFGetService *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFGetService_wrapper(iface);
++    return IMFMediaBuffer_AddRef(&wrapper->IMFMediaBuffer_iface);
++}
++
++static ULONG WINAPI buffer_wrapper_service_Release(IMFGetService *iface)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFGetService_wrapper(iface);
++    return IMFMediaBuffer_Release(&wrapper->IMFMediaBuffer_iface);
++}
++
++static HRESULT WINAPI buffer_wrapper_GetService(IMFGetService *iface, REFGUID service, REFIID riid, void **object)
++{
++    struct buffer_wrapper *wrapper = impl_from_IMFGetService_wrapper(iface);
++
++    TRACE("%p, %s, %s, %p.\n", iface, debugstr_guid(service), debugstr_guid(riid), object);
++
++    if (!wrapper->inner_service)
++        return MF_E_UNSUPPORTED_SERVICE;
++
++    return IMFGetService_GetService(wrapper->inner_service, service, riid, object);
++}
++
++static const IMFGetServiceVtbl buffer_wrapper_service_vtbl =
++{
++    buffer_wrapper_service_QueryInterface,
++    buffer_wrapper_service_AddRef,
++    buffer_wrapper_service_Release,
++    buffer_wrapper_GetService,
++};
++
++/***********************************************************************
++ *      MFCreateMediaBufferWrapper (mfplat.@)
++ */
++HRESULT WINAPI MFCreateMediaBufferWrapper(IMFMediaBuffer *buffer, DWORD offset, DWORD length,
++        IMFMediaBuffer **out)
++{
++    struct buffer_wrapper *wrapper;
++    DWORD max_length, current_length;
++    HRESULT hr;
++
++    TRACE("%p, %lu, %lu, %p.\n", buffer, offset, length, out);
++
++    if (!out)
++        return E_POINTER;
++    *out = NULL;
++    if (!buffer)
++        return E_INVALIDARG;
++
++    if (FAILED(hr = IMFMediaBuffer_GetMaxLength(buffer, &max_length)))
++        return hr;
++    if (offset > max_length || length > max_length - offset)
++        return E_INVALIDARG;
++
++    if (!(wrapper = calloc(1, sizeof(*wrapper))))
++        return E_OUTOFMEMORY;
++
++    wrapper->IMFMediaBuffer_iface.lpVtbl = &buffer_wrapper_vtbl;
++    wrapper->IMF2DBuffer2_iface.lpVtbl = &buffer_wrapper_2d_vtbl;
++    wrapper->IMFDXGIBuffer_iface.lpVtbl = &buffer_wrapper_dxgi_vtbl;
++    wrapper->IMFGetService_iface.lpVtbl = &buffer_wrapper_service_vtbl;
++    wrapper->refcount = 1;
++    wrapper->inner = buffer;
++    IMFMediaBuffer_AddRef(buffer);
++    if (FAILED(IMFMediaBuffer_QueryInterface(buffer, &IID_IMF2DBuffer2, (void **)&wrapper->inner_2d)))
++        wrapper->inner_2d = NULL;
++    if (FAILED(IMFMediaBuffer_QueryInterface(buffer, &IID_IMFDXGIBuffer, (void **)&wrapper->inner_dxgi)))
++        wrapper->inner_dxgi = NULL;
++    if (FAILED(IMFMediaBuffer_QueryInterface(buffer, &IID_IMFGetService, (void **)&wrapper->inner_service)))
++        wrapper->inner_service = NULL;
++    wrapper->offset = offset;
++    wrapper->max_length = length;
++    if (SUCCEEDED(IMFMediaBuffer_GetCurrentLength(buffer, &current_length)))
++        wrapper->current_length = current_length > offset
++                ? min(current_length - offset, length) : 0;
++    else
++        wrapper->current_length = 0;
++
++    *out = &wrapper->IMFMediaBuffer_iface;
++
++    TRACE("Created wrapper %p over buffer %p, offset %lu, length %lu.\n", wrapper, buffer, offset, length);
++
++    return S_OK;
++}
++
+ /***********************************************************************
+  *      MFCreateAlignedMemoryBuffer (mfplat.@)
+  */
+diff --git a/dlls/mfplat/mfplat.spec b/dlls/mfplat/mfplat.spec
+index 7b356f9..2a81504 100644
+--- a/dlls/mfplat/mfplat.spec
++++ b/dlls/mfplat/mfplat.spec
+@@ -56,7 +56,7 @@
+ @ stdcall MFCreateMFByteStreamWrapper(ptr ptr)
+ @ stdcall MFCreateMFVideoFormatFromMFMediaType(ptr ptr ptr)
+ @ stdcall MFCreateMediaBufferFromMediaType(ptr int64 long long ptr)
+-@ stub MFCreateMediaBufferWrapper
++@ stdcall MFCreateMediaBufferWrapper(ptr long long ptr)
+ @ stdcall MFCreateMediaEvent(long ptr long ptr ptr)
+ @ stdcall MFCreateMediaType(ptr)
+ @ stdcall MFCreateMediaTypeFromRepresentation(int128 ptr ptr)
+diff --git a/dlls/propsys/propsys.spec b/dlls/propsys/propsys.spec
+index 6a608ca..6ca8e17 100644
+--- a/dlls/propsys/propsys.spec
++++ b/dlls/propsys/propsys.spec
+@@ -153,7 +153,7 @@
+ @ stdcall PropVariantToVariant(ptr ptr)
+ @ stub StgDeserializePropVariant
+ @ stub StgSerializePropVariant
+-@ stub VariantCompare
++@ stdcall VariantCompare(ptr ptr)
+ @ stub VariantGetBooleanElem
+ @ stub VariantGetDoubleElem
+ @ stub VariantGetElementCount
+diff --git a/dlls/propsys/propvar.c b/dlls/propsys/propvar.c
+index d681b91..bc8b352 100644
+--- a/dlls/propsys/propvar.c
++++ b/dlls/propsys/propvar.c
+@@ -1066,6 +1066,47 @@ INT WINAPI PropVariantCompareEx(REFPROPVARIANT propvar1, REFPROPVARIANT propvar2
+ 
+     return res;
+ }
++/******************************************************************
++ *  VariantCompare (propsys.@)
++ *
++ * The VARIANT counterpart of PropVariantCompareEx(): same -1/0/+1
++ * ordering with the default comparison unit and flags.  VARIANT and
++ * PROPVARIANT share their layout, so the Ex implementation does the
++ * work, except for the types it leaves unhandled (BOOL, DATE,
++ * FILETIME), which are ordered by value here first.
++ */
++INT WINAPI VariantCompare(const VARIANT *var1, const VARIANT *var2)
++{
++    if (var1->vt == var2->vt)
++    {
++        switch (var1->vt)
++        {
++        case VT_BOOL:
++            return (V_BOOL(var1) != VARIANT_FALSE) == (V_BOOL(var2) != VARIANT_FALSE)
++                    ? 0 : (V_BOOL(var1) != VARIANT_FALSE ? 1 : -1);
++        case VT_DATE:
++            if (V_DATE(var1) == V_DATE(var2)) return 0;
++            return V_DATE(var1) > V_DATE(var2) ? 1 : -1;
++        case VT_FILETIME:
++        {
++            ULARGE_INTEGER time1, time2;
++
++            /* VARIANT has no filetime union member; it shares its
++             * storage with the 8-byte date member. */
++            memcpy(&time1, &V_UNION(var1, date), sizeof(time1));
++            memcpy(&time2, &V_UNION(var2, date), sizeof(time2));
++            if (time1.QuadPart == time2.QuadPart) return 0;
++            return time1.QuadPart > time2.QuadPart ? 1 : -1;
++        }
++        default:
++            break;
++        }
++    }
++
++    return PropVariantCompareEx((const PROPVARIANT *)var1, (const PROPVARIANT *)var2,
++            PVCU_DEFAULT, PVCF_DEFAULT);
++}
++
+ 
+ HRESULT WINAPI PropVariantToVariant(const PROPVARIANT *propvar, VARIANT *var)
+ {
+diff --git a/dlls/wevtapi/main.c b/dlls/wevtapi/main.c
+index 8222a95..e48ffc2 100644
+--- a/dlls/wevtapi/main.c
++++ b/dlls/wevtapi/main.c
+@@ -155,3 +155,20 @@ EVT_HANDLE WINAPI EvtCreateRenderContext(DWORD pathcount, const WCHAR **paths, D
+     SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+     return NULL;
+ }
++
++
++/***********************************************************************
++ *      EvtRender (wevtapi.@)
++ *
++ * Rendering needs an event fragment, and no event log service exists
++ * in this runtime to mint one, so every call fails the documented way
++ * instead of raising the stub exception.
++ */
++BOOL WINAPI EvtRender(EVT_HANDLE context, EVT_HANDLE fragment, DWORD flags, DWORD buffer_size, void *buffer,
++                      DWORD *buffer_used, DWORD *property_count)
++{
++    FIXME("(%p %p %#lx %lu %p %p %p) stub!\n", context, fragment, flags, buffer_size, buffer, buffer_used, property_count);
++    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
++    return FALSE;
++}
++
+diff --git a/dlls/wevtapi/wevtapi.spec b/dlls/wevtapi/wevtapi.spec
+index c7bf94b..e25f9c5 100644
+--- a/dlls/wevtapi/wevtapi.spec
++++ b/dlls/wevtapi/wevtapi.spec
+@@ -37,7 +37,7 @@
+ @ stub EvtOpenPublisherMetadata
+ @ stdcall EvtOpenSession(long ptr long long)
+ @ stdcall EvtQuery(ptr wstr wstr long)
+-@ stub EvtRender
++@ stdcall EvtRender(ptr ptr long long ptr ptr ptr)
+ @ stdcall EvtSaveChannelConfig(ptr long)
+ @ stub EvtSeek
+ @ stdcall EvtSetChannelConfigProperty(ptr long long ptr)
+diff --git a/dlls/winusb/main.c b/dlls/winusb/main.c
+index 52682a5..56b5942 100644
+--- a/dlls/winusb/main.c
++++ b/dlls/winusb/main.c
+@@ -34,3 +34,119 @@ BOOL WINAPI WinUsb_Free(WINUSB_INTERFACE_HANDLE handle)
+     FIXME( "(%p) - stub\n", handle );
+     return TRUE;
+ }
++
++/***********************************************************************
++ *           WinUsb device contract
++ *
++ * This runtime has no WinUSB device stack: no device can be driven by
++ * WinUSB, so no interface handle can ever be minted and every device
++ * handle fails WinUsb_Initialize the way a handle that does not belong
++ * to a WinUSB device fails it natively.  The functions validate their
++ * out-parameters first, in the native order, then report the invalid
++ * handle instead of raising the stub exception.
++ */
++
++/***********************************************************************
++ *           WinUsb_Initialize (winusb.@)
++ */
++BOOL WINAPI WinUsb_Initialize( HANDLE device_handle, PWINUSB_INTERFACE_HANDLE interface_handle )
++{
++    TRACE( "(%p, %p)\n", device_handle, interface_handle );
++
++    if (!interface_handle)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *interface_handle = NULL;
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_GetAssociatedInterface (winusb.@)
++ */
++BOOL WINAPI WinUsb_GetAssociatedInterface( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR index,
++                                           PWINUSB_INTERFACE_HANDLE associated_handle )
++{
++    TRACE( "(%p, %u, %p)\n", interface_handle, index, associated_handle );
++
++    if (!associated_handle)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *associated_handle = NULL;
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_GetOverlappedResult (winusb.@)
++ */
++BOOL WINAPI WinUsb_GetOverlappedResult( WINUSB_INTERFACE_HANDLE interface_handle, OVERLAPPED *overlapped,
++                                        DWORD *transferred, BOOL wait )
++{
++    TRACE( "(%p, %p, %p, %d)\n", interface_handle, overlapped, transferred, wait );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ControlTransfer (winusb.@)
++ */
++BOOL WINAPI WinUsb_ControlTransfer( WINUSB_INTERFACE_HANDLE interface_handle, WINUSB_SETUP_PACKET setup,
++                                    UCHAR *buffer, ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %p, %lu, %p, %p)\n", interface_handle, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ReadPipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_ReadPipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id, UCHAR *buffer,
++                             ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %#x, %p, %lu, %p, %p)\n", interface_handle, pipe_id, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_WritePipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_WritePipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id, const UCHAR *buffer,
++                              ULONG length, ULONG *transferred, OVERLAPPED *overlapped )
++{
++    TRACE( "(%p, %#x, %p, %lu, %p, %p)\n", interface_handle, pipe_id, buffer, length, transferred, overlapped );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_ResetPipe (winusb.@)
++ */
++BOOL WINAPI WinUsb_ResetPipe( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR pipe_id )
++{
++    TRACE( "(%p, %#x)\n", interface_handle, pipe_id );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
++
++/***********************************************************************
++ *           WinUsb_SetCurrentAlternateSetting (winusb.@)
++ */
++BOOL WINAPI WinUsb_SetCurrentAlternateSetting( WINUSB_INTERFACE_HANDLE interface_handle, UCHAR setting )
++{
++    TRACE( "(%p, %u)\n", interface_handle, setting );
++
++    SetLastError( ERROR_INVALID_HANDLE );
++    return FALSE;
++}
+diff --git a/dlls/winusb/winusb.spec b/dlls/winusb/winusb.spec
+index a0b57d5..6844013 100644
+--- a/dlls/winusb/winusb.spec
++++ b/dlls/winusb/winusb.spec
+@@ -1,22 +1,22 @@
+ @ stub WinUsb_AbortPipe
+-@ stub WinUsb_ControlTransfer
++@ stdcall WinUsb_ControlTransfer(ptr long long ptr long ptr ptr)
+ @ stub WinUsb_FlushPipe
+ @ stdcall WinUsb_Free(ptr)
+-@ stub WinUsb_GetAssociatedInterface
++@ stdcall WinUsb_GetAssociatedInterface(ptr long ptr)
+ @ stub WinUsb_GetCurrentAlternateSetting
+ @ stub WinUsb_GetDescriptor
+-@ stub WinUsb_GetOverlappedResult
++@ stdcall WinUsb_GetOverlappedResult(ptr ptr ptr long)
+ @ stub WinUsb_GetPipePolicy
+ @ stub WinUsb_GetPowerPolicy
+-@ stub WinUsb_Initialize
++@ stdcall WinUsb_Initialize(ptr ptr)
+ @ stub WinUsb_ParseConfigurationDescriptor
+ @ stub WinUsb_ParseDescriptors
+ @ stub WinUsb_QueryDeviceInformation
+ @ stub WinUsb_QueryInterfaceSettings
+ @ stub WinUsb_QueryPipe
+-@ stub WinUsb_ReadPipe
+-@ stub WinUsb_ResetPipe
+-@ stub WinUsb_SetCurrentAlternateSetting
++@ stdcall WinUsb_ReadPipe(ptr long ptr long ptr ptr)
++@ stdcall WinUsb_ResetPipe(ptr long)
++@ stdcall WinUsb_SetCurrentAlternateSetting(ptr long)
+ @ stub WinUsb_SetPipePolicy
+ @ stub WinUsb_SetPowerPolicy
+-@ stub WinUsb_WritePipe
++@ stdcall WinUsb_WritePipe(ptr long ptr long ptr ptr)
+diff --git a/include/Makefile.in b/include/Makefile.in
+index d56bc51..19a95bc 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -58,8 +58,10 @@ SOURCES = \
+ 	bits5_0.idl \
+ 	bitsmsg.h \
+ 	bluetoothapis.h \
++	bluetoothleapis.h \
+ 	bthdef.h \
+ 	bthioctl.h \
++	bthledef.h \
+ 	bthsdpdef.h \
+ 	cderr.h \
+ 	cdosys.idl \
+diff --git a/include/bluetoothleapis.h b/include/bluetoothleapis.h
+new file mode 100644
+index 0000000..31321fb
+--- /dev/null
++++ b/include/bluetoothleapis.h
+@@ -0,0 +1,53 @@
++/*
++ * Copyright 2025 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __BLUETOOTHLEAPIS_H
++#define __BLUETOOTHLEAPIS_H
++
++#include <bthledef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++HRESULT WINAPI BluetoothGATTGetServices( HANDLE, USHORT, BTH_LE_GATT_SERVICE *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTGetCharacteristics( HANDLE, BTH_LE_GATT_SERVICE *, USHORT, BTH_LE_GATT_CHARACTERISTIC *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTGetCharacteristicValue( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, ULONG, BTH_LE_GATT_CHARACTERISTIC_VALUE *, USHORT *, ULONG );
++
++/* The descriptor and event types are only ever passed by pointer in this
++ * implementation; their layouts are defined by the Bluetooth LE stack,
++ * which is not present here. */
++typedef struct _BTH_LE_GATT_DESCRIPTOR BTH_LE_GATT_DESCRIPTOR, *PBTH_LE_GATT_DESCRIPTOR;
++typedef struct _BTH_LE_GATT_DESCRIPTOR_VALUE BTH_LE_GATT_DESCRIPTOR_VALUE, *PBTH_LE_GATT_DESCRIPTOR_VALUE;
++typedef UINT64 BTH_LE_GATT_RELIABLE_WRITE_CONTEXT;
++typedef enum _BTH_LE_GATT_EVENT_TYPE
++{
++    CharacteristicValueChangedEvent = 0,
++} BTH_LE_GATT_EVENT_TYPE;
++typedef HANDLE BLUETOOTH_GATT_EVENT_HANDLE;
++typedef void (CALLBACK *PFNBLUETOOTH_GATT_EVENT_CALLBACK)( BTH_LE_GATT_EVENT_TYPE, void *, void * );
++
++HRESULT WINAPI BluetoothGATTGetDescriptors( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, USHORT, BTH_LE_GATT_DESCRIPTOR *, USHORT *, ULONG );
++HRESULT WINAPI BluetoothGATTSetCharacteristicValue( HANDLE, BTH_LE_GATT_CHARACTERISTIC *, BTH_LE_GATT_CHARACTERISTIC_VALUE *, BTH_LE_GATT_RELIABLE_WRITE_CONTEXT, ULONG );
++HRESULT WINAPI BluetoothGATTSetDescriptorValue( HANDLE, BTH_LE_GATT_DESCRIPTOR *, BTH_LE_GATT_DESCRIPTOR_VALUE *, BTH_LE_GATT_RELIABLE_WRITE_CONTEXT, ULONG );
++HRESULT WINAPI BluetoothGATTRegisterEvent( HANDLE, BTH_LE_GATT_EVENT_TYPE, void *, PFNBLUETOOTH_GATT_EVENT_CALLBACK, void *, BLUETOOTH_GATT_EVENT_HANDLE * );
++HRESULT WINAPI BluetoothGATTUnregisterEvent( BLUETOOTH_GATT_EVENT_HANDLE, ULONG );
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/include/bthledef.h b/include/bthledef.h
+new file mode 100644
+index 0000000..aa2121c
+--- /dev/null
++++ b/include/bthledef.h
+@@ -0,0 +1,98 @@
++/*
++ * Copyright 2025 Vibhav Pant
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __BTHLEDEFS_H
++#define __BTHLEDEFS_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define BLUETOOTH_GATT_FLAG_NONE                   0
++#define BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_DEVICE 0x0004
++#define BLUETOOTH_GATT_FLAG_FORCE_READ_FROM_CACHE  0x0008
++
++typedef struct _BTH_LE_UUID
++{
++    BOOLEAN IsShortUuid;
++    union
++    {
++        USHORT ShortUuid;
++        GUID LongUuid;
++    } Value;
++} BTH_LE_UUID, *PBTH_LE_UUID;
++
++typedef struct _BTH_LE_GATT_SERVICE
++{
++    BTH_LE_UUID ServiceUuid;
++    USHORT AttributeHandle;
++} BTH_LE_GATT_SERVICE, *PBTH_LE_GATT_SERVICE;
++
++typedef struct _BTH_LE_GATT_CHARACTERISTIC
++{
++    USHORT ServiceHandle;
++    BTH_LE_UUID CharacteristicUuid;
++    USHORT AttributeHandle;
++    USHORT CharacteristicValueHandle;
++    BOOLEAN IsBroadcastable;
++    BOOLEAN IsReadable;
++    BOOLEAN IsWritable;
++    BOOLEAN IsWritableWithoutResponse;
++    BOOLEAN IsSignedWritable;
++    BOOLEAN IsNotifiable;
++    BOOLEAN IsIndicatable;
++    BOOLEAN HasExtendedProperties;
++} BTH_LE_GATT_CHARACTERISTIC, *PBTH_LE_GATT_CHARACTERISTIC;
++
++typedef struct _BTH_LE_GATT_CHARACTERISTIC_VALUE
++{
++    ULONG DataSize;
++    UCHAR Data[1];
++} BTH_LE_GATT_CHARACTERISTIC_VALUE, *PBTH_LE_GATT_CHARACTERISTIC_VALUE;
++
++DEFINE_GUID( GUID_BLUETOOTHLE_DEVICE_INTERFACE, 0x781aee18, 0x7733, 0x4ce4, 0xad, 0xd0, 0x91, 0xf4, 0x1c, 0x67, 0xb5, 0x92 );
++DEFINE_GUID( GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE, 0x6e3bb679, 0x4372, 0x40c8, 0x9e, 0xaa, 0x45, 0x09, 0xdf, 0x26, 0x0c, 0xd8 );
++DEFINE_GUID( BTH_LE_ATT_BLUETOOTH_BASE_GUID, 0, 0, 0x1000, 0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb );
++
++FORCEINLINE BOOLEAN IsBthLEUuidMatch( BTH_LE_UUID u1, BTH_LE_UUID u2 )
++{
++    GUID full1, full2;
++
++    if (u1.IsShortUuid && u2.IsShortUuid)
++        return u1.Value.ShortUuid == u2.Value.ShortUuid;
++
++    if (u1.IsShortUuid)
++    {
++        full1 = BTH_LE_ATT_BLUETOOTH_BASE_GUID;
++        full1.Data1 = u1.Value.ShortUuid;
++    }
++    else
++        full1 = u1.Value.LongUuid;
++    if (u2.IsShortUuid)
++    {
++        full2 = BTH_LE_ATT_BLUETOOTH_BASE_GUID;
++        full2.Data1 = u2.Value.ShortUuid;
++    }
++    else
++        full2 = u2.Value.LongUuid;
++    return !memcmp( &full1, &full2, sizeof( full1 ) );
++}
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/include/mfapi.h b/include/mfapi.h
+index afa3655..c38410e 100644
+--- a/include/mfapi.h
++++ b/include/mfapi.h
+@@ -572,6 +572,7 @@ void *  WINAPI MFHeapAlloc(SIZE_T size, ULONG flags, char *file, int line, EAllo
+ 
+ HRESULT WINAPI MFCreateVideoSampleAllocatorEx(REFIID riid, void **allocator);
+ HRESULT WINAPI MFCreateMemoryBuffer(DWORD max_length, IMFMediaBuffer **buffer);
++HRESULT WINAPI MFCreateMediaBufferWrapper(IMFMediaBuffer *buffer, DWORD offset, DWORD length, IMFMediaBuffer **out);
+ HRESULT WINAPI MFCreateWaveFormatExFromMFMediaType(IMFMediaType *type, WAVEFORMATEX **format, UINT32 *size, UINT32 flags);
+ HRESULT WINAPI MFEndCreateFile(IMFAsyncResult *result, IMFByteStream **stream);
+ HRESULT WINAPI MFEndRegisterWorkQueueWithMMCSS(IMFAsyncResult *result, DWORD *taskid);
+diff --git a/include/winusb.h b/include/winusb.h
+index 77b686b..7a244c1 100644
+--- a/include/winusb.h
++++ b/include/winusb.h
+@@ -25,7 +25,24 @@ extern "C" {
+ 
+ typedef PVOID WINUSB_INTERFACE_HANDLE, *PWINUSB_INTERFACE_HANDLE;
+ 
++typedef struct _WINUSB_SETUP_PACKET
++{
++    UCHAR RequestType;
++    UCHAR Request;
++    USHORT Value;
++    USHORT Index;
++    USHORT Length;
++} WINUSB_SETUP_PACKET, *PWINUSB_SETUP_PACKET;
++
++BOOL WINAPI WinUsb_Initialize(HANDLE, PWINUSB_INTERFACE_HANDLE);
+ BOOL WINAPI WinUsb_Free(WINUSB_INTERFACE_HANDLE);
++BOOL WINAPI WinUsb_GetAssociatedInterface(WINUSB_INTERFACE_HANDLE, UCHAR, PWINUSB_INTERFACE_HANDLE);
++BOOL WINAPI WinUsb_GetOverlappedResult(WINUSB_INTERFACE_HANDLE, OVERLAPPED *, DWORD *, BOOL);
++BOOL WINAPI WinUsb_ControlTransfer(WINUSB_INTERFACE_HANDLE, WINUSB_SETUP_PACKET, UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_ReadPipe(WINUSB_INTERFACE_HANDLE, UCHAR, UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_WritePipe(WINUSB_INTERFACE_HANDLE, UCHAR, const UCHAR *, ULONG, ULONG *, OVERLAPPED *);
++BOOL WINAPI WinUsb_ResetPipe(WINUSB_INTERFACE_HANDLE, UCHAR);
++BOOL WINAPI WinUsb_SetCurrentAlternateSetting(WINUSB_INTERFACE_HANDLE, UCHAR);
+ 
+ #ifdef __cplusplus
+ }

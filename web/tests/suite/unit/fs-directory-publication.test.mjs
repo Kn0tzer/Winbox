@@ -30,6 +30,7 @@ using U8=unsigned char; using U32=unsigned;
 #define B(s) BString(s)
 #define EXT_MIXED ".mixed"
 #define EXT_DOSATTRIB ".user.DOSATTRIB"
+#define EXT_XATTR ".bw64xattr."
 #define EXT_LINK ".link"
 #define MAX_FILEPATH_LEN 4096
 #define klog_fmt(...) ((void)0)

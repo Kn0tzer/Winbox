@@ -78,7 +78,7 @@ for runtime in "$REPO/web/runtime" "$REPO/dist/runtime"; do
         echo "stage-vkd3d-payloads32: $archive already carries the vkd3d32 payloads — skipping"
         continue
     fi
-    backup="/home/ubuntu/backups/winbox-vkd3d32-payloads-$stamp"
+    backup="/home/ubuntu/winbox-project/evidence/winbox-vkd3d32-payloads-$stamp"
     mkdir -p "$backup"
     cp "$archive" "$backup/$(basename "$(dirname "$runtime")")-$(basename "$runtime")-wine32.zip"
     TMP="$(mktemp -d)"

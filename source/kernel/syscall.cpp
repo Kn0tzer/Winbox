@@ -1373,10 +1373,10 @@ static U32 syscall_gettid(CPU* cpu, U32 eipCount) {
 // -ENODATA; a recognised prefix with an empty attribute part
 // ("user." itself) answers -EINVAL. The one modelled
 // attribute, user.DOSATTRIB, is handled by the get forms
-// before this runs. The set/remove forms keep their standing
-// -ENOTSUP on a resolved target (FD-157) and do not come
-// through here. syscall64.cpp carries the mirror of this
-// classifier for the 64-bit dispatcher.
+// before this runs. The set/remove forms classify through
+// xattrWriteNameVerdict32 below (FD-165). syscall64.cpp
+// carries the mirror of this classifier for the 64-bit
+// dispatcher.
 static U32 xattrGetNameVerdict32(const BString& name) {
     if (name.startsWith("user.")) {
         return name.length() == 5 ? (U32)-K_EINVAL : (U32)-K_ENODATA;
@@ -1411,11 +1411,166 @@ static S32 xattrNameFetch32(CPU* cpu, U32 nameAddress, BString& nameOut) {
     return 0;
 }
 
+// FD-165: the two posix_acl names are recognised by the
+// kernel's namespace lookup but carry no stored ACL here;
+// the set and remove forms judge them separately below.
+static bool xattrIsAclName(const BString& name) {
+    return name == "system.posix_acl_access" || name == "system.posix_acl_default";
+}
+
+// FD-165: the set/remove forms' namespace verdict on a
+// resolved target (host-measured at the raw syscall level,
+// test-results/fd165/hostref-fd165*.out). Returns 0 for a
+// recognised namespace (user.*, trusted.*, security.*) with
+// an attribute part -- the caller then applies the storage
+// semantics -- and the host's refusal otherwise: a bare
+// recognised prefix answers -EINVAL; a prefix with no handler
+// (an unknown word, system.* other than the posix_acl names)
+// answers -ENOTSUP. syscall64.cpp carries the mirror of this
+// classifier for the 64-bit dispatcher.
+static U32 xattrWriteNameVerdict32(const BString& name) {
+    if (name.startsWith("user.")) {
+        return name.length() == 5 ? (U32)-K_EINVAL : 0;
+    }
+    if (name.startsWith("trusted.")) {
+        return name.length() == 8 ? (U32)-K_EINVAL : 0;
+    }
+    if (name.startsWith("security.")) {
+        return name.length() == 9 ? (U32)-K_EINVAL : 0;
+    }
+    return -K_ENOTSUP;
+}
+
+// FD-165: serve a stored attribute's value with the host's
+// getxattr size semantics: a zero size is a length query, an
+// exact fit succeeds, a short buffer answers -ERANGE.
+static U32 xattrServeStoredValue32(CPU* cpu, const std::vector<U8>& value, U32 bufAddress, U32 bufSize) {
+    if (bufSize == 0) {
+        return (U32)value.size();
+    }
+    if (value.size() > bufSize) {
+        return (U32)-K_ERANGE;
+    }
+    if (value.size() && !bufAddress) {
+        return (U32)-K_EFAULT;
+    }
+    if (value.size()) {
+        cpu->memory->memcpyToGuest(bufAddress, value.data(), value.size());
+    }
+    return (U32)value.size();
+}
+
+// FD-165: serve the stored attribute names of a resolved
+// target with the host's listxattr size semantics: a zero
+// size reports the needed length, a short buffer answers
+// -ERANGE, and a target with nothing stored has an empty
+// list (0), as the list forms answered before.
+static U32 xattrServeNameList32(CPU* cpu, const std::shared_ptr<FsNode>& node, U32 listAddress, U32 listSize) {
+    std::vector<BString> names = Fs::listXAttrNames(node);
+    U32 total = 0;
+    for (auto& name : names) {
+        total += name.length() + 1;
+    }
+    if (listSize == 0) {
+        return total;
+    }
+    if (total == 0) {
+        return 0;
+    }
+    if (!listAddress) {
+        return (U32)-K_EFAULT;
+    }
+    if (listSize < total) {
+        return (U32)-K_ERANGE;
+    }
+    U32 offset = 0;
+    for (auto& name : names) {
+        cpu->memory->memcpyToGuest(listAddress + offset, name.c_str(), name.length() + 1);
+        offset += name.length() + 1;
+    }
+    return total;
+}
+
+// FD-165: the set forms on a resolved target, in the host's
+// order: on the link itself every user.* name answers
+// -EPERM (the host never applies that namespace to a link);
+// a posix_acl name answers -EINVAL (the host validates the
+// value as an ACL and refuses a non-ACL value, and no ACL is
+// stored here); the namespace verdict runs next; a
+// recognised name is then stored, honouring XATTR_CREATE
+// (-EEXIST on a present attribute) and XATTR_REPLACE
+// (-ENODATA on an absent one). user.DOSATTRIB stores through
+// its own sidecar, as the descriptor form always did.
+static U32 xattrSetOnNode32(CPU* cpu, const std::shared_ptr<FsNode>& node, const BString& name, U32 valueAddress, U32 valueSize, U32 flags) {
+    if (node->isLink() && name.startsWith("user.")) {
+        return (U32)-K_EPERM;
+    }
+    if (xattrIsAclName(name)) {
+        // ACL values are not modelled: the host would accept
+        // a conforming ACL, so this refusal is reported, not
+        // silent. (-EINVAL is the host's answer to a non-ACL
+        // value, which is all a guest can be refused for here
+        // without the guest-visible answer changing.)
+        klog_fmt("BW64-FAIL xattr set %s: posix ACL values are not modelled; answered -EINVAL", name.c_str());
+        return (U32)-K_EINVAL;
+    }
+    U32 verdict = xattrWriteNameVerdict32(name);
+    if (verdict) {
+        return verdict;
+    }
+    bool exists = name == "user.DOSATTRIB" ? Fs::hasDosAttrib(node) : Fs::hasXAttr(node, name);
+    if ((flags & 0x1) && exists) {
+        return (U32)-K_EEXIST; // XATTR_CREATE
+    }
+    if ((flags & 0x2) && !exists) {
+        return (U32)-K_ENODATA; // XATTR_REPLACE
+    }
+    if (name == "user.DOSATTRIB") {
+        Fs::setDosAttrib(node, cpu->memory->readString(valueAddress));
+        return 0;
+    }
+    std::vector<U8> value(valueSize);
+    if (valueSize) {
+        cpu->memory->memcpyFromGuest(value.data(), valueAddress, valueSize);
+    }
+    return Fs::setXAttr(node, name, value.data(), valueSize) ? 0 : (U32)-K_ENOTSUP;
+}
+
+// FD-165: the remove forms on a resolved target: the link
+// rules and the namespace verdict as in the set forms, except
+// the posix_acl names -- clearing an ACL that was never
+// stored is a no-op success on a file or directory, while on
+// the link itself the host answers -ENOTSUP. A stored
+// attribute removes with 0; an absent one answers -ENODATA.
+static U32 xattrRemoveOnNode32(const std::shared_ptr<FsNode>& node, const BString& name) {
+    if (node->isLink() && name.startsWith("user.")) {
+        return (U32)-K_EPERM;
+    }
+    if (xattrIsAclName(name)) {
+        return node->isLink() ? (U32)-K_ENOTSUP : 0;
+    }
+    U32 verdict = xattrWriteNameVerdict32(name);
+    if (verdict) {
+        return verdict;
+    }
+    if (name == "user.DOSATTRIB") {
+        return Fs::removeDosAttrib(node);
+    }
+    return Fs::removeXAttr(node, name);
+}
+
 static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
     // FD-162: the host's entry order for the set forms: the
     // flags word first (-EINVAL), then the name fetch, then
     // the descriptor -- which answers -EBADF; the host has no
     // -EBADFD (the answer this handler used to give).
+    // FD-165: the value copy faults (-EFAULT for a null value
+    // with a nonzero size) ahead of the descriptor verdict,
+    // and a resolved descriptor's answer is the write-side
+    // classification and storage (xattrSetOnNode32) -- the
+    // modelled name included: a stored user.DOSATTRIB now
+    // answers 0, where this handler used to store it and still
+    // report -ENOTSUP.
     if ((ARG5 & ~(U32)0x3)) {
         return -K_EINVAL;
     }
@@ -1424,17 +1579,17 @@ static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
     if (fetch) {
         return (U32)fetch;
     }
+    if (!ARG3 && ARG4) {
+        return -K_EFAULT;
+    }
     U32 result = -K_ENOTSUP;
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
     if (!fd) {
         result = -K_EBADF;
-    } else if (name == "user.DOSATTRIB") {
-        BString value = cpu->memory->readString(ARG3);
+    } else {
         std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
-        if (!node) {
-            result = -K_ENOTSUP;
-        } else {
-            Fs::setDosAttrib(node->openFile->node, value);
+        if (node) {
+            result = xattrSetOnNode32(cpu, node->openFile->node, name, ARG3, ARG4, ARG5);
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "fsetxattr: result=%x\n", result);
@@ -1471,12 +1626,20 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
         // missing path answers -ENOENT, a path through a file
         // -ENOTDIR. FD-163: on the resolved target the answer
         // is the namespace verdict, not a blanket -ENODATA.
+        // FD-165: a stored attribute is served before the
+        // verdict -- the write side now stores recognised
+        // names, and the host reads its own sets back.
         bool notDir = false;
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true, nullptr, &notDir);
         if (!file) {
             result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
-            result = xattrGetNameVerdict32(name);
+            std::vector<U8> stored;
+            if (Fs::getXAttr(file, name, stored)) {
+                result = xattrServeStoredValue32(cpu, stored, ARG3, ARG4);
+            } else {
+                result = xattrGetNameVerdict32(name);
+            }
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getxattr: path=%s name=%s result = %x\n", path.c_str(), name.c_str(), result);
@@ -1511,12 +1674,19 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
         // FD-157: as in getxattr, with the link itself as the
         // target (no following). FD-163: the namespace verdict
         // applies on the resolved link as on any resolved target.
+        // FD-165: a stored attribute is served before the
+        // verdict, as in getxattr.
         bool notDir = false;
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false, nullptr, &notDir);
         if (!file) {
             result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
-            result = xattrGetNameVerdict32(name);
+            std::vector<U8> stored;
+            if (Fs::getXAttr(file, name, stored)) {
+                result = xattrServeStoredValue32(cpu, stored, ARG3, ARG4);
+            } else {
+                result = xattrGetNameVerdict32(name);
+            }
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "lgetxattr: path=%s name=%s result=%x\n", path.c_str(), name.c_str(), result);
@@ -1548,8 +1718,15 @@ static U32 syscall_fgetxattr(CPU* cpu, U32 eipCount) {
         }
     } else {
         // FD-163: any other name on an open descriptor answers
-        // the namespace verdict.
-        result = xattrGetNameVerdict32(name);
+        // the namespace verdict. FD-165: a stored attribute is
+        // served before the verdict.
+        std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        std::vector<U8> stored;
+        if (node && Fs::getXAttr(node->openFile->node, name, stored)) {
+            result = xattrServeStoredValue32(cpu, stored, ARG3, ARG4);
+        } else {
+            result = xattrGetNameVerdict32(name);
+        }
     }
 
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "fgetxattr: result = %x\n", result);
@@ -1560,9 +1737,18 @@ static U32 syscall_flistxattr(CPU* cpu, U32 eipCount) {
     // FD-162: this form used to answer -ENOTSUP without ever
     // looking at its descriptor. The host answers -EBADF for
     // an unopened descriptor and an empty list (0) for any
-    // open one -- the emulator models no xattrs.
+    // open one. FD-165: the list now serves the names the
+    // write side stored on the descriptor's file.
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
-    U32 result = fd ? 0 : (U32)-K_EBADF;
+    U32 result = 0;
+    if (!fd) {
+        result = -K_EBADF;
+    } else {
+        std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
+        if (node) {
+            result = xattrServeNameList32(cpu, node->openFile->node, ARG2, ARG3);
+        }
+    }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "flistxattr: result = %x\n", result);
     return result;
 }
@@ -1575,12 +1761,15 @@ static U32 syscall_fremovexattr(CPU* cpu, U32 eipCount) {
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
     if (!fd) {
         result = -K_EBADF; // FD-162: the host has no -EBADFD
-    } else if (name == "user.DOSATTRIB") {
+    } else {
+        // FD-165: the write-side classification and storage
+        // (xattrRemoveOnNode32) -- the modelled name included:
+        // removing a user.DOSATTRIB the file does not carry
+        // answers -ENODATA, as Fs::removeDosAttrib always
+        // reported on this form.
         std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
-        if (!node) {
-            result = -K_ENOTSUP;
-        } else {
-            result = Fs::removeDosAttrib(node->openFile->node);            
+        if (node) {
+            result = xattrRemoveOnNode32(node->openFile->node, name);
         }
     }
 
@@ -1594,66 +1783,86 @@ static U32 syscall_fremovexattr(CPU* cpu, U32 eipCount) {
 // resolved or not. The host's entry order, measured at the raw
 // syscall level, runs: the set forms validate their flags word
 // (-EINVAL for bits outside XATTR_CREATE|XATTR_REPLACE) ahead of
-// everything; a null path faults; a null attribute name faults
-// ahead of the path verdicts; an empty path answers -ENOENT;
-// then the target resolves (a miss answers -ENOENT, a path
-// through a file -ENOTDIR). Only then does the attribute verdict
-// apply, and since the emulator models no xattrs the resolved
-// answers are the standing ones the 64-bit dispatcher gives:
-// -ENOTSUP for the set/remove forms, an empty list (0) for the
-// list forms.
-static U32 xattrPathForm32(CPU* cpu, bool followLink, bool isSetForm, bool hasName, U32 resolvedAnswer) {
+// everything; a null attribute name faults ahead of the path
+// verdicts; the set forms' value copy faults next (-EFAULT for
+// a null value with a nonzero size, FD-165); a null path faults;
+// an empty path answers -ENOENT; then the target resolves (a
+// miss answers -ENOENT, a path through a file -ENOTDIR). Only
+// then does the attribute verdict apply: FD-165 gives the
+// set/remove forms the write-side classification and storage,
+// and the list forms serve the stored names.
+static S32 xattrPathEntry32(CPU* cpu, bool followLink, bool isSetForm, bool hasName, BString& nameOut, std::shared_ptr<FsNode>& nodeOut) {
     if (isSetForm && (ARG5 & ~(U32)0x3)) {
         return -K_EINVAL;
     }
     if (hasName) {
-        BString name;
-        S32 fetch = xattrNameFetch32(cpu, ARG2, name);
-        if (fetch) return (U32)fetch; // FD-163: the name fetch (null -EFAULT, empty -ERANGE) precedes the path verdicts
+        S32 fetch = xattrNameFetch32(cpu, ARG2, nameOut);
+        if (fetch) return fetch; // FD-163: the name fetch (null -EFAULT, empty -ERANGE) precedes the path verdicts
+    }
+    if (isSetForm && !ARG3 && ARG4) {
+        return -K_EFAULT; // FD-165: the value copy precedes the path verdicts
     }
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
     if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
     bool notDir = false;
-    std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, followLink, nullptr, &notDir);
-    if (!file) {
-        return notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
+    nodeOut = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, followLink, nullptr, &notDir);
+    if (!nodeOut) {
+        return notDir ? -K_ENOTDIR : -K_ENOENT;
     }
-    return resolvedAnswer;
+    return 0;
 }
 
 static U32 syscall_setxattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, true, true, true, (U32)-K_ENOTSUP);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, true, true, true, name, node);
+    U32 result = entry ? (U32)entry : xattrSetOnNode32(cpu, node, name, ARG3, ARG4, ARG5);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "setxattr: result=%x\n", result);
     return result;
 }
 
 static U32 syscall_lsetxattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, false, true, true, (U32)-K_ENOTSUP);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, false, true, true, name, node);
+    U32 result = entry ? (U32)entry : xattrSetOnNode32(cpu, node, name, ARG3, ARG4, ARG5);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "lsetxattr: result=%x\n", result);
     return result;
 }
 
 static U32 syscall_listxattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, true, false, false, 0);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, true, false, false, name, node);
+    U32 result = entry ? (U32)entry : xattrServeNameList32(cpu, node, ARG2, ARG3);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "listxattr: result=%x\n", result);
     return result;
 }
 
 static U32 syscall_llistxattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, false, false, false, 0);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, false, false, false, name, node);
+    U32 result = entry ? (U32)entry : xattrServeNameList32(cpu, node, ARG2, ARG3);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "llistxattr: result=%x\n", result);
     return result;
 }
 
 static U32 syscall_removexattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, true, false, true, (U32)-K_ENOTSUP);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, true, false, true, name, node);
+    U32 result = entry ? (U32)entry : xattrRemoveOnNode32(node, name);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "removexattr: result=%x\n", result);
     return result;
 }
 
 static U32 syscall_lremovexattr(CPU* cpu, U32 eipCount) {
-    U32 result = xattrPathForm32(cpu, false, false, true, (U32)-K_ENOTSUP);
+    BString name;
+    std::shared_ptr<FsNode> node;
+    S32 entry = xattrPathEntry32(cpu, false, false, true, name, node);
+    U32 result = entry ? (U32)entry : xattrRemoveOnNode32(node, name);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "lremovexattr: result=%x\n", result);
     return result;
 }
@@ -1776,9 +1985,9 @@ static U32 syscall_sched_setaffinity(CPU* cpu, U32 eipCount) {
     if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
     if (size < 4 || size > 1024) return -K_EINVAL;
     if (!mask || !cpu->memory->canRead(mask, 4)) return -K_EFAULT;
-    // One virtual CPU is online. Offline bits are ignored like the kernel does;
-    // at least one online CPU must remain selected.
-    if (!(cpu->memory->readd(mask) & 1)) return -K_EINVAL;
+    // Two virtual CPUs are online. Offline bits are ignored like the kernel
+    // does; at least one online CPU must remain selected.
+    if (!(cpu->memory->readd(mask) & ((1U << KSystem::guestCpuCount()) - 1))) return -K_EINVAL;
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_setaffinity: pid=%d cpusetsize=%u mask=%X result=0\n", pid, size, mask);
     return 0;
 }
@@ -1789,7 +1998,7 @@ static U32 syscall_sched_getaffinity(CPU* cpu, U32 eipCount) {
     if (pid && pid != cpu->thread->id && pid != cpu->thread->process->id) return -K_ESRCH;
     if (size < 4 || size > 1024) return -K_EINVAL;
     if (!mask || !cpu->memory->canWrite(mask, 4)) return -K_EFAULT;
-    cpu->memory->writed(mask, 1);
+    cpu->memory->writed(mask, (1U << KSystem::guestCpuCount()) - 1);
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "sched_getaffinity: pid=%d cpusetsize=%u mask=%X result=4\n", pid, size, mask);
     return 4;
 }

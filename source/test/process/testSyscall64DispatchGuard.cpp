@@ -101,12 +101,14 @@ void testSyscall64DispatchGuard() {
     std::ifstream randomFile(root + "/source/kernel/krandom.cpp");
     std::ifstream syscall32File(root + "/source/kernel/syscall.cpp");
     std::ifstream processFile(root + "/source/kernel/kprocess.cpp");
+    std::ifstream processCloneFile(root + "/source/kernel/kprocessclone.cpp");
     std::ifstream unixSocketFile(root + "/source/kernel/kunixsocket.cpp");
     const std::string randomSource((std::istreambuf_iterator<char>(randomFile)), std::istreambuf_iterator<char>());
     const std::string syscall32((std::istreambuf_iterator<char>(syscall32File)), std::istreambuf_iterator<char>());
-    const std::string processSource((std::istreambuf_iterator<char>(processFile)), std::istreambuf_iterator<char>());
+    const std::string processSource = std::string((std::istreambuf_iterator<char>(processFile)), std::istreambuf_iterator<char>()) +
+        std::string((std::istreambuf_iterator<char>(processCloneFile)), std::istreambuf_iterator<char>());
     const std::string unixSocketSource((std::istreambuf_iterator<char>(unixSocketFile)), std::istreambuf_iterator<char>());
-    if (!randomFile || !syscall32File || !processFile || !unixSocketFile || randomSource.find("std::random_device") == std::string::npos ||
+    if (!randomFile || !syscall32File || !processFile || !processCloneFile || !unixSocketFile || randomSource.find("std::random_device") == std::string::npos ||
         source.find("6364136223846793005") != std::string::npos ||
         syscall32.find("std::mt19937") != std::string::npos) {
         testFail("getrandom must use the shared nondeterministic source, not a deterministic PRNG");

@@ -1,5 +1,8 @@
 # Startup observations
 
+_Design record, October 2026 build-out: the requirements for how the launcher reports a starting program, written before it shipped. Current behavior is the shipped launcher itself. Kept as evidence of intent; the documentation map is `docs/INDEX.md`._
+
+
 User-authorized capability: replace the misleading "Not frozen" assertion.
 No logs for more than fifteen seconds can occur during CPU work, graphics or
 asset loading; background-service logs can continue after a failed app launch.

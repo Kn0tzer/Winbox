@@ -125,6 +125,14 @@ constexpr U32 deepMidAt    = TEST_HEAP_ADDRESS + 0xAC0; // "d/../../a.txt"
 constexpr U32 dotdotOnly32 = TEST_HEAP_ADDRESS + 0xB00; // ".."
 constexpr U32 absRootMidAt = TEST_HEAP_ADDRESS + 0xB40; // "/../a.txt"
 constexpr U32 relRootMidAt = TEST_HEAP_ADDRESS + 0xB80; // "../a.txt"
+constexpr U32 bareTrustedAt = TEST_HEAP_ADDRESS + 0xBC0; // "trusted."
+constexpr U32 bareSecurityAt = TEST_HEAP_ADDRESS + 0xC00; // "security."
+constexpr U32 bareSystemAt  = TEST_HEAP_ADDRESS + 0xC40; // "system."
+constexpr U32 bareWordAt    = TEST_HEAP_ADDRESS + 0xC80; // "bogus"
+constexpr U32 userYAt       = TEST_HEAP_ADDRESS + 0xCC0; // "user.y"
+constexpr U32 userZAt       = TEST_HEAP_ADDRESS + 0xD00; // "user.z"
+constexpr U32 aclDefaultAt  = TEST_HEAP_ADDRESS + 0xD40; // "system.posix_acl_default"
+constexpr U32 cTxtAt        = TEST_HEAP_ADDRESS + 0xD80; // "c.txt"
 
 void stageStringsPV32(KMemory* memory) {
     memory->memcpy(aTxtAt, "a.txt", 6);
@@ -166,6 +174,14 @@ void stageStringsPV32(KMemory* memory) {
     memory->memcpy(dotdotOnly32, "..", 3);
     memory->memcpy(absRootMidAt, "/../a.txt", 10);
     memory->memcpy(relRootMidAt, "../a.txt", 9);
+    memory->memcpy(bareTrustedAt, "trusted.", 9);
+    memory->memcpy(bareSecurityAt, "security.", 10);
+    memory->memcpy(bareSystemAt, "system.", 8);
+    memory->memcpy(bareWordAt, "bogus", 6);
+    memory->memcpy(userYAt, "user.y", 7);
+    memory->memcpy(userZAt, "user.z", 7);
+    memory->memcpy(aclDefaultAt, "system.posix_acl_default", 25);
+    memory->memcpy(cTxtAt, "c.txt", 6);
 }
 
 struct InvokePV32 {
@@ -227,31 +243,35 @@ void testXattrPathResolve32Syscalls() {
     expectEq32("getxattr(\"\", user.x)", invoke(229, emptyAt, nameAt, bufAt, 256), -K_ENOENT);
 
     // setxattr (226) / lsetxattr (227): flags validate first, then
-    // the name faults, then the target resolves; a resolved target
-    // keeps the standing -ENOTSUP (the emulator models no xattrs).
+    // the name faults, then the target resolves. FD-165: a
+    // recognised name on a resolved target is stored (the host
+    // answers 0); the full classification is pinned by
+    // testXattrWriteClassify32Syscalls.
     expectEq32("setxattr(missing, user.x, 0)", invoke(226, missingAt, nameAt, valAt, 1, 0), -K_ENOENT);
-    expectEq32("setxattr(a.txt, user.x, 0)", invoke(226, aTxtAt, nameAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, user.x, 0)", invoke(226, aTxtAt, nameAt, valAt, 1, 0), 0);
     expectEq32("setxattr(a.txt/child, user.x, 0)", invoke(226, childAt, nameAt, valAt, 1, 0), -K_ENOTDIR);
     expectEq32("setxattr(missing, user.x, bad flags): flags precede path", invoke(226, missingAt, nameAt, valAt, 1, 0x10), -K_EINVAL);
     expectEq32("setxattr(a.txt, NULL, bad flags): flags precede name", invoke(226, aTxtAt, 0, valAt, 1, 0x10), -K_EINVAL);
     expectEq32("setxattr(a.txt, NULL, 0)", invoke(226, aTxtAt, 0, valAt, 1, 0), -K_EFAULT);
     expectEq32("setxattr(NULL, user.x, 0)", invoke(226, 0, nameAt, valAt, 1, 0), -K_EFAULT);
     expectEq32("lsetxattr(missing, user.x, 0)", invoke(227, missingAt, nameAt, valAt, 1, 0), -K_ENOENT);
-    expectEq32("lsetxattr(a.txt, user.x, 0)", invoke(227, aTxtAt, nameAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("lsetxattr(a.txt, user.x, 0)", invoke(227, aTxtAt, nameAt, valAt, 1, 0), 0);
 
     // listxattr (232) / llistxattr (233): no name; the target
-    // resolves, and a resolved target has an empty list.
+    // resolves, and a target with nothing stored has an empty
+    // list (c.txt: the sets above stored user.x on a.txt).
     expectEq32("listxattr(missing)", invoke(232, missingAt, bufAt, 256, 0), -K_ENOENT);
-    expectEq32("listxattr(a.txt)", invoke(232, aTxtAt, bufAt, 256, 0), 0);
+    expectEq32("listxattr(c.txt)", invoke(232, cTxtAt, bufAt, 256, 0), 0);
     expectEq32("listxattr(a.txt/child)", invoke(232, childAt, bufAt, 256, 0), -K_ENOTDIR);
     expectEq32("listxattr(NULL)", invoke(232, 0, bufAt, 256, 0), -K_EFAULT);
     expectEq32("llistxattr(missing)", invoke(233, missingAt, bufAt, 256, 0), -K_ENOENT);
-    expectEq32("llistxattr(a.txt)", invoke(233, aTxtAt, bufAt, 256, 0), 0);
+    expectEq32("llistxattr(c.txt)", invoke(233, cTxtAt, bufAt, 256, 0), 0);
 
     // removexattr (235) / lremovexattr (236): like the set forms
-    // without the flags word.
+    // without the flags word; user.x was stored above, so its
+    // removal succeeds.
     expectEq32("removexattr(missing, user.x)", invoke(235, missingAt, nameAt, 0, 0), -K_ENOENT);
-    expectEq32("removexattr(a.txt, user.x)", invoke(235, aTxtAt, nameAt, 0, 0), -K_ENOTSUP);
+    expectEq32("removexattr(a.txt, user.x)", invoke(235, aTxtAt, nameAt, 0, 0), 0);
     expectEq32("removexattr(a.txt/child, user.x)", invoke(235, childAt, nameAt, 0, 0), -K_ENOTDIR);
     expectEq32("removexattr(a.txt, NULL)", invoke(235, aTxtAt, 0, 0, 0), -K_EFAULT);
     expectEq32("lremovexattr(missing, user.x)", invoke(236, missingAt, nameAt, 0, 0), -K_ENOENT);
@@ -425,16 +445,18 @@ void testXattrDescriptor32Syscalls() {
     expectEq32("flistxattr(dirFd)", invoke(234, dirFd, bufAt, 256, 0), 0);
 
     // Resolved answers on a valid descriptor: the get form
-    // follows the FD-163 namespace rule; the set/remove forms
-    // keep the standing -ENOTSUP both dispatchers give.
+    // follows the FD-163 namespace rule. FD-165: the set form
+    // stores a recognised name (the host answers 0) and the
+    // remove form removes it; the full write-side classification
+    // is pinned by testXattrWriteClassify32Syscalls.
     expectEq32("fgetxattr(fileFd, user.x)", invoke(231, fileFd, nameAt, bufAt, 256), -K_ENODATA);
     expectEq32("fgetxattr(fileFd, bogus.x)", invoke(231, fileFd, bogusAt, bufAt, 256), -K_ENOTSUP);
     expectEq32("fgetxattr(fileFd, user.)", invoke(231, fileFd, bareUserAt, bufAt, 256), -K_EINVAL);
     expectEq32("fgetxattr(fileFd, \"\")", invoke(231, fileFd, emptyAt, bufAt, 256), -K_ERANGE);
     expectEq32("fgetxattr(fileFd, user.DOSATTRIB) control", invoke(231, fileFd, dosAt, bufAt, 64), -K_ENODATA);
     expectEq32("fgetxattr(dirFd, user.x)", invoke(231, dirFd, nameAt, bufAt, 256), -K_ENODATA);
-    expectEq32("fsetxattr(fileFd, user.x, 0) control", invoke(228, fileFd, nameAt, valAt, 1, 0), -K_ENOTSUP);
-    expectEq32("fremovexattr(fileFd, user.x) control", invoke(237, fileFd, nameAt, 0, 0), -K_ENOTSUP);
+    expectEq32("fsetxattr(fileFd, user.x, 0) control", invoke(228, fileFd, nameAt, valAt, 1, 0), 0);
+    expectEq32("fremovexattr(fileFd, user.x) control", invoke(237, fileFd, nameAt, 0, 0), 0);
 
     process->close(fileDesc->handle);
 }
@@ -516,6 +538,154 @@ void testMidDotDot32Syscalls() {
     expectEq32("getxattr(a.txt/../d, user.x)", invoke(229, fileMidAt, nameAt, bufAt, 256), -K_ENOTDIR);
     expectEq32("process stat64(missing/../a.txt)", (S32)process->stat64(B("missing/../a.txt"), bufAt), -K_ENOENT);
     expectEq32("process stat64(a.txt/../d)", (S32)process->stat64(B("a.txt/../d"), bufAt), -K_ENOTDIR);
+}
+
+void testXattrWriteClassify32Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    RootSwapPV32 root;
+    FD dirFd = (FD)-1;
+    if (!root.ok || !stageTreePV32(process, dirFd)) {
+        testFail("xattr write-classify test could not stage its fixture");
+        return;
+    }
+    KFileDescriptorPtr fileDesc;
+    if (process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("xattr write-classify test could not open its file");
+        return;
+    }
+    const U32 fileFd = fileDesc->handle;
+    const U32 badFd = 9999;
+    InvokePV32 invoke(context);
+
+    // FD-165, host-measured at the raw syscall level
+    // (test-results/fd165/hostref-fd165*.out): the set/remove
+    // forms classify the name on a resolved target, the way the
+    // get forms already did (FD-163). A prefix with no handler
+    // (bogus.*, a bare word, system.* other than the two
+    // posix_acl names) answers -ENOTSUP; a recognised prefix
+    // with an empty attribute part answers -EINVAL; the two
+    // posix_acl names answer -EINVAL to a set (the host
+    // validates the value as an ACL and refuses a non-ACL
+    // value) and a remove of them on a file or directory is a
+    // no-op success. A recognised namespace with an attribute
+    // part is stored: CREATE on a present attribute answers
+    // -EEXIST, REPLACE on an absent one -ENODATA, and get/list
+    // read the stored values back. On the link itself (the
+    // l-forms) every user.* name answers -EPERM, while
+    // trusted.*/security.* behave as on a file. The value copy
+    // faults (-EFAULT for a null value with a nonzero size)
+    // ahead of the target verdicts, after the flags word and
+    // the name fetch.
+
+    // Set-side classification on a resolved file.
+    expectEq32("setxattr(a.txt, bogus.x) control", invoke(226, aTxtAt, bogusAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, bogus) a bare word", invoke(226, aTxtAt, bareWordAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, system.x)", invoke(226, aTxtAt, systemAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, system.)", invoke(226, aTxtAt, bareSystemAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, user.)", invoke(226, aTxtAt, bareUserAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("setxattr(a.txt, trusted.)", invoke(226, aTxtAt, bareTrustedAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("setxattr(a.txt, security.)", invoke(226, aTxtAt, bareSecurityAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("setxattr(a.txt, system.posix_acl_access, v): the value is not an ACL", invoke(226, aTxtAt, aclAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("setxattr(a.txt, system.posix_acl_default, v)", invoke(226, aTxtAt, aclDefaultAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("setxattr(missing, user.): resolution precedes the classification", invoke(226, missingAt, bareUserAt, valAt, 1, 0), -K_ENOENT);
+    expectEq32("setxattr(a.txt/child, user.x) control", invoke(226, childAt, nameAt, valAt, 1, 0), -K_ENOTDIR);
+    // The value copy faults ahead of the target verdicts.
+    expectEq32("setxattr(a.txt, user.x, NULL value, size 3)", invoke(226, aTxtAt, nameAt, 0, 3, 0), -K_EFAULT);
+    expectEq32("setxattr(missing, user.x, NULL value, size 3): the value precedes the path", invoke(226, missingAt, nameAt, 0, 3, 0), -K_EFAULT);
+    expectEq32("setxattr(a.txt, bogus.x, NULL value, size 3): the value precedes the classification", invoke(226, aTxtAt, bogusAt, 0, 3, 0), -K_EFAULT);
+
+    // Storage: a recognised name is set, read back, listed, and
+    // removed, with the host's CREATE/REPLACE verdicts.
+    expectEq32("setxattr(a.txt, user.x)", invoke(226, aTxtAt, nameAt, valAt, 1, 0), 0);
+    S32 gotLen = invoke(229, aTxtAt, nameAt, bufAt, 256);
+    expectEq32("getxattr(a.txt, user.x) reads the set back", gotLen, 1);
+    if (gotLen == 1 && context.memory->readb(bufAt) != 'v') testFail("getxattr(a.txt, user.x) value is not 'v'");
+    expectEq32("getxattr(a.txt, user.x, size 0) is a size query", invoke(229, aTxtAt, nameAt, bufAt, 0), 1);
+    expectEq32("setxattr(a.txt, user.x, CREATE) on a present attribute", invoke(226, aTxtAt, nameAt, valAt, 1, 1), -K_EEXIST);
+    expectEq32("setxattr(a.txt, user.y, REPLACE) on an absent attribute", invoke(226, aTxtAt, userYAt, valAt, 1, 2), -K_ENODATA);
+    expectEq32("setxattr(a.txt, user.y)", invoke(226, aTxtAt, userYAt, valAt, 1, 0), 0);
+    expectEq32("setxattr(a.txt, user.y, REPLACE) on a present attribute", invoke(226, aTxtAt, userYAt, valAt, 1, 2), 0);
+    S32 listLen = invoke(232, aTxtAt, bufAt, 256, 0);
+    expectEq32("listxattr(a.txt) length", listLen, 14);
+    if (listLen == 14) {
+        const char* want = "user.x\0user.y\0";
+        for (U32 i = 0; i < 14; i++) {
+            if (context.memory->readb(bufAt + i) != (U8)want[i]) { testFail("listxattr(a.txt) bytes are not user.x/user.y"); break; }
+        }
+    }
+    expectEq32("listxattr(a.txt, size 0) reports the needed size", invoke(232, aTxtAt, bufAt, 0, 0), 14);
+    expectEq32("listxattr(a.txt, size 3) is too small", invoke(232, aTxtAt, bufAt, 3, 0), -K_ERANGE);
+    expectEq32("removexattr(a.txt, user.x)", invoke(235, aTxtAt, nameAt, 0, 0), 0);
+    expectEq32("removexattr(a.txt, user.x) again: absent", invoke(235, aTxtAt, nameAt, 0, 0), -K_ENODATA);
+    expectEq32("getxattr(a.txt, user.x) is absent again", invoke(229, aTxtAt, nameAt, bufAt, 256), -K_ENODATA);
+
+    // Remove-side classification on a resolved file (user.y is
+    // still stored from the storage section).
+    expectEq32("removexattr(a.txt, trusted.x) absent", invoke(235, aTxtAt, trustedAt, 0, 0), -K_ENODATA);
+    expectEq32("removexattr(a.txt, security.x) absent", invoke(235, aTxtAt, securityAt, 0, 0), -K_ENODATA);
+    expectEq32("removexattr(a.txt, bogus.x) control", invoke(235, aTxtAt, bogusAt, 0, 0), -K_ENOTSUP);
+    expectEq32("removexattr(a.txt, user.)", invoke(235, aTxtAt, bareUserAt, 0, 0), -K_EINVAL);
+    expectEq32("removexattr(a.txt, trusted.)", invoke(235, aTxtAt, bareTrustedAt, 0, 0), -K_EINVAL);
+    expectEq32("removexattr(a.txt, security.)", invoke(235, aTxtAt, bareSecurityAt, 0, 0), -K_EINVAL);
+    expectEq32("removexattr(a.txt, system.)", invoke(235, aTxtAt, bareSystemAt, 0, 0), -K_ENOTSUP);
+    expectEq32("removexattr(a.txt, system.x)", invoke(235, aTxtAt, systemAt, 0, 0), -K_ENOTSUP);
+    expectEq32("removexattr(a.txt, system.posix_acl_access): clearing an ACL is a no-op", invoke(235, aTxtAt, aclAt, 0, 0), 0);
+    expectEq32("removexattr(a.txt, system.posix_acl_default): clearing an ACL is a no-op", invoke(235, aTxtAt, aclDefaultAt, 0, 0), 0);
+    expectEq32("removexattr(missing, bogus.x): resolution precedes the classification", invoke(235, missingAt, bogusAt, 0, 0), -K_ENOENT);
+
+    // The modelled attribute through the path forms (it used to
+    // be reachable only through the descriptor forms).
+    expectEq32("setxattr(a.txt, user.DOSATTRIB)", invoke(226, aTxtAt, dosAt, valAt, 1, 0), 0);
+    S32 dosLen = invoke(229, aTxtAt, dosAt, bufAt, 64);
+    expectEq32("getxattr(a.txt, user.DOSATTRIB) reads the set back", dosLen, 1);
+    if (dosLen == 1 && context.memory->readb(bufAt) != 'v') testFail("getxattr(a.txt, user.DOSATTRIB) value is not 'v'");
+    expectEq32("setxattr(a.txt, user.DOSATTRIB, CREATE) on a present attribute", invoke(226, aTxtAt, dosAt, valAt, 1, 1), -K_EEXIST);
+    expectEq32("removexattr(a.txt, user.DOSATTRIB)", invoke(235, aTxtAt, dosAt, 0, 0), 0);
+    expectEq32("removexattr(a.txt, user.DOSATTRIB) again: absent", invoke(235, aTxtAt, dosAt, 0, 0), -K_ENODATA);
+
+    // The link itself (the l-forms): user.* is refused outright,
+    // trusted.*/security.* behave as on a file.
+    expectEq32("lsetxattr(ln, user.x): user.* never applies to a link", invoke(227, lnAt, nameAt, valAt, 1, 0), -K_EPERM);
+    expectEq32("lsetxattr(ln, user.)", invoke(227, lnAt, bareUserAt, valAt, 1, 0), -K_EPERM);
+    expectEq32("lsetxattr(ln, user.DOSATTRIB)", invoke(227, lnAt, dosAt, valAt, 1, 0), -K_EPERM);
+    expectEq32("lsetxattr(ln, bogus.x)", invoke(227, lnAt, bogusAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("lsetxattr(ln, trusted.)", invoke(227, lnAt, bareTrustedAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("lsetxattr(ln, trusted.x) is stored on the link", invoke(227, lnAt, trustedAt, valAt, 1, 0), 0);
+    expectEq32("lgetxattr(ln, trusted.x) reads it back", invoke(230, lnAt, trustedAt, bufAt, 256), 1);
+    expectEq32("lremovexattr(ln, trusted.x)", invoke(236, lnAt, trustedAt, 0, 0), 0);
+    expectEq32("lremovexattr(ln, trusted.x) again: absent", invoke(236, lnAt, trustedAt, 0, 0), -K_ENODATA);
+    expectEq32("lremovexattr(ln, user.x)", invoke(236, lnAt, nameAt, 0, 0), -K_EPERM);
+    expectEq32("lremovexattr(ln, system.posix_acl_access)", invoke(236, lnAt, aclAt, 0, 0), -K_ENOTSUP);
+    // The following form lands on the target.
+    expectEq32("setxattr(ln, user.x) follows to a.txt", invoke(226, lnAt, nameAt, valAt, 1, 0), 0);
+    expectEq32("getxattr(a.txt, user.x) sees the followed set", invoke(229, aTxtAt, nameAt, bufAt, 256), 1);
+    expectEq32("removexattr(a.txt, user.x) cleanup", invoke(235, aTxtAt, nameAt, 0, 0), 0);
+
+    // A directory is a normal target.
+    expectEq32("setxattr(d, user.x)", invoke(226, dAt, nameAt, valAt, 1, 0), 0);
+    expectEq32("removexattr(d, user.x)", invoke(235, dAt, nameAt, 0, 0), 0);
+    expectEq32("removexattr(d, system.posix_acl_access): the no-op clear applies to directories", invoke(235, dAt, aclAt, 0, 0), 0);
+    expectEq32("setxattr(d, user.)", invoke(226, dAt, bareUserAt, valAt, 1, 0), -K_EINVAL);
+
+    // The descriptor forms follow the same classification after
+    // their own verdicts (user.y is still stored on a.txt).
+    expectEq32("fsetxattr(fileFd, user.)", invoke(228, fileFd, bareUserAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("fsetxattr(fileFd, system.posix_acl_access, v)", invoke(228, fileFd, aclAt, valAt, 1, 0), -K_EINVAL);
+    expectEq32("fsetxattr(fileFd, user.x, NULL value, size 3)", invoke(228, fileFd, nameAt, 0, 3, 0), -K_EFAULT);
+    expectEq32("fsetxattr(9999, user.x, NULL value, size 3): the value precedes the descriptor", invoke(228, badFd, nameAt, 0, 3, 0), -K_EFAULT);
+    expectEq32("fsetxattr(fileFd, user.z)", invoke(228, fileFd, userZAt, valAt, 1, 0), 0);
+    expectEq32("fgetxattr(fileFd, user.z) reads the set back", invoke(231, fileFd, userZAt, bufAt, 256), 1);
+    expectEq32("flistxattr(fileFd) lists user.y and user.z", invoke(234, fileFd, bufAt, 256, 0), 14);
+    expectEq32("fremovexattr(fileFd, user.DOSATTRIB): the modelled name on a file that does not carry it", invoke(237, fileFd, dosAt, 0, 0), -K_ENODATA);
+    expectEq32("fremovexattr(fileFd, user.)", invoke(237, fileFd, bareUserAt, 0, 0), -K_EINVAL);
+    expectEq32("fremovexattr(fileFd, bogus.x) control", invoke(237, fileFd, bogusAt, 0, 0), -K_ENOTSUP);
+    expectEq32("fremovexattr(fileFd, system.posix_acl_access): the no-op clear", invoke(237, fileFd, aclAt, 0, 0), 0);
+    expectEq32("fremovexattr(fileFd, user.z)", invoke(237, fileFd, userZAt, 0, 0), 0);
+    expectEq32("fremovexattr(dirFd, user.x): a directory descriptor, absent", invoke(237, dirFd, nameAt, 0, 0), -K_ENODATA);
+
+    process->close(fileDesc->handle);
 }
 
 #endif
