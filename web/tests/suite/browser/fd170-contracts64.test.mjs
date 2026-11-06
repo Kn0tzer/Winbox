@@ -9,7 +9,11 @@ import { guestFixture } from '../lib/guest-fixtures.mjs';
 // no RESULT line prints.
 export default class Fd170Contracts64Test extends ProbeTest {
   constructor() {
-    super({ tag: 'fd170-contracts64', timeoutMs: 300000 });
+    // 900000 = the ProbeTest default: ProbeTest passes this value as
+    // the probe-slot wait budget too, and on the shared box the slot
+    // queue alone can exceed 300 s (two FD-170 RED attempts died in
+    // the queue at exactly 300 s without ever starting).
+    super({ tag: 'fd170-contracts64', timeoutMs: 900000 });
     this.guestArchitectures = ['x64'];
   }
   async run({ page }) {
