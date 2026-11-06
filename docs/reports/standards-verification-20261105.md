@@ -91,6 +91,35 @@ standard names the installed path as canonical).
   The draft standard's standing totals (686 / 111) had drifted
   behind tests added since; updated (correction 7 below).
 
+## The checking queue — verified literally
+
+After the standards were committed, the checks standard's §7 was
+followed as written: `/home/ubuntu/checks-ci/submit-check
+lane-standards`. It took the lane tip `b2a765d49…`, added exactly
+one definition commit (`dccd1a463`, the reviewed `.woodpecker.yml`
+this branch does not yet carry), pushed to the on-box gitea ref
+`checks/current` (not GitHub), and created pipeline #12. As the
+standard states, it printed paths and exit status only; the
+verdict below is from the raw step logs at
+`/home/ubuntu/checks-ci/evidence/pipeline-12/queue-logs/`:
+
+- verify-source: the mounted commit equals the submitted commit;
+  the write probe against the source mount failed with
+  `Read-only file system`; the mounted tree was pristine.
+- citations: 352 rows, 232 / 14 / 99 / 7 — identical to by hand.
+- js-unit: **351 passed, 2 failed**, the failures exactly
+  `provenance-artifacts` and `runtime-completeness` — the
+  bare-checkout pair §0 of the checks standard documents (the
+  queue runs an unbuilt, unprepared checkout by design).
+- js-legacy: exit 0, 0 failed, 1 skipped.
+- native suites: main **689 tests, 0 FAILED**; x64 **113 tests,
+  0 FAILED** — identical totals to the by-hand serial runs.
+- run-native: exit 0.
+- Overall pipeline status: failure, carried entirely by the one
+  documented js-unit exit — the same shape Stage 0's acceptance
+  recorded. The queue and the by-hand checks agree on everything,
+  including what fails and why.
+
 ## Combining — mechanics verified on a scratch composition
 
 A real composition was deliberately not performed: the batch-8
