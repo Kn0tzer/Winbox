@@ -33,5 +33,5 @@ against `wine32.zip` by `tools/rootfs64/check_runtime_completeness.py`
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| mf.dll | 789153 | 6446d89d9e11e3542b3191743e67d195914aa6acce64036756f52535ac7e946e |
-| propsys.dll | 388367 | b0b3e7f2303328d23aa3319c8f97a9491f8346115ef8caf36dd733b4557cf784 |
+| mf.dll | 789153 | 98800d6b755221094fc67d4e3ce023f41546873df893b1f7e83609ed67457a59 |
+| propsys.dll | 388367 | f3116589e19adadf5cbe4182d40e37899f70e8738a5562a56921517b692b6c7f |

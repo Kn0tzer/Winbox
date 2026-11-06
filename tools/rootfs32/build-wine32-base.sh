@@ -247,11 +247,11 @@ echo "=== FD-167 contract backport substitution ==="
 # so every shipped copy carries the fixed bytes. Fail-closed on the
 # pins, like the win32u backport above.
 FD167_DIR="$HERE/wine10-fd167-i386"
-FD167_PINS="bluetoothapis.dll=0c721de46d5ad968123f61fa6b1805d319788d4aa19984e72e905e1d51e830b7
-bthprops.cpl=174235d2bcdaf40d5ab06175ae86cd97f2d98a2e49b6970dc36830b46a47969d
-mfplat.dll=f7f5fe208c5b2880b2cc61596755dc39ea978a556674132fa36f485ab65472ac
-wevtapi.dll=a1f83e6c12b69bcbc86a4f5c1d7478eb7381ca10c92df6af6326292104295747
-winusb.dll=7f98aec40cc2bbd930ea0ff5036671ba5606d7d2fcdbf4f0b82047a47527e499"
+FD167_PINS="bluetoothapis.dll=a0544c64170238beb521b4683c95bc4b9fa5f92b3a0ae570c2242079240eef37
+bthprops.cpl=c79d780c00638dae62787ebc6b56ac3fb303ce484f87514c2e6f8ad317bb51b7
+mfplat.dll=5fe1cd0d1ec886c2c7cbe79500d16792bbb265a7f1dcd2ab26812a9126819aed
+wevtapi.dll=8afe9e718174bb0a8e6d020f48b107497d1b4dafe3456614fd6ed9126bec8486
+winusb.dll=d83be550a7fa79e3a2573a0cc11bcb5cd2275fb2828a8e18cf3a3f350532536e"
 for entry in $FD167_PINS; do
     f="${entry%%=*}"; pin="${entry#*=}"
     src="$FD167_DIR/$f"
@@ -270,15 +270,15 @@ echo "=== FD-169 CRT substitution (i386) ==="
 # Fail-closed on the pins, like the win32u substitution above.
 FD169_DIR="$HERE/wine10-fd169-i386"
 declare -A FD169_SHA32=(
-  [msvcr100.dll]=29007c22d0081fe2f499a8eb0d1341449bdd58c3d47a8c5e197b85910a0b3322
-  [msvcr110.dll]=e2e0a731b4b92de404420f00c88cde465a5303f51e2ce106016911fff70d5b8f
-  [msvcr120.dll]=0819776bd30bf6cb2e2e041af96f3df82c94410049d582decf7a2c6ef90a1dbf
-  [msvcr70.dll]=cad2f54a8fb5654f5bc42290e2d6ed21789e59e7ccd9bca4c1e0c5947c2ef6a9
-  [msvcr71.dll]=05e32b5f829b5d1bbdc9f4e028d3fc52d3ae27cdecffb4e519ce7d3decfc2af8
-  [msvcr80.dll]=f4cbb861805987dee5b5d27612298510ba6ffe6c95dc9bf93c06a5a8a7bdcc82
-  [msvcr90.dll]=501ceebce97c19dc2bf47e6b6a82ccf2fbd00f2644ffd8f21917f40c8741213c
-  [msvcrt.dll]=6bb88c48aeba9b92b12dd9b0c61554996758a5b00f94c7aca561bdc2af0e5a72
-  [ucrtbase.dll]=fa99ad18033d40d26d567749e25cd8e60c6986ed2c14fdeb07c59ac4ad0b1c17
+  [msvcr100.dll]=c8e9bbb1aadcda1584fe6fa1c7371ab1d79d7f7ea01c6a9da18ee9086fb863e6
+  [msvcr110.dll]=fcbaef875c3201f903adf82f01d9ad956f40eeaec1cf04bc6b4c97f532265cff
+  [msvcr120.dll]=5aa48ebd548dd5d985856383efc8ecc62b2cd6b75e0aa325de145d39535bd694
+  [msvcr70.dll]=0406d46a99a8926f1af0a1a9f06c97a6bd8790bd8394f6ed5c0ddd3a4c1ec266
+  [msvcr71.dll]=641c1554fbea10f82eff4bc06f520c9e6bfea744a41d2cf6ab88c77c08363b69
+  [msvcr80.dll]=13b75e2323112b54d741eee2f7565c505f63db60cc1e75f519b49acb6d8776cc
+  [msvcr90.dll]=7635463213c7588672b94915b9bb3cb37a6a16d922bfb93144d1ecf3b4f615c2
+  [msvcrt.dll]=03c832d2d826fc334dec79714295219c095cf91261263a46a98d134220a18b6b
+  [ucrtbase.dll]=dda971fcfdea0abdc94aab827360278824d0b9f5c0eb1ef5048f2c27236cf5f8
 )
 for dll in "${!FD169_SHA32[@]}"; do
   src="$FD169_DIR/$dll"
@@ -299,25 +299,25 @@ echo "=== FD-171 i386 PE substitution ==="
 # carries both lanes' functions (see wine10-fd167-fd171-i386/README.md).
 FD171_DIR="$HERE/wine10-fd171-i386"
 FD171_SHA32=(
-    "cfgmgr32.dll 9aad4b1c185244d184a2087fe9e6f367e89fa201652d7b55437b4fd537301c60"
-    "combase.dll cca9be3845f46d616c5c2fd0d31d9153fc9ccf40e09b651f6f003dbe5b97696e"
-    "cryptext.dll 7783edb4d30d4e71f98687222c4d1874c5830a28a0134d02b14f2e215ce3c119"
-    "d2d1.dll b549db04f4811d67407993588f72134a32aaec7e555f9bd1d6285d81ae04cde3"
-    "hid.dll ca37389cc7f4646f488163128d6110a80688496b8c0399e70838d1a7f308f69b"
-    "kernel32.dll 35628e12975ab305abd6785c371acdf1a1f302b26f7dc454053d5b56d7fa0607"
-    "kernelbase.dll d50f6a31710f8241483ceca281796b53d27db7c3fc02a485c835b94d25b70c53"
-    "mscms.dll 99c8c3006511653e276d9a00016f7ce1a58f8214a8c2f0e91fbf54744ddbefcc"
-    "ntdll.dll 2da0bf73e03d6ecbbece6e2b92985bbfda75e73e1ed465d6c452d3a0e2b7fc90"
-    "pdh.dll d386d02950cb2c9f0c3d5cb85b74858d4d4c47b7bf9b17bbbcdff5d232501bc0"
-    "prntvpt.dll 636d13280be1256bd1b8f3c6c84aa465ca6fafbbd65d0959e1b980db3d5ff6c2"
-    "setupapi.dll 50615e6394c3169848f0f3b076a5cf1d9c2ecf767f149ff395c5b12996606ed9"
-    "sspicli.dll 1d7daa3e8e377e4950baeeb402100ffcae0cd256ab1e213c737f10a445890a9e"
-    "vcomp.dll c42871b35a25fa777cdda468e58caea7fa911580fd818ab88c74612ec9f7892f"
-    "vcomp100.dll 25ffbfd9726c5db96bff35a4e0e0640ec9ba126f736e390029b7370d88874d7f"
-    "vcomp110.dll bed64f70d41d408aab3885a02fd3cfbe0013aa75bcb242b5a7ea40a72d62a995"
-    "vcomp120.dll 0566b5fb2121c984f6629e8f9810b78974e15bded8787f653fd27bb070e4206d"
-    "vcomp140.dll d2ccda0b5c74d7b7d3f518af3cb0be28525e9255d1cd9c96917ee2ebc19892c0"
-    "vcomp90.dll bb48278533d3beea3f4962913309dc35c7ae6aac0904aa1dcb119feb63ec8d87"
+    "cfgmgr32.dll 34ceba5a529294a15710977e496170c9b62c90b51203eafea5f6c7afb9ed5e12"
+    "combase.dll 3b7a291a63eddc5d8a73a43b87a8485e11cecf4ac6627e6d21764857d9e34b61"
+    "cryptext.dll 53e417c2c68de322d5a7793dea2275709013e05e6dba61e7b1008db460efe1a1"
+    "d2d1.dll c7f43ca2ff47fd91c5699dd58cb87766bb6f58712c13dfd5e9812eb3842aa58d"
+    "hid.dll 34b191001a4c8835a7cd1388d9d141e814ff7d4a087538c150fa0dc80b0aaa6a"
+    "kernel32.dll 752d40eed73ec976eb6d99dbb7cd5896952ba640ee9d32797f018c30c59cda7a"
+    "kernelbase.dll 4959557be956b09d4b79d379c1354ad7edb13673c5bffdd4bde2f5d34de0f31c"
+    "mscms.dll 331b045cfbc8cf93acd9f820f4060f73d83c6a8132db07fab88a9c3b9521bd23"
+    "ntdll.dll 5f2f866d8d0bf3529965f49f0362ed46ce9366677423417016b24391da28581e"
+    "pdh.dll 5d79d70f7a2942d159090ea0ecb8407da5370d144adcc19f025af2b62876a68c"
+    "prntvpt.dll 36e998791374b6de07747d91ffe93ea3167e0c407194aca9c0475c9c3ba19133"
+    "setupapi.dll 5fcef9aa9344772bdb1ee7c71517f3abfc456850aa4c9e64965114e02971d29f"
+    "sspicli.dll 0c4b8cb4234d468d8b1cb742b6ef4fc7a9e9b61634709aadc8561431d8e8a719"
+    "vcomp.dll 739020d398a48f14b8c290e036e2c0da9201a623756453c9feeccaf1f937d9b4"
+    "vcomp100.dll 5e62b5281b786cad54ea07a671d2b2630f1e4ed61e03f51f1b128882386f5036"
+    "vcomp110.dll 5ccad41c55939f6a084de1aaabe3633645cac511a379c0be634f34124e73b81c"
+    "vcomp120.dll 4d1a0e4ce170a21ae959fcce87a0775c8ae5fb48f1207f7f0d896b7f686a1a60"
+    "vcomp140.dll cd95ffcd6da529438863bc85fc90c7b10da28cf3e37ca0e30729baab1db23d63"
+    "vcomp90.dll 774c9483c79d91fea4e4d3bbbd7f40db22804714ac1d2a15d471f3631a08a075"
 )
 for entry in "${FD171_SHA32[@]}"; do
     dll="${entry%% *}"; want="${entry##* }"
@@ -339,8 +339,8 @@ echo "=== FD-167+FD-171 combined i386 PE substitution ==="
 # substitutions above.
 FD167FD171_DIR="$HERE/wine10-fd167-fd171-i386"
 FD167FD171_SHA32=(
-    "mf.dll 6446d89d9e11e3542b3191743e67d195914aa6acce64036756f52535ac7e946e"
-    "propsys.dll b0b3e7f2303328d23aa3319c8f97a9491f8346115ef8caf36dd733b4557cf784"
+    "mf.dll 98800d6b755221094fc67d4e3ce023f41546873df893b1f7e83609ed67457a59"
+    "propsys.dll f3116589e19adadf5cbe4182d40e37899f70e8738a5562a56921517b692b6c7f"
 )
 for entry in "${FD167FD171_SHA32[@]}"; do
     dll="${entry% *}"; want="${entry##* }"
@@ -350,6 +350,39 @@ for entry in "${FD167FD171_SHA32[@]}"; do
     cp "$FD167FD171_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-167+FD-171 combined i386 DLLs substituted: sha256 verified"
+
+echo "=== builtin-signature check (i386 PE substitutions) ==="
+# Every substituted PE DLL must carry the "Wine builtin DLL" signature
+# (bytes 64..96): without it the Wine loader ignores the PE file as a
+# builtin, falls back to the .so, and the 32-bit boot dies at ntdll.dll
+# ("invalid .so library ... too old?"). The stamp is applied by the
+# lane build scripts (tools/rootfs32/stamp-wine-builtin.sh); this check
+# fails the base build closed if a future rebuild forgets it, instead
+# of shipping a zip that cannot boot. The deb's own PE files and the
+# vkd3d payloads are not substituted here and are out of scope: only
+# the 35 files substituted above are checked.
+python3 - "$OUT/opt/wine-stable/lib/wine/i386-windows" <<'EOF'
+import os, sys
+d = sys.argv[1]
+sig = b"Wine builtin DLL\x00" + b"\x00" * 15
+# Exactly the files substituted above (FD-167 5 + FD-169 9 + FD-171 19
+# + FD-167+FD-171 combined 2). The deb's own PE files and the vkd3d
+# payloads are not substituted here and are out of scope.
+names = ["bluetoothapis.dll", "bthprops.cpl", "mfplat.dll", "wevtapi.dll", "winusb.dll",
+         "msvcr100.dll", "msvcr110.dll", "msvcr120.dll", "msvcr70.dll", "msvcr71.dll",
+         "msvcr80.dll", "msvcr90.dll", "msvcrt.dll", "ucrtbase.dll",
+         "cfgmgr32.dll", "combase.dll", "cryptext.dll", "d2d1.dll", "hid.dll",
+         "kernel32.dll", "kernelbase.dll", "mscms.dll", "ntdll.dll", "pdh.dll",
+         "prntvpt.dll", "setupapi.dll", "sspicli.dll", "vcomp.dll", "vcomp90.dll",
+         "vcomp100.dll", "vcomp110.dll", "vcomp120.dll", "vcomp140.dll",
+         "mf.dll", "propsys.dll"]
+assert len(names) == 35
+bad = [n for n in names if open(os.path.join(d, n), "rb").read(96)[64:96] != sig]
+if bad:
+    print("build-wine32-base: substituted PE files without the Wine builtin signature: " + ", ".join(bad), file=sys.stderr)
+    sys.exit(1)
+print("builtin-signature check: all 35 substituted i386 PE files carry the Wine builtin signature")
+EOF
 
 
 echo "=== extracting the two preserved members from the shipped zip ==="

@@ -11,7 +11,7 @@ from the artifacts, so the register rows citing it stay honest.
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
 | w64 | `web/runtime/wine64.zip` | 195094569 | `4bdd429ccef59c1bfa745f590734454e0f3835a58d948bd224fbc67d86574467` | 1257 |
-| w32 | `web/runtime/wine32.zip` | 231609651 | `f100d5a1606e3d432958327e486423837467b7bfa499f56db735530c56f95333` | 1926 |
+| w32 | `web/runtime/wine32.zip` | 231609042 | `cdba91dd24d626004364bce5b05dcd8b34ee7cd2da4ebcd5113492611c8cc2a9` | 1926 |
 | p64 | `web/runtime/prefix64.zip` | 19133895 | `b1bfa64e0863ccf73dfcb244416ac6e3e14fa1de1f491aab7dd2c78bc0131ee5` | 152 |
 | p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 11469777 | `88fad6d6e43873152d1e9f04b6607930d3e38975fce4ec37fdb525a2f7b3e812` | 100 |

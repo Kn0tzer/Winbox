@@ -95,6 +95,14 @@ for d in "${DLLS[@]}"; do
     cp "$WORK/pe-build/dlls/$d/$d.dll" "$OUT/$d.dll"
 done
 
+# Stamp the Wine builtin signature (tools/rootfs32/stamp-wine-builtin.sh):
+# the mingw linker writes a plain DOS stub, but the Wine loader only
+# treats a PE DLL as a builtin when it carries the "Wine builtin DLL"
+# signature -- without it the 32-bit boot dies at ntdll.dll. Stamp
+# every product before the export check, so the checked bytes are the
+# shipped bytes.
+for d in "${DLLS[@]}"; do "$HERE/stamp-wine-builtin.sh" "$OUT/$d.dll"; done
+
 # Fail closed: every product must be an i386 PE carrying a sample of
 # its FD-169 exports (their non-stub nature is proven by the export
 # census and the guest fixture; presence + architecture is checked

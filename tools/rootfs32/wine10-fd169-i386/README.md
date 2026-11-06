@@ -12,12 +12,12 @@ verifies each file against the sha256 pins below before use
 
 | file | sha256 |
 |---|---|
-| msvcr100.dll | 29007c22d0081fe2f499a8eb0d1341449bdd58c3d47a8c5e197b85910a0b3322 |
-| msvcr110.dll | e2e0a731b4b92de404420f00c88cde465a5303f51e2ce106016911fff70d5b8f |
-| msvcr120.dll | 0819776bd30bf6cb2e2e041af96f3df82c94410049d582decf7a2c6ef90a1dbf |
-| msvcr70.dll | cad2f54a8fb5654f5bc42290e2d6ed21789e59e7ccd9bca4c1e0c5947c2ef6a9 |
-| msvcr71.dll | 05e32b5f829b5d1bbdc9f4e028d3fc52d3ae27cdecffb4e519ce7d3decfc2af8 |
-| msvcr80.dll | f4cbb861805987dee5b5d27612298510ba6ffe6c95dc9bf93c06a5a8a7bdcc82 |
-| msvcr90.dll | 501ceebce97c19dc2bf47e6b6a82ccf2fbd00f2644ffd8f21917f40c8741213c |
-| msvcrt.dll | 6bb88c48aeba9b92b12dd9b0c61554996758a5b00f94c7aca561bdc2af0e5a72 |
-| ucrtbase.dll | fa99ad18033d40d26d567749e25cd8e60c6986ed2c14fdeb07c59ac4ad0b1c17 |
+| msvcr100.dll | c8e9bbb1aadcda1584fe6fa1c7371ab1d79d7f7ea01c6a9da18ee9086fb863e6 |
+| msvcr110.dll | fcbaef875c3201f903adf82f01d9ad956f40eeaec1cf04bc6b4c97f532265cff |
+| msvcr120.dll | 5aa48ebd548dd5d985856383efc8ecc62b2cd6b75e0aa325de145d39535bd694 |
+| msvcr70.dll | 0406d46a99a8926f1af0a1a9f06c97a6bd8790bd8394f6ed5c0ddd3a4c1ec266 |
+| msvcr71.dll | 641c1554fbea10f82eff4bc06f520c9e6bfea744a41d2cf6ab88c77c08363b69 |
+| msvcr80.dll | 13b75e2323112b54d741eee2f7565c505f63db60cc1e75f519b49acb6d8776cc |
+| msvcr90.dll | 7635463213c7588672b94915b9bb3cb37a6a16d922bfb93144d1ecf3b4f615c2 |
+| msvcrt.dll | 03c832d2d826fc334dec79714295219c095cf91261263a46a98d134220a18b6b |
+| ucrtbase.dll | dda971fcfdea0abdc94aab827360278824d0b9f5c0eb1ef5048f2c27236cf5f8 |
