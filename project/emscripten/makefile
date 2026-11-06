@@ -321,6 +321,35 @@ ifneq ($(strip $(ASSET_FILES)),)
 	done
 endif
 
+# --- Precompiled header ---------------------------------------------------
+# 330 of the 336 project C++ sources include "boxedwine.h", and that one
+# header pulls the same large chain (STL, platform headers, the kernel/cpu
+# core headers) into every translation unit. Build that chain once per
+# BUILD_DIR as a clang precompiled header; each of those TUs then loads the
+# serialized form instead of re-parsing the chain. Object files produced
+# this way are byte-identical to the plain build (proof in the lane
+# record); only front-end work changes. Third-party sources (lib/) and
+# the project sources that do NOT include boxedwine.h are excluded below
+# and keep the plain path: a TU that does not include the header must
+# never have it forced on it. The .d file generated next to the .pch
+# makes every header in the chain a prerequisite of the .pch, so editing
+# any of them rebuilds the .pch and, through it, every dependent object.
+PCH_FILE := $(BUILD_DIR)/boxedwine.h.pch
+# The PCH set is computed by membership: project sources only (lib/ is
+# third-party and never gets the header - a path-pattern exclusion of
+# lib/ was tried first and silently did not match, which is why this is
+# a membership filter), minus the named sources that do not include
+# boxedwine.h.
+PCH_SRCS := $(filter $(PROJDIR)/source/% $(PROJDIR)/platform/%,$(SRCS))
+PCH_EXCLUDE := %/source/emulation/cpu/jit64.cpp.o %/source/emulation/cpu/jit64wasm.cpp.o %/source/util/bw64jitstats.cpp.o %/source/util/bw64metrics.cpp.o %/source/util/bwjittable.cpp.o %/source/util/ring_buffer.cpp.o
+PCH_OBJS := $(filter-out $(PCH_EXCLUDE),$(PCH_SRCS:%=$(BUILD_DIR)/%.o))
+$(PCH_OBJS): PCH_FLAGS := -include-pch $(PCH_FILE)
+$(PCH_OBJS): $(PCH_FILE)
+$(PCH_FILE): INCLUDES := -I../../lib/asmjit -I../../include -I../../lib/simde
+$(PCH_FILE): ../../include/boxedwine.h makefile
+	@$(MKDIR_P) $(dir $@)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -x c++-header -MMD -MP -MT $@ -MF $@.d -c $< -o $@
+
 # assembly
 $(BUILD_DIR)/%.s.o: %.s
 	@$(MKDIR_P) $(dir $@)
@@ -334,7 +363,7 @@ $(BUILD_DIR)/%.c.o: %.c makefile
 # c++ source
 $(BUILD_DIR)/%.cpp.o: %.cpp makefile
 	@$(MKDIR_P) $(dir $@)
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(PCH_FLAGS) -MMD -MP -c $< -o $@
 
 .PHONY: clean
 
@@ -342,6 +371,7 @@ clean:
 	$(RM) -r $(BUILD_DIR)
 
 -include $(DEPS)
+-include $(PCH_FILE).d
 
 MKDIR_P ?= mkdir -p
 

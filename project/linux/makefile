@@ -155,7 +155,7 @@ $(BUILD_DIR)/%.c.o: %.c
 # c++ source
 $(BUILD_DIR)/%.cpp.o: %.cpp
 	@$(MKDIR_P) $(dir $@)
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+	@$(CXX) $(PCH_FLAGS) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 .PHONY: clean
 
@@ -164,12 +164,46 @@ clean:
 
 $(ALL): $(NATIVE_CONFIG_STAMP)
 
+# --- Precompiled header ---------------------------------------------------
+# Same chain as the Emscripten build (see project/emscripten/makefile):
+# 330 of the 336 project C++ sources include "boxedwine.h" and re-parse
+# the same large header chain. GCC form: the header is compiled once per
+# BUILD_DIR into boxedwine.h.gch, in a pch/ directory whose boxedwine.h
+# is a symlink to the real header. Objects that include boxedwine.h get
+# -I< pch dir > FIRST (via PCH_FLAGS, ahead of CPPFLAGS) plus
+# -include boxedwine.h, so the compiler finds the .gch next to the
+# symlink and loads it instead of re-parsing; -Winvalid-pch makes a
+# rejected .gch loud instead of a silent fallback. Third-party sources
+# (lib/) and the project sources that do NOT include boxedwine.h are
+# excluded and keep the plain path. The .gch depends on the config stamp,
+# so any flag change rebuilds it; the generated .d makes every header in
+# the chain a prerequisite, so editing one rebuilds the .gch and, through
+# it, every dependent object. Objects are byte-identical to the plain
+# build (proof in the lane record).
+PCH_DIR := $(BUILD_DIR)/pch
+PCH_FILE := $(PCH_DIR)/boxedwine.h.gch
+# The PCH set is computed by membership: project sources only (lib/ is
+# third-party and never gets the header - a path-pattern exclusion of
+# lib/ was tried first and silently did not match, which is why this is
+# a membership filter), minus the named sources that do not include
+# boxedwine.h.
+PCH_SRCS := $(filter $(PROJDIR)/source/% $(PROJDIR)/platform/%,$(SRCS))
+PCH_EXCLUDE := %/source/emulation/cpu/jit64.cpp.o %/source/emulation/cpu/jit64wasm.cpp.o %/source/util/bw64jitstats.cpp.o %/source/util/bw64metrics.cpp.o %/source/util/bwjittable.cpp.o %/source/util/ring_buffer.cpp.o
+PCH_OBJS := $(filter-out $(PCH_EXCLUDE),$(PCH_SRCS:%=$(BUILD_DIR)/%.o))
+$(PCH_OBJS): PCH_FLAGS := -I$(abspath $(PCH_DIR)) -include boxedwine.h -Winvalid-pch
+$(PCH_OBJS): $(PCH_FILE)
+$(PCH_FILE): $(PROJDIR)/include/boxedwine.h $(NATIVE_CONFIG_STAMP)
+	@$(MKDIR_P) $(PCH_DIR)
+	@ln -sf $(PROJDIR)/include/boxedwine.h $(PCH_DIR)/boxedwine.h
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -x c++-header -MMD -MP -MT $@ -MF $@.d -c $(PCH_DIR)/boxedwine.h -o $@
+
 $(NATIVE_CONFIG_STAMP):
 	@$(MKDIR_P) $(BUILD_DIR)
 	@$(RM) $(BUILD_DIR)/.build-config-*
 	@touch $@
 
 -include $(DEPS)
+-include $(PCH_FILE).d
 
 MKDIR_P ?= mkdir -p
 
