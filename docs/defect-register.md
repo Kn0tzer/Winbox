@@ -9152,6 +9152,25 @@ do not close the entry until they land.
   workaround documented in `tools/guest-fixtures/fd171-contracts.c`),
   2026-11-06.
 
+- **FD-192 — The 32-bit `d2d1.dll` still crashes on
+  `D2D1CreateDeviceContext` with a null surface instead of
+  returning "invalid argument".** *(Medium)* The 64-bit side was
+  fixed in the batch-9 gate (the Wine patch now returns
+  `E_INVALIDARG` when the surface is null, proven by the 64-bit
+  fixture's `D2D1CreateDeviceContext(NULL)` check returning
+  `hr=80070057`). The 32-bit Wine 10 `d2d1.dll` never received the
+  check: the 32-bit guest fixture crashes deterministically at
+  that call (`BW64-FAIL guest-memfault32 pid=111 tid=112 addr=0x0
+  eip=0x78692441`, Wine unhandled page fault on read access to
+  `00000000`), reproduced byte-identically on re-run, after passing
+  every earlier group — so the 32-bit side is one missing fix, not
+  a broken fixture or boot. Closing terms: port the null-surface
+  check to the 32-bit `d2d1.dll`, proven by `fd171-contracts32`
+  passing with the `D2D1CreateDeviceContext(NULL)` check green.
+  Found by the batch-9 final gate, 2026-11-06; evidence the gate
+  logs `test-results/merge-batch9-20261106/browser-fixtures-contracts-final.log`
+  and `fd171-contracts32-final-rerun1.log`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
