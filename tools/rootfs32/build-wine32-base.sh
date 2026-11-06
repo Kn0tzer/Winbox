@@ -288,6 +288,47 @@ for dll in "${!FD169_SHA32[@]}"; do
   cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-169 CRT DLLs substituted: 9 sha256 verified"
+echo "=== FD-171 i386 PE substitution ==="
+# 21 PE DLLs rebuilt from the pinned wine-10.0 source with the FD-171
+# contract backports (tools/rootfs32/wine10-fd171-i386/, produced by
+# build-wine10-fd171.sh), replacing the deb builds that answer 96
+# long-tail exports with winebuild stubs (register FD-171). Same
+# fail-closed pin discipline as the win32u backport above. propsys
+# and mf also appear in the FD-167 substitution; whichever runs last
+# wins, and composition must reconcile the two lanes' pins (see the
+# wine10-fd171-i386 README).
+FD171_DIR="$HERE/wine10-fd171-i386"
+FD171_SHA32=(
+    "cfgmgr32.dll 4d4ca217b8b4173e6e821b7860f07c3eb388930fb58eb7a84d847fb6b4fd5957"
+    "combase.dll da03dcd0f19e0759844f6d2e38d65a5e8f85ea15da43417202dba7f0e2db99dc"
+    "cryptext.dll 1ed21bab40c9aa95e5fc8998d14d5e164445b46a5d0d52d4bc2b8ef148826253"
+    "d2d1.dll e5c89536f398c95f47a87eadbfd896c8afe631614ac62555eae5015e49c3071d"
+    "hid.dll 616c678dbd7a349e50839e231ea3b1a578994cdcd4513fad05bbbbb4b547d816"
+    "kernel32.dll 46c41b95b74dde715a59b10cceff6d44fc1db1acab4c61c64265fa7e05645995"
+    "kernelbase.dll 1847ac4136515dc43b178d9849b4ddab44e3b8469d627787e9d3372a5f545676"
+    "mf.dll 352432760c5ca11ba162eb01e4591252c9e4b4e677ea1d270a6df270ab1a58dd"
+    "mscms.dll 1c313f89f88bc3b94546115f85a81bf25f4c3f18886d5c2bc9881ad1a3e71328"
+    "ntdll.dll 1f326d17feba65f46e1119f243b7dc8d83adf6be575c74f14945d57bc89f27cc"
+    "pdh.dll 693de5a82e04d87e9458136df7b553c6165dea188aed364be69f6c0154b28daa"
+    "prntvpt.dll 3a5285c8d0a6fc48762e463ddd80530b54d6fd939d752f98e96e86abec0f4bec"
+    "propsys.dll 7e776f6d3de7a35ec5a99d42386929ffd1cc13bf6eac530271013f18529fba29"
+    "setupapi.dll 3b878c2dbdde59020851f67a279ce9d7faf1b0a2dca6c3eac84e6cf8f09fddf6"
+    "sspicli.dll 6540168dfc8e4c56f9f74f89d357e916cac98c368c7fb43f7e974d0d6e19745a"
+    "vcomp.dll 1481435300757f8b202b1c7ec85394fcf9e80984b3c041dfa149c7e7edc48aac"
+    "vcomp100.dll 4e534f2cc7dfe02f8b076cee55fa7ddd5dbc58ecfb76b9ae08d48ba9ffb90e48"
+    "vcomp110.dll b862859ed8ffa3a7bda913b1fb289ecc4eb21af4087d4df1216dc3470e847ade"
+    "vcomp120.dll c5eec207a56fceb4fa4efdca97090d210c6df305c1f5729f1b70cfa99ccaa7e6"
+    "vcomp140.dll a66fc0452544a4ea11cca519ed9c091a077f5fd22c4bada303058930c331fa98"
+    "vcomp90.dll 1574571555952b734472aa338f35e9259a56c12c31dc77932d851b06b7ce3ccf"
+)
+for entry in "${FD171_SHA32[@]}"; do
+    dll="${entry%% *}"; want="${entry##* }"
+    [ -f "$FD171_DIR/$dll" ] || { echo "build-wine32-base: FD-171 DLL missing: $FD171_DIR/$dll (build it with tools/rootfs32/build-wine10-fd171.sh)" >&2; exit 2; }
+    got="$(sha256sum "$FD171_DIR/$dll" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "build-wine32-base: FD-171 $dll hash mismatch: $got != $want" >&2; exit 1; }
+    cp "$FD171_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-171 i386 DLLs substituted: sha256 verified"
 
 
 echo "=== extracting the two preserved members from the shipped zip ==="

@@ -94,7 +94,7 @@ for dll in msmpeg2vdec.dll msvcp140_codecvt_ids.dll; do
         exit 1
     fi
 done
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll; do
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll; do
     if [ ! -f "$WINE8BP64/$dll" ]; then
         echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
         exit 1
@@ -364,7 +364,7 @@ done
 # three as pure spec-stub modules; the backports carry Wine 10.0's own
 # implementations (plus the FD-167 no-device contract bodies) rebuilt
 # from the pinned 8.0 tree via wine8-fd170-contracts.patch.
-for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll; do
+for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll; do
     if [ -f "$WINE8BP64/$dll" ]; then
         cp "$WINE8BP64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"

@@ -1,0 +1,3275 @@
+diff --git a/dlls/cfgmgr32/cfgmgr32.spec b/dlls/cfgmgr32/cfgmgr32.spec
+index 29de7bb..c5b9e55 100644
+--- a/dlls/cfgmgr32/cfgmgr32.spec
++++ b/dlls/cfgmgr32/cfgmgr32.spec
+@@ -29,11 +29,11 @@
+ @ stub CM_Enable_DevNode
+ @ stub CM_Enable_DevNode_Ex
+ @ stdcall CM_Enumerate_Classes(long ptr long) setupapi.CM_Enumerate_Classes
+-@ stub CM_Enumerate_Classes_Ex
+-@ stub CM_Enumerate_EnumeratorsA
+-@ stub CM_Enumerate_EnumeratorsW
+-@ stub CM_Enumerate_Enumerators_ExA
+-@ stub CM_Enumerate_Enumerators_ExW
++@ stdcall CM_Enumerate_Classes_Ex(long ptr long ptr) setupapi.CM_Enumerate_Classes_Ex
++@ stdcall CM_Enumerate_EnumeratorsA(long ptr ptr long) setupapi.CM_Enumerate_EnumeratorsA
++@ stdcall CM_Enumerate_EnumeratorsW(long ptr ptr long) setupapi.CM_Enumerate_EnumeratorsW
++@ stdcall CM_Enumerate_Enumerators_ExA(long ptr ptr long ptr) setupapi.CM_Enumerate_Enumerators_ExA
++@ stdcall CM_Enumerate_Enumerators_ExW(long ptr ptr long ptr) setupapi.CM_Enumerate_Enumerators_ExW
+ @ stub CM_Find_Range
+ @ stub CM_First_Range
+ @ stub CM_Free_Log_Conf
+@@ -45,10 +45,10 @@
+ @ stub CM_Free_Res_Des_Handle
+ @ stdcall CM_Get_Child(ptr long long) setupapi.CM_Get_Child
+ @ stdcall CM_Get_Child_Ex(ptr long long ptr) setupapi.CM_Get_Child_Ex
+-@ stub CM_Get_Class_Key_NameA
+-@ stub CM_Get_Class_Key_NameW
+-@ stub CM_Get_Class_Key_Name_ExA
+-@ stub CM_Get_Class_Key_Name_ExW
++@ stdcall CM_Get_Class_Key_NameA(ptr ptr ptr long) setupapi.CM_Get_Class_Key_NameA
++@ stdcall CM_Get_Class_Key_NameW(ptr ptr ptr long) setupapi.CM_Get_Class_Key_NameW
++@ stdcall CM_Get_Class_Key_Name_ExA(ptr ptr ptr long ptr) setupapi.CM_Get_Class_Key_Name_ExA
++@ stdcall CM_Get_Class_Key_Name_ExW(ptr ptr ptr long ptr) setupapi.CM_Get_Class_Key_Name_ExW
+ @ stub CM_Get_Class_NameA
+ @ stub CM_Get_Class_NameW
+ @ stub CM_Get_Class_Name_ExA
+@@ -71,22 +71,22 @@
+ @ stdcall CM_Get_Device_ID_ExW(ptr ptr long long ptr) setupapi.CM_Get_Device_ID_ExW
+ @ stdcall CM_Get_Device_ID_ListA(str ptr long long) setupapi.CM_Get_Device_ID_ListA
+ @ stdcall CM_Get_Device_ID_ListW(wstr ptr long long) setupapi.CM_Get_Device_ID_ListW
+-@ stub CM_Get_Device_ID_List_ExA
+-@ stub CM_Get_Device_ID_List_ExW
++@ stdcall CM_Get_Device_ID_List_ExA(str ptr long long ptr) setupapi.CM_Get_Device_ID_List_ExA
++@ stdcall CM_Get_Device_ID_List_ExW(wstr ptr long long ptr) setupapi.CM_Get_Device_ID_List_ExW
+ @ stdcall CM_Get_Device_ID_List_SizeA(ptr str long) setupapi.CM_Get_Device_ID_List_SizeA
+ @ stdcall CM_Get_Device_ID_List_SizeW(ptr wstr long) setupapi.CM_Get_Device_ID_List_SizeW
+-@ stub CM_Get_Device_ID_List_Size_ExA
+-@ stub CM_Get_Device_ID_List_Size_ExW
++@ stdcall CM_Get_Device_ID_List_Size_ExA(ptr str long ptr) setupapi.CM_Get_Device_ID_List_Size_ExA
++@ stdcall CM_Get_Device_ID_List_Size_ExW(ptr wstr long ptr) setupapi.CM_Get_Device_ID_List_Size_ExW
+ @ stdcall CM_Get_Device_ID_Size(ptr ptr long) setupapi.CM_Get_Device_ID_Size
+-@ stub CM_Get_Device_ID_Size_Ex
++@ stdcall CM_Get_Device_ID_Size_Ex(ptr ptr long ptr) setupapi.CM_Get_Device_ID_Size_Ex
+ @ stdcall CM_Get_Device_Interface_AliasA(str ptr ptr ptr long) setupapi.CM_Get_Device_Interface_AliasA
+ @ stdcall CM_Get_Device_Interface_AliasW(wstr ptr ptr ptr long) setupapi.CM_Get_Device_Interface_AliasW
+ @ stub CM_Get_Device_Interface_Alias_ExA
+ @ stub CM_Get_Device_Interface_Alias_ExW
+-@ stub CM_Get_Device_Interface_ListA
+-@ stub CM_Get_Device_Interface_ListW
+-@ stub CM_Get_Device_Interface_List_ExA
+-@ stub CM_Get_Device_Interface_List_ExW
++@ stdcall CM_Get_Device_Interface_ListA(ptr ptr ptr long long) setupapi.CM_Get_Device_Interface_ListA
++@ stdcall CM_Get_Device_Interface_ListW(ptr ptr ptr long long) setupapi.CM_Get_Device_Interface_ListW
++@ stdcall CM_Get_Device_Interface_List_ExA(ptr ptr ptr long long ptr) setupapi.CM_Get_Device_Interface_List_ExA
++@ stdcall CM_Get_Device_Interface_List_ExW(ptr ptr ptr long long ptr) setupapi.CM_Get_Device_Interface_List_ExW
+ @ stdcall CM_Get_Device_Interface_List_SizeA(ptr ptr str long) setupapi.CM_Get_Device_Interface_List_SizeA
+ @ stdcall CM_Get_Device_Interface_List_SizeW(ptr ptr wstr long) setupapi.CM_Get_Device_Interface_List_SizeW
+ @ stdcall CM_Get_Device_Interface_List_Size_ExA(ptr ptr str long ptr) setupapi.CM_Get_Device_Interface_List_Size_ExA
+@@ -134,12 +134,12 @@
+ @ stub CM_Move_DevNode
+ @ stub CM_Move_DevNode_Ex
+ @ stub CM_Next_Range
+-@ stub CM_Open_Class_KeyA
+-@ stub CM_Open_Class_KeyW
+-@ stub CM_Open_Class_Key_ExA
+-@ stub CM_Open_Class_Key_ExW
++@ stdcall CM_Open_Class_KeyA(ptr str long long ptr long) setupapi.CM_Open_Class_KeyA
++@ stdcall CM_Open_Class_KeyW(ptr wstr long long ptr long) setupapi.CM_Open_Class_KeyW
++@ stdcall CM_Open_Class_Key_ExA(ptr str long long ptr long ptr) setupapi.CM_Open_Class_Key_ExA
++@ stdcall CM_Open_Class_Key_ExW(ptr wstr long long ptr long ptr) setupapi.CM_Open_Class_Key_ExW
+ @ stdcall CM_Open_DevNode_Key(long long long long ptr long) setupapi.CM_Open_DevNode_Key
+-@ stub CM_Open_DevNode_Key_Ex
++@ stdcall CM_Open_DevNode_Key_Ex(long long long long ptr long ptr) setupapi.CM_Open_DevNode_Key_Ex
+ @ stub CM_Query_Arbitrator_Free_Data
+ @ stub CM_Query_Arbitrator_Free_Data_Ex
+ @ stub CM_Query_Arbitrator_Free_Size
+diff --git a/dlls/combase/combase.spec b/dlls/combase/combase.spec
+index 4bdc143..acbbedc 100644
+--- a/dlls/combase/combase.spec
++++ b/dlls/combase/combase.spec
+@@ -59,7 +59,7 @@
+ @ stub NdrProxyForwardingFunction31
+ @ stub NdrProxyForwardingFunction32
+ @ stub NdrOleInitializeExtension
+-@ stub RoFailFastWithErrorContextInternal2
++@ stdcall RoFailFastWithErrorContextInternal2(long long ptr)
+ @ stub RoFailFastWithErrorContextInternal
+ @ stub UpdateProcessTracing
+ @ stdcall CLIPFORMAT_UserFree(ptr ptr)
+@@ -220,13 +220,13 @@
+ @ stdcall HPALETTE_UserMarshal(ptr ptr ptr)
+ @ stdcall HPALETTE_UserSize(ptr long ptr)
+ @ stdcall HPALETTE_UserUnmarshal(ptr ptr ptr)
+-@ stub HSTRING_UserFree
++@ stdcall HSTRING_UserFree(ptr ptr)
+ @ stub -arch=win64 HSTRING_UserFree64
+-@ stub HSTRING_UserMarshal
++@ stdcall HSTRING_UserMarshal(ptr ptr ptr)
+ @ stub -arch=win64 HSTRING_UserMarshal64
+-@ stub HSTRING_UserSize
++@ stdcall HSTRING_UserSize(ptr long ptr)
+ @ stub -arch=win64 HSTRING_UserSize64
+-@ stub HSTRING_UserUnmarshal
++@ stdcall HSTRING_UserUnmarshal(ptr ptr ptr)
+ @ stub -arch=win64 HSTRING_UserUnmarshal64
+ @ stdcall HWND_UserFree(ptr ptr)
+ @ stdcall HWND_UserMarshal(ptr ptr ptr)
+@@ -288,13 +288,13 @@
+ @ stdcall RoActivateInstance(ptr ptr)
+ @ stub RoCaptureErrorContext
+ @ stub RoClearError
+-@ stub RoFailFastWithErrorContext
++@ stdcall RoFailFastWithErrorContext(long)
+ @ stub RoFreeParameterizedTypeExtra
+ @ stub RoGetActivatableClassRegistration
+ @ stdcall RoGetActivationFactory(ptr ptr ptr)
+ @ stdcall RoGetAgileReference(long ptr ptr ptr)
+ @ stdcall RoGetApartmentIdentifier(ptr)
+-@ stub RoGetErrorReportingFlags
++@ stdcall RoGetErrorReportingFlags(ptr)
+ @ stub RoGetMatchingRestrictedErrorInfo
+ @ stdcall RoGetParameterizedTypeInstanceIID(long ptr ptr ptr ptr)
+ @ stdcall RoGetServerActivatableClasses(ptr ptr ptr)
+diff --git a/dlls/combase/roapi.c b/dlls/combase/roapi.c
+index 0f8a943..11d8918 100644
+--- a/dlls/combase/roapi.c
++++ b/dlls/combase/roapi.c
+@@ -524,3 +524,37 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
+ 
+     return REGDB_E_CLASSNOTREG;
+ }
++
++/* FD-171 backport: error-reporting entry points (upstream Wine dlls/combase/roapi.c). */
++/***********************************************************************
++ *      RoGetErrorReportingFlags (combase.@)
++ */
++HRESULT WINAPI RoGetErrorReportingFlags(UINT32 *flags)
++{
++    FIXME("(%p): stub\n", flags);
++
++    if (!flags)
++        return E_POINTER;
++
++    *flags = RO_ERROR_REPORTING_USESETERRORINFO;
++    return S_OK;
++}
++
++/***********************************************************************
++ *      RoFailFastWithErrorContext (combase.@)
++ */
++void WINAPI RoFailFastWithErrorContext(HRESULT hr)
++{
++    FIXME("(0x%08lx)\n", hr);
++    RaiseFailFastException(NULL, NULL, 0);
++}
++
++/***********************************************************************
++ *      RoFailFastWithErrorContextInternal2 (combase.@)
++ */
++void WINAPI RoFailFastWithErrorContextInternal2(HRESULT error, ULONG exception_count, /* PSTOWED_EXCEPTION_INFORMATION_V2 */void *information)
++{
++    FIXME("%#lx, %lu, %p stub.\n", error, exception_count, information);
++    RaiseFailFastException(NULL, NULL, 0);
++}
++
+diff --git a/dlls/combase/usrmarshal.c b/dlls/combase/usrmarshal.c
+index 87513d3..3bdeb11 100644
+--- a/dlls/combase/usrmarshal.c
++++ b/dlls/combase/usrmarshal.c
+@@ -21,6 +21,7 @@
+ 
+ #define COBJMACROS
+ #include "ole2.h"
++#include "winstring.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -1025,3 +1026,118 @@ void WINAPI WdtpInterfacePointer_UserFree(IUnknown *punk)
+     TRACE("%p.\n", punk);
+     if (punk) IUnknown_Release(punk);
+ }
++
++
++
++/* FD-171 backport: HSTRING user-marshal support (upstream Wine
++ * dlls/combase/usrmarshal.c). The wire layouts are the documented
++ * HSTRING RPC transfer formats. */
++struct hstring_wire_inproc
++{
++    ULONG context;
++    HSTRING str;
++};
++
++struct hstring_wire_local
++{
++    ULONG context;
++    ULONG size;
++    WCHAR data[1];
++};
++
++/******************************************************************************
++ *           HSTRING_UserSize (combase.@)
++ */
++ULONG __RPC_USER HSTRING_UserSize(ULONG *flags, ULONG size, HSTRING *str)
++{
++    TRACE("%s, %lu, %s.\n", debugstr_user_flags(flags), size, debugstr_hstring(*str));
++
++    ALIGN_LENGTH(size, 7);
++    if (LOWORD(*flags) == MSHCTX_INPROC)
++        size += sizeof(struct hstring_wire_inproc);
++    else
++        size += offsetof(struct hstring_wire_local, data[WindowsGetStringLen(*str)]);
++    return size;
++}
++
++/******************************************************************************
++ *           HSTRING_UserMarshal (combase.@)
++ */
++BYTE * __RPC_USER HSTRING_UserMarshal(ULONG *flags, BYTE *buf, HSTRING *str)
++{
++    const ULONG context = sizeof(*str) == 8 ? WDT_INPROC64_CALL : WDT_INPROC_CALL;
++
++    TRACE("%s, %p, %s.\n", debugstr_user_flags(flags), buf, debugstr_hstring(*str));
++
++    if (LOWORD(*flags) == MSHCTX_DIFFERENTMACHINE)
++    {
++        FIXME("MSHCTX_DIFFERENTMACHINE is not supported yet.\n");
++        RpcRaiseException(RPC_S_INVALID_TAG);
++    }
++
++    if (LOWORD(*flags) == MSHCTX_INPROC)
++    {
++        struct hstring_wire_inproc *wire = ALIGNED_POINTER(buf, 7);
++
++        wire->context = context;
++        WindowsDuplicateString(*str, &wire->str);
++        buf = (BYTE *)(wire + 1);
++    }
++    else
++    {
++        struct hstring_wire_local *wire = ALIGNED_POINTER(buf, 7);
++        const WCHAR *str_buf;
++        UINT32 len;
++
++        wire->context = context;
++        str_buf = WindowsGetStringRawBuffer(*str, &len);
++        wire->size = len * sizeof(WCHAR);
++        memcpy(wire->data, str_buf, wire->size);
++        buf = (BYTE *)&wire->data[len];
++    }
++
++    return buf;
++}
++
++/******************************************************************************
++ *           HSTRING_UserUnmarshal (combase.@)
++ */
++BYTE * __RPC_USER HSTRING_UserUnmarshal(ULONG *flags, BYTE *buf, HSTRING *str)
++{
++    TRACE("%p, %p, %p\n", debugstr_user_flags(flags), buf, str);
++
++    if (LOWORD(*flags) == MSHCTX_INPROC)
++    {
++        const struct hstring_wire_inproc *wire = ALIGNED_POINTER(buf, 7);
++
++        *str = wire->str;
++        TRACE("str=%s\n", debugstr_hstring(*str));
++        buf = (BYTE *)(wire + 1);
++    }
++    else
++    {
++        const struct hstring_wire_local *wire = ALIGNED_POINTER(buf, 7);
++        UINT32 len;
++        HRESULT hr;
++
++        len = wire->size / sizeof(WCHAR);
++        hr = WindowsCreateString(wire->data, len, str);
++        if (FAILED(hr))
++            RpcRaiseException(RPC_S_OUT_OF_MEMORY);
++        buf = (BYTE *)&wire->data[len];
++    }
++
++    return buf;
++}
++
++/******************************************************************************
++ *           HSTRING_UserFree (combase.@)
++ */
++void __RPC_USER HSTRING_UserFree(ULONG *flags, HSTRING *str)
++{
++    TRACE("%s, %s.\n", debugstr_user_flags(flags), debugstr_hstring(*str));
++
++    if (LOWORD(*flags) == MSHCTX_INPROC)
++        WindowsDeleteString(*str);
++}
++
+diff --git a/dlls/cryptext/Makefile.in b/dlls/cryptext/Makefile.in
+index 5598bfb..a0d097c 100644
+--- a/dlls/cryptext/Makefile.in
++++ b/dlls/cryptext/Makefile.in
+@@ -1,4 +1,5 @@
+ MODULE = cryptext.dll
++IMPORTS = crypt32 cryptui user32
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+diff --git a/dlls/cryptext/cryptext.spec b/dlls/cryptext/cryptext.spec
+index ee3e155..24b4794 100644
+--- a/dlls/cryptext/cryptext.spec
++++ b/dlls/cryptext/cryptext.spec
+@@ -12,8 +12,8 @@
+ @ stub CryptExtAddSPCW
+ @ stub CryptExtOpenCAT
+ @ stub CryptExtOpenCATW
+-@ stub CryptExtOpenCER
+-@ stub CryptExtOpenCERW
++@ stdcall CryptExtOpenCER(long ptr str long)
++@ stdcall CryptExtOpenCERW(long ptr wstr long)
+ @ stub CryptExtOpenCRL
+ @ stub CryptExtOpenCRLW
+ @ stub CryptExtOpenCTL
+diff --git a/dlls/cryptext/cryptext_main.c b/dlls/cryptext/cryptext_main.c
+index 537ba66..094a7df 100644
+--- a/dlls/cryptext/cryptext_main.c
++++ b/dlls/cryptext/cryptext_main.c
+@@ -22,10 +22,28 @@
+ 
+ #include "windef.h"
+ #include "winbase.h"
++#include "winnls.h"
++#include "wincrypt.h"
++#include "winuser.h"
++#include "cryptuiapi.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(cryptext);
+ 
++static inline WCHAR *strdupAW(const char *src)
++{
++    WCHAR *dst = NULL;
++    if (src)
++    {
++        int len = MultiByteToWideChar(CP_ACP, 0, src, -1, NULL, 0);
++        dst = malloc(len * sizeof(WCHAR));
++        if (dst) MultiByteToWideChar(CP_ACP, 0, src, -1, dst, len);
++    }
++    return dst;
++}
++
++/***********************************************************************
++
+ /***********************************************************************
+  * CryptExtAddPFX (CRYPTEXT.@)
+  */
+@@ -43,3 +61,51 @@ HRESULT WINAPI CryptExtAddPFXW(LPCWSTR filename)
+     FIXME("stub: %s\n", debugstr_w(filename));
+     return E_NOTIMPL;
+ }
++
++/* FD-171 backport (upstream Wine).  */
++HRESULT WINAPI CryptExtOpenCERW(HWND hwnd, HINSTANCE hinst, LPCWSTR filename, DWORD showcmd);
++
++/***********************************************************************
++ * CryptExtOpenCER (CRYPTEXT.@)
++ */
++HRESULT WINAPI CryptExtOpenCER(HWND hwnd, HINSTANCE hinst, LPCSTR filename, DWORD showcmd)
++{
++    HRESULT hr;
++    LPWSTR filenameW;
++
++    TRACE("(%p, %p, %s, %lu)\n", hwnd, hinst, debugstr_a(filename), showcmd);
++
++    filenameW = strdupAW(filename);
++    hr = CryptExtOpenCERW(hwnd, hinst, filenameW, showcmd);
++    free(filenameW);
++    return hr;
++}
++
++/***********************************************************************
++ * CryptExtOpenCERW (CRYPTEXT.@)
++ */
++HRESULT WINAPI CryptExtOpenCERW(HWND hwnd, HINSTANCE hinst, LPCWSTR filename, DWORD showcmd)
++{
++    PCCERT_CONTEXT ctx;
++    CRYPTUI_VIEWCERTIFICATE_STRUCTW info;
++
++    TRACE("(%p, %p, %s, %lu)\n", hwnd, hinst, debugstr_w(filename), showcmd);
++
++    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filename, CERT_QUERY_CONTENT_FLAG_CERT,
++                          CERT_QUERY_FORMAT_FLAG_ALL, 0, NULL, NULL, NULL, NULL, NULL,
++                          (const void **)&ctx))
++    {
++        /* FIXME: move to the resources */
++        MessageBoxW(NULL, L"This is not a valid certificate", filename, MB_OK | MB_ICONERROR);
++        return S_OK; /* according to the tests */
++    }
++
++    memset(&info, 0, sizeof(info));
++    info.dwSize = sizeof(info);
++    info.hwndParent = hwnd;
++    info.pCertContext = ctx;
++    CryptUIDlgViewCertificateW(&info, NULL);
++    CertFreeCertificateContext(ctx);
++
++    return S_OK;
++}
+diff --git a/dlls/d2d1/d2d1.spec b/dlls/d2d1/d2d1.spec
+index 3fa85a9..7163744 100644
+--- a/dlls/d2d1/d2d1.spec
++++ b/dlls/d2d1/d2d1.spec
+@@ -5,7 +5,7 @@
+ @ stdcall D2D1InvertMatrix(ptr)
+ @ stdcall D2D1ConvertColorSpace(long long ptr)
+ @ stdcall D2D1CreateDevice(ptr ptr ptr)
+-@ stub D2D1CreateDeviceContext
++@ stdcall D2D1CreateDeviceContext(ptr ptr ptr)
+ @ stdcall D2D1SinCos(float ptr ptr)
+ @ stdcall D2D1Tan(float)
+ @ stdcall D2D1Vec3Length(float float float)
+diff --git a/dlls/d2d1/factory.c b/dlls/d2d1/factory.c
+index 954d90e..409719a 100644
+--- a/dlls/d2d1/factory.c
++++ b/dlls/d2d1/factory.c
+@@ -1666,3 +1666,26 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
+         d2d_settings_init();
+     return TRUE;
+ }
++
++/* FD-171 backport (upstream Wine).  */
++HRESULT WINAPI D2D1CreateDeviceContext(IDXGISurface *dxgi_surface,
++        const D2D1_CREATION_PROPERTIES *properties, ID2D1DeviceContext **context)
++{
++    IDXGIDevice *dxgi_device;
++    ID2D1Device *device;
++    HRESULT hr;
++
++    TRACE("dxgi_surface %p, properties %p, context %p.\n", dxgi_surface, properties, context);
++
++    if (FAILED(hr = IDXGISurface_GetDevice(dxgi_surface, &IID_IDXGIDevice, (void **)&dxgi_device)))
++        return hr;
++
++    if (SUCCEEDED(hr = D2D1CreateDevice(dxgi_device, properties, &device)))
++    {
++        hr = ID2D1Device_CreateDeviceContext(device, properties ? properties->options : D2D1_DEVICE_CONTEXT_OPTIONS_NONE, context);
++        ID2D1Device_Release(device);
++    }
++
++    IDXGIDevice_Release(dxgi_device);
++    return hr;
++}
+diff --git a/dlls/hid/hid.spec b/dlls/hid/hid.spec
+index 67c4473..e64dfc2 100644
+--- a/dlls/hid/hid.spec
++++ b/dlls/hid/hid.spec
+@@ -34,7 +34,7 @@
+ @ stdcall HidP_InitializeReportForID(long long ptr ptr long)
+ @ stdcall HidP_MaxDataListLength(long ptr)
+ @ stdcall HidP_MaxUsageListLength(long long ptr)
+-@ stub HidP_SetData
++@ stdcall HidP_SetData(long ptr ptr ptr ptr long)
+ @ stdcall HidP_SetScaledUsageValue(long long long long long ptr ptr long)
+ @ stdcall HidP_SetUsageValue(long long long long long ptr ptr long)
+ @ stdcall HidP_SetUsageValueArray(long long long long ptr long ptr ptr long)
+diff --git a/dlls/hid/hidp.c b/dlls/hid/hidp.c
+index c24a981..4ed8c99 100644
+--- a/dlls/hid/hidp.c
++++ b/dlls/hid/hidp.c
+@@ -1029,3 +1029,94 @@ NTSTATUS WINAPI HidP_GetLinkCollectionNodes( HIDP_LINK_COLLECTION_NODE *nodes, U
+ 
+     return HIDP_STATUS_SUCCESS;
+ }
++
++struct set_data_params
++{
++    HIDP_DATA *data;
++    char *report_buf;
++    BOOL found;
++};
++
++static NTSTATUS set_data( const struct hid_value_caps *caps, void *user )
++{
++    ULONG index_min, index_max, index, lookup, bit, last, mask, bit_count;
++    const struct hid_value_caps *end = caps;
++    struct set_data_params *params = user;
++    HIDP_DATA *data = params->data;
++    unsigned char *report_buf;
++
++    if (!caps->bit_size) return HIDP_STATUS_SUCCESS;
++    if (data->DataIndex < caps->data_index_min) return HIDP_STATUS_SUCCESS;
++    if (data->DataIndex > caps->data_index_max) return HIDP_STATUS_SUCCESS;
++    params->found = TRUE;
++
++    report_buf = (unsigned char *)params->report_buf + caps->start_byte;
++
++    if (HID_VALUE_CAPS_IS_ARRAY( caps ))
++    {
++        if (!(caps->flags & HID_VALUE_CAPS_IS_RANGE)) return HIDP_STATUS_IS_VALUE_ARRAY;
++
++        while (end->flags & HID_VALUE_CAPS_ARRAY_HAS_MORE) end++;
++        index_min = end - caps + 1;
++        index_max = index_min + caps->usage_max - caps->usage_min;
++        lookup = index_min + data->DataIndex - caps->data_index_min;
++
++        for (bit = caps->start_bit, last = bit + caps->report_count * caps->bit_size - 1; bit <= last; bit += 8)
++        {
++            if (!(index = report_buf[bit / 8]) || index < index_min || index > index_max) break;
++            if (!data->RawValue && index == lookup) break;
++        }
++        if (bit > last) return data->RawValue ? HIDP_STATUS_BUFFER_TOO_SMALL : HIDP_STATUS_BUTTON_NOT_PRESSED;
++
++        if (data->RawValue) report_buf[bit / 8] = lookup;
++        else if (report_buf[bit / 8] != lookup) return HIDP_STATUS_BUTTON_NOT_PRESSED;
++        else
++        {
++            while (bit < last) { report_buf[bit / 8] = report_buf[bit / 8 + 1]; bit++; }
++            report_buf[bit / 8] = 0;
++        }
++    }
++    else if (caps->flags & HID_VALUE_CAPS_IS_BUTTON)
++    {
++        bit = caps->start_bit + (data->DataIndex - caps->data_index_min) * caps->bit_size, mask = 1 << (bit % 8);
++
++        if (data->On) report_buf[bit / 8] |= mask;
++        else if (!(report_buf[bit / 8] & mask)) return HIDP_STATUS_BUTTON_NOT_PRESSED;
++        else report_buf[bit / 8] &= ~mask;
++    }
++    else if (caps->report_count == 1)
++    {
++        bit_count = caps->bit_size * caps->report_count;
++        copy_bits( report_buf, (void *)&data->RawValue, bit_count, -caps->start_bit );
++    }
++
++    return HIDP_STATUS_SUCCESS;
++}
++
++/* FD-171 backport (upstream Wine).  */
++NTSTATUS WINAPI HidP_SetData( HIDP_REPORT_TYPE report_type, HIDP_DATA *data, ULONG *data_len,
++                              PHIDP_PREPARSED_DATA preparsed_data, char *report_buf, ULONG report_len )
++{
++    struct hid_preparsed_data *preparsed = (struct hid_preparsed_data *)preparsed_data;
++    struct set_data_params params = {.report_buf = report_buf};
++    HIDP_DATA *data_end = data + *data_len;
++    NTSTATUS status = HIDP_STATUS_SUCCESS;
++
++    TRACE( "report_type %d, data %p, data_len %p, preparsed_data %p, report_buf %p, report_len %lu.\n",
++           report_type, data, data_len, preparsed_data, report_buf, report_len );
++
++    if (!report_len) return HIDP_STATUS_INVALID_REPORT_LENGTH;
++
++    for (params.data = data; params.data < data_end; params.data++)
++    {
++        struct caps_filter filter = {.usage_page = 0, .usage = 0, .report_id = report_buf[0]}; /* 0 = any in this vintage's caps_filter */
++        USHORT limit = -1;
++
++        status = enum_value_caps( preparsed, report_type, report_len, &filter, set_data, &params, &limit );
++        if (status != HIDP_STATUS_SUCCESS || !params.found) break;
++    }
++    *data_len = params.data - data;
++
++    if (!params.found) return HIDP_STATUS_REPORT_DOES_NOT_EXIST;
++    return status;
++}
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 6fb4ae8..82301ba 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -954,7 +954,7 @@
+ @ stub HeapSetFlags
+ @ stdcall -import HeapSetInformation(ptr long ptr long)
+ @ stdcall HeapSize(long long ptr) NTDLL.RtlSizeHeap
+-@ stub HeapSummary
++@ stdcall HeapSummary(long long ptr) kernelbase.HeapSummary
+ @ stdcall -import HeapUnlock(long)
+ @ stub HeapUsage
+ @ stdcall -import HeapValidate(long long ptr)
+@@ -1215,8 +1215,8 @@
+ @ stdcall -import RaiseFailFastException(ptr ptr long)
+ @ stdcall -import ReadConsoleA(long ptr long ptr ptr)
+ @ stdcall -import ReadConsoleInputA(long ptr long ptr)
+-@ stub ReadConsoleInputExA
+-@ stub ReadConsoleInputExW
++@ stdcall ReadConsoleInputExA(long ptr long ptr long) kernelbase.ReadConsoleInputExA
++@ stdcall ReadConsoleInputExW(long ptr long ptr long) kernelbase.ReadConsoleInputExW
+ @ stdcall -import ReadConsoleInputW(long ptr long ptr)
+ @ stdcall -import ReadConsoleOutputA(long ptr long long ptr)
+ @ stdcall -import ReadConsoleOutputAttribute(long ptr long long ptr)
+@@ -1279,7 +1279,7 @@
+ @ stub RegisterConsoleVDM
+ @ stdcall RegisterServiceProcess(long long)
+ @ stub RegisterSysMsgHandler
+-@ stub RegisterWaitForInputIdle
++@ stdcall RegisterWaitForInputIdle(ptr)
+ @ stdcall RegisterWaitForSingleObject(ptr long ptr ptr long long)
+ @ stdcall -import RegisterWaitForSingleObjectEx(long ptr ptr long long)
+ @ stub RegisterWowBaseHandlers
+diff --git a/dlls/kernel32/process.c b/dlls/kernel32/process.c
+index 2a4ddc6..d65c32e 100644
+--- a/dlls/kernel32/process.c
++++ b/dlls/kernel32/process.c
+@@ -80,6 +80,18 @@ static DWORD wait_input_idle( HANDLE process, DWORD timeout )
+ }
+ 
+ 
++static DWORD (WINAPI *wait_input_idle_hook)( HANDLE process, DWORD timeout );
++
++/***********************************************************************
++ *           RegisterWaitForInputIdle   (KERNEL32.@)
++ *           FD-171 backport (upstream Wine); consumed by WinExec and
++ *           LoadModule below.
++ */
++void WINAPI RegisterWaitForInputIdle( void *ptr )
++{
++    wait_input_idle_hook = ptr;
++}
++
+ /***********************************************************************
+  *           WinExec   (KERNEL32.@)
+  */
+@@ -103,7 +115,7 @@ UINT WINAPI DECLSPEC_HOTPATCH WinExec( LPCSTR lpCmdLine, UINT nCmdShow )
+                         0, NULL, NULL, &startup, &info ))
+     {
+         /* Give 30 seconds to the app to come up */
+-        if (wait_input_idle( info.hProcess, 30000 ) == WAIT_FAILED)
++        if ((wait_input_idle_hook ? wait_input_idle_hook( info.hProcess, 30000 ) : wait_input_idle( info.hProcess, 30000 )) == WAIT_FAILED)
+             WARN("WaitForInputIdle failed: Error %ld\n", GetLastError() );
+         ret = 33;
+         /* Close off the handles */
+@@ -161,7 +173,7 @@ DWORD WINAPI LoadModule( LPCSTR name, LPVOID paramBlock )
+                         params->lpEnvAddress, NULL, &startup, &info ))
+     {
+         /* Give 30 seconds to the app to come up */
+-        if (wait_input_idle( info.hProcess, 30000 ) == WAIT_FAILED)
++        if ((wait_input_idle_hook ? wait_input_idle_hook( info.hProcess, 30000 ) : wait_input_idle( info.hProcess, 30000 )) == WAIT_FAILED)
+             WARN("WaitForInputIdle failed: Error %ld\n", GetLastError() );
+         ret = 33;
+         /* Close off the handles */
+diff --git a/dlls/kernelbase/console.c b/dlls/kernelbase/console.c
+index 97c5462..a581641 100644
+--- a/dlls/kernelbase/console.c
++++ b/dlls/kernelbase/console.c
+@@ -2387,3 +2387,33 @@ void init_console( void )
+     else if (params->ConsoleHandle && params->ConsoleHandle != CONSOLE_HANDLE_SHELL_NO_WINDOW)
+         create_console_connection( params->ConsoleHandle );
+ }
++
++/* FD-171 backport (upstream Wine dlls/kernelbase). */
++#ifndef CONSOLE_READ_NOREMOVE
++#define CONSOLE_READ_NOREMOVE 0x0001
++#endif
++#ifndef CONSOLE_READ_NOWAIT
++#define CONSOLE_READ_NOWAIT   0x0002
++#endif
++/***********************************************************************
++ *            ReadConsoleInputExW   (kernelbase.@)
++ */
++BOOL WINAPI ReadConsoleInputExW( HANDLE handle, INPUT_RECORD *buffer, DWORD length, DWORD *count, USHORT flags )
++{
++    DWORD ioctl_code = (flags & CONSOLE_READ_NOWAIT) ? IOCTL_CONDRV_PEEK : IOCTL_CONDRV_READ_INPUT;
++    if (!console_ioctl( handle, ioctl_code, (void *) &flags, sizeof(USHORT),
++                        buffer, length * sizeof(INPUT_RECORD), count )) return FALSE;
++    *count /= sizeof(INPUT_RECORD);
++    return TRUE;
++}
++
++/* FD-171 backport (upstream Wine dlls/kernelbase). */
++/***********************************************************************
++ *            ReadConsoleInputExA   (kernelbase.@)
++ */
++BOOL WINAPI ReadConsoleInputExA( HANDLE handle, INPUT_RECORD *buffer, DWORD length, DWORD *count, USHORT flags )
++{
++    if (!ReadConsoleInputExW(handle, buffer, length, count, flags )) return FALSE;
++    input_records_WtoA( buffer, *count );
++    return TRUE;
++}
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 27f45ed..a9ee23a 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -815,7 +815,7 @@
+ @ stdcall HeapReAlloc(long long ptr long) ntdll.RtlReAllocateHeap
+ @ stdcall HeapSetInformation(ptr long ptr long)
+ @ stdcall HeapSize(long long ptr) ntdll.RtlSizeHeap
+-@ stub HeapSummary
++@ stdcall HeapSummary(long long ptr)
+ @ stdcall HeapUnlock(long)
+ @ stdcall HeapValidate(long long ptr)
+ @ stdcall HeapWalk(long ptr)
+@@ -1274,8 +1274,8 @@
+ @ stdcall ReOpenFile(ptr long long long)
+ @ stdcall ReadConsoleA(long ptr long ptr ptr)
+ @ stdcall ReadConsoleInputA(long ptr long ptr)
+-@ stub ReadConsoleInputExA
+-@ stub ReadConsoleInputExW
++@ stdcall ReadConsoleInputExA(long ptr long ptr long)
++@ stdcall ReadConsoleInputExW(long ptr long ptr long)
+ @ stdcall ReadConsoleInputW(long ptr long ptr)
+ @ stdcall ReadConsoleOutputA(long ptr long long ptr)
+ @ stdcall ReadConsoleOutputAttribute(long ptr long long ptr)
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 0be178f..bb2be37 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -1830,3 +1830,55 @@ UINT WINAPI GetSystemFirmwareTable( DWORD provider, DWORD id, void *buffer, DWOR
+ 
+     return get_firmware_table( provider, SystemFirmwareTable_Get, id, buffer, size );
+ }
++
++/* FD-171 backport (upstream Wine dlls/kernelbase). */
++/***********************************************************************
++ *           HeapSummary   (kernelbase.@)
++ */
++BOOL WINAPI HeapSummary( HANDLE heap, DWORD flags, LPHEAP_SUMMARY heap_summary )
++{
++    SIZE_T allocated = 0;
++    SIZE_T committed = 0;
++    SIZE_T uncommitted = 0;
++    PROCESS_HEAP_ENTRY entry;
++
++    if (heap_summary->cb != sizeof(*heap_summary))
++    {
++        /* needs to be set to the exact size by the caller */
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++
++    memset( &entry, 0, sizeof(entry) );
++
++    if (!HeapLock( heap ))
++        return FALSE;
++
++    while (HeapWalk( heap, &entry ))
++    {
++        if (entry.wFlags & PROCESS_HEAP_ENTRY_BUSY)
++        {
++            allocated += entry.cbData;
++        }
++        else if (entry.wFlags & PROCESS_HEAP_REGION)
++        {
++            committed += entry.Region.dwCommittedSize;
++            uncommitted += entry.Region.dwUnCommittedSize;
++        }
++    }
++
++    if (GetLastError() != ERROR_NO_MORE_ITEMS)
++    {
++        /* HeapWalk unsuccessful */
++        HeapUnlock( heap );
++        return FALSE;
++    }
++
++    HeapUnlock( heap );
++    heap_summary->cbAllocated = allocated;
++    heap_summary->cbCommitted = committed;
++    heap_summary->cbReserved = committed + uncommitted;
++    heap_summary->cbMaxReserve = heap_summary->cbReserved;
++
++    return TRUE;
++}
+diff --git a/dlls/mf/main.c b/dlls/mf/main.c
+index e74a4ae..c4b3abb 100644
+--- a/dlls/mf/main.c
++++ b/dlls/mf/main.c
+@@ -1071,3 +1071,66 @@ HRESULT WINAPI MFCreateFMPEG4MediaSink(IMFByteStream *stream, IMFMediaType *vide
+ 
+     return create_media_sink(&CLSID_MFFMPEG4SinkClassFactory, stream, video_type, audio_type, sink);
+ }
++
++/* FD-171 backport (upstream Wine).  */
++/*******************************************************************************
++ *      MFTranscodeGetAudioOutputAvailableTypes (mf.@)
++ */
++HRESULT WINAPI MFTranscodeGetAudioOutputAvailableTypes(REFGUID subtype, DWORD flags,
++        IMFAttributes *config, IMFCollection **ret)
++{
++    IMFCollection *media_types = NULL;
++    MFT_REGISTER_TYPE_INFO output;
++    IMFTransform *encoder = NULL;
++    IMFMediaType *media_type;
++    IMFActivate **transforms;
++    UINT32 i, count;
++    DWORD index;
++    HRESULT hr;
++
++    TRACE("%s, %#lx, %p, %p.\n", debugstr_guid(subtype), flags, config, ret);
++
++    if (config)
++        FIXME("Ignoring configuration attributes.\n");
++
++    output.guidMajorType = MFMediaType_Audio;
++    output.guidSubtype = *subtype;
++    if (FAILED(hr = MFTEnumEx(MFT_CATEGORY_AUDIO_ENCODER, flags, NULL, &output, &transforms, &count)))
++        return hr;
++
++    if (!count)
++        return MF_E_TRANSCODE_NO_MATCHING_ENCODER;
++
++    hr = MFCreateCollection(&media_types);
++
++    if (SUCCEEDED(hr))
++        hr = IMFActivate_ActivateObject(transforms[0], &IID_IMFTransform, (void **)&encoder);
++
++    if (encoder)
++    {
++        index = 0;
++        while (IMFTransform_GetOutputAvailableType(encoder, 0, index++, &media_type) == S_OK)
++        {
++            hr = IMFCollection_AddElement(media_types, (IUnknown *)media_type);
++            IMFMediaType_Release(media_type);
++            if (FAILED(hr)) break;
++        }
++
++        MFShutdownObject((IUnknown *)encoder);
++        IMFTransform_Release(encoder);
++    }
++
++    if (SUCCEEDED(hr))
++    {
++        *ret = media_types;
++        IMFCollection_AddRef(*ret);
++    }
++
++    for (i = 0; i < count; ++i)
++        IMFActivate_Release(transforms[i]);
++    CoTaskMemFree(transforms);
++    if (media_types)
++        IMFCollection_Release(media_types);
++
++    return hr;
++}
+diff --git a/dlls/mf/mf.spec b/dlls/mf/mf.spec
+index 9477cdd..de607f1 100644
+--- a/dlls/mf/mf.spec
++++ b/dlls/mf/mf.spec
+@@ -82,5 +82,5 @@
+ @ stub MFReadSequencerSegmentOffset
+ @ stdcall MFRequireProtectedEnvironment(ptr)
+ @ stdcall MFShutdownObject(ptr)
+-@ stub MFTranscodeGetAudioOutputAvailableTypes
++@ stdcall MFTranscodeGetAudioOutputAvailableTypes(ptr long ptr ptr)
+ @ stub MergePropertyStore
+diff --git a/dlls/mscms/mscms.spec b/dlls/mscms/mscms.spec
+index c15359c..ec14db7 100644
+--- a/dlls/mscms/mscms.spec
++++ b/dlls/mscms/mscms.spec
+@@ -90,7 +90,7 @@
+ @ stub WcsDisassociateColorProfileFromDevice
+ @ stub WcsEnumColorProfiles
+ @ stdcall WcsEnumColorProfilesSize(long ptr ptr)
+-@ stub WcsGetCalibrationManagementState
++@ stdcall WcsGetCalibrationManagementState(ptr)
+ @ stdcall WcsGetDefaultColorProfile(long wstr long long long long wstr)
+ @ stdcall WcsGetDefaultColorProfileSize(long wstr long long long ptr)
+ @ stdcall WcsGetDefaultRenderingIntent(long ptr)
+diff --git a/dlls/mscms/stub.c b/dlls/mscms/stub.c
+index 05c2919..f808db3 100644
+--- a/dlls/mscms/stub.c
++++ b/dlls/mscms/stub.c
+@@ -199,3 +199,14 @@ BOOL WINAPI UnregisterCMMW( PCWSTR machine, DWORD id )
+ 
+     return TRUE;
+ }
++
++/* FD-171 backport (upstream Wine).  */
++BOOL WINAPI WcsGetCalibrationManagementState( BOOL *is_enabled )
++{
++    FIXME( "( %p ) stub\n", is_enabled );
++
++    if (is_enabled)
++        *is_enabled = TRUE;
++
++    return TRUE;
++}
+diff --git a/dlls/ntdll/actctx.c b/dlls/ntdll/actctx.c
+index a4581d0..d93d881 100644
+--- a/dlls/ntdll/actctx.c
++++ b/dlls/ntdll/actctx.c
+@@ -5926,3 +5926,54 @@ NTSTATUS WINAPI RtlQueryActivationContextApplicationSettings( DWORD flags, HANDL
+     wcscpy( buffer, res );
+     return STATUS_SUCCESS;
+ }
++
++/* FD-171 backport: activation-context fast stack operations (upstream Wine dlls/ntdll/actctx.c). */
++/******************************************************************
++ *              RtlActivateActivationContextUnsafeFast (NTDLL.@)
++ *
++ * FIXME: function prototype might be wrong
++ */
++DEFINE_FASTCALL_WRAPPER( RtlActivateActivationContextUnsafeFast, 8 )
++RTL_ACTIVATION_CONTEXT_STACK_FRAME * FASTCALL RtlActivateActivationContextUnsafeFast( RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED *frame_extended,
++                                                                                      ACTIVATION_CONTEXT *actctx )
++{
++    ACTIVATION_CONTEXT_STACK *actctx_stack = NtCurrentTeb()->ActivationContextStackPointer;
++
++    TRACE( "%p %p\n", frame_extended, actctx );
++
++    frame_extended->Frame.Previous = actctx_stack->ActiveFrame;
++    frame_extended->Frame.ActivationContext = actctx;
++    frame_extended->Frame.Flags = 0;
++    actctx_stack->ActiveFrame = &frame_extended->Frame;
++    RtlAddRefActivationContext( actctx );
++    return &frame_extended->Frame;
++}
++
++/******************************************************************
++ *              RtlDeactivateActivationContextUnsafeFast (NTDLL.@)
++ *
++ * FIXME: function prototype might be wrong
++ */
++DEFINE_FASTCALL1_WRAPPER( RtlDeactivateActivationContextUnsafeFast )
++void FASTCALL RtlDeactivateActivationContextUnsafeFast( RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED *frame_extended )
++{
++    ACTIVATION_CONTEXT_STACK *actctx_stack = NtCurrentTeb()->ActivationContextStackPointer;
++    ACTIVATION_CONTEXT *actctx;
++
++    TRACE( "%p\n", frame_extended );
++
++    actctx = actctx_stack->ActiveFrame->ActivationContext;
++    actctx_stack->ActiveFrame = frame_extended->Frame.Previous;
++    RtlReleaseActivationContext( actctx );
++}
++
++/******************************************************************
++ *              RtlQueryInformationActiveActivationContext (NTDLL.@)
++ */
++NTSTATUS WINAPI RtlQueryInformationActiveActivationContext( ULONG class, PVOID buffer,
++                                                            SIZE_T buffer_size, SIZE_T *return_length )
++{
++    return RtlQueryInformationActivationContext( QUERY_ACTCTX_FLAG_USE_ACTIVE_ACTCTX, NULL, NULL,
++                                                 class, buffer, buffer_size, return_length );
++}
++
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 620d96a..20b3cf8 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -481,7 +481,7 @@
+ @ stdcall RtlAcquireSRWLockShared(ptr)
+ @ stdcall RtlActivateActivationContext(long ptr ptr)
+ @ stdcall RtlActivateActivationContextEx(long ptr ptr ptr)
+-@ stub RtlActivateActivationContextUnsafeFast
++@ stdcall -fastcall RtlActivateActivationContextUnsafeFast(ptr ptr)
+ @ stdcall RtlAddAccessAllowedAce(ptr long long ptr)
+ @ stdcall RtlAddAccessAllowedAceEx(ptr long long long ptr)
+ @ stdcall RtlAddAccessAllowedObjectAce(ptr long long long ptr ptr ptr)
+@@ -602,22 +602,22 @@
+ @ stub RtlCutoverTimeToSystemTime
+ @ stdcall RtlDeNormalizeProcessParams(ptr)
+ @ stdcall RtlDeactivateActivationContext(long long)
+-@ stub RtlDeactivateActivationContextUnsafeFast
++@ stdcall -fastcall RtlDeactivateActivationContextUnsafeFast(ptr)
+ @ stub RtlDebugPrintTimes
+ @ stdcall RtlDecodePointer(ptr)
+ @ stdcall RtlDecodeSystemPointer(ptr) RtlDecodePointer
+ @ stdcall RtlDecompressBuffer(long ptr long ptr long ptr)
+ @ stdcall RtlDecompressFragment(long ptr long ptr long long ptr ptr)
+ @ stdcall RtlDefaultNpAcl(ptr)
+-@ stub RtlDelete
++@ stdcall RtlDelete(ptr)
+ @ stdcall RtlDeleteAce(ptr long)
+ @ stdcall RtlDeleteAtomFromAtomTable(ptr long)
+ @ stdcall RtlDeleteCriticalSection(ptr)
+ @ stdcall -arch=!i386 RtlDeleteGrowableFunctionTable(ptr)
+-@ stub RtlDeleteElementGenericTable
++@ stdcall RtlDeleteElementGenericTable(ptr ptr)
+ @ stub RtlDeleteElementGenericTableAvl
+ @ cdecl -arch=!i386 RtlDeleteFunctionTable(ptr)
+-@ stub RtlDeleteNoSplay
++@ stdcall RtlDeleteNoSplay(ptr ptr)
+ @ stub RtlDeleteOwnersRanges
+ @ stub RtlDeleteRange
+ @ stdcall RtlDeleteRegistryValue(long ptr wstr)
+@@ -658,7 +658,7 @@
+ @ stdcall -arch=win32 -ret64 RtlEnlargedUnsignedMultiply(long long)
+ @ stdcall RtlEnterCriticalSection(ptr)
+ @ stub RtlEnumProcessHeaps
+-@ stub RtlEnumerateGenericTable
++@ stdcall RtlEnumerateGenericTable(ptr long)
+ # @ stub RtlEnumerateGenericTableAvl
+ # @ stub RtlEnumerateGenericTableLikeADirectory
+ @ stdcall RtlEnumerateGenericTableWithoutSplaying(ptr ptr)
+@@ -818,7 +818,7 @@
+ @ stdcall RtlInitializeSRWLock(ptr)
+ @ stdcall RtlInitializeSid(ptr ptr long)
+ # @ stub RtlInitializeStackTraceDataBase
+-@ stub RtlInsertElementGenericTable
++@ stdcall RtlInsertElementGenericTable(ptr ptr long ptr)
+ @ stdcall RtlInsertElementGenericTableAvl(ptr ptr long ptr)
+ @ cdecl -arch=!i386 RtlInstallFunctionTableCallback(long long long ptr ptr wstr)
+ @ stdcall RtlInt64ToUnicodeString(int64 long ptr)
+@@ -854,7 +854,7 @@
+ @ stdcall RtlIsCurrentThread(long)
+ @ stdcall RtlIsDosDeviceName_U(wstr)
+ @ stdcall -arch=x86_64 -norelay RtlIsEcCode(ptr)
+-@ stub RtlIsGenericTableEmpty
++@ stdcall RtlIsGenericTableEmpty(ptr)
+ # @ stub RtlIsGenericTableEmptyAvl
+ @ stdcall RtlIsNameLegalDOS8Dot3(ptr ptr ptr)
+ @ stdcall RtlIsNormalizedString(long wstr long ptr)
+@@ -937,7 +937,7 @@
+ @ stdcall RtlQueryHeapInformation(long long ptr long ptr)
+ @ stdcall RtlQueryInformationAcl(ptr ptr long long)
+ @ stdcall RtlQueryInformationActivationContext(long long ptr long ptr long ptr)
+-@ stub RtlQueryInformationActiveActivationContext
++@ stdcall RtlQueryInformationActiveActivationContext(long ptr long ptr)
+ @ stub RtlQueryInterfaceMemoryStream
+ @ stdcall RtlQueryPackageIdentity(long ptr ptr ptr ptr ptr)
+ @ stdcall RtlQueryPerformanceCounter(ptr)
+@@ -967,8 +967,8 @@
+ @ stdcall RtlReAllocateHeap(long long ptr long)
+ @ stub RtlReadMemoryStream
+ @ stub RtlReadOutOfProcessMemoryStream
+-@ stub RtlRealPredecessor
+-@ stub RtlRealSuccessor
++@ stdcall RtlRealPredecessor(ptr)
++@ stdcall RtlRealSuccessor(ptr)
+ @ stub RtlRegisterSecureMemoryCacheCallback
+ @ stdcall RtlRegisterWait(ptr ptr ptr ptr long long)
+ @ stdcall RtlReleaseActivationContext(ptr)
+@@ -1042,14 +1042,14 @@
+ @ stdcall RtlSizeHeap(long long ptr)
+ @ stdcall RtlSleepConditionVariableCS(ptr ptr ptr)
+ @ stdcall RtlSleepConditionVariableSRW(ptr ptr ptr long)
+-@ stub RtlSplay
++@ stdcall RtlSplay(ptr)
+ @ stub RtlStartRXact
+ # @ stub RtlStatMemoryStream
+ @ stdcall RtlStringFromGUID(ptr ptr)
+ @ stdcall RtlSubAuthorityCountSid(ptr)
+ @ stdcall RtlSubAuthoritySid(ptr long)
+-@ stub RtlSubtreePredecessor
+-@ stub RtlSubtreeSuccessor
++@ stdcall RtlSubtreePredecessor(ptr)
++@ stdcall RtlSubtreeSuccessor(ptr)
+ @ stdcall RtlSystemTimeToLocalTime(ptr ptr)
+ @ stdcall RtlTimeFieldsToTime(ptr ptr)
+ @ stdcall RtlTimeToElapsedTimeFields(ptr ptr)
+diff --git a/dlls/ntdll/rtl.c b/dlls/ntdll/rtl.c
+index 643d6f3..51cee33 100644
+--- a/dlls/ntdll/rtl.c
++++ b/dlls/ntdll/rtl.c
+@@ -236,6 +236,481 @@ NTSTATUS WINAPI RtlResetNtUserPfn(void)
+ }
+ 
+ 
++/* The splay-tree generic table implementation below is backported from
++ * upstream Wine (dlls/ntdll/rtl.c) for FD-171. The RTL_GENERIC_TABLE and
++ * RTL_SPLAY_LINKS types it operates on are identical in this vintage's
++ * ddk/ntddk.h; only the functions were spec stubs here. */
++static void *get_data_from_splay_links(RTL_SPLAY_LINKS *links);
++BOOLEAN WINAPI RtlIsGenericTableEmpty(RTL_GENERIC_TABLE *table);
++void * WINAPI RtlInsertElementGenericTable(RTL_GENERIC_TABLE *table, void *value, ULONG size, BOOLEAN *new_element);
++BOOLEAN WINAPI RtlDeleteElementGenericTable(RTL_GENERIC_TABLE *table, void *value);
++void * WINAPI RtlEnumerateGenericTable(RTL_GENERIC_TABLE *table, BOOLEAN restart);
++PRTL_SPLAY_LINKS WINAPI RtlSplay(PRTL_SPLAY_LINKS links);
++PRTL_SPLAY_LINKS WINAPI RtlDelete(PRTL_SPLAY_LINKS links);
++void WINAPI RtlDeleteNoSplay(PRTL_SPLAY_LINKS links, PRTL_SPLAY_LINKS *root);
++PRTL_SPLAY_LINKS WINAPI RtlRealPredecessor(PRTL_SPLAY_LINKS links);
++PRTL_SPLAY_LINKS WINAPI RtlRealSuccessor(PRTL_SPLAY_LINKS links);
++PRTL_SPLAY_LINKS WINAPI RtlSubtreePredecessor(PRTL_SPLAY_LINKS links);
++PRTL_SPLAY_LINKS WINAPI RtlSubtreeSuccessor(PRTL_SPLAY_LINKS links);
++
++
++/* data is a place holder to align stored data on a 8 byte boundary */
++struct rtl_generic_table_entry
++{
++    RTL_SPLAY_LINKS splay_links;
++    LIST_ENTRY list_entry;
++    LONGLONG data;
++};
++
++static void *get_data_from_splay_links(RTL_SPLAY_LINKS *links)
++{
++    return (unsigned char *)links + FIELD_OFFSET(struct rtl_generic_table_entry, data);
++}
++
++/* data is a place holder to align stored data on a 8 byte boundary */
++
++static void *get_data_from_list_entry(LIST_ENTRY *list_entry)
++{
++    return (unsigned char *)list_entry + FIELD_OFFSET(struct rtl_generic_table_entry, data)
++        - FIELD_OFFSET(struct rtl_generic_table_entry, list_entry);
++}
++
++static LIST_ENTRY *get_list_entry_from_splay_links(RTL_SPLAY_LINKS *links)
++{
++    return (LIST_ENTRY *)((unsigned char *)links + FIELD_OFFSET(struct rtl_generic_table_entry, list_entry));
++}
++
++static void rtl_splay_left_rotate(RTL_SPLAY_LINKS *x)
++{
++    RTL_SPLAY_LINKS *y = x->RightChild;
++
++    if (y)
++    {
++        x->RightChild = y->LeftChild;
++        if (y->LeftChild)
++            y->LeftChild->Parent = x;
++
++        y->Parent = RtlIsRoot(x) ? y : x->Parent;
++    }
++
++    if (!RtlIsRoot(x))
++    {
++        if (RtlIsLeftChild(x))
++            x->Parent->LeftChild = y;
++        else
++            x->Parent->RightChild = y;
++    }
++
++    if (y)
++        y->LeftChild = x;
++    x->Parent = y;
++}
++
++static void rtl_splay_right_rotate(RTL_SPLAY_LINKS *x)
++{
++    RTL_SPLAY_LINKS *y = x->LeftChild;
++
++    if (y)
++    {
++        x->LeftChild = y->RightChild;
++        if (y->RightChild)
++            y->RightChild->Parent = x;
++
++        y->Parent = RtlIsRoot(x) ? y : x->Parent;
++    }
++
++    if (!RtlIsRoot(x))
++    {
++        if (RtlIsLeftChild(x))
++            x->Parent->LeftChild = y;
++        else
++            x->Parent->RightChild = y;
++    }
++
++    if (y)
++        y->RightChild = x;
++    x->Parent = y;
++}
++
++static void rtl_splay_replace(RTL_SPLAY_LINKS *x, RTL_SPLAY_LINKS *y, RTL_SPLAY_LINKS **root)
++{
++    if (RtlIsRoot(x))
++        *root = y;
++    else if (RtlIsLeftChild(x))
++        x->Parent->LeftChild = y;
++    else
++        x->Parent->RightChild = y;
++
++    if (y)
++        y->Parent = RtlIsRoot(x) ? y : x->Parent;
++}
++
++static RTL_SPLAY_LINKS *rtl_splay_find(RTL_GENERIC_TABLE *table, void *value)
++{
++    RTL_GENERIC_COMPARE_RESULTS result;
++    RTL_SPLAY_LINKS *child;
++
++    child = table->TableRoot;
++    while (child)
++    {
++        result = table->CompareRoutine(table, get_data_from_splay_links(child), value);
++        if (result == GenericLessThan)
++            child = child->RightChild;
++        else if (result == GenericGreaterThan)
++            child = child->LeftChild;
++        else
++            return child;
++    }
++    return NULL;
++}
++
++/******************************************************************************
++ *  RtlSplay           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlSplay(RTL_SPLAY_LINKS *links)
++{
++    TRACE("(%p)\n", links);
++
++    while (!RtlIsRoot(links))
++    {
++        if (RtlIsRoot(links->Parent))
++        {
++            /* Zig */
++            if (RtlIsLeftChild(links))
++                rtl_splay_right_rotate(links->Parent);
++            /* Zag */
++            else
++                rtl_splay_left_rotate(links->Parent);
++        }
++        /* Zig-Zig */
++        else if (RtlIsLeftChild(links->Parent) && RtlIsLeftChild(links))
++        {
++            rtl_splay_right_rotate(links->Parent->Parent);
++            rtl_splay_right_rotate(links->Parent);
++        }
++        /* Zag-Zag */
++        else if (RtlIsRightChild(links->Parent) && RtlIsRightChild(links))
++        {
++            rtl_splay_left_rotate(links->Parent->Parent);
++            rtl_splay_left_rotate(links->Parent);
++        }
++        /* Zig-Zag */
++        else if (RtlIsRightChild(links->Parent) && RtlIsLeftChild(links))
++        {
++            rtl_splay_right_rotate(links->Parent);
++            rtl_splay_left_rotate(links->Parent);
++        }
++        /* Zag-Zig */
++        else
++        {
++            rtl_splay_left_rotate(links->Parent);
++            rtl_splay_right_rotate(links->Parent);
++        }
++    }
++
++    return links;
++}
++
++/******************************************************************************
++ *  RtlRealPredecessor           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlRealPredecessor(RTL_SPLAY_LINKS *links)
++{
++    PRTL_SPLAY_LINKS child;
++
++    TRACE("(%p)\n", links);
++
++    child = RtlLeftChild(links);
++    if (child)
++    {
++        while (RtlRightChild(child))
++            child = RtlRightChild(child);
++        return child;
++    }
++
++    child = links;
++    while (RtlIsLeftChild(child))
++        child = RtlParent(child);
++
++    if (RtlIsRightChild(child))
++        return RtlParent(child);
++
++    return NULL;
++}
++
++/******************************************************************************
++ *  RtlRealSuccessor           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlRealSuccessor(RTL_SPLAY_LINKS *links)
++{
++    PRTL_SPLAY_LINKS child;
++
++    TRACE("(%p)\n", links);
++
++    child = RtlRightChild(links);
++    if (child)
++    {
++        while (RtlLeftChild(child))
++            child = RtlLeftChild(child);
++        return child;
++    }
++
++    child = links;
++    while (RtlIsRightChild(child))
++        child = RtlParent(child);
++
++    if (RtlIsLeftChild(child))
++        return RtlParent(child);
++
++    return NULL;
++}
++
++/******************************************************************************
++ *  RtlSubtreePredecessor           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlSubtreePredecessor(RTL_SPLAY_LINKS *links)
++{
++    RTL_SPLAY_LINKS *child;
++
++    TRACE("(%p)\n", links);
++
++    child = RtlLeftChild(links);
++    if (!child)
++        return NULL;
++
++    while (RtlRightChild(child))
++        child = RtlRightChild(child);
++
++    return child;
++}
++
++/******************************************************************************
++ *  RtlSubtreeSuccessor           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlSubtreeSuccessor(RTL_SPLAY_LINKS *links)
++{
++    RTL_SPLAY_LINKS *child;
++
++    TRACE("(%p)\n", links);
++
++    child = RtlRightChild(links);
++    if (!child)
++        return NULL;
++
++    while (RtlLeftChild(child))
++        child = RtlLeftChild(child);
++
++    return child;
++}
++
++/******************************************************************************
++ *  RtlDelete           [NTDLL.@]
++ */
++RTL_SPLAY_LINKS * WINAPI RtlDelete(RTL_SPLAY_LINKS *links)
++{
++    RTL_SPLAY_LINKS *root, *to_splay;
++
++    TRACE("(%p)\n", links);
++
++    if (RtlIsRoot(links) && !RtlLeftChild(links) && !RtlRightChild(links))
++    {
++        return NULL;
++    }
++    else if (!links->LeftChild)
++    {
++        rtl_splay_replace(links, links->RightChild, &root);
++        if (RtlIsRoot(links))
++            return links->RightChild;
++
++        to_splay = links->Parent;
++    }
++    else if (!links->RightChild)
++    {
++        rtl_splay_replace(links, links->LeftChild, &root);
++        if (RtlIsRoot(links))
++            return links->LeftChild;
++
++        to_splay = links->Parent;
++    }
++    else
++    {
++        RTL_SPLAY_LINKS *predecessor = RtlSubtreePredecessor(links);
++        if (predecessor->Parent != links)
++        {
++            rtl_splay_replace(predecessor, predecessor->LeftChild, &root);
++            RtlInsertAsLeftChild(predecessor, links->LeftChild);
++            /* Delete operation first swap the value of node to delete and that of the predecessor
++             * and then delete the predecessor instead. Finally, the parent of the actual deleted
++             * node, which is the predecessor, is splayed afterwards */
++            to_splay = predecessor->Parent;
++        }
++        else
++        {
++            /* links is the parent of predecessor. So after swapping, the parent of links is in
++             * fact the predecessor. So predecessor gets splayed */
++            to_splay = predecessor;
++        }
++        rtl_splay_replace(links, predecessor, &root);
++        RtlInsertAsRightChild(predecessor, links->RightChild);
++    }
++
++    return RtlSplay(to_splay);
++}
++
++/******************************************************************************
++ *  RtlDeleteNoSplay           [NTDLL.@]
++ */
++void WINAPI RtlDeleteNoSplay(RTL_SPLAY_LINKS *links, RTL_SPLAY_LINKS **root)
++{
++    TRACE("(%p, %p)\n", links, root);
++
++    if (RtlIsRoot(links) && !RtlLeftChild(links) && !RtlRightChild(links))
++    {
++        *root = NULL;
++    }
++    else  if (!links->LeftChild)
++    {
++        rtl_splay_replace(links, links->RightChild, root);
++    }
++    else if (!links->RightChild)
++    {
++        rtl_splay_replace(links, links->LeftChild, root);
++    }
++    else
++    {
++        RTL_SPLAY_LINKS *predecessor = RtlSubtreePredecessor(links);
++        if (predecessor->Parent != links)
++        {
++            rtl_splay_replace(predecessor, predecessor->LeftChild, root);
++            RtlInsertAsLeftChild(predecessor, links->LeftChild);
++        }
++        rtl_splay_replace(links, predecessor, root);
++        RtlInsertAsRightChild(predecessor, links->RightChild);
++    }
++}
++
++/***********************************************************************
++ *           RtlInsertElementGenericTable  (NTDLL.@)
++ */
++void * WINAPI RtlInsertElementGenericTable(RTL_GENERIC_TABLE *table, void *value, ULONG size, BOOLEAN *new_element)
++{
++    RTL_SPLAY_LINKS *child, *parent = NULL;
++    RTL_GENERIC_COMPARE_RESULTS result;
++    void *buffer;
++
++    TRACE("(%p, %p, %lu, %p)\n", table, value, size, new_element);
++
++    child = table->TableRoot;
++    while (child)
++    {
++        buffer = get_data_from_splay_links(child);
++        result = table->CompareRoutine(table, buffer, value);
++        parent = child;
++        if (result == GenericLessThan)
++        {
++            child = child->RightChild;
++        }
++        else if (result == GenericGreaterThan)
++        {
++            child = child->LeftChild;
++        }
++        else
++        {
++            if (new_element)
++                *new_element = FALSE;
++            return buffer;
++        }
++    }
++
++    /* data should be stored on a 8 byte boundary */
++    child = (RTL_SPLAY_LINKS *)table->AllocateRoutine(table, size + FIELD_OFFSET(struct rtl_generic_table_entry, data));
++    RtlInitializeSplayLinks(child);
++    InsertTailList(&table->InsertOrderList, get_list_entry_from_splay_links(child));
++    buffer = get_data_from_splay_links(child);
++    memcpy(buffer, value, size);
++
++    if (parent)
++    {
++        buffer = get_data_from_splay_links(parent);
++        result = table->CompareRoutine(table, buffer, value);
++        if (result == GenericLessThan)
++            RtlInsertAsRightChild(parent, child);
++        else
++            RtlInsertAsLeftChild(parent, child);
++    }
++
++    if (new_element)
++        *new_element = TRUE;
++    table->TableRoot = RtlSplay(child);
++    table->NumberGenericTableElements++;
++    return get_data_from_splay_links(child);
++}
++
++BOOLEAN WINAPI RtlDeleteElementGenericTable(RTL_GENERIC_TABLE *table, void *value)
++{
++    RTL_SPLAY_LINKS *child;
++
++    TRACE("(%p, %p)\n", table, value);
++
++    child = rtl_splay_find(table, value);
++    if (!child)
++        return FALSE;
++
++    table->TableRoot = RtlDelete(child);
++    RemoveEntryList(get_list_entry_from_splay_links(child));
++    table->NumberGenericTableElements--;
++    table->OrderedPointer = &table->InsertOrderList;
++    table->WhichOrderedElement = 0;
++    table->FreeRoutine(table, child);
++    return TRUE;
++}
++
++/******************************************************************************
++ *  RtlEnumerateGenericTable           [NTDLL.@]
++ *
++ * RtlEnumerateGenericTable() uses TableRoot to keep track of enumeration status according to tests.
++ * This also means that other functions that change TableRoot should not be used during enumerations.
++ * Otherwise, RtlEnumerateGenericTable() won't be able to find the correct next element when restart
++ * is FALSE. This is also the case on Windows.
++ */
++void * WINAPI RtlEnumerateGenericTable(RTL_GENERIC_TABLE *table, BOOLEAN restart)
++{
++    RTL_SPLAY_LINKS *child;
++
++    TRACE("(%p, %d)\n", table, restart);
++
++    if (RtlIsGenericTableEmpty(table))
++        return NULL;
++
++    if (restart)
++    {
++        /* Find the smallest element */
++        child = table->TableRoot;
++        while (RtlLeftChild(child))
++            child = RtlLeftChild(child);
++    }
++    else
++    {
++        /* Find the successor of the root */
++        child = RtlRealSuccessor(table->TableRoot);
++        if (!child)
++            return NULL;
++    }
++
++    table->TableRoot = RtlSplay(child);
++    return get_data_from_splay_links(child);
++}
++
++/******************************************************************************
++ *  RtlIsGenericTableEmpty           [NTDLL.@]
++ */
++BOOLEAN WINAPI RtlIsGenericTableEmpty(RTL_GENERIC_TABLE *table)
++{
++    TRACE("(%p)\n", table);
++    return !table->TableRoot;
++}
++
++
+ /******************************************************************************
+  *  RtlInitializeGenericTable           [NTDLL.@]
+  */
+diff --git a/dlls/pdh/pdh.spec b/dlls/pdh/pdh.spec
+index 3d51f62..854b800 100644
+--- a/dlls/pdh/pdh.spec
++++ b/dlls/pdh/pdh.spec
+@@ -58,8 +58,8 @@
+ @ stub PdhGetDefaultPerfObjectHW
+ @ stub PdhGetDefaultPerfObjectW
+ @ stdcall PdhGetDllVersion(ptr)
+-@ stub PdhGetFormattedCounterArrayA
+-@ stub PdhGetFormattedCounterArrayW
++@ stdcall PdhGetFormattedCounterArrayA(ptr long ptr ptr ptr)
++@ stdcall PdhGetFormattedCounterArrayW(ptr long ptr ptr ptr)
+ @ stdcall PdhGetFormattedCounterValue(ptr long ptr ptr)
+ @ stub PdhGetLogFileSize
+ @ stdcall PdhGetLogFileTypeA(str ptr)
+diff --git a/dlls/pdh/pdh_main.c b/dlls/pdh/pdh_main.c
+index dec86a9..f8b2f3a 100644
+--- a/dlls/pdh/pdh_main.c
++++ b/dlls/pdh/pdh_main.c
+@@ -727,6 +727,115 @@ PDH_STATUS WINAPI PdhGetDllVersion( LPDWORD version )
+     return ERROR_SUCCESS;
+ }
+ 
++
++/***********************************************************************
++ * FD-171 backport: formatted counter array support (upstream Wine
++ * dlls/pdh/pdh_main.c). The counter core (struct counter, format_value)
++ * is unchanged between this vintage and upstream master.
++ */
++static PDH_STATUS get_formatted_counter_array( PDH_HCOUNTER handle, DWORD format,
++                                                LPDWORD bufsize, LPDWORD count, void *buffer, BOOL wide )
++{
++    PDH_STATUS ret;
++    struct counter *counter = handle;
++    PDH_FMT_COUNTERVALUE value;
++    DWORD needed = sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) + (wide ? sizeof(WCHAR) : sizeof(CHAR));
++
++    *count = 1;
++
++    if (!buffer || *bufsize < needed)
++    {
++        *bufsize = needed;
++        return PDH_MORE_DATA;
++    }
++
++    if (!(ret = format_value( counter, format, &counter->one, &counter->two, &value )))
++    {
++        PPDH_FMT_COUNTERVALUE_ITEM_W item = buffer;
++        char *name = (char *)buffer + sizeof(PDH_FMT_COUNTERVALUE_ITEM_W);
++        item->FmtValue = value;
++        item->FmtValue.CStatus = ERROR_SUCCESS;
++        if (wide)
++        {
++            item->szName = (LPWSTR)name;
++            *(WCHAR *)name = 0;
++        }
++        else
++        {
++            ((PPDH_FMT_COUNTERVALUE_ITEM_A)item)->szName = (LPSTR)name;
++            *name = 0;
++        }
++    }
++    *bufsize = needed;
++    return ret;
++}
++
++/***********************************************************************
++ *              PdhGetFormattedCounterArrayW   (PDH.@)
++ */
++PDH_STATUS WINAPI PdhGetFormattedCounterArrayW( PDH_HCOUNTER handle, DWORD format,
++                                                 LPDWORD bufsize, LPDWORD count,
++                                                 PPDH_FMT_COUNTERVALUE_ITEM_W buffer )
++{
++    PDH_STATUS ret;
++    struct counter *counter = handle;
++
++    TRACE("%p %lx %p %p %p\n", handle, format, bufsize, count, buffer);
++
++    if (!bufsize || !count || !handle) return PDH_INVALID_ARGUMENT;
++
++    EnterCriticalSection( &pdh_handle_cs );
++    if (counter->magic != PDH_MAGIC_COUNTER)
++    {
++        LeaveCriticalSection( &pdh_handle_cs );
++        return PDH_INVALID_HANDLE;
++    }
++    if (counter->status)
++    {
++        LeaveCriticalSection( &pdh_handle_cs );
++        return PDH_INVALID_DATA;
++    }
++
++    ret = get_formatted_counter_array( handle, format, bufsize, count, buffer, TRUE );
++
++    LeaveCriticalSection( &pdh_handle_cs );
++    return ret;
++}
++
++/***********************************************************************
++ *              PdhGetFormattedCounterArrayA   (PDH.@)
++ */
++PDH_STATUS WINAPI PdhGetFormattedCounterArrayA( PDH_HCOUNTER handle, DWORD format,
++                                                 LPDWORD bufsize, LPDWORD count,
++                                                 PPDH_FMT_COUNTERVALUE_ITEM_A buffer )
++{
++    PDH_STATUS ret;
++    struct counter *counter = handle;
++
++    TRACE("%p %lx %p %p %p\n", handle, format, bufsize, count, buffer);
++
++    if (!bufsize || !count || !handle) return PDH_INVALID_ARGUMENT;
++
++    EnterCriticalSection( &pdh_handle_cs );
++    if (counter->magic != PDH_MAGIC_COUNTER)
++    {
++        LeaveCriticalSection( &pdh_handle_cs );
++        return PDH_INVALID_HANDLE;
++    }
++    if (counter->status)
++    {
++        LeaveCriticalSection( &pdh_handle_cs );
++        return PDH_INVALID_DATA;
++    }
++
++    ret = get_formatted_counter_array( handle, format, bufsize, count, buffer, FALSE );
++
++    LeaveCriticalSection( &pdh_handle_cs );
++    return ret;
++}
++
++
++
+ /***********************************************************************
+  *              PdhGetFormattedCounterValue   (PDH.@)
+  */
+diff --git a/dlls/prntvpt/prntvpt.spec b/dlls/prntvpt/prntvpt.spec
+index bc0fe2a..93d4688 100644
+--- a/dlls/prntvpt/prntvpt.spec
++++ b/dlls/prntvpt/prntvpt.spec
+@@ -2,15 +2,15 @@
+ @ stdcall PTOpenProvider(wstr long ptr)
+ @ stdcall PTOpenProviderEx(wstr long long ptr ptr)
+ @ stdcall PTCloseProvider(ptr)
+-@ stub BindPTProviderThunk
++@ stdcall BindPTProviderThunk(wstr long long ptr ptr) PTOpenProviderEx
+ @ stdcall PTGetPrintCapabilities(ptr ptr ptr ptr)
+ @ stdcall PTMergeAndValidatePrintTicket(ptr ptr ptr long ptr ptr)
+ @ stdcall PTConvertPrintTicketToDevMode(ptr ptr long long ptr ptr ptr)
+ @ stdcall PTConvertDevModeToPrintTicket(ptr long ptr long ptr)
+ @ stdcall PTReleaseMemory(ptr)
+-@ stub ConvertDevModeToPrintTicketThunk2
++@ stdcall ConvertDevModeToPrintTicketThunk2(ptr ptr long long ptr ptr)
+ @ stub ConvertDevModeToPrintTicketThunk
+-@ stub ConvertPrintTicketToDevModeThunk2
++@ stdcall ConvertPrintTicketToDevModeThunk2(ptr ptr long long long ptr ptr ptr)
+ @ stub ConvertPrintTicketToDevModeThunk
+ @ stdcall -private DllCanUnloadNow()
+ @ stub DllGetClassObject
+@@ -19,9 +19,9 @@
+ @ stdcall -private DllUnregisterServer()
+ @ stub GetDeviceDefaultPrintTicketThunk
+ @ stub GetDeviceNamespacesThunk
+-@ stub GetPrintCapabilitiesThunk2
++@ stdcall GetPrintCapabilitiesThunk2(ptr ptr long ptr ptr ptr)
+ @ stub GetPrintCapabilitiesThunk
+ @ stub GetSchemaVersionThunk
+ @ stub MergeAndValidatePrintTicketThunk2
+ @ stub MergeAndValidatePrintTicketThunk
+-@ stub UnbindPTProviderThunk
++@ stdcall UnbindPTProviderThunk(ptr) PTCloseProvider
+diff --git a/dlls/prntvpt/ticket.c b/dlls/prntvpt/ticket.c
+index bd18544..0315107 100644
+--- a/dlls/prntvpt/ticket.c
++++ b/dlls/prntvpt/ticket.c
+@@ -1532,3 +1532,123 @@ HRESULT WINAPI PTGetPrintCapabilities(HPTPROVIDER provider, IStream *stream, ISt
+ 
+     return write_print_capabilities(prov->name, caps);
+ }
++
++/* FD-171 backport (upstream Wine).  */
++HRESULT WINAPI ConvertDevModeToPrintTicketThunk2(HPTPROVIDER provider, BYTE *dm, ULONG size,
++                                                 EPrintTicketScope scope, BYTE **ticket, INT *length)
++{
++    HRESULT hr;
++    IStream *stream;
++
++    TRACE("%p,%p,%lu,%d,%p,%p\n", provider, dm, size, scope, ticket, length);
++
++    if (!is_valid_provider(provider) || !dm || !ticket || !length)
++        return E_INVALIDARG;
++
++    hr = CreateStreamOnHGlobal(0, TRUE, &stream);
++    if (hr != S_OK) return hr;
++
++    hr = PTConvertDevModeToPrintTicket(provider, size, (DEVMODEW *)dm, scope, stream);
++    if (hr == S_OK)
++    {
++        HGLOBAL hmem;
++        DWORD mem_size;
++
++        hr = GetHGlobalFromStream(stream, &hmem);
++        if (hr == S_OK)
++        {
++            mem_size = GlobalSize(hmem);
++            *ticket = CoTaskMemAlloc(mem_size);
++            if (*ticket)
++            {
++                BYTE *p = GlobalLock(hmem);
++                memcpy(*ticket, p, mem_size);
++                GlobalUnlock(hmem);
++                *length = mem_size;
++            }
++            else
++                hr = E_OUTOFMEMORY;
++        }
++    }
++
++    IStream_Release(stream);
++    return hr;
++}
++
++/* FD-171 backport (upstream Wine).  */
++HRESULT WINAPI ConvertPrintTicketToDevModeThunk2(HPTPROVIDER provider, BYTE *ticket, ULONG ticket_size, EDefaultDevmodeType type,
++                                                 EPrintTicketScope scope, BYTE **dm, ULONG *size, BSTR *error)
++{
++    static const LARGE_INTEGER zero;
++    HRESULT hr;
++    IStream *stream;
++
++    TRACE("%p,%p,%lu,%d,%d,%p,%p,%p\n", provider, ticket, ticket_size, type, scope, dm, size, error);
++
++    hr = CreateStreamOnHGlobal(0, TRUE, &stream);
++    if (hr != S_OK) return hr;
++
++    hr = IStream_Write(stream, ticket, ticket_size, NULL);
++    if (hr == S_OK)
++    {
++        IStream_Seek(stream, zero, STREAM_SEEK_SET, NULL);
++
++        hr = PTConvertPrintTicketToDevMode(provider, stream, type, scope, size, (PDEVMODEW *)dm, error);
++    }
++
++    IStream_Release(stream);
++
++    return hr;
++}
++
++/* FD-171 backport (upstream Wine).  */
++HRESULT WINAPI GetPrintCapabilitiesThunk2(HPTPROVIDER provider, BYTE *ticket, INT ticket_size,
++                                          BYTE **print_caps, INT *print_caps_length, BSTR *error)
++{
++    static const LARGE_INTEGER zero;
++    HRESULT hr;
++    IStream *stream, *caps = NULL;
++    HGLOBAL hmem;
++    DWORD mem_size;
++
++    TRACE("%p,%p,%d,%p,%p,%p\n", provider, ticket, ticket_size, print_caps, print_caps_length, error);
++
++    if (!is_valid_provider(provider) || !ticket || !print_caps || !print_caps_length)
++        return E_INVALIDARG;
++
++    hr = CreateStreamOnHGlobal(0, TRUE, &stream);
++    if (hr != S_OK) return hr;
++
++    hr = IStream_Write(stream, ticket, ticket_size, NULL);
++    if (hr != S_OK) goto fail;
++
++    IStream_Seek(stream, zero, STREAM_SEEK_SET, NULL);
++
++    hr = CreateStreamOnHGlobal(0, TRUE, &caps);
++    if (hr != S_OK) goto fail;
++
++    hr = PTGetPrintCapabilities(provider, stream, caps, error);
++    if (hr != S_OK) goto fail;
++
++    hr = GetHGlobalFromStream(caps, &hmem);
++    if (hr == S_OK)
++    {
++        mem_size = GlobalSize(hmem);
++        *print_caps = CoTaskMemAlloc(mem_size);
++        if (*print_caps)
++        {
++            BYTE *p = GlobalLock(hmem);
++            memcpy(*print_caps, p, mem_size);
++            GlobalUnlock(hmem);
++            *print_caps_length = mem_size;
++        }
++        else
++            hr = E_OUTOFMEMORY;
++    }
++
++fail:
++    IStream_Release(stream);
++    if (caps) IStream_Release(caps);
++
++    return hr;
++}
+diff --git a/dlls/propsys/propsys.spec b/dlls/propsys/propsys.spec
+index 6a608ca..6a1a313 100644
+--- a/dlls/propsys/propsys.spec
++++ b/dlls/propsys/propsys.spec
+@@ -102,7 +102,7 @@
+ @ stub PropVariantGetInt16Elem
+ @ stub PropVariantGetInt32Elem
+ @ stub PropVariantGetInt64Elem
+-@ stub PropVariantGetStringElem
++@ stdcall PropVariantGetStringElem(ptr long ptr)
+ @ stub PropVariantGetUInt16Elem
+ @ stub PropVariantGetUInt32Elem
+ @ stub PropVariantGetUInt64Elem
+diff --git a/dlls/propsys/propvar.c b/dlls/propsys/propvar.c
+index d681b91..f56a2c1 100644
+--- a/dlls/propsys/propvar.c
++++ b/dlls/propsys/propvar.c
+@@ -1195,3 +1195,54 @@ HRESULT WINAPI VariantToPropVariant(const VARIANT *var, PROPVARIANT *propvar)
+ 
+     return S_OK;
+ }
++
++/* FD-171 backport (upstream Wine dlls/propsys/propvar.c): the one
++ * propsys conversion still a spec stub in this vintage. */
++HRESULT WINAPI PropVariantGetStringElem(const PROPVARIANT *propvar, ULONG idx, WCHAR **ret)
++{
++    const WCHAR *wstr;
++
++    TRACE("propvar %p, idx %lu, ret %p, propvar->vt %#x.\n", propvar, idx, ret, propvar ? propvar->vt : 0);
++
++    *ret = 0;
++    switch (propvar->vt)
++    {
++    case VT_BSTR:
++        if (idx != 0) return E_INVALIDARG;
++        wstr = propvar->bstrVal;
++        break;
++    case VT_LPWSTR:
++        if (idx != 0) return E_INVALIDARG;
++        wstr = propvar->pwszVal;
++        break;
++    case VT_BSTR | VT_VECTOR:
++        if (idx >= propvar->cabstr.cElems) return E_INVALIDARG;
++        wstr = propvar->cabstr.pElems[idx];
++        break;
++    case VT_LPWSTR | VT_VECTOR:
++        if (idx >= propvar->calpwstr.cElems) return E_INVALIDARG;
++        wstr = propvar->calpwstr.pElems[idx];
++        break;
++    case VT_BSTR | VT_ARRAY:
++    {
++        LONG l = idx;
++        HRESULT hr;
++
++        if (SafeArrayGetDim(propvar->parray) != 1) return E_INVALIDARG;
++        /* bug in native implementation: ignore lower-bound when checking bounds */
++        if (idx >= propvar->parray->rgsabound[0].cElements) return E_INVALIDARG;
++        hr = SafeArrayGetElement(propvar->parray, &l, &wstr);
++        if (FAILED(hr)) return hr;
++        break;
++    }
++    default:
++        return E_INVALIDARG;
++    }
++
++    if (!wstr) wstr = L"";
++    *ret = CoTaskMemAlloc((wcslen(wstr) + 1) * sizeof(WCHAR));
++    if (!*ret)
++        return E_OUTOFMEMORY;
++    wcscpy(*ret, wstr);
++    return S_OK;
++}
+diff --git a/dlls/setupapi/devinst.c b/dlls/setupapi/devinst.c
+index 4e406fe..eea225d 100644
+--- a/dlls/setupapi/devinst.c
++++ b/dlls/setupapi/devinst.c
+@@ -37,6 +37,7 @@
+ #include "mscat.h"
+ #include "shlwapi.h"
+ #include "wine/debug.h"
++#include "wine/heap.h"
+ #include "wine/list.h"
+ #include "cfgmgr32.h"
+ #include "winioctl.h"
+@@ -4246,6 +4247,758 @@ CONFIGRET WINAPI CM_Get_Device_IDA(DEVINST devnode, char *buffer, ULONG len, ULO
+     return CR_SUCCESS;
+ }
+ 
++/***********************************************************************
++ *           CM functions backported for FD-171
++ *
++ * The cfgmgr32 configuration-manager functions below used to be spec
++ * stubs in both cfgmgr32 and setupapi. Upstream Wine eventually
++ * implemented them in cfgmgr32 on top of a device/property model that
++ * does not exist in this vintage; here they are implemented directly
++ * on this tree's device model, where the SETUPDI code keeps the same
++ * truth in the registry: devices under System\CurrentControlSet\Enum,
++ * classes under ...\Control\Class, device interfaces under
++ * ...\Control\DeviceClasses. The observable contracts (argument
++ * validation order, CONFIGRET codes, size accounting) follow the
++ * upstream implementations in dlls/cfgmgr32/cfgmgr32.c.
++ */
++
++static const WCHAR cm171_slashW[] = {'\\',0};
++
++#define CM171_ENUMERATE_CLASSES_INSTALLER   0x00000000
++#define CM171_ENUMERATE_CLASSES_BITS        0x00000001
++#define CM171_OPEN_CLASS_KEY_INSTALLER      0x00000000
++#define CM171_OPEN_CLASS_KEY_BITS           0x00000001
++#define CM171_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES 0x00000001
++#define CM171_GET_DEVICE_INTERFACE_LIST_BITS        0x00000001
++#define CM171_GETIDLIST_FILTER_BITS         0x100003FF
++#define CM171_GETIDLIST_FILTER_ENUMERATOR   0x00000001
++#define CM171_GETIDLIST_FILTER_SERVICE      0x00000002
++#define CM171_GETIDLIST_FILTER_RELATIONS    0x000000AC
++#define CM171_GETIDLIST_FILTER_PRESENT      0x00000100
++#define CM171_GETIDLIST_FILTER_CLASS        0x00000200
++#define CM171_GETIDLIST_DONOTGENERATE       0x10000040
++
++static CONFIGRET cm171_map_error( LSTATUS err )
++{
++    switch (err)
++    {
++    case ERROR_INVALID_PARAMETER:   return CR_FAILURE;
++    case ERROR_INVALID_USER_BUFFER: return CR_INVALID_POINTER;
++    case ERROR_FILE_NOT_FOUND:      return CR_NO_SUCH_REGISTRY_KEY;
++    case ERROR_MORE_DATA:           return CR_BUFFER_SMALL;
++    case ERROR_NO_MORE_ITEMS:       return CR_NO_SUCH_VALUE;
++    case ERROR_NOT_FOUND:           return CR_NO_SUCH_VALUE;
++    case ERROR_SUCCESS:             return CR_SUCCESS;
++    default: WARN( "unmapped error %lu\n", err ); return CR_FAILURE;
++    }
++}
++
++static LSTATUS cm171_open_key( HKEY root, const WCHAR *key, REGSAM access, BOOL open, HKEY *hkey )
++{
++    LSTATUS err;
++
++    if (open) return RegOpenKeyExW( root, key, 0, access, hkey );
++
++    err = RegCreateKeyExW( root, key, 0, NULL, 0, access, NULL, hkey, NULL );
++    if (err == ERROR_CHILD_MUST_BE_VOLATILE)
++        err = RegCreateKeyExW( root, key, 0, NULL, REG_OPTION_VOLATILE, access, NULL, hkey, NULL );
++    return err;
++}
++
++static LSTATUS cm171_open_subkey( HKEY root, const WCHAR *prefix, const WCHAR *suffix,
++                                  REGSAM access, BOOL open, HKEY *hkey )
++{
++    WCHAR path[MAX_PATH];
++    ULONG len = lstrlenW( prefix ) + 1 + lstrlenW( suffix );
++
++    if (len >= ARRAY_SIZE(path)) return ERROR_FILENAME_EXCED_RANGE;
++    lstrcpyW( path, prefix );
++    lstrcatW( path, cm171_slashW );
++    lstrcatW( path, suffix );
++    return cm171_open_key( root, path, access, open, hkey );
++}
++
++static BOOL cm171_guid_from_string( const WCHAR *str, GUID *guid )
++{
++    /* strict "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" parse */
++    static const int byte_pos[8] = {0, 2, 4, 6, 9, 11, 14, 16};
++    DWORD v[11];
++    int i, j;
++
++    if (lstrlenW( str ) != 38 || str[0] != '{' || str[37] != '}' ||
++        str[9] != '-' || str[14] != '-' || str[19] != '-' || str[24] != '-')
++        return FALSE;
++    for (i = 0; i < 11; i++)
++    {
++        int digits = (i == 0) ? 8 : (i < 3 ? 4 : 2);
++        /* positions: { at 0, fields start at 1, 10, 15, then the eight
++         * Data4 bytes at 20,22,25,27,30,32,35,37 - wait, 38-char form:
++         * indexes 20,22 are before the 24 '-'... computed explicitly: */
++        static const int pos_tab[11] = {1, 10, 15, 20, 22, 25, 27, 29, 31, 33, 35};
++        int pos = pos_tab[i];
++        DWORD val = 0;
++        for (j = 0; j < digits; j++)
++        {
++            WCHAR c = str[pos + j];
++            val <<= 4;
++            if (c >= '0' && c <= '9') val |= c - '0';
++            else if (c >= 'a' && c <= 'f') val |= c - 'a' + 10;
++            else if (c >= 'A' && c <= 'F') val |= c - 'A' + 10;
++            else return FALSE;
++        }
++        v[i] = val;
++    }
++    (void)byte_pos;
++    guid->Data1 = v[0];
++    guid->Data2 = (unsigned short)v[1];
++    guid->Data3 = (unsigned short)v[2];
++    for (i = 0; i < 8; i++) guid->Data4[i] = (unsigned char)v[3 + i];
++    return TRUE;
++}
++
++/* growable multi-string collector (wide) */
++struct cm171_collect
++{
++    WCHAR *data;
++    ULONG chars; /* chars stored, excluding the final list terminator */
++    ULONG cap;
++};
++
++static BOOL cm171_collect_append( struct cm171_collect *c, const WCHAR *str )
++{
++    ULONG len = lstrlenW( str ) + 1;
++
++    if (c->chars + len + 1 > c->cap)
++    {
++        ULONG ncap = max( c->cap * 2, c->chars + len + 1 );
++        WCHAR *ndata = heap_realloc( c->data, ncap * sizeof(WCHAR) );
++        if (!ndata) return FALSE;
++        c->data = ndata;
++        c->cap = ncap;
++    }
++    memcpy( c->data + c->chars, str, len * sizeof(WCHAR) );
++    c->chars += len;
++    return TRUE;
++}
++
++static ULONG cm171_collect_total_a( const struct cm171_collect *c );
++
++static ULONG cm171_collect_total( const struct cm171_collect *c )
++{
++    return c->chars + 1; /* final list terminator */
++}
++
++/* deliver a collected wide multi-string into the caller's buffer */
++static CONFIGRET cm171_deliver_w( const struct cm171_collect *c, WCHAR *buffer, ULONG len )
++{
++    memset( buffer, 0, len * sizeof(WCHAR) );
++    if (cm171_collect_total( c ) > len) return CR_BUFFER_SMALL;
++    if (c->chars) memcpy( buffer, c->data, c->chars * sizeof(WCHAR) );
++    return CR_SUCCESS;
++}
++
++/* deliver a collected wide multi-string converted to ANSI */
++static CONFIGRET cm171_deliver_a( const struct cm171_collect *c, char *buffer, ULONG len )
++{
++    ULONG total = cm171_collect_total_a( c );
++    ULONG off = 0, aoff = 0;
++
++    memset( buffer, 0, len );
++    if (total > len) return CR_BUFFER_SMALL;
++    while (off < c->chars)
++    {
++        aoff += WideCharToMultiByte( CP_ACP, 0, c->data + off, -1, buffer + aoff, len - aoff, NULL, NULL );
++        off += lstrlenW( c->data + off ) + 1;
++    }
++    return CR_SUCCESS;
++}
++
++static ULONG cm171_collect_total_a( const struct cm171_collect *c )
++{
++    ULONG total = 1, off = 0;
++    while (off < c->chars)
++    {
++        total += WideCharToMultiByte( CP_ACP, 0, c->data + off, -1, NULL, 0, NULL, NULL );
++        off += lstrlenW( c->data + off ) + 1;
++    }
++    return total;
++}
++
++/***********************************************************************
++ *           CM_Enumerate_Classes_Ex   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Enumerate_Classes_Ex( ULONG index, GUID *class, ULONG flags, HMACHINE machine )
++{
++    WCHAR buffer[39];
++    LSTATUS err;
++    HKEY root;
++
++    TRACE( "index %lu, class %s, flags %#lx, machine %p\n", index, debugstr_guid(class), flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!class) return CR_INVALID_POINTER;
++    if (flags & ~CM171_ENUMERATE_CLASSES_BITS) return CR_INVALID_FLAG;
++
++    if ((err = RegOpenKeyExW( HKEY_LOCAL_MACHINE,
++            flags == CM171_ENUMERATE_CLASSES_INSTALLER ? ControlClass : DeviceClasses,
++            0, KEY_READ, &root )))
++        return cm171_map_error( err );
++
++    err = RegEnumKeyW( root, index, buffer, ARRAY_SIZE(buffer) );
++    RegCloseKey( root );
++    if (err) return cm171_map_error( err );
++    if (!cm171_guid_from_string( buffer, class )) return CR_FAILURE;
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *           CM_Enumerate_Enumerators_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Enumerate_Enumerators_ExW( ULONG index, WCHAR *buffer, ULONG *len, ULONG flags, HMACHINE machine )
++{
++    LSTATUS err;
++    HKEY root;
++
++    TRACE( "index %lu, buffer %p, len %p, flags %#lx, machine %p\n", index, buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!buffer || !len) return CR_INVALID_POINTER;
++    if (!*len && buffer) return CR_INVALID_DATA;
++    if (flags) return CR_INVALID_FLAG;
++
++    if ((err = RegOpenKeyExW( HKEY_LOCAL_MACHINE, Enum, 0, KEY_READ, &root )))
++        return cm171_map_error( err );
++
++    if (!(err = RegEnumKeyExW( root, index, buffer, len, NULL, NULL, NULL, NULL ))) *len += 1;
++    RegCloseKey( root );
++    return cm171_map_error( err );
++}
++
++/***********************************************************************
++ *           CM_Enumerate_EnumeratorsW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Enumerate_EnumeratorsW( ULONG index, WCHAR *buffer, ULONG *len, ULONG flags )
++{
++    return CM_Enumerate_Enumerators_ExW( index, buffer, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Enumerate_Enumerators_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Enumerate_Enumerators_ExA( ULONG index, char *buffer, ULONG *len, ULONG flags, HMACHINE machine )
++{
++    LSTATUS err;
++    HKEY root;
++
++    TRACE( "index %lu, buffer %p, len %p, flags %#lx, machine %p\n", index, buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!buffer || !len) return CR_INVALID_POINTER;
++    if (!*len && buffer) return CR_INVALID_DATA;
++    if (flags) return CR_INVALID_FLAG;
++
++    if ((err = RegOpenKeyExW( HKEY_LOCAL_MACHINE, Enum, 0, KEY_READ, &root )))
++        return cm171_map_error( err );
++
++    if (!(err = RegEnumKeyExA( root, index, buffer, len, NULL, NULL, NULL, NULL ))) *len += 1;
++    RegCloseKey( root );
++    return cm171_map_error( err );
++}
++
++/***********************************************************************
++ *           CM_Enumerate_EnumeratorsA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Enumerate_EnumeratorsA( ULONG index, char *buffer, ULONG *len, ULONG flags )
++{
++    return CM_Enumerate_Enumerators_ExA( index, buffer, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Get_Class_Key_Name_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Class_Key_Name_ExW( GUID *guid, WCHAR *name, ULONG *len, ULONG flags, HMACHINE machine )
++{
++    UINT capacity;
++
++    TRACE( "guid %s, name %p, len %p, flags %#lx, machine %p\n", debugstr_guid(guid), name, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++    if (flags) FIXME( "flags %#lx not implemented!\n", flags );
++
++    if (!guid || !len) return CR_INVALID_POINTER;
++    if ((capacity = *len) && !name) return CR_INVALID_POINTER;
++
++    *len = 39;
++    if (capacity < *len) return CR_BUFFER_SMALL;
++    SETUPDI_GuidToString( guid, name );
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *           CM_Get_Class_Key_NameW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Class_Key_NameW( GUID *class, WCHAR *name, ULONG *len, ULONG flags )
++{
++    return CM_Get_Class_Key_Name_ExW( class, name, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Get_Class_Key_Name_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Class_Key_Name_ExA( GUID *class, char *nameA, ULONG *len, ULONG flags, HMACHINE machine )
++{
++    WCHAR nameW[39];
++    CONFIGRET ret;
++
++    if ((ret = CM_Get_Class_Key_Name_ExW( class, nameA ? nameW : NULL, len, flags, machine ))) return ret;
++    if (nameA) WideCharToMultiByte( CP_ACP, 0, nameW, 39, nameA, 39, NULL, NULL );
++
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *           CM_Get_Class_Key_NameA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Class_Key_NameA( GUID *class, char *name, ULONG *len, ULONG flags )
++{
++    return CM_Get_Class_Key_Name_ExA( class, name, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Open_Class_Key_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Open_Class_Key_ExW( GUID *class, const WCHAR *name, REGSAM access,
++                                        REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine )
++{
++    BOOL open = disposition == RegDisposition_OpenExisting;
++    WCHAR buffer[39];
++
++    TRACE( "class %s, name %s, access %#lx, disposition %#lx, hkey %p, flags %#lx\n",
++           debugstr_guid(class), debugstr_w(name), access, disposition, hkey, flags );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (name) return CR_INVALID_DATA;
++    if (!hkey) return CR_INVALID_POINTER;
++    if (flags & ~CM171_OPEN_CLASS_KEY_BITS) return CR_INVALID_FLAG;
++
++    if (!class) *buffer = 0;
++    else SETUPDI_GuidToString( class, buffer );
++
++    if (flags == CM171_OPEN_CLASS_KEY_INSTALLER)
++        return cm171_map_error( cm171_open_subkey( HKEY_LOCAL_MACHINE, ControlClass, buffer, access, open, hkey ) );
++    return cm171_map_error( cm171_open_subkey( HKEY_LOCAL_MACHINE, DeviceClasses, buffer, access, open, hkey ) );
++}
++
++/***********************************************************************
++ *           CM_Open_Class_KeyW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Open_Class_KeyW( GUID *class, const WCHAR *name, REGSAM access,
++                                     REGDISPOSITION disposition, HKEY *hkey, ULONG flags )
++{
++    return CM_Open_Class_Key_ExW( class, name, access, disposition, hkey, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Open_Class_Key_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Open_Class_Key_ExA( GUID *class, const char *name, REGSAM access,
++                                        REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine )
++{
++    if (name) return CR_INVALID_DATA;
++    return CM_Open_Class_Key_ExW( class, NULL, access, disposition, hkey, flags, machine );
++}
++
++/***********************************************************************
++ *           CM_Open_Class_KeyA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Open_Class_KeyA( GUID *class, const char *name, REGSAM access,
++                                     REGDISPOSITION disposition, HKEY *hkey, ULONG flags )
++{
++    return CM_Open_Class_Key_ExA( class, name, access, disposition, hkey, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Get_Device_ID_Size_Ex   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_ID_Size_Ex( ULONG *len, DEVINST node, ULONG flags, HMACHINE machine )
++{
++    struct device *device;
++
++    TRACE( "len %p, node %#lx, flags %#lx, machine %p\n", len, node, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++    if (flags) FIXME( "flags %#lx not implemented!\n", flags );
++
++    if (!len) return CR_INVALID_POINTER;
++    if (!(device = get_devnode_device( node ))) return CR_INVALID_DEVNODE;
++
++    *len = lstrlenW( device->instanceId );
++    return CR_SUCCESS;
++}
++
++/* Walk the Enum registry tree collecting device instance IDs that
++ * match the CM_Get_Device_ID_List filter. In this device model every
++ * device recorded under Enum is present, and no relation data
++ * (eject/removal/power/bus/transport relations between devices) is
++ * recorded anywhere, so relation filters match no device. */
++static void cm171_collect_device_ids( const WCHAR *filter, ULONG flags, struct cm171_collect *collect )
++{
++    WCHAR enum_name[MAX_PATH], dev_name[MAX_PATH], inst_name[MAX_PATH];
++    BOOL want_enum = !!(flags & CM171_GETIDLIST_FILTER_ENUMERATOR);
++    BOOL want_service = !!(flags & CM171_GETIDLIST_FILTER_SERVICE);
++    BOOL want_class = !!(flags & CM171_GETIDLIST_FILTER_CLASS);
++    BOOL relations = !!(flags & CM171_GETIDLIST_FILTER_RELATIONS);
++    HKEY enum_root, enum_key, dev_key, inst_key;
++    DWORD i, j, k;
++
++    if (relations) return;
++    if ((want_enum || want_service || want_class) && !filter) want_enum = want_service = want_class = FALSE;
++
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, Enum, 0, KEY_READ, &enum_root )) return;
++
++    for (i = 0; ; i++)
++    {
++        DWORD len = ARRAY_SIZE(enum_name);
++        if (RegEnumKeyExW( enum_root, i, enum_name, &len, NULL, NULL, NULL, NULL )) break;
++        if (want_enum && wcsicmp( enum_name, filter )) continue;
++        if (RegOpenKeyExW( enum_root, enum_name, 0, KEY_READ, &enum_key )) continue;
++
++        for (j = 0; ; j++)
++        {
++            len = ARRAY_SIZE(dev_name);
++            if (RegEnumKeyExW( enum_key, j, dev_name, &len, NULL, NULL, NULL, NULL )) break;
++            if (RegOpenKeyExW( enum_key, dev_name, 0, KEY_READ, &dev_key )) continue;
++
++            for (k = 0; ; k++)
++            {
++                WCHAR id[MAX_DEVICE_ID_LEN];
++                len = ARRAY_SIZE(inst_name);
++                if (RegEnumKeyExW( dev_key, k, inst_name, &len, NULL, NULL, NULL, NULL )) break;
++
++                if (want_service || want_class)
++                {
++                    WCHAR value[256];
++                    DWORD size;
++                    BOOL match = TRUE;
++
++                    if (RegOpenKeyExW( dev_key, inst_name, 0, KEY_READ, &inst_key )) continue;
++                    if (want_service)
++                    {
++                        size = sizeof(value);
++                        if (RegQueryValueExW( inst_key, Service, NULL, NULL, (BYTE *)value, &size )
++                                || wcsicmp( value, filter ))
++                            match = FALSE;
++                    }
++                    if (match && want_class)
++                    {
++                        static const WCHAR ClassGUID[] = {'C','l','a','s','s','G','U','I','D',0};
++                        size = sizeof(value);
++                        if (RegQueryValueExW( inst_key, ClassGUID, NULL, NULL, (BYTE *)value, &size )
++                                || wcsicmp( value, filter ))
++                            match = FALSE;
++                    }
++                    RegCloseKey( inst_key );
++                    if (!match) continue;
++                }
++
++                lstrcpyW( id, enum_name );
++                lstrcatW( id, cm171_slashW );
++                lstrcatW( id, dev_name );
++                lstrcatW( id, cm171_slashW );
++                lstrcatW( id, inst_name );
++                if (!cm171_collect_append( collect, id )) goto done;
++            }
++            RegCloseKey( dev_key );
++        }
++        RegCloseKey( enum_key );
++    }
++done:
++    RegCloseKey( enum_root );
++}
++
++/***********************************************************************
++ *           CM_Get_Device_ID_List_Size_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_ID_List_Size_ExW( ULONG *len, const WCHAR *filter, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++
++    TRACE( "len %p, filter %s, flags %#lx, machine %p\n", len, debugstr_w(filter), flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!len) return CR_INVALID_POINTER;
++    if (flags & ~CM171_GETIDLIST_FILTER_BITS) return CR_INVALID_FLAG;
++
++    cm171_collect_device_ids( filter, flags, &collect );
++    *len = cm171_collect_total( &collect );
++    heap_free( collect.data );
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *           CM_Get_Device_ID_List_Size_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_ID_List_Size_ExA( ULONG *len, const char *filter, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++    WCHAR filterW[MAX_DEVICE_ID_LEN];
++    const WCHAR *filterp = NULL;
++
++    TRACE( "len %p, filter %s, flags %#lx, machine %p\n", len, debugstr_a(filter), flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!len) return CR_INVALID_POINTER;
++    if (flags & ~CM171_GETIDLIST_FILTER_BITS) return CR_INVALID_FLAG;
++
++    if (filter)
++    {
++        MultiByteToWideChar( CP_ACP, 0, filter, -1, filterW, ARRAY_SIZE(filterW) );
++        filterp = filterW;
++    }
++    cm171_collect_device_ids( filterp, flags, &collect );
++    *len = cm171_collect_total_a( &collect );
++    heap_free( collect.data );
++    return CR_SUCCESS;
++}
++
++/***********************************************************************
++ *           CM_Get_Device_ID_List_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_ID_List_ExW( const WCHAR *filter, WCHAR *buffer, ULONG len, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++    CONFIGRET ret;
++
++    TRACE( "filter %s, buffer %p, len %lu, flags %#lx, machine %p\n", debugstr_w(filter), buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!buffer) return CR_INVALID_POINTER;
++    if (flags & ~CM171_GETIDLIST_FILTER_BITS) return CR_INVALID_FLAG;
++
++    cm171_collect_device_ids( filter, flags, &collect );
++    ret = cm171_deliver_w( &collect, buffer, len );
++    heap_free( collect.data );
++    return ret;
++}
++
++/***********************************************************************
++ *           CM_Get_Device_ID_List_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_ID_List_ExA( const char *filter, char *buffer, ULONG len, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++    WCHAR filterW[MAX_DEVICE_ID_LEN];
++    const WCHAR *filterp = NULL;
++    CONFIGRET ret;
++
++    TRACE( "filter %s, buffer %p, len %lu, flags %#lx, machine %p\n", debugstr_a(filter), buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!buffer) return CR_INVALID_POINTER;
++    if (flags & ~CM171_GETIDLIST_FILTER_BITS) return CR_INVALID_FLAG;
++
++    if (filter)
++    {
++        MultiByteToWideChar( CP_ACP, 0, filter, -1, filterW, ARRAY_SIZE(filterW) );
++        filterp = filterW;
++    }
++    cm171_collect_device_ids( filterp, flags, &collect );
++    ret = cm171_deliver_a( &collect, buffer, len );
++    heap_free( collect.data );
++    return ret;
++}
++
++/* Collect the device interface paths of one interface class from the
++ * DeviceClasses registry tree, in the layout SETUPDI itself writes:
++ * DeviceClasses\{class}\<instance segment>\<"#"refstr> subkeys holding
++ * a "SymbolicLink" value; the caller-visible path is the symbolic
++ * link plus the reference string, when any. */
++static void cm171_collect_interfaces( const GUID *class, const WCHAR *instance_id, BOOL all,
++                                      struct cm171_collect *collect )
++{
++    WCHAR class_str[39], dev_name[MAX_PATH], ref_name[MAX_PATH];
++    WCHAR want_seg[MAX_DEVICE_ID_LEN];
++    HKEY classes_root, class_key, dev_key, ref_key;
++    DWORD i, j;
++
++    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, DeviceClasses, 0, KEY_READ, &classes_root )) return;
++    SETUPDI_GuidToString( class, class_str );
++    if (RegOpenKeyExW( classes_root, class_str, 0, KEY_READ, &class_key ))
++    {
++        RegCloseKey( classes_root );
++        return;
++    }
++    RegCloseKey( classes_root );
++
++    if (instance_id)
++    {
++        WCHAR *p;
++        lstrcpynW( want_seg, instance_id, ARRAY_SIZE(want_seg) );
++        for (p = want_seg; *p; p++) if (*p == '\\') *p = '#';
++    }
++
++    for (i = 0; ; i++)
++    {
++        DWORD len = ARRAY_SIZE(dev_name);
++        if (RegEnumKeyExW( class_key, i, dev_name, &len, NULL, NULL, NULL, NULL )) break;
++
++        if (instance_id)
++        {
++            /* stored segment: the "##?#" munged prefix, then the
++             * instance path with '#' separators, then "#{class}" */
++            const WCHAR *seg = dev_name;
++            ULONG seglen = lstrlenW( want_seg );
++            if (lstrlenW( seg ) < 4 || seg[0] != '#' || seg[1] != '#' || seg[2] != '?' || seg[3] != '#') continue;
++            seg += 4;
++            if (wcsnicmp( seg, want_seg, seglen ) || (seg[seglen] && seg[seglen] != '#')) continue;
++        }
++
++        if (RegOpenKeyExW( class_key, dev_name, 0, KEY_READ, &dev_key )) continue;
++        for (j = 0; ; j++)
++        {
++            WCHAR link[MAX_PATH], entry[MAX_PATH + 64];
++            DWORD len = ARRAY_SIZE(ref_name), size;
++            if (RegEnumKeyExW( dev_key, j, ref_name, &len, NULL, NULL, NULL, NULL )) break;
++            if (ref_name[0] != '#') continue;
++            if (RegOpenKeyExW( dev_key, ref_name, 0, KEY_READ, &ref_key )) continue;
++            if (!all && !is_linked( ref_key ))
++            {
++                RegCloseKey( ref_key );
++                continue;
++            }
++            size = sizeof(link);
++            if (!RegQueryValueExW( ref_key, SymbolicLink, NULL, NULL, (BYTE *)link, &size ))
++            {
++                lstrcpyW( entry, link );
++                if (ref_name[1])
++                {
++                    lstrcatW( entry, cm171_slashW );
++                    lstrcatW( entry, ref_name + 1 );
++                }
++                if (!cm171_collect_append( collect, entry ))
++                {
++                    RegCloseKey( ref_key );
++                    RegCloseKey( dev_key );
++                    RegCloseKey( class_key );
++                    return;
++                }
++            }
++            RegCloseKey( ref_key );
++        }
++        RegCloseKey( dev_key );
++    }
++    RegCloseKey( class_key );
++}
++
++/***********************************************************************
++ *           CM_Get_Device_Interface_List_ExW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_Interface_List_ExW( GUID *class, DEVINSTID_W instance_id, WCHAR *buffer,
++                                                   ULONG len, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++    CONFIGRET ret;
++
++    TRACE( "class %s, instance %s, buffer %p, len %lu, flags %#lx, machine %p\n",
++           debugstr_guid(class), debugstr_w(instance_id), buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!class) return CR_FAILURE;
++    if (!buffer) return CR_INVALID_POINTER;
++    if (!len) return CR_BUFFER_SMALL;
++    if (flags & ~CM171_GET_DEVICE_INTERFACE_LIST_BITS) return CR_INVALID_FLAG;
++
++    cm171_collect_interfaces( class, instance_id, flags == CM171_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, &collect );
++    ret = cm171_deliver_w( &collect, buffer, len );
++    heap_free( collect.data );
++    return ret;
++}
++
++/***********************************************************************
++ *           CM_Get_Device_Interface_List_ExA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_Interface_List_ExA( GUID *class, DEVINSTID_A instance_id, char *buffer,
++                                                   ULONG len, ULONG flags, HMACHINE machine )
++{
++    struct cm171_collect collect = {0};
++    WCHAR instanceW[MAX_DEVICE_ID_LEN];
++    DEVINSTID_W instancep = NULL;
++    CONFIGRET ret;
++
++    TRACE( "class %s, instance %s, buffer %p, len %lu, flags %#lx, machine %p\n",
++           debugstr_guid(class), debugstr_a(instance_id), buffer, len, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!class) return CR_FAILURE;
++    if (!buffer) return CR_INVALID_POINTER;
++    if (!len) return CR_BUFFER_SMALL;
++    if (flags & ~CM171_GET_DEVICE_INTERFACE_LIST_BITS) return CR_INVALID_FLAG;
++
++    if (instance_id)
++    {
++        MultiByteToWideChar( CP_ACP, 0, instance_id, -1, instanceW, ARRAY_SIZE(instanceW) );
++        instancep = instanceW;
++    }
++    cm171_collect_interfaces( class, instancep, flags == CM171_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES, &collect );
++    ret = cm171_deliver_a( &collect, buffer, len );
++    heap_free( collect.data );
++    return ret;
++}
++
++/***********************************************************************
++ *           CM_Get_Device_Interface_ListW   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_Interface_ListW( GUID *class, DEVINSTID_W instance_id, WCHAR *buffer, ULONG len, ULONG flags )
++{
++    return CM_Get_Device_Interface_List_ExW( class, instance_id, buffer, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Get_Device_Interface_ListA   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Get_Device_Interface_ListA( GUID *class, DEVINSTID_A instance_id, char *buffer, ULONG len, ULONG flags )
++{
++    return CM_Get_Device_Interface_List_ExA( class, instance_id, buffer, len, flags, NULL );
++}
++
++/***********************************************************************
++ *           CM_Open_DevNode_Key_Ex   (SETUPAPI.@)
++ */
++CONFIGRET WINAPI CM_Open_DevNode_Key_Ex( DEVINST node, REGSAM access, ULONG profile,
++                                         REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine )
++{
++    BOOL open = disposition == RegDisposition_OpenExisting;
++    HKEY root = HKEY_LOCAL_MACHINE;
++    struct device *device;
++    LSTATUS err;
++
++    TRACE( "node %#lx, access %#lx, profile %lu, disposition %#lx, hkey %p, flags %#lx, machine %p\n",
++           node, access, profile, disposition, hkey, flags, machine );
++    if (machine) FIXME( "machine %p not implemented!\n", machine );
++
++    if (!(device = get_devnode_device( node ))) return CR_NO_SUCH_DEVNODE;
++    if ((flags & (CM_REGISTRY_USER | CM_REGISTRY_CONFIG)) == (CM_REGISTRY_USER | CM_REGISTRY_CONFIG))
++        return CR_INVALID_FLAG;
++
++    if (flags & CM_REGISTRY_CONFIG) root = HKEY_CURRENT_CONFIG;
++    else if (flags & CM_REGISTRY_USER) root = HKEY_CURRENT_USER;
++
++    if (flags & CM_REGISTRY_SOFTWARE)
++    {
++        WCHAR driver[MAX_PATH];
++        DWORD len = sizeof(driver);
++
++        if (RegQueryValueExW( device->key, Driver, NULL, NULL, (BYTE *)driver, &len ))
++            return cm171_map_error( ERROR_NOT_FOUND );
++        return cm171_map_error( cm171_open_subkey( root, ControlClass, driver, access, open, hkey ) );
++    }
++
++    if (root != HKEY_LOCAL_MACHINE)
++        return cm171_map_error( cm171_open_subkey( root, Enum, device->instanceId, access, open, hkey ) );
++
++    err = cm171_open_key( device->key, DeviceParameters, access, open, hkey );
++    return cm171_map_error( err );
++}
++
++
+ /***********************************************************************
+  *              CM_Get_Device_IDW  (SETUPAPI.@)
+  */
+diff --git a/dlls/setupapi/setupapi.spec b/dlls/setupapi/setupapi.spec
+index 958e262..6023e80 100644
+--- a/dlls/setupapi/setupapi.spec
++++ b/dlls/setupapi/setupapi.spec
+@@ -39,11 +39,11 @@
+ @ stub CM_Enable_DevNode
+ @ stub CM_Enable_DevNode_Ex
+ @ stdcall CM_Enumerate_Classes(long ptr long)
+-@ stub CM_Enumerate_Classes_Ex
+-@ stub CM_Enumerate_EnumeratorsA
+-@ stub CM_Enumerate_EnumeratorsW
+-@ stub CM_Enumerate_Enumerators_ExA
+-@ stub CM_Enumerate_Enumerators_ExW
++@ stdcall CM_Enumerate_Classes_Ex(long ptr long ptr)
++@ stdcall CM_Enumerate_EnumeratorsA(long ptr ptr long)
++@ stdcall CM_Enumerate_EnumeratorsW(long ptr ptr long)
++@ stdcall CM_Enumerate_Enumerators_ExA(long ptr ptr long ptr)
++@ stdcall CM_Enumerate_Enumerators_ExW(long ptr ptr long ptr)
+ @ stub CM_Find_Range
+ @ stub CM_First_Range
+ @ stub CM_Free_Log_Conf
+@@ -55,10 +55,10 @@
+ @ stub CM_Free_Res_Des_Handle
+ @ stdcall CM_Get_Child(ptr long long)
+ @ stdcall CM_Get_Child_Ex(ptr long long ptr)
+-@ stub CM_Get_Class_Key_NameA
+-@ stub CM_Get_Class_Key_NameW
+-@ stub CM_Get_Class_Key_Name_ExA
+-@ stub CM_Get_Class_Key_Name_ExW
++@ stdcall CM_Get_Class_Key_NameA(ptr ptr ptr long)
++@ stdcall CM_Get_Class_Key_NameW(ptr ptr ptr long)
++@ stdcall CM_Get_Class_Key_Name_ExA(ptr ptr ptr long ptr)
++@ stdcall CM_Get_Class_Key_Name_ExW(ptr ptr ptr long ptr)
+ @ stub CM_Get_Class_NameA
+ @ stub CM_Get_Class_NameW
+ @ stub CM_Get_Class_Name_ExA
+@@ -81,22 +81,22 @@
+ @ stdcall CM_Get_Device_ID_ExW(ptr ptr long long ptr)
+ @ stdcall CM_Get_Device_ID_ListA(str ptr long long)
+ @ stdcall CM_Get_Device_ID_ListW(wstr ptr long long)
+-@ stub CM_Get_Device_ID_List_ExA
+-@ stub CM_Get_Device_ID_List_ExW
++@ stdcall CM_Get_Device_ID_List_ExA(str ptr long long ptr)
++@ stdcall CM_Get_Device_ID_List_ExW(wstr ptr long long ptr)
+ @ stdcall CM_Get_Device_ID_List_SizeA(ptr str long)
+ @ stdcall CM_Get_Device_ID_List_SizeW(ptr wstr long)
+-@ stub CM_Get_Device_ID_List_Size_ExA
+-@ stub CM_Get_Device_ID_List_Size_ExW
++@ stdcall CM_Get_Device_ID_List_Size_ExA(ptr str long ptr)
++@ stdcall CM_Get_Device_ID_List_Size_ExW(ptr wstr long ptr)
+ @ stdcall CM_Get_Device_ID_Size(ptr ptr long)
+-@ stub CM_Get_Device_ID_Size_Ex
++@ stdcall CM_Get_Device_ID_Size_Ex(ptr ptr long ptr)
+ @ stdcall CM_Get_Device_Interface_AliasA(str ptr ptr ptr long)
+ @ stdcall CM_Get_Device_Interface_AliasW(wstr ptr ptr ptr long)
+ @ stub CM_Get_Device_Interface_Alias_ExA
+ @ stub CM_Get_Device_Interface_Alias_ExW
+-@ stub CM_Get_Device_Interface_ListA
+-@ stub CM_Get_Device_Interface_ListW
+-@ stub CM_Get_Device_Interface_List_ExA
+-@ stub CM_Get_Device_Interface_List_ExW
++@ stdcall CM_Get_Device_Interface_ListA(ptr ptr ptr long long)
++@ stdcall CM_Get_Device_Interface_ListW(ptr ptr ptr long long)
++@ stdcall CM_Get_Device_Interface_List_ExA(ptr ptr ptr long long ptr)
++@ stdcall CM_Get_Device_Interface_List_ExW(ptr ptr ptr long long ptr)
+ @ stdcall CM_Get_Device_Interface_List_SizeA(ptr ptr str long)
+ @ stdcall CM_Get_Device_Interface_List_SizeW(ptr ptr wstr long)
+ @ stdcall CM_Get_Device_Interface_List_Size_ExA(ptr ptr str long ptr)
+@@ -142,12 +142,12 @@
+ @ stub CM_Move_DevNode
+ @ stub CM_Move_DevNode_Ex
+ @ stub CM_Next_Range
+-@ stub CM_Open_Class_KeyA
+-@ stub CM_Open_Class_KeyW
+-@ stub CM_Open_Class_Key_ExA
+-@ stub CM_Open_Class_Key_ExW
++@ stdcall CM_Open_Class_KeyA(ptr str long long ptr long)
++@ stdcall CM_Open_Class_KeyW(ptr wstr long long ptr long)
++@ stdcall CM_Open_Class_Key_ExA(ptr str long long ptr long ptr)
++@ stdcall CM_Open_Class_Key_ExW(ptr wstr long long ptr long ptr)
+ @ stdcall CM_Open_DevNode_Key(long long long long ptr long)
+-@ stub CM_Open_DevNode_Key_Ex
++@ stdcall CM_Open_DevNode_Key_Ex(long long long long ptr long ptr)
+ @ stub CM_Query_And_Remove_SubTreeA
+ @ stub CM_Query_And_Remove_SubTreeW
+ @ stub CM_Query_And_Remove_SubTree_ExA
+diff --git a/dlls/sspicli/main.c b/dlls/sspicli/main.c
+index 2190fc5..2f679d7 100644
+--- a/dlls/sspicli/main.c
++++ b/dlls/sspicli/main.c
+@@ -188,3 +188,221 @@ SECURITY_STATUS SEC_ENTRY SspiPrepareForCredWrite( PSEC_WINNT_AUTH_IDENTITY_OPAQ
+ 
+     return SEC_E_OK;
+ }
++
++/* FD-171 backport (upstream Wine).  */
++struct auth_identity_marshalled
++{
++    ULONG version;
++    ULONG length;
++    ULONG user_off;
++    ULONG user_len;
++    ULONG domain_off;
++    ULONG domain_len;
++    ULONG password_off;
++    ULONG password_len;
++    ULONG flags;
++    ULONG package_list_off;
++    ULONG package_list_len;
++};
++
++/***********************************************************************
++ *		SspiMarshalAuthIdentity
++ */
++SECURITY_STATUS SEC_ENTRY SspiMarshalAuthIdentity(
++        PSEC_WINNT_AUTH_IDENTITY_OPAQUE opaque_id, ULONG *len, char **byte_array )
++{
++    SEC_WINNT_AUTH_IDENTITY_EXW *idex = opaque_id;
++    struct auth_identity_marshalled *marshalled;
++    ULONG size, char_size;
++    BYTE *data;
++
++    TRACE( "%p %p %p\n", opaque_id, len, byte_array );
++
++    if (idex->Version >= 0x10000)
++    {
++        SEC_WINNT_AUTH_IDENTITY_W *id = (SEC_WINNT_AUTH_IDENTITY_W *)opaque_id;
++
++        char_size = id->Flags & SEC_WINNT_AUTH_IDENTITY_ANSI ? sizeof(char) : sizeof(WCHAR);
++        size = id->UserLength + id->DomainLength + id->PasswordLength;
++        size = sizeof(*marshalled) + size * char_size + sizeof(DWORD);
++
++        marshalled = LocalAlloc( LMEM_FIXED, size );
++        if (!marshalled) return SEC_E_INSUFFICIENT_MEMORY;
++        memset( marshalled, 0, sizeof(*marshalled) );
++        data = (BYTE *)(marshalled + 1);
++
++        marshalled->version = SEC_WINNT_AUTH_IDENTITY_VERSION;
++        marshalled->length = sizeof(*marshalled);
++        if (id->User)
++        {
++            marshalled->user_off = data - (BYTE *)marshalled;
++            memcpy( data, id->User, id->UserLength * char_size );
++            data += id->UserLength * char_size;
++        }
++        marshalled->user_len = id->UserLength;
++        if (id->Domain)
++        {
++            marshalled->domain_off = data - (BYTE *)marshalled;
++            memcpy( data, id->Domain, id->DomainLength * char_size );
++            data += id->DomainLength * char_size;
++        }
++        marshalled->domain_len = id->DomainLength;
++        if (id->Password)
++        {
++            marshalled->password_off = data - (BYTE *)marshalled;
++            memcpy( data, id->Password, id->PasswordLength * char_size );
++            data += id->PasswordLength * char_size;
++        }
++        marshalled->password_len = id->PasswordLength;
++        marshalled->flags = id->Flags;
++
++        *len = size;
++        *byte_array = (char *)marshalled;
++    }
++    else if (idex->Version == SEC_WINNT_AUTH_IDENTITY_VERSION)
++    {
++        char_size = idex->Flags & SEC_WINNT_AUTH_IDENTITY_ANSI ? sizeof(char) : sizeof(WCHAR);
++        size = idex->UserLength + idex->DomainLength + idex->PasswordLength + idex->PackageListLength;
++        size = sizeof(*marshalled) + size * char_size + sizeof(DWORD);
++
++        marshalled = LocalAlloc( LMEM_FIXED, size );
++        if (!marshalled) return SEC_E_INSUFFICIENT_MEMORY;
++        memset( marshalled, 0, sizeof(*marshalled) );
++        data = (BYTE *)(marshalled + 1);
++
++        marshalled->version = SEC_WINNT_AUTH_IDENTITY_VERSION;
++        marshalled->length = sizeof(*marshalled);
++        if (idex->User)
++        {
++            marshalled->user_off = data - (BYTE *)marshalled;
++            memcpy( data, idex->User, idex->UserLength * char_size );
++            data += idex->UserLength * char_size;
++        }
++        marshalled->user_len = idex->UserLength;
++        if (idex->Domain)
++        {
++            marshalled->domain_off = data - (BYTE *)marshalled;
++            memcpy( data, idex->Domain, idex->DomainLength * char_size );
++            data += idex->DomainLength * char_size;
++        }
++        marshalled->domain_len = idex->DomainLength;
++        if (idex->Password)
++        {
++            marshalled->password_off = data - (BYTE *)marshalled;
++            memcpy( data, idex->Password, idex->PasswordLength * char_size );
++            data += idex->PasswordLength * char_size;
++        }
++        marshalled->password_len = idex->PasswordLength;
++        marshalled->flags = idex->Flags;
++        if (idex->PackageList)
++        {
++            marshalled->package_list_off = data - (BYTE *)marshalled;
++            memcpy( data, idex->PackageList, idex->PackageListLength * char_size );
++            data += idex->PackageListLength * char_size;
++        }
++        marshalled->package_list_len = idex->PackageListLength;
++
++        *len = size;
++        *byte_array = (char *)marshalled;
++    }
++    else if (idex->Version == SEC_WINNT_AUTH_IDENTITY_VERSION_2)
++    {
++        SEC_WINNT_AUTH_IDENTITY_EX2 *id = (SEC_WINNT_AUTH_IDENTITY_EX2 *)opaque_id;
++
++        *byte_array = LocalAlloc( LMEM_FIXED, id->cbStructureLength );
++        if (!*byte_array) return SEC_E_INSUFFICIENT_MEMORY;
++        memcpy( *byte_array, id, id->cbStructureLength );
++
++        *len = id->cbStructureLength;
++    }
++    else
++    {
++        FIXME( "auth identity format not handled: %lu\n", idex->Version );
++        return SEC_E_INTERNAL_ERROR;
++    }
++
++    return SEC_E_OK;
++}
++
++/* FD-171 backport (upstream Wine).  */
++/***********************************************************************
++ *		SspiUnmarshalAuthIdentity
++ */
++SECURITY_STATUS SEC_ENTRY SspiUnmarshalAuthIdentity(
++        ULONG len, char *byte_array, PSEC_WINNT_AUTH_IDENTITY_OPAQUE *opaque_id )
++{
++    struct auth_identity_marshalled *marshalled = (struct auth_identity_marshalled *)byte_array;
++
++    TRACE( "%lu %p %p\n", len, byte_array, opaque_id );
++
++    if (len < sizeof(*marshalled)) return SEC_E_INVALID_TOKEN;
++
++    if (marshalled->version == SEC_WINNT_AUTH_IDENTITY_VERSION)
++    {
++        SEC_WINNT_AUTH_IDENTITY_EXW *ret;
++        ULONG size, char_size;
++        BYTE *data;
++
++        if (marshalled->length != sizeof(*marshalled)) return SEC_E_INVALID_TOKEN;
++
++        char_size = marshalled->flags & SEC_WINNT_AUTH_IDENTITY_ANSI ? sizeof(char) : sizeof(WCHAR);
++        size = marshalled->user_len + marshalled->domain_len +
++            marshalled->password_len + marshalled->package_list_len;
++        size = sizeof(*ret) + size * char_size;
++        ret = LocalAlloc( LMEM_FIXED, size );
++        if (!ret) return SEC_E_INSUFFICIENT_MEMORY;
++        memset( ret, 0, size );
++
++        data = (BYTE *)(ret + 1);
++        ret->Version = SEC_WINNT_AUTH_IDENTITY_VERSION;
++        ret->Length = sizeof(*ret);
++        if (marshalled->user_off)
++        {
++            ret->User = (WCHAR *)data;
++            memcpy( data, (BYTE *)marshalled + marshalled->user_off, marshalled->user_len * char_size );
++            data += marshalled->user_len * char_size;
++        }
++        ret->UserLength = marshalled->user_len;
++        if (marshalled->domain_off)
++        {
++            ret->Domain = (WCHAR *)data;
++            memcpy( data, (BYTE *)marshalled + marshalled->domain_off, marshalled->domain_len * char_size );
++            data += marshalled->domain_len * char_size;
++        }
++        ret->DomainLength = marshalled->domain_len;
++        if (marshalled->password_off)
++        {
++            ret->Password = (WCHAR *)data;
++            memcpy( data, (BYTE *)marshalled + marshalled->password_off, marshalled->password_len * char_size );
++            data += marshalled->password_len * char_size;
++        }
++        ret->PasswordLength = marshalled->password_len;
++        ret->Flags = marshalled->flags | SEC_WINNT_AUTH_IDENTITY_MARSHALLED;
++        if (marshalled->package_list_off)
++        {
++            ret->PackageList = (WCHAR *)data;
++            memcpy( data, (BYTE *)marshalled + marshalled->package_list_off,
++                    marshalled->package_list_len * char_size );
++            data += marshalled->package_list_len * char_size;
++        }
++        ret->PackageListLength = marshalled->package_list_len;
++
++        *opaque_id = ret;
++        return SEC_E_OK;
++    }
++    else if (marshalled->version == SEC_WINNT_AUTH_IDENTITY_VERSION_2)
++    {
++        SEC_WINNT_AUTH_IDENTITY_EX2 *id, *ret;
++
++        id = (SEC_WINNT_AUTH_IDENTITY_EX2 *)marshalled;
++        if (id->cbStructureLength > len) return SEC_E_INVALID_TOKEN;
++        ret = LocalAlloc( LMEM_FIXED, sizeof(*ret) );
++        if (!ret) return SEC_E_INSUFFICIENT_MEMORY;
++        memcpy( ret, id, id->cbStructureLength );
++
++        *opaque_id = ret;
++        return SEC_E_OK;
++    }
++
++    return SEC_E_INVALID_TOKEN;
++}
+diff --git a/dlls/sspicli/sspicli.spec b/dlls/sspicli/sspicli.spec
+index c3b784b..315bc46 100644
+--- a/dlls/sspicli/sspicli.spec
++++ b/dlls/sspicli/sspicli.spec
+@@ -93,10 +93,10 @@
+ @ stub SspiGetTargetHostName
+ @ stub SspiIsAuthIdentityEncrypted
+ @ stdcall SspiLocalFree(ptr)
+-@ stub SspiMarshalAuthIdentity
++@ stdcall SspiMarshalAuthIdentity(ptr ptr ptr)
+ @ stub SspiPrepareForCredRead
+ @ stdcall SspiPrepareForCredWrite(ptr wstr ptr ptr ptr ptr ptr)
+-@ stub SspiUnmarshalAuthIdentity
++@ stdcall SspiUnmarshalAuthIdentity(long ptr ptr)
+ @ stub SspiUnmarshalAuthIdentityInternal
+ @ stub SspiValidateAuthIdentity
+ @ stdcall SspiZeroAuthIdentity(ptr)
+diff --git a/dlls/vcomp/main.c b/dlls/vcomp/main.c
+index 451e47e..8f7d12c 100644
+--- a/dlls/vcomp/main.c
++++ b/dlls/vcomp/main.c
+@@ -1842,3 +1842,13 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
+ 
+     return TRUE;
+ }
++
++
++double CDECL omp_get_wtick(void)
++{
++    DWORD adjust, increment;
++    BOOL disable;
++    if (GetSystemTimeAdjustment(&adjust, &increment, &disable))
++        return (double)increment / 10000000.0;
++    return 1 / 1000.0;
++}
+diff --git a/dlls/vcomp/vcomp.spec b/dlls/vcomp/vcomp.spec
+index fb67146..1a981a6 100644
+--- a/dlls/vcomp/vcomp.spec
++++ b/dlls/vcomp/vcomp.spec
+@@ -96,7 +96,7 @@
+ @ cdecl omp_get_num_procs()
+ @ cdecl omp_get_num_threads()
+ @ cdecl omp_get_thread_num()
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick()
+ @ cdecl omp_get_wtime()
+ @ cdecl omp_in_parallel()
+ @ cdecl omp_init_lock(ptr)
+diff --git a/dlls/vcomp100/vcomp100.spec b/dlls/vcomp100/vcomp100.spec
+index fb67146..1a981a6 100644
+--- a/dlls/vcomp100/vcomp100.spec
++++ b/dlls/vcomp100/vcomp100.spec
+@@ -96,7 +96,7 @@
+ @ cdecl omp_get_num_procs()
+ @ cdecl omp_get_num_threads()
+ @ cdecl omp_get_thread_num()
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick()
+ @ cdecl omp_get_wtime()
+ @ cdecl omp_in_parallel()
+ @ cdecl omp_init_lock(ptr)
+diff --git a/dlls/vcomp110/vcomp110.spec b/dlls/vcomp110/vcomp110.spec
+index e1cb8ab..d39aeb1 100644
+--- a/dlls/vcomp110/vcomp110.spec
++++ b/dlls/vcomp110/vcomp110.spec
+@@ -97,7 +97,7 @@
+ @ cdecl omp_get_num_procs()
+ @ cdecl omp_get_num_threads()
+ @ cdecl omp_get_thread_num()
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick()
+ @ cdecl omp_get_wtime()
+ @ cdecl omp_in_parallel()
+ @ cdecl omp_init_lock(ptr)
+diff --git a/dlls/vcomp120/vcomp120.spec b/dlls/vcomp120/vcomp120.spec
+index e1cb8ab..d39aeb1 100644
+--- a/dlls/vcomp120/vcomp120.spec
++++ b/dlls/vcomp120/vcomp120.spec
+@@ -97,7 +97,7 @@
+ @ cdecl omp_get_num_procs()
+ @ cdecl omp_get_num_threads()
+ @ cdecl omp_get_thread_num()
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick()
+ @ cdecl omp_get_wtime()
+ @ cdecl omp_in_parallel()
+ @ cdecl omp_init_lock(ptr)
+diff --git a/dlls/vcomp140/vcomp140.spec b/dlls/vcomp140/vcomp140.spec
+index e1cb8ab..d39aeb1 100644
+--- a/dlls/vcomp140/vcomp140.spec
++++ b/dlls/vcomp140/vcomp140.spec
+@@ -97,7 +97,7 @@
+ @ cdecl omp_get_num_procs()
+ @ cdecl omp_get_num_threads()
+ @ cdecl omp_get_thread_num()
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick()
+ @ cdecl omp_get_wtime()
+ @ cdecl omp_in_parallel()
+ @ cdecl omp_init_lock(ptr)
+diff --git a/dlls/vcomp90/vcomp90.spec b/dlls/vcomp90/vcomp90.spec
+index 9fac400..a751e0b 100644
+--- a/dlls/vcomp90/vcomp90.spec
++++ b/dlls/vcomp90/vcomp90.spec
+@@ -96,7 +96,7 @@
+ @ cdecl omp_get_num_procs() vcomp.omp_get_num_procs
+ @ cdecl omp_get_num_threads() vcomp.omp_get_num_threads
+ @ cdecl omp_get_thread_num() vcomp.omp_get_thread_num
+-@ stub omp_get_wtick
++@ cdecl omp_get_wtick() vcomp.omp_get_wtick
+ @ cdecl omp_get_wtime() vcomp.omp_get_wtime
+ @ cdecl omp_in_parallel() vcomp.omp_in_parallel
+ @ cdecl omp_init_lock(ptr) vcomp.omp_init_lock
+diff --git a/include/ddk/ntddk.h b/include/ddk/ntddk.h
+index e9ca903..af9adae 100644
+--- a/include/ddk/ntddk.h
++++ b/include/ddk/ntddk.h
+@@ -166,6 +166,33 @@ typedef struct _RTL_SPLAY_LINKS
+     struct _RTL_SPLAY_LINKS *RightChild;
+ } RTL_SPLAY_LINKS, *PRTL_SPLAY_LINKS;
+ 
++FORCEINLINE void RtlInitializeSplayLinks(PRTL_SPLAY_LINKS links)
++{
++    links->Parent = links;
++    links->LeftChild = NULL;
++    links->RightChild = NULL;
++}
++
++FORCEINLINE void RtlInsertAsLeftChild(PRTL_SPLAY_LINKS parent, PRTL_SPLAY_LINKS child)
++{
++    parent->LeftChild = child;
++    child->Parent = parent;
++}
++
++FORCEINLINE void RtlInsertAsRightChild(PRTL_SPLAY_LINKS parent, PRTL_SPLAY_LINKS child)
++{
++    parent->RightChild = child;
++    child->Parent = parent;
++}
++
++#define RtlParent(links)       ((PRTL_SPLAY_LINKS)(links)->Parent)
++#define RtlLeftChild(links)    ((PRTL_SPLAY_LINKS)(links)->LeftChild)
++#define RtlRightChild(links)   ((PRTL_SPLAY_LINKS)(links)->RightChild)
++#define RtlIsRoot(links)       (RtlParent(links) == (PRTL_SPLAY_LINKS)(links))
++#define RtlIsLeftChild(links)  (RtlLeftChild(RtlParent(links)) == (PRTL_SPLAY_LINKS)(links))
++#define RtlIsRightChild(links) (RtlRightChild(RtlParent(links)) == (PRTL_SPLAY_LINKS)(links))
++
++
+ struct _RTL_GENERIC_TABLE;
+ 
+ typedef RTL_GENERIC_COMPARE_RESULTS (WINAPI *PRTL_GENERIC_COMPARE_ROUTINE)(struct _RTL_GENERIC_TABLE *, void *, void *);
+diff --git a/include/pdh.h b/include/pdh.h
+index 3d688bd..1ea462a 100644
+--- a/include/pdh.h
++++ b/include/pdh.h
+@@ -80,6 +80,21 @@ typedef struct _PDH_FMT_COUNTERVALUE
+     } DUMMYUNIONNAME;
+ } PDH_FMT_COUNTERVALUE, *PPDH_FMT_COUNTERVALUE;
+ 
++typedef struct _PDH_FMT_COUNTERVALUE_ITEM_A
++{
++    LPSTR szName;
++    PDH_FMT_COUNTERVALUE FmtValue;
++} PDH_FMT_COUNTERVALUE_ITEM_A,*PPDH_FMT_COUNTERVALUE_ITEM_A;
++
++typedef struct _PDH_FMT_COUNTERVALUE_ITEM_W
++{
++    LPWSTR szName;
++    PDH_FMT_COUNTERVALUE FmtValue;
++} PDH_FMT_COUNTERVALUE_ITEM_W,*PPDH_FMT_COUNTERVALUE_ITEM_W;
++
++DECL_PDH_TYPE_AW(PDH_FMT_COUNTERVALUE_ITEM)
++DECL_PDH_TYPE_AW(PPDH_FMT_COUNTERVALUE_ITEM)
++
+ typedef struct _PDH_RAW_COUNTER
+ {
+     DWORD    CStatus;
+diff --git a/include/sspi.h b/include/sspi.h
+index 6d7ea5a..6a73744 100644
+--- a/include/sspi.h
++++ b/include/sspi.h
+@@ -95,6 +95,58 @@ typedef UNICODE_STRING SECURITY_STRING, *PSECURITY_STRING;
+ #define SSPIPFC_CREDPROV_DO_NOT_SAVE 0x00000001
+ #define SSPIPFC_NO_CHECKBOX          0x00000002
+ 
++#define SEC_WINNT_AUTH_IDENTITY_VERSION 0x200
++
++#define SEC_WINNT_AUTH_IDENTITY_MARSHALLED 0x4
++#define SEC_WINNT_AUTH_IDENTITY_ONLY 0x8
++
++typedef struct _SEC_WINNT_AUTH_IDENTITY_EXW
++{
++    ULONG   Version;
++    ULONG   Length;
++    USHORT *User;
++    ULONG   UserLength;
++    USHORT *Domain;
++    ULONG   DomainLength;
++    USHORT *Password;
++    ULONG   PasswordLength;
++    ULONG   Flags;
++    USHORT *PackageList;
++    ULONG   PackageListLength;
++} SEC_WINNT_AUTH_IDENTITY_EXW, *PSEC_WINNT_AUTH_IDENTITY_EXW;
++
++typedef struct _SEC_WINNT_AUTH_IDENTITY_EXA
++{
++    ULONG  Version;
++    ULONG  Length;
++    UCHAR *User;
++    ULONG  UserLength;
++    UCHAR *Domain;
++    ULONG  DomainLength;
++    UCHAR *Password;
++    ULONG  PasswordLength;
++    ULONG  Flags;
++    UCHAR *PackageList;
++    ULONG  PackageListLength;
++} SEC_WINNT_AUTH_IDENTITY_EXA, *PSEC_WINNT_AUTH_IDENTITY_EXA;
++
++#define SEC_WINNT_AUTH_IDENTITY_VERSION_2 0x201
++
++typedef struct _SEC_WINNT_AUTH_IDENTITY_EX2 {
++    ULONG  Version;
++    USHORT cbHeaderLength;
++    ULONG  cbStructureLength;
++    ULONG  UserOffset;
++    USHORT UserLength;
++    ULONG  DomainOffset;
++    USHORT DomainLength;
++    ULONG  PackedCredentialsOffset;
++    USHORT PackedCredentialsLength;
++    ULONG  Flags;
++    ULONG  PackageListOffset;
++    USHORT PackageListLength;
++} SEC_WINNT_AUTH_IDENTITY_EX2, *PSEC_WINNT_AUTH_IDENTITY_EX2;
++
+ typedef void *PSEC_WINNT_AUTH_IDENTITY_OPAQUE;
+ 
+ SECURITY_STATUS SEC_ENTRY SspiEncodeAuthIdentityAsStrings(
+diff --git a/include/winbase.h b/include/winbase.h
+index 40142b7..e874276 100644
+--- a/include/winbase.h
++++ b/include/winbase.h
+@@ -329,6 +329,15 @@ typedef struct _PROCESS_HEAP_ENTRY
+     } DUMMYUNIONNAME;
+ } PROCESS_HEAP_ENTRY, *PPROCESS_HEAP_ENTRY, *LPPROCESS_HEAP_ENTRY;
+ 
++typedef struct _HEAP_SUMMARY
++{
++    DWORD  cb;
++    SIZE_T cbAllocated;
++    SIZE_T cbCommitted;
++    SIZE_T cbReserved;
++    SIZE_T cbMaxReserve;
++} HEAP_SUMMARY, *LPHEAP_SUMMARY;
++
+ #define PROCESS_HEAP_REGION                   0x0001
+ #define PROCESS_HEAP_UNCOMMITTED_RANGE        0x0002
+ #define PROCESS_HEAP_ENTRY_BUSY               0x0004
+@@ -2628,6 +2637,7 @@ WINBASEAPI BOOL        WINAPI QueryUmsThreadInformation(PUMS_CONTEXT,UMS_THREAD_
+ WINBASEAPI DWORD       WINAPI QueueUserAPC(PAPCFUNC,HANDLE,ULONG_PTR);
+ WINBASEAPI BOOL        WINAPI QueueUserWorkItem(LPTHREAD_START_ROUTINE,PVOID,ULONG);
+ WINBASEAPI void        WINAPI RaiseException(DWORD,DWORD,DWORD,const ULONG_PTR *);
++WINBASEAPI void        WINAPI RaiseFailFastException(PEXCEPTION_RECORD,PCONTEXT,DWORD);
+ WINBASEAPI HANDLE      WINAPI ReOpenFile(HANDLE,DWORD,DWORD,DWORD);
+ WINADVAPI  BOOL        WINAPI ReadEventLogA(HANDLE,DWORD,DWORD,LPVOID,DWORD,DWORD *,DWORD *);
+ WINADVAPI  BOOL        WINAPI ReadEventLogW(HANDLE,DWORD,DWORD,LPVOID,DWORD,DWORD *,DWORD *);
+diff --git a/include/winternl.h b/include/winternl.h
+index 0bae9fb..c3bf47a 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -231,6 +231,17 @@ typedef struct _RTL_ACTIVATION_CONTEXT_STACK_FRAME
+     ULONG                                       Flags;
+ } RTL_ACTIVATION_CONTEXT_STACK_FRAME, *PRTL_ACTIVATION_CONTEXT_STACK_FRAME;
+ 
++typedef struct _RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED
++{
++    SIZE_T Size;
++    ULONG Format;
++    RTL_ACTIVATION_CONTEXT_STACK_FRAME Frame;
++    PVOID Extra1;
++    PVOID Extra2;
++    PVOID Extra3;
++    PVOID Extra4;
++} RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED, *PRTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED;
++
+ typedef struct _ACTIVATION_CONTEXT_STACK
+ {
+     RTL_ACTIVATION_CONTEXT_STACK_FRAME *ActiveFrame;
