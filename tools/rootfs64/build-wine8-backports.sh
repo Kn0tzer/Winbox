@@ -44,6 +44,7 @@ PATCHES=(
     wine8-iphlpapi-anycast-table.patch
     wine8-win32u-desktop-wait.patch
     wine8-fd167-contracts.patch
+    wine8-win32u-fd168-backports.patch
 )
 DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi)
 

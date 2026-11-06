@@ -119,15 +119,15 @@ WINEHQ_PINS = {
 # a rebuild that changes bytes fails here until the new bytes are reviewed
 # and pinned.
 WINE8_BACKPORT_PINS = {
-    'user32.dll': '5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219',
-    'kernelbase.dll': '344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85',
-    'kernel32.dll': 'e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793',
-    'iphlpapi.dll': '2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86',
-    'win32u.dll': '49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708',
+    'user32.dll': '226bfff8294147694b9f587e99272f31ba8b7f23f4fe293622e490c87bd396e7',
+    'kernelbase.dll': '36481e46ca66c266b0b7a047de4344ba7be51b1f83e04dd8247c07869dd3bb09',
+    'kernel32.dll': 'ba1a9d9dc67ab402c2dc73a93465768d49a3da2e0af0dc9002465138f2d7c115',
+    'iphlpapi.dll': 'af9f98b669441af888c633a1d517257a02ea3b8689e4670d0c21eb8864c48515',
+    'win32u.dll': '41da01c8027bc45bc2b72b105a90847d8d700c7019d6c8902f8fffc37c58cd69',
     # The unix half of win32u (FD-01): the desktop-wait patch lives in
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
-    'win32u.so': 'd382cefb32fbe71d7e52349da06c478a22c03bde2b38d8e6bfb4eaff42ef2608',
+    'win32u.so': 'c160be3a76e5837ace446dd50372cb1a78994760e14555328eae5a5efb1f5772',
     # FD-167: the MSVC runtime throw helpers a bundled demo library
     # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
     # stubs (see wine8-backports-x86_64/README.md).

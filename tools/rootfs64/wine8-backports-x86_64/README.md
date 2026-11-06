@@ -35,7 +35,7 @@ The DLLs in this directory are **the same Wine 8.0 code the rest of
 the tree ships**, rebuilt from the pinned `wine-8.0` source tag with
 small backport patches. The first three add exactly the missing
 exports above, mirroring how upstream Wine later implemented them;
-the fourth changes no export surface at all. The fourth patch's code
+the fourth changes no export surface at all; the fifth (FD-168) implements fourteen win32u syscalls Wine 8.0 shipped as spec stubs, backported from the later upstream implementations and adapted to this tree's server protocol and display-device model. The fourth patch's code
 lives in the unix half of its module, so `win32u.so` is rebuilt and
 shipped alongside `win32u.dll` from the same patched source tree —
 until 2026-10-31 only the PE half was rebuilt, and the patch shipped
@@ -48,6 +48,7 @@ in no binary at all (FD-01, reopened per FD-43):
 | `tools/buildWine/patches/wine8-iphlpapi-anycast-table.patch` | `GetAnycastIpAddressTable` enabled and implemented exactly as upstream does (validate arguments, return an allocated empty table with `NO_ERROR`), plus the `MIB_ANYCASTIPADDRESS_*` types upstream added to `netioapi.h`. |
 | `tools/buildWine/patches/wine8-fd167-contracts.patch` | FD-167 contract backports in `msvcp140` and `setupapi`: `?_Xbad_function_call@std@@YAXXZ`, `?_XGetLastError@std@@YAXXZ` and `?_Throw_C_error@std@@YAXH@Z` become real throwing implementations (upstream Wine master's bodies, backported together with the `system_error` error-code member, the `bad_function_call` class data, and the error-category objects for msvcp140), and `SetupDiGetDeviceInterfaceAlias` becomes a real lookup over the device's registered interfaces. A bundled demo library (an Xbox services thunks DLL) imports the three throw helpers; calling a spec stub kills the guest process. `?_Throw_Cpp_error@std@@YAXH@Z` remains a stub: no authoritative semantics for it exist in any open source consulted. |
 | `tools/buildWine/patches/wine8-win32u-desktop-wait.patch` | Desktop-init patience in `win32u`: `get_desktop_window`'s `NtUserWaitForInputIdle` for the just-started desktop process goes from 10 s to 300 s (the wait still returns immediately if the process exits), so the server-side fabricated desktop window is not created under a healthy-but-slow desktop; and `load_desktop_driver` retries its publication probe (desktop-window guid property + `GraphicsDriver`/`DriverError` registry values) every 500 ms for up to 300 s instead of latching the null driver on the first missing probe. A named driver or a driver error remains a definitive, immediate answer; only a missing publication is retried. Export surface is byte-identical to the Debian build's (1321 exports, verified). |
+| `tools/buildWine/patches/wine8-win32u-fd168-backports.patch` | FD-168 win32u stub draw-down: real implementations of `NtUserAlterWindowStyle`, `NtUserBuildHimcList`, `NtUserBuildNameList`, `NtUserBuildPropList`, `NtUserGetClipCursor`, `NtUserGetPointerType`, `NtUserGetThreadState`, `NtUserQueryDisplayConfig`, `NtUserQueryWindow`, `NtUserRegisterWindowMessage`, `NtGdiGetMiterLimit`, `NtGdiSetMiterLimit`, `NtGdiIcmBrushInfo` (spec stubs become `-syscall` entries; the syscall table grows 276 -> 289). `NtUserBuildNameList` loops this tree's index-based `enum_winstation`/`enum_desktop` server requests (upstream's single-call request does not exist in this vintage); `NtUserQueryDisplayConfig` maps upstream's source/GPU walk onto this tree's adapter/monitor model; `NtUserRegisterWindowMessage` uses this tree's single server atom table (`add_atom`). The `NtUserGetClipCursor` header inline over `NtUserCallOneParam` is replaced by the real export (the dispatch case stays, so clients built against the inline are unaffected). |
 
 Because the base is the identical Wine 8.0 source — not a newer Wine —
 there is no version skew against the tree's unix side or
@@ -86,12 +87,12 @@ sha256 of these exact files, verified by
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| user32.dll | 2002112 | 5da10eb9c69549ceb7cc415eeda3819f5eb183f2817da755082905b2c2770219 |
-| kernelbase.dll | 1588877 | 344b7faa452f06f7d08e4f20a54ac75a6dcbfdd68e271650ad550d17430d2a85 |
-| kernel32.dll | 859511 | e2145d2a6fbd53aa99f0c77817f30c93ab7810738cc0b348617a0de7c6d16793 |
-| iphlpapi.dll | 380852 | 2b0ed793c7440a864e1e631f45ec7070eabda5661af0c2c2dbeb982926ad7b86 |
-| win32u.dll | 354218 | 49b874381063acf28652bee5a4c281b21582830b50190d9c2c9875fd5deff708 |
-| win32u.so | 1479712 | d382cefb32fbe71d7e52349da06c478a22c03bde2b38d8e6bfb4eaff42ef2608 |
+| user32.dll | 2002500 | 226bfff8294147694b9f587e99272f31ba8b7f23f4fe293622e490c87bd396e7 |
+| kernelbase.dll | 1588877 | 36481e46ca66c266b0b7a047de4344ba7be51b1f83e04dd8247c07869dd3bb09 |
+| kernel32.dll | 859511 | ba1a9d9dc67ab402c2dc73a93465768d49a3da2e0af0dc9002465138f2d7c115 |
+| iphlpapi.dll | 380852 | af9f98b669441af888c633a1d517257a02ea3b8689e4670d0c21eb8864c48515 |
+| win32u.dll | 354741 | 41da01c8027bc45bc2b72b105a90847d8d700c7019d6c8902f8fffc37c58cd69 |
+| win32u.so | 1492928 | c160be3a76e5837ace446dd50372cb1a78994760e14555328eae5a5efb1f5772 |
 | msvcp140.dll | 1152763 | c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a |
 | setupapi.dll | 731113 | c7e1555da0fedb6153044bb823185a995f268903bfe55c4cf26193c80ede6d21 |
 
