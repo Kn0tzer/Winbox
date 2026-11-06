@@ -7,7 +7,7 @@ The project is to exist in one place on this server: its repository, working cop
 ## The root and the map
 
 - Root created: `/home/ubuntu/winbox-project/`, with subdirectories `worktrees/` (populated), `repo/`, `store/`, `checks/`, `scripts/`, `backups/`, `evidence/`, `cache/`, `records/` (targets named in the map).
-- Map: `/home/ubuntu/winbox-project/MAP.md` — 10,211 bytes, sha256 `06e822c9198c8eae9fa0f1b10a4fe4d7df8fa39e5911873dcaff3af06bbc8b3b`. It names every project asset on the box as in-place, ready-to-apply (moves M1–M8, each with its exact procedure, its proof, and the work it waits for), a named live exception, or a proposed removal.
+- Map: `/home/ubuntu/winbox-project/MAP.md` — 10,227 bytes, sha256 `57d38be76347bfd96975b654dc9380aa41b2c153054179c67a52c01c5442d0a9`. It names every project asset on the box as in-place, ready-to-apply (moves M1–M8, each with its exact procedure, its proof, and the work it waits for), a named live exception, or a proposed removal.
 
 ## Moved now, with proof
 
@@ -48,3 +48,7 @@ No product defects were found during this effort, and no register entry is made.
 
 - Execute M7 per lane as lanes land; M2 when the last store-linked tree lands; M4 when the compiler lanes finish with the scripts; M3 when the checking and laptop-overflow work finishes; M5 when the batch-8 gate and the snapshot-cutting lanes finish; M6 with the compiler-cache lane; M8 on the backport lanes' confirmation; M1 with the integration tree in the batch-9 quiet window.
 - Amend MAP.md at each executed move (status flips from ready-to-apply to in place, with the proof recorded).
+
+## Amendment (same evening)
+
+While this effort ran, a sibling lane created one more running worktree, `wt-standards` (the common-task-standards front). It is running work: untouched, and added to the map's move M7 enumeration. The map citation above was updated to the amended map (10,227 bytes, sha256 `57d38be76347bfd96975b654dc9380aa41b2c153054179c67a52c01c5442d0a9`).
