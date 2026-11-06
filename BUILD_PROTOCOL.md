@@ -19,6 +19,38 @@ reclaimed.
 `BW64_BUILD_WAIT_SECONDS` bounds the wait. `EMSDK` selects the SDK when emcc
 is not already active; `JOBS` controls compilation.
 
+## Fresh copies and build seeds
+
+A fresh worktree has no build directory (`project/emscripten/Build/` is
+ignored), so without help its first build compiles all ~270 files from
+scratch even though the project's builds are byte-for-byte reproducible.
+The preparation step (`tools/winbox-wt-prep.sh`, installed at
+`/home/ubuntu/scripts/winbox-wt-prep.sh`) therefore also installs a
+**build seed** when the shared store holds one for the worktree's exact
+HEAD commit: the seed is the `Build/Wasm64Mt` directory of a verified
+from-scratch build of that commit, and the seeded copy's first build only
+recompiles what changed after the commit — the same incremental behaviour
+an already-built copy has always had. The prep verifies the seed's commit
+and program-file hash before installing it, relocates the mirrored
+source paths to the new worktree, and refreshes timestamps so the build
+treats the seed as up to date. A missing or mismatched seed is not an
+error: the copy simply starts unseeded, exactly as before.
+
+Publish a seed after a verified build of a commit (for example the
+integration tip at the end of a merge gate) with:
+
+```sh
+tools/winbox-publish-build-seed.sh <built-worktree>
+```
+
+(installed at `/home/ubuntu/scripts/winbox-publish-build-seed.sh`). It
+refuses a worktree with modified tracked files or a `BUILD_INFO.json`
+that does not match the worktree's HEAD, and refreshes the store's
+`SHA256SUMS` so the prep's store verification covers the seed. Only the
+standard browser target (`wasm64-mt`) is seeded. To force a from-scratch
+build in any copy, delete `project/emscripten/Build/` and build as
+usual; the wrapper's from-scratch path is unchanged.
+
 The browser export replaces `deskpin.exe`/`deskpin32.exe` in the pinned
 prefix archives with the versioned helpers under `tools/rootfs64/gltest/`.
 `desktop-pin-provenance.json` records helper and resulting prefix hashes and

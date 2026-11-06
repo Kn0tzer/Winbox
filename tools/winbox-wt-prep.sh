@@ -23,14 +23,23 @@
 # overwrite (stale 20261013 pins; "git checkout before committing")
 # is gone.
 #
+# It also prepares the machine-wide compiler cache (see the compiler-cache
+# section at the bottom): one ccache directory shared by every worktree.
+#
+# Finally, if the store holds a build seed for the worktree's exact HEAD
+# commit, it installs the seed as the worktree's emulator build directory
+# (see the build-seed section at the bottom), so the copy's first build
+# only recompiles what changed after that commit instead of compiling
+# every file from scratch. A seed is the verified build output of one
+# exact commit, published by tools/winbox-publish-build-seed.sh.
 # The store is read-only for consumers. If your work must MODIFY a
 # payload, replace the link with a real copy first:
 #   rm <worktree>/<path> && cp -a /home/ubuntu/boxedwine64-shared/<store-path> <worktree>/<path>
 # A path that already exists in the worktree as real content is left
 # untouched and reported, never overwritten.
 set -euo pipefail
-M=/home/ubuntu/boxedwine64
-S=${BW64_SHARED_STORE:-/home/ubuntu/boxedwine64-shared}
+M=/home/ubuntu/winbox-project/repo/boxedwine64
+S=${BW64_SHARED_STORE:-/home/ubuntu/winbox-project/store}
 W=${1:?usage: winbox-wt-prep.sh <worktree>}
 [ -e "$W/.git" ] || { echo "not a worktree: $W" >&2; exit 1; }
 [ -d "$S" ] || { echo "shared store missing: $S" >&2; exit 1; }
@@ -114,5 +123,95 @@ link_dir "browser/disasm" "tools/browser/disasm"
 # Shared dependency trees (unchanged from the previous prep).
 [ -e "$W/node_modules" ] || ln -s "$M/node_modules" "$W/node_modules"
 [ -e "$W/web/vendor" ] || ln -s "$M/web/vendor" "$W/web/vendor"
+# --- Compiler cache ---------------------------------------------------------
+# The project makefiles route compiles through ccache when it is installed on
+# PATH (project/emscripten/makefile, project/linux/makefile). The cache is
+# one directory shared by every worktree on this box, so a source file
+# compiled in any copy is reused by all the others while its inputs and
+# flags are unchanged. This step creates the directory if missing and
+# asserts the size cap + compression in the cache's own config file. The cap
+# is sized for this box's disk while space is tight; raise it with
+#   CCACHE_DIR=/home/ubuntu/winbox-project/cache/ccache ccache --set-config max_size=<size>
+# when there is room.
+CACHE_DIR=/home/ubuntu/winbox-project/cache/ccache
+if command -v ccache >/dev/null 2>&1; then
+  mkdir -p "$CACHE_DIR"
+  chmod 0777 "$CACHE_DIR" 2>/dev/null || true
+  CCACHE_DIR="$CACHE_DIR" ccache --set-config max_size=2.0G >/dev/null 2>&1 || true
+  CCACHE_DIR="$CACHE_DIR" ccache --set-config compression=true >/dev/null 2>&1 || true
+  echo "compiler cache: $CACHE_DIR (max_size=$(CCACHE_DIR="$CACHE_DIR" ccache --get-config max_size 2>/dev/null || echo '?'), compression=$(CCACHE_DIR="$CACHE_DIR" ccache --get-config compression 2>/dev/null || echo '?'))"
+else
+  echo "compiler cache: ccache not installed; builds compile everything (install the ccache package to enable sharing)"
+fi
+
+# --- Build seed (incremental first build) ----------------------------------
+# The store verification above has already covered the seed's bytes (it is
+# part of SHA256SUMS). The seed is still verified again here on its own
+# terms — its recorded commit must equal this worktree's HEAD and its
+# program file must match the recorded hash — before anything is
+# installed. Seeding is advisory: on any mismatch or problem the worktree
+# is left unseeded, which is exactly how a fresh copy behaves today. Only
+# the standard browser build (project/emscripten/Build/Wasm64Mt) is
+# seeded; other targets still build from scratch on first use.
+seed_note=""
+seed_build() {
+  local head seed_dir dst built_in old_mirror new_mirror w_abs f
+  head=$(git -C "$W" rev-parse HEAD 2>/dev/null) || { seed_note="seed: cannot read worktree HEAD; skipped"; return 0; }
+  w_abs=$(readlink -f "$W") || { seed_note="seed: cannot resolve worktree path; skipped"; return 0; }
+  seed_dir="$S/build-seed/$head"
+  dst="$w_abs/project/emscripten/Build/Wasm64Mt"
+  if [ ! -d "$seed_dir" ]; then seed_note="seed: no build seed stored for ${head:0:9}; first build will compile from scratch"; return 0; fi
+  if [ -e "$dst" ]; then seed_note="seed: build directory already exists; left untouched"; return 0; fi
+  case "$w_abs" in *'|'*|*'&'*) seed_note="seed: worktree path contains a character the path rewrite cannot handle; skipped"; return 0;; esac
+  built_in=$(python3 - "$seed_dir/SEED.json" "$seed_dir/Wasm64Mt/boxedwine64.wasm" "$head" <<'PYEOF'
+import hashlib, json, sys
+from pathlib import Path
+try:
+    meta = json.loads(Path(sys.argv[1]).read_text())
+except Exception:
+    sys.exit(1)
+if meta.get("git_sha") != sys.argv[3] or not meta.get("built_in"):
+    sys.exit(1)
+wasm = Path(sys.argv[2])
+if not wasm.is_file() or hashlib.file_digest(wasm.open("rb"), "sha256").hexdigest() != meta.get("wasm_sha256"):
+    sys.exit(1)
+print(meta["built_in"])
+PYEOF
+  ) || { seed_note="seed: stored seed for ${head:0:9} failed verification; skipped"; return 0; }
+  case "$built_in" in *'|'*|*'&'*) seed_note="seed: seed origin path contains a character the path rewrite cannot handle; skipped"; return 0;; esac
+  mkdir -p "$(dirname "$dst")"
+  if ! cp -a "$seed_dir/Wasm64Mt" "$dst"; then
+    seed_note="seed: copying the seed failed; worktree left unseeded"; rm -rf "$dst"; return 0
+  fi
+  # Object files live under Build/Wasm64Mt/<origin tree's absolute path>/,
+  # mirroring the source tree, and the generated dependency files name
+  # that same prefix. Move the mirrored subtree to this worktree's path
+  # and rewrite the prefix in the dependency files; every other path in
+  # them is relative to the tree or a system path valid on this machine.
+  old_mirror="${built_in#/}"; new_mirror="${w_abs#/}"
+  if [ "$old_mirror" != "$new_mirror" ]; then
+    mkdir -p "$dst/$(dirname "$new_mirror")"
+    if ! mv "$dst/$old_mirror" "$dst/$new_mirror"; then
+      seed_note="seed: relocating the seed failed; worktree left unseeded"; rm -rf "$dst"; return 0
+    fi
+    if ! find "$dst" -name '*.d' -exec sed -i "s|$built_in|$w_abs|g" {} +; then
+      seed_note="seed: rewriting dependency paths failed; worktree left unseeded"; rm -rf "$dst"; return 0
+    fi
+  fi
+  # Seeded files must look newer than this copy's freshly checked-out
+  # sources, with the link outputs newest of all, so the first build
+  # treats the seed as up to date and only recompiles real changes.
+  if ! find "$dst" -type f -exec touch {} +; then
+    seed_note="seed: refreshing seed timestamps failed; worktree left unseeded"; rm -rf "$dst"; return 0
+  fi
+  for f in boxedwine64.html boxedwine64.js boxedwine64.wasm boxedwine64.worker.js; do
+    if [ -f "$dst/$f" ]; then touch -d '+2 seconds' "$dst/$f"; fi
+  done
+  seed_note="seed: installed verified build seed for ${head:0:9} (built in $built_in); first build will only recompile changes"
+  return 0
+}
+seed_build || true
+if [ -n "$seed_note" ]; then echo "$seed_note"; fi
+
 echo "prepared $W (linked=$linked kept-existing=$kept; copied 0 payload bytes)"
 echo "note: payload paths are links into $S; to modify a payload, replace its link with a real copy first (see header)."
