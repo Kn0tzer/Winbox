@@ -87,15 +87,47 @@ sha256 of these exact files, verified by
 
 | file | bytes | sha256 |
 | --- | --- | --- |
-| user32.dll | 2002500 | 226bfff8294147694b9f587e99272f31ba8b7f23f4fe293622e490c87bd396e7 |
-| kernelbase.dll | 1588877 | 36481e46ca66c266b0b7a047de4344ba7be51b1f83e04dd8247c07869dd3bb09 |
-| kernel32.dll | 859511 | ba1a9d9dc67ab402c2dc73a93465768d49a3da2e0af0dc9002465138f2d7c115 |
-| iphlpapi.dll | 380852 | af9f98b669441af888c633a1d517257a02ea3b8689e4670d0c21eb8864c48515 |
-| win32u.dll | 354741 | 41da01c8027bc45bc2b72b105a90847d8d700c7019d6c8902f8fffc37c58cd69 |
-| win32u.so | 1492928 | c160be3a76e5837ace446dd50372cb1a78994760e14555328eae5a5efb1f5772 |
+| user32.dll | 2002112 | 3c495fc6ae4a2bcac424107100359fe4a95f9cc8db0f5568f2e7707f07edf72d |
+| kernelbase.dll | 1588877 | 3e8b4283df0c9e71dd3fef5c67ceb2aa9740d4faf57dd58d83357b87d65ebf90 |
+| kernel32.dll | 859511 | d3d35f7a3488aa59a80c115d458d7be4d76bcceda79bdd9eaae35bc5ccb41de8 |
+| iphlpapi.dll | 380852 | c9b9faf78c0ec4372a26f043f4d0d16dc363961d7cbd4fd8b42f0e13560ad283 |
+| win32u.dll | 354218 | 21f5e5438a19fc157643f54b75d798e10ada2a1674e8976120b37d958f063870 |
+| win32u.so | 1479712 | b2aa883bfb47627ff63c6be97e4da54de45b46ef159c3c29a13ad91ac18f7ec0 |
 | msvcp140.dll | 1152763 | c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a |
 | setupapi.dll | 731113 | c7e1555da0fedb6153044bb823185a995f268903bfe55c4cf26193c80ede6d21 |
+| ucrtbase.dll | 1074308 | 6f790d4721f8562c021bfddbb77cdf5da686e64507d02741888fdcc156c057d9 |
+| msvcrt.dll | 797741 | 23bad1e9016e8f3f95ba5784a6a1ad383f4d9cc65a21e6aafddc4fbda1a78f84 |
+| msvcr70.dll | 742716 | 33a64d83cefcaba027c2a4d00e1ce1d5fdc81de3fcc7eabb719dec5b817cb3b2 |
+| msvcr71.dll | 743015 | 6e37ada00292280e3e4dc21d6d4432fa331a057ecbf31e00399d19e33f425a38 |
+| msvcr80.dll | 840888 | 8cb9576ab57bc10b8010268572a1410cf62f15b7faee5202ed58e2ae6a45d0f8 |
+| msvcr90.dll | 835982 | b68c1d96070e6dae7a366616cb717c8278886f7dd902b0e1ce5e3687537e1728 |
+| msvcr100.dll | 955401 | 49dc3a015b4be2d16f7629d106845fd84d4966be23a13e9d82c0caf90bf6997c |
+| msvcr110.dll | 984872 | c82bf206e4e93ba8c12113bcad3a67ca8988347f78a66def81921270e7872a69 |
+| msvcr120.dll | 1064870 | 89054bd4059865c9b2c404f817f3ad9fa7913676fc9c4e98185fd17f2a53dbfb |
 
 Staged into `wine64.zip` by `tools/rootfs64/build-wine64-zip.sh`
 (container path) and `tools/rootfs64/stage-wine8-backports.sh`
 (merge-script path, run from `apply-runtime-poststeps.sh`).
+
+## FD-169: the Microsoft C runtime family
+
+The same backports build also rebuilds the whole Microsoft C runtime
+family (`ucrtbase.dll`, `msvcrt.dll`, `msvcr70.dll` … `msvcr120.dll`)
+from the same patched Wine 8.0 tree, with
+`tools/buildWine/patches/wine8-msvcrt-fd169-crt.patch`. In the Debian
+module set, 916 of the family's exports were winebuild stubs in these
+nine DLLs — functions that load fine and then kill the caller with
+the Wine stub exception when a program actually calls them. The patch
+implements them: a backport set taken from upstream Wine (post-8.0)
+(the `_mbs*_l` family, `_aligned_recalloc`, console `_cprintf_l`
+family, `cimag`/`crealf`, `imaxdiv`, `feholdexcept`), plus
+hand-written implementations of the `_ismbb*` classification family,
+the MSVC complex helpers and the C99 complex set, the positional and
+secure printf entry points (the 8.0 formatting engine already carries
+both modes), the public va_list scanf forms, the 32-bit-time/
+64-bit-size `_find*32i64` forms, the C11 `mbrtoc16`/`c16rtomb` family,
+and the remaining secure-form string functions. See
+`docs/reports/fd169-crt-family-20261105.md` for the per-family
+accounting, the guest-level proof, and what remains stubbed with its
+reasons. The nine DLLs' hashes are pinned in the table above alongside
+the core five.

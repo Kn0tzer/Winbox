@@ -100,6 +100,14 @@ for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp1
         exit 1
     fi
 done
+# FD-169: the Microsoft C runtime family rebuilt by the same backports
+# build (genuine implementations replacing winebuild stubs).
+for dll in ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll; do
+    if [ ! -f "$WINE8BP64/$dll" ]; then
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
+        exit 1
+    fi
+done
 if [ ! -f "$WINE8BP64/win32u.so" ]; then
     echo "ERROR: $WINE8BP64/win32u.so missing — run tools/rootfs64/build-wine8-backports.sh; refusing to build." >&2
     exit 1
@@ -355,6 +363,25 @@ for dll in user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp1
         cp "$WINE8BP64/$dll" \
             "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
         echo "--- staging $dll (wine8 loader backport) ---"
+    else
+        echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh;" \
+             "refusing to build a wine64.zip that lacks the module." >&2
+        exit 1
+    fi
+done
+
+# FD-169: stage the rebuilt Microsoft C runtime family over the
+# Debian modules. These are the same Wine 8.0 sources as the rest of
+# the tree; the FD-169 patch turns winebuild stub exports in the CRT
+# family into genuine implementations (see
+# tools/buildWine/patches/wine8-msvcrt-fd169-crt.patch and
+# wine8-backports-x86_64/README.md; hashes pinned in
+# check_runtime_completeness.py).
+for dll in ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll; do
+    if [ -f "$WINE8BP64/$dll" ]; then
+        cp "$WINE8BP64/$dll" \
+            "$STAGEHOST/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/$dll"
+        echo "--- staging $dll (wine8 FD-169 CRT backport) ---"
     else
         echo "ERROR: $WINE8BP64/$dll missing — run tools/rootfs64/build-wine8-backports.sh;" \
              "refusing to build a wine64.zip that lacks the module." >&2

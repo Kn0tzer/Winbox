@@ -261,7 +261,33 @@ for entry in $FD167_PINS; do
     cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$f"
 done
 echo "FD-167 backports substituted: sha256 verified"
-
+echo "=== FD-169 CRT substitution (i386) ==="
+# The nine Microsoft C-runtime DLLs are NOT the deb's copies: they are
+# the committed in-tree rebuilds (tools/rootfs32/wine10-fd169-i386/,
+# produced by build-wine10-fd169.sh from the pinned wine-10.0 source
+# plus the FD-169 patch), carrying genuine implementations for CRT
+# functions the stock build only stubs (defect register FD-169).
+# Fail-closed on the pins, like the win32u substitution above.
+FD169_DIR="$HERE/wine10-fd169-i386"
+declare -A FD169_SHA32=(
+  [msvcr100.dll]=f15f7a9b6eb6ce7e0fa921a3343f91cac34f808ee443eda609630ce0f81dab9d
+  [msvcr110.dll]=2b5bff73c1e77843723e3335c106a53b9ae4119839aceb16d610ebe61d7299c5
+  [msvcr120.dll]=0e4ba5e74c22db4de9a8889d89d247b708e8ba657029b75b5f7dd1f9dbb58b92
+  [msvcr70.dll]=1d5c6c16b3d095039142037a92256cd660f00fa29ecaddd07ef0722b2130f6b7
+  [msvcr71.dll]=60ac37db454b821d6245fce39830e37126a065f0386f836d98d4e89bf9565b41
+  [msvcr80.dll]=7aa234283cd4c0dd378540184db724360a189d47013ae4259d4622c2f19ecd7c
+  [msvcr90.dll]=c3f3062bb3ba6e5084da24ad66dd5dec18cc3633e0fb0b166d54a0d5a827dada
+  [msvcrt.dll]=f3cebbf0855200a772733b1d0aa431fdd77cea78b1cb03b6427311921ca98cec
+  [ucrtbase.dll]=7c1782913e4c865252348fd38cbb402bc3d8dd6bd6bf088501d4ffbaa3c5264c
+)
+for dll in "${!FD169_SHA32[@]}"; do
+  src="$FD169_DIR/$dll"
+  [ -f "$src" ] || { echo "build-wine32-base: FD-169 CRT build missing: $src (build it with tools/rootfs32/build-wine10-fd169.sh)" >&2; exit 2; }
+  got="$(sha256sum "$src" | cut -d' ' -f1)"
+  [ "$got" = "${FD169_SHA32[$dll]}" ] || { echo "build-wine32-base: FD-169 $dll hash mismatch: $got != ${FD169_SHA32[$dll]}" >&2; exit 1; }
+  cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-169 CRT DLLs substituted: 9 sha256 verified"
 
 
 echo "=== extracting the two preserved members from the shipped zip ==="

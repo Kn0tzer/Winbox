@@ -1,0 +1,5583 @@
+diff --git a/dlls/msvcr100/msvcr100.spec b/dlls/msvcr100/msvcr100.spec
+index d594972..2be512e 100644
+--- a/dlls/msvcr100/msvcr100.spec
++++ b/dlls/msvcr100/msvcr100.spec
+@@ -808,7 +808,7 @@
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__pctype()
+ @ cdecl __p__pgmptr()
+@@ -844,7 +844,7 @@
+ @ extern __wargv MSVCRT___wargv
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl __wgetmainargs(ptr ptr ptr long ptr)
+ @ extern __winitenv MSVCRT___winitenv
+ @ cdecl _abnormal_termination() __intrinsic_abnormal_termination
+@@ -857,9 +857,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _amsg_exit(long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+@@ -885,9 +885,9 @@
+ @ cdecl _calloc_crt(long long) calloc
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -908,10 +908,10 @@
+ @ cdecl -arch=!i386 _copysignf(float float) copysignf
+ @ varargs _cprintf(str)
+ @ varargs _cprintf_l(str ptr)
+-@ stub _cprintf_p
+-@ stub _cprintf_p_l
+-@ stub _cprintf_s
+-@ stub _cprintf_s_l
++@ varargs _cprintf_p()
++@ varargs _cprintf_p_l()
++@ varargs _cprintf_s()
++@ varargs _cprintf_s_l()
+ @ cdecl _cputs(str)
+ @ cdecl _cputws(wstr)
+ @ cdecl _creat(str long)
+@@ -929,10 +929,10 @@
+ @ cdecl _cwait(ptr long long)
+ @ varargs _cwprintf(wstr)
+ @ varargs _cwprintf_l(wstr ptr)
+-@ stub _cwprintf_p
+-@ stub _cwprintf_p_l
+-@ stub _cwprintf_s
+-@ stub _cwprintf_s_l
++@ varargs _cwprintf_p()
++@ varargs _cwprintf_p_l()
++@ varargs _cwprintf_s()
++@ varargs _cwprintf_s_l()
+ @ varargs _cwscanf(wstr)
+ @ varargs _cwscanf_l(wstr ptr)
+ @ varargs _cwscanf_s(wstr)
+@@ -982,11 +982,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -1084,7 +1084,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -1123,26 +1123,26 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+@@ -1229,7 +1229,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -1314,18 +1314,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -1334,16 +1334,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -1352,14 +1352,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -1368,8 +1368,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -1400,9 +1400,9 @@
+ @ cdecl _pipe(ptr long long)
+ @ cdecl _popen(str str)
+ @ stub _printf_l
+-@ stub _printf_p
+-@ stub _printf_p_l
+-@ stub _printf_s_l
++@ varargs _printf_p()
++@ varargs _printf_p_l()
++@ varargs _printf_s_l()
+ @ cdecl _purecall()
+ @ cdecl _putc_nolock(long ptr) _fputc_nolock
+ @ cdecl _putch(long)
+@@ -1530,7 +1530,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1579,7 +1579,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -1594,16 +1594,16 @@
+ @ cdecl _utime64(str ptr)
+ @ cdecl _vcprintf(str ptr)
+ @ cdecl _vcprintf_l(str ptr ptr)
+-@ stub _vcprintf_p
+-@ stub _vcprintf_p_l
+-@ stub _vcprintf_s
+-@ stub _vcprintf_s_l
++@ cdecl _vcprintf_p(ptr ptr)
++@ cdecl _vcprintf_p_l(str ptr ptr)
++@ cdecl _vcprintf_s(ptr ptr)
++@ cdecl _vcprintf_s_l(str ptr ptr)
+ @ cdecl _vcwprintf(wstr ptr)
+ @ cdecl _vcwprintf_l(wstr ptr ptr)
+-@ stub _vcwprintf_p
+-@ stub _vcwprintf_p_l
+-@ stub _vcwprintf_s
+-@ stub _vcwprintf_s_l
++@ cdecl _vcwprintf_p(ptr ptr)
++@ cdecl _vcwprintf_p_l(ptr ptr ptr)
++@ cdecl _vcwprintf_s(ptr ptr)
++@ cdecl _vcwprintf_s_l(ptr ptr ptr)
+ @ cdecl _vfprintf_l(ptr str ptr ptr)
+ @ cdecl _vfprintf_p(ptr str ptr)
+ @ cdecl _vfprintf_p_l(ptr str ptr ptr)
+@@ -1613,9 +1613,9 @@
+ @ cdecl _vfwprintf_p_l(ptr wstr ptr ptr)
+ @ cdecl _vfwprintf_s_l(ptr wstr ptr ptr)
+ @ stub _vprintf_l
+-@ stub _vprintf_p
+-@ stub _vprintf_p_l
+-@ stub _vprintf_s_l
++@ cdecl _vprintf_p(str ptr)
++@ cdecl _vprintf_p_l(str ptr ptr)
++@ cdecl _vprintf_s_l(str ptr)
+ @ cdecl _vscprintf(str ptr)
+ @ cdecl _vscprintf_l(str ptr ptr)
+ @ cdecl _vscprintf_p(str ptr)
+@@ -1645,10 +1645,10 @@
+ @ cdecl _vswprintf_p(ptr long wstr ptr)
+ @ cdecl _vswprintf_p_l(ptr long wstr ptr ptr)
+ @ cdecl _vswprintf_s_l(ptr long wstr ptr ptr)
+-@ stub _vwprintf_l
+-@ stub _vwprintf_p
+-@ stub _vwprintf_p_l
+-@ stub _vwprintf_s_l
++@ cdecl _vwprintf_l(wstr ptr ptr)
++@ cdecl _vwprintf_p(ptr ptr)
++@ cdecl _vwprintf_p_l(ptr ptr ptr)
++@ cdecl _vwprintf_s_l(ptr ptr)
+ @ cdecl _waccess(wstr long)
+ @ cdecl _waccess_s(wstr long)
+ @ cdecl _wasctime(ptr)
+@@ -1715,11 +1715,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -1742,10 +1742,10 @@
+ @ cdecl _wperror(wstr)
+ @ extern _wpgmptr MSVCRT__wpgmptr
+ @ cdecl _wpopen(wstr wstr)
+-@ stub _wprintf_l
+-@ stub _wprintf_p
+-@ stub _wprintf_p_l
+-@ stub _wprintf_s_l
++@ varargs _wprintf_l(wstr ptr)
++@ varargs _wprintf_p()
++@ varargs _wprintf_p_l()
++@ varargs _wprintf_s_l()
+ @ cdecl _wputenv(wstr)
+ @ cdecl _wputenv_s(wstr wstr)
+ @ cdecl _wremove(wstr)
+diff --git a/dlls/msvcr110/msvcr110.spec b/dlls/msvcr110/msvcr110.spec
+index 9e45d08..1de224e 100644
+--- a/dlls/msvcr110/msvcr110.spec
++++ b/dlls/msvcr110/msvcr110.spec
+@@ -986,7 +986,7 @@
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__pctype()
+ @ cdecl __p__pgmptr()
+@@ -1021,7 +1021,7 @@
+ @ extern __wargv MSVCRT___wargv
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl __wgetmainargs(ptr ptr ptr long ptr)
+ @ extern __winitenv MSVCRT___winitenv
+ @ cdecl _abnormal_termination() __intrinsic_abnormal_termination
+@@ -1034,9 +1034,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _amsg_exit(long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+@@ -1062,9 +1062,9 @@
+ @ cdecl _calloc_crt(long long) calloc
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -1085,10 +1085,10 @@
+ @ cdecl -arch=!i386 _copysignf(float float) copysignf
+ @ varargs _cprintf(str)
+ @ varargs _cprintf_l(str ptr)
+-@ stub _cprintf_p
+-@ stub _cprintf_p_l
+-@ stub _cprintf_s
+-@ stub _cprintf_s_l
++@ varargs _cprintf_p()
++@ varargs _cprintf_p_l()
++@ varargs _cprintf_s()
++@ varargs _cprintf_s_l()
+ @ cdecl _cputs(str)
+ @ cdecl _cputws(wstr)
+ @ cdecl _creat(str long)
+@@ -1106,10 +1106,10 @@
+ @ cdecl _cwait(ptr long long)
+ @ varargs _cwprintf(wstr)
+ @ varargs _cwprintf_l(wstr ptr)
+-@ stub _cwprintf_p
+-@ stub _cwprintf_p_l
+-@ stub _cwprintf_s
+-@ stub _cwprintf_s_l
++@ varargs _cwprintf_p()
++@ varargs _cwprintf_p_l()
++@ varargs _cwprintf_s()
++@ varargs _cwprintf_s_l()
+ @ varargs _cwscanf(wstr)
+ @ varargs _cwscanf_l(wstr ptr)
+ @ varargs _cwscanf_s(wstr)
+@@ -1158,11 +1158,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -1177,7 +1177,7 @@
+ @ varargs _fprintf_l(ptr str ptr)
+ @ varargs _fprintf_p(ptr str)
+ @ varargs _fprintf_p_l(ptr str ptr)
+-@ stub _fprintf_s_l
++@ varargs _fprintf_s_l(ptr str ptr)
+ @ cdecl _fputc_nolock(long ptr)
+ @ cdecl _fputchar(long)
+ @ cdecl _fputwc_nolock(long ptr)
+@@ -1259,7 +1259,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -1298,26 +1298,26 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+@@ -1415,7 +1415,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -1500,18 +1500,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -1520,16 +1520,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -1538,14 +1538,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -1554,8 +1554,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -1586,9 +1586,9 @@
+ @ cdecl _pipe(ptr long long)
+ @ cdecl _popen(str str)
+ @ stub _printf_l
+-@ stub _printf_p
+-@ stub _printf_p_l
+-@ stub _printf_s_l
++@ varargs _printf_p()
++@ varargs _printf_p_l()
++@ varargs _printf_s_l()
+ @ cdecl _purecall()
+ @ cdecl _putc_nolock(long ptr) _fputc_nolock
+ @ cdecl _putch(long)
+@@ -1716,7 +1716,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1765,7 +1765,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -1780,16 +1780,16 @@
+ @ cdecl _utime64(str ptr)
+ @ cdecl _vcprintf(str ptr)
+ @ cdecl _vcprintf_l(str ptr ptr)
+-@ stub _vcprintf_p
+-@ stub _vcprintf_p_l
+-@ stub _vcprintf_s
+-@ stub _vcprintf_s_l
++@ cdecl _vcprintf_p(ptr ptr)
++@ cdecl _vcprintf_p_l(str ptr ptr)
++@ cdecl _vcprintf_s(ptr ptr)
++@ cdecl _vcprintf_s_l(str ptr ptr)
+ @ cdecl _vcwprintf(wstr ptr)
+ @ cdecl _vcwprintf_l(wstr ptr ptr)
+-@ stub _vcwprintf_p
+-@ stub _vcwprintf_p_l
+-@ stub _vcwprintf_s
+-@ stub _vcwprintf_s_l
++@ cdecl _vcwprintf_p(ptr ptr)
++@ cdecl _vcwprintf_p_l(ptr ptr ptr)
++@ cdecl _vcwprintf_s(ptr ptr)
++@ cdecl _vcwprintf_s_l(ptr ptr ptr)
+ @ cdecl _vfprintf_l(ptr str ptr ptr)
+ @ cdecl _vfprintf_p(ptr str ptr)
+ @ cdecl _vfprintf_p_l(ptr str ptr ptr)
+@@ -1799,9 +1799,9 @@
+ @ cdecl _vfwprintf_p_l(ptr wstr ptr ptr)
+ @ cdecl _vfwprintf_s_l(ptr wstr ptr ptr)
+ @ stub _vprintf_l
+-@ stub _vprintf_p
+-@ stub _vprintf_p_l
+-@ stub _vprintf_s_l
++@ cdecl _vprintf_p(str ptr)
++@ cdecl _vprintf_p_l(str ptr ptr)
++@ cdecl _vprintf_s_l(str ptr)
+ @ cdecl _vscprintf(str ptr)
+ @ cdecl _vscprintf_l(str ptr ptr)
+ @ cdecl _vscprintf_p(str ptr)
+@@ -1831,10 +1831,10 @@
+ @ cdecl _vswprintf_p(ptr long wstr ptr)
+ @ cdecl _vswprintf_p_l(ptr long wstr ptr ptr)
+ @ cdecl _vswprintf_s_l(ptr long wstr ptr ptr)
+-@ stub _vwprintf_l
+-@ stub _vwprintf_p
+-@ stub _vwprintf_p_l
+-@ stub _vwprintf_s_l
++@ cdecl _vwprintf_l(wstr ptr ptr)
++@ cdecl _vwprintf_p(ptr ptr)
++@ cdecl _vwprintf_p_l(ptr ptr ptr)
++@ cdecl _vwprintf_s_l(ptr ptr)
+ @ cdecl _waccess(wstr long)
+ @ cdecl _waccess_s(wstr long)
+ @ cdecl _wasctime(ptr)
+@@ -1902,11 +1902,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -1928,10 +1928,10 @@
+ @ cdecl _wperror(wstr)
+ @ extern _wpgmptr MSVCRT__wpgmptr
+ @ cdecl _wpopen(wstr wstr)
+-@ stub _wprintf_l
+-@ stub _wprintf_p
+-@ stub _wprintf_p_l
+-@ stub _wprintf_s_l
++@ varargs _wprintf_l(wstr ptr)
++@ varargs _wprintf_p()
++@ varargs _wprintf_p_l()
++@ varargs _wprintf_s_l()
+ @ cdecl _wputenv(wstr)
+ @ cdecl _wputenv_s(wstr wstr)
+ @ cdecl _wremove(wstr)
+diff --git a/dlls/msvcr120/msvcr120.spec b/dlls/msvcr120/msvcr120.spec
+index 78420df..c121ce1 100644
+--- a/dlls/msvcr120/msvcr120.spec
++++ b/dlls/msvcr120/msvcr120.spec
+@@ -830,7 +830,7 @@
+ @ stdcall _CxxThrowException(ptr ptr)
+ @ cdecl -arch=i386 -norelay _EH_prolog()
+ @ stub -arch=arm _FPE_Raise
+-@ stub _FCbuild
++@ cdecl -norelay _FCbuild(float float)
+ @ cdecl _FindAndUnlinkFrame(ptr)
+ @ stub -arch=win64 _GetImageBase
+ @ stub -arch=win64 _GetThrowImageBase
+@@ -839,7 +839,7 @@
+ @ cdecl _Gettnames()
+ @ extern _HUGE MSVCRT__HUGE
+ @ cdecl _IsExceptionObjectToBeDestroyed(ptr)
+-@ stub _LCbuild
++@ cdecl -norelay _LCbuild(double double)
+ @ stub -arch=i386 _NLG_Dispatch2
+ @ stub -arch=arm,win64 __NLG_Dispatch2
+ @ stub -arch=i386 _NLG_Return
+@@ -977,7 +977,7 @@
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__pctype()
+ @ cdecl __p__pgmptr()
+@@ -1012,7 +1012,7 @@
+ @ extern __wargv MSVCRT___wargv
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl __wgetmainargs(ptr ptr ptr long ptr)
+ @ extern __winitenv MSVCRT___winitenv
+ @ cdecl _abnormal_termination() __intrinsic_abnormal_termination
+@@ -1025,9 +1025,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _amsg_exit(long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+@@ -1054,9 +1054,9 @@
+ @ cdecl _calloc_crt(long long) calloc
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -1077,10 +1077,10 @@
+ @ cdecl _copysignf(float float) copysignf
+ @ varargs _cprintf(str)
+ @ varargs _cprintf_l(str ptr)
+-@ stub _cprintf_p
+-@ stub _cprintf_p_l
+-@ stub _cprintf_s
+-@ stub _cprintf_s_l
++@ varargs _cprintf_p()
++@ varargs _cprintf_p_l()
++@ varargs _cprintf_s()
++@ varargs _cprintf_s_l()
+ @ cdecl _cputs(str)
+ @ cdecl _cputws(wstr)
+ @ cdecl _creat(str long)
+@@ -1098,10 +1098,10 @@
+ @ cdecl _cwait(ptr long long)
+ @ varargs _cwprintf(wstr)
+ @ varargs _cwprintf_l(wstr ptr)
+-@ stub _cwprintf_p
+-@ stub _cwprintf_p_l
+-@ stub _cwprintf_s
+-@ stub _cwprintf_s_l
++@ varargs _cwprintf_p()
++@ varargs _cwprintf_p_l()
++@ varargs _cwprintf_s()
++@ varargs _cwprintf_s_l()
+ @ varargs _cwscanf(wstr)
+ @ varargs _cwscanf_l(wstr ptr)
+ @ varargs _cwscanf_s(wstr)
+@@ -1159,11 +1159,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -1260,7 +1260,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -1300,36 +1300,36 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbblank
+-@ stub _ismbbblank_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbblank(long)
++@ cdecl _ismbbblank_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+ @ cdecl _ismbcalnum_l(long ptr)
+ @ cdecl _ismbcalpha(long)
+ @ cdecl _ismbcalpha_l(long ptr)
+-@ stub _ismbcblank
+-@ stub _ismbcblank_l
++@ cdecl _ismbcblank(long)
++@ cdecl _ismbcblank_l(long ptr)
+ @ cdecl _ismbcdigit(long)
+ @ cdecl _ismbcdigit_l(long ptr)
+ @ cdecl _ismbcgraph(long)
+@@ -1426,7 +1426,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -1511,18 +1511,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -1531,16 +1531,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -1549,14 +1549,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -1565,8 +1565,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -1597,9 +1597,9 @@
+ @ cdecl _pipe(ptr long long)
+ @ cdecl _popen(str str)
+ @ stub _printf_l
+-@ stub _printf_p
+-@ stub _printf_p_l
+-@ stub _printf_s_l
++@ varargs _printf_p()
++@ varargs _printf_p_l()
++@ varargs _printf_s_l()
+ @ cdecl _purecall()
+ @ cdecl _putc_nolock(long ptr) _fputc_nolock
+ @ cdecl _putch(long)
+@@ -1728,7 +1728,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1783,7 +1783,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -1799,16 +1799,16 @@
+ @ cdecl _vacopy(ptr ptr)
+ @ cdecl _vcprintf(str ptr)
+ @ cdecl _vcprintf_l(str ptr ptr)
+-@ stub _vcprintf_p
+-@ stub _vcprintf_p_l
+-@ stub _vcprintf_s
+-@ stub _vcprintf_s_l
++@ cdecl _vcprintf_p(ptr ptr)
++@ cdecl _vcprintf_p_l(str ptr ptr)
++@ cdecl _vcprintf_s(ptr ptr)
++@ cdecl _vcprintf_s_l(str ptr ptr)
+ @ cdecl _vcwprintf(wstr ptr)
+ @ cdecl _vcwprintf_l(wstr ptr ptr)
+-@ stub _vcwprintf_p
+-@ stub _vcwprintf_p_l
+-@ stub _vcwprintf_s
+-@ stub _vcwprintf_s_l
++@ cdecl _vcwprintf_p(ptr ptr)
++@ cdecl _vcwprintf_p_l(ptr ptr ptr)
++@ cdecl _vcwprintf_s(ptr ptr)
++@ cdecl _vcwprintf_s_l(ptr ptr ptr)
+ @ cdecl _vfprintf_l(ptr str ptr ptr)
+ @ cdecl _vfprintf_p(ptr str ptr)
+ @ cdecl _vfprintf_p_l(ptr str ptr ptr)
+@@ -1818,9 +1818,9 @@
+ @ cdecl _vfwprintf_p_l(ptr wstr ptr ptr)
+ @ cdecl _vfwprintf_s_l(ptr wstr ptr ptr)
+ @ stub _vprintf_l
+-@ stub _vprintf_p
+-@ stub _vprintf_p_l
+-@ stub _vprintf_s_l
++@ cdecl _vprintf_p(str ptr)
++@ cdecl _vprintf_p_l(str ptr ptr)
++@ cdecl _vprintf_s_l(str ptr)
+ @ cdecl _vscprintf(str ptr)
+ @ cdecl _vscprintf_l(str ptr ptr)
+ @ cdecl _vscprintf_p(str ptr)
+@@ -1850,10 +1850,10 @@
+ @ cdecl _vswprintf_p(ptr long wstr ptr)
+ @ cdecl _vswprintf_p_l(ptr long wstr ptr ptr)
+ @ cdecl _vswprintf_s_l(ptr long wstr ptr ptr)
+-@ stub _vwprintf_l
+-@ stub _vwprintf_p
+-@ stub _vwprintf_p_l
+-@ stub _vwprintf_s_l
++@ cdecl _vwprintf_l(wstr ptr ptr)
++@ cdecl _vwprintf_p(ptr ptr)
++@ cdecl _vwprintf_p_l(ptr ptr ptr)
++@ cdecl _vwprintf_s_l(ptr ptr)
+ @ cdecl _waccess(wstr long)
+ @ cdecl _waccess_s(wstr long)
+ @ cdecl _wasctime(ptr)
+@@ -1892,7 +1892,7 @@
+ @ cdecl _wcstof_l(wstr ptr ptr)
+ @ cdecl -ret64 _wcstoi64(wstr ptr long)
+ @ cdecl -ret64 _wcstoi64_l(wstr ptr long ptr)
+-@ stub _wcstoimax_l
++@ cdecl -ret64 _wcstoimax_l(wstr ptr long ptr) _wcstoi64_l
+ @ cdecl _wcstol_l(wstr ptr long ptr)
+ @ cdecl _wcstold_l(wstr ptr ptr) _wcstod_l
+ @ cdecl -ret64 _wcstoll_l(wstr ptr long ptr) _wcstoi64_l
+@@ -1902,7 +1902,7 @@
+ @ cdecl -ret64 _wcstoui64_l(wstr ptr long ptr)
+ @ cdecl _wcstoul_l(wstr ptr long ptr)
+ @ cdecl -ret64 _wcstoull_l(wstr ptr long ptr) _wcstoui64_l
+-@ stub _wcstoumax_l
++@ cdecl -ret64 _wcstoumax_l(wstr ptr long ptr) _wcstoui64_l
+ @ cdecl _wcsupr(wstr)
+ @ cdecl _wcsupr_l(wstr ptr)
+ @ cdecl _wcsupr_s(wstr long)
+@@ -1927,11 +1927,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -1953,10 +1953,10 @@
+ @ cdecl _wperror(wstr)
+ @ extern _wpgmptr MSVCRT__wpgmptr
+ @ cdecl _wpopen(wstr wstr)
+-@ stub _wprintf_l
+-@ stub _wprintf_p
+-@ stub _wprintf_p_l
+-@ stub _wprintf_s_l
++@ varargs _wprintf_l(wstr ptr)
++@ varargs _wprintf_p()
++@ varargs _wprintf_p_l()
++@ varargs _wprintf_s_l()
+ @ cdecl _wputenv(wstr)
+ @ cdecl _wputenv_s(wstr wstr)
+ @ cdecl _wremove(wstr)
+@@ -2037,60 +2037,60 @@
+ @ cdecl bsearch(ptr ptr long long ptr)
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr)
+ @ cdecl btowc(long)
+-@ stub cabs
+-@ stub cabsf
+-@ stub cabsl
+-@ stub cacos
+-@ stub cacosf
+-@ stub cacosh
+-@ stub cacoshf
+-@ stub cacoshl
+-@ stub cacosl
++@ cdecl cabs(int128)
++@ cdecl cabsf(int64)
++@ cdecl cabsl(int128)
++@ cdecl -norelay cacos(int128)
++@ cdecl -norelay cacosf(int64)
++@ cdecl -norelay cacosh(int128)
++@ cdecl -norelay cacoshf(int64)
++@ cdecl -norelay cacoshl(int128)
++@ cdecl -norelay cacosl(int128)
+ @ cdecl calloc(long long)
+-@ stub carg
+-@ stub cargf
+-@ stub cargl
+-@ stub casin
+-@ stub casinf
+-@ stub casinh
+-@ stub casinhf
+-@ stub casinhl
+-@ stub casinl
+-@ stub catan
+-@ stub catanf
+-@ stub catanh
+-@ stub catanhf
+-@ stub catanhl
+-@ stub catanl
++@ cdecl carg(int128)
++@ cdecl cargf(int64)
++@ cdecl cargl(int128)
++@ cdecl -norelay casin(int128)
++@ cdecl -norelay casinf(int64)
++@ cdecl -norelay casinh(int128)
++@ cdecl -norelay casinhf(int64)
++@ cdecl -norelay casinhl(int128)
++@ cdecl -norelay casinl(int128)
++@ cdecl -norelay catan(int128)
++@ cdecl -norelay catanf(int64)
++@ cdecl -norelay catanh(int128)
++@ cdecl -norelay catanhf(int64)
++@ cdecl -norelay catanhl(int128)
++@ cdecl -norelay catanl(int128)
+ @ cdecl cbrt(double)
+ @ cdecl cbrtf(float)
+ @ cdecl cbrtl(double) cbrt
+-@ stub ccos
+-@ stub ccosf
+-@ stub ccosh
+-@ stub ccoshf
+-@ stub ccoshl
+-@ stub ccosl
++@ cdecl -norelay ccos(int128)
++@ cdecl -norelay ccosf(int64)
++@ cdecl -norelay ccosh(int128)
++@ cdecl -norelay ccoshf(int64)
++@ cdecl -norelay ccoshl(int128)
++@ cdecl -norelay ccosl(int128)
+ @ cdecl ceil(double)
+ @ cdecl -arch=!i386 ceilf(float)
+-@ stub cexp
+-@ stub cexpf
+-@ stub cexpl
+-@ stub cimag
+-@ stub cimagf
+-@ stub cimagl
++@ cdecl -norelay cexp(int128)
++@ cdecl -norelay cexpf(int64)
++@ cdecl -norelay cexpl(int128)
++@ cdecl cimag(int128)
++@ cdecl cimagf(int64)
++@ cdecl cimagl(int128)
+ @ cdecl clearerr(ptr)
+ @ cdecl clearerr_s(ptr)
+ @ cdecl clock()
+-@ stub clog
+-@ stub clog10
+-@ stub clog10f
+-@ stub clog10l
+-@ stub clogf
+-@ stub clogl
+-@ stub conj
+-@ stub conjf
+-@ stub conjl
++@ cdecl -norelay clog(int128)
++@ cdecl -norelay clog10(int128)
++@ cdecl -norelay clog10f(int64)
++@ cdecl -norelay clog10l(int128)
++@ cdecl -norelay clogf(int64)
++@ cdecl -norelay clogl(int128)
++@ cdecl -norelay conj(int128)
++@ cdecl -norelay conjf(int64)
++@ cdecl -norelay conjl(int128)
+ @ cdecl copysign(double double)
+ @ cdecl copysignf(float float)
+ @ cdecl copysignl(double double) copysign
+@@ -2098,30 +2098,30 @@
+ @ cdecl -arch=!i386 cosf(float)
+ @ cdecl cosh(double)
+ @ cdecl -arch=!i386 coshf(float)
+-@ stub cpow
+-@ stub cpowf
+-@ stub cpowl
+-@ stub cproj
+-@ stub cprojf
+-@ stub cprojl
++@ cdecl -norelay cpow(int128 int128)
++@ cdecl -norelay cpowf(int64 int64)
++@ cdecl -norelay cpowl(int128 int128)
++@ cdecl -norelay cproj(int128)
++@ cdecl -norelay cprojf(int64)
++@ cdecl -norelay cprojl(int128)
+ @ cdecl creal(int128) MSVCR120_creal
+-@ stub crealf
+-@ stub creall
+-@ stub csin
+-@ stub csinf
+-@ stub csinh
+-@ stub csinhf
+-@ stub csinhl
+-@ stub csinl
+-@ stub csqrt
+-@ stub csqrtf
+-@ stub csqrtl
+-@ stub ctan
+-@ stub ctanf
+-@ stub ctanh
+-@ stub ctanhf
+-@ stub ctanhl
+-@ stub ctanl
++@ cdecl crealf(int64)
++@ cdecl creall(int128)
++@ cdecl -norelay csin(int128)
++@ cdecl -norelay csinf(int64)
++@ cdecl -norelay csinh(int128)
++@ cdecl -norelay csinhf(int64)
++@ cdecl -norelay csinhl(int128)
++@ cdecl -norelay csinl(int128)
++@ cdecl -norelay csqrt(int128)
++@ cdecl -norelay csqrtf(int64)
++@ cdecl -norelay csqrtl(int128)
++@ cdecl -norelay ctan(int128)
++@ cdecl -norelay ctanf(int64)
++@ cdecl -norelay ctanh(int128)
++@ cdecl -norelay ctanhf(int64)
++@ cdecl -norelay ctanhl(int128)
++@ cdecl -norelay ctanl(int128)
+ @ cdecl -ret64 div(long long)
+ @ cdecl erf(double)
+ @ cdecl erfc(double)
+@@ -2212,7 +2212,7 @@
+ @ cdecl ilogbf(float)
+ @ cdecl ilogbl(double) ilogb
+ @ cdecl -ret64 imaxabs(int64)
+-@ stub imaxdiv
++@ cdecl -norelay imaxdiv(int64 int64)
+ @ cdecl is_wctype(long long) iswctype
+ @ cdecl isalnum(long)
+ @ cdecl isalpha(long)
+@@ -2306,9 +2306,9 @@
+ @ cdecl nexttoward(double double) __nexttoward
+ @ cdecl nexttowardf(float double) __nexttowardf
+ @ cdecl nexttowardl(double double) __nexttoward
+-@ stub norm
+-@ stub normf
+-@ stub norml
++@ cdecl norm(int128)
++@ cdecl normf(int64)
++@ cdecl norml(int128)
+ @ cdecl perror(str)
+ @ cdecl pow(double double)
+ @ cdecl -arch=!i386 powf(float float)
+@@ -2425,27 +2425,27 @@
+ @ cdecl ungetwc(long ptr)
+ @ cdecl vfprintf(ptr str ptr)
+ @ cdecl vfprintf_s(ptr str ptr)
+-@ stub vfscanf
+-@ stub vfscanf_s
++@ cdecl vfscanf(ptr str ptr)
++@ cdecl vfscanf_s(ptr str ptr)
+ @ cdecl vfwprintf(ptr wstr ptr)
+ @ cdecl vfwprintf_s(ptr wstr ptr)
+-@ stub vfwscanf
+-@ stub vfwscanf_s
++@ cdecl vfwscanf(ptr wstr ptr)
++@ cdecl vfwscanf_s(ptr wstr ptr)
+ @ cdecl vprintf(str ptr)
+ @ cdecl vprintf_s(str ptr)
+-@ stub vscanf
+-@ stub vscanf_s
++@ cdecl vscanf(str ptr)
++@ cdecl vscanf_s(str ptr)
+ @ cdecl vsprintf(ptr str ptr)
+ @ cdecl vsprintf_s(ptr long str ptr)
+ @ cdecl vsscanf(ptr str ptr) MSVCRT_vsscanf
+-@ stub vsscanf_s
++@ cdecl vsscanf_s(str str ptr)
+ @ cdecl vswprintf_s(ptr long wstr ptr)
+ @ cdecl vswscanf(ptr wstr ptr)
+-@ stub vswscanf_s
++@ cdecl vswscanf_s(wstr wstr ptr)
+ @ cdecl vwprintf(wstr ptr)
+ @ cdecl vwprintf_s(wstr ptr)
+-@ stub vwscanf
+-@ stub vwscanf_s
++@ cdecl vwscanf(wstr ptr)
++@ cdecl vwscanf_s(wstr ptr)
+ @ cdecl wcrtomb(ptr long ptr)
+ @ cdecl wcrtomb_s(ptr ptr long long ptr)
+ @ cdecl wcscat(wstr wstr)
+@@ -2472,7 +2472,7 @@
+ @ cdecl wcsstr(wstr wstr)
+ @ cdecl wcstod(wstr ptr)
+ @ cdecl wcstof(ptr ptr)
+-@ stub wcstoimax
++@ cdecl -ret64 wcstoimax(wstr ptr long) _wcstoi64
+ @ cdecl wcstok(wstr wstr)
+ @ cdecl wcstok_s(ptr wstr ptr)
+ @ cdecl wcstol(wstr ptr long)
+@@ -2482,7 +2482,7 @@
+ @ cdecl wcstombs_s(ptr ptr long wstr long)
+ @ cdecl wcstoul(wstr ptr long)
+ @ cdecl -ret64 wcstoull(wstr ptr long) _wcstoui64
+-@ stub wcstoumax
++@ cdecl -ret64 wcstoumax(wstr ptr long) _wcstoui64
+ @ cdecl wcsxfrm(ptr wstr long)
+ @ cdecl wctob(long)
+ @ cdecl wctomb(ptr long)
+diff --git a/dlls/msvcr70/msvcr70.spec b/dlls/msvcr70/msvcr70.spec
+index f73d630..ce729b1 100644
+--- a/dlls/msvcr70/msvcr70.spec
++++ b/dlls/msvcr70/msvcr70.spec
+@@ -204,7 +204,7 @@
+ @ stub __p__fileinfo()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__osver()
+ @ cdecl __p__pctype()
+@@ -273,7 +273,7 @@
+ @ cdecl _callnewh(long)
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgetws
++@ cdecl _cgetws(ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -394,16 +394,16 @@
+ @ extern _iob MSVCRT__iob
+ @ cdecl _isatty(long)
+ @ cdecl _isctype(long long)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbkalnum(long)
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbkalnum(long)
+ @ cdecl _ismbbkana(long)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkpunct(long)
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkpunct(long)
+ @ cdecl _ismbblead(long)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbpunct(long)
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbpunct(long)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbcalnum(long)
+ @ cdecl _ismbcalpha(long)
+@@ -484,11 +484,11 @@
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsncmp(str str long)
+-@ stub _mbsncoll(str str long)
++@ cdecl _mbsncoll(ptr ptr long)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsnextc(str)
+ @ cdecl _mbsnicmp(str str long)
+-@ stub _mbsnicoll(str str long)
++@ cdecl _mbsnicoll(ptr ptr long)
+ @ cdecl _mbsninc(str long)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbspbrk(str str)
+diff --git a/dlls/msvcr71/msvcr71.spec b/dlls/msvcr71/msvcr71.spec
+index ac4e5a0..7ce4af2 100644
+--- a/dlls/msvcr71/msvcr71.spec
++++ b/dlls/msvcr71/msvcr71.spec
+@@ -199,7 +199,7 @@
+ @ stub __p__fileinfo()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__osver()
+ @ cdecl __p__pctype()
+@@ -268,7 +268,7 @@
+ @ cdecl _callnewh(long)
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgetws
++@ cdecl _cgetws(ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -389,16 +389,16 @@
+ @ extern _iob MSVCRT__iob
+ @ cdecl _isatty(long)
+ @ cdecl _isctype(long long)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbkalnum(long)
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbkalnum(long)
+ @ cdecl _ismbbkana(long)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkpunct(long)
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkpunct(long)
+ @ cdecl _ismbblead(long)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbpunct(long)
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbpunct(long)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbcalnum(long)
+ @ cdecl _ismbcalpha(long)
+@@ -479,11 +479,11 @@
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsncmp(str str long)
+-@ stub _mbsncoll(str str long)
++@ cdecl _mbsncoll(ptr ptr long)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsnextc(str)
+ @ cdecl _mbsnicmp(str str long)
+-@ stub _mbsnicoll(str str long)
++@ cdecl _mbsnicoll(ptr ptr long)
+ @ cdecl _mbsninc(str long)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbspbrk(str str)
+diff --git a/dlls/msvcr80/msvcr80.spec b/dlls/msvcr80/msvcr80.spec
+index 0e5084c..fb8d7a7 100644
+--- a/dlls/msvcr80/msvcr80.spec
++++ b/dlls/msvcr80/msvcr80.spec
+@@ -304,7 +304,7 @@
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+ @ cdecl -arch=i386 __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ stub __p__osplatform
+ @ cdecl __p__osver()
+@@ -345,7 +345,7 @@
+ @ extern __wargv MSVCRT___wargv
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl __wgetmainargs(ptr ptr ptr long ptr)
+ @ extern __winitenv MSVCRT___winitenv
+ @ cdecl _abnormal_termination() __intrinsic_abnormal_termination
+@@ -373,9 +373,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _amsg_exit(long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+@@ -401,9 +401,9 @@
+ @ cdecl _calloc_crt(long long) calloc
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -424,10 +424,10 @@
+ @ cdecl -arch=!i386 _copysignf(float float) copysignf
+ @ varargs _cprintf(str)
+ @ varargs _cprintf_l(str ptr)
+-@ stub _cprintf_p
+-@ stub _cprintf_p_l
+-@ stub _cprintf_s
+-@ stub _cprintf_s_l
++@ varargs _cprintf_p()
++@ varargs _cprintf_p_l()
++@ varargs _cprintf_s()
++@ varargs _cprintf_s_l()
+ @ cdecl _cputs(str)
+ @ cdecl _cputws(wstr)
+ @ cdecl _creat(str long)
+@@ -445,10 +445,10 @@
+ @ cdecl _cwait(ptr long long)
+ @ varargs _cwprintf(wstr)
+ @ varargs _cwprintf_l(wstr ptr)
+-@ stub _cwprintf_p
+-@ stub _cwprintf_p_l
+-@ stub _cwprintf_s
+-@ stub _cwprintf_s_l
++@ varargs _cwprintf_p()
++@ varargs _cwprintf_p_l()
++@ varargs _cwprintf_s()
++@ varargs _cwprintf_s_l()
+ @ varargs _cwscanf(wstr)
+ @ varargs _cwscanf_l(wstr ptr)
+ @ varargs _cwscanf_s(wstr)
+@@ -500,11 +500,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -609,7 +609,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -647,26 +647,26 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+@@ -753,7 +753,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -838,18 +838,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -858,16 +858,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -876,14 +876,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -892,8 +892,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -926,9 +926,9 @@
+ @ cdecl _pipe(ptr long long)
+ @ cdecl _popen(str str)
+ @ stub _printf_l
+-@ stub _printf_p
+-@ stub _printf_p_l
+-@ stub _printf_s_l
++@ varargs _printf_p()
++@ varargs _printf_p_l()
++@ varargs _printf_s_l()
+ @ cdecl _purecall()
+ @ cdecl _putc_nolock(long ptr) _fputc_nolock
+ @ cdecl _putch(long)
+@@ -1062,7 +1062,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1111,7 +1111,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -1126,16 +1126,16 @@
+ @ cdecl _utime64(str ptr)
+ @ cdecl _vcprintf(str ptr)
+ @ cdecl _vcprintf_l(str ptr ptr)
+-@ stub _vcprintf_p
+-@ stub _vcprintf_p_l
+-@ stub _vcprintf_s
+-@ stub _vcprintf_s_l
++@ cdecl _vcprintf_p(ptr ptr)
++@ cdecl _vcprintf_p_l(str ptr ptr)
++@ cdecl _vcprintf_s(ptr ptr)
++@ cdecl _vcprintf_s_l(str ptr ptr)
+ @ cdecl _vcwprintf(wstr ptr)
+ @ cdecl _vcwprintf_l(wstr ptr ptr)
+-@ stub _vcwprintf_p
+-@ stub _vcwprintf_p_l
+-@ stub _vcwprintf_s
+-@ stub _vcwprintf_s_l
++@ cdecl _vcwprintf_p(ptr ptr)
++@ cdecl _vcwprintf_p_l(ptr ptr ptr)
++@ cdecl _vcwprintf_s(ptr ptr)
++@ cdecl _vcwprintf_s_l(ptr ptr ptr)
+ @ cdecl _vfprintf_l(ptr str ptr ptr)
+ @ cdecl _vfprintf_p(ptr str ptr)
+ @ cdecl _vfprintf_p_l(ptr str ptr ptr)
+@@ -1145,9 +1145,9 @@
+ @ cdecl _vfwprintf_p_l(ptr wstr ptr ptr)
+ @ cdecl _vfwprintf_s_l(ptr wstr ptr ptr)
+ @ stub _vprintf_l
+-@ stub _vprintf_p
+-@ stub _vprintf_p_l
+-@ stub _vprintf_s_l
++@ cdecl _vprintf_p(str ptr)
++@ cdecl _vprintf_p_l(str ptr ptr)
++@ cdecl _vprintf_s_l(str ptr)
+ @ cdecl _vscprintf(str ptr)
+ @ cdecl _vscprintf_l(str ptr ptr)
+ @ cdecl _vscprintf_p(str ptr)
+@@ -1177,10 +1177,10 @@
+ @ cdecl _vswprintf_p(ptr long wstr ptr)
+ @ cdecl _vswprintf_p_l(ptr long wstr ptr ptr)
+ @ cdecl _vswprintf_s_l(ptr long wstr ptr ptr)
+-@ stub _vwprintf_l
+-@ stub _vwprintf_p
+-@ stub _vwprintf_p_l
+-@ stub _vwprintf_s_l
++@ cdecl _vwprintf_l(wstr ptr ptr)
++@ cdecl _vwprintf_p(ptr ptr)
++@ cdecl _vwprintf_p_l(ptr ptr ptr)
++@ cdecl _vwprintf_s_l(ptr ptr)
+ @ cdecl _waccess(wstr long)
+ @ cdecl _waccess_s(wstr long)
+ @ cdecl _wasctime(ptr)
+@@ -1247,11 +1247,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -1277,10 +1277,10 @@
+ @ cdecl _wperror(wstr)
+ @ extern _wpgmptr MSVCRT__wpgmptr
+ @ cdecl _wpopen(wstr wstr)
+-@ stub _wprintf_l
+-@ stub _wprintf_p
+-@ stub _wprintf_p_l
+-@ stub _wprintf_s_l
++@ varargs _wprintf_l(wstr ptr)
++@ varargs _wprintf_p()
++@ varargs _wprintf_p_l()
++@ varargs _wprintf_s_l()
+ @ cdecl _wputenv(wstr)
+ @ cdecl _wputenv_s(wstr wstr)
+ @ cdecl _wremove(wstr)
+diff --git a/dlls/msvcr90/msvcr90.spec b/dlls/msvcr90/msvcr90.spec
+index 97c6427..5b3159f 100644
+--- a/dlls/msvcr90/msvcr90.spec
++++ b/dlls/msvcr90/msvcr90.spec
+@@ -293,7 +293,7 @@
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+ @ cdecl __p__iob() __iob_func
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__pctype()
+ @ cdecl __p__pgmptr()
+@@ -329,7 +329,7 @@
+ @ extern __wargv MSVCRT___wargv
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl __wgetmainargs(ptr ptr ptr long ptr)
+ @ extern __winitenv MSVCRT___winitenv
+ @ cdecl _abnormal_termination() __intrinsic_abnormal_termination
+@@ -357,9 +357,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _amsg_exit(long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+@@ -385,9 +385,9 @@
+ @ cdecl _calloc_crt(long long) calloc
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -407,10 +407,10 @@
+ @ cdecl -arch=!i386 _copysignf(float float) copysignf
+ @ varargs _cprintf(str)
+ @ varargs _cprintf_l(str ptr)
+-@ stub _cprintf_p
+-@ stub _cprintf_p_l
+-@ stub _cprintf_s
+-@ stub _cprintf_s_l
++@ varargs _cprintf_p()
++@ varargs _cprintf_p_l()
++@ varargs _cprintf_s()
++@ varargs _cprintf_s_l()
+ @ cdecl _cputs(str)
+ @ cdecl _cputws(wstr)
+ @ cdecl _creat(str long)
+@@ -428,10 +428,10 @@
+ @ cdecl _cwait(ptr long long)
+ @ varargs _cwprintf(wstr)
+ @ varargs _cwprintf_l(wstr ptr)
+-@ stub _cwprintf_p
+-@ stub _cwprintf_p_l
+-@ stub _cwprintf_s
+-@ stub _cwprintf_s_l
++@ varargs _cwprintf_p()
++@ varargs _cwprintf_p_l()
++@ varargs _cwprintf_s()
++@ varargs _cwprintf_s_l()
+ @ varargs _cwscanf(wstr)
+ @ varargs _cwscanf_l(wstr ptr)
+ @ varargs _cwscanf_s(wstr)
+@@ -483,11 +483,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -587,7 +587,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -625,26 +625,26 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+@@ -731,7 +731,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -816,18 +816,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -836,16 +836,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -854,14 +854,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -870,8 +870,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -902,9 +902,9 @@
+ @ cdecl _pipe(ptr long long)
+ @ cdecl _popen(str str)
+ @ stub _printf_l
+-@ stub _printf_p
+-@ stub _printf_p_l
+-@ stub _printf_s_l
++@ varargs _printf_p()
++@ varargs _printf_p_l()
++@ varargs _printf_s_l()
+ @ cdecl _purecall()
+ @ cdecl _putc_nolock(long ptr) _fputc_nolock
+ @ cdecl _putch(long)
+@@ -1037,7 +1037,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1086,7 +1086,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -1101,16 +1101,16 @@
+ @ cdecl _utime64(str ptr)
+ @ cdecl _vcprintf(str ptr)
+ @ cdecl _vcprintf_l(str ptr ptr)
+-@ stub _vcprintf_p
+-@ stub _vcprintf_p_l
+-@ stub _vcprintf_s
+-@ stub _vcprintf_s_l
++@ cdecl _vcprintf_p(ptr ptr)
++@ cdecl _vcprintf_p_l(str ptr ptr)
++@ cdecl _vcprintf_s(ptr ptr)
++@ cdecl _vcprintf_s_l(str ptr ptr)
+ @ cdecl _vcwprintf(wstr ptr)
+ @ cdecl _vcwprintf_l(wstr ptr ptr)
+-@ stub _vcwprintf_p
+-@ stub _vcwprintf_p_l
+-@ stub _vcwprintf_s
+-@ stub _vcwprintf_s_l
++@ cdecl _vcwprintf_p(ptr ptr)
++@ cdecl _vcwprintf_p_l(ptr ptr ptr)
++@ cdecl _vcwprintf_s(ptr ptr)
++@ cdecl _vcwprintf_s_l(ptr ptr ptr)
+ @ cdecl _vfprintf_l(ptr str ptr ptr)
+ @ cdecl _vfprintf_p(ptr str ptr)
+ @ cdecl _vfprintf_p_l(ptr str ptr ptr)
+@@ -1120,9 +1120,9 @@
+ @ cdecl _vfwprintf_p_l(ptr wstr ptr ptr)
+ @ cdecl _vfwprintf_s_l(ptr wstr ptr ptr)
+ @ stub _vprintf_l
+-@ stub _vprintf_p
+-@ stub _vprintf_p_l
+-@ stub _vprintf_s_l
++@ cdecl _vprintf_p(str ptr)
++@ cdecl _vprintf_p_l(str ptr ptr)
++@ cdecl _vprintf_s_l(str ptr)
+ @ cdecl _vscprintf(str ptr)
+ @ cdecl _vscprintf_l(str ptr ptr)
+ @ cdecl _vscprintf_p(str ptr)
+@@ -1152,10 +1152,10 @@
+ @ cdecl _vswprintf_p(ptr long wstr ptr)
+ @ cdecl _vswprintf_p_l(ptr long wstr ptr ptr)
+ @ cdecl _vswprintf_s_l(ptr long wstr ptr ptr)
+-@ stub _vwprintf_l
+-@ stub _vwprintf_p
+-@ stub _vwprintf_p_l
+-@ stub _vwprintf_s_l
++@ cdecl _vwprintf_l(wstr ptr ptr)
++@ cdecl _vwprintf_p(ptr ptr)
++@ cdecl _vwprintf_p_l(ptr ptr ptr)
++@ cdecl _vwprintf_s_l(ptr ptr)
+ @ cdecl _waccess(wstr long)
+ @ cdecl _waccess_s(wstr long)
+ @ cdecl _wasctime(ptr)
+@@ -1222,11 +1222,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -1249,10 +1249,10 @@
+ @ cdecl _wperror(wstr)
+ @ extern _wpgmptr MSVCRT__wpgmptr
+ @ cdecl _wpopen(wstr wstr)
+-@ stub _wprintf_l
+-@ stub _wprintf_p
+-@ stub _wprintf_p_l
+-@ stub _wprintf_s_l
++@ varargs _wprintf_l(wstr ptr)
++@ varargs _wprintf_p()
++@ varargs _wprintf_p_l()
++@ varargs _wprintf_s_l()
+ @ cdecl _wputenv(wstr)
+ @ cdecl _wputenv_s(wstr wstr)
+ @ cdecl _wremove(wstr)
+diff --git a/dlls/msvcrt/console.c b/dlls/msvcrt/console.c
+index 2c6b59d..e9ce2f6 100644
+--- a/dlls/msvcrt/console.c
++++ b/dlls/msvcrt/console.c
+@@ -647,3 +647,398 @@ int CDECL __conio_common_vcwprintf(unsigned __int64 options, const wchar_t* form
+ }
+ 
+ #endif /* _MSVCR_VER>=140 */
++
++/***********************************************************************
++ * FD-169 hand implementations: the positional (_p) and secure (_s)
++ * console printf forms (same engine flags as the __stdio_common_*
++ * family), the __conio_common _p/_s variants, and the console line
++ * input functions _cgets_s/_cgetws/_cgetws_s.
++ */
++
++/*********************************************************************
++ *		_vcprintf_p_l (MSVCRT.@)
++ */
++int CDECL _vcprintf_p_l(const char* format, _locale_t locale, va_list valist)
++{
++    return pf_printf_a(puts_clbk_console_a, NULL, format, locale,
++            MSVCRT_PRINTF_POSITIONAL_PARAMS | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		_vcprintf_p (MSVCRT.@)
++ */
++int CDECL _vcprintf_p(const char* format, va_list valist)
++{
++    return _vcprintf_p_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_cprintf_p_l (MSVCRT.@)
++ */
++int WINAPIV _cprintf_p_l(const char* format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vcprintf_p_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_cprintf_p (MSVCRT.@)
++ */
++int WINAPIV _cprintf_p(const char* format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vcprintf_p_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vcprintf_s_l (MSVCRT.@)
++ */
++int CDECL _vcprintf_s_l(const char* format, _locale_t locale, va_list valist)
++{
++    return pf_printf_a(puts_clbk_console_a, NULL, format, locale,
++            MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		_vcprintf_s (MSVCRT.@)
++ */
++int CDECL _vcprintf_s(const char* format, va_list valist)
++{
++    return _vcprintf_s_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_cprintf_s_l (MSVCRT.@)
++ */
++int WINAPIV _cprintf_s_l(const char* format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vcprintf_s_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_cprintf_s (MSVCRT.@)
++ */
++int WINAPIV _cprintf_s(const char* format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vcprintf_s_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vcwprintf_p_l (MSVCRT.@)
++ */
++int CDECL _vcwprintf_p_l(const wchar_t* format, _locale_t locale, va_list valist)
++{
++    return pf_printf_w(puts_clbk_console_w, NULL, format, locale,
++            MSVCRT_PRINTF_POSITIONAL_PARAMS | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		_vcwprintf_p (MSVCRT.@)
++ */
++int CDECL _vcwprintf_p(const wchar_t* format, va_list valist)
++{
++    return _vcwprintf_p_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_cwprintf_p_l (MSVCRT.@)
++ */
++int WINAPIV _cwprintf_p_l(const wchar_t* format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vcwprintf_p_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_cwprintf_p (MSVCRT.@)
++ */
++int WINAPIV _cwprintf_p(const wchar_t* format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vcwprintf_p_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vcwprintf_s_l (MSVCRT.@)
++ */
++int CDECL _vcwprintf_s_l(const wchar_t* format, _locale_t locale, va_list valist)
++{
++    return pf_printf_w(puts_clbk_console_w, NULL, format, locale,
++            MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		_vcwprintf_s (MSVCRT.@)
++ */
++int CDECL _vcwprintf_s(const wchar_t* format, va_list valist)
++{
++    return _vcwprintf_s_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_cwprintf_s_l (MSVCRT.@)
++ */
++int WINAPIV _cwprintf_s_l(const wchar_t* format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vcwprintf_s_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_cwprintf_s (MSVCRT.@)
++ */
++int WINAPIV _cwprintf_s(const wchar_t* format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vcwprintf_s_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++#if _MSVCR_VER>=140
++/*********************************************************************
++ *		__conio_common_vcprintf_p (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcprintf_p(unsigned __int64 options, const char* format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options & ~UCRTBASE_PRINTF_MASK)
++        FIXME("options %#I64x not handled\n", options);
++    return pf_printf_a(puts_clbk_console_a, NULL, format, locale,
++             (options & UCRTBASE_PRINTF_MASK) | MSVCRT_PRINTF_POSITIONAL_PARAMS
++             | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER, arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		__conio_common_vcprintf_s (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcprintf_s(unsigned __int64 options, const char* format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options & ~UCRTBASE_PRINTF_MASK)
++        FIXME("options %#I64x not handled\n", options);
++    return pf_printf_a(puts_clbk_console_a, NULL, format, locale,
++             (options & UCRTBASE_PRINTF_MASK) | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++             arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		__conio_common_vcwprintf_p (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcwprintf_p(unsigned __int64 options, const wchar_t* format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options & ~UCRTBASE_PRINTF_MASK)
++        FIXME("options %#I64x not handled\n", options);
++    return pf_printf_w(puts_clbk_console_w, NULL, format, locale,
++             (options & UCRTBASE_PRINTF_MASK) | MSVCRT_PRINTF_POSITIONAL_PARAMS
++             | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER, arg_clbk_valist, NULL, &valist);
++}
++
++/*********************************************************************
++ *		__conio_common_vcwprintf_s (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcwprintf_s(unsigned __int64 options, const wchar_t* format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options & ~UCRTBASE_PRINTF_MASK)
++        FIXME("options %#I64x not handled\n", options);
++    return pf_printf_w(puts_clbk_console_w, NULL, format, locale,
++             (options & UCRTBASE_PRINTF_MASK) | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++             arg_clbk_valist, NULL, &valist);
++}
++#endif /* _MSVCR_VER>=140 */
++
++/*********************************************************************
++ *		_cgets_s (MSVCRT.@)
++ */
++char* CDECL _cgets_s(char *buffer, size_t size, size_t *num_read)
++{
++    size_t len = 0;
++    int c;
++
++    if (!MSVCRT_CHECK_PMT(buffer != NULL)) return NULL;
++    if (!MSVCRT_CHECK_PMT(size != 0)) return NULL;
++    if (!MSVCRT_CHECK_PMT(num_read != NULL)) return NULL;
++
++    for (;;)
++    {
++        c = _getche();
++        if (c == EOF)
++        {
++            if (!len)
++            {
++                *num_read = 0;
++                buffer[0] = 0;
++                return NULL;
++            }
++            break;
++        }
++        if (c == '\r' || c == '\n')
++        {
++            _putch('\n');
++            break;
++        }
++        if (c == '\b')
++        {
++            if (len)
++            {
++                len--;
++                _putch(' ');
++                _putch('\b');
++            }
++            continue;
++        }
++        if (len + 1 >= size)
++        {
++            /* drain the rest of the line and fail like the secure CRT */
++            while ((c = _getch()) != EOF && c != '\r' && c != '\n')
++                ;
++            buffer[0] = 0;
++            *num_read = 0;
++            *_errno() = ERANGE;
++            return NULL;
++        }
++        buffer[len++] = (char)c;
++    }
++    buffer[len] = 0;
++    *num_read = len;
++    return buffer;
++}
++
++/*********************************************************************
++ *		_cgetws_s (MSVCRT.@)
++ */
++wchar_t* CDECL _cgetws_s(wchar_t *buffer, size_t size, size_t *num_read)
++{
++    size_t len = 0;
++    wint_t c;
++
++    if (!MSVCRT_CHECK_PMT(buffer != NULL)) return NULL;
++    if (!MSVCRT_CHECK_PMT(size != 0)) return NULL;
++    if (!MSVCRT_CHECK_PMT(num_read != NULL)) return NULL;
++
++    for (;;)
++    {
++        c = _getwche();
++        if (c == WEOF)
++        {
++            if (!len)
++            {
++                *num_read = 0;
++                buffer[0] = 0;
++                return NULL;
++            }
++            break;
++        }
++        if (c == '\r' || c == '\n')
++        {
++            _putwch('\n');
++            break;
++        }
++        if (c == '\b')
++        {
++            if (len)
++            {
++                len--;
++                _putwch(' ');
++                _putwch('\b');
++            }
++            continue;
++        }
++        if (len + 1 >= size)
++        {
++            while ((c = _getwch()) != WEOF && c != '\r' && c != '\n')
++                ;
++            buffer[0] = 0;
++            *num_read = 0;
++            *_errno() = ERANGE;
++            return NULL;
++        }
++        buffer[len++] = (wchar_t)c;
++    }
++    buffer[len] = 0;
++    *num_read = len;
++    return buffer;
++}
++
++/*********************************************************************
++ *		_cgetws (MSVCRT.@)
++ */
++wchar_t* CDECL _cgetws(wchar_t *buffer)
++{
++    size_t num_read = 0;
++    wchar_t *ret;
++
++    if (!MSVCRT_CHECK_PMT(buffer != NULL)) return NULL;
++
++    /* legacy form: buffer[0] holds the maximum length on entry and
++     * buffer[1] the actual length; the string starts at buffer + 2 */
++    ret = _cgetws_s(buffer + 2, (size_t)buffer[0] + 1, &num_read);
++    if (!ret)
++    {
++        buffer[1] = 0;
++        return NULL;
++    }
++    buffer[1] = (wchar_t)num_read;
++    return buffer + 2;
++}
++
++/* FD-169 (Wine 10 port): the >=140 _vcprintf_l core. */
++
++#if _MSVCR_VER>=140
++/*********************************************************************
++ *		_vcprintf_l (MSVCRT.@)
++ * FD-169: the >=140 console core (this tree defines it only for
++ * <=120, where the __conio_common entry points do not exist;
++ * ucrtbase exports _vcprintf_l itself and _cprintf_l calls it).
++ */
++int CDECL _vcprintf_l(const char* format, _locale_t locale, va_list valist)
++{
++    return pf_printf_a(puts_clbk_console_a, NULL, format, locale, 0, arg_clbk_valist, NULL, &valist);
++}
++#endif /* _MSVCR_VER>=140 */
+diff --git a/dlls/msvcrt/ctype.c b/dlls/msvcrt/ctype.c
+index 1297bc5..668936e 100644
+--- a/dlls/msvcrt/ctype.c
++++ b/dlls/msvcrt/ctype.c
+@@ -615,3 +615,24 @@ unsigned short __cdecl wctype(const char *property)
+     return 0;
+ }
+ #endif
++
++/***********************************************************************
++ * FD-169 hand implementations: locale variants of the identifier
++ * character tests.
++ */
++
++/*********************************************************************
++ *		__iswcsym_l (MSVCRT.@)
++ */
++int CDECL __iswcsym_l(wint_t c, _locale_t locale)
++{
++    return (_iswalnum_l(c, locale) || c == '_');
++}
++
++/*********************************************************************
++ *		__iswcsymf_l (MSVCRT.@)
++ */
++int CDECL __iswcsymf_l(wint_t c, _locale_t locale)
++{
++    return (_iswalpha_l(c, locale) || c == '_');
++}
+diff --git a/dlls/msvcrt/dir.c b/dlls/msvcrt/dir.c
+index a047ca4..bc78858 100644
+--- a/dlls/msvcrt/dir.c
++++ b/dlls/msvcrt/dir.c
+@@ -1785,3 +1785,124 @@ void CDECL _wsearchenv(const wchar_t* file, const wchar_t* env, wchar_t *buf)
+ {
+     _wsearchenv_s(file, env, buf, MAX_PATH);
+ }
++
++#undef _findfirst32i64
++#undef _findnext32i64
++#undef _wfindfirst32i64
++#undef _wfindnext32i64
++
++/***********************************************************************
++ * FD-169 hand implementations: the 32-bit-time / 64-bit-size finddata
++ * variants, translated exactly like the existing 32-bit forms except
++ * that the file size keeps both halves.
++ */
++
++/* INTERNAL: Translate WIN32_FIND_DATAA to finddata32i64_t  */
++static void msvcrt_fttofd32i64( const WIN32_FIND_DATAA *fd, struct _finddata32i64_t* ft)
++{
++  DWORD dw;
++
++  if (fd->dwFileAttributes == FILE_ATTRIBUTE_NORMAL)
++    ft->attrib = 0;
++  else
++    ft->attrib = fd->dwFileAttributes;
++
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftCreationTime, &dw );
++  ft->time_create = dw;
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftLastAccessTime, &dw );
++  ft->time_access = dw;
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftLastWriteTime, &dw );
++  ft->time_write = dw;
++  ft->size = ((__int64)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
++  strcpy(ft->name, fd->cFileName);
++}
++
++/* INTERNAL: Translate WIN32_FIND_DATAW to wfinddata32i64_t  */
++static void msvcrt_wfttofd32i64( const WIN32_FIND_DATAW *fd, struct _wfinddata32i64_t* ft)
++{
++  DWORD dw;
++
++  if (fd->dwFileAttributes == FILE_ATTRIBUTE_NORMAL)
++    ft->attrib = 0;
++  else
++    ft->attrib = fd->dwFileAttributes;
++
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftCreationTime, &dw );
++  ft->time_create = dw;
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftLastAccessTime, &dw );
++  ft->time_access = dw;
++  RtlTimeToSecondsSince1970( (const LARGE_INTEGER *)&fd->ftLastWriteTime, &dw );
++  ft->time_write = dw;
++  ft->size = ((__int64)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
++  wcscpy(ft->name, fd->cFileName);
++}
++
++/*********************************************************************
++ *		_findfirst32i64 (MSVCRT.@)
++ */
++intptr_t CDECL _findfirst32i64(const char * fspec, struct _finddata32i64_t* ft)
++{
++  WIN32_FIND_DATAA find_data;
++  HANDLE hfind;
++
++  hfind  = FindFirstFileA(fspec, &find_data);
++  if (hfind == INVALID_HANDLE_VALUE)
++  {
++    msvcrt_set_errno(GetLastError());
++    return -1;
++  }
++  msvcrt_fttofd32i64(&find_data,ft);
++  TRACE(":got handle %p\n",hfind);
++  return (intptr_t)hfind;
++}
++
++/*********************************************************************
++ *		_findnext32i64 (MSVCRT.@)
++ */
++int CDECL _findnext32i64(intptr_t handle, struct _finddata32i64_t* ft)
++{
++  WIN32_FIND_DATAA find_data;
++
++  if (!FindNextFileA((HANDLE)handle, &find_data))
++  {
++    *_errno() = ENOENT;
++    return -1;
++  }
++  msvcrt_fttofd32i64(&find_data, ft);
++  return 0;
++}
++
++/*********************************************************************
++ *		_wfindfirst32i64 (MSVCRT.@)
++ */
++intptr_t CDECL _wfindfirst32i64(const wchar_t * fspec, struct _wfinddata32i64_t* ft)
++{
++  WIN32_FIND_DATAW find_data;
++  HANDLE hfind;
++
++  hfind  = FindFirstFileW(fspec, &find_data);
++  if (hfind == INVALID_HANDLE_VALUE)
++  {
++    msvcrt_set_errno(GetLastError());
++    return -1;
++  }
++  msvcrt_wfttofd32i64(&find_data,ft);
++  TRACE(":got handle %p\n",hfind);
++  return (intptr_t)hfind;
++}
++
++/*********************************************************************
++ *		_wfindnext32i64 (MSVCRT.@)
++ */
++int CDECL _wfindnext32i64(intptr_t handle, struct _wfinddata32i64_t* ft)
++{
++  WIN32_FIND_DATAW find_data;
++
++  if (!FindNextFileW((HANDLE)handle, &find_data))
++  {
++    *_errno() = ENOENT;
++    return -1;
++  }
++  msvcrt_wfttofd32i64(&find_data, ft);
++  return 0;
++}
+diff --git a/dlls/msvcrt/file.c b/dlls/msvcrt/file.c
+index dda12a7..9d04b29 100644
+--- a/dlls/msvcrt/file.c
++++ b/dlls/msvcrt/file.c
+@@ -5894,3 +5894,212 @@ int CDECL _get_stream_buffer_pointers(FILE *file, char*** base,
+     return 0;
+ }
+ #endif
++
++/* FD-169 (Wine 10 port): wide printf _l backports + hand chunk. */
++
++/*********************************************************************
++ *              _vwprintf_l (MSVCRT.@)
++ */
++int CDECL _vwprintf_l(const wchar_t *format, _locale_t locale, va_list valist)
++{
++    return _vfwprintf_l(stdout, format, locale, valist);
++}
++/*********************************************************************
++ *              _wprintf_l (MSVCRT.@)
++ */
++int WINAPIV _wprintf_l(const wchar_t *format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++    va_start(valist, locale);
++    res = _vwprintf_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++/***********************************************************************
++ * FD-169 hand implementations: the positional (_p) and secure (_s)
++ * public printf forms for stdout, built on the same engine flags the
++ * __stdio_common_* entry points use, _getws_s and _umask_s.
++ */
++
++/*********************************************************************
++ *		_vprintf_p_l (MSVCRT.@)
++ */
++int CDECL _vprintf_p_l(const char *format, _locale_t locale, va_list valist)
++{
++    return vfprintf_helper(MSVCRT_PRINTF_POSITIONAL_PARAMS
++            | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            stdout, format, locale, valist);
++}
++
++/*********************************************************************
++ *		_vprintf_p (MSVCRT.@)
++ */
++int CDECL _vprintf_p(const char *format, va_list valist)
++{
++    return _vprintf_p_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_printf_p_l (MSVCRT.@)
++ */
++int WINAPIV _printf_p_l(const char *format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vprintf_p_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_printf_p (MSVCRT.@)
++ */
++int WINAPIV _printf_p(const char *format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vprintf_p_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vprintf_s_l (MSVCRT.@)
++ */
++int CDECL _vprintf_s_l(const char *format, _locale_t locale, va_list valist)
++{
++    return vfprintf_helper(MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            stdout, format, locale, valist);
++}
++
++/*********************************************************************
++ *		_printf_s_l (MSVCRT.@)
++ */
++int WINAPIV _printf_s_l(const char *format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vprintf_s_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vwprintf_p_l (MSVCRT.@)
++ */
++int CDECL _vwprintf_p_l(const wchar_t *format, _locale_t locale, va_list valist)
++{
++    return vfwprintf_helper(MSVCRT_PRINTF_POSITIONAL_PARAMS
++            | MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            stdout, format, locale, valist);
++}
++
++/*********************************************************************
++ *		_vwprintf_p (MSVCRT.@)
++ */
++int CDECL _vwprintf_p(const wchar_t *format, va_list valist)
++{
++    return _vwprintf_p_l(format, NULL, valist);
++}
++
++/*********************************************************************
++ *		_wprintf_p_l (MSVCRT.@)
++ */
++int WINAPIV _wprintf_p_l(const wchar_t *format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vwprintf_p_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_wprintf_p (MSVCRT.@)
++ */
++int WINAPIV _wprintf_p(const wchar_t *format, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, format);
++    res = _vwprintf_p_l(format, NULL, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_vwprintf_s_l (MSVCRT.@)
++ */
++int CDECL _vwprintf_s_l(const wchar_t *format, _locale_t locale, va_list valist)
++{
++    return vfwprintf_helper(MSVCRT_PRINTF_INVOKE_INVALID_PARAM_HANDLER,
++            stdout, format, locale, valist);
++}
++
++/*********************************************************************
++ *		_wprintf_s_l (MSVCRT.@)
++ */
++int WINAPIV _wprintf_s_l(const wchar_t *format, _locale_t locale, ...)
++{
++    va_list valist;
++    int res;
++
++    va_start(valist, locale);
++    res = _vwprintf_s_l(format, locale, valist);
++    va_end(valist);
++    return res;
++}
++
++/*********************************************************************
++ *		_getws_s (MSVCRT.@)
++ */
++wchar_t* CDECL _getws_s(wchar_t *str, size_t size)
++{
++    size_t len;
++
++    if (!MSVCRT_CHECK_PMT(str != NULL)) return NULL;
++    if (!MSVCRT_CHECK_PMT(size != 0)) return NULL;
++
++    if (!fgetws(str, size, stdin))
++        return NULL;
++
++    len = wcslen(str);
++    if (len && str[len - 1] == '\n')
++    {
++        str[--len] = 0;
++        if (len && str[len - 1] == '\r')
++            str[--len] = 0;
++        return str;
++    }
++    if (len == size - 1 && !feof(stdin))
++    {
++        /* the line does not fit: drain the rest and fail like the
++         * secure CRT does (invalid parameter handler, NULL result) */
++        int ch;
++        while ((ch = fgetwc(stdin)) != WEOF && ch != '\n')
++            ;
++        *str = 0;
++        if (!MSVCRT_CHECK_PMT_ERR(FALSE, ERANGE)) return NULL;
++    }
++    return str;
++}
++
++/*********************************************************************
++ *		_umask_s (MSVCRT.@)
++ */
++errno_t CDECL _umask_s(int mode, int *old_mode)
++{
++    if (!MSVCRT_CHECK_PMT(old_mode != NULL)) return EINVAL;
++    *old_mode = _umask(mode);
++    return 0;
++}
+diff --git a/dlls/msvcrt/heap.c b/dlls/msvcrt/heap.c
+index 70e4ecb..a5c83c0 100644
+--- a/dlls/msvcrt/heap.c
++++ b/dlls/msvcrt/heap.c
+@@ -845,3 +845,43 @@ void msvcrt_destroy_heap(void)
+     if(sb_heap)
+         HeapDestroy(sb_heap);
+ }
++
++#if _MSVCR_VER>=80
++/* FD-169 (Wine 10 port): aligned recalloc backports
++ * from upstream Wine (post-8.0). */
++
++/*********************************************************************
++ *		_aligned_offset_recalloc (MSVCR80.@)
++ */
++void * CDECL _aligned_offset_recalloc(void *memblock, size_t num, size_t size,
++                                      size_t alignment, size_t offset)
++{
++    size_t old_size = 0;
++    void *ret;
++
++    TRACE("(%p, %Iu, %Iu, %Iu, %Iu)\n", memblock, num, size, alignment, offset);
++
++    if (num && size > (size_t)-1 / num)
++    {
++        *_errno() = ENOMEM;
++        return NULL;
++    }
++    size *= num;
++
++    if (memblock)
++        old_size = _aligned_msize(memblock, alignment, offset);
++
++    ret = _aligned_offset_realloc(memblock, size, alignment, offset);
++    if (ret && size > old_size)
++        memset((char *)ret + old_size, 0, size - old_size);
++    return ret;
++}
++/*********************************************************************
++ *		_aligned_recalloc (MSVCR80.@)
++ */
++void * CDECL _aligned_recalloc(void *memblock, size_t num, size_t size, size_t alignment)
++{
++    TRACE("(%p, %Iu, %Iu, %Iu)\n", memblock, num, size, alignment);
++    return _aligned_offset_recalloc(memblock, num, size, alignment, 0);
++}
++#endif /* _MSVCR_VER>=80 */
+diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
+index be345fb..5436484 100644
+--- a/dlls/msvcrt/math.c
++++ b/dlls/msvcrt/math.c
+@@ -2971,3 +2971,795 @@ double CDECL MSVCR120_creal(_Dcomplex z)
+ }
+ 
+ #endif /* _MSVCR_VER>=120 */
++
++#if _MSVCR_VER>=120
++/* FD-169 (Wine 10 port): backports from upstream Wine (post-8.0)
++ * plus the hand-written complex set; see the Wine 8.0 FD-169 patch.
++ *
++ * copysign is not linkable into every CRT flavour on this tree
++ * (ucrtbase exports it from the compiler runtime, the msvcr* builds
++ * do not link that archive member), so the complex code uses these
++ * local bit-level forms (the musl copysign semantics). */
++static inline double fd169_copysign(double x, double y)
++{
++    union { double f; unsigned long long i; } ux = { x }, uy = { y };
++    ux.i = (ux.i & 0x7fffffffffffffffULL) | (uy.i & 0x8000000000000000ULL);
++    return ux.f;
++}
++static inline float fd169_copysignf(float x, float y)
++{
++    union { float f; unsigned int i; } ux = { x }, uy = { y };
++    ux.i = (ux.i & 0x7fffffffU) | (uy.i & 0x80000000U);
++    return ux.f;
++}
++
++double CDECL cimag(_Dcomplex z)
++{
++    return z._Val[1];
++}
++float CDECL cimagf(_Fcomplex z)
++{
++    return z._Val[1];
++}
++float CDECL crealf(_Fcomplex z)
++{
++    return z._Val[0];
++}
++_Fcomplex CDECL _FCbuild(float r, float i)
++{
++    _Fcomplex ret;
++    ret._Val[0] = r;
++    ret._Val[1] = i;
++    return ret;
++}
++/*********************************************************************
++ *              imaxdiv (MSVCR100.@)
++ */
++typedef struct { __int64 quot; __int64 rem; } fd169_imaxdiv_t;
++fd169_imaxdiv_t CDECL imaxdiv(__int64 num, __int64 denom)
++{
++  fd169_imaxdiv_t ret;
++
++  ret.quot = num / denom;
++  ret.rem = num % denom;
++  return ret;
++}
++/***********************************************************************
++ * FD-169 hand implementations: the MSVC complex helper functions
++ * (_Cmulcc and family) and the C99 complex arithmetic set that Wine
++ * 8.0 ships as spec stubs in ucrtbase/msvcr120.
++ *
++ * The "l" (long double) variants use the MSVC ABI layout: in MSVC a
++ * long double is the same 64-bit type as double, so an MSVC
++ * _Lcomplex is a pair of doubles. Wine's own long double is the
++ * 80-bit x87 type, so these functions are written against an explicit
++ * double-pair struct to match the guest-visible layout exactly.
++ *
++ * Formulas are the standard principal-value definitions (C99 7.3 /
++ * Annex G), the same semantics MSVC documents for <complex>.
++ */
++typedef struct
++{
++    double _Val[2];
++} _Lcomplex; /* MSVC layout: long double == double */
++
++static _Dcomplex cx_make(double re, double im)
++{
++    _Dcomplex ret;
++    ret._Val[0] = re;
++    ret._Val[1] = im;
++    return ret;
++}
++
++static _Dcomplex cx_mul(_Dcomplex a, _Dcomplex b)
++{
++    return cx_make(a._Val[0] * b._Val[0] - a._Val[1] * b._Val[1],
++                   a._Val[0] * b._Val[1] + a._Val[1] * b._Val[0]);
++}
++
++static _Dcomplex cx_div(_Dcomplex a, _Dcomplex b)
++{
++    double denom = b._Val[0] * b._Val[0] + b._Val[1] * b._Val[1];
++    return cx_make((a._Val[0] * b._Val[0] + a._Val[1] * b._Val[1]) / denom,
++                   (a._Val[1] * b._Val[0] - a._Val[0] * b._Val[1]) / denom);
++}
++
++static _Dcomplex cx_log(_Dcomplex z)
++{
++    return cx_make(log(hypot(z._Val[0], z._Val[1])), atan2(z._Val[1], z._Val[0]));
++}
++
++static _Dcomplex cx_exp(_Dcomplex z)
++{
++    double e = exp(z._Val[0]);
++    return cx_make(e * cos(z._Val[1]), e * sin(z._Val[1]));
++}
++
++static _Dcomplex cx_sqrt(_Dcomplex z)
++{
++    double x = z._Val[0], y = z._Val[1], r = hypot(x, y), t;
++
++    if (r == 0)
++        return cx_make(0, 0);
++    if (x >= 0)
++    {
++        t = sqrt((r + x) / 2);
++        return cx_make(t, y / (2 * t));
++    }
++    t = sqrt((r - x) / 2);
++    return cx_make(fabs(y) / (2 * t), fd169_copysign(t, y));
++}
++
++/*********************************************************************
++ *		_Cmulcc (MSVCRT.@)
++ */
++_Dcomplex CDECL _Cmulcc(_Dcomplex a, _Dcomplex b)
++{
++    return cx_mul(a, b);
++}
++
++/*********************************************************************
++ *		_Cmulcr (MSVCRT.@)
++ */
++_Dcomplex CDECL _Cmulcr(_Dcomplex a, double b)
++{
++    return cx_make(a._Val[0] * b, a._Val[1] * b);
++}
++
++/*********************************************************************
++ *		_FCmulcc (MSVCRT.@)
++ */
++_Fcomplex CDECL _FCmulcc(_Fcomplex a, _Fcomplex b)
++{
++    _Fcomplex ret;
++    ret._Val[0] = a._Val[0] * b._Val[0] - a._Val[1] * b._Val[1];
++    ret._Val[1] = a._Val[0] * b._Val[1] + a._Val[1] * b._Val[0];
++    return ret;
++}
++
++/*********************************************************************
++ *		_FCmulcr (MSVCRT.@)
++ */
++_Fcomplex CDECL _FCmulcr(_Fcomplex a, float b)
++{
++    _Fcomplex ret;
++    ret._Val[0] = a._Val[0] * b;
++    ret._Val[1] = a._Val[1] * b;
++    return ret;
++}
++
++/*********************************************************************
++ *		_LCbuild (MSVCRT.@)
++ */
++_Lcomplex CDECL _LCbuild(double r, double i)
++{
++    _Lcomplex ret;
++    ret._Val[0] = r;
++    ret._Val[1] = i;
++    return ret;
++}
++
++/*********************************************************************
++ *		_LCmulcc (MSVCRT.@)
++ */
++_Lcomplex CDECL _LCmulcc(_Lcomplex a, _Lcomplex b)
++{
++    return (_Lcomplex){ a._Val[0] * b._Val[0] - a._Val[1] * b._Val[1],
++                        a._Val[0] * b._Val[1] + a._Val[1] * b._Val[0] };
++}
++
++/*********************************************************************
++ *		_LCmulcr (MSVCRT.@)
++ */
++_Lcomplex CDECL _LCmulcr(_Lcomplex a, double b)
++{
++    return (_Lcomplex){ a._Val[0] * b, a._Val[1] * b };
++}
++
++/*********************************************************************
++ *		cabs (MSVCRT.@)
++ */
++double CDECL cabs(_Dcomplex z)
++{
++    return hypot(z._Val[0], z._Val[1]);
++}
++
++/*********************************************************************
++ *		carg (MSVCRT.@)
++ */
++double CDECL carg(_Dcomplex z)
++{
++    return atan2(z._Val[1], z._Val[0]);
++}
++
++/*********************************************************************
++ *		cexp (MSVCRT.@)
++ */
++_Dcomplex CDECL cexp(_Dcomplex z)
++{
++    return cx_exp(z);
++}
++
++/*********************************************************************
++ *		clog (MSVCRT.@)
++ */
++_Dcomplex CDECL clog(_Dcomplex z)
++{
++    return cx_log(z);
++}
++
++/*********************************************************************
++ *		clog10 (MSVCRT.@)
++ */
++_Dcomplex CDECL clog10(_Dcomplex z)
++{
++    _Dcomplex ret = cx_log(z);
++    return cx_make(ret._Val[0] / 2.30258509299404568402, ret._Val[1] / 2.30258509299404568402);
++}
++
++/*********************************************************************
++ *		conj (MSVCRT.@)
++ */
++_Dcomplex CDECL conj(_Dcomplex z)
++{
++    return cx_make(z._Val[0], -z._Val[1]);
++}
++
++/*********************************************************************
++ *		cproj (MSVCRT.@)
++ */
++_Dcomplex CDECL cproj(_Dcomplex z)
++{
++    if (isinf(z._Val[0]) || isinf(z._Val[1]))
++        return cx_make(INFINITY, fd169_copysign(0.0, z._Val[1]));
++    return z;
++}
++
++/*********************************************************************
++ *		norm (MSVCRT.@)
++ */
++double CDECL norm(_Dcomplex z)
++{
++    return z._Val[0] * z._Val[0] + z._Val[1] * z._Val[1];
++}
++
++/*********************************************************************
++ *		csqrt (MSVCRT.@)
++ */
++_Dcomplex CDECL csqrt(_Dcomplex z)
++{
++    return cx_sqrt(z);
++}
++
++/*********************************************************************
++ *		cpow (MSVCRT.@)
++ */
++_Dcomplex CDECL cpow(_Dcomplex z, _Dcomplex w)
++{
++    if (z._Val[0] == 0 && z._Val[1] == 0)
++    {
++        if (w._Val[0] == 0 && w._Val[1] == 0)
++            return cx_make(1, 0);
++        if (w._Val[0] > 0)
++            return cx_make(0, 0);
++    }
++    return cx_exp(cx_mul(w, cx_log(z)));
++}
++
++/*********************************************************************
++ *		csin (MSVCRT.@)
++ */
++_Dcomplex CDECL csin(_Dcomplex z)
++{
++    return cx_make(sin(z._Val[0]) * cosh(z._Val[1]), cos(z._Val[0]) * sinh(z._Val[1]));
++}
++
++/*********************************************************************
++ *		ccos (MSVCRT.@)
++ */
++_Dcomplex CDECL ccos(_Dcomplex z)
++{
++    return cx_make(cos(z._Val[0]) * cosh(z._Val[1]), -sin(z._Val[0]) * sinh(z._Val[1]));
++}
++
++/*********************************************************************
++ *		ctan (MSVCRT.@)
++ */
++_Dcomplex CDECL ctan(_Dcomplex z)
++{
++    return cx_div(csin(z), ccos(z));
++}
++
++/*********************************************************************
++ *		csinh (MSVCRT.@)
++ */
++_Dcomplex CDECL csinh(_Dcomplex z)
++{
++    return cx_make(sinh(z._Val[0]) * cos(z._Val[1]), cosh(z._Val[0]) * sin(z._Val[1]));
++}
++
++/*********************************************************************
++ *		ccosh (MSVCRT.@)
++ */
++_Dcomplex CDECL ccosh(_Dcomplex z)
++{
++    return cx_make(cosh(z._Val[0]) * cos(z._Val[1]), sinh(z._Val[0]) * sin(z._Val[1]));
++}
++
++/*********************************************************************
++ *		ctanh (MSVCRT.@)
++ */
++_Dcomplex CDECL ctanh(_Dcomplex z)
++{
++    return cx_div(csinh(z), ccosh(z));
++}
++
++/*********************************************************************
++ *		casinh (MSVCRT.@)
++ */
++_Dcomplex CDECL casinh(_Dcomplex z)
++{
++    _Dcomplex zz = cx_mul(z, z);
++    zz._Val[0] += 1;
++    return cx_log(cx_make(z._Val[0] + cx_sqrt(zz)._Val[0], z._Val[1] + cx_sqrt(zz)._Val[1]));
++}
++
++/*********************************************************************
++ *		casin (MSVCRT.@)
++ */
++_Dcomplex CDECL casin(_Dcomplex z)
++{
++    /* asin(z) = -i * asinh(i*z) */
++    _Dcomplex w = casinh(cx_make(-z._Val[1], z._Val[0]));
++    return cx_make(w._Val[1], -w._Val[0]);
++}
++
++/*********************************************************************
++ *		cacos (MSVCRT.@)
++ */
++_Dcomplex CDECL cacos(_Dcomplex z)
++{
++    _Dcomplex w = casin(z);
++    return cx_make(1.57079632679489661923 - w._Val[0], -w._Val[1]);
++}
++
++/*********************************************************************
++ *		cacosh (MSVCRT.@)
++ */
++_Dcomplex CDECL cacosh(_Dcomplex z)
++{
++    _Dcomplex zp = cx_sqrt(cx_make(z._Val[0] + 1, z._Val[1]));
++    _Dcomplex zm = cx_sqrt(cx_make(z._Val[0] - 1, z._Val[1]));
++    _Dcomplex p = cx_mul(zp, zm);
++    return cx_log(cx_make(z._Val[0] + p._Val[0], z._Val[1] + p._Val[1]));
++}
++
++/*********************************************************************
++ *		catanh (MSVCRT.@)
++ */
++_Dcomplex CDECL catanh(_Dcomplex z)
++{
++    _Dcomplex a = cx_log(cx_make(1 + z._Val[0], z._Val[1]));
++    _Dcomplex b = cx_log(cx_make(1 - z._Val[0], -z._Val[1]));
++    return cx_make((a._Val[0] - b._Val[0]) / 2, (a._Val[1] - b._Val[1]) / 2);
++}
++
++/*********************************************************************
++ *		catan (MSVCRT.@)
++ */
++_Dcomplex CDECL catan(_Dcomplex z)
++{
++    _Dcomplex a = cx_log(cx_make(1 - z._Val[1], z._Val[0]));  /* 1 + i*z */
++    _Dcomplex b = cx_log(cx_make(1 + z._Val[1], -z._Val[0])); /* 1 - i*z */
++    /* atan(z) = (log(1+iz) - log(1-iz)) / (2i) */
++    return cx_make((a._Val[1] - b._Val[1]) / 2, -(a._Val[0] - b._Val[0]) / 2);
++}
++
++/* float variants: computed through the double core and rounded once,
++ * which is at least as accurate as a native float evaluation. */
++static _Fcomplex cxf(_Dcomplex z)
++{
++    _Fcomplex ret;
++    ret._Val[0] = (float)z._Val[0];
++    ret._Val[1] = (float)z._Val[1];
++    return ret;
++}
++static _Dcomplex cxd(_Fcomplex z)
++{
++    return cx_make(z._Val[0], z._Val[1]);
++}
++
++/*********************************************************************
++ *		cabsf (MSVCRT.@)
++ */
++float CDECL cabsf(_Fcomplex z)
++{
++    return hypotf(z._Val[0], z._Val[1]);
++}
++
++/*********************************************************************
++ *		cargf (MSVCRT.@)
++ */
++float CDECL cargf(_Fcomplex z)
++{
++    return atan2f(z._Val[1], z._Val[0]);
++}
++
++/*********************************************************************
++ *		cexpf (MSVCRT.@)
++ */
++_Fcomplex CDECL cexpf(_Fcomplex z)
++{
++    float e = expf(z._Val[0]);
++    _Fcomplex ret;
++    ret._Val[0] = e * cosf(z._Val[1]);
++    ret._Val[1] = e * sinf(z._Val[1]);
++    return ret;
++}
++
++/*********************************************************************
++ *		clogf (MSVCRT.@)
++ */
++_Fcomplex CDECL clogf(_Fcomplex z)
++{
++    return cxf(cx_log(cxd(z)));
++}
++
++/*********************************************************************
++ *		clog10f (MSVCRT.@)
++ */
++_Fcomplex CDECL clog10f(_Fcomplex z)
++{
++    return cxf(clog10(cxd(z)));
++}
++
++/*********************************************************************
++ *		conjf (MSVCRT.@)
++ */
++_Fcomplex CDECL conjf(_Fcomplex z)
++{
++    _Fcomplex ret;
++    ret._Val[0] = z._Val[0];
++    ret._Val[1] = -z._Val[1];
++    return ret;
++}
++
++/*********************************************************************
++ *		cprojf (MSVCRT.@)
++ */
++_Fcomplex CDECL cprojf(_Fcomplex z)
++{
++    if (isinf(z._Val[0]) || isinf(z._Val[1]))
++    {
++        _Fcomplex ret;
++        ret._Val[0] = INFINITY;
++        ret._Val[1] = fd169_copysignf(0.0f, z._Val[1]);
++        return ret;
++    }
++    return z;
++}
++
++/*********************************************************************
++ *		normf (MSVCRT.@)
++ */
++float CDECL normf(_Fcomplex z)
++{
++    return z._Val[0] * z._Val[0] + z._Val[1] * z._Val[1];
++}
++
++/*********************************************************************
++ *		csqrtf (MSVCRT.@)
++ */
++_Fcomplex CDECL csqrtf(_Fcomplex z)
++{
++    return cxf(cx_sqrt(cxd(z)));
++}
++
++/*********************************************************************
++ *		cpowf (MSVCRT.@)
++ */
++_Fcomplex CDECL cpowf(_Fcomplex z, _Fcomplex w)
++{
++    return cxf(cpow(cxd(z), cxd(w)));
++}
++
++/*********************************************************************
++ *		csinf (MSVCRT.@)
++ */
++_Fcomplex CDECL csinf(_Fcomplex z)
++{
++    return cxf(csin(cxd(z)));
++}
++
++/*********************************************************************
++ *		ccosf (MSVCRT.@)
++ */
++_Fcomplex CDECL ccosf(_Fcomplex z)
++{
++    return cxf(ccos(cxd(z)));
++}
++
++/*********************************************************************
++ *		ctanf (MSVCRT.@)
++ */
++_Fcomplex CDECL ctanf(_Fcomplex z)
++{
++    return cxf(ctan(cxd(z)));
++}
++
++/*********************************************************************
++ *		csinhf (MSVCRT.@)
++ */
++_Fcomplex CDECL csinhf(_Fcomplex z)
++{
++    return cxf(csinh(cxd(z)));
++}
++
++/*********************************************************************
++ *		ccoshf (MSVCRT.@)
++ */
++_Fcomplex CDECL ccoshf(_Fcomplex z)
++{
++    return cxf(ccosh(cxd(z)));
++}
++
++/*********************************************************************
++ *		ctanhf (MSVCRT.@)
++ */
++_Fcomplex CDECL ctanhf(_Fcomplex z)
++{
++    return cxf(ctanh(cxd(z)));
++}
++
++/*********************************************************************
++ *		casinf (MSVCRT.@)
++ */
++_Fcomplex CDECL casinf(_Fcomplex z)
++{
++    return cxf(casin(cxd(z)));
++}
++
++/*********************************************************************
++ *		cacosf (MSVCRT.@)
++ */
++_Fcomplex CDECL cacosf(_Fcomplex z)
++{
++    return cxf(cacos(cxd(z)));
++}
++
++/*********************************************************************
++ *		casinhf (MSVCRT.@)
++ */
++_Fcomplex CDECL casinhf(_Fcomplex z)
++{
++    return cxf(casinh(cxd(z)));
++}
++
++/*********************************************************************
++ *		cacoshf (MSVCRT.@)
++ */
++_Fcomplex CDECL cacoshf(_Fcomplex z)
++{
++    return cxf(cacosh(cxd(z)));
++}
++
++/*********************************************************************
++ *		catanf (MSVCRT.@)
++ */
++_Fcomplex CDECL catanf(_Fcomplex z)
++{
++    return cxf(catan(cxd(z)));
++}
++
++/*********************************************************************
++ *		catanhf (MSVCRT.@)
++ */
++_Fcomplex CDECL catanhf(_Fcomplex z)
++{
++    return cxf(catanh(cxd(z)));
++}
++
++/* long double variants: MSVC long double is a 64-bit double, so these
++ * are the double implementations under the MSVC _Lcomplex layout. */
++static _Dcomplex cxdl(_Lcomplex z)
++{
++    return cx_make(z._Val[0], z._Val[1]);
++}
++static _Lcomplex cxl(_Dcomplex z)
++{
++    return (_Lcomplex){ z._Val[0], z._Val[1] };
++}
++
++/*********************************************************************
++ *		cabsl (MSVCRT.@)
++ */
++double CDECL cabsl(_Lcomplex z)
++{
++    return hypot(z._Val[0], z._Val[1]);
++}
++
++/*********************************************************************
++ *		cargl (MSVCRT.@)
++ */
++double CDECL cargl(_Lcomplex z)
++{
++    return atan2(z._Val[1], z._Val[0]);
++}
++
++/*********************************************************************
++ *		creall (MSVCRT.@)
++ */
++double CDECL creall(_Lcomplex z)
++{
++    return z._Val[0];
++}
++
++/*********************************************************************
++ *		cimagl (MSVCRT.@)
++ */
++double CDECL cimagl(_Lcomplex z)
++{
++    return z._Val[1];
++}
++
++/*********************************************************************
++ *		cexpl (MSVCRT.@)
++ */
++_Lcomplex CDECL cexpl(_Lcomplex z)
++{
++    return cxl(cx_exp(cxdl(z)));
++}
++
++/*********************************************************************
++ *		clogl (MSVCRT.@)
++ */
++_Lcomplex CDECL clogl(_Lcomplex z)
++{
++    return cxl(cx_log(cxdl(z)));
++}
++
++/*********************************************************************
++ *		clog10l (MSVCRT.@)
++ */
++_Lcomplex CDECL clog10l(_Lcomplex z)
++{
++    return cxl(clog10(cxdl(z)));
++}
++
++/*********************************************************************
++ *		conjl (MSVCRT.@)
++ */
++_Lcomplex CDECL conjl(_Lcomplex z)
++{
++    return (_Lcomplex){ z._Val[0], -z._Val[1] };
++}
++
++/*********************************************************************
++ *		cprojl (MSVCRT.@)
++ */
++_Lcomplex CDECL cprojl(_Lcomplex z)
++{
++    return cxl(cproj(cxdl(z)));
++}
++
++/*********************************************************************
++ *		norml (MSVCRT.@)
++ */
++double CDECL norml(_Lcomplex z)
++{
++    return z._Val[0] * z._Val[0] + z._Val[1] * z._Val[1];
++}
++
++/*********************************************************************
++ *		csqrtl (MSVCRT.@)
++ */
++_Lcomplex CDECL csqrtl(_Lcomplex z)
++{
++    return cxl(cx_sqrt(cxdl(z)));
++}
++
++/*********************************************************************
++ *		cpowl (MSVCRT.@)
++ */
++_Lcomplex CDECL cpowl(_Lcomplex z, _Lcomplex w)
++{
++    return cxl(cpow(cxdl(z), cxdl(w)));
++}
++
++/*********************************************************************
++ *		csinl (MSVCRT.@)
++ */
++_Lcomplex CDECL csinl(_Lcomplex z)
++{
++    return cxl(csin(cxdl(z)));
++}
++
++/*********************************************************************
++ *		ccosl (MSVCRT.@)
++ */
++_Lcomplex CDECL ccosl(_Lcomplex z)
++{
++    return cxl(ccos(cxdl(z)));
++}
++
++/*********************************************************************
++ *		ctanl (MSVCRT.@)
++ */
++_Lcomplex CDECL ctanl(_Lcomplex z)
++{
++    return cxl(ctan(cxdl(z)));
++}
++
++/*********************************************************************
++ *		csinhl (MSVCRT.@)
++ */
++_Lcomplex CDECL csinhl(_Lcomplex z)
++{
++    return cxl(csinh(cxdl(z)));
++}
++
++/*********************************************************************
++ *		ccoshl (MSVCRT.@)
++ */
++_Lcomplex CDECL ccoshl(_Lcomplex z)
++{
++    return cxl(ccosh(cxdl(z)));
++}
++
++/*********************************************************************
++ *		ctanhl (MSVCRT.@)
++ */
++_Lcomplex CDECL ctanhl(_Lcomplex z)
++{
++    return cxl(ctanh(cxdl(z)));
++}
++
++/*********************************************************************
++ *		casinl (MSVCRT.@)
++ */
++_Lcomplex CDECL casinl(_Lcomplex z)
++{
++    return cxl(casin(cxdl(z)));
++}
++
++/*********************************************************************
++ *		cacosl (MSVCRT.@)
++ */
++_Lcomplex CDECL cacosl(_Lcomplex z)
++{
++    return cxl(cacos(cxdl(z)));
++}
++
++/*********************************************************************
++ *		casinhl (MSVCRT.@)
++ */
++_Lcomplex CDECL casinhl(_Lcomplex z)
++{
++    return cxl(casinh(cxdl(z)));
++}
++
++/*********************************************************************
++ *		cacoshl (MSVCRT.@)
++ */
++_Lcomplex CDECL cacoshl(_Lcomplex z)
++{
++    return cxl(cacosh(cxdl(z)));
++}
++
++/*********************************************************************
++ *		catanl (MSVCRT.@)
++ */
++_Lcomplex CDECL catanl(_Lcomplex z)
++{
++    return cxl(catan(cxdl(z)));
++}
++
++/*********************************************************************
++ *		catanhl (MSVCRT.@)
++ */
++_Lcomplex CDECL catanhl(_Lcomplex z)
++{
++    return cxl(catanh(cxdl(z)));
++}
++
++#endif /* _MSVCR_VER>=120 */
+diff --git a/dlls/msvcrt/mbcs.c b/dlls/msvcrt/mbcs.c
+index bd4245c..9d8280a 100644
+--- a/dlls/msvcrt/mbcs.c
++++ b/dlls/msvcrt/mbcs.c
+@@ -3610,3 +3610,488 @@ int CDECL _ismbcl2(unsigned int c)
+ {
+     return _ismbcl2_l(c, NULL);
+ }
++
++/***********************************************************************
++ * FD-169 hand implementations: _ismbb* byte classification, _ismbcblank,
++ * _mbsncoll/_mbsnicoll, the _s string setters, _mbstrnlen, _mbsstr_l,
++ * _mbsninc_l and __p__mbcasemap.
++ *
++ * The _ismbb* definitions are the ones Microsoft documents for the
++ * family (MS Learn, "Return value" expressions): each is the single-byte
++ * ctype test OR-ed with the corresponding kana test, where the kana
++ * tests are bit tests on the same mbctype table Wine builds for the
++ * locale (the _MS/_MP bits are set for code page 932 only, exactly as
++ * in MSVC: _MP for bytes 0xA1-0xA5, _MS for 0xA6-0xDF).
++ */
++
++/*********************************************************************
++ *		_ismbbkalnum_l (MSVCRT.@)
++ */
++int CDECL _ismbbkalnum_l(unsigned int c, _locale_t locale)
++{
++    pthreadmbcinfo mbcinfo;
++
++    if (c > 0xff)
++        return 0;
++    if (locale)
++        mbcinfo = locale->mbcinfo;
++    else
++        mbcinfo = get_mbcinfo();
++    return (mbcinfo->mbctype[c + 1] & _MS) != 0;
++}
++
++/*********************************************************************
++ *		_ismbbkalnum (MSVCRT.@)
++ */
++int CDECL _ismbbkalnum(unsigned int c)
++{
++    return _ismbbkalnum_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbkprint_l (MSVCRT.@)
++ */
++int CDECL _ismbbkprint_l(unsigned int c, _locale_t locale)
++{
++    pthreadmbcinfo mbcinfo;
++
++    if (c > 0xff)
++        return 0;
++    if (locale)
++        mbcinfo = locale->mbcinfo;
++    else
++        mbcinfo = get_mbcinfo();
++    return (mbcinfo->mbctype[c + 1] & (_MS | _MP)) != 0;
++}
++
++/*********************************************************************
++ *		_ismbbkprint (MSVCRT.@)
++ */
++int CDECL _ismbbkprint(unsigned int c)
++{
++    return _ismbbkprint_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbkpunct_l (MSVCRT.@)
++ */
++int CDECL _ismbbkpunct_l(unsigned int c, _locale_t locale)
++{
++    pthreadmbcinfo mbcinfo;
++
++    if (c > 0xff)
++        return 0;
++    if (locale)
++        mbcinfo = locale->mbcinfo;
++    else
++        mbcinfo = get_mbcinfo();
++    return (mbcinfo->mbctype[c + 1] & _MP) != 0;
++}
++
++/*********************************************************************
++ *		_ismbbkpunct (MSVCRT.@)
++ */
++int CDECL _ismbbkpunct(unsigned int c)
++{
++    return _ismbbkpunct_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbalnum_l (MSVCRT.@)
++ */
++int CDECL _ismbbalnum_l(unsigned int c, _locale_t locale)
++{
++    return (c <= 0xff && _isalnum_l(c, locale)) || _ismbbkalnum_l(c, locale);
++}
++
++/*********************************************************************
++ *		_ismbbalnum (MSVCRT.@)
++ */
++int CDECL _ismbbalnum(unsigned int c)
++{
++    return _ismbbalnum_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbalpha_l (MSVCRT.@)
++ */
++int CDECL _ismbbalpha_l(unsigned int c, _locale_t locale)
++{
++    return (c <= 0xff && _isalpha_l(c, locale)) || _ismbbkalnum_l(c, locale);
++}
++
++/*********************************************************************
++ *		_ismbbalpha (MSVCRT.@)
++ */
++int CDECL _ismbbalpha(unsigned int c)
++{
++    return _ismbbalpha_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbblank_l (MSVCRT.@)
++ */
++int CDECL _ismbbblank_l(unsigned int c, _locale_t locale)
++{
++    return c <= 0xff && _isctype_l(c, _BLANK, locale);
++}
++
++/*********************************************************************
++ *		_ismbbblank (MSVCRT.@)
++ */
++int CDECL _ismbbblank(unsigned int c)
++{
++    return _ismbbblank_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbgraph_l (MSVCRT.@)
++ */
++int CDECL _ismbbgraph_l(unsigned int c, _locale_t locale)
++{
++    return (c <= 0xff && _isctype_l(c, _PUNCT | _UPPER | _LOWER | _DIGIT, locale))
++        || _ismbbkprint_l(c, locale);
++}
++
++/*********************************************************************
++ *		_ismbbgraph (MSVCRT.@)
++ */
++int CDECL _ismbbgraph(unsigned int c)
++{
++    return _ismbbgraph_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbprint_l (MSVCRT.@)
++ */
++int CDECL _ismbbprint_l(unsigned int c, _locale_t locale)
++{
++    return (c <= 0xff && _isprint_l(c, locale)) || _ismbbkprint_l(c, locale);
++}
++
++/*********************************************************************
++ *		_ismbbprint (MSVCRT.@)
++ */
++int CDECL _ismbbprint(unsigned int c)
++{
++    return _ismbbprint_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbbpunct_l (MSVCRT.@)
++ */
++int CDECL _ismbbpunct_l(unsigned int c, _locale_t locale)
++{
++    return (c <= 0xff && _ispunct_l(c, locale)) || _ismbbkpunct_l(c, locale);
++}
++
++/*********************************************************************
++ *		_ismbbpunct (MSVCRT.@)
++ */
++int CDECL _ismbbpunct(unsigned int c)
++{
++    return _ismbbpunct_l(c, NULL);
++}
++
++/*********************************************************************
++ *		_ismbcblank_l (MSVCRT.@)
++ */
++int CDECL _ismbcblank_l(unsigned int ch, _locale_t locale)
++{
++    return _iswblank_l( msvcrt_mbc_to_wc_l(ch, locale), locale );
++}
++
++/*********************************************************************
++ *		_ismbcblank (MSVCRT.@)
++ */
++int CDECL _ismbcblank(unsigned int ch)
++{
++    return _ismbcblank_l( ch, NULL );
++}
++
++/*********************************************************************
++ *		_mbsncoll_l (MSVCRT.@)
++ */
++int CDECL _mbsncoll_l(const unsigned char *str1, const unsigned char *str2,
++        size_t count, _locale_t locale)
++{
++    /* _mbsnbcoll_l counts bytes; convert the character count to the
++     * byte length of the longer of the two prefixes, so the bounded
++     * byte compare sees both strings' first count characters. */
++    const unsigned char *p1 = str1, *p2 = str2;
++    size_t bytes, n = count;
++
++    while (n && *p1)
++    {
++        p1 = _mbsinc_l(p1, locale);
++        n--;
++    }
++    n = count;
++    while (n && *p2)
++    {
++        p2 = _mbsinc_l(p2, locale);
++        n--;
++    }
++    bytes = (p1 - str1) > (p2 - str2) ? (p1 - str1) : (p2 - str2);
++    return _mbsnbcoll_l(str1, str2, bytes, locale);
++}
++
++/*********************************************************************
++ *		_mbsncoll (MSVCRT.@)
++ */
++int CDECL _mbsncoll(const unsigned char *str1, const unsigned char *str2, size_t count)
++{
++    return _mbsncoll_l(str1, str2, count, NULL);
++}
++
++/*********************************************************************
++ *		_mbsnicoll_l (MSVCRT.@)
++ */
++int CDECL _mbsnicoll_l(const unsigned char *str1, const unsigned char *str2,
++        size_t count, _locale_t locale)
++{
++    const unsigned char *p1 = str1, *p2 = str2;
++    size_t bytes, n = count;
++
++    while (n && *p1)
++    {
++        p1 = _mbsinc_l(p1, locale);
++        n--;
++    }
++    n = count;
++    while (n && *p2)
++    {
++        p2 = _mbsinc_l(p2, locale);
++        n--;
++    }
++    bytes = (p1 - str1) > (p2 - str2) ? (p1 - str1) : (p2 - str2);
++    return _mbsnbicoll_l(str1, str2, bytes, locale);
++}
++
++/*********************************************************************
++ *		_mbsnicoll (MSVCRT.@)
++ */
++int CDECL _mbsnicoll(const unsigned char *str1, const unsigned char *str2, size_t count)
++{
++    return _mbsnicoll_l(str1, str2, count, NULL);
++}
++
++/*********************************************************************
++ *		_mbsninc_l (MSVCRT.@)
++ */
++unsigned char* CDECL _mbsninc_l(const unsigned char *str, size_t count, _locale_t locale)
++{
++    while (count && *str)
++    {
++        str = _mbsinc_l(str, locale);
++        count--;
++    }
++    return (unsigned char *)str;
++}
++
++/*********************************************************************
++ *		_mbstrnlen_l (MSVCRT.@)
++ */
++size_t CDECL _mbstrnlen_l(const char *str, size_t maxsize, _locale_t locale)
++{
++    const unsigned char *cur = (const unsigned char *)str;
++    const unsigned char *end = cur + maxsize;
++    size_t len = 0;
++
++    while (cur < end && *cur)
++    {
++        const unsigned char *next = _mbsinc_l(cur, locale);
++        if (next > end)
++            break;
++        cur = next;
++        len++;
++    }
++    return len;
++}
++
++/*********************************************************************
++ *		_mbstrnlen (MSVCRT.@)
++ */
++size_t CDECL _mbstrnlen(const char *str, size_t maxsize)
++{
++    return _mbstrnlen_l(str, maxsize, NULL);
++}
++
++/*********************************************************************
++ *		_mbsstr_l (MSVCRT.@)
++ */
++unsigned char* CDECL _mbsstr_l(const unsigned char *str, const unsigned char *substr,
++        _locale_t locale)
++{
++    pthreadmbcinfo mbcinfo;
++    size_t len;
++
++    if (locale)
++        mbcinfo = locale->mbcinfo;
++    else
++        mbcinfo = get_mbcinfo();
++
++    if (!mbcinfo->ismbcodepage)
++        return (unsigned char *)strstr((const char *)str, (const char *)substr);
++
++    len = strlen((const char *)substr);
++    while (*str)
++    {
++        if (!strncmp((const char *)str, (const char *)substr, len))
++            return (unsigned char *)str;
++        str = _mbsinc_l(str, locale);
++    }
++    return NULL;
++}
++
++/*********************************************************************
++ *		_mbsnbset_s_l (MSVCRT.@)
++ */
++errno_t CDECL _mbsnbset_s_l(unsigned char *str, size_t maxsize, unsigned int c,
++        size_t count, _locale_t locale)
++{
++    if (!MSVCRT_CHECK_PMT(str != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(maxsize != 0)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(strnlen((const char *)str, maxsize) < maxsize)) return EINVAL;
++
++    _mbsnbset_l(str, c, count, locale);
++    return 0;
++}
++
++/*********************************************************************
++ *		_mbsnbset_s (MSVCRT.@)
++ */
++errno_t CDECL _mbsnbset_s(unsigned char *str, size_t maxsize, unsigned int c, size_t count)
++{
++    return _mbsnbset_s_l(str, maxsize, c, count, NULL);
++}
++
++/*********************************************************************
++ *		_mbsnset_s_l (MSVCRT.@)
++ */
++errno_t CDECL _mbsnset_s_l(unsigned char *str, size_t maxsize, unsigned int c,
++        size_t count, _locale_t locale)
++{
++    if (!MSVCRT_CHECK_PMT(str != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(maxsize != 0)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(strnlen((const char *)str, maxsize) < maxsize)) return EINVAL;
++
++    _mbsnset_l(str, c, count, locale);
++    return 0;
++}
++
++/*********************************************************************
++ *		_mbsnset_s (MSVCRT.@)
++ */
++errno_t CDECL _mbsnset_s(unsigned char *str, size_t maxsize, unsigned int c, size_t count)
++{
++    return _mbsnset_s_l(str, maxsize, c, count, NULL);
++}
++
++/*********************************************************************
++ *		_mbsset_s_l (MSVCRT.@)
++ */
++errno_t CDECL _mbsset_s_l(unsigned char *str, size_t maxsize, unsigned int c, _locale_t locale)
++{
++    if (!MSVCRT_CHECK_PMT(str != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(maxsize != 0)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(strnlen((const char *)str, maxsize) < maxsize)) return EINVAL;
++
++    _mbsset_l(str, c, locale);
++    return 0;
++}
++
++/*********************************************************************
++ *		_mbsset_s (MSVCRT.@)
++ */
++errno_t CDECL _mbsset_s(unsigned char *str, size_t maxsize, unsigned int c)
++{
++    return _mbsset_s_l(str, maxsize, c, NULL);
++}
++
++/*********************************************************************
++ *		_mbsncat_s_l (MSVCRT.@)
++ */
++errno_t CDECL _mbsncat_s_l(unsigned char *dst, size_t maxsize, const unsigned char *src,
++        size_t count, _locale_t locale)
++{
++    BOOL truncate = (count == _TRUNCATE);
++    unsigned char *start = dst;
++    const unsigned char *p;
++    size_t dstlen, srclen = 0, copied = 0, n = count;
++    pthreadmbcinfo mbcinfo;
++
++    if (!MSVCRT_CHECK_PMT(dst != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(maxsize != 0)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(src != NULL))
++    {
++        *start = 0;
++        return EINVAL;
++    }
++
++    dstlen = strnlen((const char *)dst, maxsize);
++    if (!MSVCRT_CHECK_PMT(dstlen < maxsize))
++        return EINVAL;
++
++    if (locale)
++        mbcinfo = locale->mbcinfo;
++    else
++        mbcinfo = get_mbcinfo();
++
++    /* byte length of the first count characters of src */
++    p = src;
++    while (n && *p)
++    {
++        p = _mbsinc_l(p, locale);
++        n--;
++    }
++    srclen = p - src;
++
++    if (dstlen + srclen >= maxsize && !truncate)
++    {
++        *start = 0;
++        if (!MSVCRT_CHECK_PMT_ERR(FALSE, ERANGE)) return ERANGE;
++    }
++
++    dst += dstlen;
++    maxsize -= dstlen;
++    while (copied < srclen && maxsize > 1)
++    {
++        unsigned int curlen;
++        if (mbcinfo->ismbcodepage && _ismbblead_l(src[copied], locale))
++        {
++            if (copied + 1 >= srclen)
++                break; /* never split a character at the boundary */
++            curlen = 2;
++        }
++        else
++            curlen = 1;
++        if (curlen > maxsize - 1)
++            break;
++        *dst++ = src[copied++];
++        if (curlen == 2)
++            *dst++ = src[copied++];
++        maxsize -= curlen;
++    }
++    *dst = 0;
++
++    if (copied < srclen)
++        return truncate ? STRUNCATE : ERANGE;
++    return 0;
++}
++
++/*********************************************************************
++ *		_mbsncat_s (MSVCRT.@)
++ */
++errno_t CDECL _mbsncat_s(unsigned char *dst, size_t maxsize, const unsigned char *src, size_t count)
++{
++    return _mbsncat_s_l(dst, maxsize, src, count, NULL);
++}
++
++/*********************************************************************
++ *		__p__mbcasemap (MSVCRT.@)
++ */
++unsigned char* CDECL __p__mbcasemap(void)
++{
++    return get_mbcinfo()->mbcasemap;
++}
+diff --git a/dlls/msvcrt/misc.c b/dlls/msvcrt/misc.c
+index 559bb72..52d7ed3 100644
+--- a/dlls/msvcrt/misc.c
++++ b/dlls/msvcrt/misc.c
+@@ -582,3 +582,39 @@ void CDECL _SetWinRTOutOfMemoryExceptionCallback(void *callback)
+     FIXME("(%p): stub\n", callback);
+ }
+ #endif
++
++/***********************************************************************
++ * FD-169 hand implementation: _lsearch_s, the context-passing form of
++ * _lsearch (same insertion semantics: a missing key is appended and
++ * the element count incremented).
++ */
++
++/*********************************************************************
++ *		_lsearch_s (MSVCRT.@)
++ */
++void* CDECL _lsearch_s(const void* match, void* start,
++                     unsigned int* array_size, unsigned int elem_size,
++                     int (CDECL *cf)(void*, const void*, const void*),
++                     void* context)
++{
++  unsigned int size;
++
++  if (!MSVCRT_CHECK_PMT(match != NULL)) return NULL;
++  if (!MSVCRT_CHECK_PMT(start != NULL)) return NULL;
++  if (!MSVCRT_CHECK_PMT(array_size != NULL)) return NULL;
++  if (!MSVCRT_CHECK_PMT(cf != NULL)) return NULL;
++  size = *array_size;
++
++  if (size)
++    do
++    {
++      if (cf(context, match, start) == 0)
++        return start; /* found */
++      start = (char*)start + elem_size;
++    } while (--size);
++
++  /* not found: insert at the end */
++  memcpy(start, match, elem_size);
++  *array_size += 1;
++  return start;
++}
+diff --git a/dlls/msvcrt/msvcrt.spec b/dlls/msvcrt/msvcrt.spec
+index 27cd613..9b9dd58 100644
+--- a/dlls/msvcrt/msvcrt.spec
++++ b/dlls/msvcrt/msvcrt.spec
+@@ -263,7 +263,7 @@
+ @ stub -arch=i386 __p__fileinfo()
+ @ cdecl -arch=i386 __p__fmode()
+ @ cdecl -arch=i386 __p__iob() __iob_func
+-@ stub -arch=i386 __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl -arch=i386 __p__mbctype()
+ @ cdecl -arch=i386 __p__osver()
+ @ cdecl -arch=i386 __p__pctype()
+@@ -575,25 +575,25 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
++@ cdecl _ismbbalnum(long)
+ # stub _ismbbalnum_l(long ptr)
+-@ stub _ismbbalpha(long)
++@ cdecl _ismbbalpha(long)
+ # stub _ismbbalpha_l(long ptr)
+-@ stub _ismbbgraph(long)
++@ cdecl _ismbbgraph(long)
+ # stub _ismbbgraph_l(long ptr)
+-@ stub _ismbbkalnum(long)
++@ cdecl _ismbbkalnum(long)
+ # stub _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
++@ cdecl _ismbbkprint(long)
+ # stub _ismbbkprint_l(long ptr)
+-@ stub _ismbbkpunct(long)
++@ cdecl _ismbbkpunct(long)
+ # stub _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
++@ cdecl _ismbbprint(long)
+ # stub _ismbbprint_l(long ptr)
+-@ stub _ismbbpunct(long)
++@ cdecl _ismbbpunct(long)
+ # stub _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+@@ -776,7 +776,7 @@
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
++@ cdecl _mbsncoll(ptr ptr long)
+ # stub _mbsncoll_l(str str long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+@@ -786,7 +786,7 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
++@ cdecl _mbsnicoll(ptr ptr long)
+ # stub _mbsnicoll_l(str str long ptr)
+ @ cdecl _mbsninc(str long)
+ # stub _mbsninc_l(str long ptr)
+diff --git a/dlls/msvcrt/scanf.c b/dlls/msvcrt/scanf.c
+index c776497..5f89e92 100644
+--- a/dlls/msvcrt/scanf.c
++++ b/dlls/msvcrt/scanf.c
+@@ -818,3 +818,113 @@ int CDECL vswscanf(const wchar_t *buffer, const wchar_t *format, va_list valist)
+ }
+ 
+ #endif /* _MSVCR_VER>=120 */
++
++/***********************************************************************
++ * FD-169 hand implementations: the public va_list scanf forms and the
++ * __conio_common console scanf entry points, all over the scanf cores
++ * generated by scanf.h in this file.
++ */
++
++/*********************************************************************
++ *		vfscanf (MSVCRT.@)
++ */
++int CDECL vfscanf(FILE *file, const char *format, va_list valist)
++{
++    return vfscanf_l(file, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vfscanf_s (MSVCRT.@)
++ */
++int CDECL vfscanf_s(FILE *file, const char *format, va_list valist)
++{
++    return vfscanf_s_l(file, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vscanf (MSVCRT.@)
++ */
++int CDECL vscanf(const char *format, va_list valist)
++{
++    return vfscanf_l(stdin, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vscanf_s (MSVCRT.@)
++ */
++int CDECL vscanf_s(const char *format, va_list valist)
++{
++    return vfscanf_s_l(stdin, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vfwscanf (MSVCRT.@)
++ */
++int CDECL vfwscanf(FILE *file, const wchar_t *format, va_list valist)
++{
++    return vfwscanf_l(file, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vfwscanf_s (MSVCRT.@)
++ */
++int CDECL vfwscanf_s(FILE *file, const wchar_t *format, va_list valist)
++{
++    return vfwscanf_s_l(file, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vwscanf (MSVCRT.@)
++ */
++int CDECL vwscanf(const wchar_t *format, va_list valist)
++{
++    return vfwscanf_l(stdin, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vwscanf_s (MSVCRT.@)
++ */
++int CDECL vwscanf_s(const wchar_t *format, va_list valist)
++{
++    return vfwscanf_s_l(stdin, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vsscanf_s (MSVCRT.@)
++ */
++int CDECL vsscanf_s(const char *buffer, const char *format, va_list valist)
++{
++    return vsscanf_s_l(buffer, format, NULL, valist);
++}
++
++/*********************************************************************
++ *		vswscanf_s (MSVCRT.@)
++ */
++int CDECL vswscanf_s(const wchar_t *buffer, const wchar_t *format, va_list valist)
++{
++    return vswscanf_s_l(buffer, format, NULL, valist);
++}
++
++#if _MSVCR_VER>=140
++/*********************************************************************
++ *		__conio_common_vcscanf (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcscanf(unsigned __int64 options, const char *format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options)
++        FIXME("options %#I64x not handled\n", options);
++    return vcscanf_l(format, locale, valist);
++}
++
++/*********************************************************************
++ *		__conio_common_vcwscanf (UCRTBASE.@)
++ */
++int CDECL __conio_common_vcwscanf(unsigned __int64 options, const wchar_t *format,
++                                        _locale_t locale, va_list valist)
++{
++    if (options)
++        FIXME("options %#I64x not handled\n", options);
++    return vcwscanf_l(format, locale, valist);
++}
++#endif /* _MSVCR_VER>=140 */
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+index 9053853..7af3d64 100644
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -3554,3 +3554,22 @@ char * CDECL _strspnp( const char *str1, const char *str2)
+     return *str1 ? (char*)str1 : NULL;
+ }
+ #endif
++
++/***********************************************************************
++ * FD-169 hand implementation: _strset_s, the secure form of _strset
++ * with the usual validation (destination present, size nonzero, and
++ * the string terminated within the declared size).
++ */
++
++/*********************************************************************
++ *		_strset_s (MSVCRT.@)
++ */
++errno_t CDECL _strset_s(char *str, size_t size, int c)
++{
++    if (!MSVCRT_CHECK_PMT(str != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(size != 0)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(strnlen(str, size) < size)) return EINVAL;
++
++    _strset(str, c);
++    return 0;
++}
+diff --git a/dlls/msvcrt/wcs.c b/dlls/msvcrt/wcs.c
+index 1b7bc3e..9b6f640 100644
+--- a/dlls/msvcrt/wcs.c
++++ b/dlls/msvcrt/wcs.c
+@@ -3085,3 +3085,271 @@ size_t CDECL wcsxfrm(wchar_t *dest, const wchar_t *src, size_t len)
+ {
+     return _wcsxfrm_l(dest, src, len, NULL);
+ }
++
++/***********************************************************************
++ * FD-169 hand implementations: the C11 char16/char32 conversion
++ * functions and __wcsncnt.
++ *
++ * Wine wide characters are UTF-16 code units, so mbrtoc16 is the
++ * locale decode itself (with surrogate splitting for characters the
++ * locale's code page cannot represent, which in practice means
++ * UTF-8 locales), and mbrtoc32 additionally combines a surrogate
++ * pair into a code point. The mbstate_t carries a pending low
++ * surrogate between mbrtoc16/c16rtomb calls; pending values are
++ * stored as the surrogate value itself, which cannot collide with
++ * the byte-sized states Wine's other conversions use.
++ */
++
++static int fd169_pending_surrogate(mbstate_t *state)
++{
++    if (state && *state >= 0xdc00 && *state <= 0xdfff)
++        return *state;
++    return 0;
++}
++
++/* decode one character from str (at most len bytes) in the current
++ * locale; returns the number of bytes consumed, 0 for the null
++ * character, -1 on an invalid sequence (errno set to EILSEQ) and -2
++ * for an incomplete sequence. Wide output goes to out (up to two
++ * UTF-16 units, *outlen receives their number). */
++static int fd169_decode_wide(WCHAR *out, int *outlen, const char *str, size_t len)
++{
++    pthreadlocinfo locinfo = get_locinfo();
++    size_t n;
++    int ret;
++
++    *outlen = 0;
++    if (!len)
++        return -2;
++    if (!*str)
++    {
++        out[0] = 0;
++        *outlen = 1;
++        return 0;
++    }
++    if (!locinfo->lc_codepage)
++    {
++        out[0] = (unsigned char)*str;
++        *outlen = 1;
++        return 1;
++    }
++    for (n = 1; n <= len; n++)
++    {
++        ret = MultiByteToWideChar(locinfo->lc_codepage, MB_ERR_INVALID_CHARS,
++                str, n, out, 2);
++        if (ret > 0)
++        {
++            *outlen = ret;
++            return n;
++        }
++        if (n == len)
++            break;
++        /* a longer prefix may still decode (multibyte sequence) */
++        if (!isleadbyte((unsigned char)*str) && locinfo->lc_codepage != CP_UTF8)
++            break;
++    }
++    /* distinguish an incomplete sequence (valid so far, needs more
++     * bytes) from an invalid one */
++    if (locinfo->lc_codepage == CP_UTF8)
++    {
++        unsigned char c = (unsigned char)*str;
++        size_t need = (c >= 0xf0) ? 4 : (c >= 0xe0) ? 3 : (c >= 0xc0) ? 2 : 1;
++        size_t i;
++        BOOL prefix_ok = len < need;
++        for (i = 1; prefix_ok && i < len && i < need; i++)
++            if (((unsigned char)str[i] & 0xc0) != 0x80)
++                prefix_ok = FALSE;
++        if (prefix_ok && len < need)
++            return -2;
++    }
++    else if (isleadbyte((unsigned char)*str) && len == 1)
++        return -2;
++    *_errno() = EILSEQ;
++    return -1;
++}
++
++/*********************************************************************
++ *		mbrtoc16 (MSVCRT.@)
++ */
++size_t CDECL mbrtoc16(WCHAR *c16, const char *str, size_t len, mbstate_t *state)
++{
++    WCHAR out[2];
++    int outlen, pending, ret;
++
++    if (!str)
++    {
++        if (state) *state = 0;
++        return 0;
++    }
++    pending = fd169_pending_surrogate(state);
++    if (pending)
++    {
++        if (state) *state = 0;
++        if (c16) *c16 = pending;
++        return (size_t)-3;
++    }
++    ret = fd169_decode_wide(out, &outlen, str, len);
++    if (ret > 0)
++    {
++        if (c16) *c16 = out[0];
++        if (outlen == 2 && state)
++            *state = out[1];
++    }
++    else if (ret == 0 && c16)
++        *c16 = 0;
++    return ret;
++}
++
++/*********************************************************************
++ *		mbrtoc32 (MSVCRT.@)
++ */
++size_t CDECL mbrtoc32(unsigned int *c32, const char *str, size_t len, mbstate_t *state)
++{
++    WCHAR out[2];
++    int outlen, ret;
++
++    if (!str)
++    {
++        if (state) *state = 0;
++        return 0;
++    }
++    ret = fd169_decode_wide(out, &outlen, str, len);
++    if (ret >= 0 && c32)
++    {
++        if (outlen == 2)
++            *c32 = 0x10000 + ((out[0] - 0xd800) << 10) + (out[1] - 0xdc00);
++        else if (outlen == 1)
++            *c32 = out[0];
++        else
++            *c32 = 0;
++    }
++    return ret;
++}
++
++/*********************************************************************
++ *		c16rtomb (MSVCRT.@)
++ */
++size_t CDECL c16rtomb(char *str, WCHAR c16, mbstate_t *state)
++{
++    pthreadlocinfo locinfo = get_locinfo();
++    WCHAR pair[2];
++    int pending, len;
++
++    if (!str)
++    {
++        /* equivalent to a call with a null character and a scratch
++         * buffer: resets the state, and fails if a high surrogate
++         * is still pending */
++        char buf[8];
++        return c16rtomb(buf, 0, state);
++    }
++
++    pending = state ? *state : 0;
++    if (pending >= 0xd800 && pending <= 0xdbff)
++    {
++        if (state) *state = 0;
++        if (c16 < 0xdc00 || c16 > 0xdfff)
++        {
++            *_errno() = EILSEQ;
++            return (size_t)-1;
++        }
++        pair[0] = pending;
++        pair[1] = c16;
++        len = WideCharToMultiByte(locinfo->lc_codepage, 0, pair, 2,
++                str, locinfo->mb_cur_max * 2, NULL, NULL);
++        if (!len)
++        {
++            *_errno() = EILSEQ;
++            return (size_t)-1;
++        }
++        return len;
++    }
++
++    if (c16 >= 0xd800 && c16 <= 0xdbff)
++    {
++        if (state) *state = c16;
++        return 0;
++    }
++    if (c16 >= 0xdc00 && c16 <= 0xdfff)
++    {
++        *_errno() = EILSEQ;
++        return (size_t)-1;
++    }
++    if (!locinfo->lc_codepage)
++    {
++        if (c16 > 0xff)
++        {
++            *_errno() = EILSEQ;
++            return (size_t)-1;
++        }
++        *str = (char)c16;
++        return c16 != 0;
++    }
++    len = WideCharToMultiByte(locinfo->lc_codepage, 0, &c16, 1,
++            str, locinfo->mb_cur_max, NULL, NULL);
++    if (!len)
++    {
++        *_errno() = EILSEQ;
++        return (size_t)-1;
++    }
++    if (c16 == 0)
++        return 0;
++    return len;
++}
++
++/*********************************************************************
++ *		c32rtomb (MSVCRT.@)
++ */
++size_t CDECL c32rtomb(char *str, unsigned int c32, mbstate_t *state)
++{
++    WCHAR pair[2];
++    int count;
++
++    if (!str)
++    {
++        if (state) *state = 0;
++        return 0;
++    }
++    if (state) *state = 0;
++    if (c32 > 0x10ffff || (c32 >= 0xd800 && c32 <= 0xdfff))
++    {
++        *_errno() = EILSEQ;
++        return (size_t)-1;
++    }
++    if (c32 < 0x10000)
++    {
++        pair[0] = (WCHAR)c32;
++        count = 1;
++    }
++    else
++    {
++        c32 -= 0x10000;
++        pair[0] = 0xd800 + (c32 >> 10);
++        pair[1] = 0xdc00 + (c32 & 0x3ff);
++        count = 2;
++    }
++    if (count == 1)
++        return c16rtomb(str, pair[0], &(mbstate_t){0});
++    {
++        pthreadlocinfo locinfo = get_locinfo();
++        int len = WideCharToMultiByte(locinfo->lc_codepage, 0, pair, 2,
++                str, locinfo->mb_cur_max * 2, NULL, NULL);
++        if (!len)
++        {
++            *_errno() = EILSEQ;
++            return (size_t)-1;
++        }
++        return len;
++    }
++}
++
++/*********************************************************************
++ *		__wcsncnt (MSVCRT.@)
++ */
++size_t CDECL __wcsncnt(const wchar_t *str, size_t count)
++{
++    size_t n = 0;
++    while (n < count && str[n])
++        n++;
++    return n;
++}
+diff --git a/dlls/ucrtbase/ucrtbase.spec b/dlls/ucrtbase/ucrtbase.spec
+index cd8f9f2..27e3a6a 100644
+--- a/dlls/ucrtbase/ucrtbase.spec
++++ b/dlls/ucrtbase/ucrtbase.spec
+@@ -15,15 +15,15 @@
+ @ cdecl -arch=i386 _CItan()
+ @ cdecl -arch=i386 _CItanh()
+ @ cdecl _Cbuild(ptr double double)
+-@ stub _Cmulcc
+-@ stub _Cmulcr
++@ cdecl -norelay _Cmulcc(int128 int128)
++@ cdecl -norelay _Cmulcr(int128 double)
+ @ cdecl _CreateFrameInfo(ptr ptr)
+ @ stdcall _CxxThrowException(ptr ptr)
+ @ cdecl -arch=i386 -norelay _EH_prolog()
+ @ cdecl _Exit(long) _exit
+-@ stub _FCbuild
+-@ stub _FCmulcc
+-@ stub _FCmulcr
++@ cdecl -norelay _FCbuild(float float)
++@ cdecl -norelay _FCmulcc(int64 int64)
++@ cdecl -norelay _FCmulcr(int64 float)
+ @ cdecl _FindAndUnlinkFrame(ptr)
+ @ stub _GetImageBase
+ @ stub _GetThrowImageBase
+@@ -31,9 +31,9 @@
+ @ cdecl _Getmonths()
+ @ cdecl _Gettnames()
+ @ cdecl _IsExceptionObjectToBeDestroyed(ptr)
+-@ stub _LCbuild
+-@ stub _LCmulcc
+-@ stub _LCmulcr
++@ cdecl -norelay _LCbuild(double double)
++@ cdecl -norelay _LCmulcc(int128 int128)
++@ cdecl -norelay _LCmulcr(int128 double)
+ @ stub _SetImageBase
+ @ stub _SetThrowImageBase
+ @ stub _NLG_Dispatch2
+@@ -75,13 +75,13 @@
+ @ cdecl ___mb_cur_max_l_func(ptr)
+ @ cdecl __acrt_iob_func(long)
+ @ cdecl __conio_common_vcprintf(int64 str ptr ptr)
+-@ stub __conio_common_vcprintf_p
+-@ stub __conio_common_vcprintf_s
+-@ stub __conio_common_vcscanf
++@ cdecl __conio_common_vcprintf_p(int64 str ptr ptr)
++@ cdecl __conio_common_vcprintf_s(int64 str ptr ptr)
++@ cdecl __conio_common_vcscanf(int64 str ptr ptr)
+ @ cdecl __conio_common_vcwprintf(int64 wstr ptr ptr) __conio_common_vcwprintf
+-@ stub __conio_common_vcwprintf_p
+-@ stub __conio_common_vcwprintf_s
+-@ stub __conio_common_vcwscanf
++@ cdecl __conio_common_vcwprintf_p(int64 wstr ptr ptr)
++@ cdecl __conio_common_vcwprintf_s(int64 wstr ptr ptr)
++@ cdecl __conio_common_vcwscanf(int64 wstr ptr ptr)
+ @ cdecl -arch=i386 __control87_2(long long ptr ptr)
+ @ cdecl __current_exception()
+ @ cdecl __current_exception_context()
+@@ -130,7 +130,7 @@
+ @ cdecl __p__commode()
+ @ cdecl __p__environ()
+ @ cdecl __p__fmode()
+-@ stub __p__mbcasemap()
++@ cdecl __p__mbcasemap()
+ @ cdecl __p__mbctype()
+ @ cdecl __p__pgmptr()
+ @ cdecl __p__wcmdln()
+@@ -180,7 +180,7 @@
+ @ cdecl __uncaught_exception()
+ @ cdecl __wcserror(wstr)
+ @ cdecl __wcserror_s(ptr long wstr)
+-@ stub __wcsncnt
++@ cdecl __wcsncnt(wstr long)
+ @ cdecl -ret64 _abs64(int64)
+ @ cdecl _access(str long)
+ @ cdecl _access_s(str long)
+@@ -189,9 +189,9 @@
+ @ cdecl _aligned_msize(ptr long long)
+ @ cdecl _aligned_offset_malloc(long long long)
+ @ cdecl _aligned_offset_realloc(ptr long long long)
+-@ stub _aligned_offset_recalloc
++@ cdecl _aligned_offset_recalloc(ptr long long long long)
+ @ cdecl _aligned_realloc(ptr long long)
+-@ stub _aligned_recalloc
++@ cdecl _aligned_recalloc(ptr long long long)
+ @ cdecl _assert(str str long)
+ @ cdecl _atodbl(ptr str)
+ @ cdecl _atodbl_l(ptr str ptr)
+@@ -217,9 +217,9 @@
+ @ cdecl _calloc_base(long long)
+ @ cdecl _cexit()
+ @ cdecl _cgets(ptr)
+-@ stub _cgets_s
+-@ stub _cgetws
+-@ stub _cgetws_s
++@ cdecl _cgets_s(ptr long ptr)
++@ cdecl _cgetws(ptr)
++@ cdecl _cgetws_s(ptr long ptr)
+ @ cdecl _chdir(str)
+ @ cdecl _chdrive(long)
+ @ cdecl _chgsign(double)
+@@ -316,11 +316,11 @@
+ @ cdecl _fileno(ptr)
+ @ cdecl _findclose(long)
+ @ cdecl _findfirst32(str ptr)
+-@ stub _findfirst32i64
++@ cdecl _findfirst32i64(str ptr)
+ @ cdecl _findfirst64(str ptr)
+ @ cdecl _findfirst64i32(str ptr)
+ @ cdecl _findnext32(long ptr)
+-@ stub _findnext32i64
++@ cdecl _findnext32i64(ptr ptr)
+ @ cdecl _findnext64(long ptr)
+ @ cdecl _findnext64i32(long ptr)
+ @ cdecl _finite(double)
+@@ -406,7 +406,7 @@
+ @ cdecl _getwche()
+ @ cdecl _getwche_nolock()
+ @ cdecl _getws(ptr)
+-@ stub _getws_s
++@ cdecl _getws_s(ptr long)
+ @ cdecl -arch=i386 _global_unwind2(ptr)
+ @ cdecl _gmtime32(ptr)
+ @ cdecl _gmtime32_s(ptr ptr)
+@@ -441,36 +441,36 @@
+ @ cdecl _isgraph_l(long ptr)
+ @ cdecl _isleadbyte_l(long ptr)
+ @ cdecl _islower_l(long ptr)
+-@ stub _ismbbalnum(long)
+-@ stub _ismbbalnum_l
+-@ stub _ismbbalpha(long)
+-@ stub _ismbbalpha_l
+-@ stub _ismbbblank
+-@ stub _ismbbblank_l
+-@ stub _ismbbgraph(long)
+-@ stub _ismbbgraph_l
+-@ stub _ismbbkalnum(long)
+-@ stub _ismbbkalnum_l
++@ cdecl _ismbbalnum(long)
++@ cdecl _ismbbalnum_l(long ptr)
++@ cdecl _ismbbalpha(long)
++@ cdecl _ismbbalpha_l(long ptr)
++@ cdecl _ismbbblank(long)
++@ cdecl _ismbbblank_l(long ptr)
++@ cdecl _ismbbgraph(long)
++@ cdecl _ismbbgraph_l(long ptr)
++@ cdecl _ismbbkalnum(long)
++@ cdecl _ismbbkalnum_l(long ptr)
+ @ cdecl _ismbbkana(long)
+ @ cdecl _ismbbkana_l(long ptr)
+-@ stub _ismbbkprint(long)
+-@ stub _ismbbkprint_l
+-@ stub _ismbbkpunct(long)
+-@ stub _ismbbkpunct_l
++@ cdecl _ismbbkprint(long)
++@ cdecl _ismbbkprint_l(long ptr)
++@ cdecl _ismbbkpunct(long)
++@ cdecl _ismbbkpunct_l(long ptr)
+ @ cdecl _ismbblead(long)
+ @ cdecl _ismbblead_l(long ptr)
+-@ stub _ismbbprint(long)
+-@ stub _ismbbprint_l
+-@ stub _ismbbpunct(long)
+-@ stub _ismbbpunct_l
++@ cdecl _ismbbprint(long)
++@ cdecl _ismbbprint_l(long ptr)
++@ cdecl _ismbbpunct(long)
++@ cdecl _ismbbpunct_l(long ptr)
+ @ cdecl _ismbbtrail(long)
+ @ cdecl _ismbbtrail_l(long ptr)
+ @ cdecl _ismbcalnum(long)
+ @ cdecl _ismbcalnum_l(long ptr)
+ @ cdecl _ismbcalpha(long)
+ @ cdecl _ismbcalpha_l(long ptr)
+-@ stub _ismbcblank
+-@ stub _ismbcblank_l
++@ cdecl _ismbcblank(long)
++@ cdecl _ismbcblank_l(long ptr)
+ @ cdecl _ismbcdigit(long)
+ @ cdecl _ismbcdigit_l(long ptr)
+ @ cdecl _ismbcgraph(long)
+@@ -574,7 +574,7 @@
+ @ cdecl _lrotl(long long) MSVCRT__lrotl
+ @ cdecl _lrotr(long long) MSVCRT__lrotr
+ @ cdecl _lsearch(ptr ptr ptr long ptr)
+-@ stub _lsearch_s
++@ cdecl _lsearch_s(ptr ptr ptr long ptr ptr)
+ @ cdecl _lseek(long long long)
+ @ cdecl -ret64 _lseeki64(long int64 long)
+ @ cdecl _ltoa(long ptr long)
+@@ -659,18 +659,18 @@
+ @ cdecl _mbsnbicoll_l(str str long ptr)
+ @ cdecl _mbsnbset(ptr long long)
+ @ cdecl _mbsnbset_l(str long long ptr)
+-@ stub _mbsnbset_s
+-@ stub _mbsnbset_s_l
++@ cdecl _mbsnbset_s(ptr long long long)
++@ cdecl _mbsnbset_s_l(ptr long long long ptr)
+ @ cdecl _mbsncat(str str long)
+ @ cdecl _mbsncat_l(str str long ptr)
+-@ stub _mbsncat_s
+-@ stub _mbsncat_s_l
++@ cdecl _mbsncat_s(ptr long ptr long)
++@ cdecl _mbsncat_s_l(ptr long ptr long ptr)
+ @ cdecl _mbsnccnt(str long)
+ @ cdecl _mbsnccnt_l(str long ptr)
+ @ cdecl _mbsncmp(str str long)
+ @ cdecl _mbsncmp_l(str str long ptr)
+-@ stub _mbsncoll(str str long)
+-@ stub _mbsncoll_l
++@ cdecl _mbsncoll(ptr ptr long)
++@ cdecl _mbsncoll_l(ptr ptr long ptr)
+ @ cdecl _mbsncpy(ptr str long)
+ @ cdecl _mbsncpy_l(ptr str long ptr)
+ @ cdecl _mbsncpy_s(ptr long str long)
+@@ -679,16 +679,16 @@
+ @ cdecl _mbsnextc_l(str ptr)
+ @ cdecl _mbsnicmp(str str long)
+ @ cdecl _mbsnicmp_l(str str long ptr)
+-@ stub _mbsnicoll(str str long)
+-@ stub _mbsnicoll_l
++@ cdecl _mbsnicoll(ptr ptr long)
++@ cdecl _mbsnicoll_l(ptr ptr long ptr)
+ @ cdecl _mbsninc(str long)
+-@ stub _mbsninc_l
++@ cdecl _mbsninc_l(ptr long ptr)
+ @ cdecl _mbsnlen(str long)
+ @ cdecl _mbsnlen_l(str long ptr)
+ @ cdecl _mbsnset(ptr long long)
+ @ cdecl _mbsnset_l(ptr long long ptr)
+-@ stub _mbsnset_s
+-@ stub _mbsnset_s_l
++@ cdecl _mbsnset_s(ptr long long long)
++@ cdecl _mbsnset_s_l(ptr long long long ptr)
+ @ cdecl _mbspbrk(str str)
+ @ cdecl _mbspbrk_l(str str ptr)
+ @ cdecl _mbsrchr(str long)
+@@ -697,14 +697,14 @@
+ @ cdecl _mbsrev_l(str ptr)
+ @ cdecl _mbsset(ptr long)
+ @ cdecl _mbsset_l(ptr long ptr)
+-@ stub _mbsset_s
+-@ stub _mbsset_s_l
++@ cdecl _mbsset_s(ptr long long)
++@ cdecl _mbsset_s_l(ptr long long ptr)
+ @ cdecl _mbsspn(str str)
+ @ cdecl _mbsspn_l(str str ptr)
+ @ cdecl _mbsspnp(str str)
+ @ cdecl _mbsspnp_l(str str ptr)
+ @ cdecl _mbsstr(str str)
+-@ stub _mbsstr_l
++@ cdecl _mbsstr_l(ptr ptr ptr)
+ @ cdecl _mbstok(str str)
+ @ cdecl _mbstok_l(str str ptr)
+ @ cdecl _mbstok_s(str str ptr)
+@@ -713,8 +713,8 @@
+ @ cdecl _mbstowcs_s_l(ptr ptr long str long ptr)
+ @ cdecl _mbstrlen(str)
+ @ cdecl _mbstrlen_l(str ptr)
+-@ stub _mbstrnlen
+-@ stub _mbstrnlen_l
++@ cdecl _mbstrnlen(str long)
++@ cdecl _mbstrnlen_l(str long ptr)
+ @ cdecl _mbsupr(str)
+ @ cdecl _mbsupr_l(str ptr)
+ @ cdecl _mbsupr_s(str long)
+@@ -763,13 +763,13 @@
+ @ cdecl _o____mb_cur_max_func() ___mb_cur_max_func
+ @ cdecl _o___acrt_iob_func(long) __acrt_iob_func
+ @ cdecl _o___conio_common_vcprintf(int64 str ptr ptr) __conio_common_vcprintf
+-@ stub _o___conio_common_vcprintf_p
+-@ stub _o___conio_common_vcprintf_s
+-@ stub _o___conio_common_vcscanf
++@ cdecl _o___conio_common_vcprintf_p(int64 str ptr ptr) __conio_common_vcprintf_p
++@ cdecl _o___conio_common_vcprintf_s(int64 str ptr ptr) __conio_common_vcprintf_s
++@ cdecl _o___conio_common_vcscanf(int64 str ptr ptr) __conio_common_vcscanf
+ @ cdecl _o___conio_common_vcwprintf(int64 wstr ptr ptr) __conio_common_vcwprintf
+-@ stub _o___conio_common_vcwprintf_p
+-@ stub _o___conio_common_vcwprintf_s
+-@ stub _o___conio_common_vcwscanf
++@ cdecl _o___conio_common_vcwprintf_p(int64 wstr ptr ptr) __conio_common_vcwprintf_p
++@ cdecl _o___conio_common_vcwprintf_s(int64 wstr ptr ptr) __conio_common_vcwprintf_s
++@ cdecl _o___conio_common_vcwscanf(int64 wstr ptr ptr) __conio_common_vcwscanf
+ @ cdecl _o___daylight() __p__daylight
+ @ cdecl _o___dstbias() __p__dstbias
+ @ cdecl _o___fpe_flt_rounds() __fpe_flt_rounds
+@@ -801,14 +801,14 @@
+ @ cdecl _o___p__commode() __p__commode
+ @ cdecl _o___p__environ() __p__environ
+ @ cdecl _o___p__fmode() __p__fmode
+-@ stub _o___p__mbcasemap
++@ cdecl _o___p__mbcasemap() __p__mbcasemap
+ @ cdecl _o___p__mbctype() __p__mbctype
+ @ cdecl _o___p__pgmptr() __p__pgmptr
+ @ cdecl _o___p__wcmdln() __p__wcmdln
+ @ cdecl _o___p__wenviron() __p__wenviron
+ @ cdecl _o___p__wpgmptr() __p__wpgmptr
+ @ cdecl _o___pctype_func() __pctype_func
+-@ stub _o___pwctype_func
++@ cdecl _o___pwctype_func() __pwctype_func
+ @ cdecl _o___std_exception_copy(ptr ptr) __std_exception_copy
+ @ cdecl _o___std_exception_destroy(ptr) __std_exception_destroy
+ @ cdecl _o___std_type_info_destroy_list(ptr) __std_type_info_destroy_list
+@@ -841,9 +841,9 @@
+ @ cdecl _o__aligned_msize(ptr long long) _aligned_msize
+ @ cdecl _o__aligned_offset_malloc(long long long) _aligned_offset_malloc
+ @ cdecl _o__aligned_offset_realloc(ptr long long long) _aligned_offset_realloc
+-@ stub _o__aligned_offset_recalloc
++@ cdecl _o__aligned_offset_recalloc(ptr long long long long) _aligned_offset_recalloc
+ @ cdecl _o__aligned_realloc(ptr long long) _aligned_realloc
+-@ stub _o__aligned_recalloc
++@ cdecl _o__aligned_recalloc(ptr long long long) _aligned_recalloc
+ @ cdecl _o__atodbl(ptr str) _atodbl
+ @ cdecl _o__atodbl_l(ptr str ptr) _atodbl_l
+ @ cdecl _o__atof_l(str ptr) _atof_l
+@@ -864,9 +864,9 @@
+ @ cdecl _o__calloc_base(long long) _calloc_base
+ @ cdecl _o__cexit() _cexit
+ @ cdecl _o__cgets(ptr) _cgets
+-@ stub _o__cgets_s
+-@ stub _o__cgetws
+-@ stub _o__cgetws_s
++@ cdecl _o__cgets_s(ptr long ptr) _cgets_s
++@ cdecl _o__cgetws(ptr) _cgetws
++@ cdecl _o__cgetws_s(ptr long ptr) _cgetws_s
+ @ cdecl _o__chdir(str) _chdir
+ @ cdecl _o__chdrive(long) _chdrive
+ @ cdecl _o__chmod(str long) _chmod
+@@ -940,11 +940,11 @@
+ @ cdecl _o__fileno(ptr) _fileno
+ @ cdecl _o__findclose(long) _findclose
+ @ cdecl _o__findfirst32(str ptr) _findfirst32
+-@ stub _o__findfirst32i64
++@ cdecl _o__findfirst32i64(str ptr) _findfirst32i64
+ @ cdecl _o__findfirst64(str ptr) _findfirst64
+ @ cdecl _o__findfirst64i32(str ptr) _findfirst64i32
+ @ cdecl _o__findnext32(long ptr) _findnext32
+-@ stub _o__findnext32i64
++@ cdecl _o__findnext32i64(ptr ptr) _findnext32i64
+ @ cdecl _o__findnext64(long ptr) _findnext64
+ @ cdecl _o__findnext64i32(long ptr) _findnext64i32
+ @ cdecl _o__flushall() _flushall
+@@ -1018,7 +1018,7 @@
+ @ cdecl _o__getwche() _getwche
+ @ cdecl _o__getwche_nolock() _getwche_nolock
+ @ cdecl _o__getws(ptr) _getws
+-@ stub _o__getws_s
++@ cdecl _o__getws_s(ptr long) _getws_s
+ @ cdecl _o__gmtime32(ptr) _gmtime32
+ @ cdecl _o__gmtime32_s(ptr ptr) _gmtime32_s
+ @ cdecl _o__gmtime64(ptr) _gmtime64
+@@ -1040,36 +1040,36 @@
+ @ cdecl _o__isctype(long long) _isctype
+ @ cdecl _o__isctype_l(long long ptr) _isctype_l
+ @ cdecl _o__isleadbyte_l(long ptr) _isleadbyte_l
+-@ stub _o__ismbbalnum
+-@ stub _o__ismbbalnum_l
+-@ stub _o__ismbbalpha
+-@ stub _o__ismbbalpha_l
+-@ stub _o__ismbbblank
+-@ stub _o__ismbbblank_l
+-@ stub _o__ismbbgraph
+-@ stub _o__ismbbgraph_l
+-@ stub _o__ismbbkalnum
+-@ stub _o__ismbbkalnum_l
++@ cdecl _o__ismbbalnum(long) _ismbbalnum
++@ cdecl _o__ismbbalnum_l(long ptr) _ismbbalnum_l
++@ cdecl _o__ismbbalpha(long) _ismbbalpha
++@ cdecl _o__ismbbalpha_l(long ptr) _ismbbalpha_l
++@ cdecl _o__ismbbblank(long) _ismbbblank
++@ cdecl _o__ismbbblank_l(long ptr) _ismbbblank_l
++@ cdecl _o__ismbbgraph(long) _ismbbgraph
++@ cdecl _o__ismbbgraph_l(long ptr) _ismbbgraph_l
++@ cdecl _o__ismbbkalnum(long) _ismbbkalnum
++@ cdecl _o__ismbbkalnum_l(long ptr) _ismbbkalnum_l
+ @ cdecl _o__ismbbkana(long) _ismbbkana
+ @ cdecl _o__ismbbkana_l(long ptr) _ismbbkana_l
+-@ stub _o__ismbbkprint
+-@ stub _o__ismbbkprint_l
+-@ stub _o__ismbbkpunct
+-@ stub _o__ismbbkpunct_l
++@ cdecl _o__ismbbkprint(long) _ismbbkprint
++@ cdecl _o__ismbbkprint_l(long ptr) _ismbbkprint_l
++@ cdecl _o__ismbbkpunct(long) _ismbbkpunct
++@ cdecl _o__ismbbkpunct_l(long ptr) _ismbbkpunct_l
+ @ cdecl _o__ismbblead(long) _ismbblead
+ @ cdecl _o__ismbblead_l(long ptr) _ismbblead_l
+-@ stub _o__ismbbprint
+-@ stub _o__ismbbprint_l
+-@ stub _o__ismbbpunct
+-@ stub _o__ismbbpunct_l
++@ cdecl _o__ismbbprint(long) _ismbbprint
++@ cdecl _o__ismbbprint_l(long ptr) _ismbbprint_l
++@ cdecl _o__ismbbpunct(long) _ismbbpunct
++@ cdecl _o__ismbbpunct_l(long ptr) _ismbbpunct_l
+ @ cdecl _o__ismbbtrail(long) _ismbbtrail
+ @ cdecl _o__ismbbtrail_l(long ptr) _ismbbtrail_l
+ @ cdecl _o__ismbcalnum(long) _ismbcalnum
+ @ cdecl _o__ismbcalnum_l(long ptr) _ismbcalnum_l
+ @ cdecl _o__ismbcalpha(long) _ismbcalpha
+ @ cdecl _o__ismbcalpha_l(long ptr) _ismbcalpha_l
+-@ stub _o__ismbcblank
+-@ stub _o__ismbcblank_l
++@ cdecl _o__ismbcblank(long) _ismbcblank
++@ cdecl _o__ismbcblank_l(long ptr) _ismbcblank_l
+ @ cdecl _o__ismbcdigit(long) _ismbcdigit
+ @ cdecl _o__ismbcdigit_l(long ptr) _ismbcdigit_l
+ @ cdecl _o__ismbcgraph(long) _ismbcgraph
+@@ -1086,7 +1086,7 @@
+ @ cdecl _o__ismbcl2_l(long ptr) _ismbcl2_l
+ @ cdecl _o__ismbclegal(long) _ismbclegal
+ @ cdecl _o__ismbclegal_l(long ptr) _ismbclegal_l
+-@ stub _o__ismbclower
++@ cdecl _o__ismbclower(long) _ismbclower
+ @ cdecl _o__ismbclower_l(long ptr) _ismbclower_l
+ @ cdecl _o__ismbcprint(long) _ismbcprint
+ @ cdecl _o__ismbcprint_l(long ptr) _ismbcprint_l
+@@ -1145,7 +1145,7 @@
+ @ cdecl _o__logb(double) logb
+ @ cdecl -arch=!i386 _o__logbf(float) logbf
+ @ cdecl _o__lsearch(ptr ptr ptr long ptr) _lsearch
+-@ stub _o__lsearch_s
++@ cdecl _o__lsearch_s(ptr ptr ptr long ptr ptr) _lsearch_s
+ @ cdecl _o__lseek(long long long) _lseek
+ @ cdecl -ret64 _o__lseeki64(long int64 long) _lseeki64
+ @ cdecl _o__ltoa(long ptr long) _ltoa
+@@ -1228,18 +1228,18 @@
+ @ cdecl _o__mbsnbicoll_l(str str long ptr) _mbsnbicoll_l
+ @ cdecl _o__mbsnbset(ptr long long) _mbsnbset
+ @ cdecl _o__mbsnbset_l(str long long ptr) _mbsnbset_l
+-@ stub _o__mbsnbset_s
+-@ stub _o__mbsnbset_s_l
++@ cdecl _o__mbsnbset_s(ptr long long long) _mbsnbset_s
++@ cdecl _o__mbsnbset_s_l(ptr long long long ptr) _mbsnbset_s_l
+ @ cdecl _o__mbsncat(str str long) _mbsncat
+ @ cdecl _o__mbsncat_l(str str long ptr) _mbsncat_l
+-@ stub _o__mbsncat_s
+-@ stub _o__mbsncat_s_l
++@ cdecl _o__mbsncat_s(ptr long ptr long) _mbsncat_s
++@ cdecl _o__mbsncat_s_l(ptr long ptr long ptr) _mbsncat_s_l
+ @ cdecl _o__mbsnccnt(str long) _mbsnccnt
+ @ cdecl _o__mbsnccnt_l(str long ptr) _mbsnccnt_l
+ @ cdecl _o__mbsncmp(str str long) _mbsncmp
+ @ cdecl _o__mbsncmp_l(str str long ptr) _mbsncmp_l
+-@ stub _o__mbsncoll
+-@ stub _o__mbsncoll_l
++@ cdecl _o__mbsncoll(ptr ptr long) _mbsncoll
++@ cdecl _o__mbsncoll_l(ptr ptr long ptr) _mbsncoll_l
+ @ cdecl _o__mbsncpy(ptr str long) _mbsncpy
+ @ cdecl _o__mbsncpy_l(ptr str long ptr) _mbsncpy_l
+ @ cdecl _o__mbsncpy_s(ptr long str long) _mbsncpy_s
+@@ -1248,16 +1248,16 @@
+ @ cdecl _o__mbsnextc_l(str ptr) _mbsnextc_l
+ @ cdecl _o__mbsnicmp(str str long) _mbsnicmp
+ @ cdecl _o__mbsnicmp_l(str str long ptr) _mbsnicmp_l
+-@ stub _o__mbsnicoll
+-@ stub _o__mbsnicoll_l
++@ cdecl _o__mbsnicoll(ptr ptr long) _mbsnicoll
++@ cdecl _o__mbsnicoll_l(ptr ptr long ptr) _mbsnicoll_l
+ @ cdecl _o__mbsninc(str long) _mbsninc
+-@ stub _o__mbsninc_l
++@ cdecl _o__mbsninc_l(ptr long ptr) _mbsninc_l
+ @ cdecl _o__mbsnlen(str long) _mbsnlen
+ @ cdecl _o__mbsnlen_l(str long ptr) _mbsnlen_l
+ @ cdecl _o__mbsnset(ptr long long) _mbsnset
+ @ cdecl _o__mbsnset_l(ptr long long ptr) _mbsnset_l
+-@ stub _o__mbsnset_s
+-@ stub _o__mbsnset_s_l
++@ cdecl _o__mbsnset_s(ptr long long long) _mbsnset_s
++@ cdecl _o__mbsnset_s_l(ptr long long long ptr) _mbsnset_s_l
+ @ cdecl _o__mbspbrk(str str) _mbspbrk
+ @ cdecl _o__mbspbrk_l(str str ptr) _mbspbrk_l
+ @ cdecl _o__mbsrchr(str long) _mbsrchr
+@@ -1266,14 +1266,14 @@
+ @ cdecl _o__mbsrev_l(str ptr) _mbsrev_l
+ @ cdecl _o__mbsset(ptr long) _mbsset
+ @ cdecl _o__mbsset_l(ptr long ptr) _mbsset_l
+-@ stub _o__mbsset_s
+-@ stub _o__mbsset_s_l
++@ cdecl _o__mbsset_s(ptr long long) _mbsset_s
++@ cdecl _o__mbsset_s_l(ptr long long ptr) _mbsset_s_l
+ @ cdecl _o__mbsspn(str str) _mbsspn
+ @ cdecl _o__mbsspn_l(str str ptr) _mbsspn_l
+ @ cdecl _o__mbsspnp(str str) _mbsspnp
+ @ cdecl _o__mbsspnp_l(str str ptr) _mbsspnp_l
+ @ cdecl _o__mbsstr(str str) _mbsstr
+-@ stub _o__mbsstr_l
++@ cdecl _o__mbsstr_l(ptr ptr ptr) _mbsstr_l
+ @ cdecl _o__mbstok(str str) _mbstok
+ @ cdecl _o__mbstok_l(str str ptr) _mbstok_l
+ @ cdecl _o__mbstok_s(str str ptr) _mbstok_s
+@@ -1282,8 +1282,8 @@
+ @ cdecl _o__mbstowcs_s_l(ptr ptr long str long ptr) _mbstowcs_s_l
+ @ cdecl _o__mbstrlen(str) _mbstrlen
+ @ cdecl _o__mbstrlen_l(str ptr) _mbstrlen_l
+-@ stub _o__mbstrnlen
+-@ stub _o__mbstrnlen_l
++@ cdecl _o__mbstrnlen(str long) _mbstrnlen
++@ cdecl _o__mbstrnlen_l(str long ptr) _mbstrnlen_l
+ @ cdecl _o__mbsupr(str) _mbsupr
+ @ cdecl _o__mbsupr_l(str ptr) _mbsupr_l
+ @ cdecl _o__mbsupr_s(str long) _mbsupr_s
+@@ -1378,7 +1378,7 @@
+ @ cdecl _o__strnicoll(str str long) _strnicoll
+ @ cdecl _o__strnicoll_l(str str long ptr) _strnicoll_l
+ @ cdecl _o__strnset_s(str long long long) _strnset_s
+-@ stub _o__strset_s
++@ cdecl _o__strset_s(str long long) _strset_s
+ @ cdecl _o__strtime(ptr) _strtime
+ @ cdecl _o__strtime_s(ptr long) _strtime_s
+ @ cdecl _o__strtod_l(str ptr ptr) _strtod_l
+@@ -1418,7 +1418,7 @@
+ @ cdecl _o__ultow(long ptr long) _ultow
+ @ cdecl _o__ultow_s(long ptr long long) _ultow_s
+ @ cdecl _o__umask(long) _umask
+-@ stub _o__umask_s
++@ cdecl _o__umask_s(long ptr) _umask_s
+ @ cdecl _o__ungetc_nolock(long ptr) _ungetc_nolock
+ @ cdecl _o__ungetch(long) _ungetch
+ @ cdecl _o__ungetch_nolock(long) _ungetch_nolock
+@@ -1492,11 +1492,11 @@
+ @ cdecl _o__wexecvpe(wstr ptr ptr) _wexecvpe
+ @ cdecl _o__wfdopen(long wstr) _wfdopen
+ @ cdecl _o__wfindfirst32(wstr ptr) _wfindfirst32
+-@ stub _o__wfindfirst32i64
++@ cdecl _o__wfindfirst32i64(wstr ptr) _wfindfirst32i64
+ @ cdecl _o__wfindfirst64(wstr ptr) _wfindfirst64
+ @ cdecl _o__wfindfirst64i32(wstr ptr) _wfindfirst64i32
+ @ cdecl _o__wfindnext32(long ptr) _wfindnext32
+-@ stub _o__wfindnext32i64
++@ cdecl _o__wfindnext32i64(ptr ptr) _wfindnext32i64
+ @ cdecl _o__wfindnext64(long ptr) _wfindnext64
+ @ cdecl _o__wfindnext64i32(long ptr) _wfindnext64i32
+ @ cdecl _o__wfopen(wstr wstr) _wfopen
+@@ -1712,8 +1712,8 @@
+ @ cdecl _o_malloc(long) malloc
+ @ cdecl _o_mblen(ptr long) mblen
+ @ cdecl _o_mbrlen(ptr long ptr) mbrlen
+-@ stub _o_mbrtoc16
+-@ stub _o_mbrtoc32
++@ cdecl _o_mbrtoc16(ptr str long ptr) mbrtoc16
++@ cdecl _o_mbrtoc32(ptr str long ptr) mbrtoc32
+ @ cdecl _o_mbrtowc(ptr str long ptr) mbrtowc
+ @ cdecl _o_mbsrtowcs(ptr ptr long ptr) mbsrtowcs
+ @ cdecl _o_mbsrtowcs_s(ptr ptr long ptr long ptr) mbsrtowcs_s
+@@ -1948,7 +1948,7 @@
+ @ cdecl _strnset_s(str long long long)
+ @ cdecl _strrev(str)
+ @ cdecl _strset(str long)
+-@ stub _strset_s
++@ cdecl _strset_s(str long long)
+ @ cdecl _strtime(ptr)
+ @ cdecl _strtime_s(ptr long)
+ @ cdecl _strtod_l(str ptr ptr)
+@@ -1993,7 +1993,7 @@
+ @ cdecl _ultow(long ptr long)
+ @ cdecl _ultow_s(long ptr long long)
+ @ cdecl _umask(long)
+-@ stub _umask_s
++@ cdecl _umask_s(long ptr)
+ @ cdecl _ungetc_nolock(long ptr)
+ @ cdecl _ungetch(long)
+ @ cdecl _ungetch_nolock(long)
+@@ -2043,7 +2043,7 @@
+ @ cdecl _wcstof_l(wstr ptr ptr)
+ @ cdecl -ret64 _wcstoi64(wstr ptr long)
+ @ cdecl -ret64 _wcstoi64_l(wstr ptr long ptr)
+-@ stub _wcstoimax_l
++@ cdecl -ret64 _wcstoimax_l(wstr ptr long ptr) _wcstoi64_l
+ @ cdecl _wcstol_l(wstr ptr long ptr)
+ @ cdecl _wcstold_l(wstr ptr ptr) _wcstod_l
+ @ cdecl -ret64 _wcstoll_l(wstr ptr long ptr) _wcstoi64_l
+@@ -2053,7 +2053,7 @@
+ @ cdecl -ret64 _wcstoui64_l(wstr ptr long ptr)
+ @ cdecl _wcstoul_l(wstr ptr long ptr)
+ @ cdecl -ret64 _wcstoull_l(wstr ptr long ptr) _wcstoui64_l
+-@ stub _wcstoumax_l
++@ cdecl -ret64 _wcstoumax_l(wstr ptr long ptr) _wcstoui64_l
+ @ cdecl _wcsupr(wstr)
+ @ cdecl _wcsupr_l(wstr ptr)
+ @ cdecl _wcsupr_s(wstr long)
+@@ -2077,11 +2077,11 @@
+ @ cdecl _wexecvpe(wstr ptr ptr)
+ @ cdecl _wfdopen(long wstr)
+ @ cdecl _wfindfirst32(wstr ptr)
+-@ stub _wfindfirst32i64
++@ cdecl _wfindfirst32i64(wstr ptr)
+ @ cdecl _wfindfirst64(wstr ptr)
+ @ cdecl _wfindfirst64i32(wstr ptr)
+ @ cdecl _wfindnext32(long ptr)
+-@ stub _wfindnext32i64
++@ cdecl _wfindnext32i64(ptr ptr)
+ @ cdecl _wfindnext64(long ptr)
+ @ cdecl _wfindnext64i32(long ptr)
+ @ cdecl _wfopen(wstr wstr)
+@@ -2180,62 +2180,62 @@
+ @ cdecl bsearch(ptr ptr long long ptr)
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr)
+ @ cdecl btowc(long)
+-@ stub c16rtomb
+-@ stub c32rtomb
+-@ stub cabs
+-@ stub cabsf
+-@ stub cabsl
+-@ stub cacos
+-@ stub cacosf
+-@ stub cacosh
+-@ stub cacoshf
+-@ stub cacoshl
+-@ stub cacosl
++@ cdecl c16rtomb(ptr long ptr)
++@ cdecl c32rtomb(ptr long ptr)
++@ cdecl cabs(int128)
++@ cdecl cabsf(int64)
++@ cdecl cabsl(int128)
++@ cdecl -norelay cacos(int128)
++@ cdecl -norelay cacosf(int64)
++@ cdecl -norelay cacosh(int128)
++@ cdecl -norelay cacoshf(int64)
++@ cdecl -norelay cacoshl(int128)
++@ cdecl -norelay cacosl(int128)
+ @ cdecl calloc(long long)
+-@ stub carg
+-@ stub cargf
+-@ stub cargl
+-@ stub casin
+-@ stub casinf
+-@ stub casinh
+-@ stub casinhf
+-@ stub casinhl
+-@ stub casinl
+-@ stub catan
+-@ stub catanf
+-@ stub catanh
+-@ stub catanhf
+-@ stub catanhl
+-@ stub catanl
++@ cdecl carg(int128)
++@ cdecl cargf(int64)
++@ cdecl cargl(int128)
++@ cdecl -norelay casin(int128)
++@ cdecl -norelay casinf(int64)
++@ cdecl -norelay casinh(int128)
++@ cdecl -norelay casinhf(int64)
++@ cdecl -norelay casinhl(int128)
++@ cdecl -norelay casinl(int128)
++@ cdecl -norelay catan(int128)
++@ cdecl -norelay catanf(int64)
++@ cdecl -norelay catanh(int128)
++@ cdecl -norelay catanhf(int64)
++@ cdecl -norelay catanhl(int128)
++@ cdecl -norelay catanl(int128)
+ @ cdecl cbrt(double)
+ @ cdecl cbrtf(float)
+ @ cdecl cbrtl(double) cbrt
+-@ stub ccos
+-@ stub ccosf
+-@ stub ccosh
+-@ stub ccoshf
+-@ stub ccoshl
+-@ stub ccosl
++@ cdecl -norelay ccos(int128)
++@ cdecl -norelay ccosf(int64)
++@ cdecl -norelay ccosh(int128)
++@ cdecl -norelay ccoshf(int64)
++@ cdecl -norelay ccoshl(int128)
++@ cdecl -norelay ccosl(int128)
+ @ cdecl ceil(double)
+ @ cdecl -arch=!i386 ceilf(float)
+-@ stub cexp
+-@ stub cexpf
+-@ stub cexpl
+-@ stub cimag
+-@ stub cimagf
+-@ stub cimagl
++@ cdecl -norelay cexp(int128)
++@ cdecl -norelay cexpf(int64)
++@ cdecl -norelay cexpl(int128)
++@ cdecl cimag(int128)
++@ cdecl cimagf(int64)
++@ cdecl cimagl(int128)
+ @ cdecl clearerr(ptr)
+ @ cdecl clearerr_s(ptr)
+ @ cdecl clock()
+-@ stub clog
+-@ stub clog10
+-@ stub clog10f
+-@ stub clog10l
+-@ stub clogf
+-@ stub clogl
+-@ stub conj
+-@ stub conjf
+-@ stub conjl
++@ cdecl -norelay clog(int128)
++@ cdecl -norelay clog10(int128)
++@ cdecl -norelay clog10f(int64)
++@ cdecl -norelay clog10l(int128)
++@ cdecl -norelay clogf(int64)
++@ cdecl -norelay clogl(int128)
++@ cdecl -norelay conj(int128)
++@ cdecl -norelay conjf(int64)
++@ cdecl -norelay conjl(int128)
+ @ cdecl copysign(double double)
+ @ cdecl copysignf(float float)
+ @ cdecl copysignl(double double) copysign
+@@ -2243,30 +2243,30 @@
+ @ cdecl -arch=!i386 cosf(float)
+ @ cdecl cosh(double)
+ @ cdecl -arch=!i386 coshf(float)
+-@ stub cpow
+-@ stub cpowf
+-@ stub cpowl
+-@ stub cproj
+-@ stub cprojf
+-@ stub cprojl
++@ cdecl -norelay cpow(int128 int128)
++@ cdecl -norelay cpowf(int64 int64)
++@ cdecl -norelay cpowl(int128 int128)
++@ cdecl -norelay cproj(int128)
++@ cdecl -norelay cprojf(int64)
++@ cdecl -norelay cprojl(int128)
+ @ cdecl creal(int128) MSVCR120_creal
+-@ stub crealf
+-@ stub creall
+-@ stub csin
+-@ stub csinf
+-@ stub csinh
+-@ stub csinhf
+-@ stub csinhl
+-@ stub csinl
+-@ stub csqrt
+-@ stub csqrtf
+-@ stub csqrtl
+-@ stub ctan
+-@ stub ctanf
+-@ stub ctanh
+-@ stub ctanhf
+-@ stub ctanhl
+-@ stub ctanl
++@ cdecl crealf(int64)
++@ cdecl creall(int128)
++@ cdecl -norelay csin(int128)
++@ cdecl -norelay csinf(int64)
++@ cdecl -norelay csinh(int128)
++@ cdecl -norelay csinhf(int64)
++@ cdecl -norelay csinhl(int128)
++@ cdecl -norelay csinl(int128)
++@ cdecl -norelay csqrt(int128)
++@ cdecl -norelay csqrtf(int64)
++@ cdecl -norelay csqrtl(int128)
++@ cdecl -norelay ctan(int128)
++@ cdecl -norelay ctanf(int64)
++@ cdecl -norelay ctanh(int128)
++@ cdecl -norelay ctanhf(int64)
++@ cdecl -norelay ctanhl(int128)
++@ cdecl -norelay ctanl(int128)
+ @ cdecl -ret64 div(long long)
+ @ cdecl erf(double)
+ @ cdecl erfc(double)
+@@ -2348,7 +2348,7 @@
+ @ cdecl ilogbf(float)
+ @ cdecl ilogbl(double) ilogb
+ @ cdecl -ret64 imaxabs(int64)
+-@ stub imaxdiv
++@ cdecl -norelay imaxdiv(int64 int64)
+ @ cdecl is_wctype(long long) iswctype
+ @ cdecl isalnum(long)
+ @ cdecl isalpha(long)
+@@ -2415,8 +2415,8 @@
+ @ cdecl malloc(long)
+ @ cdecl mblen(ptr long)
+ @ cdecl mbrlen(ptr long ptr)
+-@ stub mbrtoc16
+-@ stub mbrtoc32
++@ cdecl mbrtoc16(ptr str long ptr)
++@ cdecl mbrtoc32(ptr str long ptr)
+ @ cdecl mbrtowc(ptr str long ptr)
+ @ cdecl mbsrtowcs(ptr ptr long ptr)
+ @ cdecl mbsrtowcs_s(ptr ptr long ptr long ptr)
+@@ -2444,9 +2444,9 @@
+ @ cdecl nexttoward(double double) __nexttoward
+ @ cdecl nexttowardf(float double) __nexttowardf
+ @ cdecl nexttowardl(double double) __nexttoward
+-@ stub norm
+-@ stub normf
+-@ stub norml
++@ cdecl norm(int128)
++@ cdecl normf(int64)
++@ cdecl norml(int128)
+ @ cdecl perror(str)
+ @ cdecl pow(double double)
+ @ cdecl powf(float float)
+@@ -2582,7 +2582,7 @@
+ @ cdecl wcsstr(wstr wstr)
+ @ cdecl wcstod(wstr ptr)
+ @ cdecl wcstof(ptr ptr)
+-@ stub wcstoimax
++@ cdecl -ret64 wcstoimax(wstr ptr long) _wcstoi64
+ @ cdecl wcstok(wstr wstr ptr)
+ @ cdecl wcstok_s(ptr wstr ptr)
+ @ cdecl wcstol(wstr ptr long)
+@@ -2592,7 +2592,7 @@
+ @ cdecl wcstombs_s(ptr ptr long wstr long)
+ @ cdecl wcstoul(wstr ptr long)
+ @ cdecl -ret64 wcstoull(wstr ptr long) _wcstoui64
+-@ stub wcstoumax
++@ cdecl -ret64 wcstoumax(wstr ptr long) _wcstoui64
+ @ cdecl wcsxfrm(ptr wstr long)
+ @ cdecl wctob(long)
+ @ cdecl wctomb(ptr long)

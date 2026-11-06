@@ -119,20 +119,31 @@ WINEHQ_PINS = {
 # a rebuild that changes bytes fails here until the new bytes are reviewed
 # and pinned.
 WINE8_BACKPORT_PINS = {
-    'user32.dll': '226bfff8294147694b9f587e99272f31ba8b7f23f4fe293622e490c87bd396e7',
-    'kernelbase.dll': '36481e46ca66c266b0b7a047de4344ba7be51b1f83e04dd8247c07869dd3bb09',
-    'kernel32.dll': 'ba1a9d9dc67ab402c2dc73a93465768d49a3da2e0af0dc9002465138f2d7c115',
-    'iphlpapi.dll': 'af9f98b669441af888c633a1d517257a02ea3b8689e4670d0c21eb8864c48515',
-    'win32u.dll': '41da01c8027bc45bc2b72b105a90847d8d700c7019d6c8902f8fffc37c58cd69',
+    'user32.dll': '3c495fc6ae4a2bcac424107100359fe4a95f9cc8db0f5568f2e7707f07edf72d',
+    'kernelbase.dll': '3e8b4283df0c9e71dd3fef5c67ceb2aa9740d4faf57dd58d83357b87d65ebf90',
+    'kernel32.dll': 'd3d35f7a3488aa59a80c115d458d7be4d76bcceda79bdd9eaae35bc5ccb41de8',
+    'iphlpapi.dll': 'c9b9faf78c0ec4372a26f043f4d0d16dc363961d7cbd4fd8b42f0e13560ad283',
+    'win32u.dll': '21f5e5438a19fc157643f54b75d798e10ada2a1674e8976120b37d958f063870',
     # The unix half of win32u (FD-01): the desktop-wait patch lives in
     # this module; pinning only the DLL is what let the patch ship in
     # no binary (FD-43).
-    'win32u.so': 'c160be3a76e5837ace446dd50372cb1a78994760e14555328eae5a5efb1f5772',
+    'win32u.so': 'b2aa883bfb47627ff63c6be97e4da54de45b46ef159c3c29a13ad91ac18f7ec0',
     # FD-167: the MSVC runtime throw helpers a bundled demo library
     # imports, and SetupDiGetDeviceInterfaceAlias, stop being spec
     # stubs (see wine8-backports-x86_64/README.md).
     'msvcp140.dll': 'c8255d140b6bdbba5d7e0d61b6eea3de05f00dba7e1b8344bce08da54142d58a',
     'setupapi.dll': 'c7e1555da0fedb6153044bb823185a995f268903bfe55c4cf26193c80ede6d21',
+    # FD-169: the Microsoft C runtime family, rebuilt from the same
+    # patched Wine 8.0 tree (wine8-msvcrt-fd169-crt.patch).
+    'ucrtbase.dll': '6f790d4721f8562c021bfddbb77cdf5da686e64507d02741888fdcc156c057d9',
+    'msvcrt.dll': '23bad1e9016e8f3f95ba5784a6a1ad383f4d9cc65a21e6aafddc4fbda1a78f84',
+    'msvcr70.dll': '33a64d83cefcaba027c2a4d00e1ce1d5fdc81de3fcc7eabb719dec5b817cb3b2',
+    'msvcr71.dll': '6e37ada00292280e3e4dc21d6d4432fa331a057ecbf31e00399d19e33f425a38',
+    'msvcr80.dll': '8cb9576ab57bc10b8010268572a1410cf62f15b7faee5202ed58e2ae6a45d0f8',
+    'msvcr90.dll': 'b68c1d96070e6dae7a366616cb717c8278886f7dd902b0e1ce5e3687537e1728',
+    'msvcr100.dll': '49dc3a015b4be2d16f7629d106845fd84d4966be23a13e9d82c0caf90bf6997c',
+    'msvcr110.dll': 'c82bf206e4e93ba8c12113bcad3a67ca8988347f78a66def81921270e7872a69',
+    'msvcr120.dll': '89054bd4059865c9b2c404f817f3ad9fa7913676fc9c4e98185fd17f2a53dbfb',
 }
 # The D3D12 payload staged into wine64.zip at system placement by
 # build-wine64-zip.sh / stage-vkd3d-payloads.sh (2026-10-26 restage):
@@ -285,6 +296,32 @@ def t_wine10_fd167_32_source_and_zip():
         assert member in members, f'{member} missing from shipped wine32.zip'
         assert sha(members[member]) == pin, \
             f'{member} in wine32.zip != pinned FD-167 backport bytes'
+# FD-169: the nine i386 CRT DLLs are committed rebuilds (wine-10.0 +
+# FD-169 patch, tools/rootfs32/build-wine10-fd169.sh) substituted into
+# wine32.zip by build-wine32-base.sh. Re-pins are deliberate.
+WINE10_FD169_PINS32 = {
+    'msvcr100.dll': 'f15f7a9b6eb6ce7e0fa921a3343f91cac34f808ee443eda609630ce0f81dab9d',
+    'msvcr110.dll': '2b5bff73c1e77843723e3335c106a53b9ae4119839aceb16d610ebe61d7299c5',
+    'msvcr120.dll': '0e4ba5e74c22db4de9a8889d89d247b708e8ba657029b75b5f7dd1f9dbb58b92',
+    'msvcr70.dll': '1d5c6c16b3d095039142037a92256cd660f00fa29ecaddd07ef0722b2130f6b7',
+    'msvcr71.dll': '60ac37db454b821d6245fce39830e37126a065f0386f836d98d4e89bf9565b41',
+    'msvcr80.dll': '7aa234283cd4c0dd378540184db724360a189d47013ae4259d4622c2f19ecd7c',
+    'msvcr90.dll': 'c3f3062bb3ba6e5084da24ad66dd5dec18cc3633e0fb0b166d54a0d5a827dada',
+    'msvcrt.dll': 'f3cebbf0855200a772733b1d0aa431fdd77cea78b1cb03b6427311921ca98cec',
+    'ucrtbase.dll': '7c1782913e4c865252348fd38cbb402bc3d8dd6bd6bf088501d4ffbaa3c5264c',
+}
+
+
+def t_wine10_fd169_crt32_source_and_zip():
+    for name, pin in WINE10_FD169_PINS32.items():
+        src = ROOT / 'tools/rootfs32/wine10-fd169-i386' / name
+        assert sha(src.read_bytes()) == pin, f'{name} (FD-169 i386) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE10_FD169_PINS32.items():
+        member = f'opt/wine-stable/lib/wine/i386-windows/{name}'
+        assert member in members, f'{member} missing from shipped wine32.zip'
+        assert sha(members[member]) == pin, f'{name} in wine32.zip != pinned FD-169 bytes'
 
 
 def t_wine8_backports_source_and_zip():
