@@ -1361,13 +1361,73 @@ static U32 syscall_gettid(CPU* cpu, U32 eipCount) {
     return result;
 }
 
-static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {    
-    U32 result = -K_ENOTSUP;
-    BString name = cpu->memory->readString(ARG2);
+// FD-163: on a resolved target the host looks an xattr name's
+// namespace up before the attribute itself (host-measured at
+// the raw syscall level, test-results/fd162-164/
+// hostref-fd162-164.out and hostref-fd163b/c/d.out). A prefix
+// with no handler -- an unknown word, "system.*" other than
+// the two posix_acl names, a name with no recognised prefix
+// at all -- answers -ENOTSUP; a recognised namespace (user.*,
+// trusted.*, security.*, system.posix_acl_access,
+// system.posix_acl_default) with an absent attribute answers
+// -ENODATA; a recognised prefix with an empty attribute part
+// ("user." itself) answers -EINVAL. The one modelled
+// attribute, user.DOSATTRIB, is handled by the get forms
+// before this runs. The set/remove forms keep their standing
+// -ENOTSUP on a resolved target (FD-157) and do not come
+// through here. syscall64.cpp carries the mirror of this
+// classifier for the 64-bit dispatcher.
+static U32 xattrGetNameVerdict32(const BString& name) {
+    if (name.startsWith("user.")) {
+        return name.length() == 5 ? (U32)-K_EINVAL : (U32)-K_ENODATA;
+    }
+    if (name.startsWith("trusted.")) {
+        return name.length() == 8 ? (U32)-K_EINVAL : (U32)-K_ENODATA;
+    }
+    if (name.startsWith("security.")) {
+        return name.length() == 9 ? (U32)-K_EINVAL : (U32)-K_ENODATA;
+    }
+    if (name == "system.posix_acl_access" || name == "system.posix_acl_default") {
+        return -K_ENODATA;
+    }
+    return -K_ENOTSUP;
+}
 
+// FD-162/FD-163: the xattr family's name-fetch verdicts, in
+// the host's measured entry order: a null name faults
+// (-EFAULT) and an empty name answers -ERANGE, both ahead of
+// the path and descriptor verdicts alike (an empty name
+// answers -ERANGE even for a null path, a missing path and
+// an unopened descriptor). Returns 0 when the name fetches
+// cleanly, and the fetched name in nameOut.
+static S32 xattrNameFetch32(CPU* cpu, U32 nameAddress, BString& nameOut) {
+    if (!nameAddress) {
+        return -K_EFAULT;
+    }
+    nameOut = cpu->memory->readString(nameAddress);
+    if (nameOut.length() == 0) {
+        return -K_ERANGE;
+    }
+    return 0;
+}
+
+static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
+    // FD-162: the host's entry order for the set forms: the
+    // flags word first (-EINVAL), then the name fetch, then
+    // the descriptor -- which answers -EBADF; the host has no
+    // -EBADFD (the answer this handler used to give).
+    if ((ARG5 & ~(U32)0x3)) {
+        return -K_EINVAL;
+    }
+    BString name;
+    S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+    if (fetch) {
+        return (U32)fetch;
+    }
+    U32 result = -K_ENOTSUP;
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
     if (!fd) {
-        result = -K_EBADFD;
+        result = -K_EBADF;
     } else if (name == "user.DOSATTRIB") {
         BString value = cpu->memory->readString(ARG3);
         std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
@@ -1382,10 +1442,11 @@ static U32 syscall_fsetxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
+    BString name;
+    S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+    if (fetch) return (U32)fetch; // FD-157/FD-163: the host fetches the attribute name ahead of the path verdicts (a null name faults, an empty name answers -ERANGE, even for a null or missing path)
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
-    if (!ARG2) return -K_EFAULT; // FD-157: the host fetches the attribute name ahead of the path verdicts (a null name faults even for an empty or missing path)
     BString path = cpu->memory->readString(ARG1);
-    BString name = cpu->memory->readString(ARG2);
     if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
 
     U32 result = -K_ENOTSUP;
@@ -1408,15 +1469,14 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
     } else {
         // FD-157: every other name resolves its target first. A
         // missing path answers -ENOENT, a path through a file
-        // -ENOTDIR, and an attribute the resolved file does not
-        // have -ENODATA (the emulator models no xattrs beyond
-        // DOSATTRIB), instead of -ENOTSUP for all three shapes.
+        // -ENOTDIR. FD-163: on the resolved target the answer
+        // is the namespace verdict, not a blanket -ENODATA.
         bool notDir = false;
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, true, nullptr, &notDir);
         if (!file) {
             result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
-            result = -K_ENODATA;
+            result = xattrGetNameVerdict32(name);
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "getxattr: path=%s name=%s result = %x\n", path.c_str(), name.c_str(), result);
@@ -1424,10 +1484,11 @@ static U32 syscall_getxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
+    BString name;
+    S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+    if (fetch) return (U32)fetch; // FD-157/FD-163: the name fetch precedes the path verdicts, as in getxattr
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
-    if (!ARG2) return -K_EFAULT; // FD-157: the host fetches the attribute name ahead of the path verdicts (a null name faults even for an empty or missing path)
     BString path = cpu->memory->readString(ARG1);
-    BString name = cpu->memory->readString(ARG2);
     if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
     U32 result = -K_ENOTSUP;
     if (name == "user.DOSATTRIB") {
@@ -1448,13 +1509,14 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
         }
     } else {
         // FD-157: as in getxattr, with the link itself as the
-        // target (no following).
+        // target (no following). FD-163: the namespace verdict
+        // applies on the resolved link as on any resolved target.
         bool notDir = false;
         std::shared_ptr<FsNode> file = Fs::getNodeFromLocalPath(cpu->thread->process->fsContext->currentDirectory, path, false, nullptr, &notDir);
         if (!file) {
             result = notDir ? (U32)-K_ENOTDIR : (U32)-K_ENOENT;
         } else {
-            result = -K_ENODATA;
+            result = xattrGetNameVerdict32(name);
         }
     }
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "lgetxattr: path=%s name=%s result=%x\n", path.c_str(), name.c_str(), result);
@@ -1462,12 +1524,13 @@ static U32 syscall_lgetxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_fgetxattr(CPU* cpu, U32 eipCount) {
+    BString name;
+    S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+    if (fetch) return (U32)fetch; // FD-162/FD-163: the name fetch precedes the descriptor verdict
     U32 result = -K_ENOTSUP;
-    BString name = cpu->memory->readString(ARG2);
-
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
     if (!fd) {
-        result = -K_EBADFD;
+        result = -K_EBADF; // FD-162: the host has no -EBADFD
     } else if (name == "user.DOSATTRIB") {
         std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
         if (!node) {
@@ -1483,6 +1546,10 @@ static U32 syscall_fgetxattr(CPU* cpu, U32 eipCount) {
                 result = -K_ERANGE;
             }
         }
+    } else {
+        // FD-163: any other name on an open descriptor answers
+        // the namespace verdict.
+        result = xattrGetNameVerdict32(name);
     }
 
     SYS_LOG1(SYSCALL_SYSTEM, cpu, "fgetxattr: result = %x\n", result);
@@ -1490,18 +1557,24 @@ static U32 syscall_fgetxattr(CPU* cpu, U32 eipCount) {
 }
 
 static U32 syscall_flistxattr(CPU* cpu, U32 eipCount) {
-    U32 result = -K_ENOTSUP;
-    SYS_LOG1_NO_FMT(SYSCALL_SYSTEM, cpu, "flistxattr: result = ENOTSUP IGNORED\n");
+    // FD-162: this form used to answer -ENOTSUP without ever
+    // looking at its descriptor. The host answers -EBADF for
+    // an unopened descriptor and an empty list (0) for any
+    // open one -- the emulator models no xattrs.
+    KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
+    U32 result = fd ? 0 : (U32)-K_EBADF;
+    SYS_LOG1(SYSCALL_SYSTEM, cpu, "flistxattr: result = %x\n", result);
     return result;
 }
 
 static U32 syscall_fremovexattr(CPU* cpu, U32 eipCount) {
+    BString name;
+    S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+    if (fetch) return (U32)fetch; // FD-162/FD-163: the name fetch precedes the descriptor verdict
     U32 result = -K_ENOTSUP;
-    BString name = cpu->memory->readString(ARG2);
-
     KFileDescriptorPtr fd = cpu->thread->process->getFileDescriptor(ARG1);
     if (!fd) {
-        result = -K_EBADFD;
+        result = -K_EBADF; // FD-162: the host has no -EBADFD
     } else if (name == "user.DOSATTRIB") {
         std::shared_ptr<KFile> node = std::dynamic_pointer_cast<KFile>(fd->kobject);
         if (!node) {
@@ -1533,8 +1606,12 @@ static U32 xattrPathForm32(CPU* cpu, bool followLink, bool isSetForm, bool hasNa
     if (isSetForm && (ARG5 & ~(U32)0x3)) {
         return -K_EINVAL;
     }
+    if (hasName) {
+        BString name;
+        S32 fetch = xattrNameFetch32(cpu, ARG2, name);
+        if (fetch) return (U32)fetch; // FD-163: the name fetch (null -EFAULT, empty -ERANGE) precedes the path verdicts
+    }
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
-    if (hasName && !ARG2) return -K_EFAULT; // the name is fetched ahead of the path verdicts
     BString path = cpu->memory->readString(ARG1);
     if (path.length() == 0) return -K_ENOENT; // FD-131: an empty path resolves to nothing on the host
     bool notDir = false;

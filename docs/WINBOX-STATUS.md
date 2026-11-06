@@ -1,6 +1,7 @@
 # Winbox status — read this first
 
-_Last rewritten 2026-10-30 (documentation cleanup lane). This file says
+_Last rewritten 2026-10-30 (documentation cleanup lane); current-state
+sections updated 2026-11-05 (cleanup/status lane). This file says
 where the truth lives and what is current as of that date. Anything here
 that can change — build hashes, register counts, demo verdicts — names
 its source; trust the source over this summary._
@@ -19,7 +20,10 @@ https://kn0tzer.work.gd/winbox
   production; read it rather than trusting any document, including this
   one. Each deploy is recorded in `docs/reports/deploy-*.md` and keeps
   exactly one rollback copy beside the live tree. The current deploy
-  record is `docs/reports/deploy-20261030-deadstart.md`.
+  record is `docs/reports/deploy-batch6-20261104.md`. Batch 7 went
+  live on 2026-11-05: the live site's stamp reads commit `4006ddb58`,
+  program hash `c0af957a` — read the stamp, not this line, for what is
+  live at any moment.
 - **Compatibility gaps:** the registers in `docs/known-gaps/` are the
   live record, guarded by tests; their headers carry the current
   counts. One register file, `runtime-artifact-manifest.md`, is
@@ -34,7 +38,34 @@ https://kn0tzer.work.gd/winbox
 - **How the runtime fits together:** `docs/architecture.md`.
 - **Build and probe coordination:** `BUILD_PROTOCOL.md`.
 
-## Current state (2026-10-30)
+## Current state (2026-11-05)
+
+- Seven fix batches have shipped since the 2026-10-30 state below.
+  The live site serves the batch-7 build (commit `4006ddb58`, program
+  hash `c0af957a`, live 2026-11-05); the integration branch holds the
+  same build plus its records. The defect register
+  (`docs/defect-register.md`) holds 161 tracked entries with 118
+  closures; the open remainder is listed in its Section A.
+- Starting a program works far more often than it did on 2026-10-30:
+  the startup defects behind the dead starts were fixed and shipped.
+  One rare stuck start remains open (register FD-115): measured at
+  1 wedged start in 35 first-visit starts on shipped builds. The
+  launcher's automatic-restart safety net still ships.
+- The Godot demo now opens its window on the shipped build and builds
+  its graphics pipelines; it still shows no first frame, because one
+  shader operation it needs has no equivalent in the browser's shader
+  language (register FD-72; the project's side is ready, the blocker
+  is the browser platform).
+- Demo verdicts in `docs/game-compatibility.md` still rest on the
+  2026-10-30 sweep; no new full sweep has been run since.
+- Housekeeping (2026-11-05): the main checkout's working tree is clean
+  again (580 tracked source files that showed as deleted were
+  restored; nothing was committed from that checkout), and 56 finished
+  lane worktrees were removed after preserving their evidence —
+  free disk space recovered from under 5 GB to over 40 GB. Record:
+  `docs/reports/cleanup-status-20261105.md`.
+
+## Current state (2026-10-30 — superseded by the 2026-11-05 section above)
 
 - The DirectX 12 campaign is complete and shipped (2026-10-29); its
   register closed with no open rows.

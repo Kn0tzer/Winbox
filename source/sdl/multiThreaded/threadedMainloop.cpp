@@ -86,6 +86,10 @@ bool doMainLoop() {
         }
         // Present the in-process X11 wire server's latest frame + pump host input
         // (Phase 2c). Cap the wait so we stay responsive while a window is up.
+        // The wire server and its SDL sink exist only in the 64-bit guest
+        // configuration (xwirepresentSDL.cpp); the single-threaded mainloop
+        // guards its identical call the same way (FD-33).
+#ifdef BOXEDWINE_GUEST_X64
         tickXWirePresent();
         if (g_xwirePresentSink) {
             timeout = 17;
@@ -93,6 +97,7 @@ bool doMainLoop() {
         if (hasMainThreadWork()) {
             timeout = 0;
         }
+#endif
 #endif
         if (flipFB()) {
             timeout = 17;

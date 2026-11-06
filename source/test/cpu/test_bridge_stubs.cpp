@@ -15,12 +15,8 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     return (U64)(U32)-K_ENOSYS;
 }
 
-// msgScratch is defined in syscall64.cpp which requires BOXEDWINE_GUEST_X64.
-// Provide a stub for the test build.
-U32 msgScratch(KThread* thread) {
-    (void)thread;
-    return 0;
-}
+// msgScratch needs no stub: it is defined in syscall64.cpp for every
+// configuration (it serves the 32-bit dispatcher's slow paths too, FD-33).
 
 // Stubs for SDL mainloop functions not in test build
 bool hasMainThreadWork() { return false; }

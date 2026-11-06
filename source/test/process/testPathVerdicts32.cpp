@@ -111,6 +111,20 @@ constexpr U32 hlAt         = TEST_HEAP_ADDRESS + 0x580; // "hl.txt"
 constexpr U32 ldTrailAt    = TEST_HEAP_ADDRESS + 0x5C0; // "ld/"
 constexpr U32 bufAt        = TEST_HEAP_ADDRESS + 0x600; // out buffers
 constexpr U32 lnTrailAt    = TEST_HEAP_ADDRESS + 0x700; // "ln/"
+constexpr U32 bogusAt      = TEST_HEAP_ADDRESS + 0x800; // "bogus.x"
+constexpr U32 trustedAt    = TEST_HEAP_ADDRESS + 0x840; // "trusted.x"
+constexpr U32 securityAt   = TEST_HEAP_ADDRESS + 0x880; // "security.x"
+constexpr U32 bareUserAt   = TEST_HEAP_ADDRESS + 0x8C0; // "user."
+constexpr U32 aclAt        = TEST_HEAP_ADDRESS + 0x900; // "system.posix_acl_access"
+constexpr U32 systemAt     = TEST_HEAP_ADDRESS + 0x980; // "system.x"
+constexpr U32 dMidAt       = TEST_HEAP_ADDRESS + 0x9C0; // "d/../a.txt"
+constexpr U32 ldMidAt      = TEST_HEAP_ADDRESS + 0xA00; // "ld/../a.txt"
+constexpr U32 lnMidAt      = TEST_HEAP_ADDRESS + 0xA40; // "ln/../d"
+constexpr U32 innerMidAt   = TEST_HEAP_ADDRESS + 0xA80; // "d/inner/../../a.txt"
+constexpr U32 deepMidAt    = TEST_HEAP_ADDRESS + 0xAC0; // "d/../../a.txt"
+constexpr U32 dotdotOnly32 = TEST_HEAP_ADDRESS + 0xB00; // ".."
+constexpr U32 absRootMidAt = TEST_HEAP_ADDRESS + 0xB40; // "/../a.txt"
+constexpr U32 relRootMidAt = TEST_HEAP_ADDRESS + 0xB80; // "../a.txt"
 
 void stageStringsPV32(KMemory* memory) {
     memory->memcpy(aTxtAt, "a.txt", 6);
@@ -138,6 +152,20 @@ void stageStringsPV32(KMemory* memory) {
     memory->memcpy(hlAt, "hl.txt", 7);
     memory->memcpy(ldTrailAt, "ld/", 4);
     memory->memcpy(lnTrailAt, "ln/", 4);
+    memory->memcpy(bogusAt, "bogus.x", 8);
+    memory->memcpy(trustedAt, "trusted.x", 10);
+    memory->memcpy(securityAt, "security.x", 11);
+    memory->memcpy(bareUserAt, "user.", 6);
+    memory->memcpy(aclAt, "system.posix_acl_access", 24);
+    memory->memcpy(systemAt, "system.x", 9);
+    memory->memcpy(dMidAt, "d/../a.txt", 11);
+    memory->memcpy(ldMidAt, "ld/../a.txt", 12);
+    memory->memcpy(lnMidAt, "ln/../d", 8);
+    memory->memcpy(innerMidAt, "d/inner/../../a.txt", 20);
+    memory->memcpy(deepMidAt, "d/../../a.txt", 14);
+    memory->memcpy(dotdotOnly32, "..", 3);
+    memory->memcpy(absRootMidAt, "/../a.txt", 10);
+    memory->memcpy(relRootMidAt, "../a.txt", 9);
 }
 
 struct InvokePV32 {
@@ -310,12 +338,8 @@ void testTrailingNotDir32Syscalls() {
     // -ENOTDIR by either route; pinned as a control.
     expectEq32("process rmdir(a.txt/) control", (S32)process->rmdir(B("a.txt/")), -K_ENOTDIR);
 
-    // Printed observations, not pinned: the mid-path erased ".."
-    // pair (see the 64-bit companion); filed separately.
-    printf("FD-159 observation: statfs(\"missing/../a.txt\") -> %d (host: -ENOENT)\n",
-           invoke(99, missMidAt, bufAt, 0, 0));
-    printf("FD-159 observation: statfs(\"a.txt/../d\") -> %d (host: -ENOTDIR)\n",
-           invoke(99, fileMidAt, bufAt, 0, 0));
+    // The mid-path erased ".." pair these shapes used to print
+    // as observations is pinned by testMidDotDot32Syscalls.
 }
 
 void testLinkBareDestination32() {
@@ -356,6 +380,142 @@ void testLinkBareDestination32() {
     expectEq32("syscall link(a.txt, hl.txt)", invoke(9, absAtxtAt, hlAt, 0, 0), -K_EEXIST);
     expectEq32("rename(c.txt, c2.txt) bare-name audit control", (S32)process->rename(B("c.txt"), B("c2.txt")), 0);
     expectEq32("symlink(a.txt, sl2) bare-name audit control", (S32)process->symlink(B("a.txt"), B("sl2")), 0);
+}
+
+void testXattrDescriptor32Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    RootSwapPV32 root;
+    FD dirFd = (FD)-1;
+    if (!root.ok || !stageTreePV32(process, dirFd)) {
+        testFail("xattr descriptor test could not stage its fixture");
+        return;
+    }
+    KFileDescriptorPtr fileDesc;
+    if (process->openFile(B("/"), B("/a.txt"), K_O_RDONLY, fileDesc) != 0 || !fileDesc) {
+        testFail("xattr descriptor test could not open its file");
+        return;
+    }
+    const U32 fileFd = fileDesc->handle;
+    const U32 badFd = 9999;
+    InvokePV32 invoke(context);
+
+    // FD-162, host-measured at the raw syscall level
+    // (test-results/fd162-164/hostref-fd162-164.out): the four
+    // descriptor forms answer -EBADF for an unopened descriptor --
+    // the host has no -EBADFD -- in the family's entry order: the
+    // set form's flags word first (-EINVAL), then the name fetch
+    // (a null name -EFAULT, an empty name -ERANGE), then the
+    // descriptor verdict.
+    expectEq32("fgetxattr(9999, user.x)", invoke(231, badFd, nameAt, bufAt, 256), -K_EBADF);
+    expectEq32("fgetxattr(9999, bogus.x)", invoke(231, badFd, bogusAt, bufAt, 256), -K_EBADF);
+    expectEq32("fgetxattr(9999, NULL)", invoke(231, badFd, 0, bufAt, 256), -K_EFAULT);
+    expectEq32("fgetxattr(9999, \"\")", invoke(231, badFd, emptyAt, bufAt, 256), -K_ERANGE);
+    expectEq32("fsetxattr(9999, user.x, 0)", invoke(228, badFd, nameAt, valAt, 1, 0), -K_EBADF);
+    expectEq32("fsetxattr(9999, user.x, bad flags): flags precede fd", invoke(228, badFd, nameAt, valAt, 1, 0x10), -K_EINVAL);
+    expectEq32("fsetxattr(9999, NULL, 0)", invoke(228, badFd, 0, valAt, 1, 0), -K_EFAULT);
+    expectEq32("flistxattr(9999)", invoke(234, badFd, bufAt, 256, 0), -K_EBADF);
+    expectEq32("fremovexattr(9999, user.x)", invoke(237, badFd, nameAt, 0, 0), -K_EBADF);
+    expectEq32("fremovexattr(9999, NULL)", invoke(237, badFd, 0, 0, 0), -K_EFAULT);
+
+    // FD-162: flistxattr consults its descriptor; a valid one has
+    // an empty list.
+    expectEq32("flistxattr(fileFd)", invoke(234, fileFd, bufAt, 256, 0), 0);
+    expectEq32("flistxattr(dirFd)", invoke(234, dirFd, bufAt, 256, 0), 0);
+
+    // Resolved answers on a valid descriptor: the get form
+    // follows the FD-163 namespace rule; the set/remove forms
+    // keep the standing -ENOTSUP both dispatchers give.
+    expectEq32("fgetxattr(fileFd, user.x)", invoke(231, fileFd, nameAt, bufAt, 256), -K_ENODATA);
+    expectEq32("fgetxattr(fileFd, bogus.x)", invoke(231, fileFd, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("fgetxattr(fileFd, user.)", invoke(231, fileFd, bareUserAt, bufAt, 256), -K_EINVAL);
+    expectEq32("fgetxattr(fileFd, \"\")", invoke(231, fileFd, emptyAt, bufAt, 256), -K_ERANGE);
+    expectEq32("fgetxattr(fileFd, user.DOSATTRIB) control", invoke(231, fileFd, dosAt, bufAt, 64), -K_ENODATA);
+    expectEq32("fgetxattr(dirFd, user.x)", invoke(231, dirFd, nameAt, bufAt, 256), -K_ENODATA);
+    expectEq32("fsetxattr(fileFd, user.x, 0) control", invoke(228, fileFd, nameAt, valAt, 1, 0), -K_ENOTSUP);
+    expectEq32("fremovexattr(fileFd, user.x) control", invoke(237, fileFd, nameAt, 0, 0), -K_ENOTSUP);
+
+    process->close(fileDesc->handle);
+}
+
+void testXattrNamespace32Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    RootSwapPV32 root;
+    FD dirFd = (FD)-1;
+    if (!root.ok || !stageTreePV32(process, dirFd)) {
+        testFail("xattr namespace test could not stage its fixture");
+        return;
+    }
+    InvokePV32 invoke(context);
+
+    // FD-163, host-measured at the raw syscall level
+    // (test-results/fd162-164/hostref-fd162-164.out and
+    // hostref-fd163b/c/d.out): on a resolved target the kernel
+    // looks the name's namespace up before the attribute. A
+    // prefix it has no handler for (bogus.*, a bare word,
+    // system.* other than the two posix_acl names) answers
+    // -ENOTSUP; a recognised namespace (user.*, trusted.*,
+    // security.*, system.posix_acl_access/_default) with an
+    // absent attribute answers -ENODATA; a recognised prefix
+    // with an empty attribute name answers -EINVAL; an empty
+    // name answers -ERANGE at fetch time, ahead of every path
+    // and descriptor verdict.
+    expectEq32("getxattr(a.txt, bogus.x)", invoke(229, aTxtAt, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("getxattr(a.txt, trusted.x)", invoke(229, aTxtAt, trustedAt, bufAt, 256), -K_ENODATA);
+    expectEq32("getxattr(a.txt, security.x)", invoke(229, aTxtAt, securityAt, bufAt, 256), -K_ENODATA);
+    expectEq32("getxattr(a.txt, system.x)", invoke(229, aTxtAt, systemAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("getxattr(a.txt, system.posix_acl_access)", invoke(229, aTxtAt, aclAt, bufAt, 256), -K_ENODATA);
+    expectEq32("getxattr(a.txt, user.)", invoke(229, aTxtAt, bareUserAt, bufAt, 256), -K_EINVAL);
+    expectEq32("getxattr(a.txt, \"\")", invoke(229, aTxtAt, emptyAt, bufAt, 256), -K_ERANGE);
+    expectEq32("getxattr(NULL, \"\"): the name fetch precedes the path fault", invoke(229, 0, emptyAt, bufAt, 256), -K_ERANGE);
+    expectEq32("getxattr(missing, bogus.x): resolution precedes the namespace", invoke(229, missingAt, bogusAt, bufAt, 256), -K_ENOENT);
+    expectEq32("getxattr(a.txt/child, bogus.x)", invoke(229, childAt, bogusAt, bufAt, 256), -K_ENOTDIR);
+    expectEq32("getxattr(d, bogus.x)", invoke(229, dAt, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("getxattr(ln, bogus.x) follows", invoke(229, lnAt, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("lgetxattr(a.txt, bogus.x)", invoke(230, aTxtAt, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("lgetxattr(ln, bogus.x) the link itself", invoke(230, lnAt, bogusAt, bufAt, 256), -K_ENOTSUP);
+    expectEq32("setxattr(a.txt, \"\", 0): the fetch verdict reaches the set forms", invoke(226, aTxtAt, emptyAt, valAt, 1, 0), -K_ERANGE);
+    expectEq32("removexattr(a.txt, \"\")", invoke(235, aTxtAt, emptyAt, 0, 0), -K_ERANGE);
+}
+
+void testMidDotDot32Syscalls() {
+    TestContext& context = testContext();
+    KProcessPtr process = context.process;
+
+    RootSwapPV32 root;
+    FD dirFd = (FD)-1;
+    if (!root.ok || !stageTreePV32(process, dirFd)) {
+        testFail("mid-dotdot test could not stage its fixture");
+        return;
+    }
+    InvokePV32 invoke(context);
+
+    // FD-164, host-measured at the raw syscall level
+    // (test-results/fd162-164/hostref-fd162-164.out): a ".." away
+    // from the end of a path is stepped through, not erased with
+    // its predecessor -- the predecessor must resolve (a miss
+    // answers -ENOENT) and must be a directory (a file, or a
+    // link to a file, answers -ENOTDIR). A ".." at the root
+    // stays at the root.
+    expectEq32("statfs(missing/../a.txt)", invoke(99, missMidAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq32("statfs(a.txt/../d)", invoke(99, fileMidAt, bufAt, 0, 0), -K_ENOTDIR);
+    expectEq32("statfs(d/../a.txt) control", invoke(99, dMidAt, bufAt, 0, 0), 0);
+    expectEq32("statfs(ld/../a.txt) through a link to a directory", invoke(99, ldMidAt, bufAt, 0, 0), 0);
+    expectEq32("statfs(ln/../d) through a link to a file", invoke(99, lnMidAt, bufAt, 0, 0), -K_ENOTDIR);
+    expectEq32("statfs(d/inner/../../a.txt)", invoke(99, innerMidAt, bufAt, 0, 0), -K_ENOTDIR);
+    expectEq32("statfs(d/../../a.txt) clamps at the root", invoke(99, deepMidAt, bufAt, 0, 0), 0);
+    expectEq32("statfs(..) at the root", invoke(99, dotdotOnly32, bufAt, 0, 0), 0);
+    expectEq32("statfs(/../a.txt)", invoke(99, absRootMidAt, bufAt, 0, 0), 0);
+    expectEq32("statfs(\"../a.txt\") from the root", invoke(99, relRootMidAt, bufAt, 0, 0), 0);
+    expectEq32("stat64(missing/../a.txt)", invoke(195, missMidAt, bufAt, 0, 0), -K_ENOENT);
+    expectEq32("stat64(a.txt/../d)", invoke(195, fileMidAt, bufAt, 0, 0), -K_ENOTDIR);
+    expectEq32("getxattr(missing/../a.txt, user.x)", invoke(229, missMidAt, nameAt, bufAt, 256), -K_ENOENT);
+    expectEq32("getxattr(a.txt/../d, user.x)", invoke(229, fileMidAt, nameAt, bufAt, 256), -K_ENOTDIR);
+    expectEq32("process stat64(missing/../a.txt)", (S32)process->stat64(B("missing/../a.txt"), bufAt), -K_ENOENT);
+    expectEq32("process stat64(a.txt/../d)", (S32)process->stat64(B("a.txt/../d"), bufAt), -K_ENOTDIR);
 }
 
 #endif

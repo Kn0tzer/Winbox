@@ -1579,6 +1579,18 @@ do not close the entry until they land.
   are unaffected. Evidence:
   `test-results/alkhaser-int2d/REPORT.md`
   (branch `lane-alkhaser-int2d`, tests section).
+
+  Fixed on branch `lane-buildrel`:
+  the single-process mode that died
+  is the harness's multi-worker
+  thread mode, replaced by process
+  sharding (see FD-32's closing
+  account); at the default worker
+  count the binary now completes
+  111 tests, 0 FAILED, and the old
+  thread path still dies at 79 of
+  111 on the same tree -- see
+  CL-122.
 - **FD-32 — Multi-worker native suite runs die on the loaded
   box.** *(Low)* Runs at the harness's default worker count
   die with exit 139 inside the first few tests, in a
@@ -1614,6 +1626,31 @@ do not close the entry until they land.
   early parallel-run failure to this
   entry. Evidence: `test-results/fd87loss/`
   (suite logs).*
+
+  *Closing account 2026-11-05
+  (lane-buildrel): multi-worker runs
+  are now process shards. Each shard
+  process runs a strided slice of
+  the entries through the serial
+  mode's own fork-per-test isolated
+  path (extracted unchanged), so a
+  test keeps the standalone
+  environment FD-41 proved it needs;
+  shard output is replayed in shard
+  order, failure counts return over
+  a pipe, and a shard that dies
+  before reporting fails all its
+  tests loudly. Proof on the fixed
+  tree: the preserved thread path
+  (BW64_TEST_NO_SHARD=1) dies exit
+  139 after 2 tests with a runaway
+  guest-memfault loop, while 4
+  shards complete 686 tests,
+  0 FAILED, matching the serial
+  total; the default invocation
+  completes the same. Fixed on
+  branch `lane-buildrel` -- see
+  CL-123.*
 - **FD-33 — The native release build does not build.**
   *(Low)* Two pre-existing failures in the same build family:
   (a) the release application binary fails to link with
@@ -1627,6 +1664,29 @@ do not close the entry until they land.
   `wt-deadstart3/test-results/INTERIM-deadstart2.md`; (b)
   `docs/known-gaps/gl.md` (row for the release-target guard
   fix, "adjacent non-GL failure").
+
+  Fixed on branch `lane-buildrel`:
+  (a) the message scratch and its
+  invalidation move out of the
+  64-bit gate in syscall64.cpp (the
+  32-bit dispatcher's slow paths use
+  the same scratch; the test build's
+  stub for it is deleted, so tests
+  link the real one), the execve
+  invalidation is ungated in
+  kprocess.cpp, and the
+  multi-threaded mainloop guards its
+  wire-present calls like the
+  single-threaded one. The release
+  build now links and starts, and
+  every other native configuration
+  builds. (b) not reproduced on the
+  current tree: the threshold
+  helper's uses outside the WASM
+  JIT configuration already carry
+  the guard, and the release
+  configuration's full compile is
+  error-free -- see CL-124.
 - **FD-34 — The debug (`-D_DEBUG`) compile of the instruction
   decoder is broken at baseline.** *(Low)* It fails on a
   switch/`-Werror` conflict, verified byte-identical on the
@@ -7630,7 +7690,26 @@ do not close the entry until they land.
   descriptor (and flistxattr of
   a valid descriptor answers
   the empty list), proven by
-  guest tests. Filed, not fixed.
+  guest tests. Filed, not fixed. Closing
+  account (lane-fd162-164,
+  2026-11-05): closed on this
+  branch -- see CL-119. The four
+  descriptor forms now share the
+  host's entry order: the set
+  form's flags word first
+  (-EINVAL for a word outside
+  0x3), then the name fetch, then
+  the descriptor verdict, which
+  is -EBADF (-EBADFD is gone);
+  and flistxattr consults its
+  descriptor, answering the empty
+  list for an open one. Fix
+  `9b4ce67b1`; guest test
+  testXattrDescriptor32Syscalls
+  red on the base, green on the
+  fix. Record: `docs/reports/
+  fd162-164-xattr-namespaces-
+  dotdot-20261105.md`.
 
 - **FD-163 — An xattr name in a
   namespace the emulator does
@@ -7672,7 +7751,26 @@ do not close the entry until they land.
   modelled namespaces answer
   -ENOTSUP on a resolved file on
   both dispatchers, proven by
-  guest tests. Filed, not fixed.
+  guest tests. Filed, not fixed. Closing
+  account (lane-fd162-164,
+  2026-11-05): closed on this
+  branch -- see CL-120. The get
+  forms on both dispatchers now
+  answer the namespace verdict on
+  a resolved target: a prefix
+  with no handler -ENOTSUP, a
+  recognised namespace with an
+  absent attribute -ENODATA, a
+  bare recognised prefix -EINVAL;
+  and an empty name answers
+  -ERANGE at fetch time, ahead of
+  the path and descriptor
+  verdicts. Fix `9b4ce67b1`;
+  guest tests
+  testXattrNamespace32Syscalls
+  and testXattrNamespace64Syscalls
+  red on the base, green on the
+  fix. Record as in CL-119.
 
 - **FD-164 — A ".." component
   away from the end of a path is
@@ -7718,9 +7816,89 @@ do not close the entry until they land.
   -ENOTDIR, and ".." at the root
   resolves to the root, at the
   path calls, proven by guest
+  tests. Filed, not fixed. Closing
+  account (lane-fd162-164,
+  2026-11-05): closed on this
+  branch -- see CL-121. When a
+  caller asks for the notDir
+  verdict, the resolver now
+  judges each non-trailing ".."
+  by resolving the path ahead of
+  it -- a miss propagates as a
+  miss, a predecessor resolving
+  to a non-directory sets the
+  verdict -- and the path
+  normalisation clamps a ".." at
+  the root instead of failing the
+  walk. Fixes `9b4ce67b1` and
+  `872d1b474` (the slice-safe form
+  of the scan, behaviour
+  identical); guest tests
+  testMidDotDot32Syscalls and
+  testMidDotDot64Syscalls red on
+  the base, green on the fix.
+  Record as in CL-119.
+
+- **FD-165 — The set/remove
+  xattr forms' namespace
+  classification is unmeasured
+  on the host and unmodelled in
+  the guest: beyond the one
+  modelled name, both dispatchers
+  answer their standing -ENOTSUP
+  for every name on a resolved
+  target, whether or not the host
+  would classify the name first.**
+  *(Low. Filed by the FD-162-164
+  lane, 2026-11-05; provisional
+  until the merge lane's audit.)*
+  FD-163's raw-syscall matrix
+  covered the get forms, whose
+  namespace rule is now
+  implemented; the same matrix
+  did not extend to the set/remove
+  forms, and the one remove-side
+  shape it did touch (the modelled
+  name through the descriptor
+  form, on a file) is not pinned
+  for a file that does not carry
+  the attribute. Whether the host
+  classifies names for
+  setxattr/removexattr and their
+  l/f variants — and so whether
+  the standing -ENOTSUP is right
+  for each name class there — is
+  unknown. Closing terms: the
+  set/remove forms' name handling
+  measured at the raw syscall
+  level (including the descriptor
+  remove form for the modelled
+  name on a file that does not
+  carry it) and aligned with the
+  measurement, proven by guest
   tests. Filed, not fixed.
 
 ## B. Fixed on a lane branch — awaiting merge
+
+**Status correction (2026-11-05, cleanup/status lane):** this table
+is now a historical ledger, not a live queue. Every branch row in it
+has since been composed into the integration branch — through the
+2026-10-31 cleanup merge wave and fix batches 1–7 (last composed
+2026-11-04) — and the entries those rows answer are closed in
+Section C. Read a row here as "this lane's work, its branch, and its
+proof", never as work still outstanding. The branches whose work is
+genuinely not in the integration tree today are the ones with no row
+here yet: `lane-fd162-164` (in progress) and `lane-cleanup-status`
+(this lane). The original preamble follows, kept for the record.
+
+**Batch-8 audit note (2026-11-05):** the two branches named in
+the correction above have since been composed into this tree
+(batch 8, together with `lane-buildrel`): `lane-fd162-164`'s
+entries are closed in Section C (FD-162 as CL-119, FD-163 as
+CL-120, FD-164 as CL-121; its filing FD-165 stays open) and
+`lane-buildrel`'s as CL-122 to CL-124 (FD-31 to FD-33), and
+both lanes have rows in the table below. The correction stands
+as written for the moment it was made.
 
 These are findings whose fixes are written and proven on their
 branches but are **not** in the integration tree. The entries
@@ -7812,6 +7990,8 @@ is behavioural, is re-proven there.
 | `lane-fd156` | *(Batch-7 settled numbers: FD-156 closed as CL-112.)* FD-156 CLOSED (closure number settles at composition): the MEMORY64 variant of the Node wasm64-selftest target compiles again -- the SDL audio bridge's bridge-arming EM_ASM call cast the ring index addresses (&bwRingWrite, &bwRingRead) to int, which a 64-bit-pointer build rejects; both now go as pointers (sig 'p', delivered to JS as the Number byte offset, the treatment the ring base at $0 already gets), byte-identical values on wasm32 hosts; the target's run instructions corrected to the .cjs form with the measured Node-version behaviour. No new defects filed. | Base (integ tip `3ea2fd97d`): build fails at platform/sdl/kdspaudio.cpp:371, the two filed cast errors in both compilations of the file, no other error site. Fixed: `make wasm64-selftest-mem64` MAKE_EXIT=0; run under official Node v24.11.0 (tarball sha256 verified against the release SHASUMS256.txt; the box's Node 22.22.3 rejects the module at instantiation -- 64-bit table limits) **953 passed, 0 failed**, exit 0. Standard variant build + run 953/0; native suites serial main 682 tests 0 FAILED, x64 108 tests 0 FAILED; JS unit 353/0, legacy 115/0; browser build 'Browser export verified' (BUILD_INFO git_sha `b4d3f2e8f`, dirty 0, wasm aba69204..., archive c4dbe35986a5). Record: `docs/reports/fd156-mem64-selftest-target-20261104.md`; evidence `test-results/fd156/` |
 | `lane-fd157-161` | *(Batch-7 settled numbers: FD-157 closed as CL-113, FD-158 as CL-114, FD-159 as CL-115, FD-160 as CL-116, FD-161 as CL-117; filings FD-162 to FD-164 keep their numbers.)* *(Provisional numbers: closures settle at the next composition.)* FD-157 CLOSED + FD-158 CLOSED + FD-159 CLOSED + FD-160 CLOSED + FD-161 CLOSED (lane-local CL-111..CL-115): FD-157 -- the 32-bit dispatcher's xattr path forms resolved only for the modelled DOSATTRIB name and had no handlers at all for six of the eight forms; all eight now resolve before answering (miss -ENOENT, through a file -ENOTDIR, unresolved attribute -ENODATA; the set/remove forms keep -ENOTSUP and the list forms an empty list for a resolved target), and a null attribute name faults ahead of the path verdicts as the host's entry order measures. FD-158 -- readlink/readlinkat of a missing path answers -ENOENT on both dispatchers; a resolved non-link keeps -EINVAL. FD-159 -- a path whose final component is erased by normalization ("a.txt/", "a.txt/.", "a.txt/..") answers -ENOTDIR: the resolver judges the anchor component when the caller asks for the notDir verdict. FD-160 -- the 64-bit dispatcher's rmdir (84) gained its missing case, routed to KProcess::rmdir. FD-161 -- Fs::getParentPath of a slash-less path returns the working directory, so a hard link to a bare filename succeeds; every other consumer audited. New filings from this lane's measurements: FD-162 (the 32-bit xattr descriptor forms answer the emulator-private -EBADFD for an unopened descriptor, and flistxattr never consults its descriptor), FD-163 (an unmodelled xattr namespace answers -ENODATA where the host answers -ENOTSUP), FD-164 (the mid-path erased-.. family). | Tests `c22bc6805`, fix `7239fe69c` on base `3ea2fd97d`: RED -- the seven new guest tests fail on the base for the filed reasons (evidence `test-results/fd157-161/red-main.log`, `red-x64.log`); GREEN -- targeted tests pass and the full native suites run serially with 0 FAILED (main 686 tests, x64 111 tests); JS unit suite 353/0; browser build 'Browser export verified' on the fixed tree. Host behaviour measured first at the raw syscall level (asm-generic numbers, strace cross-checked): `test-results/fd157-161/hostref-fd157-161.out`. Record: `docs/reports/fd157-161-path-verdicts-20261104.md`; evidence `test-results/fd157-161/` |
 | `lane-fd154` | *(Batch-7 settled numbers: FD-154 closed as CL-118.)* FD-154 ADJUDICATED + CLOSED: the five browser-suite failures from the batch-5 gate, each identified to a product or harness cause and fixed. winsock-http PRODUCT (fix `d26f606a1`): browser-build INET sockets are marked loopbackStream and connect() refused loopback destinations internally, never using the native transport that reaches the relay; it now falls through to the native connect when no guest listener exists. input-mouse-rel PRODUCT (fix `3cce91bcb`): both relative-motion producers advanced the sink's tracked pointer at queue time and the delivering connection added the delta again, doubling the first motion of every stream (injected 100,50 -> guest 200,100); producers no longer advance, and deliveries are reported back through the new noteDeliveredPointer(). input-fullscreen HARNESS over three PRODUCT layers: harness `e482eb6a6` keeps the page unlocked (headless grants ClipCursor's pointer lock without a gesture and clicks under lock arrive at (0,0)) and delivers the press through the injection channel; product `f610e90b2` (a GrabModeSync grab froze input at grab time), `dbe7705f3` (grab-routed events dropped as foreign-target because Wine grabs on the root window owned by another connection -- own-grab targets now deliver on the grabbing connection, and grab parameters plus every pointer-path drop reason log under BW64_XWIRE), `25471296c` (the delivery loop re-froze after the first event under a sync grab while this client never sends XAllowEvents -- sync grabs treated as async, matching the native X11 layer). jit64 HARNESS (`189f6b302`, `41de3c327`): the wineboot wait demanded `wineboot.exe--init`, a substring the space-joined argv rendering never produces; pattern fixed and the generated-code assertion gated on engine availability. jitbench HARNESS (`b99c92154`, `260545f5b`, `1d2c059d8`, `87d9e021b`): the boot never passed ?jit32 so CPU32 mode-1 could never latch, and the suite's interpreter-target build has no JIT engine to latch; assertions gate on the stats' availability report, JIT-variant builds keep the full assertions. Two xwire-pointer-grab unit contracts updated to the measured semantics (`58f759879`). | All five reproduced stock on the unmodified base `3ea2fd97d` first. Fixed build (wasm `3b3fd4f9`): winsock-http passes with relay stats accepted 1, 76 bytes up / 324 down; input-mouse-rel and input-fullscreen pass on both architectures (the guest prints the move, BUTTON UP, and the clipped 1500-count move exactly once); jit64 passes end to end in both modes; the jitbench focused run passes. JS unit 353/0; native suites serial main 682 tests 0 FAILED, x64 108 tests 0 FAILED. Whether the shipped build should switch to the JIT variant is flagged in the lane record as a build decision outside this filing. Record: `docs/reports/fd154-adjudication-20261104.md`; evidence `test-results/fd154/` |
+| `lane-fd162-164` | *(Batch-8 settled numbers: FD-162 closed as CL-119, FD-163 as CL-120, FD-164 as CL-121; filing FD-165 keeps its number.)* *(Provisional numbers: closures settle at the next composition.)* FD-162 CLOSED + FD-163 CLOSED + FD-164 CLOSED (lane-local CL-119..CL-121): FD-162 -- the 32-bit xattr descriptor forms answered the emulator-private -EBADFD for an unopened descriptor and flistxattr never consulted its descriptor; the four forms now share the host's entry order (flags, name fetch, descriptor -EBADF) and flistxattr answers the empty list for an open descriptor. FD-163 -- the xattr get forms answered -ENODATA for every name on a resolved target; both dispatchers now classify the fetched name (unmodelled prefix -ENOTSUP, recognised namespace with an absent attribute -ENODATA, a bare recognised prefix -EINVAL) and the empty name answers -ERANGE at fetch time. FD-164 -- a ".." away from the end of a path was erased with its predecessor sight unseen; the resolver now judges each non-trailing ".." by resolving the path ahead of it when the notDir verdict is asked, and ".." clamps at the root. New filing from this lane's measurements: FD-165 (the set/remove forms' namespace classification, unmeasured and unmodelled). | Tests `ec62ca78e`, fixes `9b4ce67b1` + `872d1b474` on base `4006ddb58`: RED -- the five new guest tests fail on the base for the filed reasons (evidence `test-results/fd162-164/red-main.log`, `red-x64.log`); GREEN -- full native suites run serially with 0 FAILED (main 689 tests, x64 113 tests); JS unit suite 353/0; browser build 'Browser export verified' on the fixed tree (wasm `0e5fa5dee8b2`). Host behaviour measured first at the raw syscall level (asm-generic numbers, strace cross-checked): `test-results/fd162-164/hostref-fd162-164.out`, `hostref-fd163b/c/d.out`. Record: `docs/reports/fd162-164-xattr-namespaces-dotdot-20261105.md`; evidence `test-results/fd162-164/` |
+| `lane-buildrel` | *(Batch-8 settled numbers: FD-31 closed as CL-122, FD-32 as CL-123, FD-33 as CL-124.)* *(Provisional numbers: closures settle at the next composition.)* FD-33 CLOSED + FD-32 CLOSED + FD-31 CLOSED (lane-local CL-119..CL-121): FD-33 -- the native release build failed to link on three symbols defined behind the 64-bit-guest gate (msgScratch, tickXWirePresent, hasMainThreadWork); the message scratch, its caches and the execve invalidation move ahead of the gate in syscall64.cpp, the kprocess invalidation call is ungated, the multi-threaded mainloop guards its wire-present calls like the single-threaded one, and the test build's msgScratch stub (returning 0, silently routing tests to a fallback) is deleted so tests link the real scratch; part (b), the filed JIT compile error, is not reproduced on the current tree (the threshold helper's outside uses already carry the guard; the configuration's full compile is error-free). FD-32/FD-31 -- multi-worker native suite runs were in-process threads and died exit 139 (main suite after 2 tests amid a runaway guest-memfault loop; 64-bit suite after 79 of 111 at the clone tests); parallel runs are now process shards, each shard running a strided slice through the serial mode's unchanged fork-per-test isolated path, output replayed in shard order, failure counts returned over a pipe, a dead shard failing all its tests loudly. | Fix `05ab65469` on base `4006ddb58`: release build RED on base (the three undefined symbols at link) -> GREEN (links, binary starts and shuts down cleanly); all five native configurations build exit 0 (release, test, x64, x64-test, x64-cache); browser build 'Browser export verified' on the same commit (wasm `7daab6b2`, BUILD_INFO dirty 0). Suites: main serial 686/0, 4 shards 686/0, default 686/0, preserved thread path exit 139 after 2; x64 serial 111/0, default shards 111/0, 4 shards 111/0 twice with one futex-race flake in a third run at load 13-17 (test 6/6 standalone; failing log preserved). All runs on the shared box, loads recorded per log. Record: `docs/reports/buildrel-fd31-32-33-20261105.md`; evidence `test-results/buildrel/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -11254,6 +11434,254 @@ dead-start fix and needs composition care.
   tests 0 FAILED. Record:
   `docs/reports/fd154-adjudication-20261104.md`;
   evidence `test-results/fd154/`
+  in the lane's worktree.
+
+- **CL-119 — FD-162 closed: the
+  32-bit xattr descriptor forms
+  answer -EBADF for an unopened
+  descriptor, flistxattr consults
+  its descriptor, and the set
+  form validates its flags word
+  first.** *(Lane-local closure
+  on `lane-fd162-164`; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd162-164`: tests
+  `ec62ca78e`, fix `9b4ce67b1` on
+  base `4006ddb58`. The four
+  descriptor forms now share the
+  host's measured entry order —
+  flags (-EINVAL outside 0x3),
+  name fetch, descriptor — the
+  descriptor verdict is -EBADF
+  (the emulator-private -EBADFD
+  is gone), and flistxattr
+  answers -EBADF for an unopened
+  descriptor and the empty list
+  (0) for any open one. Proof:
+  guest test
+  testXattrDescriptor32Syscalls
+  red on the base (the three new
+  main-flavour tests together
+  showed 41 wrong answers in the
+  filed shapes, `test-results/
+  fd162-164/red-main.log`), green
+  on the fix; full native suites
+  serial with 0 FAILED (main 689
+  tests, x64 113 tests); JS unit
+  suite 353/0; browser build
+  'Browser export verified' on
+  the fixed tree (wasm
+  `0e5fa5dee8b2`, built from
+  `872d1b474` with a clean tree).
+  Host behaviour measured first
+  at the raw syscall level
+  (asm-generic numbers, strace
+  cross-checked): `test-results/
+  fd162-164/hostref-fd162-164
+  .out`. Record: `docs/reports/
+  fd162-164-xattr-namespaces-
+  dotdot-20261105.md`; evidence
+  `test-results/fd162-164/`.
+
+- **CL-120 — FD-163 closed: the
+  xattr get forms classify the
+  name's namespace on a resolved
+  target, and the empty name
+  answers -ERANGE at fetch
+  time.** *(Lane-local closure
+  on `lane-fd162-164`; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd162-164`, fix
+  `9b4ce67b1`. One classifier per
+  dispatcher, kept in step by
+  hand: a prefix with no handler
+  answers -ENOTSUP, a recognised
+  namespace (user.*, trusted.*,
+  security.*,
+  system.posix_acl_access,
+  system.posix_acl_default) with
+  an absent attribute -ENODATA, a
+  bare recognised prefix ("user."
+  itself) -EINVAL; the empty name
+  answers -ERANGE at fetch time
+  on every name-taking form,
+  ahead of the path and
+  descriptor verdicts. The
+  set/remove forms keep their
+  standing -ENOTSUP (FD-157);
+  their namespace classification
+  is filed as FD-165. Proof:
+  guest tests
+  testXattrNamespace32Syscalls
+  and testXattrNamespace64Syscalls
+  red on the base, green on the
+  fix; suite tallies as in
+  CL-119. Record and evidence as
+  in CL-119.
+
+- **CL-121 — FD-164 closed: a
+  non-trailing ".." steps through
+  its predecessor in the
+  resolver, and ".." at the root
+  clamps.** *(Lane-local closure
+  on `lane-fd162-164`; the number
+  settles at the next
+  composition.)* Fixed on branch
+  `lane-fd162-164`, fixes
+  `9b4ce67b1` and `872d1b474`.
+  When a caller asks for the
+  notDir verdict, the resolver
+  judges each non-trailing ".."
+  by resolving the path ahead of
+  it (a miss propagates as
+  -ENOENT, a predecessor
+  resolving to a non-directory
+  sets the -ENOTDIR verdict), and
+  the normalisation clamps a ".."
+  at the root instead of failing
+  the walk; the trailing-marker
+  family stays FD-159's rule and
+  callers not asking for the
+  verdict keep the erased walk.
+  The second fix is the same scan
+  in the restricted source subset
+  the fs-dynamic-link-cache unit
+  test compiles; behaviour
+  identical. Proof: guest tests
+  testMidDotDot32Syscalls and
+  testMidDotDot64Syscalls red on
+  the base, green on the fix;
+  suite tallies as in CL-119.
+  Record and evidence as in
+  CL-119.
+
+- **CL-122 — FD-31 closed: the
+  64-bit native test binary's
+  single-process full run died
+  partway (exit 139, clone/fork
+  neighbourhood).** The dying mode
+  was the harness's multi-worker
+  thread mode; it is replaced by
+  process sharding (CL-123), under
+  which the binary completes its
+  full run at the default worker
+  count. Fixed on branch
+  `lane-buildrel`, commit
+  `05ab65469`. Proof: on the fixed
+  tree the preserved thread path
+  still dies exit 139 after 79 of
+  111 tests (last output in the
+  clone3 neighbourhood), while the
+  default shard run completes 111
+  tests, 0 FAILED (22 s), the
+  serial run 111/0, and two of
+  three explicit 4-shard runs
+  111/0 -- the third had one
+  futex wait/wake race failure
+  under peak load (13-17 on 4
+  CPUs), the test passing 6/6
+  standalone and in both re-runs;
+  recorded in the lane record as a
+  load-sensitive race-test flake
+  with the failing log preserved,
+  not a shard-mode defect. Record:
+  `docs/reports/buildrel-fd31-32-33-20261105.md`;
+  evidence `test-results/buildrel/`
+  in the lane's worktree.
+- **CL-123 — FD-32 closed:
+  multi-worker native suite runs
+  died with exit 139 inside the
+  first few tests.** Parallelism
+  in the test harness is now
+  process sharding instead of
+  in-process threads
+  (`testRunParallel` in
+  source/test/cpu/testCPU.cpp):
+  workerCount shard processes each
+  run a strided slice through the
+  serial mode's unchanged
+  fork-per-test isolated path, so
+  every test keeps its standalone
+  environment; a shard's output is
+  captured and replayed in shard
+  order, its failure count returns
+  over a pipe, and a shard that
+  dies before reporting fails all
+  its tests loudly, so the final
+  total can never silently shrink.
+  Fixed on branch `lane-buildrel`,
+  commit `05ab65469`. Proof: the
+  preserved thread path
+  (BW64_TEST_NO_SHARD=1) dies exit
+  139 after 2 tests amid a runaway
+  guest-memfault loop (count past
+  26,624); 4 shards complete the
+  main suite 686 tests, 0 FAILED
+  (341 s vs 510 s serial), the
+  default invocation likewise
+  686/0, and the 64-bit suite
+  completes in parallel too
+  (CL-122) -- every parallel total
+  equals its serial total. Record:
+  `docs/reports/buildrel-fd31-32-33-20261105.md`;
+  evidence `test-results/buildrel/`
+  in the lane's worktree.
+- **CL-124 — FD-33 closed: the
+  native release build failed to
+  link, and its configuration had
+  a filed JIT compile error.**
+  (a) reproduced on the base
+  exactly as filed (undefined
+  `msgScratch`, `tickXWirePresent`,
+  `hasMainThreadWork`): the
+  per-thread message scratch, its
+  caches and the execve
+  invalidation entry point were
+  defined inside syscall64.cpp's
+  BOXEDWINE_GUEST_X64 gate while
+  the 32-bit dispatcher's
+  sendmsg/recvmsg slow paths call
+  the scratch unguarded -- they
+  move ahead of the gate; the
+  execve invalidation call in
+  kprocess.cpp is ungated with
+  them (a 32-bit execve previously
+  left the cache stale in
+  non-64-bit builds); the
+  multi-threaded SDL mainloop
+  guards its wire-present calls
+  with the same gate the
+  single-threaded mainloop already
+  used; and the test build's
+  msgScratch stub (which returned
+  0 and silently routed tests to a
+  fallback path) is deleted, so
+  the test build links the real
+  scratch. (b) not reproduced:
+  the JIT threshold helper's uses
+  outside the WASM JIT
+  configuration already carry the
+  guard on the current tree, and
+  the configuration's full compile
+  is error-free. Fixed on branch
+  `lane-buildrel`, commit
+  `05ab65469`. Proof: the release
+  build failed to link on the base
+  and links with the fix, the
+  binary starting and shutting
+  down cleanly; all five native
+  configurations of project/linux
+  build (release, test, x64,
+  x64-test, x64-cache, each exit
+  0); the browser build completes
+  'Browser export verified' on the
+  same commit (wasm `7daab6b2`,
+  BUILD_INFO dirty 0, support
+  archive at pin). Record:
+  `docs/reports/buildrel-fd31-32-33-20261105.md`;
+  evidence `test-results/buildrel/`
   in the lane's worktree.
 
 ## Appendix — examined and deliberately NOT registered
