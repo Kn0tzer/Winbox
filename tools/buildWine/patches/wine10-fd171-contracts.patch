@@ -431,7 +431,7 @@ diff --git a/dlls/d2d1/factory.c b/dlls/d2d1/factory.c
 index 954d90e..409719a 100644
 --- a/dlls/d2d1/factory.c
 +++ b/dlls/d2d1/factory.c
-@@ -1666,3 +1666,26 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
+@@ -1666,3 +1666,32 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
          d2d_settings_init();
      return TRUE;
  }
@@ -445,6 +445,12 @@ index 954d90e..409719a 100644
 +    HRESULT hr;
 +
 +    TRACE("dxgi_surface %p, properties %p, context %p.\n", dxgi_surface, properties, context);
++
++    /* A NULL surface is a caller error, not a crash: GetDevice below
++     * dereferences the surface pointer unconditionally. Native
++     * behaviour for a NULL surface is an error return. */
++    if (!dxgi_surface)
++        return E_INVALIDARG;
 +
 +    if (FAILED(hr = IDXGISurface_GetDevice(dxgi_surface, &IID_IDXGIDevice, (void **)&dxgi_device)))
 +        return hr;
