@@ -11003,6 +11003,31 @@ do not close the entry until they land.
   as upstream-faithful behaviour. Evidence: the slice-3 lane
   record and its preserved guest consoles.
 
+- **FD-194 — In a 64-bit guest session the PlugPlay
+  service is registered but never starts: its start
+  fails with error 1053.** *(Medium)*
+  With FD-189's registration in place the 64-bit guest
+  probe finds PlugPlay present, but its state stays
+  stopped (state=1): services.exe logs that sending the
+  start message failed and the service process is
+  killed right after. The 32-bit session starts the
+  same service fine (state=4). Measured cause: Wine's
+  services.exe waits at most 10000 ms (its built-in
+  service_pipe_timeout) for a service process to
+  connect its control pipe, and a 64-bit service
+  process importing the GUI DLL stack spends longer
+  than that in process initialisation on this
+  emulator, so the manager kills it before the
+  handshake can happen. Closing terms: the 64-bit
+  PlugPlay service reaches the running state in a
+  guest session, proven by the project's service
+  probe reporting it present and running. Filed by
+  the FD-189 lane on its branch as its lane-local
+  FD-193, 2026-11-07; the settled number is FD-194
+  (the batch-10 composition plan assigns FD-193 to
+  the block-statistics filing). FIXED on `lane-fd194`
+  — see CL-134.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -11162,6 +11187,7 @@ is behavioural, is re-proven there.
 
 | `lane-unfiled4` | *(Lane-local numbers: FD-193 closed as CL-137, FD-194 as CL-138, FD-195 as CL-139, FD-196 as CL-140; FD-197 and FD-198 filed open.)* Four characterised-but-unfiled gaps filed and fixed: FD-193 (vectored-read segment lengths judged as the ABI signed size in all four validation paths; combined transfers capped at MAX_RW_COUNT 0x7ffff000 in all four walks), FD-194 (positioned reads and writes on unseekable objects answer -ESPIPE immediately after descriptor resolution on both cores, the file-position mode delegating to the plain vectored call after validation; two measured write corners left as stated boundaries in the entry), FD-195 (32-bit linkat implemented and wired at slot 303, flags validated ahead of the path fault), FD-196 (a per-trap metrics hook feeds the emission gate from both Vulkan bridges; schema unchanged, committed fixture byte-identical). | Host contracts measured at the raw syscall level (native aarch64 and aarch32 compat binaries) before any fix; new native tests testUnfiledGaps32 (main suite) and testUnfiledGaps64 (x64 suite): RED on the base (29 failing assertions in the main suite; the x64 run cannot complete on the unfixed code - its positioned read consumes pipe bytes the test then waits for), GREEN with the fix; metrics selftest extended (trap-only windows emit) and passing. Evidence `test-results/unfiled4/`; record `docs/reports/fd193-196-unfiled-gaps-20261107.md` |
 | `lane-fd39-residue` | FD-39 CLOSED as CL-137 (lane-local number; settles at the next composition): the effect-only residue (sampling effects of LOD bias, border color, texture swizzle, depth-texture mode) is proven unfixable as texture/sampler state in either shipped backend -- the WebGPU sampler descriptor has no such fields (its texture-view swizzle is behind an optional device feature the backend never requests) and the legacy route's WebGL2/ES 3.0 host defines none of the pnames; swizzle on the legacy route alone is expressible and was deliberately not taken (the default route still could not express it; rendering would differ by route). Correction in the same lane: CLAMP_TO_BORDER never reached a real WebGPU sampler (no such address mode exists); the backend now decodes it to clamp-to-edge with a once-log, raw mode retained. | Fix commit `8258111c6` on base `faf95d26c`. Proof: gl-fd39-texparams red on the old sampler mapping ('clamp-to-border' actual vs 'clamp-to-edge' expected) and green on the fix, raw-mode retention asserted; neighbouring GL/Vulkan sampler tests 21/21; evidence in `test-results/fd39-residue/`. Record: `docs/reports/fd39-residue-20261107.md` |
+| `lane-fd194` | *(Settled number FD-194 per the batch-10 composition plan; filed by lane-fd189 as its lane-local FD-193.)* FD-194 FIXED: the registered 64-bit PlugPlay service now actually starts. Wine's services.exe allows a service process 10000 ms (built-in default) to connect its control pipe; a 64-bit GUI-stack service process needs longer than that to initialise on this emulator and was killed with error 1053. The shipped 64-bit prefix now carries "ServicesPipeTimeout"="120000" (REG_SZ, the only form services.exe reads) under HKLM\System\CurrentControlSet\Control, installed by the prefix64-reg.txt fragment; the shipped-prefix guard requires the string form above the default on win64. | Fix commit `f05e260f8` on base `88fefb838`; runtime assets re-pinned to runtime-assets-20261107-fd194 (only prefix64.zip changed). Guest proof on the build of that commit (BUILD_INFO git_sha f05e260f8, 'Browser export verified'): fd189-services64 reports 'PlugPlay ok present state=4', RESULT 0 (preserved console `test-results/fd194/console-run15-final-state4.log`); the 32-bit control fd189-services32 reports PlugPlay present state=4, RESULT 0 on the same build. Unit: test_prepare_prefixes 13/13 including the two new FD-194 tests. Record: `docs/reports/fd194-plugplay-start-timeout-20261107.md`; evidence `test-results/fd194/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -15934,6 +15960,50 @@ dead-start fix and needs composition care.
   complete past by recording the names as crashed in the
   harnesses, under the harnesses' own known-crasher
   precedent.
+
+- **CL-134 — FD-194 closed: the 64-bit PlugPlay
+  service was registered but could not finish
+  starting inside the service manager's 10-second
+  start budget.** *(Lane-local closure on
+  `lane-fd194`; the number settles at the next
+  composition.)*
+  Wine's services.exe waits at most
+  service_pipe_timeout (built-in default 10000 ms)
+  for a service process to connect its control pipe
+  after being sent the start message. In a 64-bit
+  session the PlugPlay process spent the whole
+  budget in process initialisation — about 1,600
+  wineserver requests in the window, no idle gap,
+  killed mid font enumeration — so the manager
+  logged the failed start, returned error 1053 and
+  killed the process; the same binaries complete
+  the handshake at once when no budget applies, and
+  the 32-bit stack fits the budget. The shipped
+  64-bit prefix now carries the raised budget in
+  the only form services.exe reads:
+  "ServicesPipeTimeout"="120000" as a REG_SZ (a
+  REG_DWORD is silently ignored) under
+  HKLM\System\CurrentControlSet\Control, merged
+  from `tools/rootfs64/prefix64-reg.txt`; the
+  shipped-prefix guard (`prepare_prefixes.py`)
+  requires that string-form value above the
+  built-in default on win64, with unit and
+  completeness coverage.
+  Proof: on the browser build of the fixing commit
+  (BUILD_INFO git_sha `f05e260f8`, 'Browser export
+  verified' in the build log), the project's
+  service probe reports the 64-bit PlugPlay service
+  present and running — 'fd189-64: PlugPlay ok
+  present state=4', RESULT 0, preserved console
+  `test-results/fd194/console-run15-final-state4.log`
+  — where the same probe on the pre-fix build
+  reported state=1; the 32-bit control reports
+  state=4 on the same build; an in-guest registry
+  fixture reads the value back as REG_SZ "120000";
+  test_prepare_prefixes passes 13/13 including the
+  two new FD-194 tests. Fix commit `f05e260f8` on
+  base `88fefb838`. Record:
+  `docs/reports/fd194-plugplay-start-timeout-20261107.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
