@@ -836,11 +836,39 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
 }
 
 U32 translateOpenError() {
+    // The fs layer preserves the host errno exactly across a failed
+    // node->open() (FsFileNode::open restores it before returning
+    // nullptr), so translate the full set open(2) can answer with
+    // instead of collapsing everything unlisted to EINVAL (frontier
+    // review D17). Errnos with no open(2) meaning stay on the EINVAL
+    // default, as do the nullptr returns that carry no host errno at
+    // all (virtual/dynamic-link/mem nodes refuse before any host call).
     switch (errno) {
     case EACCES: return -K_EACCES;
+    case EAGAIN: return -K_EAGAIN;
+    case EBUSY: return -K_EBUSY;
     case EEXIST: return -K_EEXIST;
-    case ENOENT: return -K_ENOENT;
+    case EFAULT: return -K_EFAULT;
+    case EFBIG: return -K_EFBIG;
+    case EINTR: return -K_EINTR;
+    case EIO: return -K_EIO;
     case EISDIR: return -K_EISDIR;
+    case ELOOP: return -K_ELOOP;
+    case EMFILE: return -K_EMFILE;
+    case EMLINK: return -K_EMLINK;
+    case ENAMETOOLONG: return -K_ENAMETOOLONG;
+    case ENFILE: return -K_ENFILE;
+    case ENODEV: return -K_ENODEV;
+    case ENOENT: return -K_ENOENT;
+    case ENOMEM: return -K_ENOMEM;
+    case ENOSPC: return -K_ENOSPC;
+    case ENOTDIR: return -K_ENOTDIR;
+    case ENXIO: return -K_ENXIO;
+    case EOVERFLOW: return -K_EOVERFLOW;
+    case EPERM: return -K_EPERM;
+    case EROFS: return -K_EROFS;
+    case ETXTBSY: return -K_ETXTBSY;
+    case EXDEV: return -K_EXDEV;
     }
     return -K_EINVAL;
 }

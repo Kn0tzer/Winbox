@@ -3882,6 +3882,23 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     this->reg[X64_RDX].setU64(uctxPtr);    // arg3: ucontext*
     this->rip = sa.handler;
     enterSignalHandler64(this);
+    // FD-14 (frontier review D11): the delivery itself is logged here,
+    // at the delivery point, so every caller leaves a trace -- the
+    // interpreter funnel logs its own fault-class lines, but direct
+    // kernel-side callers (e.g. the rt_sigreturn bad-frame path below)
+    // delivered with no log line at all. Same rate-limit discipline
+    // as the funnel (first 64, then every 1024th) so a fault-looping
+    // guest cannot flood the log.
+    {
+        static std::atomic<unsigned long long> syncFaultLogCount{0};
+        const unsigned long long n = syncFaultLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 64 || n % 1024 == 0) {
+            klog_fmt("BW64-FAIL sync-fault64 pid=%d tid=%d sig=%u trap=%u addr=0x%llx err=%u si_code=%d delivered=1 count=%llu",
+                     (this->thread && this->thread->process) ? (int)this->thread->process->id : -1,
+                     this->thread ? (int)this->thread->id : -1,
+                     sig, trapNo, (unsigned long long)faultAddr, errorCode, (int)siCode, n);
+        }
+    }
     return true;
 }
 

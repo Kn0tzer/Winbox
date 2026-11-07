@@ -655,6 +655,16 @@ void BString::split(char c, std::vector<BString>& results) const {
 
 void BString::split(const char* c, std::vector<BString>& results) const {
     if (!isEmpty()) {
+        // An empty delimiter can never terminate the scan below:
+        // strstr(s, "") always matches at s and the cursor advances
+        // by the delimiter length 0, so the loop never ends (FD-11).
+        // The guard lives here, not only at callers, so every caller
+        // is safe: an empty (or null) delimiter splits nothing and
+        // yields the whole string as the single result.
+        if (!c || !c[0]) {
+            results.push_back(BString::copy(data->str));
+            return;
+        }
         char* s = data->str;
         char* p = s;
         int cLen = (int)strlen(c);

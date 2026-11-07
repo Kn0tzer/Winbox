@@ -22,37 +22,74 @@
 #include "kmemory_soft.h"
 #include "soft_mmu.h"
 
+// seg_mapper returns normally only when its on-demand mapping
+// succeeded (the 32-bit Wine syscall_frame window); a delivered
+// guest handler or a fatal fault throws instead. The mapping
+// replaces this page, so the access must be re-dispatched to the
+// page that is installed now -- previously the read answered a
+// fabricated 0 (right only by the fresh page being zero-filled)
+// and the write was silently dropped (frontier review D5 audit).
 U8 InvalidPage::readb(MMU* mmu, U32 address) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, true, false);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        return page->readb(mmu, address);
+    }
     return 0;
 }
 
 void InvalidPage::writeb(MMU* mmu, U32 address, U8 value) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, false, true);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        page->writeb(mmu, address, value);
+    } else {
+        klog_fmt("BW64-FAIL invalid-page-write op=writeb addr=0x%x outcome=dropped reason=page-unchanged-after-seg_mapper-return", address);
+    }
 }
 
 U16 InvalidPage::readw(MMU* mmu, U32 address) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, true, false);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        return page->readw(mmu, address);
+    }
     return 0;
 }
 
 void InvalidPage::writew(MMU* mmu, U32 address, U16 value) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, false, true);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        page->writew(mmu, address, value);
+    } else {
+        klog_fmt("BW64-FAIL invalid-page-write op=writew addr=0x%x outcome=dropped reason=page-unchanged-after-seg_mapper-return", address);
+    }
 }
 
 U32 InvalidPage::readd(MMU* mmu, U32 address) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, true, false);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        return page->readd(mmu, address);
+    }
     return 0;
 }
 
 void InvalidPage::writed(MMU* mmu, U32 address, U32 value) {
     KThread* thread = KThread::currentThread();
     thread->seg_mapper(address, false, true);
+    Page* page = mmu->getPage();
+    if (page != this) {
+        page->writed(mmu, address, value);
+    } else {
+        klog_fmt("BW64-FAIL invalid-page-write op=writed addr=0x%x outcome=dropped reason=page-unchanged-after-seg_mapper-return", address);
+    }
 }
 
 bool InvalidPage::canReadRam(MMU* mmu) {
