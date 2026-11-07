@@ -90,6 +90,50 @@ public class VkHost {
         }
     }
 
+    // Functions whose host behaviour cannot be expressed by the generic
+    // marshal pipeline: the guest must receive a Vulkan error (or a
+    // silent no-op) instead of a host call the emulator cannot honour.
+    // These bodies used to be hand-written edits inside the generated
+    // vk_host.cpp (FD-28); they live in the generator now so that
+    // regenerating vk_host.cpp reproduces them exactly. The JS unit
+    // test vk-panic-stubs.test.mjs pins their shape in the output.
+    static private boolean writeCustomFunctionBody(VkFunction fn, StringBuilder out) {
+        if (fn.name.equals("vkGetMemoryHostPointerPropertiesEXT")) {
+            out.append("    VkDevice device = (VkDevice)getVulkanPtr(cpu->memory, ARG1);\n");
+            out.append("    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);\n");
+            out.append("    VkExternalMemoryHandleTypeFlagBits handleType = (VkExternalMemoryHandleTypeFlagBits)ARG2;\n");
+            out.append("    (void)device;\n");
+            out.append("    (void)handleType;\n");
+            out.append("    static bool shown;\n");
+            out.append("    if (!shown) { klog(\"vkGetMemoryHostPointerPropertiesEXT: unsupported guest host pointer; VK_ERROR_INVALID_EXTERNAL_HANDLE\"); shown = true; }\n");
+            out.append("    EAX = (U32)VK_ERROR_INVALID_EXTERNAL_HANDLE;\n");
+            return true;
+        }
+        if (fn.name.equals("vkCmdSetCheckpointNV")) {
+            out.append("    VkCommandBuffer commandBuffer = (VkCommandBuffer)getVulkanPtr(cpu->memory, ARG1);\n");
+            out.append("    BoxedVulkanInfo* pBoxedInfo = getInfoFromHandle(cpu->memory, ARG1);\n");
+            out.append("    (void)commandBuffer;\n");
+            out.append("    (void)pBoxedInfo;\n");
+            out.append("    static bool shown;\n");
+            out.append("    if (!shown) { klog(\"vkCmdSetCheckpointNV: optional diagnostic checkpoint ignored\"); shown = true; }\n");
+            return true;
+        }
+        if (fn.name.equals("vkGetBufferOpaqueCaptureDescriptorDataEXT") || fn.name.equals("vkGetImageOpaqueCaptureDescriptorDataEXT") || fn.name.equals("vkGetImageViewOpaqueCaptureDescriptorDataEXT") || fn.name.equals("vkGetSamplerOpaqueCaptureDescriptorDataEXT") || fn.name.equals("vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT")) {
+            out.append("    (void)cpu->memory->readq(ARG1);\n");
+            out.append("    static bool shown;\n");
+            out.append("    if (!shown) { klog(\"" + fn.name + ": unsupported capture-replay data; VK_ERROR_FEATURE_NOT_PRESENT\"); shown = true; }\n");
+            out.append("    EAX = (U32)VK_ERROR_FEATURE_NOT_PRESENT;\n");
+            return true;
+        }
+        if (fn.name.equals("vkGetDescriptorSetHostMappingVALVE")) {
+            out.append("    static bool shown;\n");
+            out.append("    if (!shown) { klog(\"vkGetDescriptorSetHostMappingVALVE: host descriptor mapping unavailable; returned null\"); shown = true; }\n");
+            out.append("    if (ARG3) cpu->memory->writeq(ARG3, 0);\n");
+            return true;
+        }
+        return false;
+    }
+
     static private void writeFunction(VkData data, VkFunction fn, StringBuilder out) throws Exception {
         int stackPos = 1;
 
@@ -99,7 +143,11 @@ public class VkHost {
         }
         out.append("void vk_" + fn.name.substring(2) + "(CPU* cpu) {\n");
         if (!fn.params.elementAt(0).paramType.getType().equals("VK_DEFINE_HANDLE")) {
-            out.append("    initVulkan();\n");
+            out.append("    if (!initVulkan()) { EAX = (U32)VK_ERROR_INITIALIZATION_FAILED; return; }\n");
+        }
+        if (writeCustomFunctionBody(fn, out)) {
+            out.append("}\n");
+            return;
         }/*
         out.append("    klog(\"");
         out.append(fn.name);
@@ -269,7 +317,7 @@ public class VkHost {
         out.append("#define BOXED_VK_EXTERN\n");
         out.append("#include \"vk_host.h\"\n");
         out.append("#include \"vk_host_marshal.h\"\n\n");
-        out.append("void initVulkan();\n");
+        out.append("bool initVulkan();\n");
         out.append("BoxedVulkanInfo* getInfoFromHandle(KMemory* memory, U32 address);\n");
         out.append("void freeVulkanPtr(KMemory* memory, U32 p);\n");
         out.append("void registerVkMemoryAllocation(VkDeviceMemory memory, VkDeviceSize size);\n");
@@ -384,9 +432,15 @@ public class VkHost {
             part2.append("            return (VkBaseOutStructure*)p;\n");
             part2.append("        }\n");
         }
-        part2.append("       default:\n");
-        part2.append("            kpanic_fmt(\"vulkanGetNextPtr not implemented for %d\", type);\n");
-        part2.append("            return nullptr;\n");
+        part2.append("       default: {\n");
+        part2.append("            static bool shown;\n");
+        part2.append("            if (!shown) { klog_fmt(\"vulkanGetNextPtr: unknown guest pNext sType %d; skipping node\", type); shown = true; }\n");
+        part2.append("            // VkBaseInStructure in the 32-bit guest ABI is sType followed by\n");
+        part2.append("            // a 32-bit pNext address. Skip only this unknown node and preserve\n");
+        part2.append("            // any following structures the host knows how to marshal.\n");
+        part2.append("            U32 next = memory->readd(address + 4);\n");
+        part2.append("            return vulkanGetNextPtr(pBoxedInfo, memory, next);\n");
+        part2.append("       }\n");
         part2.append("    }\n");
         part2.append("}\n");
 
@@ -405,8 +459,11 @@ public class VkHost {
             part2.append("*)pNext;\n");
             part2.append("            break;\n");
         }
-        part2.append("       default:\n");
-        part2.append("            kpanic_fmt(\"vulkanGetNextPtr not implemented for %d\", pNext->sType);\n");
+        part2.append("       default: {\n");
+        part2.append("            static bool shown;\n");
+        part2.append("            if (!shown) { klog_fmt(\"vulkanDeleteNextPtr: unknown host pNext sType %d; node left allocated\", pNext->sType); shown = true; }\n");
+        part2.append("            return;\n");
+        part2.append("       }\n");
         part2.append("    }\n");
         part2.append("}\n");
 
@@ -428,8 +485,11 @@ public class VkHost {
             part2.append("            break;\n");
             part2.append("        }\n");
         }
-        part2.append("       default:\n");
-        part2.append("            kpanic_fmt(\"vulkanWriteNextPtr not implemented for %d\", type);\n");
+        part2.append("       default: {\n");
+        part2.append("            static bool shown;\n");
+        part2.append("            if (!shown) { klog_fmt(\"vulkanWriteNextPtr: unknown guest pNext sType %d; output node skipped\", type); shown = true; }\n");
+        part2.append("            break;\n");
+        part2.append("       }\n");
         part2.append("    }\n");
         part2.append("}\n");
 

@@ -1257,6 +1257,7 @@ public class VkHostMarshalType {
     static VkHostMarshalInUnion inUnion = new VkHostMarshalInUnion();
     static vkHostMarshalNotImplemented notImplemented = new vkHostMarshalNotImplemented();
     static VkUpdateDescriptorSetWithTemplateMarshal updateDescriptorSetWithTemplateMarshal = new VkUpdateDescriptorSetWithTemplateMarshal();
+    static VkCmdPushDescriptorSetWithTemplateMarshal cmdPushDescriptorSetWithTemplateMarshal = new VkCmdPushDescriptorSetWithTemplateMarshal();
     static VkHostMarshalInStructure unmapMemory2 = new VkHostMarshalInStructure() {
         public void after(VkData data, VkFunction fn, StringBuilder out, VkParam param) throws Exception {
             super.after(data, fn, out, param);
@@ -1379,6 +1380,9 @@ public class VkHostMarshalType {
             }
             if ((function.name.equals("vkUpdateDescriptorSetWithTemplateKHR") || function.name.equals("vkUpdateDescriptorSetWithTemplate")) && param.name.equals("pData")) {
                 return updateDescriptorSetWithTemplateMarshal;
+            }
+            if ((function.name.equals("vkCmdPushDescriptorSetWithTemplateKHR") || function.name.equals("vkCmdPushDescriptorSetWithTemplate")) && param.name.equals("pData")) {
+                return cmdPushDescriptorSetWithTemplateMarshal;
             }
             if (param.len == null && param.arrayLen == 0) {
                 return notImplemented;
