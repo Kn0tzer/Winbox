@@ -2131,13 +2131,18 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
         if ((S64)cpu->memory->readq(iov + (U64)i * 16 + 8) < 0) return (U64)-K_EINVAL;
     }
     if (isPreadv2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
-    // FD-194: the file-position mode is a plain vectored read
-    // once validation has run (flags included, so a bad flag
-    // still answers -EOPNOTSUPP ahead of any byte moving).
-    // sys_readv64 re-validates identically, walks at the
-    // current position (pipes included) and raises the same
-    // single IN_ACCESS.
-    if (useFilePos) return sys_readv64(cpu, fd, iov, iovcnt);
+    // FD-194: the file-position mode on an unseekable object
+    // is a plain vectored read once validation has run (flags
+    // included, so a bad flag still answers -EOPNOTSUPP ahead
+    // of any byte moving): sys_readv64 re-validates
+    // identically and raises the same single IN_ACCESS. A
+    // real file keeps the walk below instead -- its
+    // per-segment core is offset-explicit and maintains the
+    // tracked position, which the sequential path does not
+    // (FD-80's preadv2 offset -1 cases are the witness: the
+    // queue's full x64 suite caught the unconditional
+    // delegation returning 0 on a file at a live position).
+    if (useFilePos && !std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return sys_readv64(cpu, fd, iov, iovcnt);
     S64 basePos = useFilePos ? fdesc->kobject->getPos() : offset;
     U64 total = 0;
     S64 err = 0;
@@ -2157,6 +2162,9 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
         if ((U64)got < want) break; // short read: EOF / drained
     }
     if (total == 0 && err < 0) return (U64)err;
+    if (useFilePos && total > 0) {
+        fdesc->kobject->seek(basePos + (S64)total);
+    }
     // Exactly one IN_ACCESS per successful call (see the header
     // comment); the per-segment reads above ran with notification
     // suppressed so a multi-segment read cannot stack them up.
@@ -2261,13 +2269,15 @@ static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
     if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
     // FD-194 (write twin): the file-position mode without
-    // RWF_APPEND is a plain vectored write once validation
-    // has run. APPEND keeps the walk below: the host's two
-    // ABIs disagree on APPEND + position mode for a pipe
-    // (native answers -EBADF, compat writes), so that corner
-    // keeps its current answer -- a stated boundary in
-    // FD-194's entry.
-    if (useFilePos && !(isPwritev2 && (flags & 0x10ULL))) return sys_writev64(cpu, fd, iov, iovcnt);
+    // RWF_APPEND on an unseekable object is a plain vectored
+    // write once validation has run. A real file keeps the
+    // walk below (its per-segment core maintains the tracked
+    // position, as on the read side). APPEND keeps the walk
+    // in all cases: the host's two ABIs disagree on APPEND +
+    // position mode for a pipe (native answers -EBADF,
+    // compat writes), so that corner keeps its current
+    // answer -- a stated boundary in FD-194's entry.
+    if (useFilePos && !(isPwritev2 && (flags & 0x10ULL)) && !std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return sys_writev64(cpu, fd, iov, iovcnt);
     bool append = isPwritev2 && (flags & 0x10ULL); // RWF_APPEND
     S64 base = offset;
     if (append) {
