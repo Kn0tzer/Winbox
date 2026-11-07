@@ -90,8 +90,8 @@ never committed), blocks binary, correct environment:
 ## Proof: the full gate, through the real script
 
 Fresh build dir, `./scripts/build-jit-wasm.sh --selftest-only`,
-`BUILD_TMP=/tmp/bw64-jit-fd176c`, log `/tmp/bw64-jit-fd176c-script.log`,
-exit code 0:
+exit code 0. Preserved evidence: `test-results/fd176/` (the full script
+log `build-jit-wasm-selftest-only.log` and both invalidate logs):
 
 - jit64 phase-1 unit tests: 873 passed, 0 failed.
 - Generated emitters byte-identical (`gen-jit64.mjs --check`, gen tests
