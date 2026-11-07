@@ -9733,6 +9733,13 @@ do not close the entry until they land.
   (source/kernel/knetlink.cpp), which is the filed lead - but
   the backend's own traces do not appear in these session
   consoles, so the monitor-abort step is not yet proven from a
+  CLOSED on the lane - see CL-141 in section C. The witness
+  signature (XInput slot=0 CONNECTED + DINPUT devices=1) is met
+  on both architectures and the standing input-gamepad test
+  passes end to end on both; the defect was eleven stacked
+  layers, each masking the next - full account in
+  `docs/reports/fd195-bus-discovery-20261107.md`.
+
   log. Fresh probe runs on the lane's own build are still owed:
   two attempts (15-minute and 60-minute slot budgets) starved
   behind the build relay without booting.
@@ -11047,6 +11054,37 @@ do not close the entry until they land.
   (the batch-10 composition plan assigns FD-193 to
   the block-statistics filing). FIXED on `lane-fd194`
   — see CL-134.
+
+- **FD-204 - A service process's first COM apartment never
+  finishes initializing in this environment: CoInitialize in
+  a winedevice-hosted driver thread creates the apartment and
+  then never returns.** *(Medium - found by the FD-195 lane,
+  2026-11-07.)* Traced with +ole: the PnP thread's
+  CoInitializeEx completes "apartment created" and then
+  silence forever (a 420 s settle changed nothing); the only
+  remaining step in combase is the one-time creation of the
+  STA's hidden message window. The identical call in
+  explorer.exe in the same session succeeds. FD-195 routed
+  around it (setupapi no longer pays CoInitialize for INF
+  sections with nothing to register), but any service-side
+  COM first use - including a future INF that does register a
+  DLL - hits the same wall. Evidence:
+  `test-results/fd195/diag-fix3-olerpc/` on lane-fd195-bus.
+  Closing terms: a service-process fixture whose first
+  CoInitialize returns, or a convicted root cause with a fix.
+
+- **FD-205 - The input-gamepad test's trigger wait could
+  match a resting-state line and fail a healthy session.**
+  *(Low - test harness only. Filed and fixed by the FD-195
+  lane, 2026-11-07; see CL-142.)* The trigger phase waited on
+  a pattern that also matches lt=0 rt=0; the stick-return
+  step just before the phase prints exactly such a line, and
+  when that line was delivered after the phase's mark it
+  matched first, even though the evidencing lt=255 rt=127
+  line sat right behind it in the same console
+  (`test-results/fd195/gamepad-final6.out` on lane-fd195-bus).
+  The wait now requires the evidencing values themselves;
+  commit `659bba40a`.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -16024,6 +16062,44 @@ dead-start fix and needs composition care.
   two new FD-194 tests. Fix commit `f05e260f8` on
   base `88fefb838`. Record:
   `docs/reports/fd194-plugplay-start-timeout-20261107.md`.
+
+- **CL-141 - FD-195 closed: a program in the emulator can
+  see and use a game controller connected to the host.**
+  *(Lane-local numbering on lane-fd195-bus; composition
+  renumbers.)* Eleven stacked layers, each masking the next;
+  the full account with preserved-log quotes is the lane
+  record `docs/reports/fd195-bus-discovery-20261107.md`.
+  Fixing commits: `3e9f20c5e` (synthesized udev surface:
+  stat type bits on virtual files and dynamic links, uevent
+  trailing newlines), `96f017ea9` (64-bit readlink through
+  the virtual getLink, and readlinkat/openat/faccessat
+  honouring a real dirfd), `045cbffe3` (pad feed state kept
+  across the guest open boundary, native test extended),
+  `2949500ed` (Emscripten gamepad-axis poller, poller-owned
+  triggers, inverted axes centred), `5aefb0a42` (setupapi
+  CoInitialize gating + hidclass last-report seeding on
+  both Wine vintages; guest libudev.so.1 staged for x86-64;
+  WineBus "Enable SDL"=0 in the 64-bit prefix with the
+  registry-fragment merge fixed to insert missing values and
+  a validator guard; the five driver .inf files staged into
+  the 64-bit prefix), `194412a12` (runtime re-pin),
+  `3248805d7` (permanent fd195-udevprobe regression test).
+  Proof: `test-results/fd195/gamepad-final10.out` -
+  `PASS input-gamepad (176941ms)` with the witness verdicts
+  for both guests in the same session console (32-bit READY
+  xinput=1 dinput=1, sticks at lx=32767 ly=-32767; 64-bit
+  XINPUT STATE lx=32767 ly=32767); `udev86-final.out` PASS
+  fd195-udevprobe + fd188-hid-enum PASS; runtime
+  completeness 0 failures, bootstrap verified (13 files).
+
+- **CL-142 - FD-205 closed: the input-gamepad trigger wait
+  now requires the evidencing values.** Fixing commit
+  `659bba40a` (lane-fd195-bus). Proof: the full input-gamepad
+  run after the hardening passes both architectures
+  (`test-results/fd195/gamepad-final10.out`), and the
+  hardened pattern cannot match the resting line that caused
+  the false failure in `gamepad-final6.out`.
+
 
 ## Appendix — examined and deliberately NOT registered
 
