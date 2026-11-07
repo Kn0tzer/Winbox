@@ -23,6 +23,9 @@
 # hash-checked at their pins), the FD-171 contract backports (the
 # nineteen i386-windows DLL members must carry the committed rebuild
 # bytes, tools/rootfs32/wine10-fd171-i386/, hash-checked at their
+# pins), the FD-169 remainder rebuilds (the two i386-windows
+# DLL members must carry the committed rebuild bytes,
+# tools/rootfs32/wine10-fd169r-i386/, hash-checked at their
 # pins), and the FD-167+FD-171 combined build (the two i386-windows
 # DLL members, mf.dll and propsys.dll, must carry the combined
 # rebuild bytes, tools/rootfs32/wine10-fd167-fd171-i386/, hash-checked
@@ -162,7 +165,11 @@ FD169_PINS=""
 for dll in msvcr100 msvcr110 msvcr120 msvcr70 msvcr71 msvcr80 msvcr90 msvcrt ucrtbase; do
   FD169_PINS="${FD169_PINS}opt/wine-stable/lib/wine/i386-windows/${dll}.dll=$(sha256sum "$HERE/wine10-fd169-i386/${dll}.dll" | cut -d' ' -f1),"
 done
-python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" "$BACKPORT32_SHA" "${FD167_ARGS[@]}" "$FD169_PINS" "$FD171_PINS" "$FD167FD171_PINS" <<'EOF'
+FD169R_PINS=""
+for dll in msvcp140_2 msvcp140_atomic_wait; do
+  FD169R_PINS="${FD169R_PINS}opt/wine-stable/lib/wine/i386-windows/${dll}.dll=$(sha256sum "$HERE/wine10-fd169r-i386/${dll}.dll" | cut -d' ' -f1),"
+done
+python3 - "$SHIPPED" "$SCRATCH_RT/wine32.zip" "$BACKPORT32_SHA" "${FD167_ARGS[@]}" "$FD169_PINS" "$FD171_PINS" "$FD167FD171_PINS" "$FD169R_PINS" <<'EOF'
 import hashlib, sys, zipfile
 def census(path):
     with zipfile.ZipFile(path) as z:
@@ -170,12 +177,13 @@ def census(path):
                 for i in z.infolist()}
 old, new = census(sys.argv[1]), census(sys.argv[2])
 pin = sys.argv[3]
-fd167 = dict(arg.split("=", 1) for arg in sys.argv[4:-3])
+fd167 = dict(arg.split("=", 1) for arg in sys.argv[4:-4])
 def csv(arg):
     return dict(kv.split("=", 1) for kv in arg.rstrip(",").split(",") if kv)
-fd169 = csv(sys.argv[-3])
-fd171 = csv(sys.argv[-2])
-fd167fd171 = csv(sys.argv[-1])
+fd169 = csv(sys.argv[-4])
+fd171 = csv(sys.argv[-3])
+fd167fd171 = csv(sys.argv[-2])
+fd169r = csv(sys.argv[-1])
 backport = {
     "opt/wine-stable/lib/wine/i386-unix/win32u.so",
     "opt/wine-stable/lib/wine/i386-unix/win32u.dll.so",
@@ -192,12 +200,13 @@ drivers_bad = sorted(k for k in drivers_new if k.endswith(".sys")
                      and old.get("opt/wine-stable/lib/wine/i386-windows/" + k.rsplit("/", 1)[-1], (None, None))[1] != new[k][1])
 only_new = [k for k in only_new if k not in drivers_new]
 print(f"FD-188 drivers/ mirror: {len(drivers_new)} members, byte-identical to their .sys siblings")
-diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport and k not in fd167 and k not in fd169 and k not in fd171 and k not in fd167fd171)
+diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport and k not in fd167 and k not in fd169 and k not in fd171 and k not in fd167fd171 and k not in fd169r)
 bad = sorted(k for k in backport if k not in new or new[k][1] != pin)
 bad += sorted(f"{k} (FD-167)" for k, want in fd167.items() if k not in new or new[k][1] != want)
 bad += sorted(f"{k} (FD-169)" for k, want in fd169.items() if k not in new or new[k][1] != want)
 bad += sorted(f"{k} (FD-171)" for k, want in fd171.items() if k not in new or new[k][1] != want)
 bad += sorted(f"{k} (FD-167+FD-171)" for k, want in fd167fd171.items() if k not in new or new[k][1] != want)
+bad += sorted(f"{k} (FD-169 remainder)" for k, want in fd169r.items() if k not in new or new[k][1] != want)
 print(f"shipped {len(old)} members, regenerated {len(new)} members")
 for k in only_old: print(f"  MISSING in regen: {k}")
 for k in only_new: print(f"  EXTRA in regen:   {k}")
@@ -206,7 +215,7 @@ for k in bad: print(f"  BACKPORT MEMBER NOT AT PIN: {k} regen={new.get(k)} expec
 for k in drivers_bad: print(f"  DRIVERS MIRROR MEMBER NOT AT SIBLING HASH: {k}")
 if only_old or only_new or diff or bad or drivers_bad:
     raise SystemExit("regen-wine32-zip: member verification FAILED (see above)")
-print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin, the five FD-167 backport members, the nine FD-169 CRT members, the nineteen FD-171 members, the two FD-167+FD-171 combined members at their in-tree pins and the FD-188 drivers/ mirror members at their .sys sibling hashes")
+print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin, the five FD-167 backport members, the nine FD-169 CRT members, the two FD-169 remainder members, the nineteen FD-171 members, the two FD-167+FD-171 combined members at their in-tree pins and the FD-188 drivers/ mirror members at their .sys sibling hashes")
 EOF
 
 echo "=== [5/5] completeness gate (in-tree, scratch web/runtime set) ==="

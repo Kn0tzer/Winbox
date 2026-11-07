@@ -127,6 +127,11 @@ WINEHQ_PINS = {
 # a rebuild that changes bytes fails here until the new bytes are reviewed
 # and pinned.
 WINE8_BACKPORT_PINS = {
+    # FD-169 remainder: the C++17 special-math DLL and the
+    # atomic-wait backports (build-wine8-backports.sh,
+    # wine8-fd169r-crt2.patch).
+    'msvcp140_2.dll': 'dd990f0b50454bba0cfce4e1746abd397f0660204c8caf5fe880e46d615f665c',
+    'msvcp140_atomic_wait.dll': 'b712301e2e0a35f4ce256c3c541a8582e1dad5d3d4577f0028eb0a1259a9e7d0',
     'user32.dll': 'b7b39a1b3daa48ffc273328359340f210bbca996ea2135ee130c7e93005da338',
     'kernelbase.dll': '5d94b2639e2e408da5fc4fd2fc27466b990ced859603ef3e123ff4ef85c3f251',
     'kernel32.dll': 'ccf67fb5bba80af571952c5beefae8c4ca9f92ca4787da9a2424fc4a49fcd2e1',
@@ -364,6 +369,28 @@ def t_wine10_fd169_crt32_source_and_zip():
         member = f'opt/wine-stable/lib/wine/i386-windows/{name}'
         assert member in members, f'{member} missing from shipped wine32.zip'
         assert sha(members[member]) == pin, f'{name} in wine32.zip != pinned FD-169 bytes'
+# FD-169 remainder: the i386 msvcp140_2 (C++17 special math) and
+# msvcp140_atomic_wait (execution wait/wake, shared-mutex pair, CRT
+# allocation pair, tzdb deleters) DLLs are committed rebuilds
+# (wine-10.0 + FD-169 remainder patch,
+# tools/rootfs32/build-wine10-fd169r.sh) substituted into wine32.zip
+# by build-wine32-base.sh. Re-pins are deliberate.
+WINE10_FD169R_PINS32 = {
+    'msvcp140_2.dll': '2c8c70331d04ea0a4f3826d7719e5e77f6cd65c174b6c2e6017a729fa3e082ad',
+    'msvcp140_atomic_wait.dll': 'c12bc9e47019340c1777bf4f5a4e0ea1b1d1906342209db84128d190fd3a1348',
+}
+
+
+def t_wine10_fd169r_crt32_source_and_zip():
+    for name, pin in WINE10_FD169R_PINS32.items():
+        src = ROOT / 'tools/rootfs32/wine10-fd169r-i386' / name
+        assert sha(src.read_bytes()) == pin, f'{name} (FD-169 remainder i386) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE10_FD169R_PINS32.items():
+        member = f'opt/wine-stable/lib/wine/i386-windows/{name}'
+        assert member in members, f'{member} missing from shipped wine32.zip'
+        assert sha(members[member]) == pin, f'{name} in wine32.zip != pinned FD-169 remainder bytes'
 # The FD-171 i386 PE set: 21 DLLs rebuilt from the pinned wine-10.0
 # source with wine10-fd171-contracts.patch (see
 # tools/rootfs32/wine10-fd171-i386/README.md), substituted into the

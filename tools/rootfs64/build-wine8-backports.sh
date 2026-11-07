@@ -54,10 +54,11 @@ PATCHES=(
     wine8-win32u-fd168-slice2.patch
     wine8-win32u-fd168-slice3.patch
     wine8-msvcrt-fd169-crt.patch
+    wine8-fd169r-crt2.patch
     wine8-fd170-contracts.patch
     wine8-fd171-contracts.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils propsys ntdll cfgmgr32 pdh combase mfplat cryptext d2d1 hid mf mscms prntvpt sspicli vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140 windows.networking wintypes wofutil)
+DLLS=(msvcp140_2 msvcp140_atomic_wait user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils propsys ntdll cfgmgr32 pdh combase mfplat cryptext d2d1 hid mf mscms prntvpt sspicli vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140 windows.networking wintypes wofutil)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }

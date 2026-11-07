@@ -288,6 +288,28 @@ for dll in "${!FD169_SHA32[@]}"; do
   cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-169 CRT DLLs substituted: 9 sha256 verified"
+echo "=== FD-169 remainder substitution (i386) ==="
+# msvcp140_2.dll and msvcp140_atomic_wait.dll are NOT the deb's
+# copies either: they are the committed in-tree rebuilds
+# (tools/rootfs32/wine10-fd169r-i386/, produced by
+# build-wine10-fd169r.sh from the pinned wine-10.0 source plus the
+# FD-169 remainder patch), carrying genuine implementations for the
+# C++17 special-math exports and the atomic-wait functions the stock
+# build only stubs (defect register FD-169). Fail-closed on the
+# pins, like the FD-169 substitution above.
+FD169R_DIR="$HERE/wine10-fd169r-i386"
+declare -A FD169R_SHA32=(
+  [msvcp140_2.dll]=2c8c70331d04ea0a4f3826d7719e5e77f6cd65c174b6c2e6017a729fa3e082ad
+  [msvcp140_atomic_wait.dll]=c12bc9e47019340c1777bf4f5a4e0ea1b1d1906342209db84128d190fd3a1348
+)
+for dll in "${!FD169R_SHA32[@]}"; do
+  src="$FD169R_DIR/$dll"
+  [ -f "$src" ] || { echo "build-wine32-base: FD-169 remainder build missing: $src (build it with tools/rootfs32/build-wine10-fd169r.sh)" >&2; exit 2; }
+  got="$(sha256sum "$src" | cut -d' ' -f1)"
+  [ "$got" = "${FD169R_SHA32[$dll]}" ] || { echo "build-wine32-base: FD-169 remainder $dll hash mismatch: $got != ${FD169R_SHA32[$dll]}" >&2; exit 1; }
+  cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-169 remainder DLLs substituted: 2 sha256 verified"
 echo "=== FD-171 i386 PE substitution ==="
 # 19 PE DLLs rebuilt from the pinned wine-10.0 source with the FD-171
 # contract backports (tools/rootfs32/wine10-fd171-i386/, produced by
