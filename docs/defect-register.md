@@ -8583,6 +8583,22 @@ do not close the entry until they land.
   core set, or the tests need to move into a harness that already
   links it. The tests themselves were not run by this lane for
   exactly this reason. Filed, not fixed.
+  CLOSED — see CL-134. Fixed on `lane-fd176` (commit `5bec2fa3e` on
+  base `faf95d26c`): the recipe links the kernel core set
+  (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler,
+  synchronization, bfile, platform/linux, with sdl2-config flags),
+  the three harness stubs that stood in for the unlinked kernel are
+  removed, and — the second defect in the same gate — the blocks
+  binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off
+  BW64_JIT_FAST_DISPATCH=0`, without which the BBlock cache is never
+  entered and the differential is vacuous (fast dispatch defaults on;
+  the engine defaults to interp). Proof: full
+  `./scripts/build-jit-wasm.sh --selftest-only` exit 0 (jit64 phase-1
+  873/0; gen emitters byte-identical; invalidate interp+blocks
+  pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0);
+  sensitivity re-verified (bw64NoteWriteSlow neutered: T1/T3/T4 fail
+  with stale values, pass=17 fail=37). Record:
+  `docs/reports/fd176-invalidate-gate-link-20261106.md`.
 
 - **FD-177 — `FsZip::init` still walks each
   archive's central directory entry by entry
@@ -9189,6 +9205,22 @@ do not close the entry until they land.
   logs `test-results/merge-batch9-20261106/browser-fixtures-contracts-final.log`
   and `fd171-contracts32-final-rerun1.log`.
 
+- **FD-193 — `BW64_BLOCKSTATS` prints garbage.** *(Low —
+  diagnostic only. Filed by lane-fd176, 2026-11-06.)* The
+  `tryBlockStep` atexit reporter keeps a `static CPU64*` to the
+  first CPU that allocates a block table, but every test context
+  owns a new CPU that is destroyed at the end of its test — by
+  process exit the pointer dangles, and the printed counters are
+  nonsense (measured: `built=281474198778416 ...
+  coverage=5120879205109700.0%`). It also registers once per CPU,
+  so the line repeats. No effect on any gate (the flag is off by
+  default and was only set during diagnosis); the BLOCKSTATS
+  numbers must not be used as proof of block execution. Closing
+  terms: the reporter reads live counters (or is removed), proven
+  by a run with the flag set printing sane per-process totals.
+  Found while proving the FD-176 environment fix; record:
+  `docs/reports/fd176-invalidate-gate-link-20261106.md`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -9327,6 +9359,7 @@ is behavioural, is re-proven there.
 | `lane-pch` | *(Batch-9 settled numbers: filings FD-184, FD-185.)* Build speed (improvement, no FD closed): both project makefiles precompile the shared `boxedwine.h` chain once per build directory instead of re-parsing it in every one of the 330 project translation units that include it - clang `-include-pch` (project/emscripten/makefile), GCC `.gch` (project/linux/makefile). The precompiled set is computed by membership (project sources under source/ and platform/ only, minus the six sources that do not include the header); third-party sources under lib/ never see it. Generated dependency files make every header in the chain a prerequisite of the precompiled header, so editing one rebuilds it and all consumers. FD-184 and FD-185 filed from this lane's measurements (cpu.h two-letter macros poison later asmjit header inclusions; the Emscripten `test` target does not compile on the base - six multi-threaded-only test units in a non-multi-threaded target, pre-existing). | Base `48d27952a`, code `73e0232cd`. Clean-build compiler CPU (user time from `time`, shared box, loads recorded in the logs): wasm64-mt 853.6s -> 406.2s (-52%), native Test 812.9s -> 405.5s (-50%), native X64Test 943.1s -> 530.4s (-44%). Outputs byte-identical in all three arms (wasm `9b51d60101ab`, JS glue `9fe550765f`, Test binary `fcb1c3d959`, X64Test binary `2ab4830b0c` - same hashes before and after). Native suites serial on the precompiled-header binaries: main 689/0, x64 113/0. JS unit 353/0; legacy 115/0 (1 skip). Full `tools/bw64-build.sh` run on the committed tip produced dist with BUILD_INFO git_sha `73e0232cd` and wasm `9b51d60101ab` (its dirty count 13 is exactly the shared-store prep symlinks; zero tracked modifications). Dependency wiring proven by dry runs: a no-op build schedules 0 compiles; touching one chain header schedules exactly 1 precompiled-header rebuild plus all 189 of its consumers in the wasm64-mt configuration. Emscripten `test` target census: every consumer compiles; the only failures are FD-185's six, identical without the change. Record: `docs/reports/pch-build-20261105.md`; evidence `test-results/pch/` |
 
 | `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
+| `lane-fd176` | FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -13563,6 +13596,33 @@ dead-start fix and needs composition care.
   the unmodified build enumerated nothing. Fix commits
   `6b6186d93` + `bcff6378b` on base `48d27952a`. Record:
   `docs/reports/fd24-gamepad-20261106.md`.
+
+- **CL-134 — FD-176 closed: the block-invalidation
+  differential gate links again — and actually executes blocks.**
+  *(Lane-local closure on `lane-fd176`; the number settles at the
+  next composition.)*
+  The gate script's invalidate-test link predated the FD-82/FD-129
+  cross-references and failed with undefined references
+  (`FsOpenNode::noteMappedPagesReleased`,
+  `bwCurrentThreadRegistryLookup()`, `KSystem::guestCpuCount()`).
+  The recipe now links the kernel core set (fsopennode, fsnode,
+  kthread, ksystem, kinotify, kscheduler, synchronization, bfile,
+  platform/linux, with sdl2-config flags) and the three harness
+  stubs that stood in for the unlinked kernel are removed — one of
+  them (`useF64 = true`) also held the wrong value for the 64-bit
+  guest, whose product value is false. The same gate carried a
+  second, vacuity defect: as scripted, both binaries interpreted
+  (tryBlockStep is gated on `jit64Enabled`, fast dispatch defaults
+  on, the engine defaults to interp), so the differential proved
+  nothing. The blocks binary now runs with `BW64_JIT=1
+  BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe
+  to reach `tryBlockStep` and by sabotage (the bw64NoteWriteSlow
+  funnel neutered) to fail T1/T3/T4 with stale values.
+  Proof: full `./scripts/build-jit-wasm.sh --selftest-only` exit 0
+  (jit64 phase-1 873/0; gen emitters byte-identical; invalidate
+  interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture
+  tests 314/0). Fix commit `5bec2fa3e` on base `faf95d26c`.
+  Record: `docs/reports/fd176-invalidate-gate-link-20261106.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
