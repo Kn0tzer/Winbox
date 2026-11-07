@@ -211,3 +211,18 @@ were corrected with the measurements written into their comments
   once mid-lane (333 MB freed at the strip) and again at
   closeout; the rootfs probe binaries were deleted; no
   store, staging or scratch was created.
+- The checking queue's first verdict on this branch
+  (pipeline 36) caught two more consequences of this lane's
+  own changes, both fixed in a follow-up commit: the
+  nanosleep slice test's stub environment did not provide
+  the two clock sources the rewritten helper now reads (nor
+  the K_EOPNOTSUPP constant, nor the new remain-address
+  argument at its call sites), and the silent-failure
+  baseline for syscall64.cpp needed a reviewed raise for
+  the new validation branches (unloggedDefault 7→10,
+  unloggedErrno 134→136 — deliberate contract answers in
+  the file's existing counted shape). Pipeline 36's
+  native-main build leg was also terminated mid-compile
+  (exit 143) under queue contention; both native suites
+  build and pass from this tree directly, and the queue
+  re-run is the adjudication.
