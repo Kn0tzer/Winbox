@@ -1,0 +1,24 @@
+Browser tests (Playwright, needs box):
+  FAIL input-gamepad (141349ms)
+    Guest output /gamepad-witness: XINPUT slot=0 CONNECTED/ not seen within 120000ms; last lines:
+    log:   thread 5B WAITING KUnixSocketObject::lockCond
+    log: WINE32 CALLER pid=90 tid=91 eip=0x7aabe338 esp=0x7f30f260 ebp=0x7f30f7e8 /opt/wine-stable/lib/wine/i386-windows/win32u.dll+0xe338
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30f7e8 addr=0x40de16 /opt/wine-stable/lib/wine/i386-windows/explorer.exe+0xde16
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30feb8 addr=0x411978 /opt/wine-stable/lib/wine/i386-windows/explorer.exe+0x11978
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30ff20 addr=0x411a35 /opt/wine-stable/lib/wine/i386-windows/explorer.exe+0x11a35
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30ff40 addr=0x7bef57c8 /opt/wine-stable/lib/wine/i386-windows/kernel32.dll+0x257c8
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30ff58 addr=0x7bf8bde3 /opt/wine-stable/lib/wine/i386-windows/ntdll.dll+0x4bde3
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30ff6c addr=0x7bf8c7e5 /opt/wine-stable/lib/wine/i386-windows/ntdll.dll+0x4c7e5
+    log:        ld-linux.so.2                                                 1042abb0 / 0001abb0
+    log: process 1B TERMINATED /opt/wine-stable/bin/wine-preloader /opt/wine-stable/bin/wine C:\windows\system32\winedevice.exe
+    log: process 3D TERMINATED /opt/wine-stable/bin/wine-preloader /opt/wine-stable/bin/wine C:\windows\system32\winedevice.exe
+    log: process 5E TERMINATED /opt/wine-stable/bin/wine-preloader /opt/wine-stable/bin/wine C:\windows\system32\cmd.exe /c echo vkboot
+    log:   thread 5B WAITING KUnixSocketObject::lockCond
+    log: WINE32 CALLER pid=90 tid=91 eip=0x7aabe338 esp=0x7f30f260 ebp=0x7f30f7e8 /opt/wine-stable/lib/wine/i386-windows/win32u.dll+0xe338
+    log: WINE32 FRAME pid=90 tid=91 fp=0x7f30f7e8 addr=0x40de16 /opt/wine-stable/lib/wine/i386-windows/explorer.exe+0xde16
+
+==================================================
+SUITE RESULT: 0 passed, 1 failed
+Failed tests:
+  - input-gamepad [browser]
+==================================================
