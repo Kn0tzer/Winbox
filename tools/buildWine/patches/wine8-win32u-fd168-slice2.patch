@@ -1,0 +1,270 @@
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index c3ba1a9..9192f40 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -4980,6 +4980,19 @@ UINT WINAPI NtGdiGetTextCharsetInfo( HDC hdc, FONTSIGNATURE *fs, DWORD flags )
+     return ret;
+ }
+ 
++/**********************************************************************
++ *           NtGdiGetCharSet    (win32u.@)
++ *
++ * The character set of the font selected into the DC: the same
++ * value NtGdiGetTextCharsetInfo returns when no signature buffer
++ * is requested, which is what gdi32's GetTextCharset exposes.
++ */
++UINT WINAPI NtGdiGetCharSet( HDC hdc )
++{
++    return NtGdiGetTextCharsetInfo( hdc, NULL, 0 );
++}
++
++
+ /***********************************************************************
+  *           NtGdiHfontCreate   (win32u.@)
+  */
+@@ -6223,6 +6236,23 @@ done:
+ }
+ 
+ 
++/**********************************************************************
++ *           NtGdiPolyTextOutW    (win32u.@)
++ *
++ * Draw each POLYTEXTW entry in order, exactly as a sequence of
++ * NtGdiExtTextOutW calls with the entry's position, flags, clip /
++ * opaque rectangle and advances (the gdi32 PolyTextOutW contract,
++ * carried out on this side of the syscall boundary).
++ */
++BOOL WINAPI NtGdiPolyTextOutW( HDC hdc, const POLYTEXTW *pt, INT count )
++{
++    for (; count > 0; count--, pt++)
++        if (!NtGdiExtTextOutW( hdc, pt->x, pt->y, pt->uiFlags, &pt->rcl, pt->lpstr, pt->n, pt->pdx, 0 ))
++            return FALSE;
++    return TRUE;
++}
++
++
+ /******************************************************************************
+  *           NtGdiGetCharABCWidthsW    (win32u.@)
+  *
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index cbdb61e..9af47ac 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -376,6 +376,38 @@ DWORD WINAPI NtUserGetQueueStatus( UINT flags )
+     return ret;
+ }
+ 
++/**********************************************************************
++ *           NtUserGetQueueStatusReadonly (win32u.@)
++ *
++ * The NtUserGetQueueStatus query without its side effect: the
++ * changed bits are reported but not consumed, so repeated calls
++ * keep returning them until a clearing NtUserGetQueueStatus call
++ * (or the queue being drained) resets them. The server request
++ * already separates the two: clear_bits stays 0 here.
++ */
++DWORD WINAPI NtUserGetQueueStatusReadonly( UINT flags )
++{
++    DWORD ret;
++
++    if (flags & ~(QS_ALLINPUT | QS_ALLPOSTMESSAGE | QS_SMRESULT))
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_FLAGS );
++        return 0;
++    }
++
++    check_for_events( flags );
++
++    SERVER_START_REQ( get_queue_status )
++    {
++        req->clear_bits = 0;
++        wine_server_call( req );
++        ret = MAKELONG( reply->changed_bits & flags, reply->wake_bits & flags );
++    }
++    SERVER_END_REQ;
++    return ret;
++}
++
++
+ /***********************************************************************
+  *           get_input_state
+  */
+diff --git a/dlls/win32u/mapping.c b/dlls/win32u/mapping.c
+index 65f276e..e543f9b 100644
+--- a/dlls/win32u/mapping.c
++++ b/dlls/win32u/mapping.c
+@@ -468,3 +468,13 @@ void combine_transform( XFORM *result, const XFORM *xform1, const XFORM *xform2
+ 
+     *result = r;
+ }
++
++/**********************************************************************
++ *           NtGdiCombineTransform   (win32u.@)
++ */
++BOOL WINAPI NtGdiCombineTransform( XFORM *result, const XFORM *xform1, const XFORM *xform2 )
++{
++    if (!result || !xform1 || !xform2) return FALSE;
++    combine_transform( result, xform1, xform2 );
++    return TRUE;
++}
+diff --git a/dlls/win32u/syscall.c b/dlls/win32u/syscall.c
+index e0f4e8f..b076ea5 100644
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -39,6 +39,7 @@ static void * const syscalls[] =
+     NtGdiAddFontMemResourceEx,
+     NtGdiAddFontResourceW,
+     NtGdiCombineRgn,
++    NtGdiCombineTransform,
+     NtGdiCreateBitmap,
+     NtGdiCreateClientObj,
+     NtGdiCreateDIBBrush,
+@@ -67,6 +68,7 @@ static void * const syscalls[] =
+     NtGdiFlush,
+     NtGdiGetBitmapBits,
+     NtGdiGetBitmapDimension,
++    NtGdiGetCharSet,
+     NtGdiGetColorAdjustment,
+     NtGdiGetDCDword,
+     NtGdiGetDCObject,
+@@ -86,6 +88,7 @@ static void * const syscalls[] =
+     NtGdiInitSpool,
+     NtGdiOffsetRgn,
+     NtGdiPathToRegion,
++    NtGdiPolyTextOutW,
+     NtGdiPtInRegion,
+     NtGdiRectInRegion,
+     NtGdiRemoveFontMemResourceEx,
+@@ -207,6 +210,7 @@ static void * const syscalls[] =
+     NtUserGetProcessWindowStation,
+     NtUserGetProp,
+     NtUserGetQueueStatus,
++    NtUserGetQueueStatusReadonly,
+     NtUserGetRawInputBuffer,
+     NtUserGetRawInputData,
+     NtUserGetRawInputDeviceInfo,
+@@ -232,6 +236,7 @@ static void * const syscalls[] =
+     NtUserInvalidateRect,
+     NtUserInvalidateRgn,
+     NtUserIsClipboardFormatAvailable,
++    NtUserIsTopLevelWindow,
+     NtUserKillTimer,
+     NtUserLockWindowUpdate,
+     NtUserLogicalToPerMonitorDPIPhysicalPoint,
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index c25a5e9..ae6d84a 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -135,7 +135,7 @@
+ @ stdcall NtGdiCloseFigure(long)
+ @ stub NtGdiColorCorrectPalette
+ @ stdcall -syscall NtGdiCombineRgn(long long long long)
+-@ stub NtGdiCombineTransform
++@ stdcall -syscall NtGdiCombineTransform(ptr ptr ptr)
+ @ stdcall NtGdiComputeXformCoefficients(long)
+ @ stub NtGdiConfigureOPMProtectedOutput
+ @ stub NtGdiConvertMetafileRect
+@@ -454,7 +454,7 @@
+ @ stub NtGdiGetCertificateSize
+ @ stub NtGdiGetCertificateSizeByHandle
+ @ stdcall NtGdiGetCharABCWidthsW(long long long ptr long ptr)
+-@ stub NtGdiGetCharSet
++@ stdcall -syscall NtGdiGetCharSet(long)
+ @ stdcall NtGdiGetCharWidthInfo(long ptr)
+ @ stdcall NtGdiGetCharWidthW(long long long ptr long ptr)
+ @ stub NtGdiGetCharacterPlacementW
+@@ -559,7 +559,7 @@
+ @ stdcall NtGdiPolyDraw(long ptr ptr long)
+ @ stub NtGdiPolyPatBlt
+ @ stdcall NtGdiPolyPolyDraw(long ptr ptr long long)
+-@ stub NtGdiPolyTextOutW
++@ stdcall -syscall NtGdiPolyTextOutW(long ptr long)
+ @ stdcall -syscall NtGdiPtInRegion(long long long)
+ @ stdcall NtGdiPtVisible(long long long)
+ @ stub NtGdiQueryFontAssocInfo
+@@ -982,7 +982,7 @@
+ @ stdcall -syscall NtUserGetProcessWindowStation()
+ @ stdcall -syscall NtUserGetProp(long wstr)
+ @ stdcall -syscall NtUserGetQueueStatus(long)
+-@ stub NtUserGetQueueStatusReadonly
++@ stdcall -syscall NtUserGetQueueStatusReadonly(long)
+ @ stdcall -syscall NtUserGetRawInputBuffer(ptr ptr long)
+ @ stdcall -syscall NtUserGetRawInputData(ptr long ptr ptr long)
+ @ stdcall -syscall NtUserGetRawInputDeviceInfo(ptr long ptr ptr)
+@@ -1055,7 +1055,7 @@
+ @ stub NtUserIsMouseInputEnabled
+ @ stub NtUserIsNonClientDpiScalingEnabled
+ @ stub NtUserIsResizeLayoutSynchronizationEnabled
+-@ stub NtUserIsTopLevelWindow
++@ stdcall -syscall NtUserIsTopLevelWindow(long)
+ @ stub NtUserIsTouchWindow
+ @ stub NtUserIsWindowBroadcastingDpiToChildren
+ @ stub NtUserIsWindowGDIScaledDpiMessageEnabled
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 753f470..294358b 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -739,6 +739,15 @@ HWND WINAPI NtUserGetAncestor( HWND hwnd, UINT type )
+     return ret;
+ }
+ 
++/**********************************************************************
++ *           NtUserIsTopLevelWindow (win32u.@)
++ */
++BOOL WINAPI NtUserIsTopLevelWindow( HWND hwnd )
++{
++    if (!hwnd) return FALSE;
++    return NtUserGetAncestor( hwnd, GA_ROOT ) == hwnd;
++}
++
+ /* see IsChild */
+ BOOL is_child( HWND parent, HWND child )
+ {
+diff --git a/include/ntgdi.h b/include/ntgdi.h
+index 5e22419..d161f53 100644
+--- a/include/ntgdi.h
++++ b/include/ntgdi.h
+@@ -262,6 +262,7 @@ BOOL     WINAPI NtGdiBitBlt( HDC hdc_dst, INT x_dst, INT y_dst, INT width, INT h
+ BOOL     WINAPI NtGdiCancelDC( HDC hdc );
+ BOOL     WINAPI NtGdiCloseFigure( HDC hdc );
+ INT      WINAPI NtGdiCombineRgn( HRGN dest, HRGN src1, HRGN src2, INT mode );
++BOOL     WINAPI NtGdiCombineTransform( XFORM *result, const XFORM *xform1, const XFORM *xform2 );
+ BOOL     WINAPI NtGdiComputeXformCoefficients( HDC hdc );
+ HBITMAP  WINAPI NtGdiCreateBitmap( INT width, INT height, UINT planes,
+                                    UINT bpp, const void *bits );
+@@ -368,6 +369,7 @@ DWORD    WINAPI NtGdiGetRegionData( HRGN hrgn, DWORD count, RGNDATA *data );
+ INT      WINAPI NtGdiGetRgnBox( HRGN hrgn, RECT *rect );
+ DWORD    WINAPI NtGdiGetSpoolMessage( void *ptr1, DWORD data2, void *ptr3, DWORD data4 );
+ UINT     WINAPI NtGdiGetSystemPaletteUse( HDC hdc );
++UINT     WINAPI NtGdiGetCharSet( HDC hdc );
+ UINT     WINAPI NtGdiGetTextCharsetInfo( HDC hdc, FONTSIGNATURE *fs, DWORD flags );
+ BOOL     WINAPI NtGdiGetTextExtentExW( HDC hdc, const WCHAR *str, INT count, INT max_ext,
+                                        INT *nfit, INT *dxs, SIZE *size, UINT flags );
+@@ -400,6 +402,7 @@ BOOL     WINAPI NtGdiPlgBlt( HDC hdc, const POINT *point, HDC hdc_src, INT x_src
+ BOOL     WINAPI NtGdiPolyDraw(HDC hdc, const POINT *points, const BYTE *types, DWORD count );
+ ULONG    WINAPI NtGdiPolyPolyDraw( HDC hdc, const POINT *points, const ULONG *counts,
+                                    DWORD count, UINT function );
++BOOL     WINAPI NtGdiPolyTextOutW( HDC hdc, const POLYTEXTW *pt, INT count );
+ BOOL     WINAPI NtGdiPtInRegion( HRGN hrgn, INT x, INT y );
+ BOOL     WINAPI NtGdiPtVisible( HDC hdc, INT x, INT y );
+ BOOL     WINAPI NtGdiRectInRegion( HRGN hrgn, const RECT *rect );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 8ae4fdc..c2b5153 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -816,6 +816,7 @@ HWINSTA WINAPI NtUserGetProcessWindowStation(void);
+ HANDLE  WINAPI NtUserGetProp( HWND hwnd, const WCHAR *str );
+ ULONG   WINAPI NtUserGetProcessDpiAwarenessContext( HANDLE process );
+ DWORD   WINAPI NtUserGetQueueStatus( UINT flags );
++DWORD   WINAPI NtUserGetQueueStatusReadonly( UINT flags );
+ UINT    WINAPI NtUserGetRawInputBuffer( RAWINPUT *data, UINT *data_size, UINT header_size );
+ UINT    WINAPI NtUserGetRawInputData( HRAWINPUT rawinput, UINT command, void *data, UINT *data_size, UINT header_size );
+ UINT    WINAPI NtUserGetRawInputDeviceInfo( HANDLE handle, UINT command, void *data, UINT *data_size );
+@@ -842,6 +843,7 @@ NTSTATUS WINAPI NtUserInitializeClientPfnArrays( const struct user_client_procs
+ HICON   WINAPI NtUserInternalGetWindowIcon( HWND hwnd, UINT type );
+ INT     WINAPI NtUserInternalGetWindowText( HWND hwnd, WCHAR *text, INT count );
+ BOOL    WINAPI NtUserIsClipboardFormatAvailable( UINT format );
++BOOL    WINAPI NtUserIsTopLevelWindow( HWND hwnd );
+ BOOL    WINAPI NtUserInvalidateRect( HWND hwnd, const RECT *rect, BOOL erase );
+ BOOL    WINAPI NtUserInvalidateRgn( HWND hwnd, HRGN hrgn, BOOL erase );
+ BOOL    WINAPI NtUserKillTimer( HWND hwnd, UINT_PTR id );
