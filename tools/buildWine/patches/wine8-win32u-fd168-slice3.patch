@@ -1,0 +1,161 @@
+diff --git a/dlls/win32u/syscall.c b/dlls/win32u/syscall.c
+index e0f4e8f..71c4b7a 100644
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -325,6 +325,7 @@ static void * const syscalls[] =
+     NtUserWaitForInputIdle,
+     NtUserWaitMessage,
+     NtUserWindowFromDC,
++    NtUserWindowFromPhysicalPoint,
+     NtUserWindowFromPoint,
+ };
+ 
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index c25a5e9..230ee02 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -373,7 +373,7 @@
+ @ stub NtGdiDestroyPhysicalMonitor
+ @ stub NtGdiDoBanding
+ @ stdcall NtGdiDoPalette(long long long ptr long long)
+-@ stub NtGdiDrawEscape
++@ stdcall NtGdiDrawEscape(long long long ptr)
+ @ stdcall -syscall NtGdiDrawStream(long long ptr)
+ @ stub NtGdiDwmCreatedBitmapRemotingOutput
+ @ stdcall NtGdiEllipse(long long long long long)
+@@ -557,7 +557,7 @@
+ @ stdcall -syscall NtGdiPathToRegion(long)
+ @ stdcall NtGdiPlgBlt(long ptr long long long long long long long long long)
+ @ stdcall NtGdiPolyDraw(long ptr ptr long)
+-@ stub NtGdiPolyPatBlt
++@ stdcall NtGdiPolyPatBlt(long long ptr long long)
+ @ stdcall NtGdiPolyPolyDraw(long ptr ptr long long)
+ @ stub NtGdiPolyTextOutW
+ @ stdcall -syscall NtGdiPtInRegion(long long long)
+@@ -848,7 +848,7 @@
+ @ stdcall -syscall NtUserDragDetect(long long long)
+ @ stdcall -syscall NtUserDragObject(long long long long long)
+ @ stub NtUserDrawAnimatedRects
+-@ stub NtUserDrawCaption
++@ stdcall NtUserDrawCaption(long long ptr long)
+ @ stdcall NtUserDrawCaptionTemp(long long ptr long long wstr long)
+ @ stdcall -syscall NtUserDrawIconEx(long long long long long long long long long)
+ @ stdcall NtUserDrawMenuBarTemp(long long ptr long long)
+@@ -1310,7 +1310,7 @@
+ @ stub NtUserWaitForRedirectionStartComplete
+ @ stdcall -syscall NtUserWaitMessage()
+ @ stdcall -syscall NtUserWindowFromDC(long)
+-@ stub NtUserWindowFromPhysicalPoint
++@ stdcall -syscall NtUserWindowFromPhysicalPoint(int64)
+ @ stdcall -syscall NtUserWindowFromPoint(long long)
+ @ stub NtUserYieldTask
+ @ stub NtValidateCompositionSurfaceHandle
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 753f470..b747c69 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2392,6 +2392,19 @@ HWND WINAPI NtUserWindowFromPoint( LONG x, LONG y )
+     return window_from_point( 0, pt, &hittest );
+ }
+ 
++/*******************************************************************
++ *           NtUserWindowFromPhysicalPoint (win32u.@)
++ *
++ * Physical points share the logical coordinate space in this
++ * driver model (the tree's LogicalToPhysicalPoint and
++ * PhysicalToLogicalPoint are the identity mapping), so the hit
++ * test is NtUserWindowFromPoint itself.
++ */
++HWND WINAPI NtUserWindowFromPhysicalPoint( POINT pt )
++{
++    return NtUserWindowFromPoint( pt.x, pt.y );
++}
++
+ /*******************************************************************
+  *           NtUserChildWindowFromPointEx (win32u.@)
+  */
+diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
+index e128705..573307c 100644
+--- a/dlls/win32u/wrappers.c
++++ b/dlls/win32u/wrappers.c
+@@ -177,6 +177,12 @@ INT WINAPI NtGdiExtEscape( HDC hdc, WCHAR *driver, INT driver_id, INT escape, IN
+                                         output_size, output );
+ }
+ 
++INT WINAPI NtGdiDrawEscape( HDC hdc, INT escape, INT input_size, const char *input )
++{
++    if (!unix_funcs) return 0;
++    return unix_funcs->pNtGdiExtEscape( hdc, NULL, 0, escape, input_size, input, 0, NULL );
++}
++
+ BOOL WINAPI NtGdiExtFloodFill( HDC hdc, INT x, INT y, COLORREF color, UINT type )
+ {
+     if (!unix_funcs) return FALSE;
+@@ -441,6 +447,22 @@ BOOL WINAPI NtGdiPatBlt( HDC hdc, INT left, INT top, INT width, INT height, DWOR
+     return unix_funcs->pNtGdiPatBlt( hdc, left, top, width, height, rop );
+ }
+ 
++BOOL WINAPI NtGdiPolyPatBlt( HDC hdc, DWORD rop, const POLYPATBLT *p, DWORD count, DWORD mode )
++{
++    HGDIOBJ prev_brush;
++    DWORD i;
++
++    if (!unix_funcs) return FALSE;
++    if (count && !unix_funcs->pNtGdiGetDeviceCaps( hdc, HORZRES )) return FALSE;
++    for (i = 0; i < count; i++)
++    {
++        if (!(prev_brush = unix_funcs->pNtGdiSelectBrush( hdc, p[i].hBrush ))) continue;
++        unix_funcs->pNtGdiPatBlt( hdc, p[i].nXLeft, p[i].nYLeft, p[i].nWidth, p[i].nHeight, rop );
++        unix_funcs->pNtGdiSelectBrush( hdc, prev_brush );
++    }
++    return TRUE;
++}
++
+ BOOL WINAPI NtGdiPlgBlt( HDC hdc, const POINT *point, HDC hdc_src, INT x_src, INT y_src,
+                          INT width, INT height, HBITMAP mask, INT x_mask, INT y_mask,
+                          DWORD bk_color )
+@@ -725,6 +747,12 @@ NTSTATUS WINAPI NtGdiDdDDISetVidPnSourceOwner( const D3DKMT_SETVIDPNSOURCEOWNER
+     return unix_funcs->pNtGdiDdDDISetVidPnSourceOwner( desc );
+ }
+ 
++BOOL WINAPI NtUserDrawCaption( HWND hwnd, HDC hdc, const RECT *rect, UINT flags )
++{
++    if (!unix_funcs) return FALSE;
++    return unix_funcs->pNtUserDrawCaptionTemp( hwnd, hdc, rect, 0, 0, NULL, flags & 0x103f );
++}
++
+ BOOL WINAPI NtUserDrawCaptionTemp( HWND hwnd, HDC hdc, const RECT *rect, HFONT font,
+                                    HICON icon, const WCHAR *str, UINT flags )
+ {
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 8ae4fdc..173a026 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -959,6 +959,7 @@ WORD    WINAPI NtUserVkKeyScanEx( WCHAR chr, HKL layout );
+ DWORD   WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow );
+ BOOL    WINAPI NtUserWaitMessage(void);
+ HWND    WINAPI NtUserWindowFromDC( HDC hdc );
++HWND    WINAPI NtUserWindowFromPhysicalPoint( POINT pt );
+ HWND    WINAPI NtUserWindowFromPoint( LONG x, LONG y );
+ 
+ /* NtUserCallNoParam codes, not compatible with Windows */
+diff --git a/include/wingdi.h b/include/wingdi.h
+index 046009c..044a02b 100644
+--- a/include/wingdi.h
++++ b/include/wingdi.h
+@@ -1160,6 +1160,15 @@ DECL_WINELIB_TYPE_AW(POLYTEXT)
+ DECL_WINELIB_TYPE_AW(PPOLYTEXT)
+ DECL_WINELIB_TYPE_AW(LPPOLYTEXT)
+ 
++typedef struct tagPOLYPATBLT
++{
++    INT    nXLeft;
++    INT    nYLeft;
++    INT    nWidth;
++    INT    nHeight;
++    HBRUSH hBrush;
++} POLYPATBLT, *PPOLYPATBLT, *LPPOLYPATBLT;
++
+ 
+ /* ntmFlags field flags */
+ #define NTM_REGULAR     __MSABI_LONG(0x00000040)
