@@ -94,3 +94,29 @@ T1–T4), which is the workload that produced the garbage.
   `fd193_edit.py`) was deleted as each phase finished with it —
   about 15 MB freed in total; no new store, staging copy, or
   large scratch was created.
+
+## Queue checks (the checking queue, the standard door)
+
+- The first submission ran as pipeline 20 and never reached the
+  checks: its verify-source step found the shared source mount
+  holding another lane commit (`81bd25c4...`) instead of this
+  branch tip. With half a dozen lanes submitting at once, each
+  `submit-check` re-prepares the single shared mount
+  (`checks/src`), so most pipelines in that batch (18–21)
+  failed verify-source identically — no check ran and every
+  step log is empty. Evidence: `checks/evidence/pipeline-20/`.
+- Re-submitted after the submission traffic drained. Pipeline
+  26 verified the mounted commit is exactly this branch tip
+  (`345a6a5d7...`) and ran the full definition: citations exit
+  0; js-unit exit 1 with 352 passed / 2 failed — the two known
+  bare-checkout artifacts (`provenance-artifacts`,
+  `runtime-completeness`), the accepted baseline shape;
+  js-legacy exit 0; native-main-build exit 0; native-main exit
+  0 (692 tests, 0 FAILED in 269 s); native-x64-build exit 0;
+  native-x64 exit 0 (116 tests, 0 FAILED in 25 s); run-native
+  exit 0. Evidence: `checks/evidence/pipeline-26/`.
+- Infrastructure note for the coordinator: the shared source
+  mount makes concurrent submissions destroy each other's
+  pipelines at verify-source — in the 17–21 batch only pipeline
+  17 verified. Submissions need serialising (or a per-pipeline
+  mount) before multi-lane fan-outs can rely on the queue.
