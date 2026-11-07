@@ -1,0 +1,274 @@
+Root element :registry
+Removing extension: VKSC_VERSION_1_0 vulkansc 
+Removing extension: VK_KHR_display vulkan,vulkansc explicityly removed
+Removing extension: VK_KHR_xcb_surface vulkan xcb 
+Removing extension: VK_KHR_wayland_surface vulkan wayland 
+Removing extension: VK_KHR_mir_surface disabled 
+Removing extension: VK_KHR_android_surface vulkan android 
+Removing extension: VK_KHR_win32_surface vulkan win32 
+Removing extension: VK_ANDROID_native_buffer disabled android 
+Removing extension: VK_AMD_extension_17 disabled 
+Removing extension: VK_AMD_extension_18 disabled 
+Removing extension: VK_AMD_extension_20 disabled 
+Removing extension: VK_EXT_extension_28 disabled 
+Removing extension: VK_AMD_extension_32 disabled 
+Removing extension: VK_AMD_extension_33 disabled 
+Removing extension: VK_AMD_extension_35 disabled 
+Removing extension: VK_AMD_extension_44 disabled 
+Removing extension: VK_AMD_extension_46 disabled 
+Removing extension: VK_NVX_extension_48 disabled 
+Removing extension: VK_GOOGLE_extension_49 disabled 
+Removing extension: VK_GGP_stream_descriptor_surface vulkan ggp 
+Removing extension: VK_NV_private_vendor_info vulkansc 
+Removing extension: VK_NV_extension_53 disabled 
+Removing extension: VK_NV_external_memory_capabilities vulkan explicityly removed
+Removing extension: VK_NV_external_memory_win32 vulkan win32 explicityly removed
+Removing extension: VK_NV_win32_keyed_mutex vulkan win32 
+Removing extension: VK_NN_vi_surface vulkan vi 
+Removing extension: VK_KHR_external_memory_win32 vulkan win32 
+Removing extension: VK_KHR_external_memory_fd vulkan,vulkansc explicityly removed
+Removing extension: VK_KHR_win32_keyed_mutex vulkan win32 explicityly removed
+Removing extension: VK_KHR_external_semaphore_win32 vulkan win32 explicityly removed
+Removing extension: VK_KHR_external_semaphore_fd vulkan,vulkansc explicityly removed
+Removing extension: VK_NVX_device_generated_commands disabled 
+Removing extension: VK_EXT_acquire_xlib_display vulkan xlib_xrandr 
+Removing extension: VK_GOOGLE_display_timing vulkan explicityly removed
+Removing extension: VK_RESERVED_do_not_use_94 disabled 
+Removing extension: VK_NV_extension_101 disabled 
+Removing extension: VK_NV_extension_104 disabled 
+Removing extension: VK_IMG_extension_107 disabled 
+Removing extension: VK_IMG_extension_108 disabled 
+Removing extension: VK_KHR_shared_presentable_image vulkan,vulkansc explicityly removed
+Removing extension: VK_KHR_external_fence_win32 vulkan win32 explicityly removed
+Removing extension: VK_KHR_external_fence_fd vulkan,vulkansc explicityly removed
+Removing extension: VK_KHR_extension_119 disabled 
+Removing extension: VK_MVK_ios_surface vulkan ios 
+Removing extension: VK_MVK_macos_surface vulkan macos 
+Removing extension: VK_MVK_moltenvk disabled 
+Removing extension: VK_EXT_external_memory_dma_buf vulkan,vulkansc explicityly removed
+Removing extension: VK_ANDROID_external_memory_android_hardware_buffer vulkan android 
+Removing extension: VK_AMD_extension_134 disabled 
+Removing extension: VK_AMDX_shader_enqueue vulkan provisional 
+Removing extension: VK_KHR_extension_136 disabled 
+Removing extension: VK_AMD_extension_140 disabled 
+Removing extension: VK_AMD_extension_142 disabled 
+Removing extension: VK_AMD_extension_143 disabled 
+Removing extension: VK_RESERVED_do_not_use_146 disabled 
+Removing extension: VK_NV_extension_152 disabled 
+Removing extension: VK_EXT_image_drm_format_modifier vulkan,vulkansc explicityly removed
+Removing extension: VK_EXT_extension_160 disabled 
+Removing extension: VK_KHR_portability_subset vulkan provisional 
+Removing extension: VK_NV_extension_168 disabled 
+Removing extension: VK_QCOM_extension_173 disabled 
+Removing extension: VK_QCOM_extension_174 disabled 
+Removing extension: VK_EXT_extension_177 disabled 
+Removing extension: VK_AMD_extension_183 disabled 
+Removing extension: VK_AMD_extension_187 disabled 
+Removing extension: VK_GGP_frame_token vulkan ggp 
+Removing extension: VK_GOOGLE_extension_194 disabled 
+Removing extension: VK_GOOGLE_extension_195 disabled 
+Removing extension: VK_GOOGLE_extension_196 disabled 
+Removing extension: VK_KHR_extension_209 disabled 
+Removing extension: VK_AMD_display_native_hdr vulkan explicityly removed
+Removing extension: VK_FUCHSIA_imagepipe_surface vulkan fuchsia 
+Removing extension: VK_GOOGLE_extension_217 disabled 
+Removing extension: VK_EXT_metal_surface vulkan metal 
+Removing extension: VK_EXT_extension_220 disabled 
+Removing extension: VK_KHR_extension_221 disabled 
+Removing extension: VK_EXT_extension_223 disabled 
+Removing extension: VK_AMD_extension_229 disabled 
+Removing extension: VK_AMD_extension_231 disabled 
+Removing extension: VK_AMD_extension_232 disabled 
+Removing extension: VK_AMD_extension_234 disabled 
+Removing extension: VK_KHR_surface_protected_capabilities vulkan explicityly removed
+Removing extension: VK_INTEL_extension_243 disabled 
+Removing extension: VK_MESA_extension_244 disabled 
+Removing extension: VK_EXT_full_screen_exclusive vulkan win32 explicityly removed
+Removing extension: VK_EXT_headless_surface vulkan,vulkansc explicityly removed
+Removing extension: VK_EXT_extension_259 disabled 
+Removing extension: VK_GGP_extension_263 disabled 
+Removing extension: VK_BRCM_extension_264 disabled 
+Removing extension: VK_BRCM_extension_265 disabled 
+Removing extension: VK_EXT_extension_267 disabled 
+Removing extension: VK_KHR_extension_280 disabled 
+Removing extension: VK_EXT_device_memory_report vulkan explicityly removed
+Removing extension: VK_EXT_extension_289 disabled 
+Removing extension: VK_NV_extension_292 disabled 
+Removing extension: VK_KHR_extension_297 disabled 
+Removing extension: VK_KHR_extension_299 disabled 
+Removing extension: VK_QCOM_extension_303 disabled 
+Removing extension: VK_QCOM_extension_304 disabled 
+Removing extension: VK_QCOM_extension_305 disabled 
+Removing extension: VK_QCOM_extension_306 disabled 
+Removing extension: VK_QCOM_extension_307 disabled 
+Removing extension: VK_KHR_object_refresh vulkansc 
+Removing extension: VK_QCOM_extension_310 disabled 
+Removing extension: VK_EXT_metal_objects vulkan metal explicityly removed
+Removing extension: VK_EXT_extension_313 disabled 
+Removing extension: VK_AMD_extension_314 disabled 
+Removing extension: VK_AMD_extension_316 disabled 
+Removing extension: VK_AMD_extension_318 disabled 
+Removing extension: VK_AMD_extension_319 disabled 
+Removing extension: VK_AMD_extension_320 disabled 
+Removing extension: VK_KHR_extension_325 disabled 
+Removing extension: VK_NV_extension_330 disabled 
+Removing extension: VK_NV_extension_332 disabled 
+Removing extension: VK_KHR_extension_335 disabled 
+Removing extension: VK_ARM_extension_344 disabled 
+Removing extension: VK_NV_acquire_winrt_display vulkan,vulkansc win32 
+Removing extension: VK_EXT_directfb_surface vulkan directfb 
+Removing extension: VK_KHR_extension_350 disabled 
+Removing extension: VK_NV_extension_351 disabled 
+Removing extension: VK_EXT_physical_device_drm vulkan explicityly removed
+Removing extension: VK_KHR_extension_358 disabled 
+Removing extension: VK_EXT_extension_359 disabled 
+Removing extension: VK_EXT_extension_360 disabled 
+Removing extension: VK_EXT_extension_363 disabled 
+Removing extension: VK_FUCHSIA_extension_364 disabled 
+Removing extension: VK_FUCHSIA_external_memory vulkan fuchsia 
+Removing extension: VK_FUCHSIA_external_semaphore vulkan fuchsia 
+Removing extension: VK_FUCHSIA_buffer_collection vulkan fuchsia 
+Removing extension: VK_FUCHSIA_extension_368 disabled 
+Removing extension: VK_QCOM_extension_369 disabled 
+Removing extension: VK_NV_external_memory_rdma vulkan explicityly removed
+Removing extension: VK_NV_external_sci_sync vulkansc sci 
+Removing extension: VK_NV_external_memory_sci_buf vulkansc sci 
+Removing extension: VK_QNX_screen_surface vulkan screen 
+Removing extension: VK_KHR_extension_380 disabled 
+Removing extension: VK_KHR_extension_381 disabled 
+Removing extension: VK_EXT_extension_384 disabled 
+Removing extension: VK_MESA_extension_385 disabled 
+Removing extension: VK_GOOGLE_extension_386 disabled 
+Removing extension: VK_EXT_extension_388 disabled 
+Removing extension: VK_EXT_extension_390 disabled 
+Removing extension: VK_EXT_extension_391 disabled 
+Removing extension: VK_NV_displacement_micromap vulkan provisional 
+Removing extension: VK_JUICE_extension_399 disabled 
+Removing extension: VK_JUICE_extension_400 disabled 
+Removing extension: VK_FB_extension_402 disabled 
+Removing extension: VK_FB_extension_403 disabled 
+Removing extension: VK_FB_extension_404 disabled 
+Removing extension: VK_HUAWEI_extension_406 disabled 
+Removing extension: VK_GGP_extension_407 disabled 
+Removing extension: VK_GGP_extension_408 disabled 
+Removing extension: VK_GGP_extension_409 disabled 
+Removing extension: VK_GGP_extension_410 disabled 
+Removing extension: VK_GGP_extension_411 disabled 
+Removing extension: VK_HUAWEI_extension_415 disabled 
+Removing extension: VK_EXT_extension_420 disabled 
+Removing extension: VK_ARM_extension_424 disabled 
+Removing extension: VK_NV_extension_430 disabled 
+Removing extension: VK_NV_extension_432 disabled 
+Removing extension: VK_NV_extension_433 disabled 
+Removing extension: VK_GOOGLE_surfaceless_query vulkan explicityly removed
+Removing extension: VK_EXT_application_parameters vulkansc 
+Removing extension: VK_EXT_extension_437 disabled 
+Removing extension: VK_SEC_extension_439 disabled 
+Removing extension: VK_QCOM_extension_440 disabled 
+Removing extension: VK_COREAVI_extension_442 disabled 
+Removing extension: VK_COREAVI_extension_443 disabled 
+Removing extension: VK_COREAVI_extension_444 disabled 
+Removing extension: VK_COREAVI_extension_445 disabled 
+Removing extension: VK_COREAVI_extension_446 disabled 
+Removing extension: VK_COREAVI_extension_447 disabled 
+Removing extension: VK_SEC_extension_448 disabled 
+Removing extension: VK_SEC_extension_449 disabled 
+Removing extension: VK_SEC_extension_450 disabled 
+Removing extension: VK_SEC_extension_451 disabled 
+Removing extension: VK_ARM_extension_453 disabled 
+Removing extension: VK_GOOGLE_extension_455 disabled 
+Removing extension: VK_EXT_extension_457 disabled 
+Removing extension: VK_EXT_extension_458 disabled 
+Removing extension: VK_LUNARG_direct_driver_loading vulkan explicityly removed
+Removing extension: VK_EXT_extension_461 disabled 
+Removing extension: VK_EXT_extension_462 disabled 
+Removing extension: VK_EXT_extension_468 disabled 
+Removing extension: VK_ANDROID_external_format_resolve vulkan android 
+Removing extension: VK_AMD_extension_470 disabled 
+Removing extension: VK_AMD_extension_472 disabled 
+Removing extension: VK_AMD_extension_473 disabled 
+Removing extension: VK_AMD_extension_474 disabled 
+Removing extension: VK_AMD_extension_475 disabled 
+Removing extension: VK_AMD_extension_476 disabled 
+Removing extension: VK_AMD_extension_478 disabled 
+Removing extension: VK_AMD_extension_479 disabled 
+Removing extension: VK_EXT_extension_480 disabled 
+Removing extension: VK_EXT_extension_481 disabled 
+Removing extension: VK_SEC_amigo_profiling vulkan explicityly removed
+Removing extension: VK_EXT_extension_487 disabled 
+Removing extension: VK_EXT_extension_488 disabled 
+Removing extension: VK_NV_external_sci_sync2 vulkansc sci 
+Removing extension: VK_NV_extension_492 disabled 
+Removing extension: VK_NV_extension_494 disabled 
+Removing extension: VK_EXT_extension_501 disabled 
+Removing extension: VK_EXT_extension_502 disabled 
+Removing extension: VK_EXT_extension_503 disabled 
+Removing extension: VK_NV_extension_504 disabled 
+Removing extension: VK_EXT_extension_505 disabled 
+Removing extension: VK_EXT_extension_508 disabled 
+Removing extension: VK_EXT_extension_509 disabled 
+Removing extension: VK_MESA_extension_510 disabled 
+Removing extension: VK_KHR_extension_515 disabled 
+Removing extension: VK_MESA_extension_518 disabled 
+Removing extension: VK_EXT_extension_523 disabled 
+Removing extension: VK_EXT_extension_524 disabled 
+Removing extension: VK_EXT_extension_528 disabled 
+Removing extension: VK_QNX_external_memory_screen_buffer vulkan,vulkansc screen 
+Removing extension: VK_KHR_extension_532 disabled 
+Removing extension: VK_EXT_extension_533 disabled 
+Removing extension: VK_QCOM_extension_536 disabled 
+Removing extension: VK_EXT_extension_537 disabled 
+Removing extension: VK_EXT_extension_538 disabled 
+Removing extension: VK_EXT_extension_539 disabled 
+Removing extension: VK_EXT_extension_540 disabled 
+Removing extension: VK_EXT_extension_541 disabled 
+Removing extension: VK_EXT_extension_542 disabled 
+Removing extension: VK_EXT_extension_543 disabled 
+Removing extension: VK_QCOM_extension_548 disabled 
+Removing extension: VK_NV_extension_549 disabled 
+Removing extension: VK_NV_extension_550 disabled 
+Removing extension: VK_NV_extension_551 disabled 
+Removing extension: VK_KHR_extension_553 disabled 
+Removing extension: VK_IMG_extension_555 disabled 
+Removing extension: VK_NV_extension_557 disabled 
+Removing extension: VK_KHR_extension_558 disabled 
+Removing extension: VK_EXT_extension_561 disabled 
+Removing extension: VK_KHR_extension_562 disabled 
+Removing extension: VK_KHR_maintenance7 vulkan explicityly removed
+Removing extension: VK_ARM_extension_566 disabled 
+Removing extension: VK_ARM_extension_567 disabled 
+Removing extension: VK_ARM_extension_568 disabled 
+Removing extension: VK_NV_extension_570 disabled 
+Removing extension: VK_NV_extension_571 disabled 
+Removing extension: VK_NV_extension_572 disabled 
+Removing extension: VK_KHR_extension_574 disabled 
+Removing extension: VK_KHR_extension_575 disabled 
+Removing extension: VK_HUAWEI_extension_577 disabled 
+Removing extension: VK_EXT_extension_578 disabled 
+Removing extension: VK_EXT_extension_579 disabled 
+Removing extension: VK_EXT_extension_580 disabled 
+Removing extension: VK_NV_extension_581 disabled 
+Removing extension: VK_EXT_extension_582 disabled 
+Removing extension: VK_EXT_extension_584 disabled 
+Removing extension: VK_EXT_extension_585 disabled 
+Removing extension: VK_IMG_extension_586 disabled 
+Removing extension: VK_KHR_extension_587 disabled 
+Removing extension: VK_HUAWEI_extension_588 disabled 
+Removing extension: VK_HUAWEI_extension_589 disabled 
+Removing extension: VK_HUAWEI_extension_590 disabled 
+Removing extension: VK_NV_extension_592 disabled 
+Removing extension: VK_NV_extension_593 disabled 
+Removing extension: VK_NV_extension_595 disabled 
+Removing extension: VK_KHR_extension_596 disabled 
+Removing extension: VK_ARM_extension_597 disabled 
+Removing extension: VK_KHR_extension_598 disabled 
+Removing extension: VK_KHR_extension_599 disabled 
+Removing extension: VK_IMG_extension_600 disabled 
+Removing extension: VK_IMG_extension_601 disabled 
+Removing extension: VK_EXT_extension_602 disabled 
+Removing extension: VK_EXT_extension_603 disabled 
+Removing extension: VK_EXT_extension_604 disabled 
+Removing extension: VK_KHR_extension_605 disabled 
+Removing extension: VK_KHR_extension_606 disabled 
+Removing extension: VK_KHR_extension_607 disabled 
+Removing extension: VK_KHR_extension_608 disabled 
