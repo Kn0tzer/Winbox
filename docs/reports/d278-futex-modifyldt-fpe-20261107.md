@@ -118,9 +118,42 @@ lane's working copy — not from any summary:
 ## Checks
 
 Submitted through the checking queue
-(`winbox-project/checks/submit-check lane-d278`).
-Verdicts from the preserved pipeline logs are filled in
-by the follow-up commit that collects them.
+(`winbox-project/checks/submit-check lane-d278`) three
+times; the queue verdicts are still owed, for reasons
+outside the branch:
+
+- The first submission (tip `4b0c846c2`) died before any
+  pipeline existed: its preparation clone raced another
+  lane's submission inside the shared scratch clone and
+  the checkout failed on objects that are in fact
+  present in the repository (verified directly
+  afterwards).
+- The second submission created pipeline #27 on the
+  exact tip. Its verify-source step passed — mounted
+  commit `4b0c846c2`, read-only mount enforced, tree
+  pristine — but during the next step another lane's
+  submission replaced the shared source tree, and the
+  prepare-workspace log records the tree vanishing file
+  by file (`checks/evidence/pipeline-27/queue-logs/
+  209-prepare-workspace.log`). The pipeline produced no
+  check verdicts: the remaining step logs are empty and
+  its verdict step reports every result file missing.
+- The third submission was stood down before firing:
+  while it waited for a clear field, the box's free
+  disk fell to 5.6–5.7G — below the 6G floor this
+  closeout works under — with other lanes' pipelines
+  still running and consuming.
+
+So the light-check verdicts for this branch (citations,
+JS unit, JS legacy, the full native suites, run-native)
+remain owed to a rerun once the disk recovers and the
+submission contention clears. The branch's proof in the
+meantime is the preserved native evidence verified
+above: the six new tests red on the base and green on
+the fix, with the neighbouring control test green on
+both — the same tests the queue's native suites run
+(main 614–618 and x64 6, inside the suites' 697 / 117
+totals at this tip).
 
 ## Environment notes
 
