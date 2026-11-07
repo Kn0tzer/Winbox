@@ -545,6 +545,9 @@ U32 KSystem::tgkill(U32 threadGroupId, U32 threadId, U32 signal) {
 */
 
 U32 KSystem::processCount() {
+    // FD-201: read under the table lock, like every other access; a bare
+    // size() can observe the table mid-rehash.
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
     return (U32)KSystem::processes.size();
 }
 
@@ -558,6 +561,17 @@ void KSystem::guestRamInfo(U64& totalBytes, U64& freeBytes) {
     // live processes have not committed, summed over both memory managers.
     totalBytes = 4ULL * 1024 * 1024 * 1024;
     U64 committed = 0;
+    // FD-201: scan under the table lock. addProcess/eraseProcess mutate
+    // this table under processesCond, and an insert that crosses the
+    // load-factor limit makes BHashTable replace its whole slot array
+    // and free the old one (rehash). This loop used to run unlocked, so
+    // a scan racing a process start could keep reading the freed array
+    // and dereference a wild KProcess pointer; the first field load
+    // traps and kills the calling worker, which is the occasional dead
+    // start (the caller on the fault path is a starting process's
+    // sysinfo). Every other iteration of this table already holds
+    // processesCond (see getRunningProcessCount).
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond);
     for (auto& entry : KSystem::processes) {
         const KProcessPtr& process = entry.value;
         if (!process) continue;
@@ -584,7 +598,7 @@ U32 KSystem::sysinfo(KThread* thread, U32 address) {
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;
-    memory->writew(address, (U16)KSystem::processes.size()); address+=2;
+    memory->writew(address, (U16)KSystem::processCount()); address+=2;
     memory->writew(address, 0); address += 2;
     memory->writed(address, 0); address+=4;
     memory->writed(address, 0); address+=4;

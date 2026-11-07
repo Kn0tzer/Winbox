@@ -135,6 +135,44 @@ void testGuestCpuTopology() {
             return;
         }
     }
+    // FD-201: KSystem::guestRamInfo scans the process table to sum the
+    // committed pages behind sysinfo and /proc/meminfo. The scan must
+    // hold processesCond: addProcess/eraseProcess mutate the table under
+    // that lock, and an insert that crosses the load-factor limit makes
+    // BHashTable replace its whole slot array and free the old one
+    // (rehash), so an unlocked scan could keep reading the freed array
+    // and dereference a wild KProcess pointer -- the first field load
+    // trapped and killed the calling worker, which was the occasional
+    // dead program start. Guard the lock's presence in guestRamInfo and
+    // processCount so it cannot be removed as an "optimization".
+    {
+        std::ifstream in(root + "/source/kernel/ksystem.cpp");
+        if (!in) {
+            testFail("FD-201 guard cannot read source/kernel/ksystem.cpp");
+            return;
+        }
+        const std::string ksystem((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        auto bodyOf = [&ksystem](const char* signature) -> std::string {
+            const size_t at = ksystem.find(signature);
+            if (at == std::string::npos) {
+                return "";
+            }
+            const size_t end = ksystem.find("\n}\n", at);
+            return ksystem.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        };
+        const std::string ramInfo = bodyOf("void KSystem::guestRamInfo(");
+        if (ramInfo.empty() ||
+            ramInfo.find("BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond)") == std::string::npos) {
+            testFail("KSystem::guestRamInfo must scan the process table under processesCond (FD-201)");
+            return;
+        }
+        const std::string count = bodyOf("U32 KSystem::processCount()");
+        if (count.empty() ||
+            count.find("BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(processesCond)") == std::string::npos) {
+            testFail("KSystem::processCount must read the process table under processesCond (FD-201)");
+            return;
+        }
+    }
 }
 
 #endif
