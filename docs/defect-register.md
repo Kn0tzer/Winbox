@@ -1829,6 +1829,35 @@ do not close the entry until they land.
   still the ceiling and most reject families remain. Record:
   `docs/reports/perf-incdec-fastpath-20261105.md`.*
 
+  *Progress 2026-11-07 (lane `lane-fd26`): two more reject
+  families closed. The fast engine now compiles the scalar
+  SSE moves MOVSD (F2 0F 10/11), MOVSS (F3 0F 10/11) and the
+  MOVQ load (F3 0F 7E), and the packed FP bitwise-logic ops
+  ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD
+  (0F 54/55/56/57), instead of refusing every block
+  containing one. Both families are bit-exact by
+  construction (moves and bitwise ops only; scalar FP
+  arithmetic stays out of scope - its NaN / min-max
+  semantics are not bit-identical between the engines). On
+  the controlled guest bench (sseprobe64: 100k passes of an
+  8-wide scalar-move loop and an 8-wide packed-logic loop
+  per sample, warm medians, fresh session per engine mode,
+  modes 0,1,1,0), the fast engine went from no advantage on
+  the integration tip (scalar 967 / 416 ms against
+  interpreter 408 / 489 ms; logic 357 / 330 ms against
+  246 / 219 ms - the loops' blocks fell back whole) to
+  8.6-10.8x faster than the interpreter in the same runs
+  for the scalar loop (34 / 40 ms against 293 / 433 ms) and
+  2.7-6.0x faster for the logic loop (82 / 34 ms against
+  221 / 205 ms); battery and loop checksums identical
+  across every mode and build, interpreter medians
+  unchanged across builds (box load differed between the
+  two bench runs; the within-run ratios are the controlled
+  figures). FD-26 stays OPEN: guest execution is still the
+  ceiling; scalar FP arithmetic and most other reject
+  families remain. Record:
+  `docs/reports/fd26-scalar-logic-fastpath-20261107.md`.*
+
 - **FD-38 — Directory-notification (inotify) delivery:
   semantics fixed, the enablement park found (a poll/sweep
   lock-order deadlock) and removed at its source, delivery
@@ -9815,6 +9844,61 @@ do not close the entry until they land.
   cases pass including `lods rep-{b,w,d,q}`. Closing terms:
   composition takes the fix and the harness stays green.
 
+- **FD-195 — The section-14.3 block-invalidation gate does
+  not build at the integration tip: its fixed source list
+  no longer links.** *(Medium)* `scripts/build-jit-wasm.sh`
+  compiles the invalidation differential from a fixed file
+  list (cpu64.cpp, jit64.cpp, jit64wasm.cpp,
+  common_lock.cpp, ripSampler.cpp, kmemory64.cpp,
+  bstring.cpp, fpu + softfloat + the test). At `faf95d26c`
+  the link fails with undefined references to
+  `KSystem::guestCpuCount()` (defined in
+  `source/kernel/ksystem.cpp`),
+  `FsOpenNode::noteMappedPagesReleased(unsigned int)`
+  (defined in `source/io/fsopennode.cpp`) and
+  `bwCurrentThreadRegistryLookup()` (defined in
+  `source/kernel/kthread.cpp`) - none of the three files
+  is in the list. Verified baseline-identical: a pristine
+  checkout of the tip fails the same way (phase-1 873/0 and
+  the generated-emitter check pass first), so the gate has
+  been un-runnable since whichever change added the
+  references without updating the list; the FD-176
+  invalidation proof (54/0, byte-identical logs) predates
+  the breakage. Effect: the script exits there, so a plain
+  gate run also skips the 314-test emitted-code fixture
+  stage behind it. Closing terms: the gate builds and the
+  invalidation differential runs green at the tip again
+  (fix the list, or move the three definitions onto files
+  the list already carries). Found by lane `lane-fd26`,
+  2026-11-07; evidence
+  `test-results/fd26/inv_build_interp.log` (pristine-tip
+  run) and the lane record. *(Lane-local number; settles
+  at the next composition audit.)*
+
+- **FD-196 — A guest double printed with `%.3f` comes out
+  as ~1e66 garbage after the first print in a process, in
+  both engines.** *(Low)* The sseprobe64 bench fixture
+  originally computed its millisecond figure as a double
+  (`(double)(end-start) * 1000.0 / (double)freq`) and
+  printed it with `%.3f`. On the integration tip's build,
+  the first sample in each process printed sane (504 ms,
+  530 ms) and every later sample printed ~1e66-1e68
+  garbage - interpreter and fast-engine sessions alike -
+  while the same fixture's integer output and its
+  double-sweep checksum stayed stable and correct. Which
+  step is wrong (the int64-to-double conversion, the
+  multiply/divide, or the C library's `%f` path, and
+  whether the trigger is the second print or the packed
+  logic loop's code) was not isolated. The fixture now
+  reports integer milliseconds plus the raw tick delta.
+  Closing terms: a minimal fixture isolates the failing
+  step and the step is fixed or proven correct. Found by
+  lane `lane-fd26`, 2026-11-07; evidence
+  `test-results/fd26/console-fp-garbage-partial.log` (the
+  killed first bench run's console: first sample sane,
+  everything after garbage). *(Lane-local number; settles
+  at the next composition audit.)*
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -9968,6 +10052,7 @@ is behavioural, is re-proven there.
 
 | `lane-d278` | *(Provisional numbers: FD-09 closed as CL-134, FD-193 as CL-135, FD-194 as CL-136 — all lane-local. FD-193 is also claimed on `lane-fd176` for an unrelated filing, FD-194 in the batch-10 settlement for the PlugPlay filing, and CL-134 on the batch-10 branches; every number settles at the next composition.)* FD-09 CLOSED (frontier review D8): `modify_ldt` answers the host's measured matrix instead of panicking — byte count other than one descriptor -EINVAL, unreadable descriptor pointer -EFAULT, out-of-range index -EINVAL, each rejection one counted `BW64-FAIL syscall.modify_ldt` line. FD-193 FILED + CLOSED (frontier review D2): futex operations on an unmapped word answer the host's measured matrix (-EFAULT for every operation except a 64-bit private WAKE / WAKE_BITSET, which returns 0) instead of the 32-bit panic, the null-page park, and the 64-bit phantom page; a zero bitset mask is -EINVAL on both word sizes. FD-194 FILED + CLOSED (frontier review D7): divide quotient overflow delivers SIGFPE / FPE_INTDIV / trap 0 and x87 exceptions deliver through the SIGFPE slot with trap 16, both as the host does; INTO via SIGSEGV trap 4 pinned unchanged. Fix commit `f998e2e01` on base `faf95d26c`. | Host reference programs measured first (raw futex and modify_ldt syscalls, raw signal delivery; sources and outputs in `test-results/d278/hostref/`). Six new native tests (main 614-618, x64 6) fail on the base — the shared-futex and modify_ldt index cases with the filed panic text — and pass with the fix, the rejections visible as counted BW64-FAIL lines in the green logs; control test 613 passes on the base and with the fix. Checking queue: pipeline #27 verified the source mount on the exact tip but was invalidated when a concurrent submission replaced the shared source tree mid-run, and a further attempt was stood down at 5.6G free disk — the queue verdicts are owed to a rerun (see the record's Checks section). Record: `docs/reports/d278-futex-modifyldt-fpe-20261107.md`; evidence `test-results/d278/` |
 | `lane-ditems` | *(Provisional numbers: FD-11 closed as CL-137, FD-14 closed as CL-138, FD-37 closed as CL-139, FD-195 filed and closed as CL-140, FD-196 filed and closed as CL-141; all settle at the next composition.)* The frontier review's five remaining D-items, worked as one lane: D16 = FD-11 (the empty-separator split guard moved inside `BString::split` itself), D11 = FD-14 (`raiseSyncFault` logs its own deliveries at the delivery point; the 32-bit core's two recover-gate sites confirmed in context, no change needed), D21 = FD-37 (fresh export of the repository's only stash to `evidence/stash-export-20261106/`; the stash was not dropped), D5 filed as FD-195 (caller audit of the no-throw segment-fault entry points: the invalid page's accessors silently dropped writes after an on-demand mapping — fixed to re-dispatch, with a loud log for a write that still cannot land; all other call sites proven sound), D17 filed as FD-196 (`translateOpenError` widened from 4 errnos to 25 now that the filesystem layer preserves the host errno). | Commits `5dc0b8513` (tests) + `14783353f` (fixes) on base `faf95d26c`. Proof: four new/extended native tests, each RED on the unpatched code and GREEN after — `testBStringSplit` (RED = hang, timeout-killed), `testTranslateOpenError` (28 rows), `testFaultDelivery32` additions (write/read-back through the on-demand-mapped window), `testRaiseSyncFaultDeliveryLogged64` (the emitted `BW64-FAIL sync-fault64 ... delivered=1` line is in the GREEN log) — restored-tree GREEN re-confirmed for all four; full suites via the checking queue on the submitted branch. Evidence `test-results/ditems/`; record `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md` |
+| `lane-fd26` | *(Lane-local numbers: filings FD-195, FD-196; FD-26 stays open.)* FD-26 (partial): the fast engine compiles the scalar SSE moves (MOVSD / MOVSS / MOVQ load) and the packed FP logic ops (AND / ANDN / OR / XOR, PS and PD forms) instead of falling back block-wide (see the FD-26 progress note). FD-195 filed: the section-14.3 invalidation gate does not link at the tip (pre-existing, baseline-identical). FD-196 filed: a guest `%.3f` double print goes to ~1e66 garbage after the first print in a process. | Guest bench (sseprobe64, warm medians, modes 0,1,1,0): fast-engine scalar loop 967/416 ms before -> 34/40 ms after (interpreter 408/489 -> 293/433 in the same runs), logic loop 357/330 -> 82/34 (interpreter 246/219 -> 221/205); battery + loop checksums identical across modes and builds. Native jit64 tests 919/0 (base 873/0); generated emitters byte-identical; wasm fixtures 323/0 (base 314/0) incl. a 500-iteration differential fuzz against the interpreter model and denied-access fault tests; sabotage (new kinds decoded as UNKNOWN) turns exactly the 16 new checks red (903/16). JS unit 353 passed / 1 failed (provenance-artifacts - no dist in the tree at run time; passes once the build exists). Invalidation gate not runnable at the tip (FD-195). Record: `docs/reports/fd26-scalar-logic-fastpath-20261107.md`; evidence `test-results/suite-sseprobe-bench/`, `test-results/fd26/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
