@@ -146,3 +146,32 @@ acquired the lock), so there was nothing further to strip.
 (`before.json`, `after-src.json`, force-added with this record) and
 the build log. All heavy work ran on cores 0-2 (the lane's build
 processes inherited the SSH affinity; verified by taskset).
+
+## Run phase — attempt of 2026-11-07 (stopped at the disk guardrail)
+
+- The branch was rebased onto the current integration tip
+  `334c70be4` (batch 10 landed and deployed); the only conflict was
+  this lane's register entry, resolved by renumbering it: the
+  batch-10 composition settled FD-195 to the bus-discovery filing,
+  so the coverage-probe filing is **FD-201** on this branch
+  (provisional; final settlement at batch-11 composition). Register
+  audit after the rebase: FD 1..201 each exactly once (standing
+  gaps 46/56/57), no duplicates.
+- Prep verified against the shared store
+  (`winbox-wt-prep.sh`: 23 links, pins OK) — no private store was
+  built; the 2026-11-06 store mismatch is gone.
+- The dist build was started and waited on the shared build lock
+  behind a relay of other lanes' builds; `bw64-build.sh` gave up
+  with `FATAL: build lock busy or invalid` after its wait
+  (log: `test-results/vkgl-census/build-run-20261107.log`). No
+  "Browser export verified" line exists for this branch yet, so no
+  probe was run — the matrices remain owed, exactly as listed in
+  the Outstanding steps above.
+- While the build waited, free disk fell from 12G to 6.0G under the
+  combined weight of the running lane wave, reaching this lane's
+  stop-and-report line. The lane stopped here with the tree clean
+  and nothing of its own to strip (the build never wrote output).
+- Resume: re-run step 2 (build) when the build lock and disk allow,
+  then steps 3–5 unchanged, except new gap filings now start at
+  FD-202 (FD-201 is this lane's renumbered probe filing) and FD-195
+  references read as FD-201.

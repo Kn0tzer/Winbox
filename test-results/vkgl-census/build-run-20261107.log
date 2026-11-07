@@ -1,0 +1,2 @@
+[bw64-build] waiting for build lock (owner=build:2402320 pid=2402320)
+[bw64-build] FATAL: build lock busy or invalid: /tmp/bw64-build.lock.d
