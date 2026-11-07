@@ -18,6 +18,10 @@
 
 #include "boxedwine.h"
 #include <SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/html5.h>
+void bwPollPadAxesEmscripten();
+#endif
 #include "../../source/x11/x11.h"
 #include "sdlcallback.h"
 #include "devinput.h"
@@ -309,6 +313,9 @@ bool KNativeInputSDL::waitForEvent(U32 ms) {
 }
 
 bool KNativeInputSDL::processEvents() {
+#ifdef __EMSCRIPTEN__
+    bwPollPadAxesEmscripten();
+#endif
     SDL_Event e = {};
 
     while (SDL_PollEvent(&e) == 1) {
@@ -583,6 +590,7 @@ namespace {
 SDL_GameController* bwPadController = nullptr;
 SDL_Joystick* bwPadJoystick = nullptr;
 SDL_JoystickID bwPadInstance = -1;
+int bwPadIndex = -1;
 bool bwHatUp = false, bwHatDown = false, bwHatLeft = false, bwHatRight = false;
 
 void bwFeedHat() {
@@ -627,6 +635,16 @@ U32 bwEvdevButton(SDL_GameControllerButton button) {
     }
 }
 
+// The guest XInput implementation inverts the two Y axes as
+// -scaled - 1, so a stick resting at exactly 0 would read back as
+// -1. Real pads rest within a count or two of centre, never at
+// exactly 0 on every axis; this virtual pad rests one count below
+// centre on the inverted axes, so the composed chain reports a
+// true 0 at rest while full deflection still reaches the ends.
+static void bwFeedInvertedAxis(U32 axis, S32 value) {
+    onGamepadAxis(axis, value - 1);
+}
+
 void bwFeedNeutralState() {
     for (U32 code = K_BTN_SOUTH; code <= K_BTN_THUMBR; code++) {
         onGamepadButton(code, false);
@@ -634,10 +652,10 @@ void bwFeedNeutralState() {
     bwHatUp = bwHatDown = bwHatLeft = bwHatRight = false;
     bwFeedHat();
     onGamepadAxis(K_ABS_X, 0);
-    onGamepadAxis(K_ABS_Y, 0);
+    bwFeedInvertedAxis(K_ABS_Y, 0);
     onGamepadAxis(K_ABS_Z, 0);
     onGamepadAxis(K_ABS_RX, 0);
-    onGamepadAxis(K_ABS_RY, 0);
+    bwFeedInvertedAxis(K_ABS_RY, 0);
     onGamepadAxis(K_ABS_RZ, 0);
 }
 
@@ -663,9 +681,9 @@ void bwSyncControllerState() {
         S32 value = SDL_GameControllerGetAxis(bwPadController, axis);
         switch (axis) {
             case SDL_CONTROLLER_AXIS_LEFTX: onGamepadAxis(K_ABS_X, value); break;
-            case SDL_CONTROLLER_AXIS_LEFTY: onGamepadAxis(K_ABS_Y, value); break;
+            case SDL_CONTROLLER_AXIS_LEFTY: bwFeedInvertedAxis(K_ABS_Y, value); break;
             case SDL_CONTROLLER_AXIS_RIGHTX: onGamepadAxis(K_ABS_RX, value); break;
-            case SDL_CONTROLLER_AXIS_RIGHTY: onGamepadAxis(K_ABS_RY, value); break;
+            case SDL_CONTROLLER_AXIS_RIGHTY: bwFeedInvertedAxis(K_ABS_RY, value); break;
             case SDL_CONTROLLER_AXIS_TRIGGERLEFT: bwFeedTrigger(K_ABS_Z, value); break;
             case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: bwFeedTrigger(K_ABS_RZ, value); break;
             default: break;
@@ -691,15 +709,20 @@ void bwSyncJoystickState() {
     }
     bwFeedHat();
     if (SDL_JoystickNumAxes(bwPadJoystick) > 0) onGamepadAxis(K_ABS_X, SDL_JoystickGetAxis(bwPadJoystick, 0));
-    if (SDL_JoystickNumAxes(bwPadJoystick) > 1) onGamepadAxis(K_ABS_Y, SDL_JoystickGetAxis(bwPadJoystick, 1));
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 1) bwFeedInvertedAxis(K_ABS_Y, SDL_JoystickGetAxis(bwPadJoystick, 1));
     if (SDL_JoystickNumAxes(bwPadJoystick) > 2) onGamepadAxis(K_ABS_RX, SDL_JoystickGetAxis(bwPadJoystick, 2));
-    if (SDL_JoystickNumAxes(bwPadJoystick) > 3) onGamepadAxis(K_ABS_RY, SDL_JoystickGetAxis(bwPadJoystick, 3));
+    if (SDL_JoystickNumAxes(bwPadJoystick) > 3) bwFeedInvertedAxis(K_ABS_RY, SDL_JoystickGetAxis(bwPadJoystick, 3));
 }
+
+#ifdef __EMSCRIPTEN__
+static S32 bwEmAxisSnapshot[6] = {0, 0, 0, 0, 0, 0};
+#endif
 
 void bwOpenPad(int index) {
     if (bwPadInstance >= 0) {
         return; // one pad is already fed; the kernel models exactly one
     }
+    bwPadIndex = index;
     if (SDL_IsGameController(index)) {
         bwPadController = SDL_GameControllerOpen(index);
         if (bwPadController) {
@@ -732,6 +755,10 @@ void bwClosePad(SDL_JoystickID instance) {
         bwPadJoystick = nullptr;
     }
     bwPadInstance = -1;
+    bwPadIndex = -1;
+#ifdef __EMSCRIPTEN__
+    memset(bwEmAxisSnapshot, 0, sizeof(bwEmAxisSnapshot));
+#endif
     klog_fmt("Gamepad feed: controller removed (instance %d)", (int)instance);
 }
 
@@ -763,11 +790,17 @@ bool bwHandlePadEvent(SDL_Event* e) {
             if (!bwPadController || e->caxis.which != bwPadInstance) return true;
             switch ((SDL_GameControllerAxis)e->caxis.axis) {
                 case SDL_CONTROLLER_AXIS_LEFTX: onGamepadAxis(K_ABS_X, e->caxis.value); break;
-                case SDL_CONTROLLER_AXIS_LEFTY: onGamepadAxis(K_ABS_Y, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_LEFTY: bwFeedInvertedAxis(K_ABS_Y, e->caxis.value); break;
                 case SDL_CONTROLLER_AXIS_RIGHTX: onGamepadAxis(K_ABS_RX, e->caxis.value); break;
-                case SDL_CONTROLLER_AXIS_RIGHTY: onGamepadAxis(K_ABS_RY, e->caxis.value); break;
+                case SDL_CONTROLLER_AXIS_RIGHTY: bwFeedInvertedAxis(K_ABS_RY, e->caxis.value); break;
+#ifndef __EMSCRIPTEN__
+                // In the browser build the Emscripten poll owns the
+                // triggers: SDL's standard mapping reports them as
+                // digital full-scale axes, which would overwrite the
+                // poll's analog values.
                 case SDL_CONTROLLER_AXIS_TRIGGERLEFT: bwFeedTrigger(K_ABS_Z, e->caxis.value); break;
                 case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: bwFeedTrigger(K_ABS_RZ, e->caxis.value); break;
+#endif
                 default: break;
             }
             return true;
@@ -787,8 +820,10 @@ bool bwHandlePadEvent(SDL_Event* e) {
                 case 3: onGamepadButton(K_BTN_NORTH, down); break;
                 case 4: onGamepadButton(K_BTN_TL, down); break;
                 case 5: onGamepadButton(K_BTN_TR, down); break;
+#ifndef __EMSCRIPTEN__
                 case 6: bwFeedDigitalTrigger(K_ABS_Z, down); break;
                 case 7: bwFeedDigitalTrigger(K_ABS_RZ, down); break;
+#endif
                 case 8: onGamepadButton(K_BTN_SELECT, down); break;
                 case 9: onGamepadButton(K_BTN_START, down); break;
                 case 10: onGamepadButton(K_BTN_THUMBL, down); break;
@@ -807,9 +842,9 @@ bool bwHandlePadEvent(SDL_Event* e) {
             if (!bwPadJoystick || e->jaxis.which != bwPadInstance) return false;
             switch (e->jaxis.axis) {
                 case 0: onGamepadAxis(K_ABS_X, e->jaxis.value); break;
-                case 1: onGamepadAxis(K_ABS_Y, e->jaxis.value); break;
+                case 1: bwFeedInvertedAxis(K_ABS_Y, e->jaxis.value); break;
                 case 2: onGamepadAxis(K_ABS_RX, e->jaxis.value); break;
-                case 3: onGamepadAxis(K_ABS_RY, e->jaxis.value); break;
+                case 3: bwFeedInvertedAxis(K_ABS_RY, e->jaxis.value); break;
                 default: break;
             }
             return true;
@@ -832,6 +867,38 @@ bool bwHandlePadEvent(SDL_Event* e) {
 }
 
 } // namespace
+
+#ifdef __EMSCRIPTEN__
+// SDL's Emscripten joystick driver delivers button events for the
+// browser gamepad but never updates its axis state in this build:
+// no SDL_CONTROLLERAXISMOTION / SDL_JOYAXISMOTION events are
+// generated and SDL_GameControllerGetAxis keeps returning the
+// connect-time values, so stick and trigger motion never reached
+// the guest (measured: the Emscripten gamepad API itself tracks
+// the pad faithfully while SDL emits only button events). The
+// feed therefore polls the Emscripten gamepad API directly and
+// feeds axis changes through the same entry points the SDL event
+// handlers use. Buttons keep the event path, which works.
+void bwPollPadAxesEmscripten() {
+    if (bwPadIndex < 0 || bwPadInstance < 0) return;
+    emscripten_sample_gamepad_data();
+    EmscriptenGamepadEvent ge;
+    if (emscripten_get_gamepad_status(bwPadIndex, &ge) != EMSCRIPTEN_RESULT_SUCCESS || !ge.connected) return;
+    S32 axes[6];
+    axes[0] = ge.numAxes > 0 ? (S32)(ge.axis[0] * 32767.0) : 0;
+    axes[1] = ge.numAxes > 1 ? (S32)(ge.axis[1] * 32767.0) : 0;
+    axes[2] = ge.numAxes > 2 ? (S32)(ge.axis[2] * 32767.0) : 0;
+    axes[3] = ge.numAxes > 3 ? (S32)(ge.axis[3] * 32767.0) : 0;
+    axes[4] = ge.numButtons > 6 ? (S32)(ge.analogButton[6] * 32767.0) : 0;
+    axes[5] = ge.numButtons > 7 ? (S32)(ge.analogButton[7] * 32767.0) : 0;
+    if (axes[0] != bwEmAxisSnapshot[0]) { bwEmAxisSnapshot[0] = axes[0]; onGamepadAxis(K_ABS_X, axes[0]); }
+    if (axes[1] != bwEmAxisSnapshot[1]) { bwEmAxisSnapshot[1] = axes[1]; bwFeedInvertedAxis(K_ABS_Y, axes[1]); }
+    if (axes[2] != bwEmAxisSnapshot[2]) { bwEmAxisSnapshot[2] = axes[2]; onGamepadAxis(K_ABS_RX, axes[2]); }
+    if (axes[3] != bwEmAxisSnapshot[3]) { bwEmAxisSnapshot[3] = axes[3]; bwFeedInvertedAxis(K_ABS_RY, axes[3]); }
+    if (axes[4] != bwEmAxisSnapshot[4]) { bwEmAxisSnapshot[4] = axes[4]; bwFeedTrigger(K_ABS_Z, axes[4]); }
+    if (axes[5] != bwEmAxisSnapshot[5]) { bwEmAxisSnapshot[5] = axes[5]; bwFeedTrigger(K_ABS_RZ, axes[5]); }
+}
+#endif
 
 bool KNativeInputSDL::handlSdlEvent(SDL_Event* e) {
 #ifdef BOXEDWINE_RECORDER
