@@ -50,6 +50,10 @@ def valid_entries(architecture: str) -> dict[str, bytes]:
     if architecture == "win32":
         for filename in ("d3d9.dll", "d3d11.dll", "dxgi.dll"):
             entries["home/username/" + filename] = (filename + " payload").encode()
+        # FD-188: the shipped 32-bit prefix carries the five driver
+        # .inf files in C:\windows\inf\ and the guard requires them.
+        for name in ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
+            entries[root + "drive_c/windows/inf/" + name] = b"inf"
     else:
         for name in ("winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
             entries[root + "drive_c/windows/inf/" + name] = b"inf"
@@ -280,6 +284,10 @@ class PrefixPackagingTests(unittest.TestCase):
                     for name in modules:
                         if name not in skip:
                             archive.writestr(linked + name, b"wine module")
+                    # FD-188: every .sys needs its drivers/ mirror.
+                    for name in ("winebus.sys", "winehid.sys", "wineusb.sys"):
+                        if name not in skip:
+                            archive.writestr(linked + "drivers/" + name, b"wine module")
                     archive.writestr(unix + "winebus.so", b"winebus")
                     archive.writestr(unix + "wineusb.so", b"wineusb")
                     if with_alsa:

@@ -9257,6 +9257,24 @@ do not close the entry until they land.
 - **FD-195 — The guest enumerates no HID device at all with a simulated gamepad installed.** *(High)*
   With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.
 
+- **FD-196 — FD-188's tightened prefix/runtime validation left
+  the packaging test fixtures behind: `test_prepare_prefixes.py`
+  fails 3 of 11 on the lane's own tip.** *(Low — test fixtures
+  only. Filed by the batch-10 merge lane, 2026-11-06.)* FD-188's
+  fix added two requirements to
+  `tools/rootfs64/prepare_prefixes.py` (the 32-bit prefix must
+  carry the five driver .inf files in `C:\windows\inf\`; every
+  .sys in a wine runtime needs its `drivers/` mirror), but the
+  synthetic fixtures in `tools/rootfs64/test_prepare_prefixes.py`
+  were not updated, so that file's test suite errors 3 of 11 on
+  the FD-188 branch tip while passing on the base tip and on
+  `lane-fd189`. No project check runs this file automatically
+  (only the tools/rootfs64 README names it), so no lane gate saw
+  it. FIXED in the batch-10 composition — see CL-138: the
+  fixtures now carry the required members; the validators are
+  unchanged.
+
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -13747,6 +13765,22 @@ dead-start fix and needs composition care.
   controller — the guest enumerates no HID device at all.
   That remainder is FD-195, and FD-188's entry stays open
   on it.
+
+- **CL-138 — FD-196 closed: the prefix-packaging test fixtures
+  carry FD-188's required members.** *(Batch-10 composition.)*
+  The batch-10 composition ran
+  `tools/rootfs64/test_prepare_prefixes.py` on the composed
+  tree and found 3 of 11 tests in error; the same failure
+  reproduces on the `lane-fd188` tip and on neither the base
+  tip nor `lane-fd189` — FD-188's validation tightening
+  (CL-137) had left the synthetic fixtures behind. The fix
+  touches fixtures only: the win32 valid-prefix fixture now
+  includes the five driver .inf files, and the synthetic wine
+  runtime mirrors its three .sys modules under `drivers/`.
+  The validators are unchanged. Proof:
+  `test_prepare_prefixes.py` runs 11 tests OK on the composed
+  tree.
+
 
 ## Appendix — examined and deliberately NOT registered
 
