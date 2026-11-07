@@ -62,10 +62,18 @@ artifacts and the *source* payloads, offline:
      the 64-bit stack serves the Arial family (FD-86); the 32-bit
      stack serves it through the same replacement, written into its
      exported prefix by tools/browser/stage-wine32-fonts.py.
+  4d. prefix64.zip's system.reg carries the PlugPlay service, the
+     winebus/wineusb bus-driver services and the ROOT\\WINE bus-device
+     enumeration, merged from tools/rootfs64/prefix64-reg.txt (FD-189);
+     without them the Service Control Manager answers error 1060 for
+     all three services and the root enumeration is empty on the
+     64-bit side, while the 32-bit prefix (a real wineboot's output)
+     has always carried them.
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
      the download cache exists, the cached deb's ttc matches the pin.
   6. When build-prefix64.sh output exists (tools/rootfs64/dist/), its
-     system.reg carries the CurrentVersion + .NETFramework sections.
+     system.reg carries the CurrentVersion + .NETFramework sections. and
+     the FD-189 Plug-and-Play sections.
 
 Exit code 0 = every non-skipped check passed. Skips are printed, never
 silent. Run directly or via web/tests/suite/unit/runtime-completeness.test.mjs.
@@ -460,7 +468,72 @@ def support_zip_path():
     return support_dir() / deps['archive']
 
 
+# FD-188: the drivers/ mirror. Wine's driver loader opens every driver by
+# the absolute path C:\windows\system32\drivers\<name>.sys, which the
+# shipped prefixes resolve through their system32.link into the wine zips'
+# windows dirs. Each wine zip must therefore mirror every .sys file from
+# its windows dir into a drivers/ subdirectory, byte-identical, with no
+# other files there -- a missing mirror made every driver load fail
+# STATUS_DLL_NOT_FOUND (c0000135) / ZwLoadDriver c0000142. The mirror is
+# laid down by build-wine32-base.sh (32-bit) and build-wine64-zip.sh /
+# stage-wine64-drivers.sh (64-bit).
+DRIVERS_DIRS = {
+    'wine64.zip': 'usr/lib/x86_64-linux-gnu/wine/x86_64-windows',
+    'wine32.zip': 'opt/wine-stable/lib/wine/i386-windows',
+}
+
+
+def t_drivers_dir():
+    for archive, windir in DRIVERS_DIRS.items():
+        with zipfile.ZipFile(RUNTIME / archive) as z:
+            members = {n: z.read(n) for n in z.namelist() if not n.endswith('/')}
+        sysnames = sorted(n for n in members
+                          if n.startswith(windir + '/') and n.endswith('.sys')
+                          and '/' not in n[len(windir) + 1:])
+        assert sysnames, f'{archive}: no .sys files in {windir}'
+        for n in sysnames:
+            mirror = windir + '/drivers/' + n.rsplit('/', 1)[-1]
+            assert mirror in members, f'{mirror} missing from {archive}'
+            assert sha(members[mirror]) == sha(members[n]), \
+                f'{mirror} in {archive} != its .sys sibling bytes'
+        extra = sorted(n for n in members
+                       if n.startswith(windir + '/drivers/') and n.rsplit('/', 1)[-1]
+                       not in {s.rsplit('/', 1)[-1] for s in sysnames})
+        assert not extra, f'{archive}: unexpected files in drivers/: {extra}'
+
+
+INF_NAMES = ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf")
+
+
+def t_driver_inf():
+    # FD-188: the driver .inf files (wine.inf [InfFiles]) must be in the
+    # wine zips' share/wine/ -- the producer, so a real wineboot copies
+    # them into a prefix's C:\windows\inf\ -- and in the shipped 32-bit
+    # prefix's inf/ (the overlay: prefix32.zip was cut before the wine
+    # zips carried them). Byte-identical to the version-matched sources.
+    for archive, srcdir, placements in (
+        ("wine32.zip", ROOT / "tools/rootfs32/wine-inf",
+         ("opt/wine-stable/share/wine", "usr/share/wine")),
+        ("wine64.zip", ROOT / "tools/rootfs64/wine-inf",
+         ("usr/share/wine",)),
+    ):
+        with zipfile.ZipFile(RUNTIME / archive) as z:
+            for pl in placements:
+                for n in INF_NAMES:
+                    member = pl + "/" + n
+                    assert member in z.namelist(), f"{member} missing from {archive}"
+                    assert sha(z.read(member)) == sha((srcdir / n).read_bytes()), \
+                        f"{member} in {archive} != tree source"
+    with zipfile.ZipFile(RUNTIME / "prefix32.zip") as z:
+        for n in INF_NAMES:
+            member = "home/username/.wine/drive_c/windows/inf/" + n
+            assert member in z.namelist(), f"{member} missing from prefix32.zip"
+            assert sha(z.read(member)) == sha((ROOT / "tools/rootfs32/wine-inf" / n).read_bytes()), \
+                f"{member} in prefix32.zip != tree source"
+
+
 def t_service_runtime():
+
     if not support_pack_ready():
         skip('validate_service_runtime (shipped pairs)',
              'no support pack built yet (dependencies.json absent); '
@@ -791,6 +864,22 @@ def t_prefix64_arial():
             'glibc-rootfs64.zip: DejaVuSans.ttf (the Arial replacement target) missing'
 
 
+def t_prefix64_pnp():
+    fragment = (ROOT / 'tools/rootfs64/prefix64-reg.txt').read_text()
+    with zipfile.ZipFile(RUNTIME / 'prefix64.zip') as z:
+        system = z.read('home/username/.wine/system.reg').decode(errors='replace')
+    for section in ('[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay]',
+                    '[System\\\\CurrentControlSet\\\\Services\\\\winebus]',
+                    '[System\\\\CurrentControlSet\\\\Services\\\\wineusb]',
+                    '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS]',
+                    '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]'):
+        assert section in system, \
+            f'prefix64.zip system.reg: {section} missing (FD-189)'
+    merged, added = prefixes.merge_registry_fragment(system, fragment)
+    assert added == [], \
+        f'prefix64.zip system.reg drifted from prefix64-reg.txt (FD-189): {added}'
+
+
 def t_cjk_pin():
     text = (ROOT / 'tools/browser/stage-dependencies.py').read_text()
     assert CJK_TTC_SHA in text, 'stage-dependencies.py lost the CJK ttc pin'
@@ -821,6 +910,12 @@ def t_prefix64_built():
             system = z.read('home/username/.wine/system.reg').decode(errors='replace')
         assert '[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]' in system, label
         assert '[Software\\\\Microsoft\\\\.NETFramework]' in system, label
+        for section in ('[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay]',
+                        '[System\\\\CurrentControlSet\\\\Services\\\\winebus]',
+                        '[System\\\\CurrentControlSet\\\\Services\\\\wineusb]',
+                        '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS]',
+                        '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]'):
+            assert section in system, f'{label}: {section} missing (FD-189)'
 
 
 if __name__ == '__main__':
@@ -834,6 +929,8 @@ if __name__ == '__main__':
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
+    check('drivers/ mirror exact (both zips, FD-188)', t_drivers_dir)
+    check('driver .inf files in share/wine/ + prefix32 inf/ (FD-188)', t_driver_inf)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('support pack member uniqueness + Vulkan shim pins (FD-53)', t_support_pack_member_uniqueness)
     check('retained runtime-assets archive agrees with the file pins (FD-73)', t_assets_archive)
@@ -845,6 +942,7 @@ if __name__ == '__main__':
     check('fonts32 faces (source + shipped zip)', t_fonts32)
     check('fonts64 faces (source + shipped zip)', t_fonts64)
     check('prefix64 Arial font replacement (FD-86)', t_prefix64_arial)
+    check('prefix64 PlugPlay + bus services (FD-189)', t_prefix64_pnp)
     check('CJK font pin', t_cjk_pin)
     check('prefix64 built artifact sections', t_prefix64_built)
     print(f'{len(FAILURES)} failures, {len(SKIPS)} skips')

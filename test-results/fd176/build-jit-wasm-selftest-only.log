@@ -1,0 +1,1904 @@
+=== [1/5] native phase-1 unit tests (g++ gate) ===
+PASS: CPU64 destruction releases JIT state and cached ops
+PASS: CPU64 destruction releases JIT state and cached ops
+jit64 phase-1 unit tests\n  873 passed, 0 failed
+jit64gen.inc in sync.
+jit64_gen_tests: compared=0 skipped=31304 failures=0
+OK: all generated emitters byte-identical
+--- jit64 block-invalidation tests (section 14.3) ---
+OK: block-invalidation tests match the independent instruction interpreter.
+TAP version 13
+# Subtest: all 16 registers retain full 64-bit immediate values
+ok 1 - all 16 registers retain full 64-bit immediate values
+  ---
+  duration_ms: 147.209081
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 0
+ok 2 - i64 signed LEB encoding preserves 0
+  ---
+  duration_ms: 25.034104
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 3f
+ok 3 - i64 signed LEB encoding preserves 3f
+  ---
+  duration_ms: 27.611208
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 40
+ok 4 - i64 signed LEB encoding preserves 40
+  ---
+  duration_ms: 10.108611
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 7f
+ok 5 - i64 signed LEB encoding preserves 7f
+  ---
+  duration_ms: 10.223692
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 80
+ok 6 - i64 signed LEB encoding preserves 80
+  ---
+  duration_ms: 10.637375
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 7fffffffffffffff
+ok 7 - i64 signed LEB encoding preserves 7fffffffffffffff
+  ---
+  duration_ms: 8.561517
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves 8000000000000000
+ok 8 - i64 signed LEB encoding preserves 8000000000000000
+  ---
+  duration_ms: 10.929738
+  type: 'test'
+  ...
+# Subtest: i64 signed LEB encoding preserves ffffffffffffffff
+ok 9 - i64 signed LEB encoding preserves ffffffffffffffff
+  ---
+  duration_ms: 11.431223
+  type: 'test'
+  ...
+# Subtest: 32-bit immediate MOV zero-extends high registers
+ok 10 - 32-bit immediate MOV zero-extends high registers
+  ---
+  duration_ms: 8.347075
+  type: 'test'
+  ...
+# Subtest: MOV r/m64,r64 and MOV r64,r/m64 preserve high halves
+ok 11 - MOV r/m64,r64 and MOV r64,r/m64 preserve high halves
+  ---
+  duration_ms: 7.054624
+  type: 'test'
+  ...
+# Subtest: 32-bit register MOV zero-extends both encoding directions
+ok 12 - 32-bit register MOV zero-extends both encoding directions
+  ---
+  duration_ms: 9.260283
+  type: 'test'
+  ...
+# Subtest: C7 imm32 sign-extends for a 64-bit register destination
+ok 13 - C7 imm32 sign-extends for a 64-bit register destination
+  ---
+  duration_ms: 9.352043
+  type: 'test'
+  ...
+# Subtest: C7 imm32 zero-extends for a 32-bit register destination
+ok 14 - C7 imm32 zero-extends for a 32-bit register destination
+  ---
+  duration_ms: 17.983721
+  type: 'test'
+  ...
+# Subtest: RIP advancement wraps modulo 64 bits
+ok 15 - RIP advancement wraps modulo 64 bits
+  ---
+  duration_ms: 6.420058
+  type: 'test'
+  ...
+# Subtest: state at the end of imported memory stays in bounds
+ok 16 - state at the end of imported memory stays in bounds
+  ---
+  duration_ms: 7.019543
+  type: 'test'
+  ...
+# Subtest: unaligned state pointer executes correctly
+ok 17 - unaligned state pointer executes correctly
+  ---
+  duration_ms: 5.455169
+  type: 'test'
+  ...
+# Subtest: out-of-bounds state traps before modifying any guest state
+ok 18 - out-of-bounds state traps before modifying any guest state
+  ---
+  duration_ms: 50.798016
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects empty block
+ok 19 - whole-block fallback rejects empty block
+  ---
+  duration_ms: 6.487498
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects 16-bit guest-memory MOV
+ok 20 - whole-block fallback rejects 16-bit guest-memory MOV
+  ---
+  duration_ms: 4.502961
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects 16-bit MOV
+ok 21 - whole-block fallback rejects 16-bit MOV
+  ---
+  duration_ms: 3.513232
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects 16-bit MOVSXD
+ok 22 - whole-block fallback rejects 16-bit MOVSXD
+  ---
+  duration_ms: 3.27755
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects REP prefix
+ok 23 - whole-block fallback rejects REP prefix
+  ---
+  duration_ms: 3.421751
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects FS-segment memory ADD
+ok 24 - whole-block fallback rejects FS-segment memory ADD
+  ---
+  duration_ms: 3.268309
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects GS-segment memory ADD
+ok 25 - whole-block fallback rejects GS-segment memory ADD
+  ---
+  duration_ms: 3.756874
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects LOCK memory ADD
+ok 26 - whole-block fallback rejects LOCK memory ADD
+  ---
+  duration_ms: 3.059547
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects block longer than 24 operations
+ok 27 - whole-block fallback rejects block longer than 24 operations
+  ---
+  duration_ms: 3.082827
+  type: 'test'
+  ...
+# Subtest: memory MOV 32 preserves addresses above 4GiB and register width
+ok 28 - memory MOV 32 preserves addresses above 4GiB and register width
+  ---
+  duration_ms: 13.685402
+  type: 'test'
+  ...
+# Subtest: memory MOV 64 preserves addresses above 4GiB and register width
+ok 29 - memory MOV 64 preserves addresses above 4GiB and register width
+  ---
+  duration_ms: 16.556269
+  type: 'test'
+  ...
+# Subtest: ADD r64,r64 wraps with carry out
+ok 30 - ADD r64,r64 wraps with carry out
+  ---
+  duration_ms: 6.931022
+  type: 'test'
+  ...
+# Subtest: ADD r32,r32 uses 32-bit flags and zero-extends
+ok 31 - ADD r32,r32 uses 32-bit flags and zero-extends
+  ---
+  duration_ms: 5.276368
+  type: 'test'
+  ...
+# Subtest: SUB r64,r64 borrows
+ok 32 - SUB r64,r64 borrows
+  ---
+  duration_ms: 7.678909
+  type: 'test'
+  ...
+# Subtest: XOR r64,r64 self-zeroes with logic flags
+ok 33 - XOR r64,r64 self-zeroes with logic flags
+  ---
+  duration_ms: 8.019312
+  type: 'test'
+  ...
+# Subtest: AND/OR r64,r64 clear CF/OF/AF
+ok 34 - AND/OR r64,r64 clear CF/OF/AF
+  ---
+  duration_ms: 15.169096
+  type: 'test'
+  ...
+# Subtest: ADD r64,imm32 sign-extends the immediate
+ok 35 - ADD r64,imm32 sign-extends the immediate
+  ---
+  duration_ms: 5.338608
+  type: 'test'
+  ...
+# Subtest: ADD r64,imm8 sign-extends and SUB r64,imm8 borrows
+ok 36 - ADD r64,imm8 sign-extends and SUB r64,imm8 borrows
+  ---
+  duration_ms: 11.683225
+  type: 'test'
+  ...
+# Subtest: ADD rax,imm32 accumulator form
+ok 37 - ADD rax,imm32 accumulator form
+  ---
+  duration_ms: 5.65845
+  type: 'test'
+  ...
+# Subtest: CMP r64,r64 writes no register
+ok 38 - CMP r64,r64 writes no register
+  ---
+  duration_ms: 7.114224
+  type: 'test'
+  ...
+# Subtest: TEST r64,r64 writes no register
+ok 39 - TEST r64,r64 writes no register
+  ---
+  duration_ms: 5.372848
+  type: 'test'
+  ...
+# Subtest: ADC/SBB fold the incoming carry
+ok 40 - ADC/SBB fold the incoming carry
+  ---
+  duration_ms: 11.514984
+  type: 'test'
+  ...
+# Subtest: ALU on extended registers (r8/r9)
+ok 41 - ALU on extended registers (r8/r9)
+  ---
+  duration_ms: 14.217527
+  type: 'test'
+  ...
+# Subtest: ALU preserves non-written RFLAGS bits
+ok 42 - ALU preserves non-written RFLAGS bits
+  ---
+  duration_ms: 6.637059
+  type: 'test'
+  ...
+# Subtest: mixed MOV+ADD block
+ok 43 - mixed MOV+ADD block
+  ---
+  duration_ms: 14.47609
+  type: 'test'
+  ...
+# Subtest: fuzz memory ALU vs reference (600 cases)
+ok 44 - fuzz memory ALU vs reference (600 cases)
+  ---
+  duration_ms: 5087.07451
+  type: 'test'
+  ...
+# Subtest: CMP [mem],r64 and TEST r64,[mem] write nothing
+ok 45 - CMP [mem],r64 and TEST r64,[mem] write nothing
+  ---
+  duration_ms: 87.764627
+  type: 'test'
+  ...
+# Subtest: ADC/SBB [mem],r64 fold the incoming carry
+ok 46 - ADC/SBB [mem],r64 fold the incoming carry
+  ---
+  duration_ms: 38.143063
+  type: 'test'
+  ...
+# Subtest: immediate-to-memory ADD/SUB/AND/OR/XOR
+ok 47 - immediate-to-memory ADD/SUB/AND/OR/XOR
+  ---
+  duration_ms: 37.303454
+  type: 'test'
+  ...
+# Subtest: 16-bit and 8-bit memory ALU
+ok 48 - 16-bit and 8-bit memory ALU
+  ---
+  duration_ms: 30.593155
+  type: 'test'
+  ...
+# Subtest: SIB and displacement addressing
+ok 49 - SIB and displacement addressing
+  ---
+  duration_ms: 17.107393
+  type: 'test'
+  ...
+# Subtest: RIP-relative memory ALU (fixture ripBase=0)
+ok 50 - RIP-relative memory ALU (fixture ripBase=0)
+  ---
+  duration_ms: 11.907107
+  type: 'test'
+  ...
+# Subtest: 0x67 address-size wraps the EA to 32 bits
+ok 51 - 0x67 address-size wraps the EA to 32 bits
+  ---
+  duration_ms: 6.210375
+  type: 'test'
+  ...
+# Subtest: unmapped read returns 0 then write commits (fault ordering)
+ok 52 - unmapped read returns 0 then write commits (fault ordering)
+  ---
+  duration_ms: 6.594619
+  type: 'test'
+  ...
+# Subtest: ADD [mem],r64 / SUB r64,[mem] round-trip
+ok 53 - ADD [mem],r64 / SUB r64,[mem] round-trip
+  ---
+  duration_ms: 15.502259
+  type: 'test'
+  ...
+# Subtest: MOV r/m8,r8 reg-direct: low bytes and high-byte AH
+ok 54 - MOV r/m8,r8 reg-direct: low bytes and high-byte AH
+  ---
+  duration_ms: 12.470712
+  type: 'test'
+  ...
+# Subtest: MOV r8,r/m8 reg-direct: 8A direction and REX SPL semantics
+ok 55 - MOV r8,r/m8 reg-direct: 8A direction and REX SPL semantics
+  ---
+  duration_ms: 24.083536
+  type: 'test'
+  ...
+# Subtest: MOV r/m8,r8 with REX.B: r8b/r9b
+ok 56 - MOV r/m8,r8 with REX.B: r8b/r9b
+  ---
+  duration_ms: 10.458534
+  type: 'test'
+  ...
+# Subtest: MOV byte [mem],r8 / r8,[mem] round-trip
+ok 57 - MOV byte [mem],r8 / r8,[mem] round-trip
+  ---
+  duration_ms: 12.916116
+  type: 'test'
+  ...
+# Subtest: MOV r/m8,r8 to unmapped address commits the write
+ok 58 - MOV r/m8,r8 to unmapped address commits the write
+  ---
+  duration_ms: 7.88295
+  type: 'test'
+  ...
+# Subtest: MOV r8,[mem] from unmapped address reads 0
+ok 59 - MOV r8,[mem] from unmapped address reads 0
+  ---
+  duration_ms: 7.684149
+  type: 'test'
+  ...
+# Subtest: 66 88 stays fast (0x66 ignored for 8-bit)
+ok 60 - 66 88 stays fast (0x66 ignored for 8-bit)
+  ---
+  duration_ms: 5.712611
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects 16-bit MOV (66 89)
+ok 61 - whole-block fallback rejects 16-bit MOV (66 89)
+  ---
+  duration_ms: 4.556641
+  type: 'test'
+  ...
+# Subtest: fuzz 8-bit MOV vs reference (600 cases)
+ok 62 - fuzz 8-bit MOV vs reference (600 cases)
+  ---
+  duration_ms: 4372.46154
+  type: 'test'
+  ...
+# Subtest: SHL r64 by 4 shifts out CF and zeroes
+ok 63 - SHL r64 by 4 shifts out CF and zeroes
+  ---
+  duration_ms: 11.742666
+  type: 'test'
+  ...
+# Subtest: SHL r64 by 1 sets OF from MSB xor CF
+ok 64 - SHL r64 by 1 sets OF from MSB xor CF
+  ---
+  duration_ms: 9.040041
+  type: 'test'
+  ...
+# Subtest: SHR r64 by 1 shifts into CF, OF is old MSB
+ok 65 - SHR r64 by 1 shifts into CF, OF is old MSB
+  ---
+  duration_ms: 7.966151
+  type: 'test'
+  ...
+# Subtest: SAR r64 by 1 sign-extends and clears OF
+ok 66 - SAR r64 by 1 sign-extends and clears OF
+  ---
+  duration_ms: 6.898902
+  type: 'test'
+  ...
+# Subtest: SAR r64 by 63 of -1 stays -1 with CF set
+ok 67 - SAR r64 by 63 of -1 stays -1 with CF set
+  ---
+  duration_ms: 21.836676
+  type: 'test'
+  ...
+# Subtest: SHL r32 uses 32-bit width, flags and zero-extension
+ok 68 - SHL r32 uses 32-bit width, flags and zero-extension
+  ---
+  duration_ms: 17.265435
+  type: 'test'
+  ...
+# Subtest: SAR r32 sign-extends from 32 bits
+ok 69 - SAR r32 sign-extends from 32 bits
+  ---
+  duration_ms: 20.629065
+  type: 'test'
+  ...
+# Subtest: shift by 0 is a no-op preserving value and flags
+ok 70 - shift by 0 is a no-op preserving value and flags
+  ---
+  duration_ms: 21.458273
+  type: 'test'
+  ...
+# Subtest: shift preserves AF and non-shift RFLAGS bits
+ok 71 - shift preserves AF and non-shift RFLAGS bits
+  ---
+  duration_ms: 6.953222
+  type: 'test'
+  ...
+# Subtest: SHL /6 alias behaves like /4
+ok 72 - SHL /6 alias behaves like /4
+  ---
+  duration_ms: 7.114744
+  type: 'test'
+  ...
+# Subtest: shift on extended register r8
+ok 73 - shift on extended register r8
+  ---
+  duration_ms: 6.790261
+  type: 'test'
+  ...
+# Subtest: mixed shift+ALU block observes shift result
+ok 74 - mixed shift+ALU block observes shift result
+  ---
+  duration_ms: 5.535409
+  type: 'test'
+  ...
+# Subtest: ROL r64 by 1 rotates MSB into CF and LSB
+ok 75 - ROL r64 by 1 rotates MSB into CF and LSB
+  ---
+  duration_ms: 13.483441
+  type: 'test'
+  ...
+# Subtest: ROL r64 by 4, OF preserved when count!=1
+ok 76 - ROL r64 by 4, OF preserved when count!=1
+  ---
+  duration_ms: 9.023041
+  type: 'test'
+  ...
+# Subtest: ROR r64 by 1 shifts LSB into CF
+ok 77 - ROR r64 by 1 shifts LSB into CF
+  ---
+  duration_ms: 7.869671
+  type: 'test'
+  ...
+# Subtest: RCL r64 by 1 threads carry through CF
+ok 78 - RCL r64 by 1 threads carry through CF
+  ---
+  duration_ms: 9.120602
+  type: 'test'
+  ...
+# Subtest: RCR r64 by 1 threads carry through CF
+ok 79 - RCR r64 by 1 threads carry through CF
+  ---
+  duration_ms: 27.145683
+  type: 'test'
+  ...
+# Subtest: ROL r32 by 1 zero-extends and uses 32-bit width
+ok 80 - ROL r32 by 1 zero-extends and uses 32-bit width
+  ---
+  duration_ms: 36.76621
+  type: 'test'
+  ...
+# Subtest: rotate by 0 leaves value and flags untouched
+ok 81 - rotate by 0 leaves value and flags untouched
+  ---
+  duration_ms: 23.49809
+  type: 'test'
+  ...
+# Subtest: RCL r64 by 63 iterates the full carry chain
+ok 82 - RCL r64 by 63 iterates the full carry chain
+  ---
+  duration_ms: 21.128909
+  type: 'test'
+  ...
+# Subtest: rotate preserves SZP/AF (only CF/OF change)
+ok 83 - rotate preserves SZP/AF (only CF/OF change)
+  ---
+  duration_ms: 8.495756
+  type: 'test'
+  ...
+# Subtest: IMUL r64,r64 without overflow clears CF/OF
+ok 84 - IMUL r64,r64 without overflow clears CF/OF
+  ---
+  duration_ms: 16.111064
+  type: 'test'
+  ...
+# Subtest: IMUL r64,r64 overflow sets CF and OF
+ok 85 - IMUL r64,r64 overflow sets CF and OF
+  ---
+  duration_ms: 8.122632
+  type: 'test'
+  ...
+# Subtest: IMUL r64,r64 INT64_MIN * -1 overflows
+ok 86 - IMUL r64,r64 INT64_MIN * -1 overflows
+  ---
+  duration_ms: 8.95304
+  type: 'test'
+  ...
+# Subtest: IMUL r32,r32 sign-extends and detects 32-bit overflow
+ok 87 - IMUL r32,r32 sign-extends and detects 32-bit overflow
+  ---
+  duration_ms: 8.153553
+  type: 'test'
+  ...
+# Subtest: IMUL r32,r32 negative operands without overflow
+ok 88 - IMUL r32,r32 negative operands without overflow
+  ---
+  duration_ms: 12.957076
+  type: 'test'
+  ...
+# Subtest: IMUL preserves SZP/AF, only CF/OF change
+ok 89 - IMUL preserves SZP/AF, only CF/OF change
+  ---
+  duration_ms: 10.09301
+  type: 'test'
+  ...
+# Subtest: STOSB stores AL and advances RDI
+ok 90 - STOSB stores AL and advances RDI
+  ---
+  duration_ms: 7.291785
+  type: 'test'
+  ...
+# Subtest: STOSD stores EAX and advances RDI by 4
+ok 91 - STOSD stores EAX and advances RDI by 4
+  ---
+  duration_ms: 6.407938
+  type: 'test'
+  ...
+# Subtest: REP STOSD fills RCX dwords and zeroes RCX
+ok 92 - REP STOSD fills RCX dwords and zeroes RCX
+  ---
+  duration_ms: 6.339577
+  type: 'test'
+  ...
+# Subtest: MOVSB copies byte and advances RSI/RDI
+ok 93 - MOVSB copies byte and advances RSI/RDI
+  ---
+  duration_ms: 7.202464
+  type: 'test'
+  ...
+# Subtest: REP MOVSD copies RCX dwords
+ok 94 - REP MOVSD copies RCX dwords
+  ---
+  duration_ms: 7.296185
+  type: 'test'
+  ...
+# Subtest: STD makes STOSB decrement RDI
+ok 95 - STD makes STOSB decrement RDI
+  ---
+  duration_ms: 8.984961
+  type: 'test'
+  ...
+# Subtest: 0x67 masks addresses to 32 bits but not register updates
+ok 96 - 0x67 masks addresses to 32 bits but not register updates
+  ---
+  duration_ms: 6.378298
+  type: 'test'
+  ...
+# Subtest: REP with RCX=0 does nothing but still clears RCX
+ok 97 - REP with RCX=0 does nothing but still clears RCX
+  ---
+  duration_ms: 6.379777
+  type: 'test'
+  ...
+# Subtest: SCASB finds AL and sets ZF
+ok 98 - SCASB finds AL and sets ZF
+  ---
+  duration_ms: 9.221123
+  type: 'test'
+  ...
+# Subtest: REPE CMPSB stops at first mismatch with RCX remainder
+ok 99 - REPE CMPSB stops at first mismatch with RCX remainder
+  ---
+  duration_ms: 6.838182
+  type: 'test'
+  ...
+# Subtest: REPNE SCASD stops at match
+ok 100 - REPNE SCASD stops at match
+  ---
+  duration_ms: 7.211545
+  type: 'test'
+  ...
+# Subtest: REP STOSQ writes 8 bytes per iteration
+ok 101 - REP STOSQ writes 8 bytes per iteration
+  ---
+  duration_ms: 12.001228
+  type: 'test'
+  ...
+# Subtest: string op preserves non-flag RFLAGS bits
+ok 102 - string op preserves non-flag RFLAGS bits
+  ---
+  duration_ms: 12.100429
+  type: 'test'
+  ...
+# Subtest: string ops differential fuzz (reference model)
+ok 103 - string ops differential fuzz (reference model)
+  ---
+  duration_ms: 2394.762201
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=0 (AL,CL)
+ok 104 - 8-bit ALU r/m,r sub=0 (AL,CL)
+  ---
+  duration_ms: 6.559859
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=0 (CL,AL)
+ok 105 - 8-bit ALU r,r/m sub=0 (CL,AL)
+  ---
+  duration_ms: 5.879733
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=1 (AL,CL)
+ok 106 - 8-bit ALU r/m,r sub=1 (AL,CL)
+  ---
+  duration_ms: 5.215367
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=1 (CL,AL)
+ok 107 - 8-bit ALU r,r/m sub=1 (CL,AL)
+  ---
+  duration_ms: 5.083085
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=2 (AL,CL)
+ok 108 - 8-bit ALU r/m,r sub=2 (AL,CL)
+  ---
+  duration_ms: 5.794612
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=2 (CL,AL)
+ok 109 - 8-bit ALU r,r/m sub=2 (CL,AL)
+  ---
+  duration_ms: 17.7736
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=3 (AL,CL)
+ok 110 - 8-bit ALU r/m,r sub=3 (AL,CL)
+  ---
+  duration_ms: 6.62934
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=3 (CL,AL)
+ok 111 - 8-bit ALU r,r/m sub=3 (CL,AL)
+  ---
+  duration_ms: 6.534379
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=4 (AL,CL)
+ok 112 - 8-bit ALU r/m,r sub=4 (AL,CL)
+  ---
+  duration_ms: 5.273928
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=4 (CL,AL)
+ok 113 - 8-bit ALU r,r/m sub=4 (CL,AL)
+  ---
+  duration_ms: 5.322088
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=5 (AL,CL)
+ok 114 - 8-bit ALU r/m,r sub=5 (AL,CL)
+  ---
+  duration_ms: 5.735771
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=5 (CL,AL)
+ok 115 - 8-bit ALU r,r/m sub=5 (CL,AL)
+  ---
+  duration_ms: 20.725066
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=6 (AL,CL)
+ok 116 - 8-bit ALU r/m,r sub=6 (AL,CL)
+  ---
+  duration_ms: 8.667398
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=6 (CL,AL)
+ok 117 - 8-bit ALU r,r/m sub=6 (CL,AL)
+  ---
+  duration_ms: 6.990582
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r/m,r sub=7 (AL,CL)
+ok 118 - 8-bit ALU r/m,r sub=7 (AL,CL)
+  ---
+  duration_ms: 6.103695
+  type: 'test'
+  ...
+# Subtest: 8-bit ALU r,r/m sub=7 (CL,AL)
+ok 119 - 8-bit ALU r,r/m sub=7 (CL,AL)
+  ---
+  duration_ms: 5.660611
+  type: 'test'
+  ...
+# Subtest: 8-bit ADD AH,BH (high-byte registers, no REX)
+ok 120 - 8-bit ADD AH,BH (high-byte registers, no REX)
+  ---
+  duration_ms: 8.218073
+  type: 'test'
+  ...
+# Subtest: 8-bit SUB DH,AH preserves neighbors
+ok 121 - 8-bit SUB DH,AH preserves neighbors
+  ---
+  duration_ms: 18.577526
+  type: 'test'
+  ...
+# Subtest: 8-bit ADD SPL,SPL under REX (not AH)
+ok 122 - 8-bit ADD SPL,SPL under REX (not AH)
+  ---
+  duration_ms: 7.567908
+  type: 'test'
+  ...
+# Subtest: 8-bit ADD AL,imm8 (acc-imm)
+ok 123 - 8-bit ADD AL,imm8 (acc-imm)
+  ---
+  duration_ms: 6.938262
+  type: 'test'
+  ...
+# Subtest: 8-bit OR r/m8,imm8 (0x80 group)
+ok 124 - 8-bit OR r/m8,imm8 (0x80 group)
+  ---
+  duration_ms: 7.396587
+  type: 'test'
+  ...
+# Subtest: 8-bit TEST r/m8,r8 sets flags only
+ok 125 - 8-bit TEST r/m8,r8 sets flags only
+  ---
+  duration_ms: 8.750479
+  type: 'test'
+  ...
+# Subtest: 8-bit TEST AL,imm8 (A8)
+ok 126 - 8-bit TEST AL,imm8 (A8)
+  ---
+  duration_ms: 23.950415
+  type: 'test'
+  ...
+# Subtest: 16-bit ADD AX,CX preserves upper 48
+ok 127 - 16-bit ADD AX,CX preserves upper 48
+  ---
+  duration_ms: 7.460147
+  type: 'test'
+  ...
+# Subtest: 16-bit OR AX,CX preserves upper 48
+ok 128 - 16-bit OR AX,CX preserves upper 48
+  ---
+  duration_ms: 10.403333
+  type: 'test'
+  ...
+# Subtest: 16-bit ADC AX,CX preserves upper 48
+ok 129 - 16-bit ADC AX,CX preserves upper 48
+  ---
+  duration_ms: 11.243621
+  type: 'test'
+  ...
+# Subtest: 16-bit SBB AX,CX preserves upper 48
+ok 130 - 16-bit SBB AX,CX preserves upper 48
+  ---
+  duration_ms: 8.698158
+  type: 'test'
+  ...
+# Subtest: 16-bit AND AX,CX preserves upper 48
+ok 131 - 16-bit AND AX,CX preserves upper 48
+  ---
+  duration_ms: 12.629314
+  type: 'test'
+  ...
+# Subtest: 16-bit SUB AX,CX preserves upper 48
+ok 132 - 16-bit SUB AX,CX preserves upper 48
+  ---
+  duration_ms: 19.960219
+  type: 'test'
+  ...
+# Subtest: 16-bit XOR AX,CX preserves upper 48
+ok 133 - 16-bit XOR AX,CX preserves upper 48
+  ---
+  duration_ms: 51.953346
+  type: 'test'
+  ...
+# Subtest: 16-bit CMP AX,CX preserves upper 48
+ok 134 - 16-bit CMP AX,CX preserves upper 48
+  ---
+  duration_ms: 12.073188
+  type: 'test'
+  ...
+# Subtest: 16-bit ADD AX,imm16 (acc-imm)
+ok 135 - 16-bit ADD AX,imm16 (acc-imm)
+  ---
+  duration_ms: 28.774178
+  type: 'test'
+  ...
+# Subtest: 16-bit SHL AX,1 with flags
+ok 136 - 16-bit SHL AX,1 with flags
+  ---
+  duration_ms: 6.913902
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB6 dest16
+ok 137 - MOVX 0FB6 dest16
+  ---
+  duration_ms: 6.302777
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB6 dest32
+ok 138 - MOVX 0FB6 dest32
+  ---
+  duration_ms: 6.095375
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB6 dest64
+ok 139 - MOVX 0FB6 dest64
+  ---
+  duration_ms: 6.246056
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB7 dest16
+ok 140 - MOVX 0FB7 dest16
+  ---
+  duration_ms: 6.489099
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB7 dest32
+ok 141 - MOVX 0FB7 dest32
+  ---
+  duration_ms: 5.869813
+  type: 'test'
+  ...
+# Subtest: MOVX 0FB7 dest64
+ok 142 - MOVX 0FB7 dest64
+  ---
+  duration_ms: 5.756092
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBE dest16
+ok 143 - MOVX 0FBE dest16
+  ---
+  duration_ms: 5.529209
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBE dest32
+ok 144 - MOVX 0FBE dest32
+  ---
+  duration_ms: 5.53453
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBE dest64
+ok 145 - MOVX 0FBE dest64
+  ---
+  duration_ms: 5.746572
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBF dest16
+ok 146 - MOVX 0FBF dest16
+  ---
+  duration_ms: 6.485418
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBF dest32
+ok 147 - MOVX 0FBF dest32
+  ---
+  duration_ms: 6.223536
+  type: 'test'
+  ...
+# Subtest: MOVX 0FBF dest64
+ok 148 - MOVX 0FBF dest64
+  ---
+  duration_ms: 5.989094
+  type: 'test'
+  ...
+# Subtest: IMUL 1-op 8-bit
+ok 149 - IMUL 1-op 8-bit
+  ---
+  duration_ms: 6.446498
+  type: 'test'
+  ...
+# Subtest: IMUL 1-op 16-bit
+ok 150 - IMUL 1-op 16-bit
+  ---
+  duration_ms: 6.346456
+  type: 'test'
+  ...
+# Subtest: IMUL 1-op 32-bit
+ok 151 - IMUL 1-op 32-bit
+  ---
+  duration_ms: 6.089095
+  type: 'test'
+  ...
+# Subtest: IMUL 1-op 64-bit
+ok 152 - IMUL 1-op 64-bit
+  ---
+  duration_ms: 5.536809
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 16-bit imm8
+ok 153 - IMUL 3-op 16-bit imm8
+  ---
+  duration_ms: 5.858213
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 16-bit imm16
+ok 154 - IMUL 3-op 16-bit imm16
+  ---
+  duration_ms: 5.248367
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 32-bit imm8
+ok 155 - IMUL 3-op 32-bit imm8
+  ---
+  duration_ms: 5.117446
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 32-bit imm32
+ok 156 - IMUL 3-op 32-bit imm32
+  ---
+  duration_ms: 5.655891
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 64-bit imm8
+ok 157 - IMUL 3-op 64-bit imm8
+  ---
+  duration_ms: 5.743252
+  type: 'test'
+  ...
+# Subtest: IMUL 3-op 64-bit imm32
+ok 158 - IMUL 3-op 64-bit imm32
+  ---
+  duration_ms: 5.904013
+  type: 'test'
+  ...
+# Subtest: fuzz 8-bit ALU vs reference (500 cases, high-byte adversarial)
+ok 159 - fuzz 8-bit ALU vs reference (500 cases, high-byte adversarial)
+  ---
+  duration_ms: 3551.344775
+  type: 'test'
+  ...
+# Subtest: fuzz 16-bit ALU vs reference (300 cases)
+ok 160 - fuzz 16-bit ALU vs reference (300 cases)
+  ---
+  duration_ms: 2000.704866
+  type: 'test'
+  ...
+# Subtest: fuzz MOVX vs reference (240 cases)
+ok 161 - fuzz MOVX vs reference (240 cases)
+  ---
+  duration_ms: 1754.380936
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x0 dest32
+ok 162 - MOVSXD src=0x0 dest32
+  ---
+  duration_ms: 7.381067
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x0 dest64
+ok 163 - MOVSXD src=0x0 dest64
+  ---
+  duration_ms: 8.287595
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x1 dest32
+ok 164 - MOVSXD src=0x1 dest32
+  ---
+  duration_ms: 78.570665
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x1 dest64
+ok 165 - MOVSXD src=0x1 dest64
+  ---
+  duration_ms: 43.562191
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x7fffffff dest32
+ok 166 - MOVSXD src=0x7fffffff dest32
+  ---
+  duration_ms: 6.288177
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x7fffffff dest64
+ok 167 - MOVSXD src=0x7fffffff dest64
+  ---
+  duration_ms: 6.064775
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x80000000 dest32
+ok 168 - MOVSXD src=0x80000000 dest32
+  ---
+  duration_ms: 5.867533
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x80000000 dest64
+ok 169 - MOVSXD src=0x80000000 dest64
+  ---
+  duration_ms: 8.271515
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0xffffffff dest32
+ok 170 - MOVSXD src=0xffffffff dest32
+  ---
+  duration_ms: 5.289568
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0xffffffff dest64
+ok 171 - MOVSXD src=0xffffffff dest64
+  ---
+  duration_ms: 18.732608
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0xdeadbeef80000001 dest32
+ok 172 - MOVSXD src=0xdeadbeef80000001 dest32
+  ---
+  duration_ms: 18.857689
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0xdeadbeef80000001 dest64
+ok 173 - MOVSXD src=0xdeadbeef80000001 dest64
+  ---
+  duration_ms: 11.920947
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x1234567800000000 dest32
+ok 174 - MOVSXD src=0x1234567800000000 dest32
+  ---
+  duration_ms: 51.932785
+  type: 'test'
+  ...
+# Subtest: MOVSXD src=0x1234567800000000 dest64
+ok 175 - MOVSXD src=0x1234567800000000 dest64
+  ---
+  duration_ms: 21.058149
+  type: 'test'
+  ...
+# Subtest: MOVSXD dest==src aliasing (movsxd rax, eax)
+ok 176 - MOVSXD dest==src aliasing (movsxd rax, eax)
+  ---
+  duration_ms: 9.732567
+  type: 'test'
+  ...
+# Subtest: MOVSXD high source register (movsxd r8, r9d)
+ok 177 - MOVSXD high source register (movsxd r8, r9d)
+  ---
+  duration_ms: 6.801221
+  type: 'test'
+  ...
+# Subtest: fuzz MOVSXD vs reference (600 cases)
+ok 178 - fuzz MOVSXD vs reference (600 cases)
+  ---
+  duration_ms: 5381.587912
+  type: 'test'
+  ...
+# Subtest: fuzz IMUL 1-op vs reference (200 cases)
+ok 179 - fuzz IMUL 1-op vs reference (200 cases)
+  ---
+  duration_ms: 1550.010063
+  type: 'test'
+  ...
+# Subtest: fuzz IMUL 3-op vs reference (200 cases)
+ok 180 - fuzz IMUL 3-op vs reference (200 cases)
+  ---
+  duration_ms: 1481.941573
+  type: 'test'
+  ...
+# Subtest: LEA basic forms
+ok 181 - LEA basic forms
+  ---
+  duration_ms: 26.368596
+  type: 'test'
+  ...
+# Subtest: fuzz LEA vs reference (600 cases)
+ok 182 - fuzz LEA vs reference (600 cases)
+  ---
+  duration_ms: 4216.832864
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects 16-bit LEA
+ok 183 - whole-block fallback rejects 16-bit LEA
+  ---
+  duration_ms: 6.366417
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects FS-segment LEA
+ok 184 - whole-block fallback rejects FS-segment LEA
+  ---
+  duration_ms: 5.944933
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects GS-segment LEA
+ok 185 - whole-block fallback rejects GS-segment LEA
+  ---
+  duration_ms: 5.953613
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects reg-form LEA
+ok 186 - whole-block fallback rejects reg-form LEA
+  ---
+  duration_ms: 6.162495
+  type: 'test'
+  ...
+# Subtest: whole-block fallback rejects LOCK LEA
+ok 187 - whole-block fallback rejects LOCK LEA
+  ---
+  duration_ms: 6.035094
+  type: 'test'
+  ...
+# Subtest: PUSH RSP pushes the old RSP value
+ok 188 - PUSH RSP pushes the old RSP value
+  ---
+  duration_ms: 92.717192
+  type: 'test'
+  ...
+# Subtest: POP RSP loads the popped value (discards the +8)
+ok 189 - POP RSP loads the popped value (discards the +8)
+  ---
+  duration_ms: 9.070801
+  type: 'test'
+  ...
+# Subtest: PUSH [RSP] uses the decode-time EA
+ok 190 - PUSH [RSP] uses the decode-time EA
+  ---
+  duration_ms: 7.931551
+  type: 'test'
+  ...
+# Subtest: POP [RSP] uses the decode-time EA
+ok 191 - POP [RSP] uses the decode-time EA
+  ---
+  duration_ms: 10.330092
+  type: 'test'
+  ...
+# Subtest: PUSH then POP round-trips through unmapped stack
+ok 192 - PUSH then POP round-trips through unmapped stack
+  ---
+  duration_ms: 7.650229
+  type: 'test'
+  ...
+# Subtest: POP from unmapped stack yields zero
+ok 193 - POP from unmapped stack yields zero
+  ---
+  duration_ms: 7.288505
+  type: 'test'
+  ...
+# Subtest: PUSH imm8/imm32 sign-extend and push 8 bytes
+ok 194 - PUSH imm8/imm32 sign-extend and push 8 bytes
+  ---
+  duration_ms: 7.250065
+  type: 'test'
+  ...
+# Subtest: fuzz PUSH/POP vs reference (600 cases)
+ok 195 - fuzz PUSH/POP vs reference (600 cases)
+  ---
+  duration_ms: 4251.571535
+  type: 'test'
+  ...
+# Subtest: GRP3 TEST reg-direct: flags like AND, no writeback
+ok 196 - GRP3 TEST reg-direct: flags like AND, no writeback
+  ---
+  duration_ms: 22.35836
+  type: 'test'
+  ...
+# Subtest: GRP3 TEST [mem]: fault-free load, RIP-relative immediate shift
+ok 197 - GRP3 TEST [mem]: fault-free load, RIP-relative immediate shift
+  ---
+  duration_ms: 13.710843
+  type: 'test'
+  ...
+# Subtest: GRP3 NOT: bitwise complement, flags preserved
+ok 198 - GRP3 NOT: bitwise complement, flags preserved
+  ---
+  duration_ms: 27.185324
+  type: 'test'
+  ...
+# Subtest: GRP3 NEG: 0-a with SUB flags, CF=(a!=0)
+ok 199 - GRP3 NEG: 0-a with SUB flags, CF=(a!=0)
+  ---
+  duration_ms: 31.849365
+  type: 'test'
+  ...
+# Subtest: GRP3 MUL: unsigned RDX:RAX product, CF/OF=(hi!=0)
+ok 200 - GRP3 MUL: unsigned RDX:RAX product, CF/OF=(hi!=0)
+  ---
+  duration_ms: 46.606538
+  type: 'test'
+  ...
+# Subtest: GRP3 whole-block fallback rejects /1 (DIV/IDIV emit since the guard-bail fast path)
+ok 201 - GRP3 whole-block fallback rejects /1 (DIV/IDIV emit since the guard-bail fast path)
+  ---
+  duration_ms: 26.782081
+  type: 'test'
+  ...
+# Subtest: fuzz F6/F7 group 3 vs reference (600 cases)
+ok 202 - fuzz F6/F7 group 3 vs reference (600 cases)
+  ---
+  duration_ms: 4038.557505
+  type: 'test'
+  ...
+# Subtest: INC/DEC edges: OF at the sign boundary, CF preserved both ways
+ok 203 - INC/DEC edges: OF at the sign boundary, CF preserved both ways
+  ---
+  duration_ms: 141.306388
+  type: 'test'
+  ...
+# Subtest: fuzz FF/FE INC/DEC vs reference (600 cases)
+ok 204 - fuzz FF/FE INC/DEC vs reference (600 cases)
+  ---
+  duration_ms: 4271.982998
+  type: 'test'
+  ...
+# Subtest: DIV r32: quotient/remainder, results zero-extend
+ok 205 - DIV r32: quotient/remainder, results zero-extend
+  ---
+  duration_ms: 10.318893
+  type: 'test'
+  ...
+# Subtest: DIV r32: nonzero EDX bails to the interpreter
+ok 206 - DIV r32: nonzero EDX bails to the interpreter
+  ---
+  duration_ms: 8.720839
+  type: 'test'
+  ...
+# Subtest: DIV r32: divide by zero bails
+ok 207 - DIV r32: divide by zero bails
+  ---
+  duration_ms: 8.628798
+  type: 'test'
+  ...
+# Subtest: IDIV r64: negative dividend via CQO form
+ok 208 - IDIV r64: negative dividend via CQO form
+  ---
+  duration_ms: 9.025401
+  type: 'test'
+  ...
+# Subtest: IDIV r64: INT64_MIN / -1 bails (interpreter truncates)
+ok 209 - IDIV r64: INT64_MIN / -1 bails (interpreter truncates)
+  ---
+  duration_ms: 8.728598
+  type: 'test'
+  ...
+# Subtest: DIV r64: wide dividend, zero high half
+ok 210 - DIV r64: wide dividend, zero high half
+  ---
+  duration_ms: 8.94524
+  type: 'test'
+  ...
+# Subtest: DIV r8: AX divided, quotient/remainder bytes packed, upper RAX kept
+ok 211 - DIV r8: AX divided, quotient/remainder bytes packed, upper RAX kept
+  ---
+  duration_ms: 8.125873
+  type: 'test'
+  ...
+# Subtest: IDIV r8: negative AX, negative remainder
+ok 212 - IDIV r8: negative AX, negative remainder
+  ---
+  duration_ms: 8.414755
+  type: 'test'
+  ...
+# Subtest: DIV r16 / IDIV r16: CWD form and bad-high-half bail
+ok 213 - DIV r16 / IDIV r16: CWD form and bad-high-half bail
+  ---
+  duration_ms: 22.35952
+  type: 'test'
+  ...
+# Subtest: DIV bail mid-block: earlier ops stand, RIP/execCount at the DIV
+ok 214 - DIV bail mid-block: earlier ops stand, RIP/execCount at the DIV
+  ---
+  duration_ms: 8.514677
+  type: 'test'
+  ...
+# Subtest: DIV/IDIV differential fuzz (register forms)
+ok 215 - DIV/IDIV differential fuzz (register forms)
+  ---
+  duration_ms: 984.36515
+  type: 'test'
+  ...
+# Subtest: CBW (66 98): AL->AX sign extension, upper 48 preserved
+ok 216 - CBW (66 98): AL->AX sign extension, upper 48 preserved
+  ---
+  duration_ms: 19.481215
+  type: 'test'
+  ...
+# Subtest: CWDE (98): AX->EAX sign extension, zero-extended to 64
+ok 217 - CWDE (98): AX->EAX sign extension, zero-extended to 64
+  ---
+  duration_ms: 14.043926
+  type: 'test'
+  ...
+# Subtest: CDQE (48 98): EAX->RAX sign extension
+ok 218 - CDQE (48 98): EAX->RAX sign extension
+  ---
+  duration_ms: 13.132638
+  type: 'test'
+  ...
+# Subtest: CBW/CWDE/CDQE: RFLAGS preserved across flag sets
+ok 219 - CBW/CWDE/CDQE: RFLAGS preserved across flag sets
+  ---
+  duration_ms: 72.638292
+  type: 'test'
+  ...
+# Subtest: fuzz CBW/CWDE/CDQE vs reference (600 cases)
+ok 220 - fuzz CBW/CWDE/CDQE vs reference (600 cases)
+  ---
+  duration_ms: 3470.61577
+  type: 'test'
+  ...
+# Subtest: CWD (66 99): AX->DX sign extension, upper 48 of RDX preserved
+ok 221 - CWD (66 99): AX->DX sign extension, upper 48 of RDX preserved
+  ---
+  duration_ms: 14.637691
+  type: 'test'
+  ...
+# Subtest: CDQ (99): EAX->EDX sign extension, full RDX write
+ok 222 - CDQ (99): EAX->EDX sign extension, full RDX write
+  ---
+  duration_ms: 14.119087
+  type: 'test'
+  ...
+# Subtest: CQO (48 99): RAX->RDX sign extension
+ok 223 - CQO (48 99): RAX->RDX sign extension
+  ---
+  duration_ms: 13.235958
+  type: 'test'
+  ...
+# Subtest: CWD/CDQ/CQO: RAX read-only, RFLAGS preserved across flag sets
+ok 224 - CWD/CDQ/CQO: RAX read-only, RFLAGS preserved across flag sets
+  ---
+  duration_ms: 86.248214
+  type: 'test'
+  ...
+# Subtest: fuzz CWD/CDQ/CQO vs reference (600 cases)
+ok 225 - fuzz CWD/CDQ/CQO vs reference (600 cases)
+  ---
+  duration_ms: 3720.681293
+  type: 'test'
+  ...
+# Subtest: CMOVcc: all 16 conditions, taken and not-taken
+ok 226 - CMOVcc: all 16 conditions, taken and not-taken
+  ---
+  duration_ms: 804.876019
+  type: 'test'
+  ...
+# Subtest: CMOVcc: 32-bit not-taken zero-extends dest
+ok 227 - CMOVcc: 32-bit not-taken zero-extends dest
+  ---
+  duration_ms: 8.385116
+  type: 'test'
+  ...
+# Subtest: CMOVcc: 16-bit preserves upper 48
+ok 228 - CMOVcc: 16-bit preserves upper 48
+  ---
+  duration_ms: 16.138265
+  type: 'test'
+  ...
+# Subtest: CMOVcc: memory source, taken and not-taken
+ok 229 - CMOVcc: memory source, taken and not-taken
+  ---
+  duration_ms: 19.317933
+  type: 'test'
+  ...
+# Subtest: fuzz CMOVcc vs reference (600 cases)
+ok 230 - fuzz CMOVcc vs reference (600 cases)
+  ---
+  duration_ms: 4123.884709
+  type: 'test'
+  ...
+# Subtest: D1 SHL r64 by 1 (implicit count)
+ok 231 - D1 SHL r64 by 1 (implicit count)
+  ---
+  duration_ms: 7.129424
+  type: 'test'
+  ...
+# Subtest: D1 SHR r32 by 1 (implicit count)
+ok 232 - D1 SHR r32 by 1 (implicit count)
+  ---
+  duration_ms: 7.276665
+  type: 'test'
+  ...
+# Subtest: D1 SAR r16 by 1 sign-extends
+ok 233 - D1 SAR r16 by 1 sign-extends
+  ---
+  duration_ms: 7.119664
+  type: 'test'
+  ...
+# Subtest: D0 SHL r8 by 1 (8-bit form)
+ok 234 - D0 SHL r8 by 1 (8-bit form)
+  ---
+  duration_ms: 6.68394
+  type: 'test'
+  ...
+# Subtest: D1 ROL r64 by 1
+ok 235 - D1 ROL r64 by 1
+  ---
+  duration_ms: 6.587659
+  type: 'test'
+  ...
+# Subtest: D1 ROR r64 by 1
+ok 236 - D1 ROR r64 by 1
+  ---
+  duration_ms: 6.71474
+  type: 'test'
+  ...
+# Subtest: D1 RCL r64 by 1 threads carry
+ok 237 - D1 RCL r64 by 1 threads carry
+  ---
+  duration_ms: 6.878381
+  type: 'test'
+  ...
+# Subtest: D1 RCR r64 by 1 threads carry
+ok 238 - D1 RCR r64 by 1 threads carry
+  ---
+  duration_ms: 6.057214
+  type: 'test'
+  ...
+# Subtest: D1 SHL [rax] mem form writes back
+ok 239 - D1 SHL [rax] mem form writes back
+  ---
+  duration_ms: 6.789541
+  type: 'test'
+  ...
+# Subtest: D1 SAR [rax] mem64 form
+ok 240 - D1 SAR [rax] mem64 form
+  ---
+  duration_ms: 7.043303
+  type: 'test'
+  ...
+# Subtest: fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)
+ok 241 - fuzz D0/D1 shift/rotate-by-1 vs reference (600 cases)
+  ---
+  duration_ms: 3965.977253
+  type: 'test'
+  ...
+# Subtest: D3 SHL r64 by CL
+ok 242 - D3 SHL r64 by CL
+  ---
+  duration_ms: 8.387276
+  type: 'test'
+  ...
+# Subtest: D3 SHL r32 by CL=0 is no-op (flags untouched)
+ok 243 - D3 SHL r32 by CL=0 is no-op (flags untouched)
+  ---
+  duration_ms: 7.978392
+  type: 'test'
+  ...
+# Subtest: D3 SHL r64 by CL=0 is pure no-op
+ok 244 - D3 SHL r64 by CL=0 is pure no-op
+  ---
+  duration_ms: 8.261234
+  type: 'test'
+  ...
+# Subtest: D3 SHR r64 by CL=1 sets OF from MSB
+ok 245 - D3 SHR r64 by CL=1 sets OF from MSB
+  ---
+  duration_ms: 7.77119
+  type: 'test'
+  ...
+# Subtest: D3 count masked to 0x1F for 32-bit (CL=33 -> 1)
+ok 246 - D3 count masked to 0x1F for 32-bit (CL=33 -> 1)
+  ---
+  duration_ms: 6.544378
+  type: 'test'
+  ...
+# Subtest: D3 count masked to 0x3F for 64-bit (CL=65 -> 1)
+ok 247 - D3 count masked to 0x3F for 64-bit (CL=65 -> 1)
+  ---
+  duration_ms: 7.220625
+  type: 'test'
+  ...
+# Subtest: fuzz D2/D3 shift/rotate-by-CL vs reference (600 cases)
+ok 248 - fuzz D2/D3 shift/rotate-by-CL vs reference (600 cases)
+  ---
+  duration_ms: 3952.438492
+  type: 'test'
+  ...
+# Subtest: C6 MOV r/m8,imm8 reg-direct: low bytes
+ok 249 - C6 MOV r/m8,imm8 reg-direct: low bytes
+  ---
+  duration_ms: 21.800875
+  type: 'test'
+  ...
+# Subtest: C6 MOV r/m8,imm8 mem form
+ok 250 - C6 MOV r/m8,imm8 mem form
+  ---
+  duration_ms: 16.627469
+  type: 'test'
+  ...
+# Subtest: C6 preserves RFLAGS
+ok 251 - C6 preserves RFLAGS
+  ---
+  duration_ms: 28.130412
+  type: 'test'
+  ...
+# Subtest: fuzz C6 MOV r/m8,imm8 vs reference (600 cases)
+ok 252 - fuzz C6 MOV r/m8,imm8 vs reference (600 cases)
+  ---
+  duration_ms: 4125.352802
+  type: 'test'
+  ...
+# Subtest: SETcc reg-direct: all 16 conditions
+ok 253 - SETcc reg-direct: all 16 conditions
+  ---
+  duration_ms: 39.672796
+  type: 'test'
+  ...
+# Subtest: SETcc mem form
+ok 254 - SETcc mem form
+  ---
+  duration_ms: 15.240417
+  type: 'test'
+  ...
+# Subtest: SETcc preserves RFLAGS
+ok 255 - SETcc preserves RFLAGS
+  ---
+  duration_ms: 34.996394
+  type: 'test'
+  ...
+# Subtest: fuzz SETcc vs reference (600 cases)
+ok 256 - fuzz SETcc vs reference (600 cases)
+  ---
+  duration_ms: 3949.878348
+  type: 'test'
+  ...
+# Subtest: fuzz BT/BTS/BTR/BTC vs reference (600 cases)
+ok 257 - fuzz BT/BTS/BTR/BTC vs reference (600 cases)
+  ---
+  duration_ms: 4233.364291
+  type: 'test'
+  ...
+# Subtest: SSE movdqa register form copies 128 bits and preserves flags
+ok 258 - SSE movdqa register form copies 128 bits and preserves flags
+  ---
+  duration_ms: 7.282026
+  type: 'test'
+  ...
+# Subtest: SSE 16-byte memory loads: movdqa aligned, movdqu unaligned
+ok 259 - SSE 16-byte memory loads: movdqa aligned, movdqu unaligned
+  ---
+  duration_ms: 8.332315
+  type: 'test'
+  ...
+# Subtest: SSE movups load, movaps store, movupd reload round-trip
+ok 260 - SSE movups load, movaps store, movupd reload round-trip
+  ---
+  duration_ms: 8.92028
+  type: 'test'
+  ...
+# Subtest: SSE pxor: self-xor zeroes, memory form XORs both qwords
+ok 261 - SSE pxor: self-xor zeroes, memory form XORs both qwords
+  ---
+  duration_ms: 15.013295
+  type: 'test'
+  ...
+# Subtest: SSE movd/movq GPR transfers zero-extend and clear the high qword
+ok 262 - SSE movd/movq GPR transfers zero-extend and clear the high qword
+  ---
+  duration_ms: 43.249188
+  type: 'test'
+  ...
+# Subtest: SSE movd memory forms: dword load, qword store
+ok 263 - SSE movd memory forms: dword load, qword store
+  ---
+  duration_ms: 8.045713
+  type: 'test'
+  ...
+# Subtest: SSE REX-extended XMM registers (xmm8..xmm15)
+ok 264 - SSE REX-extended XMM registers (xmm8..xmm15)
+  ---
+  duration_ms: 7.334626
+  type: 'test'
+  ...
+# Subtest: SSE differential fuzz vs interpreter model
+ok 265 - SSE differential fuzz vs interpreter model
+  ---
+  duration_ms: 3651.035547
+  type: 'test'
+  ...
+# Subtest: SSE fault: movdqa load with second qword denied leaves the xmm untouched
+ok 266 - SSE fault: movdqa load with second qword denied leaves the xmm untouched
+  ---
+  duration_ms: 8.184234
+  type: 'test'
+  ...
+# Subtest: SSE fault: movdqa store publishes the first qword before the second faults
+ok 267 - SSE fault: movdqa store publishes the first qword before the second faults
+  ---
+  duration_ms: 7.956312
+  type: 'test'
+  ...
+# Subtest: SSE fault: pxor memory source denied leaves the destination untouched
+ok 268 - SSE fault: pxor memory source denied leaves the destination untouched
+  ---
+  duration_ms: 8.9002
+  type: 'test'
+  ...
+# Subtest: SSE fault: earlier ops commit, the faulting op does not
+ok 269 - SSE fault: earlier ops commit, the faulting op does not
+  ---
+  duration_ms: 7.921951
+  type: 'test'
+  ...
+# Subtest: NOP advances RIP without touching state (block exit through the tail)
+ok 270 - NOP advances RIP without touching state (block exit through the tail)
+  ---
+  duration_ms: 7.544028
+  type: 'test'
+  ...
+# Subtest: Jcc rel8 taken and not taken (JZ, ZF from the entry RFLAGS)
+ok 271 - Jcc rel8 taken and not taken (JZ, ZF from the entry RFLAGS)
+  ---
+  duration_ms: 14.314568
+  type: 'test'
+  ...
+# Subtest: Jcc rel32 (0F 85) taken and not taken
+ok 272 - Jcc rel32 (0F 85) taken and not taken
+  ---
+  duration_ms: 13.542321
+  type: 'test'
+  ...
+# Subtest: Jcc condition coverage: every cc reads the flag it should
+ok 273 - Jcc condition coverage: every cc reads the flag it should
+  ---
+  duration_ms: 204.596715
+  type: 'test'
+  ...
+# Subtest: JMP rel32 / rel8 set RIP and never fall through
+ok 274 - JMP rel32 / rel8 set RIP and never fall through
+  ---
+  duration_ms: 14.019166
+  type: 'test'
+  ...
+# Subtest: CALL rel32 pushes the return address and jumps
+ok 275 - CALL rel32 pushes the return address and jumps
+  ---
+  duration_ms: 6.71814
+  type: 'test'
+  ...
+# Subtest: RET pops RIP off the guest stack
+ok 276 - RET pops RIP off the guest stack
+  ---
+  duration_ms: 7.146425
+  type: 'test'
+  ...
+# Subtest: LEAVE is RSP = RBP; RBP = pop64() and still advances RIP
+ok 277 - LEAVE is RSP = RBP; RBP = pop64() and still advances RIP
+  ---
+  duration_ms: 7.016663
+  type: 'test'
+  ...
+# Subtest: CALL *reg: pushes rip+len and jumps to the register
+ok 278 - CALL *reg: pushes rip+len and jumps to the register
+  ---
+  duration_ms: 8.777518
+  type: 'test'
+  ...
+# Subtest: JMP *reg: jumps, stack untouched
+ok 279 - JMP *reg: jumps, stack untouched
+  ---
+  duration_ms: 7.587788
+  type: 'test'
+  ...
+# Subtest: CALL *r15 / JMP *r8: REX-extended target registers
+ok 280 - CALL *r15 / JMP *r8: REX-extended target registers
+  ---
+  duration_ms: 15.433058
+  type: 'test'
+  ...
+# Subtest: CALL *[rbx] / CALL *[rax+0x10]: memory-indirect targets
+ok 281 - CALL *[rbx] / CALL *[rax+0x10]: memory-indirect targets
+  ---
+  duration_ms: 17.243915
+  type: 'test'
+  ...
+# Subtest: JMP *[rax*8+disp32]: the census jump-table shape (ff 24 c5)
+ok 282 - JMP *[rax*8+disp32]: the census jump-table shape (ff 24 c5)
+  ---
+  duration_ms: 8.133673
+  type: 'test'
+  ...
+# Subtest: CALL *[rip+disp]: RIP-relative target slot
+ok 283 - CALL *[rip+disp]: RIP-relative target slot
+  ---
+  duration_ms: 8.767919
+  type: 'test'
+  ...
+# Subtest: CALL *[rsp]: the target is read before the push lands
+ok 284 - CALL *[rsp]: the target is read before the push lands
+  ---
+  duration_ms: 7.696549
+  type: 'test'
+  ...
+# Subtest: CALL *[rsp-8]: read and push name the same slot; the read wins
+ok 285 - CALL *[rsp-8]: read and push name the same slot; the read wins
+  ---
+  duration_ms: 7.977511
+  type: 'test'
+  ...
+# Subtest: JMP *[rsp+disp8]: plain-base RSP addressing carries a no-index SIB
+ok 286 - JMP *[rsp+disp8]: plain-base RSP addressing carries a no-index SIB
+  ---
+  duration_ms: 7.300626
+  type: 'test'
+  ...
+# Subtest: CALL *%rsp / JMP *%rsp: the target is the pre-push RSP
+ok 287 - CALL *%rsp / JMP *%rsp: the target is the pre-push RSP
+  ---
+  duration_ms: 21.330232
+  type: 'test'
+  ...
+# Subtest: CALL with an unaligned RSP: no alignment behavior, push at RSP-8
+ok 288 - CALL with an unaligned RSP: no alignment behavior, push at RSP-8
+  ---
+  duration_ms: 6.70814
+  type: 'test'
+  ...
+# Subtest: indirect targets are used verbatim (0 and all-ones)
+ok 289 - indirect targets are used verbatim (0 and all-ones)
+  ---
+  duration_ms: 13.259519
+  type: 'test'
+  ...
+# Subtest: mid-block CALL *rbx: earlier ops stand, return address is block-relative
+ok 290 - mid-block CALL *rbx: earlier ops stand, return address is block-relative
+  ---
+  duration_ms: 7.548788
+  type: 'test'
+  ...
+# Subtest: K-M3: CALL *[rbx] with a denied target read changes nothing
+ok 291 - K-M3: CALL *[rbx] with a denied target read changes nothing
+  ---
+  duration_ms: 6.949382
+  type: 'test'
+  ...
+# Subtest: K-M3: JMP *[rbx] with a denied target read changes nothing
+ok 292 - K-M3: JMP *[rbx] with a denied target read changes nothing
+  ---
+  duration_ms: 6.922982
+  type: 'test'
+  ...
+# Subtest: K-M3: CALL *rax with a denied push keeps RSP and RIP at the op
+ok 293 - K-M3: CALL *rax with a denied push keeps RSP and RIP at the op
+  ---
+  duration_ms: 6.768021
+  type: 'test'
+  ...
+# Subtest: K-M3: CALL *[rsp] reads the target, then a denied push still changes nothing
+ok 294 - K-M3: CALL *[rsp] reads the target, then a denied push still changes nothing
+  ---
+  duration_ms: 7.480507
+  type: 'test'
+  ...
+# Subtest: K-M3: mid-block CALL *[rbx] fault keeps the completed prefix
+ok 295 - K-M3: mid-block CALL *[rbx] fault keeps the completed prefix
+  ---
+  duration_ms: 7.374546
+  type: 'test'
+  ...
+# Subtest: JMP *reg touches no memory at all
+ok 296 - JMP *reg touches no memory at all
+  ---
+  duration_ms: 6.991223
+  type: 'test'
+  ...
+# Subtest: FF /2 /4 differential fuzz vs interpreter model
+ok 297 - FF /2 /4 differential fuzz vs interpreter model
+  ---
+  duration_ms: 2910.875189
+  type: 'test'
+  ...
+# Subtest: PUSH/POP inside a block feed a following RET
+ok 298 - PUSH/POP inside a block feed a following RET
+  ---
+  duration_ms: 8.008591
+  type: 'test'
+  ...
+# Subtest: bounded execution stops at the instruction limit with the exact RIP
+ok 299 - bounded execution stops at the instruction limit with the exact RIP
+  ---
+  duration_ms: 60.492942
+  type: 'test'
+  ...
+# Subtest: limit interacts with a terminator: the branch is not taken early
+ok 300 - limit interacts with a terminator: the branch is not taken early
+  ---
+  duration_ms: 7.80983
+  type: 'test'
+  ...
+# Subtest: store into a block code page leaves the module at the next RIP
+ok 301 - store into a block code page leaves the module at the next RIP
+  ---
+  duration_ms: 15.796781
+  type: 'test'
+  ...
+# Subtest: a block that never stores ignores the generation table
+ok 302 - a block that never stores ignores the generation table
+  ---
+  duration_ms: 9.453445
+  type: 'test'
+  ...
+# Subtest: a stale entry generation does not stop the block (the check compares the TABLE)
+ok 303 - a stale entry generation does not stop the block (the check compares the TABLE)
+  ---
+  duration_ms: 8.592797
+  type: 'test'
+  ...
+# Subtest: shared-memory import descriptor links only a shared host memory
+ok 304 - shared-memory import descriptor links only a shared host memory
+  ---
+  duration_ms: 14.994495
+  type: 'test'
+  ...
+# Subtest: K-M3: denied load stops the block at the faulting op
+ok 305 - K-M3: denied load stops the block at the faulting op
+  ---
+  duration_ms: 8.224754
+  type: 'test'
+  ...
+# Subtest: K-M3: denied store leaves no trace and stops the block
+ok 306 - K-M3: denied store leaves no trace and stops the block
+  ---
+  duration_ms: 7.992351
+  type: 'test'
+  ...
+# Subtest: K-M3: PUSH to a denied page keeps RSP unchanged
+ok 307 - K-M3: PUSH to a denied page keeps RSP unchanged
+  ---
+  duration_ms: 9.361524
+  type: 'test'
+  ...
+# Subtest: K-M3: POP r/m with a denied store keeps RSP unchanged
+ok 308 - K-M3: POP r/m with a denied store keeps RSP unchanged
+  ---
+  duration_ms: 8.066032
+  type: 'test'
+  ...
+# Subtest: K-M3: REP MOVSQ write fault keeps completed-element progress
+ok 309 - K-M3: REP MOVSQ write fault keeps completed-element progress
+  ---
+  duration_ms: 8.464276
+  type: 'test'
+  ...
+# Subtest: K-M3: REP MOVSQ read fault on element 1 makes no progress
+ok 310 - K-M3: REP MOVSQ read fault on element 1 makes no progress
+  ---
+  duration_ms: 7.175264
+  type: 'test'
+  ...
+# Subtest: K-M3: REP CMPSQ fault on the second read keeps first-element flags
+ok 311 - K-M3: REP CMPSQ fault on the second read keeps first-element flags
+  ---
+  duration_ms: 7.86963
+  type: 'test'
+  ...
+# Subtest: K-M3: RMW store fault restores the op-start flags
+ok 312 - K-M3: RMW store fault restores the op-start flags
+  ---
+  duration_ms: 7.79667
+  type: 'test'
+  ...
+# Subtest: K-M3: shift store fault restores the op-start flags
+ok 313 - K-M3: shift store fault restores the op-start flags
+  ---
+  duration_ms: 8.525796
+  type: 'test'
+  ...
+# Subtest: K-M3: BTS store fault restores CF
+ok 314 - K-M3: BTS store fault restores CF
+  ---
+  duration_ms: 8.003031
+  type: 'test'
+  ...
+1..314
+# tests 314
+# suites 0
+# pass 314
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 88694.434278
+selftest-only: skipping emcc build.

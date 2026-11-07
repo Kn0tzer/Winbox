@@ -16,17 +16,30 @@
 // register values. The driver builds separate instruction-interpreter and
 // block-executor binaries, keeping the reference independent of block decoding.
 //
-// Build (mirrors scripts/test-jit-lifetime.sh link recipe):
+// Build (mirrors scripts/build-jit-wasm.sh, section 14.3):
 //   g++ -std=c++20 -DBOXEDWINE_GUEST_X64=1 -DBOXEDWINE_BLOCK_EXEC=1 \
 //       -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
-//       -Iinclude -Ilib/simde source/emulation/cpu/cpu64.cpp \
+//       -Iinclude -Ilib/simde $(sdl2-config --cflags) source/emulation/cpu/cpu64.cpp \
 //       source/emulation/cpu/jit64.cpp source/emulation/cpu/jit64wasm.cpp \
 //       source/emulation/cpu/common/common_lock.cpp \
 //       source/emulation/cpu/normal/ripSampler.cpp \
 //       source/kernel/kmemory64.cpp source/util/bstring.cpp \
-//       <fpu.o> source/emulation/cpu/tests/jit64_invalidate_tests.cpp \
+//       source/io/fsopennode.cpp source/io/fsnode.cpp \
+//       source/kernel/kthread.cpp source/kernel/ksystem.cpp \
+//       source/kernel/kinotify.cpp source/kernel/kscheduler.cpp \
+//       source/util/synchronization.cpp source/util/bfile.cpp \
+//       platform/linux/platform.cpp \
+//       <fpu.o> <softfloat objects> source/emulation/cpu/tests/jit64_invalidate_tests.cpp \
 //       -Wl,--gc-sections -o /tmp/jit64_invalidate_tests
+// FD-176: the kernel core set above is load-bearing - the CPU and memory
+// units call into it (file-mapping release, thread registry, guest CPU
+// count), and the chain only closes with inotify, the condition/scheduler
+// pair, the file node, and the Linux platform layer.
 // Driver: build with and without BOXEDWINE_BLOCK_EXEC; require identical output.
+// Run the blocks binary with BW64_JIT=1 BW64_JIT_ENGINE=off
+// BW64_JIT_FAST_DISPATCH=0 - without that environment the BBlock cache is
+// never entered (fast dispatch defaults on, engine defaults to interp) and
+// the differential is vacuous. See scripts/build-jit-wasm.sh (FD-176).
 // Exit 0 = all pass; non-zero = failures (count printed).
 
 #include "boxedwine.h"
@@ -40,7 +53,12 @@
 #include <vector>
 
 // ---- standalone-link stubs (no kernel/process in this harness) ----
-thread_local KThread* KThread::runningThread = nullptr;
+// FD-176: KThread::runningThread, KSystem::useF64, and
+// KSystem::getSystemTimeAsMicroSeconds used to be stubbed here because the
+// kernel core was not linked. They now come from the linked kernel core
+// (kthread.cpp / ksystem.cpp) - see scripts/build-jit-wasm.sh. Note the
+// product value of useF64 is false for the 64-bit guest (the SoftFloat
+// 80-bit path); the old stub's `true` was the wrong value here.
 void internal_log(BString msg, FILE* f) { std::fprintf(f, "%s\n", msg.str()); }
 void internal_kpanic(BString msg) { std::fprintf(stderr, "KPANIC: %s\n", msg.str()); std::abort(); }
 void kpanic(const char* msg) { std::fprintf(stderr, "KPANIC: %s\n", msg); std::abort(); }
@@ -71,8 +89,6 @@ bool bw64RecoverClaimRip(unsigned architecture, U64 rip) {
 void ksyscall64(CPU64*) { std::fprintf(stderr, "STUB: ksyscall64 reached\n"); std::abort(); }
 bool CPU64::raiseSyncFault(U32, U32, S32, U64, U32) { std::abort(); return false; }
 void KProcess::signalProcess(U32) {}
-bool KSystem::useF64 = true;
-U64 KSystem::getSystemTimeAsMicroSeconds() { return 0; }
 #include "softfloat_types.h"
 // (remaining softfloat extF80 helpers come from lib/softfloat objects)
 

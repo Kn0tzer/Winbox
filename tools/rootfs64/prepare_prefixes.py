@@ -17,6 +17,9 @@ import zipfile
 PREFIX = "home/username/.wine/"
 HIVES = ("system.reg", "user.reg", "userdef.reg")
 SERVICES = ("RpcSs", "PlugPlay", "winebus", "wineusb")
+# FD-189: the Plug-and-Play stack whose registration the shipped
+# 64-bit prefix must carry (see _validate_prefix).
+PNP_SERVICES = ("PlugPlay", "winebus", "wineusb")
 CONTROLLER_KEYS = (
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.Gamepad",
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.RawGameController",
@@ -168,7 +171,15 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
         key = f"system\\\\currentcontrolset\\\\services\\\\{service}".lower()
         body = system_sections.get(key)
         if body is None:
-            if require_full_init:
+            # FD-189: the Plug-and-Play stack must be registered in the
+            # shipped prefix. A missing PlugPlay/winebus/wineusb
+            # registration used to pass this guard silently (only the
+            # native-boot packaging path required it), so the shipped
+            # 64-bit prefix carried no PnP stack at all while the guard
+            # stayed green. RpcSs keeps the old allowance: the shipped
+            # 64-bit prefix has never registered it and changing that
+            # is outside FD-189's scope.
+            if require_full_init or service in PNP_SERVICES:
                 errors.append(f"missing service registration {service}")
             continue
         match = next((re.search(r'^"Start"=dword:([0-9a-fA-F]{8})$', line) for line in body
@@ -178,7 +189,11 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
         elif int(match.group(1), 16) == 4:
             errors.append(f"service {service} is disabled")
 
-    controller_keys = CONTROLLER_KEYS if require_full_init or architecture == "win32" else CONTROLLER_KEYS[:2]
+    # FD-189: the ROOT\WINE bus-device keys are required on win64
+    # too. The old [:2] carve-out let the shipped 64-bit prefix pass
+    # with no bus enumeration at all; the 32-bit prefix has always
+    # carried them.
+    controller_keys = CONTROLLER_KEYS
     for key in controller_keys:
         if key.lower() not in system.lower():
             errors.append(f"missing controller/HID registry key {key}")
@@ -205,6 +220,17 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
 
     if architecture == "win64" and require_full_init:
         for filename in ("winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
+            key = PREFIX + "drive_c/windows/inf/" + filename
+            if key not in contents:
+                errors.append(f"missing installed input INF {filename}")
+
+    # FD-188: the 32-bit prefix must carry the five [InfFiles] entries
+    # (wine.inf) in C:\windows\inf\, or the PnP manager cannot install
+    # a function driver for an enumerated WINEBUS HID device. The win64
+    # prefix's overlay is the FD-189 lane's; its list above is the four
+    # root-device INFs and stays gated on require_full_init.
+    if architecture == "win32":
+        for filename in ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
             key = PREFIX + "drive_c/windows/inf/" + filename
             if key not in contents:
                 errors.append(f"missing installed input INF {filename}")
@@ -250,6 +276,19 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path,
     missing = [system32 + name for name in required if system32 + name not in names]
     if missing:
         raise ValueError(f"{wine_zip}: missing linked audio/service/device/D3D payloads: " + ", ".join(missing))
+    # FD-188: the driver loader opens drivers by the absolute path
+    # C:\windows\system32\drivers\<name>.sys, which resolves through the
+    # system32.link above to <windows>/drivers/<name>.sys in this zip.
+    # Every .sys in the linked windows dir must have a copy under drivers/ --
+    # a missing drivers/ directory made every driver load fail
+    # STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver fail c0000142.
+    sys_members = sorted(n for n in names
+                         if n.startswith(system32) and n.endswith(".sys")
+                         and "/" not in n[len(system32):])
+    missing_drivers = [system32 + "drivers/" + n.rsplit("/", 1)[-1] for n in sys_members
+                       if system32 + "drivers/" + n.rsplit("/", 1)[-1] not in names]
+    if missing_drivers:
+        raise ValueError(f"{wine_zip}: missing drivers/ mirror members: " + ", ".join(missing_drivers))
     if "x86_64-windows/" in system32:
         unix_dir = system32.replace("x86_64-windows/", "x86_64-unix/")
     elif "i386-windows/" in system32:

@@ -26,7 +26,10 @@
 # pins), and the FD-167+FD-171 combined build (the two i386-windows
 # DLL members, mf.dll and propsys.dll, must carry the combined
 # rebuild bytes, tools/rootfs32/wine10-fd167-fd171-i386/, hash-checked
-# at their pins);
+# at their pins), and the FD-188 drivers/ mirror (the i386-windows/drivers/
+# members must each be byte-identical to the shipped zip's same-basename
+# .sys sibling in i386-windows/ -- the mirror build-wine32-base.sh lays
+# down so the driver loader finds C:\windows\system32\drivers\*.sys);
 # everything else must be member-identical — the two preserved
 # members are extracted FROM the shipped zip by the base build, so a
 # faithful regeneration is identical apart from those, not merely
@@ -181,6 +184,14 @@ backport = {
 }
 only_old = sorted(set(old) - set(new))
 only_new = sorted(set(new) - set(old))
+# FD-188: the drivers/ mirror members are sanctioned -- each must be
+# byte-identical to the shipped zip's same-basename .sys sibling.
+DRIVERS_PREFIX = "opt/wine-stable/lib/wine/i386-windows/drivers/"
+drivers_new = sorted(k for k in only_new if k == DRIVERS_PREFIX or (k.startswith(DRIVERS_PREFIX) and k.endswith(".sys")))
+drivers_bad = sorted(k for k in drivers_new if k.endswith(".sys")
+                     and old.get("opt/wine-stable/lib/wine/i386-windows/" + k.rsplit("/", 1)[-1], (None, None))[1] != new[k][1])
+only_new = [k for k in only_new if k not in drivers_new]
+print(f"FD-188 drivers/ mirror: {len(drivers_new)} members, byte-identical to their .sys siblings")
 diff = sorted(k for k in set(old) & set(new) if old[k] != new[k] and k not in backport and k not in fd167 and k not in fd169 and k not in fd171 and k not in fd167fd171)
 bad = sorted(k for k in backport if k not in new or new[k][1] != pin)
 bad += sorted(f"{k} (FD-167)" for k, want in fd167.items() if k not in new or new[k][1] != want)
@@ -192,9 +203,10 @@ for k in only_old: print(f"  MISSING in regen: {k}")
 for k in only_new: print(f"  EXTRA in regen:   {k}")
 for k in diff: print(f"  DIFFERS:          {k} shipped={old[k]} regen={new[k]}")
 for k in bad: print(f"  BACKPORT MEMBER NOT AT PIN: {k} regen={new.get(k)} expected sha256={pin}")
-if only_old or only_new or diff or bad:
+for k in drivers_bad: print(f"  DRIVERS MIRROR MEMBER NOT AT SIBLING HASH: {k}")
+if only_old or only_new or diff or bad or drivers_bad:
     raise SystemExit("regen-wine32-zip: member verification FAILED (see above)")
-print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin, the five FD-167 backport members, the nine FD-169 CRT members, the nineteen FD-171 members and the two FD-167+FD-171 combined members at their in-tree pins")
+print("member verification: IDENTICAL member set, sizes and sha256, except the four win32u backport members at the committed pin, the five FD-167 backport members, the nine FD-169 CRT members, the nineteen FD-171 members, the two FD-167+FD-171 combined members at their in-tree pins and the FD-188 drivers/ mirror members at their .sys sibling hashes")
 EOF
 
 echo "=== [5/5] completeness gate (in-tree, scratch web/runtime set) ==="

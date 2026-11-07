@@ -1,0 +1,12 @@
+{
+  "base": "https://kn0tzer.work.gd/winbox",
+  "arch": "x64",
+  "n": 3,
+  "pageReady": 3,
+  "certified": 3,
+  "falseReady": 0,
+  "raceFailed": 0,
+  "other": 0,
+  "rescues": 0,
+  "medianCertifiedReadyMs": 105355
+}

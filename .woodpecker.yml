@@ -1,0 +1,140 @@
+# Winbox standing light checks — Stage 0 checking queue definition.
+# Single-file Woodpecker pipeline (design: ci-queue-research-20261105.md).
+# The source tree is NEVER cloned by the queue: it is bind-mounted read-only
+# from the executor host at /src (prepared by the submit-check script), and
+# step 1 proves the mount is the submitted commit and is not writable before
+# any check runs. All work happens in a workspace copy; all outputs land in
+# results/ and leave through the single S3 publish step.
+skip_clone: true
+
+variables:
+  EXPECTED_SHA: ""
+
+steps:
+  - name: verify-source
+    image: bw64-checks-runner:stage0
+    volumes:
+      - /home/ubuntu/winbox-project/checks/src:/src:ro
+    commands:
+      - 'echo "expected commit: $EXPECTED_SHA"'
+      - 'actual=$(git -C /src rev-parse HEAD); echo "mounted commit: $actual"; test "$actual" = "$EXPECTED_SHA"'
+      - |
+        if (echo probe > /src/.write-probe) 2>verify-write.err; then
+          echo "FATAL: a write to the read-only source mount SUCCEEDED"; exit 1
+        fi
+        echo "write attempt against /src failed as required:"
+        cat verify-write.err
+      - 'if touch /src/.write-probe2 2>/dev/null; then echo "FATAL: touch on /src SUCCEEDED"; exit 1; fi'
+      - test -z "$(git -C /src status --porcelain)" && echo "mounted source tree is pristine"
+      - mkdir -p results
+      - cp verify-write.err results/verify-source-write-attempt.log
+      - echo "verify-source OK" | tee results/verify-source.log
+
+  - name: prepare-workspace
+    image: bw64-checks-runner:stage0
+    depends_on: [verify-source]
+    volumes:
+      - /home/ubuntu/winbox-project/checks/src:/src:ro
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+      - /home/ubuntu/winbox-project/checks/inputs/slang:/mnt/slang:ro
+    commands:
+      - cp -a /src/. ./work/
+      - rm -rf work/.git
+      - ln -s /mnt/node_modules work/node_modules
+      - mkdir -p work/tools/browser/slang && cp -a /mnt/slang/. work/tools/browser/slang/
+      - cd work && node tools/browser/stage-vendor.mjs
+      - echo "workspace prepared" | tee -a ../results/prepare.log
+
+  - name: citations
+    image: bw64-checks-runner:stage0
+    depends_on: [prepare-workspace]
+    volumes:
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+    commands:
+      - cd work
+      - python3 tools/vk-register-citation-audit.py > ../results/citations.log 2>&1 || echo $? > ../results/citations.exit
+      - test -f ../results/citations.exit || echo 0 > ../results/citations.exit
+      - cat ../results/citations.log
+
+  - name: js-unit
+    image: bw64-checks-runner:stage0
+    depends_on: [citations]
+    volumes:
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+    commands:
+      - cd work
+      - node web/tests/suite/runner.mjs --unit > ../results/js-unit.log 2>&1 || echo $? > ../results/js-unit.exit
+      - test -f ../results/js-unit.exit || echo 0 > ../results/js-unit.exit
+      - tail -5 ../results/js-unit.log
+
+  - name: js-legacy
+    image: bw64-checks-runner:stage0
+    depends_on: [js-unit]
+    volumes:
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+    commands:
+      - cd work
+      - node --test web/tests/*.test.mjs > ../results/js-legacy.log 2>&1 || echo $? > ../results/js-legacy.exit
+      - test -f ../results/js-legacy.exit || echo 0 > ../results/js-legacy.exit
+      - tail -5 ../results/js-legacy.log
+
+  - name: native-suites
+    image: bw64-checks-runner:stage0
+    depends_on: [js-legacy]
+    volumes:
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+    commands:
+      - cd work
+      - make -C project/linux test -j3 > ../results/native-main-build.log 2>&1 || echo $? > ../results/native-main-build.exit
+      - test -f ../results/native-main-build.exit || echo 0 > ../results/native-main-build.exit
+      - ./project/linux/Build/Test/boxedwine 0 0 1 > ../results/native-main.log 2>&1 || echo $? > ../results/native-main.exit
+      - test -f ../results/native-main.exit || echo 0 > ../results/native-main.exit
+      - make -C project/linux x64-test -j3 > ../results/native-x64-build.log 2>&1 || echo $? > ../results/native-x64-build.exit
+      - test -f ../results/native-x64-build.exit || echo 0 > ../results/native-x64-build.exit
+      - ./project/linux/Build/X64Test/boxedwine 0 0 1 > ../results/native-x64.log 2>&1 || echo $? > ../results/native-x64.exit
+      - test -f ../results/native-x64.exit || echo 0 > ../results/native-x64.exit
+      - grep -h "FAILED\|tests" ../results/native-main.log ../results/native-x64.log | tail -4 || true
+
+  - name: run-native
+    image: bw64-checks-runner:stage0
+    depends_on: [native-suites]
+    volumes:
+      - /home/ubuntu/winbox-project/repo/boxedwine64/node_modules:/mnt/node_modules:ro
+    commands:
+      - cd work
+      - python3 tools/vkd3d/tests/run-native.py > ../results/run-native.log 2>&1 || echo $? > ../results/run-native.exit
+      - test -f ../results/run-native.exit || echo 0 > ../results/run-native.exit
+      - tail -3 ../results/run-native.log
+
+  - name: publish-results
+    image: woodpeckerci/plugin-s3
+    depends_on: [run-native]
+    when:
+      status: [success, failure]
+    settings:
+      bucket: checks-output
+      access_key:
+        from_secret: s3_access_key
+      secret_key:
+        from_secret: s3_secret_key
+      source: results/**/*
+      target: checks/${CI_PIPELINE_NUMBER}
+      endpoint: http://10.0.1.1:9110
+      path_style: true
+
+  - name: verdict
+    image: bw64-checks-runner:stage0
+    depends_on: [publish-results]
+    when:
+      status: [success, failure]
+    commands:
+      - |
+        fail=0
+        for n in citations js-unit js-legacy native-main-build native-main native-x64-build native-x64 run-native; do
+          f="results/$n.exit"
+          if [ ! -f "$f" ]; then echo "$f MISSING"; fail=1; continue; fi
+          v=$(cat "$f"); echo "$f -> exit $v"
+          [ "$v" = "0" ] || fail=1
+        done
+        if [ "$fail" != "0" ]; then echo "ONE OR MORE LIGHT CHECKS FAILED (see results/)"; exit 1; fi
+        echo "ALL LIGHT CHECKS PASSED"

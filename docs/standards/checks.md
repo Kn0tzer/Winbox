@@ -113,11 +113,21 @@ partway has failed, however many PASS lines precede the abort.
 
     /home/ubuntu/winbox-project/checks/submit-check <lane-branch>
 
-- This is the **only door** into the queue. It takes the branch tip
-  from the main repository (adding the reviewed `.woodpecker.yml`
-  as exactly one commit if the tip does not carry it), submits it
-  to the on-box queue — never to GitHub — and waits. The box is the
-  queue's one and only executor; there is no target argument.
+- The queue is the **standard door for the light checks** (§§1–5:
+  citations, JS unit, JS legacy, native suites, run-native). A lane
+  proves those checks with a queue run, not by hand: by-hand runs of
+  those checks are for iterating only and are not evidence for a
+  merge. The verdict a merge rests on is the queue run's, read from
+  its raw step logs.
+- The definition file `.woodpecker.yml` lives at the repository root
+  (landed on the integration branch; see
+  `docs/reports/woodpecker-yml-landing-20261106.md`). `submit-check`
+  takes the branch tip from the main repository and submits it to
+  the on-box queue — never to GitHub — and waits. When the tip
+  carries the definition file it is submitted as-is; an older tip
+  without it still gets the reviewed file added as exactly one
+  commit by submit-check. The box is the queue's one and only
+  executor; there is no target argument.
 - A queue run executes, in a sealed container with the source
   mounted **read-only** (the run's own first step proves the mount
   refuses writes): citations, JS unit, JS legacy, native suites,
@@ -130,7 +140,7 @@ partway has failed, however many PASS lines precede the abort.
   failures (the two bare-checkout unit failures of check 0 appear
   in queue runs of unbuilt tips, correctly).
 - The queue does not replace the browser guest suite (check 6),
-  which it does not run.
+  which it does not run; that suite still runs by hand under §6.
 
 Verified literally: 2026-11-05 —
 `docs/reports/standards-verification-20261105.md`.

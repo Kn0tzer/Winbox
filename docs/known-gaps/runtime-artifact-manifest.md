@@ -10,10 +10,10 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 195094788 | `431d61cb9c7689da6d587a3ed21e2829386dcbe86ca168d6ac135c8fced4d8f2` | 1257 |
-| w32 | `web/runtime/wine32.zip` | 231609052 | `128952652c5c7e6a47044e33d168ff703464b889652d52ab5c2f76f223108e47` | 1926 |
-| p64 | `web/runtime/prefix64.zip` | 19133895 | `b1bfa64e0863ccf73dfcb244416ac6e3e14fa1de1f491aab7dd2c78bc0131ee5` | 152 |
-| p32 | `web/runtime/prefix32.zip` | 5916403 | `4afb83305a319af96e96cf38e9015e2f77c7e08ebcce8245c1d59ce427aaa049` | 42 |
+| w64 | `web/runtime/wine64.zip` | 194844190 | `133bfd70840e6c3dc60d63a9cc5aacc2d75b66e814914299ccac3dd5ea5c8604` | 1280 |
+| w32 | `web/runtime/wine32.zip` | 231315001 | `aa2bb9d63bf03dca2275d64ec117dbb280b68b8eea456d54774738cefa46e070` | 1957 |
+| p64 | `web/runtime/prefix64.zip` | 19066808 | `197251244ccb367f6a46c3fc8ec7fdaaa425891f75aa02113f27f1e3d3126b62` | 152 |
+| p32 | `web/runtime/prefix32.zip` | 5868900 | `68164e5635cd31d996f16ddd6899c375d028ef42f170fa207307002f51702fc6` | 47 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 11469777 | `88fad6d6e43873152d1e9f04b6607930d3e38975fce4ec37fdb525a2f7b3e812` | 100 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
 | support | `dist/runtime/support-c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f.zip` | 517564189 | `c4dbe35986a5edcff6646cb8b4f63cc7660e6e1e6dcda6546454db77d241729f` | 3542 |
@@ -193,7 +193,7 @@ Labels match the register legend in `runtime.md`
 
 ## DirectX core + input set
 
-### w64 (23)
+### w64 (24)
 
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10.dll` (1531455 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d10core.dll` (192842 bytes)
@@ -209,6 +209,7 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/dplaysvr.exe` (131319 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/dplayx.dll` (1539330 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/dpnet.dll` (846163 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/drivers/winexinput.sys` (209288 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/dsound.dll` (1716517 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/dxgi.dll` (1595272 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/winexinput.sys` (209288 bytes)
@@ -219,7 +220,7 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/xinput9_1_0.dll` (272351 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/xinputuap.dll` (273536 bytes)
 
-### w32 (23)
+### w32 (24)
 
 - `opt/wine-stable/lib/wine/i386-windows/d3d10.dll` (1346342 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/d3d10core.dll` (176826 bytes)
@@ -235,6 +236,7 @@ Labels match the register legend in `runtime.md`
 - `opt/wine-stable/lib/wine/i386-windows/dplaysvr.exe` (115015 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/dplayx.dll` (1370366 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/dpnet.dll` (790102 bytes)
+- `opt/wine-stable/lib/wine/i386-windows/drivers/winexinput.sys` (181119 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/dsound.dll` (1572333 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/dxgi.dll` (1524299 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/winexinput.sys` (181119 bytes)

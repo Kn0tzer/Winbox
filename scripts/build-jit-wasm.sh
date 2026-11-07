@@ -64,8 +64,17 @@ g++ -std=c++17 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 -DJIT64_GEN_VERIFY=1 \
 # guest memory inside / overlapping / across its range (plus a within-block
 # self-modifying store and a cross-page block), and compares block execution
 # against a separately compiled instruction interpreter. A sensitivity
-# check (noteGuestWrite neutered) was verified to fail T1/T3/T4, so this gate
-# is not vacuous.
+# check (the bw64NoteWriteSlow funnel neutered, so no guest write bumps a
+# generation) was verified to fail T1/T3/T4, so this gate is not vacuous -
+# but ONLY when the blocks binary is run with the environment below.
+# FD-176: without it the differential is vacuous. Fast dispatch defaults
+# ON (jit64FastDispatchEnabled returns true when BW64_JIT_FAST_DISPATCH is
+# unset), which makes runBounded skip tryBlockStep entirely; and the JIT
+# engine defaults to interp, so tryJitStep shadows tryBlockStep too. The
+# blocks binary must run with BW64_JIT=1 BW64_JIT_ENGINE=off
+# BW64_JIT_FAST_DISPATCH=0 for the BBlock cache to execute at all. (Do not
+# "prove" execution from BW64_BLOCKSTATS: its counters read a dangling CPU
+# once the first test context is destroyed, so the numbers are garbage.)
 echo "--- jit64 block-invalidation tests (section 14.3) ---"
 # NOTE: -ffunction-sections/-fdata-sections are load-bearing here: fpu.cpp
 # also implements 32-bit-KMemory FPU helpers (FSTENV/FRSTOR/...) that must be
@@ -75,6 +84,18 @@ echo "--- jit64 block-invalidation tests (section 14.3) ---"
 # Its bw64Recover* calls are defined by the test harness instead: they live
 # in source/util/log.cpp, whose logging core (klog/kpanic/KSystem::logFile)
 # the standalone harness deliberately replaces with its own definitions.
+# FD-176: the invalidate tests link the kernel core set, not just the CPU.
+# FD-82/FD-129 cross-references (kmemory64's file-mapping release calls
+# FsOpenNode; KThread::currentThread falls back to the thread registry) and
+# the machine definition (cpu64 reads KSystem::guestCpuCount) pull the
+# kernel in; the chain closes through inotify, the condition/scheduler
+# pair, the file node, and the Linux platform layer. The harness stubs that
+# used to stand in for kthread/ksystem (runningThread, useF64,
+# getSystemTimeAsMicroSeconds) are gone from jit64_invalidate_tests.cpp -
+# linking the real units would collide with them. platform.cpp needs the
+# SDL headers (sdl2-config, as the native makefile uses).
+SDL_CFLAGS=()
+if command -v sdl2-config >/dev/null; then SDL_CFLAGS=($(sdl2-config --cflags)); else SDL_CFLAGS=(-I/usr/include/SDL2); fi
 g++ -std=c++20 -DBOXEDWINE_GUEST_X64=1 -ffunction-sections -fdata-sections -c \
     -I"$REPO/include" -I"$REPO/lib/simde" \
     "$REPO/source/emulation/cpu/common/fpu.cpp" -o "$BUILD_TMP/inv_fpu.o"
@@ -90,7 +111,7 @@ for mode in interp blocks; do
     if [[ "$mode" == blocks ]]; then INV_FLAGS=(-DBOXEDWINE_BLOCK_EXEC=1); fi
     g++ -std=c++20 -Wall -Wextra -DBOXEDWINE_GUEST_X64=1 "${INV_FLAGS[@]}" \
         -DBOXEDWINE_BLOCK_CACHE_INFRA=1 -ffunction-sections -fdata-sections \
-        -I"$REPO/include" -I"$REPO/lib/simde" -I"$REPO/lib/softfloat/source/include" \
+        -I"$REPO/include" -I"$REPO/lib/simde" -I"$REPO/lib/softfloat/source/include" "${SDL_CFLAGS[@]}" \
         "$REPO/source/emulation/cpu/cpu64.cpp" \
         "$REPO/source/emulation/cpu/jit64.cpp" \
         "$REPO/source/emulation/cpu/jit64wasm.cpp" \
@@ -98,11 +119,25 @@ for mode in interp blocks; do
         "$REPO/source/emulation/cpu/normal/ripSampler.cpp" \
         "$REPO/source/kernel/kmemory64.cpp" \
         "$REPO/source/util/bstring.cpp" \
+        "$REPO/source/io/fsopennode.cpp" \
+        "$REPO/source/io/fsnode.cpp" \
+        "$REPO/source/kernel/kthread.cpp" \
+        "$REPO/source/kernel/ksystem.cpp" \
+        "$REPO/source/kernel/kinotify.cpp" \
+        "$REPO/source/kernel/kscheduler.cpp" \
+        "$REPO/source/util/synchronization.cpp" \
+        "$REPO/source/util/bfile.cpp" \
+        "$REPO/platform/linux/platform.cpp" \
         "$BUILD_TMP/inv_fpu.o" "$BUILD_TMP"/softfloat/*.o \
         "$REPO/source/emulation/cpu/tests/jit64_invalidate_tests.cpp" \
         -Wl,--gc-sections -o "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_build_$mode.log" 2>&1 || \
         { echo "FAIL: $mode invalidate-test build; see $BUILD_TMP/inv_build_$mode.log" >&2; exit 1; }
-    "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_$mode.log"
+    if [[ "$mode" == blocks ]]; then
+        BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0 \
+            "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_$mode.log"
+    else
+        BW64_JIT=0 "$BUILD_TMP/jit64_invalidate_$mode" > "$BUILD_TMP/inv_$mode.log"
+    fi
 done
 cmp -s "$BUILD_TMP/inv_interp.log" "$BUILD_TMP/inv_blocks.log" || { echo "FAIL: block invalidation differs from the instruction interpreter" >&2; exit 1; }
 echo "OK: block-invalidation tests match the independent instruction interpreter."

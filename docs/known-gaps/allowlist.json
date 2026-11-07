@@ -112,8 +112,8 @@
     },
     {
       "file": "scripts/build-jit-wasm.sh",
-      "count": 1,
-      "reason": "Gate comment noting the block-invalidation link uses ripSampler.cpp's designed non-multi-threaded inert stubs (the product's own term for its no-op sampler configuration in that build shape); documentary, not a gap."
+      "count": 2,
+      "reason": "Two documentary comments in the gate script: one noting the block-invalidation link uses ripSampler.cpp's designed non-multi-threaded inert stubs (the product's own term for its no-op sampler configuration in that build shape), and one (FD-176) recording that the harness stubs that once stood in for the unlinked kernel units are removed; both documentary, not gaps."
     }
   ]
 }

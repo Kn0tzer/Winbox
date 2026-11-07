@@ -453,6 +453,18 @@ mkdir -p "$OUT/opt/wine-stable/share/wine"
 cp -a "$OUT/.extract/libwine8/usr/share/wine/." "$OUT/opt/wine-stable/share/wine/"
 cp -a "$OUT/.extract/libwine8/usr/share/wine" "$OUT/usr/share/wine"
 
+echo "=== driver .inf files (FD-188) ==="
+# The Debian libwine data dir carries no per-driver .inf files, so a real
+# wineboot has nothing to copy into a prefix's C:\windows\inf\ and the
+# PnP manager cannot install a function driver for an enumerated device.
+# The five [InfFiles] entries (wine.inf) are version-matched Wine 8.0
+# sources kept in tools/rootfs32/wine-inf/; the merge-script path for
+# already-cut zips is stage-wine-inf.sh.
+for inf in input.inf winebus.inf winehid.inf wineusb.inf winexinput.inf; do
+    cp "$REPO/tools/rootfs32/wine-inf/$inf" "$OUT/opt/wine-stable/share/wine/$inf"
+    cp "$REPO/tools/rootfs32/wine-inf/$inf" "$OUT/usr/share/wine/$inf"
+done
+
 echo "=== bookworm i386 system-library closure (pinned debs) ==="
 for line in "${CLOSURE_PINS[@]}"; do
     IFS='|' read -r member pkg ver debsha debbytes url <<<"$line"
@@ -470,6 +482,52 @@ done
 # plugin closure rides the support pack since 2026-10-25); the shipped
 # member set includes it, so the base keeps it, empty, on purpose.
 mkdir -p "$OUT/usr/lib/i386-linux-gnu/gstreamer-1.0"
+
+echo "=== drivers/ mirror (FD-188) ==="
+# Wine's driver loader (ntoskrnl load_driver) opens every driver by the
+# absolute path C:\windows\system32\drivers\<name>.sys. The shipped prefix
+# redirects system32 at the filesystem level to the Wine lib dir
+# (drive_c/windows/system32.link -> .../i386-windows), which carries the
+# .sys files but no drivers/ subdirectory -- so the loader answered
+# STATUS_DLL_NOT_FOUND (c0000135) for every driver and ZwLoadDriver failed
+# Wine's own prefix creation writes drivers\*.sys
+# placeholders, but this project's prefix build deliberately ships only the
+# registry + the system32.link, so the placeholders never arrive. Mirror
+# every .sys file from the windows dir into a drivers/ subdirectory (byte
+# copies of the same builtins): the loader then finds the file, and its
+# builtin-replacement machinery loads the canonical builtin and associates
+# the Unix .so by basename, so DriverEntry runs.
+SYSWIN="$OUT/opt/wine-stable/lib/wine/i386-windows"
+mkdir -p "$SYSWIN/drivers"
+for f in "$SYSWIN"/*.sys; do
+    [ -f "$f" ] || continue
+    cp "$f" "$SYSWIN/drivers/$(basename "$f")"
+done
+count="$(find "$SYSWIN/drivers" -maxdepth 1 -name '*.sys' | wc -l)"
+[ "$count" -gt 0 ] || { echo "build-wine32-base: no .sys files mirrored into drivers/ -- refusing to ship a driver-less tree" >&2; exit 1; }
+# The mirror must be exact: every drivers/*.sys byte-identical to its
+# sibling, and no other files in drivers/.
+python3 - "$SYSWIN" <<'EOF'
+import hashlib, os, sys
+d = sys.argv[1]
+drivers = os.path.join(d, "drivers")
+bad = []
+for name in sorted(os.listdir(drivers)):
+    src = os.path.join(d, name)
+    dst = os.path.join(drivers, name)
+    if not name.endswith(".sys") or not os.path.isfile(src):
+        bad.append(name + " (no .sys sibling)")
+        continue
+    if hashlib.sha256(open(src, "rb").read()).hexdigest() != hashlib.sha256(open(dst, "rb").read()).hexdigest():
+        bad.append(name + " (bytes differ from sibling)")
+for name in sorted(os.listdir(d)):
+    if name.endswith(".sys") and not os.path.isfile(os.path.join(drivers, name)):
+        bad.append(name + " (missing from drivers/)")
+if bad:
+    print("build-wine32-base: drivers/ mirror mismatch: " + ", ".join(bad), file=sys.stderr)
+    sys.exit(1)
+print(f"drivers/ mirror: {len(os.listdir(drivers))} .sys files, byte-identical to their siblings")
+EOF
 
 rm -rf "$OUT/.extract"
 echo "=== base tree assembled at $OUT ==="

@@ -57,3 +57,83 @@
 [Software\\Microsoft\\.NETFramework\\policy\\v4.0] 1791854119
 #time=1dd5ab05044980c
 "30319"="30319-30319"
+
+;   * HKLM\System\CurrentControlSet\Services\PlugPlay,
+;     winebus and wineusb, plus the ROOT\WINE bus-device
+;     enumeration (Enum\ROOT\WINE\WINEBUS and WINEUSB with
+;     their Device Parameters subkeys) — the Plug-and-Play
+;     stack a real wineboot registers (FD-189). Verbatim from
+;     the 32-bit prefix's system.reg, which a real Wine 10
+;     wineboot produced; the PlugPlay values match the 64-bit
+;     Wine 8.0 wine.inf's own [PlugPlayService] section
+;     (ServiceType 32, StartType 2, plugplay.exe) and the bus
+;     drivers point at binaries the 64-bit wine zip ships
+;     (winebus.sys, wineusb.sys). Without these the Service
+;     Control Manager answers error 1060 for all three services
+;     and the root enumeration is empty on the 64-bit side.
+;
+
+[System\\CurrentControlSet\\Services\\PlugPlay] 1791272932
+#time=1dd556721e8c562
+"Description"="Enables automatic configuration of devices"
+"DisplayName"="Plug and Play Service"
+"ErrorControl"=dword:00000001
+"ImagePath"="C:\\windows\\system32\\plugplay.exe"
+"ObjectName"="LocalSystem"
+"PreshutdownTimeout"=dword:0002bf20
+"Start"=dword:00000002
+"Type"=dword:00000020
+
+[System\\CurrentControlSet\\Services\\winebus] 1791272933
+#time=1dd5567225e050c
+"Description"="Wine HID bus driver"
+"DisplayName"="Wine HID bus"
+"ErrorControl"=dword:00000001
+"Group"="WinePlugPlay"
+"ImagePath"="C:\\windows\\system32\\drivers\\winebus.sys"
+"ObjectName"="LocalSystem"
+"PreshutdownTimeout"=dword:0002bf20
+"Start"=dword:00000003
+"Type"=dword:00000001
+
+[System\\CurrentControlSet\\Services\\wineusb] 1791272934
+#time=1dd556722a66248
+"Description"="Wine USB bus driver"
+"DisplayName"="Wine USB bus"
+"ErrorControl"=dword:00000001
+"Group"="WinePlugPlay"
+"ImagePath"="C:\\windows\\system32\\drivers\\wineusb.sys"
+"ObjectName"="LocalSystem"
+"PreshutdownTimeout"=dword:0002bf20
+"Start"=dword:00000003
+"Type"=dword:00000001
+
+[System\\CurrentControlSet\\Enum\\ROOT\\WINE\\WINEBUS] 1791272933
+#time=1dd5567225fa646
+"Class"="System"
+"ClassGUID"="{4D36E97D-E325-11CE-BFC1-08002BE10318}"
+"ConfigFlags"=dword:00000000
+"DeviceDesc"="Wine HID bus driver"
+"Driver"="{4D36E97D-E325-11CE-BFC1-08002BE10318}\\0000"
+"HardwareId"=hex(7):72,00,6f,00,6f,00,74,00,5c,00,77,00,69,00,6e,00,65,00,62,\
+  00,75,00,73,00,00,00,00,00,43,00,3a,00,5c,00,77,00,69,00,6e,00,64,00,6f,00,\
+  77,00,73,00,5c,00,69,00,6e,00,66,00
+"Service"="winebus"
+
+[System\\CurrentControlSet\\Enum\\ROOT\\WINE\\WINEBUS\\Device Parameters] 1791272933
+#time=1dd55672257d402
+
+[System\\CurrentControlSet\\Enum\\ROOT\\WINE\\WINEUSB] 1791272934
+#time=1dd556722a704fa
+"Class"="System"
+"ClassGUID"="{4D36E97D-E325-11CE-BFC1-08002BE10318}"
+"ConfigFlags"=dword:00000000
+"DeviceDesc"="Wine USB bus driver"
+"Driver"="{4D36E97D-E325-11CE-BFC1-08002BE10318}\\0001"
+"HardwareId"=hex(7):72,00,6f,00,6f,00,74,00,5c,00,77,00,69,00,6e,00,65,00,75,\
+  00,73,00,62,00,00,00,00,00,43,00,3a,00,5c,00,77,00,69,00,6e,00,64,00,6f,00,\
+  77,00,73,00,5c,00,69,00,6e,00,66,00
+"Service"="wineusb"
+
+[System\\CurrentControlSet\\Enum\\ROOT\\WINE\\WINEUSB\\Device Parameters] 1791272934
+#time=1dd556722a331ea

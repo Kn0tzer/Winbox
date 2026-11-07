@@ -1,0 +1,4 @@
+boot 1: certified in 126.8s hwnd=0x10048 restarts=0 (load 3.21 -> 7.98) 
+boot 2: certified in 105.4s hwnd=0x10048 restarts=0 (load 7.98 -> 7.36) 
+boot 3: certified in 95.7s hwnd=0x10048 restarts=0 (load 7.36 -> 7.72) 
+SUMMARY {"base":"https://kn0tzer.work.gd/winbox","arch":"x64","n":3,"pageReady":3,"certified":3,"falseReady":0,"raceFailed":0,"other":0,"rescues":0,"medianCertifiedReadyMs":105355}
