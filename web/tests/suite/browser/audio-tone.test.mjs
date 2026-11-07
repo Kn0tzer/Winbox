@@ -96,15 +96,31 @@ export default class AudioToneTest extends ProbeTest {
   constructor() { super({ tag: 'audio-tone', timeoutMs: 1800000 }); }
   async run({ page }) {
     await page.addInitScript(() => {
-      globalThis.__audioCapture = { contexts: [], channels: [], outputChannels: 0, worklets: 0,
+      globalThis.__audioCapture = { contexts: [], channels: [], spChannels: [], outputChannels: 0, worklets: 0,
         crossOriginIsolated: globalThis.crossOriginIsolated };
-      const capture = buffer => {
+      const pushInto = (arrays, buffer) => {
         const count = buffer.numberOfChannels;
         globalThis.__audioCapture.outputChannels = count;
-        while (globalThis.__audioCapture.channels.length < count) globalThis.__audioCapture.channels.push([]);
+        while (arrays.length < count) arrays.push([]);
         for (let channel = 0; channel < count; channel++)
-          globalThis.__audioCapture.channels[channel].push(...buffer.getChannelData(channel));
+          arrays[channel].push(...buffer.getChannelData(channel));
       };
+      // The measured stream is what the runtime's own output node
+      // plays: the AudioWorkletNode's output, tapped below. A
+      // ScriptProcessorNode also exists in the page -- SDL's own
+      // emscripten pump -- but it is not the output: the emulator's
+      // writeAudio bypasses SDL's queue in this build, so that node
+      // only ever outputs silence. Folding its buffers into the
+      // measured stream interleaves blocks of silence with the real
+      // sound (FD-202: duty 0.25, RMS peak/sqrt(2), doubled
+      // duration, silent gaps of exactly one ScriptProcessor buffer,
+      // while the worklet path alone measures exact). ScriptProcessor
+      // buffers are therefore kept aside and measured only when no
+      // worklet node exists (the runtime's fallback output path).
+      const capture = buffer => pushInto(globalThis.__audioCapture.channels, buffer);
+      const captureSp = buffer => pushInto(globalThis.__audioCapture.spChannels, buffer);
+      globalThis.__audioCapture.measuredChannels = () =>
+        globalThis.__audioCapture.worklets > 0 ? globalThis.__audioCapture.channels : globalThis.__audioCapture.spChannels;
       const RealContext = globalThis.AudioContext;
       globalThis.AudioContext = class extends RealContext {
         constructor(...args) {
@@ -126,7 +142,7 @@ export default class AudioToneTest extends ProbeTest {
               get: () => handler,
               set: fn => {
                 handler = fn;
-                descriptor.set.call(node, fn && (event => { fn.call(node, event); capture(event.outputBuffer); }));
+                descriptor.set.call(node, fn && (event => { fn.call(node, event); captureSp(event.outputBuffer); }));
               },
             });
             globalThis.__audioCapture.outputChannels = channels;
@@ -172,6 +188,7 @@ export default class AudioToneTest extends ProbeTest {
       await this.stageFile(page, exe, await guestFixture('dsptone-stereo', arch));
       await page.evaluate(() => {
         globalThis.__audioCapture.channels = [];
+        globalThis.__audioCapture.spChannels = [];
         globalThis.__audioCapture.outputChannels = 0;
       });
       this.testedArchitectures.add(arch);
@@ -181,8 +198,8 @@ export default class AudioToneTest extends ProbeTest {
       if (pid <= 0) throw new Error(`${arch} DSP tone guest spawn failed: ${pid}`);
       await this.waitForLog(page, /dsptone: WRITESTART rate=\d+ channels=2/, 30000, from);
       await this.waitForLog(page, /dsptone: RESULT 0/, 30000, from);
-      await this.waitForPageFn(page, () => globalThis.__audioCapture.channels.length >= 2
-        && globalThis.__audioCapture.channels[0].length > (globalThis.__audioCapture.contexts[0]?.sampleRate || 48000) * 2, 15000);
+      await this.waitForPageFn(page, () => globalThis.__audioCapture.measuredChannels().length >= 2
+        && globalThis.__audioCapture.measuredChannels()[0].length > (globalThis.__audioCapture.contexts[0]?.sampleRate || 48000) * 2, 15000);
       // The guest queues six seconds of tone and the device drains after
       // RESULT 0; wait until the capture stops growing so the measured
       // duration and completeness cover the whole tone, not a prefix.
@@ -190,7 +207,7 @@ export default class AudioToneTest extends ProbeTest {
         const sampleRate = await page.evaluate(() => globalThis.__audioCapture.contexts[0]?.sampleRate || 48000);
         let lastLength = -1;
         for (let i = 0; i < 40; i++) {
-          const length = await page.evaluate(() => globalThis.__audioCapture.channels[0]?.length || 0);
+          const length = await page.evaluate(() => globalThis.__audioCapture.measuredChannels()[0]?.length || 0);
           if (length === lastLength && length > sampleRate * 5) break;
           lastLength = length;
           await page.waitForTimeout(1500);
@@ -201,7 +218,7 @@ export default class AudioToneTest extends ProbeTest {
         outputChannels: globalThis.__audioCapture.outputChannels,
         worklets: globalThis.__audioCapture.worklets,
         crossOriginIsolated: globalThis.__audioCapture.crossOriginIsolated,
-        channels: globalThis.__audioCapture.channels.map(samples => samples.slice()),
+        channels: globalThis.__audioCapture.measuredChannels().map(samples => samples.slice()),
       }));
       const leftHz = frequency(result.channels[0], result.sampleRate);
       const rightHz = frequency(result.channels[1], result.sampleRate);
