@@ -322,6 +322,19 @@ do not close the entry until they land.
   inbound connections; networking is off by default. Evidence:
   `docs/reports/chromium-networking-20261017.md`; the deployed
   relay state recorded 2026-10-29.
+  Update 2026-11-07 (branch `lane-dnsresolve`): the clause
+  "guest-side explicit DNS APIs are unverified" is now verified
+  on the shipped browser path. A Winsock guest program resolves
+  a host name with getaddrinfo, connects to the returned
+  address and reads an HTTP 200 response; an unresolvable
+  `.invalid` name fails promptly with WSAHOST_NOT_FOUND.
+  Proven end to end on both architectures by the deterministic
+  suite test `web/tests/suite/browser/winsock-dns.test.mjs`
+  (fixture `tools/guest-fixtures/win32-dns.c`), commit
+  `b3bc87931`; evidence `test-results/suite-winsock-dns/`;
+  record `docs/reports/fd04-guest-dns-20261107.md`. FD-04
+  stays open for the remaining gaps above; the shipped
+  networking default is unchanged.
 
 ### Emulator-killing and correctness defects (kernel / CPU / memory)
 
