@@ -174,7 +174,8 @@ devices, unrelated to the gamepad.
 - `194412a12` runtime re-pin for the FD-195 generation
 - `3248805d7` permanent udev-surface regression test
 - `659bba40a` input-gamepad trigger-wait hardening (FD-205)
-- (this record + register update commit)
+- `40ae887dd` this record + the register update;
+  `4830d58e6` the superseded diagnostic test removed
 
 Register: FD-195 closed as CL-141 (lane-local numbering;
 composition renumbers). FD-204 and FD-205 filed alongside.
