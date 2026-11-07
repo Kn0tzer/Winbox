@@ -224,6 +224,17 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
             if key not in contents:
                 errors.append(f"missing installed input INF {filename}")
 
+    # FD-188: the 32-bit prefix must carry the five [InfFiles] entries
+    # (wine.inf) in C:\windows\inf\, or the PnP manager cannot install
+    # a function driver for an enumerated WINEBUS HID device. The win64
+    # prefix's overlay is the FD-189 lane's; its list above is the four
+    # root-device INFs and stays gated on require_full_init.
+    if architecture == "win32":
+        for filename in ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
+            key = PREFIX + "drive_c/windows/inf/" + filename
+            if key not in contents:
+                errors.append(f"missing installed input INF {filename}")
+
     if errors:
         raise ValueError("prefix validation failed: " + "; ".join(errors))
 
@@ -265,6 +276,19 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path,
     missing = [system32 + name for name in required if system32 + name not in names]
     if missing:
         raise ValueError(f"{wine_zip}: missing linked audio/service/device/D3D payloads: " + ", ".join(missing))
+    # FD-188: the driver loader opens drivers by the absolute path
+    # C:\windows\system32\drivers\<name>.sys, which resolves through the
+    # system32.link above to <windows>/drivers/<name>.sys in this zip.
+    # Every .sys in the linked windows dir must have a copy under drivers/ --
+    # a missing drivers/ directory made every driver load fail
+    # STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver fail c0000142.
+    sys_members = sorted(n for n in names
+                         if n.startswith(system32) and n.endswith(".sys")
+                         and "/" not in n[len(system32):])
+    missing_drivers = [system32 + "drivers/" + n.rsplit("/", 1)[-1] for n in sys_members
+                       if system32 + "drivers/" + n.rsplit("/", 1)[-1] not in names]
+    if missing_drivers:
+        raise ValueError(f"{wine_zip}: missing drivers/ mirror members: " + ", ".join(missing_drivers))
     if "x86_64-windows/" in system32:
         unix_dir = system32.replace("x86_64-windows/", "x86_64-unix/")
     elif "i386-windows/" in system32:

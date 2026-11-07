@@ -137,7 +137,7 @@ rm -rf "$STAGEHOST"; mkdir -p "$STAGEHOST"
 # every DT_NEEDED. We stage in the container (Linux paths/symlinks) but ZIP on
 # the macOS host afterward (the image has no `zip`; it does have python3, but
 # host zip keeps the artifact build off the slow emulated container).
-docker run --rm --platform linux/amd64 -v "$DIST":/dist "$IMAGE" bash -c '
+docker run --rm --platform linux/amd64 -v "$DIST":/dist -v "$REPO/tools/rootfs64/wine-inf":/wine-inf:ro "$IMAGE" bash -c '
 set -euo pipefail
 STAGE=/dist/stage
 mkdir -p "$STAGE"
@@ -249,12 +249,32 @@ ln -sf /usr/lib/wine/wineserver64 "$STAGE/usr/lib/wine/wineserver"
 mkdir -p "$STAGE/usr/lib/x86_64-linux-gnu/wine"
 cp -aL /usr/lib/x86_64-linux-gnu/wine/x86_64-unix    "$STAGE/usr/lib/x86_64-linux-gnu/wine/"
 cp -aL /usr/lib/x86_64-linux-gnu/wine/x86_64-windows "$STAGE/usr/lib/x86_64-linux-gnu/wine/"
+# FD-188: mirror every x86_64-windows/*.sys into x86_64-windows/drivers/
+# (byte copies). The Wine driver loader opens drivers by the absolute path
+# C:\windows\system32\drivers\<name>.sys; the shipped prefix redirects
+# system32 to this tree, which carries the .sys files but no drivers/
+# subdirectory, so every driver load failed STATUS_DLL_NOT_FOUND (c0000135)
+# and ZwLoadDriver failed c0000142. The merge-script path for this host
+# (stage-wine64-drivers.sh) performs the same copies on the shipped zip.
+mkdir -p "$STAGE/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/drivers"
+for f in "$STAGE/usr/lib/x86_64-linux-gnu/wine/x86_64-windows"/*.sys; do
+    [ -f "$f" ] || continue
+    cp "$f" "$STAGE/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/drivers/$(basename "$f")"
+done
 # i386-windows is the 32-bit PE side; not needed for a pure wine64 boot.
 
 # Wine data: NLS locale tables (wineserver loads l_intl.nls), fonts, etc.
 # wine resolves these as <bindir>/../../share/wine, i.e. /usr/share/wine.
 mkdir -p "$STAGE/usr/share"
 cp -aL /usr/share/wine "$STAGE/usr/share/"
+# FD-188: driver .inf files. The WineHQ data dir carries no per-driver
+# .inf files, so a real wineboot has nothing to copy into a prefix's
+# C:\windows\inf\. The five [InfFiles] entries (wine.inf) are
+# version-matched Wine 10.0 sources, mounted read-only at /wine-inf.
+# The merge-script path for already-cut zips is stage-wine-inf.sh.
+for inf in input.inf winebus.inf winehid.inf wineusb.inf winexinput.inf; do
+    cp "/wine-inf/$inf" "$STAGE/usr/share/wine/$inf"
+done
 # X11 locale DATA (libx11-data: /usr/share/X11/locale/{locale.alias,locale.dir,
 # compose.dir,<locale>/XLC_LOCALE,...}). libX11 reads these during XOpenIM /
 # XSetLocaleModifiers when a GUI app (e.g. glcube via winex11) opens the display;

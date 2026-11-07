@@ -468,7 +468,72 @@ def support_zip_path():
     return support_dir() / deps['archive']
 
 
+# FD-188: the drivers/ mirror. Wine's driver loader opens every driver by
+# the absolute path C:\windows\system32\drivers\<name>.sys, which the
+# shipped prefixes resolve through their system32.link into the wine zips'
+# windows dirs. Each wine zip must therefore mirror every .sys file from
+# its windows dir into a drivers/ subdirectory, byte-identical, with no
+# other files there -- a missing mirror made every driver load fail
+# STATUS_DLL_NOT_FOUND (c0000135) / ZwLoadDriver c0000142. The mirror is
+# laid down by build-wine32-base.sh (32-bit) and build-wine64-zip.sh /
+# stage-wine64-drivers.sh (64-bit).
+DRIVERS_DIRS = {
+    'wine64.zip': 'usr/lib/x86_64-linux-gnu/wine/x86_64-windows',
+    'wine32.zip': 'opt/wine-stable/lib/wine/i386-windows',
+}
+
+
+def t_drivers_dir():
+    for archive, windir in DRIVERS_DIRS.items():
+        with zipfile.ZipFile(RUNTIME / archive) as z:
+            members = {n: z.read(n) for n in z.namelist() if not n.endswith('/')}
+        sysnames = sorted(n for n in members
+                          if n.startswith(windir + '/') and n.endswith('.sys')
+                          and '/' not in n[len(windir) + 1:])
+        assert sysnames, f'{archive}: no .sys files in {windir}'
+        for n in sysnames:
+            mirror = windir + '/drivers/' + n.rsplit('/', 1)[-1]
+            assert mirror in members, f'{mirror} missing from {archive}'
+            assert sha(members[mirror]) == sha(members[n]), \
+                f'{mirror} in {archive} != its .sys sibling bytes'
+        extra = sorted(n for n in members
+                       if n.startswith(windir + '/drivers/') and n.rsplit('/', 1)[-1]
+                       not in {s.rsplit('/', 1)[-1] for s in sysnames})
+        assert not extra, f'{archive}: unexpected files in drivers/: {extra}'
+
+
+INF_NAMES = ("input.inf", "winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf")
+
+
+def t_driver_inf():
+    # FD-188: the driver .inf files (wine.inf [InfFiles]) must be in the
+    # wine zips' share/wine/ -- the producer, so a real wineboot copies
+    # them into a prefix's C:\windows\inf\ -- and in the shipped 32-bit
+    # prefix's inf/ (the overlay: prefix32.zip was cut before the wine
+    # zips carried them). Byte-identical to the version-matched sources.
+    for archive, srcdir, placements in (
+        ("wine32.zip", ROOT / "tools/rootfs32/wine-inf",
+         ("opt/wine-stable/share/wine", "usr/share/wine")),
+        ("wine64.zip", ROOT / "tools/rootfs64/wine-inf",
+         ("usr/share/wine",)),
+    ):
+        with zipfile.ZipFile(RUNTIME / archive) as z:
+            for pl in placements:
+                for n in INF_NAMES:
+                    member = pl + "/" + n
+                    assert member in z.namelist(), f"{member} missing from {archive}"
+                    assert sha(z.read(member)) == sha((srcdir / n).read_bytes()), \
+                        f"{member} in {archive} != tree source"
+    with zipfile.ZipFile(RUNTIME / "prefix32.zip") as z:
+        for n in INF_NAMES:
+            member = "home/username/.wine/drive_c/windows/inf/" + n
+            assert member in z.namelist(), f"{member} missing from prefix32.zip"
+            assert sha(z.read(member)) == sha((ROOT / "tools/rootfs32/wine-inf" / n).read_bytes()), \
+                f"{member} in prefix32.zip != tree source"
+
+
 def t_service_runtime():
+
     if not support_pack_ready():
         skip('validate_service_runtime (shipped pairs)',
              'no support pack built yet (dependencies.json absent); '
@@ -864,6 +929,8 @@ if __name__ == '__main__':
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)
     check('vkd3d payloads 32-bit (shipped zip)', t_vkd3d_payloads32)
     check('validate_service_runtime (shipped pairs)', t_service_runtime)
+    check('drivers/ mirror exact (both zips, FD-188)', t_drivers_dir)
+    check('driver .inf files in share/wine/ + prefix32 inf/ (FD-188)', t_driver_inf)
     check('gstreamer closure rides the support pack (absent from boot zips)', t_gstreamer_split)
     check('support pack member uniqueness + Vulkan shim pins (FD-53)', t_support_pack_member_uniqueness)
     check('retained runtime-assets archive agrees with the file pins (FD-73)', t_assets_archive)

@@ -1,13 +1,13 @@
 // Browser gamepad (simulated via a stubbed Gamepad API) -> emulator
 //
-// BLOCKED (2026-11-06): this test currently fails at the slot-0
-// CONNECTED wait for reasons filed as FD-173 (the WineBus kernel
-// driver fails to initialise in the emulator, like every kernel
-// driver) and FD-174 (the 64-bit prefix has no PlugPlay
-// registration). The emulator-side chain it exercises — simulated
-// pad -> SDL feed -> kernel evdev device -> guest discovery — is
-// in place; this test is the proof vehicle the moment either
-// blocker lands. See docs/reports/fd24-gamepad-20261106.md.
+// The emulator-side chain it exercises — simulated pad -> SDL feed ->
+// kernel evdev device -> guest discovery — is in place. The 32-bit arm
+// was BLOCKED on FD-188 (the WineBus kernel driver failed to initialise
+// in the emulator, like every kernel driver; fixed on lane-fd188 by the
+// drivers/ mirror in the wine zips). The 64-bit arm is still BLOCKED on
+// FD-189 (the 64-bit prefix has no PlugPlay registration; separate lane,
+// not in this tree). This test is the proof vehicle for FD-188's closing
+// terms on the 32-bit arm. See docs/reports/fd24-gamepad-20261106.md.
 // controller feed -> kernel evdev gamepad -> guest HID -> XInput and
 // DirectInput state observed by a purpose-built guest witness program.
 import { ProbeTest } from '../lib/probe-base.mjs';

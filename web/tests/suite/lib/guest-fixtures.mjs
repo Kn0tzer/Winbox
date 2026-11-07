@@ -19,6 +19,8 @@ const fixtures = {
   'fd189-services': ['tools/guest-fixtures/fd189-services.c', '-ladvapi32', '-lsetupapi'],
   'dbwin-echo': ['tools/guest-fixtures/dbwin-echo.c', '-lkernel32'],
   'fd167-contracts32': ['tools/guest-fixtures/fd167-contracts32.c', '-loleaut32'],
+  'fd188-drivers-check': ['tools/guest-fixtures/fd188-drivers-check.c', '-lkernel32', '-ladvapi32'],
+  'fd188-hid-enum': ['tools/guest-fixtures/fd188-hid-enum.c', '-lkernel32', '-ladvapi32', '-lsetupapi'],
   'fd167-contracts64': ['tools/guest-fixtures/fd167-contracts64.c'],
   'fd167-msvcp64': ['tools/guest-fixtures/fd167-msvcp64.c'],
   'fd167-setupapi64': ['tools/guest-fixtures/fd167-setupapi64.c'],
