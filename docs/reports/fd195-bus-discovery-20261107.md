@@ -26,7 +26,7 @@ devices=1 - is met on BOTH architectures, and the standing
   count=1, devnode=/dev/input/event5, initialized=1).
 - Every product build printed the build script's own verdict
   (`build20.log`: "Browser export verified"); the runtime
-  completeness checker reports 0 failures, 0 skips and
+  completeness checker reports 0 failures, 0 skips;
   `bootstrap.py --check` verifies all 13 pinned files.
 
 ## What was wrong - eleven convicted layers of one defect
