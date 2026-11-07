@@ -94,8 +94,12 @@ export default class InputGamepadTest extends ProbeTest {
         __bwPad.buttons[7].pressed = true; __bwPad.buttons[7].value = 0.5;
         __bwPad.timestamp++;
       });
-      const trig = await this.waitForLog(page, /XINPUT slot=0 STATE .* lt=(\d+) rt=(\d+) /, 60000, mark);
-      check(Number(trig.match(/lt=(\d+)/)[1]) === 255, `${arch}: left trigger full must read 255, got: ${trig}`);
+      // Wait for the line that evidences the trigger press itself:
+      // the stick return just before this phase legitimately prints
+      // a resting lt=0 rt=0 line, and console delivery can lag the
+      // mark, so a pattern accepting lt=0 can match that in-flight
+      // line instead of the trigger state.
+      const trig = await this.waitForLog(page, /XINPUT slot=0 STATE .* lt=255 rt=(\d+) /, 60000, mark);
       const rt = Number(trig.match(/rt=(\d+)/)[1]);
       check(rt >= 120 && rt <= 135, `${arch}: right trigger half must read about 127, got: ${trig}`);
       await this.setPad(page, () => {
