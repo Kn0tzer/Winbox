@@ -109,7 +109,12 @@ Audited in the source at `faf95d26c`:
    fails if CPUID ever advertises AVX ("CPUID does NOT
    advertise AVX (not implemented -- must stay clear)"), and
    the native self-test `cpu64SelfTest.cpp:3901` (Test 66)
-   pins XGETBV(0) at the legacy mask 0x3.
+   pins XGETBV(0) at the legacy mask 0x3. The main native
+   suite pins the execution side the same way:
+   `testOpcodeFault64Delivery` (`source/test/testMain.cpp:320`,
+   body `source/test/process/testOpcodeFault64.cpp:81-87`)
+   requires a VEX-prefixed instruction (C5 F8 77, vzeroupper)
+   to deliver SIGILL — the test fails if it ever executes.
 
 Delivering (b) would require a new CPU subsystem — 256-bit
 register state, XSAVE/XRSTOR with the extended area, XSETBV,
@@ -121,9 +126,33 @@ check.
 
 ## Checks
 
-Submitted through the checking queue (`submit-check lane-fd03`)
-at this lane's base tip `faf95d26c`; the pipeline's raw logs
-are the preserved evidence. PIPELINE_SECTION_TO_FILL
+Pipeline #17, submitted through the checking queue
+(`submit-check lane-fd03`) at this lane's base tip
+`faf95d26c` — the definition file was already present at
+the tip, so the tip was submitted as-is. The pipeline's
+raw logs are preserved at `checks/evidence/pipeline-17/`
+and its result files in the queue's object store under
+`checks/17/results/`; every figure below is read from
+those logs. verify-source confirmed the mounted tree is
+the submitted commit and a write attempt was refused
+(read-only file system). Exit codes, from the pipeline's
+own verdict step: citations 0 (352 rows with citations:
+232 MATCH, 14 MATCH-INHERITED, 99 UNCHECKABLE, 7 EXEMPT);
+js-legacy 0; native-main build 0, native-main 0 — 692
+tests, "0 tests FAILED in 392s", the suite carrying
+`testOpcodeFault64Delivery`; native-x64 build 0,
+native-x64 0 — 116 tests, "0 tests FAILED in 27s", the
+suite running the CPU64 self-test battery
+(`runX64SelfTest`) with Test 66's XGETBV pin; run-native
+0. js-unit is the one nonzero exit (1): 352 passed, 2
+failed, the failures being exactly the two known
+bare-checkout artifacts (`provenance-artifacts`,
+`runtime-completeness`) — the same acceptance shape as
+pipelines 11 and 14, and the reason the pipeline status
+reads failure. Nothing in the run touches either term's
+verdict: the checks that carry the (b) pins are green at
+this tip, and (a) is a property of the shipped payload
+set audited above, not of any test.
 
 ## Environment note — the shared store no longer matches this base's pins
 
