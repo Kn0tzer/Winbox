@@ -9274,6 +9274,88 @@ do not close the entry until they land.
   fixtures now carry the required members; the validators are
   unchanged.
 
+- **FD-197 — The checking queue's shared source mount races
+  under concurrent submissions: queued pipelines mount another
+  lane's commit and fail verify-source, producing no check
+  verdicts.** *(Medium — checks infrastructure. Filed by the
+  batch-10 merge lane, 2026-11-07.)* Every submission through
+  `checks/submit-check` re-prepares the one shared `checks/src`
+  mount, so two submissions in flight at once overwrite each
+  other's queued jobs: the later preparation wins and the
+  earlier pipeline's verify-source step fails against the wrong
+  commit — fail-closed, no wrong verdict is ever produced, but
+  no verdict at all. Measured casualties in the 2026-11-06/07
+  submission flood: pipelines 18, 19, 20 and 21 all failed
+  verify-source this way (pipeline 21 was this batch's own
+  composition run: it expected the composed tip `c8bd65a4f`
+  and found `81bd25c49` mounted); the race struck again
+  mid-run at least once (a pipeline whose verify-source had
+  passed on its exact tip then had the shared tree replaced
+  under its workspace step, leaving every check log empty);
+  further submissions the same night (pipelines 25, 29 and
+  31 among them) failed the same way, and every lane that
+  re-submitted once submissions were serialised (pipelines
+  22, 26 and 30) verified and ran fully. Fix direction,
+  recorded not prescribed: serialise submissions, or give
+  each pipeline its own source mount. Closing terms: two
+  submissions issued concurrently both verify-source against
+  their own commits and run to verdicts. Evidence: the
+  pipelines' own verify-source logs under
+  `checks/evidence/pipeline-*/queue-logs/`.
+
+- **FD-198 — The known-gaps audit's allowlist covered only
+  one of the gate script's two documentary mentions of the
+  word "stubs", so the audit failed on the composed batch-10
+  tree.** *(Low — checker bookkeeping. Filed by the batch-10
+  merge lane, 2026-11-07.)* `scripts/build-jit-wasm.sh`
+  carries two documentary comments: the older one noting the
+  block-invalidation link uses ripSampler's designed inert
+  stubs, and the one FD-176's fix added recording that the
+  harness stubs which once stood in for the unlinked kernel
+  units are removed. The allowlist entry for that file
+  counted one mention, so the known-gaps audit counted two
+  against an allowance of one and failed the batch-10 gate's
+  unit run — a bookkeeping defect in the checker, not a gap
+  in the product. FIXED in the batch-10 composition — see
+  CL-139: the count is 2 and the reason covers both mentions.
+
+- **FD-199 — FD-188's re-cut `wine64.zip` flattened
+  `usr/lib/wine/wineserver` from a symlink into a regular
+  file holding the link target's text.** *(Medium — shipped
+  artifact. Filed by the batch-10 merge lane, 2026-11-07.)*
+  The archive FD-188's restage produced (pin `1b725073…`)
+  carried the wineserver entry as a regular file (mode
+  0o600) whose content was the link target path, where the
+  base archive carries a symlink (mode 0o120755). The
+  packaging-prefix unit test caught it in the batch-10 gate:
+  shipped Wine archive entries must be executable ELF files,
+  and a 26-byte text file is not one. FIXED in the batch-10
+  composition — see CL-140: the entry's type bits were
+  restored at the byte level and the retained archive
+  re-cut around the repaired zip.
+
+- **FD-200 — The archive producer path that re-cut
+  `wine64.zip` for FD-188 drops symlink type bits, so any
+  future re-cut through the same path flattens links the
+  same way.** *(Medium — tooling. Filed by the batch-10 merge
+  lane, 2026-11-07.)* FD-199's flattened entry was repaired
+  at the byte level for this batch, but the path that
+  produced the defective archive is unchanged: whatever
+  staging/re-zip step FD-188's restage used wrote the
+  wineserver entry back as a regular file instead of
+  preserving its symlink type. Until the producer preserves
+  entry types (or a post-cut check rejects a shipped archive
+  whose entries lost them), the next re-cut can silently
+  reintroduce FD-199 — the packaging test would catch it at
+  gate time, but the artifact pipeline should not be able to
+  produce it. Closing terms: a re-cut of the 64-bit runtime
+  archive through the producer path yields an archive whose
+  symlink entries survive as symlinks, proven by a
+  central-directory comparison against the pre-cut archive
+  showing entry types preserved. Found by the batch-10
+  merge lane, 2026-11-07, from FD-199's byte-level repair
+  evidence.
+
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -13780,6 +13862,45 @@ dead-start fix and needs composition care.
   The validators are unchanged. Proof:
   `test_prepare_prefixes.py` runs 11 tests OK on the composed
   tree.
+
+- **CL-139 — FD-198 closed: the known-gaps allowlist covers
+  both documentary mentions in the gate script.**
+  *(Batch-10 composition.)* Commit `9c42e22b0`: the
+  allowlist entry for `scripts/build-jit-wasm.sh` now counts
+  2 mentions and its reason covers both — the ripSampler
+  inert-stubs note and FD-176's note recording the removed
+  harness stubs. Both mentions are documentary comments, not
+  gaps. Proof: the known-gaps audit unit test passes on the
+  composed tree (the batch-10 gate's targeted re-run after
+  the repair commit, log
+  `test-results/merge-batch10-20261106/unit-targeted-repair.log`).
+
+- **CL-140 — FD-199 closed: the flattened wineserver entry
+  in the shipped 64-bit runtime archive is a symlink
+  again.** *(Batch-10 composition.)* The repair is at the
+  byte level: the central-directory external attributes of
+  `usr/lib/wine/wineserver` were restored from regular-file
+  0o600 to symlink 0o120755; a central-directory comparison
+  against the defective zip shows exactly that one field
+  differing across all 1,280 members — names, sizes, CRCs
+  and compressed sizes identical — and the repaired zip
+  (`133bfd70840e6c3dc60d63a9cc5aacc2d75b66e814914299ccac3dd5ea5c8604`,
+  194,844,190 bytes, size unchanged) passes a full testzip.
+  The retained combined archive was re-cut around it
+  (`browser-runtime-20261107.tar`,
+  `f54d0550bc413a34b91c1c66785a546d5122f5bdc7141ef0b374877191dab9ca`,
+  491,182,080 bytes); commit `9c42e22b0` points
+  `tools/browser/runtime-assets.json` and
+  `docs/known-gaps/runtime-artifact-manifest.md` at the
+  repaired hashes, and the shared store carries the repaired
+  zip with its checksum records updated. Proof: the
+  packaging-prefix unit test passes on the composed tree
+  (targeted re-run, same log as CL-139), and the
+  completeness checker passes the retained-archive
+  agreement and shipped-archive checks with 0 failures
+  (log `test-results/merge-batch10-20261106/completeness-repair.log`).
+  The producer path that created the flattened entry is
+  FD-200, still open.
 
 
 ## Appendix — examined and deliberately NOT registered
