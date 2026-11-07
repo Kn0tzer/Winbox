@@ -116,6 +116,38 @@ void testFaultDelivery32() {
         }
     }
 
+    // On-demand mapping of the 32-bit Wine syscall_frame window: a
+    // read of the still-unmapped window answers the fresh page's
+    // zero-filled content (seg_mapper maps it and returns).
+    {
+        FaultFixture f = makeFaultFixture();
+        KThread::setCurrentThread(f.thread);
+        if (f.memory->readb(0x76F040) != 0) {
+            testFail("read of a fresh syscall_frame window page did not answer 0");
+        }
+    }
+
+    // A write to the still-unmapped window makes seg_mapper map the
+    // page and return; the write must still land. The InvalidPage
+    // accessors used to return without re-dispatching, silently
+    // dropping it (frontier review D5 audit).
+    {
+        FaultFixture f = makeFaultFixture();
+        KThread::setCurrentThread(f.thread);
+        f.memory->writeb(0x76F040, 0xAB);
+        if (f.memory->readb(0x76F040) != 0xAB) {
+            testFail("first write to the syscall_frame window was dropped (read back 0x%x)", f.memory->readb(0x76F040));
+        }
+        f.memory->writed(0x76F048, 0x11223344);
+        if (f.memory->readd(0x76F048) != 0x11223344) {
+            testFail("writed to the mapped syscall_frame window did not land");
+        }
+        f.memory->writew(0x76F050, 0xBEEF);
+        if (f.memory->readw(0x76F050) != 0xBEEF) {
+            testFail("writew to the mapped syscall_frame window did not land");
+        }
+    }
+
     KThread::setCurrentThread(shared.thread);
 }
 

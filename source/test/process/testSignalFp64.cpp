@@ -191,4 +191,27 @@ void testSignal64AsyncFp() {
         cpu.mxcsr != 0x1f80 || cpu.fpu.cw != 0x037f)
         testFail("null signal FP pointer did not initialize FP state");
 }
+
+void testRaiseSyncFaultDeliveryLogged64() {
+    // FD-14 (frontier review D11): a synchronous fault delivered by
+    // raiseSyncFault must be logged at the delivery point itself, so
+    // direct kernel-side callers -- which never pass through the cpu
+    // step funnel and its fault-class lines -- still leave a trace.
+    // The delivery log is rate-limited (first 64 deliveries in the
+    // process, then every 1024th), so deliver until a line lands; a
+    // refusal (no handler installed) must log nothing.
+    bool logged = false;
+    for (int attempt = 0; attempt < 1100 && !logged; attempt++) {
+        SignalFixture f;
+        bw64TestLogClear();
+        if (!f.deliver(K_SIGSEGV)) { testFail("raiseSyncFault delivery failed"); return; }
+        logged = bw64TestLogContains("sync-fault64") && bw64TestLogContains("delivered=1");
+    }
+    if (!logged) { testFail("raiseSyncFault delivery produced no delivery-point log line"); return; }
+    SignalFixture f;
+    f.cpu.sigActions[K_SIGUSR1].installed = false;
+    bw64TestLogClear();
+    if (f.deliver(K_SIGUSR1)) { testFail("raiseSyncFault delivered with no handler installed"); return; }
+    if (bw64TestLogContains("sync-fault64")) { testFail("a refused raiseSyncFault delivery was logged as delivered"); return; }
+}
 #endif

@@ -239,4 +239,49 @@ void testBStringIndexOf() {
     }
 }
 
+// FD-11 (frontier review D16): BString::split with an empty delimiter
+// never advanced its cursor (strstr matches everywhere, the step is
+// the delimiter length 0) and looped forever. The guard lives in
+// split itself: an empty delimiter yields the whole string as the
+// single result. On the unfixed code this test does not fail -- it
+// hangs, which is the defect; the hang is the recorded RED evidence.
+void testBStringSplit() {
+    {
+        BString s("a/b/c", true);
+        std::vector<BString> results;
+        s.split("", results);
+        if (results.size() != 1 || !(results[0] == "a/b/c")) {
+            testFail("split with an empty delimiter must yield the whole string once");
+            return;
+        }
+    }
+    {
+        BString s("a/b/c", true);
+        std::vector<BString> results;
+        s.split(BString("", true), results);
+        if (results.size() != 1 || !(results[0] == "a/b/c")) {
+            testFail("split with an empty BString delimiter must yield the whole string once");
+            return;
+        }
+    }
+    {
+        // Controls: ordinary delimiters split exactly as before.
+        BString s("a/b/c", true);
+        std::vector<BString> results;
+        s.split('/', results);
+        if (results.size() != 3 || !(results[0] == "a") ||
+            !(results[1] == "b") || !(results[2] == "c")) {
+            testFail("split on '/' regressed");
+            return;
+        }
+        BString t("a::b::c", true);
+        std::vector<BString> parts;
+        t.split("::", parts);
+        if (parts.size() != 3 || !(parts[1] == "b")) {
+            testFail("split on a multi-char delimiter regressed");
+            return;
+        }
+    }
+}
+
 #endif

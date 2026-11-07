@@ -62,6 +62,14 @@ void kwarn_fmt(const char* format, Args&&... args) {
 void klog(const char* msg);
 void klog_nonewline(const char* msg);
 
+#ifdef __TEST
+// Test-only capture of everything routed through internal_log, so a
+// test can assert that a code path actually logged (and what). The
+// capture is bounded; bw64TestLogClear resets it between cases.
+void bw64TestLogClear();
+bool bw64TestLogContains(const char* needle);
+#endif
+
 // Non-blocking access to the log mutex for the guest thread dump
 // (bw64_dump_guest_threads). The dump runs synchronously on the browser
 // main thread; a guest thread can hold logMutex across a browser-proxied

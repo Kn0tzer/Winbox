@@ -61,6 +61,8 @@ void testWaitPid();
 void testBStringContains();
 void testBStringJoin();
 void testBStringIndexOf();
+void testBStringSplit();
+void testTranslateOpenError();
 void testCondStartWaitTime();
 void testFutex32WakeRace();
 void testMsyncLockOrder();
@@ -217,6 +219,7 @@ void testStatx64Syscall();
 void testClone3Abi64();
 void testCloneSharing64();
 void testSignalFp64Roundtrip();
+void testRaiseSyncFaultDeliveryLogged64();
 void testSignal64NestedAltstack();
 void testSignal64BadFpFrame();
 void testSignal64AsyncFp();
@@ -346,6 +349,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemoryFault64RepPartial, "Test x64 REP string faults keep partial progress (K-M3)"},
     {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
     {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
+    {testRaiseSyncFaultDeliveryLogged64, "Test x64 raiseSyncFault deliveries are logged at the delivery point (FD-14)"},
     {testClone64AltstackReset, "Test x64 clone sigaltstack reset for CLONE_VM children"},
     {testFstatfsDescriptor64Syscalls, "Test x64 fstatfs answers -EBADF for a descriptor that is not open; any open descriptor keeps the fabricated answer"},
     {testUtimensatFlags64Syscalls, "Test x64 utimensat answers -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH on non-null paths; a path through a file answers -ENOTDIR"},
@@ -971,6 +975,8 @@ const TestEntry TEST_ENTRIES[] = {
     {testBStringContains, "Test BString contains with embedded NUL bytes"},
     {testBStringJoin, "Test BString join delimiter lengths"},
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
+    {testBStringSplit, "Test BString split with an empty delimiter (FD-11)"},
+    {testTranslateOpenError, "Test translateOpenError maps the full open errno set (D17)"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
