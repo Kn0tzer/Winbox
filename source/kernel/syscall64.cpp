@@ -1743,9 +1743,9 @@ static U64 sys_signalfd64(CPU64* cpu, S32 fdNumber, U64 maskAddress, U64 maskSiz
     return descriptor->handle;
 }
 
-// openat(dirfd, path, flags, mode). For dirfd we honour AT_FDCWD (-100) and
-// any "absolute" path. Relative paths against a real dirfd aren't supported
-// yet — ld-linux always passes AT_FDCWD or absolute, so this covers the
+// openat(dirfd, path, flags, mode). For dirfd we honour AT_FDCWD (-100),
+// absolute paths, and relative paths against a real dirfd (resolved
+// against the descriptor's directory, like the 32-bit path). ld-linux
 // startup path.
 #ifndef K_AT_FDCWD
 #define K_AT_FDCWD (-100)
@@ -1780,13 +1780,19 @@ static U64 sys_openat64(CPU64* cpu, U64 dirfd, U64 pathAddr, U64 flags, U64 /*mo
                  (unsigned long long)flags);
     }
     bool isAbs = (path[0] == '/');
+    BString base = process->fsContext->currentDirectory;
     if (!isAbs && (S32)dirfd != K_AT_FDCWD) {
-        klog_fmt("sys_openat64: relative path '%s' with dirfd=%d not yet supported",
-                 path, (int)(S32)dirfd);
-        return (U64)-2;
+        // A relative path resolves against the dirfd's directory
+        // (systemd's chase_symlinks opens every path component this
+        // way; the 32-bit path honours dirfd throughout).
+        KFileDescriptorPtr descriptor = process->getFileDescriptor((FD)dirfd);
+        if (!descriptor) return (U64)-K_EBADF;
+        std::shared_ptr<KFile> directoryFile = descriptor->kobject ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+        if (!directoryFile || !directoryFile->openFile || !directoryFile->openFile->node || !directoryFile->openFile->node->isDirectory()) return (U64)-K_ENOTDIR;
+        base = directoryFile->openFile->node->path;
     }
     KFileDescriptorPtr result;
-    U32 rc = process->openFile(process->fsContext->currentDirectory, BString::copy(path),
+    U32 rc = process->openFile(base, BString::copy(path),
                                (U32)flags, result);
     // BW64_DRVINIT (section 4.35): driver-module opens are init steps —
     // including FAILED ones (a libvulkan.so.1 that does not resolve is a
@@ -2994,13 +3000,26 @@ static U64 sys_execve64(CPU64* cpu, U64 pathAddr, U64 argvAddr, U64 envpAddr) {
 // readlink(path, buf, bufsize) — resolve a symlink. /proc/self/exe is the
 // big-ticket caller for glibc startup; everything else falls back to the
 // FsNode link field if present.
-static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
+static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz, S32 dirfd = -100) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     if (!pathAddr || !buf || sz == 0) return (U64)-K_EFAULT;
     char path[1024] = {0};
     cpu->memory->memcpyFromGuest(path, pathAddr, sizeof(path) - 1);
     if (path[0] == '\0') return (U64)-K_ENOENT; // FD-131: empty path, as the host answers
     KProcess* proc = cpu->thread->process.get();
+    // readlinkat: a relative path resolves against the dirfd's
+    // directory, not the process cwd (the 32-bit path honours this
+    // via getCurrentDirectoryFromDirFD; systemd's chase_symlinks
+    // walks sysfs component-by-component with real dirfds, and
+    // dropping the dirfd made every chased device path fail).
+    BString base = proc->fsContext->currentDirectory;
+    if (dirfd != -100 && path[0] != '/') {
+        KFileDescriptorPtr descriptor = proc->getFileDescriptor((FD)dirfd);
+        if (!descriptor) return (U64)-K_EBADF;
+        std::shared_ptr<KFile> directoryFile = descriptor->kobject ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+        if (!directoryFile || !directoryFile->openFile || !directoryFile->openFile->node || !directoryFile->openFile->node->isDirectory()) return (U64)-K_ENOTDIR;
+        base = directoryFile->openFile->node->path;
+    }
     BString pidExe = B("/proc/") + BString::valueOf(proc->id) + B("/exe");
     BString resolved;
     // The kernel's /proc magic symlinks. glibc/wine's realpath() walks
@@ -3017,7 +3036,7 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
     } else {
         bool notDir = false;
         std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-            proc->fsContext->currentDirectory, BString::copy(path), false, nullptr, &notDir);
+            base, BString::copy(path), false, nullptr, &notDir);
         if (!n && notDir) return (U64)-K_ENOTDIR; // a prefix component is not a directory
         if (!n) return (U64)-K_ENOENT; // FD-158: a missing path; only a resolved non-link keeps -EINVAL
         if (!n->isLink()) return (U64)-22; // -EINVAL on non-symlink
@@ -3030,10 +3049,15 @@ static U64 sys_readlink64(CPU64* cpu, U64 pathAddr, U64 buf, U64 sz) {
             // A link to a non-directory was already answered
             // -ENOTDIR by the resolver's anchor judgment.
             bool targetNotDir = false;
-            std::shared_ptr<FsNode> target = Fs::getNodeFromLocalPath(proc->fsContext->currentDirectory, pathString, true, nullptr, &targetNotDir);
+            std::shared_ptr<FsNode> target = Fs::getNodeFromLocalPath(base, pathString, true, nullptr, &targetNotDir);
             if (target && target->isDirectory()) return (U64)-22; // -EINVAL
         }
-        resolved = n->link;
+        // The virtual accessor, not the raw field: dynamic links
+        // (FsDynamicLinkNode -- every synthesized /sys and /proc
+        // link) keep their target in a function, and the field
+        // stays empty for them, which made 64-bit readlink return
+        // an empty target where the 32-bit path (getLink) works.
+        resolved = n->getLink();
     }
     U64 toCopy = (U64)resolved.length();
     if (toCopy > sz) toCopy = sz;
@@ -6852,10 +6876,10 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_readlinkat:
             // readlinkat(dirfd, path, buf, bufsiz). Modern glibc/wine ntdll use
             // THIS, not readlink(89), to resolve /proc/self/exe (the basis for
-            // wine's loader/module dir derivation). dirfd is AT_FDCWD or the
-            // path is absolute (/proc/self/exe is), so we can ignore dirfd and
-            // reuse the readlink resolver on (path=a2, buf=a3, sz=a4).
-            ret = sys_readlink64(cpu, a2, a3, a4);
+            // wine's loader/module dir derivation); systemd's chase_symlinks
+            // also resolves relative components against real dirfds, which
+            // the resolver now honours.
+            ret = sys_readlink64(cpu, a2, a3, a4, (S32)a1);
             break;
         case X64_SYS_access:
         case X64_SYS_faccessat:
@@ -6880,9 +6904,26 @@ void ksyscall64(CPU64* cpu) {
             // AT_EMPTY_PATH is the fd form and keeps resolving (the
             // working directory for AT_FDCWD).
             if (path[0] == '\0' && !(nr == X64_SYS_faccessat2 && (a4 & 0x1000))) { ret = (U64)-2; break; }
+            if (path[0] == '\0' && (S32)a1 != -100) {
+                // faccessat2 AT_EMPTY_PATH with a real dirfd: the
+                // descriptor itself is the subject.
+                ret = cpu->thread->process->getFileDescriptor((FD)a1) ? 0 : (U64)-K_EBADF;
+                break;
+            }
+            // A relative path in the *at forms resolves against the
+            // dirfd's directory (sd-device checks "uevent" against
+            // the chased device directory this way), not the cwd.
+            BString accessBase = cpu->thread->process->fsContext->currentDirectory;
+            if (nr != X64_SYS_access && path[0] != '/' && (S32)a1 != -100) {
+                KFileDescriptorPtr descriptor = cpu->thread->process->getFileDescriptor((FD)a1);
+                if (!descriptor) { ret = (U64)-K_EBADF; break; }
+                std::shared_ptr<KFile> directoryFile = descriptor->kobject ? std::dynamic_pointer_cast<KFile>(descriptor->kobject) : nullptr;
+                if (!directoryFile || !directoryFile->openFile || !directoryFile->openFile->node || !directoryFile->openFile->node->isDirectory()) { ret = (U64)-K_ENOTDIR; break; }
+                accessBase = directoryFile->openFile->node->path;
+            }
             bool notDir = false;
             std::shared_ptr<FsNode> n = Fs::getNodeFromLocalPath(
-                cpu->thread->process->fsContext->currentDirectory, BString::copy(path), true, nullptr, &notDir);
+                accessBase, BString::copy(path), true, nullptr, &notDir);
             ret = n ? 0 : (notDir ? (U64)-K_ENOTDIR : (U64)-2);
             break;
         }
