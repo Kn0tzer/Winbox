@@ -69,6 +69,15 @@ artifacts and the *source* payloads, offline:
      all three services and the root enumeration is empty on the
      64-bit side, while the 32-bit prefix (a real wineboot's output)
      has always carried them.
+  4e. prefix64.zip's system.reg carries "ServicesPipeTimeout"="120000"
+     (REG_SZ) under [System\\CurrentControlSet\\Control], merged from
+     tools/rootfs64/prefix64-reg.txt (FD-194); services.exe waits at
+     most that long for a service process to connect its control
+     pipe, and the built-in 10000 ms default is shorter than a
+     64-bit GUI-stack service process needs to finish initialising
+     on this emulator, so PlugPlay was killed with error 1053
+     before it could connect. Only the string form is read; a
+     REG_DWORD under the same name is ignored.
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
      the download cache exists, the cached deb's ttc matches the pin.
   6. When build-prefix64.sh output exists (tools/rootfs64/dist/), its
@@ -902,6 +911,10 @@ def t_prefix64_pnp():
                     '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]'):
         assert section in system, \
             f'prefix64.zip system.reg: {section} missing (FD-189)'
+    assert '[System\\\\CurrentControlSet\\\\Control]' in system, \
+        'prefix64.zip system.reg: [System\\CurrentControlSet\\Control] missing (FD-194)'
+    assert '"ServicesPipeTimeout"="120000"' in system, \
+        'prefix64.zip system.reg: ServicesPipeTimeout raise missing (FD-194)'
     merged, added = prefixes.merge_registry_fragment(system, fragment)
     assert added == [], \
         f'prefix64.zip system.reg drifted from prefix64-reg.txt (FD-189): {added}'

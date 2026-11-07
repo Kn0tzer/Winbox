@@ -20,6 +20,14 @@ SERVICES = ("RpcSs", "PlugPlay", "winebus", "wineusb")
 # FD-189: the Plug-and-Play stack whose registration the shipped
 # 64-bit prefix must carry (see _validate_prefix).
 PNP_SERVICES = ("PlugPlay", "winebus", "wineusb")
+# FD-194: the value (ms) the shipped 64-bit prefix must carry as
+# ServicesPipeTimeout under HKLM\System\CurrentControlSet\Control --
+# the budget services.exe grants a service process to connect its
+# control pipe. The built-in default (10000) is too small for a
+# 64-bit GUI-stack service process on this emulator (see
+# _validate_prefix); prefix64-reg.txt installs this value.
+SERVICE_PIPE_TIMEOUT_MS = 120000
+
 CONTROLLER_KEYS = (
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.Gamepad",
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.RawGameController",
@@ -197,6 +205,32 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
     for key in controller_keys:
         if key.lower() not in system.lower():
             errors.append(f"missing controller/HID registry key {key}")
+    # FD-194: services.exe reads ServicesPipeTimeout from
+    # HKLM\System\CurrentControlSet\Control at startup and waits at
+    # most that long for a service process to connect its control
+    # pipe (built-in default 10000 ms). A 64-bit service process
+    # importing the GUI DLL stack spends longer than that in process
+    # initialisation on this emulator, so PlugPlay was killed with
+    # error 1053 before it could connect; the 32-bit stack fits the
+    # default budget (the 32-bit control probe passes), so only the
+    # 64-bit prefix carries the raise. services.exe accepts only the
+    # REG_SZ (string) form -- a REG_DWORD under the same name is
+    # silently ignored -- so the guard requires the string form with
+    # a value above the built-in default.
+    if architecture == "win64":
+        control = system_sections.get("system\\\\currentcontrolset\\\\control")
+        timeout = None
+        if control is not None:
+            timeout = next((re.search(r'^"ServicesPipeTimeout"="(\d+)"$', line)
+                            for line in control
+                            if line.startswith('"ServicesPipeTimeout"=')), None)
+        if timeout is None:
+            errors.append("missing ServicesPipeTimeout (REG_SZ) in "
+                          "System\\CurrentControlSet\\Control")
+        elif int(timeout.group(1)) <= 10000:
+            errors.append("ServicesPipeTimeout does not exceed the "
+                          "10000 ms built-in default")
+
     audio_values = re.findall(r'^"Audio"="([^"]+)"$', user, re.MULTILINE)
     if audio_values and any(value != "alsa" for value in audio_values):
         errors.append("unexpected Wine audio driver setting: " + ", ".join(audio_values))
