@@ -1,0 +1,4 @@
+Running 1 Test tests with 1 threads starting at 28
+[guest fd=2 pid=10 ] wxyz
+Test x64 vectored-read lengths and positioned reads on pipes (FD-193/FD-194) ... OK
+0 tests FAILED in 0s

@@ -1,0 +1,35 @@
+PASS enabled child: gate reads as enabled
+PASS enabled child: the same activity emits a snapshot (looking for bw64: METRICS)
+CHILD PASSED
+PASS control: a fresh BW64_METRICS=1 process emits for the same activity
+PASS disabled child: gate reads as disabled
+PASS disabled child: the same activity emits no snapshot
+PASS disabled child: format_json returns 0 and writes nothing
+CHILD PASSED
+PASS fresh BW64_METRICS=0 process emits nothing and records nothing
+PASS snapshot fits and is non-empty
+PASS arch comes from the build (looking for "arch":"x86-64")
+PASS Vulkan present path selected (looking for "path":"vk")
+PASS one present counted (looking for "count":1)
+PASS fps is emitted (looking for "fps":)
+PASS submit ms is the measured value (looking for "submitMs":0.90)
+PASS guest span is the measured value (looking for "guestMs":14.40)
+PASS audio calls/ms/bytes aggregate (looking for "calls":2,"ms":1.00,"bytes":8192)
+PASS syscall span aggregates (looking for "calls":1,"ms":18.40)
+PASS cpu64 JIT section reflects the published stats (looking for "cpu64":{"supported":true,"available":true,"engine":"emitted-wasm","enabled":true)
+PASS retired-instruction counter is forwarded (looking for "instructionsRetired":81234567)
+PASS absent engine is explicit (looking for "cpu32":{"supported":false,"available":false,"engine":null)
+PASS guest layers are reported unavailable (looking for "id":"wine")
+PASS window counters reset after a snapshot
+PASS first event after a long stall starts a new window (no stale emit)
+PASS bridge-only activity emits a snapshot (looking for bw64: METRICS)
+PASS stale window was dropped, fresh window has calls=1
+PASS FD-63: syscall-only activity emits snapshots across successive intervals
+PASS FD-63: emitted snapshot carries the window's accumulated syscall calls
+PASS wrote fixture to /home/ubuntu/winbox-project/worktrees/wt-unfiled4/web/tests/fixtures/frame-metrics-snapshot.txt
+PASS FD-196: Vulkan-trap-only activity emits snapshots across successive intervals
+PASS FD-196: emitted snapshot reports zero frames for the frameless session
+PASS FD-196: emitted snapshot carries the window's trap count
+PASS FD-196: vk32-trap-only activity emits snapshots across successive intervals
+SELFTEST PASSED
+[bw64metrics-fixture] wrote /home/ubuntu/winbox-project/worktrees/wt-unfiled4/web/tests/fixtures/frame-metrics-snapshot.txt

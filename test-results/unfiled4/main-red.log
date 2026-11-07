@@ -1,0 +1,29 @@
+Running 1 Test tests with 1 threads starting at 663
+Test vectored-read lengths, positioned reads on pipes, 32-bit linkat (FD-193/FD-194/FD-195) ... FAILED
+  32-bit readv with a 2 GiB segment did not answer -EINVAL
+  32-bit readv after the refused segment lost the pipe bytes
+  32-bit readv with a negative second segment did not answer -EINVAL
+  32-bit readv consumed pipe bytes ahead of the -EINVAL
+  32-bit readv with segment sum 2^31+1 did not read the 20-byte file
+  32-bit preadv with a 2 GiB segment did not answer -EINVAL
+  32-bit preadv on a pipe did not answer -ESPIPE
+  32-bit preadv on a pipe with iovcnt 2000 did not answer -ESPIPE ahead of the range check
+  32-bit preadv on a pipe with a null array did not answer -ESPIPE ahead of the array check
+  32-bit preadv on the pipe write end did not answer -ESPIPE
+  32-bit preadv2 on a pipe did not answer -ESPIPE
+  32-bit preadv2 file-position mode did not read the intact pipe bytes
+  32-bit linkat basic link did not return 0
+  32-bit linkat did not create /copy.bin
+  32-bit linkat onto an existing name did not answer -EEXIST
+  32-bit linkat with flags 0x8000 did not answer -EINVAL
+  32-bit linkat flags check did not precede the null-path fault
+  32-bit linkat with a null old path did not answer -EFAULT
+  32-bit linkat with a null new path did not answer -EFAULT
+  32-bit linkat with an empty old path did not answer -ENOENT
+  32-bit linkat with an empty new path did not answer -ENOENT
+  32-bit linkat of a missing source did not answer -ENOENT
+  32-bit linkat of a directory did not answer -EPERM
+  32-bit linkat with a bad olddirfd did not answer -EBADF
+  32-bit linkat with a file as olddirfd did not answer -ENOTDIR
+  32-bit linkat test could not open /sub for its dirfd
+1 tests FAILED in 0s

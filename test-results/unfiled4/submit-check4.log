@@ -1,0 +1,26 @@
+queue drained after 760s; submitting
+lane tip: 83b7f7ff7eb0b452fcf5408aa9b363848c757971 (lane-unfiled4)
+definition file already present at tip; submitting tip as-is
+remote: . Processing 1 references        
+remote: Processed 1 references in total        
+pushed to gitea ref checks/current
+source mount prepared at /home/ubuntu/winbox-project/checks/src
+pipeline created: #40 (commit 83b7f7ff7eb0b452fcf5408aa9b363848c757971)
+pipeline #40 finished with status: failure
+step logs: /home/ubuntu/winbox-project/checks/evidence/pipeline-40/queue-logs/
+output files list: /home/ubuntu/winbox-project/checks/evidence/pipeline-40/minio-objects.txt
+pipeline exit status: failure
+submit-check exit=1
+queue drained after 20s; submitting
+lane tip: ac7940c911e1efae1ca3e9e81cbf1eccbd32b65c (lane-unfiled4)
+definition file already present at tip; submitting tip as-is
+remote: . Processing 1 references        
+remote: Processed 1 references in total        
+pushed to gitea ref checks/current
+source mount prepared at /home/ubuntu/winbox-project/checks/src
+pipeline created: #41 (commit ac7940c911e1efae1ca3e9e81cbf1eccbd32b65c)
+pipeline #41 finished with status: failure
+step logs: /home/ubuntu/winbox-project/checks/evidence/pipeline-41/queue-logs/
+output files list: /home/ubuntu/winbox-project/checks/evidence/pipeline-41/minio-objects.txt
+pipeline exit status: failure
+submit-check exit=1

@@ -1,0 +1,5 @@
+pwrite64 pipe off=-2                     -> -1 errno=29 (Invalid seek)
+pwritev pipe READ end off=0              -> -1 errno=29 (Invalid seek)
+pwritev2 pipe APPEND off=0               -> -1 errno=29 (Invalid seek)
+pwritev2 pipe APPEND off=-1              -> 4 errno=0 (No error information)
+drain                                    -> 4 bytes 'wxyz'

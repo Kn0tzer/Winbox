@@ -1,0 +1,77 @@
+In file included from /usr/include/c++/13/cassert:44,
+                 from /home/ubuntu/winbox-project/worktrees/wt-unfiled4/tools/vkd3d/tests/vk64_native_test.cpp:15:
+/home/ubuntu/winbox-project/worktrees/wt-unfiled4/tools/vkd3d/tests/vk64_native_test.cpp: In function ‘int main()’:
+/home/ubuntu/winbox-project/worktrees/wt-unfiled4/tools/vkd3d/tests/vk64_native_test.cpp:3272:48: warning: comparison between ‘vk32abi::VkPointClippingBehavior’ {aka ‘enum vk32abi::VkPointClippingBehavior’} and ‘enum VkPointClippingBehavior’ [-Wenum-compare]
+ 3272 |             assert(v1132.pointClippingBehavior == VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES && v1132.maxPerSetDescriptors == 1024 && v1132.subgroupSize == 32);
+      |                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+PASS: clear-only render passes survive submission serialization
+PASS: extended dynamic state (DYN1 tail, ordered RASTER_STATE records, unknown dynamic state and adjacency/depth-bounds rejected loudly)
+PASS: every accepted image/vertex format has a real size; unknown formats are loud
+PASS: attachment and vertex-binding overflow is reported, 8 attachments / 16 bindings fit
+PASS: vkCmdUpdateBuffer record-time capture and submit-time write
+PASS: descriptor buffer offset honored in uniform capture
+PASS: Vulkan32 allocation layout, four-byte map output and failure cleanup
+PASS: Vulkan32 bridge parity (fill, 64-bit device address, destroy, subresource layout)
+PASS: Vulkan32 memory properties satisfy vkd3d heap-class masks (HOST_CACHED advertised for READBACK)
+PASS: Vulkan64 memory properties advertise a 4 GiB device-local heap
+PASS: Vulkan32 CopyImageToBuffer records region fields (v1 + 2KHR) and submits a READBACK
+PASS: Vulkan32 clear-color writes whole texels (wide, half, int and UNORM formats; no footprint overrun)
+PASS: vkCmdClearColorImage honours subresource ranges (both ABIs; outside bytes untouched, REMAINING and clamp)
+PASS: Vulkan32 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT)
+PASS: Vulkan64 clear-color packs bit-packed formats (PACK16 fields, A2B10G10R10 UNORM/UINT, B10G11R11 UFLOAT; subrange phase)
+PASS: former stubs (device image sizing, queue2, granularity, sparse, pipeline cache, buffer-view destroy)
+PASS: descriptor arrays keep per-element bindings and >8-binding layouts
+PASS: dynamic offsets are applied in layout order (UBO/SSBO dynamic, WHOLE_SIZE)
+PASS: immutable samplers populate the set without app writes
+PASS: sampler-only descriptor writes are emitted with the sampler
+PASS: vkUpdateDescriptorSets copies are applied
+PASS: descriptor pools enforce maxSets and free/reset release sets
+PASS: vkCmdPushDescriptorSetKHR records a bound descriptor set
+PASS: 32-bit compute dispatch is recorded, marked, deferred and served (V2 compute records)
+PASS: 32-bit vkMapMemory flags mapped memory; compute deferral declines on it (wasMapped)
+PASS: 32-bit copy regions are bounds-checked loudly and clamped; indirect dispatch must resolve
+PASS: descriptor strides differ between i386 and x86-64
+PASS: dynamic rendering attachment ABI, manifest metadata, stride/binding snapshots, cleanup
+PASS: command-pool isolation, child destruction, full reset, virtual destruction
+PASS: WithCount viewport/scissor core+EXT and coherent mapped ranges
+PASS: FD-153 colour-only pass drops nothing; bogus depth view stays loud
+PASS: FD-153 empty specialization drops nothing; claimed-but-broken spec stays loud
+PASS: FD-153 unbound set 0 resolves silently; stale set id stays loud
+PASS: FD-153 32-bit colour-only pass and empty spec drop nothing
+PASS: FD-153 zero-region 32-bit copies drop nothing; claimed-without-array stays loud
+PASS: FD-155 32-bit specialization header refusals are loud; served shapes unchanged
+PASS: FD-155 null spec pointer stays silent; unreadable spec drops loudly
+PASS: storage texel push descriptor wires kind 6, marks and reads back
+PASS: partial-overlap copy splits at the GPU-write mark boundaries
+PASS: draw-time storage writes mark the view range (graphics-stage UAV)
+PASS: compute root-descriptor dispatch writes are marked, re-stamped at submit, and later dirt still refuses deferral
+PASS: GUARD unsupported features are rejected loudly (geometry/tess pipelines, unimplemented fn, compute dispatch, renderless submit)
+PASS: GUARD Properties2 answers are identical for 32-bit and 64-bit guests (maintenance5, descriptor-indexing, transform-feedback, Vulkan 1.1/1.2/1.3 arms)
+PASS: GUARD KHR spellings of the promoted physical-device queries are served on the 64-bit guest path (FD-19: served alias wrappers, core trap id, byte-identical answers)
+PASS: image view ranges are kept; swizzle and render-target subresources are loud
+PASS: per-attachment colour clears (MRT, integer formats) are captured
+PASS: render pass subpasses split into passes with resolve copies; extra NextSubpass is loud
+PASS: dynamic rendering colour resolve is an image copy; viewMask and render-area offset are loud
+PASS: vkCreateRenderPass2 subpass references parse in 64-bit and 32-bit guests
+PASS: GUARD advertised features are truthful and identical for 32-bit and 64-bit guests
+PASS: GUARD SPIR-V capabilities and storage-buffer stores are reported at vkCreateShaderModule
+PASS: GUARD helper-invocation reads (BuiltIn 23 / OpIsHelperInvocationEXT) are refused by name at vkCreateShaderModule (FD-72)
+PASS: GUARD descriptor-heap texel arrays are admitted when R15a-servable and refused by name otherwise (FD-16)
+PASS: GUARD texel-pointer atomics through a descriptor-heap array are served, attributed per array (FD-62)
+PASS: GUARD texel cone boundaries: value form served, weak/sub-word/64-bit/mixed/escape refuse by name (FD-62)
+PASS: GUARD multi-signature bare-image descriptor-heap texel arrays are admitted (FD-16)
+PASS: GUARD a CompositeExtract literal equal to the chain id is not a pointer escape (operand-aware scan)
+PASS: GUARD the small-id heap-array module is admitted (operand-aware scan)
+PASS: GUARD a constant value equal to a stray physical-buffer pointer type id is not an external use
+PASS: GUARD memory-access and type-width literals equal to a swept type id are not references (FD-70)
+PASS: GUARD skip5302 sweep simulation counts no literal word as a reference at the FD-78 positions
+PASS: GUARD integer-offset root addresses admit exactly the word-load class (FD-70)
+PASS: GUARD SampledImageArrayDynamicIndexing admitted exactly when its image arrays are servable, refused by name otherwise (FD-87)
+PASS: GUARD dead descriptor variables gate neither SampledBuffer nor RuntimeDescriptorArray (FD-87)
+PASS: GUARD an ExtInst instruction number equal to a swept type id is not a reference (FD-87/FD-78)
+PASS: GUARD root-descriptor collision check consults the descriptor-heap set (nonzero-set admission and decline)
+PASS: GUARD R8 downgrade census shapes are reported at vkCreateShaderModule
+PASS: GUARD unsupported sampler state is reported at vkCreateSampler
+PASS: query pools create, record, complete and destroy (64-bit)
+PASS: query pools create, record, complete and destroy (32-bit)
+PASS: re-planning readbacks disposes of the previous plan's heap blocks (FD-66)

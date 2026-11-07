@@ -1,0 +1,6 @@
+pwrite64 pipe off=-2                     -> -1 errno=22 (Invalid argument)
+pwritev pipe READ end off=0              -> -1 errno=29 (Illegal seek)
+pwritev2 pipe APPEND off=0               -> -1 errno=29 (Illegal seek)
+pwritev2 pipe APPEND off=-1              -> -1 errno=9 (Bad file descriptor)
+drain                                    -> read errno=11 (Resource temporarily unavailable)
+DONE

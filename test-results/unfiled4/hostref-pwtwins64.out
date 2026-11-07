@@ -1,0 +1,7 @@
+pwrite64 pipe off=0                    -> -1 errno=29 (Illegal seek)
+pwritev pipe off=0                     -> -1 errno=29 (Illegal seek)
+pwritev pipe cnt=2000 off=0            -> -1 errno=29 (Illegal seek)
+pwritev2 pipe off=0 flags=0            -> -1 errno=29 (Illegal seek)
+pwritev2 pipe off=-1 (pos mode)        -> 4 errno=0 (Success)
+pwrite64 pipe READ end off=0           -> -1 errno=29 (Illegal seek)
+drain after all attempts               -> 4 bytes 'wxyz'

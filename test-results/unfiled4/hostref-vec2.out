@@ -1,0 +1,12 @@
+preadv single len=2^48                               -> 16
+preadv single len=2^44                               -> 16
+preadv {8, 2^63-4} (seg2 top-bit)                    -> -1 errno=14 (Bad address)
+preadv {2^63} single (top-bit)                       -> -1 errno=22 (Invalid argument)
+preadv {2^63-1} single (SSIZE_MAX)                   -> 16
+preadv {2^62, 2^62} sum wraps                        -> -1 errno=14 (Bad address)
+readv {2^62, 2^62} sum wraps                         -> -1 errno=14 (Bad address)
+readv {2^40, 2^40} (control)                         -> 16
+readv {8, 2^63-4} (seg2 top-bit)                     -> -1 errno=14 (Bad address)
+pread64 pipe off=-2                                  -> -1 errno=29 (Illegal seek)
+preadv pipe iovcnt=-1                                -> -1 errno=29 (Illegal seek)
+preadv closed-fd control                             -> -1 errno=9 (Bad file descriptor)

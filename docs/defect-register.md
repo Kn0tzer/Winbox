@@ -10440,6 +10440,13 @@ do not close the entry until they land.
   `hostref-vec-arm64.out`'s preadv rows passed the loff_t
   offset as one register instead of the split pair — both
   kept as evidence of the artifacts, neither cited).
+  CLOSED — see CL-137 (lane-local number; settles at the
+  next composition audit). The signed check sits in all
+  four validation paths and the 0x7ffff000 cap in all
+  four walks (the 32-bit cap rides the shared
+  `KObject::readv` walk). Filed and fixed by the
+  unfiled-gaps lane, 2026-11-07. Record:
+  `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
 - **FD-194 — A positioned read attempted on a pipe (or any
   unseekable object) answers the wrong thing, and on the
   64-bit side silently reads.** *(Medium)* The host
@@ -10482,6 +10489,28 @@ do not close the entry until they land.
   `test-results/unfiled4/` (`hostref-pv2-final.out` is
   the authoritative matrix; FD-98's entry named this
   boundary and left it unfiled).
+  CLOSED — see CL-138 (lane-local number; settles at the
+  next composition audit). The write twins are corrected
+  in the same fix: `sys_pwritev64` / `KProcess::pwritev`
+  hoist the same answer ahead of their mode, range,
+  array and flags checks, `sys_pwrite64` gains it after
+  the descriptor check, and the 32-bit `pread64` /
+  `pwrite64` non-file answer moves from `-EINVAL` to
+  `-ESPIPE` (sockets already answered it). Two measured
+  corners stay as boundaries: `pwritev2` with
+  RWF_APPEND and the file-position mode on a pipe — the
+  host's own ABIs disagree (native answers `-EBADF`,
+  the compat path writes), so that combination keeps
+  the walk's current answer; and `pwrite64` with a
+  negative offset on a pipe, where the native path
+  answers `-EINVAL` ahead of `-ESPIPE` and the compat
+  path answers `-ESPIPE` — each core follows its own
+  ABI (the 64-bit side keeps FD-93's offset-first
+  order, the 32-bit side answers ESPIPE first). Write
+  rows: `hostref-pwtwins64.out`, `hostref-pwtwins32.out`,
+  `hostref-pwt2-64.out`, `hostref-pwt2-32.out`. Filed
+  and fixed by the unfiled-gaps lane, 2026-11-07.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
 - **FD-195 — The 32-bit `linkat` system call has no helper
   at all.** *(Medium)* Slot 303 in the 32-bit dispatch
   table is `nullptr`: every `linkat` from a 32-bit guest
@@ -10518,6 +10547,10 @@ do not close the entry until they land.
   the unfiled-gaps lane, 2026-11-06; evidence
   `test-results/unfiled4/` (`hostref-linkat64.out`,
   `hostref-linkat32.out`).
+  CLOSED — see CL-139 (lane-local number; settles at the
+  next composition audit). Filed and fixed by the
+  unfiled-gaps lane, 2026-11-07. Record:
+  `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
 - **FD-196 — Vulkan trap traffic that never completes a
   frame feeds no metrics counter.** *(Low)* FD-63 closed
   the emission gate's blindness for syscall-only guests;
@@ -10550,6 +10583,17 @@ do not close the entry until they land.
   trap count with zero frames). Found by the
   unfiled-gaps lane, 2026-11-06 (characterised in
   FD-63's entry, 2026-11-01, and left unfiled).
+  CLOSED — see CL-140 (lane-local number; settles at the
+  next composition audit). The per-trap hook
+  (`bw64_metrics_vk_trap`) is called from
+  `VkProfTrapTimer`'s destructor ahead of the timing
+  gate on both bridges, flushes any due snapshot before
+  accounting (FD-63's rule), and feeds the gate through
+  both trap counters; the committed fixture is
+  byte-identical (the official regeneration differs
+  only in a clock-jitter field and was not shipped).
+  Filed and fixed by the unfiled-gaps lane, 2026-11-07.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
 - **FD-197 — The vectored-write family shares FD-193's
   unguarded shape.** *(Low)* Found by inspection while
   fixing FD-193: `sys_writev64` / `sys_pwritev64` and
@@ -10566,6 +10610,33 @@ do not close the entry until they land.
   same checks and cap in the four write walks, proven
   by native tests. Found by the unfiled-gaps lane,
   2026-11-06.
+
+## B. Fixed on a lane branch
+  by native tests. Found by the unfiled-gaps lane,
+  2026-11-06.
+
+- **FD-198 — The 64-bit sequential read path answers
+  end-of-file for descriptor 0 whatever it names.**
+  *(Low)* `sys_read64` opens with an unconditional
+  stdin shortcut: descriptor 0 returns 0 before the
+  descriptor is even resolved. In the browser product
+  descriptor 0 is conventionally stdin, which carries
+  no data, so the shortcut is invisible — until a guest
+  closes stdin and opens a file onto descriptor 0 (a
+  legal shape daemons and test harnesses use), after
+  which every sequential read on that file silently
+  answers end-of-file while positioned reads on the
+  same descriptor return its contents. Measured by the
+  unfiled-gaps lane, 2026-11-07, while staging its x64
+  fixtures: the test's data file landed on handle 0,
+  `pread64` read it correctly and `readv` answered 0
+  with the position at 0 (the lane's tests now stage a
+  throwaway descriptor first). The 32-bit model path
+  has no such shortcut. Closing terms: resolve the
+  descriptor first and apply the end-of-file answer
+  only when descriptor 0 names no readable object,
+  proven by a native x64 test reading a file staged on
+  descriptor 0. Not fixed by the filing lane.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -10721,6 +10792,8 @@ is behavioural, is re-proven there.
 | `lane-d278` | *(Provisional numbers: FD-09 closed as CL-134, FD-193 as CL-135, FD-194 as CL-136 — all lane-local. FD-193 is also claimed on `lane-fd176` for an unrelated filing, FD-194 in the batch-10 settlement for the PlugPlay filing, and CL-134 on the batch-10 branches; every number settles at the next composition.)* FD-09 CLOSED (frontier review D8): `modify_ldt` answers the host's measured matrix instead of panicking — byte count other than one descriptor -EINVAL, unreadable descriptor pointer -EFAULT, out-of-range index -EINVAL, each rejection one counted `BW64-FAIL syscall.modify_ldt` line. FD-193 FILED + CLOSED (frontier review D2): futex operations on an unmapped word answer the host's measured matrix (-EFAULT for every operation except a 64-bit private WAKE / WAKE_BITSET, which returns 0) instead of the 32-bit panic, the null-page park, and the 64-bit phantom page; a zero bitset mask is -EINVAL on both word sizes. FD-194 FILED + CLOSED (frontier review D7): divide quotient overflow delivers SIGFPE / FPE_INTDIV / trap 0 and x87 exceptions deliver through the SIGFPE slot with trap 16, both as the host does; INTO via SIGSEGV trap 4 pinned unchanged. Fix commit `f998e2e01` on base `faf95d26c`. | Host reference programs measured first (raw futex and modify_ldt syscalls, raw signal delivery; sources and outputs in `test-results/d278/hostref/`). Six new native tests (main 614-618, x64 6) fail on the base — the shared-futex and modify_ldt index cases with the filed panic text — and pass with the fix, the rejections visible as counted BW64-FAIL lines in the green logs; control test 613 passes on the base and with the fix. Checking queue: pipeline #27 verified the source mount on the exact tip but was invalidated when a concurrent submission replaced the shared source tree mid-run, and a further attempt was stood down at 5.6G free disk — the queue verdicts are owed to a rerun (see the record's Checks section). Record: `docs/reports/d278-futex-modifyldt-fpe-20261107.md`; evidence `test-results/d278/` |
 | `lane-ditems` | *(Provisional numbers: FD-11 closed as CL-137, FD-14 closed as CL-138, FD-37 closed as CL-139, FD-195 filed and closed as CL-140, FD-196 filed and closed as CL-141; all settle at the next composition.)* The frontier review's five remaining D-items, worked as one lane: D16 = FD-11 (the empty-separator split guard moved inside `BString::split` itself), D11 = FD-14 (`raiseSyncFault` logs its own deliveries at the delivery point; the 32-bit core's two recover-gate sites confirmed in context, no change needed), D21 = FD-37 (fresh export of the repository's only stash to `evidence/stash-export-20261106/`; the stash was not dropped), D5 filed as FD-195 (caller audit of the no-throw segment-fault entry points: the invalid page's accessors silently dropped writes after an on-demand mapping — fixed to re-dispatch, with a loud log for a write that still cannot land; all other call sites proven sound), D17 filed as FD-196 (`translateOpenError` widened from 4 errnos to 25 now that the filesystem layer preserves the host errno). | Commits `5dc0b8513` (tests) + `14783353f` (fixes) on base `faf95d26c`. Proof: four new/extended native tests, each RED on the unpatched code and GREEN after — `testBStringSplit` (RED = hang, timeout-killed), `testTranslateOpenError` (28 rows), `testFaultDelivery32` additions (write/read-back through the on-demand-mapped window), `testRaiseSyncFaultDeliveryLogged64` (the emitted `BW64-FAIL sync-fault64 ... delivered=1` line is in the GREEN log) — restored-tree GREEN re-confirmed for all four; full suites via the checking queue on the submitted branch. Evidence `test-results/ditems/`; record `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md` |
 | `lane-fd26` | *(Lane-local numbers: filings FD-195, FD-196; FD-26 stays open.)* FD-26 (partial): the fast engine compiles the scalar SSE moves (MOVSD / MOVSS / MOVQ load) and the packed FP logic ops (AND / ANDN / OR / XOR, PS and PD forms) instead of falling back block-wide (see the FD-26 progress note). FD-195 filed: the section-14.3 invalidation gate does not link at the tip (pre-existing, baseline-identical). FD-196 filed: a guest `%.3f` double print goes to ~1e66 garbage after the first print in a process. | Guest bench (sseprobe64, warm medians, modes 0,1,1,0): fast-engine scalar loop 967/416 ms before -> 34/40 ms after (interpreter 408/489 -> 293/433 in the same runs), logic loop 357/330 -> 82/34 (interpreter 246/219 -> 221/205); battery + loop checksums identical across modes and builds. Native jit64 tests 919/0 (base 873/0); generated emitters byte-identical; wasm fixtures 323/0 (base 314/0) incl. a 500-iteration differential fuzz against the interpreter model and denied-access fault tests; sabotage (new kinds decoded as UNKNOWN) turns exactly the 16 new checks red (903/16). JS unit 353 passed / 1 failed (provenance-artifacts - no dist in the tree at run time; passes once the build exists). Invalidation gate not runnable at the tip (FD-195). Record: `docs/reports/fd26-scalar-logic-fastpath-20261107.md`; evidence `test-results/suite-sseprobe-bench/`, `test-results/fd26/` |
+
+| `lane-unfiled4` | *(Lane-local numbers: FD-193 closed as CL-137, FD-194 as CL-138, FD-195 as CL-139, FD-196 as CL-140; FD-197 and FD-198 filed open.)* Four characterised-but-unfiled gaps filed and fixed: FD-193 (vectored-read segment lengths judged as the ABI signed size in all four validation paths; combined transfers capped at MAX_RW_COUNT 0x7ffff000 in all four walks), FD-194 (positioned reads and writes on unseekable objects answer -ESPIPE immediately after descriptor resolution on both cores, the file-position mode delegating to the plain vectored call after validation; two measured write corners left as stated boundaries in the entry), FD-195 (32-bit linkat implemented and wired at slot 303, flags validated ahead of the path fault), FD-196 (a per-trap metrics hook feeds the emission gate from both Vulkan bridges; schema unchanged, committed fixture byte-identical). | Host contracts measured at the raw syscall level (native aarch64 and aarch32 compat binaries) before any fix; new native tests testUnfiledGaps32 (main suite) and testUnfiledGaps64 (x64 suite): RED on the base (29 failing assertions in the main suite; the x64 run cannot complete on the unfixed code - its positioned read consumes pipe bytes the test then waits for), GREEN with the fix; metrics selftest extended (trap-only windows emit) and passing. Evidence `test-results/unfiled4/`; record `docs/reports/fd193-196-unfiled-gaps-20261107.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call

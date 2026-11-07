@@ -1,0 +1,11 @@
+big mapping at 0x10000000
+c32 readv {3G, 3G} sum=2^33                          -> -22 (errno 22)
+c32 readv {2G} single sum=2^31                       -> -22 (errno 22)
+c32 readv {4G-1} single                              -> -22 (errno 22)
+c32 readv {1G, 1G} sum=2^31                          -> 16
+c32 readv {2G-1} single (fits s32)                   -> 16
+c32 readv {16} control                               -> 16
+c32 preadv {3G, 3G} off=0                            -> -22 (errno 22)
+c32 preadv pipe off=0                                -> -29 (errno 29)
+c32 pread64 pipe off=0                               -> -29 (errno 29)
+c32 preadv2 pipe off=-1 mode                         -> 4
