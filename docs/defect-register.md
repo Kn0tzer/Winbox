@@ -915,7 +915,8 @@ do not close the entry until they land.
   (the original find) and
   `docs/reports/fd15-honest-gl-answers-20261031.md` (the fix).
 - **FD-39 — Some desktop-only OpenGL texture settings still
-  have no honest answer (the FD-15 residue).** *(Medium)*
+  have no honest answer (the FD-15 residue). CLOSED
+  2026-11-07 — see CL-137.** *(Was Medium)*
   Settings such as texture LOD bias, mipmap-generation hints,
   border color, depth-texture mode, and texture swizzle exist
   on desktop OpenGL but have no model in either graphics
@@ -949,16 +950,38 @@ do not close the entry until they land.
   when the base level is redefined, and the CLAMP_TO_BORDER
   wrap reaches the sampler as WebGPU clamp-to-border.
   5_6_5_REV gained its unpack model in the same table.
-  REMAINING (effect-only residue, still open): no backend
-  here can express the *rendering effects* of LOD bias in
-  sampling, a non-default border color (WebGPU samplers
-  have no borderColor field), or texture swizzle /
-  depth-texture mode in shader sampling. Those values are
-  now honest state -- set, validated, queryable -- whose
-  sampling effect is not yet modelled; closing the residue
-  needs sampler/shader support in a backend, not a
-  different answer at the API surface. Evidence:
-  `docs/reports/fd39-texparam-store-20261031.md`.
+  RESOLVED AS PROVEN UNFIXABLE 2026-11-07 on branch
+  `lane-fd39-residue` (see CL-137): the four sampling
+  effects cannot be expressed as texture/sampler state
+  in either shipped backend. The WebGPU backend's
+  sampler descriptor has no borderColor, LOD-bias or
+  swizzle field (and its one swizzle escape, a
+  texture-view swizzle, sits behind an optional device
+  feature this backend never requests); the legacy
+  route's host is WebGL2, whose ES 3.0 parameter set
+  defines none of LOD bias, border color, depth-texture
+  mode or the border wrap (texture swizzle alone is
+  defined there -- recorded in the lane record as the
+  one expressible cell, not taken: it cannot close this
+  entry, whose default route is the WebGPU backend, and
+  it would split rendering behaviour by route). The
+  only remaining route is rewriting sampling
+  expressions in translated shaders with per-texture
+  state plumbed through generated pipelines -- the
+  sampler/shader backend feature this entry named, not
+  a fix-sized unit. The values stay honest state on
+  both routes, exactly as the 2026-10-31 fix left them.
+  CORRECTION to the RESOLVED IN PART paragraph above:
+  the CLAMP_TO_BORDER wrap never reached a real sampler
+  as "WebGPU clamp-to-border" -- WebGPU has no such
+  address mode, and a real GPUDevice rejects the value
+  the backend wrote (only the recording device in the
+  unit tests accepted it). Fixed in `8258111c6`: the
+  sampler now decodes CLAMP_TO_BORDER to clamp-to-edge
+  (the Vulkan tier's disposition for the same mode),
+  the raw mode stays in the params map, and the
+  approximation is logged once. Evidence:
+  `docs/reports/fd39-residue-20261107.md`.
 - **FD-40 — The 64-bit boot smoke test never reaches the
   window station. FIXED 2026-10-31 (commit `5e4bab8f2`,
   merged into the integration tree as `6b9c834d7`).**
@@ -10794,6 +10817,7 @@ is behavioural, is re-proven there.
 | `lane-fd26` | *(Lane-local numbers: filings FD-195, FD-196; FD-26 stays open.)* FD-26 (partial): the fast engine compiles the scalar SSE moves (MOVSD / MOVSS / MOVQ load) and the packed FP logic ops (AND / ANDN / OR / XOR, PS and PD forms) instead of falling back block-wide (see the FD-26 progress note). FD-195 filed: the section-14.3 invalidation gate does not link at the tip (pre-existing, baseline-identical). FD-196 filed: a guest `%.3f` double print goes to ~1e66 garbage after the first print in a process. | Guest bench (sseprobe64, warm medians, modes 0,1,1,0): fast-engine scalar loop 967/416 ms before -> 34/40 ms after (interpreter 408/489 -> 293/433 in the same runs), logic loop 357/330 -> 82/34 (interpreter 246/219 -> 221/205); battery + loop checksums identical across modes and builds. Native jit64 tests 919/0 (base 873/0); generated emitters byte-identical; wasm fixtures 323/0 (base 314/0) incl. a 500-iteration differential fuzz against the interpreter model and denied-access fault tests; sabotage (new kinds decoded as UNKNOWN) turns exactly the 16 new checks red (903/16). JS unit 353 passed / 1 failed (provenance-artifacts - no dist in the tree at run time; passes once the build exists). Invalidation gate not runnable at the tip (FD-195). Record: `docs/reports/fd26-scalar-logic-fastpath-20261107.md`; evidence `test-results/suite-sseprobe-bench/`, `test-results/fd26/` |
 
 | `lane-unfiled4` | *(Lane-local numbers: FD-193 closed as CL-137, FD-194 as CL-138, FD-195 as CL-139, FD-196 as CL-140; FD-197 and FD-198 filed open.)* Four characterised-but-unfiled gaps filed and fixed: FD-193 (vectored-read segment lengths judged as the ABI signed size in all four validation paths; combined transfers capped at MAX_RW_COUNT 0x7ffff000 in all four walks), FD-194 (positioned reads and writes on unseekable objects answer -ESPIPE immediately after descriptor resolution on both cores, the file-position mode delegating to the plain vectored call after validation; two measured write corners left as stated boundaries in the entry), FD-195 (32-bit linkat implemented and wired at slot 303, flags validated ahead of the path fault), FD-196 (a per-trap metrics hook feeds the emission gate from both Vulkan bridges; schema unchanged, committed fixture byte-identical). | Host contracts measured at the raw syscall level (native aarch64 and aarch32 compat binaries) before any fix; new native tests testUnfiledGaps32 (main suite) and testUnfiledGaps64 (x64 suite): RED on the base (29 failing assertions in the main suite; the x64 run cannot complete on the unfixed code - its positioned read consumes pipe bytes the test then waits for), GREEN with the fix; metrics selftest extended (trap-only windows emit) and passing. Evidence `test-results/unfiled4/`; record `docs/reports/fd193-196-unfiled-gaps-20261107.md` |
+| `lane-fd39-residue` | FD-39 CLOSED as CL-137 (lane-local number; settles at the next composition): the effect-only residue (sampling effects of LOD bias, border color, texture swizzle, depth-texture mode) is proven unfixable as texture/sampler state in either shipped backend -- the WebGPU sampler descriptor has no such fields (its texture-view swizzle is behind an optional device feature the backend never requests) and the legacy route's WebGL2/ES 3.0 host defines none of the pnames; swizzle on the legacy route alone is expressible and was deliberately not taken (the default route still could not express it; rendering would differ by route). Correction in the same lane: CLAMP_TO_BORDER never reached a real WebGPU sampler (no such address mode exists); the backend now decodes it to clamp-to-edge with a once-log, raw mode retained. | Fix commit `8258111c6` on base `faf95d26c`. Proof: gl-fd39-texparams red on the old sampler mapping ('clamp-to-border' actual vs 'clamp-to-edge' expected) and green on the fix, raw-mode retention asserted; neighbouring GL/Vulkan sampler tests 21/21; evidence in `test-results/fd39-residue/`. Record: `docs/reports/fd39-residue-20261107.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -15453,6 +15477,42 @@ dead-start fix and needs composition care.
   (`5dc0b8513`), 28 pinned rows: RED on unpatched code,
   GREEN after. Evidence: `test-results/ditems/`.
   Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-137 — FD-39 closed as proven unfixable in the
+  shipped backends: the sampling effects of LOD bias,
+  border color, texture swizzle and depth-texture mode
+  are texture/sampler state that neither backend's state
+  model contains.** *(Lane-local closure on
+  `lane-fd39-residue`; the number settles at the next
+  composition.)*
+  The 2026-10-31 fix (the CL-07 residue) made the set
+  honest state -- set, validated, queryable -- on both
+  GL routes. This lane proved the remaining effects
+  cannot be modelled as state: the WebGPU sampler
+  descriptor (the project's vendored @webgpu/types)
+  carries no borderColor, LOD-bias or swizzle field,
+  GPUAddressMode has no border mode at all, and the
+  texture-view swizzle in those types is gated on an
+  optional device feature the backend never requests;
+  the legacy route's WebGL2 host implements ES 3.0,
+  whose header (Emscripten 6.0.9's GLES3/gl3.h) defines
+  none of the four pnames or the border wrap. The
+  project's Vulkan tier records the same limits in
+  shipped code (maxSamplerLodBias = 0, "WebGPU has no
+  sampler LOD bias"; "WebGPU has no border addressing").
+  Texture swizzle on the legacy route alone is
+  expressible (ES 3.0 defines it and Emscripten forwards
+  texParameteri verbatim); it was not taken, because the
+  default route still could not express it and guest
+  rendering would then differ by route. One correction
+  landed with the closure: the FD-39 record's claim
+  that CLAMP_TO_BORDER reached the sampler as "WebGPU
+  clamp-to-border" was false on real hardware (no such
+  address mode exists); the backend now decodes it to
+  clamp-to-edge with a once-log, the raw mode retained
+  (fix `8258111c6`, red/green in the updated
+  gl-fd39-texparams test). Record:
+  `docs/reports/fd39-residue-20261107.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
