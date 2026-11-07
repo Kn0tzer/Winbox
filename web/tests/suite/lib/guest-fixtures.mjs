@@ -56,6 +56,7 @@ elfFixtures['dsptone-stereo'] = ['tools/guest-fixtures/dsptone.c', '-nostdlib', 
   '-fno-pie', '-no-pie', '-Wl,-e,_start', '-DBW64_DSPS_TONE_ELF'];
 elfFixtures['dumpstat'] = ['tools/guest-fixtures/dumpstat.c'];
 elfFixtures['alsatone'] = ['tools/guest-fixtures/alsatone.c', '-ldl'];
+elfFixtures['fd195-udevprobe'] = ['tools/guest-fixtures/fd195-udevprobe.c', '-ldl'];
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['cpu32-jit-growth'] = ['tools/guest-fixtures/cpu32-jit-growth.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
