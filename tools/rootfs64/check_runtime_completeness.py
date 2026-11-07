@@ -155,8 +155,10 @@ WINE8_BACKPORT_PINS = {
     # stubs (see wine8-backports-x86_64/README.md).
     'msvcp140.dll': '8525ebf0220f595714acef764ba6e3fc2e542edbe158a43fad1ebf7cc2c8b940',
     # (setupapi.dll is pinned below, in the FD-171 block: the composed
-    # build carries both the FD-167 SetupDiGetDeviceInterfaceAlias and the
-    # FD-171 CM_* family in it, so its bytes differ from either lane's.)
+    # build carries the FD-167 SetupDiGetDeviceInterfaceAlias, the
+    # FD-171 CM_* family and the FD-195 SetupInstallFromInfSectionW
+    # COM-initialization gate in it, so its bytes differ from any
+    # single lane's.)
     # FD-169: the Microsoft C runtime family, rebuilt from the same
     # patched Wine 8.0 tree (wine8-msvcrt-fd169-crt.patch).
     'ucrtbase.dll': 'daed274b229dfc1c5d9ae5780dfab75d361796243c0432088b171dae1f63bbd7',
@@ -184,6 +186,7 @@ WINE8_BACKPORT_PINS = {
     'cryptext.dll': 'ab6e0b932923e4db5a757f0546e11cfd3a237b80fc106126da30221dee51b8d7',
     'd2d1.dll': '1afe8f059055abc37c92dcb7bbb2909bd143f4dcbf5d8d0d0a3d8bcaf4b5abc2',
     'hid.dll': '16b08432e431c4dc9c0bc8bd637f6ded3b691556437334a18ab2a735b57939e8',
+    'hidclass.sys': 'ecb13aed3d1ee725e93d06cc91fe427d434a24c7a1d0caf8bb630de5d0f9fc21',
     'mf.dll': 'f61db07e215a171fc53dfe111324acea9e4f3699f3d4458cd87227205dee208b',
     'mfplat.dll': '84a8d777a398ceec8cd63d5072a09fd7a634a2d4e081836999f48a6a2070d2e6',
     'mscms.dll': 'e1616c36ea928b5058187e454ef676cc0243ca6d091767d9ad30515bacd89958',
@@ -191,7 +194,7 @@ WINE8_BACKPORT_PINS = {
     'pdh.dll': 'df56ea38553a8ae6ef07d4db44f949c57f5fdb883bf2ae2c6c29a46d9ac51330',
     'prntvpt.dll': 'afb5b277b57688931ac95170bea45ead1495bc9d941c424de53cc656910663a1',
     'propsys.dll': '6f5c0e0b534cd29c127bc7a470285c9bb6aff35a9c39ca6f8b84952512a0a32c',
-    'setupapi.dll': '661d8fa545f6793f903196081d82eb1a3aeffbd888342b990e71768bffa08c73',
+    'setupapi.dll': 'a3d63eea9af804e41a540e291a9a1c2ff6d597d47f2f8b4f878b785d66b9cba9',
     'sspicli.dll': 'db2d5a16a94abf7c3fc8d6726415598ccbba91d2838f9f45e9cf0e67504846e8',
     'vcomp.dll': '29e766d4382d2374526f4516d9b67c87a1d35edfc5a808b0a3bd92693b4db97c',
     'vcomp100.dll': 'a264b5c4b94bc4919b54189469b6eb23d979f38491362c8a5562c5668b070f7d',
@@ -416,7 +419,6 @@ WINE10_FD171_PINS32 = {
     'ntdll.dll': '5f2f866d8d0bf3529965f49f0362ed46ce9366677423417016b24391da28581e',
     'pdh.dll': '5d79d70f7a2942d159090ea0ecb8407da5370d144adcc19f025af2b62876a68c',
     'prntvpt.dll': '36e998791374b6de07747d91ffe93ea3167e0c407194aca9c0475c9c3ba19133',
-    'setupapi.dll': '5fcef9aa9344772bdb1ee7c71517f3abfc456850aa4c9e64965114e02971d29f',
     'sspicli.dll': '0c4b8cb4234d468d8b1cb742b6ef4fc7a9e9b61634709aadc8561431d8e8a719',
     'vcomp.dll': '739020d398a48f14b8c290e036e2c0da9201a623756453c9feeccaf1f937d9b4',
     'vcomp100.dll': '5e62b5281b786cad54ea07a671d2b2630f1e4ed61e03f51f1b128882386f5036',
@@ -437,6 +439,49 @@ def t_wine10_fd171_source_and_zip():
         hits = [n for n in members if n.endswith('/' + name)]
         assert hits, f'{name} missing from shipped wine32.zip'
         assert sha(members[hits[0]]) == pin, f'{name} in wine32.zip != pinned FD-171 bytes'
+
+# The FD-195 i386 binaries: setupapi.dll rebuilt from the pinned
+# wine-10.0 source with both the FD-171 contracts patch and
+# wine10-fd195-setupapi-coinstall.patch, and hidclass.sys with
+# wine10-fd195-hidclass-last-report.patch (see
+# tools/rootfs32/wine10-fd195-i386/README.md), substituted into the
+# wine32 payload by build-wine32-base.sh after the FD-171 set, so
+# setupapi.dll is pinned here instead of in WINE10_FD171_PINS32.
+WINE10_FD195_PINS32 = {
+    'setupapi.dll': '14724d59d4d2ea77cb4833c2661df053a37e2bc94585c7c83fd054ea8b00e54e',
+    'hidclass.sys': '608e9c23a0f19f9780516a710ca29a6919e659d760494d4b29ee050c4dd94454',
+}
+
+
+# The 64-bit runtime's libudev.so.1: the genuine Debian bookworm
+# libudev1 binary (see tools/rootfs64/libudev1-x86_64/README.md),
+# merged into wine64.zip by stage-libudev64.sh. winebus's udev
+# backend dlopens it to enumerate evdev devices; without it the
+# backend stays dead on the 64-bit side and no evdev device (the
+# game controller) ever becomes a guest device (FD-195). The
+# 32-bit runtime ships its i386 libudev natively.
+WINE64_LIBUDEV_PIN = '99a5e38f8b45ec2729e5bc24d2d8e2f04d260a2455431a1f9d61f500b31060dd'
+
+
+def t_wine64_libudev_source_and_zip():
+    src = ROOT / 'tools/rootfs64/libudev1-x86_64/libudev.so.1'
+    assert sha(src.read_bytes()) == WINE64_LIBUDEV_PIN, 'libudev.so.1 (FD-195 x86-64) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine64.zip') as z:
+        data = z.read('usr/lib/x86_64-linux-gnu/libudev.so.1')
+    assert sha(data) == WINE64_LIBUDEV_PIN, 'libudev.so.1 in wine64.zip != pinned bytes'
+
+
+def t_wine10_fd195_source_and_zip():
+    for name, pin in WINE10_FD195_PINS32.items():
+        src = ROOT / 'tools/rootfs32/wine10-fd195-i386' / name
+        assert sha(src.read_bytes()) == pin, f'{name} (FD-195 i386) source hash drifted from pin'
+    with zipfile.ZipFile(RUNTIME / 'wine32.zip') as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    for name, pin in WINE10_FD195_PINS32.items():
+        hits = [n for n in members if n.endswith('/' + name)]
+        assert hits, f'{name} missing from shipped wine32.zip'
+        assert sha(members[hits[0]]) == pin, f'{name} in wine32.zip != pinned FD-195 bytes'
+
 
 
 # The FD-167 + FD-171 combined i386 PE set: propsys.dll and mf.dll
@@ -964,6 +1009,8 @@ if __name__ == '__main__':
     check('FD-167 i386 PE backports (source + shipped zip)', t_wine10_fd167_32_source_and_zip)
     check('FD-169 i386 CRT rebuilds (source + shipped zip)', t_wine10_fd169_crt32_source_and_zip)
     check('FD-171 i386 PE backports (source + shipped zip)', t_wine10_fd171_source_and_zip)
+    check('FD-195 i386 setupapi + hidclass (source + shipped zip)', t_wine10_fd195_source_and_zip)
+    check('FD-195 x86-64 libudev (source + shipped zip)', t_wine64_libudev_source_and_zip)
     check('FD-167+FD-171 combined i386 PE (source + shipped zip)', t_wine10_fd167_fd171_32_source_and_zip)
     check('wine10 win32u backport 32-bit (source + shipped zip)', t_wine10_backport32_source_and_zip)
     check('vkd3d payloads (source + shipped zip)', t_vkd3d_payloads)

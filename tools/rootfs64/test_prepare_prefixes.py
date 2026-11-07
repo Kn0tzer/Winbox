@@ -20,7 +20,12 @@ def registry(architecture: str, user: bool = False) -> bytes:
     for service, start in (("RpcSs", "00000003"), ("PlugPlay", "00000002"),
                            ("winebus", "00000003"), ("wineusb", "00000003")):
         lines.extend((f"[System\\\\CurrentControlSet\\\\Services\\\\{service}] 1",
-                      f'"Start"=dword:{start}', ""))
+                      f'"Start"=dword:{start}'))
+        if service == "winebus":
+            # FD-195: the shipped win64 prefix disables winebus's SDL
+            # backend so its udev backend starts; the guard requires it.
+            lines.append('"Enable SDL"=dword:00000000')
+        lines.append("")
     lines.extend((f"[System\\\\CurrentControlSet\\\\Control] 1",
                   '"ServicesPipeTimeout"="120000"', ""))
     lines.extend((r"[Software\\Microsoft\\Windows NT\\CurrentVersion] 1",

@@ -87,6 +87,7 @@
 [System\\CurrentControlSet\\Services\\winebus] 1791272933
 #time=1dd5567225e050c
 "Description"="Wine HID bus driver"
+"Enable SDL"=dword:00000000
 "DisplayName"="Wine HID bus"
 "ErrorControl"=dword:00000001
 "Group"="WinePlugPlay"

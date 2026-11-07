@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Merge the Wine 8.0 loader-backport DLLs (tools/rootfs64/
 # wine8-backports-x86_64/: user32, kernelbase, kernel32, iphlpapi, win32u,
-# msvcp140, setupapi —
+# msvcp140, setupapi, hidclass.sys —
 # rebuilt from the pinned wine-8.0 source with the wine8-*.patch
 # backports) into the shipped wine64.zip archives, REPLACING the Debian
 # wine 8.0 members, WITHOUT a full rootfs rebuild.
@@ -18,7 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WIN64_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-windows"
 UNIX_DIR="usr/lib/x86_64-linux-gnu/wine/x86_64-unix"
-DLLS=(msvcp140_2.dll msvcp140_atomic_wait.dll user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll)
+DLLS=(msvcp140_2.dll msvcp140_atomic_wait.dll user32.dll kernelbase.dll kernel32.dll iphlpapi.dll win32u.dll msvcp140.dll setupapi.dll ucrtbase.dll msvcrt.dll msvcr70.dll msvcr71.dll msvcr80.dll msvcr90.dll msvcr100.dll msvcr110.dll msvcr120.dll bluetoothapis.dll winusb.dll netutils.dll propsys.dll ntdll.dll cfgmgr32.dll pdh.dll combase.dll mfplat.dll cryptext.dll d2d1.dll hid.dll mf.dll mscms.dll prntvpt.dll sspicli.dll vcomp.dll vcomp90.dll vcomp100.dll vcomp110.dll vcomp120.dll vcomp140.dll windows.networking.dll wintypes.dll wofutil.dll hidclass.sys)
 for dll in "${DLLS[@]}"; do
     [[ -f "$HERE/wine8-backports-x86_64/$dll" ]] || { echo "stage-wine8-backports: missing $HERE/wine8-backports-x86_64/$dll — run tools/rootfs64/build-wine8-backports.sh" >&2; exit 2; }
 done
@@ -59,6 +59,18 @@ EOF
         [[ "$member_hash" == "$want_hash" ]] || { current=0; break; }
     done
     if [[ "$current" == "1" ]]; then
+        mirror_hash="$(python3 - "$archive" "$WIN64_DIR/drivers/hidclass.sys" <<'EOF'
+import hashlib, sys, zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        print(hashlib.sha256(z.read(sys.argv[2])).hexdigest())
+except KeyError:
+    print("absent")
+EOF
+)"
+        [[ "$mirror_hash" == "$(sha256sum "$HERE/wine8-backports-x86_64/hidclass.sys" | awk '{print $1}')" ]] || current=0
+    fi
+    if [[ "$current" == "1" ]]; then
         echo "stage-wine8-backports: $archive already carries the backport DLLs — skipping"
         continue
     fi
@@ -70,6 +82,9 @@ EOF
     for dll in "${DLLS[@]}"; do
         cp "$HERE/wine8-backports-x86_64/$dll" "$TMP/payload/$WIN64_DIR/"
     done
+    # FD-188 mirror: the same driver bytes also ship under drivers/.
+    mkdir -p "$TMP/payload/$WIN64_DIR/drivers"
+    cp "$HERE/wine8-backports-x86_64/hidclass.sys" "$TMP/payload/$WIN64_DIR/drivers/"
     cp "$HERE/wine8-backports-x86_64/win32u.so" "$TMP/payload/$UNIX_DIR/"
     ( cd "$TMP/payload" && zip -qry9 "$TMP/payload.zip" usr )
     python3 - "$archive" "$TMP/payload.zip" <<'EOF'
@@ -103,5 +118,12 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 EOF
 )"
     [[ "$so_hash" == "$(sha256sum "$HERE/wine8-backports-x86_64/win32u.so" | awk '{print $1}')" ]] || { echo "stage-wine8-backports: final verification failed for win32u.so in $archive" >&2; exit 2; }
+    mirror_hash="$(python3 - "$archive" "$WIN64_DIR/drivers/hidclass.sys" <<'EOF'
+import hashlib, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    print(hashlib.sha256(z.read(sys.argv[2])).hexdigest())
+EOF
+)"
+    [[ "$mirror_hash" == "$(sha256sum "$HERE/wine8-backports-x86_64/hidclass.sys" | awk '{print $1}')" ]] || { echo "stage-wine8-backports: final verification failed for drivers/hidclass.sys in $archive" >&2; exit 2; }
     echo "stage-wine8-backports: backport DLLs staged in $archive (backup in $backup)"
 done

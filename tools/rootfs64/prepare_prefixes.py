@@ -252,6 +252,16 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
     if "[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]" not in system:
         errors.append("missing Windows NT CurrentVersion version emulation section")
 
+    # FD-195: winebus's SDL backend cannot load in the browser guest
+    # (no libSDL2 ships), but Wine 8 starts the udev backend only when
+    # SDL is disabled or its driver init fails -- and the thread-start
+    # success hides the in-thread SDL failure, so without this value
+    # the udev backend never starts and no input device is ever
+    # enumerated on win64. The value lives on the WineBus service key
+    # itself (check_bus_option reads the driver key, not Parameters).
+    if architecture == "win64" and '"Enable SDL"=dword:00000000' not in system:
+        errors.append("missing WineBus Enable SDL=0 (FD-195: udev backend never starts)")
+
     if architecture == "win64" and require_full_init:
         for filename in ("winebus.inf", "winehid.inf", "wineusb.inf", "winexinput.inf"):
             key = PREFIX + "drive_c/windows/inf/" + filename
@@ -375,18 +385,41 @@ def validate_service_runtime(prefix_zip: Path, wine_zip: Path,
 
 
 def merge_registry_fragment(registry: str, fragment: str) -> tuple[str, list[str]]:
-    """Append every [section] of *fragment* that *registry* still lacks.
+    """Merge *fragment* into *registry*.
 
-    Registry fragments (prefix64-reg.txt, prefix-mono-reg.txt) carry state a
-    real wineboot/wine-mono install writes; the pre-booted browser prefixes
-    must gain it without duplicating sections on rebuild (idempotent).
-    Returns the merged text and the section headers that were added.
+    Sections the registry lacks are appended whole (the original
+    behaviour). For a section the registry already has, any value line
+    whose name is not already present in that section is inserted at
+    the end of the section instead of being silently dropped: a
+    fragment must be able to add one value to a long-standing section
+    (FD-195 adds "Enable SDL" to the existing WineBus service section;
+    the section-only merge left the value on the floor while reporting
+    success). Idempotent: a second merge changes nothing.
+    Returns the merged text and the section headers that were added or
+    extended.
     """
     added: list[str] = []
-    for section in re.findall(r'(?ms)^(\[.*?^.*?)(?=^\[|\Z)', fragment):
+    frag_sections = re.findall(r'(?ms)^(\[.*?^.*?)(?=^\[|\Z)', fragment)
+    for section in frag_sections:
         header = section.splitlines()[0].strip()
-        if header.split(']')[0] + ']' not in registry:
+        key = header.split(']')[0] + ']'
+        if key not in registry:
             registry = registry.rstrip('\n') + '\n\n' + section.strip() + '\n'
+            added.append(header)
+            continue
+        m = re.search(r'(?ms)^' + re.escape(key) + r'.*?(?=^\[|\Z)', registry)
+        if not m:
+            continue
+        existing = m.group(0)
+        present = set(re.findall(r'(?m)^"([^"]+)"\s*=', existing))
+        missing = [line for line in section.strip().splitlines()[1:]
+                   if line.startswith('"')
+                   and line.split('"')[1] not in present]
+        if missing:
+            registry = (registry[:m.start()]
+                        + existing.rstrip('\n') + '\n'
+                        + '\n'.join(missing) + '\n\n'
+                        + registry[m.end():])
             added.append(header)
     return registry, added
 
