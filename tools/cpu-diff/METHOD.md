@@ -101,10 +101,23 @@ per-form table in `REPORT.md` makes every bucket auditable.
   The original FYL2XP1 vector used x=1, outside Intel's defined operand
   range. Its differing result was an invalid comparison, not evidence of
   a 1-ULP precision difference. The current vectors use valid operands.
-- Not covered yet: string ops (emulator implements MOVS/STOS/LODS/SCAS/CMPS
-  but harness lacks RSI/RDI per-side infrastructure), control flow (jcc/
-  loops/calls), segment overrides, privileged/system instructions, most of
-  SSE2+ integer SIMD, FPU environment (fldcw/fstenv).
+- String ops and control flow are covered since 2026-11-07 (see the
+  checkpoint below): all widths and repeat modes of MOVS/STOS/LODS/
+  SCAS/CMPS (REP, REPE/REPNE early exits, DF=1 forms, single-step), the
+  full jcc set in rel8 and rel32 under eight flag scenarios, jmp/call/
+  ret/loop/jrcxz/jecxz, and pushfq/popfq/lahf/sahf. RSI/RDI per-side
+  handling exists (skipRsiRdi; the pointers are derived from the
+  per-side scratch base by LEA).
+- Not covered yet: segment overrides, privileged/system instructions,
+  most of SSE2+ integer SIMD, FPU environment (fldcw/fstenv), and
+  generated fuzzing (FD-25).
+- Snippet constraint: a snippet must return with DF=0. The native
+  runner's result-copying epilogue never clears DF, so a snippet that
+  leaves DF=1 corrupts the runner child's own copies (the 0xED7 popfq
+  case ends with CLD for this reason). The emulator side has no such
+  constraint; this is a property of the native reference runner.
+- The harness accepts `--filter <substring>` to run only the cases
+  whose `name/form` contains the substring (single-case debugging).
 - AVX/AVX2/FMA/BMI: not implemented. The emulator reports no AVX, so
   guests do not see it, but VEX-encoded instructions are still not
   executed. Source facts: CPUID leaf 1 ECX omits OSXSAVE (bit 27) and AVX
@@ -196,3 +209,29 @@ inputs provide the numerical regression coverage.
 The runner checks source/header freshness before using a cached executable.
 The CLI returns nonzero for wrong results, an unstable emulator result, or
 a failed native reference run; timing outliers remain reported separately.
+
+## Verified checkpoint — 2026-11-07
+
+The harness had rotted at the integration tip and was repaired first:
+it did not link (11 undefined symbols against current product code);
+its raiseSyncFault stub threw unconditionally, so after the product
+change that routed INT3 through the synchronous-fault path the stub
+misclassified the snippet terminator and 7,539 of 7,567 cases failed
+spuriously; the string-op builder was disabled; and three string cases
+were defective (stosb lacked skipRsiRdi; lodsb's LEA encoded the wrong
+source register; lodsb also never set checkMem, so the native runner
+never patched its scratch pointer and that case could never run).
+One stale expectation was updated to the deliberate machine definition
+(CPUID leaf 1 reports 2 vCPUs).
+
+Repaired baseline, measured: 7,567 cases, 4,409 forms, one divergence
+(the CPUID expectation above, test-side). After the 2026-11-07
+expansion (control flow + string widths/repeat modes + the re-enabled
+string cases): **7,920 cases, 4,494 forms, all passing** — fpu 47,
+int 292, mmx 623, sse 110, sse41 610, sse42 2482, ssse3 330 forms;
+slow_or_inconsistent = 0 in every set. The expansion caught one real
+emulator defect (REP LODS, see BUGS.md). Evidence:
+`test-results/cpu-differential/` (final), `...-repaired/` (baseline),
+`...-expanded/` (expansion before the REP LODS fix). The 2026-10-14
+checkpoint above used a different form granularity and is not
+comparable to these counts.

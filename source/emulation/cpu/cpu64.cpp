@@ -1516,33 +1516,60 @@ dsp_61:
     // defaults to 64-bit (RSI); the 0x67 prefix selects 32-bit ESI -- the
     // effective address is masked to 32 bits and the ESI update
     // zero-extends into RSI, per x86-64 semantics (cf. dsp_61 LOOP asize32
-    // handling). Follows the dsp_43 (MOVS) memory/DF conventions. REP
-    // prefixes have no effect on LODS (single iteration).
+    // handling). Follows the dsp_43 (MOVS) memory/DF conventions. With a
+    // REP prefix (F3; F2 is equivalent for LODS, which has no condition
+    // to test) the load repeats until the count register reaches zero
+    // and the accumulator ends holding the last element; without one,
+    // exactly one element is loaded. (Proven against hardware ground
+    // truth by the cpu-diff differential: REP LODS counts RCX down to
+    // 0 and advances RSI per element at every operand width.)
 dsp_62:
     if (op == 0xAC || op == 0xAD) {
         U32 size = (op == 0xAC) ? 1 : opSize;
         S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        U64 addr = reg[X64_RSI].u64;
-        if (p.asize32) addr &= 0xFFFFFFFFULL;
-        switch (size) {
-            case 1:
-                writeReg8(X64_RAX, memory->readb(addr), rexPresent);
-                break;
-            case 2:
-                reg[X64_RAX].setU16(memory->readw(addr));
-                break;
-            case 4:
-                reg[X64_RAX].setU32(memory->readd(addr));
-                break;
-            default:
-                reg[X64_RAX].setU64(memory->readq(addr));
-                break;
+        U64 count = (p.rep != 0) ? reg[X64_RCX].u64 : 1;
+        if (p.asize32) count &= 0xFFFFFFFFULL;
+        while (count--) {
+            U64 addr = reg[X64_RSI].u64;
+            if (p.asize32) addr &= 0xFFFFFFFFULL;
+            U64 val;
+            switch (size) {
+                case 1: val = memory->readb(addr); break;
+                case 2: val = memory->readw(addr); break;
+                case 4: val = memory->readd(addr); break;
+                default: val = memory->readq(addr); break;
+            }
+            // K-M3: a denied read ends the instruction BEFORE the
+            // accumulator write and the pointer step: the frame carries
+            // the last completed element's state (hardware partial
+            // progress, preserved across delivery by
+            // faultPartialProgress), mirroring dsp_44 (CMPS/SCAS).
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
+            }
+            switch (size) {
+                case 1:
+                    writeReg8(X64_RAX, (U8)val, rexPresent);
+                    break;
+                case 2:
+                    reg[X64_RAX].setU16((U16)val);
+                    break;
+                case 4:
+                    reg[X64_RAX].setU32((U32)val);
+                    break;
+                default:
+                    reg[X64_RAX].setU64(val);
+                    break;
+            }
+            if (p.asize32) {
+                reg[X64_RSI].setU32(reg[X64_RSI].u32 + (U32)step);
+            } else {
+                reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
+            }
         }
-        if (p.asize32) {
-            reg[X64_RSI].setU32(reg[X64_RSI].u32 + (U32)step);
-        } else {
-            reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
-        }
+        if (p.rep != 0) reg[X64_RCX].setU64(0);
         U32 used = opOff + 1;
         rip += used;
         return used;

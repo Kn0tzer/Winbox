@@ -29,6 +29,26 @@ but FPU::FLD1/FPU::FLDZ already call PREP_PUSH internally.
 **Before:** fpu set 2/11 pass (faddp/fsubp/etc. read garbage registers)
 **After:** fpu set 9/11 pass
 
+## Fixed 2026-11-07 (lane `lane-cpudiff`, committed on that branch)
+
+### REP LODS (F3 AC / F3 AD) — executed only one iteration
+**File:** source/emulation/cpu/cpu64.cpp (dsp_62 LODS handler)
+**Bytes:** `F3 AC` (rep lodsb), `F3 AD`, `F3 66 AD`, `F3 48 AD`
+**Expected:** the load repeats until the count register reaches zero;
+RSI advances per element and the accumulator ends holding the last
+element, at every operand width.
+**Actual:** exactly one load; RCX unchanged; RSI advanced once. The
+handler's comment asserted "REP prefixes have no effect on LODS",
+which is not the architecture.
+**Fix:** the handler now loops with the same count handling and the
+same K-M3 partial-progress fault protocol as dsp_43 (MOVS/STOS) and
+dsp_44 (CMPS/SCAS).
+**Before:** native rax = last element, rcx = 0; emulator rax = first
+element, rcx = 3 — at all four widths (new `lods rep-{b,w,d,q}`
+cases, 2026-11-07).
+**After:** full suite passes 7,920/7,920 cases including those forms
+(`test-results/cpu-differential/`).
+
 ## Reported (not fixed)
 
 ### 3. ADC / SBB — AF (and sometimes CF/OF) wrong when carry/borrow-in is set
