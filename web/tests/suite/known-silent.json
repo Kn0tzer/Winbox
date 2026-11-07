@@ -52,7 +52,7 @@
    "unloggedErrno": 0
   },
   "web/gl-webgpu.mjs": {
-   "emptyCatch": 4,
+   "emptyCatch": 5,
    "unloggedDefault": 0,
    "unloggedErrno": 0
   },

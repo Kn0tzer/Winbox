@@ -3239,7 +3239,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : 'clamp-to-edge';
     if ([0x2802, 0x2803, 0x8072].some(wrap => texture.params.get(wrap) === 0x812d) && !this._unsupportedWarnings.has('clamp-to-border')) {
       this._unsupportedWarnings.add('clamp-to-border');
-      try { this._log?.('gl-webgpu: clamp-to-border wrap served as clamp-to-edge; border colour is not applied (FD-39)'); } catch { /* logging must never throw */ }
+      try { this._log?.('gl-webgpu: clamp-to-border wrap served as clamp-to-edge; border colour is not applied (FD-39)'); } catch { /* logging must never throw; the approximation is already recorded in _unsupportedWarnings above */ }
     }
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
