@@ -10718,6 +10718,54 @@ do not close the entry until they land.
   `test-results/suite-audio-tone/` in wt-audio-e2e;
   record `docs/reports/audio-tone-values-20261107.md`.
 
+  **Resolution (2026-11-07, lane-fd202-audio): the
+  delivered audio is whole; the signature above is an
+  artifact of the check's own capture, and this entry
+  is FIXED as a check defect -- see CL-142.** The
+  check folded two different output objects into one
+  measured array: the AudioWorkletNode's output (the
+  runtime's real output path, tapped) and every
+  ScriptProcessorNode's output buffer -- including
+  SDL's own emscripten pump node, which is not the
+  output in this build (writeAudio bypasses SDL's
+  queue via the bwPump ring), so its buffers are
+  silence by design, in blocks of exactly its
+  4096-frame buffer. A source-separated capture
+  against the live build (wt-fd202-audio,
+  `test-results/suite-fd202-split/`) measures the
+  worklet path alone at peak 0.3662109375 exactly,
+  RMS 0.3662109375, duty 0.500, active 5.93 s,
+  longest internal gap 0 frames, the worklet's own
+  metrics at framesWritten 264,600 (the guest's
+  exact frame count) and underrunFrames 0; the
+  ScriptProcessor path alone is 266,240 frames of
+  pure silence from one node created with
+  bufferSize 4096, all 65 of its buffers all-zero;
+  the merged array reproduces this filing's
+  signature to three decimals. The closing terms
+  are met by the fixed check passing on both
+  architectures (CL-142); no product code changed,
+  because the product was not the defect.
+
+- **FD-203 -- audio-tone check: in the no-worklet
+  fallback configuration the capture still merges
+  SDL's silent pump node with the runtime's
+  ScriptProcessor output.** *(Low -- check only, in
+  a configuration the project does not ship or gate.
+  Filed by lane-fd202-audio, 2026-11-07.)* FD-202's
+  fix separates the two capture sources and measures
+  the worklet output in the shipped configuration;
+  when no AudioWorkletNode exists, the runtime's own
+  output is itself a ScriptProcessorNode and the
+  check's fallback array still folds SDL's pump-node
+  buffers into it, so the FD-202 conflation can
+  recur there. No runtime mark distinguishes the
+  two ScriptProcessor nodes today. Closing terms:
+  the fallback measurement identifies the runtime's
+  output node (or the runtime marks it) and the
+  strengthened check passes in a no-worklet run.
+  The shipped, gated configuration is unaffected.
+
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -15592,6 +15640,35 @@ dead-start fix and needs composition care.
   product for measured reasons. It passes once FD-202 is
   fixed. Record: `docs/reports/audio-tone-values-20261107.md`;
   evidence `test-results/audio-e2e/`.
+- **CL-142 -- FD-202 closed: the shipped audio check
+  folded a silent pump node's buffers into the
+  measured stream; it now measures the runtime's
+  output node only.** *(lane-fd202-audio; number
+  lane-local, settles at batch-11 composition.)*
+  Commit `bf1a97710`:
+  `web/tests/suite/browser/audio-tone.test.mjs`
+  keeps ScriptProcessor output buffers in a separate
+  array and measures the AudioWorkletNode's tapped
+  output -- the delivered stream; the ScriptProcessor
+  array is measured only when no worklet node exists
+  (the runtime's fallback output path). No tolerance,
+  fixture, or assertion changed; only which stream is
+  measured. Proof: the strengthened check PASSES on
+  both architectures against the live batch-10 build
+  (run with the live tree as the probe dist; the
+  audio path's product code is byte-identical there):
+  x64 peak 0.36621, RMS 0.36621, duty 0.50038,
+  active 5.954 s, longest gap 0 ms, 440.75 Hz,
+  channels sample-identical; x86 duty 0.50046,
+  active 5.991 s, gap 0 ms, 440.47 Hz. The same
+  statistics over the pre-fix merged array fail every
+  value assertion (duty 0.248, RMS 0.258, duration
+  11.97 s, gap 92.88 ms -- preserved in the split
+  evidence), so the fixed check still catches the
+  signature when it is in the measured stream.
+  Evidence: `test-results/suite-audio-tone/` and
+  `test-results/suite-fd202-split/` in wt-fd202-audio.
+  Record: `docs/reports/fd202-audio-capture-20261107.md`.
 
 
 ## Appendix — examined and deliberately NOT registered
