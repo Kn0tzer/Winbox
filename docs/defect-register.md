@@ -201,6 +201,8 @@ do not close the entry until they land.
   `test-results/fd01-proof-batch9-20261106/` (this lane) and
   `test-results/deploy-batch9-20261106/cert-x64`, `cert-x86`
   (deploy lane, re-verified from disk).
+  Batch-10 composition (2026-11-06): the closure proof above
+  settles as CL-136 — see section C.
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -9133,8 +9135,14 @@ do not close the entry until they land.
   wineusb), while the bus devices do enumerate (`ROOT\WINE\WINEBUS`
   + `ROOT\WINE\WINEUSB`). Evidence
   `test-results/fd189/green64-fd189-lines.log` on `lane-fd189`.
+  Batch-10 composition (2026-11-06): the driver-load layer of
+  this entry is FIXED — see CL-137 (fix commit `7b0c2a50b` on
+  `lane-fd188`, composed in this batch). The entry remains OPEN
+  on the second half of its closing terms: the FD-24 witness
+  does not yet see the controller, because the guest enumerates
+  no HID device at all — that remainder is filed as FD-195.
 - **FD-189 — The shipped 64-bit guest prefix has no
-  PlugPlay or bus-driver registration. FIXED 2026-11-06 — see CL-134
+  PlugPlay or bus-driver registration. FIXED 2026-11-06 — see CL-135
   (provisional; settles at the next composition).** *(Was Medium)*
   In a 64-bit guest session the PlugPlay, WineBus and
   WineUsb services do not exist (a guest probe's OpenService
@@ -9229,7 +9237,7 @@ do not close the entry until they land.
   Found while proving the FD-176 environment fix; record:
   `docs/reports/fd176-invalidate-gate-link-20261106.md`.
 
-- **FD-193 — The 64-bit PlugPlay service is registered but fails
+- **FD-194 — The 64-bit PlugPlay service is registered but fails
   to start: services.exe reports error 1053.** *(Medium)* The
   fd189-services64 guest probe on the FD-189 build proves the
   service is present (state=1) and services.exe attempts to
@@ -9246,7 +9254,7 @@ do not close the entry until they land.
   evidence `test-results/fd189/green64-fd189-lines.log` and the
   green64 guest console.
 
-- **FD-193 — The guest enumerates no HID device at all with a simulated gamepad installed.** *(High)*
+- **FD-195 — The guest enumerates no HID device at all with a simulated gamepad installed.** *(High)*
   With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.
 
 ## B. Fixed on a lane branch — awaiting merge
@@ -9388,11 +9396,11 @@ is behavioural, is re-proven there.
 
 | `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
 
-| `lane-fd176` | FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
+| `lane-fd176` | *(Batch-10 settled numbers: FD-176 closed as CL-134; FD-193 filed.)* FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
 
-| `lane-fd189` | *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-193 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
+| `lane-fd189` | *(Batch-10 settled numbers: FD-189 closed as CL-135; FD-194 filed.)* *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-194 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
 
-| `lane-fd188` | FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claims provisional CL-134 on its branch; first-composed wins, the other renumbers; merge lane settles): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-193 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
+| `lane-fd188` | *(Batch-10 settled numbers: FD-188's driver-load layer closed as CL-137; FD-195 filed.)* FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claimed provisional CL-134 on its branch; settled as CL-137 at the batch-10 composition): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-195 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -13657,7 +13665,7 @@ dead-start fix and needs composition care.
   tests 314/0). Fix commit `5bec2fa3e` on base `faf95d26c`.
   Record: `docs/reports/fd176-invalidate-gate-link-20261106.md`.
 
-- **CL-134 — FD-189 closed: the shipped 64-bit guest prefix now
+- **CL-135 — FD-189 closed: the shipped 64-bit guest prefix now
   registers the PlugPlay service and the ROOT\WINE bus devices, the
   way the 32-bit prefix does.** *(Lane-local closure on
   `lane-fd189`; the number settles at the next composition.)*
@@ -13684,6 +13692,61 @@ dead-start fix and needs composition care.
   0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL.
   Fix commit `44ab5edcf` on base `faf95d26c`. Record:
   `docs/reports/fd189-plugplay-prefix64-20261106.md`.
+
+- **CL-136 — FD-01 closure proof: the first-visit start fix
+  stands proven on the live batch-9 build.** *(Settled at the
+  batch-10 composition; the proof is the `lane-fd01-proof`
+  lane's work, composed in this batch.)*
+  FD-01's closure terms required the fix merged, deployed, and
+  the live first-visit rate re-measured through the public site
+  under the hardened FD-47 protocol. The proof lane re-ran that
+  protocol against the live batch-9 build (git_sha `d50bcc02f`,
+  wasm `92b36180...`): fresh profile per boot, restart budget
+  pre-exhausted (bwretry=2), 900 s window, offline FD-47
+  classification. The batch-9 deploy lane certified 3/3 x86-64
+  (median ready 88.1 s) and 5/5 x86 (median 18.8 s) on the live
+  build; the proof lane independently certified a further 3/3
+  x86-64 (95.7/105.4/126.8 s) — a batch-9 total of 6/6 x86-64
+  (median 100.5 s) and 5/5 x86, every boot with the real handle
+  (0x10048 / 0x10052), explorer opened, zero restarts, zero
+  rescues, zero false-ready, zero failure signatures. The
+  closure stands on batch 9. The restart stopgap was needed
+  zero times; retiring it remains a separate decision, not
+  part of this closure. Record:
+  `docs/reports/fd01-proof-batch9-20261106.md`; evidence
+  `test-results/fd01-proof-batch9-20261106/` and
+  `test-results/deploy-batch9-20261106/cert-x64`, `cert-x86`.
+
+- **CL-137 — FD-188's driver-load layer closed: kernel-mode
+  Wine drivers initialise in the emulator.** *(Settled at the
+  batch-10 composition from `lane-fd188`. FD-188's entry
+  remains open on its remaining terms — see FD-195.)*
+  Wine's driver loader opens every driver by the absolute path
+  `C:\windows\system32\drivers\<name>.sys`, but the shipped
+  prefix redirects system32 to the Wine lib dir, which carried
+  the .sys files and no `drivers/` subdirectory — every driver
+  load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver
+  failed c0000142. The fix mirrors every .sys file into a
+  `drivers/` subdirectory in both wine archives (wine32: 20,
+  wine64: 17) and ships the five driver .inf files in the wine
+  archives' `share/wine/` and the 32-bit prefix's
+  `C:\windows\inf\`; completeness guards (`t_drivers_dir`,
+  `t_driver_inf`) pin the shape. Proof on the lane: the
+  fd188-driver-probe guest test PASS twice (no c0000135 /
+  c0000142 lines, all four boot drivers initialise, the drivers
+  directory lists 22 entries, WineBus service state 4); the
+  browser build's program file byte-identical to the pre-fix
+  build (payload-only change); queue pipeline 16 on the fix
+  commit (citations 0 drift; js-unit 352 passed / 2 failed —
+  the two known bare-checkout artifacts; native main 692
+  tests 0 FAILED, x64 116 tests 0 FAILED; run-native all
+  PASS). Fix commit `7b0c2a50b` on base `faf95d26c`, composed
+  in this batch as `89d9b8c87`. Record:
+  `docs/reports/fd188-drivers-initialise-20261107.md`.
+  What did NOT close: the FD-24 witness still sees no
+  controller — the guest enumerates no HID device at all.
+  That remainder is FD-195, and FD-188's entry stays open
+  on it.
 
 ## Appendix — examined and deliberately NOT registered
 
