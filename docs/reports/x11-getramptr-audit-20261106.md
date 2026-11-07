@@ -178,3 +178,24 @@ the fault handler — which is why the tests fork.
 - Light checks for this branch go through the checking queue
   (`checks/submit-check lane-x11-getramptr-audit`); results are
   read from the queue's own logs.
+
+## Queue results (added after the run)
+
+Submitted as `lane-x11-getramptr-audit` at tip `81bd25c49`;
+the queue's pipeline 22 checked that exact commit (its
+verify-source log shows expected and mounted commit both
+`81bd25c492e21ed3c56cadc09ee71d0b60f89c8c`). Read from the
+queue's own step logs in
+`checks/evidence/pipeline-22/queue-logs/`:
+
+- citations exit 0 (352 rows).
+- js-unit exit 1: 352 passed, 2 failed — only
+  `provenance-artifacts` and `runtime-completeness`, the two
+  known bare-checkout artifacts that need a built `dist/`;
+  identical to the queue's Stage-1 proof run on the
+  unmodified integration tip. This branch changes no JS.
+- js-legacy exit 0 (fail 0).
+- native-main exit 0: **696 tests, 0 FAILED** — the 692-test
+  baseline plus this lane's four new tests.
+- native-x64 exit 0: 116 tests, 0 FAILED.
+- run-native exit 0.
