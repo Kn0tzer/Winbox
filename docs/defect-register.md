@@ -1615,6 +1615,29 @@ do not close the entry until they land.
   and system-call censuses exist and have already caught real
   items (FD-22's class; FD-23). Evidence:
   `docs/reports/broad-conformance-analysis-20261030.md` §3.
+  *Progress 2026-11-07 (lane `lane-cpudiff`): the CPU
+  differential harness was repaired and expanded. As found on
+  the integration tip it did not link (11 undefined symbols),
+  its fault stub misclassified the INT3 snippet terminator so
+  7,539 of 7,567 cases failed spuriously, the string-op
+  builder was disabled, and three of its cases were defective
+  (one, `lodsb rep`, could never run: without checkMem the
+  native runner never patched the scratch pointer, so the
+  native side always crashed). Repaired baseline, measured:
+  4,409 forms / 7,567 cases. The lane then added control-flow
+  coverage (all 16 jcc in rel8+rel32 under eight flag
+  scenarios, jmp/call/ret/loop/jrcxz/jecxz, pushfq/popfq/
+  lahf/sahf) and string widths and repeat modes (all widths
+  of MOVS/STOS/LODS/SCAS/CMPS under REP, REPE/REPNE early
+  exits, DF=1 forms, single-step forms), and re-enabled the
+  original string cases: 4,494 forms / 7,920 cases, all
+  passing (`test-results/cpu-differential/`). The new
+  coverage immediately caught a real emulator defect — REP
+  LODS executed one iteration — filed as FD-193 (lane-local)
+  and fixed on this lane. Generated fuzzing, the rest of
+  this entry, remains open. Evidence:
+  `docs/reports/cpudiff-coverage-expansion-20261107.md`.*
+
 - **FD-26 — Interpreter throughput is the frame-rate ceiling,
   and the instrument to target the work does not exist.**
   *(Medium)* Measured: about 90% of a Portal-class frame is
@@ -9597,6 +9620,23 @@ do not close the entry until they land.
   x11-getramptr-audit lane, 2026-11-06. *(Lane-local
   numbers: FD-193 and CL-137; both settle at the next
   composition.)*
+
+- **FD-193 — REP LODS executed only one iteration in the
+  64-bit interpreter.** *(Low; lane-local number from
+  `lane-cpudiff`, to be renumbered at composition)* The LODS
+  handler (dsp_62) loaded a single element regardless of the
+  REP prefix, under a comment asserting REP has no effect on
+  LODS; hardware repeats the load until the count register
+  reaches zero, leaving the last element in the accumulator.
+  Found 2026-11-07 by the new REP-width string cases of the
+  CPU differential harness (native RCX 3→0 and last-element
+  accumulator vs emulator RCX unchanged and first element,
+  at all four operand widths). Fixed on `lane-cpudiff` in
+  commit `35889ff29`: the handler now repeats with the same
+  partial-progress fault protocol as MOVS/CMPS. Proof:
+  `test-results/cpu-differential/` — full suite 7,920/7,920
+  cases pass including `lods rep-{b,w,d,q}`. Closing terms:
+  composition takes the fix and the harness stays green.
 
 ## B. Fixed on a lane branch — awaiting merge
 
