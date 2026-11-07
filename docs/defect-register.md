@@ -8681,6 +8681,47 @@ do not close the entry until they land.
   because the shipped i386 DLL is that build. FD-168 stays open at
   2,023 with these dispositions. Record:
   `docs/reports/fd168-win32u-drawdown-20261105.md`.
+  *Addendum — second draw-down (lane-fd168-slice2, 2026-11-07;
+  partial, all numbers lane-local until the batch-10 composition
+  audit settles them; no CL claimed — FD-168 stays open).* Five
+  more x86-64 win32u placeholders became real syscall
+  implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice2.patch`):
+  NtUserGetQueueStatusReadonly, NtUserIsTopLevelWindow,
+  NtGdiCombineTransform, NtGdiGetCharSet, NtGdiPolyTextOutW. Each
+  is built entirely from machinery this tree already has (the
+  existing `get_queue_status` server request issued with
+  `clear_bits = 0`; the `NtUserGetAncestor(GA_ROOT)` identity
+  window.c already uses internally; the existing
+  `combine_transform` helper; the charset `NtGdiGetTextCharsetInfo`
+  computes; a loop over the existing `NtGdiExtTextOutW` mirroring
+  gdi32's own PolyTextOutW) — no new server requests, no ported
+  FIXME semi-stubs. Census effect: x86-64 win32u stubs 912 -> 907;
+  i386 unchanged at 1,111; FD-168 total 2,023 -> 2,018; baseline
+  named-stub total 31,838 -> 31,833 with only x64/win32u.dll
+  changed across all 1,171 tables. Proof: guest test
+  `win32u-fd168-slice2` PASS — 13 checks, all ok=1, RESULT 0 in
+  the preserved console log (the posted-message changed bit
+  survives two readonly reads and is consumed only by the clearing
+  sibling call); the same fixture on the pre-change wine64.zip
+  fails all 13 checks with the Wine stub exception (RESULT 13).
+  Census `--check` exit 0; completeness checker +
+  `bootstrap.py --check` 0 failures; dist build "Browser export
+  verified"; JS unit suite 354 passed / 0 failed. Legacy suite
+  stopped by the lane during the 38th of 45 browser tests (a CPU
+  benchmark still mid-run after ~30 min of contention): 36 of 37
+  completed browser tests passed; the one failure (input-gamepad)
+  fails identically on the pre-change runtime and belongs to the
+  FD-189/FD-194 gamepad blockage, not this change. Only the
+  win32u pair was re-pinned — a from-scratch backports rebuild
+  does not reproduce the other 40 outputs' reviewed bytes (they
+  came from iterative lane builds), so they were restored
+  untouched; the composition must carry this lane's
+  win32u.dll/win32u.so, or rebuild them from the patch, onto
+  whichever runtime vintage it settles. Candidate families
+  re-examined and still refused are listed in the record. FD-168
+  stays open at 2,018. Record:
+  `docs/reports/fd168-win32u-drawdown2-20261107.md`.
 - **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
   validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
   ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
@@ -10990,6 +11031,7 @@ is behavioural, is re-proven there.
 | `lane-vkhost-gen` | FD-28 CLOSED as CL-137 (provisional; settles at the next composition): the Vulkan host bridge's generator now emits every implementation that used to be a hand-written edit in the generated vk_host.cpp — init-failure propagation, map-failure handling, push-descriptor-template marshaling, the log-once graceful degrades for eight unsupported functions, and the log-once-and-skip unknown-pNext defaults — so regenerating the bridge reproduces the shipped files exactly. The next-pointer part of FD-27 is discharged by the same commit; FD-27's two union types remain open. | Fix commit `26a90c5b6` on base `faf95d26c`. Baseline regeneration on the base changed vk_host.cpp by 66 insertions / 69 deletions (the divergence); with the fixed generator all six outputs (vk_host.cpp, vk_host.h, vk_host_marshal.cpp, vk_host_marshal.h, vk.c, vkdef.h) regenerate sha256-identical to the committed blobs, a second run identical again, no function routed to the not-implemented marshal, and the regenerated vk_host.cpp passes g++ -fsyntax-only with the project flags. Checking-queue pipeline 18, submitted at the fix commit, was voided by the concurrent-submission mount race filed as FD-194 (its verify-source mounted the commit of a sibling lane; pipelines 19-21 died the same way), and a re-submission (pipeline 28) was still queued behind the submission flood when this lane closed; the light checks were therefore run by hand on this tree with the exact commands the pipeline runs: citations exit 0 (352 rows, 0 drift), JS unit 352 passed / 2 failed (only the two known bare-checkout artifacts: provenance-artifacts, runtime-completeness), JS legacy 115/0. The native suites were not re-run by hand because the change touches no compiled source (generator tooling only; every generated output byte-identical to the base). Record: `docs/reports/fd28-vkhost-generator-20261106.md`; evidence `test-results/fd28/` |
 
 | `lane-fd168` | FD-168 first draw-down (all section-A numbers provisional until the batch-9 audit settles them; no CL claimed — FD-168 stays open). Fourteen x86-64 win32u placeholders became real syscall implementations in the Wine 8 backports build (`tools/buildWine/patches/wine8-win32u-fd168-backports.patch`: spec lines to the syscall shape, syscall-table entries, unix-side bodies ported from the newest upstream source and adapted to this vintage's server protocol): NtUserAlterWindowStyle, NtUserBuildHimcList, NtUserBuildNameList, NtUserBuildPropList, NtUserGetClipCursor, NtUserGetCurrentInputMessageSource, NtUserGetPointerType, NtUserGetThreadState, NtUserQueryDisplayConfig, NtUserQueryWindow, NtUserRegisterWindowMessage, NtGdiGetMiterLimit, NtGdiSetMiterLimit, NtGdiIcmBrushInfo. Runtime restaged with re-pinned hashes (checker + README), retained runtime-assets archive rebuilt and re-pinned, census baseline regenerated in the same change: x64 win32u 926 -> 912, i386 1,111 unchanged, FD-168 total 2,037 -> 2,023, shipped named stubs 33,756 -> 33,742, only x64/win32u.dll moved across 1,171 tables. Remaining 2,023 carry recorded per-family dispositions in the FD-168 entry (31 D3DKMT-layer-only, 6 blocked on absent server/driver/state machinery, 8 upstream FIXME semi-stubs not faked, 1 upstream-removed misspelling, 866 never implemented upstream, i386 vendor-build disposition). | Guest test `win32u-fd168` PASS — fixture `tools/guest-fixtures/win32u-fd168.c`, 17 checks, every check ok=1 and RESULT 0 in the run's preserved console log; the first run (16/17) caught the miter-limit pair using Wine 8's stale FLOAT parameter form — rewritten to Wine 10's DWORD bit-pattern form and re-proven 17/17. Census `--check` exit 0; completeness checker + `bootstrap.py --check` 0 failures; dist build "Browser export verified". JS unit suite 354 passed / 0 failed on the final tree; legacy 115/0. Record: `docs/reports/fd168-win32u-drawdown-20261105.md`; evidence `test-results/suite-win32u-fd168/` |
+| `lane-fd168-slice2` | FD-168 second draw-down (all numbers provisional/lane-local until the batch-10 composition audit settles them; no CL claimed — FD-168 stays open). Five more x86-64 win32u placeholders became real syscall implementations in the Wine 8 backports build (`tools/buildWine/patches/wine8-win32u-fd168-slice2.patch`: spec lines to the syscall shape, syscall-table entries, unix-side bodies built from machinery already in the tree): NtUserGetQueueStatusReadonly (existing `get_queue_status` server request with `clear_bits = 0`), NtUserIsTopLevelWindow (the `NtUserGetAncestor(GA_ROOT)` identity), NtGdiCombineTransform (the existing `combine_transform` helper), NtGdiGetCharSet (`NtGdiGetTextCharsetInfo`'s charset), NtGdiPolyTextOutW (a loop over `NtGdiExtTextOutW`, as gdi32's own PolyTextOutW does). Runtime restaged on the batch-9 vintage with only the win32u pair re-pinned (the other 40 backport outputs restored to their reviewed bytes — a from-scratch rebuild does not reproduce them), retained runtime-assets archive rebuilt and re-pinned (release `runtime-assets-20261106-fd168s2`), census baseline regenerated in the same change: x64 win32u 912 -> 907, i386 1,111 unchanged, FD-168 total 2,023 -> 2,018, baseline named stubs 31,838 -> 31,833, only x64/win32u.dll moved across 1,171 tables. | Guest test `win32u-fd168-slice2` PASS — fixture `tools/guest-fixtures/win32u-fd168s2.c`, 13 checks, every check ok=1 and RESULT 0 in the run's preserved console log (green run twice on the final bytes); negative control on the pre-change wine64.zip: all 13 checks fail with the Wine stub exception (RESULT 13). Census `--check` exit 0; completeness checker + `bootstrap.py --check` 0 failures; dist build "Browser export verified". JS unit suite 354 passed / 0 failed. Legacy suite stopped by the lane during the 38th of 45 browser tests (jitbench CPU benchmark still mid-run after ~30 min of contention): 36/37 completed browser tests passed; the one failure (input-gamepad) fails identically on the pre-change runtime (FD-189/FD-194 blockage). Record: `docs/reports/fd168-win32u-drawdown2-20261107.md`; evidence `test-results/suite-win32u-fd168-slice2/` |
 
 | `lane-fd170` | *(Batch-9 settled numbers: FD-170 discharged as CL-131.)* FD-170 DISCHARGED (provisional CL-131; settles at the batch-9 composition): a recorded per-DLL decision for all 50 whole-DLL-absence DLLs (90 tables, 6,734 named stubs). Implemented on the x64 side via `tools/buildWine/patches/wine8-fd170-contracts.patch` in the Wine 8.0 backport pipeline (built by `tools/rootfs64/build-wine8-backports.sh`, staged by `stage-wine8-backports.sh` / `build-wine64-zip.sh`, hash-pinned fail-closed in `tools/rootfs64/check_runtime_completeness.py`): bluetoothapis 95→71 named stubs (Wine 10.0's radio/SDP code backported + the FD-167 no-radio/no-device contract bodies, with the headers they need), winusb 21→13 (the FD-167 no-device contract bodies), netutils 22→17 (Wine 10.0's `NetApiBuffer*` heap-buffer functions). The other 47 DLLs are accepted as documented absences, each with its concrete missing substrate recorded in the FD-170 entry and the lane record. | Census run against the built binaries differs from the base baseline in exactly those three tables (33,756 → 33,719 named stubs total; FD-170 remainder 6,697); baseline regenerated in the same change, `--check` exit 0. Runtime assets re-cut as `runtime-assets-20261105-fd170`; `bootstrap.py --check` passes (13 files verified, completeness 0 failures). JS unit suite 352 passed / 2 failed — both failures (provenance-artifacts, binary-patch-registry) attributable to the borrowed batch-8 gate dist this lane tested against, not to the change; the census guard test passes. Guest fixture `web/tests/suite/browser/fd170-contracts64.test.mjs` committed; its verdict is owed to the batch-9 gate — every attempt on 2026-11-05/06 died in the shared probe queue or in a guest boot that outlasted the hung-probe cap at load 13–19. Record: `docs/reports/fd170-whole-dll-decisions-20261105.md`; evidence `test-results/fd170/` |
 
