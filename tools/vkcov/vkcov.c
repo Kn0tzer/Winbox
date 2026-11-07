@@ -824,15 +824,28 @@ static void t_cmd_all(void) {
     { VkImageSubresourceLayers sl = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
       VkOffset3D off = { 0, 0, 0 }; VkExtent3D ex = { 32, 32, 1 };
       VkImageBlit blit = { sl, { off, {32,32,1} }, sl, { off, {16,16,1} } };
-      T2V(vkCmdBlitImage, pvkCmdBlitImage(cmdbuf, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST));
+      /* vkCmdBlitImage SKIPPED 2026-11-07 (run phase): called for real,
+         the guest entered a delivered fetch-fault loop at a fixed rip
+         (0x700227500; the delivered-fault count passed 22 million) and
+         never returned -- the harness crash handler never regained
+         control, so the run could not continue past this call. Valid
+         args (64x64 img, 1 region). Filed as FD-204; -2 = crashed. */
+      note("SKIP vkCmdBlitImage: wedges the guest (fault loop)");
+      trybegin("vkCmdBlitImage"); rep("vkCmdBlitImage",-2,-2,0,0);
       VkImageBlit2 blit2 = { VK_STRUCTURE_TYPE_IMAGE_BLIT_2, 0, sl,
         { off, {32,32,1} }, sl, { off, {16,16,1} } };
       VkBlitImageInfo2 bii = { VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2, 0,
         img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit2, VK_FILTER_NEAREST };
-      T2V(vkCmdBlitImage2, pvkCmdBlitImage2(cmdbuf, &bii));
-      T2V(vkCmdBlitImage2KHR, pvkCmdBlitImage2KHR(cmdbuf, &bii)); }
+      /* vkCmdBlitImage2 measured wedging the guest the same way in
+         the follow-up run of 2026-11-07 (delivered data-fault loop at
+         a fixed rip, count past 1.2 million when the run was
+         stopped); vkCmdBlitImage2KHR skipped on the same-code-path
+         precedent, not individually measured. The family is FD-204. */
+      note("SKIP vkCmdBlitImage2: wedges the guest (fault loop)");
+      trybegin("vkCmdBlitImage2"); rep("vkCmdBlitImage2",-2,-2,0,0);
+      note("SKIP vkCmdBlitImage2KHR: same code path as vkCmdBlitImage2");
+      trybegin("vkCmdBlitImage2KHR"); rep("vkCmdBlitImage2KHR",-2,-2,0,0); }
     { VkImageSubresourceLayers sl = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
       VkOffset3D off = { 0, 0, 0 }; VkExtent3D ex = { 64, 64, 1 };
       VkImageResolve rs = { sl, off, sl, off, ex };
@@ -1498,7 +1511,16 @@ static void t_stubs(void) {
     { trybegin("vkGetDeviceImageSparseMemoryRequirements"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceImageSparseMemoryRequirements)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceImageSparseMemoryRequirements)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceImageSparseMemoryRequirements",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceImageSubresourceLayout"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceImageSubresourceLayout)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceImageSubresourceLayout)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceImageSubresourceLayout",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetDeviceMemoryCommitment"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceMemoryCommitment)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceMemoryCommitment)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceMemoryCommitment",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetDeviceProcAddr"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceProcAddr)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceProcAddr)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceProcAddr",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
+    /* vkGetDeviceProcAddr SKIPPED as a stub row 2026-11-07 (run phase):
+       the row calls the REAL loader entry with no arguments (garbage
+       handle and name pointer); in the run of 2026-11-07 the call
+       wedged the guest in a delivered data-fault loop at a fixed rip
+       (delivered count past 5.5 million) and never returned. This name
+       is a working loader function (the harness resolves everything
+       through it), not a -8 stub, so the row's premise is false. The
+       endless fault redelivery is filed as FD-205; -2 = crashed. */
+    { note("SKIP vkGetDeviceProcAddr: stub row calls the real loader entry; wedged the guest (fault loop)");
+      trybegin("vkGetDeviceProcAddr"); rep("vkGetDeviceProcAddr",-2,-2,0,0); }
     { trybegin("vkGetDeviceQueue2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetDeviceQueue2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetDeviceQueue2)(); uint64_t _t3=qpf_us(); rep("vkGetDeviceQueue2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetEventStatus"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetEventStatus)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetEventStatus)(); uint64_t _t3=qpf_us(); rep("vkGetEventStatus",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetFenceStatus2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetFenceStatus2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetFenceStatus2)(); uint64_t _t3=qpf_us(); rep("vkGetFenceStatus2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
@@ -1507,7 +1529,12 @@ static void t_stubs(void) {
     { trybegin("vkGetImageSparseMemoryRequirements"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetImageSparseMemoryRequirements)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetImageSparseMemoryRequirements)(); uint64_t _t3=qpf_us(); rep("vkGetImageSparseMemoryRequirements",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetImageSubresourceLayout2"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetImageSubresourceLayout2)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetImageSubresourceLayout2)(); uint64_t _t3=qpf_us(); rep("vkGetImageSubresourceLayout2",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetImageSubresourceLayout2EXT"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetImageSubresourceLayout2EXT)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetImageSubresourceLayout2EXT)(); uint64_t _t3=qpf_us(); rep("vkGetImageSubresourceLayout2EXT",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
-    { trybegin("vkGetInstanceProcAddr"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetInstanceProcAddr)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetInstanceProcAddr)(); uint64_t _t3=qpf_us(); rep("vkGetInstanceProcAddr",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
+    /* vkGetInstanceProcAddr SKIPPED with the pair above: same
+       stub-row shape (the real loader entry called with no
+       arguments); not individually measured -- skipped on the pair
+       precedent, and the record says so. */
+    { note("SKIP vkGetInstanceProcAddr: stub row calls the real loader entry (pair of vkGetDeviceProcAddr)");
+      trybegin("vkGetInstanceProcAddr"); rep("vkGetInstanceProcAddr",-2,-2,0,0); }
     { trybegin("vkGetPhysicalDeviceFeatures2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceFeatures2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceFeatures2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceFeatures2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceFormatProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceFormatProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceFormatProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceFormatProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }
     { trybegin("vkGetPhysicalDeviceImageFormatProperties2KHR"); uint64_t _t0=qpf_us(); void* _r1=((void*(*)())pvkGetPhysicalDeviceImageFormatProperties2KHR)(); uint64_t _t1=qpf_us(); uint64_t _t2=qpf_us(); void* _r2=((void*(*)())pvkGetPhysicalDeviceImageFormatProperties2KHR)(); uint64_t _t3=qpf_us(); rep("vkGetPhysicalDeviceImageFormatProperties2KHR",(long long)(intptr_t)_r1,(long long)(intptr_t)_r2,_t1-_t0,_t3-_t2); }

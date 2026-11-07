@@ -2440,7 +2440,7 @@ static void run_all(void) {
         uint64_t _t0=qpf_us(); pglGetAttachedShaders(g_prog, 8, &s_len, s_sh); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglGetAttachedShaders(g_prog, 8, &s_len, s_sh); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glGetAttachedShaders",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glGetAttachedShaders: no proc */
     trybegin("glGetAttachedShaders"); note("no proc: glGetAttachedShaders"); rep("glGetAttachedShaders",-1,-1,0,0);
     }
@@ -3634,14 +3634,24 @@ static void run_all(void) {
     /* glTexStorage2D: no proc */
     trybegin("glTexStorage2D"); note("no proc: glTexStorage2D"); rep("glTexStorage2D",-1,-1,0,0);
     }
-    /* glTexStorage2DMultisample */
-    if (pglTexStorage2DMultisample) {
+    /* glTexStorage2DMultisample SKIPPED 2026-11-07 (run phase): called
+       for real, the underlying driver call threw, and the bridge case
+       shared by the four *Multisample texture entry points reported
+       the error through an embedded JS catch handler that references
+       an undefined identifier -- the catch itself threw an uncaught
+       ReferenceError in the page and killed the session (the run of
+       2026-11-07 ended here, 221 of 333 handlers in). The bridge
+       case's stated design is the opposite: swallow driver refusals
+       so they cannot poison the guest. Filed as FD-207; -2 = crashed. */
+    note("SKIP glTexStorage2DMultisample: bridge error-report path kills the session (FD-207)");
+    trybegin("glTexStorage2DMultisample"); rep("glTexStorage2DMultisample",-2,-2,0,0);
+    if (0) { /* orig: if (pglTexStorage2DMultisample) { */
         trybegin("glTexStorage2DMultisample");
         pglGetError();
         uint64_t _t0=qpf_us(); pglTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 64, 64, GL_TRUE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 64, 64, GL_TRUE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glTexStorage2DMultisample",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glTexStorage2DMultisample: no proc */
     trybegin("glTexStorage2DMultisample"); note("no proc: glTexStorage2DMultisample"); rep("glTexStorage2DMultisample",-1,-1,0,0);
     }
@@ -3656,14 +3666,18 @@ static void run_all(void) {
     /* glTexStorage3D: no proc */
     trybegin("glTexStorage3D"); note("no proc: glTexStorage3D"); rep("glTexStorage3D",-1,-1,0,0);
     }
-    /* glTexStorage3DMultisample */
-    if (pglTexStorage3DMultisample) {
+    /* glTexStorage3DMultisample SKIPPED with the 2D case above: the
+       same shared bridge case and the same error-report path; not
+       individually measured. FD-207. */
+    note("SKIP glTexStorage3DMultisample: same bridge case as glTexStorage2DMultisample (FD-207)");
+    trybegin("glTexStorage3DMultisample"); rep("glTexStorage3DMultisample",-2,-2,0,0);
+    if (0) { /* orig: if (pglTexStorage3DMultisample) { */
         trybegin("glTexStorage3DMultisample");
         pglGetError();
         uint64_t _t0=qpf_us(); pglTexStorage3DMultisample(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4, GL_RGBA8, 8, 8, 4, GL_TRUE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglTexStorage3DMultisample(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4, GL_RGBA8, 8, 8, 4, GL_TRUE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glTexStorage3DMultisample",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glTexStorage3DMultisample: no proc */
     trybegin("glTexStorage3DMultisample"); note("no proc: glTexStorage3DMultisample"); rep("glTexStorage3DMultisample",-1,-1,0,0);
     }

@@ -2,13 +2,14 @@
 
 Lane `lane-vkgl-coverage`, base integ `faf95d26c`, 2026-11-06.
 
-**Status: PARTIAL — the harness raise is committed, but the probe
-verification is outstanding.** The lane's dist build never acquired
-the shared build lock, and the 2026-11-06 disk emergency (box at 99%
-full, lanes ordered to strip and stop) ended the lane before the
-coverage probes could run. The After numbers below are source-level
-census counts; the end-to-end matrix numbers are owed. Resume steps
-are at the end of this record.
+**Status: COMPLETE — the run phase finished 2026-11-07.** The
+harness raise was committed in 2026-11-06; the end-to-end probe
+verification it owed was completed on 2026-11-07 (see the final
+section of this record). All three coverage probes ran to their
+RESULT lines against a verified build of this branch's tip, and the
+After section below now carries the measured four-bucket matrices
+next to the source-level census counts. FD-201 is closed (CL-143);
+the gaps the runs convicted are filed as FD-204 to FD-209.
 
 ## The instrument
 
@@ -94,7 +95,9 @@ import time. Filed as **FD-195**; fixed on this branch by importing
   `vkcov-probe-matrix.mjs`: the FD-195 import fix.
 - `tools/conformance/vkgl_spec_census.py`: the census.
 
-## After (source level — probe verification outstanding)
+## After — census counts and the measured matrices (2026-11-07)
+
+Source level (the harness raise itself, measured 2026-11-06):
 
 Vulkan:
 
@@ -112,7 +115,75 @@ OpenGL:
 - **Exercised share of bridge cases: 91.6% → 100%** (99.7% of ABI
   ids; the residual is the `_MAX` sentinel, not a function).
 
+Measured end-to-end (run phase, 2026-11-07; build identity and run
+history in the final section; analyzer output committed at
+`test-results/vkgl-census/matrix-vk64-run-20261107.md` and
+`matrix-gl64-run-20261107.md`):
+
+Vulkan — 309 handlers tested, two complete runs with identical
+return codes on every name:
+
+- Fully working: **221**
+- Slow or flaky: **3** — all slow, none flaky: vkCreateInstance
+  (15 ms), vkCreateShaderModule (16 ms), vkMapMemory (17 ms),
+  creation-class calls marginally over the 10 ms bar on a shared,
+  loaded box. Recorded, not filed.
+- Broken or stub: **85** = 62 loud stubs answering
+  VK_ERROR_FEATURE_NOT_PRESENT (-8) by design; 10 crashed (-2);
+  13 other-error answers, of which 3 are analyzer mis-buckets of
+  non-VkResult returns (vkGetBufferDeviceAddress returned the
+  value 1 — a device address, not an error code; the two
+  presentation-support queries returned VK_TRUE). Genuinely
+  broken: **10**, all answering -3 (VK_ERROR_INITIALIZATION_FAILED)
+  — filed as FD-206.
+- The 10 crashed: the vkCmdCopyImage trio and the
+  vkCmdCopyImageToBuffer2 pair (bridge exceptions the guest crash
+  handler contains; known and harness-skipped since 2026-10-09);
+  the vkCmdBlitImage family, 3 (new — FD-204); the
+  vkGetDeviceProcAddr / vkGetInstanceProcAddr pair, 2 (new —
+  FD-205).
+- Proc-addr census of the 418 registry names the shim does not
+  expose: 405 resolve through both proc-addr entry points — 403
+  of them to one shared catch-all thunk address, the other two
+  being vkGetDeviceProcAddr and vkGetInstanceProcAddr themselves;
+  13 resolve to nothing (the descriptor-buffer and
+  cooperative-matrix families). Deliberately NOT filed: the shared
+  thunk is the loader-side form of the project's designed loud
+  stub — calling it answers -8, as the stub rows measure — and
+  the register's standing disposition treats those as by-design.
+  Recorded here so the count is not lost.
+- Noted, not filed: vkGetBufferDeviceAddress returned the value
+  1 in both runs. The harness records only the return value and
+  cannot distinguish a handle-space answer from a wrong address;
+  flagged here for any future buffer-device-address work.
+
+OpenGL — 334 rows tested (the 333 harness names plus the
+traceProc plumbing row), complete run:
+
+- Fully working, under the 10 ms bar: **4** (glDeleteBuffers,
+  glDeleteFramebuffers, glDeleteRenderbuffers, glDeleteTextures).
+- Slow or flaky: **203** — 202 answered GL_NO_ERROR on both calls
+  but measured ≥ 10 ms, with timings quantized at ~17/33/50 ms;
+  plus 1 flaky (glCompressedTexImage3D, in FD-208). Adjudication:
+  in the same environment the Vulkan calls measured 0–3 ms, so
+  the GL slow bucket records the GL path's frame-paced round trip
+  (≈ one to three 16.7 ms frames per call), not 202 individual
+  handler defects; no per-handler performance filing is made
+  from it.
+- Broken or stub: **127** = 103 rows with no callable proc
+  (32 glX*/traceProc rows, which are not Windows-path entry
+  points, and 71 real entry points the guest cannot resolve —
+  FD-209); 3 crashed (-2: glGetAttachedShaders, known since
+  2026-10-09; glTexStorage2DMultisample — FD-207;
+  glTexStorage3DMultisample on the shared-case precedent);
+  21 answering GL errors (FD-208).
+
 ## Outstanding (resume steps)
+
+*(Discharged 2026-11-07 — see the final section. Two details in
+the steps below are superseded by events: the filing number in
+step 5 reads FD-201 after the rebase renumber, and the gaps the
+runs convicted were filed as FD-204 to FD-209.)*
 
 1. Prep a worktree from this branch. Note: the shared store's
    `wine64.zip`/`wine32.zip`/`prefix32.zip` currently mismatch the
@@ -175,3 +246,92 @@ processes inherited the SSH affinity; verified by taskset).
   then steps 3–5 unchanged, except new gap filings now start at
   FD-202 (FD-201 is this lane's renumbered probe filing) and FD-195
   references read as FD-201.
+
+## Run phase — completed 2026-11-07
+
+Build: `tools/bw64-build.sh` on this branch's tip — the log
+(`test-results/vkgl-census/build-run-20261107b.log`) carries the
+literal "Browser export verified" line, and dist BUILD_INFO reads
+git_sha `4c84741b6e7bb48055e6dc3e84fe9e2c5c398015`, 0 dirty files,
+wasm sha256
+`92b36180e9b3469b07014b91cf0054e4f50e1b119b2881e6ca1a85819d27bfdf`
+(5,722,692 bytes) — byte-identical to the shipped batch-10 build,
+as expected: this branch changes no product code, so every result
+below is a measurement of the shipped product path. The build
+first waited out a sibling lane's probe (the build script's
+probe-drain wait), then compiled cleanly. The branch's
+checking-service verdict had already been collected separately
+and is clean; it is not repeated here.
+
+Runs (all through the shared probe-slot helper; consoles and
+results preserved under `test-results/bridge-coverage-<tag>/` on
+this tree, probe logs under `test-results/vkgl-census/`):
+
+- vkcov run 1 (`vkgl-vk-20261107`): wedged at vkCmdBlitImage
+  after 108 result lines — the guest redelivered one fetch fault
+  past 22 million deliveries; stopped from outside; the partial
+  results were harvested from the preserved console log.
+- vkcov run 2 (`vkgl-vk2-20261107`): with vkCmdBlitImage
+  harness-skipped, reached 258 result lines including the full
+  proc-addr census; wedged at the vkGetDeviceProcAddr stub row
+  (FD-205) after 255 unique results; stopped; harvested.
+- vkcov run 3 (`vkgl-vk3-20261107`): with the proc-addr rows also
+  skipped, wedged at vkCmdBlitImage2 after 109 lines; stopped;
+  harvested.
+- vkcov run 4 (`vkgl-vk4-20261107`): **complete** —
+  `vkcov: RESULT 0`, 309 handlers. The Vulkan matrix above is
+  from this run.
+- vkcov matrix variant (`vkgl-vkm-20261107`): **complete** —
+  RESULT 0, 309 handlers, return codes identical to run 4 on
+  every one of the 309 names.
+- glcov run 1 (`vkgl-gl-20261107`): the session died at
+  glTexStorage2DMultisample, 221 of 334 rows in — the FD-207
+  ReferenceError in the bridge's own error-report path.
+- glcov run 2 (`vkgl-gl2-20261107`): complete, RESULT 0, 334
+  rows — but it exposed a harness recording flaw (below), so
+  its results file mis-records the three skipped rows.
+- glcov run 3 (`vkgl-gl3-20261107`): **complete** — RESULT 0,
+  334 rows, skips correctly recorded. The OpenGL matrix above is
+  from this run (the broken set is identical to run 2's).
+
+Harness changes made during the run phase (measurement
+instruments only, all on this branch; the exes were rebuilt with
+the project's documented compilers and are committed):
+
+- vkcov.c: vkCmdBlitImage and vkCmdBlitImage2 converted to
+  known-crasher skips after each was measured wedging the guest
+  (FD-204); vkCmdBlitImage2KHR skipped on the same-code-path
+  precedent; the vkGetDeviceProcAddr stub row converted to a
+  skip after it was measured wedging the guest (FD-205), and
+  vkGetInstanceProcAddr with it on the pair precedent. Both
+  proc-addr names are working loader functions — the stub rows'
+  premise (a -8 stub called with no arguments) was false.
+- glcov.c: glTexStorage2DMultisample converted to a skip after
+  it was measured killing the session (FD-207);
+  glTexStorage3DMultisample skipped on the shared-bridge-case
+  precedent.
+- glcov.c recording fix: a skipped row's trailing no-proc else
+  branch still executed and overwrote the skip's -2 record with
+  a -1 in the results file (the console log shows both lines;
+  the results parser keeps the last). The else branches of the
+  two TexStorage rows and of the pre-existing glGetAttachedShaders
+  skip are now neutralised. Consequence beyond this lane: every
+  earlier GL results file, including the 2026-10-26 matrix,
+  records glGetAttachedShaders as missing (-1) when it was in
+  fact a recorded crash (-2).
+
+Register outcome: FD-201 CLOSED (CL-143, provisional).
+New filings from these runs: FD-204 (blit family wedge),
+FD-205 (unbounded fault redelivery), FD-206 (ten Vulkan
+handlers answering -3), FD-207 (GL multisample error path
+kills the session), FD-208 (twenty-one GL error answers plus
+one inconsistent answer), FD-209 (seventy-one GL entry points
+the guest cannot resolve). Register audit after the filings:
+FD 1..209 each exactly once (standing gaps 46/56/57; FD-202
+and FD-203 live on a sibling branch and join at composition),
+CL 1..143 each exactly once (CL-141/CL-142 likewise on the
+sibling branch); no duplicates.
+
+The tree was stripped of generated build output after the runs
+(dist, web/runtime, the native Build tree); the test-results
+evidence stays.
