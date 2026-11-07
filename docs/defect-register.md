@@ -465,13 +465,22 @@ do not close the entry until they land.
   (branch `lane-cleanmem`, "residual risks / notes for the
   merge").
 - **FD-11 — Splitting a string with an empty separator loops
-  forever.** *(Medium)* `BString::split("")` never advances its
+  forever. CLOSED 2026-11-06 — see CL-137.** *(Was Medium)* `BString::split("")` never advances its
   cursor, so any caller that reaches it with an uninitialized
   separator hangs the process. Found via a debugger stack of a
   hung test process; the filesystem layer now guards its own
   entry point, but the utility itself is unfixed. Owner: the
   util layer. Evidence: `docs/reports/cleanup-fs-20261031.md`
   (branch `lane-cleanfs`, "found outside this layer").
+  Closed on `lane-ditems` in `14783353f`: `BString::split(const char*)`
+  now returns the whole string as the single result for an empty
+  (or null) delimiter, inside `split` itself, so every caller is
+  covered, not only the filesystem layer's guarded entry point.
+  Proof: native test `testBStringSplit` (commit `5dc0b8513`) —
+  on the unpatched code the test does not fail, it hangs (killed
+  by timeout, the recorded RED); on the fixed code it passes,
+  with `split('/')` and `split("::")` controls unchanged.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 - **FD-12 — A 32-bit futex lost-wakeup flaw is proven, its fix
   is unmerged, and a related park is unconvicted. CLOSED
   2026-11-01 (the flaw) — see CL-28; the park is split out as
@@ -502,14 +511,33 @@ do not close the entry until they land.
   code comments at the site. Evidence:
   `docs/reports/cleanlog-ksubsys-20261030.md`
   (branch `lane-cleanlog-ksubsys`, "residuals").
-- **FD-14 — Fault reporting has two blind spots left.**
-  *(Low)* `CPU64::raiseSyncFault` logs nothing itself, so
+- **FD-14 — Fault reporting has two blind spots left.
+  CLOSED 2026-11-06 — see CL-138.** *(Was Low)* `CPU64::raiseSyncFault` logs nothing itself, so
   direct kernel-side callers remain unlogged at the delivery
   point (deliveries routed through the interpreter's funnel do
   log); and the 32-bit core's two gate sites that mirror the
   64-bit ones were not confirmed in their own context.
   Evidence: `docs/reports/cleanup-cpu-core-20261030.md`
   (branch `lane-clean-cpu`, "handed off").
+  Closed on `lane-ditems` in `14783353f`, both halves. (a)
+  `CPU64::raiseSyncFault` now logs its own deliveries at the
+  delivery point — a rate-limited `BW64-FAIL sync-fault64 ...
+  delivered=1` line (first 64, then every 1024th; the flood
+  discipline of the interpreter funnel) — so the direct
+  kernel-side caller (rt_sigreturn's bad-frame path) is no
+  longer silent; refused deliveries log nothing. Proof:
+  native x64 test `testRaiseSyncFaultDeliveryLogged64`
+  (commit `5dc0b8513`) — RED on the unpatched code ("delivery
+  produced no delivery-point log line"), GREEN after, with
+  the emitted line in the run log. (b) The 32-bit core's two
+  gate sites were confirmed in their own context:
+  `normal_invalid` and `normal_ud2`
+  (`source/emulation/cpu/normal/normal_other.h`) recover-gate
+  exactly as their 64-bit mirrors do — the skip path logs once
+  per RIP through `bw64RecoverClaimRip`, the fall-through
+  delivers through `KThread::signalIllegalInstruction`, which
+  logs via `bw64LogGuestFault32` — no code change needed.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 
 - **FD-76 — The guest-thread dump silently covered nothing
   in 32-bit sessions. CLOSED 2026-11-01 — see CL-29.**
@@ -810,6 +838,64 @@ do not close the entry until they land.
   deliveries and passes with the fix. Record:
   `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
   evidence `test-results/d278/`.
+- **FD-195 — Caller audit of the no-throw segment-fault
+  entry points (frontier review D5): one silent write-drop
+  found and fixed; the rest proven sound. CLOSED
+  2026-11-06 — see CL-140.** *(Filed and closed by
+  `lane-ditems`; the number is lane-local and settles at
+  the next composition.)* `KThread::seg_mapper` /
+  `seg_access` with `throwException=false` promise the
+  caller a delivered fault instead of a throw. The audit
+  read every call site: the four explicit-false sites
+  (`CPU::startException`, `CPU::runNextSingleOp`,
+  `NormalCPU::run`, and the multi-threaded platform's
+  containment site) each re-fetch or retire loudly after
+  delivery and are sound; the default-true callers
+  (softmmu read/write pages, `KMemory::preflightWrite`)
+  are sound because both functions throw on every path
+  that does not return from the on-demand mapping. One
+  real defect: the invalid page's write accessors called
+  `seg_mapper` and returned — when the on-demand mapping
+  succeeded, the guest's write was silently dropped
+  (reads returned a fabricated 0, right only because a
+  fresh anonymous page is zero-filled). Fixed in
+  `14783353f`: all six accessors re-dispatch through the
+  page's current type after `seg_mapper` returns, and a
+  write that still cannot land logs a `BW64-FAIL
+  invalid-page-write ... outcome=dropped` line instead of
+  vanishing. Proof: native test `testFaultDelivery32`
+  additions (commit `5dc0b8513`) write and read back
+  through the Wine syscall-frame window that triggers
+  the on-demand mapping — RED on the unpatched code
+  (readback mismatch), GREEN after. Audit observation,
+  no action: the soft read/write page accessors would
+  dereference a null page pointer if `seg_access` ever
+  gained a return path; today it cannot return to them.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **FD-196 — Opening a file collapsed almost every host
+  error into "invalid argument" (frontier review D17).
+  CLOSED 2026-11-06 — see CL-141.** *(Filed and closed
+  by `lane-ditems`; the number is lane-local and settles
+  at the next composition.)* `translateOpenError()` in
+  `KProcess` mapped only EACCES/EEXIST/ENOENT/EISDIR and
+  turned every other host open failure — a full disk,
+  too many open files, a read-only filesystem — into
+  -EINVAL, so a guest could not tell why an open failed
+  even though the filesystem layer preserves the host
+  errno exactly (`FsFileNode::open` restores it before
+  returning). Fixed in `14783353f`: the map now covers
+  25 errnos (adding EAGAIN, EBUSY, EFAULT, EFBIG, EINTR,
+  EIO, ELOOP, EMFILE, EMLINK, ENAMETOOLONG, ENFILE,
+  ENODEV, ENOMEM, ENOSPC, ENOTDIR, ENXIO, EOVERFLOW,
+  EPERM, EROFS, ETXTBSY, EXDEV; `K_EMLINK` and
+  `K_EOVERFLOW` added to `include/kerror.h`); the EINVAL
+  default stands only for node types that return no
+  host errno. Proof: native test `testTranslateOpenError`
+  (commit `5dc0b8513`), a 28-row table pinning every
+  mapped errno plus the default rows — RED on the
+  unpatched code, GREEN after. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 
 ### Graphics
 
@@ -2022,7 +2108,7 @@ do not close the entry until they land.
   `docs/reports/cleanup-fault32-20261030.md` ("residual
   risks").
 - **FD-37 — A recorded "safe to drop" proof for a saved work
-  stash has rotted.** *(Low, operations)* The 2026-10-25 proof
+  stash has rotted. CLOSED 2026-11-06 — see CL-139.** *(Was Low, operations)* The 2026-10-25 proof
   that a particular stash could be dropped relied on a backup
   directory that no longer exists, and the stash list has
   since shifted — what the proof described is no longer what
@@ -2030,6 +2116,19 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
+  Closed on `lane-ditems` (operations; no code change): a
+  fresh export of the repository's only stash
+  (`stash@{0}`, commit
+  `22998f7b8e551db6fa33794742c72a6b89f521e9`, "item 8
+  triangle fans in progress") now sits at
+  `/home/ubuntu/winbox-project/evidence/stash-export-20261106/`
+  — working-tree patch, index patch, and the untracked-files
+  commit's tree, with hashes and restore instructions in its
+  README. The stash itself was NOT dropped. The alkhaser
+  report the same review item named is index-linked from
+  `docs/INDEX.md`, and the 54 pre-existing broken links stand
+  accepted as recorded in
+  `docs/reports/docs-cleanup-20261030.md`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 - **FD-58 — chmod reports success without changing
   anything. CLOSED 2026-11-01 — see CL-30.** *(Medium. Filed provisionally as FD-55 on
   the FD-38 lane branch; renumbered at this composition —
@@ -9868,6 +9967,7 @@ is behavioural, is re-proven there.
 | `lane-x11-getramptr-audit` | *(Lane-local numbers: FD-193 closed as CL-137; both settle at the next composition.)* FD-193 CLOSED: audit of all 19 `getRamPtr` call sites in the window-system bridge (`source/x11`; none in `source/x11wire`) — 12 received guest-controlled addresses/lengths and dereferenced the result unchecked (getRamPtr returns null for unmapped, read-only or page-straddling spans, so such a guest struct crashed the host); guest fields now read through the checked accessor, `XSetWindowAttributes::get` falls back to its checked read on refusal, and `ChangeWindowAttributes` guards the null-attributes case. The 7 remaining sites pass emulator-allocated addresses and are safe by construction (Appendix). | Fix commit `cd030f389` on base `faf95d26c`. Proof: four new native tests drive the real int 0x99 handlers with page-straddling structs in a forked child — unfixed: all four fail (refusals logged at the exact straddle addresses; children wedged on the null deref, killed after budget); fixed: all four pass (logs `test-results/x11-getramptr-audit/red-601..604.log`, `green-601..604.log`). Record: `docs/reports/x11-getramptr-audit-20261106.md` |
 
 | `lane-d278` | *(Provisional numbers: FD-09 closed as CL-134, FD-193 as CL-135, FD-194 as CL-136 — all lane-local. FD-193 is also claimed on `lane-fd176` for an unrelated filing, FD-194 in the batch-10 settlement for the PlugPlay filing, and CL-134 on the batch-10 branches; every number settles at the next composition.)* FD-09 CLOSED (frontier review D8): `modify_ldt` answers the host's measured matrix instead of panicking — byte count other than one descriptor -EINVAL, unreadable descriptor pointer -EFAULT, out-of-range index -EINVAL, each rejection one counted `BW64-FAIL syscall.modify_ldt` line. FD-193 FILED + CLOSED (frontier review D2): futex operations on an unmapped word answer the host's measured matrix (-EFAULT for every operation except a 64-bit private WAKE / WAKE_BITSET, which returns 0) instead of the 32-bit panic, the null-page park, and the 64-bit phantom page; a zero bitset mask is -EINVAL on both word sizes. FD-194 FILED + CLOSED (frontier review D7): divide quotient overflow delivers SIGFPE / FPE_INTDIV / trap 0 and x87 exceptions deliver through the SIGFPE slot with trap 16, both as the host does; INTO via SIGSEGV trap 4 pinned unchanged. Fix commit `f998e2e01` on base `faf95d26c`. | Host reference programs measured first (raw futex and modify_ldt syscalls, raw signal delivery; sources and outputs in `test-results/d278/hostref/`). Six new native tests (main 614-618, x64 6) fail on the base — the shared-futex and modify_ldt index cases with the filed panic text — and pass with the fix, the rejections visible as counted BW64-FAIL lines in the green logs; control test 613 passes on the base and with the fix. Checking queue: pipeline #27 verified the source mount on the exact tip but was invalidated when a concurrent submission replaced the shared source tree mid-run, and a further attempt was stood down at 5.6G free disk — the queue verdicts are owed to a rerun (see the record's Checks section). Record: `docs/reports/d278-futex-modifyldt-fpe-20261107.md`; evidence `test-results/d278/` |
+| `lane-ditems` | *(Provisional numbers: FD-11 closed as CL-137, FD-14 closed as CL-138, FD-37 closed as CL-139, FD-195 filed and closed as CL-140, FD-196 filed and closed as CL-141; all settle at the next composition.)* The frontier review's five remaining D-items, worked as one lane: D16 = FD-11 (the empty-separator split guard moved inside `BString::split` itself), D11 = FD-14 (`raiseSyncFault` logs its own deliveries at the delivery point; the 32-bit core's two recover-gate sites confirmed in context, no change needed), D21 = FD-37 (fresh export of the repository's only stash to `evidence/stash-export-20261106/`; the stash was not dropped), D5 filed as FD-195 (caller audit of the no-throw segment-fault entry points: the invalid page's accessors silently dropped writes after an on-demand mapping — fixed to re-dispatch, with a loud log for a write that still cannot land; all other call sites proven sound), D17 filed as FD-196 (`translateOpenError` widened from 4 errnos to 25 now that the filesystem layer preserves the host errno). | Commits `5dc0b8513` (tests) + `14783353f` (fixes) on base `faf95d26c`. Proof: four new/extended native tests, each RED on the unpatched code and GREEN after — `testBStringSplit` (RED = hang, timeout-killed), `testTranslateOpenError` (28 rows), `testFaultDelivery32` additions (write/read-back through the on-demand-mapped window), `testRaiseSyncFaultDeliveryLogged64` (the emitted `BW64-FAIL sync-fault64 ... delivered=1` line is in the GREEN log) — restored-tree GREEN re-confirmed for all four; full suites via the checking queue on the submitted branch. Evidence `test-results/ditems/`; record `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -14463,6 +14563,69 @@ dead-start fix and needs composition care.
   `faf95d26c`. Record:
   `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
   evidence `test-results/d278/`.
+
+- **CL-137 — FD-11 closed: splitting a string with an
+  empty separator looped forever.** *(Lane-local closure
+  on `lane-ditems`; the number settles at the next
+  composition.)* The guard now lives inside
+  `BString::split(const char*)` itself (empty or null
+  delimiter yields the whole string once), covering every
+  caller rather than only the filesystem layer's entry
+  point. Fix `14783353f`; test `testBStringSplit`
+  (`5dc0b8513`): RED = the test hangs on unpatched code
+  (timeout kill), GREEN after; ordinary-delimiter
+  controls unchanged. Evidence: `test-results/ditems/`.
+  Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-138 — FD-14 closed: fault reporting's two blind
+  spots.** *(Lane-local closure on `lane-ditems`; the
+  number settles at the next composition.)*
+  `CPU64::raiseSyncFault` logs its own deliveries at the
+  delivery point (rate-limited `BW64-FAIL sync-fault64 ...
+  delivered=1`), ending the silence of direct kernel-side
+  callers; and the 32-bit core's two recover-gate sites
+  were confirmed in context to mirror the 64-bit ones
+  (skip logged once per RIP; fall-through delivered and
+  logged through `signalIllegalInstruction`) — no change
+  needed there. Fix `14783353f`; test
+  `testRaiseSyncFaultDeliveryLogged64` (`5dc0b8513`):
+  RED on unpatched code, GREEN after with the emitted
+  delivery line in the log. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-139 — FD-37 closed: the rotted stash drop-safe
+  proof replaced with a fresh export.** *(Lane-local
+  closure on `lane-ditems`; the number settles at the
+  next composition.)* The repository's only stash was
+  exported fresh on 2026-11-06 to
+  `/home/ubuntu/winbox-project/evidence/stash-export-20261106/`
+  (working-tree patch, index patch, untracked-tree
+  archive, hashes and restore instructions); the stash
+  was not dropped, and no future drop may cite the
+  2026-10-25 proof. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-140 — FD-195 closed: the no-throw segment-fault
+  caller audit (D5) — one silent write-drop fixed, the
+  remaining call sites proven sound.** *(Lane-local
+  closure on `lane-ditems`; the number settles at the
+  next composition.)* The invalid page's accessors
+  re-dispatch after an on-demand mapping instead of
+  dropping writes / fabricating read zeros, and an
+  unlandable write logs loudly. Fix `14783353f`; proof
+  in the `testFaultDelivery32` additions (`5dc0b8513`):
+  RED on unpatched code, GREEN after. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-141 — FD-196 closed: open() failures no longer
+  collapse into EINVAL (D17).** *(Lane-local closure on
+  `lane-ditems`; the number settles at the next
+  composition.)* `translateOpenError` maps the 25
+  errnos the filesystem layer can actually deliver;
+  the default remains for node types with no host
+  errno. Fix `14783353f`; test `testTranslateOpenError`
+  (`5dc0b8513`), 28 pinned rows: RED on unpatched code,
+  GREEN after. Evidence: `test-results/ditems/`.
+  Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 
 ## Appendix — examined and deliberately NOT registered
 

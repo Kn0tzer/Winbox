@@ -1,0 +1,3 @@
+Running 1 Test tests with 1 threads starting at 604
+Test BString split with an empty delimiter (FD-11) ... OK
+0 tests FAILED in 0s

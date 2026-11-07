@@ -1,0 +1,3 @@
+Running 1 Test tests with 1 threads starting at 605
+Test translateOpenError maps the full open errno set (D17) ... OK
+0 tests FAILED in 0s
