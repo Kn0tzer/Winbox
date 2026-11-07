@@ -10799,10 +10799,48 @@ do not close the entry until they land.
   `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-4/console.log`
   and `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-5/console.log`
   (clean controls boot-1 to boot-3 and the re-run series in
-  the same directory). Cause not yet identified. Closing
-  terms: the cause is identified and fixed, and repeated
-  32-bit starts against a build carrying the fix pass with
-  zero occurrences of the failure.
+  the same directory). Closing terms: the cause is
+  identified and fixed, and repeated 32-bit starts against a
+  build carrying the fix pass with zero occurrences of the
+  failure.
+  **RESOLVED on this branch (2026-11-07, lane-x86-start-fault;
+  see the section B row and the lane record's resolution
+  addendum).** A third instance, captured the same morning by
+  the FD-169 remainder lane's 32-bit suite run on a build
+  byte-identical to the shipped one, preserved the full wasm
+  stack the deploy consoles lacked (evidence:
+  `wt-fd169-remainder/test-results/suite-fd169r-smf32-fault1/console.log`):
+  the trap fires in `KSystem::guestRamInfo`, called from the
+  32-bit `sysinfo` handler, on the `process->memory64` field
+  load. Cause: `guestRamInfo` iterated the process table
+  (`KSystem::processes`, a BHashTable) with no lock while
+  `addProcess`/`eraseProcess` mutate it under
+  `processesCond`; an insert crossing the table's load-factor
+  limit replaces the whole slot array and frees the old one
+  (BHashTable::rehash), so a scan racing a process start could
+  keep reading the freed array and dereference a wild
+  KProcess pointer — the first field load traps and kills the
+  calling worker, the desktop never reports ready, and the
+  start is lost. A starting process's own sysinfo (issued by
+  every starting Wine process) is the usual caller, which is
+  why the fault lands exactly at program starts and only in
+  bursts (a rehash happens only when an insert crosses a
+  power-of-two process count). Fix commit `5602c1dd5`:
+  `guestRamInfo` and `processCount` now hold `processesCond`
+  for the table access — the pattern every other access in
+  the class already used — and the 32-bit sysinfo reads the
+  process count through `processCount`; a source guard in the
+  guest-topology test pins both locks (fails on the unfixed
+  source, passes with the fix). Proof on the branch: two
+  series of 12 consecutive 32-bit starts against the fixed
+  build (wasm `4be34516…`), 24/24 started, zero occurrences,
+  zero captured exceptions (driver logs and per-boot consoles
+  in `test-results/x86-start-fault/repro-fixed-1/` and
+  `repro-fixed-2/`); a control series against the live
+  unfixed build the same day ran 12/12 clean, consistent with
+  the bursty incidence (the preserved fault instances are the
+  positive control). The closure number settles when batches
+  combine.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -10951,6 +10989,7 @@ is behavioural, is re-proven there.
 | `lane-fd189` | *(Batch-10 settled numbers: FD-189 closed as CL-135; FD-194 filed.)* *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-194 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
 
 | `lane-fd188` | *(Batch-10 settled numbers: FD-188's driver-load layer closed as CL-137; FD-195 filed.)* FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claimed provisional CL-134 on its branch; settled as CL-137 at the batch-10 composition): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-195 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
+| `lane-x86-start-fault` | FD-201 FIXED (closure number settles at the next composition): the occasional dead 32-bit start. `KSystem::guestRamInfo` iterated the process table with no lock while `addProcess`/`eraseProcess` mutate it under `processesCond`; an insert crossing the table's load-factor limit makes BHashTable replace its whole slot array and free the old one (rehash), so a sysinfo scan racing a process start could keep reading the freed array and dereference a wild KProcess pointer — the first field load (`process->memory64`) traps and kills the calling worker. Fix: `guestRamInfo` and `processCount` hold `processesCond` for the table access; the 32-bit sysinfo reads the count through `processCount`; a source guard in the guest-topology test pins both locks. | Fix commit `5602c1dd5` on base `334c70be4`. Identification: the FD-169 lane's faulted 32-bit suite run (shipped-identical wasm `92b36180…`) preserved the full wasm stack — `sysinfo` → `guestRamInfo`, trap on the `process->memory64` load — matched field-for-field against the source (full analysis in the lane record's resolution addendum). Guard red/green in the native suite: the topology test fails on the unfixed source with the FD-201 message and passes with the fix. Browser proof: fixed build (BUILD_INFO git_sha `94a2970c6` + the fix, wasm `4be34516…`, 'Browser export verified') — two series of 12 consecutive 32-bit starts, 24/24 started, zero fault occurrences, zero CDP-captured exceptions (`test-results/x86-start-fault/repro-fixed-1/`, `repro-fixed-2/`); control series on the live unfixed build the same day 12/12 clean (bursty incidence; preserved instances are the positive control). Record: `docs/reports/fd201-x86-start-fault-20261107.md` (resolution addendum) |
 
 | `lane-fd193` | *(Provisional number: FD-193 closed as CL-135; settles at the next composition.)* FD-193 CLOSED: the BW64_BLOCKSTATS exit reporter no longer dereferences a CPU that may already be destroyed — a CPU that allocates a block table under the flag joins a process-wide registry, folds its counters into process-wide totals on destruction, and the once-registered reporter prints the folded totals plus the counters of any CPUs still alive at exit. | Fix commit `f5fac0447` on base `faf95d26c`. RED on the base: four identical garbage lines (coverage=5070359463874500.0%) from the four-context block-invalidation harness. GREEN: a single line, identical across runs — built=7 execs=7 insnsInBlocks=13 totalInsns=14 coverage=92.9% — with totalInsns matching the harness's own independent instruction total exactly; interp/blocks differential byte-identical (pass=54 fail=0); flag unset prints nothing; CPU-lifetime gate PASS with block execution off and on; jit64 phase-1 tests 873/0. Record: `docs/reports/fd193-blockstats-reporter-20261107.md`; evidence `test-results/fd193/` |
 | `lane-x11-getramptr-audit` | *(Lane-local numbers: FD-193 closed as CL-137; both settle at the next composition.)* FD-193 CLOSED: audit of all 19 `getRamPtr` call sites in the window-system bridge (`source/x11`; none in `source/x11wire`) — 12 received guest-controlled addresses/lengths and dereferenced the result unchecked (getRamPtr returns null for unmapped, read-only or page-straddling spans, so such a guest struct crashed the host); guest fields now read through the checked accessor, `XSetWindowAttributes::get` falls back to its checked read on refusal, and `ChangeWindowAttributes` guards the null-attributes case. The 7 remaining sites pass emulator-allocated addresses and are safe by construction (Appendix). | Fix commit `cd030f389` on base `faf95d26c`. Proof: four new native tests drive the real int 0x99 handlers with page-straddling structs in a forked child — unfixed: all four fail (refusals logged at the exact straddle addresses; children wedged on the null deref, killed after budget); fixed: all four pass (logs `test-results/x11-getramptr-audit/red-601..604.log`, `green-601..604.log`). Record: `docs/reports/x11-getramptr-audit-20261106.md` |

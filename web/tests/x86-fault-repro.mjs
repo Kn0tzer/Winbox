@@ -7,8 +7,12 @@
 // port and every target (page, iframe, emulator workers) is auto-attached
 // over CDP with Runtime enabled, so a WebAssembly trap inside any worker
 // is recorded in exceptions.jsonl with its full stack trace (wasm function
-// names when the build carries them -- use a BW64_PROFILE=1 build) instead
-// of only the message string the launcher forwards to the console.
+// indices of the build under test) instead of only the message string the
+// launcher forwards to the console. NOTE: indices are per-build -- a
+// BW64_PROFILE=1 build's function bodies differ from the shipped build's
+// at the same indices (measured 2026-11-07), so its name section must not
+// be used to interpret another build's stack; identify functions against
+// the trapping build's own wasm.
 //
 // Env:
 //   DIST       dist to serve (default: dist)
