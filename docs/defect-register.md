@@ -433,12 +433,28 @@ do not close the entry until they land.
   record. Evidence: `docs/known-gaps/kernel.md` (epoll row);
   `docs/known-gaps/gl.md` (fixed-function row, same symptom from
   the graphics side).
-- **FD-09 — `KThread::modify_ldt` panics on invalid indexes.**
-  *(Medium)* Guest input reaching an internal-invariant panic in
-  the thread-object layer; flagged by the fault-delivery lane as
-  outside its area. Evidence:
+- **FD-09 — `KThread::modify_ldt` panics on invalid indexes.
+  FIXED 2026-11-07 on branch `lane-d278` (commit
+  `f998e2e01`) — see CL-134 (lane-local).** *(Was Medium)*
+  Guest input reaching an internal-invariant panic in
+  the thread-object layer; flagged by the fault-delivery
+  lane as outside its area. Evidence:
   `docs/reports/cleanup-fault32-20261030.md`
   (branch `lane-cleanlog32`, "deliberately left alone").
+  Update (2026-11-07): the host's answers were measured
+  with raw `modify_ldt` syscalls and are now the guest's
+  answers — a byte count other than one descriptor is
+  -EINVAL (checked first), an unreadable descriptor
+  pointer is -EFAULT, and an out-of-range index is
+  -EINVAL instead of the panic; each rejection logs one
+  counted `BW64-FAIL syscall.modify_ldt` line. Pinned by
+  the new native tests `testModifyLdtInvalid32` and
+  `testModifyLdtIndex32` (main suite 616 and 617), which
+  fail on the base — 617 with this entry's exact panic
+  text — and pass with the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
 - **FD-10 — Some X11 callers use memory pointers without checking
   for failure.** *(Medium)* The guest-memory lane made a
   cross-page pointer request return "no pointer" instead of
@@ -732,6 +748,68 @@ do not close the entry until they land.
   FD-77's register debt is now fully discharged: the
   freeze is fixed (CL-34) and its silence is
   surfaced. FD-77 stays CLOSED.
+
+- **FD-193 — A futex on an unmapped word panics the
+  emulator, parks on the null page, or works on a
+  phantom page (frontier review D2). Filed and FIXED
+  2026-11-07 on branch `lane-d278` (commit `f998e2e01`)
+  — see CL-135 (lane-local).** *(Was High. The number
+  is lane-local: `lane-fd176` claims FD-193 for an
+  unrelated filing, and CL-135 is likewise claimed on
+  sibling branches; the composition audit settles
+  both.)* On the 32-bit side, a shared futex operation
+  on an unmapped word reached a kernel panic ("Could
+  not find futex address"), and a private WAIT proved
+  neither the word nor the timeout pointer before
+  parking — it read the null page and parked on
+  whatever it found there. On the 64-bit side the page
+  lookup materialized a fresh zero page for an unmapped
+  word, so every operation silently worked on a phantom
+  word. The host's answers, measured with raw syscalls:
+  -EFAULT for every operation on an unmapped word,
+  except a 64-bit private WAKE / WAKE_BITSET, which
+  wakes nothing and returns 0; and a bitset operation
+  with a zero mask is -EINVAL — the rule the 64-bit
+  side already had, now enforced on the 32-bit side
+  too. The guest answers the same, and each 32-bit
+  rejection logs one counted `BW64-FAIL syscall.futex`
+  line. Pinned by the new native tests
+  `testFutexUnmapped32` and `testFutexSharedUnmapped32`
+  (main suite 614 and 615) and `testFutexUnmapped64`
+  (x64 suite 6), which fail on the base — the 32-bit
+  cases with the panic behaviour above — and pass with
+  the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/` (the raw host-reference
+  programs and their outputs are in its `hostref/`
+  directory).
+
+- **FD-194 — Floating-point faults are delivered in
+  the wrong signal slot with the wrong code (frontier
+  review D7). Filed and FIXED 2026-11-07 on branch
+  `lane-d278` (commit `f998e2e01`) — see CL-136
+  (lane-local).** *(Was Medium. The number is
+  lane-local: the FD-189 lane's PlugPlay filing takes
+  FD-194 in the batch-10 settlement, and CL-136 is
+  likewise claimed on sibling branches; the
+  composition audit settles both.)* A divide quotient
+  overflow delivered SIGFPE with FPE_INTOVF and trap 4,
+  where the host delivers FPE_INTDIV and trap 0 exactly
+  as for divide-by-zero — the INTOVF / trap-4 pair
+  belongs to the INTO instruction, whose host delivery
+  is SIGSEGV and is unchanged. And
+  `CPU::prepareFpuException` delivered x87 exceptions
+  through the SIGSEGV slot, where the host delivers
+  SIGFPE with trap 16; the guest's own handler
+  classifies traps 16/19 only inside its SIGFPE
+  handler, so the old slot could never produce the
+  right Windows exception in the guest. Both behaviours
+  measured with raw signals on a real kernel. Pinned by
+  the new native test `testFpeDelivery32` (main suite
+  618), which fails on the base showing both wrong
+  deliveries and passes with the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
 
 ### Graphics
 
@@ -9789,6 +9867,8 @@ is behavioural, is re-proven there.
 | `lane-fd193` | *(Provisional number: FD-193 closed as CL-135; settles at the next composition.)* FD-193 CLOSED: the BW64_BLOCKSTATS exit reporter no longer dereferences a CPU that may already be destroyed — a CPU that allocates a block table under the flag joins a process-wide registry, folds its counters into process-wide totals on destruction, and the once-registered reporter prints the folded totals plus the counters of any CPUs still alive at exit. | Fix commit `f5fac0447` on base `faf95d26c`. RED on the base: four identical garbage lines (coverage=5070359463874500.0%) from the four-context block-invalidation harness. GREEN: a single line, identical across runs — built=7 execs=7 insnsInBlocks=13 totalInsns=14 coverage=92.9% — with totalInsns matching the harness's own independent instruction total exactly; interp/blocks differential byte-identical (pass=54 fail=0); flag unset prints nothing; CPU-lifetime gate PASS with block execution off and on; jit64 phase-1 tests 873/0. Record: `docs/reports/fd193-blockstats-reporter-20261107.md`; evidence `test-results/fd193/` |
 | `lane-x11-getramptr-audit` | *(Lane-local numbers: FD-193 closed as CL-137; both settle at the next composition.)* FD-193 CLOSED: audit of all 19 `getRamPtr` call sites in the window-system bridge (`source/x11`; none in `source/x11wire`) — 12 received guest-controlled addresses/lengths and dereferenced the result unchecked (getRamPtr returns null for unmapped, read-only or page-straddling spans, so such a guest struct crashed the host); guest fields now read through the checked accessor, `XSetWindowAttributes::get` falls back to its checked read on refusal, and `ChangeWindowAttributes` guards the null-attributes case. The 7 remaining sites pass emulator-allocated addresses and are safe by construction (Appendix). | Fix commit `cd030f389` on base `faf95d26c`. Proof: four new native tests drive the real int 0x99 handlers with page-straddling structs in a forked child — unfixed: all four fail (refusals logged at the exact straddle addresses; children wedged on the null deref, killed after budget); fixed: all four pass (logs `test-results/x11-getramptr-audit/red-601..604.log`, `green-601..604.log`). Record: `docs/reports/x11-getramptr-audit-20261106.md` |
 
+| `lane-d278` | *(Provisional numbers: FD-09 closed as CL-134, FD-193 as CL-135, FD-194 as CL-136 — all lane-local. FD-193 is also claimed on `lane-fd176` for an unrelated filing, FD-194 in the batch-10 settlement for the PlugPlay filing, and CL-134 on the batch-10 branches; every number settles at the next composition.)* FD-09 CLOSED (frontier review D8): `modify_ldt` answers the host's measured matrix instead of panicking — byte count other than one descriptor -EINVAL, unreadable descriptor pointer -EFAULT, out-of-range index -EINVAL, each rejection one counted `BW64-FAIL syscall.modify_ldt` line. FD-193 FILED + CLOSED (frontier review D2): futex operations on an unmapped word answer the host's measured matrix (-EFAULT for every operation except a 64-bit private WAKE / WAKE_BITSET, which returns 0) instead of the 32-bit panic, the null-page park, and the 64-bit phantom page; a zero bitset mask is -EINVAL on both word sizes. FD-194 FILED + CLOSED (frontier review D7): divide quotient overflow delivers SIGFPE / FPE_INTDIV / trap 0 and x87 exceptions deliver through the SIGFPE slot with trap 16, both as the host does; INTO via SIGSEGV trap 4 pinned unchanged. Fix commit `f998e2e01` on base `faf95d26c`. | Host reference programs measured first (raw futex and modify_ldt syscalls, raw signal delivery; sources and outputs in `test-results/d278/hostref/`). Six new native tests (main 614-618, x64 6) fail on the base — the shared-futex and modify_ldt index cases with the filed panic text — and pass with the fix, the rejections visible as counted BW64-FAIL lines in the green logs; control test 613 passes on the base and with the fix. QUEUE-VERDICT-PENDING. Record: `docs/reports/d278-futex-modifyldt-fpe-20261107.md`; evidence `test-results/d278/` |
+
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
 (signalfd4) two ways — the queue's recorded decision is the
@@ -14307,6 +14387,82 @@ dead-start fix and needs composition care.
   `test-results/x11-getramptr-audit/`. Fix commit
   `cd030f389` on base `faf95d26c`. Record:
   `docs/reports/x11-getramptr-audit-20261106.md`.
+
+- **CL-134 — FD-09 closed: `modify_ldt` answers the
+  host's measured error matrix instead of panicking on
+  guest input.** *(Lane-local closure on `lane-d278`;
+  CL-134 is also claimed on the batch-10 branches and
+  the number settles at the next composition.)* A
+  write whose byte count is not one descriptor returns
+  -EINVAL (checked first), an unreadable descriptor
+  pointer returns -EFAULT, and an out-of-range index
+  returns -EINVAL; each rejection logs one counted
+  `BW64-FAIL syscall.modify_ldt` line. The answers were
+  measured with raw `modify_ldt` syscalls on a real
+  kernel (host-reference program and output in
+  `test-results/d278/hostref/`). Proof: the new native
+  tests `testModifyLdtInvalid32` (main suite 616,
+  argument answers) and `testModifyLdtIndex32` (617,
+  invalid-index answers) fail on the base — 617 with
+  the filed panic text, "syscall_modify_ldt invalid
+  index: 8192" — and pass with the fix. Fix commit
+  `f998e2e01` on base `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **CL-135 — FD-193 closed: a futex on an unmapped
+  word answers the host's error matrix instead of
+  panicking, parking on the null page, or operating on
+  a phantom page.** *(Lane-local closure on
+  `lane-d278`; FD-193 is also claimed on `lane-fd176`
+  for an unrelated filing and CL-135 on sibling
+  branches — both numbers settle at the next
+  composition.)* On the 32-bit side the shared path
+  returns -EFAULT with a counted `BW64-FAIL
+  syscall.futex` line where it panicked ("Could not
+  find futex address"), and a private WAIT proves the
+  word and the timeout pointer before parking; the
+  bitset zero-mask rule the 64-bit side already had is
+  now enforced on the 32-bit side too. On the 64-bit
+  side the word's page is proven mapped before the
+  pointer lookup can materialize a phantom zero page:
+  every operation returns -EFAULT except a private
+  WAKE / WAKE_BITSET, which wakes nothing and returns
+  0. The matrix was measured with raw futex syscalls
+  on real kernels (host-reference program and outputs
+  in `test-results/d278/hostref/`). Proof: the new
+  native tests `testFutexUnmapped32` (main suite 614),
+  `testFutexSharedUnmapped32` (615), and
+  `testFutexUnmapped64` (x64 suite 6) fail on the base
+  and pass with the fix. Fix commit `f998e2e01` on base
+  `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **CL-136 — FD-194 closed: floating-point faults are
+  delivered in the host's signal slot with the host's
+  code.** *(Lane-local closure on `lane-d278`; FD-194
+  is taken by the PlugPlay filing in the batch-10
+  settlement and CL-136 is likewise claimed on sibling
+  branches — both numbers settle at the next
+  composition.)* A divide quotient overflow now
+  delivers SIGFPE with FPE_INTDIV and trap 0, exactly
+  like divide-by-zero, where it delivered FPE_INTOVF
+  and trap 4; and `CPU::prepareFpuException` delivers
+  x87 exceptions through the SIGFPE slot with trap 16,
+  where it wrote into the SIGSEGV slot — a slot whose
+  contents the guest's handler never classifies as an
+  FPU fault. INTO keeps its host-correct SIGSEGV /
+  trap-4 delivery, pinned unchanged. Both behaviours
+  measured with raw signals on a real kernel
+  (host-reference programs and outputs in
+  `test-results/d278/hostref/`). Proof: the new native
+  test `testFpeDelivery32` (main suite 618) fails on
+  the base showing both wrong deliveries and passes
+  with the fix. Fix commit `f998e2e01` on base
+  `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
 
 ## Appendix — examined and deliberately NOT registered
 
