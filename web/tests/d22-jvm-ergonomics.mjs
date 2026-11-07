@@ -18,7 +18,7 @@ const ZIP_SRC = '/tmp/d22-probe.zip';
 const VM_ARGS = ['-Dhttps.protocols=TLSv1.2,TLSv1.1,TLSv1', '-XX:+ShowCodeDetailsInExceptionMessages', '-XX:+UseCompactObjectHeaders', '--enable-native-access=ALL-UNNAMED'];
 const RUNS = [
   { name: 'flags', args: [...VM_ARGS, '-XX:+PrintFlagsFinal', '-version'], marker: /openjdk version/i, need: /MaxHeapSize/ },
-  { name: 'settings', args: [...VM_ARGS, '-XshowSettings:all', '-version'], marker: /openjdk version/i, need: /Maximum heap size/ },
+  { name: 'settings', args: [...VM_ARGS, '-XshowSettings:all', '-version'], marker: /VM settings:/, need: /Max\. Heap Size \(Estimated\)/ },
   { name: 'runtime', args: [...VM_ARGS, '-cp', 'Z:\\home\\username\\apps', 'HeapProbe'], marker: /HEAPPROBE DONE/, need: /HEAPPROBE maxMemory=/ },
 ];
 const RUN_TIMEOUT_MS = 900_000;
