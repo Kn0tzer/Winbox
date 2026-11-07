@@ -9715,7 +9715,27 @@ do not close the entry until they land.
   green64 guest console.
 
 - **FD-195 — The guest enumerates no HID device at all with a simulated gamepad installed.** *(High)*
-  With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.
+  With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.record `docs/reports/fd188-drivers-initialise-20261107.md`.
+  Progress note (FD-195 lane, 2026-11-07, read from the batch-10
+  gate's preserved session logs - same product contents as the
+  live build): the host feed is live (`Gamepad feed: controller
+  'Standard Gamepad' opened (instance 0)`); the WineBus service
+  runs (state 4); exactly one WINEBUS child device is created in
+  a session - `WINEBUS\VID_845E&PID_0001`, is_gamepad=0, no &MI_
+  suffix, default serial - which is not the gamepad; the gamepad
+  (VID_045E&PID_028E) is never enumerated as a device at all.
+  Each session carries exactly one BW64-FAIL line
+  (`netlink-recvfrom flags=0x22`). Per the shipped Wine 10
+  winebus source, if netlink monitor creation fails the udev
+  backend aborts before its initial enumeration, so no udev
+  device can appear; the emulator's netlink recvfrom rejects
+  flags beyond MSG_DONTWAIT|MSG_NOSIGNAL with EINVAL
+  (source/kernel/knetlink.cpp), which is the filed lead - but
+  the backend's own traces do not appear in these session
+  consoles, so the monitor-abort step is not yet proven from a
+  log. Fresh probe runs on the lane's own build are still owed:
+  two attempts (15-minute and 60-minute slot budgets) starved
+  behind the build relay without booting.
 
 - **FD-196 — FD-188's tightened prefix/runtime validation left
   the packaging test fixtures behind: `test_prepare_prefixes.py`
