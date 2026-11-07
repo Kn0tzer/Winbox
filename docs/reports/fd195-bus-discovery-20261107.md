@@ -144,9 +144,11 @@ devices, unrelated to the gamepad.
   several times as members changed; tarfile's default directory
   entries for path components make members read as directories,
   so the final archive was written with explicit regular-file
-  entries. Current archive: 493,588,480 bytes (the size moved
-  again with the prefix64 INF staging; see runtime-assets.json
-  for the live pin).
+  entries. Final archive: 493,598,720 bytes, sha256
+  1a0160d5a75e7f733215936d35e2885ac0bea7d909ab12e167b4ba7b3cbd0726
+  (the last rebuild after the prefix64 INF staging and the
+  final prefix64 re-pin; runtime-assets.json carries the
+  per-file pins - prefix64.zip 19,038,895 bytes).
 - Incident, recovered: an early regen ran with web/runtime
   still holding the prep symlinks and wrote through one into
   the shared store's wine32.zip. The store file was restored
