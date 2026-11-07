@@ -8722,6 +8722,46 @@ do not close the entry until they land.
   re-examined and still refused are listed in the record. FD-168
   stays open at 2,018. Record:
   `docs/reports/fd168-win32u-drawdown2-20261107.md`.
+
+  *Addendum — third draw-down (lane-fd168-slice3, 2026-11-07;
+  partial, the entry stays open).* Four more x86-64 win32u names
+  are real implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice3.patch`):
+  NtUserDrawCaption (forwards to the tree's own full caption
+  painter NtUserDrawCaptionTemp with the window's own
+  font/icon/text, flags masked to the public caption bits
+  0x103f), NtGdiDrawEscape (the no-output form of the existing
+  NtGdiExtEscape wrapper), NtGdiPolyPatBlt (per-entry composition
+  of brush selection and NtGdiPatBlt with kernel semantics:
+  invalid-brush entries skipped silently, invalid DC returns
+  FALSE, count zero is a TRUE no-op), and
+  NtUserWindowFromPhysicalPoint (a new syscall-table entry
+  forwarding to NtUserWindowFromPoint). Runtime restaged on the
+  current vintage: wine64.zip `4867cf75…`, release
+  `runtime-assets-20261107-fd168s3`; the census regenerated in
+  the same change: x64 win32u named stubs 912 -> 908, the only
+  table changed across 1,171, FD-168 total on this branch
+  2,023 -> 2,019. (The second draw-down's five names live on
+  lane-fd168-slice2, not in this branch; the combined count when
+  both compose is 2,014.) Proof: guest fixture
+  `tools/guest-fixtures/win32u-fd168s3.c` (19 checks) against a
+  verified build of the branch tip — RESULT 0 twice, every check
+  ok=1; against the previous shipped runtime (wine64.zip
+  `133bfd70…`) RESULT 18, every new-export check failing at the
+  stub guard. One fixture repair was needed first and is
+  recorded in the lane record: the caption checks as committed
+  demanded nonzero returns from DrawCaption, which this tree's
+  caption painter does not produce in this environment on
+  either runtime; the repaired checks assert exact agreement
+  with the reference instead (pixel difference 0) — the
+  return-value divergence itself is filed below as FD-201.
+  Checks: JS unit on the built tree 354 passed / 0 failed;
+  checking-queue pipeline 57 on the fixture-repair tip is the
+  standard shape (verify-source exact; citations 0; js-unit
+  352/2, only the two known bare-checkout artifacts; js-legacy
+  0; native 692/0 and 116/0; run-native 0). FD-168 stays open
+  at 2,019 on this branch. Record:
+  `docs/reports/fd168-win32u-drawdown3-20261107.md`.
 - **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
   validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
   ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
@@ -10898,6 +10938,41 @@ do not close the entry until they land.
 
 - **FD-209 — Seventy-one GL entry points a Windows guest cannot resolve at all, though the harness carries rows for them.** *(Medium)* Measured 2026-11-07 on the completed glcov run: the harness resolves each name the way an application does (wglGetProcAddress first, then the opengl32 export table) and 103 of its 334 rows resolved to no callable pointer. Of those, 32 are glX* names and the traceProc plumbing row, which are not Windows-path entry points at all and are counted for completeness only. The other 71 are real GL entry points — among them the vertex-array-object family (glBindVertexArray, glGenVertexArrays, glDeleteVertexArrays), the sync family (glFenceSync, glClientWaitSync, glWaitSync, glDeleteSync, glIsSync, glGetSynciv), instanced drawing (glDrawArraysInstanced, glDrawElementsInstanced and the base-vertex/base-instance variants), glBufferStorage, glMapBufferRange, the glTexBuffer family, glGetStringi, the unsigned-uniform family, and the debug-message family (full list in the record) — so an application in the emulator cannot call them through the standard routes. (Two of the 71, glGetShaderSourceImpl and glVersionMode, are ABI-internal names rather than application entry points.) The likely mechanism, for the fixing lane to confirm: the guest context's reported GL version gates which entry points the loader will resolve. Closing terms: the named entry points resolve through the guest path and reach their bridge handlers (proven by the glcov rows recording real answers), or the register records per family why resolution is correctly absent. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/console.log ("no export" notes) and glcov-results.json.
 
+
+- **FD-201 — In this environment the win32u caption painter
+  paints correctly but returns 0, where the documented
+  contract is a nonzero return on success.** *(Low —
+  behaviour divergence in a shipped, already-implemented
+  function. Filed by lane-fd168-slice3, 2026-11-07;
+  lane-local number — other batch-11 branches claim FD-201
+  for unrelated findings, so this entry renumbers when the
+  batch composes.)* Measured with the slice-3 guest fixture
+  (titled WS_OVERLAPPEDWINDOW window, memory-DC surfaces) on
+  two runtimes: the batch-10 shipped runtime (wine64.zip
+  `133bfd70…`) and the slice-3 runtime (`4867cf75…`). On
+  both, NtUserDrawCaptionTemp with the window's own
+  font/icon/text paints the caption (11,988 of 12,000
+  surface pixels non-white) and returns 0; user32 DrawCaption
+  on the same window paints pixel-identical output and also
+  returns 0. Microsoft's documentation for DrawCaption: if
+  the function succeeds, the return value is nonzero — so a
+  guest program that checks the return sees failure after a
+  successful paint. The divergence belongs to the shipped
+  caption painter (NtUserDrawCaptionTemp, implemented long
+  before this slice), not to the slice's new
+  NtUserDrawCaption, which forwards to it and agrees with it
+  exactly (pixel difference 0, same return). A host-side
+  reference was attempted and not obtained: the box's
+  packaged Wine 9.0 did not complete its own first-run
+  prefix initialisation inside two bounded windows on the
+  loaded box, so whether Wine on a normal host returns
+  nonzero for the same calls is unmeasured. Closing terms:
+  either the painter returns nonzero on a successful paint
+  in the emulator guest (the fixture's original nonzero
+  assertions then restored and passing), or the same calls
+  measured under host Wine returning 0 as well, closing this
+  as upstream-faithful behaviour. Evidence: the slice-3 lane
+  record and its preserved guest consoles.
 
 ## B. Fixed on a lane branch — awaiting merge
 
