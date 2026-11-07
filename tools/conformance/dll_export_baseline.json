@@ -20160,7 +20160,7 @@
    "unvalidated": 0
   },
   "x64/win32u.dll": {
-   "code": 409,
+   "code": 413,
    "data": 0,
    "empty": 0,
    "forwarders": 0,
@@ -20495,7 +20495,6 @@
     "NtGdiDestroyOPMProtectedOutput",
     "NtGdiDestroyPhysicalMonitor",
     "NtGdiDoBanding",
-    "NtGdiDrawEscape",
     "NtGdiDwmCreatedBitmapRemotingOutput",
     "NtGdiEnableEudc",
     "NtGdiEndGdiRendering",
@@ -20601,7 +20600,6 @@
     "NtGdiPATHOBJ_vEnumStart",
     "NtGdiPATHOBJ_vEnumStartClipLines",
     "NtGdiPATHOBJ_vGetBounds",
-    "NtGdiPolyPatBlt",
     "NtGdiPolyTextOutW",
     "NtGdiQueryFontAssocInfo",
     "NtGdiQueryFonts",
@@ -20798,7 +20796,6 @@
     "NtUserDoSoundDisconnect",
     "NtUserDownlevelTouchpad",
     "NtUserDrawAnimatedRects",
-    "NtUserDrawCaption",
     "NtUserDwmGetRemoteSessionOcclusionEvent",
     "NtUserDwmGetRemoteSessionOcclusionState",
     "NtUserDwmKernelShutdown",
@@ -21076,12 +21073,11 @@
     "NtUserWaitAvailableMessageEx",
     "NtUserWaitForMsgAndEvent",
     "NtUserWaitForRedirectionStartComplete",
-    "NtUserWindowFromPhysicalPoint",
     "NtUserYieldTask",
     "NtValidateCompositionSurfaceHandle",
     "NtVisualCaptureBits"
    ],
-   "stubs": 912,
+   "stubs": 908,
    "unvalidated": 0
   },
   "x64/windows.devices.enumeration.dll": {
@@ -46577,19 +46573,19 @@
  },
  "format": 1,
  "totals": {
-  "code": 106502,
+  "code": 106506,
   "data": 4771,
   "dlls": 1171,
   "empty": 41661,
   "forwarders": 19547,
   "named": 161677,
   "slots": 206103,
-  "stubs": 33072
+  "stubs": 33068
  },
  "zip_sha256": {
   "prefix32.zip": "68164e5635cd31d996f16ddd6899c375d028ef42f170fa207307002f51702fc6",
-  "prefix64.zip": "b1bfa64e0863ccf73dfcb244416ac6e3e14fa1de1f491aab7dd2c78bc0131ee5",
+  "prefix64.zip": "197251244ccb367f6a46c3fc8ec7fdaaa425891f75aa02113f27f1e3d3126b62",
   "wine32.zip": "aa2bb9d63bf03dca2275d64ec117dbb280b68b8eea456d54774738cefa46e070",
-  "wine64.zip": "1b72507361d91d9fc70090df5c1692959791cb24f1f59f9c80a32e736d6e4938"
+  "wine64.zip": "4867cf758f2f42d4de850e3671088fb2183c2f54e2095400cb3cbcf5f6fb4c97"
  }
 }
