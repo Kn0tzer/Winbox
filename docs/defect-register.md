@@ -9899,6 +9899,507 @@ do not close the entry until they land.
   everything after garbage). *(Lane-local number; settles
   at the next composition audit.)*
 
+- **FD-193 — On the 64-bit side `clock_gettime` ignored the
+  clock id entirely.** *(Medium)* Every clock — including
+  invalid ids 10, 12, −1 and 99 — returned wall-clock time with
+  a success answer, so a guest asking for a monotonic or CPU
+  clock silently received realtime, and nonsense ids were
+  indistinguishable from real ones. The host's raw answers:
+  ids 0–9 and 11 are valid, each in its own domain (realtime
+  family, monotonic family, process CPU time, thread CPU
+  time); anything else answers −EINVAL ahead of the result
+  pointer check. Fixed on branch `lane-timing-waits`:
+  `sys_clock_gettime64` validates through the shared
+  `KSystem::isSupportedClockId` and reports per-clock domains
+  mirroring the 32-bit side. Proof: guest probe
+  `guestprobeC-run1` rows (clk10/12/−1/99 → −EINVAL, clk99
+  with a null result pointer → −EINVAL, null pointer with a
+  valid clock → −EFAULT, clocks 2/3/7/8/9/11 → 0, monotonic
+  below realtime) against `hostref-timing.txt`; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-194 — `clock_getres` answered for any clock, claimed
+  the wrong resolution, and wrote through a null pointer.**
+  *(Medium)* All three implementations (32-bit, 32-bit
+  time64, 64-bit) returned success for invalid ids such as
+  99; the 32-bit pair reported 1 ms for every clock and the
+  64-bit case 1 ns for every clock; a null result pointer
+  was written through. The host's raw answers: an invalid
+  id answers −EINVAL; a null pointer is accepted and
+  nothing is written; fine clocks report 1 ns and the
+  coarse clocks (5, 6) report 1,000,000 ns. Fixed on branch
+  `lane-timing-waits` on all three implementations. Proof:
+  guest probe `guestprobeC-run1` clock_getres rows; suite
+  tests `testTimingWaits32` / `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-195 — An interrupted sleep never wrote its remaining
+  time.** *(Medium)* `nanosleep`'s second argument and
+  `clock_nanosleep`'s fourth are where the host reports how
+  much of the sleep is left when a signal interrupts it;
+  guests (and libc retry loops) rely on it. On the 64-bit
+  side the dispatcher did not even pass the address; on the
+  32-bit side `KThread::clockNanoSleep` ignored it and
+  `KThread::nanoSleep` had no concept of it. An interrupted
+  sleep answered −EINTR with the caller's buffer untouched.
+  Fixed on branch `lane-timing-waits`: the wrappers compute
+  the remainder from the requested duration minus the
+  elapsed time of the call and write it on −EINTR, for
+  relative sleeps only (the host writes nothing for
+  TIMER_ABSTIME sleeps). Proof: the mechanism is in the fix
+  commits; the interrupt-driven shapes cannot be driven
+  synchronously in the native harness (a guest handler is
+  never called — FD-213), so the regression vehicle is the
+  guest probe family in `test-results/timing-waits/`, and
+  the limitation is recorded in
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-196 — 32-bit `clock_nanosleep` refused TIMER_ABSTIME
+  outright and validated nothing.** *(Medium)*
+  `KThread::clockNanoSleep` answered −EINVAL for ANY
+  nonzero flags, so the valid TIMER_ABSTIME bit made every
+  absolute sleep fail; the wrappers read the request fields
+  before any check, so a null request read guest address 0
+  and an out-of-range nanosecond field was silently
+  accepted. Fixed on branch `lane-timing-waits`: the
+  wrappers answer −EFAULT for a null request and −EINVAL
+  for out-of-range fields, convert TIMER_ABSTIME against
+  the same clock source `clock_gettime` reports, answer
+  −EOPNOTSUPP for CLOCK_THREAD_CPUTIME_ID, and route
+  through the interruptible sleep path. Proof: suite test
+  `testTimingWaits32` (including an absolute monotonic
+  sleep that elapses), guest probe rows in
+  `guestprobe-run*`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-197 — 64-bit `clock_nanosleep` refused flag bits the
+  host ignores, refused the process CPU clock, and used a
+  different monotonic base than `clock_gettime`.**
+  *(Medium)* Any flags value with bits outside TIMER_ABSTIME
+  answered −EINVAL (the host, strace-verified, ignores the
+  other bits); clock 2 answered −EINVAL (the host accepts
+  it); clock 3 answered −EINVAL (the host answers
+  −EOPNOTSUPP); and the TIMER_ABSTIME conversion used
+  `getMilliesSinceStart` while `clock_gettime` reported
+  `getMicroCounter`, so a deadline and a clock reading did
+  not share a domain. Fixed on branch `lane-timing-waits`.
+  Proof: guest probe `guestprobeC-run1` clock_nanosleep
+  rows (clk3 → −95, clk2 → 0, flags 2/−1 → 0, absolute
+  monotonic and realtime sleeps elapsing ~40 ms against a
+  40 ms target); host rows in `hostref-timing.txt` and
+  `hostref-timing3.txt`; suite test `testTimingWaits64`.
+  Record: `docs/reports/timing-waits-20261107.md`.
+
+- **FD-198 — `getrusage` accepted any `who`, accepted a
+  null usage pointer, and (64-bit) reported zeros.**
+  *(Medium)* The host validates `who` first (0, −1, 1
+  valid; anything else −EINVAL) and then faults a null
+  usage pointer. The 64-bit case zero-filled the structure
+  and answered 0 for every input. The 32-bit side treated
+  any `who` ≥ 1 as RUSAGE_THREAD and any negative value as
+  RUSAGE_CHILDREN, and wrote through a null pointer. Fixed
+  on branch `lane-timing-waits`: both widths validate in
+  the host's order and report real summed thread CPU times
+  (new shared helper `KProcess::cpuTimesMicroSeconds`).
+  Proof: guest probe `guestprobeC-run1` getrusage rows;
+  suite tests on both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-199 — Interval timers: negative seconds were
+  clamped instead of refused, the 32-bit side validated
+  nothing, and `getitimer` checked its pointer before
+  `which`.** *(Medium)* On the 64-bit side a setitimer
+  value of −1 seconds was read as unsigned and clamped to
+  ~49 days; the 32-bit `KProcess::setitimer` applied the
+  same clamp with no field validation at all; and
+  `getitimer` answered −EFAULT for a null result pointer
+  even when `which` itself was invalid, where the host
+  answers −EINVAL (the `which` check precedes the pointer
+  check). Fixed on branch `lane-timing-waits` on both
+  widths. Proof: guest probe `guestprobeC-run1` itimer
+  rows (setitimer sec −1 → −EINVAL, getitimer(3, NULL) →
+  −EINVAL, getitimer(0, NULL) → −EFAULT); suite tests on
+  both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-200 — `wait4` answered −ECHILD for unknown option
+  bits instead of −EINVAL.** *(Medium)* The host validates
+  the options word ahead of the child lookup: bits outside
+  WNOHANG|WUNTRACED|WCONTINUED and the __W* clone-scope
+  bits answer −EINVAL even when there are no children.
+  Both widths answered −ECHILD. Fixed on branch
+  `lane-timing-waits` at `KSystem::waitpid` (32-bit) and
+  at the 64-bit wait4 case. Proof: guest probe
+  `guestprobeC-run1` wait4 rows; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-201 — The 64-bit side had no `alarm` syscall.**
+  *(Low)* `alarm` shares the ITIMER_REAL slot with
+  setitimer on the host; the 32-bit side implements it
+  (`KProcess::alarm`) but the 64-bit dispatch table had no
+  case and answered −ENOSYS. Fixed on branch
+  `lane-timing-waits` by dispatching to the existing
+  implementation. Proof: guest probe `guestprobeC-run1`
+  (`alarm0` → 0); suite test `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-202 — 64-bit `times` returned ticks at 1000× the
+  real rate.** *(Low)* The return value was
+  microseconds/10000 — 100,000 ticks per second — where
+  the host's clock tick (USER_HZ) is 100 per second, so a
+  guest dividing by CLK_TCK read durations 1000× too
+  large. Fixed on branch `lane-timing-waits`
+  (milliseconds/10 since start). Proof: guest probe
+  `guestprobeC-run1` times rows; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-203 — 32-bit `gettimeofday` wrote through a null
+  time pointer.** *(Low)* The host accepts (NULL, NULL)
+  and writes nothing; the 32-bit side wrote the timeval
+  unconditionally, i.e. at guest address 0 when the caller
+  passed null. The 64-bit case was already correct. Fixed
+  on branch `lane-timing-waits`. Proof: suite test
+  `testTimingWaits32`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-204 — `epoll_create` size and `epoll_create1` flags
+  were not validated on either width.** *(Medium)* The
+  host answers −EINVAL for a legacy create size ≤ 0 and
+  for create1 flags outside EPOLL_CLOEXEC|EPOLL_NONBLOCK;
+  the emulator returned a descriptor for size 0, size −5
+  and flags 1 alike. Fixed on branch `lane-timing-waits`
+  in both dispatchers' wrappers/cases. Proof: guest probe
+  `guestprobeD-run2` rows (flags 1 → −EINVAL, flags
+  0x10000 → −EINVAL, size 0/−5 → −EINVAL, valid forms →
+  descriptors); suite tests on both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-205 — 64-bit `epoll_wait` accepted maxevents < 1
+  and returned events anyway.** *(Medium)* The host
+  answers −EINVAL for maxevents 0 or negative, even with
+  an event ready; the 64-bit case clamped the value
+  (0 → proceeded, −1 → 64) and returned the ready event.
+  The pwait/pwait2 body already validated. Fixed on branch
+  `lane-timing-waits`. Proof: guest probe
+  `guestprobeD-run2` rows (maxevents 0/−1 with data ready
+  → −EINVAL, maxevents 4 → 1 event). Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-206 — `poll` set POLLNVAL in revents but did not
+  count it, so polling a closed descriptor answered 0.**
+  *(Medium)* The host answers 1 (the return counts every
+  descriptor with nonzero revents). In
+  `internal_poll_impl` the tally sat inside the
+  descriptor-exists branch, while POLLNVAL is set exactly
+  when the descriptor no longer exists. Fixed on branch
+  `lane-timing-waits` by counting every entry with nonzero
+  revents. Proof: guest probe `guestprobeC-run1` (`poll
+  closedfd` → ret 1, revents 0x20; pre-fix ret 0). Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-207 — A negative or out-of-range timespec parked
+  `pselect6` and `ppoll` instead of answering −EINVAL.**
+  *(High)* Both 64-bit cases read the timespec fields as
+  unsigned, so {−1, 0} became an effectively infinite wait
+  and a guest passing a bad timeout hung the session
+  instead of getting an error. ppoll also lacked the
+  timespec permission check its siblings have, and
+  pselect6 never validated its sigmask argument's size or
+  pointer (the host copies the mask in: size ≠ 8 answers
+  −EINVAL, an unreadable mask −EFAULT; the mask's
+  non-application itself is FD-103). Fixed on branch
+  `lane-timing-waits`. Proof: guest probes `guestprobeC-run1`
+  and `guestprobeE-run2` (sec −1 → −EINVAL on both calls,
+  bad nsec → −EINVAL, bad pointer → −EFAULT, mask size 4
+  → −EINVAL, mask bad pointer → −EFAULT); the pre-fix
+  parks are the tails of `guestprobeB-run1/2/5`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-208 — `pselect6` and `ppoll` never wrote back the
+  unslept remainder of their timeout.** *(Medium)* Linux
+  writes the remaining time back for select, pselect6 and
+  ppoll alike; the emulator wrote it back only for select.
+  This entry also corrects the FD-23-residue register note
+  that "pselect6 never writes its timespec back, as on the
+  host": the timing lane's raw-syscall host grid measured
+  the write-back directly (ready-immediately: 49.999998120
+  of 50 s left; interrupted at ~43 ms: 49.957649822;
+  fully expired: 0), and the standing census test pin that
+  encoded the old claim is updated in the same fix. Fixed
+  on branch `lane-timing-waits` (the shared select core
+  gained a nanosecond-fraction mode for pselect6; ppoll
+  writes back at its case). Proof: guest probes
+  `guestprobeE-run2` (ppoll ready: 9.999989 of 10 s left;
+  expired shapes → ~0) and `guestprobeF-run1` (select and
+  pselect6 ready returns leave ~the full timeout);
+  updated pin in `testSyscallCensus64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-209 — 64-bit `timerfd_settime` rejected the valid
+  TFD_TIMER_CANCEL_ON_SET flag and (in this lane's first
+  correction) nearly traded that for accepting
+  everything.** *(Medium)* The host's valid mask is
+  ABSTIME|CANCEL_ON_SET (0x3): flags 0–3 answer 0, 4 and
+  −1 answer −EINVAL (raw grid + strace, `hostref-timing3.txt`).
+  The shipped 64-bit case rejected bit 1 outright; the
+  32-bit path never validated. Fixed on branch
+  `lane-timing-waits`: the 64-bit case accepts exactly the
+  host mask (CANCEL_ON_SET is accepted; cancelling on a
+  clock-set is not modelled, as nothing here sets the
+  clock). The standing `testTimerfd` pin that asserted
+  −EINVAL for flags=2 rested on the assumption that bit 1
+  is invalid; it is updated in the same fix to pin the
+  measured mask. Proof: suite tests `testTimerfd` and
+  `testTimingWaits64`; guest probe `guestprobeC-run1`.
+  Record: `docs/reports/timing-waits-20261107.md`.
+
+- **FD-210 — The select core refused the all-null-sets
+  sleep shape for nfds > 1024.** *(Low)* The 1024 cap
+  exists because the fd-set buffers are fixed-size (a
+  boundary FD-23 stated); with no set pointers at all
+  there is nothing to buffer and the host simply sleeps
+  (raw grid: nfds=100000 with empty sets answers 0 after
+  the timeout). Fixed on branch `lane-timing-waits`: the
+  cap now applies only when at least one set pointer is
+  non-null; the stated boundary otherwise stands. Proof:
+  guest probe `guestprobeC-run1` (`pselect6 nfds100000`
+  → 0). Record: `docs/reports/timing-waits-20261107.md`.
+
+- **FD-211 — The X64Headless target did not build at the
+  integration tip.** *(Medium; found by this lane, outside
+  its family)* `source/util/networkutils.cpp` began with
+  an `#undef U64` block ahead of its includes; U64 is a
+  macro from the platform types header, and under the
+  batch-9 precompiled-header force-include the macro is
+  already defined, so the #undef killed it for the whole
+  translation unit and the header's include guard made
+  the re-include a no-op — every use of the U64 type in
+  the file then failed. The checking queue's native legs
+  build only the test targets, which exclude this file,
+  so the break shipped unnoticed. Fixed on branch
+  `lane-timing-waits` by deleting the three-line block
+  (no identifier in the file collides with the macro).
+  Proof: `make x64` completes and the binary runs the
+  guest probes in `test-results/timing-waits/`; the
+  failure log is `build-x64.log` there. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-212 — `waitid` is not implemented on either
+  width.** *(Medium)* Every shape answers −ENOSYS. The
+  host contract is measured (raw grid): option validation
+  precedes the child lookup (bad options → −EINVAL ahead
+  of −ECHILD; options=0 → −EINVAL; a bad idtype →
+  −EINVAL; no children → −ECHILD); a bad siginfo pointer
+  answers −EFAULT even with no children, and with an
+  exited child the child is still reaped when the info
+  write faults; WNOHANG on a running child answers 0 with
+  the siginfo zeroed. Closing terms: implement waitid on
+  both widths to that contract, proven by guest probes
+  and suite tests per shape. Filed by the timing lane,
+  2026-11-07; evidence `test-results/timing-waits/
+  hostref-timing.txt` and the guest grid rows in
+  `guestprobe-run*` / `guestprobeB-run*`. The census
+  disposition (ordinary-unimplemented) already records
+  the gap; this entry gives it a queue number and the
+  measured contract.
+
+- **FD-213 — Timer-expiry signals are never delivered to
+  a guest handler, and the surrounding pending-signal
+  machinery misbehaves.** *(High, scoped as measured)*
+  Measured in the bare x86-64 ELF vehicle (single thread,
+  full kernel): an interval timer counts down in real
+  time (getitimer read-backs track the wall clock) and
+  expires, but the expired SIGALRM never reaches a
+  properly installed handler (install verified, 1000 ms
+  flip test: never; 50 ms periodic over 400 ms: 0
+  deliveries against the host's ~8). Sleeps and waits
+  surface −EINTR late, at internal ~200 ms wake quanta or
+  near the natural end. A timer signal that is BLOCKED
+  still interrupts a nanosleep with −EINTR (the host
+  completes the sleep), and the expired signal cannot be
+  dequeued by `rt_sigtimedwait` (answers −EAGAIN);
+  `rt_sigtimedwait` also fails to validate its timeout
+  (bad nsec answers −EAGAIN, host −EINVAL). Separately,
+  `pause()` in a fresh process with a 40 ms timer parked
+  past a 240 s timeout instead of returning −EINTR at
+  expiry. Direct delivery works: a tgkill'd signal runs
+  the handler during a CPU loop, so the defect is in the
+  timer-expiry → dispatch path and the pending-signal
+  machinery, not in handler invocation. Scope caveat:
+  measured in the bare-ELF vehicle; the production (Wine,
+  multithreaded) impact is unmeasured. One guest run also
+  died around a sigprocmask unblock following a timer
+  expiry (single observation, in the same evidence).
+  Closing terms: an expired interval timer delivers its
+  signal to an installed handler in the vehicle, blocked
+  signals do not interrupt sleeps, and an expired pending
+  signal is dequeueable via rt_sigtimedwait. Filed by the
+  timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/` (`timingprobe2-run2`,
+  `timingprobe3-run2`, `timingprobe4-run1`,
+  `guestprobeB-run*`).
+
+- **FD-214 — A `wait4` stop report consumes the child
+  and reports no stop status.** *(Medium)* On the host,
+  wait4 with WUNTRACED on a stopped child reports the
+  stop (status carries 0x7f) and does not reap. Measured
+  in the guest: the call returned the child with
+  stopped=0 and the child was gone afterwards (a later
+  wait answered −ECHILD). Other wait4 shapes match the
+  host (exit-code reaping, WNOHANG forms). Closing terms:
+  stop reports carry a stop status and leave the child
+  waitable. Filed by the timing lane, 2026-11-07;
+  evidence the child-wait rows of the guest grid in
+  `test-results/timing-waits/`.
+
+- **FD-215 — In the full-kernel ELF vehicle, 64-bit
+  `futex` is served by the threadless stub, not the real
+  implementation.** *(High)* `sys_futex64` delegates to
+  `KThread::futex64` only when the CPU carries a thread,
+  process and memory64; in the `--x64-run-elf` /
+  rootfs vehicle the stub answered instead: WAIT on a
+  matching value returned −EAGAIN in 0 ms instead of
+  blocking (50 ms timeout shape), WAIT with a bad address
+  answered −EAGAIN instead of −EFAULT, WAKE with a bad
+  address answered 0 instead of −EFAULT, CMP_REQUEUE
+  with a bad second address answered 0 instead of
+  −EFAULT. glibc's EAGAIN-retry behaviour masks this as
+  spinning and CPU burn. Methodological consequence: futex
+  contract shapes must be probed through the native
+  harness's real path (the dispatch-guard test) or a
+  vehicle known to take it — the suite pins in
+  `testTimingWaits64` use FUTEX_PRIVATE_FLAG forms for
+  exactly this reason. Closing terms: the futex dispatch
+  condition holds in the full-kernel vehicle, proven by
+  the grid shapes blocking and faulting as the host does.
+  Filed by the timing lane, 2026-11-07; evidence the
+  futex rows of `guestprobeB-run5` against
+  `hostref-timing.txt`.
+
+- **FD-216 — Guest page protections are not consulted on
+  syscall memory accesses (cross-cutting).** *(Medium)*
+  Across the timing family, a pointer to a mapped
+  PROT_NONE page is treated as readable/writable:
+  clock_gettime wrote its result there, getitimer and
+  setitimer accepted it, nanosleep/clock_nanosleep read
+  the request as zeros from it, getrusage wrote there,
+  epoll_wait wrote events there, poll read its descriptor
+  array as zeros, pselect6 accepted a sigmask there. Null
+  pointers ARE faulted where the code checks them, so
+  this is specifically the protection flags of mapped
+  pages being ignored by the non-checked accessors, not
+  missing null checks. Closing terms are subsystem-wide
+  and belong to the memory owners; this entry records the
+  measured shapes so the property has a queue number.
+  Filed by the timing lane, 2026-11-07; evidence the
+  bad-pointer rows of the guest grid in
+  `test-results/timing-waits/`.
+
+- **FD-217 — ITIMER_VIRTUAL and ITIMER_PROF are refused
+  with −EINVAL.** *(Medium)* The host accepts them (they
+  tick against process/thread CPU time); the emulator's
+  shared itimer core refuses them, and the standing suite
+  test pins the refusal deliberately. Closing them needs
+  CPU-time timers (the CPU-time sources now exist —
+  FD-198's helper and the per-thread times — but the
+  expiry machinery is FD-213's territory). Closing terms:
+  setitimer/getitimer accept VIRTUAL and PROF against CPU
+  time and the pin is replaced. Filed by the timing lane,
+  2026-11-07; evidence `hostref-timing.txt` and
+  `testSetitimer64Syscalls`.
+
+- **FD-218 — Four timing-family calls have no 32-bit
+  dispatch at all: `pause`, `rt_sigtimedwait`, `ppoll`,
+  `epoll_pwait`.** *(Medium)* All four are dispatched on
+  the 64-bit side and answer −ENOSYS on the 32-bit side
+  (census disposition: ordinary-unimplemented; the suite
+  now pins the −ENOSYS answers in `testTimingWaits32` so
+  the gap is executable, except pause, whose blocking
+  shape cannot be pinned in the harness). The 64-bit
+  implementations are open-coded in the 64-bit dispatcher
+  rather than shared methods, so wiring the 32-bit side
+  is real work, not a table entry. Closing terms: the
+  four calls dispatch on the 32-bit side to the same
+  contract as the 64-bit side. Filed by the timing lane,
+  2026-11-07; evidence
+  `tools/conformance/syscall_dispositions.json` and the
+  suite pins.
+
+- **FD-219 — In the bare-ELF vehicle the guest process
+  dies at `epoll_ctl` DEL with a null event, and related
+  deaths follow interrupt-heavy sequences.** *(High)*
+  `epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL)` is valid on
+  the host (the event is ignored; the answer is 0). In
+  the vehicle the run ends there: a
+  `BW64-FAIL guest-memfault32 ... addr=0x0` report whose
+  instruction pointer is the guest's own entry point,
+  then emulator shutdown — reproduced deterministically
+  in an isolation probe whose thirteen preceding calls all
+  answer correctly (`guestprobeD-run1` on the base-era
+  binary, `guestprobeD-run2` on the timing lane's fixed
+  binary, same fault address). The ctl implementation
+  itself is exonerated by reading: it already skips the
+  event read for DEL and its removal path touches only
+  host-side structures, so the death sits in the
+  surrounding return/dispatch machinery. Related: the
+  full-grid runs repeatedly died shortly after
+  interrupt-heavy select sequences, in states the
+  isolation probes (3/5/6/7) never reproduced. Closing
+  terms: the isolation probe runs to completion with DEL
+  answering 0. Filed by the timing lane, 2026-11-07;
+  evidence `test-results/timing-waits/guestprobeD-run*`
+  and `guestprobe-run*`.
+
+- **FD-220 — POSIX timers are absent.**
+  *(Medium)* timer_create and family answer −ENOSYS for
+  every shape on both widths (the census disposition
+  records subsystem-absent deliberately). The host
+  contract is measured in the grid (creation validation,
+  EINVAL/EFAULT orderings, the same lenient-flags pattern
+  as the other timer calls). Closing terms: implement
+  the subsystem or take a deliberate documented decision
+  to keep it absent; either way this entry is the queue
+  record. Filed by the timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/hostref-timing.txt` and the
+  guest grid's timer rows.
+
+- **FD-221 — Timing-family model limits and unmeasured
+  residue (recorded, not defects of commission).**
+  *(Low)* (a) The ALARM clocks (8, 9) are served from the
+  wall/monotonic bases; their suspend semantics do not
+  exist here. (b) `times` fills the tms accounting fields
+  with zeros, and 64-bit `getrusage` fills only the two
+  CPU-time fields. (c) 64-bit `epoll_pwait` refuses
+  maxevents > 64 (scratch-page cap) where the host
+  accepts more. (d) `clock_nanosleep` acceptance for
+  clocks 4, 5, 6, 8, 9 follows the kernel's clock
+  structure; this box's host grid measured 0, 1, 2, 3, 7,
+  11 directly. (e) The monotonic clock's epoch is the
+  emulator's start, so early guest readings are near
+  zero; contract-legal, recorded because it surprises.
+  (f) The remaining-time write on interrupted sleeps is
+  computed at millisecond (32-bit) / microsecond (64-bit)
+  fidelity from the call's elapsed wall time, not from
+  the wait's internal deadline bookkeeping. Filed by the
+  timing lane, 2026-11-07; evidence
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-222 — 64-bit `epoll_pwait` rejects a sigsetsize
+  other than 8 when a mask is passed; the host accepts
+  any size.** *(Low)* Measured: mask non-null with size 4
+  answers −EINVAL in the guest (`guestprobeD-run2`) and
+  0 on the host (raw grid); ppoll likewise accepts any
+  size on the host, and rt_sigtimedwait/pselect6 are the
+  calls that genuinely require exactly 8. Closing terms:
+  drop the size check in the epoll_pwait body (the mask
+  copy itself is bounded by the read). Filed by the
+  timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/hostref-timing.txt` and
+  `guestprobeD-run2`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -10065,6 +10566,7 @@ after it; `lane-firstframe` is based on a tip from before the
 dead-start fix and needs composition care.
 
 ---
+| `lane-timing-waits` | *(Lane-local numbers FD-193..FD-222; composition settles them.)* FD-193..FD-211 FIXED: the timing/wait family measured against the raw-syscall host grid — 64-bit clock_gettime per-clock domains and id validation; clock_getres on all three implementations; remaining-time write-back on interrupted sleeps; 32-bit clock_nanosleep TIMER_ABSTIME; 64-bit clock_nanosleep flags/clock domains; getrusage validation and real CPU times; itimer validation order both widths; wait4 options validation; 64-bit alarm; 64-bit times tick rate; 32-bit gettimeofday null-tv; epoll create/create1 validation both widths; epoll_wait maxevents; poll POLLNVAL counting; negative-timespec parking in pselect6/ppoll (+sigmask copy-in validation); pselect6/ppoll timeout write-back (corrects the FD-23-residue register note); timerfd_settime flag mask; select-core nfds boundary; FD-211 the X64Headless build break at the tip (networkutils U64 macro). FD-212..FD-222 FILED: waitid unimplemented; timer-expiry signals never delivered (FD-213); wait4 stop-report consumes the child; futex stub path in the ELF vehicle; PROT_NONE not consulted on syscall accesses; ITIMER_VIRTUAL/PROF refused; i386 pause/rt_sigtimedwait/ppoll/epoll_pwait gaps; guest death at epoll_ctl DEL; POSIX timers absent; model-limit residue; epoll_pwait sigsetsize | Host reference programs measured first (raw syscall grid, 243 + 11 + 11 rows incl. strace-verified clock_nanosleep flags and the timerfd 0x3 flag mask); new tests testTimingWaits32/testTimingWaits64 plus corrected standing pins in testTimerfd and testSyscallCensus64; full native suites serial: main 693/693 and x64 117/117, 0 FAILED; guest probes pre/post fix in `test-results/timing-waits/` (hostref grids, guestprobe A-F runs, suite logs). Record: `docs/reports/timing-waits-20261107.md`; evidence `test-results/timing-waits/` |
 
 ## C. Closed — fixed (or disproven) with proof
 
