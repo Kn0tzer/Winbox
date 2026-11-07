@@ -325,57 +325,99 @@ U32 KSystem::ugetrlimit(KThread * thread, U32 resource, U32 rlim) {
     return 0;
 }
 
-U32 KSystem::clock_gettime(KThread* thread, U32 clock_id, U32 tp) {
-    KMemory* memory = thread->memory;
+bool KSystem::isSupportedClockId(U32 clockId) {
+    return clockId <= 9 || clockId == 11;
+}
 
-    if (clock_id==0 || clock_id==5) { // CLOCK_REALTIME / CLOCK_REALTIME_COARSE
-        U64 m = KSystem::getSystemTimeAsMicroSeconds();
-        memory->writed(tp, (U32)(m / 1000000l));
-        memory->writed(tp + 4, (U32)(m % 1000000l) * 1000);
-    } else if (clock_id==1 || clock_id==2 || clock_id==4 || clock_id==6) { // CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID , CLOCK_MONOTONIC_COARSE
-        U64 diff = KSystem::getMicroCounter();
-        memory->writed(tp, (U32)(diff / 1000000l));
-        memory->writed(tp + 4, (U32)(diff % 1000000l) * 1000);
-    } else {
+// Shared clock-id dispatch for clock_gettime/clock_gettime64: the
+// host answers for the whole id set {0..9, 11}, each in its own
+// value domain (wall time, the monotonic counter, or CPU time);
+// 10, 12 and above answer -EINVAL (raw host grid,
+// test-results/timing-waits/hostref-timing.txt).
+static bool bw64ClockValueMicroSeconds(KThread* thread, U32 clock_id, U64& outUs) {
+    switch (clock_id) {
+        case 0: // CLOCK_REALTIME
+        case 5: // CLOCK_REALTIME_COARSE
+        case 8: // CLOCK_REALTIME_ALARM
+        case 11: // CLOCK_TAI (the host grid reads TAI == UTC: offset 0)
+            outUs = KSystem::getSystemTimeAsMicroSeconds();
+            return true;
+        case 1: // CLOCK_MONOTONIC
+        case 4: // CLOCK_MONOTONIC_RAW
+        case 6: // CLOCK_MONOTONIC_COARSE
+        case 7: // CLOCK_BOOTTIME
+        case 9: // CLOCK_BOOTTIME_ALARM
+            outUs = KSystem::getMicroCounter();
+            return true;
+        case 2: // CLOCK_PROCESS_CPUTIME_ID
+            outUs = thread->process->cpuTimeMicroSeconds();
+            return true;
+        case 3: // CLOCK_THREAD_CPUTIME_ID
+            outUs = thread->getThreadUserTime() + thread->kernelTime;
+            return true;
+        default:
+            return false;
+    }
+}
+
+U32 KSystem::clock_gettime(KThread* thread, U32 clock_id, U32 tp) {
+    // Host order: the clock id is validated before the result
+    // pointer; a null result pointer then answers -EFAULT.
+    if (!KSystem::isSupportedClockId(clock_id)) {
         bw64RecoverLogOnce("syscall.clock_gettime.clock", "unsupported clock_gettime clock id; returned EINVAL");
         return -K_EINVAL;
     }
+    if (!tp) {
+        return -K_EFAULT;
+    }
+    U64 m = 0;
+    bw64ClockValueMicroSeconds(thread, clock_id, m);
+    KMemory* memory = thread->memory;
+    memory->writed(tp, (U32)(m / 1000000l));
+    memory->writed(tp + 4, (U32)(m % 1000000l) * 1000);
     return 0;
 }
 
 U32 KSystem::clock_gettime64(KThread* thread, U32 clock_id, U32 tp) {
-    KMemory* memory = thread->memory;
-
-    if (clock_id == 0 || clock_id == 5) { // CLOCK_REALTIME / CLOCK_REALTIME_COARSE
-        U64 m = KSystem::getSystemTimeAsMicroSeconds();
-        memory->writeq(tp, m / 1000000l);
-        memory->writed(tp + 8, (U32)(m % 1000000l) * 1000);
-    }
-    else if (clock_id == 1 || clock_id == 2 || clock_id == 4 || clock_id == 6 || clock_id == 7) { // CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID , CLOCK_MONOTONIC_COARSE, CLOCK_BOOTTIME
-        U64 diff = KSystem::getMicroCounter();
-        memory->writeq(tp, diff / 1000000l);
-        memory->writed(tp + 8, (U32)(diff % 1000000l) * 1000);
-    }
-    else {
+    if (!KSystem::isSupportedClockId(clock_id)) {
         bw64RecoverLogOnce("syscall.clock_gettime64.clock", "unsupported clock_gettime64 clock id; returned EINVAL");
         return -K_EINVAL;
     }
+    if (!tp) {
+        return -K_EFAULT;
+    }
+    U64 m = 0;
+    bw64ClockValueMicroSeconds(thread, clock_id, m);
+    KMemory* memory = thread->memory;
+    memory->writeq(tp, m / 1000000l);
+    memory->writed(tp + 8, (U32)(m % 1000000l) * 1000);
     return 0;
 }
 
 U32 KSystem::clock_getres(KThread* thread, U32 clk_id, U32 timespecAddress) {
-    KMemory* memory = thread->memory;
-
-    memory->writed(timespecAddress, 0);
-    memory->writed(timespecAddress+4, 1000000);
+    // Host answers (raw grid): an invalid clock id answers -EINVAL;
+    // a null result pointer is accepted and written nowhere; the
+    // fine clocks report 1 ns and the two COARSE clocks 1000000 ns.
+    if (!KSystem::isSupportedClockId(clk_id)) {
+        return -K_EINVAL;
+    }
+    if (timespecAddress) {
+        KMemory* memory = thread->memory;
+        memory->writed(timespecAddress, 0);
+        memory->writed(timespecAddress + 4, (clk_id == 5 || clk_id == 6) ? 1000000 : 1);
+    }
     return 0;
 }
 
 U32 KSystem::clock_getres64(KThread* thread, U32 clk_id, U32 timespecAddress) {
-    KMemory* memory = thread->memory;
-
-    memory->writeq(timespecAddress, 0);
-    memory->writed(timespecAddress + 8, 1000000);
+    if (!KSystem::isSupportedClockId(clk_id)) {
+        return -K_EINVAL;
+    }
+    if (timespecAddress) {
+        KMemory* memory = thread->memory;
+        memory->writeq(timespecAddress, 0);
+        memory->writed(timespecAddress + 8, (clk_id == 5 || clk_id == 6) ? 1000000 : 1);
+    }
     return 0;
 }
 
@@ -666,6 +708,14 @@ U32 KSystem::reapChild(KThread* thread, S32 pid, U32 options, int* statusOut) {
 }
 
 U32 KSystem::waitpid(KThread* thread, S32 pid, U32 statusAddress, U32 options) {
+    // Host order (raw grid): an out-of-mask option bit answers
+    // -EINVAL before any child lookup -- wait4 with options 0x10
+    // and no children answers EINVAL, not ECHILD. Valid bits:
+    // WNOHANG | WUNTRACED | WCONTINUED plus the __WNOTHREAD /
+    // __WALL / __WCLONE selectors.
+    if (options & ~0xE000000B) {
+        return -K_EINVAL;
+    }
     KProcessPtr process;
     U32 result = 0;
     KMemory* memory = thread->memory;
@@ -784,11 +834,18 @@ U32 KSystem::getpgid(U32 pid) {
 }
 
 U32 KSystem::gettimeofday(KThread* thread, U32 tv, U32 tz) {
-    U64 m = Platform::getSystemTimeAsMicroSeconds();
+    // Host answers (raw grid): (NULL, NULL) is a successful no-op;
+    // each pointer is written only when non-null.
     KMemory* memory = thread->memory;
-
-    memory->writed(tv, (U32)(m / 1000000l));
-    memory->writed(tv + 4, (U32)(m % 1000000l));
+    if (tv) {
+        U64 m = Platform::getSystemTimeAsMicroSeconds();
+        memory->writed(tv, (U32)(m / 1000000l));
+        memory->writed(tv + 4, (U32)(m % 1000000l));
+    }
+    if (tz) {
+        memory->writed(tz, 0);
+        memory->writed(tz + 4, 0);
+    }
     return 0;
 }
 

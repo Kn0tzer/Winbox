@@ -1505,29 +1505,64 @@ static U64 sys_prlimit64_64(CPU64* cpu, U64 pid, U64 res, U64 newLim, U64 oldLim
 // yield to other guest threads; absolute waits are converted using the selected
 // clock before entering the same path.
 static U64 sys_nanosleep64(CPU64* cpu, U64 requestAddr, bool clockSleep,
-                           U64 clockId, U64 flags) {
+                           U64 clockId, U64 flags, U64 remainAddr) {
     if (!cpu || !cpu->memory || !cpu->thread || !requestAddr)
         return (U64)(S64)-K_EFAULT;
-    if ((!clockSleep && (clockId || flags)) ||
-        (clockSleep && ((flags & ~1ULL) ||
-         (clockId != 0 && clockId != 1 && clockId != 7 && clockId != 11))))
+    if (!clockSleep && (clockId || flags))
         return (U64)(S64)-K_EINVAL;
+    // Host contract (raw-syscall grid; the flag shapes additionally
+    // strace-verified): clock_nanosleep ignores flag bits other than
+    // TIMER_ABSTIME instead of refusing them; CLOCK_PROCESS_CPUTIME_ID
+    // accepts sleeps; CLOCK_THREAD_CPUTIME_ID refuses with -EOPNOTSUPP;
+    // any other unsupported clock answers -EINVAL.
+    if (clockSleep) {
+        switch (clockId) {
+            case 0: case 1: case 2: case 4: case 5: case 6: case 7:
+            case 8: case 9: case 11:
+                break;
+            case 3: // CLOCK_THREAD_CPUTIME_ID
+                return (U64)(S64)-K_EOPNOTSUPP;
+            default:
+                return (U64)(S64)-K_EINVAL;
+        }
+    }
 
     const U64 seconds = cpu->memory->readq(requestAddr);
     const U64 nanoseconds = cpu->memory->readq(requestAddr + 8);
     if (nanoseconds >= 1000000000ULL || seconds > (~0ULL - nanoseconds) / 1000000000ULL)
         return (U64)(S64)-K_EINVAL;
     U64 duration = seconds * 1000000000ULL + nanoseconds;
-    if (clockSleep && (flags & 1)) { // TIMER_ABSTIME
-        U64 now = 0;
-        if (clockId == 0 || clockId == 11) {
-            now = KSystem::getSystemTimeAsMicroSeconds() * 1000ULL;
-        } else {
-            now = (U64)KSystem::getMilliesSinceStart() * 1000000ULL;
+    bool absolute = clockSleep && (flags & 1); // TIMER_ABSTIME
+    if (absolute) {
+        // Convert against the same source clock_gettime reports for the
+        // id, so a deadline means the same thing on both calls. (The
+        // monotonic base used to be a different counter than the one
+        // clock_gettime reported.)
+        U64 nowUs;
+        switch (clockId) {
+            case 0: case 5: case 8: case 11:
+                nowUs = KSystem::getSystemTimeAsMicroSeconds();
+                break;
+            case 2:
+                nowUs = cpu->thread->process ? cpu->thread->process->cpuTimeMicroSeconds() : 0;
+                break;
+            default:
+                nowUs = KSystem::getMicroCounter();
+                break;
         }
+        U64 now = nowUs * 1000ULL;
         duration = duration > now ? duration - now : 0;
     }
+    U64 startUs = KSystem::getMicroCounter();
     const U32 result = cpu->thread->nanoSleep(duration);
+    // On an interrupted relative sleep the host writes the remaining
+    // time to the remain address; absolute sleeps get no write.
+    if ((S32)result == -K_EINTR && remainAddr && !absolute) {
+        U64 elapsedNs = (KSystem::getMicroCounter() - startUs) * 1000ULL;
+        U64 remainNs = duration > elapsedNs ? duration - elapsedNs : 0;
+        cpu->memory->writeq(remainAddr, remainNs / 1000000000ULL);
+        cpu->memory->writeq(remainAddr + 8, remainNs % 1000000000ULL);
+    }
     return (U64)(S64)(S32)result;
 }
 
@@ -1544,15 +1579,33 @@ static U64 sys_getcpu64(CPU64* cpu, U64 cpuPtr, U64 nodePtr, U64 /*cachePtr*/) {
     return 0;
 }
 
-// clock_gettime(clk, struct timespec*). Returns wall-clock from the host so
-// glibc gets monotonically advancing values.
-static U64 sys_clock_gettime64(CPU64* cpu, U64 /*clk*/, U64 tsAddr) {
+// clock_gettime(clk, struct timespec*). Host contract (raw-syscall
+// grid): the clock id is validated before the result pointer; each
+// supported clock reports its own domain - wall time for the realtime
+// family, the monotonic counter for the monotonic family, summed thread
+// CPU time for the process clock, the calling thread's own CPU time for
+// the thread clock. (Every clock used to return wall time, including
+// invalid ids.) Mirrors KSystem::clock_gettime on the 32-bit side.
+static U64 sys_clock_gettime64(CPU64* cpu, U64 clk, U64 tsAddr) {
+    if (!KSystem::isSupportedClockId((S32)clk)) return (U64)(S64)-K_EINVAL;
     if (!tsAddr) return (U64)-K_EFAULT;
-    U64 us = KSystem::getSystemTimeAsMicroSeconds();
-    U64 sec = us / 1000000ULL;
-    U64 nsec = (us % 1000000ULL) * 1000ULL;
-    cpu->memory->writeq(tsAddr, sec);
-    cpu->memory->writeq(tsAddr + 8, nsec);
+    U64 us;
+    switch ((S32)clk) {
+        case 0: case 5: case 8: case 11: // realtime family
+            us = KSystem::getSystemTimeAsMicroSeconds();
+            break;
+        case 2: // CLOCK_PROCESS_CPUTIME_ID
+            us = cpu->thread && cpu->thread->process ? cpu->thread->process->cpuTimeMicroSeconds() : 0;
+            break;
+        case 3: // CLOCK_THREAD_CPUTIME_ID
+            us = cpu->thread ? cpu->thread->getThreadUserTime() + cpu->thread->kernelTime : 0;
+            break;
+        default: // monotonic family
+            us = KSystem::getMicroCounter();
+            break;
+    }
+    cpu->memory->writeq(tsAddr, us / 1000000ULL);
+    cpu->memory->writeq(tsAddr + 8, (us % 1000000ULL) * 1000ULL);
     return 0;
 }
 
@@ -5592,10 +5645,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int bw64_dump_guest_threads() {
 // the previous pselect6-only implementation let a bad descriptor read as
 // merely unready. nfds is capped at the 1024 descriptors these fd_set
 // buffers can hold; the host itself has no such cap.
-static S64 sys_select_core64(CPU64* cpu, S32 nfds, U64 rfdsAddr, U64 wfdsAddr, U64 efdsAddr, U32 timeoutMs, U64 remainingWritebackAddr, U64 totalTimeoutUs) {
+static S64 sys_select_core64(CPU64* cpu, S32 nfds, U64 rfdsAddr, U64 wfdsAddr, U64 efdsAddr, U32 timeoutMs, U64 remainingWritebackAddr, U64 totalTimeoutUs, bool writebackIsTimespec) {
     KProcessPtr process = cpu->thread->process;
     KMemory64* memory = cpu->memory;
-    if (nfds < 0 || nfds > 1024) {
+    // The 1024 cap exists only because the fd-set buffers below are
+    // fixed-size; with no set pointers at all there is nothing to
+    // buffer and the host simply sleeps, however large nfds is (raw
+    // grid: nfds=100000 with empty sets answers 0 after the timeout).
+    if (nfds < 0 || (nfds > 1024 && (rfdsAddr || wfdsAddr || efdsAddr))) {
         return -K_EINVAL;
     }
     U32 setBytes = ((U32)nfds + 7) / 8;
@@ -5655,7 +5712,9 @@ static S64 sys_select_core64(CPU64* cpu, S32 nfds, U64 rfdsAddr, U64 wfdsAddr, U
         U64 elapsedUs = KSystem::getMicroCounter() - startUs;
         U64 remainingUs = totalTimeoutUs > elapsedUs ? totalTimeoutUs - elapsedUs : 0;
         memory->writeq(remainingWritebackAddr, remainingUs / 1000000);
-        memory->writeq(remainingWritebackAddr + 8, remainingUs % 1000000);
+        // select's timeval takes the fraction in microseconds;
+        // pselect6's timespec takes it in nanoseconds.
+        memory->writeq(remainingWritebackAddr + 8, writebackIsTimespec ? (remainingUs % 1000000) * 1000 : remainingUs % 1000000);
     }
     if (rc < 0) {
         return rc;
@@ -7445,7 +7504,13 @@ void ksyscall64(CPU64* cpu) {
                 break;
             }
             constexpr U32 TFD_TIMER_ABSTIME = 1;
-            if ((a2 & ~TFD_TIMER_ABSTIME) != 0) { ret = (U64)-K_EINVAL; break; }
+            // Host flag mask (raw + strace-verified): the valid bits
+            // are TFD_TIMER_ABSTIME (1) and TFD_TIMER_CANCEL_ON_SET (2);
+            // flags 0..3 answer 0, anything outside answers -EINVAL.
+            // CANCEL_ON_SET is accepted; cancelling on a clock-set is
+            // not modelled (nothing here ever sets the clock). Only bit
+            // 0 changes behaviour below.
+            if ((a2 & ~0x3ULL) != 0) { ret = (U64)-K_EINVAL; break; }
             if (!a3) { ret = (U64)-K_EFAULT; break; }
             const S64 intervalSec = (S64)cpu->memory->readq(a3);
             const S64 intervalNsec = (S64)cpu->memory->readq(a3 + 8);
@@ -7646,25 +7711,56 @@ void ksyscall64(CPU64* cpu) {
             // (>0xF0000000 == infinite) and poll(timeout=0) is non-blocking — so
             // the 32-bit path passes the raw arg straight through. We do the same.
             U32 timeoutMs;
+            U64 ppollTsAddr = 0;
+            U64 ppollStartUs = 0;
+            U64 ppollTotalUs = 0;
             if (nr == X64_SYS_ppoll) {
                 // ppoll: a3 is a timespec* (NULL == infinite wait).
                 if (a3 == 0) {
                     timeoutMs = 0xFFFFFFFFu; // infinite
                 } else {
-                    U64 sec  = cpu->memory->readq(a3);
-                    U64 nsec = cpu->memory->readq(a3 + 8);
-                    U64 ms = sec * 1000 + nsec / 1000000;
+                    // Host contract (raw grid): out-of-range fields
+                    // answer -EINVAL ahead of the wait; the fields used
+                    // to be read as unsigned, so a negative seconds
+                    // value became an effectively infinite wait.
+                    if (!sys_rangeHasPermission64(cpu->memory, a3, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                    S64 sec  = (S64)cpu->memory->readq(a3);
+                    S64 nsec = (S64)cpu->memory->readq(a3 + 8);
+                    if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }
+                    U64 ms = (U64)sec * 1000 + (U64)nsec / 1000000;
                     // A real zero timespec is a non-blocking poll (kpoll: 0).
                     timeoutMs = (U32)ms;
+                    ppollTsAddr = a3;
+                    ppollStartUs = KSystem::getMicroCounter();
+                    ppollTotalUs = (U64)sec * 1000000 + (U64)nsec / 1000;
                 }
             } else {
                 // poll: a3 is a signed int ms; pass through (-1 -> 0xFFFFFFFF).
                 timeoutMs = (U32)a3;
             }
+            // A non-null ppoll sigmask the guest cannot read answers
+            // -EFAULT on the host; the mask itself is not applied (the
+            // emulator has no atomic mask swap here), and the host does
+            // not validate ppoll's sigsetsize argument.
+            if (nr == X64_SYS_ppoll && a4 && !sys_rangeHasPermission64(cpu->memory, a4, 8, K64_PAGE_READ)) {
+                ret = (U64)-K_EFAULT; break;
+            }
+            // ppoll writes the unslept remainder back into the timespec
+            // (host-measured), on success and on -EINTR alike.
+            auto ppollWriteback = [&]() {
+                if (ppollTsAddr && timeoutMs != 0xFFFFFFFFu) {
+                    U64 elapsedUs = KSystem::getMicroCounter() - ppollStartUs;
+                    U64 remainUs = ppollTotalUs > elapsedUs ? ppollTotalUs - elapsedUs : 0;
+                    cpu->memory->writeq(ppollTsAddr, remainUs / 1000000);
+                    cpu->memory->writeq(ppollTsAddr + 8, (remainUs % 1000000) * 1000);
+                }
+            };
             if (nfds == 0) {
                 // No fds: kpoll with our scratch still honors the timeout sleep.
                 U32 scratch0 = bounceSockaddrTo32(cpu, 0, 0, nullptr);
-                ret = (U64)(S64)(S32)kpoll(cpu->thread, scratch0, 0, timeoutMs);
+                S32 rc0 = (S32)kpoll(cpu->thread, scratch0, 0, timeoutMs);
+                if (rc0 >= 0 || rc0 == -K_EINTR) ppollWriteback();
+                ret = (U64)(S64)rc0;
                 break;
             }
             U32 bytes = nfds * 8;
@@ -7680,6 +7776,7 @@ void ksyscall64(CPU64* cpu) {
                 cpu->thread->memory->memcpy(scratch, tmp, bytes);
             }
             S32 rc = (S32)kpoll(cpu->thread, scratch, nfds, timeoutMs);
+            if (rc >= 0 || rc == -K_EINTR) ppollWriteback();
             // Copy the (revents-updated) array back to the 64-bit guest.
             {
                 U8 tmp[K_PAGE_SIZE];
@@ -7700,15 +7797,41 @@ void ksyscall64(CPU64* cpu) {
                 ret = (U64)-K_ENOSYS; break;
             }
             U32 timeoutMs;
+            U64 totalTimeoutUs = 0;
             if (a5 == 0) {
                 timeoutMs = 0xFFFFFFFFu; // NULL timespec == wait forever
             } else {
                 if (!sys_rangeHasPermission64(cpu->memory, a5, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
-                U64 sec  = cpu->memory->readq(a5);
-                U64 nsec = cpu->memory->readq(a5 + 8);
-                timeoutMs = (U32)(sec * 1000 + nsec / 1000000);
+                S64 sec  = (S64)cpu->memory->readq(a5);
+                S64 nsec = (S64)cpu->memory->readq(a5 + 8);
+                // Host contract (raw grid): out-of-range fields answer
+                // -EINVAL ahead of the wait; read as unsigned, a
+                // negative seconds value used to become an effectively
+                // infinite wait instead of an error.
+                if (sec < 0 || nsec < 0 || nsec >= 1000000000) { ret = (U64)-K_EINVAL; break; }
+                totalTimeoutUs = (U64)sec * 1000000 + (U64)nsec / 1000;
+                if (totalTimeoutUs == 0) {
+                    timeoutMs = 0;
+                } else {
+                    U64 ms = (totalTimeoutUs + 999) / 1000;
+                    timeoutMs = ms > 0xF0000000 ? 0xFFFFFFFFu : (U32)ms;
+                }
             }
-            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, 0, 0);
+            // The sigmask argument itself is not applied (see the case
+            // comment above), but the host still copies it in: a size
+            // other than 8 answers -EINVAL and an unreadable mask
+            // -EFAULT. a6 points at {const sigset_t*, size_t}.
+            if (a6) {
+                if (!sys_rangeHasPermission64(cpu->memory, a6, 16, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+                U64 maskPtr = cpu->memory->readq(a6);
+                U64 maskSize = cpu->memory->readq(a6 + 8);
+                if (maskSize != 8) { ret = (U64)-K_EINVAL; break; }
+                if (maskPtr && !sys_rangeHasPermission64(cpu->memory, maskPtr, 8, K64_PAGE_READ)) { ret = (U64)-K_EFAULT; break; }
+            }
+            // pselect6 writes the unslept remainder back into the
+            // timespec like select does (host-measured); the core's
+            // write-back is told the fraction is nanoseconds here.
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, a5, totalTimeoutUs, true);
             break;
         }
         case X64_SYS_sched_yield:
@@ -7824,6 +7947,10 @@ void ksyscall64(CPU64* cpu) {
             // arch-neutral reaper and write the status into memory64. rusage
             // (a4) is ignored.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ECHILD; break; }
+            // Host order (raw grid): unknown option bits answer -EINVAL
+            // ahead of the no-children -ECHILD. Valid bits: WNOHANG(1),
+            // WUNTRACED(2), WCONTINUED(8) and the __W* clone-scope bits.
+            if (a3 & ~0xE000000BULL) { ret = (U64)-K_EINVAL; break; }
             int status = 0;
             U32 rc = KSystem::reapChild(cpu->thread, (S32)a1, (U32)a3, a2 ? &status : nullptr);
             if ((S32)rc > 0 && a2) {
@@ -7892,7 +8019,9 @@ void ksyscall64(CPU64* cpu) {
             KProcessPtr process = cpu->thread->process;
             const U32 which = (U32)a1;
             const U64 oldAddress = (nr == X64_SYS_setitimer) ? a3 : a2;
-            if (nr == X64_SYS_getitimer && !oldAddress) { ret = (U64)-K_EFAULT; break; }
+            // For getitimer the host validates `which` ahead of the
+            // result-pointer fault, so the !oldAddress fault for it is
+            // taken after setitimerValues has run (below), not here.
             bool apply = false;
             U32 valueMs = 0;
             U32 intervalMs = 0;
@@ -7901,7 +8030,7 @@ void ksyscall64(CPU64* cpu) {
                 U64 intervalUsec = cpu->memory->readq(a2 + 8);
                 U64 valueSec = cpu->memory->readq(a2 + 16);
                 U64 valueUsec = cpu->memory->readq(a2 + 24);
-                if (intervalUsec >= 1000000 || valueUsec >= 1000000) { ret = (U64)-K_EINVAL; break; }
+                if ((S64)intervalSec < 0 || (S64)valueSec < 0 || intervalUsec >= 1000000 || valueUsec >= 1000000) { ret = (U64)-K_EINVAL; break; }
                 U64 vms = valueSec > 0xffffffffULL / 1000 ? 0xffffffffULL : valueSec * 1000 + valueUsec / 1000;
                 U64 ims = intervalSec > 0xffffffffULL / 1000 ? 0xffffffffULL : intervalSec * 1000 + intervalUsec / 1000;
                 valueMs = (U32)vms;
@@ -7914,6 +8043,7 @@ void ksyscall64(CPU64* cpu) {
                                                   oldAddress ? &oldRemainingMs : nullptr,
                                                   oldAddress ? &oldIntervalMs : nullptr);
             if (result) { ret = (U64)(S64)result; break; }
+            if (nr == X64_SYS_getitimer && !oldAddress) { ret = (U64)-K_EFAULT; break; }
             if (oldAddress) {
                 cpu->memory->writeq(oldAddress, oldIntervalMs / 1000);
                 cpu->memory->writeq(oldAddress + 8, (oldIntervalMs % 1000) * 1000);
@@ -7949,6 +8079,11 @@ void ksyscall64(CPU64* cpu) {
             // No guest memory. wineserver's main loop is epoll-driven. The
             // process epoll machinery is reused as-is.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            // Host contract (raw grid): legacy epoll_create answers
+            // -EINVAL for size <= 0; epoll_create1 accepts only
+            // EPOLL_CLOEXEC (0x80000) and EPOLL_NONBLOCK (0x800).
+            if (nr == X64_SYS_epoll_create && (S64)a1 <= 0) { ret = (U64)-K_EINVAL; break; }
+            if (nr == X64_SYS_epoll_create1 && (a1 & ~0x80800ULL)) { ret = (U64)-K_EINVAL; break; }
             ret = (U64)(S64)(S32)cpu->thread->process->epollcreate(
                 (nr == X64_SYS_epoll_create) ? (U32)a1 : 0,
                 (nr == X64_SYS_epoll_create1) ? (U32)a1 : 0);
@@ -7976,6 +8111,10 @@ void ksyscall64(CPU64* cpu) {
             // back to memory64. Cap maxevents so the scratch page holds them.
             // No process (bare selftest) → -EBADF.
             if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_EBADF; break; }
+            // Host contract (raw grid): maxevents < 1 answers -EINVAL
+            // even when an event is already ready; larger values are
+            // capped by the scratch page below, as before.
+            if ((S32)a3 < 1) { ret = (U64)-K_EINVAL; break; }
             U32 maxevents = (U32)a3;
             if (maxevents > 64) maxevents = 64;       // 64*12=768 < page
             U32 ev32 = bounceSockaddrTo32(cpu, 0, maxevents * 12, nullptr);
@@ -8131,7 +8270,7 @@ void ksyscall64(CPU64* cpu) {
                     timeoutMs = ms > 0xF0000000 ? 0xFFFFFFFFu : (U32)ms;
                 }
             }
-            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, a5, totalTimeoutUs);
+            ret = (U64)sys_select_core64(cpu, (S32)a1, a2, a3, a4, timeoutMs, a5, totalTimeoutUs, false);
             break;
         }
         case X64_SYS_chmod: {  // chmod(path, mode)
@@ -8178,18 +8317,51 @@ void ksyscall64(CPU64* cpu) {
             ret = 0;
             break;
         }
-        case X64_SYS_getrusage:
-            // struct rusage is large; for v1 just zero-fill 144 bytes.
-            // glibc only inspects ru_utime and ru_stime on the startup path.
-            if (a2) cpu->memory->memsetGuest(a2, 0, 144);
+        case X64_SYS_getrusage: {
+            // Host order (raw grid): an unsupported who answers -EINVAL
+            // ahead of the usage-pointer fault; a null usage pointer then
+            // answers -EFAULT. Valid who values: 0 (RUSAGE_SELF), -1
+            // (RUSAGE_CHILDREN), 1 (RUSAGE_THREAD). ru_utime/ru_stime
+            // carry real CPU times; the remaining fields stay zero.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            S64 who = (S64)a1;
+            if (who != 0 && who != -1 && who != 1) { ret = (U64)-K_EINVAL; break; }
+            if (!a2) { ret = (U64)-K_EFAULT; break; }
+            cpu->memory->memsetGuest(a2, 0, 144);
+            U64 userUs = 0;
+            U64 kernelUs = 0;
+            if (who == 0) {
+                cpu->thread->process->cpuTimesMicroSeconds(userUs, kernelUs);
+            } else if (who == 1) {
+                userUs = cpu->thread->getThreadUserTime();
+                kernelUs = cpu->thread->kernelTime;
+            }
+            cpu->memory->writeq(a2, userUs / 1000000ULL);
+            cpu->memory->writeq(a2 + 8, userUs % 1000000ULL);
+            cpu->memory->writeq(a2 + 16, kernelUs / 1000000ULL);
+            cpu->memory->writeq(a2 + 24, kernelUs % 1000000ULL);
             ret = 0;
             break;
+        }
         case X64_SYS_times: {
             // times(&tms): struct tms is 4x clock_t = 32 bytes on x86_64.
-            // Zero the accounting fields; return USER_HZ (100) ticks since an
-            // arbitrary point so Mono/Unity startup timing moves forward.
+            // Zero the accounting fields; return clock ticks (USER_HZ =
+            // 100 per second) since an arbitrary point so startup timing
+            // moves forward. The old value divided microseconds by
+            // 10000, which is 100000 ticks per second: a guest dividing
+            // by CLK_TCK read durations 1000x too large.
             if (a1) cpu->memory->memsetGuest(a1, 0, 32);
-            ret = KSystem::getSystemTimeAsMicroSeconds() / 10000ULL;
+            ret = KSystem::getMilliesSinceStart() / 10;
+            break;
+        }
+        case 37: { // alarm(seconds)
+            // Shares the ITIMER_REAL slot with setitimer, as on the
+            // host, and returns the seconds remaining on any previous
+            // alarm. KProcess::alarm already implements the semantics
+            // for the 32-bit side; the 64-bit table had no case at all
+            // and answered -ENOSYS.
+            if (!cpu->thread || !cpu->thread->process) { ret = (U64)-K_ENOSYS; break; }
+            ret = (U64)cpu->thread->process->alarm((U32)a1);
             break;
         }
         case X64_SYS_sysinfo:
@@ -8216,20 +8388,24 @@ void ksyscall64(CPU64* cpu) {
         case X64_SYS_getsid:
             ret = cpu->thread ? cpu->thread->id : 1;
             break;
-        case X64_SYS_clock_getres:
-            // 1 ns resolution claim. Some libc time helpers use this to size
-            // a struct timespec field.
+        case X64_SYS_clock_getres: {
+            // Host contract (raw grid): an unsupported clock answers
+            // -EINVAL; a null result pointer is accepted and nothing is
+            // written; fine clocks report 1 ns, the coarse clocks (5, 6)
+            // report 1000000 ns.
+            if (!KSystem::isSupportedClockId((S32)a1)) { ret = (U64)-K_EINVAL; break; }
             if (a2) {
                 cpu->memory->writeq(a2,     0);
-                cpu->memory->writeq(a2 + 8, 1);
+                cpu->memory->writeq(a2 + 8, (a1 == 5 || a1 == 6) ? 1000000 : 1);
             }
             ret = 0;
             break;
+        }
         case X64_SYS_nanosleep:
-            ret = sys_nanosleep64(cpu, a1, false, 0, 0);
+            ret = sys_nanosleep64(cpu, a1, false, 0, 0, a2);
             break;
         case X64_SYS_clock_nanosleep:
-            ret = sys_nanosleep64(cpu, a3, true, a1, a2);
+            ret = sys_nanosleep64(cpu, a3, true, a1, a2, a4);
             break;
         case X64_SYS_membarrier: {
             // Linux 6.x command bits. The single-process virtual CPU makes

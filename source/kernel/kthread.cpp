@@ -2595,11 +2595,26 @@ U32 KThread::nanoSleep(U64 nano) {
 }
 
 U32 KThread::clockNanoSleep(U32 clock, U32 flags, U64 nano, U32 addressRemain) {
-    if (flags) {
-        bw64RecoverLogOnce("syscall.clock_nanosleep.flags", "unsupported clock_nanosleep flags; returned EINVAL");
-        return -K_EINVAL;
+    // Host contract (raw-syscall measurements): only TIMER_ABSTIME (bit 0)
+    // of the flags is meaningful and other bits are ignored, not refused.
+    // The syscall wrappers validate the clock id, convert an absolute
+    // request into a relative duration, and pass addressRemain == 0 for
+    // absolute sleeps because the host writes no remaining time for those.
+    // Sleeping through nanoSleep() (not Platform::nanoSleep directly)
+    // gives the interruptible path nanosleep uses, so a delivered signal
+    // ends the sleep with -EINTR and the remaining time can be reported.
+    (void)clock;
+    (void)flags;
+    U64 startMs = KSystem::getMilliesSinceStart();
+    U32 result = this->nanoSleep(nano);
+    if ((S32)result == -K_EINTR && addressRemain) {
+        U64 durationMs = nano / 1000000;
+        U64 elapsedMs = KSystem::getMilliesSinceStart() - startMs;
+        U64 remainMs = durationMs > elapsedMs ? durationMs - elapsedMs : 0;
+        this->memory->writed(addressRemain, (U32)(remainMs / 1000));
+        this->memory->writed(addressRemain + 4, (U32)((remainMs % 1000) * 1000000));
     }
-    return Platform::nanoSleep(nano);
+    return result;
 }
 
 U32 KThread::sleep(U32 ms) {

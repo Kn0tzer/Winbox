@@ -2204,7 +2204,35 @@ U32 KProcess::dup2(FD fildes, FD fildes2) {
     return fildes2;
 }
 
-U32 KProcess::getrusuage(KThread* thread, U32 who, U32 usage) {    
+void KProcess::cpuTimesMicroSeconds(U64& userMicroSeconds, U64& kernelMicroSeconds) {
+    userMicroSeconds = 0;
+    kernelMicroSeconds = 0;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+    for (auto& t : this->threads) {
+        KThread* otherThread = t.value;
+        userMicroSeconds += otherThread->getThreadUserTime();
+        kernelMicroSeconds += otherThread->kernelTime;
+    }
+}
+
+U64 KProcess::cpuTimeMicroSeconds() {
+    U64 userMicroSeconds = 0;
+    U64 kernelMicroSeconds = 0;
+    this->cpuTimesMicroSeconds(userMicroSeconds, kernelMicroSeconds);
+    return userMicroSeconds + kernelMicroSeconds;
+}
+
+U32 KProcess::getrusuage(KThread* thread, U32 who, U32 usage) {
+    // Host order (raw grid): an unsupported who answers -EINVAL
+    // ahead of the usage-pointer fault; a null usage pointer then
+    // answers -EFAULT. Valid who values: 0 (RUSAGE_SELF), -1
+    // (RUSAGE_CHILDREN), 1 (RUSAGE_THREAD).
+    if (who != 0 && who != 1 && (S32)who != -1) {
+        return -K_EINVAL;
+    }
+    if (!usage) {
+        return -K_EFAULT;
+    }
     U32 userSeconds = 0;
     U32 userMicroSeconds = 0;
     U32 kernelSeconds = 0;
@@ -2556,8 +2584,21 @@ U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
     U32 valueMs = 0;
     U32 intervalMs = 0;
     if (apply) {
-        valueMs = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
-        intervalMs = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
+        // Host validation (raw grid): a negative tv_sec or a tv_usec
+        // outside [0, 1000000) in either the value or the interval
+        // answers -EINVAL; the fields were previously folded into
+        // millisecond arithmetic unchecked (a usec of -1 became a
+        // ~49-day timer).
+        S32 valueSec = (S32)memory->readd(newValue + 8);
+        S32 valueUsec = (S32)memory->readd(newValue + 12);
+        S32 intervalSec = (S32)memory->readd(newValue);
+        S32 intervalUsec = (S32)memory->readd(newValue + 4);
+        if (valueSec < 0 || intervalSec < 0 || valueUsec < 0 || valueUsec >= 1000000 ||
+            intervalUsec < 0 || intervalUsec >= 1000000) {
+            return -K_EINVAL;
+        }
+        valueMs = (U32)valueSec * 1000 + (U32)valueUsec / 1000;
+        intervalMs = (U32)intervalSec * 1000 + (U32)intervalUsec / 1000;
     }
     S32 result = this->setitimerValues(which, apply, valueMs, intervalMs,
                                        oldValue ? &oldRemainingMs : nullptr,
@@ -2575,6 +2616,12 @@ U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
 }
 
 U32 KProcess::getitimer(U32 which, U32 oldValue) {
+    // Host order (raw grid): an invalid which answers -EINVAL ahead
+    // of the value-pointer fault.
+    S32 whichCheck = itimerCheckWhich(which);
+    if (whichCheck) {
+        return (U32)whichCheck;
+    }
     if (!oldValue) {
         return -K_EFAULT;
     }

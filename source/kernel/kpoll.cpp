@@ -118,9 +118,15 @@ static S32 internal_poll_impl(KThread* thread, KPollData* data, U32 count, U32 t
                                      (long)us->debugPendingTotal(), (long)us->debugPendingLive());
                         }
                     }
-                    if (data->revents != 0) {
-                        result++;
-                    }
+                }
+                // The result counts every entry with nonzero revents,
+                // including POLLNVAL entries whose descriptor no longer
+                // exists: the host answers 1 for a poll on a closed
+                // descriptor (raw grid), but the tally used to sit
+                // inside the descriptor-exists branch, so such an entry
+                // set revents yet the call answered 0.
+                if (data->revents != 0) {
+                    result++;
                 }
                 data++;
             }

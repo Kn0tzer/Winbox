@@ -149,6 +149,11 @@ public:
     static U32 clock_getres64(KThread* thread, U32 clk_id, U32 timespecAddress);
     static U32 clock_gettime(KThread* thread, U32 clock_id, U32 tp);
     static U32 clock_gettime64(KThread* thread, U32 clock_id, U32 tp);
+    // The host-valid clock id set for the clock_gettime family:
+    // 0..9 and 11 (10, 12 and anything else answer -EINVAL, and the
+    // id check precedes the result-pointer check). Measured on the
+    // raw host grid (test-results/timing-waits/hostref-timing.txt).
+    static bool isSupportedClockId(U32 clockId);
     static U32 getpgid(U32 pid);
     static U32 gettimeofday(KThread* thread, U32 tv, U32 tz);
     static U32 kill(S32 pid, U32 signal);
