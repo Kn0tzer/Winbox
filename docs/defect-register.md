@@ -8802,6 +8802,35 @@ do not close the entry until they land.
   lane) covers a neighbouring gap the census cannot see: complex
   helpers missing outright from the versioned DLLs' export lists.
   This entry stays open for the remainder families above.
+  Progress (2026-11-07, lane-fd169-remainder): two more
+  remainder families are discharged — exactly 100 further stub
+  slots (resolved count 1,634 -> 1,734; family remainder 9,061
+  -> 8,961; census totals 33,072 -> 32,972 stub slots, the
+  baseline diff being exactly the 100 named slots with zero
+  additions). msvcp140_2 is now fully implemented (44 x86-64 +
+  42 x86): the complete C++17 special-math set, hand-written
+  and validated against 50-digit mpmath references over a
+  2,703-case grid (worst relative error 1.6e-13 outside three
+  documented elliptic-third-kind pole-cancellation points at
+  3.5e-14 absolute). msvcp140_atomic_wait gains 9 x86-64 + 5
+  x86 slots backported from upstream Wine: the execution
+  wait/wake pair, the shared-mutex pair, the CRT allocation
+  pair, and the three tzdb deleters (real upstream memory
+  management over the upstream layouts). Proven at guest level
+  by fd169r-smf64 / fd169r-smf32 (RESULT 0 on the new runtime;
+  the 64-bit fixture aborts at the first stub call on the
+  retained pre-change runtime — negative control). What
+  remains, each with its reason in
+  docs/reports/fd169-remainder-20261107.md: the four tzdb
+  getters (no time-zone database data source in the browser
+  build; an honest empty answer would be factually wrong),
+  the indirect-wait / compare_exchange_128 family (stub even
+  upstream), concrt140 + the same names in msvcr100/110/120,
+  msvcp60/70/71 legacy STL ABIs, the msvcp90-source
+  remainders, msvcm80/90, vcruntime140's exception machinery,
+  the msvcrtd debug heap, the __crt* plumbing, and the short
+  unpinned-contract tail. This entry stays open for those
+  families.
 - **FD-170 — Ninety shipped DLL tables are ≥90% unimplemented stubs
   (6,734 named stubs, excluding the win32u and CRT families filed
   separately): entire subsystems a program can load but never use —
