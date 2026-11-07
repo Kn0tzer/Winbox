@@ -1,0 +1,5 @@
+T1 eax=9 ebx=7 rip=0x10000a
+T2 ecx=11 edx=13 eax=0 rip=0x20000c
+T3 eax=0x12345678 rip=0x30000f
+T4 eax=5 ebx=9
+invalidate_tests: pass=54 fail=0

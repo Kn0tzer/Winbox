@@ -1,0 +1,4 @@
+mode off:
+PASS: CPU64 destruction releases JIT state and cached ops
+mode on:
+PASS: CPU64 destruction releases JIT state and cached ops

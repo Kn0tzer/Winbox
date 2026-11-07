@@ -9520,6 +9520,39 @@ do not close the entry until they land.
   `docs/reports/d22-mindustry-ergonomics-20261107.md`.
 
 
+- **FD-193 — `BW64_BLOCKSTATS` prints garbage. CLOSED — see
+  CL-135.** *(Low — diagnostic only. Filed by lane-fd176,
+  2026-11-06; fixed by lane-fd193, 2026-11-07.)* The
+  `tryBlockStep` atexit reporter kept a `static CPU64*` to the
+  first CPU that allocated a block table, but every test context
+  owns a new CPU that is destroyed at the end of its test — by
+  process exit the pointer dangles, and the printed counters are
+  nonsense (measured on the integration tip by lane-fd193: four
+  identical lines, `built=281473917630304 ...
+  coverage=5070359463874500.0%`). It also registered once per
+  CPU, so the line repeats. No effect on any gate (the flag is
+  off by default and was only set during diagnosis); the
+  BLOCKSTATS numbers must not be used as proof of block
+  execution. Closing terms were: the reporter reads live
+  counters (or is removed), proven by a run with the flag set
+  printing sane per-process totals. Fix: a CPU that allocates a
+  block table while the flag is set joins a process-wide
+  registry; on destruction it folds its counters into
+  process-wide totals and leaves the registry; the reporter
+  registers exactly once and prints the folded totals plus the
+  counters of any CPUs still alive at exit. Proof: the
+  block-invalidation harness (four CPU contexts) run with the
+  flag set prints a single line, identical across runs —
+  `built=7 execs=7 insnsInBlocks=13 totalInsns=14
+  coverage=92.9%` — and totalInsns matches the harness's own
+  independent total exactly (its contexts execute 4+4+2+4
+  instructions; the one non-block instruction is the
+  self-modifying test's tail, re-decoded outside the cached
+  block by design). Found while proving the FD-176 environment
+  fix; fixed on `lane-fd193` (commit `f5fac0447`); record:
+  `docs/reports/fd193-blockstats-reporter-20261107.md`;
+  evidence: `test-results/fd193/`.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -9667,6 +9700,8 @@ is behavioural, is re-proven there.
 | `lane-fd189` | *(Batch-10 settled numbers: FD-189 closed as CL-135; FD-194 filed.)* *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-194 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
 
 | `lane-fd188` | *(Batch-10 settled numbers: FD-188's driver-load layer closed as CL-137; FD-195 filed.)* FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claimed provisional CL-134 on its branch; settled as CL-137 at the batch-10 composition): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-195 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
+
+| `lane-fd193` | *(Provisional number: FD-193 closed as CL-135; settles at the next composition.)* FD-193 CLOSED: the BW64_BLOCKSTATS exit reporter no longer dereferences a CPU that may already be destroyed — a CPU that allocates a block table under the flag joins a process-wide registry, folds its counters into process-wide totals on destruction, and the once-registered reporter prints the folded totals plus the counters of any CPUs still alive at exit. | Fix commit `f5fac0447` on base `faf95d26c`. RED on the base: four identical garbage lines (coverage=5070359463874500.0%) from the four-context block-invalidation harness. GREEN: a single line, identical across runs — built=7 execs=7 insnsInBlocks=13 totalInsns=14 coverage=92.9% — with totalInsns matching the harness's own independent instruction total exactly; interp/blocks differential byte-identical (pass=54 fail=0); flag unset prints nothing; CPU-lifetime gate PASS with block execution off and on; jit64 phase-1 tests 873/0. Record: `docs/reports/fd193-blockstats-reporter-20261107.md`; evidence `test-results/fd193/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -14137,6 +14172,32 @@ dead-start fix and needs composition care.
   `docs/reports/fd03-remaining-terms-20261106.md`
   (evidence audit on base `faf95d26c`, record commit
   `3bf935b48`; no product code changed).
+
+- **CL-135 — FD-193 closed: the `BW64_BLOCKSTATS` exit
+  reporter read a dangling CPU pointer and printed garbage.**
+  *(Lane-local closure on `lane-fd193`; the number settles at
+  the next composition — CL-134 is claimed on the lane-fd176
+  and lane-fd189 branches.)* The reporter's static `CPU64*`
+  pointed at the first CPU that allocated a block table; test
+  contexts destroy their CPUs before process exit, so the
+  atexit line read freed memory, and one handler was registered
+  per CPU so the line repeated (four identical garbage lines,
+  coverage=5070359463874500.0%, measured on the integration
+  tip). A CPU that allocates a block table while the flag is
+  set now joins a process-wide registry and, on destruction,
+  folds its counters into process-wide totals; the reporter
+  registers exactly once and prints the folded totals plus the
+  counters of any CPUs still alive at exit. Proof: the
+  block-invalidation harness run with the flag set prints a
+  single line, identical across runs (built=7 execs=7
+  insnsInBlocks=13 totalInsns=14 coverage=92.9%), with
+  totalInsns matching the harness's own independent
+  instruction total exactly; interp/blocks differential
+  byte-identical (pass=54 fail=0); flag unset prints nothing;
+  CPU-lifetime gate PASS in both block modes; jit64 phase-1
+  tests 873/0. Fix commit `f5fac0447` on base `faf95d26c`.
+  Record: `docs/reports/fd193-blockstats-reporter-20261107.md`;
+  evidence `test-results/fd193/`.
 
 ## Appendix — examined and deliberately NOT registered
 
