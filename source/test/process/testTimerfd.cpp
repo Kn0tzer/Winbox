@@ -169,7 +169,14 @@ void testTimerfd64Syscalls() {
     if (result != 0 || timer->isReadReady()) {
         testFail("x64 timerfd disarm created a spurious expiration");
     }
-    result = syscall(286, fd, 2 /*unsupported CANCEL_ON_SET without ABS*/, testPage, 0);
+    // The raw host kernel accepts flags 2 (TFD_TIMER_CANCEL_ON_SET)
+    // and 3; only bits outside the 0x3 mask answer -EINVAL (timing
+    // lane's raw + strace-verified grid, test-results/timing-waits/).
+    // The earlier pin of -EINVAL for flags=2 rested on the assumption
+    // that bit 1 is invalid; it is a real flag.
+    result = syscall(286, fd, 2 /*TFD_TIMER_CANCEL_ON_SET*/, testPage, 0);
+    if (result != 0) testFail("x64 timerfd_settime refused TFD_TIMER_CANCEL_ON_SET");
+    result = syscall(286, fd, 4 /*outside the host mask*/, testPage, 0);
     if (result != (U64)-K_EINVAL) testFail("x64 timerfd_settime accepted invalid flags");
     process->close(fd);
 }

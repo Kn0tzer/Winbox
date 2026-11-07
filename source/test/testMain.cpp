@@ -90,6 +90,7 @@ void testGetrandom32Syscall();
 void testReadv32Syscall();
 void testFutexWaitv32Syscall();
 void testNullPath32Syscalls();
+void testTimingWaits32();
 void testMemfdNullName32Syscalls();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
@@ -206,6 +207,7 @@ void testXattrNamespace64Syscalls();
 void testXattrWriteClassify64Syscalls();
 void testMidDotDot64Syscalls();
 void testSetitimer64Syscalls();
+void testTimingWaits64();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
 void testFutex64Operations();
@@ -318,6 +320,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
     {testSetitimerProbes, "Test setitimer expiration probes"},
     {testSetitimer64Syscalls, "Test x64 setitimer and getitimer syscalls"},
+    {testTimingWaits64, "Test x64 timing and wait contract answers against the raw-syscall host grid"},
     {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
@@ -1037,6 +1040,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testEmptyPathProcessApi, "Test empty path answers -ENOENT through the KProcess API; AT_EMPTY_PATH fd forms keep working"},
     {testStatxAtEmptyPathProcessApi, "Test KProcess::statx with AT_EMPTY_PATH and a non-empty path stats the named path"},
     {testNullPath32Syscalls, "Test 32-bit null path answers -EFAULT through the string reader path; utimensat null path answers the raw per-shape matrix (FD-136)"},
+    {testTimingWaits32, "Test 32-bit timing and wait contract answers against the raw-syscall host grid"},
     {testMemfdNullName32Syscalls, "Test 32-bit memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
