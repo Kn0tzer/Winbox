@@ -9356,6 +9356,47 @@ do not close the entry until they land.
   merge lane, 2026-11-07, from FD-199's byte-level repair
   evidence.
 
+- **FD-196 — Browser probes starve behind a build queue:
+  no probe can start while any build is queued, so probe
+  slot counts do not bound browser-test throughput on a
+  busy box.** *(Medium)* Two serial build gates stand
+  before any browser starts: `acquireProbeSlot` refuses
+  acquisition while a `build-pending` file names a live
+  pid, and `tools/bw64-build.sh` claims that file when a
+  build starts *waiting* — before it holds the build
+  lock — removing it only at its own exit, so a relay of
+  queued builds holds the claim continuously; a probe
+  that does acquire then waits again in setup for the
+  build lock itself (`waitForBuildIdle`, 600 s default).
+  Measured 2026-11-07 on the 20-lane wave (project work
+  on cores 0–2, a Minecraft server on core 3): the claim
+  was held without a usable gap from 04:24Z to past
+  06:11Z across at least six builds (the DNS lane's, the
+  batch-10 merge build, an FD-26 JIT build, two FD-194
+  builds, and others), and three suite boots
+  (boot64-smoke twice, boot32-vkboot once) each failed
+  at the 900 s slot wait — 901729 ms, 900490 ms,
+  901735 ms — *without testing anything*, while other
+  lanes' probes queued behind the same relay. One probe
+  did slip through a handoff gap, acquired, passed the
+  build-idle wait, and booted the guest, proving the
+  gates pass when a gap aligns. Net effect: on a
+  build-saturated box, browser testing is serial-to-zero
+  no matter how many probe slots exist; raising slot
+  defaults cannot parallelize anything until probe
+  starts are possible during a build queue (for
+  example, claiming `build-pending` only while holding
+  the build lock, or reserving a bounded probe window).
+  Slot defaults stay heavy 2 / light 2 — the 2×
+  verification in `web/tests/parallel-probe-README.md`
+  remains the highest proven probe concurrency, and the
+  3× measurement under the current core split is still
+  owed (apparatus preserved with the record). Found by
+  the probe-parallel lane, 2026-11-07; evidence
+  `docs/reports/probe-parallel-20261107.md` and
+  `test-results/probepar/` on branch
+  `lane-probe-parallel`. (Number lane-local; the next
+  composition audit settles it.)
 
 ## B. Fixed on a lane branch — awaiting merge
 
