@@ -172,6 +172,21 @@ static U32 syscall_link(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+static U32 syscall_linkat(CPU* cpu, U32 eipCount) {
+    // FD-195: the host validates the flags ahead of the path
+    // fault (measured: bad flags with a null old path answer
+    // -EINVAL, not -EFAULT); only AT_SYMLINK_FOLLOW (0x400)
+    // and AT_EMPTY_PATH (0x1000) are defined.
+    if (ARG5 & ~0x1400) return -K_EINVAL;
+    if (!ARG2 || !ARG4) return -K_EFAULT; // FD-132: a null path faults on the host, on either side
+    BString oldpath = cpu->memory->readString(ARG2);
+    BString newpath = cpu->memory->readString(ARG4);
+    SYS_LOG1(SYSCALL_FILE, cpu, "linkat: olddirfd=%d oldpath=%X(%s) newdirfd=%d newpath=%X(%s) flags=%x", ARG1, ARG2, oldpath.c_str(), ARG3, ARG4, newpath.c_str(), ARG5);
+    U32 result = cpu->thread->process->linkat(ARG1, oldpath, ARG3, newpath, ARG5);
+    SYS_LOG(SYSCALL_FILE, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
 static U32 syscall_unlink(CPU* cpu, U32 eipCount) {
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
@@ -3027,7 +3042,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_fstatat64,  // 300 __NR_fstatat64
     syscall_unlinkat,   // 301 __NR_unlinkat
     syscall_renameat,   // 302
-    nullptr,                  // 303
+    syscall_linkat,                  // 303 __NR_linkat
     syscall_symlinkat,  // 304 __NR_symlinkat
     syscall_readlinkat, // 305 __NR_readlinkat
     syscall_fchmodat,   // 306 __NR_fchmodat

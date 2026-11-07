@@ -145,6 +145,7 @@ void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
 void testPwritev32Dispatch();
 void testPreadv32Dispatch();
+void testUnfiledGaps32();
 void testWritevPartialError();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
@@ -164,6 +165,7 @@ void testPidfd64Syscalls();
 void testInotify64Syscalls();
 void testExeSpawnSignal64();
 void testPreadv64Syscalls();
+void testUnfiledGaps64();
 void testCloseWriteDeferral64();
 void testMmap64FileReadFailure();
 void testSendmsgBadBuffer64Syscalls();
@@ -273,6 +275,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testUnfiledGaps64, "Test x64 vectored-read lengths and positioned reads on pipes (FD-193/FD-194)"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
     {testSendmsgBadBuffer64Syscalls, "Test x64 sendmsg/sendmmsg from unreadable guest buffers"},
@@ -1047,6 +1050,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testPwritev32Dispatch, "Test 32-bit pwritev and pwritev2 dispatch"},
     {testPreadv32Dispatch, "Test 32-bit preadv and preadv2 dispatch"},
+    {testUnfiledGaps32, "Test vectored-read lengths, positioned reads on pipes, 32-bit linkat (FD-193/FD-194/FD-195)"},
     {testWritevPartialError, "Test 32-bit writev partial-error return shape (FD-96)"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
@@ -1055,6 +1059,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testUnfiledGaps64, "Test x64 vectored-read lengths and positioned reads on pipes (FD-193/FD-194)"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},

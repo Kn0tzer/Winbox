@@ -134,6 +134,12 @@ std::atomic<uint64_t> g_vkBufUs{0};
 std::atomic<uint64_t> g_vkImgUs{0};
 std::atomic<uint64_t> g_vkGuestUs{0};
 std::atomic<uint64_t> g_vkTrapCalls{0};
+// FD-196: 32-bit guest Vulkan traps, counted per trap like the
+// 64-bit path's g_vkTrapCalls. Gate-only: the vk32 JSON section
+// documents per-trap data as unavailable, so this counter is
+// never printed -- it exists so frameless vk32 traffic counts
+// as activity for the emission gate.
+std::atomic<uint64_t> g_vk32TrapCalls{0};
 std::atomic<uint64_t> g_vkHopChunks{0};
 std::atomic<uint64_t> g_vkHopBytes{0};
 
@@ -212,6 +218,7 @@ void resetWindow() {
     takeRelaxed(g_vkImgUs);
     takeRelaxed(g_vkGuestUs);
     takeRelaxed(g_vkTrapCalls);
+    takeRelaxed(g_vk32TrapCalls);
     takeRelaxed(g_vkHopChunks);
     takeRelaxed(g_vkHopBytes);
 }
@@ -469,9 +476,31 @@ void bw64_metrics_vk_frame(const Bw64VkFrame* f) {
     addRelaxed(g_vkBufUs, millisToUs(f->bufMs));
     addRelaxed(g_vkImgUs, millisToUs(f->imgMs));
     addRelaxed(g_vkGuestUs, millisToUs(f->guestMs));
-    addRelaxed(g_vkTrapCalls, f->trapCalls);
+    // FD-196: g_vkTrapCalls is owned by bw64_metrics_vk_trap
+    // (counted per trap as it happens); adding f->trapCalls
+    // here as well would count every presented frame's traps
+    // twice.
     addRelaxed(g_vkHopChunks, f->hopChunks);
     addRelaxed(g_vkHopBytes, f->hopBytes);
+}
+
+// FD-196: one Vulkan trap, counted as it happens. Until now the
+// Vulkan counters moved only inside bw64_metrics_vk_frame (at
+// present completion), so a guest issuing traps indefinitely
+// without presenting produced no activity the emission gate
+// could see and nothing was ever emitted for it. The bridge
+// calls this from its per-trap timer on both guest paths.
+void bw64_metrics_vk_trap(int arch) {
+    if (!bw64_metrics_enabled()) return;
+    // Flush BEFORE accounting, like bw64_metrics_add_stage: a
+    // stale/idle window reset must never discard the trap that
+    // triggered this call. The trap lands in the next window.
+    bw64_metrics_maybe_emit();
+    if (arch == 1) {
+        addRelaxed(g_vk32TrapCalls, 1);
+    } else {
+        addRelaxed(g_vkTrapCalls, 1);
+    }
 }
 
 // Launcher escape hatch (?metrics=0): the metrics timing hooks run on guest
@@ -511,6 +540,8 @@ void bw64_metrics_maybe_emit(void) {
             uint64_t glCalls = g_stage[BW64_STAGE_GL].calls.load(std::memory_order_relaxed);
             uint64_t audioCalls = g_stage[BW64_STAGE_AUDIO].calls.load(std::memory_order_relaxed);
             uint64_t syscallCalls = g_stage[BW64_STAGE_SYSCALL].calls.load(std::memory_order_relaxed);
+            uint64_t vkTrapCalls = g_vkTrapCalls.load(std::memory_order_relaxed);
+            uint64_t vk32TrapCalls = g_vk32TrapCalls.load(std::memory_order_relaxed);
             bool frameActivity = vkPresents || vk32Presents || sdlPresents || vkFrames;
             // FD-63: syscall dispatch counts as activity. A guest that is
             // executing dispatches syscalls continuously, so a window holding
@@ -520,7 +551,14 @@ void bw64_metrics_maybe_emit(void) {
             // no-activity branch below, which discarded the accumulated
             // counters unreported every interval and froze the panel at the
             // last frame-driven snapshot for the rest of the run.
-            bool bridgeActivity = glCalls || audioCalls || syscallCalls;
+            // FD-196: Vulkan trap calls count as activity too, on
+            // the same reasoning as FD-63's syscall clause: a guest
+            // driving its Vulkan device without ever presenting is
+            // a live session, and without this its windows fell
+            // into the no-activity branch and were discarded
+            // unreported -- the panel froze for precisely the
+            // stuck-before-first-frame sessions.
+            bool bridgeActivity = glCalls || audioCalls || syscallCalls || vkTrapCalls || vk32TrapCalls;
             if (!last) {
                 // First call: start the window, nothing to report yet.
                 g_lastEmitUs.store(nowUs, std::memory_order_relaxed);

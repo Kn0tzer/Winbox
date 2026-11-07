@@ -2002,6 +2002,15 @@ static U64 sys_pread64Impl(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset, b
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-194: an object that is not a file cannot be positioned:
+    // the host answers -ESPIPE for it ahead of the offset and
+    // mode answers below (measured on the 6.17 kernel; only
+    // KFile is seekable -- sockets, epoll, eventfd and the rest
+    // all take this answer). Without this, non-file objects fell
+    // into the readFully path below, whose seek() stream objects
+    // ignore, so a positioned read on a socketpair silently
+    // consumed and returned its bytes.
+    if (!std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return (U64)-K_ESPIPE;
     // FD-84: the host's validation order for the positioned-read
     // family, measured on the 6.17 host kernel: a negative offset
     // answers -EINVAL ahead of the descriptor's mode, and a
@@ -2070,6 +2079,8 @@ static U64 sys_pread64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     return sys_pread64Impl(cpu, fd, buf, count, offset, true);
 }
 
+static U64 sys_readv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt);
+
 // preadv / preadv2 (FD-80; FD-99/FD-100) -- vectored positioned
 // reads over the same positioned-read core as pread64. Host
 // behaviour measured on the box's 6.17 kernel: segments fill in
@@ -2094,6 +2105,13 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
     if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-194: an unseekable object answers -ESPIPE ahead of the
+    // mode, iovcnt, array and flags answers (the host's order,
+    // measured on the 6.17 kernel) -- a pipe's write end
+    // included, so this precedes the mode check below. The
+    // file-position mode is exempt: it reads, and takes the
+    // readv path after validation below.
+    if (!useFilePos && !std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return (U64)-K_ESPIPE;
     // FD-95 (batch-3 merge decision): the mode answer sits with
     // the descriptor check -- a descriptor that cannot be read
     // answers -EBADF ahead of the iovcnt range and iovec array
@@ -2104,7 +2122,22 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
+    // FD-193: a segment length that is negative read as s64
+    // answers -EINVAL -- part of the host's vector import, so
+    // it sits with the array check and ahead of the flags
+    // check. Without it the walk below treated the length as
+    // a huge unsigned count.
+    for (S32 i = 0; i < cnt; i++) {
+        if ((S64)cpu->memory->readq(iov + (U64)i * 16 + 8) < 0) return (U64)-K_EINVAL;
+    }
     if (isPreadv2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    // FD-194: the file-position mode is a plain vectored read
+    // once validation has run (flags included, so a bad flag
+    // still answers -EOPNOTSUPP ahead of any byte moving).
+    // sys_readv64 re-validates identically, walks at the
+    // current position (pipes included) and raises the same
+    // single IN_ACCESS.
+    if (useFilePos) return sys_readv64(cpu, fd, iov, iovcnt);
     S64 basePos = useFilePos ? fdesc->kobject->getPos() : offset;
     U64 total = 0;
     S64 err = 0;
@@ -2112,15 +2145,18 @@ static U64 sys_preadv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 p
         U64 segBase = cpu->memory->readq(iov + (U64)i * 16 + 0);
         U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
         if (len == 0) continue;
-        S64 got = (S64)sys_pread64Impl(cpu, fd, segBase, len, (U64)(basePos + (S64)total), false);
+        // FD-193: the combined transfer is capped at the host's
+        // MAX_RW_COUNT (0x7ffff000), as in sys_readv64.
+        U64 want = len;
+        const U64 capLeft = 0x7ffff000ULL - total;
+        if (want > capLeft) want = capLeft;
+        if (want == 0) break;
+        S64 got = (S64)sys_pread64Impl(cpu, fd, segBase, want, (U64)(basePos + (S64)total), false);
         if (got < 0) { err = got; break; }
         total += (U64)got;
-        if ((U64)got < len) break; // short read: EOF / drained
+        if ((U64)got < want) break; // short read: EOF / drained
     }
     if (total == 0 && err < 0) return (U64)err;
-    if (useFilePos && total > 0) {
-        fdesc->kobject->seek(basePos + (S64)total);
-    }
     // Exactly one IN_ACCESS per successful call (see the header
     // comment); the per-segment reads above ran with notification
     // suppressed so a multi-segment read cannot stack them up.
@@ -2145,6 +2181,16 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
     if ((S64)offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-194 (write twin): an unseekable object answers
+    // -ESPIPE ahead of the mode answer (measured on the 6.17
+    // kernel: pwrite64 on either end of a pipe). The offset
+    // answer above keeps its FD-93 place ahead of this one --
+    // the native path answers -EINVAL for a negative offset
+    // even on a pipe, where the compat path answers -ESPIPE
+    // (the 32-bit core below follows the compat order).
+    // Without this, non-file objects fell into the
+    // seek-and-write path below and silently wrote.
+    if (!std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return (U64)-K_ESPIPE;
     if (!fdesc->canWrite()) return (U64)-K_EBADF;
     if (count == 0) return 0;
     // Ceiling only (was a 1MB cap that silently truncated large pwrites).
@@ -2187,6 +2233,8 @@ static U64 sys_pwrite64(CPU64* cpu, U64 fd, U64 buf, U64 count, U64 offset) {
 // write: the core's guest copy zero-fills an unreadable buffer
 // instead of failing, which would fabricate bytes the host never
 // writes (the single-call paths keep that trait -- FD-97).
+static U64 sys_writev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt);
+
 static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 posH, U64 flags, bool isPwritev2) {
     if (!cpu->thread || !cpu->thread->process) return (U64)-K_ENOSYS;
     S64 offset = (S64)((posH << 32) | (posL & 0xFFFFFFFFULL));
@@ -2194,6 +2242,13 @@ static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 
     if (!useFilePos && offset < 0) return (U64)-K_EINVAL;
     KFileDescriptorPtr fdesc = cpu->thread->process->getFileDescriptor((FD)fd);
     if (!fdesc) return (U64)-9; // -EBADF
+    // FD-194 (write twin): an unseekable object answers
+    // -ESPIPE ahead of the mode, iovcnt, array and flags
+    // answers (measured: pwritev on either end of a pipe),
+    // mirroring sys_preadv64. The file-position mode is
+    // exempt: it writes, and takes the writev path after
+    // validation below.
+    if (!useFilePos && !std::dynamic_pointer_cast<KFile>(fdesc->kobject)) return (U64)-K_ESPIPE;
     // FD-95 (batch-3 merge decision): the mode answer sits with
     // the descriptor check -- a descriptor that cannot be
     // written answers -EBADF ahead of the iovcnt range and
@@ -2205,6 +2260,14 @@ static U64 sys_pwritev64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt, U64 posL, U64 
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && (iov == 0 || !sys_rangeHasPermission64(cpu->memory, iov, (U64)cnt * 16, K64_PAGE_READ))) return (U64)-K_EFAULT;
     if (isPwritev2 && (flags & ~0x3FULL)) return (U64)-K_EOPNOTSUPP;
+    // FD-194 (write twin): the file-position mode without
+    // RWF_APPEND is a plain vectored write once validation
+    // has run. APPEND keeps the walk below: the host's two
+    // ABIs disagree on APPEND + position mode for a pipe
+    // (native answers -EBADF, compat writes), so that corner
+    // keeps its current answer -- a stated boundary in
+    // FD-194's entry.
+    if (useFilePos && !(isPwritev2 && (flags & 0x10ULL))) return sys_writev64(cpu, fd, iov, iovcnt);
     bool append = isPwritev2 && (flags & 0x10ULL); // RWF_APPEND
     S64 base = offset;
     if (append) {
@@ -2781,6 +2844,14 @@ static U64 sys_readv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
     S32 cnt = (S32)iovcnt;
     if (cnt < 0 || cnt > 1024) return (U64)-K_EINVAL; // IOV_MAX
     if (cnt > 0 && iov == 0) return (U64)-K_EFAULT;
+    // FD-193: a segment length that is negative read as s64
+    // answers -EINVAL before any byte moves (the host's vector
+    // import judges every segment up front). Without it the
+    // walk treated the length as a huge unsigned count and
+    // returned whatever the source gave up.
+    for (S32 i = 0; i < cnt; i++) {
+        if ((S64)cpu->memory->readq(iov + (U64)i * 16 + 8) < 0) return (U64)-K_EINVAL;
+    }
     U64 total = 0;
     S64 err = 0;
     {
@@ -2789,10 +2860,18 @@ static U64 sys_readv64(CPU64* cpu, U64 fd, U64 iov, U64 iovcnt) {
             U64 base = cpu->memory->readq(iov + (U64)i * 16 + 0);
             U64 len  = cpu->memory->readq(iov + (U64)i * 16 + 8);
             if (len == 0) continue;
-            S64 got = (S64)sys_read64(cpu, fd, base, len);
+            // FD-193: cap the combined transfer at the host's
+            // MAX_RW_COUNT (2147479552 = 0x7ffff000, measured
+            // from /dev/zero for one 2^31 segment and for two
+            // segments summing to 2^31).
+            U64 want = len;
+            const U64 capLeft = 0x7ffff000ULL - total;
+            if (want > capLeft) want = capLeft;
+            if (want == 0) break;
+            S64 got = (S64)sys_read64(cpu, fd, base, want);
             if (got < 0) { err = got; break; }
             total += (U64)got;
-            if ((U64)got < len) break; // short read: EOF / drained
+            if ((U64)got < want) break; // short read: EOF / drained
         }
     }
     if (total == 0 && err < 0) return (U64)err;

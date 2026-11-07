@@ -5179,9 +5179,17 @@ inline void vkProfReset(VkProfAcc& a) {
 // trap's wall to accTrapOther EXCEPT submit/submit2/submit2KHR/present, which
 // time themselves at finer granularity below.
 struct VkProfTrapTimer {
-    U64 fn; double t0;
-    explicit VkProfTrapTimer(U64 f) : fn(f), t0(vkProfNow()) {}
+    U64 fn; double t0; int arch;
+    VkProfTrapTimer(U64 f, int a) : fn(f), t0(vkProfNow()), arch(a) {}
     ~VkProfTrapTimer() {
+        // FD-196: count the trap in the metrics registry FIRST,
+        // ahead of the timing gate below -- Vulkan traffic that
+        // never completes a frame still has to feed the
+        // registry's emission gate, or the metrics panel stays
+        // frozen for exactly the stuck sessions it exists to
+        // diagnose. The hook applies the registry's own enable
+        // gate and is one relaxed atomic increment.
+        bw64_metrics_vk_trap(arch);
         if (!vkTimingEnabled()) return;
         if (fn == VK64_fn_vkQueueSubmit || fn == VK64_fn_vkQueueSubmit2 ||
             fn == VK64_fn_vkQueueSubmit2KHR || fn == VK64_fn_vkQueuePresentKHR)
@@ -8076,7 +8084,7 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
     std::lock_guard<std::recursive_mutex> lk(g_vkMutex);
     // NB: constructed AFTER the lock so the destructor (which touches the
     // profiler accumulators) also runs under g_vkMutex. BW64_VKPROF, no-op when unset.
-    VkProfTrapTimer vkprofTrap(fnId);
+    VkProfTrapTimer vkprofTrap(fnId, 0);
     g_dropFn = fnId;
     g_mem32 = nullptr;
     g_mem = cpu ? cpu->memory : nullptr;
@@ -12168,7 +12176,7 @@ U64 vk32Bridge(CPU* cpu, U32 fnId, U32 argsAddr) {
     // wall to the shared accumulator (submit/present exclude themselves and
     // time at finer granularity; the vk32 present case is the frame boundary
     // that consumes and resets it).
-    VkProfTrapTimer vkprofTrap(fnId);
+    VkProfTrapTimer vkprofTrap(fnId, 1);
 
     switch (fnId) {
     // ================= B. Queries =================

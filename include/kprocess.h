@@ -315,6 +315,7 @@ public:
     void cpuTimesMicroSeconds(U64& userMicroSeconds, U64& kernelMicroSeconds);
     U32 ioctl(KThread* thread, FD fildes, U32 request);
     U32 link(BString from, BString to);
+    U32 linkat(FD olddirfd, BString from, FD newdirfd, BString to, U32 flags);
     // FD-81: link() served by sharing the source's backing path
     // (see KProcess::link). Public so the suites can prove the
     // mechanism on hosts whose filesystems do hard-link.
