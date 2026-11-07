@@ -174,20 +174,76 @@ class PrefixPackagingTests(unittest.TestCase):
             prefixes._validate_prefix(entries, "win32")
 
     def test_win64_runtime_defaults_are_allowed_when_prefix_has_no_service_overrides(self):
+        # FD-189: the old leniency is gone for the Plug-and-Play stack --
+        # a win64 prefix missing PlugPlay/winebus/wineusb or the ROOT\WINE
+        # bus keys now fails the guard, because that leniency is exactly
+        # how the shipped 64-bit prefix carried no PnP stack at all while
+        # the guard stayed green. Only RpcSs keeps the allowance.
         entries = valid_entries("win64")
         system_key = prefixes.PREFIX + "system.reg"
         text = entries[system_key].decode()
-        for name in (*prefixes.SERVICES,):
-            section = f"[System\\\\CurrentControlSet\\\\Services\\\\{name}] 1\n\"Start\"=dword:00000003\n\n"
-            if name == "PlugPlay":
-                section = f"[System\\\\CurrentControlSet\\\\Services\\\\{name}] 1\n\"Start\"=dword:00000002\n\n"
-            text = text.replace(section, "")
-        for key in prefixes.CONTROLLER_KEYS[2:]:
-            text = "\n".join(line for line in text.splitlines() if not line.startswith("[" + key + "]")) + "\n"
-        entries[system_key] = text.encode()
+        rpcss = ('[System\\\\CurrentControlSet\\\\Services\\\\RpcSs] 1\n'
+                 '"Start"=dword:00000003\n\n')
+        entries[system_key] = text.replace(rpcss, "").encode()
         prefixes._validate_prefix(entries, "win64")
         with self.assertRaisesRegex(ValueError, "missing service registration RpcSs"):
             prefixes._validate_prefix(entries, "win64", require_full_init=True)
+
+    def test_win64_guard_requires_pnp_services_and_bus_keys(self):
+        entries = valid_entries("win64")
+        system_key = prefixes.PREFIX + "system.reg"
+        text = entries[system_key].decode()
+        plugplay = ('[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay] 1\n'
+                    '"Start"=dword:00000002\n\n')
+        entries[system_key] = text.replace(plugplay, "").encode()
+        with self.assertRaisesRegex(ValueError, "missing service registration PlugPlay"):
+            prefixes._validate_prefix(entries, "win64")
+
+        entries = valid_entries("win64")
+        text = entries[system_key].decode()
+        for key in prefixes.CONTROLLER_KEYS[2:]:
+            text = "\n".join(line for line in text.splitlines() if not line.startswith("[" + key + "]")) + "\n"
+        entries[system_key] = text.encode()
+        with self.assertRaisesRegex(ValueError, "missing controller/HID registry key"):
+            prefixes._validate_prefix(entries, "win64")
+
+    def test_pnp_fragment_registers_plugplay_and_bus_devices(self):
+        # FD-189: merging the shipped prefix64-reg.txt into a win64
+        # registry without the PnP stack installs exactly the PlugPlay
+        # service, the two bus-driver services and the ROOT\WINE bus
+        # devices -- and without the merge the same registry fails the
+        # guard with the filed signature.
+        fragment = (Path(__file__).resolve().parent / "prefix64-reg.txt").read_text()
+        entries = valid_entries("win64")
+        system_key = prefixes.PREFIX + "system.reg"
+        text = entries[system_key].decode()
+        for name, start in (("PlugPlay", "00000002"), ("winebus", "00000003"),
+                            ("wineusb", "00000003")):
+            section = (f"[System\\\\CurrentControlSet\\\\Services\\\\{name}] 1\n"
+                       f'"Start"=dword:{start}\n\n')
+            text = text.replace(section, "")
+        for key in prefixes.CONTROLLER_KEYS[2:]:
+            text = "\n".join(line for line in text.splitlines() if not line.startswith("[" + key + "]")) + "\n"
+        bare = text
+        with self.assertRaisesRegex(ValueError, "missing service registration PlugPlay"):
+            prefixes._validate_prefix({**entries, system_key: bare.encode()}, "win64")
+        merged, added = prefixes.merge_registry_fragment(bare, fragment)
+        # The fragment also carries the CurrentVersion/.NETFramework
+        # sections this minimal fixture lacks, so the count is larger
+        # than the PnP set; assert the PnP sections by name.
+        pnp = ("[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay]",
+               "[System\\\\CurrentControlSet\\\\Services\\\\winebus]",
+               "[System\\\\CurrentControlSet\\\\Services\\\\wineusb]",
+               "[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS]",
+               "[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS\\\\Device Parameters]",
+               "[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]",
+               "[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB\\\\Device Parameters]")
+        for header in pnp:
+            # `added` carries the header line with its registry timestamp
+            # suffix, so match by prefix; `merged` is plain text.
+            self.assertTrue(any(a.startswith(header) for a in added), header)
+            self.assertIn(header, merged)
+        prefixes._validate_prefix({**entries, system_key: merged.encode()}, "win64")
 
     def test_guard_checks_both_architecture_hives_and_hid_state(self):
         prefixes._validate_prefix(valid_entries("win32"), "win32")

@@ -17,6 +17,9 @@ import zipfile
 PREFIX = "home/username/.wine/"
 HIVES = ("system.reg", "user.reg", "userdef.reg")
 SERVICES = ("RpcSs", "PlugPlay", "winebus", "wineusb")
+# FD-189: the Plug-and-Play stack whose registration the shipped
+# 64-bit prefix must carry (see _validate_prefix).
+PNP_SERVICES = ("PlugPlay", "winebus", "wineusb")
 CONTROLLER_KEYS = (
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.Gamepad",
     "Software\\\\Microsoft\\\\WindowsRuntime\\\\ActivatableClassId\\\\Windows.Gaming.Input.RawGameController",
@@ -168,7 +171,15 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
         key = f"system\\\\currentcontrolset\\\\services\\\\{service}".lower()
         body = system_sections.get(key)
         if body is None:
-            if require_full_init:
+            # FD-189: the Plug-and-Play stack must be registered in the
+            # shipped prefix. A missing PlugPlay/winebus/wineusb
+            # registration used to pass this guard silently (only the
+            # native-boot packaging path required it), so the shipped
+            # 64-bit prefix carried no PnP stack at all while the guard
+            # stayed green. RpcSs keeps the old allowance: the shipped
+            # 64-bit prefix has never registered it and changing that
+            # is outside FD-189's scope.
+            if require_full_init or service in PNP_SERVICES:
                 errors.append(f"missing service registration {service}")
             continue
         match = next((re.search(r'^"Start"=dword:([0-9a-fA-F]{8})$', line) for line in body
@@ -178,7 +189,11 @@ def _validate_prefix(contents: dict[str, bytes], architecture: str,
         elif int(match.group(1), 16) == 4:
             errors.append(f"service {service} is disabled")
 
-    controller_keys = CONTROLLER_KEYS if require_full_init or architecture == "win32" else CONTROLLER_KEYS[:2]
+    # FD-189: the ROOT\WINE bus-device keys are required on win64
+    # too. The old [:2] carve-out let the shipped 64-bit prefix pass
+    # with no bus enumeration at all; the 32-bit prefix has always
+    # carried them.
+    controller_keys = CONTROLLER_KEYS
     for key in controller_keys:
         if key.lower() not in system.lower():
             errors.append(f"missing controller/HID registry key {key}")

@@ -62,10 +62,18 @@ artifacts and the *source* payloads, offline:
      the 64-bit stack serves the Arial family (FD-86); the 32-bit
      stack serves it through the same replacement, written into its
      exported prefix by tools/browser/stage-wine32-fonts.py.
+  4d. prefix64.zip's system.reg carries the PlugPlay service, the
+     winebus/wineusb bus-driver services and the ROOT\\WINE bus-device
+     enumeration, merged from tools/rootfs64/prefix64-reg.txt (FD-189);
+     without them the Service Control Manager answers error 1060 for
+     all three services and the root enumeration is empty on the
+     64-bit side, while the 32-bit prefix (a real wineboot's output)
+     has always carried them.
   5. stage-dependencies.py pins the CJK font (deb + ttc sha256) and, when
      the download cache exists, the cached deb's ttc matches the pin.
   6. When build-prefix64.sh output exists (tools/rootfs64/dist/), its
-     system.reg carries the CurrentVersion + .NETFramework sections.
+     system.reg carries the CurrentVersion + .NETFramework sections. and
+     the FD-189 Plug-and-Play sections.
 
 Exit code 0 = every non-skipped check passed. Skips are printed, never
 silent. Run directly or via web/tests/suite/unit/runtime-completeness.test.mjs.
@@ -791,6 +799,22 @@ def t_prefix64_arial():
             'glibc-rootfs64.zip: DejaVuSans.ttf (the Arial replacement target) missing'
 
 
+def t_prefix64_pnp():
+    fragment = (ROOT / 'tools/rootfs64/prefix64-reg.txt').read_text()
+    with zipfile.ZipFile(RUNTIME / 'prefix64.zip') as z:
+        system = z.read('home/username/.wine/system.reg').decode(errors='replace')
+    for section in ('[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay]',
+                    '[System\\\\CurrentControlSet\\\\Services\\\\winebus]',
+                    '[System\\\\CurrentControlSet\\\\Services\\\\wineusb]',
+                    '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS]',
+                    '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]'):
+        assert section in system, \
+            f'prefix64.zip system.reg: {section} missing (FD-189)'
+    merged, added = prefixes.merge_registry_fragment(system, fragment)
+    assert added == [], \
+        f'prefix64.zip system.reg drifted from prefix64-reg.txt (FD-189): {added}'
+
+
 def t_cjk_pin():
     text = (ROOT / 'tools/browser/stage-dependencies.py').read_text()
     assert CJK_TTC_SHA in text, 'stage-dependencies.py lost the CJK ttc pin'
@@ -821,6 +845,12 @@ def t_prefix64_built():
             system = z.read('home/username/.wine/system.reg').decode(errors='replace')
         assert '[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion]' in system, label
         assert '[Software\\\\Microsoft\\\\.NETFramework]' in system, label
+        for section in ('[System\\\\CurrentControlSet\\\\Services\\\\PlugPlay]',
+                        '[System\\\\CurrentControlSet\\\\Services\\\\winebus]',
+                        '[System\\\\CurrentControlSet\\\\Services\\\\wineusb]',
+                        '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEBUS]',
+                        '[System\\\\CurrentControlSet\\\\Enum\\\\ROOT\\\\WINE\\\\WINEUSB]'):
+            assert section in system, f'{label}: {section} missing (FD-189)'
 
 
 if __name__ == '__main__':
@@ -845,6 +875,7 @@ if __name__ == '__main__':
     check('fonts32 faces (source + shipped zip)', t_fonts32)
     check('fonts64 faces (source + shipped zip)', t_fonts64)
     check('prefix64 Arial font replacement (FD-86)', t_prefix64_arial)
+    check('prefix64 PlugPlay + bus services (FD-189)', t_prefix64_pnp)
     check('CJK font pin', t_cjk_pin)
     check('prefix64 built artifact sections', t_prefix64_built)
     print(f'{len(FAILURES)} failures, {len(SKIPS)} skips')

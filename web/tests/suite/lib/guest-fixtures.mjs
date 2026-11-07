@@ -16,6 +16,7 @@ const fixtures = {
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   'fd171-contracts': ['tools/guest-fixtures/fd171-contracts.c', '-loleaut32', '-lole32', '-ladvapi32'],
+  'fd189-services': ['tools/guest-fixtures/fd189-services.c', '-ladvapi32', '-lsetupapi'],
   'dbwin-echo': ['tools/guest-fixtures/dbwin-echo.c', '-lkernel32'],
   'fd167-contracts32': ['tools/guest-fixtures/fd167-contracts32.c', '-loleaut32'],
   'fd167-contracts64': ['tools/guest-fixtures/fd167-contracts64.c'],
