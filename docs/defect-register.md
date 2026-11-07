@@ -9553,6 +9553,51 @@ do not close the entry until they land.
   `docs/reports/fd193-blockstats-reporter-20261107.md`;
   evidence: `test-results/fd193/`.
 
+- **FD-193 — Twelve `getRamPtr` call sites in the X11 bridge
+  dereference the result for guest-controlled structs without
+  checking the refusal case, so a page-straddling, unmapped or
+  read-only guest struct crashes the host.** *(High — filed
+  and FIXED on this branch, see CL-137.)* `KMemory::getRamPtr`
+  returns nullptr when the page is unmapped or not writable
+  or the span crosses a page boundary. An audit of all 19
+  call sites in `source/x11` (and 0 in `source/x11wire`)
+  found 12 that pass guest-controlled addresses (in two
+  cases also a guest-controlled element count) and
+  dereference the result unchecked:
+  `XSetWindowAttributes::get` — which also handed the null
+  to `ChangeWindowAttributes`, whose `setAttributes` call
+  dereferences it — `x11_FreeModifierMap` (no null-argument
+  guard either), `x11_XRRFreeCrtcInfo`,
+  `x11_XRRFreeOutputInfo`, `x11_XRRFreeScreenResources`
+  (the struct and its modes array), `x11_XRRGetCrtcInfo`
+  (the struct and its modes array), `x11_XRRGetOutputInfo`,
+  `x11_XRRSetCrtcConfig` (the struct and `modes[modeId-1]`),
+  and `x11_XRRFreeProviderResources`. The remaining 7 sites
+  pass emulator-allocated addresses (fresh `KProcess::alloc`
+  results) whose spans cannot straddle or be unmapped, and
+  are recorded in the Appendix. Guest struct fields are now
+  read through the checked accessor (`readd` at
+  `offsetof`), which takes the guest-fault path for a bad
+  pointer like the rest of the file; `get()` falls back to
+  its checked read when `getRamPtr` refuses; the
+  null-attributes case in `ChangeWindowAttributes` returns
+  BadValue (Success for a zero mask). Proof: four new native
+  tests drive the real int 0x99 handlers with
+  page-straddling structs in a forked child — on the
+  unfixed code all four fail (the emulator logs the
+  `getRamPtr` refusal at the exact straddle addresses,
+  `addr=0x10000FF8 len=48` and `addr=0x10000FFC len=8`, and
+  the handler children wedge on the null dereference and
+  are killed; `get()` returned the null instead of falling
+  back), and on the fixed code all four pass. Fix commit
+  `cd030f389` on base `faf95d26c`. Record:
+  `docs/reports/x11-getramptr-audit-20261106.md`; evidence
+  `test-results/x11-getramptr-audit/` (`red-601..604.log`,
+  `green-601..604.log`). Found by the
+  x11-getramptr-audit lane, 2026-11-06. *(Lane-local
+  numbers: FD-193 and CL-137; both settle at the next
+  composition.)*
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
@@ -9702,6 +9747,7 @@ is behavioural, is re-proven there.
 | `lane-fd188` | *(Batch-10 settled numbers: FD-188's driver-load layer closed as CL-137; FD-195 filed.)* FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claimed provisional CL-134 on its branch; settled as CL-137 at the batch-10 composition): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-195 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
 
 | `lane-fd193` | *(Provisional number: FD-193 closed as CL-135; settles at the next composition.)* FD-193 CLOSED: the BW64_BLOCKSTATS exit reporter no longer dereferences a CPU that may already be destroyed — a CPU that allocates a block table under the flag joins a process-wide registry, folds its counters into process-wide totals on destruction, and the once-registered reporter prints the folded totals plus the counters of any CPUs still alive at exit. | Fix commit `f5fac0447` on base `faf95d26c`. RED on the base: four identical garbage lines (coverage=5070359463874500.0%) from the four-context block-invalidation harness. GREEN: a single line, identical across runs — built=7 execs=7 insnsInBlocks=13 totalInsns=14 coverage=92.9% — with totalInsns matching the harness's own independent instruction total exactly; interp/blocks differential byte-identical (pass=54 fail=0); flag unset prints nothing; CPU-lifetime gate PASS with block execution off and on; jit64 phase-1 tests 873/0. Record: `docs/reports/fd193-blockstats-reporter-20261107.md`; evidence `test-results/fd193/` |
+| `lane-x11-getramptr-audit` | *(Lane-local numbers: FD-193 closed as CL-137; both settle at the next composition.)* FD-193 CLOSED: audit of all 19 `getRamPtr` call sites in the window-system bridge (`source/x11`; none in `source/x11wire`) — 12 received guest-controlled addresses/lengths and dereferenced the result unchecked (getRamPtr returns null for unmapped, read-only or page-straddling spans, so such a guest struct crashed the host); guest fields now read through the checked accessor, `XSetWindowAttributes::get` falls back to its checked read on refusal, and `ChangeWindowAttributes` guards the null-attributes case. The 7 remaining sites pass emulator-allocated addresses and are safe by construction (Appendix). | Fix commit `cd030f389` on base `faf95d26c`. Proof: four new native tests drive the real int 0x99 handlers with page-straddling structs in a forked child — unfixed: all four fail (refusals logged at the exact straddle addresses; children wedged on the null deref, killed after budget); fixed: all four pass (logs `test-results/x11-getramptr-audit/red-601..604.log`, `green-601..604.log`). Record: `docs/reports/x11-getramptr-audit-20261106.md` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -14199,6 +14245,29 @@ dead-start fix and needs composition care.
   Record: `docs/reports/fd193-blockstats-reporter-20261107.md`;
   evidence `test-results/fd193/`.
 
+- **CL-137 — FD-193 closed: twelve X11 bridge call sites
+  dereferenced getRamPtr's refusal (null) for guest
+  structs.** *(Lane-local closure on
+  `lane-x11-getramptr-audit`; the number settles at the
+  next composition.)*
+  Guest struct fields in the eight affected handlers are
+  now read through the checked accessor (`readd` at
+  `offsetof`, counts snapshotted before use);
+  `XSetWindowAttributes::get` falls back to its checked
+  read when `getRamPtr` refuses instead of returning the
+  null; `ChangeWindowAttributes` returns BadValue for a
+  null attributes pointer with a nonzero mask (Success
+  for a zero mask); `x11_FreeModifierMap` gained its
+  missing null-argument guard. The 7 call sites that pass
+  emulator-allocated addresses were audited safe by
+  construction and are unchanged (Appendix). Proof: the
+  four new native tests in
+  `source/test/x11/testX11RamPtrAudit.cpp` — unfixed code
+  all four fail, fixed code all four pass, logs in
+  `test-results/x11-getramptr-audit/`. Fix commit
+  `cd030f389` on base `faf95d26c`. Record:
+  `docs/reports/x11-getramptr-audit-20261106.md`.
+
 ## Appendix — examined and deliberately NOT registered
 
 Recorded so the examination is not lost; each was audited by
@@ -14233,6 +14302,23 @@ its lane and is not a defect, for the stated reason:
   zero-count return, so the check order FD-116 filed
   (descriptor answers first) already holds there; not a
   defect. (`lane-fd116-117` record.)
+- The 7 `getRamPtr` call sites in the X11 bridge that pass
+  emulator-allocated addresses (the Xinerama/XRandR reply
+  structs and mode arrays the handlers build themselves,
+  and `DisplayData::pCurrentRequest`): a fresh
+  `KProcess::alloc` result is backed by the guest heap
+  allocator's page subdivisions or whole-page mappings, so
+  the span cannot straddle a page boundary or be unmapped
+  and the returned pointer cannot be null. Audited call by
+  call by the x11-getramptr-audit lane; the
+  guest-controlled sites in the same files are FD-193.
+  (`lane-x11-getramptr-audit` record.)
+- `BHeap::free` trusting the size word stored in front of a
+  guest heap block: every access goes through the checked
+  MMU path into the guest's own address space, so a corrupt
+  size word can only corrupt or unmap the guest's own heap
+  — which the guest can already do with its own allocator.
+  No host impact. (`lane-x11-getramptr-audit` record.)
 
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
