@@ -28,6 +28,7 @@
 #include <mutex>
 #include <chrono>
 #include <string>
+#include <vector>
 
 // Sharded locks for CPU64 atomic read-modify-write memory ops (XCHG with
 // memory, CMPXCHG, XADD, LOCK-prefixed ALU). In the multi-threaded build each
@@ -291,6 +292,12 @@ CPU64::~CPU64() {
     // compiled only with that gate, so release the complete type here. Table
     // slots the emitted modules own are returned first (only in the worker
     // that created them).
+#if defined(BOXEDWINE_BLOCK_EXEC) && defined(BOXEDWINE_BLOCK_CACHE_INFRA)
+    // FD-193: leave the BLOCKSTATS registry first, folding this CPU's
+    // counters into the process-wide totals, so the exit reporter never
+    // reads this CPU's memory after it is gone.
+    if (blockStatsRegistered) blockStatsUnregister(this);
+#endif
     jit64ReleaseState(m_jit);
     delete m_jit;
 }
@@ -8952,6 +8959,69 @@ void CPU64::freeJit() {
     m_jit = nullptr;
 }
 
+namespace {
+// FD-193: process-wide BLOCKSTATS accounting. The exit reporter must
+// never dereference a lone CPU: test contexts own CPUs that are
+// destroyed before process exit, so the reporter's old static CPU64*
+// dangled and printed heap garbage (measured: coverage=
+// 5070359463874500.0%), and it registered once per CPU, so the line
+// repeated. Instead, a CPU that allocates a block table while
+// BW64_BLOCKSTATS is set joins this registry; on destruction it folds
+// its counters into the folded totals and leaves the registry. The
+// reporter — registered exactly once — prints the folded totals plus
+// the counters of any CPUs still alive at exit: always live memory,
+// always a single line.
+std::atomic<U64> gBlockStatsFoldedBuilt{0};
+std::atomic<U64> gBlockStatsFoldedExec{0};
+std::atomic<U64> gBlockStatsFoldedInsn{0};
+std::atomic<U64> gBlockStatsFoldedTotal{0};
+std::mutex gBlockStatsRegistryMutex;
+std::vector<CPU64*> gBlockStatsRegistry;
+} // namespace
+
+void CPU64::blockStatsRegister(CPU64* cpu) {
+    static std::once_flag reportOnce;
+    std::call_once(reportOnce, [] { std::atexit(&CPU64::blockStatsReport); });
+    std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+    gBlockStatsRegistry.push_back(cpu);
+    cpu->blockStatsRegistered = true;
+}
+
+void CPU64::blockStatsUnregister(CPU64* cpu) {
+    {
+        std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+        auto it = std::find(gBlockStatsRegistry.begin(), gBlockStatsRegistry.end(), cpu);
+        if (it != gBlockStatsRegistry.end()) gBlockStatsRegistry.erase(it);
+    }
+    gBlockStatsFoldedBuilt += cpu->blockStatsBuilt;
+    gBlockStatsFoldedExec += cpu->blockStatsExec;
+    gBlockStatsFoldedInsn += cpu->blockStatsInsn;
+    gBlockStatsFoldedTotal += cpu->instructionCount;
+    cpu->blockStatsRegistered = false;
+}
+
+void CPU64::blockStatsReport() {
+    U64 built = gBlockStatsFoldedBuilt.load();
+    U64 execs = gBlockStatsFoldedExec.load();
+    U64 insns = gBlockStatsFoldedInsn.load();
+    U64 total = gBlockStatsFoldedTotal.load();
+    {
+        std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+        for (const CPU64* cpu : gBlockStatsRegistry) {
+            built += cpu->blockStatsBuilt;
+            execs += cpu->blockStatsExec;
+            insns += cpu->blockStatsInsn;
+            total += cpu->instructionCount;
+        }
+    }
+    klog_fmt("BLOCKSTATS: built=%llu execs=%llu insnsInBlocks=%llu totalInsns=%llu coverage=%.1f%%",
+             (unsigned long long)built,
+             (unsigned long long)execs,
+             (unsigned long long)insns,
+             (unsigned long long)total,
+             total ? 100.0 * (double)insns / (double)total : 0.0);
+}
+
 U32 CPU64::tryBlockStep(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     U64 r = rip;
@@ -8959,17 +9029,7 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
     if (blockNegCache[neg] == r) return 0;
     if (!blockTable) {
         blockTable = std::make_unique<BBlock[]>(BBLOCK_SLOTS);
-        if (std::getenv("BW64_BLOCKSTATS")) {
-            static CPU64* statsCpu = this;
-            std::atexit([] {
-                klog_fmt("BLOCKSTATS: built=%llu execs=%llu insnsInBlocks=%llu totalInsns=%llu coverage=%.1f%%",
-                         (unsigned long long)statsCpu->blockStatsBuilt,
-                         (unsigned long long)statsCpu->blockStatsExec,
-                         (unsigned long long)statsCpu->blockStatsInsn,
-                         (unsigned long long)statsCpu->instructionCount,
-                         statsCpu->instructionCount ? 100.0 * statsCpu->blockStatsInsn / statsCpu->instructionCount : 0.0);
-            });
-        }
+        if (std::getenv("BW64_BLOCKSTATS")) blockStatsRegister(this);
     }
     BBlock& b = blockTable[(U32)((r ^ (r >> 9)) & (BBLOCK_SLOTS - 1))];
     if (b.startRip == r) {
