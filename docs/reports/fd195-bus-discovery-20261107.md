@@ -24,6 +24,13 @@ devices=1 - is met on BOTH architectures, and the standing
   "winebusState":"4","xinputSlot0":true,"dinputDevices":1}`);
   64-bit udev surface first green in `udev64h.out` (enumerate
   count=1, devnode=/dev/input/event5, initialized=1).
+- Queue light checks (pipeline 58, commit `390b43728`):
+  verify-source OK on the exact tip; citations exit 0;
+  native main 692 tests 0 FAILED; native x64 116 tests
+  0 FAILED; run-native PASS; js-legacy exit 0; js-unit
+  352 passed / 2 failed - exactly the two known bare-checkout
+  artifacts (provenance-artifacts, runtime-completeness),
+  i.e. the standing pipeline shape.
 - Every product build printed the build script's own verdict
   (`build20.log`: "Browser export verified"); the runtime
   completeness checker reports 0 failures, 0 skips;
