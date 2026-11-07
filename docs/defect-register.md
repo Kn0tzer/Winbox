@@ -10841,6 +10841,8 @@ do not close the entry until they land.
   the bursty incidence (the preserved fault instances are the
   positive control). The closure number settles when batches
   combine.
+- **FD-201 — The bridge-coverage probes cannot run: they import the probe-slot helper from the project's pre-move path.** *(Medium)* `web/tests/vkcov-probe.mjs`, `web/tests/glcov-probe.mjs`, and `web/tests/vkcov-probe-matrix.mjs` imported `acquireProbeSlot` from `/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs`, a tree deleted by the 2026-11-06 project move, so every Vulkan/OpenGL coverage run died at import time and the coverage matrices could not be re-measured at all. Fixed on lane-vkgl-coverage (relative `./probe-slots.mjs` import in all three probes). Closing terms: a coverage probe runs end-to-end from a fresh worktree and writes its results matrix; the fix is committed but the closing proof is outstanding — the vkgl-coverage lane was stopped by the 2026-11-06 disk emergency before its dist build, and the resume steps are recorded in docs/reports/vkgl-spec-coverage-20261106.md. Found by the vkgl-coverage lane, 2026-11-06; evidence docs/reports/vkgl-spec-coverage-20261106.md + test-results/vkgl-census/before.json (force-added). Number note: filed as FD-195 on this lane branch off the pre-batch-10 base; the batch-10 composition settled FD-195 to the bus-discovery filing, so on the 2026-11-07 rebase onto the batch-10 tip this entry is FD-201 (provisional; final settlement at batch-11 composition).
+
 
 ## B. Fixed on a lane branch — awaiting merge
 

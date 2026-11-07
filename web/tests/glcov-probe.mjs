@@ -5,7 +5,7 @@ import { chromium } from "@playwright/test";
 import { serve } from "../../tools/browser/serve.mjs";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { acquireProbeSlot } from '/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs';
+import { acquireProbeSlot } from './probe-slots.mjs';
 
 const tag = process.env.TAG || `glcov-${Date.now()}`;
 if (!/^[\w.-]+$/.test(tag)) throw new Error("TAG must contain only letters, numbers, _, . or -");
