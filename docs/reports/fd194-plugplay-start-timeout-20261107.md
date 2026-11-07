@@ -137,3 +137,18 @@ call was `ImmCreateContext` was seen parked in a win32u
 ServiceMain (create event, register handler, report status) reaches
 RUNNING under the raised budget, so the observation does not block
 this service, but a future GUI-calling service may meet it.
+
+## Checking queue
+
+Pipeline 42 (submitted from branch tip `9b40fae2a`; the pipeline's
+own verify-source step confirms the mounted commit was
+`9b40fae2a80f33d68ddf71071e868525c2bbfeb4` and the mounted tree
+pristine): citations exit 0; js-legacy exit 0; native suites 692
+tests 0 FAILED (main) and 116 tests 0 FAILED (x64); run-native
+exit 0; js-unit 352 passed / 2 failed — provenance-artifacts and
+runtime-completeness, the two known bare-checkout failures (the
+queue job has no build output and no runtime store mounted; the
+previous accepted pipeline on this base, 41, shows the identical
+pair). Run locally in this prepared tree,
+`check_runtime_completeness.py` passes 0 failures / 0 skips,
+including the FD-194 assertions.
