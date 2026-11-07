@@ -315,6 +315,25 @@ do not close the entry until they land.
   citation audit 352 rows 0 drift. Record:
   `docs/reports/fd03-machine-definition-20261105.md`; evidence
   `test-results/machine/`.
+  **Update 2026-11-07 — the floor-(c) raise measured
+  end-to-end in a real program's own runtime (D22,
+  `lane-d22-mindustry`).** The JVM bundled in the Mindustry
+  game archive (OpenJDK 25.0.1, extracted byte-for-byte)
+  was run inside the guest under the game's own launch
+  arguments on the current integration code (build
+  `4913603a9`, verified export): its ergonomics follow the
+  raised definition exactly — `MaxHeapSize = 1073741824`
+  (the 25% default of the 4 GiB the JVM sees),
+  `InitialHeapSize = 67108864`, the human-readable settings
+  print `Max. Heap Size (Estimated): 1.00G`, and at the Java
+  API level `Runtime.maxMemory()` returns 1073741824 with
+  `Runtime.availableProcessors()` returning 2; a live
+  allocation then held 268435456 bytes (maxMemory/4) and
+  the heap grew to 757071872 bytes without error. On the
+  pre-raise definition the same defaults arithmetic gives
+  a 256 MiB heap and 1 processor. Record:
+  `docs/reports/d22-mindustry-ergonomics-20261107.md`;
+  evidence `test-results/d22-mindustry-20261106/`.
 - **FD-04 — Networking gaps (campaign parked by directive; gaps
   inventoried and verified).** *(Medium)* What works: opt-in IPv4
   TCP through the relay, connect-by-name. What does not exist:
@@ -9410,6 +9429,30 @@ do not close the entry until they land.
   `test-results/probepar/` on branch
   `lane-probe-parallel`. (Number lane-local; the next
   composition audit settles it.)
+- **FD-201 — The D22 JVM-ergonomics probe's settings run
+  waits for a heap-size label the bundled JDK never prints,
+  so a run that captured the value reports a timeout.**
+  *(Low — test tooling. Filed by the D22 lane, 2026-11-07.)*
+  The probe (`web/tests/d22-jvm-ergonomics.mjs`) gated its
+  `-XshowSettings:all` run on the literal `Maximum heap size`
+  and the `openjdk version` line. The Mindustry archive's
+  bundled JDK 25 prints the value as `Max. Heap Size
+  (Estimated):` inside its VM settings section, and prints
+  the version line only after every settings section; the
+  sections stream slowly enough through the guest console
+  that the trailing sections had not printed when the run's
+  900 s deadline expired — while the heap line itself had
+  been in the stream since guest time 390.0 s
+  (`test-results/d22-mindustry-20261106/console-settings.log`
+  line 5956). The run therefore recorded a false timeout
+  (markerHit=false) over a successful capture. FIXED on
+  `lane-d22-mindustry` by `13d57b2a2`: the matcher keys on
+  the VM settings section header and the heap-size label
+  the JDK actually prints; both corrected patterns match
+  the preserved settings stream exactly once each. The
+  closure number settles when the batch composes. Record:
+  `docs/reports/d22-mindustry-ergonomics-20261107.md`.
+
 
 ## B. Fixed on a lane branch — awaiting merge
 
