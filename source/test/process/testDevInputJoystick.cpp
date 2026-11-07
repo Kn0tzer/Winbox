@@ -260,8 +260,46 @@ void testDevInputJoystick() {
     device->readNative(record, sizeof(record)); // drain
 #endif
 
+    // A feed that arrives while no guest reader has the device open must
+    // not be lost: the next open adopts the fed state and emits it as the
+    // first frame, the way a real pad reports its state when it connects.
+    // (An open with no feed at all stays silent -- asserted at the top of
+    // this test.)
     device->close();
     delete device;
+    device = nullptr;
+    onGamepadAxis(K_ABS_Y, 777);
+    onGamepadButton(K_BTN_EAST, true);
+    FsOpenNode* reopened = openDevInputJoystick(dummyNode, K_O_RDWR, 0);
+    if (!reopened) {
+        testFail("openDevInputJoystick returned null on reopen");
+        return;
+    }
+    if (!reopened->isReadReady()) {
+        testFail("joystick not read-ready on an open that follows a feed");
+    }
+    memory->memset(buf, 0, 24);
+    joystickIoctlSetup(context, buf);
+    reopened->ioctl(context.thread, K3B_EVIOCGABS(K_ABS_Y, 24));
+    if ((S32)memory->readd(buf) != 777) {
+        testFail("joystick reopened EVIOCGABS(ABS_Y) did not adopt the fed state: %d", (S32)memory->readd(buf));
+    }
+    U8 frame[1024];
+    result = reopened->readNative(frame, sizeof(frame));
+    if (result != 24 * 16) { // 8 axes + 15 buttons + SYN, 16-byte records
+        testFail("joystick reopen frame returned %d bytes, expected %d", result, 24 * 16);
+    } else {
+        U16 firstType = *(U16*)(frame + 8);
+        U16 lastType = *(U16*)(frame + 23 * 16 + 8);
+        U16 lastCode = *(U16*)(frame + 23 * 16 + 10);
+        if (firstType != K_EV_ABS || lastType != K_EV_SYN || lastCode != K_SYN_REPORT) {
+            testFail("joystick reopen frame wrong: first type=%d last type/code=%d/%d", firstType, lastType, lastCode);
+        }
+    }
+    reopened->close();
+    delete reopened;
+    onGamepadAxis(K_ABS_Y, 0);
+    onGamepadButton(K_BTN_EAST, false);
 }
 
 #endif
