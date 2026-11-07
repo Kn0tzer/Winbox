@@ -13,6 +13,7 @@ const fixtures = {
   'win32u-fd168': ['tools/guest-fixtures/win32u-fd168.c', '-luser32', '-lgdi32', '-limm32'],
   'win32-tcp': ['tools/guest-fixtures/win32-tcp.c', '-lws2_32'],
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
+  'win32-dns': ['tools/guest-fixtures/win32-dns.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   'fd171-contracts': ['tools/guest-fixtures/fd171-contracts.c', '-loleaut32', '-lole32', '-ladvapi32'],
