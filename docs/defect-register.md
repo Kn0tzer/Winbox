@@ -9126,8 +9126,16 @@ do not close the entry until they land.
   witness then seeing the controller. Filed by the gamepad
   lane, 2026-11-06, from the measurements in
   `docs/reports/fd24-gamepad-20261106.md`.
+  Seen on the 64-bit side too, once FD-189 registers the services:
+  the FD-189 lane's green64 guest console shows `ZwLoadDriver
+  failed to create driver …\Services\winebus: c0000142` /
+  `Auto-start service L"winebus" failed to start: 1114` (same for
+  wineusb), while the bus devices do enumerate (`ROOT\WINE\WINEBUS`
+  + `ROOT\WINE\WINEUSB`). Evidence
+  `test-results/fd189/green64-fd189-lines.log` on `lane-fd189`.
 - **FD-189 — The shipped 64-bit guest prefix has no
-  PlugPlay or bus-driver registration.** *(Medium)*
+  PlugPlay or bus-driver registration. FIXED 2026-11-06 — see CL-134
+  (provisional; settles at the next composition).** *(Was Medium)*
   In a 64-bit guest session the PlugPlay, WineBus and
   WineUsb services do not exist (a guest probe's OpenService
   answers error 1060 for all three) and the root device
@@ -9220,6 +9228,23 @@ do not close the entry until they land.
   by a run with the flag set printing sane per-process totals.
   Found while proving the FD-176 environment fix; record:
   `docs/reports/fd176-invalidate-gate-link-20261106.md`.
+
+- **FD-193 — The 64-bit PlugPlay service is registered but fails
+  to start: services.exe reports error 1053.** *(Medium)* The
+  fd189-services64 guest probe on the FD-189 build proves the
+  service is present (state=1) and services.exe attempts to
+  auto-start it, but the console records `service L"PlugPlay"
+  failed to start` / `Auto-start service L"PlugPlay" failed to
+  start: 1053`, and plugplay.exe ran and exited with status 0
+  without reporting SERVICE_RUNNING. On the 32-bit prefix the same
+  service reaches SERVICE_RUNNING (state 4). This is distinct from
+  FD-188 (a user-mode service process failing its start handshake,
+  not a kernel driver failing to load). Closing terms: a 64-bit
+  guest session in which the PlugPlay service reaches
+  SERVICE_RUNNING, proven by the fd189-services64 probe reporting
+  `PlugPlay present state=4`. Found by the FD-189 lane, 2026-11-07;
+  evidence `test-results/fd189/green64-fd189-lines.log` and the
+  green64 guest console.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -9359,7 +9384,10 @@ is behavioural, is re-proven there.
 | `lane-pch` | *(Batch-9 settled numbers: filings FD-184, FD-185.)* Build speed (improvement, no FD closed): both project makefiles precompile the shared `boxedwine.h` chain once per build directory instead of re-parsing it in every one of the 330 project translation units that include it - clang `-include-pch` (project/emscripten/makefile), GCC `.gch` (project/linux/makefile). The precompiled set is computed by membership (project sources under source/ and platform/ only, minus the six sources that do not include the header); third-party sources under lib/ never see it. Generated dependency files make every header in the chain a prerequisite of the precompiled header, so editing one rebuilds it and all consumers. FD-184 and FD-185 filed from this lane's measurements (cpu.h two-letter macros poison later asmjit header inclusions; the Emscripten `test` target does not compile on the base - six multi-threaded-only test units in a non-multi-threaded target, pre-existing). | Base `48d27952a`, code `73e0232cd`. Clean-build compiler CPU (user time from `time`, shared box, loads recorded in the logs): wasm64-mt 853.6s -> 406.2s (-52%), native Test 812.9s -> 405.5s (-50%), native X64Test 943.1s -> 530.4s (-44%). Outputs byte-identical in all three arms (wasm `9b51d60101ab`, JS glue `9fe550765f`, Test binary `fcb1c3d959`, X64Test binary `2ab4830b0c` - same hashes before and after). Native suites serial on the precompiled-header binaries: main 689/0, x64 113/0. JS unit 353/0; legacy 115/0 (1 skip). Full `tools/bw64-build.sh` run on the committed tip produced dist with BUILD_INFO git_sha `73e0232cd` and wasm `9b51d60101ab` (its dirty count 13 is exactly the shared-store prep symlinks; zero tracked modifications). Dependency wiring proven by dry runs: a no-op build schedules 0 compiles; touching one chain header schedules exactly 1 precompiled-header rebuild plus all 189 of its consumers in the wasm64-mt configuration. Emscripten `test` target census: every consumer compiles; the only failures are FD-185's six, identical without the change. Record: `docs/reports/pch-build-20261105.md`; evidence `test-results/pch/` |
 
 | `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
+
 | `lane-fd176` | FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
+
+| `lane-fd189` | *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-193 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -13623,6 +13651,34 @@ dead-start fix and needs composition care.
   interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture
   tests 314/0). Fix commit `5bec2fa3e` on base `faf95d26c`.
   Record: `docs/reports/fd176-invalidate-gate-link-20261106.md`.
+
+- **CL-134 — FD-189 closed: the shipped 64-bit guest prefix now
+  registers the PlugPlay service and the ROOT\WINE bus devices, the
+  way the 32-bit prefix does.** *(Lane-local closure on
+  `lane-fd189`; the number settles at the next composition.)*
+  The shipped prefix64.zip carried exactly one service registration
+  (MountMgr) and no PlugPlay, winebus or wineusb sections and no
+  ROOT\WINE enumeration, so a 64-bit guest probe answered
+  OpenService error 1060 for all three services and found an empty
+  root enumeration. The fragment `tools/rootfs64/prefix64-reg.txt`
+  now carries the seven PnP sections verbatim from the 32-bit
+  prefix's system.reg, and the shipped prefix guard now requires
+  them on win64 too. Runtime assets re-pinned to
+  `runtime-assets-20261106-fd189` (only prefix64.zip changed).
+  Proof: the checker is RED on the unfixed set (the new FD-189
+  check names all five missing pieces) and the fd189-services64
+  browser fixture is RED on the base build (three 1060s + empty
+  enumeration, RESULT 4), both GREEN after the fix — the 64-bit
+  fixture reports all three services present and both bus devices
+  enumerating (RESULT 0) and the 32-bit control stays green; the
+  fixed browser build's wasm is byte-identical to the baseline
+  (payload-only change); the completeness checker passes 0 failures
+  / 0 skips and `bootstrap.py --check` verifies 13 files; the
+  citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED
+  (legacy exit 0, unit 354/0); native suites serial main 692 tests
+  0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL.
+  Fix commit `44ab5edcf` on base `faf95d26c`. Record:
+  `docs/reports/fd189-plugplay-prefix64-20261106.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
