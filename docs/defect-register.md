@@ -270,7 +270,8 @@ do not close the entry until they land.
   re-measurement terms are discharged. This defect is
   CLOSED — see CL-19.**
 - **FD-03 — The emulated machine is far smaller than modern
-  programs expect, and no GPU-compute API exists.** *(High, class
+  programs expect, and no GPU-compute API exists. CLOSED
+  2026-11-06 — see CL-134.** *(High, class
   of programs)* Four independent floor failures, none of them a
   per-program bug: (a) no OpenCL ICD exists behind the staged
   `opencl.dll` and there is no CUDA at all, so GPU-compute
@@ -334,6 +335,23 @@ do not close the entry until they land.
   a 256 MiB heap and 1 processor. Record:
   `docs/reports/d22-mindustry-ergonomics-20261107.md`;
   evidence `test-results/d22-mindustry-20261106/`.
+  **Update 2026-11-06 — remaining terms (a) and (b) closed as
+  proven not deliverable on `lane-fd03`; FD-03 is CLOSED — see
+  CL-134.** (a) The shipped set stages Wine's `opencl.dll` and
+  its unix forwarder plus the Khronos ICD loader, but no
+  vendor ICD exists anywhere in the set — no `.icd` file, no
+  registry vendor key, no implementation in the emulator
+  source — and no CUDA binary is staged at all; the guest's
+  only GPU path (the Vulkan→WebGPU bridge) exposes no OpenCL
+  or CUDA surface an ICD could be written against. (b) The
+  CPU has no 256-bit register state (its SIMD union is
+  128-bit), no XSAVE machinery beyond the legacy mask
+  (XGETBV returns x87+SSE only; XSETBV is unimplemented),
+  and no VEX decoding in either engine, so no AVX/AVX2
+  instruction could execute; the honest negatives stay
+  pinned by the guest fixture (CPUID AVX bit clear) and the
+  native self-test (XGETBV(0) = 0x3). Record:
+  `docs/reports/fd03-remaining-terms-20261106.md`.
 - **FD-04 — Networking gaps (campaign parked by directive; gaps
   inventoried and verified).** *(Medium)* What works: opt-in IPv4
   TCP through the relay, connect-by-name. What does not exist:
@@ -9592,6 +9610,7 @@ is behavioural, is re-proven there.
 | `lane-pch` | *(Batch-9 settled numbers: filings FD-184, FD-185.)* Build speed (improvement, no FD closed): both project makefiles precompile the shared `boxedwine.h` chain once per build directory instead of re-parsing it in every one of the 330 project translation units that include it - clang `-include-pch` (project/emscripten/makefile), GCC `.gch` (project/linux/makefile). The precompiled set is computed by membership (project sources under source/ and platform/ only, minus the six sources that do not include the header); third-party sources under lib/ never see it. Generated dependency files make every header in the chain a prerequisite of the precompiled header, so editing one rebuilds it and all consumers. FD-184 and FD-185 filed from this lane's measurements (cpu.h two-letter macros poison later asmjit header inclusions; the Emscripten `test` target does not compile on the base - six multi-threaded-only test units in a non-multi-threaded target, pre-existing). | Base `48d27952a`, code `73e0232cd`. Clean-build compiler CPU (user time from `time`, shared box, loads recorded in the logs): wasm64-mt 853.6s -> 406.2s (-52%), native Test 812.9s -> 405.5s (-50%), native X64Test 943.1s -> 530.4s (-44%). Outputs byte-identical in all three arms (wasm `9b51d60101ab`, JS glue `9fe550765f`, Test binary `fcb1c3d959`, X64Test binary `2ab4830b0c` - same hashes before and after). Native suites serial on the precompiled-header binaries: main 689/0, x64 113/0. JS unit 353/0; legacy 115/0 (1 skip). Full `tools/bw64-build.sh` run on the committed tip produced dist with BUILD_INFO git_sha `73e0232cd` and wasm `9b51d60101ab` (its dirty count 13 is exactly the shared-store prep symlinks; zero tracked modifications). Dependency wiring proven by dry runs: a no-op build schedules 0 compiles; touching one chain header schedules exactly 1 precompiled-header rebuild plus all 189 of its consumers in the wasm64-mt configuration. Emscripten `test` target census: every consumer compiles; the only failures are FD-185's six, identical without the change. Record: `docs/reports/pch-build-20261105.md`; evidence `test-results/pch/` |
 
 | `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
+| `lane-fd03` | *(Provisional number: FD-03 closed as CL-134; settles at the next composition — sibling lanes also claim CL-134 provisionally.)* FD-03 CLOSED (remaining terms): floors (a) OpenCL/CUDA and (b) AVX/AVX2 proven not deliverable in the browser target by a layer-by-layer audit at the base tip — for (a), the shipped set carries Wine's opencl thunk pair and the Khronos loader but no vendor ICD (no .icd file, no registry vendor key, no emulator-source implementation) and no CUDA binary at all; for (b), the CPU's SIMD state is 128-bit only, XGETBV is hardwired to the legacy x87+SSE mask with XSETBV unimplemented, CPUID leaf 7 is all zeros, and neither engine decodes VEX. No product code changed. | Record commit `3bf935b48` on base `faf95d26c`. Evidence: the audit's listings, readelf output, and source citations are quoted in the record from the pinned payload set (retained archive `winbox-runtime-assets-20261106`) and the source at the base tip; the negatives are pinned by `tools/testdata/machine_definition_check.c` (CPUID AVX bit clear) and `cpu64SelfTest.cpp` Test 66 (XGETBV(0) = 0x3); checking-queue pipeline #17 ran the light checks at the base tip. Record: `docs/reports/fd03-remaining-terms-20261106.md` |
 
 | `lane-fd176` | *(Batch-10 settled numbers: FD-176 closed as CL-134; FD-193 filed.)* FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
 
@@ -13999,6 +14018,44 @@ dead-start fix and needs composition care.
   The producer path that created the flattened entry is
   FD-200, still open.
 
+- **CL-134 — FD-03 closed: the two floors the machine-
+  definition raise could not move — no GPU-compute API and
+  no AVX/AVX2 — are proven not deliverable in the browser
+  target.** *(Lane-local closure on `lane-fd03`; the number
+  settles at the next composition — sibling lanes also
+  claim CL-134 provisionally.)*
+  (a) OpenCL/CUDA: the shipped set stages Wine's
+  `opencl.dll` thunk and its unix forwarder (which NEEDs
+  `libOpenCL.so.1`) and the Khronos loader itself, but no
+  vendor ICD exists at any layer — no `.icd` file or
+  `vendors` entry in any of the four runtime zips, no
+  Khronos OpenCL vendor key in either prefix's
+  `system.reg`, and no OpenCL code anywhere in the emulator
+  source; CUDA is not staged at all (no `nvcuda` or
+  `cudart` entry in either wine zip). A loader with zero
+  ICDs can only answer `CL_PLATFORM_NOT_FOUND_KHR`, and
+  the guest's sole GPU path (Vulkan→WebGPU) offers no
+  OpenCL or CUDA surface to implement against. (b)
+  AVX/AVX2: the CPU's SIMD register state is a 128-bit
+  union (`source/emulation/cpu/common/cpu.h:184`, held at
+  `cpu.h:253`); CPUID leaf 1 advertises at most SSE4.2
+  with OSXSAVE and AVX clear (`common/cpu.cpp:449-452`)
+  and leaf 7 returns all zeros (`cpu.cpp:475-481`); XGETBV
+  is hardwired to the legacy x87+SSE mask
+  (`cpu64.cpp:5164`) with XSETBV unimplemented; and no VEX
+  decoding exists in either engine (`grep -i vex
+  source/emulation/cpu` is empty), so the first AVX
+  instruction would fault even if advertised. The
+  negatives stay pinned by the guest fixture
+  (`machine_definition_check.c` fails if the AVX bit is
+  ever set) and the native self-test (XGETBV(0) = 0x3).
+  Either term reopens if its missing layer ever exists: a
+  browser-exposed compute surface an ICD could target, or
+  a CPU subsystem with 256-bit state, an XSAVE extended
+  area, and VEX decoding in both engines. Record:
+  `docs/reports/fd03-remaining-terms-20261106.md`
+  (evidence audit on base `faf95d26c`, record commit
+  `3bf935b48`; no product code changed).
 
 ## Appendix — examined and deliberately NOT registered
 
