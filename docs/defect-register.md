@@ -10660,6 +10660,64 @@ do not close the entry until they land.
   only when descriptor 0 names no readable object,
   proven by a native x64 test reading a file staged on
   descriptor 0. Not fixed by the filing lane.
+- **FD-201 — The shipped audio check verified only the
+  captured tone's frequency, so wrong sample values could
+  pass it.** *(Medium — test coverage. Filed by
+  lane-audio-e2e, 2026-11-07.)*
+  `web/tests/suite/browser/audio-tone.test.mjs` reduced the
+  captured audio to two zero-crossing frequencies. The guest
+  fixture (`tools/guest-fixtures/dsptone.c`) is fully
+  deterministic — a 440 Hz square wave at ±12000/32768,
+  identical stereo channels, exactly six seconds at
+  44100 Hz — so the values themselves are checkable, and
+  the FD-108 lesson is that values can be wrong while
+  frequency measures right. FIXED on lane-audio-e2e — see
+  CL-141: the check now measures peak and RMS level,
+  RMS/peak shape, duty cycle, active duration, the longest
+  silent gap inside the tone, and channel balance on both
+  architectures, waits for the queued tone to drain before
+  measuring, and writes every measured value into its
+  per-architecture evidence JSON before asserting. Its
+  first catch is FD-202.
+
+- **FD-202 — Delivered audio interleaves the guest's sound
+  with an equal amount of silence in 4096-frame blocks:
+  sound plays stuttered and takes twice as long.**
+  *(High — user-visible audio. Filed by lane-audio-e2e,
+  2026-11-07.)* Measured with the strengthened audio-tone
+  check (FD-201) against a fresh build of integration tip
+  `334c70be4` (wasm `92b36180…`, byte-identical to the live
+  batch-10 build): three runs, both architectures, the
+  same signature every time. The guest's deterministic
+  tone arrives with peak exactly 0.3662109375, channels
+  sample-identical, pitch 440.0–441.9 Hz — but duty cycle
+  0.249 (expected ~0.50), RMS 0.2583 (expected ~0.3662;
+  exactly peak/√2), active span 11.94–12.02 s (expected
+  6 s), and recurring silent gaps of exactly 4096 frames
+  (92.88 ms) inside the tone; of ~530,000 delivered frames
+  per channel, half are silence. Every guest sample
+  arrives; an equal number of silence frames is
+  interleaved in 4096-frame blocks, so anything a program
+  plays is heard as ~93 ms of sound alternating with
+  ~93 ms of silence, at twice the true duration. The
+  write side is not the pacing: the session console shows
+  the guest's six one-second writes (1,058,400 bytes
+  total) accepted in ~0.62 s of audio-stage time. The
+  mechanism is NOT identified by this filing; the numbers
+  bound it to the delivery path between the guest's
+  writes and the browser's audio output — downstream of
+  sample generation (values and channel identity are
+  bit-exact), upstream of the output node the check
+  captures. The frequency-only check this replaces passed
+  throughout, which is how this survived. Closing terms:
+  the strengthened audio-tone check passes on both
+  architectures — duty ~0.50, RMS ~peak, active duration
+  ~6 s, no internal silent gap above 20 ms — against a
+  build carrying the fix. Evidence: `test-results/audio-e2e/`
+  (run3-evidence/, run4-evidence/, run logs) and
+  `test-results/suite-audio-tone/` in wt-audio-e2e;
+  record `docs/reports/audio-tone-values-20261107.md`.
+
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -15513,6 +15571,28 @@ dead-start fix and needs composition care.
   (fix `8258111c6`, red/green in the updated
   gl-fd39-texparams test). Record:
   `docs/reports/fd39-residue-20261107.md`.
+- **CL-141 — FD-201 closed: the shipped audio check
+  measures the captured sample values, not only the
+  frequency.** *(lane-audio-e2e; number lane-local,
+  settles at batch-11 composition.)* Commit `bcf24f33a`:
+  `web/tests/suite/browser/audio-tone.test.mjs` now
+  measures, on both architectures, peak and RMS level,
+  RMS/peak shape ratio, duty cycle, active duration, the
+  longest silent gap inside the tone, and channel balance,
+  waiting for the queued tone to drain first and writing
+  every measured value into the per-architecture evidence
+  JSON before asserting; both architectures are captured
+  before any sample-value assertion runs. Proof: against
+  a fresh build of `334c70be4` ("Browser export verified";
+  wasm `92b36180…`, byte-identical to the live build) the
+  strengthened check caught FD-202's signature in three
+  runs while the pre-existing checks (channels, isolation,
+  worklet, frequency) passed — a check that cannot fail is
+  no proof, and this one demonstrably fails on the current
+  product for measured reasons. It passes once FD-202 is
+  fixed. Record: `docs/reports/audio-tone-values-20261107.md`;
+  evidence `test-results/audio-e2e/`.
+
 
 ## Appendix — examined and deliberately NOT registered
 
