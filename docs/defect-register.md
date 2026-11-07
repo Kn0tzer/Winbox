@@ -10767,6 +10767,43 @@ do not close the entry until they land.
   The shipped, gated configuration is unaffected.
 
 
+- **FD-201 — A first-visit 32-bit start can be killed at the
+  moment a new program starts inside the session: a session
+  worker dies with a guest memory error and the desktop never
+  appears.** *(High — start reliability; kills a whole
+  session. Filed by the x86 start-fault lane, 2026-11-07.)*
+  In the batch-10 deploy's live acceptance, the first 32-bit
+  certification series certified 3 of 5 starts; boots 4 and 5
+  each suffered a delivered wasm `RuntimeError: memory access
+  out of bounds` in a session worker at the identical console
+  position — immediately after the wineserver-side socketpair
+  wiring for a newly starting program, where clean boots log
+  the new program's stack setup — with identical JS glue
+  offsets (15105 / 6378) in both. The desktop program's main
+  thread then sat frozen at one identical state snapshot for
+  the rest of each run, the desktop never reported ready, and
+  each boot exhausted its 900 s budget with 0 restarts. An
+  adjudication re-run on the same live build certified 5 of 5
+  clean, so the fault site is deterministic but its incidence
+  is not a persistent property of the build; the 64-bit series
+  (3 of 3) and the six consumer sessions were clean in the
+  same hours. The shipped program code did not change in
+  batch 10 (the deployed wasm is byte-identical to batch 9),
+  and one earlier instance of a delivered guest memory fault
+  during a start is on record against an earlier shipped
+  build (batch-4 deploy, consumer run a4, unattributed), so
+  the defect predates batch 10. The FD-115 first-visit tally
+  stands at 3 in 60 with these two boots counted. Evidence:
+  deploy record `docs/reports/deploy-batch10-20261107.md`;
+  preserved consoles
+  `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-4/console.log`
+  and `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-5/console.log`
+  (clean controls boot-1 to boot-3 and the re-run series in
+  the same directory). Cause not yet identified. Closing
+  terms: the cause is identified and fixed, and repeated
+  32-bit starts against a build carrying the fix pass with
+  zero occurrences of the failure.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
