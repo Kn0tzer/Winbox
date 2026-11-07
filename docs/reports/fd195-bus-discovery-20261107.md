@@ -14,8 +14,9 @@ devices=1 - is met on BOTH architectures, and the standing
   The same session console (`test-results/suite-input-gamepad/console.log`)
   carries the witness verdicts for both guests: 32-bit
   `READY xinput=1 dinput=1` with `XINPUT slot=0 STATE ...
-  lx=32767 ly=-32767`, and 64-bit (pid 71 wine64) `XINPUT slot=0
-  STATE buttons=0x0000 lt=0 rt=0 lx=32767 ly=32767` - live sticks,
+  lx=32767 ly=-32767`, and 64-bit (pid 71 wine64) `READY
+  xinput=1 dinput=1`, `DINPUT devices=1`, `XINPUT slot=0 STATE
+  buttons=0x0000 lt=0 rt=0 lx=32767 ly=32767` - live sticks,
   triggers and buttons on both word sizes.
 - `udev86-final.out`: `PASS fd195-udevprobe` (the permanent
   regression test, asserting form) and `PASS fd195-udevprobe64`
