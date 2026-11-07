@@ -128,3 +128,13 @@ when FD-202 is fixed; fixing the audio delivery path is a separate
 lane's work, not this lane's. Everything else in the end state —
 the value measurements themselves, both architectures, the measured
 values in the evidence — is delivered as specified.
+
+## Checking-queue verdict (addendum)
+
+Queue pipeline 49 on tip `837a2727a` (verify-source confirmed the
+mounted commit): citations exit 0; js-unit 352 passed / 2 failed —
+exactly the two known bare-checkout artifacts
+(`provenance-artifacts`, `runtime-completeness`), the standing
+shape; js-legacy exit 0; native-main 692 tests, 0 FAILED;
+native-x64 116 tests, 0 FAILED; run-native exit 0. Evidence:
+`checks/evidence/pipeline-49/queue-logs/`.
