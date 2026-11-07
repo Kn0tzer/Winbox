@@ -1,0 +1,3 @@
+boot tag=b3 base=http://127.0.0.1:34485 dist=/home/ubuntu/winbox-project/worktrees/wt-coldstart-x64/dist
+boot 1: certified in 113.4s hwnd=0x10048 restarts=0 (load 6.28 -> 6.33) 
+SUMMARY {"base":"http://127.0.0.1:34485","arch":"x64","n":1,"pageReady":1,"certified":1,"falseReady":0,"raceFailed":0,"other":0,"rescues":0,"medianCertifiedReadyMs":113354}

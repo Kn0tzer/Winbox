@@ -1,0 +1,12 @@
+{
+  "base": "http://127.0.0.1:38685",
+  "arch": "x64",
+  "n": 1,
+  "pageReady": 1,
+  "certified": 1,
+  "falseReady": 0,
+  "raceFailed": 0,
+  "other": 0,
+  "rescues": 0,
+  "medianCertifiedReadyMs": 117719
+}
