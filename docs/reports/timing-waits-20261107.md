@@ -226,3 +226,12 @@ were corrected with the measurements written into their comments
   (exit 143) under queue contention; both native suites
   build and pass from this tree directly, and the queue
   re-run is the adjudication.
+- Queue adjudication, final: pipeline 39 (the current tip)
+  passes every leg except js-unit's two known bare-checkout
+  artifacts (`provenance-artifacts`,
+  `runtime-completeness` — 352 passed, 2 failed), exactly
+  the pipeline-14 baseline shape; its native legs all exit
+  0, re-adjudicating pipeline 36's contention kill as
+  environmental. Pipeline 37 (the pre-fix tip) reproduced
+  pipeline 36's js-unit failures exactly; pipelines 35 and
+  38 belonged to other lanes sharing the queue.
