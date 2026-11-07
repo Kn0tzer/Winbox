@@ -184,25 +184,39 @@ int main(void) {
     }
     LARGE_INTEGER frequency, start, end;
     if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return 2;
+    // Integer millisecond math ONLY: the double ms expression printed
+    // garbage (1e66+) for every sample after the first on the shipped
+    // build, in both engines - the guest FP conversion/format path is
+    // not trusted inside a timing report. ticks= carries the raw QPC
+    // delta so the figure can be re-derived from the log.
+    {
+        char fline[96];
+        snprintf(fline, sizeof(fline), "BW_SSEPROBE64 qpcfreq=%lld\n", (long long)frequency.QuadPart);
+        OutputDebugStringA(fline);
+        printf("%s", fline);
+        fflush(stdout);
+    }
     for (int sample = 0; sample < 4; sample++) {
-        char line[192]; char hex[17];
+        char line[224]; char hex[17];
         QueryPerformanceCounter(&start);
         uint64_t sumA = timing_scalar(seed);
         QueryPerformanceCounter(&end);
+        long long ticksA = (long long)(end.QuadPart - start.QuadPart);
         snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)sumA);
-        snprintf(line, sizeof(line), "BW_SSEPROBE64 sample=%d loop=scalar ms=%.3f checksum=%s passes=%u\n",
-                 sample, (double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)frequency.QuadPart,
-                 hex, (unsigned)SSEPROBE_PASSES);
+        snprintf(line, sizeof(line), "BW_SSEPROBE64 sample=%d loop=scalar ms=%lld checksum=%s passes=%u ticks=%lld\n",
+                 sample, (long long)(ticksA * 1000 / frequency.QuadPart),
+                 hex, (unsigned)SSEPROBE_PASSES, ticksA);
         OutputDebugStringA(line);
         printf("%s", line);
         fflush(stdout);
         QueryPerformanceCounter(&start);
         uint64_t sumB = timing_logic(seed);
         QueryPerformanceCounter(&end);
+        long long ticksB = (long long)(end.QuadPart - start.QuadPart);
         snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)sumB);
-        snprintf(line, sizeof(line), "BW_SSEPROBE64 sample=%d loop=logic ms=%.3f checksum=%s passes=%u\n",
-                 sample, (double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)frequency.QuadPart,
-                 hex, (unsigned)SSEPROBE_PASSES);
+        snprintf(line, sizeof(line), "BW_SSEPROBE64 sample=%d loop=logic ms=%lld checksum=%s passes=%u ticks=%lld\n",
+                 sample, (long long)(ticksB * 1000 / frequency.QuadPart),
+                 hex, (unsigned)SSEPROBE_PASSES, ticksB);
         OutputDebugStringA(line);
         printf("%s", line);
         fflush(stdout);
