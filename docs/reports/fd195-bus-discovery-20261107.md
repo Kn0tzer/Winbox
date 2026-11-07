@@ -1,6 +1,8 @@
 # FD-195: the guest sees and uses the host game controller - lane record
 
 Branch `lane-fd195-bus`, base integ tip `334c70be4`.
+(The queue ran pipeline 58 on tip `390b43728`; the commits
+above it on the branch are record-only.)
 State: CLOSED on the lane (fixing commits listed at the end).
 The FD-24 witness signature - XInput slot=0 CONNECTED + DINPUT
 devices=1 - is met on BOTH architectures, and the standing
