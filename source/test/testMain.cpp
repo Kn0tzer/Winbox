@@ -76,6 +76,11 @@ void testFutex64DispatchGuard();
 void testMadvise32Syscall();
 void testFaultDelivery32();
 void testPortIoFault32();
+void testFutexUnmapped32();
+void testFutexSharedUnmapped32();
+void testModifyLdtInvalid32();
+void testModifyLdtIndex32();
+void testFpeDelivery32();
 void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
@@ -202,6 +207,7 @@ void testSetitimer64Syscalls();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
 void testFutex64Operations();
+void testFutexUnmapped64();
 void testPrctl64Options();
 void testOpcodeFault64Delivery();
 void testCpu64AvxCpuidMask();
@@ -239,6 +245,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testAtomicStress64, "Test x64 concurrent LOCK atomicity stress (K-M1)"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
+    {testFutexUnmapped64, "Test x64 futex unmapped-address answers (D2)"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
@@ -976,6 +983,11 @@ const TestEntry TEST_ENTRIES[] = {
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
+    {testFutexUnmapped32, "Test 32-bit futex unmapped-address answers (D2)"},
+    {testFutexSharedUnmapped32, "Test 32-bit shared futex unmapped-address answers (D2)"},
+    {testModifyLdtInvalid32, "Test 32-bit modify_ldt argument answers (D8/FD-09)"},
+    {testModifyLdtIndex32, "Test 32-bit modify_ldt invalid index answers (D8/FD-09)"},
+    {testFpeDelivery32, "Test 32-bit FPE delivery slots and codes (D7)"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testReadv32Syscall, "Test 32-bit readv dispatch and notification contract (FD-92)"},
     {testFutexWaitv32Syscall, "Test 32-bit futex_waitv syscall"},

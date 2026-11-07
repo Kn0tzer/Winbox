@@ -546,11 +546,49 @@ void KThread::clearFutexes() {
     }
 }
 
+namespace {
+// Frontier review D2/D8: counted BW64-FAIL lines for guest calls the
+// host answers with an errno where the guest used to panic or read
+// the null page. The first few occurrences log in full and every
+// power of two after that (the memFailLogDue shape), so a guest
+// spinning on a bad call cannot flood the log.
+std::atomic<U64> gFutexBadAddressCount{0};
+std::atomic<U64> gModifyLdtRejectCount{0};
+
+U64 bw64BadGuestCallOrdinal(std::atomic<U64>& counter) {
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+bool bw64BadGuestCallLogDue(U64 ordinal) {
+    return ordinal <= 16 || (ordinal & (ordinal - 1)) == 0;
+}
+
+void bw64LogFutexBadAddress(U32 addr, U32 cmd, const char* check) {
+    const U64 ordinal = bw64BadGuestCallOrdinal(gFutexBadAddressCount);
+    if (bw64BadGuestCallLogDue(ordinal)) {
+        klog_fmt("BW64-FAIL syscall.futex addr=0x%x cmd=%u check=%s err=EFAULT count=%llu",
+            addr, cmd, check, (unsigned long long)ordinal);
+    }
+}
+
+void bw64LogModifyLdtReject(U32 func, U32 ptr, U32 count, int index, const char* err) {
+    const U64 ordinal = bw64BadGuestCallOrdinal(gModifyLdtRejectCount);
+    if (bw64BadGuestCallLogDue(ordinal)) {
+        klog_fmt("BW64-FAIL syscall.modify_ldt func=%u ptr=0x%x count=%u index=%d err=%s n=%llu",
+            func, ptr, count, index, err, (unsigned long long)ordinal);
+    }
+}
+} // namespace
+
 U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, bool time64) {
     if (addr & 3) return -K_EINVAL;
     U64 ramAddress = 0;
     U32 cmd = (op & FUTEX_CMD_MASK);
     bool isPrivate = (op & FUTEX_PRIVATE_FLAG) != 0;
+
+    if ((cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET) && val3 == 0) {
+        return -K_EINVAL;
+    }
 
     if (bw64RecoverEnabled() && cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET &&
         cmd != FUTEX_WAKE && cmd != FUTEX_WAKE_BITSET) {
@@ -564,7 +602,12 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
         ramAddress = (U64)memory->getRamPtr(addr, 4, false, true);
     }
     if (ramAddress == 0) {
-        kpanic_fmt("Could not find futex address: %0.8X", addr);
+        // Shared futex operations on an unmapped word: the host
+        // answers -EFAULT for every one of them (measured with raw
+        // syscalls; frontier review D2). This used to kpanic and
+        // take the whole emulator down with the guest.
+        bw64LogFutexBadAddress(addr, cmd, "shared-word");
+        return -K_EFAULT;
     }
     /*
     * from kernel source, if I ever implement one of these I need to note pTime actually contains val2
@@ -573,6 +616,22 @@ U32 KThread::futex(U32 addr, U32 op, U32 value, U32 pTime, U32 val2, U32 val3, b
         val2 = (u32)(unsigned long)utime;
         */
     if (cmd ==FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) {
+        if (isPrivate && memory->getRamPtr(addr, 4, false, true) == nullptr) {
+            // A private futex keys on the guest address without
+            // resolving it above, so the word's readability is proven
+            // here: the host faults a WAIT whose word is unmapped,
+            // where the guest used to read the null page and park on
+            // whatever it found there.
+            bw64LogFutexBadAddress(addr, cmd, "wait-word");
+            return -K_EFAULT;
+        }
+        if (pTime != 0 && (memory->getRamPtr(pTime, 4, false, false) == nullptr ||
+                           memory->getRamPtr(pTime + (time64 ? 12 : 4), 4, false, false) == nullptr)) {
+            // The host copies the timeout before waiting; an
+            // unmapped timeout pointer is -EFAULT.
+            bw64LogFutexBadAddress(pTime, cmd, "wait-timeout");
+            return -K_EFAULT;
+        }
         //klog_fmt("%x/%x futux WAIT addr=%x op=%x val=%x ram=%x", id, process->id, addr, op, value, (U32)ramAddress);
         struct futex* f;
         U32 expireTime = 0xFFFFFFFF;
@@ -970,6 +1029,16 @@ S64 KThread::futex64(U64 addr, U32 op, U32 value, U64 arg4, U64 addr2, U32 val3)
     // Stable host pointer for the futex word — the table key. A 4-byte word
     // never crosses a page boundary in practice; getRamPtr returns null only
     // then, in which case there is nothing sane to wait on.
+    if (!mem->isPageMapped(addr >> K64_PAGE_SHIFT)) {
+        // The word's page does not exist. getRamPtr would materialize
+        // a fresh zero page for it (its contract is to hand out a
+        // stable host pointer), which made unmapped futexes silently
+        // operate on a phantom word: the host answers -EFAULT for
+        // every operation except a private WAKE/WAKE_BITSET, which
+        // wakes nothing and returns 0 (measured; frontier review D2).
+        if (isPrivate && (cmd == FUTEX_WAKE || cmd == FUTEX_WAKE_BITSET)) return 0;
+        return -K_EFAULT;
+    }
     U64 ramAddress = (U64)mem->getRamPtr(addr, 4);
     if (ramAddress == 0) return -K_EFAULT;
     U32 val2 = (U32)arg4;
@@ -2459,7 +2528,23 @@ void KThread::clone(KThread* from) {
 }
 
 U32 KThread::modify_ldt(U32 func, U32 ptr, U32 count) {
+    // Host answers, measured with raw modify_ldt syscalls: a write
+    // whose byte count is not one descriptor is -EINVAL (checked
+    // first), an unreadable descriptor pointer is -EFAULT, and an
+    // out-of-range index is -EINVAL. The index cases used to kpanic
+    // (FD-09), and the pointer cases read the null page. The read
+    // form keeps the guest's entry-shaped contract (the descriptor
+    // in the buffer names the entry to describe back).
     if (func == 1 || func == 0x11) {
+        if (count != 16) {
+            bw64LogModifyLdtReject(func, ptr, count, -1, "EINVAL");
+            return -K_EINVAL;
+        }
+        if (memory->getRamPtr(ptr, 4, false, false) == nullptr ||
+            memory->getRamPtr(ptr + 12, 4, false, false) == nullptr) {
+            bw64LogModifyLdtReject(func, ptr, count, -1, "EFAULT");
+            return -K_EFAULT;
+        }
         int index = memory->readd(ptr);
         U32 address = memory->readd(ptr + 4);
         U32 limit = memory->readd(ptr + 8);
@@ -2473,10 +2558,16 @@ U32 KThread::modify_ldt(U32 func, U32 ptr, U32 count) {
             ldt->base_addr = address;
             ldt->flags = flags;
         } else {
-            kpanic_fmt("syscall_modify_ldt invalid index: %d", index);
+            bw64LogModifyLdtReject(func, ptr, count, index, "EINVAL");
+            return -K_EINVAL;
         }
         return 0;
     } else if (func == 0) {
+        if (memory->getRamPtr(ptr, 4, false, false) == nullptr ||
+            memory->getRamPtr(ptr + 12, 4, false, false) == nullptr) {
+            bw64LogModifyLdtReject(func, ptr, count, -1, "EFAULT");
+            return -K_EFAULT;
+        }
         int index = memory->readd(ptr);
         if (index>=0 && index<LDT_ENTRIES) {
             struct user_desc* ldt = this->getLDT(index);
@@ -2485,7 +2576,8 @@ U32 KThread::modify_ldt(U32 func, U32 ptr, U32 count) {
             memory->writed(ptr + 8, ldt->limit);
             memory->writed(ptr + 12, ldt->flags);
         } else {
-            kpanic_fmt("syscall_modify_ldt invalid index: %d", index);
+            bw64LogModifyLdtReject(func, ptr, count, index, "EINVAL");
+            return -K_EINVAL;
         }
         return 16;
     } else {
