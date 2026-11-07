@@ -55,7 +55,11 @@ U32 FsDynamicLinkNode::getType(bool checkForLink) {
 }
 
 U32 FsDynamicLinkNode::getMode() {
-    return K__S_IREAD | K__S_IEXEC | K__S_IWRITE;
+    // FD-195: include the type bits like every other node class -
+    // without S_IFLNK, lstat consumers (systemd sd-device) do not
+    // recognise the link and never resolve class symlinks, which
+    // breaks parent/devpath derivation for sysfs devices.
+    return K__S_IREAD | K__S_IEXEC | K__S_IWRITE | (this->getType(false) << 12);
 }
 
 U32 FsDynamicLinkNode::removeDir() {
