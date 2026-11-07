@@ -55,6 +55,7 @@
 #include "cpu/testVk32Trap.h"
 #include "mmu/testSelfModifying.h"
 #include "mmu/testBrk.h"
+#include "x11/testX11RamPtrAudit.h"
 
 void testWaitPid();
 void testBStringContains();
@@ -956,6 +957,10 @@ const TestEntry TEST_ENTRIES[] = {
     {testSelfModifyingFront, "Test Self Modifying Code Same Block(Previous)"},
     {testSelfModifyingBack, "Test Self Modifying Code Same Block(Next)"},
     {testBrkHeap, "Test brk/mmap heap"},
+    {testX11RamPtrGetFallback, "Test X11 XSetWindowAttributes::get getRamPtr refusal fallback"},
+    {testX11RamPtrFreeHandlers, "Test X11 free handlers with page-straddling guest structs"},
+    {testX11RamPtrGetCrtcInfoStraddle, "Test X11 XRRGetCrtcInfo with page-straddling resources struct"},
+    {testX11RamPtrSetCrtcConfigStraddle, "Test X11 XRRSetCrtcConfig with page-straddling resources struct"},
     {testBStringContains, "Test BString contains with embedded NUL bytes"},
     {testBStringJoin, "Test BString join delimiter lengths"},
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},

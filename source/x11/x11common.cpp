@@ -283,6 +283,13 @@ static void x11_ChangeWindowAttributes(CPU* cpu) {
     }
     XSetWindowAttributes tmpAttributes;
     XSetWindowAttributes* attributes = XSetWindowAttributes::get(memory, ARG4, &tmpAttributes);
+    if (!attributes) {
+        // get() returns nullptr only for a null guest pointer; setAttributes
+        // would dereference it for any mask bit. A null pointer with no
+        // mask bits is a no-op.
+        EAX = mask ? BadValue : Success;
+        return;
+    }
     EAX = w->setAttributes(data, attributes, mask);
 }
 
@@ -1074,8 +1081,15 @@ static void x11_GetModifierMapping(CPU* cpu) {
 static void x11_FreeModifierMap(CPU* cpu) {
     KThread* thread = cpu->thread;
     KMemory* memory = cpu->memory;
-    XModifierKeymap* result = (XModifierKeymap*)memory->getRamPtr(ARG1, sizeof(XModifierKeymap), true);
-    thread->process->free(result->modifiermap);
+    if (!ARG1) {
+        EAX = Success;
+        return;
+    }
+    // The struct is guest memory: read the field through the checked
+    // accessor. getRamPtr can refuse a guest pointer (unmapped,
+    // page-straddling or not writable) and the result was dereferenced
+    // unchecked.
+    thread->process->free(memory->readd(ARG1 + offsetof(XModifierKeymap, modifiermap)));
     thread->process->free(ARG1);
     EAX = Success;
 }
@@ -3391,9 +3405,14 @@ static void x11_XRRFreeCrtcInfo(CPU* cpu) {
     KThread* thread = cpu->thread;
     if (!ARG1) return;
     KMemory* memory = thread->memory;
-    XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(ARG1, sizeof(XRRCrtcInfo), true);
-    if (info->outputs) thread->process->free(info->outputs);
-    if (info->possible) thread->process->free(info->possible);
+    // The struct is guest memory: read the fields through the checked
+    // accessor. getRamPtr can refuse a guest pointer (unmapped,
+    // page-straddling or not writable) and the result was dereferenced
+    // unchecked.
+    U32 outputs = memory->readd(ARG1 + offsetof(XRRCrtcInfo, outputs));
+    if (outputs) thread->process->free(outputs);
+    U32 possible = memory->readd(ARG1 + offsetof(XRRCrtcInfo, possible));
+    if (possible) thread->process->free(possible);
     thread->process->free(ARG1);
 }
 
@@ -3402,11 +3421,16 @@ static void x11_XRRFreeOutputInfo(CPU* cpu) {
     KThread* thread = cpu->thread;
     if (!ARG1) return;
     KMemory* memory = thread->memory;
-    XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(ARG1, sizeof(XRROutputInfo), true);
-    if (info->name) thread->process->free(info->name);
-    if (info->crtcs) thread->process->free(info->crtcs);
-    if (info->clones) thread->process->free(info->clones);
-    if (info->modes) thread->process->free(info->modes);
+    // The struct is guest memory: read the fields through the checked
+    // accessor (see x11_XRRFreeCrtcInfo).
+    U32 name = memory->readd(ARG1 + offsetof(XRROutputInfo, name));
+    if (name) thread->process->free(name);
+    U32 crtcs = memory->readd(ARG1 + offsetof(XRROutputInfo, crtcs));
+    if (crtcs) thread->process->free(crtcs);
+    U32 clones = memory->readd(ARG1 + offsetof(XRROutputInfo, clones));
+    if (clones) thread->process->free(clones);
+    U32 modes = memory->readd(ARG1 + offsetof(XRROutputInfo, modes));
+    if (modes) thread->process->free(modes);
     thread->process->free(ARG1);
 }
 
@@ -3415,16 +3439,23 @@ static void x11_XRRFreeScreenResources(CPU* cpu) {
     KThread* thread = cpu->thread;
     if (!ARG1) return;
     KMemory* memory = thread->memory;
-    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG1, sizeof(XRRScreenResources), true);
-    if (resources->modes) {
-        XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
-        for (S32 i = 0; i < resources->nmode; i++) {
-            if (modes[i].name) thread->process->free(modes[i].name);
+    // The struct and the array it points to are guest memory: read the
+    // fields through the checked accessor. getRamPtr can refuse a guest
+    // pointer (unmapped, page-straddling, not writable, or a span longer
+    // than one page) and the results were dereferenced unchecked.
+    U32 modesAddress = memory->readd(ARG1 + offsetof(XRRScreenResources, modes));
+    if (modesAddress) {
+        S32 nmode = (S32)memory->readd(ARG1 + offsetof(XRRScreenResources, nmode));
+        for (S32 i = 0; i < nmode; i++) {
+            U32 name = memory->readd(modesAddress + i * sizeof(XRRModeInfo) + offsetof(XRRModeInfo, name));
+            if (name) thread->process->free(name);
         }
-        thread->process->free(resources->modes);
+        thread->process->free(modesAddress);
     }
-    if (resources->crtcs) thread->process->free(resources->crtcs);
-    if (resources->outputs) thread->process->free(resources->outputs);
+    U32 crtcs = memory->readd(ARG1 + offsetof(XRRScreenResources, crtcs));
+    if (crtcs) thread->process->free(crtcs);
+    U32 outputs = memory->readd(ARG1 + offsetof(XRRScreenResources, outputs));
+    if (outputs) thread->process->free(outputs);
     thread->process->free(ARG1);
 }
 
@@ -3433,8 +3464,14 @@ static void x11_XRRGetCrtcInfo(CPU* cpu) {
     KThread* thread = cpu->thread;
     KMemory* memory = thread->memory;
     if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
-    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
-    if (resources->ncrtc < 1) { EAX = 0; return; }
+    // The resources struct is guest memory: read its fields through the
+    // checked accessor. getRamPtr can refuse a guest pointer (unmapped,
+    // page-straddling or not writable) and the result was dereferenced
+    // unchecked.
+    if ((S32)memory->readd(ARG2 + offsetof(XRRScreenResources, ncrtc)) < 1) { EAX = 0; return; }
+    U32 resourcesTimestamp = memory->readd(ARG2 + offsetof(XRRScreenResources, timestamp));
+    U32 modesAddress = memory->readd(ARG2 + offsetof(XRRScreenResources, modes));
+    S32 nmode = (S32)memory->readd(ARG2 + offsetof(XRRScreenResources, nmode));
     KNativeScreenPtr screen = KNativeSystem::getScreen();
     U32 address = thread->process->alloc(thread, sizeof(XRRCrtcInfo));
     U32 outputsAddress = thread->process->alloc(thread, sizeof(RROutput));
@@ -3442,12 +3479,12 @@ static void x11_XRRGetCrtcInfo(CPU* cpu) {
     memory->writed(outputsAddress, 1);
     memory->writed(possibleAddress, 1);
     XRRCrtcInfo* info = (XRRCrtcInfo*)memory->getRamPtr(address, sizeof(XRRCrtcInfo), true);
-    info->timestamp = resources->timestamp;
+    info->timestamp = resourcesTimestamp;
     info->x = 0; info->y = 0; info->width = screen->screenWidth(); info->height = screen->screenHeight();
     info->mode = 0;
-    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
-    for (S32 i = 0; i < resources->nmode; i++) {
-        if (modes[i].width == info->width && modes[i].height == info->height) { info->mode = modes[i].id; break; }
+    for (S32 i = 0; i < nmode; i++) {
+        U32 modeAddress = modesAddress + i * sizeof(XRRModeInfo);
+        if (memory->readd(modeAddress + offsetof(XRRModeInfo, width)) == info->width && memory->readd(modeAddress + offsetof(XRRModeInfo, height)) == info->height) { info->mode = memory->readd(modeAddress + offsetof(XRRModeInfo, id)); break; }
     }
     info->rotation = RR_Rotate_0; info->noutput = 1;
     info->outputs = outputsAddress; info->rotations = RR_Rotate_0;
@@ -3460,24 +3497,27 @@ static void x11_XRRGetOutputInfo(CPU* cpu) {
     KThread* thread = cpu->thread;
     KMemory* memory = thread->memory;
     if (!ARG2 || ARG3 != 1) { EAX = 0; return; }
-    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
-    if (resources->noutput < 1) { EAX = 0; return; }
+    // The resources struct is guest memory: read its fields through the
+    // checked accessor (see x11_XRRGetCrtcInfo).
+    if ((S32)memory->readd(ARG2 + offsetof(XRRScreenResources, noutput)) < 1) { EAX = 0; return; }
+    U32 resourcesTimestamp = memory->readd(ARG2 + offsetof(XRRScreenResources, timestamp));
+    S32 nmode = (S32)memory->readd(ARG2 + offsetof(XRRScreenResources, nmode));
     static const char name[] = "Boxedwine-0";
     U32 address = thread->process->alloc(thread, sizeof(XRROutputInfo));
     U32 nameAddress = thread->process->alloc(thread, sizeof(name));
     U32 crtcAddress = thread->process->alloc(thread, sizeof(RRCrtc));
-    U32 modesAddress = thread->process->alloc(thread, sizeof(RRMode) * resources->nmode);
+    U32 modesAddress = thread->process->alloc(thread, sizeof(RRMode) * nmode);
     memory->memcpy(nameAddress, name, sizeof(name));
     memory->writed(crtcAddress, 1);
-    for (S32 i = 0; i < resources->nmode; i++) memory->writed(modesAddress + i * sizeof(RRMode), i + 1);
+    for (S32 i = 0; i < nmode; i++) memory->writed(modesAddress + i * sizeof(RRMode), i + 1);
     XRROutputInfo* info = (XRROutputInfo*)memory->getRamPtr(address, sizeof(XRROutputInfo), true);
-    info->timestamp = resources->timestamp; info->crtc = 1;
+    info->timestamp = resourcesTimestamp; info->crtc = 1;
     info->name = nameAddress; info->nameLen = sizeof(name) - 1;
     info->mm_width = 0; info->mm_height = 0;
     info->connection = 0; info->subpixel_order = 0;
     info->ncrtc = 1; info->crtcs = crtcAddress;
     info->nclone = 0; info->clones = 0;
-    info->nmode = resources->nmode; info->npreferred = resources->nmode ? 1 : 0; info->modes = modesAddress;
+    info->nmode = nmode; info->npreferred = nmode ? 1 : 0; info->modes = modesAddress;
     EAX = address;
 }
 
@@ -3569,15 +3609,17 @@ static void x11_XRRSetCrtcConfig(CPU* cpu) {
         EAX = RRSetConfigFailed;
         return;
     }
-    XRRScreenResources* resources = (XRRScreenResources*)memory->getRamPtr(ARG2, sizeof(XRRScreenResources), true);
+    // The resources struct is guest memory: read its fields through the
+    // checked accessor (see x11_XRRGetCrtcInfo).
+    S32 nmode = (S32)memory->readd(ARG2 + offsetof(XRRScreenResources, nmode));
     U32 modeId = ARG7;
-    if (!modeId || modeId > (U32)resources->nmode || resources->ncrtc < 1 || resources->noutput < 1) {
+    if (!modeId || modeId > (U32)nmode || (S32)memory->readd(ARG2 + offsetof(XRRScreenResources, ncrtc)) < 1 || (S32)memory->readd(ARG2 + offsetof(XRRScreenResources, noutput)) < 1) {
         EAX = RRSetConfigFailed;
         return;
     }
-    XRRModeInfo* modes = (XRRModeInfo*)memory->getRamPtr(resources->modes, sizeof(XRRModeInfo) * resources->nmode, true);
+    U32 modeAddress = memory->readd(ARG2 + offsetof(XRRScreenResources, modes)) + (modeId - 1) * sizeof(XRRModeInfo);
     XServer* server = XServer::getServer();
-    server->changeScreen(modes[modeId - 1].width, modes[modeId - 1].height);
+    server->changeScreen(memory->readd(modeAddress + offsetof(XRRModeInfo, width)), memory->readd(modeAddress + offsetof(XRRModeInfo, height)));
     EAX = RRSetConfigSuccess;
 }
 
@@ -3639,8 +3681,10 @@ static void x11_XRRGetProviderResources(CPU* cpu) {
 static void x11_XRRFreeProviderResources(CPU* cpu) {
     KThread* thread = cpu->thread;
     if (!ARG1) return;
-    XRRProviderResources* resources = (XRRProviderResources*)thread->memory->getRamPtr(ARG1, sizeof(XRRProviderResources), true);
-    if (resources->providers) thread->process->free(resources->providers);
+    // The struct is guest memory: read the field through the checked
+    // accessor (see x11_XRRFreeCrtcInfo).
+    U32 providers = thread->memory->readd(ARG1 + offsetof(XRRProviderResources, providers));
+    if (providers) thread->process->free(providers);
     thread->process->free(ARG1);
 }
 
