@@ -183,6 +183,24 @@ do not close the entry until they land.
   by separate decision: it was needed zero times in the
   live measurement, but retiring it is its own case and
   is not part of this closure.
+  UPDATE (2026-11-06, branch `lane-fd01-proof`): the closure is
+  re-proven on the live batch-9 build (git_sha `d50bcc02f`, wasm
+  `92b36180...`, built 2026-11-06T22:32:28Z) under the same hardened
+  protocol — fresh profile per boot, restart budget pre-exhausted
+  (bwretry=2), 900 s window, offline FD-47 classification. The
+  batch-9 deploy lane certified 3/3 x86-64 (median ready 88.1 s)
+  and 5/5 x86 (median 18.8 s) on the live build; this lane
+  independently certified a further 3/3 x86-64 (95.7/105.4/126.8 s),
+  for a batch-9 total of 6/6 x86-64 (median 100.5 s) and 5/5 x86 —
+  every boot with the real handle (0x10048 / 0x10052), explorer
+  opened, zero restarts, zero rescues, zero false-ready, zero
+  failure signatures. The closure stands on batch 9; the restart
+  stopgap was needed zero times and its retirement remains a
+  separate decision. Record:
+  `docs/reports/fd01-proof-batch9-20261106.md`; evidence:
+  `test-results/fd01-proof-batch9-20261106/` (this lane) and
+  `test-results/deploy-batch9-20261106/cert-x64`, `cert-x86`
+  (deploy lane, re-verified from disk).
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
