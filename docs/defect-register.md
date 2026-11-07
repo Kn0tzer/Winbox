@@ -10400,6 +10400,173 @@ do not close the entry until they land.
   `test-results/timing-waits/hostref-timing.txt` and
   `guestprobeD-run2`.
 
+- **FD-193 — Vectored reads accept segment lengths that are
+  negative read as the ABI's signed size, and the combined
+  length is never capped.** *(Medium)* In all four read walks
+  (64-bit `sys_readv64` / `sys_preadv64`, 32-bit
+  `KProcess::readv` / `KProcess::preadv` over
+  `KObject::readv`) a segment length is taken as an unsigned
+  count and walked as-is: a length with the top bit set is a
+  request to read gigabytes into one segment, and on the
+  32-bit side the running total is a U32 that wraps, so a
+  crafted array can make the walk's accounting go backwards.
+  The host contract, measured at the raw syscall level on
+  this box's 6.17 kernel (native aarch64 and aarch32 compat
+  binaries; the two widths agree on every row): any segment
+  whose length is negative read as the ABI's signed size
+  (64-bit: >= 2^63; 32-bit: >= 2^31) answers `-EINVAL`
+  before any byte moves, wherever it sits in the array; the
+  32-bit side has NO sum check (segments of 1 GiB + 1 GiB +
+  1 byte, sum 2^31 + 1, read normally — only the
+  per-segment sign is judged); and a successful transfer is
+  capped at `MAX_RW_COUNT` = 0x7ffff000 bytes in total
+  (measured exactly 2147479552 returned from /dev/zero for
+  one 2^31 segment and for two segments summing to 2^31).
+  Boundaries: the host additionally answers `-EFAULT` for
+  segment ranges that exceed the address space
+  ({2^62, 2^62}; {8, SSIZE_MAX}) — the emulator's flat
+  guest memory has no equivalent range validation and this
+  entry does not ask for one; the vectored-WRITE family
+  shares the unguarded shape and is filed separately as
+  FD-197. Closing terms: the per-segment signed check in
+  all four validation paths (after the iovec array check,
+  ahead of the preadv2 flags check) and the total cap in
+  all four walks, proven by native tests on both suites.
+  Found by the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (host references
+  `hostref-vec3.out`, `hostref-vec-arm32.out`,
+  `hostref-vec-arm32b.out`, `hostref-pv2-final.out`; the
+  early `hostref-vec.out` is qemu-polluted and
+  `hostref-vec-arm64.out`'s preadv rows passed the loff_t
+  offset as one register instead of the split pair — both
+  kept as evidence of the artifacts, neither cited).
+- **FD-194 — A positioned read attempted on a pipe (or any
+  unseekable object) answers the wrong thing, and on the
+  64-bit side silently reads.** *(Medium)* The host
+  contract, measured at the raw syscall level on the 6.17
+  kernel (both widths identical on every row): a missing
+  descriptor answers `-EBADF` ahead of everything; after
+  that, an unseekable object answers `-ESPIPE` ahead of
+  the iovcnt range, iovec array, and preadv2 flags answers
+  (preadv on a pipe with iovcnt 2000, a null array, or bad
+  flags all answer ESPIPE), and `pread64` answers ESPIPE
+  ahead of its negative-offset `-EINVAL`; `preadv`'s own
+  negative offset answers `-EINVAL` ahead of ESPIPE;
+  `preadv2` with offset -2 answers `-EINVAL`, with offset
+  -1 is the file-position mode and READS from a pipe (its
+  flags are still validated first: a bad flag answers
+  `-EOPNOTSUPP` ahead of the read); pipe bytes are never
+  consumed by a refused positioned read. The emulator
+  today: 64-bit `sys_pread64Impl` sends non-file objects
+  through a seek-ignoring stream read, so a positioned
+  read on a socketpair consumes data and returns it;
+  64-bit `sys_preadv64` inherits that per segment; 32-bit
+  `KProcess::preadv` answers `-EBADF` (write end),
+  `-EINVAL` (bad iovcnt), `-EFAULT` (null array) or
+  `-EOPNOTSUPP` (flags) ahead of ESPIPE, and its
+  file-position mode fails on a pipe instead of reading;
+  32-bit `KProcess::pread64` answers `-EINVAL` for
+  unseekable objects that are not sockets (eventfd,
+  timerfd, epoll, inotify). The positioned-WRITE twins
+  (`pwrite64` / `pwritev`, both cores) carry the same
+  non-file `-EINVAL` shape and are corrected alongside
+  (the host answers ESPIPE there too, measured in the
+  same pass). Closing terms: the seekability answer
+  hoisted to immediately after descriptor resolution in
+  `sys_preadv64`, `sys_pread64Impl`,
+  `KProcess::preadv` and `KProcess::pread64` (position
+  mode excepted, delegating to the plain vectored read
+  after validation), proven by native tests on both
+  suites covering the pipe matrix on both ABIs. Found by
+  the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (`hostref-pv2-final.out` is
+  the authoritative matrix; FD-98's entry named this
+  boundary and left it unfiled).
+- **FD-195 — The 32-bit `linkat` system call has no helper
+  at all.** *(Medium)* Slot 303 in the 32-bit dispatch
+  table is `nullptr`: every `linkat` from a 32-bit guest
+  answers `-ENOSYS`, whatever its arguments — the only
+  one of the *at family missing (renameat, symlinkat,
+  readlinkat and plain link are all wired). The host
+  contract, measured at the raw syscall level on the 6.17
+  kernel (i386-shape arguments driven through the aarch32
+  compat path and the native path; identical on every
+  row): flags outside `AT_SYMLINK_FOLLOW` (0x400) |
+  `AT_EMPTY_PATH` (0x1000) answer `-EINVAL`, ahead of
+  even the null-path fault; a null path answers
+  `-EFAULT` (FD-132's rule); an empty path answers
+  `-ENOENT` (FD-131's rule); a bad dirfd answers
+  `-EBADF`, a dirfd that is not a directory `-ENOTDIR`;
+  a missing source `-ENOENT`, an existing target
+  `-EEXIST`, a directory source `-EPERM`; dirfd-relative
+  resolution works on both sides; `AT_EMPTY_PATH` with
+  an empty old path and a file descriptor links that
+  file, and with a pipe descriptor answers `-EXDEV`;
+  without `AT_SYMLINK_FOLLOW` the new name links the
+  symlink itself, with it the symlink's target. Boundary:
+  the 64-bit dispatcher HAS a linkat case but resolves
+  both paths against the current directory only (dirfds
+  ignored) and leaves the `AT_EMPTY_PATH` descriptor
+  form at its current answer — a real divergence, not
+  part of this entry's closing terms. Closing terms: a
+  `KProcess::linkat` resolving each side through the
+  established dirfd helper and delegating to
+  `KProcess::link` (with the followed-source and
+  descriptor forms above), a dispatcher that validates
+  flags ahead of the path fault, wired at slot 303, and
+  native tests proving the measured matrix. Found by
+  the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (`hostref-linkat64.out`,
+  `hostref-linkat32.out`).
+- **FD-196 — Vulkan trap traffic that never completes a
+  frame feeds no metrics counter.** *(Low)* FD-63 closed
+  the emission gate's blindness for syscall-only guests;
+  its entry named the remaining boundary: Vulkan counters
+  move only inside `bw64_metrics_vk_frame`, which runs at
+  present completion — a guest that issues Vulkan traps
+  indefinitely without ever presenting (stuck before its
+  first frame, the FD-63 shape in Vulkan form) produces
+  no activity the gate can see, so nothing is ever
+  emitted for exactly the sessions the panel exists to
+  diagnose. The bridge already constructs a per-trap
+  timer on every trap in both dispatchers
+  (`VkProfTrapTimer` in `vk64Bridge` / `vk32Bridge`),
+  but its accounting is gated on the profiling timers
+  and reaches the registry only at frame completion.
+  Closing terms: a per-trap metrics hook called from
+  that timer ahead of its timing gate, counting into
+  the registry's existing Vulkan trap counter on the
+  64-bit path and a gate-only counter on the 32-bit
+  path, with both counters feeding the emission gate's
+  activity test and `bw64_metrics_vk_frame` no longer
+  adding the frame's trap count a second time; the
+  JSON schema does not change and the committed metrics
+  fixture stays byte-identical. Boundaries: per-trap
+  TIMING on the 32-bit Vulkan path stays unavailable
+  (only the call count is knowable there), and trap
+  calls the bridge rejects before its dispatcher are
+  not counted. Proven by a new metrics-selftest section
+  (trap-only activity emits; the snapshot reports the
+  trap count with zero frames). Found by the
+  unfiled-gaps lane, 2026-11-06 (characterised in
+  FD-63's entry, 2026-11-01, and left unfiled).
+- **FD-197 — The vectored-write family shares FD-193's
+  unguarded shape.** *(Low)* Found by inspection while
+  fixing FD-193: `sys_writev64` / `sys_pwritev64` and
+  32-bit `KObject::writev` / `KProcess::pwritev` walk
+  their segments with no per-segment signed check and no
+  combined cap, and the 32-bit accumulator is a U32 that
+  wraps — the same defect as FD-193 on the write side.
+  The kernel's vector import is shared between the read
+  and write families, so the host contract is expected
+  to mirror FD-193's measured one, but this lane did not
+  measure the write side and the entry stays open on
+  that honesty: closing terms are the raw-syscall host
+  matrix for writev/pwritev (both widths), then the
+  same checks and cap in the four write walks, proven
+  by native tests. Found by the unfiled-gaps lane,
+  2026-11-06.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
