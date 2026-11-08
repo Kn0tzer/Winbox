@@ -16669,6 +16669,19 @@ its lane and is not a defect, for the stated reason:
   lines (`test-results/bridge-coverage-fd207-fix/`),
   and the JS unit suite passes 354/0 on the
   built tree.
+
+- **CL-191 — FD-263 closed.** Fixed on branch
+  `lane-fd263` (commit `5a34d6f8a`): the guest threads emulatorn stack overflowed its 64 KiB limit during process teardown andn corrupted the threads TLS key slots, so the key-destructor walk
+  tried to lock a bogus proxying-context node and tripped the
+  unaligned-access trap; the wasm64-mt target now builds with
+  `-sDEFAULT_PTHREAD_STACK_SIZE=524288` (512 KiB). Proof:
+  `d3d10-comprehensive` PASSES on the clean fix build in 196,279 ms
+  (SUITE RESULT 1 passed / 0 failed, 0 page errors; guest
+  `tri10: RESULT 0`); the fixed wasm is byte-identical to the
+  shipped batch-11 wasm and only the JavaScript glue changes;
+  checking-queue pipeline 64 adjudicated clean in the standard
+  shape. Record:
+  `docs/reports/fd263-stack-overflow-20261108.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
