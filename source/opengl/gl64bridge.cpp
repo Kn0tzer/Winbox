@@ -4407,7 +4407,7 @@ static U64 glBridge(GLGuestCPU* cpu, U64 fnId, U64 argsAddr) {
                         if (typeof GLctx === 'undefined') return;
                         if ($0) GLctx.texImage3DMultisample($1, $2, $3, $4, $5, $6, false);
                         else      GLctx.texImage2DMultisample($1, $2, $3, $4, $5, false);
-                    } catch (e) { globalThis.__bw64glReportBridgeException(is3D ? 'glTexImage3DMultisample' : 'glTexImage2DMultisample', e); } },
+                    } catch (e) { globalThis.__bw64glReportBridgeException($0 ? 'glTexImage3DMultisample' : 'glTexImage2DMultisample', e); } },
                     (int)is3D, tgt, smp, ifmt, w, h, d);
                     e = glGetError();
                     if (e && !trace && !g_allocationError) g_allocationError = e;
