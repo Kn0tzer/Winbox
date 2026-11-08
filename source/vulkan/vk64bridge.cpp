@@ -10494,7 +10494,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (const auto& r : regs)
             recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage"), args.a[1], args.a[3], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
                 r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
-        U32 pxBytes = (U32)src->pixBytes;
+        // FD-204: bytes per pixel come from the format, not from
+        // Image::pixBytes -- the bind sites set that field to the
+        // image's TOTAL byte count (which the texture-upload and
+        // dirty-range paths rely on), so using it here made the row
+        // pitch astronomical and every pixel was dropped.
+        U32 pxBytes = fmt_bpp(src->format);
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
         U32 dstRowPitch = dst->w * pxBytes;
@@ -10562,7 +10567,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (const auto& r : regs)
             recordImageCopy(cbOf(args.a[0], "vkCmdCopyImage2"), hSrcImage2, hDstImage2, r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
                 r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
-        U32 pxBytes = (U32)src->pixBytes;
+        // FD-204: bytes per pixel come from the format, not from
+        // Image::pixBytes -- the bind sites set that field to the
+        // image's TOTAL byte count (which the texture-upload and
+        // dirty-range paths rely on), so using it here made the row
+        // pitch astronomical and every pixel was dropped.
+        U32 pxBytes = fmt_bpp(src->format);
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
         U32 dstRowPitch = dst->w * pxBytes;
@@ -10673,7 +10683,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
         // U32 filter = (U32)args.a[7]; // 0=NEAREST, 1=LINEAR (currently unused, NEAREST assumed)
-        U32 pxBytes = (U32)src->pixBytes;
+        // FD-204: bytes per pixel come from the format, not from
+        // Image::pixBytes -- the bind sites set that field to the
+        // image's TOTAL byte count (which the texture-upload and
+        // dirty-range paths rely on), so using it here made the row
+        // pitch astronomical and every pixel was dropped.
+        U32 pxBytes = fmt_bpp(src->format);
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
         U32 dstRowPitch = dst->w * pxBytes;
@@ -10776,7 +10791,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         DeviceMemory* smem = objOf<DeviceMemory>(src->mem, K_MEMORY, "vkCmdBlitImage2");
         DeviceMemory* dmem = objOf<DeviceMemory>(dst->mem, K_MEMORY, "vkCmdBlitImage2");
         VK64_DROP_IF(return 0, !smem || !dmem || !smem->va || !dmem->va);
-        U32 pxBytes = (U32)src->pixBytes;
+        // FD-204: bytes per pixel come from the format, not from
+        // Image::pixBytes -- the bind sites set that field to the
+        // image's TOTAL byte count (which the texture-upload and
+        // dirty-range paths rely on), so using it here made the row
+        // pitch astronomical and every pixel was dropped.
+        U32 pxBytes = fmt_bpp(src->format);
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
         U32 dstRowPitch = dst->w * pxBytes;
@@ -10860,7 +10880,12 @@ U64 vk64Bridge(CPU64* cpu, U64 fnId, U64 argsAddr) {
         for (const auto& r : regs)
             recordImageCopy(cbOf(args.a[0], "vkCmdResolveImage"), args.a[1], args.a[3], r.srcMip, r.srcBaseLayer, r.dstMip, r.dstBaseLayer,
                 r.srcX, r.srcY, r.srcZ, r.dstX, r.dstY, r.dstZ, r.w, r.h, r.d, std::min(r.srcLayerCount, r.dstLayerCount));
-        U32 pxBytes = (U32)src->pixBytes;
+        // FD-204: bytes per pixel come from the format, not from
+        // Image::pixBytes -- the bind sites set that field to the
+        // image's TOTAL byte count (which the texture-upload and
+        // dirty-range paths rely on), so using it here made the row
+        // pitch astronomical and every pixel was dropped.
+        U32 pxBytes = fmt_bpp(src->format);
         if (!pxBytes) pxBytes = 4;
         U32 srcRowPitch = src->w * pxBytes;
         U32 dstRowPitch = dst->w * pxBytes;

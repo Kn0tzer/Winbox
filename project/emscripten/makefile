@@ -150,7 +150,15 @@ wasm64-mt: export TARGET_EXEC := boxedwine64.html
 # adds them to EXPORTED_FUNCTIONS (merged with the pthread/PROXY_TO_PTHREAD feature
 # exports), so they're reachable from ccall without an explicit -sEXPORTED_FUNCTIONS
 # list (which would otherwise have to re-enumerate the feature exports too).
-wasm64-mt: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js --pre-js=boxedwine-audio-callback-shim.js $(BW64_JIT_LD_FLAGS)
+# DEFAULT_PTHREAD_STACK_SIZE=524288 (512 KiB; FD-263): the Emscripten default is
+# 64 KiB, and a guest thread's emulator stack overflows it during process teardown,
+# growing down past the guard into the thread's TLS key slots. The corrupted slot
+# then reads as a small integer (0x5) for the proxying-context list head, and the
+# mutex lock's atomic compare-exchange traps on the misaligned address, ending the
+# session with an uncaught WebAssembly error. Wasm has no guard-page fault, so the
+# overflow is silent until the destructor walk. 512 KiB gives headroom over the
+# ~74 KiB the overflowing path consumed; Windows threads get 1 MiB.
+wasm64-mt: export EXTRA_LD_FLAGS := -pthread -sFETCH=1 -sPTHREAD_POOL_SIZE=32 -sDEFAULT_PTHREAD_STACK_SIZE=524288 -sPROXY_TO_PTHREAD=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=\#gl64canvas -sOFFSCREEN_FRAMEBUFFER=1 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sLEGACY_GL_EMULATION=1 -sMAX_WEBGL_VERSION=2 -sASSERTIONS=0 --js-library=boxedwine-multithreaded-audio.js --pre-js=boxedwine-audio-callback-shim.js $(BW64_JIT_LD_FLAGS)
 wasm64-mt: export ASSET_FILES := boxedwine.css boxedwine-shell.js wine64.html wine64-launcher.js coi-serviceworker.js $(ZIP_ASSET_FILES)
 
 # 32-bit guest WASM JIT in the production browser configuration.

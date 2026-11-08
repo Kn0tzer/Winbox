@@ -151,5 +151,131 @@ void testFaultDelivery32() {
     KThread::setCurrentThread(shared.thread);
 }
 
+
+// FD-205: an identical fault redelivered forever must be contained.
+// A guest handler that returns to the faulting instruction without
+// fixing the fault makes the emulator re-deliver the identical fault
+// (observed past 5.5M deliveries on 32-bit, and as a 64-line
+// guest-memfault32 loop in a live session); after
+// BW64_FAULT_LOOP_LIMIT identical deliveries the fault takes the
+// no-handler path -- the process is ended and the faulting thread
+// unwinds -- instead of being delivered again. seg_mapper throws 2
+// on a delivery (unwind to the signal handler) and 1 on the
+// no-handler path; the test simulates the guest handler's sigreturn
+// after each delivery (EIP back to the faulting instruction, ESP back
+// to its pre-frame value so the signal frames do not overflow the
+// fixture stack). Each case faults a throwaway process, never the
+// shared fixture process.
+
+// A fixture with a real, mapped stack. makeFaultFixture's stack sits at
+// TEST_STACK_ADDRESS (0xE0000000), above the process mmap limit
+// (0xC0000000), so its mmap silently fails and the stack is unmapped --
+// a signal frame cannot be built there (the first frame write faults
+// and, with a handler installed, is delivered instead of mapping the
+// page). Map a stack below the limit and point ESP/EBP at it; the frame
+// is then built on a mapped page (demand allocation populates it).
+FaultFixture makeContainmentFixture() {
+    FaultFixture f = makeFaultFixture();
+    const U32 stackBase = 0x70000000;
+    U32 r = f.memory->mmap(f.thread, stackBase, 0x4000,
+                           K_PROT_READ | K_PROT_WRITE,
+                           K_MAP_PRIVATE | K_MAP_ANONYMOUS, -1, 0);
+    if (r != stackBase)
+        testFail("could not map a fixture stack (mmap=0x%x)", r);
+    f.cpu->reg[4].u32 = stackBase + 0x4000 - 16; // ESP
+    f.cpu->reg[5].u32 = stackBase + 0x4000 - 16; // EBP
+    // Warm the page the signal frame will be built on.
+    f.memory->writed(stackBase + 0x4000 - 16, 0x11223344);
+    if (f.memory->readd(stackBase + 0x4000 - 16) != 0x11223344)
+        testFail("fixture stack page did not warm up");
+    return f;
+}
+
+void testFaultLoopContainment32() {
+    TestContext& shared = testContext();
+    const U32 faultAddr = 0x60000000;
+    const U32 otherAddr = 0x60000004;
+    auto installHandler = [](FaultFixture& f) {
+        KSigAction& segv = f.process->sigActions[K_SIGSEGV];
+        segv.reset();
+        memset(segv.sigInfo, 0, sizeof(segv.sigInfo));
+        segv.handlerAndSigAction = TEST_CODE_ADDRESS + 0x100;
+        segv.flags = K_SA_SIGINFO;
+    };
+    // Main case: 128 identical deliveries, then the 129th is contained.
+    {
+        FaultFixture f = makeContainmentFixture();
+        KThread::setCurrentThread(f.thread);
+        installHandler(f);
+        const U32 origEsp = f.cpu->reg[4].u32;
+        const U32 origEip = f.cpu->eip.u32;
+        for (U32 i = 0; i < BW64_FAULT_LOOP_LIMIT; i++) {
+            f.cpu->eip.u32 = origEip;
+            f.cpu->reg[4].u32 = origEsp;
+            int caught = 0;
+            try {
+                f.thread->seg_mapper(faultAddr, true, false, true);
+            } catch (int e) {
+                caught = e;
+            }
+            if (caught != 2)
+                testFail("identical fault did not deliver before the loop limit (delivery %u, caught=%d)", i + 1, caught);
+            if (f.thread->terminating)
+                testFail("identical fault ended the process before the loop limit (delivery %u)", i + 1);
+            if (f.cpu->eip.u32 != TEST_CODE_ADDRESS + 0x100)
+                testFail("fault delivery did not transfer to the handler (delivery %u, eip=0x%x)", i + 1, f.cpu->eip.u32);
+        }
+        // One more identical delivery must take the no-handler path.
+        f.cpu->eip.u32 = origEip;
+        f.cpu->reg[4].u32 = origEsp;
+        int caught = 0;
+        try {
+            f.thread->seg_mapper(faultAddr, true, false, true);
+        } catch (int e) {
+            caught = e;
+        }
+        if (caught != 1)
+            testFail("identical fault past the loop limit did not unwind the faulting thread (caught=%d)", caught);
+        if (!f.thread->terminating)
+            testFail("identical fault past the loop limit did not end the guest process");
+        if (f.thread->faultLoopCount != BW64_FAULT_LOOP_LIMIT + 1)
+            testFail("fault loop counter is %u, expected %u", f.thread->faultLoopCount, BW64_FAULT_LOOP_LIMIT + 1);
+    }
+    // Reset case: a different fault resets the count, so the original
+    // fault delivers again instead of tripping at the limit.
+    {
+        FaultFixture f = makeContainmentFixture();
+        KThread::setCurrentThread(f.thread);
+        installHandler(f);
+        const U32 origEsp = f.cpu->reg[4].u32;
+        const U32 origEip = f.cpu->eip.u32;
+        auto deliver = [&](U32 addr) {
+            f.cpu->eip.u32 = origEip;
+            f.cpu->reg[4].u32 = origEsp;
+            int caught = 0;
+            try {
+                f.thread->seg_mapper(addr, true, false, true);
+            } catch (int e) {
+                caught = e;
+            }
+            return caught;
+        };
+        for (U32 i = 0; i < BW64_FAULT_LOOP_LIMIT - 1; i++) {
+            if (deliver(faultAddr) != 2)
+                testFail("reset-case fault did not deliver (delivery %u)", i + 1);
+        }
+        // A different fault resets the count to 1 for its own key.
+        if (deliver(otherAddr) != 2)
+            testFail("a different fault did not deliver");
+        // The original fault now delivers again (its count restarted),
+        // instead of tripping as delivery 129 would have.
+        if (deliver(faultAddr) != 2)
+            testFail("original fault did not deliver after the count reset");
+        if (f.thread->terminating)
+            testFail("original fault ended the process after the count reset");
+    }
+    KThread::setCurrentThread(shared.thread);
+}
+
 #endif
 #endif

@@ -824,28 +824,14 @@ static void t_cmd_all(void) {
     { VkImageSubresourceLayers sl = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
       VkOffset3D off = { 0, 0, 0 }; VkExtent3D ex = { 32, 32, 1 };
       VkImageBlit blit = { sl, { off, {32,32,1} }, sl, { off, {16,16,1} } };
-      /* vkCmdBlitImage SKIPPED 2026-11-07 (run phase): called for real,
-         the guest entered a delivered fetch-fault loop at a fixed rip
-         (0x700227500; the delivered-fault count passed 22 million) and
-         never returned -- the harness crash handler never regained
-         control, so the run could not continue past this call. Valid
-         args (64x64 img, 1 region). Filed as FD-204; -2 = crashed. */
-      note("SKIP vkCmdBlitImage: wedges the guest (fault loop)");
-      trybegin("vkCmdBlitImage"); rep("vkCmdBlitImage",-2,-2,0,0);
+      T2V(vkCmdBlitImage, pvkCmdBlitImage(cmdbuf, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST));
       VkImageBlit2 blit2 = { VK_STRUCTURE_TYPE_IMAGE_BLIT_2, 0, sl,
         { off, {32,32,1} }, sl, { off, {16,16,1} } };
       VkBlitImageInfo2 bii = { VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2, 0,
         img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit2, VK_FILTER_NEAREST };
-      /* vkCmdBlitImage2 measured wedging the guest the same way in
-         the follow-up run of 2026-11-07 (delivered data-fault loop at
-         a fixed rip, count past 1.2 million when the run was
-         stopped); vkCmdBlitImage2KHR skipped on the same-code-path
-         precedent, not individually measured. The family is FD-204. */
-      note("SKIP vkCmdBlitImage2: wedges the guest (fault loop)");
-      trybegin("vkCmdBlitImage2"); rep("vkCmdBlitImage2",-2,-2,0,0);
-      note("SKIP vkCmdBlitImage2KHR: same code path as vkCmdBlitImage2");
-      trybegin("vkCmdBlitImage2KHR"); rep("vkCmdBlitImage2KHR",-2,-2,0,0); }
+      T2V(vkCmdBlitImage2, pvkCmdBlitImage2(cmdbuf, &bii));
+      T2V(vkCmdBlitImage2KHR, pvkCmdBlitImage2KHR(cmdbuf, &bii)); }
     { VkImageSubresourceLayers sl = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
       VkOffset3D off = { 0, 0, 0 }; VkExtent3D ex = { 64, 64, 1 };
       VkImageResolve rs = { sl, off, sl, off, ex };

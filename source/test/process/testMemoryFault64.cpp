@@ -211,4 +211,51 @@ void testMemoryFault64RepPartial() {
             testFail("non-REP MOVSQ fault changed the pre-instruction frame");
     }
 }
+
+// FD-205: an identical fault redelivered forever must be contained.
+// A guest handler that returns to the faulting instruction without
+// fixing the fault makes the emulator re-deliver the identical fault
+// (observed past 28M deliveries on 64-bit); after
+// BW64_FAULT_LOOP_LIMIT identical deliveries the fault is refused
+// instead of delivered again, so the faulting thread's process is
+// ended rather than looping. Calls raiseSyncFault directly (the single
+// funnel for synchronous fault delivery) and simulates the guest
+// handler's sigreturn after each delivery -- RIP back to the faulting
+// instruction, RSP back to its pre-frame value so the signal frames
+// do not overflow the fixture stack.
+void testFaultLoopContainment64() {
+    FaultFixture f;
+    const U64 faultRip = code;
+    const U64 origRsp = f.cpu.reg[X64_RSP].u64;
+    for (U32 i = 0; i < BW64_FAULT_LOOP_LIMIT; i++) {
+        f.cpu.rip = faultRip;
+        f.cpu.reg[X64_RSP].setU64(origRsp);
+        if (!f.cpu.raiseSyncFault(K_SIGSEGV, 14, 1 /*SEGV_MAPERR*/, data))
+            testFail("identical fault refused before the loop limit (delivery %u)", i + 1);
+        if (f.cpu.rip != code + 0x800)
+            testFail("fault delivery did not transfer to the handler (delivery %u, rip=0x%llx)", i + 1, (unsigned long long)f.cpu.rip);
+    }
+    // One more identical delivery must be refused: no new frame is built
+    // and RIP stays at the faulting instruction.
+    f.cpu.rip = faultRip;
+    f.cpu.reg[X64_RSP].setU64(origRsp);
+    if (f.cpu.raiseSyncFault(K_SIGSEGV, 14, 1, data))
+        testFail("identical fault delivered past the loop limit");
+    if (f.cpu.rip != faultRip || f.cpu.reg[X64_RSP].u64 != origRsp)
+        testFail("contained fault built a frame or moved RIP");
+    if (f.cpu.faultLoopCount != BW64_FAULT_LOOP_LIMIT + 1)
+        testFail("fault loop counter is %u, expected %u", f.cpu.faultLoopCount, BW64_FAULT_LOOP_LIMIT + 1);
+    // A different fault (different address) resets the count and delivers.
+    f.cpu.rip = faultRip;
+    f.cpu.reg[X64_RSP].setU64(origRsp);
+    if (!f.cpu.raiseSyncFault(K_SIGSEGV, 14, 1, data + 4096))
+        testFail("a different fault did not reset the loop count");
+    if (f.cpu.rip != code + 0x800)
+        testFail("reset fault delivery did not transfer to the handler");
+    // And the original fault delivers again (its count restarted at 1).
+    f.cpu.rip = faultRip;
+    f.cpu.reg[X64_RSP].setU64(origRsp);
+    if (!f.cpu.raiseSyncFault(K_SIGSEGV, 14, 1, data))
+        testFail("original fault did not deliver after the count reset");
+}
 #endif

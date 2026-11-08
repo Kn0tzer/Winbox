@@ -4014,6 +4014,33 @@ bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 siCode, U64 faultAddr,
     if (!sa.installed) return false;
     if (sa.handler == 0 /*SIG_DFL*/ || sa.handler == 1 /*SIG_IGN*/) return false;
 
+    // FD-205: identical-fault loop containment. A guest handler that
+    // returns to the faulting instruction without fixing the fault makes
+    // the emulator re-deliver the identical fault forever (observed past
+    // 28M deliveries); contain it by ending the faulting thread's
+    // process -- the Linux/Wine outcome for an unhandled fault -- instead
+    // of delivering again. Callers deliver with rip at the faulting
+    // instruction, so (signal, rip, fault address) identifies one fault.
+    // A different fault resets the count (see BW64_FAULT_LOOP_LIMIT).
+    if (sig == faultLoopSig && this->rip == faultLoopRip && faultAddr == faultLoopAddr) {
+        faultLoopCount++;
+    } else {
+        faultLoopSig = sig;
+        faultLoopRip = this->rip;
+        faultLoopAddr = faultAddr;
+        faultLoopCount = 1;
+    }
+    if (faultLoopCount > BW64_FAULT_LOOP_LIMIT) {
+        klog_fmt("BW64-FAIL fault-loop-contained pid=%d tid=%d sig=%u rip=0x%llx addr=0x%llx count=%u",
+                 (this->thread && this->thread->process) ? (int)this->thread->process->id : -1,
+                 this->thread ? (int)this->thread->id : -1,
+                 sig, (unsigned long long)this->rip, (unsigned long long)faultAddr, faultLoopCount);
+        if (this->thread && this->thread->process) {
+            this->thread->process->signal(K_SIGKILL);
+        }
+        return false;
+    }
+
     U64 frameBase = signalFrameBase64(this, sa.flags);
 
     U64 uctxPtr = buildSignalFrame(this, frameBase);

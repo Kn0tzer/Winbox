@@ -102,6 +102,13 @@ public:
 
     void seg_mapper(U32 address, bool readFault, bool writeFault, bool throwException=true);
     void seg_access(U32 address, bool readFault, bool writeFault, bool throwException=true);
+    // FD-205: identical-fault loop containment (see BW64_FAULT_LOOP_LIMIT
+    // in ksignal.h). Counts consecutive deliveries of the identical fault
+    // (same signal, same faulting instruction, same fault address) on this
+    // thread; returns true once the count passes the limit, in which case
+    // the caller must take its no-handler path (end the process) instead
+    // of delivering again. A different fault resets the count.
+    bool faultLoopTripped(U32 signal, U32 faultRip, U32 faultAddr);
     bool runSignals();
 #if defined(BOXEDWINE_GUEST_X64) && defined(BOXEDWINE_MULTI_THREADED)
     // Called by a blocking wait loop (socket read, poll, futex, sleep) after it
@@ -180,6 +187,11 @@ public:
     U64 userTime = 0;    
 #endif
     bool terminating = false;
+    // FD-205: identical-fault loop containment state for this thread.
+    U32 faultLoopSig = 0;
+    U32 faultLoopRip = 0;
+    U32 faultLoopAddr = 0;
+    U32 faultLoopCount = 0;
     // FD-44: see addRef/releaseRef above.
     std::atomic<U32> refCount{1};
     U32 clear_child_tid = 0;

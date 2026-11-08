@@ -282,6 +282,26 @@ void CPU::prepareException(int code, int error) {
     // down. Only an unrecognized exception code (an internal bug, not
     // guest input) still panics, after the stack walk. These are
     // blocking signals, which signalfd can't handle.
+    // FD-205: identical-fault loop containment. Map the exception to the
+    // signal it will be delivered as (the same mapping the branches below
+    // apply) and, when a guest handler is installed, refuse to deliver a
+    // runaway identical fault: end the process instead. A different fault
+    // resets the count (see BW64_FAULT_LOOP_LIMIT in ksignal.h).
+    {
+        U32 faultSig = 0;
+        U32 faultAddr = 0;
+        if (code == EXCEPTION_GP) { faultSig = K_SIGSEGV; faultAddr = 0; }
+        else if (code == EXCEPTION_DIVIDE) { faultSig = K_SIGFPE; faultAddr = this->eip.u32; }
+        else if (code == EXCEPTION_NP || code == EXCEPTION_SS || code == EXCEPTION_BOUND) { faultSig = K_SIGSEGV; faultAddr = this->eip.u32; }
+        if (faultSig != 0 && this->thread) {
+            KSigAction* action = &process->sigActions[faultSig];
+            const bool handlerInstalled = action->handlerAndSigAction != K_SIG_IGN && action->handlerAndSigAction != K_SIG_DFL;
+            if (handlerInstalled && this->thread->faultLoopTripped(faultSig, this->eip.u32, faultAddr)) {
+                process->signal(K_SIGKILL);
+                return;
+            }
+        }
+    }
     if (code==EXCEPTION_GP) {
         KSigAction* action = &process->sigActions[K_SIGSEGV];
         const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;

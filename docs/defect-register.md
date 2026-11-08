@@ -10982,13 +10982,13 @@ do not close the entry until they land.
   strengthened check passes in a no-worklet run.
   The shipped, gated configuration is unaffected.
 
-- **FD-204 — Calling vkCmdBlitImage or vkCmdBlitImage2 wedges the guest in an endless delivered-fault loop.** *(High)* Measured 2026-11-07 by the vkcov coverage harness on a verified build of lane-vkgl-coverage's tip (wasm byte-identical to the shipped batch-10 build): with valid arguments (a 64x64 image, one blit region), vkCmdBlitImage never returned — the guest faulted fetching from an unmapped address (rip == addr, 0x700227500 in the captured run) and the same fault was redelivered past 22 million times without the guest's crash handler ever regaining control; the session was unrecoverable and the run had to be stopped from outside. Called live in the next run, vkCmdBlitImage2 wedged the same way (delivered data fault at a fixed rip, count past 1.2 million when stopped); vkCmdBlitImage2KHR is recorded on the same-code-path precedent, not individually measured. The harness now skips all three (recorded -2, crashed) so the coverage matrix can complete. Contrast the vkCmdCopyImage family, whose bridge exception the guest crash handler does contain (recorded -2, run continues). Closing terms: a guest calling any of the three blit entry points with valid arguments gets a normal return or a containable error, proven by a vkcov run with the skips removed. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk-20261107/console.log and test-results/bridge-coverage-vkgl-vk3-20261107/console.log (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
+- **FD-204 — Calling vkCmdBlitImage or vkCmdBlitImage2 wedges the guest in an endless delivered-fault loop. CLOSED 2026-11-08 — see CL-188.** *(High)* Measured 2026-11-07 by the vkcov coverage harness on a verified build of lane-vkgl-coverage's tip (wasm byte-identical to the shipped batch-10 build): with valid arguments (a 64x64 image, one blit region), vkCmdBlitImage never returned — the guest faulted fetching from an unmapped address (rip == addr, 0x700227500 in the captured run) and the same fault was redelivered past 22 million times without the guest's crash handler ever regaining control; the session was unrecoverable and the run had to be stopped from outside. Called live in the next run, vkCmdBlitImage2 wedged the same way (delivered data fault at a fixed rip, count past 1.2 million when stopped); vkCmdBlitImage2KHR is recorded on the same-code-path precedent, not individually measured. The harness now skips all three (recorded -2, crashed) so the coverage matrix can complete. Contrast the vkCmdCopyImage family, whose bridge exception the guest crash handler does contain (recorded -2, run continues). Closing terms: a guest calling any of the three blit entry points with valid arguments gets a normal return or a containable error, proven by a vkcov run with the skips removed. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk-20261107/console.log and test-results/bridge-coverage-vkgl-vk3-20261107/console.log (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
 
-- **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
+- **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread. CLOSED 2026-11-08 — see CL-189.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
 
 - **FD-206 — Ten implemented Vulkan handlers answer VK_ERROR_INITIALIZATION_FAILED (-3) to the coverage harness's calls.** *(Medium)* Measured 2026-11-07 on the completed vkcov runs (two independent end-to-end runs with identical return codes): vkSetEvent, vkResetEvent, vkCmdSetEvent, vkCmdResetEvent, vkGetEventStatus (the whole event family), vkGetQueryPoolResults, vkFreeDescriptorSets, vkGetDeviceImageMemoryRequirements, vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceImageFormatProperties2KHR. The harness's arguments are valid-ish by design (created objects, a begun command buffer, established state); per name, the fixing lane triages handler defect vs harness argument/state artifact, but the event family's uniform -3 across state the harness did establish is a functional failure on its face. Closing terms: each named handler returns a spec-correct result for the harness's call, or the register records the per-name reason its -3 is the correct answer. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk4-20261107/vkcov-results.json.
 
-- **FD-207 — The GL bridge's multisample-texture error path kills the session with an uncaught ReferenceError.** *(High)* In source/opengl/gl64bridge.cpp, the shared case for glTexImage2DMultisample / glTexImage3DMultisample / glTexStorage2DMultisample / glTexStorage3DMultisample wraps the WebGL call in an EM_ASM try/catch whose catch handler references the bare identifier is3D — a C++ variable that is never passed into the JS (the try block correctly uses $0 for the same value). is3D occurs exactly once in the shipped JS and is defined nowhere, so whenever the driver call throws, the catch itself throws ReferenceError: is3D is not defined, uncaught in the page, and the session dies — the exact outcome the case's own comment says the try/catch exists to prevent ("error swallow so a driver that refuses cannot poison wined3d's checks"). Measured 2026-11-07: the glcov run's glTexStorage2DMultisample call threw in the driver, the ReferenceError ended the run at 221 of 334 rows with the session dead. (The glTexImage pair shares the bridge case but never reaches it from the harness — no callable proc; see FD-209.) The harness now skips the two TexStorage rows (recorded -2, crashed). Closing terms: the catch uses the passed-in value (or an equivalent correct reference) so a driver refusal is reported and swallowed as designed; proven by a glcov run with the skips removed, completing with the four names answered. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl-20261107/console.log + summary.json (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
+- **FD-207 — The GL bridge's multisample-texture error path kills the session with an uncaught ReferenceError. CLOSED 2026-11-08 — see CL-190.** *(High)* In source/opengl/gl64bridge.cpp, the shared case for glTexImage2DMultisample / glTexImage3DMultisample / glTexStorage2DMultisample / glTexStorage3DMultisample wraps the WebGL call in an EM_ASM try/catch whose catch handler references the bare identifier is3D — a C++ variable that is never passed into the JS (the try block correctly uses $0 for the same value). is3D occurs exactly once in the shipped JS and is defined nowhere, so whenever the driver call throws, the catch itself throws ReferenceError: is3D is not defined, uncaught in the page, and the session dies — the exact outcome the case's own comment says the try/catch exists to prevent ("error swallow so a driver that refuses cannot poison wined3d's checks"). Measured 2026-11-07: the glcov run's glTexStorage2DMultisample call threw in the driver, the ReferenceError ended the run at 221 of 334 rows with the session dead. (The glTexImage pair shares the bridge case but never reaches it from the harness — no callable proc; see FD-209.) The harness now skips the two TexStorage rows (recorded -2, crashed). Closing terms: the catch uses the passed-in value (or an equivalent correct reference) so a driver refusal is reported and swallowed as designed; proven by a glcov run with the skips removed, completing with the four names answered. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl-20261107/console.log + summary.json (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
 
 - **FD-208 — Twenty-one GL handlers answer GL errors to the coverage harness's calls, and one answers inconsistently between calls.** *(Medium)* Measured 2026-11-07 on the completed glcov runs (the set is identical across both): GL_INVALID_OPERATION (1282) from glAttachShader, glBlitFramebuffer, glBufferData, glBufferSubData, glGetSamplerParameterIiv, glGetSamplerParameterIuiv, glGetTexImage, glPointParameterf, glPointParameterfv, glPointParameteri, glPointParameteriv, glSamplerParameterIiv, glSamplerParameterIuiv; GL_INVALID_ENUM (1280) from glBeginQuery, glEndQuery, glGetFloatv, glGetIntegeri_v, glReadPixels; GL_INVALID_VALUE (1281) from glEnd, glGetTexLevelParameteriv; GL_STACK_UNDERFLOW (1284) from glPopMatrix; and glCompressedTexImage3D, which answered 37442 on the first call and GL_NO_ERROR on the second (37442 is not a GL error code). The harness's arguments are valid-ish by design; per name, the fixing lane triages handler defect vs harness argument/state artifact — several are plausibly state artifacts of the harness's own sequence (glEnd with no matching begin in flight, glPopMatrix at stack bottom). Closing terms: per name, either a spec-correct answer to the harness's call, or a register note recording why the error is the correct answer to that call. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/glcov-results.json.
 
@@ -11159,7 +11159,8 @@ do not close the entry until they land.
 
 - **FD-263 — A Direct3D 10 guest workload kills the
   browser page with an uncaught WebAssembly trap:
-  "operation does not support unaligned accesses".**
+  "operation does not support unaligned accesses".
+  CLOSED 2026-11-08 — see CL-191.**
   *(High — can kill a running session. Filed by the
   batch-11 merge lane, 2026-11-08.)* The batch-11
   gate's browser suite failed `d3d10-comprehensive`
@@ -11184,7 +11185,32 @@ do not close the entry until they land.
   identified in a symbols build and the unaligned
   path fixed (or proven to be a trap the guest itself
   provoked, with the session surviving it), and
-  `d3d10-comprehensive` passing in a gate run.
+  `d3d10-comprehensive` passing in a gate run. FIXED 2026-11-08:
+  the trapping operation is musl's `__pthread_mutex_lock` (wasm
+  function 728, offset 0x2172b) executing an atomic compare-exchange
+  on a misaligned mutex address — the mutex at node+16 of a
+  proxying-context list node whose pointer was the bogus value `0x5`,
+  read from the dying thread's TLS slot for the `active_ctxs` key
+  during the key-destructor walk (`cancel_ctx` 4601 <-
+  `cancel_active_ctxs` 11145 <- `_emscripten_thread_exit`). The
+  slot was corrupted by the guest thread's emulator stack
+  overflowing its 64 KiB limit during process teardown and growing
+  down past the guard into the TLS key slots (16-slot read showed
+  stack-frame data: small integers and a float 1.0 across slots
+  0–15; no `pthread_setspecific` small-value write was ever observed).
+  Fix commit `5a34d6f8a` (branch lane-fd263): `-sDEFAULT_PTHREAD_STACK_SIZE=524288`
+  (512 KiB) on the wasm64-mt target in project/emscripten/makefile.
+  Proof: `d3d10-comprehensive` PASSES on the clean fix build in
+  196,279 ms (SUITE RESULT 1 passed / 0 failed, 0 page errors;
+  guest `tri10: RESULT 0`); the fixed wasm is byte-identical to the
+  shipped batch-11 wasm (`e44fe64e…`) and only the JavaScript glue
+  changes. Queue pipeline #64 on the fix tip: standard shape
+  (verify-source exact; citations exit 0; js-unit 352/2 known
+  bare-checkout artifacts; js-legacy 0; native-main 705/0;
+  native-x64 120/0; run-native 0). Record:
+  docs/reports/fd263-stack-overflow-20261108.md. Follow-ups: the
+  exact deep teardown path (~74 KiB) was not isolated, and the
+  wasm64-mt-jit target still uses the 64 KiB default.
 
 - **FD-264 — The 64-bit boot smoke test never sees
   its payload run: a freshly booted 64-bit `cmd`
@@ -11251,6 +11277,8 @@ do not close the entry until they land.
   witness lines arriving as contiguous text, and
   the mechanism (why this spawn attaches a rendering
   console host in the composed tree) named.
+
+- **FD-266 — After the fault-containment fix ends a faulting guest process, the session dies silently: the launcher never restarts it and never reports the death.** *(Medium — the containment itself works; the session should surface the death or restart. Filed by the batch-12 deploy lane, 2026-11-08.)* In the batch-12 live acceptance the consumer browser program hit the FD-205 fault loop three times (runs a1, a2, b3 — identical signature: guest-memfault32, addr `0xfffffd08`, eip `0x10584384`); each time the containment refused delivery at count 130 (`delivered=0`) and the faulting guest process ended, exactly as designed — but the session then sat silent until the 900 s timeout: the preserved consoles carry zero `restart` lines, their last entries are the lazy-fetch lines at ~23–26 s, and the timeout screenshots are nearly dark. In batch 11 the same loop died differently (a worker RangeError killed the page), so this silent-after-containment shape is new to batch 12. Closing terms: a session whose guest process dies via containment either restarts the guest or reports the failure, proven by a live consumer run that hits the loop and then either maps or fails loudly instead of timing out silently.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -16553,6 +16581,36 @@ dead-start fix and needs composition care.
   all recorded in
   `docs/reports/merge-batch11-20261107.md`.
 
+- **CL-188 — FD-204 closed: calling vkCmdBlitImage or vkCmdBlitImage2
+  wedges the guest in an endless delivered-fault loop.** Fixed on
+  branch `lane-fd204-fd205`, commit `0fb7827eb`: `Image::pixBytes`
+  is the image's total byte count (set by the bind sites on both
+  widths) but the copy family used it as bytes per pixel, so every
+  blit pixel was dropped and the call was a silent no-op returning
+  0. The copy family (CopyImage, CopyImage2, BlitImage, BlitImage2,
+  ResolveImage) now takes bytes-per-pixel from the format
+  (`fmt_bpp`). Proof: vkcov run with the blit skips removed on the
+  fixed build (wasm `1bd945d2...`) completes end to end (RESULT 0,
+  309 handlers); all three blit entry points return 0, zero pixel
+  drops, zero fault lines. The 2026-11-07 wedge itself did not
+  reproduce on the batch-11-based build; the FD-205 containment
+  bounds any recurrence. Record:
+  `docs/reports/fd204-fd205-fault-containment-20261108.md`.
+
+- **CL-189 — FD-205 closed: a guest memory fault in some paths is
+  redelivered forever instead of containing the faulting thread.**
+  Fixed on branch `lane-fd204-fd205`, commit `0fb7827eb`: after
+  `BW64_FAULT_LOOP_LIMIT` (128) identical deliveries (same signal,
+  faulting instruction, fault address) the fault is refused and the
+  faulting thread's process is ended (`K_SIGKILL`); 64-bit in
+  `raiseSyncFault`, 32-bit in `seg_mapper`/`seg_access`/
+  `prepareException` via `KThread::faultLoopTripped`. A different
+  fault resets the count. Proof: native tests
+  `testFaultLoopContainment64`/`testFaultLoopContainment32` pass
+  (containment trips at count 129); the vkcov fix run completes
+  with zero fault lines. Record:
+  `docs/reports/fd204-fd205-fault-containment-20261108.md`.
+
 ## Appendix — examined and deliberately NOT registered
 
 Recorded so the examination is not lost; each was audited by
@@ -16605,6 +16663,27 @@ its lane and is not a defect, for the stated reason:
   — which the guest can already do with its own allocator.
   No host impact. (`lane-x11-getramptr-audit` record.)
 
+- **CL-190 — FD-207 closed.** Fixed on branch
+  `lane-fd207` (commit `d1493310b`). Proof:
+  the glcov run with the skips removed completes
+  334/334 rows with the two TexStorage rows
+  answering 1280,1280 and zero ReferenceError
+  lines (`test-results/bridge-coverage-fd207-fix/`),
+  and the JS unit suite passes 354/0 on the
+  built tree.
+
+- **CL-191 — FD-263 closed.** Fixed on branch
+  `lane-fd263` (commit `5a34d6f8a`): the guest threads emulatorn stack overflowed its 64 KiB limit during process teardown andn corrupted the threads TLS key slots, so the key-destructor walk
+  tried to lock a bogus proxying-context node and tripped the
+  unaligned-access trap; the wasm64-mt target now builds with
+  `-sDEFAULT_PTHREAD_STACK_SIZE=524288` (512 KiB). Proof:
+  `d3d10-comprehensive` PASSES on the clean fix build in 196,279 ms
+  (SUITE RESULT 1 passed / 0 failed, 0 page errors; guest
+  `tri10: RESULT 0`); the fixed wasm is byte-identical to the
+  shipped batch-11 wasm and only the JavaScript glue changes;
+  checking-queue pipeline 64 adjudicated clean in the standard
+  shape. Record:
+  `docs/reports/fd263-stack-overflow-20261108.md`.
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
   later section never ran (was FD-50).** Fixed in
