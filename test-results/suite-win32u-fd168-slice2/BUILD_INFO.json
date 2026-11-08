@@ -1,10 +1,10 @@
 {
-  "built_at_utc": "2026-11-07T06:32:06.450028+00:00",
-  "git_sha": "faf95d26c7a022a11333a96a6b1586d22736bdd0",
-  "git_dirty_files": 12,
-  "wasm_sha256": "92b36180e9b3469b07014b91cf0054e4f50e1b119b2881e6ca1a85819d27bfdf",
-  "wasm_bytes": 5722692,
-  "js_sha256": "94669195ae2041379071bb46b9b6ba8951b788494a01688f1f93051784692c5e",
+  "built_at_utc": "2026-11-08T00:36:38.618114+00:00",
+  "git_sha": "63cf6249d6f4466362f8b617fdbe43c2ae6f26a5",
+  "git_dirty_files": 0,
+  "wasm_sha256": "e44fe64e4334fe0a08cbb2e61388b539394cbf48a34235e27a26a6585e0a0f1b",
+  "wasm_bytes": 5736471,
+  "js_sha256": "896f55af674a0fc1bc21a0b827916d7983b862d3df74c2e2038595287164b1eb",
   "profiling": false,
-  "builder": "lane-fd168-slice2 (pid 1793077)"
+  "builder": "build:3548512 (pid 3548512)"
 }
