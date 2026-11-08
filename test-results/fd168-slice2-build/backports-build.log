@@ -1,0 +1,147 @@
+--- applied wine8-user32-pointer-family.patch ---
+--- applied wine8-kernelbase-copyfile2.patch ---
+--- applied wine8-iphlpapi-anycast-table.patch ---
+--- applied wine8-win32u-desktop-wait.patch ---
+--- applied wine8-fd167-contracts.patch ---
+--- applied wine8-win32u-fd168-backports.patch ---
+--- applied wine8-win32u-fd168-slice2.patch ---
+--- applied wine8-msvcrt-fd169-crt.patch ---
+--- applied wine8-fd170-contracts.patch ---
+/home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/buildWine/patches/wine8-fd171-contracts.patch:175: new blank line at EOF.
++
+/home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/buildWine/patches/wine8-fd171-contracts.patch:314: new blank line at EOF.
++
+/home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/buildWine/patches/wine8-fd171-contracts.patch:952: new blank line at EOF.
++
+/home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/buildWine/patches/wine8-fd171-contracts.patch:1065: new blank line at EOF.
++
+warning: 4 lines add whitespace errors.
+--- applied wine8-fd171-contracts.patch ---
+--- native build tools ready ---
+--- built user32.dll ---
+--- built kernelbase.dll ---
+--- built kernel32.dll ---
+--- built iphlpapi.dll ---
+--- built win32u.dll ---
+--- built msvcp140.dll ---
+--- built setupapi.dll ---
+--- built ucrtbase.dll ---
+--- built msvcrt.dll ---
+--- built msvcr70.dll ---
+--- built msvcr71.dll ---
+--- built msvcr80.dll ---
+--- built msvcr90.dll ---
+--- built msvcr100.dll ---
+--- built msvcr110.dll ---
+--- built msvcr120.dll ---
+--- built bluetoothapis.dll ---
+--- built winusb.dll ---
+--- built netutils.dll ---
+--- built propsys.dll ---
+--- built ntdll.dll ---
+--- built cfgmgr32.dll ---
+--- built pdh.dll ---
+--- built combase.dll ---
+--- built mfplat.dll ---
+--- built cryptext.dll ---
+--- built d2d1.dll ---
+--- built hid.dll ---
+--- built mf.dll ---
+--- built mscms.dll ---
+--- built prntvpt.dll ---
+--- built sspicli.dll ---
+--- built vcomp.dll ---
+--- built vcomp90.dll ---
+--- built vcomp100.dll ---
+--- built vcomp110.dll ---
+--- built vcomp120.dll ---
+--- built vcomp140.dll ---
+--- built windows.networking.dll ---
+--- built wintypes.dll ---
+--- built wofutil.dll ---
+--- stamped Wine builtin signature: user32.dll ---
+--- stamped Wine builtin signature: kernelbase.dll ---
+--- stamped Wine builtin signature: kernel32.dll ---
+--- stamped Wine builtin signature: iphlpapi.dll ---
+--- stamped Wine builtin signature: win32u.dll ---
+--- stamped Wine builtin signature: msvcp140.dll ---
+--- stamped Wine builtin signature: setupapi.dll ---
+--- stamped Wine builtin signature: ucrtbase.dll ---
+--- stamped Wine builtin signature: msvcrt.dll ---
+--- stamped Wine builtin signature: msvcr70.dll ---
+--- stamped Wine builtin signature: msvcr71.dll ---
+--- stamped Wine builtin signature: msvcr80.dll ---
+--- stamped Wine builtin signature: msvcr90.dll ---
+--- stamped Wine builtin signature: msvcr100.dll ---
+--- stamped Wine builtin signature: msvcr110.dll ---
+--- stamped Wine builtin signature: msvcr120.dll ---
+--- stamped Wine builtin signature: bluetoothapis.dll ---
+--- stamped Wine builtin signature: winusb.dll ---
+--- stamped Wine builtin signature: netutils.dll ---
+--- stamped Wine builtin signature: propsys.dll ---
+--- stamped Wine builtin signature: ntdll.dll ---
+--- stamped Wine builtin signature: cfgmgr32.dll ---
+--- stamped Wine builtin signature: pdh.dll ---
+--- stamped Wine builtin signature: combase.dll ---
+--- stamped Wine builtin signature: mfplat.dll ---
+--- stamped Wine builtin signature: cryptext.dll ---
+--- stamped Wine builtin signature: d2d1.dll ---
+--- stamped Wine builtin signature: hid.dll ---
+--- stamped Wine builtin signature: mf.dll ---
+--- stamped Wine builtin signature: mscms.dll ---
+--- stamped Wine builtin signature: prntvpt.dll ---
+--- stamped Wine builtin signature: sspicli.dll ---
+--- stamped Wine builtin signature: vcomp.dll ---
+--- stamped Wine builtin signature: vcomp90.dll ---
+--- stamped Wine builtin signature: vcomp100.dll ---
+--- stamped Wine builtin signature: vcomp110.dll ---
+--- stamped Wine builtin signature: vcomp120.dll ---
+--- stamped Wine builtin signature: vcomp140.dll ---
+--- stamped Wine builtin signature: windows.networking.dll ---
+--- stamped Wine builtin signature: wintypes.dll ---
+--- stamped Wine builtin signature: wofutil.dll ---
+--- win32u.so carries freetype + fontconfig support (FD-65 guard) ---
+--- built win32u.so (unix half) ---
+=== sha256 (re-pin these in check_runtime_completeness.py + README.md) ===
+2f04c40792ac68a508f8afeac285894894f547d7d49bf44161e3fd1843378962  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/bluetoothapis.dll
+7ee2e16fa1b35e1bfb49d71286b7415b5989588a2dcd212f992c2c8e8954fc1c  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/cfgmgr32.dll
+3239c93b17dc0e679d913bff3e78ffaa188da6beb838e49190efa073197bb19a  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/combase.dll
+c38a025534e313ba36c46978711de6c18c2870b5a1ace1a447f66b97934ea76b  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/cryptext.dll
+c9db6f4c2649af12dbbc7d4231b997744239b5720846234350d17a06ef542f12  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/d2d1.dll
+5fc5ed44dc468b0b90dbca56150f2ff771ede4a6b7be30fc27e77fb2b73b0ffe  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/hid.dll
+1330068a2a718b231732fe3e9057eb5cae77b9ab74ddaf71a162a49af255827d  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/iphlpapi.dll
+f3add8470350464ab84444c419bed4674699569be99ab9f126d6bd6705ef4507  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/kernel32.dll
+1eb5059b7d59617233e592b5f182f6dc117f3b55c12b711a3ec44f33cd879ac9  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/kernelbase.dll
+36c7e6c1b881b1f7f3765133a9371e5e13088d88698e8cab0452f3feeeae0310  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/mf.dll
+6e8bb4ee7f71959a51b79d52c50846fe5ea8ff2dc0209e6830b7e5bfe4ee3342  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/mfplat.dll
+7a8da5fa71a5a761b799900ace09a2cc69d2fa0dd62b9a4f7b6053246443e076  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/mscms.dll
+8074e245a6e7e67cd64e2126bc7c688bf216b063a8bbae381bc1a11f0ba562dd  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcp140.dll
+746be30c65de01ff83cee1387263a965f760106e99887fa984e2cc36b8a74544  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr100.dll
+45edf7342e953006cfc1a5783beac76432dc95b665958d7ef57e9c94733d7a52  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr110.dll
+6f981b611dbcfa5cf73a828d071ef71cb02de63efe401f813f0e32bcfba58669  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr120.dll
+96ddbe21cc2a12b5ee70f93689b861654bed397f84e9bd4ea15065f5b513116d  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr70.dll
+5b237645562e62e8dd0f618cff214cd1c693abfee90c467103ec5cc747aa84e4  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr71.dll
+af0341691107b41e11da49d9c3738abd1bb5865c694f3a10e24064047c0ab0e2  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr80.dll
+83a79ddd840253cc0f2da02dcad549233b98fd56b59c5d38e7746cb974b8817a  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcr90.dll
+3a262a48c2d647fbbb863fe70acc480ba616d0f005e03b7d545d868582b6b842  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/msvcrt.dll
+24179149e111fda8219699954c0377d26a9714de45f552f050fb0bbe7ab4af14  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/netutils.dll
+0d1ef796aa9564ef663640b975c9a5e8cb7ce0fd6cbda7200c1cc96abd09761b  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/ntdll.dll
+e545bd37508e859d725c694e7fee06947b99bc4b036c3051e4b36e328e2a2ebe  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/pdh.dll
+6e6efe850d3f8e98a50b55b453636863ded13b1e4ff4ddedc6c8c6701083c194  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/prntvpt.dll
+fb04d21e67b67dc7c0e499fc954edd694b3a142fc708f00c02b4af38929c8562  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/propsys.dll
+9bf4e3f557535807f6a2234976b2af545f7f6240266ba173296f3b28791ff8e9  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/setupapi.dll
+51d00db6f4db13983e5b1d56c20cd1304ae5a11d17a5530a5782df165206b72c  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/sspicli.dll
+5bdb91b81a7bb74734ccee03b6cc3046f84aa119889219be4a6ac1057220ae41  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/ucrtbase.dll
+d43c00c55c56b50e08c8e9b301850f259c51d30009d4b2c3dba54f91641a3de6  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/user32.dll
+ea0562668f7476a16a52c6a429c5dfd1f02422e4086a7c61575486ab5606b4f9  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp.dll
+83a1d72eac97b5324b66f0a467fc552fbf71d8e61074accea72cc9ef629a9d15  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp100.dll
+b63f3579aaade412c6a56dda6ee40e6ccd113f54bc5175db54d4a985eecc43d5  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp110.dll
+f9daefeac3c300aa389743106f0438e183ccb14cd33f230749bfc95eed5448e8  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp120.dll
+840ecaed8d532062dddab4d8b6d9fe7ea80c6e0a308950f2bdccd872527986fb  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp140.dll
+c3744fb0b0e106bb3d4fc5fa683dc8c5fac0e6be9c6f49cbaf365459b781a17f  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/vcomp90.dll
+91beadaac11f12ce9c2fd0f69154d4227dbfacc6b1a52379dd8f70831a38d3f6  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/win32u.dll
+495b1fc06a19ad4b7fd646d6a88486d7da9b3eddae934449b4aac00b5f0ec3ff  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/windows.networking.dll
+cd5ff48b8878e6d06f24960605a883e4d99ad4fb9421b3c046047d0c9a2d9860  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/wintypes.dll
+2b99f1cf0429a00aa651169ce3b3d6b0d622dcb7454ba8e86358036dbc62c16f  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/winusb.dll
+10238dc69d6476de00d7f7c970086c1797496363454c01c534e3c6d611b58aec  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/wofutil.dll
+d884fdc9373369df44bd4eefb3a8435cd2da3839a0834bec758024a28ac48ff8  /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/tools/rootfs64/wine8-backports-x86_64/win32u.so

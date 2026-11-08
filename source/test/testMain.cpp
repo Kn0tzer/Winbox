@@ -55,11 +55,14 @@
 #include "cpu/testVk32Trap.h"
 #include "mmu/testSelfModifying.h"
 #include "mmu/testBrk.h"
+#include "x11/testX11RamPtrAudit.h"
 
 void testWaitPid();
 void testBStringContains();
 void testBStringJoin();
 void testBStringIndexOf();
+void testBStringSplit();
+void testTranslateOpenError();
 void testCondStartWaitTime();
 void testFutex32WakeRace();
 void testMsyncLockOrder();
@@ -75,6 +78,11 @@ void testFutex64DispatchGuard();
 void testMadvise32Syscall();
 void testFaultDelivery32();
 void testPortIoFault32();
+void testFutexUnmapped32();
+void testFutexSharedUnmapped32();
+void testModifyLdtInvalid32();
+void testModifyLdtIndex32();
+void testFpeDelivery32();
 void testClone32Sharing();
 void testClone32Flags();
 void testClone3Abi32();
@@ -82,6 +90,7 @@ void testGetrandom32Syscall();
 void testReadv32Syscall();
 void testFutexWaitv32Syscall();
 void testNullPath32Syscalls();
+void testTimingWaits32();
 void testMemfdNullName32Syscalls();
 void testMlock32Syscalls();
 void testSchedAffinity32Syscalls();
@@ -136,6 +145,7 @@ void testWriteFamilyWrongMode();
 void testCloseWriteDeferral();
 void testPwritev32Dispatch();
 void testPreadv32Dispatch();
+void testUnfiledGaps32();
 void testWritevPartialError();
 void testTempFileLinkPattern();
 void testInotifyPollNotifyStress();
@@ -155,6 +165,7 @@ void testPidfd64Syscalls();
 void testInotify64Syscalls();
 void testExeSpawnSignal64();
 void testPreadv64Syscalls();
+void testUnfiledGaps64();
 void testCloseWriteDeferral64();
 void testMmap64FileReadFailure();
 void testSendmsgBadBuffer64Syscalls();
@@ -198,9 +209,11 @@ void testXattrNamespace64Syscalls();
 void testXattrWriteClassify64Syscalls();
 void testMidDotDot64Syscalls();
 void testSetitimer64Syscalls();
+void testTimingWaits64();
 void testInotifyEvents();
 void testSignalfd64Syscalls();
 void testFutex64Operations();
+void testFutexUnmapped64();
 void testPrctl64Options();
 void testOpcodeFault64Delivery();
 void testCpu64AvxCpuidMask();
@@ -210,6 +223,7 @@ void testStatx64Syscall();
 void testClone3Abi64();
 void testCloneSharing64();
 void testSignalFp64Roundtrip();
+void testRaiseSyncFaultDeliveryLogged64();
 void testSignal64NestedAltstack();
 void testSignal64BadFpFrame();
 void testSignal64AsyncFp();
@@ -238,6 +252,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testAtomicStress64, "Test x64 concurrent LOCK atomicity stress (K-M1)"},
     {testFutex64DispatchGuard, "Test x64 futex dispatch guard"},
     {testFutex64Operations, "Test x64 futex operations and multithread wake race"},
+    {testFutexUnmapped64, "Test x64 futex unmapped-address answers (D2)"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
@@ -260,6 +275,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testUnfiledGaps64, "Test x64 vectored-read lengths and positioned reads on pipes (FD-193/FD-194)"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
     {testSendmsgBadBuffer64Syscalls, "Test x64 sendmsg/sendmmsg from unreadable guest buffers"},
@@ -307,6 +323,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testTimerfdProcessAbiProbes, "Test timerfd expiration through the process ABI"},
     {testSetitimerProbes, "Test setitimer expiration probes"},
     {testSetitimer64Syscalls, "Test x64 setitimer and getitimer syscalls"},
+    {testTimingWaits64, "Test x64 timing and wait contract answers against the raw-syscall host grid"},
     {testAsyncSigio, "Test fcntl async ownership and SIGIO delivery"},
     {testDnsLoopbackService, "Test loopback DNS service for guest resolvers"},
     {testDevDspCapture, "Test dsp capture contract and GETISPACE"},
@@ -338,6 +355,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testMemoryFault64RepPartial, "Test x64 REP string faults keep partial progress (K-M3)"},
     {testSigaltstack64Semantics, "Test x64 sigaltstack SS_ONSTACK query and on-stack EPERM"},
     {testSigaltstack64Autodisarm, "Test x64 sigaltstack SS_AUTODISARM disarm and sigreturn restore"},
+    {testRaiseSyncFaultDeliveryLogged64, "Test x64 raiseSyncFault deliveries are logged at the delivery point (FD-14)"},
     {testClone64AltstackReset, "Test x64 clone sigaltstack reset for CLONE_VM children"},
     {testFstatfsDescriptor64Syscalls, "Test x64 fstatfs answers -EBADF for a descriptor that is not open; any open descriptor keeps the fabricated answer"},
     {testUtimensatFlags64Syscalls, "Test x64 utimensat answers -EINVAL for flag bits outside AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH on non-null paths; a path through a file answers -ENOTDIR"},
@@ -956,9 +974,15 @@ const TestEntry TEST_ENTRIES[] = {
     {testSelfModifyingFront, "Test Self Modifying Code Same Block(Previous)"},
     {testSelfModifyingBack, "Test Self Modifying Code Same Block(Next)"},
     {testBrkHeap, "Test brk/mmap heap"},
+    {testX11RamPtrGetFallback, "Test X11 XSetWindowAttributes::get getRamPtr refusal fallback"},
+    {testX11RamPtrFreeHandlers, "Test X11 free handlers with page-straddling guest structs"},
+    {testX11RamPtrGetCrtcInfoStraddle, "Test X11 XRRGetCrtcInfo with page-straddling resources struct"},
+    {testX11RamPtrSetCrtcConfigStraddle, "Test X11 XRRSetCrtcConfig with page-straddling resources struct"},
     {testBStringContains, "Test BString contains with embedded NUL bytes"},
     {testBStringJoin, "Test BString join delimiter lengths"},
     {testBStringIndexOf, "Test BString indexOf/lastIndexOf with embedded NUL bytes"},
+    {testBStringSplit, "Test BString split with an empty delimiter (FD-11)"},
+    {testTranslateOpenError, "Test translateOpenError maps the full open errno set (D17)"},
     {testCondStartWaitTime, "Test condStartWaitTime deadline accounting (sleep/poll)"},
     {testFutex32WakeRace, "Test 32-bit futex lost-wakeup scenarios"},
     {testMsyncLockOrder, "Test msync mapped-files lock order (FD-77 ABBA)"},
@@ -971,6 +995,11 @@ const TestEntry TEST_ENTRIES[] = {
     {testMadvise32Syscall, "Test 32-bit madvise syscall effects"},
     {testFaultDelivery32, "Test 32-bit fault delivery without a guest handler"},
     {testPortIoFault32, "Test 32-bit port IO and int 0x99 fault delivery"},
+    {testFutexUnmapped32, "Test 32-bit futex unmapped-address answers (D2)"},
+    {testFutexSharedUnmapped32, "Test 32-bit shared futex unmapped-address answers (D2)"},
+    {testModifyLdtInvalid32, "Test 32-bit modify_ldt argument answers (D8/FD-09)"},
+    {testModifyLdtIndex32, "Test 32-bit modify_ldt invalid index answers (D8/FD-09)"},
+    {testFpeDelivery32, "Test 32-bit FPE delivery slots and codes (D7)"},
     {testGetrandom32Syscall, "Test 32-bit getrandom entropy and validation"},
     {testReadv32Syscall, "Test 32-bit readv dispatch and notification contract (FD-92)"},
     {testFutexWaitv32Syscall, "Test 32-bit futex_waitv syscall"},
@@ -1014,12 +1043,14 @@ const TestEntry TEST_ENTRIES[] = {
     {testEmptyPathProcessApi, "Test empty path answers -ENOENT through the KProcess API; AT_EMPTY_PATH fd forms keep working"},
     {testStatxAtEmptyPathProcessApi, "Test KProcess::statx with AT_EMPTY_PATH and a non-empty path stats the named path"},
     {testNullPath32Syscalls, "Test 32-bit null path answers -EFAULT through the string reader path; utimensat null path answers the raw per-shape matrix (FD-136)"},
+    {testTimingWaits32, "Test 32-bit timing and wait contract answers against the raw-syscall host grid"},
     {testMemfdNullName32Syscalls, "Test 32-bit memfd_create null name answers -EFAULT; empty name still creates the file; names past 249 chars answer -EINVAL (FD-138)"},
     {testChmodAccessHardLink, "Test chmod, inotify IN_ACCESS and hard link semantics"},
     {testWriteFamilyWrongMode, "Test write family wrong-mode answers (FD-93)"},
     {testCloseWriteDeferral, "Test inotify close events defer to the last munmap while a mapping is open"},
     {testPwritev32Dispatch, "Test 32-bit pwritev and pwritev2 dispatch"},
     {testPreadv32Dispatch, "Test 32-bit preadv and preadv2 dispatch"},
+    {testUnfiledGaps32, "Test vectored-read lengths, positioned reads on pipes, 32-bit linkat (FD-193/FD-194/FD-195)"},
     {testWritevPartialError, "Test 32-bit writev partial-error return shape (FD-96)"},
     {testTempFileLinkPattern, "Test temp-file-to-lock-name link pattern on a shared backing path"},
     {testInotifyPollNotifyStress, "Test inotify poll/notify lock composition under stress"},
@@ -1028,6 +1059,7 @@ const TestEntry TEST_ENTRIES[] = {
     {testCopyFileRange64Syscall, "Test x64 copy_file_range syscall"},
     {testProcessVm64Syscalls, "Test x64 process_vm_readv/writev syscalls"},
     {testPreadv64Syscalls, "Test x64 preadv and preadv2 syscalls"},
+    {testUnfiledGaps64, "Test x64 vectored-read lengths and positioned reads on pipes (FD-193/FD-194)"},
     {testCloseWriteDeferral64, "Test x64 inotify close events defer to the last munmap while a mapping is open"},
     {testMmap64FileReadFailure, "Test x64 file mmap leaves nothing mapped when the content read fails"},
     {testWriteFamily64Syscalls, "Test x64 write family wrong-mode syscalls (FD-93)"},

@@ -1,0 +1,78 @@
+--- a/dlls/hidclass.sys/hid.h
++++ b/dlls/hidclass.sys/hid.h
+@@ -64,6 +64,7 @@
+ 
+             KSPIN_LOCK queues_lock;
+             struct list queues;
++            struct hid_report *last_report;
+ 
+             UNICODE_STRING link_name;
+ 
+@@ -129,4 +130,5 @@
+ NTSTATUS WINAPI pdo_read(DEVICE_OBJECT *device, IRP *irp) DECLSPEC_HIDDEN;
+ NTSTATUS WINAPI pdo_write(DEVICE_OBJECT *device, IRP *irp) DECLSPEC_HIDDEN;
+ NTSTATUS WINAPI pdo_create(DEVICE_OBJECT *device, IRP *irp) DECLSPEC_HIDDEN;
++void hid_device_clear_last_report(DEVICE_OBJECT *device) DECLSPEC_HIDDEN;
+ NTSTATUS WINAPI pdo_close(DEVICE_OBJECT *device, IRP *irp) DECLSPEC_HIDDEN;
+--- a/dlls/hidclass.sys/device.c
++++ b/dlls/hidclass.sys/device.c
+@@ -267,6 +267,22 @@
+     InitializeListHead( &completed );
+ 
+     KeAcquireSpinLock( &ext->u.pdo.queues_lock, &irql );
++    /* FD-195: remember the most recent report of a controller collection,
++     * so a queue opened later can be seeded with the current state in
++     * pdo_create. Controller consumers are state readers (XInput /
++     * DirectInput): on Windows the current state is queryable from the
++     * driver stack at any time, while a report delivered before the
++     * consumer opened the device is otherwise lost to it. */
++    if (desc->UsagePage == HID_USAGE_PAGE_GENERIC &&
++        (desc->Usage == HID_USAGE_GENERIC_GAMEPAD ||
++         desc->Usage == HID_USAGE_GENERIC_JOYSTICK ||
++         desc->Usage == HID_USAGE_GENERIC_MULTI_AXIS_CONTROLLER))
++    {
++        hid_report_incref( last_report );
++        hid_report_decref( ext->u.pdo.last_report );
++        ext->u.pdo.last_report = last_report;
++    }
++
+     LIST_FOR_EACH_ENTRY( queue, &ext->u.pdo.queues, struct hid_queue, entry )
+     {
+         if (!polled) hid_queue_push_report( queue, last_report );
+@@ -743,6 +759,15 @@
+     return status;
+ }
+ 
++/* FD-195: drop the retained last report (caller holds the PDO lock). */
++void hid_device_clear_last_report(DEVICE_OBJECT *device)
++{
++    BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
++
++    hid_report_decref( ext->u.pdo.last_report );
++    ext->u.pdo.last_report = NULL;
++}
++
+ NTSTATUS WINAPI pdo_create(DEVICE_OBJECT *device, IRP *irp)
+ {
+     BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
+@@ -768,6 +793,10 @@
+     {
+         KeAcquireSpinLock( &ext->u.pdo.queues_lock, &irql );
+         list_add_tail( &ext->u.pdo.queues, &queue->entry );
++        /* FD-195: seed the new queue with the most recent report, so a
++         * state reader opening the device after the last report still
++         * observes the current controller state. */
++        if (ext->u.pdo.last_report) hid_queue_push_report( queue, ext->u.pdo.last_report );
+         KeReleaseSpinLock( &ext->u.pdo.queues_lock, irql );
+ 
+         irp->Tail.Overlay.OriginalFileObject->FsContext = queue;
+--- a/dlls/hidclass.sys/pnp.c
++++ b/dlls/hidclass.sys/pnp.c
+@@ -502,6 +502,7 @@
+             KeAcquireSpinLock( &ext->u.pdo.queues_lock, &irql );
+             LIST_FOR_EACH_ENTRY_SAFE( queue, next, &ext->u.pdo.queues, struct hid_queue, entry )
+                 hid_queue_destroy( queue );
++            hid_device_clear_last_report( device );
+             KeReleaseSpinLock( &ext->u.pdo.queues_lock, irql );
+ 
+             HidP_FreeCollectionDescription(&ext->u.pdo.device_desc);

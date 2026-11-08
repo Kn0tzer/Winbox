@@ -144,6 +144,20 @@ enum Jit64Kind : U8 {
                         // sub = 0 (INC) / 1 (DEC). r/m read-modify-write;
                         // OF/SF/ZF/AF/PF from the result like ADD/SUB of 1,
                         // CF preserved. Register and memory forms.
+    J64_SSE_LOGIC128 = 39, // 0F 54/55/56/57 ANDPS/ANDNPS/ORPS/XORPS
+                        // and the 66-prefixed PD forms: sub = the 0F
+                        // opcode byte. dst OP src per qword (ANDN is
+                        // ~dst & src, the interpreter's order).
+                        // size = 16. No flags touched.
+    J64_SSE_MOVSCALAR = 40, // MOVSD (F2 0F 10/11), MOVSS (F3 0F 10/11),
+                        // MOVQ load (F3 0F 7E): sub 0 = MOVSD load,
+                        // 1 = MOVSD store, 2 = MOVSS load, 3 = MOVSS
+                        // store, 4 = MOVQ load. Register forms preserve
+                        // the destination's upper bits except the MOVQ
+                        // load (high qword always zeroed); memory loads
+                        // zero everything above the moved scalar.
+                        // size = 8 (MOVSD/MOVQ) or 4 (MOVSS).
+                        // No flags touched.
     J64_UNKNOWN = 255
 };
 

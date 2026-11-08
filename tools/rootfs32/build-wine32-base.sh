@@ -288,6 +288,28 @@ for dll in "${!FD169_SHA32[@]}"; do
   cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-169 CRT DLLs substituted: 9 sha256 verified"
+echo "=== FD-169 remainder substitution (i386) ==="
+# msvcp140_2.dll and msvcp140_atomic_wait.dll are NOT the deb's
+# copies either: they are the committed in-tree rebuilds
+# (tools/rootfs32/wine10-fd169r-i386/, produced by
+# build-wine10-fd169r.sh from the pinned wine-10.0 source plus the
+# FD-169 remainder patch), carrying genuine implementations for the
+# C++17 special-math exports and the atomic-wait functions the stock
+# build only stubs (defect register FD-169). Fail-closed on the
+# pins, like the FD-169 substitution above.
+FD169R_DIR="$HERE/wine10-fd169r-i386"
+declare -A FD169R_SHA32=(
+  [msvcp140_2.dll]=2c8c70331d04ea0a4f3826d7719e5e77f6cd65c174b6c2e6017a729fa3e082ad
+  [msvcp140_atomic_wait.dll]=c12bc9e47019340c1777bf4f5a4e0ea1b1d1906342209db84128d190fd3a1348
+)
+for dll in "${!FD169R_SHA32[@]}"; do
+  src="$FD169R_DIR/$dll"
+  [ -f "$src" ] || { echo "build-wine32-base: FD-169 remainder build missing: $src (build it with tools/rootfs32/build-wine10-fd169r.sh)" >&2; exit 2; }
+  got="$(sha256sum "$src" | cut -d' ' -f1)"
+  [ "$got" = "${FD169R_SHA32[$dll]}" ] || { echo "build-wine32-base: FD-169 remainder $dll hash mismatch: $got != ${FD169R_SHA32[$dll]}" >&2; exit 1; }
+  cp "$src" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-169 remainder DLLs substituted: 2 sha256 verified"
 echo "=== FD-171 i386 PE substitution ==="
 # 19 PE DLLs rebuilt from the pinned wine-10.0 source with the FD-171
 # contract backports (tools/rootfs32/wine10-fd171-i386/, produced by
@@ -310,7 +332,6 @@ FD171_SHA32=(
     "ntdll.dll 5f2f866d8d0bf3529965f49f0362ed46ce9366677423417016b24391da28581e"
     "pdh.dll 5d79d70f7a2942d159090ea0ecb8407da5370d144adcc19f025af2b62876a68c"
     "prntvpt.dll 36e998791374b6de07747d91ffe93ea3167e0c407194aca9c0475c9c3ba19133"
-    "setupapi.dll 5fcef9aa9344772bdb1ee7c71517f3abfc456850aa4c9e64965114e02971d29f"
     "sspicli.dll 0c4b8cb4234d468d8b1cb742b6ef4fc7a9e9b61634709aadc8561431d8e8a719"
     "vcomp.dll 739020d398a48f14b8c290e036e2c0da9201a623756453c9feeccaf1f937d9b4"
     "vcomp100.dll 5e62b5281b786cad54ea07a671d2b2630f1e4ed61e03f51f1b128882386f5036"
@@ -327,6 +348,29 @@ for entry in "${FD171_SHA32[@]}"; do
     cp "$FD171_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
 done
 echo "FD-171 i386 DLLs substituted: sha256 verified"
+echo "=== FD-195 setupapi + hidclass substitution (i386) ==="
+# setupapi.dll is also in the FD-171 set; the two lanes' changes are
+# in disjoint source files of the same DLL (FD-171: the
+# config-manager family; FD-195: SetupInstallFromInfSectionW's
+# COM initialization in install.c), so the FD-195 build
+# (tools/rootfs32/wine10-fd195-i386/, produced by
+# build-wine10-fd195.sh from the pinned wine-10.0 source with BOTH
+# patches) carries both lanes' functions and is substituted last
+# for setupapi.dll -- the same discipline as the combined
+# FD-167+FD-171 step below. Fail-closed on the pin.
+FD195_DIR="$HERE/wine10-fd195-i386"
+FD195_SHA32=(
+    "setupapi.dll 14724d59d4d2ea77cb4833c2661df053a37e2bc94585c7c83fd054ea8b00e54e"
+    "hidclass.sys 608e9c23a0f19f9780516a710ca29a6919e659d760494d4b29ee050c4dd94454"
+)
+for entry in "${FD195_SHA32[@]}"; do
+    dll="${entry%% *}"; want="${entry##* }"
+    [ -f "$FD195_DIR/$dll" ] || { echo "build-wine32-base: FD-195 DLL missing: $FD195_DIR/$dll (build it with tools/rootfs32/build-wine10-fd195.sh)" >&2; exit 2; }
+    got="$(sha256sum "$FD195_DIR/$dll" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "build-wine32-base: FD-195 $dll hash mismatch: $got != $want" >&2; exit 1; }
+    cp "$FD195_DIR/$dll" "$OUT/opt/wine-stable/lib/wine/i386-windows/$dll"
+done
+echo "FD-195 i386 DLLs substituted: sha256 verified"
 echo "=== FD-167+FD-171 combined i386 PE substitution ==="
 # propsys.dll and mf.dll are touched by both lanes with disjoint
 # functions (FD-167 VariantCompare / MFCreateDeviceSource, FD-171

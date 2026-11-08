@@ -428,6 +428,15 @@ private:
     std::unique_ptr<BBlock[]> blockTable;      // lazily allocated
     U64 blockNegCache[1024] = {};              // rips known not to block
     U64 blockStatsExec = 0, blockStatsInsn = 0, blockStatsBuilt = 0;
+    // FD-193: BLOCKSTATS registry membership (definitions in cpu64.cpp,
+    // with tryBlockStep). The exit reporter reads process-wide folded
+    // totals plus live CPUs' counters; it never holds a lone CPU
+    // pointer — that pointer dangled once the CPU was destroyed, which
+    // is how the printout became garbage.
+    bool blockStatsRegistered = false;
+    static void blockStatsRegister(CPU64* cpu);
+    static void blockStatsUnregister(CPU64* cpu);
+    static void blockStatsReport();
 
     bool decodeModRMRecipe(U64 modrmAddr, const Prefixes& p, U32 trailingImmBytes, BRecipe& out);
     ModRM resolveRecipe(const BRecipe& r);

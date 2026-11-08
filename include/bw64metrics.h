@@ -53,7 +53,9 @@ typedef struct Bw64VkFrame {
     double bufMs;           /* subset of submit: buffer uploads */
     double imgMs;           /* subset of submit: image uploads */
     double guestMs;         /* wall - submit - trapOther - present */
-    uint64_t trapCalls;
+    uint64_t trapCalls;     /* the bridge's own per-frame count; the registry
+                               counts traps per call through
+                               bw64_metrics_vk_trap and does not read this */
     uint64_t hopChunks;
     uint64_t hopBytes;
     uint32_t breakdown;     /* 1 = the per-stage fields above are measured */
@@ -68,6 +70,7 @@ int bw64_metrics_enabled(void);
 double bw64_metrics_now_ms(void);
 void bw64_metrics_add_stage(int stage, double millis, uint64_t bytes);
 void bw64_metrics_vk_frame(const Bw64VkFrame* frame);
+void bw64_metrics_vk_trap(int arch);
 void bw64_metrics_set_enabled(int enabled);
 void bw64_metrics_present_sdl(void);
 void bw64_metrics_maybe_emit(void);

@@ -1,0 +1,29 @@
+lane tip: c156cdae2861f83387c9275462e74839c053896f (lane-unfiled4)
+definition file already present at tip; submitting tip as-is
+remote: . Processing 1 references        
+remote: Processed 1 references in total        
+pushed to gitea ref checks/current
+source mount prepared at /home/ubuntu/winbox-project/checks/src
+pipeline created: #32 (commit c156cdae2861f83387c9275462e74839c053896f)
+pipeline #32 finished with status: failure
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+TypeError: 'NoneType' object is not iterable
+step logs: /home/ubuntu/winbox-project/checks/evidence/pipeline-32/queue-logs/
+output files list: /home/ubuntu/winbox-project/checks/evidence/pipeline-32/minio-objects.txt
+pipeline exit status: failure

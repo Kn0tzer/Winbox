@@ -1,0 +1,14 @@
+== regenerated file hashes vs committed blobs:
+IDENTICAL source/vulkan/vk_host.cpp 30339455c348a90a68f485330dad266176f90c95ff9167328e1ee80f7a4646cf
+IDENTICAL source/vulkan/vk_host.h 1acbcb800e0614290bf54d9e0875d92788a2e12aba29712941018f5ba8d89688
+IDENTICAL source/vulkan/vk_host_marshal.cpp a30d7c6076a0181ed4c9425a7b96553c181ae529c02dc4bf0bf266e8c2b0a196
+IDENTICAL source/vulkan/vk_host_marshal.h 52108a858d0f69ba5695e1e097247010797c458330e5685de90bfd2e7add7552
+IDENTICAL tools/vulkan/vk.c c30186605273f85db8935eef36826439e2fa85386182e69290927accfb0cd242
+IDENTICAL tools/vulkan/vkdef.h 731016a4ba39ed98e749be9651b15a93ea58bfe635ef4408f82db49b5a598f3f
+== second run (idempotence):
+java exit: 0
+(empty above = still identical)
+== incomplete prints in fixed run log:
+0
+== syntax check: g++ -fsyntax-only -std=c++20 -DBOXEDWINE_VULKAN (project flags) source/vulkan/vk_host.cpp
+syntax exit: 0

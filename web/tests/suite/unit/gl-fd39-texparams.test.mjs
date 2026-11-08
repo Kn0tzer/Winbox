@@ -7,7 +7,8 @@ import { createValidationDevice } from '../fixtures/webgpu-validation-device.mjs
 // reject with INVALID_ENUM (LOD bias, GENERATE_MIPMAP, depth-texture
 // mode, texture swizzle) are now validated and stored, GENERATE_MIPMAP
 // actually regenerates the mip chain when the base level is redefined,
-// and CLAMP_TO_BORDER reaches the sampler as clamp-to-border. A valid
+// and CLAMP_TO_BORDER is accepted and stored (the sampler decodes
+// it to clamp-to-edge: WebGPU has no border addressing). A valid
 // set must leave the error slot clean: wined3d polls it while creating
 // its device, which is why these could not simply be refused. Every
 // behavioral check below fails on the pre-FD-39 backend.
@@ -57,11 +58,17 @@ test('FD-39: WebGPU backend stores the desktop texparam set and honors GENERATE_
     gl.texParameterf(0x0de1, 0x8501, NaN);
     assert.equal(gl.getError(), 0x0501, 'NaN LOD_BIAS is INVALID_VALUE');
 
-    // CLAMP_TO_BORDER is accepted and reaches the sampler.
+    // CLAMP_TO_BORDER is accepted and stored; WebGPU has no border
+    // addressing (GPUAddressMode is clamp-to-edge / repeat /
+    // mirror-repeat only), so the sampler decodes it to clamp-to-edge
+    // and the raw mode stays in the params map. The FD-39 lane asserted
+    // 'clamp-to-border' here -- a value a real GPUDevice rejects; the
+    // recording device this test drives cannot see the difference.
     gl.texParameteri(0x0de1, 0x2802, 0x812d); // WRAP_S = CLAMP_TO_BORDER
     assert.equal(gl.getError(), 0, 'CLAMP_TO_BORDER set must not raise');
+    assert.equal(tex.params.get(0x2802), 0x812d, 'raw wrap mode retained in the params map');
     const sampler = gl._samplerFor(tex);
-    assert.equal(sampler.addressModeU, 'clamp-to-border');
+    assert.equal(sampler.addressModeU, 'clamp-to-edge');
   } finally {
     gpu.restore();
   }

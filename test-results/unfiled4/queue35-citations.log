@@ -1,0 +1,39 @@
+rows with citations: 352
+  MATCH: 199
+  MATCH-INHERITED: 14
+  DRIFT: 33
+  UNCHECKABLE: 99
+  EXEMPT: 7
+  DRIFT reg:38 cites=[('source/vulkan/vk64bridge.cpp', 5606, 5606)] kind=func construct='v2VertexFormatBytes' hits=[5618, 6919] nearest=5618 
+  DRIFT reg:40 cites=[('source/vulkan/vk64bridge.cpp', 5694, 5694)] kind=token construct='v2-chunk-handler-threw' hits=[5706] nearest=5706 
+  DRIFT reg:41 cites=[('source/vulkan/vk64bridge.cpp', 6599, 6599)] kind=token construct='descriptor-wire-kind' hits=[6611] nearest=6611 
+  DRIFT reg:43 cites=[('source/vulkan/vk64bridge.cpp', 7218, 7218)] kind=token construct='unknown-cmd-kind' hits=[7230] nearest=7230 
+  DRIFT reg:44 cites=[('source/vulkan/vk64bridge.cpp', 7218, 7218)] kind=token construct='unknown-cmd-kind' hits=[7230] nearest=7230 
+  DRIFT reg:45 cites=[('source/vulkan/vk64bridge.cpp', 7382, 7382)] kind=marker construct='* geometryShader/tessellationShader are false (WebGPU has neither stage), so' hits=[7394] nearest=7394 
+  DRIFT reg:46 cites=[('source/vulkan/vk64bridge.cpp', 7365, 7365), ('source/vulkan/vk64bridge.cpp', 8215, 8215), ('source/vulkan/vk64bridge.cpp', 12206, 12206)] kind=func construct='fillCoreFeatures' hits=[7377, 8243, 8250, 12256, 12314] nearest=7377 
+  DRIFT reg:47 cites=[('source/vulkan/vk64bridge.cpp', 7416, 7416)] kind=marker construct='(zero), so every required feature read "unsupported" even with the extension' hits=[7428] nearest=7428 
+  DRIFT reg:48 cites=[('source/vulkan/vk64bridge.cpp', 7629, 7629)] kind=marker construct='that uses them fails at pipeline creation in the page tier (noteUnsupported).' hits=[7641] nearest=7641 
+  DRIFT reg:52 cites=[('source/vulkan/vk64bridge.cpp', 8101, 8101)] kind=func construct='logAskedFor' hits=[8018, 8109, 12159] nearest=8109 
+  DRIFT reg:53 cites=[('source/vulkan/vk64bridge.cpp', 8096, 8096)] kind=marker construct="(name*) — the guest shim's benign stub for a vk* we do not implement." hits=[8104] nearest=8104 
+  DRIFT reg:54 cites=[('source/vulkan/vk64bridge.cpp', 8010, 8010)] kind=func construct='logAskedFor' hits=[8018, 8109, 12159] nearest=8018 
+  DRIFT reg:55 cites=[('source/vulkan/vk64bridge.cpp', 8102, 8102)] kind=func construct='vk64Unsupported' hits=[424, 445, 505, 508, 511, 2453, 2457, 2479] nearest=8110 
+  DRIFT reg:56 cites=[('source/vulkan/vk64bridge.cpp', 10361, 10361)] kind=marker construct='Game-breaking stub implementations (immediate CPU emulation)' hits=[10369] nearest=10369 
+  DRIFT reg:58 cites=[('source/vulkan/vk64bridge.cpp', 8102, 8102)] kind=func construct='vk64Unsupported' hits=[424, 445, 505, 508, 511, 2453, 2457, 2479] nearest=8110 
+  DRIFT reg:60 cites=[('source/vulkan/vk64bridge.cpp', 11810, 11810)] kind=marker construct='bridge never had them, so DXVK saw every chained feature as unsupported.' hits=[11818] nearest=11818 
+  DRIFT reg:65 cites=[('source/vulkan/vk64bridge.cpp', 12147, 12147)] kind=func construct='logAskedFor' hits=[8018, 8109, 12159] nearest=12159 
+  DRIFT reg:68 cites=[('source/vulkan/vk64bridge.cpp', 12034, 12034)] kind=func construct='vk64Unsupported' hits=[424, 445, 505, 508, 511, 2453, 2457, 2479] nearest=12046 
+  DRIFT reg:72 cites=[('source/vulkan/vk64bridge.cpp', 7849, 7849)] kind=marker construct='The stream-out limits stay zero and the transformFeedback' hits=[7861] nearest=7861 
+  DRIFT reg:231 cites=[('source/vulkan/vk64bridge.cpp', 8867, 8867), ('source/vulkan/vk64bridge.cpp', 12828, 12828)] kind=marker construct='No transfer-dst rejection at creation time for D24S8/D32S8. These' hits=[8875, 12836] nearest=8875 
+  DRIFT reg:331 cites=[('source/vulkan/vk64bridge.cpp', 5561, 5561)] kind=token construct='texel-buffer-view-format' hits=[5573] nearest=5573 
+  DRIFT reg:341 cites=[('source/vulkan/vk64bridge.cpp', 8327, 8327), ('source/vulkan/vk64bridge.cpp', 12433, 12433)] kind=token construct='image-format' hits=[8335, 8351, 8871, 12441, 12483, 12832] nearest=8335 
+  DRIFT reg:343 cites=[('source/vulkan/vk64bridge.cpp', 7665, 7665)] kind=marker construct='SM 6.0 gate half (vkd3d device.c shader-model init reads this struct' hits=[7677] nearest=7677 
+  DRIFT reg:344 cites=[('source/vulkan/vk64bridge.cpp', 7365, 7365), ('web/vk-protocol.mjs', 391, 391)] kind=func construct='fillCoreFeatures' hits=[7377, 8243, 8250, 12256, 12314] nearest=7377 
+  DRIFT reg:376 cites=[('source/vulkan/vk64bridge.cpp', 11593, 11593)] kind=func construct='vk32ClearTexel' hits=[11605, 13637] nearest=11605 
+  DRIFT reg:390 cites=[('source/vulkan/vk64bridge.cpp', 5674, 5674)] kind=func construct='hopV2LastToPage' hits=[5686, 6180] nearest=5686 
+  DRIFT reg:391 cites=[('source/vulkan/vk64bridge.cpp', 6240, 6240)] kind=func construct='serializeSubmitV2' hits=[6252, 11237, 11348, 14396] nearest=6252 
+  DRIFT reg:392 cites=[('source/vulkan/vk64bridge.cpp', 6245, 6245)] kind=marker construct='double vkprofBufT = 0, vkprofImgT = 0, vkprofQueueT = 0;' hits=[6257] nearest=6257 
+  DRIFT reg:393 cites=[('source/vulkan/vk64bridge.cpp', 11217, 11217), ('source/vulkan/vk64bridge.cpp', 11309, 11309)] kind=marker construct='vkQueueSubmit2 fallback: found non-empty CB' hits=[11229, 11340] nearest=11229 
+  DRIFT reg:402 cites=[('source/vulkan/vk64bridge.cpp', 10240, 10240)] kind=marker construct='U64 pInfo2 = args.a[1];' hits=[10248, 10318, 10539, 10605, 10745] nearest=10248 
+  DRIFT reg:403 cites=[('source/vulkan/vk64bridge.cpp', 13876, 13876)] kind=marker construct='case VK64_fn_vkCmdCopyImageToBuffer:' hits=[10211, 13888] nearest=13888 
+  DRIFT reg:404 cites=[('source/vulkan/vk64bridge.cpp', 6131, 6131)] kind=marker construct='pend.pitch = rb.rowLen ? rb.rowLen * 4 : rb.w * 4;' hits=[6143] nearest=6143 
+  DRIFT reg:405 cites=[('source/vulkan/vk64bridge.cpp', 6097, 6097)] kind=marker construct="Fallback for copy-only textures: if the source image's data" hits=[6109] nearest=6109 

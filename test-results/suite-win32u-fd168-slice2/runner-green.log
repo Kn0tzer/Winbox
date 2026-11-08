@@ -1,0 +1,7 @@
+Browser tests (Playwright, needs box):
+log: win32u-fd168s2: RESULT 0
+  PASS win32u-fd168-slice2 (141418ms)
+
+==================================================
+SUITE RESULT: 1 passed, 0 failed
+==================================================

@@ -153,6 +153,7 @@ int main(int argc, char** argv) {
     f.trapCalls = 31;
     f.hopChunks = 12;
     f.hopBytes = 81234;
+    for (int i = 0; i < 31; i++) bw64_metrics_vk_trap(0);
     bw64_metrics_vk_frame(&f);
 
     int n = bw64_metrics_format_json(json, sizeof(json));
@@ -245,6 +246,7 @@ int main(int argc, char** argv) {
         bw64_metrics_add_stage(BW64_STAGE_AUDIO, 0.5, 4096);
         bw64_metrics_add_stage(BW64_STAGE_AUDIO, 0.5, 4096);
         bw64_metrics_add_stage(BW64_STAGE_GL, 2.25, 0);
+        for (int i = 0; i < 31; i++) bw64_metrics_vk_trap(0);
         bw64_metrics_vk_frame(&f);
         usleep(600000);                       // a genuine >=500 ms window
         bw64_metrics_add_stage(BW64_STAGE_SYSCALL, 0.25, 0);
@@ -272,6 +274,54 @@ int main(int argc, char** argv) {
                 std::printf("PASS wrote fixture to %s\n", fixtureOut);
             }
         }
+    }
+
+    // FD-196: a session whose only instrumented traffic is Vulkan
+    // traps -- a guest driving its device without ever presenting
+    // -- must still emit, and the snapshot must carry the trap
+    // count with zero frames. Before the per-trap hook existed,
+    // the Vulkan counters moved only at present completion, so
+    // these windows were discarded as idle and nothing emitted.
+    {
+        usleep(600000);
+        bw64_metrics_maybe_emit();
+        g_lastLog.clear();
+        int emittedLines = 0;
+        std::string firstLine;
+        for (int i = 0; i < 6; i++) {
+            g_lastLog.clear();
+            bw64_metrics_vk_trap(0);
+            bw64_metrics_vk_trap(0);
+            bw64_metrics_vk_trap(0);
+            usleep(600000);
+            bw64_metrics_maybe_emit();
+            if (!g_lastLog.empty()) {
+                emittedLines++;
+                if (firstLine.empty()) firstLine = g_lastLog;
+            }
+        }
+        expect(emittedLines >= 3,
+               "FD-196: Vulkan-trap-only activity emits snapshots across successive intervals");
+        expect(firstLine.find("\"frames\":0,\"wallMs\":0.00") != std::string::npos,
+               "FD-196: emitted snapshot reports zero frames for the frameless session");
+        expect(firstLine.find("\"trapCalls\":3,") != std::string::npos,
+               "FD-196: emitted snapshot carries the window's trap count");
+        // The 32-bit path's counter is gate-only (never printed):
+        // vk32-trap-only windows must emit too.
+        usleep(600000);
+        bw64_metrics_maybe_emit();
+        g_lastLog.clear();
+        int emitted32 = 0;
+        for (int i = 0; i < 4; i++) {
+            g_lastLog.clear();
+            bw64_metrics_vk_trap(1);
+            bw64_metrics_vk_trap(1);
+            usleep(600000);
+            bw64_metrics_maybe_emit();
+            if (!g_lastLog.empty()) emitted32++;
+        }
+        expect(emitted32 >= 2,
+               "FD-196: vk32-trap-only activity emits snapshots across successive intervals");
     }
 
     std::printf("%s\n", failures ? "SELFTEST FAILED" : "SELFTEST PASSED");

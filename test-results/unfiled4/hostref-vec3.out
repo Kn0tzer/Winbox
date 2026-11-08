@@ -1,0 +1,3 @@
+preadv {8, 2^63} (top-bit seg2)                      -> -1 errno=22 (Invalid argument)
+preadv {2^63, 8} (top-bit seg1)                      -> -1 errno=22 (Invalid argument)
+preadv {8, SSIZE_MAX} (sum wraps)                    -> -1 errno=14 (Bad address)

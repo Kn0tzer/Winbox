@@ -51,11 +51,16 @@ PATCHES=(
     wine8-win32u-desktop-wait.patch
     wine8-fd167-contracts.patch
     wine8-win32u-fd168-backports.patch
+    wine8-win32u-fd168-slice2.patch
+    wine8-win32u-fd168-slice3.patch
     wine8-msvcrt-fd169-crt.patch
+    wine8-fd169r-crt2.patch
     wine8-fd170-contracts.patch
     wine8-fd171-contracts.patch
+    wine8-fd195-setupapi-coinstall.patch
+    wine8-fd195-hidclass-last-report.patch
 )
-DLLS=(user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils propsys ntdll cfgmgr32 pdh combase mfplat cryptext d2d1 hid mf mscms prntvpt sspicli vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140 windows.networking wintypes wofutil)
+DLLS=(msvcp140_2 msvcp140_atomic_wait user32 kernelbase kernel32 iphlpapi win32u msvcp140 setupapi ucrtbase msvcrt msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 bluetoothapis winusb netutils propsys ntdll cfgmgr32 pdh combase mfplat cryptext d2d1 hid mf mscms prntvpt sspicli vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140 windows.networking wintypes wofutil)
 
 for tool in git make flex bison x86_64-w64-mingw32-gcc x86_64-linux-gnu-gcc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "build-wine8-backports: required host tool '$tool' not found" >&2; exit 1; }
@@ -110,12 +115,15 @@ targets=(); for d in "${DLLS[@]}"; do targets+=("dlls/$d/$d.dll"); done
 # must exist before combase links.
 make -j"$(nproc)" dlls/kernelbase/kernelbase.dll dlls/kernel32/kernel32.dll dlls/ntdll/ntdll.dll > make.log 2>&1
 make -j"$(nproc)" "${targets[@]}" >> make.log 2>&1
+make -j"$(nproc)" dlls/hidclass.sys/hidclass.sys >> make.log 2>&1
 
 mkdir -p "$OUT"
 for d in "${DLLS[@]}"; do
     cp "$WORK/x64-build/dlls/$d/$d.dll" "$OUT/$d.dll"
     echo "--- built $d.dll ---"
 done
+cp "$WORK/x64-build/dlls/hidclass.sys/hidclass.sys" "$OUT/hidclass.sys"
+echo "--- built hidclass.sys ---"
 
 # The mingw cross tree links these as plain PE files, but they ship as
 # Wine builtins: a full Wine build has winebuild stamp the 32-byte
@@ -142,6 +150,20 @@ for name in sys.argv[2:]:
         f.seek(64)
         f.write(sig)
     print("--- stamped Wine builtin signature: " + name + ".dll ---")
+PYEOF
+python3 - "$OUT" <<'PYEOF'
+import struct, sys
+out = sys.argv[1]
+sig = b"Wine builtin DLL" + b"\0" * 16
+path = out + "/hidclass.sys"
+with open(path, "r+b") as f:
+    head = f.read(64)
+    assert head[:2] == b"MZ", path
+    (e_lfanew,) = struct.unpack("<I", head[0x3C:0x40])
+    assert e_lfanew >= 64 + len(sig), (path, e_lfanew)
+    f.seek(64)
+    f.write(sig)
+print("--- stamped Wine builtin signature: hidclass.sys ---")
 PYEOF
 # 3. x86_64-linux-gnu cross tree (ELF unix modules only): build the
 # unix half of win32u from the same patched source tree as the PE half
@@ -174,4 +196,4 @@ cp "$WORK/x64linux-build/dlls/win32u/win32u.so" "$OUT/win32u.so"
 echo "--- built win32u.so (unix half) ---"
 
 echo "=== sha256 (re-pin these in check_runtime_completeness.py + README.md) ==="
-sha256sum "$OUT"/*.dll "$OUT"/win32u.so
+sha256sum "$OUT"/*.dll "$OUT"/hidclass.sys "$OUT"/win32u.so

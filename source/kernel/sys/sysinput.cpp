@@ -57,7 +57,7 @@ void sysAddInput(const std::shared_ptr<FsNode>& sysNode, const std::shared_ptr<F
 	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/phys"), K__S_IREAD, k_mdev(0, 0), padNode, B("boxedwine/input0"));
 	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/uniq"), K__S_IREAD, k_mdev(0, 0), padNode, B(""));
 	Fs::addDynamicLinkFile(B("/sys/devices/virtual/input/input5/subsystem"), k_mdev(0, 0), padNode, false, B("../../../../class/input"));
-	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/uevent"), K__S_IREAD, k_mdev(0, 0), padNode, B("PRODUCT=3/45e/28e/110\nNAME=\"BoxedWine gamepad\"\nPHYS=\"boxedwine/input0\"\nEV=b\nKEY=7fff0000 0 0 0 0 0 0 0 0\nABS=3003f\nMSC=0\nLED=0"));
+	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/uevent"), K__S_IREAD, k_mdev(0, 0), padNode, B("PRODUCT=3/45e/28e/110\nNAME=\"BoxedWine gamepad\"\nPHYS=\"boxedwine/input0\"\nEV=b\nKEY=7fff0000 0 0 0 0 0 0 0 0\nABS=3003f\nMSC=0\nLED=0\n"));
 
 	std::shared_ptr<FsNode> idNode = padNode->getChildByName(B("id"));
 	if (!idNode) {
@@ -90,7 +90,7 @@ void sysAddInput(const std::shared_ptr<FsNode>& sysNode, const std::shared_ptr<F
 		eventNode = Fs::addFileNode(B("/sys/devices/virtual/input/input5/event5"), B(""), B(""), true, padNode);
 	}
 	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/event5/dev"), K__S_IREAD, k_mdev(0, 0), eventNode, B("13:69"));
-	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/event5/uevent"), K__S_IREAD, k_mdev(0, 0), eventNode, B("MAJOR=13\nMINOR=69\nDEVNAME=input/event5"));
+	Fs::addVirtualFile(B("/sys/devices/virtual/input/input5/event5/uevent"), K__S_IREAD, k_mdev(0, 0), eventNode, B("MAJOR=13\nMINOR=69\nDEVNAME=input/event5\n"));
 	Fs::addDynamicLinkFile(B("/sys/devices/virtual/input/input5/event5/device"), k_mdev(0, 0), eventNode, false, B(".."));
 	Fs::addDynamicLinkFile(B("/sys/devices/virtual/input/input5/event5/subsystem"), k_mdev(0, 0), eventNode, false, B("../../../../../class/input"));
 

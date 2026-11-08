@@ -20,7 +20,14 @@ def registry(architecture: str, user: bool = False) -> bytes:
     for service, start in (("RpcSs", "00000003"), ("PlugPlay", "00000002"),
                            ("winebus", "00000003"), ("wineusb", "00000003")):
         lines.extend((f"[System\\\\CurrentControlSet\\\\Services\\\\{service}] 1",
-                      f'"Start"=dword:{start}', ""))
+                      f'"Start"=dword:{start}'))
+        if service == "winebus":
+            # FD-195: the shipped win64 prefix disables winebus's SDL
+            # backend so its udev backend starts; the guard requires it.
+            lines.append('"Enable SDL"=dword:00000000')
+        lines.append("")
+    lines.extend((f"[System\\\\CurrentControlSet\\\\Control] 1",
+                  '"ServicesPipeTimeout"="120000"', ""))
     lines.extend((r"[Software\\Microsoft\\Windows NT\\CurrentVersion] 1",
                   r'"ProductName"="Microsoft Windows 7"', r'"CurrentBuild"="7601"',
                   r'"CSDVersion"="Service Pack 1"', ""))
@@ -210,6 +217,45 @@ class PrefixPackagingTests(unittest.TestCase):
         entries[system_key] = text.encode()
         with self.assertRaisesRegex(ValueError, "missing controller/HID registry key"):
             prefixes._validate_prefix(entries, "win64")
+
+    def test_win64_guard_requires_service_pipe_timeout(self):
+        # FD-194: the raised service start budget is part of the
+        # shipped 64-bit prefix's contract -- without it PlugPlay
+        # cannot finish initialising before services.exe kills it.
+        section = ('[System\\\\CurrentControlSet\\\\Control] 1\n'
+                   '"ServicesPipeTimeout"="120000"\n\n')
+        entries = valid_entries("win64")
+        system_key = prefixes.PREFIX + "system.reg"
+        text = entries[system_key].decode()
+        entries[system_key] = text.replace(section, "").encode()
+        with self.assertRaisesRegex(ValueError, "missing ServicesPipeTimeout"):
+            prefixes._validate_prefix(entries, "win64")
+
+        # The REG_DWORD form does not count: services.exe parses only
+        # the string form and silently ignores a dword.
+        entries = valid_entries("win64")
+        text = entries[system_key].decode()
+        entries[system_key] = text.replace(
+            '"ServicesPipeTimeout"="120000"',
+            '"ServicesPipeTimeout"=dword:0001d4c0').encode()
+        with self.assertRaisesRegex(ValueError, "missing ServicesPipeTimeout"):
+            prefixes._validate_prefix(entries, "win64")
+
+    def test_service_pipe_timeout_fragment_installs_the_raise(self):
+        # FD-194: merging the shipped fragment into a win64 registry
+        # whose Control key has no ServicesPipeTimeout installs the
+        # raise, and the merged registry passes the guard.
+        fragment = (Path(__file__).resolve().parent / "prefix64-reg.txt").read_text()
+        section = ('[System\\\\CurrentControlSet\\\\Control] 1\n'
+                   '"ServicesPipeTimeout"="120000"\n\n')
+        entries = valid_entries("win64")
+        system_key = prefixes.PREFIX + "system.reg"
+        bare = entries[system_key].decode().replace(section, "")
+        with self.assertRaisesRegex(ValueError, "missing ServicesPipeTimeout"):
+            prefixes._validate_prefix({**entries, system_key: bare.encode()}, "win64")
+        merged, added = prefixes.merge_registry_fragment(bare, fragment)
+        assert any(header.startswith("[System") and "Control]" in header for header in added), added
+        prefixes._validate_prefix({**entries, system_key: merged.encode()}, "win64")
 
     def test_pnp_fragment_registers_plugplay_and_bus_devices(self):
         # FD-189: merging the shipped prefix64-reg.txt into a win64

@@ -78,6 +78,7 @@ class CPU { public: KMemory* memory; KThread* thread = nullptr; };
 // Metrics are an optional diagnostic boundary; keep them off under test.
 extern "C" int bw64_metrics_enabled(void) { return 0; }
 extern "C" void bw64_metrics_vk_frame(const Bw64VkFrame*) {}
+extern "C" void bw64_metrics_vk_trap(int) {}
 
 static KMemory64 memory;
 static CPU64 cpu{&memory};

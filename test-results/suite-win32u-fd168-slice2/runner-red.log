@@ -1,0 +1,13 @@
+Browser tests (Playwright, needs box):
+log: win32u-fd168s2: RESULT 13
+  FAIL win32u-fd168-slice2 (156941ms)
+    log: win32u-fd168s2: RESULT 13
+        at Win32uFd168Slice2Test.run (file:///home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/tests/suite/browser/win32u-fd168-slice2.test.mjs:27:13)
+        at async file:///home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/tests/suite/runner.mjs:113:11
+        at async runBrowserFile (file:///home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/tests/suite/runner.mjs:123:5)
+
+==================================================
+SUITE RESULT: 0 passed, 1 failed
+Failed tests:
+  - win32u-fd168-slice2 [browser]
+==================================================

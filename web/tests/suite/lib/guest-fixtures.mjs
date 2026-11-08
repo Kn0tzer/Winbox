@@ -11,8 +11,11 @@ const fixtures = {
   'window-state': ['tools/guest-fixtures/window-state.c', '-luser32'],
   'cursor-clip': ['tools/guest-fixtures/cursor-clip.c', '-luser32'],
   'win32u-fd168': ['tools/guest-fixtures/win32u-fd168.c', '-luser32', '-lgdi32', '-limm32'],
+  'win32u-fd168s2': ['tools/guest-fixtures/win32u-fd168s2.c', '-luser32', '-lgdi32'],
+  'win32u-fd168s3': ['tools/guest-fixtures/win32u-fd168s3.c', '-luser32', '-lgdi32'],
   'win32-tcp': ['tools/guest-fixtures/win32-tcp.c', '-lws2_32'],
   'win32-internet': ['tools/guest-fixtures/win32-internet.c', '-lws2_32'],
+  'win32-dns': ['tools/guest-fixtures/win32-dns.c', '-lws2_32'],
   'player-pointer': ['tools/guest-fixtures/player-pointer.c', '-luser32', '-lgdi32'],
   'win32-clock': ['tools/guest-fixtures/win32-clock.c'],
   'fd171-contracts': ['tools/guest-fixtures/fd171-contracts.c', '-loleaut32', '-lole32', '-ladvapi32'],
@@ -26,6 +29,8 @@ const fixtures = {
   'fd167-setupapi64': ['tools/guest-fixtures/fd167-setupapi64.c'],
   'fd169-crt64': ['tools/guest-fixtures/fd169-crt64.c', '-lm'],
   'fd169-crt32': ['tools/guest-fixtures/fd169-crt32.c', '-lm'],
+  'fd169r-smf64': ['tools/guest-fixtures/fd169r-smf64.c', '-lm'],
+  'fd169r-smf32': ['tools/guest-fixtures/fd169r-smf32.c', '-lm'],
   'fd170-contracts64': ['tools/guest-fixtures/fd170-contracts64.c'],
   // Deterministic 64-bit integer/branch/memory workload with a checksum. The
   // PE64 build (mingw, CRT printf) and the ELF64 build (freestanding, direct
@@ -34,6 +39,7 @@ const fixtures = {
   // checksum in either guest format.
   'jitbench64-pe': ['tools/guest-fixtures/jitbench64.c', '-fno-tree-vectorize'],
   'incprobe64-pe': ['tools/guest-fixtures/incprobe64.c', '-fno-tree-vectorize'],
+  'sseprobe64-pe': ['tools/guest-fixtures/sseprobe64.c', '-fno-tree-vectorize'],
   'jitbench32-pe': ['tools/guest-fixtures/jitbench32.c', '-fno-tree-vectorize'],
   'jitbenchmix-pe': ['tools/guest-fixtures/jitbenchmix.c', '-fno-tree-vectorize'],
   'mshtml-document': ['tools/guest-fixtures/mshtml-document.c', '-lole32', '-loleaut32', '-luuid'],
@@ -50,6 +56,7 @@ elfFixtures['dsptone-stereo'] = ['tools/guest-fixtures/dsptone.c', '-nostdlib', 
   '-fno-pie', '-no-pie', '-Wl,-e,_start', '-DBW64_DSPS_TONE_ELF'];
 elfFixtures['dumpstat'] = ['tools/guest-fixtures/dumpstat.c'];
 elfFixtures['alsatone'] = ['tools/guest-fixtures/alsatone.c', '-ldl'];
+elfFixtures['fd195-udevprobe'] = ['tools/guest-fixtures/fd195-udevprobe.c', '-ldl'];
 elfFixtures['fork-mapping'] = ['tools/guest-fixtures/fork-mapping.c', '-static', '-pthread'];
 elfFixtures['cpu32-sse3'] = ['tools/guest-fixtures/cpu32-sse3.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];
 elfFixtures['cpu32-jit-growth'] = ['tools/guest-fixtures/cpu32-jit-growth.c', '-static', '-msse3', '-nostdlib', '-fno-builtin', '-fno-stack-protector', '-fno-pie', '-no-pie'];

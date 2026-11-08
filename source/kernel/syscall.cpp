@@ -172,6 +172,21 @@ static U32 syscall_link(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+static U32 syscall_linkat(CPU* cpu, U32 eipCount) {
+    // FD-195: the host validates the flags ahead of the path
+    // fault (measured: bad flags with a null old path answer
+    // -EINVAL, not -EFAULT); only AT_SYMLINK_FOLLOW (0x400)
+    // and AT_EMPTY_PATH (0x1000) are defined.
+    if (ARG5 & ~0x1400) return -K_EINVAL;
+    if (!ARG2 || !ARG4) return -K_EFAULT; // FD-132: a null path faults on the host, on either side
+    BString oldpath = cpu->memory->readString(ARG2);
+    BString newpath = cpu->memory->readString(ARG4);
+    SYS_LOG1(SYSCALL_FILE, cpu, "linkat: olddirfd=%d oldpath=%X(%s) newdirfd=%d newpath=%X(%s) flags=%x", ARG1, ARG2, oldpath.c_str(), ARG3, ARG4, newpath.c_str(), ARG5);
+    U32 result = cpu->thread->process->linkat(ARG1, oldpath, ARG3, newpath, ARG5);
+    SYS_LOG(SYSCALL_FILE, cpu, " result=%d(0x%X)\n", result, result);
+    return result;
+}
+
 static U32 syscall_unlink(CPU* cpu, U32 eipCount) {
     if (!ARG1) return -K_EFAULT; // FD-132: a null path faults on the host; readString erases it to ""
     BString path = cpu->memory->readString(ARG1);
@@ -995,23 +1010,91 @@ static U32 syscall_sched_get_priority_min(CPU* cpu, U32 eipCount) {
     return result;
 }
 
+// Shared 32-bit clock_nanosleep core (host contract from raw-syscall
+// measurements): the request fields are validated (negative seconds or a
+// nanosecond field outside [0, 1e9) answer -EINVAL); CLOCK_THREAD_CPUTIME_ID
+// (3) refuses sleeps with -EOPNOTSUPP; an unknown clock answers -EINVAL.
+// A TIMER_ABSTIME request is converted to a relative duration against the
+// same clock source clock_gettime reports for that id, and the remain
+// address is suppressed for it (the host writes remaining time only for
+// relative sleeps). Other flag bits are ignored, as on the host.
+static U32 bw64ClockNanoSleep32(CPU* cpu, U32 clock, U32 flags, S64 sec, S64 nsec, U32 addressRemain) {
+    if (sec < 0 || nsec < 0 || nsec >= 1000000000) {
+        return -K_EINVAL;
+    }
+    if (clock == 3) { // CLOCK_THREAD_CPUTIME_ID
+        return -K_EOPNOTSUPP;
+    }
+    U64 baseUs;
+    switch (clock) {
+        case 0: case 5: case 8: case 11: // realtime family: wall clock
+            baseUs = KSystem::getSystemTimeAsMicroSeconds();
+            break;
+        case 1: case 4: case 6: case 7: case 9: // monotonic family
+            baseUs = KSystem::getMicroCounter();
+            break;
+        case 2: // CLOCK_PROCESS_CPUTIME_ID
+            baseUs = cpu->thread->process->cpuTimeMicroSeconds();
+            break;
+        default:
+            return -K_EINVAL;
+    }
+    U64 requestUs = (U64)sec * 1000000 + (U64)nsec / 1000;
+    U64 durationUs = requestUs;
+    U32 remain = addressRemain;
+    if (flags & 1) { // TIMER_ABSTIME
+        durationUs = requestUs > baseUs ? requestUs - baseUs : 0;
+        remain = 0;
+    }
+    return cpu->thread->clockNanoSleep(clock, flags, durationUs * 1000, remain);
+}
+
 static U32 syscall_clock_nanosleep(CPU* cpu, U32 eipCount) {
+    // The host answers -EFAULT for a null request before any field is read.
+    if (!ARG3) {
+        return -K_EFAULT;
+    }
     SYS_LOG1(SYSCALL_THREAD, cpu, "clock_nanosleep: clock=%d flags=%x req=%X(%d.%.09d sec) remaining=%X", ARG1, ARG2, ARG3, cpu->memory->readd(ARG3), cpu->memory->readd(ARG3 + 4), ARG4);
-    U32 result = cpu->thread->clockNanoSleep(ARG1, ARG2, ((U64)cpu->memory->readd(ARG3)) * 1000000000l + cpu->memory->readd(ARG3 + 4), ARG4);
+    U32 result = bw64ClockNanoSleep32(cpu, ARG1, ARG2, (S32)cpu->memory->readd(ARG3), (S32)cpu->memory->readd(ARG3 + 4), ARG4);
     SYS_LOG(SYSCALL_THREAD, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
 
 static U32 syscall_clock_nanosleep_time64(CPU* cpu, U32 eipCount) {
+    if (!ARG3) {
+        return -K_EFAULT;
+    }
     SYS_LOG1(SYSCALL_THREAD, cpu, "clock_nanosleep_time64: clock=%d flags=%x req=%X(%d.%.09d sec) remaining=%X", ARG1, ARG2, ARG3, cpu->memory->readd(ARG3), cpu->memory->readd(ARG3 + 4), ARG4);
-    U32 result = cpu->thread->clockNanoSleep(ARG1, ARG2, ((U64)cpu->memory->readq(ARG3)) * 1000000000l + cpu->memory->readd(ARG3 + 8), ARG4);
+    U32 result = bw64ClockNanoSleep32(cpu, ARG1, ARG2, (S64)cpu->memory->readq(ARG3), (S32)cpu->memory->readd(ARG3 + 8), ARG4);
     SYS_LOG(SYSCALL_THREAD, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
 
 static U32 syscall_nanosleep(CPU* cpu, U32 eipCount) {
+    // The host answers -EFAULT for a null request and -EINVAL for a
+    // negative seconds field or a nanosecond field outside [0, 1e9),
+    // before sleeping. On an interrupted sleep it writes the remaining
+    // time to the second argument; the write is done here from the
+    // requested duration minus the elapsed wall time of the call.
+    if (!ARG1) {
+        return -K_EFAULT;
+    }
     SYS_LOG1(SYSCALL_THREAD, cpu, "nanosleep: req=%X(%d.%.09d sec)", ARG1, cpu->memory->readd(ARG1), cpu->memory->readd(ARG1+4));
-    U32 result = cpu->thread->nanoSleep(((U64)cpu->memory->readd(ARG1))*1000000000l+ cpu->memory->readd(ARG1+4));
+    S32 sec = (S32)cpu->memory->readd(ARG1);
+    S32 nsec = (S32)cpu->memory->readd(ARG1 + 4);
+    if (sec < 0 || nsec < 0 || nsec >= 1000000000) {
+        return -K_EINVAL;
+    }
+    U64 durationNs = (U64)sec * 1000000000ull + (U64)nsec;
+    U64 startMs = KSystem::getMilliesSinceStart();
+    U32 result = cpu->thread->nanoSleep(durationNs);
+    if ((S32)result == -K_EINTR && ARG2) {
+        U64 durationMs = durationNs / 1000000;
+        U64 elapsedMs = KSystem::getMilliesSinceStart() - startMs;
+        U64 remainMs = durationMs > elapsedMs ? durationMs - elapsedMs : 0;
+        cpu->memory->writed(ARG2, (U32)(remainMs / 1000));
+        cpu->memory->writed(ARG2 + 4, (U32)((remainMs % 1000) * 1000000));
+    }
     SYS_LOG(SYSCALL_THREAD, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -2019,7 +2102,7 @@ static U32 syscall_exit_group(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_epoll_create(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_PROCESS, cpu, "epoll_create: size=%d", ARG1);
-    U32 result = cpu->thread->process->epollcreate(ARG1, 0);
+    U32 result = ((S32)ARG1 <= 0) ? (U32)-K_EINVAL : cpu->thread->process->epollcreate(ARG1, 0);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -2332,7 +2415,7 @@ static U32 syscall_eventfd2(CPU* cpu, U32 eipCount) {
 
 static U32 syscall_epoll_create1(CPU* cpu, U32 eipCount) {
     SYS_LOG1(SYSCALL_PROCESS, cpu, "epoll_create1: falgs=%X", ARG1);
-    U32 result = cpu->thread->process->epollcreate(0, ARG1);
+    U32 result = (ARG1 & ~0x80800) ? (U32)-K_EINVAL : cpu->thread->process->epollcreate(0, ARG1);
     SYS_LOG(SYSCALL_PROCESS, cpu, " result=%d(0x%X)\n", result, result);
     return result;
 }
@@ -2959,7 +3042,7 @@ static const SyscallFunc syscallFunc[] = {
     syscall_fstatat64,  // 300 __NR_fstatat64
     syscall_unlinkat,   // 301 __NR_unlinkat
     syscall_renameat,   // 302
-    nullptr,                  // 303
+    syscall_linkat,                  // 303 __NR_linkat
     syscall_symlinkat,  // 304 __NR_symlinkat
     syscall_readlinkat, // 305 __NR_readlinkat
     syscall_fchmodat,   // 306 __NR_fchmodat

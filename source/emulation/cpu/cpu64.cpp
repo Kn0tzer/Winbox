@@ -28,6 +28,7 @@
 #include <mutex>
 #include <chrono>
 #include <string>
+#include <vector>
 
 // Sharded locks for CPU64 atomic read-modify-write memory ops (XCHG with
 // memory, CMPXCHG, XADD, LOCK-prefixed ALU). In the multi-threaded build each
@@ -291,6 +292,12 @@ CPU64::~CPU64() {
     // compiled only with that gate, so release the complete type here. Table
     // slots the emitted modules own are returned first (only in the worker
     // that created them).
+#if defined(BOXEDWINE_BLOCK_EXEC) && defined(BOXEDWINE_BLOCK_CACHE_INFRA)
+    // FD-193: leave the BLOCKSTATS registry first, folding this CPU's
+    // counters into the process-wide totals, so the exit reporter never
+    // reads this CPU's memory after it is gone.
+    if (blockStatsRegistered) blockStatsUnregister(this);
+#endif
     jit64ReleaseState(m_jit);
     delete m_jit;
 }
@@ -1509,33 +1516,60 @@ dsp_61:
     // defaults to 64-bit (RSI); the 0x67 prefix selects 32-bit ESI -- the
     // effective address is masked to 32 bits and the ESI update
     // zero-extends into RSI, per x86-64 semantics (cf. dsp_61 LOOP asize32
-    // handling). Follows the dsp_43 (MOVS) memory/DF conventions. REP
-    // prefixes have no effect on LODS (single iteration).
+    // handling). Follows the dsp_43 (MOVS) memory/DF conventions. With a
+    // REP prefix (F3; F2 is equivalent for LODS, which has no condition
+    // to test) the load repeats until the count register reaches zero
+    // and the accumulator ends holding the last element; without one,
+    // exactly one element is loaded. (Proven against hardware ground
+    // truth by the cpu-diff differential: REP LODS counts RCX down to
+    // 0 and advances RSI per element at every operand width.)
 dsp_62:
     if (op == 0xAC || op == 0xAD) {
         U32 size = (op == 0xAC) ? 1 : opSize;
         S64 step = (rflags & X64_DF) ? -(S64)size : (S64)size;
-        U64 addr = reg[X64_RSI].u64;
-        if (p.asize32) addr &= 0xFFFFFFFFULL;
-        switch (size) {
-            case 1:
-                writeReg8(X64_RAX, memory->readb(addr), rexPresent);
-                break;
-            case 2:
-                reg[X64_RAX].setU16(memory->readw(addr));
-                break;
-            case 4:
-                reg[X64_RAX].setU32(memory->readd(addr));
-                break;
-            default:
-                reg[X64_RAX].setU64(memory->readq(addr));
-                break;
+        U64 count = (p.rep != 0) ? reg[X64_RCX].u64 : 1;
+        if (p.asize32) count &= 0xFFFFFFFFULL;
+        while (count--) {
+            U64 addr = reg[X64_RSI].u64;
+            if (p.asize32) addr &= 0xFFFFFFFFULL;
+            U64 val;
+            switch (size) {
+                case 1: val = memory->readb(addr); break;
+                case 2: val = memory->readw(addr); break;
+                case 4: val = memory->readd(addr); break;
+                default: val = memory->readq(addr); break;
+            }
+            // K-M3: a denied read ends the instruction BEFORE the
+            // accumulator write and the pointer step: the frame carries
+            // the last completed element's state (hardware partial
+            // progress, preserved across delivery by
+            // faultPartialProgress), mirroring dsp_44 (CMPS/SCAS).
+            if (memoryFaultPending) {
+                if (p.rep != 0) reg[X64_RCX].setU64(count + 1);
+                faultPartialProgress = true;
+                return opOff + 1;
+            }
+            switch (size) {
+                case 1:
+                    writeReg8(X64_RAX, (U8)val, rexPresent);
+                    break;
+                case 2:
+                    reg[X64_RAX].setU16((U16)val);
+                    break;
+                case 4:
+                    reg[X64_RAX].setU32((U32)val);
+                    break;
+                default:
+                    reg[X64_RAX].setU64(val);
+                    break;
+            }
+            if (p.asize32) {
+                reg[X64_RSI].setU32(reg[X64_RSI].u32 + (U32)step);
+            } else {
+                reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
+            }
         }
-        if (p.asize32) {
-            reg[X64_RSI].setU32(reg[X64_RSI].u32 + (U32)step);
-        } else {
-            reg[X64_RSI].setU64(reg[X64_RSI].u64 + (U64)step);
-        }
+        if (p.rep != 0) reg[X64_RCX].setU64(0);
         U32 used = opOff + 1;
         rip += used;
         return used;
@@ -8952,6 +8986,69 @@ void CPU64::freeJit() {
     m_jit = nullptr;
 }
 
+namespace {
+// FD-193: process-wide BLOCKSTATS accounting. The exit reporter must
+// never dereference a lone CPU: test contexts own CPUs that are
+// destroyed before process exit, so the reporter's old static CPU64*
+// dangled and printed heap garbage (measured: coverage=
+// 5070359463874500.0%), and it registered once per CPU, so the line
+// repeated. Instead, a CPU that allocates a block table while
+// BW64_BLOCKSTATS is set joins this registry; on destruction it folds
+// its counters into the folded totals and leaves the registry. The
+// reporter — registered exactly once — prints the folded totals plus
+// the counters of any CPUs still alive at exit: always live memory,
+// always a single line.
+std::atomic<U64> gBlockStatsFoldedBuilt{0};
+std::atomic<U64> gBlockStatsFoldedExec{0};
+std::atomic<U64> gBlockStatsFoldedInsn{0};
+std::atomic<U64> gBlockStatsFoldedTotal{0};
+std::mutex gBlockStatsRegistryMutex;
+std::vector<CPU64*> gBlockStatsRegistry;
+} // namespace
+
+void CPU64::blockStatsRegister(CPU64* cpu) {
+    static std::once_flag reportOnce;
+    std::call_once(reportOnce, [] { std::atexit(&CPU64::blockStatsReport); });
+    std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+    gBlockStatsRegistry.push_back(cpu);
+    cpu->blockStatsRegistered = true;
+}
+
+void CPU64::blockStatsUnregister(CPU64* cpu) {
+    {
+        std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+        auto it = std::find(gBlockStatsRegistry.begin(), gBlockStatsRegistry.end(), cpu);
+        if (it != gBlockStatsRegistry.end()) gBlockStatsRegistry.erase(it);
+    }
+    gBlockStatsFoldedBuilt += cpu->blockStatsBuilt;
+    gBlockStatsFoldedExec += cpu->blockStatsExec;
+    gBlockStatsFoldedInsn += cpu->blockStatsInsn;
+    gBlockStatsFoldedTotal += cpu->instructionCount;
+    cpu->blockStatsRegistered = false;
+}
+
+void CPU64::blockStatsReport() {
+    U64 built = gBlockStatsFoldedBuilt.load();
+    U64 execs = gBlockStatsFoldedExec.load();
+    U64 insns = gBlockStatsFoldedInsn.load();
+    U64 total = gBlockStatsFoldedTotal.load();
+    {
+        std::lock_guard<std::mutex> lock(gBlockStatsRegistryMutex);
+        for (const CPU64* cpu : gBlockStatsRegistry) {
+            built += cpu->blockStatsBuilt;
+            execs += cpu->blockStatsExec;
+            insns += cpu->blockStatsInsn;
+            total += cpu->instructionCount;
+        }
+    }
+    klog_fmt("BLOCKSTATS: built=%llu execs=%llu insnsInBlocks=%llu totalInsns=%llu coverage=%.1f%%",
+             (unsigned long long)built,
+             (unsigned long long)execs,
+             (unsigned long long)insns,
+             (unsigned long long)total,
+             total ? 100.0 * (double)insns / (double)total : 0.0);
+}
+
 U32 CPU64::tryBlockStep(U64 maxInsn) {
     if (!jit64Enabled()) return 0;
     U64 r = rip;
@@ -8959,17 +9056,7 @@ U32 CPU64::tryBlockStep(U64 maxInsn) {
     if (blockNegCache[neg] == r) return 0;
     if (!blockTable) {
         blockTable = std::make_unique<BBlock[]>(BBLOCK_SLOTS);
-        if (std::getenv("BW64_BLOCKSTATS")) {
-            static CPU64* statsCpu = this;
-            std::atexit([] {
-                klog_fmt("BLOCKSTATS: built=%llu execs=%llu insnsInBlocks=%llu totalInsns=%llu coverage=%.1f%%",
-                         (unsigned long long)statsCpu->blockStatsBuilt,
-                         (unsigned long long)statsCpu->blockStatsExec,
-                         (unsigned long long)statsCpu->blockStatsInsn,
-                         (unsigned long long)statsCpu->instructionCount,
-                         statsCpu->instructionCount ? 100.0 * statsCpu->blockStatsInsn / statsCpu->instructionCount : 0.0);
-            });
-        }
+        if (std::getenv("BW64_BLOCKSTATS")) blockStatsRegister(this);
     }
     BBlock& b = blockTable[(U32)((r ^ (r >> 9)) & (BBLOCK_SLOTS - 1))];
     if (b.startRip == r) {

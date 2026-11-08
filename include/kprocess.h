@@ -309,8 +309,13 @@ public:
     U32 getcwd(U32 buffer, U32 size);
     U32 getdents(FD fildes, U32 dirp, U32 count, bool is64);
     U32 getrusuage(KThread* thread, U32 who, U32 usage);
+    // Sum of every thread's user + kernel CPU time, in microseconds:
+    // the CLOCK_PROCESS_CPUTIME_ID source (and getrusage's basis).
+    U64 cpuTimeMicroSeconds();
+    void cpuTimesMicroSeconds(U64& userMicroSeconds, U64& kernelMicroSeconds);
     U32 ioctl(KThread* thread, FD fildes, U32 request);
     U32 link(BString from, BString to);
+    U32 linkat(FD olddirfd, BString from, FD newdirfd, BString to, U32 flags);
     // FD-81: link() served by sharing the source's backing path
     // (see KProcess::link). Public so the suites can prove the
     // mechanism on hosts whose filesystems do hard-link.

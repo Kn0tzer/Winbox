@@ -730,6 +730,10 @@ bool jit64OpWritesMemory(const Jit64Op& op) {
         return op.isMem && (op.sub == 0x11 || op.sub == 0x29 || op.sub == 0x7F);
     case J64_SSE_MOVD:   // sub 1 = the MOVD/MOVQ store form
         return op.isMem && op.sub == 1;
+    case J64_SSE_MOVSCALAR: // sub 1/3 = the MOVSD/MOVSS store forms
+        return op.isMem && (op.sub == 1 || op.sub == 3);
+    case J64_SSE_LOGIC128:  // the memory form is a source read only
+        return false;
     case J64_PUSH:
     case J64_CALL_REL:   // pushes the return address
     case J64_CALL_IND:   // pushes the return address
@@ -1158,6 +1162,111 @@ void emitSseMovd(Bytes& body, const Jit64Op& op) {
     }
 }
 
+// Packed FP bitwise logic (0F 54 AND, 0F 55 ANDN, 0F 56 OR, 0F 57 XOR;
+// sub = the 0F opcode byte; the PS and PD forms are the same bit op).
+// The source is staged through L_A/L_B first, exactly like PXOR, so a
+// regField == rmIndex op reads the pre-op value. ANDN is ~dst & src
+// (the interpreter's operand order).
+void emitSseLogic128(Bytes& body, const Jit64Op& op) {
+    emitSseRead128(body, op);
+    for (int half = 0; half < 2; half++) {
+        const U32 dst = L_XMM + 2 * op.regField + (U32)half;
+        const U32 src = half ? L_B : L_A;
+        local(body, 0x20, dst);
+        if (op.sub == 0x55) {           // ANDN: invert the destination
+            i64Const(body, ~0ULL);
+            body.push_back(0x85);       // i64.xor
+        }
+        local(body, 0x20, src);
+        body.push_back((op.sub == 0x54 || op.sub == 0x55) ? 0x83   // i64.and
+                       : (op.sub == 0x56) ? 0x84                   // i64.or
+                                          : 0x85);                 // i64.xor
+        local(body, 0x21, dst);
+    }
+}
+
+// Scalar SSE moves. sub: 0 = MOVSD load, 1 = MOVSD store, 2 = MOVSS
+// load, 3 = MOVSS store, 4 = MOVQ load (F3 0F 7E). Mirrors the
+// interpreter's scalar blocks in cpu64.cpp field for field:
+// - memory loads zero everything above the moved scalar (MOVSS: the
+//   high qword and the high half of the low qword; MOVSD/MOVQ: the
+//   high qword);
+// - register loads/stores preserve the destination's upper bits,
+//   except the MOVQ load, which zeroes the high qword even in
+//   register form;
+// - memory stores write only the scalar's bytes.
+// Loads publish through L_R, so a denied read leaves the destination
+// register untouched (the interpreter's checkpoint semantics).
+void emitSseMovScalar(Bytes& body, const Jit64Op& op) {
+    const U32 lo = L_XMM + 2 * op.regField;
+    const U32 hi = lo + 1;
+    switch (op.sub) {
+    case 0: // MOVSD load
+    case 4: // MOVQ load
+        if (op.isMem) {
+            emitEA(body, op);
+            emitMemRead(body, L_T1, 8); // -> L_R
+            local(body, 0x20, L_R);
+            local(body, 0x21, lo);
+        } else {
+            local(body, 0x20, L_XMM + 2 * op.rmIndex);
+            local(body, 0x21, lo);
+        }
+        if (op.sub == 4 || op.isMem) {
+            i64Const(body, 0);
+            local(body, 0x21, hi); // high qword zeroed
+        }
+        return;
+    case 2: // MOVSS load
+        if (op.isMem) {
+            emitEA(body, op);
+            emitMemRead(body, L_T1, 4); // -> L_R (helper zero-extends)
+            local(body, 0x20, L_R);
+            local(body, 0x21, lo);
+            i64Const(body, 0);
+            local(body, 0x21, hi);
+        } else {
+            // Replace only the low dword of the destination.
+            local(body, 0x20, lo);
+            i64Const(body, 0xFFFFFFFF00000000ULL);
+            body.push_back(0x83);       // i64.and
+            local(body, 0x20, L_XMM + 2 * op.rmIndex);
+            i64Const(body, 0xFFFFFFFFULL);
+            body.push_back(0x83);       // i64.and
+            body.push_back(0x84);       // i64.or
+            local(body, 0x21, lo);
+        }
+        return;
+    case 1: // MOVSD store
+        if (op.isMem) {
+            emitEA(body, op);
+            emitMemWrite(body, L_T1, lo, 8);
+        } else {
+            local(body, 0x20, lo);
+            local(body, 0x21, L_XMM + 2 * op.rmIndex);
+        }
+        return;
+    default: // 3: MOVSS store
+        local(body, 0x20, lo);
+        i64Const(body, 0xFFFFFFFFULL);
+        body.push_back(0x83);           // i64.and
+        local(body, 0x21, L_R);
+        if (op.isMem) {
+            emitEA(body, op);
+            emitMemWrite(body, L_T1, L_R, 4);
+        } else {
+            // Replace only the low dword of the destination register.
+            local(body, 0x20, L_XMM + 2 * op.rmIndex);
+            i64Const(body, 0xFFFFFFFF00000000ULL);
+            body.push_back(0x83);       // i64.and
+            local(body, 0x20, L_R);
+            body.push_back(0x84);       // i64.or
+            local(body, 0x21, L_XMM + 2 * op.rmIndex);
+        }
+        return;
+    }
+}
+
 // Emit one block terminator. `afterOff` is the instruction's end offset (the
 // RIP of the next guest instruction). Jcc/JMP/CALL/RET own the guest RIP here
 // (the caller must NOT also emit emitRipAfter for them); NOP/LEAVE do not, so
@@ -1364,11 +1473,14 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             break;
         case J64_SSE_MOV128:
         case J64_SSE_PXOR:
+        case J64_SSE_LOGIC128:
             // 16-byte XMM operands; the decoder records size 16.
             widthOk = (op.size == 16);
             break;
         case J64_SSE_MOVD:
-            // MOVD (32-bit) / MOVQ (64-bit) GPR<->XMM forms only.
+        case J64_SSE_MOVSCALAR:
+            // MOVD/MOVQ GPR<->XMM forms (4/8); MOVSCALAR is the
+            // MOVSD (8) / MOVSS (4) / MOVQ-load (8) XMM<->XMM/memory set.
             widthOk = (op.size == 4 || op.size == 8);
             break;
         default:
@@ -1412,7 +1524,8 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // helpers (two qword accesses for the 128-bit forms), so their
             // fault placement matches the interpreter's readq/writeq pairs.
             bool memSse = op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR ||
-                          op.kind == J64_SSE_MOVD;
+                          op.kind == J64_SSE_MOVD || op.kind == J64_SSE_LOGIC128 ||
+                          op.kind == J64_SSE_MOVSCALAR;
             // Indirect CALL/JMP read the target qword through emitEA +
             // emitMemRead, so their fault placement matches the
             // interpreter's loadRM exactly.
@@ -1573,6 +1686,21 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // sub 0 = load (6E), 1 = store (7E). regField = XMM register;
             // rmIndex = GPR (register form) or 0xFF (memory form).
             if (op.sub > 1) return false;
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_SSE_LOGIC128:
+            // sub is the 0F opcode byte (0x54..0x57); regField =
+            // destination XMM; source in rmIndex or EA.
+            if (op.sub != 0x54 && op.sub != 0x55 && op.sub != 0x56 && op.sub != 0x57) return false;
+            if (op.regField >= 16) return false;
+            if (!op.isMem && op.rmIndex >= 16) return false;
+            break;
+        case J64_SSE_MOVSCALAR:
+            // sub 0/2/4 = loads (MOVSD/MOVSS/MOVQ), 1/3 = stores
+            // (MOVSD/MOVSS). regField = XMM register; rmIndex = XMM
+            // (register form) or 0xFF (memory form).
+            if (op.sub > 4) return false;
             if (op.regField >= 16) return false;
             if (!op.isMem && op.rmIndex >= 16) return false;
             break;
@@ -1905,6 +2033,16 @@ bool jit64EmitWasm(const Jit64Block& block, const Jit64EmitOptions& options,
             // MOVD/MOVQ: publishes the XMM local (load) or the GPR local /
             // guest memory (store) inline.
             emitSseMovd(body, op);
+            break;
+        case J64_SSE_LOGIC128:
+            // Packed FP logic: combines the destination XMM local with
+            // the staged source inline; no L_R publish.
+            emitSseLogic128(body, op);
+            break;
+        case J64_SSE_MOVSCALAR:
+            // Scalar moves: publish the XMM local (loads) or guest
+            // memory / the destination XMM local (stores) inline.
+            emitSseMovScalar(body, op);
             break;
         case J64_INCDEC:
             // INC/DEC: read-modify-write published inline by emitIncDec

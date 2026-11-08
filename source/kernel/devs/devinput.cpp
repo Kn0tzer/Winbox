@@ -859,17 +859,45 @@ void postSendEvent(DevInput* events, U64 time) {
 
 static DevInputJoystick* joystickEvents;
 
+// The host feed's last known pad state, kept outside any open device
+// instance. The feed syncs the pad's full state when the pad connects on
+// the host, which in the browser build happens before the guest has
+// opened the device; dropping that sync leaves the guest's bus driver
+// with a device that enumerates but never reports (its readers wait for
+// a first input report that only a state change would produce). A real
+// pad reports its current state when it connects, so an open that
+// follows a feed adopts the state and emits it as the first frame.
+static bool padFeedSeen = false;
+static bool padButtonStates[15]; // K_BTN_SOUTH..K_BTN_THUMBR
+static S32 padAxisValues[8]; // kJoystickAxes order
+
 FsOpenNode* openDevInputJoystick(const std::shared_ptr<FsNode>& node, U32 flags, U32 data) {
     joystickEvents = new DevInputJoystick(node, flags);
     joystickEvents->clearOnExit = (DevInput**)&joystickEvents;
+    memcpy(joystickEvents->buttonStates, padButtonStates, sizeof(padButtonStates));
+    memcpy(joystickEvents->axisValues, padAxisValues, sizeof(padAxisValues));
+    if (padFeedSeen) {
+        U64 time = KSystem::getSystemTimeAsMicroSeconds();
+        BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(joystickEvents->bufferCond);
+        for (U32 i = 0; i < sizeof(kJoystickAxes) / sizeof(kJoystickAxes[0]); i++) {
+            queueEvent(joystickEvents, K_EV_ABS, kJoystickAxes[i].code, (U32)padAxisValues[i], time);
+        }
+        for (U32 code = K_BTN_SOUTH; code <= K_BTN_THUMBR; code++) {
+            queueEvent(joystickEvents, K_EV_KEY, code, padButtonStates[code - K_BTN_SOUTH] ? 1 : 0, time);
+        }
+        postSendEvent(joystickEvents, time);
+        BOXEDWINE_CONDITION_SIGNAL_ALL(joystickEvents->bufferCond);
+    }
     return joystickEvents;
 }
 
 void onGamepadButton(U32 code, bool down) {
-    if (!joystickEvents) {
+    if (code < K_BTN_SOUTH || code > K_BTN_THUMBR) {
         return;
     }
-    if (code < K_BTN_SOUTH || code > K_BTN_THUMBR) {
+    padFeedSeen = true;
+    padButtonStates[code - K_BTN_SOUTH] = down;
+    if (!joystickEvents) {
         return;
     }
     U64 time = KSystem::getSystemTimeAsMicroSeconds();
@@ -881,9 +909,6 @@ void onGamepadButton(U32 code, bool down) {
 }
 
 void onGamepadAxis(U32 axis, S32 value) {
-    if (!joystickEvents) {
-        return;
-    }
     int index = joystickAxisIndex(axis);
     if (index < 0) {
         return;
@@ -894,11 +919,14 @@ void onGamepadAxis(U32 axis, S32 value) {
     if (value > kJoystickAxes[index].max) {
         value = kJoystickAxes[index].max;
     }
-    U64 time = KSystem::getSystemTimeAsMicroSeconds();
-    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(joystickEvents->bufferCond);
-    if (joystickEvents->axisValues[index] == value) {
+    padFeedSeen = true;
+    bool changed = padAxisValues[index] != value;
+    padAxisValues[index] = value;
+    if (!joystickEvents || !changed) {
         return;
     }
+    U64 time = KSystem::getSystemTimeAsMicroSeconds();
+    BOXEDWINE_CRITICAL_SECTION_WITH_CONDITION(joystickEvents->bufferCond);
     joystickEvents->axisValues[index] = value;
     queueEvent(joystickEvents, K_EV_ABS, axis, value, time);
     postSendEvent(joystickEvents, time);

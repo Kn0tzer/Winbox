@@ -16,10 +16,13 @@
 #
 #   docker run --name wine64build --platform linux/amd64 debian:bookworm sh -c \
 #     'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && \
-#      apt-get install -y -qq wine64'
+#      apt-get install -y -qq wine64 libudev1'
 #   docker commit wine64build boxedwine64/wine64-debian:bookworm
 #   docker rm wine64build
 #
+# (libudev1 is installed explicitly: winebus dlopens it for evdev
+# enumeration and the wine64 closure alone does not pull it in —
+# without it no evdev device reaches the 64-bit guest, FD-195.)
 # Output zips land in tools/rootfs64/dist/ (gitignored — 600MB+, build artifact).
 set -euo pipefail
 

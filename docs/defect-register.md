@@ -203,6 +203,7 @@ do not close the entry until they land.
   (deploy lane, re-verified from disk).
   Batch-10 composition (2026-11-06): the closure proof above
   settles as CL-136 — see section C.
+
 - **FD-02 — The 32-bit staged Windows system files carry the
   same two impatience defects, and the fix pipeline cannot
   reach them.** *(High)* The 32-bit set is a different vintage
@@ -269,8 +270,10 @@ do not close the entry until they land.
   the same build. The merge -> deploy -> live
   re-measurement terms are discharged. This defect is
   CLOSED — see CL-19.**
+
 - **FD-03 — The emulated machine is far smaller than modern
-  programs expect, and no GPU-compute API exists.** *(High, class
+  programs expect, and no GPU-compute API exists. CLOSED
+  2026-11-06 — see CL-134.** *(High, class
   of programs)* Four independent floor failures, none of them a
   per-program bug: (a) no OpenCL ICD exists behind the staged
   `opencl.dll` and there is no CUDA at all, so GPU-compute
@@ -315,6 +318,43 @@ do not close the entry until they land.
   citation audit 352 rows 0 drift. Record:
   `docs/reports/fd03-machine-definition-20261105.md`; evidence
   `test-results/machine/`.
+  **Update 2026-11-07 — the floor-(c) raise measured
+  end-to-end in a real program's own runtime (D22,
+  `lane-d22-mindustry`).** The JVM bundled in the Mindustry
+  game archive (OpenJDK 25.0.1, extracted byte-for-byte)
+  was run inside the guest under the game's own launch
+  arguments on the current integration code (build
+  `4913603a9`, verified export): its ergonomics follow the
+  raised definition exactly — `MaxHeapSize = 1073741824`
+  (the 25% default of the 4 GiB the JVM sees),
+  `InitialHeapSize = 67108864`, the human-readable settings
+  print `Max. Heap Size (Estimated): 1.00G`, and at the Java
+  API level `Runtime.maxMemory()` returns 1073741824 with
+  `Runtime.availableProcessors()` returning 2; a live
+  allocation then held 268435456 bytes (maxMemory/4) and
+  the heap grew to 757071872 bytes without error. On the
+  pre-raise definition the same defaults arithmetic gives
+  a 256 MiB heap and 1 processor. Record:
+  `docs/reports/d22-mindustry-ergonomics-20261107.md`;
+  evidence `test-results/d22-mindustry-20261106/`.
+  **Update 2026-11-06 — remaining terms (a) and (b) closed as
+  proven not deliverable on `lane-fd03`; FD-03 is CLOSED — see
+  CL-134.** (a) The shipped set stages Wine's `opencl.dll` and
+  its unix forwarder plus the Khronos ICD loader, but no
+  vendor ICD exists anywhere in the set — no `.icd` file, no
+  registry vendor key, no implementation in the emulator
+  source — and no CUDA binary is staged at all; the guest's
+  only GPU path (the Vulkan→WebGPU bridge) exposes no OpenCL
+  or CUDA surface an ICD could be written against. (b) The
+  CPU has no 256-bit register state (its SIMD union is
+  128-bit), no XSAVE machinery beyond the legacy mask
+  (XGETBV returns x87+SSE only; XSETBV is unimplemented),
+  and no VEX decoding in either engine, so no AVX/AVX2
+  instruction could execute; the honest negatives stay
+  pinned by the guest fixture (CPUID AVX bit clear) and the
+  native self-test (XGETBV(0) = 0x3). Record:
+  `docs/reports/fd03-remaining-terms-20261106.md`.
+
 - **FD-04 — Networking gaps (campaign parked by directive; gaps
   inventoried and verified).** *(Medium)* What works: opt-in IPv4
   TCP through the relay, connect-by-name. What does not exist:
@@ -322,6 +362,19 @@ do not close the entry until they land.
   inbound connections; networking is off by default. Evidence:
   `docs/reports/chromium-networking-20261017.md`; the deployed
   relay state recorded 2026-10-29.
+  Update 2026-11-07 (branch `lane-dnsresolve`): the clause
+  "guest-side explicit DNS APIs are unverified" is now verified
+  on the shipped browser path. A Winsock guest program resolves
+  a host name with getaddrinfo, connects to the returned
+  address and reads an HTTP 200 response; an unresolvable
+  `.invalid` name fails promptly with WSAHOST_NOT_FOUND.
+  Proven end to end on both architectures by the deterministic
+  suite test `web/tests/suite/browser/winsock-dns.test.mjs`
+  (fixture `tools/guest-fixtures/win32-dns.c`), commit
+  `b3bc87931`; evidence `test-results/suite-winsock-dns/`;
+  record `docs/reports/fd04-guest-dns-20261107.md`. FD-04
+  stays open for the remaining gaps above; the shipped
+  networking default is unchanged.
 
 ### Emulator-killing and correctness defects (kernel / CPU / memory)
 
@@ -365,6 +418,7 @@ do not close the entry until they land.
   and `callOpenGL`'s panic on an unregistered int 0x99 index.
   The fix landed at the live sites. Record:
   `docs/reports/fd06-portio-20261031.md`.
+
 - **FD-07 — K-M2: in interpreter mode, control flow can reach
   data on multiple threads.** *(High)* Observed as thousands of
   unimplemented-opcode faults inside a mapped image plus
@@ -372,6 +426,7 @@ do not close the entry until they land.
   a shared corrupted indirect target. Next step on record: a
   traced probe at a merge gate. Evidence: `docs/known-gaps/kernel.md`
   (K-M2 row).
+
 - **FD-08 — Exclusive epoll wake-one is incomplete, with a live
   field symptom.** *(High)* Edge-triggered and one-shot epoll
   semantics are largely implemented, but EPOLLEXCLUSIVE wake-one
@@ -383,12 +438,29 @@ do not close the entry until they land.
   record. Evidence: `docs/known-gaps/kernel.md` (epoll row);
   `docs/known-gaps/gl.md` (fixed-function row, same symptom from
   the graphics side).
-- **FD-09 — `KThread::modify_ldt` panics on invalid indexes.**
-  *(Medium)* Guest input reaching an internal-invariant panic in
-  the thread-object layer; flagged by the fault-delivery lane as
-  outside its area. Evidence:
+
+- **FD-09 — `KThread::modify_ldt` panics on invalid indexes.
+  FIXED 2026-11-07 on branch `lane-d278` (commit
+  `f998e2e01`) — see CL-134 (lane-local).** *(Was Medium)*
+  Guest input reaching an internal-invariant panic in
+  the thread-object layer; flagged by the fault-delivery
+  lane as outside its area. Evidence:
   `docs/reports/cleanup-fault32-20261030.md`
   (branch `lane-cleanlog32`, "deliberately left alone").
+  Update (2026-11-07): the host's answers were measured
+  with raw `modify_ldt` syscalls and are now the guest's
+  answers — a byte count other than one descriptor is
+  -EINVAL (checked first), an unreadable descriptor
+  pointer is -EFAULT, and an out-of-range index is
+  -EINVAL instead of the panic; each rejection logs one
+  counted `BW64-FAIL syscall.modify_ldt` line. Pinned by
+  the new native tests `testModifyLdtInvalid32` and
+  `testModifyLdtIndex32` (main suite 616 and 617), which
+  fail on the base — 617 with this entry's exact panic
+  text — and pass with the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
 - **FD-10 — Some X11 callers use memory pointers without checking
   for failure.** *(Medium)* The guest-memory lane made a
   cross-page pointer request return "no pointer" instead of
@@ -398,14 +470,25 @@ do not close the entry until they land.
   `docs/reports/cleanmem-guest-memory-20261030.md`
   (branch `lane-cleanmem`, "residual risks / notes for the
   merge").
+
 - **FD-11 — Splitting a string with an empty separator loops
-  forever.** *(Medium)* `BString::split("")` never advances its
+  forever. CLOSED 2026-11-06 — see CL-137.** *(Was Medium)* `BString::split("")` never advances its
   cursor, so any caller that reaches it with an uninitialized
   separator hangs the process. Found via a debugger stack of a
   hung test process; the filesystem layer now guards its own
   entry point, but the utility itself is unfixed. Owner: the
   util layer. Evidence: `docs/reports/cleanup-fs-20261031.md`
   (branch `lane-cleanfs`, "found outside this layer").
+  Closed on `lane-ditems` in `14783353f`: `BString::split(const char*)`
+  now returns the whole string as the single result for an empty
+  (or null) delimiter, inside `split` itself, so every caller is
+  covered, not only the filesystem layer's guarded entry point.
+  Proof: native test `testBStringSplit` (commit `5dc0b8513`) —
+  on the unpatched code the test does not fail, it hangs (killed
+  by timeout, the recorded RED); on the fixed code it passes,
+  with `split('/')` and `split("::")` controls unchanged.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
 - **FD-12 — A 32-bit futex lost-wakeup flaw is proven, its fix
   is unmerged, and a related park is unconvicted. CLOSED
   2026-11-01 (the flaw) — see CL-28; the park is split out as
@@ -428,6 +511,7 @@ do not close the entry until they land.
   FD-77. Evidence: `docs/reports/fd12-park-lane-20261101.md`;
   integration tree `test-results/site-chromium-20261030/
   REPORT.md` (the original suspicion).
+
 - **FD-13 — Two small socket behaviours deviate from the
   contract.** *(Low)* On unix sockets, `MSG_NOSIGNAL` is
   accepted through the write path but not honored (no SIGPIPE
@@ -436,14 +520,34 @@ do not close the entry until they land.
   code comments at the site. Evidence:
   `docs/reports/cleanlog-ksubsys-20261030.md`
   (branch `lane-cleanlog-ksubsys`, "residuals").
-- **FD-14 — Fault reporting has two blind spots left.**
-  *(Low)* `CPU64::raiseSyncFault` logs nothing itself, so
+
+- **FD-14 — Fault reporting has two blind spots left.
+  CLOSED 2026-11-06 — see CL-138.** *(Was Low)* `CPU64::raiseSyncFault` logs nothing itself, so
   direct kernel-side callers remain unlogged at the delivery
   point (deliveries routed through the interpreter's funnel do
   log); and the 32-bit core's two gate sites that mirror the
   64-bit ones were not confirmed in their own context.
   Evidence: `docs/reports/cleanup-cpu-core-20261030.md`
   (branch `lane-clean-cpu`, "handed off").
+  Closed on `lane-ditems` in `14783353f`, both halves. (a)
+  `CPU64::raiseSyncFault` now logs its own deliveries at the
+  delivery point — a rate-limited `BW64-FAIL sync-fault64 ...
+  delivered=1` line (first 64, then every 1024th; the flood
+  discipline of the interpreter funnel) — so the direct
+  kernel-side caller (rt_sigreturn's bad-frame path) is no
+  longer silent; refused deliveries log nothing. Proof:
+  native x64 test `testRaiseSyncFaultDeliveryLogged64`
+  (commit `5dc0b8513`) — RED on the unpatched code ("delivery
+  produced no delivery-point log line"), GREEN after, with
+  the emitted line in the run log. (b) The 32-bit core's two
+  gate sites were confirmed in their own context:
+  `normal_invalid` and `normal_ud2`
+  (`source/emulation/cpu/normal/normal_other.h`) recover-gate
+  exactly as their 64-bit mirrors do — the skip path logs once
+  per RIP through `bw64RecoverClaimRip`, the fall-through
+  delivers through `KThread::signalIllegalInstruction`, which
+  logs via `bw64LogGuestFault32` — no code change needed.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
 
 - **FD-76 — The guest-thread dump silently covered nothing
   in 32-bit sessions. CLOSED 2026-11-01 — see CL-29.**
@@ -683,6 +787,127 @@ do not close the entry until they land.
   freeze is fixed (CL-34) and its silence is
   surfaced. FD-77 stays CLOSED.
 
+- **FD-210 — A futex on an unmapped word panics the
+  emulator, parks on the null page, or works on a
+  phantom page (frontier review D2). Filed and FIXED
+  2026-11-07 on branch `lane-d278` (commit `f998e2e01`)
+  — see CL-147 (lane-local).** *(Was High. The number
+  is lane-local: `lane-fd176` claims FD-210 for an
+  unrelated filing, and CL-147 is likewise claimed on
+  sibling branches; the composition audit settles
+  both.)* On the 32-bit side, a shared futex operation
+  on an unmapped word reached a kernel panic ("Could
+  not find futex address"), and a private WAIT proved
+  neither the word nor the timeout pointer before
+  parking — it read the null page and parked on
+  whatever it found there. On the 64-bit side the page
+  lookup materialized a fresh zero page for an unmapped
+  word, so every operation silently worked on a phantom
+  word. The host's answers, measured with raw syscalls:
+  -EFAULT for every operation on an unmapped word,
+  except a 64-bit private WAKE / WAKE_BITSET, which
+  wakes nothing and returns 0; and a bitset operation
+  with a zero mask is -EINVAL — the rule the 64-bit
+  side already had, now enforced on the 32-bit side
+  too. The guest answers the same, and each 32-bit
+  rejection logs one counted `BW64-FAIL syscall.futex`
+  line. Pinned by the new native tests
+  `testFutexUnmapped32` and `testFutexSharedUnmapped32`
+  (main suite 614 and 615) and `testFutexUnmapped64`
+  (x64 suite 6), which fail on the base — the 32-bit
+  cases with the panic behaviour above — and pass with
+  the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/` (the raw host-reference
+  programs and their outputs are in its `hostref/`
+  directory).
+
+- **FD-211 — Floating-point faults are delivered in
+  the wrong signal slot with the wrong code (frontier
+  review D7). Filed and FIXED 2026-11-07 on branch
+  `lane-d278` (commit `f998e2e01`) — see CL-148
+  (lane-local).** *(Was Medium. The number is
+  lane-local: the FD-189 lane's PlugPlay filing takes
+  FD-211 in the batch-10 settlement, and CL-148 is
+  likewise claimed on sibling branches; the
+  composition audit settles both.)* A divide quotient
+  overflow delivered SIGFPE with FPE_INTOVF and trap 4,
+  where the host delivers FPE_INTDIV and trap 0 exactly
+  as for divide-by-zero — the INTOVF / trap-4 pair
+  belongs to the INTO instruction, whose host delivery
+  is SIGSEGV and is unchanged. And
+  `CPU::prepareFpuException` delivered x87 exceptions
+  through the SIGSEGV slot, where the host delivers
+  SIGFPE with trap 16; the guest's own handler
+  classifies traps 16/19 only inside its SIGFPE
+  handler, so the old slot could never produce the
+  right Windows exception in the guest. Both behaviours
+  measured with raw signals on a real kernel. Pinned by
+  the new native test `testFpeDelivery32` (main suite
+  618), which fails on the base showing both wrong
+  deliveries and passes with the fix. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **FD-214 — Caller audit of the no-throw segment-fault
+  entry points (frontier review D5): one silent write-drop
+  found and fixed; the rest proven sound. CLOSED
+  2026-11-06 — see CL-154.** *(Filed and closed by
+  `lane-ditems`; the number is lane-local and settles at
+  the next composition.)* `KThread::seg_mapper` /
+  `seg_access` with `throwException=false` promise the
+  caller a delivered fault instead of a throw. The audit
+  read every call site: the four explicit-false sites
+  (`CPU::startException`, `CPU::runNextSingleOp`,
+  `NormalCPU::run`, and the multi-threaded platform's
+  containment site) each re-fetch or retire loudly after
+  delivery and are sound; the default-true callers
+  (softmmu read/write pages, `KMemory::preflightWrite`)
+  are sound because both functions throw on every path
+  that does not return from the on-demand mapping. One
+  real defect: the invalid page's write accessors called
+  `seg_mapper` and returned — when the on-demand mapping
+  succeeded, the guest's write was silently dropped
+  (reads returned a fabricated 0, right only because a
+  fresh anonymous page is zero-filled). Fixed in
+  `14783353f`: all six accessors re-dispatch through the
+  page's current type after `seg_mapper` returns, and a
+  write that still cannot land logs a `BW64-FAIL
+  invalid-page-write ... outcome=dropped` line instead of
+  vanishing. Proof: native test `testFaultDelivery32`
+  additions (commit `5dc0b8513`) write and read back
+  through the Wine syscall-frame window that triggers
+  the on-demand mapping — RED on the unpatched code
+  (readback mismatch), GREEN after. Audit observation,
+  no action: the soft read/write page accessors would
+  dereference a null page pointer if `seg_access` ever
+  gained a return path; today it cannot return to them.
+  Evidence: `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **FD-215 — Opening a file collapsed almost every host
+  error into "invalid argument" (frontier review D17).
+  CLOSED 2026-11-06 — see CL-155.** *(Filed and closed
+  by `lane-ditems`; the number is lane-local and settles
+  at the next composition.)* `translateOpenError()` in
+  `KProcess` mapped only EACCES/EEXIST/ENOENT/EISDIR and
+  turned every other host open failure — a full disk,
+  too many open files, a read-only filesystem — into
+  -EINVAL, so a guest could not tell why an open failed
+  even though the filesystem layer preserves the host
+  errno exactly (`FsFileNode::open` restores it before
+  returning). Fixed in `14783353f`: the map now covers
+  25 errnos (adding EAGAIN, EBUSY, EFAULT, EFBIG, EINTR,
+  EIO, ELOOP, EMFILE, EMLINK, ENAMETOOLONG, ENFILE,
+  ENODEV, ENOMEM, ENOSPC, ENOTDIR, ENXIO, EOVERFLOW,
+  EPERM, EROFS, ETXTBSY, EXDEV; `K_EMLINK` and
+  `K_EOVERFLOW` added to `include/kerror.h`); the EINVAL
+  default stands only for node types that return no
+  host errno. Proof: native test `testTranslateOpenError`
+  (commit `5dc0b8513`), a 28-row table pinning every
+  mapped errno plus the default rows — RED on the
+  unpatched code, GREEN after. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
 ### Graphics
 
 - **FD-15 — The OpenGL bridge gives five fabricated or dropped
@@ -700,8 +925,10 @@ do not close the entry until they land.
   as FD-39. Evidence: `docs/reports/cleanup-bridges-20261030.md`
   (the original find) and
   `docs/reports/fd15-honest-gl-answers-20261031.md` (the fix).
+
 - **FD-39 — Some desktop-only OpenGL texture settings still
-  have no honest answer (the FD-15 residue).** *(Medium)*
+  have no honest answer (the FD-15 residue). CLOSED
+  2026-11-07 — see CL-137.** *(Was Medium)*
   Settings such as texture LOD bias, mipmap-generation hints,
   border color, depth-texture mode, and texture swizzle exist
   on desktop OpenGL but have no model in either graphics
@@ -735,16 +962,39 @@ do not close the entry until they land.
   when the base level is redefined, and the CLAMP_TO_BORDER
   wrap reaches the sampler as WebGPU clamp-to-border.
   5_6_5_REV gained its unpack model in the same table.
-  REMAINING (effect-only residue, still open): no backend
-  here can express the *rendering effects* of LOD bias in
-  sampling, a non-default border color (WebGPU samplers
-  have no borderColor field), or texture swizzle /
-  depth-texture mode in shader sampling. Those values are
-  now honest state -- set, validated, queryable -- whose
-  sampling effect is not yet modelled; closing the residue
-  needs sampler/shader support in a backend, not a
-  different answer at the API surface. Evidence:
-  `docs/reports/fd39-texparam-store-20261031.md`.
+  RESOLVED AS PROVEN UNFIXABLE 2026-11-07 on branch
+  `lane-fd39-residue` (see CL-137): the four sampling
+  effects cannot be expressed as texture/sampler state
+  in either shipped backend. The WebGPU backend's
+  sampler descriptor has no borderColor, LOD-bias or
+  swizzle field (and its one swizzle escape, a
+  texture-view swizzle, sits behind an optional device
+  feature this backend never requests); the legacy
+  route's host is WebGL2, whose ES 3.0 parameter set
+  defines none of LOD bias, border color, depth-texture
+  mode or the border wrap (texture swizzle alone is
+  defined there -- recorded in the lane record as the
+  one expressible cell, not taken: it cannot close this
+  entry, whose default route is the WebGPU backend, and
+  it would split rendering behaviour by route). The
+  only remaining route is rewriting sampling
+  expressions in translated shaders with per-texture
+  state plumbed through generated pipelines -- the
+  sampler/shader backend feature this entry named, not
+  a fix-sized unit. The values stay honest state on
+  both routes, exactly as the 2026-10-31 fix left them.
+  CORRECTION to the RESOLVED IN PART paragraph above:
+  the CLAMP_TO_BORDER wrap never reached a real sampler
+  as "WebGPU clamp-to-border" -- WebGPU has no such
+  address mode, and a real GPUDevice rejects the value
+  the backend wrote (only the recording device in the
+  unit tests accepted it). Fixed in `8258111c6`: the
+  sampler now decodes CLAMP_TO_BORDER to clamp-to-edge
+  (the Vulkan tier's disposition for the same mode),
+  the raw mode stays in the params map, and the
+  approximation is logged once. Evidence:
+  `docs/reports/fd39-residue-20261107.md`.
+
 - **FD-40 — The 64-bit boot smoke test never reaches the
   window station. FIXED 2026-10-31 (commit `5e4bab8f2`,
   merged into the integration tree as `6b9c834d7`).**
@@ -840,6 +1090,7 @@ do not close the entry until they land.
   lack the signature too but are not syscall DLLs and show
   no symptom; the build script stamps them on their next
   rebuild.
+
 - **FD-16 — One class of shader still cannot build a pipeline:
   texel buffers reached through a descriptor-heap array.
   CLOSED 2026-10-31 — see CL-13.**
@@ -854,6 +1105,7 @@ do not close the entry until they land.
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`
   (branch `lane-firstframe`, "what still blocks the first
   frame").
+
 - **FD-17 — Unigine Tropics aborts on a missing DirectX
   function, and which graphics library the guest loads is
   unproven.** *(Medium)* The engine aborts on
@@ -863,6 +1115,7 @@ do not close the entry until they land.
   captured, so the fix location — staged-library machinery or
   override defaults — is undecided. Evidence:
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`.
+
 - **FD-18 — Quake III renders garbled or not at all, and the
   rejected texture format is still uncaptured.** *(Medium)*
   The sweep's second attempt showed a frozen, garbled smear;
@@ -875,6 +1128,7 @@ do not close the entry until they land.
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`.
   (The separate presents-stop symptom is FD-08's field
   symptom, not this entry.)
+
 - **FD-19 — The 64-bit Vulkan dispatcher is missing one entry
   its 32-bit sibling has.** *(Low)* There is no
   `vkGetPhysicalDeviceProperties2KHR` case in the 64-bit
@@ -1182,6 +1436,7 @@ do not close the entry until they land.
   wrong by the x87 register-cache defect
   FD-108 records, and with the values
   right the capture hears the tone.
+
 - **FD-86 — No Arial family on the 64-bit stack:
   family-name lookups for Arial find nothing.
   FIXED 2026-11-03 — see CL-64.** *(Was
@@ -1248,6 +1503,7 @@ do not close the entry until they land.
   full account in CL-42. What the test still fails on
   after this fix is FD-85's remaining defect, a
   different layer.
+
 - **FD-108 — 64-bit guest writes interleaved with
   repeated cross-module calls are lost to later
   reads: the memory reads back as zeros although
@@ -1373,6 +1629,7 @@ do not close the entry until they land.
   against a current build. Evidence: integration tree
   `test-results/demo-sweep-20261030/REPORT.md`;
   `wt-firstframe/test-results/firstframe-20261030/REPORT.md`.
+
 - **FD-21 — A Java program's runtime executes indefinitely
   without ever showing a window; loop or crawl unproven.**
   *(Medium)* The Java runtime's main thread stays running
@@ -1385,6 +1642,7 @@ do not close the entry until they land.
   Resume steps are recorded in the evidence, in order.
   Evidence: `docs/reports/mindustry-jvm-stall-20261030.md`
   (branch `lane-mindustry`).
+
 - **FD-22 — Reading the loaded-module list directly faults on
   a null entry.** *(Medium)* Reachable only after the FD-class
   interrupt fix on branch `lane-alkhaser-int2d` let the
@@ -1458,6 +1716,7 @@ do not close the entry until they land.
   `rseq` itself is unchanged — the loud refusal stands —
   and its prerequisite is filed as FD-109. Two findings
   from the lane are filed as FD-110.
+
 - **FD-109 — `rseq` cannot be served honestly until the
   64-bit signal-delivery path honours the abort
   contract.** *(Medium)* FD-23's entry records why `rseq`
@@ -1488,6 +1747,7 @@ do not close the entry until they land.
   — failing on the current code because delivery ignores
   the area entirely. Only then may 334 be reconsidered,
   as its own lane with its own host-measured contract.
+
 - **FD-110 — The 64-bit `pselect6` ignores its signal-mask
   argument entirely, and never validates its timespec.**
   *(Medium)* Found on the FD-23 residue lane
@@ -1514,6 +1774,7 @@ do not close the entry until they land.
   mask size and an out-of-range timespec answer as the
   host's do — failing on the current code because the
   argument is never read.
+
 - **FD-24 — No game controller exists for guests.** *(Medium)*
   The kernel half landed in round 3B: a guest evdev gamepad at
   `/dev/input/event5` (15 buttons, 6 axes, Xbox-360 identity
@@ -1552,6 +1813,7 @@ do not close the entry until they land.
   advertises none).
   Evidence: `docs/reports/fd24-gamepad-20261106.md`;
   `docs/known-gaps/coverage.md` (gamepad / XInput rows).
+
 - **FD-25 — The instruments that would find unknown gaps are
   only partly built.** *(Medium)* Proposed by the
   broad-conformance lane and not yet in place: a full-spec
@@ -1565,6 +1827,29 @@ do not close the entry until they land.
   and system-call censuses exist and have already caught real
   items (FD-22's class; FD-23). Evidence:
   `docs/reports/broad-conformance-analysis-20261030.md` §3.
+  *Progress 2026-11-07 (lane `lane-cpudiff`): the CPU
+  differential harness was repaired and expanded. As found on
+  the integration tip it did not link (11 undefined symbols),
+  its fault stub misclassified the INT3 snippet terminator so
+  7,539 of 7,567 cases failed spuriously, the string-op
+  builder was disabled, and three of its cases were defective
+  (one, `lodsb rep`, could never run: without checkMem the
+  native runner never patched the scratch pointer, so the
+  native side always crashed). Repaired baseline, measured:
+  4,409 forms / 7,567 cases. The lane then added control-flow
+  coverage (all 16 jcc in rel8+rel32 under eight flag
+  scenarios, jmp/call/ret/loop/jrcxz/jecxz, pushfq/popfq/
+  lahf/sahf) and string widths and repeat modes (all widths
+  of MOVS/STOS/LODS/SCAS/CMPS under REP, REPE/REPNE early
+  exits, DF=1 forms, single-step forms), and re-enabled the
+  original string cases: 4,494 forms / 7,920 cases, all
+  passing (`test-results/cpu-differential/`). The new
+  coverage immediately caught a real emulator defect — REP
+  LODS executed one iteration — filed as FD-193 (lane-local)
+  and fixed on this lane. Generated fuzzing, the rest of
+  this entry, remains open. Evidence:
+  `docs/reports/cpudiff-coverage-expansion-20261107.md`.*
+
 - **FD-26 — Interpreter throughput is the frame-rate ceiling,
   and the instrument to target the work does not exist.**
   *(Medium)* Measured: about 90% of a Portal-class frame is
@@ -1591,6 +1876,35 @@ do not close the entry until they land.
   the controlled figure). FD-26 stays OPEN: guest execution is
   still the ceiling and most reject families remain. Record:
   `docs/reports/perf-incdec-fastpath-20261105.md`.*
+
+  *Progress 2026-11-07 (lane `lane-fd26`): two more reject
+  families closed. The fast engine now compiles the scalar
+  SSE moves MOVSD (F2 0F 10/11), MOVSS (F3 0F 10/11) and the
+  MOVQ load (F3 0F 7E), and the packed FP bitwise-logic ops
+  ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD
+  (0F 54/55/56/57), instead of refusing every block
+  containing one. Both families are bit-exact by
+  construction (moves and bitwise ops only; scalar FP
+  arithmetic stays out of scope - its NaN / min-max
+  semantics are not bit-identical between the engines). On
+  the controlled guest bench (sseprobe64: 100k passes of an
+  8-wide scalar-move loop and an 8-wide packed-logic loop
+  per sample, warm medians, fresh session per engine mode,
+  modes 0,1,1,0), the fast engine went from no advantage on
+  the integration tip (scalar 967 / 416 ms against
+  interpreter 408 / 489 ms; logic 357 / 330 ms against
+  246 / 219 ms - the loops' blocks fell back whole) to
+  8.6-10.8x faster than the interpreter in the same runs
+  for the scalar loop (34 / 40 ms against 293 / 433 ms) and
+  2.7-6.0x faster for the logic loop (82 / 34 ms against
+  221 / 205 ms); battery and loop checksums identical
+  across every mode and build, interpreter medians
+  unchanged across builds (box load differed between the
+  two bench runs; the within-run ratios are the controlled
+  figures). FD-26 stays OPEN: guest execution is still the
+  ceiling; scalar FP arithmetic and most other reject
+  families remain. Record:
+  `docs/reports/fd26-scalar-logic-fastpath-20261107.md`.*
 
 - **FD-38 — Directory-notification (inotify) delivery:
   semantics fixed, the enablement park found (a poll/sweep
@@ -1679,14 +1993,36 @@ do not close the entry until they land.
   recorded, not silently dropped. Evidence:
   `docs/reports/tooling-honesty-20261030.md`
   (branch `lane-tooling-honesty`, item 6 follow-ups).
+  UPDATE (2026-11-06, branch `lane-vkhost-gen`): the
+  next-pointer-writer panic emissions named above are
+  discharged — the FD-28 fix (commit `26a90c5b6`) taught
+  the generator the shipped log-once-and-skip defaults
+  for `vulkanGetNextPtr`, `vulkanDeleteNextPtr` and
+  `vulkanWriteNextPtr`, and regeneration is
+  byte-identical. The two union types above remain open
+  here. Record:
+  `docs/reports/fd28-vkhost-generator-20261106.md`.
+
 - **FD-28 — One generated graphics file has silently diverged
-  from its generator.** *(Medium)* `vk_host.cpp` carries
+  from its generator. CLOSED 2026-11-06 — see CL-137
+  (provisional; settles at the next composition).**
+  *(Medium)* `vk_host.cpp` carries
   hand-written fixes (error propagation, map-failure handling,
   log-once unsupported operations) that a wholesale
   regeneration would destroy. It needs an owner: either the
   generator learns those implementations, or the file stops
   presenting itself as generated. Evidence:
   `docs/reports/tooling-honesty-20261030.md`.
+  Closure (2026-11-06, branch `lane-vkhost-gen`): the
+  generator learned the hand-written implementations — fix
+  commit `26a90c5b6`. Regenerating now reproduces
+  `vk_host.cpp` and every other generator output
+  byte-identically (sha256-verified against the committed
+  blobs), so the file's autogenerated header is true again
+  and regeneration is safe. Record:
+  `docs/reports/fd28-vkhost-generator-20261106.md`;
+  evidence: `test-results/fd28/`.
+
 - **FD-29 — A fresh checkout cannot fetch its runtime
   assets.** *(Medium)* The runtime-assets release address in
   `tools/browser/runtime-assets.json` returns 404, so every
@@ -1696,6 +2032,7 @@ do not close the entry until they land.
   needs an authenticated release step the box cannot perform.
   Evidence: `docs/reports/cleanup-bridges-20261030.md`
   (branch `lane-cleanup-bridges`, verification section).
+
 - **FD-30 — Five legacy test failures reproduce identically
   on the pristine integration tree.** *(Medium)* One spirv
   corpus conversion and four vkwebgpu frame/sampler cases fail
@@ -1703,6 +2040,7 @@ do not close the entry until they land.
   graphics area, currently unowned. Evidence:
   `docs/reports/tooling-honesty-20261030.md`
   ("for the coordinator").
+
 - **FD-31 — The 64-bit native test binary dies partway
   through a full run.** *(Low)* A single-process full run
   segfaults (exit 139) after ~33 passes; the crash
@@ -1724,6 +2062,7 @@ do not close the entry until they land.
   thread path still dies at 79 of
   111 on the same tree -- see
   CL-122.
+
 - **FD-32 — Multi-worker native suite runs die on the loaded
   box.** *(Low)* Runs at the harness's default worker count
   die with exit 139 inside the first few tests, in a
@@ -1784,6 +2123,7 @@ do not close the entry until they land.
   completes the same. Fixed on
   branch `lane-buildrel` -- see
   CL-123.*
+
 - **FD-33 — The native release build does not build.**
   *(Low)* Two pre-existing failures in the same build family:
   (a) the release application binary fails to link with
@@ -1820,6 +2160,7 @@ do not close the entry until they land.
   the guard, and the release
   configuration's full compile is
   error-free -- see CL-124.
+
 - **FD-34 — The debug (`-D_DEBUG`) compile of the instruction
   decoder is broken at baseline.** *(Low)* It fails on a
   switch/`-Werror` conflict, verified byte-identical on the
@@ -1827,6 +2168,7 @@ do not close the entry until they land.
   found it. Evidence:
   `docs/reports/cleanup-cpu-core-20261030.md`
   (branch `lane-clean-cpu`, "handed off").
+
 - **FD-35 — The staged Windows libraries are two different
   vintages.** *(Low)* The 64-bit set is Debian bookworm
   Wine 8.0; the 32-bit set is WineHQ 10.0. Targeted backports
@@ -1834,6 +2176,7 @@ do not close the entry until they land.
   standing source of missing-export and behaviour-difference
   risk (it is also why FD-02 needs its own route). Evidence:
   `docs/reports/loader-gaps-20261030.md`.
+
 - **FD-36 — Verification debts (unproven, not known-broken).**
   *(Low)* (a) Keyboard input at the Celeste title screen was
   never directly exercised in the live proof. (b) 39 exotic GL
@@ -1850,8 +2193,9 @@ do not close the entry until they land.
   `test-results/alkhaser-int2d/REPORT.md`;
   `docs/reports/cleanup-fault32-20261030.md` ("residual
   risks").
+
 - **FD-37 — A recorded "safe to drop" proof for a saved work
-  stash has rotted.** *(Low, operations)* The 2026-10-25 proof
+  stash has rotted. CLOSED 2026-11-06 — see CL-139.** *(Was Low, operations)* The 2026-10-25 proof
   that a particular stash could be dropped relied on a backup
   directory that no longer exists, and the stash list has
   since shifted — what the proof described is no longer what
@@ -1859,6 +2203,20 @@ do not close the entry until they land.
   proof; any future drop needs a fresh export first.
   Evidence: `docs/reports/docs-cleanup-20261030.md`
   (branch `lane-docsclean`).
+  Closed on `lane-ditems` (operations; no code change): a
+  fresh export of the repository's only stash
+  (`stash@{0}`, commit
+  `22998f7b8e551db6fa33794742c72a6b89f521e9`, "item 8
+  triangle fans in progress") now sits at
+  `/home/ubuntu/winbox-project/evidence/stash-export-20261106/`
+  — working-tree patch, index patch, and the untracked-files
+  commit's tree, with hashes and restore instructions in its
+  README. The stash itself was NOT dropped. The alkhaser
+  report the same review item named is index-linked from
+  `docs/INDEX.md`, and the 54 pre-existing broken links stand
+  accepted as recorded in
+  `docs/reports/docs-cleanup-20261030.md`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
 - **FD-58 — chmod reports success without changing
   anything. CLOSED 2026-11-01 — see CL-30.** *(Medium. Filed provisionally as FD-55 on
   the FD-38 lane branch; renumbered at this composition —
@@ -1967,6 +2325,7 @@ do not close the entry until they land.
   later ones in the shared process — see CL-08. Evidence:
   `docs/reports/fd06-portio-20261031.md`;
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+
 - **FD-42 — A suite run can flood gigabytes of crash
   diagnostics in the tail tests. CLOSED 2026-10-31 — see
   CL-09.** *(Was Medium)*
@@ -1985,6 +2344,7 @@ do not close the entry until they land.
   `docs/reports/fd06-portio-20261031.md`;
   `docs/reports/deploy-20261031.md`;
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+
 - **FD-43 — The FD-01 desktop-wait fix is present in no
   shipped binary; the measured first-visit "improvement"
   was a readiness false positive — ATTRIBUTED 2026-10-31; CLOSED 2026-10-31 (CL-10) once the hardening and the four-arm measurement it demanded were delivered (FD-47, lane-readygate).** *(Medium — a closed fix's evidence chain)*
@@ -2068,6 +2428,7 @@ do not close the entry until they land.
   `docs/reports/readiness-hardening-20261031.md`; data:
   `test-results/readygate-summary.json` and the per-boot
   `test-results/suite-readygate-<arm>-<i>/boot.json`.
+
 - **FD-44 — Guest platform threads can outlive the
   thread state they execute on. CLOSED 2026-10-31 — see CL-14.** *(Medium, emulator
   thread lifetime)* Characterized by the FD-41/FD-42 lane
@@ -2127,6 +2488,7 @@ do not close the entry until they land.
   (process lifetime under cross-thread delivery).
   Evidence: `docs/reports/fd44-thread-lifetime-20261031.md`
   (worktree `wt-fd44`, `test-results/fd44/`).
+
 - **FD-51 — The RIP sampler's background thread
   dereferences published CPU state with no lifetime
   hold.** *(Low–Medium, emulator thread lifetime; found
@@ -2154,6 +2516,7 @@ do not close the entry until they land.
   FD-51 at integration — FD-47 was taken on the
   integration branch by the readiness-certification
   entry.)*
+
 - **FD-52 — Cross-thread delivery pins the thread, not
   the process: the shared guest memory can still be
   freed under an in-flight frame build.** *(Low,
@@ -2182,6 +2545,7 @@ do not close the entry until they land.
   FD-52 at integration — FD-48 was taken on the
   integration branch by the restart-certification
   entry.)*
+
 - **FD-47 — The session-readiness certification accepted
   any hex value as a window handle, certifying sessions
   with no desktop as started. FIXED ON BRANCH
@@ -2244,6 +2608,7 @@ do not close the entry until they land.
   FD-47 at integration — FD-44 was already taken on
   the integration branch by the thread-lifetime entry
   above.)*
+
 - **FD-53 — The shipped support runtime archive contains
   two different files under one member name.
   CLOSED 2026-11-01 — see CL-24.** *(Medium)*
@@ -2287,6 +2652,7 @@ do not close the entry until they land.
   all) is unverified. FD-39's store covers the scalar path;
   this entry tracks the rest of the query surface. Evidence:
   `docs/reports/fd39-texparam-store-20261031.md`.
+
 - **FD-48 — After a stopgap session restart, a genuinely
   started session may never be certified by the hardened
   readiness test. CLOSED 2026-10-31 — see CL-15
@@ -2353,6 +2719,7 @@ do not close the entry until they land.
   in-page for the whole window (0 X11, no explorer). JS unit
   342/0; completeness 0 failures / 1 skip. Record:
   `docs/reports/fd48-restart-certification-20261031.md`.
+
 - **FD-50 — The native Vulkan bridge test harness aborts at
   the pipeline-cache assertions, so every later section of
   the harness never runs. CLOSED 2026-11-01 — see CL-20.** *(Medium, test harness)* Found
@@ -2400,6 +2767,7 @@ do not close the entry until they land.
   defect — the fn-921 abort and the silent skipping of
   every later section — is discharged. Evidence:
   `test-results/merge-fd50-fd55-fd62-20261101/`.
+
 - **FD-49 — A class of captured Godot shader modules fails
   translation on format-less storage images. CLOSED 2026-10-31 — see CL-16.** *(Severity
   unmeasured)* Found by the FD-16 lane (2026-10-31) while
@@ -2473,6 +2841,7 @@ do not close the entry until they land.
   compiles with the fix in shared code ("Browser export
   verified", wasm `35302eba…`, support archive
   `c4dbe35986a5…` unchanged).
+
 - **FD-55 — The Godot demo presents no frame in the
   browser path: the guest never reaches its first
   frame. Its startup is still inside engine
@@ -2830,6 +3199,7 @@ do not close the entry until they land.
   citations the fix's insertions shifted, browser build
   BUILD COMPLETE (wasm `df27c5e0…`). Record:
   `docs/reports/fd66-readback-disposal-20261101.md`.
+
 - **FD-62 — A class of real shader modules is refused
   over atomic operations performed through image texel
   pointers; the refusal now rests on the true, named
@@ -3911,6 +4281,7 @@ do not close the entry until they land.
   backing store itself.
   Record: docs/reports/fd81-temp-link-pattern-20261101.md;
   evidence test-results/fd81/ (on the lane tree).
+
 - **FD-82 — A 64-bit guest's file-backed mappings do
   not participate in FD-79's close-event deferral: the
   64-bit memory path materializes a file mapping as
@@ -4048,6 +4419,7 @@ do not close the entry until they land.
   Closed inline at composition; no CL number consumed,
   so the CL-42/CL-43 split coordinated for the two FD-87
   claims is undisturbed.
+
 - **FD-89 — The Godot demo's second-wave pipeline
   creations fail on sibling shader modules:
   capability 29 refused unnamed as a bare
@@ -4441,6 +4813,7 @@ do not close the entry until they land.
   lives, in its original form, on lane-fd87's
   register; this branch's copy carries the narrowing
   and supersedes it.
+
 - **FD-91 — The comment above the ADDR table in
   web/vk-protocol.mjs misstates the mapping it
   annotates.** *(Low, documentation. Filed by the
@@ -4464,6 +4837,7 @@ do not close the entry until they land.
   consequences stated) is queued here. Evidence:
   web/vk-protocol.mjs lines 89-90;
   `docs/reports/fd64-legacy-descset-20261102.md`.
+
 - **FD-92 — spirvfix's fixed output for the captured
   369,400-byte Godot module is not spirv-val clean:
   synthesized pointer types are spliced ahead of a
@@ -4654,7 +5028,6 @@ do not close the entry until they land.
   `docs/reports/fd92-fd93-readv-write-family-20261102.md`;
   evidence `test-results/fd92-93/`.*
 
-
 - **FD-101 — The 64-bit sendmsg path gathers
   segment data from unreadable guest buffers
   as fabricated zeros instead of answering
@@ -4711,7 +5084,6 @@ do not close the entry until they land.
   1024 answers -EMSGSIZE. Record:
   `docs/reports/fd101-sendmsg-efault-20261102.md`;
   evidence `test-results/fd101/`.
-
 
 - **FD-105 — The 64-bit sendmsg SCM_RIGHTS
   translation trusts the guest's cmsg_len:
@@ -4967,8 +5339,6 @@ do not close the entry until they land.
   `docs/reports/fd97-single-call-write-efault-20261102.md`;
   evidence `test-results/fd97/`.
 
-
-
 - **FD-94 — pwritev and pwritev2 are undispatched
   on the 64-bit dispatcher and absent from the
   32-bit syscall table. FIXED 2026-11-02 on
@@ -5058,7 +5428,6 @@ do not close the entry until they land.
   675/675 and x64 83/83, 0 FAILED
   (test-results/merge-batch3-20261102/).
 
-
 - **FD-96 — The 32-bit vectored write returns a
   later segment's error even after earlier segments
   wrote bytes; the host returns the bytes.
@@ -5087,8 +5456,6 @@ do not close the entry until they land.
   `d528d792b` (fix) — see CL-60. Record:
   `docs/reports/fd94-fd96-pwritev-writev-20261102.md`;
   evidence `test-results/fd94-96/`.
-
-
 
 - **FD-98 — The 32-bit dispatcher's preadv (333)
   and preadv2 (377) are null table slots and
@@ -5148,7 +5515,6 @@ do not close the entry until they land.
   `docs/reports/fd98-preadv32-20261102.md`;
   evidence `test-results/fd98/`.
 
-
 - **FD-99 — The 64-bit dispatcher's preadv2
   refuses the file-position offset and one
   defined flag the host accepts. FIXED
@@ -5189,7 +5555,6 @@ do not close the entry until they land.
   are recorded there; the validation-order
   half of the restructure is FD-100's fix
   (CL-63).
-
 
 - **FD-100 — The positioned vectored family's
   v2 flags check runs ahead of the iovcnt range
@@ -5502,6 +5867,28 @@ do not close the entry until they land.
   `docs/reports/fd115-fd165-prehandshake-surfacing-20261105.md`;
   evidence `test-results/fd115/` — see
   CL-127.
+  **Update (batch-11 composition, 2026-11-07):** the
+  deploy-series tally since the last in-entry update:
+  batch-7 deploy added 5 clean first-visit x86 starts
+  (tally 1 wedged in 40), batch 8 added 5 (1 in 45),
+  batch 9 added 5 (1 in 50). The batch-10 deploy's
+  first x86 series went 3/5: two starts died on a
+  delivered memory fault at the wine-preloader spawn
+  transition; an adjudication re-run about 80 minutes
+  later went 5/5, so the tally stands at 3 wedged in
+  60 measured first-visit x86 starts. One further
+  occurrence of the same class was preserved in a
+  suite boot (the FD-169 remainder lane's first 32-bit
+  suite attempt, on the shipped batch-10 build) — a
+  suite boot, not a certification start, so it is
+  counted as a class occurrence, not in the tally.
+  The mechanism behind the batch-10 instances is now
+  identified and fixed in batch 11 — see FD-201
+  (CL-165): the process-table scan behind sysinfo
+  raced table growth and read freed memory at process
+  starts. The 2026-11-02 instance's fault-loop shape
+  remains unattributed, as recorded above. The entry
+  stays closed on its surfacing term (CL-127).
 
 - **FD-123 — A zero-length plain write on
   a 64-bit datagram socket queues nothing,
@@ -5616,7 +6003,6 @@ do not close the entry until they land.
   emulator's standing -ENOTCONN for the
   zero-length case with this entry as the
   reference. Filed, not fixed.
-
 
 - **FD-116 — sys_recvmsg64 reports a
   fabricated source name for queued
@@ -7273,6 +7659,7 @@ do not close the entry until they land.
   capture's silent header guard — is
   filed as FD-155. Fixed on branch
   `lane-fd153` — see CL-104.
+
 - **FD-154 — Five browser-suite tests fail
   identically on the batch-4 base and the
   batch-5 composed tree in the current suite
@@ -8262,6 +8649,7 @@ do not close the entry until they land.
   msvcp140 `?_Throw_Cpp_error@std@@YAXH@Z`, is neither implemented
   nor proven unreachable and is refiled as FD-172. Proof and full
   account: `docs/reports/fd167-demo-reachable-stub-contracts-20261105.md`.
+
 - **FD-172 — msvcp140 `?_Throw_Cpp_error@std@@YAXH@Z` remains an
   unimplemented stub: no authoritative semantics for it exist in any
   open source consulted.** *(Low. Filed by the FD-167 lane,
@@ -8278,6 +8666,7 @@ do not close the entry until they land.
   enumeration, or a behavioural reference from the real DLL), proven
   by a guest test like FD-167's; until then it stays a stub and the
   census keeps it counted. Filed, not fixed.
+
 - **FD-168 — win32u.dll carries 2,037 validated unimplemented stubs
   (926 x86-64 + 1,111 i386): 1,572 NtUser*/NtGdi* names plus 465
   composition/display/Dxgk-family names a program can call and be
@@ -8359,6 +8748,96 @@ do not close the entry until they land.
   because the shipped i386 DLL is that build. FD-168 stays open at
   2,023 with these dispositions. Record:
   `docs/reports/fd168-win32u-drawdown-20261105.md`.
+  *Addendum — second draw-down (lane-fd168-slice2, 2026-11-07;
+  partial, all numbers lane-local until the batch-10 composition
+  audit settles them; no CL claimed — FD-168 stays open).* Five
+  more x86-64 win32u placeholders became real syscall
+  implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice2.patch`):
+  NtUserGetQueueStatusReadonly, NtUserIsTopLevelWindow,
+  NtGdiCombineTransform, NtGdiGetCharSet, NtGdiPolyTextOutW. Each
+  is built entirely from machinery this tree already has (the
+  existing `get_queue_status` server request issued with
+  `clear_bits = 0`; the `NtUserGetAncestor(GA_ROOT)` identity
+  window.c already uses internally; the existing
+  `combine_transform` helper; the charset `NtGdiGetTextCharsetInfo`
+  computes; a loop over the existing `NtGdiExtTextOutW` mirroring
+  gdi32's own PolyTextOutW) — no new server requests, no ported
+  FIXME semi-stubs. Census effect: x86-64 win32u stubs 912 -> 907;
+  i386 unchanged at 1,111; FD-168 total 2,023 -> 2,018; baseline
+  named-stub total 31,838 -> 31,833 with only x64/win32u.dll
+  changed across all 1,171 tables. Proof: guest test
+  `win32u-fd168-slice2` PASS — 13 checks, all ok=1, RESULT 0 in
+  the preserved console log (the posted-message changed bit
+  survives two readonly reads and is consumed only by the clearing
+  sibling call); the same fixture on the pre-change wine64.zip
+  fails all 13 checks with the Wine stub exception (RESULT 13).
+  Census `--check` exit 0; completeness checker +
+  `bootstrap.py --check` 0 failures; dist build "Browser export
+  verified"; JS unit suite 354 passed / 0 failed. Legacy suite
+  stopped by the lane during the 38th of 45 browser tests (a CPU
+  benchmark still mid-run after ~30 min of contention): 36 of 37
+  completed browser tests passed; the one failure (input-gamepad)
+  fails identically on the pre-change runtime and belongs to the
+  FD-189/FD-194 gamepad blockage, not this change. Only the
+  win32u pair was re-pinned — a from-scratch backports rebuild
+  does not reproduce the other 40 outputs' reviewed bytes (they
+  came from iterative lane builds), so they were restored
+  untouched; the composition must carry this lane's
+  win32u.dll/win32u.so, or rebuild them from the patch, onto
+  whichever runtime vintage it settles. Candidate families
+  re-examined and still refused are listed in the record. FD-168
+  stays open at 2,018. Record:
+  `docs/reports/fd168-win32u-drawdown2-20261107.md`.
+
+  *Addendum — third draw-down (lane-fd168-slice3, 2026-11-07;
+  partial, the entry stays open).* Four more x86-64 win32u names
+  are real implementations in the Wine 8 backports build (patch
+  `tools/buildWine/patches/wine8-win32u-fd168-slice3.patch`):
+  NtUserDrawCaption (forwards to the tree's own full caption
+  painter NtUserDrawCaptionTemp with the window's own
+  font/icon/text, flags masked to the public caption bits
+  0x103f), NtGdiDrawEscape (the no-output form of the existing
+  NtGdiExtEscape wrapper), NtGdiPolyPatBlt (per-entry composition
+  of brush selection and NtGdiPatBlt with kernel semantics:
+  invalid-brush entries skipped silently, invalid DC returns
+  FALSE, count zero is a TRUE no-op), and
+  NtUserWindowFromPhysicalPoint (a new syscall-table entry
+  forwarding to NtUserWindowFromPoint). Runtime restaged on the
+  current vintage: wine64.zip `4867cf75…`, release
+  `runtime-assets-20261107-fd168s3`; the census regenerated in
+  the same change: x64 win32u named stubs 912 -> 908, the only
+  table changed across 1,171, FD-168 total on this branch
+  2,023 -> 2,019. (The second draw-down's five names live on
+  lane-fd168-slice2, not in this branch; the combined count when
+  both compose is 2,014.) Proof: guest fixture
+  `tools/guest-fixtures/win32u-fd168s3.c` (19 checks) against a
+  verified build of the branch tip — RESULT 0 twice, every check
+  ok=1; against the previous shipped runtime (wine64.zip
+  `133bfd70…`) RESULT 18, every new-export check failing at the
+  stub guard. One fixture repair was needed first and is
+  recorded in the lane record: the caption checks as committed
+  demanded nonzero returns from DrawCaption, which this tree's
+  caption painter does not produce in this environment on
+  either runtime; the repaired checks assert exact agreement
+  with the reference instead (pixel difference 0) — the
+  return-value divergence itself is filed below as FD-201.
+  Checks: JS unit on the built tree 354 passed / 0 failed;
+  checking-queue pipeline 57 on the fixture-repair tip is the
+  standard shape (verify-source exact; citations 0; js-unit
+  352/2, only the two known bare-checkout artifacts; js-legacy
+  0; native 692/0 and 116/0; run-native 0). FD-168 stays open
+  at 2,019 on this branch. Record:
+  `docs/reports/fd168-win32u-drawdown3-20261107.md`.
+  **Composition note (batch 11, 2026-11-07):** slices
+  2 and 3 are composed together in this batch: the
+  combined remaining count for this entry is 2,014
+  (2,023 − 5 − 4). The two slices' patch files sit
+  side by side in `tools/buildWine/patches/` and the
+  shipped win32u pair is rebuilt with both applied
+  (see the batch-11 merge record for the pair's
+  hashes and the census proof).
+
 - **FD-169 — The shipped Microsoft C/C++ runtime DLLs carry 10,698
   validated unimplemented stubs: msvcp60–140, msvcr70–120 (+_app),
   ucrtbase, concrt140, msvcm80/90 and the api-ms-crt set.** *(Medium.
@@ -8399,6 +8878,36 @@ do not close the entry until they land.
   lane) covers a neighbouring gap the census cannot see: complex
   helpers missing outright from the versioned DLLs' export lists.
   This entry stays open for the remainder families above.
+  Progress (2026-11-07, lane-fd169-remainder): two more
+  remainder families are discharged — exactly 100 further stub
+  slots (resolved count 1,634 -> 1,734; family remainder 9,061
+  -> 8,961; census totals 33,072 -> 32,972 stub slots, the
+  baseline diff being exactly the 100 named slots with zero
+  additions). msvcp140_2 is now fully implemented (44 x86-64 +
+  42 x86): the complete C++17 special-math set, hand-written
+  and validated against 50-digit mpmath references over a
+  2,703-case grid (worst relative error 1.6e-13 outside three
+  documented elliptic-third-kind pole-cancellation points at
+  3.5e-14 absolute). msvcp140_atomic_wait gains 9 x86-64 + 5
+  x86 slots backported from upstream Wine: the execution
+  wait/wake pair, the shared-mutex pair, the CRT allocation
+  pair, and the three tzdb deleters (real upstream memory
+  management over the upstream layouts). Proven at guest level
+  by fd169r-smf64 / fd169r-smf32 (RESULT 0 on the new runtime;
+  the 64-bit fixture aborts at the first stub call on the
+  retained pre-change runtime — negative control). What
+  remains, each with its reason in
+  docs/reports/fd169-remainder-20261107.md: the four tzdb
+  getters (no time-zone database data source in the browser
+  build; an honest empty answer would be factually wrong),
+  the indirect-wait / compare_exchange_128 family (stub even
+  upstream), concrt140 + the same names in msvcr100/110/120,
+  msvcp60/70/71 legacy STL ABIs, the msvcp90-source
+  remainders, msvcm80/90, vcruntime140's exception machinery,
+  the msvcrtd debug heap, the __crt* plumbing, and the short
+  unpinned-contract tail. This entry stays open for those
+  families.
+
 - **FD-170 — Ninety shipped DLL tables are ≥90% unimplemented stubs
   (6,734 named stubs, excluding the win32u and CRT families filed
   separately): entire subsystems a program can load but never use —
@@ -8548,7 +9057,6 @@ do not close the entry until they land.
   reasons); final closure settles at the merge audit, which must
   also reconcile the propsys/mf overlap with FD-167's pins (the two
   lanes' backports touch disjoint functions in those DLLs).
-
 
 - **FD-175 — The JIT statistics text export truncates at 3072
   bytes, so on any full Wine boot the statistics JSON is
@@ -9013,6 +9521,7 @@ do not close the entry until they land.
   provisional: sibling branches carry provisional
   filings through FD-172, and the composition audit
   settles final numbers by substance.
+
 - **FD-185 — The Emscripten `test` target does not
   compile: six test units need the multi-threaded
   configuration the target never defines.** *(Medium,
@@ -9141,6 +9650,7 @@ do not close the entry until they land.
   on the second half of its closing terms: the FD-24 witness
   does not yet see the controller, because the guest enumerates
   no HID device at all — that remainder is filed as FD-195.
+
 - **FD-189 — The shipped 64-bit guest prefix has no
   PlugPlay or bus-driver registration. FIXED 2026-11-06 — see CL-135
   (provisional; settles at the next composition).** *(Was Medium)*
@@ -9236,6 +9746,7 @@ do not close the entry until they land.
   by a run with the flag set printing sane per-process totals.
   Found while proving the FD-176 environment fix; record:
   `docs/reports/fd176-invalidate-gate-link-20261106.md`.
+  CLOSED — see CL-143. Fixed on branch `lane-fd193`, commit `f5fac0447`; see CL-143.
 
 - **FD-194 — The 64-bit PlugPlay service is registered but fails
   to start: services.exe reports error 1053.** *(Medium)* The
@@ -9253,9 +9764,38 @@ do not close the entry until they land.
   `PlugPlay present state=4`. Found by the FD-189 lane, 2026-11-07;
   evidence `test-results/fd189/green64-fd189-lines.log` and the
   green64 guest console.
+  CLOSED — see CL-144. Fixed on branch `lane-fd194`, commit `f05e260f8`; see CL-144.
 
 - **FD-195 — The guest enumerates no HID device at all with a simulated gamepad installed.** *(High)*
-  With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.
+  With a simulated gamepad installed and the FD-188 driver-load fix in place, the guest's SetupDi HID enumeration finds 0 HID devices. The WineBus service runs (state 4), the root WINEBUS device exists, the five driver .inf files are present in `C:\windows\inf\`, and setupapi reads `winehid.inf` and enumerates compatible drivers for the one PnP-enumerated WINEBUS device (VID_845E&PID_0001). The gamepad device (VID_045E&PID_028E) is never enumerated as a device at all, and only one of the two kernel-created WINEBUS child devices is PnP-enumerated. So winebus's Unix-side device discovery does not surface the gamepad, and the function-driver install for the one enumerated HID PDO does not complete to a started HID device. Lead: a single `BW64-FAIL netlink-recvfrom flags=0x22 outcome=returned-EINVAL` appears in the witness session — libudev's monitor uses netlink for hotplug events, and if recvfrom fails winebus never learns about devices that appear after its initial scan. Closing terms: the FD-24 witness sees the controller (XInput slot=0 CONNECTED + DINPUT devices=1). Found by the FD-188 lane, 2026-11-07; evidence `test-results/fd188/hid-enum-run2.log` and `witness-run2.log`; record `docs/reports/fd188-drivers-initialise-20261107.md`.record `docs/reports/fd188-drivers-initialise-20261107.md`.
+  Progress note (FD-195 lane, 2026-11-07, read from the batch-10
+  gate's preserved session logs - same product contents as the
+  live build): the host feed is live (`Gamepad feed: controller
+  'Standard Gamepad' opened (instance 0)`); the WineBus service
+  runs (state 4); exactly one WINEBUS child device is created in
+  a session - `WINEBUS\VID_845E&PID_0001`, is_gamepad=0, no &MI_
+  suffix, default serial - which is not the gamepad; the gamepad
+  (VID_045E&PID_028E) is never enumerated as a device at all.
+  Each session carries exactly one BW64-FAIL line
+  (`netlink-recvfrom flags=0x22`). Per the shipped Wine 10
+  winebus source, if netlink monitor creation fails the udev
+  backend aborts before its initial enumeration, so no udev
+  device can appear; the emulator's netlink recvfrom rejects
+  flags beyond MSG_DONTWAIT|MSG_NOSIGNAL with EINVAL
+  (source/kernel/knetlink.cpp), which is the filed lead - but
+  the backend's own traces do not appear in these session
+  consoles, so the monitor-abort step is not yet proven from a
+  CLOSED on the lane - see CL-145 in section C. The witness
+  signature (XInput slot=0 CONNECTED + DINPUT devices=1) is met
+  on both architectures and the standing input-gamepad test
+  passes end to end on both; the defect was eleven stacked
+  layers, each masking the next - full account in
+  `docs/reports/fd195-bus-discovery-20261107.md`.
+
+  log. Fresh probe runs on the lane's own build are still owed:
+  two attempts (15-minute and 60-minute slot budgets) starved
+  behind the build relay without booting.
+  CLOSED — see CL-145. Fixed on branch `lane-fd195-bus`; see CL-145.
 
 - **FD-196 — FD-188's tightened prefix/runtime validation left
   the packaging test fixtures behind: `test_prepare_prefixes.py`
@@ -9302,6 +9842,7 @@ do not close the entry until they land.
   their own commits and run to verdicts. Evidence: the
   pipelines' own verify-source logs under
   `checks/evidence/pipeline-*/queue-logs/`.
+  Also filed by the FD-28 lane as its lane-local FD-194 (2026-11-07); that filing duplicates this entry and was deduped at the batch-11 composition.
 
 - **FD-198 — The known-gaps audit's allowlist covered only
   one of the gate script's two documentary mentions of the
@@ -9356,6 +9897,1360 @@ do not close the entry until they land.
   merge lane, 2026-11-07, from FD-199's byte-level repair
   evidence.
 
+- **FD-224 — Browser probes starve behind a build queue:
+  no probe can start while any build is queued, so probe
+  slot counts do not bound browser-test throughput on a
+  busy box.** *(Medium)* Two serial build gates stand
+  before any browser starts: `acquireProbeSlot` refuses
+  acquisition while a `build-pending` file names a live
+  pid, and `tools/bw64-build.sh` claims that file when a
+  build starts *waiting* — before it holds the build
+  lock — removing it only at its own exit, so a relay of
+  queued builds holds the claim continuously; a probe
+  that does acquire then waits again in setup for the
+  build lock itself (`waitForBuildIdle`, 600 s default).
+  Measured 2026-11-07 on the 20-lane wave (project work
+  on cores 0–2, a Minecraft server on core 3): the claim
+  was held without a usable gap from 04:24Z to past
+  06:11Z across at least six builds (the DNS lane's, the
+  batch-10 merge build, an FD-26 JIT build, two FD-194
+  builds, and others), and three suite boots
+  (boot64-smoke twice, boot32-vkboot once) each failed
+  at the 900 s slot wait — 901729 ms, 900490 ms,
+  901735 ms — *without testing anything*, while other
+  lanes' probes queued behind the same relay. One probe
+  did slip through a handoff gap, acquired, passed the
+  build-idle wait, and booted the guest, proving the
+  gates pass when a gap aligns. Net effect: on a
+  build-saturated box, browser testing is serial-to-zero
+  no matter how many probe slots exist; raising slot
+  defaults cannot parallelize anything until probe
+  starts are possible during a build queue (for
+  example, claiming `build-pending` only while holding
+  the build lock, or reserving a bounded probe window).
+  Slot defaults stay heavy 2 / light 2 — the 2×
+  verification in `web/tests/parallel-probe-README.md`
+  remains the highest proven probe concurrency, and the
+  3× measurement under the current core split is still
+  owed (apparatus preserved with the record). Found by
+  the probe-parallel lane, 2026-11-07; evidence
+  `docs/reports/probe-parallel-20261107.md` and
+  `test-results/probepar/` on branch
+  `lane-probe-parallel`. (Number lane-local; the next
+  composition audit settles it.)
+
+- **FD-225 — The D22 JVM-ergonomics probe's settings run
+  waits for a heap-size label the bundled JDK never prints,
+  so a run that captured the value reports a timeout.**
+  *(Low — test tooling. Filed by the D22 lane, 2026-11-07.)*
+  The probe (`web/tests/d22-jvm-ergonomics.mjs`) gated its
+  `-XshowSettings:all` run on the literal `Maximum heap size`
+  and the `openjdk version` line. The Mindustry archive's
+  bundled JDK 25 prints the value as `Max. Heap Size
+  (Estimated):` inside its VM settings section, and prints
+  the version line only after every settings section; the
+  sections stream slowly enough through the guest console
+  that the trailing sections had not printed when the run's
+  900 s deadline expired — while the heap line itself had
+  been in the stream since guest time 390.0 s
+  (`test-results/d22-mindustry-20261106/console-settings.log`
+  line 5956). The run therefore recorded a false timeout
+  (markerHit=false) over a successful capture. FIXED on
+  `lane-d22-mindustry` by `13d57b2a2`: the matcher keys on
+  the VM settings section header and the heap-size label
+  the JDK actually prints; both corrected patterns match
+  the preserved settings stream exactly once each. The
+  closure number settles when the batch composes. Record:
+  `docs/reports/d22-mindustry-ergonomics-20261107.md`.
+  CLOSED — see CL-162.
+
+- **FD-212 — Twelve `getRamPtr` call sites in the X11 bridge
+  dereference the result for guest-controlled structs without
+  checking the refusal case, so a page-straddling, unmapped or
+  read-only guest struct crashes the host.** *(High — filed
+  and FIXED on this branch, see CL-149.)* `KMemory::getRamPtr`
+  returns nullptr when the page is unmapped or not writable
+  or the span crosses a page boundary. An audit of all 19
+  call sites in `source/x11` (and 0 in `source/x11wire`)
+  found 12 that pass guest-controlled addresses (in two
+  cases also a guest-controlled element count) and
+  dereference the result unchecked:
+  `XSetWindowAttributes::get` — which also handed the null
+  to `ChangeWindowAttributes`, whose `setAttributes` call
+  dereferences it — `x11_FreeModifierMap` (no null-argument
+  guard either), `x11_XRRFreeCrtcInfo`,
+  `x11_XRRFreeOutputInfo`, `x11_XRRFreeScreenResources`
+  (the struct and its modes array), `x11_XRRGetCrtcInfo`
+  (the struct and its modes array), `x11_XRRGetOutputInfo`,
+  `x11_XRRSetCrtcConfig` (the struct and `modes[modeId-1]`),
+  and `x11_XRRFreeProviderResources`. The remaining 7 sites
+  pass emulator-allocated addresses (fresh `KProcess::alloc`
+  results) whose spans cannot straddle or be unmapped, and
+  are recorded in the Appendix. Guest struct fields are now
+  read through the checked accessor (`readd` at
+  `offsetof`), which takes the guest-fault path for a bad
+  pointer like the rest of the file; `get()` falls back to
+  its checked read when `getRamPtr` refuses; the
+  null-attributes case in `ChangeWindowAttributes` returns
+  BadValue (Success for a zero mask). Proof: four new native
+  tests drive the real int 0x99 handlers with
+  page-straddling structs in a forked child — on the
+  unfixed code all four fail (the emulator logs the
+  `getRamPtr` refusal at the exact straddle addresses,
+  `addr=0x10000FF8 len=48` and `addr=0x10000FFC len=8`, and
+  the handler children wedge on the null dereference and
+  are killed; `get()` returned the null instead of falling
+  back), and on the fixed code all four pass. Fix commit
+  `cd030f389` on base `faf95d26c`. Record:
+  `docs/reports/x11-getramptr-audit-20261106.md`; evidence
+  `test-results/x11-getramptr-audit/` (`red-601..604.log`,
+  `green-601..604.log`). Found by the
+  x11-getramptr-audit lane, 2026-11-06. *(Lane-local
+  numbers: FD-212 and CL-149; both settle at the next
+  composition.)*
+  CLOSED — see CL-149.
+
+- **FD-213 — REP LODS executed only one iteration in the
+  64-bit interpreter.** *(Low; lane-local number from
+  `lane-cpudiff`, to be renumbered at composition)* The LODS
+  handler (dsp_62) loaded a single element regardless of the
+  REP prefix, under a comment asserting REP has no effect on
+  LODS; hardware repeats the load until the count register
+  reaches zero, leaving the last element in the accumulator.
+  Found 2026-11-07 by the new REP-width string cases of the
+  CPU differential harness (native RCX 3→0 and last-element
+  accumulator vs emulator RCX unchanged and first element,
+  at all four operand widths). Fixed on `lane-cpudiff` in
+  commit `35889ff29`: the handler now repeats with the same
+  partial-progress fault protocol as MOVS/CMPS. Proof:
+  `test-results/cpu-differential/` — full suite 7,920/7,920
+  cases pass including `lods rep-{b,w,d,q}`. Closing terms:
+  composition takes the fix and the harness stays green.
+  CLOSED — see CL-150.
+
+- **FD-216 — The section-14.3 block-invalidation gate does
+  not build at the integration tip: its fixed source list
+  no longer links.** *(Medium)* `scripts/build-jit-wasm.sh`
+  compiles the invalidation differential from a fixed file
+  list (cpu64.cpp, jit64.cpp, jit64wasm.cpp,
+  common_lock.cpp, ripSampler.cpp, kmemory64.cpp,
+  bstring.cpp, fpu + softfloat + the test). At `faf95d26c`
+  the link fails with undefined references to
+  `KSystem::guestCpuCount()` (defined in
+  `source/kernel/ksystem.cpp`),
+  `FsOpenNode::noteMappedPagesReleased(unsigned int)`
+  (defined in `source/io/fsopennode.cpp`) and
+  `bwCurrentThreadRegistryLookup()` (defined in
+  `source/kernel/kthread.cpp`) - none of the three files
+  is in the list. Verified baseline-identical: a pristine
+  checkout of the tip fails the same way (phase-1 873/0 and
+  the generated-emitter check pass first), so the gate has
+  been un-runnable since whichever change added the
+  references without updating the list; the FD-176
+  invalidation proof (54/0, byte-identical logs) predates
+  the breakage. Effect: the script exits there, so a plain
+  gate run also skips the 314-test emitted-code fixture
+  stage behind it. Closing terms: the gate builds and the
+  invalidation differential runs green at the tip again
+  (fix the list, or move the three definitions onto files
+  the list already carries). Found by lane `lane-fd26`,
+  2026-11-07; evidence
+  `test-results/fd26/inv_build_interp.log` (pristine-tip
+  run) and the lane record. *(Lane-local number; settles
+  at the next composition audit.)*
+  CLOSED — see CL-156.
+
+- **FD-217 — A guest double printed with `%.3f` comes out
+  as ~1e66 garbage after the first print in a process, in
+  both engines.** *(Low)* The sseprobe64 bench fixture
+  originally computed its millisecond figure as a double
+  (`(double)(end-start) * 1000.0 / (double)freq`) and
+  printed it with `%.3f`. On the integration tip's build,
+  the first sample in each process printed sane (504 ms,
+  530 ms) and every later sample printed ~1e66-1e68
+  garbage - interpreter and fast-engine sessions alike -
+  while the same fixture's integer output and its
+  double-sweep checksum stayed stable and correct. Which
+  step is wrong (the int64-to-double conversion, the
+  multiply/divide, or the C library's `%f` path, and
+  whether the trigger is the second print or the packed
+  logic loop's code) was not isolated. The fixture now
+  reports integer milliseconds plus the raw tick delta.
+  Closing terms: a minimal fixture isolates the failing
+  step and the step is fixed or proven correct. Found by
+  lane `lane-fd26`, 2026-11-07; evidence
+  `test-results/fd26/console-fp-garbage-partial.log` (the
+  killed first bench run's console: first sample sane,
+  everything after garbage). *(Lane-local number; settles
+  at the next composition audit.)*
+
+- **FD-231 — On the 64-bit side `clock_gettime` ignored the
+  clock id entirely.** *(Medium)* Every clock — including
+  invalid ids 10, 12, −1 and 99 — returned wall-clock time with
+  a success answer, so a guest asking for a monotonic or CPU
+  clock silently received realtime, and nonsense ids were
+  indistinguishable from real ones. The host's raw answers:
+  ids 0–9 and 11 are valid, each in its own domain (realtime
+  family, monotonic family, process CPU time, thread CPU
+  time); anything else answers −EINVAL ahead of the result
+  pointer check. Fixed on branch `lane-timing-waits`:
+  `sys_clock_gettime64` validates through the shared
+  `KSystem::isSupportedClockId` and reports per-clock domains
+  mirroring the 32-bit side. Proof: guest probe
+  `guestprobeC-run1` rows (clk10/12/−1/99 → −EINVAL, clk99
+  with a null result pointer → −EINVAL, null pointer with a
+  valid clock → −EFAULT, clocks 2/3/7/8/9/11 → 0, monotonic
+  below realtime) against `hostref-timing.txt`; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-168.
+
+- **FD-232 — `clock_getres` answered for any clock, claimed
+  the wrong resolution, and wrote through a null pointer.**
+  *(Medium)* All three implementations (32-bit, 32-bit
+  time64, 64-bit) returned success for invalid ids such as
+  99; the 32-bit pair reported 1 ms for every clock and the
+  64-bit case 1 ns for every clock; a null result pointer
+  was written through. The host's raw answers: an invalid
+  id answers −EINVAL; a null pointer is accepted and
+  nothing is written; fine clocks report 1 ns and the
+  coarse clocks (5, 6) report 1,000,000 ns. Fixed on branch
+  `lane-timing-waits` on all three implementations. Proof:
+  guest probe `guestprobeC-run1` clock_getres rows; suite
+  tests `testTimingWaits32` / `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-169.
+
+- **FD-233 — An interrupted sleep never wrote its remaining
+  time.** *(Medium)* `nanosleep`'s second argument and
+  `clock_nanosleep`'s fourth are where the host reports how
+  much of the sleep is left when a signal interrupts it;
+  guests (and libc retry loops) rely on it. On the 64-bit
+  side the dispatcher did not even pass the address; on the
+  32-bit side `KThread::clockNanoSleep` ignored it and
+  `KThread::nanoSleep` had no concept of it. An interrupted
+  sleep answered −EINTR with the caller's buffer untouched.
+  Fixed on branch `lane-timing-waits`: the wrappers compute
+  the remainder from the requested duration minus the
+  elapsed time of the call and write it on −EINTR, for
+  relative sleeps only (the host writes nothing for
+  TIMER_ABSTIME sleeps). Proof: the mechanism is in the fix
+  commits; the interrupt-driven shapes cannot be driven
+  synchronously in the native harness (a guest handler is
+  never called — FD-251), so the regression vehicle is the
+  guest probe family in `test-results/timing-waits/`, and
+  the limitation is recorded in
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-170.
+
+- **FD-234 — 32-bit `clock_nanosleep` refused TIMER_ABSTIME
+  outright and validated nothing.** *(Medium)*
+  `KThread::clockNanoSleep` answered −EINVAL for ANY
+  nonzero flags, so the valid TIMER_ABSTIME bit made every
+  absolute sleep fail; the wrappers read the request fields
+  before any check, so a null request read guest address 0
+  and an out-of-range nanosecond field was silently
+  accepted. Fixed on branch `lane-timing-waits`: the
+  wrappers answer −EFAULT for a null request and −EINVAL
+  for out-of-range fields, convert TIMER_ABSTIME against
+  the same clock source `clock_gettime` reports, answer
+  −EOPNOTSUPP for CLOCK_THREAD_CPUTIME_ID, and route
+  through the interruptible sleep path. Proof: suite test
+  `testTimingWaits32` (including an absolute monotonic
+  sleep that elapses), guest probe rows in
+  `guestprobe-run*`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-171.
+
+- **FD-235 — 64-bit `clock_nanosleep` refused flag bits the
+  host ignores, refused the process CPU clock, and used a
+  different monotonic base than `clock_gettime`.**
+  *(Medium)* Any flags value with bits outside TIMER_ABSTIME
+  answered −EINVAL (the host, strace-verified, ignores the
+  other bits); clock 2 answered −EINVAL (the host accepts
+  it); clock 3 answered −EINVAL (the host answers
+  −EOPNOTSUPP); and the TIMER_ABSTIME conversion used
+  `getMilliesSinceStart` while `clock_gettime` reported
+  `getMicroCounter`, so a deadline and a clock reading did
+  not share a domain. Fixed on branch `lane-timing-waits`.
+  Proof: guest probe `guestprobeC-run1` clock_nanosleep
+  rows (clk3 → −95, clk2 → 0, flags 2/−1 → 0, absolute
+  monotonic and realtime sleeps elapsing ~40 ms against a
+  40 ms target); host rows in `hostref-timing.txt` and
+  `hostref-timing3.txt`; suite test `testTimingWaits64`.
+  Record: `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-172.
+
+- **FD-236 — `getrusage` accepted any `who`, accepted a
+  null usage pointer, and (64-bit) reported zeros.**
+  *(Medium)* The host validates `who` first (0, −1, 1
+  valid; anything else −EINVAL) and then faults a null
+  usage pointer. The 64-bit case zero-filled the structure
+  and answered 0 for every input. The 32-bit side treated
+  any `who` ≥ 1 as RUSAGE_THREAD and any negative value as
+  RUSAGE_CHILDREN, and wrote through a null pointer. Fixed
+  on branch `lane-timing-waits`: both widths validate in
+  the host's order and report real summed thread CPU times
+  (new shared helper `KProcess::cpuTimesMicroSeconds`).
+  Proof: guest probe `guestprobeC-run1` getrusage rows;
+  suite tests on both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-173.
+
+- **FD-237 — Interval timers: negative seconds were
+  clamped instead of refused, the 32-bit side validated
+  nothing, and `getitimer` checked its pointer before
+  `which`.** *(Medium)* On the 64-bit side a setitimer
+  value of −1 seconds was read as unsigned and clamped to
+  ~49 days; the 32-bit `KProcess::setitimer` applied the
+  same clamp with no field validation at all; and
+  `getitimer` answered −EFAULT for a null result pointer
+  even when `which` itself was invalid, where the host
+  answers −EINVAL (the `which` check precedes the pointer
+  check). Fixed on branch `lane-timing-waits` on both
+  widths. Proof: guest probe `guestprobeC-run1` itimer
+  rows (setitimer sec −1 → −EINVAL, getitimer(3, NULL) →
+  −EINVAL, getitimer(0, NULL) → −EFAULT); suite tests on
+  both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-174.
+
+- **FD-238 — `wait4` answered −ECHILD for unknown option
+  bits instead of −EINVAL.** *(Medium)* The host validates
+  the options word ahead of the child lookup: bits outside
+  WNOHANG|WUNTRACED|WCONTINUED and the __W* clone-scope
+  bits answer −EINVAL even when there are no children.
+  Both widths answered −ECHILD. Fixed on branch
+  `lane-timing-waits` at `KSystem::waitpid` (32-bit) and
+  at the 64-bit wait4 case. Proof: guest probe
+  `guestprobeC-run1` wait4 rows; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-175.
+
+- **FD-239 — The 64-bit side had no `alarm` syscall.**
+  *(Low)* `alarm` shares the ITIMER_REAL slot with
+  setitimer on the host; the 32-bit side implements it
+  (`KProcess::alarm`) but the 64-bit dispatch table had no
+  case and answered −ENOSYS. Fixed on branch
+  `lane-timing-waits` by dispatching to the existing
+  implementation. Proof: guest probe `guestprobeC-run1`
+  (`alarm0` → 0); suite test `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-176.
+
+- **FD-240 — 64-bit `times` returned ticks at 1000× the
+  real rate.** *(Low)* The return value was
+  microseconds/10000 — 100,000 ticks per second — where
+  the host's clock tick (USER_HZ) is 100 per second, so a
+  guest dividing by CLK_TCK read durations 1000× too
+  large. Fixed on branch `lane-timing-waits`
+  (milliseconds/10 since start). Proof: guest probe
+  `guestprobeC-run1` times rows; suite test
+  `testTimingWaits64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-177.
+
+- **FD-241 — 32-bit `gettimeofday` wrote through a null
+  time pointer.** *(Low)* The host accepts (NULL, NULL)
+  and writes nothing; the 32-bit side wrote the timeval
+  unconditionally, i.e. at guest address 0 when the caller
+  passed null. The 64-bit case was already correct. Fixed
+  on branch `lane-timing-waits`. Proof: suite test
+  `testTimingWaits32`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-178.
+
+- **FD-242 — `epoll_create` size and `epoll_create1` flags
+  were not validated on either width.** *(Medium)* The
+  host answers −EINVAL for a legacy create size ≤ 0 and
+  for create1 flags outside EPOLL_CLOEXEC|EPOLL_NONBLOCK;
+  the emulator returned a descriptor for size 0, size −5
+  and flags 1 alike. Fixed on branch `lane-timing-waits`
+  in both dispatchers' wrappers/cases. Proof: guest probe
+  `guestprobeD-run2` rows (flags 1 → −EINVAL, flags
+  0x10000 → −EINVAL, size 0/−5 → −EINVAL, valid forms →
+  descriptors); suite tests on both widths. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-179.
+
+- **FD-243 — 64-bit `epoll_wait` accepted maxevents < 1
+  and returned events anyway.** *(Medium)* The host
+  answers −EINVAL for maxevents 0 or negative, even with
+  an event ready; the 64-bit case clamped the value
+  (0 → proceeded, −1 → 64) and returned the ready event.
+  The pwait/pwait2 body already validated. Fixed on branch
+  `lane-timing-waits`. Proof: guest probe
+  `guestprobeD-run2` rows (maxevents 0/−1 with data ready
+  → −EINVAL, maxevents 4 → 1 event). Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-180.
+
+- **FD-244 — `poll` set POLLNVAL in revents but did not
+  count it, so polling a closed descriptor answered 0.**
+  *(Medium)* The host answers 1 (the return counts every
+  descriptor with nonzero revents). In
+  `internal_poll_impl` the tally sat inside the
+  descriptor-exists branch, while POLLNVAL is set exactly
+  when the descriptor no longer exists. Fixed on branch
+  `lane-timing-waits` by counting every entry with nonzero
+  revents. Proof: guest probe `guestprobeC-run1` (`poll
+  closedfd` → ret 1, revents 0x20; pre-fix ret 0). Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-181.
+
+- **FD-245 — A negative or out-of-range timespec parked
+  `pselect6` and `ppoll` instead of answering −EINVAL.**
+  *(High)* Both 64-bit cases read the timespec fields as
+  unsigned, so {−1, 0} became an effectively infinite wait
+  and a guest passing a bad timeout hung the session
+  instead of getting an error. ppoll also lacked the
+  timespec permission check its siblings have, and
+  pselect6 never validated its sigmask argument's size or
+  pointer (the host copies the mask in: size ≠ 8 answers
+  −EINVAL, an unreadable mask −EFAULT; the mask's
+  non-application itself is FD-103). Fixed on branch
+  `lane-timing-waits`. Proof: guest probes `guestprobeC-run1`
+  and `guestprobeE-run2` (sec −1 → −EINVAL on both calls,
+  bad nsec → −EINVAL, bad pointer → −EFAULT, mask size 4
+  → −EINVAL, mask bad pointer → −EFAULT); the pre-fix
+  parks are the tails of `guestprobeB-run1/2/5`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-182.
+
+- **FD-246 — `pselect6` and `ppoll` never wrote back the
+  unslept remainder of their timeout.** *(Medium)* Linux
+  writes the remaining time back for select, pselect6 and
+  ppoll alike; the emulator wrote it back only for select.
+  This entry also corrects the FD-23-residue register note
+  that "pselect6 never writes its timespec back, as on the
+  host": the timing lane's raw-syscall host grid measured
+  the write-back directly (ready-immediately: 49.999998120
+  of 50 s left; interrupted at ~43 ms: 49.957649822;
+  fully expired: 0), and the standing census test pin that
+  encoded the old claim is updated in the same fix. Fixed
+  on branch `lane-timing-waits` (the shared select core
+  gained a nanosecond-fraction mode for pselect6; ppoll
+  writes back at its case). Proof: guest probes
+  `guestprobeE-run2` (ppoll ready: 9.999989 of 10 s left;
+  expired shapes → ~0) and `guestprobeF-run1` (select and
+  pselect6 ready returns leave ~the full timeout);
+  updated pin in `testSyscallCensus64`. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-183.
+
+- **FD-247 — 64-bit `timerfd_settime` rejected the valid
+  TFD_TIMER_CANCEL_ON_SET flag and (in this lane's first
+  correction) nearly traded that for accepting
+  everything.** *(Medium)* The host's valid mask is
+  ABSTIME|CANCEL_ON_SET (0x3): flags 0–3 answer 0, 4 and
+  −1 answer −EINVAL (raw grid + strace, `hostref-timing3.txt`).
+  The shipped 64-bit case rejected bit 1 outright; the
+  32-bit path never validated. Fixed on branch
+  `lane-timing-waits`: the 64-bit case accepts exactly the
+  host mask (CANCEL_ON_SET is accepted; cancelling on a
+  clock-set is not modelled, as nothing here sets the
+  clock). The standing `testTimerfd` pin that asserted
+  −EINVAL for flags=2 rested on the assumption that bit 1
+  is invalid; it is updated in the same fix to pin the
+  measured mask. Proof: suite tests `testTimerfd` and
+  `testTimingWaits64`; guest probe `guestprobeC-run1`.
+  Record: `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-184.
+
+- **FD-248 — The select core refused the all-null-sets
+  sleep shape for nfds > 1024.** *(Low)* The 1024 cap
+  exists because the fd-set buffers are fixed-size (a
+  boundary FD-23 stated); with no set pointers at all
+  there is nothing to buffer and the host simply sleeps
+  (raw grid: nfds=100000 with empty sets answers 0 after
+  the timeout). Fixed on branch `lane-timing-waits`: the
+  cap now applies only when at least one set pointer is
+  non-null; the stated boundary otherwise stands. Proof:
+  guest probe `guestprobeC-run1` (`pselect6 nfds100000`
+  → 0). Record: `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-185.
+
+- **FD-249 — The X64Headless target did not build at the
+  integration tip.** *(Medium; found by this lane, outside
+  its family)* `source/util/networkutils.cpp` began with
+  an `#undef U64` block ahead of its includes; U64 is a
+  macro from the platform types header, and under the
+  batch-9 precompiled-header force-include the macro is
+  already defined, so the #undef killed it for the whole
+  translation unit and the header's include guard made
+  the re-include a no-op — every use of the U64 type in
+  the file then failed. The checking queue's native legs
+  build only the test targets, which exclude this file,
+  so the break shipped unnoticed. Fixed on branch
+  `lane-timing-waits` by deleting the three-line block
+  (no identifier in the file collides with the macro).
+  Proof: `make x64` completes and the binary runs the
+  guest probes in `test-results/timing-waits/`; the
+  failure log is `build-x64.log` there. Record:
+  `docs/reports/timing-waits-20261107.md`.
+  CLOSED — see CL-186.
+
+- **FD-250 — `waitid` is not implemented on either
+  width.** *(Medium)* Every shape answers −ENOSYS. The
+  host contract is measured (raw grid): option validation
+  precedes the child lookup (bad options → −EINVAL ahead
+  of −ECHILD; options=0 → −EINVAL; a bad idtype →
+  −EINVAL; no children → −ECHILD); a bad siginfo pointer
+  answers −EFAULT even with no children, and with an
+  exited child the child is still reaped when the info
+  write faults; WNOHANG on a running child answers 0 with
+  the siginfo zeroed. Closing terms: implement waitid on
+  both widths to that contract, proven by guest probes
+  and suite tests per shape. Filed by the timing lane,
+  2026-11-07; evidence `test-results/timing-waits/
+  hostref-timing.txt` and the guest grid rows in
+  `guestprobe-run*` / `guestprobeB-run*`. The census
+  disposition (ordinary-unimplemented) already records
+  the gap; this entry gives it a queue number and the
+  measured contract.
+
+- **FD-251 — Timer-expiry signals are never delivered to
+  a guest handler, and the surrounding pending-signal
+  machinery misbehaves.** *(High, scoped as measured)*
+  Measured in the bare x86-64 ELF vehicle (single thread,
+  full kernel): an interval timer counts down in real
+  time (getitimer read-backs track the wall clock) and
+  expires, but the expired SIGALRM never reaches a
+  properly installed handler (install verified, 1000 ms
+  flip test: never; 50 ms periodic over 400 ms: 0
+  deliveries against the host's ~8). Sleeps and waits
+  surface −EINTR late, at internal ~200 ms wake quanta or
+  near the natural end. A timer signal that is BLOCKED
+  still interrupts a nanosleep with −EINTR (the host
+  completes the sleep), and the expired signal cannot be
+  dequeued by `rt_sigtimedwait` (answers −EAGAIN);
+  `rt_sigtimedwait` also fails to validate its timeout
+  (bad nsec answers −EAGAIN, host −EINVAL). Separately,
+  `pause()` in a fresh process with a 40 ms timer parked
+  past a 240 s timeout instead of returning −EINTR at
+  expiry. Direct delivery works: a tgkill'd signal runs
+  the handler during a CPU loop, so the defect is in the
+  timer-expiry → dispatch path and the pending-signal
+  machinery, not in handler invocation. Scope caveat:
+  measured in the bare-ELF vehicle; the production (Wine,
+  multithreaded) impact is unmeasured. One guest run also
+  died around a sigprocmask unblock following a timer
+  expiry (single observation, in the same evidence).
+  Closing terms: an expired interval timer delivers its
+  signal to an installed handler in the vehicle, blocked
+  signals do not interrupt sleeps, and an expired pending
+  signal is dequeueable via rt_sigtimedwait. Filed by the
+  timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/` (`timingprobe2-run2`,
+  `timingprobe3-run2`, `timingprobe4-run1`,
+  `guestprobeB-run*`).
+
+- **FD-252 — A `wait4` stop report consumes the child
+  and reports no stop status.** *(Medium)* On the host,
+  wait4 with WUNTRACED on a stopped child reports the
+  stop (status carries 0x7f) and does not reap. Measured
+  in the guest: the call returned the child with
+  stopped=0 and the child was gone afterwards (a later
+  wait answered −ECHILD). Other wait4 shapes match the
+  host (exit-code reaping, WNOHANG forms). Closing terms:
+  stop reports carry a stop status and leave the child
+  waitable. Filed by the timing lane, 2026-11-07;
+  evidence the child-wait rows of the guest grid in
+  `test-results/timing-waits/`.
+
+- **FD-253 — In the full-kernel ELF vehicle, 64-bit
+  `futex` is served by the threadless stub, not the real
+  implementation.** *(High)* `sys_futex64` delegates to
+  `KThread::futex64` only when the CPU carries a thread,
+  process and memory64; in the `--x64-run-elf` /
+  rootfs vehicle the stub answered instead: WAIT on a
+  matching value returned −EAGAIN in 0 ms instead of
+  blocking (50 ms timeout shape), WAIT with a bad address
+  answered −EAGAIN instead of −EFAULT, WAKE with a bad
+  address answered 0 instead of −EFAULT, CMP_REQUEUE
+  with a bad second address answered 0 instead of
+  −EFAULT. glibc's EAGAIN-retry behaviour masks this as
+  spinning and CPU burn. Methodological consequence: futex
+  contract shapes must be probed through the native
+  harness's real path (the dispatch-guard test) or a
+  vehicle known to take it — the suite pins in
+  `testTimingWaits64` use FUTEX_PRIVATE_FLAG forms for
+  exactly this reason. Closing terms: the futex dispatch
+  condition holds in the full-kernel vehicle, proven by
+  the grid shapes blocking and faulting as the host does.
+  Filed by the timing lane, 2026-11-07; evidence the
+  futex rows of `guestprobeB-run5` against
+  `hostref-timing.txt`.
+
+- **FD-254 — Guest page protections are not consulted on
+  syscall memory accesses (cross-cutting).** *(Medium)*
+  Across the timing family, a pointer to a mapped
+  PROT_NONE page is treated as readable/writable:
+  clock_gettime wrote its result there, getitimer and
+  setitimer accepted it, nanosleep/clock_nanosleep read
+  the request as zeros from it, getrusage wrote there,
+  epoll_wait wrote events there, poll read its descriptor
+  array as zeros, pselect6 accepted a sigmask there. Null
+  pointers ARE faulted where the code checks them, so
+  this is specifically the protection flags of mapped
+  pages being ignored by the non-checked accessors, not
+  missing null checks. Closing terms are subsystem-wide
+  and belong to the memory owners; this entry records the
+  measured shapes so the property has a queue number.
+  Filed by the timing lane, 2026-11-07; evidence the
+  bad-pointer rows of the guest grid in
+  `test-results/timing-waits/`.
+
+- **FD-255 — ITIMER_VIRTUAL and ITIMER_PROF are refused
+  with −EINVAL.** *(Medium)* The host accepts them (they
+  tick against process/thread CPU time); the emulator's
+  shared itimer core refuses them, and the standing suite
+  test pins the refusal deliberately. Closing them needs
+  CPU-time timers (the CPU-time sources now exist —
+  FD-236's helper and the per-thread times — but the
+  expiry machinery is FD-251's territory). Closing terms:
+  setitimer/getitimer accept VIRTUAL and PROF against CPU
+  time and the pin is replaced. Filed by the timing lane,
+  2026-11-07; evidence `hostref-timing.txt` and
+  `testSetitimer64Syscalls`.
+
+- **FD-256 — Four timing-family calls have no 32-bit
+  dispatch at all: `pause`, `rt_sigtimedwait`, `ppoll`,
+  `epoll_pwait`.** *(Medium)* All four are dispatched on
+  the 64-bit side and answer −ENOSYS on the 32-bit side
+  (census disposition: ordinary-unimplemented; the suite
+  now pins the −ENOSYS answers in `testTimingWaits32` so
+  the gap is executable, except pause, whose blocking
+  shape cannot be pinned in the harness). The 64-bit
+  implementations are open-coded in the 64-bit dispatcher
+  rather than shared methods, so wiring the 32-bit side
+  is real work, not a table entry. Closing terms: the
+  four calls dispatch on the 32-bit side to the same
+  contract as the 64-bit side. Filed by the timing lane,
+  2026-11-07; evidence
+  `tools/conformance/syscall_dispositions.json` and the
+  suite pins.
+
+- **FD-257 — In the bare-ELF vehicle the guest process
+  dies at `epoll_ctl` DEL with a null event, and related
+  deaths follow interrupt-heavy sequences.** *(High)*
+  `epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL)` is valid on
+  the host (the event is ignored; the answer is 0). In
+  the vehicle the run ends there: a
+  `BW64-FAIL guest-memfault32 ... addr=0x0` report whose
+  instruction pointer is the guest's own entry point,
+  then emulator shutdown — reproduced deterministically
+  in an isolation probe whose thirteen preceding calls all
+  answer correctly (`guestprobeD-run1` on the base-era
+  binary, `guestprobeD-run2` on the timing lane's fixed
+  binary, same fault address). The ctl implementation
+  itself is exonerated by reading: it already skips the
+  event read for DEL and its removal path touches only
+  host-side structures, so the death sits in the
+  surrounding return/dispatch machinery. Related: the
+  full-grid runs repeatedly died shortly after
+  interrupt-heavy select sequences, in states the
+  isolation probes (3/5/6/7) never reproduced. Closing
+  terms: the isolation probe runs to completion with DEL
+  answering 0. Filed by the timing lane, 2026-11-07;
+  evidence `test-results/timing-waits/guestprobeD-run*`
+  and `guestprobe-run*`.
+
+- **FD-258 — POSIX timers are absent.**
+  *(Medium)* timer_create and family answer −ENOSYS for
+  every shape on both widths (the census disposition
+  records subsystem-absent deliberately). The host
+  contract is measured in the grid (creation validation,
+  EINVAL/EFAULT orderings, the same lenient-flags pattern
+  as the other timer calls). Closing terms: implement
+  the subsystem or take a deliberate documented decision
+  to keep it absent; either way this entry is the queue
+  record. Filed by the timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/hostref-timing.txt` and the
+  guest grid's timer rows.
+
+- **FD-259 — Timing-family model limits and unmeasured
+  residue (recorded, not defects of commission).**
+  *(Low)* (a) The ALARM clocks (8, 9) are served from the
+  wall/monotonic bases; their suspend semantics do not
+  exist here. (b) `times` fills the tms accounting fields
+  with zeros, and 64-bit `getrusage` fills only the two
+  CPU-time fields. (c) 64-bit `epoll_pwait` refuses
+  maxevents > 64 (scratch-page cap) where the host
+  accepts more. (d) `clock_nanosleep` acceptance for
+  clocks 4, 5, 6, 8, 9 follows the kernel's clock
+  structure; this box's host grid measured 0, 1, 2, 3, 7,
+  11 directly. (e) The monotonic clock's epoch is the
+  emulator's start, so early guest readings are near
+  zero; contract-legal, recorded because it surprises.
+  (f) The remaining-time write on interrupted sleeps is
+  computed at millisecond (32-bit) / microsecond (64-bit)
+  fidelity from the call's elapsed wall time, not from
+  the wait's internal deadline bookkeeping. Filed by the
+  timing lane, 2026-11-07; evidence
+  `docs/reports/timing-waits-20261107.md`.
+
+- **FD-260 — 64-bit `epoll_pwait` rejects a sigsetsize
+  other than 8 when a mask is passed; the host accepts
+  any size.** *(Low)* Measured: mask non-null with size 4
+  answers −EINVAL in the guest (`guestprobeD-run2`) and
+  0 on the host (raw grid); ppoll likewise accepts any
+  size on the host, and rt_sigtimedwait/pselect6 are the
+  calls that genuinely require exactly 8. Closing terms:
+  drop the size check in the epoll_pwait body (the mask
+  copy itself is bounded by the read). Filed by the
+  timing lane, 2026-11-07; evidence
+  `test-results/timing-waits/hostref-timing.txt` and
+  `guestprobeD-run2`.
+
+- **FD-218 — Vectored reads accept segment lengths that are
+  negative read as the ABI's signed size, and the combined
+  length is never capped.** *(Medium)* In all four read walks
+  (64-bit `sys_readv64` / `sys_preadv64`, 32-bit
+  `KProcess::readv` / `KProcess::preadv` over
+  `KObject::readv`) a segment length is taken as an unsigned
+  count and walked as-is: a length with the top bit set is a
+  request to read gigabytes into one segment, and on the
+  32-bit side the running total is a U32 that wraps, so a
+  crafted array can make the walk's accounting go backwards.
+  The host contract, measured at the raw syscall level on
+  this box's 6.17 kernel (native aarch64 and aarch32 compat
+  binaries; the two widths agree on every row): any segment
+  whose length is negative read as the ABI's signed size
+  (64-bit: >= 2^63; 32-bit: >= 2^31) answers `-EINVAL`
+  before any byte moves, wherever it sits in the array; the
+  32-bit side has NO sum check (segments of 1 GiB + 1 GiB +
+  1 byte, sum 2^31 + 1, read normally — only the
+  per-segment sign is judged); and a successful transfer is
+  capped at `MAX_RW_COUNT` = 0x7ffff000 bytes in total
+  (measured exactly 2147479552 returned from /dev/zero for
+  one 2^31 segment and for two segments summing to 2^31).
+  Boundaries: the host additionally answers `-EFAULT` for
+  segment ranges that exceed the address space
+  ({2^62, 2^62}; {8, SSIZE_MAX}) — the emulator's flat
+  guest memory has no equivalent range validation and this
+  entry does not ask for one; the vectored-WRITE family
+  shares the unguarded shape and is filed separately as
+  FD-222. Closing terms: the per-segment signed check in
+  all four validation paths (after the iovec array check,
+  ahead of the preadv2 flags check) and the total cap in
+  all four walks, proven by native tests on both suites.
+  Found by the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (host references
+  `hostref-vec3.out`, `hostref-vec-arm32.out`,
+  `hostref-vec-arm32b.out`, `hostref-pv2-final.out`; the
+  early `hostref-vec.out` is qemu-polluted and
+  `hostref-vec-arm64.out`'s preadv rows passed the loff_t
+  offset as one register instead of the split pair — both
+  kept as evidence of the artifacts, neither cited).
+  CLOSED — see CL-157 (lane-local number; settles at the
+  next composition audit). The signed check sits in all
+  four validation paths and the 0x7ffff000 cap in all
+  four walks (the 32-bit cap rides the shared
+  `KObject::readv` walk). Filed and fixed by the
+  unfiled-gaps lane, 2026-11-07. Record:
+  `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **FD-219 — A positioned read attempted on a pipe (or any
+  unseekable object) answers the wrong thing, and on the
+  64-bit side silently reads.** *(Medium)* The host
+  contract, measured at the raw syscall level on the 6.17
+  kernel (both widths identical on every row): a missing
+  descriptor answers `-EBADF` ahead of everything; after
+  that, an unseekable object answers `-ESPIPE` ahead of
+  the iovcnt range, iovec array, and preadv2 flags answers
+  (preadv on a pipe with iovcnt 2000, a null array, or bad
+  flags all answer ESPIPE), and `pread64` answers ESPIPE
+  ahead of its negative-offset `-EINVAL`; `preadv`'s own
+  negative offset answers `-EINVAL` ahead of ESPIPE;
+  `preadv2` with offset -2 answers `-EINVAL`, with offset
+  -1 is the file-position mode and READS from a pipe (its
+  flags are still validated first: a bad flag answers
+  `-EOPNOTSUPP` ahead of the read); pipe bytes are never
+  consumed by a refused positioned read. The emulator
+  today: 64-bit `sys_pread64Impl` sends non-file objects
+  through a seek-ignoring stream read, so a positioned
+  read on a socketpair consumes data and returns it;
+  64-bit `sys_preadv64` inherits that per segment; 32-bit
+  `KProcess::preadv` answers `-EBADF` (write end),
+  `-EINVAL` (bad iovcnt), `-EFAULT` (null array) or
+  `-EOPNOTSUPP` (flags) ahead of ESPIPE, and its
+  file-position mode fails on a pipe instead of reading;
+  32-bit `KProcess::pread64` answers `-EINVAL` for
+  unseekable objects that are not sockets (eventfd,
+  timerfd, epoll, inotify). The positioned-WRITE twins
+  (`pwrite64` / `pwritev`, both cores) carry the same
+  non-file `-EINVAL` shape and are corrected alongside
+  (the host answers ESPIPE there too, measured in the
+  same pass). Closing terms: the seekability answer
+  hoisted to immediately after descriptor resolution in
+  `sys_preadv64`, `sys_pread64Impl`,
+  `KProcess::preadv` and `KProcess::pread64` (position
+  mode excepted, delegating to the plain vectored read
+  after validation), proven by native tests on both
+  suites covering the pipe matrix on both ABIs. Found by
+  the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (`hostref-pv2-final.out` is
+  the authoritative matrix; FD-98's entry named this
+  boundary and left it unfiled).
+  CLOSED — see CL-158 (lane-local number; settles at the
+  next composition audit). The write twins are corrected
+  in the same fix: `sys_pwritev64` / `KProcess::pwritev`
+  hoist the same answer ahead of their mode, range,
+  array and flags checks, `sys_pwrite64` gains it after
+  the descriptor check, and the 32-bit `pread64` /
+  `pwrite64` non-file answer moves from `-EINVAL` to
+  `-ESPIPE` (sockets already answered it). Two measured
+  corners stay as boundaries: `pwritev2` with
+  RWF_APPEND and the file-position mode on a pipe — the
+  host's own ABIs disagree (native answers `-EBADF`,
+  the compat path writes), so that combination keeps
+  the walk's current answer; and `pwrite64` with a
+  negative offset on a pipe, where the native path
+  answers `-EINVAL` ahead of `-ESPIPE` and the compat
+  path answers `-ESPIPE` — each core follows its own
+  ABI (the 64-bit side keeps FD-93's offset-first
+  order, the 32-bit side answers ESPIPE first). Write
+  rows: `hostref-pwtwins64.out`, `hostref-pwtwins32.out`,
+  `hostref-pwt2-64.out`, `hostref-pwt2-32.out`. Filed
+  and fixed by the unfiled-gaps lane, 2026-11-07.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **FD-220 — The 32-bit `linkat` system call has no helper
+  at all.** *(Medium)* Slot 303 in the 32-bit dispatch
+  table is `nullptr`: every `linkat` from a 32-bit guest
+  answers `-ENOSYS`, whatever its arguments — the only
+  one of the *at family missing (renameat, symlinkat,
+  readlinkat and plain link are all wired). The host
+  contract, measured at the raw syscall level on the 6.17
+  kernel (i386-shape arguments driven through the aarch32
+  compat path and the native path; identical on every
+  row): flags outside `AT_SYMLINK_FOLLOW` (0x400) |
+  `AT_EMPTY_PATH` (0x1000) answer `-EINVAL`, ahead of
+  even the null-path fault; a null path answers
+  `-EFAULT` (FD-132's rule); an empty path answers
+  `-ENOENT` (FD-131's rule); a bad dirfd answers
+  `-EBADF`, a dirfd that is not a directory `-ENOTDIR`;
+  a missing source `-ENOENT`, an existing target
+  `-EEXIST`, a directory source `-EPERM`; dirfd-relative
+  resolution works on both sides; `AT_EMPTY_PATH` with
+  an empty old path and a file descriptor links that
+  file, and with a pipe descriptor answers `-EXDEV`;
+  without `AT_SYMLINK_FOLLOW` the new name links the
+  symlink itself, with it the symlink's target. Boundary:
+  the 64-bit dispatcher HAS a linkat case but resolves
+  both paths against the current directory only (dirfds
+  ignored) and leaves the `AT_EMPTY_PATH` descriptor
+  form at its current answer — a real divergence, not
+  part of this entry's closing terms. Closing terms: a
+  `KProcess::linkat` resolving each side through the
+  established dirfd helper and delegating to
+  `KProcess::link` (with the followed-source and
+  descriptor forms above), a dispatcher that validates
+  flags ahead of the path fault, wired at slot 303, and
+  native tests proving the measured matrix. Found by
+  the unfiled-gaps lane, 2026-11-06; evidence
+  `test-results/unfiled4/` (`hostref-linkat64.out`,
+  `hostref-linkat32.out`).
+  CLOSED — see CL-159 (lane-local number; settles at the
+  next composition audit). Filed and fixed by the
+  unfiled-gaps lane, 2026-11-07. Record:
+  `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **FD-221 — Vulkan trap traffic that never completes a
+  frame feeds no metrics counter.** *(Low)* FD-63 closed
+  the emission gate's blindness for syscall-only guests;
+  its entry named the remaining boundary: Vulkan counters
+  move only inside `bw64_metrics_vk_frame`, which runs at
+  present completion — a guest that issues Vulkan traps
+  indefinitely without ever presenting (stuck before its
+  first frame, the FD-63 shape in Vulkan form) produces
+  no activity the gate can see, so nothing is ever
+  emitted for exactly the sessions the panel exists to
+  diagnose. The bridge already constructs a per-trap
+  timer on every trap in both dispatchers
+  (`VkProfTrapTimer` in `vk64Bridge` / `vk32Bridge`),
+  but its accounting is gated on the profiling timers
+  and reaches the registry only at frame completion.
+  Closing terms: a per-trap metrics hook called from
+  that timer ahead of its timing gate, counting into
+  the registry's existing Vulkan trap counter on the
+  64-bit path and a gate-only counter on the 32-bit
+  path, with both counters feeding the emission gate's
+  activity test and `bw64_metrics_vk_frame` no longer
+  adding the frame's trap count a second time; the
+  JSON schema does not change and the committed metrics
+  fixture stays byte-identical. Boundaries: per-trap
+  TIMING on the 32-bit Vulkan path stays unavailable
+  (only the call count is knowable there), and trap
+  calls the bridge rejects before its dispatcher are
+  not counted. Proven by a new metrics-selftest section
+  (trap-only activity emits; the snapshot reports the
+  trap count with zero frames). Found by the
+  unfiled-gaps lane, 2026-11-06 (characterised in
+  FD-63's entry, 2026-11-01, and left unfiled).
+  CLOSED — see CL-160 (lane-local number; settles at the
+  next composition audit). The per-trap hook
+  (`bw64_metrics_vk_trap`) is called from
+  `VkProfTrapTimer`'s destructor ahead of the timing
+  gate on both bridges, flushes any due snapshot before
+  accounting (FD-63's rule), and feeds the gate through
+  both trap counters; the committed fixture is
+  byte-identical (the official regeneration differs
+  only in a clock-jitter field and was not shipped).
+  Filed and fixed by the unfiled-gaps lane, 2026-11-07.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **FD-222 — The vectored-write family shares FD-218's
+  unguarded shape.** *(Low)* Found by inspection while
+  fixing FD-218: `sys_writev64` / `sys_pwritev64` and
+  32-bit `KObject::writev` / `KProcess::pwritev` walk
+  their segments with no per-segment signed check and no
+  combined cap, and the 32-bit accumulator is a U32 that
+  wraps — the same defect as FD-218 on the write side.
+  The kernel's vector import is shared between the read
+  and write families, so the host contract is expected
+  to mirror FD-218's measured one, but this lane did not
+  measure the write side and the entry stays open on
+  that honesty: closing terms are the raw-syscall host
+  matrix for writev/pwritev (both widths), then the
+  same checks and cap in the four write walks, proven
+  by native tests. Found by the unfiled-gaps lane,
+  2026-11-06.
+
+- **FD-201 — A first-visit 32-bit start can be killed at the
+  moment a new program starts inside the session: a session
+  worker dies with a guest memory error and the desktop never
+  appears.** *(High — start reliability; kills a whole
+  session. Filed by the x86 start-fault lane, 2026-11-07.)*
+  In the batch-10 deploy's live acceptance, the first 32-bit
+  certification series certified 3 of 5 starts; boots 4 and 5
+  each suffered a delivered wasm `RuntimeError: memory access
+  out of bounds` in a session worker at the identical console
+  position — immediately after the wineserver-side socketpair
+  wiring for a newly starting program, where clean boots log
+  the new program's stack setup — with identical JS glue
+  offsets (15105 / 6378) in both. The desktop program's main
+  thread then sat frozen at one identical state snapshot for
+  the rest of each run, the desktop never reported ready, and
+  each boot exhausted its 900 s budget with 0 restarts. An
+  adjudication re-run on the same live build certified 5 of 5
+  clean, so the fault site is deterministic but its incidence
+  is not a persistent property of the build; the 64-bit series
+  (3 of 3) and the six consumer sessions were clean in the
+  same hours. The shipped program code did not change in
+  batch 10 (the deployed wasm is byte-identical to batch 9),
+  and one earlier instance of a delivered guest memory fault
+  during a start is on record against an earlier shipped
+  build (batch-4 deploy, consumer run a4, unattributed), so
+  the defect predates batch 10. The FD-115 first-visit tally
+  stands at 3 in 60 with these two boots counted. Evidence:
+  deploy record `docs/reports/deploy-batch10-20261107.md`;
+  preserved consoles
+  `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-4/console.log`
+  and `wt-deploy-batch10/test-results/deploy-batch10-20261107/cert-x86/boot-5/console.log`
+  (clean controls boot-1 to boot-3 and the re-run series in
+  the same directory). Closing terms: the cause is
+  identified and fixed, and repeated 32-bit starts against a
+  build carrying the fix pass with zero occurrences of the
+  failure.
+  **RESOLVED on this branch (2026-11-07, lane-x86-start-fault;
+  see the section B row and the lane record's resolution
+  addendum).** A third instance, captured the same morning by
+  the FD-169 remainder lane's 32-bit suite run on a build
+  byte-identical to the shipped one, preserved the full wasm
+  stack the deploy consoles lacked (evidence:
+  `wt-fd169-remainder/test-results/suite-fd169r-smf32-fault1/console.log`):
+  the trap fires in `KSystem::guestRamInfo`, called from the
+  32-bit `sysinfo` handler, on the `process->memory64` field
+  load. Cause: `guestRamInfo` iterated the process table
+  (`KSystem::processes`, a BHashTable) with no lock while
+  `addProcess`/`eraseProcess` mutate it under
+  `processesCond`; an insert crossing the table's load-factor
+  limit replaces the whole slot array and frees the old one
+  (BHashTable::rehash), so a scan racing a process start could
+  keep reading the freed array and dereference a wild
+  KProcess pointer — the first field load traps and kills the
+  calling worker, the desktop never reports ready, and the
+  start is lost. A starting process's own sysinfo (issued by
+  every starting Wine process) is the usual caller, which is
+  why the fault lands exactly at program starts and only in
+  bursts (a rehash happens only when an insert crosses a
+  power-of-two process count). Fix commit `5602c1dd5`:
+  `guestRamInfo` and `processCount` now hold `processesCond`
+  for the table access — the pattern every other access in
+  the class already used — and the 32-bit sysinfo reads the
+  process count through `processCount`; a source guard in the
+  guest-topology test pins both locks (fails on the unfixed
+  source, passes with the fix). Proof on the branch: two
+  series of 12 consecutive 32-bit starts against the fixed
+  build (wasm `4be34516…`), 24/24 started, zero occurrences,
+  zero captured exceptions (driver logs and per-boot consoles
+  in `test-results/x86-start-fault/repro-fixed-1/` and
+  `repro-fixed-2/`); a control series against the live
+  unfixed build the same day ran 12/12 clean, consistent with
+  the bursty incidence (the preserved fault instances are the
+  positive control). The closure number settles when batches
+  combine.
+  CLOSED — see CL-165.
+
+- **FD-202 — Delivered audio interleaves the guest's sound
+  with an equal amount of silence in 4096-frame blocks:
+  sound plays stuttered and takes twice as long.**
+  *(High — user-visible audio. Filed by lane-audio-e2e,
+  2026-11-07.)* Measured with the strengthened audio-tone
+  check (FD-226) against a fresh build of integration tip
+  `334c70be4` (wasm `92b36180…`, byte-identical to the live
+  batch-10 build): three runs, both architectures, the
+  same signature every time. The guest's deterministic
+  tone arrives with peak exactly 0.3662109375, channels
+  sample-identical, pitch 440.0–441.9 Hz — but duty cycle
+  0.249 (expected ~0.50), RMS 0.2583 (expected ~0.3662;
+  exactly peak/√2), active span 11.94–12.02 s (expected
+  6 s), and recurring silent gaps of exactly 4096 frames
+  (92.88 ms) inside the tone; of ~530,000 delivered frames
+  per channel, half are silence. Every guest sample
+  arrives; an equal number of silence frames is
+  interleaved in 4096-frame blocks, so anything a program
+  plays is heard as ~93 ms of sound alternating with
+  ~93 ms of silence, at twice the true duration. The
+  write side is not the pacing: the session console shows
+  the guest's six one-second writes (1,058,400 bytes
+  total) accepted in ~0.62 s of audio-stage time. The
+  mechanism is NOT identified by this filing; the numbers
+  bound it to the delivery path between the guest's
+  writes and the browser's audio output — downstream of
+  sample generation (values and channel identity are
+  bit-exact), upstream of the output node the check
+  captures. The frequency-only check this replaces passed
+  throughout, which is how this survived. Closing terms:
+  the strengthened audio-tone check passes on both
+  architectures — duty ~0.50, RMS ~peak, active duration
+  ~6 s, no internal silent gap above 20 ms — against a
+  build carrying the fix. Evidence: `test-results/audio-e2e/`
+  (run3-evidence/, run4-evidence/, run logs) and
+  `test-results/suite-audio-tone/` in wt-audio-e2e;
+  record `docs/reports/audio-tone-values-20261107.md`.
+
+  **Resolution (2026-11-07, lane-fd202-audio): the
+  delivered audio is whole; the signature above is an
+  artifact of the check's own capture, and this entry
+  is FIXED as a check defect -- see CL-164.** The
+  check folded two different output objects into one
+  measured array: the AudioWorkletNode's output (the
+  runtime's real output path, tapped) and every
+  ScriptProcessorNode's output buffer -- including
+  SDL's own emscripten pump node, which is not the
+  output in this build (writeAudio bypasses SDL's
+  queue via the bwPump ring), so its buffers are
+  silence by design, in blocks of exactly its
+  4096-frame buffer. A source-separated capture
+  against the live build (wt-fd202-audio,
+  `test-results/suite-fd202-split/`) measures the
+  worklet path alone at peak 0.3662109375 exactly,
+  RMS 0.3662109375, duty 0.500, active 5.93 s,
+  longest internal gap 0 frames, the worklet's own
+  metrics at framesWritten 264,600 (the guest's
+  exact frame count) and underrunFrames 0; the
+  ScriptProcessor path alone is 266,240 frames of
+  pure silence from one node created with
+  bufferSize 4096, all 65 of its buffers all-zero;
+  the merged array reproduces this filing's
+  signature to three decimals. The closing terms
+  are met by the fixed check passing on both
+  architectures (CL-164); no product code changed,
+  because the product was not the defect.
+  CLOSED — see CL-164.
+
+- **FD-203 -- audio-tone check: in the no-worklet
+  fallback configuration the capture still merges
+  SDL's silent pump node with the runtime's
+  ScriptProcessor output.** *(Low -- check only, in
+  a configuration the project does not ship or gate.
+  Filed by lane-fd202-audio, 2026-11-07.)* FD-202's
+  fix separates the two capture sources and measures
+  the worklet output in the shipped configuration;
+  when no AudioWorkletNode exists, the runtime's own
+  output is itself a ScriptProcessorNode and the
+  check's fallback array still folds SDL's pump-node
+  buffers into it, so the FD-202 conflation can
+  recur there. No runtime mark distinguishes the
+  two ScriptProcessor nodes today. Closing terms:
+  the fallback measurement identifies the runtime's
+  output node (or the runtime marks it) and the
+  strengthened check passes in a no-worklet run.
+  The shipped, gated configuration is unaffected.
+
+- **FD-204 — Calling vkCmdBlitImage or vkCmdBlitImage2 wedges the guest in an endless delivered-fault loop.** *(High)* Measured 2026-11-07 by the vkcov coverage harness on a verified build of lane-vkgl-coverage's tip (wasm byte-identical to the shipped batch-10 build): with valid arguments (a 64x64 image, one blit region), vkCmdBlitImage never returned — the guest faulted fetching from an unmapped address (rip == addr, 0x700227500 in the captured run) and the same fault was redelivered past 22 million times without the guest's crash handler ever regaining control; the session was unrecoverable and the run had to be stopped from outside. Called live in the next run, vkCmdBlitImage2 wedged the same way (delivered data fault at a fixed rip, count past 1.2 million when stopped); vkCmdBlitImage2KHR is recorded on the same-code-path precedent, not individually measured. The harness now skips all three (recorded -2, crashed) so the coverage matrix can complete. Contrast the vkCmdCopyImage family, whose bridge exception the guest crash handler does contain (recorded -2, run continues). Closing terms: a guest calling any of the three blit entry points with valid arguments gets a normal return or a containable error, proven by a vkcov run with the skips removed. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk-20261107/console.log and test-results/bridge-coverage-vkgl-vk3-20261107/console.log (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
+
+- **FD-205 — A guest memory fault in some paths is redelivered forever instead of containing the faulting thread.** *(High)* Measured 2026-11-07 during the vkcov run phase: a call that faulted on a data read (addr 0x7002a0fa8 at rip 0x700223c5c in the captured run) was delivered past 5.5 million times at the identical rip/addr; the guest thread never died, the session never recovered, and the run had to be stopped from outside. The triggering call was the harness's vkGetDeviceProcAddr stub row — the real loader entry called with no arguments; that row's premise is false and the harness now skips it (and its vkGetInstanceProcAddr pair, on the pair precedent) — but the defect filed here is the emulator-side behaviour the row exposed: unbounded redelivery of a single fault. The same redelivery shape is what makes FD-204 session-fatal. Closing terms: a guest fault that cannot be handled terminates or suspends the faulting thread, or is surfaced as a session failure, instead of redelivering without bound; proven by a faulting guest call after which the session either continues or reports failure. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk2-20261107/console.log (preserved on the lane tree).
+
+- **FD-206 — Ten implemented Vulkan handlers answer VK_ERROR_INITIALIZATION_FAILED (-3) to the coverage harness's calls.** *(Medium)* Measured 2026-11-07 on the completed vkcov runs (two independent end-to-end runs with identical return codes): vkSetEvent, vkResetEvent, vkCmdSetEvent, vkCmdResetEvent, vkGetEventStatus (the whole event family), vkGetQueryPoolResults, vkFreeDescriptorSets, vkGetDeviceImageMemoryRequirements, vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceImageFormatProperties2KHR. The harness's arguments are valid-ish by design (created objects, a begun command buffer, established state); per name, the fixing lane triages handler defect vs harness argument/state artifact, but the event family's uniform -3 across state the harness did establish is a functional failure on its face. Closing terms: each named handler returns a spec-correct result for the harness's call, or the register records the per-name reason its -3 is the correct answer. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-vk4-20261107/vkcov-results.json.
+
+- **FD-207 — The GL bridge's multisample-texture error path kills the session with an uncaught ReferenceError.** *(High)* In source/opengl/gl64bridge.cpp, the shared case for glTexImage2DMultisample / glTexImage3DMultisample / glTexStorage2DMultisample / glTexStorage3DMultisample wraps the WebGL call in an EM_ASM try/catch whose catch handler references the bare identifier is3D — a C++ variable that is never passed into the JS (the try block correctly uses $0 for the same value). is3D occurs exactly once in the shipped JS and is defined nowhere, so whenever the driver call throws, the catch itself throws ReferenceError: is3D is not defined, uncaught in the page, and the session dies — the exact outcome the case's own comment says the try/catch exists to prevent ("error swallow so a driver that refuses cannot poison wined3d's checks"). Measured 2026-11-07: the glcov run's glTexStorage2DMultisample call threw in the driver, the ReferenceError ended the run at 221 of 334 rows with the session dead. (The glTexImage pair shares the bridge case but never reaches it from the harness — no callable proc; see FD-209.) The harness now skips the two TexStorage rows (recorded -2, crashed). Closing terms: the catch uses the passed-in value (or an equivalent correct reference) so a driver refusal is reported and swallowed as designed; proven by a glcov run with the skips removed, completing with the four names answered. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl-20261107/console.log + summary.json (preserved on the lane tree) and docs/reports/vkgl-spec-coverage-20261106.md.
+
+- **FD-208 — Twenty-one GL handlers answer GL errors to the coverage harness's calls, and one answers inconsistently between calls.** *(Medium)* Measured 2026-11-07 on the completed glcov runs (the set is identical across both): GL_INVALID_OPERATION (1282) from glAttachShader, glBlitFramebuffer, glBufferData, glBufferSubData, glGetSamplerParameterIiv, glGetSamplerParameterIuiv, glGetTexImage, glPointParameterf, glPointParameterfv, glPointParameteri, glPointParameteriv, glSamplerParameterIiv, glSamplerParameterIuiv; GL_INVALID_ENUM (1280) from glBeginQuery, glEndQuery, glGetFloatv, glGetIntegeri_v, glReadPixels; GL_INVALID_VALUE (1281) from glEnd, glGetTexLevelParameteriv; GL_STACK_UNDERFLOW (1284) from glPopMatrix; and glCompressedTexImage3D, which answered 37442 on the first call and GL_NO_ERROR on the second (37442 is not a GL error code). The harness's arguments are valid-ish by design; per name, the fixing lane triages handler defect vs harness argument/state artifact — several are plausibly state artifacts of the harness's own sequence (glEnd with no matching begin in flight, glPopMatrix at stack bottom). Closing terms: per name, either a spec-correct answer to the harness's call, or a register note recording why the error is the correct answer to that call. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/glcov-results.json.
+
+- **FD-209 — Seventy-one GL entry points a Windows guest cannot resolve at all, though the harness carries rows for them.** *(Medium)* Measured 2026-11-07 on the completed glcov run: the harness resolves each name the way an application does (wglGetProcAddress first, then the opengl32 export table) and 103 of its 334 rows resolved to no callable pointer. Of those, 32 are glX* names and the traceProc plumbing row, which are not Windows-path entry points at all and are counted for completeness only. The other 71 are real GL entry points — among them the vertex-array-object family (glBindVertexArray, glGenVertexArrays, glDeleteVertexArrays), the sync family (glFenceSync, glClientWaitSync, glWaitSync, glDeleteSync, glIsSync, glGetSynciv), instanced drawing (glDrawArraysInstanced, glDrawElementsInstanced and the base-vertex/base-instance variants), glBufferStorage, glMapBufferRange, the glTexBuffer family, glGetStringi, the unsigned-uniform family, and the debug-message family (full list in the record) — so an application in the emulator cannot call them through the standard routes. (Two of the 71, glGetShaderSourceImpl and glVersionMode, are ABI-internal names rather than application entry points.) The likely mechanism, for the fixing lane to confirm: the guest context's reported GL version gates which entry points the loader will resolve. Closing terms: the named entry points resolve through the guest path and reach their bridge handlers (proven by the glcov rows recording real answers), or the register records per family why resolution is correctly absent. Found by the vkgl-coverage lane, 2026-11-07; evidence test-results/bridge-coverage-vkgl-gl3-20261107/console.log ("no export" notes) and glcov-results.json.
+
+- **FD-223 — The 64-bit sequential read path answers
+  end-of-file for descriptor 0 whatever it names.**
+  *(Low)* `sys_read64` opens with an unconditional
+  stdin shortcut: descriptor 0 returns 0 before the
+  descriptor is even resolved. In the browser product
+  descriptor 0 is conventionally stdin, which carries
+  no data, so the shortcut is invisible — until a guest
+  closes stdin and opens a file onto descriptor 0 (a
+  legal shape daemons and test harnesses use), after
+  which every sequential read on that file silently
+  answers end-of-file while positioned reads on the
+  same descriptor return its contents. Measured by the
+  unfiled-gaps lane, 2026-11-07, while staging its x64
+  fixtures: the test's data file landed on handle 0,
+  `pread64` read it correctly and `readv` answered 0
+  with the position at 0 (the lane's tests now stage a
+  throwaway descriptor first). The 32-bit model path
+  has no such shortcut. Closing terms: resolve the
+  descriptor first and apply the end-of-file answer
+  only when descriptor 0 names no readable object,
+  proven by a native x64 test reading a file staged on
+  descriptor 0. Not fixed by the filing lane.
+
+- **FD-226 — The shipped audio check verified only the
+  captured tone's frequency, so wrong sample values could
+  pass it.** *(Medium — test coverage. Filed by
+  lane-audio-e2e, 2026-11-07.)*
+  `web/tests/suite/browser/audio-tone.test.mjs` reduced the
+  captured audio to two zero-crossing frequencies. The guest
+  fixture (`tools/guest-fixtures/dsptone.c`) is fully
+  deterministic — a 440 Hz square wave at ±12000/32768,
+  identical stereo channels, exactly six seconds at
+  44100 Hz — so the values themselves are checkable, and
+  the FD-108 lesson is that values can be wrong while
+  frequency measures right. FIXED on lane-audio-e2e — see
+  CL-163: the check now measures peak and RMS level,
+  RMS/peak shape, duty cycle, active duration, the longest
+  silent gap inside the tone, and channel balance on both
+  architectures, waits for the queued tone to drain before
+  measuring, and writes every measured value into its
+  per-architecture evidence JSON before asserting. Its
+  first catch is FD-202.
+  CLOSED — see CL-163.
+
+- **FD-227 — The bridge-coverage probes cannot run: they import the probe-slot helper from the project's pre-move path. CLOSED 2026-11-07 — see CL-166.** *(Was Medium)* `web/tests/vkcov-probe.mjs`, `web/tests/glcov-probe.mjs`, and `web/tests/vkcov-probe-matrix.mjs` imported `acquireProbeSlot` from `/home/ubuntu/boxedwine64/web/tests/probe-slots.mjs`, a tree deleted by the 2026-11-06 project move, so every Vulkan/OpenGL coverage run died at import time and the coverage matrices could not be re-measured at all. Fixed on lane-vkgl-coverage (relative `./probe-slots.mjs` import in all three probes). Closing terms: a coverage probe runs end-to-end from a fresh worktree and writes its results matrix; the fix is committed but the closing proof is still outstanding. Run phase attempted 2026-11-07: the branch was rebased onto the batch-10 tip and prep verified clean, but the dist build never acquired the shared build lock (the build script gave up after its wait while lane builds relayed) and free disk fell to the lane guardrail line the same morning; the remaining steps are recorded in docs/reports/vkgl-spec-coverage-20261106.md. Found by the vkgl-coverage lane, 2026-11-06; evidence docs/reports/vkgl-spec-coverage-20261106.md + test-results/vkgl-census/before.json (force-added). Number note: filed as FD-195 on this lane branch off the pre-batch-10 base; the batch-10 composition settled FD-195 to the bus-discovery filing, so on the 2026-11-07 rebase onto the batch-10 tip this entry is FD-227 (provisional; final settlement at batch-11 composition). Run phase completed 2026-11-07: on a verified build of this branch's tip, all three coverage probes ran end-to-end and wrote their results matrices — the closing terms are met (CL-166); the gaps the runs convicted are FD-204 to FD-209.
+
+- **FD-228 — In this environment the win32u caption painter
+  paints correctly but returns 0, where the documented
+  contract is a nonzero return on success.** *(Low —
+  behaviour divergence in a shipped, already-implemented
+  function. Filed by lane-fd168-slice3, 2026-11-07;
+  lane-local number — other batch-11 branches claim FD-228
+  for unrelated findings, so this entry renumbers when the
+  batch composes.)* Measured with the slice-3 guest fixture
+  (titled WS_OVERLAPPEDWINDOW window, memory-DC surfaces) on
+  two runtimes: the batch-10 shipped runtime (wine64.zip
+  `133bfd70…`) and the slice-3 runtime (`4867cf75…`). On
+  both, NtUserDrawCaptionTemp with the window's own
+  font/icon/text paints the caption (11,988 of 12,000
+  surface pixels non-white) and returns 0; user32 DrawCaption
+  on the same window paints pixel-identical output and also
+  returns 0. Microsoft's documentation for DrawCaption: if
+  the function succeeds, the return value is nonzero — so a
+  guest program that checks the return sees failure after a
+  successful paint. The divergence belongs to the shipped
+  caption painter (NtUserDrawCaptionTemp, implemented long
+  before this slice), not to the slice's new
+  NtUserDrawCaption, which forwards to it and agrees with it
+  exactly (pixel difference 0, same return). A host-side
+  reference was attempted and not obtained: the box's
+  packaged Wine 9.0 did not complete its own first-run
+  prefix initialisation inside two bounded windows on the
+  loaded box, so whether Wine on a normal host returns
+  nonzero for the same calls is unmeasured. Closing terms:
+  either the painter returns nonzero on a successful paint
+  in the emulator guest (the fixture's original nonzero
+  assertions then restored and passing), or the same calls
+  measured under host Wine returning 0 as well, closing this
+  as upstream-faithful behaviour. Evidence: the slice-3 lane
+  record and its preserved guest consoles.
+
+- **FD-229 - A service process's first COM apartment never
+  finishes initializing in this environment: CoInitialize in
+  a winedevice-hosted driver thread creates the apartment and
+  then never returns.** *(Medium - found by the FD-195 lane,
+  2026-11-07.)* Traced with +ole: the PnP thread's
+  CoInitializeEx completes "apartment created" and then
+  silence forever (a 420 s settle changed nothing); the only
+  remaining step in combase is the one-time creation of the
+  STA's hidden message window. The identical call in
+  explorer.exe in the same session succeeds. FD-195 routed
+  around it (setupapi no longer pays CoInitialize for INF
+  sections with nothing to register), but any service-side
+  COM first use - including a future INF that does register a
+  DLL - hits the same wall. Evidence:
+  `test-results/fd195/diag-fix3-olerpc/` on lane-fd195-bus.
+  Closing terms: a service-process fixture whose first
+  CoInitialize returns, or a convicted root cause with a fix.
+
+- **FD-230 - The input-gamepad test's trigger wait could
+  match a resting-state line and fail a healthy session.**
+  *(Low - test harness only. Filed and fixed by the FD-195
+  lane, 2026-11-07; see CL-167.)* The trigger phase waited on
+  a pattern that also matches lt=0 rt=0; the stick-return
+  step just before the phase prints exactly such a line, and
+  when that line was delivered after the phase's mark it
+  matched first, even though the evidencing lt=255 rt=127
+  line sat right behind it in the same console
+  (`test-results/fd195/gamepad-final6.out` on lane-fd195-bus).
+  The wait now requires the evidencing values themselves;
+  commit `659bba40a`.
+  CLOSED — see CL-167.
+
+- **FD-261 — The shared build store's `prefix64.zip` was
+  silently overwritten: the store file no longer
+  matched its own checksums.** *(Medium — build
+  infrastructure. Filed by the batch-11 merge lane,
+  2026-11-07.)* Preparing the batch-11 merge working
+  copy failed its pin check: the store's
+  `web-runtime/prefix64.zip` hashed `51f0a9aa…`
+  (19,066,816 B, mtime 2026-11-07 22:51) against the
+  pinned `19725124…` carried by both the integration
+  manifest and the store's own SHA256SUMS. The FD-195
+  lane's record documents the same hazard striking
+  `wine32.zip` earlier the same day: a regeneration
+  run with `web/runtime` still holding preparation
+  symlinks wrote through one into the store (that
+  file was restored and verified). The prefix64
+  overwrite's writer is not identified; its content
+  matches no lane's recorded artifact. The file was
+  restored from the retained batch-10 archive
+  (`backups/winbox-runtime-assets-20261107/`, tar
+  sha256 `f54d0550…`): the extracted copy hashes
+  exactly to the pin, and a full checksum pass over
+  the store verifies clean. Closing terms: store
+  payloads cannot be written through preparation
+  links (consumer-side read-only enforcement, or
+  preparation that copies any payload a lane may
+  regenerate), proven by a repeat of the incident
+  shape failing loudly instead of landing.
+
+- **FD-262 — The batch-11 composition's silent-failure
+  baseline for `syscall64.cpp` undercounted the
+  composed tree by two.** *(Low — test-baseline
+  accounting. Filed by the batch-11 merge lane,
+  2026-11-07.)* The hand-composed
+  `web/tests/suite/known-silent.json` entry took the
+  timing lane's figure (`unloggedErrno` 136) for the
+  merged file. Two pool lanes had each added two
+  unlogged `-EINVAL` returns to disjoint sites of
+  the same file — the timing lane's clock-validation
+  returns and the unfiled-gaps lane's vectored-read
+  signed-length returns — each reviewed and
+  baselined at +2 on its own branch. Scanner counts
+  per branch prove the arithmetic: integration 134,
+  each lane 136, the composed tree 138. The batch
+  gate's checking-service run (pipeline 59) failed
+  `no-silent-failure` on exactly this line; the
+  baseline is corrected to the measured 138. No
+  product code changes; the composition added and
+  hid no silent path.
+  CLOSED — see CL-187.
+
+- **FD-263 — A Direct3D 10 guest workload kills the
+  browser page with an uncaught WebAssembly trap:
+  "operation does not support unaligned accesses".**
+  *(High — can kill a running session. Filed by the
+  batch-11 merge lane, 2026-11-08.)* The batch-11
+  gate's browser suite failed `d3d10-comprehensive`
+  three times out of three (suite run and two focused
+  re-runs: 152,784 / 146,043 / 146,769 ms) with the
+  same signature: the page raises `pageerror:
+  RuntimeError: operation does not support unaligned
+  accesses` from the composed build's wasm (build
+  sha256 `e44fe64e…`; browser stack: function 4601 at
+  0x22ffbd, called from 11145 at 0x3ef8f3, from 11141
+  at 0x3ef70c, through the message entry point), and
+  the harness counts any page error as fatal. The
+  trap fires at a consistent stage — after the
+  guest's Vulkan WebGPU device has enumerated and a
+  further guest process has spawned — and the guest
+  itself continues afterwards; no D3D10 check in the
+  test reports a wrong result. The same test passed
+  the batch-10 gate on a focused re-run (177 s) on
+  the previous build. The shipped wasm carries no
+  name section, so the trapping operation is not yet
+  identified. Closing terms: the trapping operation
+  identified in a symbols build and the unaligned
+  path fixed (or proven to be a trap the guest itself
+  provoked, with the session surviving it), and
+  `d3d10-comprehensive` passing in a gate run.
+
+- **FD-264 — The 64-bit boot smoke test never sees
+  its payload run: a freshly booted 64-bit `cmd`
+  does not print within the test's waits.** *(Medium
+  — the regression guard for 64-bit starting is
+  blind, and 64-bit cold-start latency is
+  implicated. Filed by the batch-11 merge lane,
+  2026-11-08.)* `boot64-smoke` failed three times
+  out of three in the batch-11 gate (303,196 /
+  301,636 / 303,279 ms). The test's first two
+  milestones are met (the guest loader's execve and
+  user32 loading both appear) but the third — the
+  booted `cmd /c echo vkboot` producing its output
+  line — never arrives inside its 240 s wait, in any
+  run; a full search of the preserved consoles,
+  including after stripping terminal escape
+  sequences, finds "vkboot" only in launch and
+  process lines, never as program output. At each
+  kill the guest is alive and working through device
+  enumeration (registry `CompatibleIds` reads in the
+  wineserver trace), with no fault or error in the
+  stream. Every other 64-bit boot in the same suite
+  passed on the same composed prefix, including full
+  desktop boots at 120–195 s, and this test passed
+  the batch-10 gate. Not yet separated: how much of
+  the latency is this box's sustained load versus
+  enumeration work the composed 64-bit prefix newly
+  does at boot. Closing terms: `boot64-smoke`
+  passing in a gate run, with the boot-latency cause
+  named.
+
+- **FD-265 — The guest DNS test's witness lines
+  reach the console one character at a time through
+  a console host, so the test times out even though
+  the guest's name resolution, connection, and HTTP
+  read all complete.** *(Medium — the capability
+  works; its only end-to-end witness is blind, and
+  any console program spawned the same way is
+  suspect. Filed by the batch-11 merge lane,
+  2026-11-08.)* `winsock-dns` failed three times out
+  of three in the batch-11 gate (319,870 / 319,728 /
+  318,343 ms), each time at its 300 s wait for the
+  fixture's `BW_DNS done=1` line on the 32-bit
+  guest, including one run in a verified quiet
+  window (load ~1.0). The preserved console shows
+  what actually happens: the fixture (spawned as
+  pid 101) runs under a `conhost.exe`, and its
+  output arrives character-by-character wrapped in
+  cursor hide/show escape sequences — de-escaped,
+  the complete witness sequence is present
+  (`BW_DNS gai=`, `addr=`, `connect=`, `http=`, the
+  negative-name stages, `done=`). The relay's own
+  log independently shows a client performing the
+  fixture's exact script during one of the attempts
+  (a stream to example.com, then the made-up-name
+  check refused with ENOTFOUND, as designed). So the
+  guest resolves, connects, and reads exactly as
+  FD-04's discharged clause requires; what is broken
+  is the path by which this spawned console
+  process's output reaches the page — on the DNS
+  lane's branch the identical test passed with
+  plain, matchable lines. Closing terms:
+  `winsock-dns` passing in a gate run with the
+  witness lines arriving as contiguous text, and
+  the mechanism (why this spawn attaches a rendering
+  console host in the composed tree) named.
 
 ## B. Fixed on a lane branch — awaiting merge
 
@@ -9486,7 +11381,10 @@ is behavioural, is re-proven there.
 
 | `lane-audit-l1l2` | *(Batch-9 settled numbers: FD-19 closed as CL-130; filings FD-179, FD-180, FD-181.)* *(Provisional numbers: FD-19 closed as CL-130 — lane-fd162-164 claims CL-130..CL-121 on its branch; filings FD-179, FD-180, FD-181 keep their numbers if free at composition.)* FD-19 CLOSED as DISPROVEN: the 64-bit guest shim resolves the promoted queries' KHR spellings to real alias wrappers that forward to the core wrappers, so a 64-bit guest's KHR call traps under the core fn id and is served; the 32-bit shim traps the KHR id itself, which is why only the 32-bit dispatcher carries the paired cases. New filings: FD-179 (the proc-address lookup returns different addresses for a KHR spelling and its core spelling — both served, answers identical), FD-180 (a 32-bit benchmark boot died in a delivered-fault loop — 65 guest-memfault32 lines at one eip, printed count to 1024 — and the host fault path recursed to a JavaScript stack overflow; the batch-7 gate's one-off 'memory access out of bounds' trap on the same fixture cross-referenced, identity unproven), FD-181 (a 64-bit benchmark guest spawned into a healthy session produced no output in 180 s, its only thread parked in a socket-condition wait, 3 of 3 attempts under recorded heavy load; the gate's focused run passed the fixture, so intermittent). | FD-19: new GUARD section in the native bridge test (`64e7e3c0e`) calling through the shim-returned KHR pointers — core trap id pinned, answers byte-identical to the core names for all three query pairs; run-native 70 PASS, exit 0. L1: bounded repetition series on a build whose wasm `c0af957a` is byte-identical to the batch-7 gate build — x86 mix: 7 clean boots, then the FD-180 fault-loop boot; x64 mix: 3 stalled first-boots (FD-181). Native suites serial main 686 tests 0 FAILED, x64 111 tests 0 FAILED; JS unit 353/0; browser build 'Browser export verified'. Record: `docs/reports/audit-followup-l1-l2-20261105.md`; evidence `test-results/audit-l1l2/`, `test-results/audit-l1/`, `test-results/suite-audit-l1*/` |
 
+| `lane-vkhost-gen` | FD-28 CLOSED as CL-137 (provisional; settles at the next composition): the Vulkan host bridge's generator now emits every implementation that used to be a hand-written edit in the generated vk_host.cpp — init-failure propagation, map-failure handling, push-descriptor-template marshaling, the log-once graceful degrades for eight unsupported functions, and the log-once-and-skip unknown-pNext defaults — so regenerating the bridge reproduces the shipped files exactly. The next-pointer part of FD-27 is discharged by the same commit; FD-27's two union types remain open. | Fix commit `26a90c5b6` on base `faf95d26c`. Baseline regeneration on the base changed vk_host.cpp by 66 insertions / 69 deletions (the divergence); with the fixed generator all six outputs (vk_host.cpp, vk_host.h, vk_host_marshal.cpp, vk_host_marshal.h, vk.c, vkdef.h) regenerate sha256-identical to the committed blobs, a second run identical again, no function routed to the not-implemented marshal, and the regenerated vk_host.cpp passes g++ -fsyntax-only with the project flags. Checking-queue pipeline 18, submitted at the fix commit, was voided by the concurrent-submission mount race filed as FD-194 (its verify-source mounted the commit of a sibling lane; pipelines 19-21 died the same way), and a re-submission (pipeline 28) was still queued behind the submission flood when this lane closed; the light checks were therefore run by hand on this tree with the exact commands the pipeline runs: citations exit 0 (352 rows, 0 drift), JS unit 352 passed / 2 failed (only the two known bare-checkout artifacts: provenance-artifacts, runtime-completeness), JS legacy 115/0. The native suites were not re-run by hand because the change touches no compiled source (generator tooling only; every generated output byte-identical to the base). Record: `docs/reports/fd28-vkhost-generator-20261106.md`; evidence `test-results/fd28/` |
+
 | `lane-fd168` | FD-168 first draw-down (all section-A numbers provisional until the batch-9 audit settles them; no CL claimed — FD-168 stays open). Fourteen x86-64 win32u placeholders became real syscall implementations in the Wine 8 backports build (`tools/buildWine/patches/wine8-win32u-fd168-backports.patch`: spec lines to the syscall shape, syscall-table entries, unix-side bodies ported from the newest upstream source and adapted to this vintage's server protocol): NtUserAlterWindowStyle, NtUserBuildHimcList, NtUserBuildNameList, NtUserBuildPropList, NtUserGetClipCursor, NtUserGetCurrentInputMessageSource, NtUserGetPointerType, NtUserGetThreadState, NtUserQueryDisplayConfig, NtUserQueryWindow, NtUserRegisterWindowMessage, NtGdiGetMiterLimit, NtGdiSetMiterLimit, NtGdiIcmBrushInfo. Runtime restaged with re-pinned hashes (checker + README), retained runtime-assets archive rebuilt and re-pinned, census baseline regenerated in the same change: x64 win32u 926 -> 912, i386 1,111 unchanged, FD-168 total 2,037 -> 2,023, shipped named stubs 33,756 -> 33,742, only x64/win32u.dll moved across 1,171 tables. Remaining 2,023 carry recorded per-family dispositions in the FD-168 entry (31 D3DKMT-layer-only, 6 blocked on absent server/driver/state machinery, 8 upstream FIXME semi-stubs not faked, 1 upstream-removed misspelling, 866 never implemented upstream, i386 vendor-build disposition). | Guest test `win32u-fd168` PASS — fixture `tools/guest-fixtures/win32u-fd168.c`, 17 checks, every check ok=1 and RESULT 0 in the run's preserved console log; the first run (16/17) caught the miter-limit pair using Wine 8's stale FLOAT parameter form — rewritten to Wine 10's DWORD bit-pattern form and re-proven 17/17. Census `--check` exit 0; completeness checker + `bootstrap.py --check` 0 failures; dist build "Browser export verified". JS unit suite 354 passed / 0 failed on the final tree; legacy 115/0. Record: `docs/reports/fd168-win32u-drawdown-20261105.md`; evidence `test-results/suite-win32u-fd168/` |
+| `lane-fd168-slice2` | FD-168 second draw-down (all numbers provisional/lane-local until the batch-10 composition audit settles them; no CL claimed — FD-168 stays open). Five more x86-64 win32u placeholders became real syscall implementations in the Wine 8 backports build (`tools/buildWine/patches/wine8-win32u-fd168-slice2.patch`: spec lines to the syscall shape, syscall-table entries, unix-side bodies built from machinery already in the tree): NtUserGetQueueStatusReadonly (existing `get_queue_status` server request with `clear_bits = 0`), NtUserIsTopLevelWindow (the `NtUserGetAncestor(GA_ROOT)` identity), NtGdiCombineTransform (the existing `combine_transform` helper), NtGdiGetCharSet (`NtGdiGetTextCharsetInfo`'s charset), NtGdiPolyTextOutW (a loop over `NtGdiExtTextOutW`, as gdi32's own PolyTextOutW does). Runtime restaged on the batch-9 vintage with only the win32u pair re-pinned (the other 40 backport outputs restored to their reviewed bytes — a from-scratch rebuild does not reproduce them), retained runtime-assets archive rebuilt and re-pinned (release `runtime-assets-20261106-fd168s2`), census baseline regenerated in the same change: x64 win32u 912 -> 907, i386 1,111 unchanged, FD-168 total 2,023 -> 2,018, baseline named stubs 31,838 -> 31,833, only x64/win32u.dll moved across 1,171 tables. | Guest test `win32u-fd168-slice2` PASS — fixture `tools/guest-fixtures/win32u-fd168s2.c`, 13 checks, every check ok=1 and RESULT 0 in the run's preserved console log (green run twice on the final bytes); negative control on the pre-change wine64.zip: all 13 checks fail with the Wine stub exception (RESULT 13). Census `--check` exit 0; completeness checker + `bootstrap.py --check` 0 failures; dist build "Browser export verified". JS unit suite 354 passed / 0 failed. Legacy suite stopped by the lane during the 38th of 45 browser tests (jitbench CPU benchmark still mid-run after ~30 min of contention): 36/37 completed browser tests passed; the one failure (input-gamepad) fails identically on the pre-change runtime (FD-189/FD-194 blockage). Record: `docs/reports/fd168-win32u-drawdown2-20261107.md`; evidence `test-results/suite-win32u-fd168-slice2/` |
 
 | `lane-fd170` | *(Batch-9 settled numbers: FD-170 discharged as CL-131.)* FD-170 DISCHARGED (provisional CL-131; settles at the batch-9 composition): a recorded per-DLL decision for all 50 whole-DLL-absence DLLs (90 tables, 6,734 named stubs). Implemented on the x64 side via `tools/buildWine/patches/wine8-fd170-contracts.patch` in the Wine 8.0 backport pipeline (built by `tools/rootfs64/build-wine8-backports.sh`, staged by `stage-wine8-backports.sh` / `build-wine64-zip.sh`, hash-pinned fail-closed in `tools/rootfs64/check_runtime_completeness.py`): bluetoothapis 95→71 named stubs (Wine 10.0's radio/SDP code backported + the FD-167 no-radio/no-device contract bodies, with the headers they need), winusb 21→13 (the FD-167 no-device contract bodies), netutils 22→17 (Wine 10.0's `NetApiBuffer*` heap-buffer functions). The other 47 DLLs are accepted as documented absences, each with its concrete missing substrate recorded in the FD-170 entry and the lane record. | Census run against the built binaries differs from the base baseline in exactly those three tables (33,756 → 33,719 named stubs total; FD-170 remainder 6,697); baseline regenerated in the same change, `--check` exit 0. Runtime assets re-cut as `runtime-assets-20261105-fd170`; `bootstrap.py --check` passes (13 files verified, completeness 0 failures). JS unit suite 352 passed / 2 failed — both failures (provenance-artifacts, binary-patch-registry) attributable to the borrowed batch-8 gate dist this lane tested against, not to the change; the census guard test passes. Guest fixture `web/tests/suite/browser/fd170-contracts64.test.mjs` committed; its verdict is owed to the batch-9 gate — every attempt on 2026-11-05/06 died in the shared probe queue or in a guest boot that outlasted the hung-probe cap at load 13–19. Record: `docs/reports/fd170-whole-dll-decisions-20261105.md`; evidence `test-results/fd170/` |
 
@@ -9495,12 +11393,25 @@ is behavioural, is re-proven there.
 | `lane-pch` | *(Batch-9 settled numbers: filings FD-184, FD-185.)* Build speed (improvement, no FD closed): both project makefiles precompile the shared `boxedwine.h` chain once per build directory instead of re-parsing it in every one of the 330 project translation units that include it - clang `-include-pch` (project/emscripten/makefile), GCC `.gch` (project/linux/makefile). The precompiled set is computed by membership (project sources under source/ and platform/ only, minus the six sources that do not include the header); third-party sources under lib/ never see it. Generated dependency files make every header in the chain a prerequisite of the precompiled header, so editing one rebuilds it and all consumers. FD-184 and FD-185 filed from this lane's measurements (cpu.h two-letter macros poison later asmjit header inclusions; the Emscripten `test` target does not compile on the base - six multi-threaded-only test units in a non-multi-threaded target, pre-existing). | Base `48d27952a`, code `73e0232cd`. Clean-build compiler CPU (user time from `time`, shared box, loads recorded in the logs): wasm64-mt 853.6s -> 406.2s (-52%), native Test 812.9s -> 405.5s (-50%), native X64Test 943.1s -> 530.4s (-44%). Outputs byte-identical in all three arms (wasm `9b51d60101ab`, JS glue `9fe550765f`, Test binary `fcb1c3d959`, X64Test binary `2ab4830b0c` - same hashes before and after). Native suites serial on the precompiled-header binaries: main 689/0, x64 113/0. JS unit 353/0; legacy 115/0 (1 skip). Full `tools/bw64-build.sh` run on the committed tip produced dist with BUILD_INFO git_sha `73e0232cd` and wasm `9b51d60101ab` (its dirty count 13 is exactly the shared-store prep symlinks; zero tracked modifications). Dependency wiring proven by dry runs: a no-op build schedules 0 compiles; touching one chain header schedules exactly 1 precompiled-header rebuild plus all 189 of its consumers in the wasm64-mt configuration. Emscripten `test` target census: every consumer compiles; the only failures are FD-185's six, identical without the change. Record: `docs/reports/pch-build-20261105.md`; evidence `test-results/pch/` |
 
 | `lane-buildcache` | *(Batch-9 settled numbers: FD-186 closed as CL-132.)* *(Provisional numbers: FD-186 closed as CL-132; both settle at the next composition.)* FD-186 CLOSED: compiles in both project makefiles now route through ccache when it is installed — one cache directory shared by every working copy on the box, keys relativised to each tree's root so identical files in different copies hit; `BW64_CCACHE=0` disables, command-line CC/CXX still win, a missing ccache changes nothing. The `winbox-wt-prep.sh` step creates the shared directory and asserts its size cap (2.0 GB) + compression, so new copies get it automatically. | Proof on base `48d27952a`, loads recorded per run in the record: browser build uncached 1,434 s; cold cache (emptied first) 1,084 s with 270 misses / 0 hits and BUILD COMPLETE; warm same tree 182 s with 270/270 hits; warm FRESH tree's first build 175 s with 270/270 hits; the product wasm byte-identical in all four runs (sha256 `9b51d60101ab…`, 5,688,949 B — the figure the shared-build-store lane measured independently for this tip). Native release: uncached 747 s, cold 543 s (377 misses), warm 3 s (377/377 hits); cached native binaries identical to each other, differing from an uncached build only in embedded source-path annotation strings (relativised by the cache; object-level diff in the record) — code identical. Suites on the cache-built tree: native serial main 689 tests 0 FAILED, x64 0 FAILED, JS unit 353/0. Record: `docs/reports/build-cache-20261105.md`; evidence `test-results/buildcache/` |
+| `lane-fd03` | *(Provisional number: FD-03 closed as CL-134; settles at the next composition — sibling lanes also claim CL-134 provisionally.)* FD-03 CLOSED (remaining terms): floors (a) OpenCL/CUDA and (b) AVX/AVX2 proven not deliverable in the browser target by a layer-by-layer audit at the base tip — for (a), the shipped set carries Wine's opencl thunk pair and the Khronos loader but no vendor ICD (no .icd file, no registry vendor key, no emulator-source implementation) and no CUDA binary at all; for (b), the CPU's SIMD state is 128-bit only, XGETBV is hardwired to the legacy x87+SSE mask with XSETBV unimplemented, CPUID leaf 7 is all zeros, and neither engine decodes VEX. No product code changed. | Record commit `3bf935b48` on base `faf95d26c`. Evidence: the audit's listings, readelf output, and source citations are quoted in the record from the pinned payload set (retained archive `winbox-runtime-assets-20261106`) and the source at the base tip; the negatives are pinned by `tools/testdata/machine_definition_check.c` (CPUID AVX bit clear) and `cpu64SelfTest.cpp` Test 66 (XGETBV(0) = 0x3); checking-queue pipeline #17 ran the light checks at the base tip. Record: `docs/reports/fd03-remaining-terms-20261106.md` |
 
 | `lane-fd176` | *(Batch-10 settled numbers: FD-176 closed as CL-134; FD-193 filed.)* FD-176 CLOSED as CL-134 (lane-local number; settles at the next composition): the block-invalidation differential gate links again — the script's invalidate-test link now carries the kernel core set (fsopennode, fsnode, kthread, ksystem, kinotify, kscheduler, synchronization, bfile, platform/linux, with sdl2-config flags) and the three harness stubs that stood in for the unlinked kernel are removed (one, `useF64 = true`, also held the wrong value for the 64-bit guest, whose product value is false). Second defect in the same gate, fixed in the same commit: as scripted the differential was vacuous — both binaries interpreted, since tryBlockStep is gated on jit64Enabled, fast dispatch defaults on, and the engine defaults to interp — so the blocks binary now runs with `BW64_JIT=1 BW64_JIT_ENGINE=off BW64_JIT_FAST_DISPATCH=0`, proven by probe to reach tryBlockStep and by sabotage to fail T1/T3/T4 with stale values. FD-193 filed from this lane (BW64_BLOCKSTATS prints garbage from a dangling CPU pointer; diagnostic only). | Commit `5bec2fa3e` on base `faf95d26c`. Full `./scripts/build-jit-wasm.sh --selftest-only` exit 0: jit64 phase-1 873/0; gen emitters byte-identical; invalidate interp+blocks pass=54 fail=0, logs byte-identical; wasm fixture tests 314/0. Sensitivity re-verified on the new recipe (bw64NoteWriteSlow neutered: T1/T3/T4 fail with stale values, pass=17 fail=37). The emcc phases were not re-run (the change does not touch the emcc recipe). Record: `docs/reports/fd176-invalidate-gate-link-20261106.md` |
 
 | `lane-fd189` | *(Batch-10 settled numbers: FD-189 closed as CL-135; FD-194 filed.)* *(Provisional numbers: FD-189 closed as CL-134; settles at the next composition.)* FD-189 CLOSED: the shipped 64-bit prefix now registers the PlugPlay service and the ROOT\WINE bus devices the way the 32-bit prefix does — the fragment `tools/rootfs64/prefix64-reg.txt` carries the seven PnP sections verbatim from the 32-bit prefix's system.reg, and the shipped prefix guard (`tools/rootfs64/prepare_prefixes.py`) now requires them on win64 too. The old leniency is how this shipped green: the guard only required a missing service registration on the native-boot packaging path and the Enum keys only for win32/full-init, so the shipped `check` path passed a prefix with no PnP stack at all. Runtime assets re-pinned to `runtime-assets-20261106-fd189` (only prefix64.zip changed). | Fix commit `44ab5edcf` on base `faf95d26c`. Proof: checker RED on the unfixed set (the new FD-189 check names all five missing pieces) and the fd189-services64 browser fixture RED on the base build (three OpenService 1060s + empty root enumeration, RESULT 4), both GREEN after the fix — the 64-bit fixture reports all three services present and both bus devices enumerating (RESULT 0) and the 32-bit control stays green; the fixed browser build's wasm is byte-identical to the baseline (payload-only change); the completeness checker passes 0 failures / 0 skips and `bootstrap.py --check` verifies 13 files; the citation audit is 352 rows, 0 drift; JS checks ALL TESTS PASSED (legacy exit 0, unit 354/0); native suites serial main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native 71 PASS, 0 FAIL. The services are registered and present but do not reach running on 64-bit — the PlugPlay start failure is filed as FD-194 (provisional) and FD-188's entry is annotated with the 64-bit driver-load signature. Record: `docs/reports/fd189-plugplay-prefix64-20261106.md`; evidence `test-results/fd189/` |
 
 | `lane-fd188` | *(Batch-10 settled numbers: FD-188's driver-load layer closed as CL-137; FD-195 filed.)* FD-188 FIXED on the driver-load layer (provisional CL-134 — COLLISION: the fd189 lane also claimed provisional CL-134 on its branch; settled as CL-137 at the batch-10 composition): Wine's driver loader opens every driver by the absolute path `C:\windows\system32\drivers\<name>.sys`, but the shipped prefix redirects system32 to the Wine lib dir, which carried the .sys files and no `drivers/` subdirectory — every driver load failed STATUS_DLL_NOT_FOUND (c0000135) and ZwLoadDriver failed c0000142. Fix mirrors every .sys file into a `drivers/` subdirectory in both wine zips (wine32: 20, wine64: 17) and ships the five wine.inf [InfFiles] driver .inf files in the wine zips' `share/wine/` + prefix32's `C:\windows\inf\`, so setupapi can install a function driver for an enumerated WINEBUS HID device. Guards: completeness checker `t_drivers_dir` + `t_driver_inf` tests; prefix validation requires the five .inf files in the 32-bit prefix. Re-pinned as `runtime-assets-20261107-fd188b`; shared store refreshed to the new pins. NOT closed on its literal terms: the FD-24 witness still sees no controller — the guest enumerates no HID device at all, filed as FD-195 (winebus device discovery; witness proof vehicle). | Fix commit `7b0c2a50b` on base `faf95d26c`. Regression probe `fd188-driver-probe` PASS twice (runs 9, 10): no c0000135/c0000142 lines, all four boot drivers init done, drivers dir lists 22 entries (the full mirror), WineBus service state 4. Browser build 'Browser export verified', wasm byte-identical to the pre-fix build (`92b36180…`). Queue pipeline 16 on the fix commit: citations 0 drift; js-unit 352 passed / 2 failed — the same two known bare-checkout artifacts as pipeline 11 (`provenance-artifacts`, `runtime-completeness`); js-legacy 0 fail; native main 692 tests 0 FAILED, x64 116 tests 0 FAILED; run-native all PASS. Record: `docs/reports/fd188-drivers-initialise-20261107.md`; evidence `test-results/fd188/` |
+| `lane-x86-start-fault` | FD-201 FIXED (closure number settles at the next composition): the occasional dead 32-bit start. `KSystem::guestRamInfo` iterated the process table with no lock while `addProcess`/`eraseProcess` mutate it under `processesCond`; an insert crossing the table's load-factor limit makes BHashTable replace its whole slot array and free the old one (rehash), so a sysinfo scan racing a process start could keep reading the freed array and dereference a wild KProcess pointer — the first field load (`process->memory64`) traps and kills the calling worker. Fix: `guestRamInfo` and `processCount` hold `processesCond` for the table access; the 32-bit sysinfo reads the count through `processCount`; a source guard in the guest-topology test pins both locks. | Fix commit `5602c1dd5` on base `334c70be4`. Identification: the FD-169 lane's faulted 32-bit suite run (shipped-identical wasm `92b36180…`) preserved the full wasm stack — `sysinfo` → `guestRamInfo`, trap on the `process->memory64` load — matched field-for-field against the source (full analysis in the lane record's resolution addendum). Guard red/green in the native suite: the topology test fails on the unfixed source with the FD-201 message and passes with the fix. Browser proof: fixed build (BUILD_INFO git_sha `94a2970c6` + the fix, wasm `4be34516…`, 'Browser export verified') — two series of 12 consecutive 32-bit starts, 24/24 started, zero fault occurrences, zero CDP-captured exceptions (`test-results/x86-start-fault/repro-fixed-1/`, `repro-fixed-2/`); control series on the live unfixed build the same day 12/12 clean (bursty incidence; preserved instances are the positive control). Record: `docs/reports/fd201-x86-start-fault-20261107.md` (resolution addendum) |
+
+| `lane-fd193` | *(Provisional number: FD-193 closed as CL-135; settles at the next composition.)* FD-193 CLOSED: the BW64_BLOCKSTATS exit reporter no longer dereferences a CPU that may already be destroyed — a CPU that allocates a block table under the flag joins a process-wide registry, folds its counters into process-wide totals on destruction, and the once-registered reporter prints the folded totals plus the counters of any CPUs still alive at exit. | Fix commit `f5fac0447` on base `faf95d26c`. RED on the base: four identical garbage lines (coverage=5070359463874500.0%) from the four-context block-invalidation harness. GREEN: a single line, identical across runs — built=7 execs=7 insnsInBlocks=13 totalInsns=14 coverage=92.9% — with totalInsns matching the harness's own independent instruction total exactly; interp/blocks differential byte-identical (pass=54 fail=0); flag unset prints nothing; CPU-lifetime gate PASS with block execution off and on; jit64 phase-1 tests 873/0. Record: `docs/reports/fd193-blockstats-reporter-20261107.md`; evidence `test-results/fd193/` |
+| `lane-x11-getramptr-audit` | *(Lane-local numbers: FD-193 closed as CL-137; both settle at the next composition.)* FD-193 CLOSED: audit of all 19 `getRamPtr` call sites in the window-system bridge (`source/x11`; none in `source/x11wire`) — 12 received guest-controlled addresses/lengths and dereferenced the result unchecked (getRamPtr returns null for unmapped, read-only or page-straddling spans, so such a guest struct crashed the host); guest fields now read through the checked accessor, `XSetWindowAttributes::get` falls back to its checked read on refusal, and `ChangeWindowAttributes` guards the null-attributes case. The 7 remaining sites pass emulator-allocated addresses and are safe by construction (Appendix). | Fix commit `cd030f389` on base `faf95d26c`. Proof: four new native tests drive the real int 0x99 handlers with page-straddling structs in a forked child — unfixed: all four fail (refusals logged at the exact straddle addresses; children wedged on the null deref, killed after budget); fixed: all four pass (logs `test-results/x11-getramptr-audit/red-601..604.log`, `green-601..604.log`). Record: `docs/reports/x11-getramptr-audit-20261106.md` |
+
+| `lane-d278` | *(Provisional numbers: FD-09 closed as CL-134, FD-193 as CL-135, FD-194 as CL-136 — all lane-local. FD-193 is also claimed on `lane-fd176` for an unrelated filing, FD-194 in the batch-10 settlement for the PlugPlay filing, and CL-134 on the batch-10 branches; every number settles at the next composition.)* FD-09 CLOSED (frontier review D8): `modify_ldt` answers the host's measured matrix instead of panicking — byte count other than one descriptor -EINVAL, unreadable descriptor pointer -EFAULT, out-of-range index -EINVAL, each rejection one counted `BW64-FAIL syscall.modify_ldt` line. FD-193 FILED + CLOSED (frontier review D2): futex operations on an unmapped word answer the host's measured matrix (-EFAULT for every operation except a 64-bit private WAKE / WAKE_BITSET, which returns 0) instead of the 32-bit panic, the null-page park, and the 64-bit phantom page; a zero bitset mask is -EINVAL on both word sizes. FD-194 FILED + CLOSED (frontier review D7): divide quotient overflow delivers SIGFPE / FPE_INTDIV / trap 0 and x87 exceptions deliver through the SIGFPE slot with trap 16, both as the host does; INTO via SIGSEGV trap 4 pinned unchanged. Fix commit `f998e2e01` on base `faf95d26c`. | Host reference programs measured first (raw futex and modify_ldt syscalls, raw signal delivery; sources and outputs in `test-results/d278/hostref/`). Six new native tests (main 614-618, x64 6) fail on the base — the shared-futex and modify_ldt index cases with the filed panic text — and pass with the fix, the rejections visible as counted BW64-FAIL lines in the green logs; control test 613 passes on the base and with the fix. Checking queue: pipeline #27 verified the source mount on the exact tip but was invalidated when a concurrent submission replaced the shared source tree mid-run, and a further attempt was stood down at 5.6G free disk — the queue verdicts are owed to a rerun (see the record's Checks section). Record: `docs/reports/d278-futex-modifyldt-fpe-20261107.md`; evidence `test-results/d278/` |
+| `lane-ditems` | *(Provisional numbers: FD-11 closed as CL-137, FD-14 closed as CL-138, FD-37 closed as CL-139, FD-195 filed and closed as CL-140, FD-196 filed and closed as CL-141; all settle at the next composition.)* The frontier review's five remaining D-items, worked as one lane: D16 = FD-11 (the empty-separator split guard moved inside `BString::split` itself), D11 = FD-14 (`raiseSyncFault` logs its own deliveries at the delivery point; the 32-bit core's two recover-gate sites confirmed in context, no change needed), D21 = FD-37 (fresh export of the repository's only stash to `evidence/stash-export-20261106/`; the stash was not dropped), D5 filed as FD-195 (caller audit of the no-throw segment-fault entry points: the invalid page's accessors silently dropped writes after an on-demand mapping — fixed to re-dispatch, with a loud log for a write that still cannot land; all other call sites proven sound), D17 filed as FD-196 (`translateOpenError` widened from 4 errnos to 25 now that the filesystem layer preserves the host errno). | Commits `5dc0b8513` (tests) + `14783353f` (fixes) on base `faf95d26c`. Proof: four new/extended native tests, each RED on the unpatched code and GREEN after — `testBStringSplit` (RED = hang, timeout-killed), `testTranslateOpenError` (28 rows), `testFaultDelivery32` additions (write/read-back through the on-demand-mapped window), `testRaiseSyncFaultDeliveryLogged64` (the emitted `BW64-FAIL sync-fault64 ... delivered=1` line is in the GREEN log) — restored-tree GREEN re-confirmed for all four; full suites via the checking queue on the submitted branch. Evidence `test-results/ditems/`; record `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md` |
+| `lane-fd26` | *(Lane-local numbers: filings FD-195, FD-196; FD-26 stays open.)* FD-26 (partial): the fast engine compiles the scalar SSE moves (MOVSD / MOVSS / MOVQ load) and the packed FP logic ops (AND / ANDN / OR / XOR, PS and PD forms) instead of falling back block-wide (see the FD-26 progress note). FD-195 filed: the section-14.3 invalidation gate does not link at the tip (pre-existing, baseline-identical). FD-196 filed: a guest `%.3f` double print goes to ~1e66 garbage after the first print in a process. | Guest bench (sseprobe64, warm medians, modes 0,1,1,0): fast-engine scalar loop 967/416 ms before -> 34/40 ms after (interpreter 408/489 -> 293/433 in the same runs), logic loop 357/330 -> 82/34 (interpreter 246/219 -> 221/205); battery + loop checksums identical across modes and builds. Native jit64 tests 919/0 (base 873/0); generated emitters byte-identical; wasm fixtures 323/0 (base 314/0) incl. a 500-iteration differential fuzz against the interpreter model and denied-access fault tests; sabotage (new kinds decoded as UNKNOWN) turns exactly the 16 new checks red (903/16). JS unit 353 passed / 1 failed (provenance-artifacts - no dist in the tree at run time; passes once the build exists). Invalidation gate not runnable at the tip (FD-195). Record: `docs/reports/fd26-scalar-logic-fastpath-20261107.md`; evidence `test-results/suite-sseprobe-bench/`, `test-results/fd26/` |
+
+| `lane-unfiled4` | *(Lane-local numbers: FD-193 closed as CL-137, FD-194 as CL-138, FD-195 as CL-139, FD-196 as CL-140; FD-197 and FD-198 filed open.)* Four characterised-but-unfiled gaps filed and fixed: FD-193 (vectored-read segment lengths judged as the ABI signed size in all four validation paths; combined transfers capped at MAX_RW_COUNT 0x7ffff000 in all four walks), FD-194 (positioned reads and writes on unseekable objects answer -ESPIPE immediately after descriptor resolution on both cores, the file-position mode delegating to the plain vectored call after validation; two measured write corners left as stated boundaries in the entry), FD-195 (32-bit linkat implemented and wired at slot 303, flags validated ahead of the path fault), FD-196 (a per-trap metrics hook feeds the emission gate from both Vulkan bridges; schema unchanged, committed fixture byte-identical). | Host contracts measured at the raw syscall level (native aarch64 and aarch32 compat binaries) before any fix; new native tests testUnfiledGaps32 (main suite) and testUnfiledGaps64 (x64 suite): RED on the base (29 failing assertions in the main suite; the x64 run cannot complete on the unfixed code - its positioned read consumes pipe bytes the test then waits for), GREEN with the fix; metrics selftest extended (trap-only windows emit) and passing. Evidence `test-results/unfiled4/`; record `docs/reports/fd193-196-unfiled-gaps-20261107.md` |
+| `lane-fd39-residue` | FD-39 CLOSED as CL-137 (lane-local number; settles at the next composition): the effect-only residue (sampling effects of LOD bias, border color, texture swizzle, depth-texture mode) is proven unfixable as texture/sampler state in either shipped backend -- the WebGPU sampler descriptor has no such fields (its texture-view swizzle is behind an optional device feature the backend never requests) and the legacy route's WebGL2/ES 3.0 host defines none of the pnames; swizzle on the legacy route alone is expressible and was deliberately not taken (the default route still could not express it; rendering would differ by route). Correction in the same lane: CLAMP_TO_BORDER never reached a real WebGPU sampler (no such address mode exists); the backend now decodes it to clamp-to-edge with a once-log, raw mode retained. | Fix commit `8258111c6` on base `faf95d26c`. Proof: gl-fd39-texparams red on the old sampler mapping ('clamp-to-border' actual vs 'clamp-to-edge' expected) and green on the fix, raw-mode retention asserted; neighbouring GL/Vulkan sampler tests 21/21; evidence in `test-results/fd39-residue/`. Record: `docs/reports/fd39-residue-20261107.md` |
+| `lane-fd194` | *(Settled number FD-194 per the batch-10 composition plan; filed by lane-fd189 as its lane-local FD-193.)* FD-194 FIXED: the registered 64-bit PlugPlay service now actually starts. Wine's services.exe allows a service process 10000 ms (built-in default) to connect its control pipe; a 64-bit GUI-stack service process needs longer than that to initialise on this emulator and was killed with error 1053. The shipped 64-bit prefix now carries "ServicesPipeTimeout"="120000" (REG_SZ, the only form services.exe reads) under HKLM\System\CurrentControlSet\Control, installed by the prefix64-reg.txt fragment; the shipped-prefix guard requires the string form above the default on win64. | Fix commit `f05e260f8` on base `88fefb838`; runtime assets re-pinned to runtime-assets-20261107-fd194 (only prefix64.zip changed). Guest proof on the build of that commit (BUILD_INFO git_sha f05e260f8, 'Browser export verified'): fd189-services64 reports 'PlugPlay ok present state=4', RESULT 0 (preserved console `test-results/fd194/console-run15-final-state4.log`); the 32-bit control fd189-services32 reports PlugPlay present state=4, RESULT 0 on the same build. Unit: test_prepare_prefixes 13/13 including the two new FD-194 tests. Record: `docs/reports/fd194-plugplay-start-timeout-20261107.md`; evidence `test-results/fd194/` |
 
 Merge-composition notes that belong with this table: the
 kernelgate and kernel-subsystems branches treat one system call
@@ -9513,6 +11424,7 @@ after it; `lane-firstframe` is based on a tip from before the
 dead-start fix and needs composition care.
 
 ---
+| `lane-timing-waits` | *(Lane-local numbers FD-193..FD-222; composition settles them.)* FD-193..FD-211 FIXED: the timing/wait family measured against the raw-syscall host grid — 64-bit clock_gettime per-clock domains and id validation; clock_getres on all three implementations; remaining-time write-back on interrupted sleeps; 32-bit clock_nanosleep TIMER_ABSTIME; 64-bit clock_nanosleep flags/clock domains; getrusage validation and real CPU times; itimer validation order both widths; wait4 options validation; 64-bit alarm; 64-bit times tick rate; 32-bit gettimeofday null-tv; epoll create/create1 validation both widths; epoll_wait maxevents; poll POLLNVAL counting; negative-timespec parking in pselect6/ppoll (+sigmask copy-in validation); pselect6/ppoll timeout write-back (corrects the FD-23-residue register note); timerfd_settime flag mask; select-core nfds boundary; FD-211 the X64Headless build break at the tip (networkutils U64 macro). FD-212..FD-222 FILED: waitid unimplemented; timer-expiry signals never delivered (FD-213); wait4 stop-report consumes the child; futex stub path in the ELF vehicle; PROT_NONE not consulted on syscall accesses; ITIMER_VIRTUAL/PROF refused; i386 pause/rt_sigtimedwait/ppoll/epoll_pwait gaps; guest death at epoll_ctl DEL; POSIX timers absent; model-limit residue; epoll_pwait sigsetsize | Host reference programs measured first (raw syscall grid, 243 + 11 + 11 rows incl. strace-verified clock_nanosleep flags and the timerfd 0x3 flag mask); new tests testTimingWaits32/testTimingWaits64 plus corrected standing pins in testTimerfd and testSyscallCensus64; full native suites serial: main 693/693 and x64 117/117, 0 FAILED; guest probes pre/post fix in `test-results/timing-waits/` (hostref grids, guestprobe A-F runs, suite logs). Record: `docs/reports/timing-waits-20261107.md`; evidence `test-results/timing-waits/` |
 
 ## C. Closed — fixed (or disproven) with proof
 
@@ -9525,6 +11437,7 @@ dead-start fix and needs composition care.
   guest memory-fault lines in any log. Proof:
   `docs/reports/deploy-20261030-deadstart.md` (integration
   tree). What remains of start reliability is FD-01/FD-02.
+
 - **CL-02 — Two directory-notification defects that stalled a
   real browser demo.** Notification records for unnamed events
   carried a wrong length that corrupted the record stream, and
@@ -9534,6 +11447,7 @@ dead-start fix and needs composition care.
   tree `test-results/site-chromium-20261030/REPORT.md`. The
   uncharacterized remainder of that feature is registered
   separately as FD-38.
+
 - **CL-03 — NOT-A-DEFECT: the "DirectX 12 test oracle is
   broken box-wide" verdict.** The oracle was never broken:
   unstaged trees fail an invisible staging precondition and
@@ -9543,6 +11457,7 @@ dead-start fix and needs composition care.
   end-to-end green (verdict passed, result 0). Proof:
   `docs/reports/tooling-honesty-20261030.md`
   (branch `lane-tooling-honesty`).
+
 - **CL-04 — The standing register's open "Celeste visual
   verification" row.** Closed by live proof on 2026-10-30: the
   demo reaches its animated title screen through the live
@@ -9551,6 +11466,7 @@ dead-start fix and needs composition care.
   `docs/known-gaps/gl.md` row itself is stale and should be
   updated the next time that register is touched; the
   remaining Celeste debts are FD-36.)
+
 - **CL-05 — The pathfinder's four deferred audit areas.**
   Multi-line recovery-gated reporting blocks, 32-bit CPU fault
   delivery, kernel-subsystem silent branches, and the
@@ -9663,6 +11579,7 @@ dead-start fix and needs composition care.
   underlying thread-lifetime defect the isolation exposed
   stays open as FD-44. Record:
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+
 - **CL-09 — A suite run could flood gigabytes of crash
   diagnostics (was FD-42).** Fixed on branch
   `lane-fd41-fd42`, commit `dc5f96fa8`. The host
@@ -9682,6 +11599,7 @@ dead-start fix and needs composition care.
   fault-looping leftover that drove the original floods
   no longer exists under test isolation. Record:
   `docs/reports/fd41-fd42-suite-containment-20261031.md`.
+
 - **CL-10 — The FD-01 "improvement" was a readiness false
   positive and the fix shipped in no binary (was
   FD-43).** Closed by its own named conditions being
@@ -9694,6 +11612,7 @@ dead-start fix and needs composition care.
   pre-rebuild baseline. FD-01 remains open on the race
   itself. Record:
   `docs/reports/readiness-hardening-20261031.md`.
+
 - **CL-11 — The readiness certification accepted an
   NTSTATUS error value as a window handle (was
   FD-47).** Fixed on `lane-readygate`: the launcher
@@ -9720,6 +11639,7 @@ dead-start fix and needs composition care.
   dispatch-level `accept4` test). Record:
   `docs/reports/fd23-syscall-census-20261031.md`; gate:
   `docs/reports/merge-batch3-20261031.md`.
+
 - **CL-13 — A texel buffer reached through a descriptor-heap
   runtime array was rejected at shader creation (was
   FD-16).** Fixed on branch `lane-fd16`, commits
@@ -9761,6 +11681,7 @@ dead-start fix and needs composition care.
   `docs/reports/fd16-texel-heap-arrays-20261031.md`.
 
 ---
+
 - **CL-14 — Guest platform threads could outlive the
   thread state they executed on (was FD-44).** Fixed in
   `d52d839ac` on `lane-fd44` (tests `76407729e`,
@@ -10139,6 +12060,7 @@ dead-start fix and needs composition care.
   this lane: FD-105, FD-106, FD-107,
   FD-108. Record:
   `docs/reports/fd102-fd104-message-faults-20261102.md`.
+
 - **CL-56 — The 64-bit single-call write
   paths answer for unreadable guest buffers:
   only the guest-readable prefix is written,
@@ -13099,6 +15021,7 @@ dead-start fix and needs composition care.
   `docs/reports/buildrel-fd31-32-33-20261105.md`;
   evidence `test-results/buildrel/`
   in the lane's worktree.
+
 - **CL-123 — FD-32 closed:
   multi-worker native suite runs
   died with exit 139 inside the
@@ -13137,6 +15060,7 @@ dead-start fix and needs composition care.
   `docs/reports/buildrel-fd31-32-33-20261105.md`;
   evidence `test-results/buildrel/`
   in the lane's worktree.
+
 - **CL-124 — FD-33 closed: the
   native release build failed to
   link, and its configuration had
@@ -13902,6 +15826,732 @@ dead-start fix and needs composition care.
   The producer path that created the flattened entry is
   FD-200, still open.
 
+- **CL-141 — FD-03 closed: the two floors the machine-
+  definition raise could not move — no GPU-compute API and
+  no AVX/AVX2 — are proven not deliverable in the browser
+  target.** *(Lane-local closure on `lane-fd03`; the number
+  settles at the next composition — sibling lanes also
+  claim CL-134 provisionally.)*
+  (a) OpenCL/CUDA: the shipped set stages Wine's
+  `opencl.dll` thunk and its unix forwarder (which NEEDs
+  `libOpenCL.so.1`) and the Khronos loader itself, but no
+  vendor ICD exists at any layer — no `.icd` file or
+  `vendors` entry in any of the four runtime zips, no
+  Khronos OpenCL vendor key in either prefix's
+  `system.reg`, and no OpenCL code anywhere in the emulator
+  source; CUDA is not staged at all (no `nvcuda` or
+  `cudart` entry in either wine zip). A loader with zero
+  ICDs can only answer `CL_PLATFORM_NOT_FOUND_KHR`, and
+  the guest's sole GPU path (Vulkan→WebGPU) offers no
+  OpenCL or CUDA surface to implement against. (b)
+  AVX/AVX2: the CPU's SIMD register state is a 128-bit
+  union (`source/emulation/cpu/common/cpu.h:184`, held at
+  `cpu.h:253`); CPUID leaf 1 advertises at most SSE4.2
+  with OSXSAVE and AVX clear (`common/cpu.cpp:449-452`)
+  and leaf 7 returns all zeros (`cpu.cpp:475-481`); XGETBV
+  is hardwired to the legacy x87+SSE mask
+  (`cpu64.cpp:5164`) with XSETBV unimplemented; and no VEX
+  decoding exists in either engine (`grep -i vex
+  source/emulation/cpu` is empty), so the first AVX
+  instruction would fault even if advertised. The
+  negatives stay pinned by the guest fixture
+  (`machine_definition_check.c` fails if the AVX bit is
+  ever set) and the native self-test (XGETBV(0) = 0x3).
+  Either term reopens if its missing layer ever exists: a
+  browser-exposed compute surface an ICD could target, or
+  a CPU subsystem with 256-bit state, an XSAVE extended
+  area, and VEX decoding in both engines. Record:
+  `docs/reports/fd03-remaining-terms-20261106.md`
+  (evidence audit on base `faf95d26c`, record commit
+  `3bf935b48`; no product code changed).
+
+- **CL-142 — FD-28 closed: one generated graphics file
+  had silently diverged from its generator.**
+  *(Provisional closure on `lane-vkhost-gen`; the number
+  settles at the next composition. CL-137 is also claimed
+  by `lane-x11-getramptr-audit` for its FD-193 closure.)*
+  `vk_host.cpp` presented itself as autogenerated but
+  carried hand-written implementations (initVulkan error
+  propagation, mapVkMemory failure handling,
+  push-descriptor-template support, log-once graceful
+  degrades for eight unsupported operations, and
+  log-once-and-skip handling of unknown pNext structures)
+  that the Java generator in `tools/vulkan/gen` did not
+  emit; a wholesale regeneration silently reverted them
+  (baseline diff on the base tip: 66 insertions / 69
+  deletions in that one file). The generator now emits
+  all of them, through its own name-keyed special cases:
+  the guarded initVulkan preamble and prologue, a
+  writeCustomFunctionBody for the eight degrade bodies,
+  failure-checked map after() emissions, a new
+  VkCmdPushDescriptorSetWithTemplateMarshal, and
+  log-once-and-skip unknown-sType defaults in the three
+  pNext writers (which also discharges the next-pointer
+  part of FD-27). Proof: regeneration with the rebuilt
+  generator reproduces all six outputs byte-identically
+  (sha256-verified against the committed blobs;
+  vk_host.cpp `30339455c348…`), a second run identical,
+  and the regenerated vk_host.cpp passes
+  `g++ -fsyntax-only` with the project flags. Checking-queue pipeline 18, submitted at the fix commit, was voided by the concurrent-submission mount race filed as FD-194 (its verify-source mounted the commit of a sibling lane; pipelines 19-21 died the same way), and a re-submission (pipeline 28) was still queued behind the submission flood when this lane closed; the light checks were therefore run by hand on this tree with the exact commands the pipeline runs: citations exit 0 (352 rows, 0 drift), JS unit 352 passed / 2 failed (only the two known bare-checkout artifacts: provenance-artifacts, runtime-completeness), JS legacy 115/0. The native suites were not re-run by hand because the change touches no compiled source (generator tooling only; every generated output byte-identical to the base).
+  Fix commit `26a90c5b6` on base `faf95d26c`. Record:
+  `docs/reports/fd28-vkhost-generator-20261106.md`;
+  evidence: `test-results/fd28/`.
+
+- **CL-143 — FD-193 closed: the `BW64_BLOCKSTATS` exit
+  reporter read a dangling CPU pointer and printed garbage.**
+  *(Lane-local closure on `lane-fd193`; the number settles at
+  the next composition — CL-134 is claimed on the lane-fd176
+  and lane-fd189 branches.)* The reporter's static `CPU64*`
+  pointed at the first CPU that allocated a block table; test
+  contexts destroy their CPUs before process exit, so the
+  atexit line read freed memory, and one handler was registered
+  per CPU so the line repeated (four identical garbage lines,
+  coverage=5070359463874500.0%, measured on the integration
+  tip). A CPU that allocates a block table while the flag is
+  set now joins a process-wide registry and, on destruction,
+  folds its counters into process-wide totals; the reporter
+  registers exactly once and prints the folded totals plus the
+  counters of any CPUs still alive at exit. Proof: the
+  block-invalidation harness run with the flag set prints a
+  single line, identical across runs (built=7 execs=7
+  insnsInBlocks=13 totalInsns=14 coverage=92.9%), with
+  totalInsns matching the harness's own independent
+  instruction total exactly; interp/blocks differential
+  byte-identical (pass=54 fail=0); flag unset prints nothing;
+  CPU-lifetime gate PASS in both block modes; jit64 phase-1
+  tests 873/0. Fix commit `f5fac0447` on base `faf95d26c`.
+  Record: `docs/reports/fd193-blockstats-reporter-20261107.md`;
+  evidence `test-results/fd193/`.
+
+- **CL-144 — FD-194 closed: the 64-bit PlugPlay
+  service was registered but could not finish
+  starting inside the service manager's 10-second
+  start budget.** *(Lane-local closure on
+  `lane-fd194`; the number settles at the next
+  composition.)*
+  Wine's services.exe waits at most
+  service_pipe_timeout (built-in default 10000 ms)
+  for a service process to connect its control pipe
+  after being sent the start message. In a 64-bit
+  session the PlugPlay process spent the whole
+  budget in process initialisation — about 1,600
+  wineserver requests in the window, no idle gap,
+  killed mid font enumeration — so the manager
+  logged the failed start, returned error 1053 and
+  killed the process; the same binaries complete
+  the handshake at once when no budget applies, and
+  the 32-bit stack fits the budget. The shipped
+  64-bit prefix now carries the raised budget in
+  the only form services.exe reads:
+  "ServicesPipeTimeout"="120000" as a REG_SZ (a
+  REG_DWORD is silently ignored) under
+  HKLM\System\CurrentControlSet\Control, merged
+  from `tools/rootfs64/prefix64-reg.txt`; the
+  shipped-prefix guard (`prepare_prefixes.py`)
+  requires that string-form value above the
+  built-in default on win64, with unit and
+  completeness coverage.
+  Proof: on the browser build of the fixing commit
+  (BUILD_INFO git_sha `f05e260f8`, 'Browser export
+  verified' in the build log), the project's
+  service probe reports the 64-bit PlugPlay service
+  present and running — 'fd189-64: PlugPlay ok
+  present state=4', RESULT 0, preserved console
+  `test-results/fd194/console-run15-final-state4.log`
+  — where the same probe on the pre-fix build
+  reported state=1; the 32-bit control reports
+  state=4 on the same build; an in-guest registry
+  fixture reads the value back as REG_SZ "120000";
+  test_prepare_prefixes passes 13/13 including the
+  two new FD-194 tests. Fix commit `f05e260f8` on
+  base `88fefb838`. Record:
+  `docs/reports/fd194-plugplay-start-timeout-20261107.md`.
+
+- **CL-145 - FD-195 closed: a program in the emulator can
+  see and use a game controller connected to the host.**
+  *(Lane-local numbering on lane-fd195-bus; composition
+  renumbers.)* Eleven stacked layers, each masking the next;
+  the full account with preserved-log quotes is the lane
+  record `docs/reports/fd195-bus-discovery-20261107.md`.
+  Fixing commits: `3e9f20c5e` (synthesized udev surface:
+  stat type bits on virtual files and dynamic links, uevent
+  trailing newlines), `96f017ea9` (64-bit readlink through
+  the virtual getLink, and readlinkat/openat/faccessat
+  honouring a real dirfd), `045cbffe3` (pad feed state kept
+  across the guest open boundary, native test extended),
+  `2949500ed` (Emscripten gamepad-axis poller, poller-owned
+  triggers, inverted axes centred), `5aefb0a42` (setupapi
+  CoInitialize gating + hidclass last-report seeding on
+  both Wine vintages; guest libudev.so.1 staged for x86-64;
+  WineBus "Enable SDL"=0 in the 64-bit prefix with the
+  registry-fragment merge fixed to insert missing values and
+  a validator guard; the five driver .inf files staged into
+  the 64-bit prefix), `194412a12` (runtime re-pin),
+  `3248805d7` (permanent fd195-udevprobe regression test).
+  Proof: `test-results/fd195/gamepad-final10.out` -
+  `PASS input-gamepad (176941ms)` with the witness verdicts
+  for both guests in the same session console (32-bit READY
+  xinput=1 dinput=1, sticks at lx=32767 ly=-32767; 64-bit
+  XINPUT STATE lx=32767 ly=32767); `udev86-final.out` PASS
+  fd195-udevprobe + fd188-hid-enum PASS; runtime
+  completeness 0 failures, bootstrap verified (13 files).
+
+- **CL-146 — FD-09 closed: `modify_ldt` answers the
+  host's measured error matrix instead of panicking on
+  guest input.** *(Lane-local closure on `lane-d278`;
+  CL-134 is also claimed on the batch-10 branches and
+  the number settles at the next composition.)* A
+  write whose byte count is not one descriptor returns
+  -EINVAL (checked first), an unreadable descriptor
+  pointer returns -EFAULT, and an out-of-range index
+  returns -EINVAL; each rejection logs one counted
+  `BW64-FAIL syscall.modify_ldt` line. The answers were
+  measured with raw `modify_ldt` syscalls on a real
+  kernel (host-reference program and output in
+  `test-results/d278/hostref/`). Proof: the new native
+  tests `testModifyLdtInvalid32` (main suite 616,
+  argument answers) and `testModifyLdtIndex32` (617,
+  invalid-index answers) fail on the base — 617 with
+  the filed panic text, "syscall_modify_ldt invalid
+  index: 8192" — and pass with the fix. Fix commit
+  `f998e2e01` on base `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **CL-147 — FD-210 closed: a futex on an unmapped
+  word answers the host's error matrix instead of
+  panicking, parking on the null page, or operating on
+  a phantom page.** *(Lane-local closure on
+  `lane-d278`; FD-210 is also claimed on `lane-fd176`
+  for an unrelated filing and CL-135 on sibling
+  branches — both numbers settle at the next
+  composition.)* On the 32-bit side the shared path
+  returns -EFAULT with a counted `BW64-FAIL
+  syscall.futex` line where it panicked ("Could not
+  find futex address"), and a private WAIT proves the
+  word and the timeout pointer before parking; the
+  bitset zero-mask rule the 64-bit side already had is
+  now enforced on the 32-bit side too. On the 64-bit
+  side the word's page is proven mapped before the
+  pointer lookup can materialize a phantom zero page:
+  every operation returns -EFAULT except a private
+  WAKE / WAKE_BITSET, which wakes nothing and returns
+  0. The matrix was measured with raw futex syscalls
+  on real kernels (host-reference program and outputs
+  in `test-results/d278/hostref/`). Proof: the new
+  native tests `testFutexUnmapped32` (main suite 614),
+  `testFutexSharedUnmapped32` (615), and
+  `testFutexUnmapped64` (x64 suite 6) fail on the base
+  and pass with the fix. Fix commit `f998e2e01` on base
+  `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **CL-148 — FD-211 closed: floating-point faults are
+  delivered in the host's signal slot with the host's
+  code.** *(Lane-local closure on `lane-d278`; FD-211
+  is taken by the PlugPlay filing in the batch-10
+  settlement and CL-136 is likewise claimed on sibling
+  branches — both numbers settle at the next
+  composition.)* A divide quotient overflow now
+  delivers SIGFPE with FPE_INTDIV and trap 0, exactly
+  like divide-by-zero, where it delivered FPE_INTOVF
+  and trap 4; and `CPU::prepareFpuException` delivers
+  x87 exceptions through the SIGFPE slot with trap 16,
+  where it wrote into the SIGSEGV slot — a slot whose
+  contents the guest's handler never classifies as an
+  FPU fault. INTO keeps its host-correct SIGSEGV /
+  trap-4 delivery, pinned unchanged. Both behaviours
+  measured with raw signals on a real kernel
+  (host-reference programs and outputs in
+  `test-results/d278/hostref/`). Proof: the new native
+  test `testFpeDelivery32` (main suite 618) fails on
+  the base showing both wrong deliveries and passes
+  with the fix. Fix commit `f998e2e01` on base
+  `faf95d26c`. Record:
+  `docs/reports/d278-futex-modifyldt-fpe-20261107.md`;
+  evidence `test-results/d278/`.
+
+- **CL-149 — FD-212 closed: twelve X11 bridge call sites
+  dereferenced getRamPtr's refusal (null) for guest
+  structs.** *(Lane-local closure on
+  `lane-x11-getramptr-audit`; the number settles at the
+  next composition.)*
+  Guest struct fields in the eight affected handlers are
+  now read through the checked accessor (`readd` at
+  `offsetof`, counts snapshotted before use);
+  `XSetWindowAttributes::get` falls back to its checked
+  read when `getRamPtr` refuses instead of returning the
+  null; `ChangeWindowAttributes` returns BadValue for a
+  null attributes pointer with a nonzero mask (Success
+  for a zero mask); `x11_FreeModifierMap` gained its
+  missing null-argument guard. The 7 call sites that pass
+  emulator-allocated addresses were audited safe by
+  construction and are unchanged (Appendix). Proof: the
+  four new native tests in
+  `source/test/x11/testX11RamPtrAudit.cpp` — unfixed code
+  all four fail, fixed code all four pass, logs in
+  `test-results/x11-getramptr-audit/`. Fix commit
+  `cd030f389` on base `faf95d26c`. Record:
+  `docs/reports/x11-getramptr-audit-20261106.md`.
+
+- **CL-150 — FD-213 closed: REP LODS executed only one
+  iteration in the 64-bit interpreter.** Fixed on
+  branch `lane-cpudiff`, commit `35889ff29`. Proof:
+  the lane's repaired CPU-differential harness runs
+  7,920/7,920 cases green, and checking-queue
+  pipeline 44 shows the standard shape. Record:
+  `docs/reports/cpudiff-coverage-expansion-20261107.md`.
+
+- **CL-151 — FD-11 closed: splitting a string with an
+  empty separator looped forever.** *(Lane-local closure
+  on `lane-ditems`; the number settles at the next
+  composition.)* The guard now lives inside
+  `BString::split(const char*)` itself (empty or null
+  delimiter yields the whole string once), covering every
+  caller rather than only the filesystem layer's entry
+  point. Fix `14783353f`; test `testBStringSplit`
+  (`5dc0b8513`): RED = the test hangs on unpatched code
+  (timeout kill), GREEN after; ordinary-delimiter
+  controls unchanged. Evidence: `test-results/ditems/`.
+  Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-152 — FD-14 closed: fault reporting's two blind
+  spots.** *(Lane-local closure on `lane-ditems`; the
+  number settles at the next composition.)*
+  `CPU64::raiseSyncFault` logs its own deliveries at the
+  delivery point (rate-limited `BW64-FAIL sync-fault64 ...
+  delivered=1`), ending the silence of direct kernel-side
+  callers; and the 32-bit core's two recover-gate sites
+  were confirmed in context to mirror the 64-bit ones
+  (skip logged once per RIP; fall-through delivered and
+  logged through `signalIllegalInstruction`) — no change
+  needed there. Fix `14783353f`; test
+  `testRaiseSyncFaultDeliveryLogged64` (`5dc0b8513`):
+  RED on unpatched code, GREEN after with the emitted
+  delivery line in the log. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-153 — FD-37 closed: the rotted stash drop-safe
+  proof replaced with a fresh export.** *(Lane-local
+  closure on `lane-ditems`; the number settles at the
+  next composition.)* The repository's only stash was
+  exported fresh on 2026-11-06 to
+  `/home/ubuntu/winbox-project/evidence/stash-export-20261106/`
+  (working-tree patch, index patch, untracked-tree
+  archive, hashes and restore instructions); the stash
+  was not dropped, and no future drop may cite the
+  2026-10-25 proof. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-154 — FD-214 closed: the no-throw segment-fault
+  caller audit (D5) — one silent write-drop fixed, the
+  remaining call sites proven sound.** *(Lane-local
+  closure on `lane-ditems`; the number settles at the
+  next composition.)* The invalid page's accessors
+  re-dispatch after an on-demand mapping instead of
+  dropping writes / fabricating read zeros, and an
+  unlandable write logs loudly. Fix `14783353f`; proof
+  in the `testFaultDelivery32` additions (`5dc0b8513`):
+  RED on unpatched code, GREEN after. Evidence:
+  `test-results/ditems/`. Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-155 — FD-215 closed: open() failures no longer
+  collapse into EINVAL (D17).** *(Lane-local closure on
+  `lane-ditems`; the number settles at the next
+  composition.)* `translateOpenError` maps the 25
+  errnos the filesystem layer can actually deliver;
+  the default remains for node types with no host
+  errno. Fix `14783353f`; test `testTranslateOpenError`
+  (`5dc0b8513`), 28 pinned rows: RED on unpatched code,
+  GREEN after. Evidence: `test-results/ditems/`.
+  Record: `docs/reports/ditems-d5-d11-d16-d17-d21-20261106.md`.
+
+- **CL-156 — FD-216 closed as superseded: the gate-stage
+  build break the FD-26 lane found on its base.**
+  The breakage was pre-existing on the lane's base
+  and is the same harness-link defect FD-176 fixed
+  (commit `5bec2fa3e`, settled as CL-134 in batch
+  10), which landed after the FD-26 lane branched;
+  no separate fix is required. Record:
+  `docs/reports/fd26-scalar-logic-fastpath-20261107.md`.
+
+- **CL-157 — FD-218 closed.** Fixed on branch
+  `lane-unfiled4`, commit `c156cdae2` (the four
+  characterised-but-unfiled gaps). Proof: the lane's
+  new native tests are RED on the base (29 failing
+  assertions across the four) and GREEN with the
+  fix; native suites 693/0 and 117/0 on the branch;
+  checking-queue pipeline 41, standard shape.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **CL-158 — FD-219 closed.** Fixed on branch
+  `lane-unfiled4`, commit `c156cdae2` (the four
+  characterised-but-unfiled gaps). Proof: the lane's
+  new native tests are RED on the base (29 failing
+  assertions across the four) and GREEN with the
+  fix; native suites 693/0 and 117/0 on the branch;
+  checking-queue pipeline 41, standard shape.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **CL-159 — FD-220 closed.** Fixed on branch
+  `lane-unfiled4`, commit `c156cdae2` (the four
+  characterised-but-unfiled gaps). Proof: the lane's
+  new native tests are RED on the base (29 failing
+  assertions across the four) and GREEN with the
+  fix; native suites 693/0 and 117/0 on the branch;
+  checking-queue pipeline 41, standard shape.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **CL-160 — FD-221 closed.** Fixed on branch
+  `lane-unfiled4`, commit `c156cdae2` (the four
+  characterised-but-unfiled gaps). Proof: the lane's
+  new native tests are RED on the base (29 failing
+  assertions across the four) and GREEN with the
+  fix; native suites 693/0 and 117/0 on the branch;
+  checking-queue pipeline 41, standard shape.
+  Record: `docs/reports/fd193-196-unfiled-gaps-20261107.md`.
+
+- **CL-161 — FD-39 closed as proven unfixable in the
+  shipped backends: the sampling effects of LOD bias,
+  border color, texture swizzle and depth-texture mode
+  are texture/sampler state that neither backend's state
+  model contains.** *(Lane-local closure on
+  `lane-fd39-residue`; the number settles at the next
+  composition.)*
+  The 2026-10-31 fix (the CL-07 residue) made the set
+  honest state -- set, validated, queryable -- on both
+  GL routes. This lane proved the remaining effects
+  cannot be modelled as state: the WebGPU sampler
+  descriptor (the project's vendored @webgpu/types)
+  carries no borderColor, LOD-bias or swizzle field,
+  GPUAddressMode has no border mode at all, and the
+  texture-view swizzle in those types is gated on an
+  optional device feature the backend never requests;
+  the legacy route's WebGL2 host implements ES 3.0,
+  whose header (Emscripten 6.0.9's GLES3/gl3.h) defines
+  none of the four pnames or the border wrap. The
+  project's Vulkan tier records the same limits in
+  shipped code (maxSamplerLodBias = 0, "WebGPU has no
+  sampler LOD bias"; "WebGPU has no border addressing").
+  Texture swizzle on the legacy route alone is
+  expressible (ES 3.0 defines it and Emscripten forwards
+  texParameteri verbatim); it was not taken, because the
+  default route still could not express it and guest
+  rendering would then differ by route. One correction
+  landed with the closure: the FD-39 record's claim
+  that CLAMP_TO_BORDER reached the sampler as "WebGPU
+  clamp-to-border" was false on real hardware (no such
+  address mode exists); the backend now decodes it to
+  clamp-to-edge with a once-log, the raw mode retained
+  (fix `8258111c6`, red/green in the updated
+  gl-fd39-texparams test). Record:
+  `docs/reports/fd39-residue-20261107.md`.
+
+- **CL-162 — FD-225 closed: the D22 JVM-ergonomics probe's
+  settings run timed out on a harness matcher
+  defect.** Fixed on branch `lane-d22-mindustry`,
+  commit `13d57b2a2`. Proof in the FD-225 entry and
+  `docs/reports/d22-mindustry-ergonomics-20261107.md`.
+
+- **CL-163 — FD-226 closed: the shipped audio check
+  measures the captured sample values, not only the
+  frequency.** *(lane-audio-e2e; number lane-local,
+  settles at batch-11 composition.)* Commit `bcf24f33a`:
+  `web/tests/suite/browser/audio-tone.test.mjs` now
+  measures, on both architectures, peak and RMS level,
+  RMS/peak shape ratio, duty cycle, active duration, the
+  longest silent gap inside the tone, and channel balance,
+  waiting for the queued tone to drain first and writing
+  every measured value into the per-architecture evidence
+  JSON before asserting; both architectures are captured
+  before any sample-value assertion runs. Proof: against
+  a fresh build of `334c70be4` ("Browser export verified";
+  wasm `92b36180…`, byte-identical to the live build) the
+  strengthened check caught FD-202's signature in three
+  runs while the pre-existing checks (channels, isolation,
+  worklet, frequency) passed — a check that cannot fail is
+  no proof, and this one demonstrably fails on the current
+  product for measured reasons. It passes once FD-202 is
+  fixed. Record: `docs/reports/audio-tone-values-20261107.md`;
+  evidence `test-results/audio-e2e/`.
+
+- **CL-164 -- FD-202 closed: the shipped audio check
+  folded a silent pump node's buffers into the
+  measured stream; it now measures the runtime's
+  output node only.** *(lane-fd202-audio; number
+  lane-local, settles at batch-11 composition.)*
+  Commit `bf1a97710`:
+  `web/tests/suite/browser/audio-tone.test.mjs`
+  keeps ScriptProcessor output buffers in a separate
+  array and measures the AudioWorkletNode's tapped
+  output -- the delivered stream; the ScriptProcessor
+  array is measured only when no worklet node exists
+  (the runtime's fallback output path). No tolerance,
+  fixture, or assertion changed; only which stream is
+  measured. Proof: the strengthened check PASSES on
+  both architectures against the live batch-10 build
+  (run with the live tree as the probe dist; the
+  audio path's product code is byte-identical there):
+  x64 peak 0.36621, RMS 0.36621, duty 0.50038,
+  active 5.954 s, longest gap 0 ms, 440.75 Hz,
+  channels sample-identical; x86 duty 0.50046,
+  active 5.991 s, gap 0 ms, 440.47 Hz. The same
+  statistics over the pre-fix merged array fail every
+  value assertion (duty 0.248, RMS 0.258, duration
+  11.97 s, gap 92.88 ms -- preserved in the split
+  evidence), so the fixed check still catches the
+  signature when it is in the measured stream.
+  Evidence: `test-results/suite-audio-tone/` and
+  `test-results/suite-fd202-split/` in wt-fd202-audio.
+  Record: `docs/reports/fd202-audio-capture-20261107.md`.
+
+- **CL-165 — FD-201 closed: a first-visit 32-bit start can
+  be killed at the wine-preloader spawn transition.**
+  Fixed on branch `lane-x86-start-fault`, commit
+  `5602c1dd5`: `KSystem::guestRamInfo` and
+  `processCount` now hold `processesCond` across the
+  process-table scan, so a scan can no longer read
+  the slot array a concurrent insert's rehash has
+  freed. Proof: two preserved series of 12
+  consecutive 32-bit starts on the fixed build —
+  24/24 started, 0 faulted; the source guard is RED
+  on the unfixed tree and GREEN with the fix;
+  checking-queue pipeline 55, standard shape.
+  Record: `docs/reports/fd201-x86-start-fault-20261107.md`.
+
+- **CL-166 — FD-227 closed: the bridge-coverage probes
+  run again, and the Vulkan/OpenGL coverage matrices are
+  measured end-to-end.** *(Lane-local, provisional;
+  settles at batch-11 composition.)* The fix (relative
+  `./probe-slots.mjs` imports in the three probes) was
+  already on lane-vkgl-coverage; the closing proof landed
+  in the run phase of 2026-11-07. On a verified build of
+  the branch tip `4c84741b6` (dist BUILD_INFO: git_sha
+  `4c84741b6`, 0 dirty files, wasm sha256
+  `92b36180e9b3469b07014b91cf0054e4f50e1b119b2881e6ca1a85819d27bfdf`,
+  byte-identical to the shipped batch-10 build — this
+  branch changes no product code), `vkcov-probe` ran all
+  309 harness handlers to `vkcov: RESULT 0`, the
+  `vkcov-probe-matrix` variant repeated the run with
+  identical return codes on all 309, and `glcov-probe`
+  ran all 334 rows to `glcov: RESULT 0`. The four-bucket
+  matrices, the proc-addr census count, and the run
+  history are in
+  `docs/reports/vkgl-spec-coverage-20261106.md`. The runs
+  convicted six further gaps, filed in section A as
+  FD-204 to FD-209; three of them (FD-204, FD-205,
+  FD-207) are session-fatal defects the matrix could only
+  complete past by recording the names as crashed in the
+  harnesses, under the harnesses' own known-crasher
+  precedent.
+
+- **CL-167 - FD-230 closed: the input-gamepad trigger wait
+  now requires the evidencing values.** Fixing commit
+  `659bba40a` (lane-fd195-bus). Proof: the full input-gamepad
+  run after the hardening passes both architectures
+  (`test-results/fd195/gamepad-final10.out`), and the
+  hardened pattern cannot match the resting line that caused
+  the false failure in `gamepad-final6.out`.
+
+- **CL-168 — FD-231 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-231 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-169 — FD-232 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-232 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-170 — FD-233 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-233 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-171 — FD-234 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-234 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-172 — FD-235 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-235 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-173 — FD-236 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-236 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-174 — FD-237 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-237 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-175 — FD-238 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-238 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-176 — FD-239 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-239 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-177 — FD-240 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-240 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-178 — FD-241 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-241 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-179 — FD-242 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-242 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-180 — FD-243 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-243 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-181 — FD-244 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-244 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-182 — FD-245 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-245 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-183 — FD-246 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-246 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-184 — FD-247 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-247 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-185 — FD-248 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-248 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-186 — FD-249 closed.** Fixed on branch
+  `lane-timing-waits` (commits `f909bc857`,
+  `92e2e63a6`, `1e00fef0a`). Proof: the lane's
+  raw-syscall host-reference matrix and the native
+  tests `testTimingWaits32`/`testTimingWaits64`, as
+  recorded in the FD-249 entry; checking-queue
+  pipelines 36 and 39 adjudicated clean in the
+  standard shape. Record:
+  `docs/reports/timing-waits-20261107.md`.
+
+- **CL-187 — FD-262 closed.** Fixed on branch
+  `lane-merge-batch11` (commit `4dfcf63fe`). Proof:
+  the per-branch scanner counts (integration 134,
+  timing lane 136, unfiled-gaps lane 136, composed
+  tree 138), the `no-silent-failure` unit test
+  passing on the composed tree, and the
+  checking-service verdict on the corrected tip,
+  all recorded in
+  `docs/reports/merge-batch11-20261107.md`.
 
 ## Appendix — examined and deliberately NOT registered
 
@@ -13937,6 +16587,23 @@ its lane and is not a defect, for the stated reason:
   zero-count return, so the check order FD-116 filed
   (descriptor answers first) already holds there; not a
   defect. (`lane-fd116-117` record.)
+- The 7 `getRamPtr` call sites in the X11 bridge that pass
+  emulator-allocated addresses (the Xinerama/XRandR reply
+  structs and mode arrays the handlers build themselves,
+  and `DisplayData::pCurrentRequest`): a fresh
+  `KProcess::alloc` result is backed by the guest heap
+  allocator's page subdivisions or whole-page mappings, so
+  the span cannot straddle a page boundary or be unmapped
+  and the returned pointer cannot be null. Audited call by
+  call by the x11-getramptr-audit lane; the
+  guest-controlled sites in the same files are FD-193.
+  (`lane-x11-getramptr-audit` record.)
+- `BHeap::free` trusting the size word stored in front of a
+  guest heap block: every access goes through the checked
+  MMU path into the guest's own address space, so a corrupt
+  size word can only corrupt or unmap the guest's own heap
+  — which the guest can already do with its own allocator.
+  No host impact. (`lane-x11-getramptr-audit` record.)
 
 - **CL-20 — The native Vulkan bridge test harness
   aborted at the pipeline-cache assertions, so every
@@ -14274,6 +16941,7 @@ its lane and is not a defect, for the stated reason:
   gate); records
   `docs/reports/fd72-helper-invocation-boundary-20261101.md`,
   `docs/reports/merge-fd72-20261101.md`.
+
 - **CL-28 — The 32-bit futex lost-wakeup flaw (FD-12's flaw
   half).** *(Filed provisionally as CL-26 on lane-fd12;
   numbered CL-28 at composition on 2026-11-01 — CL-26
@@ -14298,6 +16966,7 @@ its lane and is not a defect, for the stated reason:
   `native-test-GREEN-fixed.log`, `native-full-fixed.log`,
   `native-x64-fixed.log`, `js-unit-fixed.log`), record
   `docs/reports/fd12-park-lane-20261101.md`.
+
 - **CL-29 — The guest-thread dump's silent 32-bit blindness
   (FD-76).** *(Filed provisionally as CL-27 on lane-fd12;
   numbered CL-29 at composition on 2026-11-01 — see
@@ -14490,6 +17159,7 @@ its lane and is not a defect, for the stated reason:
   tree the two names load as separate nodes; a
   served link exists in the guest tree only, never
   as a second name in the backing store itself.
+
 - **CL-34 — The silent freeze convicted: an msync /
   mapped-files ABBA deadlock, fixed at the lock
   order (FD-77).** *(Filed as CL-33 on lane-fd77b,
@@ -14549,6 +17219,7 @@ its lane and is not a defect, for the stated reason:
   serial suites x64 67/67 and main 667/667, 0 FAILED;
   run-native 56 PASS; browser build "Browser export
   verified" (wasm `35302eba…`).
+
 - **CL-36 — The METRICS stream froze mid-session:
   the emission gate did not count syscall dispatch
   as activity (FD-63).** *(Filed provisionally as
@@ -14583,6 +17254,7 @@ its lane and is not a defect, for the stated reason:
   and panel tests 21/21; the browser build compiles
   on the fixed tree (wasm `1809b7d7…`, support
   archive `c4dbe35986a5…` unchanged).
+
 - **CL-37 — Integer-offset root addresses served
   through a word view in both mirrors (FD-70).**
   *(Filed provisionally on branch `lane-fd70int`,
@@ -14614,6 +17286,7 @@ its lane and is not a defect, for the stated reason:
   succeeding in vivo on the shipped build — the
   FD-70 closing terms' last clause, unmet by
   construction until a deploy carries the branch.
+
 - **CL-38 — A file description's close event is
   delivered at the host's moment: held while any
   mapping of the description is live, delivered at
@@ -14705,6 +17378,7 @@ its lane and is not a defect, for the stated reason:
   668/668 and x64 68/68, 0 FAILED. Record:
   `docs/reports/fd79-fd80-kernel-semantics-20261101.md`;
   evidence `test-results/fd79-80/`.
+
 - **CL-40 — A readback plan a setup discards is freed
   with it, and the sanitizer flavour finishes clean
   (FD-66).** *(Filed as CL-38 on `lane-fd66`,
@@ -14737,6 +17411,7 @@ its lane and is not a defect, for the stated reason:
   prologue alone reopens exactly 328 bytes in 2
   allocations. Full evidence:
   `docs/reports/fd66-readback-disposal-20261101.md`.
+
 - **CL-41 — Gecko starved because the 64-bit GDI font
   engine was never built: the backport build configured
   win32u's unix half without freetype or fontconfig, and
@@ -15732,6 +18407,7 @@ its lane and is not a defect, for the stated reason:
   -EOPNOTSUPP) and GREEN on the fix; shared
   suite, browser and JS figures as in CL-53.
   Record and evidence as in CL-53.
+
 - **CL-64 — The 64-bit stack served no Arial family:
   prefix64 carried no font replacement entry, the
   mechanism the 32-bit stack serves Arial through
@@ -15827,6 +18503,7 @@ its lane and is not a defect, for the stated reason:
   (wasm c290559e). Record:
   `docs/reports/fd23-residue-20261102.md`; evidence
   `test-results/fd23res/`.
+
 - **CL-66 — The ALSA chain's mmap face delivered one
   buffer then stalled: the OSS position face reported
   the write position and a constant 0 delay.**
@@ -15849,4 +18526,3 @@ its lane and is not a defect, for the stated reason:
   record was written by the batch-3 merge audit, which
   also settled its number — the lane's provisional
   CL-45.)
-

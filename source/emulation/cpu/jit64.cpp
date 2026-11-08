@@ -104,6 +104,15 @@ static const Jit64CoveredOpcode kCovered[] = {
     { "FF JMP r/m",          0xFF, 0x00, J64_JMP_IND },     // 37 (FF /4; reg + mem forms)
     { "FF INC/DEC r/m",      0xFF, 0x00, J64_INCDEC },      // 38 (FF /0 /1; sizes 2/4/8; CF preserved)
     { "FE INC/DEC r/m8",     0xFE, 0x00, J64_INCDEC },      // 39 (FE /0 /1; 8-bit form)
+    // Scalar-move / packed-logic round (FD-26 follow-up): the scalar
+    // FP data-movement forms x86-64 compilers spill through, and the
+    // packed bitwise-logic forms (the PXOR row's siblings: fabs
+    // masking, zeroing and sign work in FP code). Shares are
+    // qualitative: a static capstone sweep of the shipped wine64 DLLs
+    // found the scalar SSE forms the only declined SSE families
+    // present there (scalar moves + scalar FP arithmetic).
+    { "F2 0F10 MOVSD",       0x0F, 0x10, J64_SSE_MOVSCALAR }, // 40 (F2 0F10/11 MOVSD; F3 0F10/11 MOVSS and F3 0F7E MOVQ load share the kind)
+    { "0F54 ANDPS",          0x0F, 0x54, J64_SSE_LOGIC128 },  // 41 (0F54/55/56/57 AND/ANDN/OR/XOR, PS and 66 PD forms)
     // NOTE: 0F85 (JNZ rel32) stays FAST in jit64Classify but fell just outside
     // this corpus's top-20, so it has no table row. The whole 00..3B ALU range
     // (including 29 SUB r/m,r) is table-covered; the phase-1 table only names
@@ -374,6 +383,58 @@ bool jit64DecodeOne(U64 ripBase, const U8* bytes, U32 byteCount, Jit64Op& out) {
             if (!ml) return false;
             out.kind = J64_NOP;
             out.len = (U8)(opOff + 2 + ml);
+            return true;
+        }
+        if (((op2 == 0x10 || op2 == 0x11) && (p.rep == 0xF2 || p.rep == 0xF3)) ||
+            (op2 == 0x7E && p.rep == 0xF3 && !p.osize16)) {
+            // Scalar SSE moves (FD-26 follow-up), mirroring the
+            // interpreter's scalar blocks in cpu64.cpp:
+            //   F2 0F 10/11  MOVSD load/store (8-byte low part)
+            //   F3 0F 10/11  MOVSS load/store (4-byte low part)
+            //   F3 0F 7E     MOVQ load (low qword; high qword zeroed
+            //                even in register form, unlike MOVSD)
+            // sub: 0 = MOVSD load, 1 = MOVSD store, 2 = MOVSS load,
+            // 3 = MOVSS store, 4 = MOVQ load. The 0x66 prefix does not
+            // change the scalar forms (the interpreter keys only on
+            // the REP prefix); LOCK-prefixed forms stay undecoded,
+            // like the rest of the SSE set.
+            if (p.lock) return false;
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = J64_SSE_MOVSCALAR;
+            if (op2 == 0x7E) { out.sub = 4; out.size = 8; }
+            else if (p.rep == 0xF2) { out.sub = (op2 == 0x11) ? 1 : 0; out.size = 8; }
+            else { out.sub = (op2 == 0x11) ? 3 : 2; out.size = 4; }
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            out.rep = p.rep;
+            out.osize66 = p.osize16;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
+            return true;
+        }
+        if (op2 == 0x54 || op2 == 0x55 || op2 == 0x56 || op2 == 0x57) {
+            // Packed FP bitwise logic (FD-26 follow-up): ANDPS/ANDPD
+            // (0F 54), ANDNPS/ANDNPD (0F 55), ORPS/ORPD (0F 56),
+            // XORPS/XORPD (0F 57). The interpreter serves all four as
+            // plain 128-bit bitwise ops (dst OP src per qword; ANDN
+            // is ~dst & src) and the 0x66 prefix selects only the PD
+            // name, so the emitter mirrors PXOR's shape with a
+            // different operator. F2/F3-prefixed forms stay
+            // undecoded: whether the interpreter would serve them as
+            // logic ops is not part of this contract.
+            if (p.rep != 0 || p.lock) return false;
+            U8 rf; bool rr; U8 ri; bool hm;
+            U32 ml = scanModRM(bytes + opOff + 2, byteCount - (opOff + 2), p, rf, rr, ri, hm);
+            if (!ml) return false;
+            out.kind = J64_SSE_LOGIC128;
+            out.sub = op2;
+            out.size = 16;
+            out.len = (U8)(opOff + 2 + ml);
+            out.regField = rf; out.rmIndex = ri; out.isMem = hm;
+            out.rep = p.rep;
+            out.osize66 = p.osize16;
+            if (hm) decodeEA(bytes + opOff + 2, p, ripBase + opOff + 2, 0, out.ea);
             return true;
         }
         if (op2 == 0x10 || op2 == 0x11 || op2 == 0x28 || op2 == 0x29 ||
@@ -960,7 +1021,8 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         op.plan = JIT64_FAST;
         return;
     }
-    if (op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR || op.kind == J64_SSE_MOVD) {
+    if (op.kind == J64_SSE_MOV128 || op.kind == J64_SSE_PXOR || op.kind == J64_SSE_MOVD ||
+        op.kind == J64_SSE_LOGIC128 || op.kind == J64_SSE_MOVSCALAR) {
         // SSE set. The decoder enforced the interpreter's prefix predicate
         // and excluded LOCK at decode (the folded hasLockOrRep argument
         // cannot carry that distinction, and MOVDQU's legitimate F3 makes
@@ -986,6 +1048,17 @@ void jit64Classify(Jit64Op& op, bool hasLockOrRep, bool osize16) {
         case J64_SSE_MOVD:
             if ((op.size != 4 && op.size != 8) || op.sub > 1) return;
             if (!op.osize66 || op.rep != 0) return;
+            break;
+        case J64_SSE_LOGIC128:
+            if (op.size != 16) return;
+            if (op.sub != 0x54 && op.sub != 0x55 && op.sub != 0x56 && op.sub != 0x57) return;
+            if (op.rep != 0) return; // 0x66 (the PD forms) is allowed, as on MOVUPS/MOVAPS
+            break;
+        case J64_SSE_MOVSCALAR:
+            if (op.sub > 4) return;
+            if (op.sub <= 1 && !(op.rep == 0xF2 && op.size == 8)) return;            // MOVSD
+            if ((op.sub == 2 || op.sub == 3) && !(op.rep == 0xF3 && op.size == 4)) return; // MOVSS
+            if (op.sub == 4 && !(op.rep == 0xF3 && op.size == 8)) return;            // MOVQ load
             break;
         default:
             return;
@@ -1650,6 +1723,10 @@ bool jit64BlockMayStore(const Jit64Op* ops, U32 nOps) {
             break;
         case J64_SSE_MOVD:
             if (op.isMem && op.sub == 1) return true; // MOVD/MOVQ store form
+            break;
+        case J64_SSE_MOVSCALAR:
+            // The store forms are exactly sub 1 (MOVSD) and 3 (MOVSS).
+            if (op.isMem && (op.sub == 1 || op.sub == 3)) return true;
             break;
         case J64_GRP3:
             // NOT/NEG r/m (sub 2/3) store to guest memory via the

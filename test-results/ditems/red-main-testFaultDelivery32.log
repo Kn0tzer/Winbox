@@ -1,0 +1,12 @@
+Running 1 Test tests with 1 threads starting at 614
+BW64-FAIL guest-exception32 pid=12 tid=13 addr=0x0 eip=0xd0000000 err=0 delivered=0 count=1
+BW64-FAIL guest-trap32 pid=14 tid=15 addr=0x0 eip=0xd0000000 err=1 delivered=0 count=2
+BW64-FAIL guest-memfault32 pid=16 tid=17 addr=0x60000000 eip=0xd0000000 err=0 delivered=0 count=3
+D0000000 EAX=00000000 ECX=00000000 EDX=00000000 EBX=00000000 ESP=DFFFFFF0 EBP=DFFFFFF0 ESI=00000000 EDI=00000000 Unknown at 00000000
+Page Fault at 60000000
+Valid address ranges:
+Mapped Files:
+   Unknown                                                       d0000000 / 00000000
+Test 32-bit fault delivery without a guest handler ... FAILED
+  first write to the syscall_frame window was dropped (read back 0x0)
+1 tests FAILED in 0s

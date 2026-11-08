@@ -3226,11 +3226,21 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color
     texture.samplerCache ||= new Map();
     const cacheKey = stateKey([...texture.params.entries()].sort((a, b) => a[0] - b[0]));
     if (texture.samplerCache.has(cacheKey)) return texture.samplerCache.get(cacheKey);
-    // FD-39: CLAMP_TO_BORDER is accepted above and maps to WebGPU's
-    // clamp-to-border, whose border colour is fixed at transparent
-    // black -- exactly GL's default border colour. A guest-set
-    // non-default border colour remains stored state only (FD-39).
-    const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : value === 0x812d ? 'clamp-to-border' : 'clamp-to-edge';
+    // FD-39, corrected 2026-11-07: WebGPU has no border addressing --
+    // GPUAddressMode is 'clamp-to-edge' | 'repeat' | 'mirror-repeat'
+    // (the vendored @webgpu/types), so there is no 'clamp-to-border'
+    // value for a sampler to receive: a real GPUDevice rejects it,
+    // which the recording device used by the unit tests cannot see.
+    // CLAMP_TO_BORDER therefore decodes to clamp-to-edge here, the
+    // raw mode stays in the params map, and the approximation is
+    // logged once below. The border colour (default or guest-set) is
+    // never applied: GPUSamplerDescriptor has no borderColor field,
+    // and the wrap's effect is the FD-39 residue disposition.
+    const address = value => value === 0x2901 ? 'repeat' : value === 0x8370 ? 'mirror-repeat' : 'clamp-to-edge';
+    if ([0x2802, 0x2803, 0x8072].some(wrap => texture.params.get(wrap) === 0x812d) && !this._unsupportedWarnings.has('clamp-to-border')) {
+      this._unsupportedWarnings.add('clamp-to-border');
+      try { this._log?.('gl-webgpu: clamp-to-border wrap served as clamp-to-edge; border colour is not applied (FD-39)'); } catch { /* logging must never throw; the approximation is already recorded in _unsupportedWarnings above */ }
+    }
     const filter = value => value === 0x2600 ? 'nearest' : 'linear';
     const min = texture.params.get(0x2801) ?? 0x2703, mag = texture.params.get(0x2800) ?? 0x2601;
     const maxAnisotropy = Math.max(1, Math.min(16, texture.params.get(0x84fe) || 1));

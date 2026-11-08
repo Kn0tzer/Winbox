@@ -1,0 +1,4 @@
+Running 1 Test tests with 1 threads starting at 106
+Test x64 raiseSyncFault deliveries are logged at the delivery point (FD-14) ... FAILED
+  raiseSyncFault delivery produced no delivery-point log line
+1 tests FAILED in 0s

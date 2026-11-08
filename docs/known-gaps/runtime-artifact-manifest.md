@@ -10,9 +10,9 @@ from the artifacts, so the register rows citing it stay honest.
 
 | Label | Path | Bytes | sha256 | Members |
 | --- | --- | --- | --- | --- |
-| w64 | `web/runtime/wine64.zip` | 194844190 | `133bfd70840e6c3dc60d63a9cc5aacc2d75b66e814914299ccac3dd5ea5c8604` | 1280 |
-| w32 | `web/runtime/wine32.zip` | 231315001 | `aa2bb9d63bf03dca2275d64ec117dbb280b68b8eea456d54774738cefa46e070` | 1957 |
-| p64 | `web/runtime/prefix64.zip` | 19066808 | `197251244ccb367f6a46c3fc8ec7fdaaa425891f75aa02113f27f1e3d3126b62` | 152 |
+| w64 | `web/runtime/wine64.zip` | 196033613 | `13f254e3c3a51449abfec2a3e4aba385e085f41ffee9ab53e9eb77260f2a271e` | 1281 |
+| w32 | `web/runtime/wine32.zip` | 232594442 | `8133274c06128250f94bb858c62fb2b12285b527606bf276674e20dd898c8d71` | 1957 |
+| p64 | `web/runtime/prefix64.zip` | 19038913 | `c344364aa6e2e60249cb60baf3ec7825d9cd366088c13ac838547e6d3e4725ca` | 157 |
 | p32 | `web/runtime/prefix32.zip` | 5868900 | `68164e5635cd31d996f16ddd6899c375d028ef42f170fa207307002f51702fc6` | 47 |
 | g64 | `web/runtime/glibc-rootfs64.zip` | 11469777 | `88fad6d6e43873152d1e9f04b6607930d3e38975fce4ec37fdb525a2f7b3e812` | 100 |
 | g32 | `web/runtime/glibc-rootfs32.zip` | 3875770 | `32f9e51288fb4d2407d831da3cceb1da0c18a80fe10ecd96db7dd3bb980ece19` | 154 |
@@ -33,8 +33,8 @@ Labels match the register legend in `runtime.md`
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp120_app.dll` (317058 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140.dll` (1153111 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_1.dll` (128904 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_2.dll` (63999 bytes)
-- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_atomic_wait.dll` (128581 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_2.dll` (75079 bytes)
+- `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_atomic_wait.dll` (72402 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp140_codecvt_ids.dll` (66024 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp60.dll` (3676152 bytes)
 - `usr/lib/x86_64-linux-gnu/wine/x86_64-windows/msvcp70.dll` (4356949 bytes)
@@ -67,8 +67,8 @@ Labels match the register legend in `runtime.md`
 - `opt/wine-stable/lib/wine/i386-windows/msvcp120_app.dll` (304884 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/msvcp140.dll` (3638479 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/msvcp140_1.dll` (113537 bytes)
-- `opt/wine-stable/lib/wine/i386-windows/msvcp140_2.dll` (70152 bytes)
-- `opt/wine-stable/lib/wine/i386-windows/msvcp140_atomic_wait.dll` (119101 bytes)
+- `opt/wine-stable/lib/wine/i386-windows/msvcp140_2.dll` (181722 bytes)
+- `opt/wine-stable/lib/wine/i386-windows/msvcp140_atomic_wait.dll` (121550 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/msvcp140_codecvt_ids.dll` (61764 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/msvcp60.dll` (3012560 bytes)
 - `opt/wine-stable/lib/wine/i386-windows/msvcp70.dll` (3626790 bytes)

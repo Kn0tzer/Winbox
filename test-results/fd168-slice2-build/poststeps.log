@@ -1,0 +1,73 @@
+PASS winehq backports (source + shipped zip)
+FAIL wine8 loader backports (source + shipped zip): win32u.dll in wine64.zip != pinned bytes
+PASS FD-167 i386 PE backports (source + shipped zip)
+PASS FD-169 i386 CRT rebuilds (source + shipped zip)
+PASS FD-171 i386 PE backports (source + shipped zip)
+PASS FD-167+FD-171 combined i386 PE (source + shipped zip)
+PASS wine10 win32u backport 32-bit (source + shipped zip)
+PASS vkd3d payloads (source + shipped zip)
+PASS vkd3d payloads 32-bit (shipped zip)
+PASS validate_service_runtime (shipped pairs)
+PASS gstreamer closure rides the support pack (absent from boot zips)
+PASS support pack member uniqueness + Vulkan shim pins (FD-53)
+PASS retained runtime-assets archive agrees with the file pins (FD-73)
+PASS DirectX redist sets complete (both zips)
+PASS VC++ runtime sets (both zips, asymmetries pinned)
+PASS wineserver dispatch is ELF (no /bin/sh script)
+PASS manifest matches shipped zips
+PASS ALSA-to-OSS bridge members (staging-tree anchored, both arches)
+PASS fonts32 faces (source + shipped zip)
+PASS fonts64 faces (source + shipped zip)
+PASS prefix64 Arial font replacement (FD-86)
+PASS CJK font pin
+SKIP prefix64 built artifact: build-prefix64.sh output not present
+PASS prefix64 built artifact sections
+1 failures, 1 skips
+apply-runtime-poststeps: runtime set incomplete; applying every post-step...
+dist/runtime: fonts already staged
+web/runtime: fonts already staged
+stage-fonts32: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/glibc-rootfs32.zip already carries the Mono face — skipping
+stage-fonts32: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/glibc-rootfs32.zip already carries the Mono face — skipping
+stage-fonts64: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/glibc-rootfs64.zip already carries the Serif face — skipping
+stage-fonts64: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/glibc-rootfs64.zip already carries the Serif face — skipping
+stage-font-alias64: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/prefix64.zip already carries the Arial replacement - skipping
+stage-font-alias64: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/prefix64.zip already carries the Arial replacement - skipping
+stage-alsa32: i386 ALSA-to-OSS bridge staged in /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime
+stage-alsa32: i386 ALSA-to-OSS bridge staged in /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime
+stage-wine64-payloads: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/wine64.zip already carries the backport DLLs — skipping
+stage-wine64-payloads: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/wine64.zip already carries the backport DLLs — skipping
+stage-wine8-backports: backport DLLs staged in /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/wine64.zip (backup in /home/ubuntu/winbox-project/evidence/winbox-wine8-backports-20261107-061910)
+stage-wine8-backports: backport DLLs staged in /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/wine64.zip (backup in /home/ubuntu/winbox-project/evidence/winbox-wine8-backports-20261107-061910)
+stage-vkd3d-payloads: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/wine64.zip already carries the vkd3d payloads — skipping
+stage-vkd3d-payloads: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/wine64.zip already carries the vkd3d payloads — skipping
+stage-vkd3d-payloads32: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/web/runtime/wine32.zip already carries the vkd3d32 payloads — skipping
+stage-vkd3d-payloads32: /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/dist/runtime/wine32.zip already carries the vkd3d32 payloads — skipping
+wrote /home/ubuntu/winbox-project/worktrees/wt-fd168-slice2/docs/known-gaps/runtime-artifact-manifest.md (62110 bytes)
+apply-runtime-poststeps: gating on the completeness checker...
+PASS winehq backports (source + shipped zip)
+PASS wine8 loader backports (source + shipped zip)
+PASS FD-167 i386 PE backports (source + shipped zip)
+PASS FD-169 i386 CRT rebuilds (source + shipped zip)
+PASS FD-171 i386 PE backports (source + shipped zip)
+PASS FD-167+FD-171 combined i386 PE (source + shipped zip)
+PASS wine10 win32u backport 32-bit (source + shipped zip)
+PASS vkd3d payloads (source + shipped zip)
+PASS vkd3d payloads 32-bit (shipped zip)
+PASS validate_service_runtime (shipped pairs)
+PASS gstreamer closure rides the support pack (absent from boot zips)
+PASS support pack member uniqueness + Vulkan shim pins (FD-53)
+PASS retained runtime-assets archive agrees with the file pins (FD-73)
+PASS DirectX redist sets complete (both zips)
+PASS VC++ runtime sets (both zips, asymmetries pinned)
+PASS wineserver dispatch is ELF (no /bin/sh script)
+PASS manifest matches shipped zips
+PASS ALSA-to-OSS bridge members (staging-tree anchored, both arches)
+PASS fonts32 faces (source + shipped zip)
+PASS fonts64 faces (source + shipped zip)
+PASS prefix64 Arial font replacement (FD-86)
+PASS CJK font pin
+SKIP prefix64 built artifact: build-prefix64.sh output not present
+PASS prefix64 built artifact sections
+0 failures, 1 skips
+apply-runtime-poststeps: ARTIFACT BYTES CHANGED — re-pin tools/browser/runtime-assets.json and rebuild the retained runtime-assets archive before committing.
+apply-runtime-poststeps: shipped runtime set complete and verified.

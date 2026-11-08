@@ -1,0 +1,49 @@
+--- a/dlls/setupapi/install.c
++++ b/dlls/setupapi/install.c
+@@ -1117,6 +1117,7 @@
+     {
+         struct register_dll_info info = { .unregister = FALSE };
+         HRESULT hr;
++        INFCONTEXT ctx;
+ 
+         if (flags & SPINST_REGISTERCALLBACKAWARE)
+         {
+@@ -1124,7 +1125,18 @@
+             info.callback_context = context;
+         }
+ 
+-        hr = CoInitialize(NULL);
++        /* CoInitialize also creates the calling thread's apartment
++         * window, which needs this process's window layer fully
++         * usable. A device-install thread in a service process can
++         * get here before the session desktop can service window
++         * creation, and the initialization then never returns: the
++         * install stalls, and every device queued behind it is never
++         * enumerated. The initialization only serves the registration
++         * calls below, so only pay it when the section actually
++         * registers DLLs. */
++        hr = E_FAIL;
++        if (SetupFindFirstLineW( hinf, section, L"RegisterDlls", &ctx ))
++            hr = CoInitialize(NULL);
+ 
+         ret = iterate_section_fields( hinf, section, L"RegisterDlls", register_dlls_callback, &info );
+         for (i = 0; i < info.modules_count; i++) FreeLibrary( info.modules[i] );
+@@ -1139,6 +1151,7 @@
+     {
+         struct register_dll_info info = { .unregister = TRUE };
+         HRESULT hr;
++        INFCONTEXT ctx;
+ 
+         if (flags & SPINST_REGISTERCALLBACKAWARE)
+         {
+@@ -1146,7 +1159,9 @@
+             info.callback_context = context;
+         }
+ 
+-        hr = CoInitialize(NULL);
++        hr = E_FAIL;
++        if (SetupFindFirstLineW( hinf, section, L"UnregisterDlls", &ctx ))
++            hr = CoInitialize(NULL);
+ 
+         ret = iterate_section_fields( hinf, section, L"UnregisterDlls", register_dlls_callback, &info );
+         for (i = 0; i < info.modules_count; i++) FreeLibrary( info.modules[i] );

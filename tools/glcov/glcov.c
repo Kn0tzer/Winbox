@@ -99,6 +99,17 @@ typedef void (APIENTRY *GLDEBUGPROC)(GLenum source, GLenum type, GLuint id,
 #define GL_TEXTURE_2D_MULTISAMPLE 0x9100
 #define GL_TEXTURE_2D_MULTISAMPLE_ARRAY 0x9102
 #define GL_TEXTURE0 0x84C0
+#define GL_GREATER 0x0204
+#define GL_VERTEX_ARRAY 0x8074
+#define GL_COLOR_ARRAY 0x8076
+#define GL_TEXTURE_COORD_ARRAY 0x8078
+#define GL_FOG_DENSITY 0x0B62
+#define GL_FOG_COLOR 0x0B66
+#define GL_FOG_MODE 0x0B65
+#define GL_TEXTURE_ENV 0x2300
+#define GL_TEXTURE_ENV_MODE 0x2200
+#define GL_TEXTURE_ENV_COLOR 0x2201
+#define GL_MODULATE 0x2100
 #define GL_RGBA 0x1908
 #define GL_RGBA8 0x8058
 #define GL_RGBA32F 0x8814
@@ -870,6 +881,65 @@ static PFN_glXWaitX pglXWaitX = 0;
 typedef long long (APIENTRY *PFN_traceProc)(const char *name, long long hit);
 static PFN_traceProc ptraceProc = 0;
 
+
+/* ---- extended coverage decls (vkgl-coverage lane) ---- */
+typedef void (APIENTRY *PFN_glAlphaFunc)(GLenum func, GLfloat ref_);
+static PFN_glAlphaFunc pglAlphaFunc = 0;
+typedef void (APIENTRY *PFN_glClientActiveTextureARB)(GLenum texture);
+static PFN_glClientActiveTextureARB pglClientActiveTextureARB = 0;
+typedef void (APIENTRY *PFN_glColor4ub)(GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha);
+static PFN_glColor4ub pglColor4ub = 0;
+typedef void (APIENTRY *PFN_glColorPointer)(GLint size, GLenum type, GLsizei stride, const void *pointer);
+static PFN_glColorPointer pglColorPointer = 0;
+typedef void (APIENTRY *PFN_glDisableClientState)(GLenum array);
+static PFN_glDisableClientState pglDisableClientState = 0;
+typedef void (APIENTRY *PFN_glEnableClientState)(GLenum array);
+static PFN_glEnableClientState pglEnableClientState = 0;
+typedef void (APIENTRY *PFN_glFogf)(GLenum pname, GLfloat param);
+static PFN_glFogf pglFogf = 0;
+typedef void (APIENTRY *PFN_glFogfv)(GLenum pname, const GLfloat *params);
+static PFN_glFogfv pglFogfv = 0;
+typedef void (APIENTRY *PFN_glFogi)(GLenum pname, GLint param);
+static PFN_glFogi pglFogi = 0;
+typedef void (APIENTRY *PFN_glFogiv)(GLenum pname, const GLint *params);
+static PFN_glFogiv pglFogiv = 0;
+typedef void (APIENTRY *PFN_glLoadMatrixd)(const GLdouble *m);
+static PFN_glLoadMatrixd pglLoadMatrixd = 0;
+typedef void (APIENTRY *PFN_glLoadMatrixf)(const GLfloat *m);
+static PFN_glLoadMatrixf pglLoadMatrixf = 0;
+typedef void (APIENTRY *PFN_glMultMatrixd)(const GLdouble *m);
+static PFN_glMultMatrixd pglMultMatrixd = 0;
+typedef void (APIENTRY *PFN_glMultiTexCoord2fARB)(GLenum target, GLfloat s, GLfloat t);
+static PFN_glMultiTexCoord2fARB pglMultiTexCoord2fARB = 0;
+typedef void (APIENTRY *PFN_glTexCoordPointer)(GLint size, GLenum type, GLsizei stride, const void *pointer);
+static PFN_glTexCoordPointer pglTexCoordPointer = 0;
+typedef void (APIENTRY *PFN_glTexEnvf)(GLenum target, GLenum pname, GLfloat param);
+static PFN_glTexEnvf pglTexEnvf = 0;
+typedef void (APIENTRY *PFN_glTexEnvfv)(GLenum target, GLenum pname, const GLfloat *params);
+static PFN_glTexEnvfv pglTexEnvfv = 0;
+typedef void (APIENTRY *PFN_glTexEnvi)(GLenum target, GLenum pname, GLint param);
+static PFN_glTexEnvi pglTexEnvi = 0;
+typedef void (APIENTRY *PFN_glTexEnviv)(GLenum target, GLenum pname, const GLint *params);
+static PFN_glTexEnviv pglTexEnviv = 0;
+typedef void (APIENTRY *PFN_glVertexPointer)(GLint size, GLenum type, GLsizei stride, const void *pointer);
+static PFN_glVertexPointer pglVertexPointer = 0;
+typedef void (APIENTRY *PFN_glXCopyContext)(void *dpy, void *src, void *dst, unsigned long mask);
+static PFN_glXCopyContext pglXCopyContext = 0;
+typedef void* (APIENTRY *PFN_glXCreatePbuffer)(void *dpy, void *config, const int *attribList);
+static PFN_glXCreatePbuffer pglXCreatePbuffer = 0;
+typedef void (APIENTRY *PFN_glXDestroyPbuffer)(void *dpy, void *pbuf);
+static PFN_glXDestroyPbuffer pglXDestroyPbuffer = 0;
+typedef void* (APIENTRY *PFN_glXGetCurrentReadDrawable)(void);
+static PFN_glXGetCurrentReadDrawable pglXGetCurrentReadDrawable = 0;
+typedef void (APIENTRY *PFN_glXGetSelectedEvent)(void *dpy, void *draw, unsigned long *mask);
+static PFN_glXGetSelectedEvent pglXGetSelectedEvent = 0;
+typedef int (APIENTRY *PFN_glXQueryContext)(void *dpy, void *ctx, int attribute, int *value);
+static PFN_glXQueryContext pglXQueryContext = 0;
+typedef void (APIENTRY *PFN_glXQueryDrawable)(void *dpy, void *draw, int attribute, unsigned int *value);
+static PFN_glXQueryDrawable pglXQueryDrawable = 0;
+typedef void (APIENTRY *PFN_glXSelectEvent)(void *dpy, void *draw, unsigned long mask);
+static PFN_glXSelectEvent pglXSelectEvent = 0;
+
 static void load_all(void) {
     LOADGL(glActiveTexture);
     LOADGL(glAttachShader);
@@ -1178,6 +1248,34 @@ static void load_all(void) {
     LOADGL(glXWaitX);
     LOADGL(traceProc);
     LOADGL(glUnmapBuffer); /* hygiene only, not a bridge handler */
+    LOADGL(glAlphaFunc);
+    LOADGL(glClientActiveTextureARB);
+    LOADGL(glColor4ub);
+    LOADGL(glColorPointer);
+    LOADGL(glDisableClientState);
+    LOADGL(glEnableClientState);
+    LOADGL(glFogf);
+    LOADGL(glFogfv);
+    LOADGL(glFogi);
+    LOADGL(glFogiv);
+    LOADGL(glLoadMatrixd);
+    LOADGL(glLoadMatrixf);
+    LOADGL(glMultMatrixd);
+    LOADGL(glMultiTexCoord2fARB);
+    LOADGL(glTexCoordPointer);
+    LOADGL(glTexEnvf);
+    LOADGL(glTexEnvfv);
+    LOADGL(glTexEnvi);
+    LOADGL(glTexEnviv);
+    LOADGL(glVertexPointer);
+    LOADGL(glXCopyContext);
+    LOADGL(glXCreatePbuffer);
+    LOADGL(glXDestroyPbuffer);
+    LOADGL(glXGetCurrentReadDrawable);
+    LOADGL(glXGetSelectedEvent);
+    LOADGL(glXQueryContext);
+    LOADGL(glXQueryDrawable);
+    LOADGL(glXSelectEvent);
 }
 static void setup_gl(void) {
     if (pglGenTextures && pglBindTexture && pglTexImage2D && pglTexParameteri) {
@@ -2342,7 +2440,7 @@ static void run_all(void) {
         uint64_t _t0=qpf_us(); pglGetAttachedShaders(g_prog, 8, &s_len, s_sh); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglGetAttachedShaders(g_prog, 8, &s_len, s_sh); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glGetAttachedShaders",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glGetAttachedShaders: no proc */
     trybegin("glGetAttachedShaders"); note("no proc: glGetAttachedShaders"); rep("glGetAttachedShaders",-1,-1,0,0);
     }
@@ -3536,14 +3634,24 @@ static void run_all(void) {
     /* glTexStorage2D: no proc */
     trybegin("glTexStorage2D"); note("no proc: glTexStorage2D"); rep("glTexStorage2D",-1,-1,0,0);
     }
-    /* glTexStorage2DMultisample */
-    if (pglTexStorage2DMultisample) {
+    /* glTexStorage2DMultisample SKIPPED 2026-11-07 (run phase): called
+       for real, the underlying driver call threw, and the bridge case
+       shared by the four *Multisample texture entry points reported
+       the error through an embedded JS catch handler that references
+       an undefined identifier -- the catch itself threw an uncaught
+       ReferenceError in the page and killed the session (the run of
+       2026-11-07 ended here, 221 of 333 handlers in). The bridge
+       case's stated design is the opposite: swallow driver refusals
+       so they cannot poison the guest. Filed as FD-207; -2 = crashed. */
+    note("SKIP glTexStorage2DMultisample: bridge error-report path kills the session (FD-207)");
+    trybegin("glTexStorage2DMultisample"); rep("glTexStorage2DMultisample",-2,-2,0,0);
+    if (0) { /* orig: if (pglTexStorage2DMultisample) { */
         trybegin("glTexStorage2DMultisample");
         pglGetError();
         uint64_t _t0=qpf_us(); pglTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 64, 64, GL_TRUE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 64, 64, GL_TRUE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glTexStorage2DMultisample",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glTexStorage2DMultisample: no proc */
     trybegin("glTexStorage2DMultisample"); note("no proc: glTexStorage2DMultisample"); rep("glTexStorage2DMultisample",-1,-1,0,0);
     }
@@ -3558,14 +3666,18 @@ static void run_all(void) {
     /* glTexStorage3D: no proc */
     trybegin("glTexStorage3D"); note("no proc: glTexStorage3D"); rep("glTexStorage3D",-1,-1,0,0);
     }
-    /* glTexStorage3DMultisample */
-    if (pglTexStorage3DMultisample) {
+    /* glTexStorage3DMultisample SKIPPED with the 2D case above: the
+       same shared bridge case and the same error-report path; not
+       individually measured. FD-207. */
+    note("SKIP glTexStorage3DMultisample: same bridge case as glTexStorage2DMultisample (FD-207)");
+    trybegin("glTexStorage3DMultisample"); rep("glTexStorage3DMultisample",-2,-2,0,0);
+    if (0) { /* orig: if (pglTexStorage3DMultisample) { */
         trybegin("glTexStorage3DMultisample");
         pglGetError();
         uint64_t _t0=qpf_us(); pglTexStorage3DMultisample(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4, GL_RGBA8, 8, 8, 4, GL_TRUE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
         uint64_t _t2=qpf_us(); pglTexStorage3DMultisample(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, 4, GL_RGBA8, 8, 8, 4, GL_TRUE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
         rep("glTexStorage3DMultisample",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
-    } else {
+    } else if (0) { /* run-phase recording fix 2026-11-07: this row is skipped above; the no-proc branch must not overwrite the crashed record (it did in every earlier run -- the console shows both lines, the results file kept the -1) */
     /* glTexStorage3DMultisample: no proc */
     trybegin("glTexStorage3DMultisample"); note("no proc: glTexStorage3DMultisample"); rep("glTexStorage3DMultisample",-1,-1,0,0);
     }
@@ -4496,6 +4608,354 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_CLOSE || m == WM_DESTROY) { PostQuitMessage(0); return 0; }
     return DefWindowProc(h, m, w, l);
 }
+/* ---- extended coverage (vkgl-coverage lane) ----
+ * The 28 bridge handlers the matrix never called: fixed-function state
+ * setters, fog/texture-env rows, client-array pointers, matrix loaders
+ * and the remaining GLX rows. See
+ * docs/reports/vkgl-spec-coverage-20261106.md. */
+static const GLdouble s_md16[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+static unsigned long s_ul = 0;
+static void run_extended(void) {
+    /* glAlphaFunc */
+    if (pglAlphaFunc) {
+        trybegin("glAlphaFunc");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglAlphaFunc(GL_GREATER, 0.5f); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglAlphaFunc(GL_GREATER, 0.5f); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glAlphaFunc",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glAlphaFunc: no proc */
+    trybegin("glAlphaFunc"); note("no proc: glAlphaFunc"); rep("glAlphaFunc",-1,-1,0,0);
+    }
+
+    /* glColor4ub */
+    if (pglColor4ub) {
+        trybegin("glColor4ub");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglColor4ub(255, 128, 0, 255); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglColor4ub(255, 128, 0, 255); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glColor4ub",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glColor4ub: no proc */
+    trybegin("glColor4ub"); note("no proc: glColor4ub"); rep("glColor4ub",-1,-1,0,0);
+    }
+
+    /* glFogf */
+    if (pglFogf) {
+        trybegin("glFogf");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglFogf(GL_FOG_DENSITY, 0.25f); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglFogf(GL_FOG_DENSITY, 0.25f); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glFogf",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glFogf: no proc */
+    trybegin("glFogf"); note("no proc: glFogf"); rep("glFogf",-1,-1,0,0);
+    }
+
+    /* glFogfv */
+    if (pglFogfv) {
+        trybegin("glFogfv");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglFogfv(GL_FOG_COLOR, clearc); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglFogfv(GL_FOG_COLOR, clearc); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glFogfv",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glFogfv: no proc */
+    trybegin("glFogfv"); note("no proc: glFogfv"); rep("glFogfv",-1,-1,0,0);
+    }
+
+    /* glFogi */
+    if (pglFogi) {
+        trybegin("glFogi");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglFogi(GL_FOG_MODE, GL_LINEAR); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglFogi(GL_FOG_MODE, GL_LINEAR); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glFogi",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glFogi: no proc */
+    trybegin("glFogi"); note("no proc: glFogi"); rep("glFogi",-1,-1,0,0);
+    }
+
+    /* glFogiv */
+    if (pglFogiv) {
+        trybegin("glFogiv");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglFogiv(GL_FOG_COLOR, cleari); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglFogiv(GL_FOG_COLOR, cleari); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glFogiv",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glFogiv: no proc */
+    trybegin("glFogiv"); note("no proc: glFogiv"); rep("glFogiv",-1,-1,0,0);
+    }
+
+    /* glLoadMatrixf */
+    if (pglLoadMatrixf) {
+        trybegin("glLoadMatrixf");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglLoadMatrixf(s_m16); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglLoadMatrixf(s_m16); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glLoadMatrixf",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glLoadMatrixf: no proc */
+    trybegin("glLoadMatrixf"); note("no proc: glLoadMatrixf"); rep("glLoadMatrixf",-1,-1,0,0);
+    }
+
+    /* glLoadMatrixd */
+    if (pglLoadMatrixd) {
+        trybegin("glLoadMatrixd");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglLoadMatrixd(s_md16); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglLoadMatrixd(s_md16); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glLoadMatrixd",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glLoadMatrixd: no proc */
+    trybegin("glLoadMatrixd"); note("no proc: glLoadMatrixd"); rep("glLoadMatrixd",-1,-1,0,0);
+    }
+
+    /* glMultMatrixd */
+    if (pglMultMatrixd) {
+        trybegin("glMultMatrixd");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglMultMatrixd(s_md16); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglMultMatrixd(s_md16); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glMultMatrixd",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glMultMatrixd: no proc */
+    trybegin("glMultMatrixd"); note("no proc: glMultMatrixd"); rep("glMultMatrixd",-1,-1,0,0);
+    }
+
+    /* glTexEnvf */
+    if (pglTexEnvf) {
+        trybegin("glTexEnvf");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glTexEnvf",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glTexEnvf: no proc */
+    trybegin("glTexEnvf"); note("no proc: glTexEnvf"); rep("glTexEnvf",-1,-1,0,0);
+    }
+
+    /* glTexEnvfv */
+    if (pglTexEnvfv) {
+        trybegin("glTexEnvfv");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, clearc); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, clearc); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glTexEnvfv",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glTexEnvfv: no proc */
+    trybegin("glTexEnvfv"); note("no proc: glTexEnvfv"); rep("glTexEnvfv",-1,-1,0,0);
+    }
+
+    /* glTexEnvi */
+    if (pglTexEnvi) {
+        trybegin("glTexEnvi");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glTexEnvi",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glTexEnvi: no proc */
+    trybegin("glTexEnvi"); note("no proc: glTexEnvi"); rep("glTexEnvi",-1,-1,0,0);
+    }
+
+    /* glTexEnviv */
+    if (pglTexEnviv) {
+        trybegin("glTexEnviv");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, cleari); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, cleari); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glTexEnviv",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glTexEnviv: no proc */
+    trybegin("glTexEnviv"); note("no proc: glTexEnviv"); rep("glTexEnviv",-1,-1,0,0);
+    }
+
+    /* glClientActiveTextureARB */
+    if (pglClientActiveTextureARB) {
+        trybegin("glClientActiveTextureARB");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglClientActiveTextureARB(GL_TEXTURE0); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglClientActiveTextureARB(GL_TEXTURE0); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glClientActiveTextureARB",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glClientActiveTextureARB: no proc */
+    trybegin("glClientActiveTextureARB"); note("no proc: glClientActiveTextureARB"); rep("glClientActiveTextureARB",-1,-1,0,0);
+    }
+
+    /* glMultiTexCoord2fARB */
+    if (pglMultiTexCoord2fARB) {
+        trybegin("glMultiTexCoord2fARB");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglMultiTexCoord2fARB(GL_TEXTURE0, 0.5f, 0.5f); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglMultiTexCoord2fARB(GL_TEXTURE0, 0.5f, 0.5f); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glMultiTexCoord2fARB",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glMultiTexCoord2fARB: no proc */
+    trybegin("glMultiTexCoord2fARB"); note("no proc: glMultiTexCoord2fARB"); rep("glMultiTexCoord2fARB",-1,-1,0,0);
+    }
+
+    /* glEnableClientState */
+    if (pglEnableClientState) {
+        trybegin("glEnableClientState");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglEnableClientState(GL_VERTEX_ARRAY); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglEnableClientState(GL_VERTEX_ARRAY); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glEnableClientState",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glEnableClientState: no proc */
+    trybegin("glEnableClientState"); note("no proc: glEnableClientState"); rep("glEnableClientState",-1,-1,0,0);
+    }
+
+    /* glVertexPointer */
+    if (pglVertexPointer) {
+        trybegin("glVertexPointer");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglVertexPointer(3, GL_FLOAT, 0, tri); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglVertexPointer(3, GL_FLOAT, 0, tri); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glVertexPointer",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glVertexPointer: no proc */
+    trybegin("glVertexPointer"); note("no proc: glVertexPointer"); rep("glVertexPointer",-1,-1,0,0);
+    }
+
+    /* glColorPointer */
+    if (pglColorPointer) {
+        trybegin("glColorPointer");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglColorPointer(4, GL_UNSIGNED_BYTE, 0, s_px); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglColorPointer(4, GL_UNSIGNED_BYTE, 0, s_px); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glColorPointer",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glColorPointer: no proc */
+    trybegin("glColorPointer"); note("no proc: glColorPointer"); rep("glColorPointer",-1,-1,0,0);
+    }
+
+    /* glTexCoordPointer */
+    if (pglTexCoordPointer) {
+        trybegin("glTexCoordPointer");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglTexCoordPointer(2, GL_FLOAT, 0, tri); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglTexCoordPointer(2, GL_FLOAT, 0, tri); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glTexCoordPointer",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glTexCoordPointer: no proc */
+    trybegin("glTexCoordPointer"); note("no proc: glTexCoordPointer"); rep("glTexCoordPointer",-1,-1,0,0);
+    }
+
+    /* glDisableClientState */
+    if (pglDisableClientState) {
+        trybegin("glDisableClientState");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglDisableClientState(GL_VERTEX_ARRAY); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglDisableClientState(GL_VERTEX_ARRAY); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glDisableClientState",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glDisableClientState: no proc */
+    trybegin("glDisableClientState"); note("no proc: glDisableClientState"); rep("glDisableClientState",-1,-1,0,0);
+    }
+
+    /* glXCopyContext */
+    if (pglXCopyContext) {
+        trybegin("glXCopyContext");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglXCopyContext(NULL, NULL, NULL, 0); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglXCopyContext(NULL, NULL, NULL, 0); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glXCopyContext",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXCopyContext: no proc */
+    trybegin("glXCopyContext"); note("no proc: glXCopyContext"); rep("glXCopyContext",-1,-1,0,0);
+    }
+
+    /* glXCreatePbuffer */
+    if (pglXCreatePbuffer) {
+        trybegin("glXCreatePbuffer");
+        pglGetError();
+        uint64_t _t0=qpf_us(); long long _r1=(long long)(intptr_t)(pglXCreatePbuffer(NULL, NULL, NULL)); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); long long _r2=(long long)(intptr_t)(pglXCreatePbuffer(NULL, NULL, NULL)); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        note("glXCreatePbuffer ret=%lld", _r1);
+        rep("glXCreatePbuffer",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXCreatePbuffer: no proc */
+    trybegin("glXCreatePbuffer"); note("no proc: glXCreatePbuffer"); rep("glXCreatePbuffer",-1,-1,0,0);
+    }
+
+    /* glXDestroyPbuffer */
+    if (pglXDestroyPbuffer) {
+        trybegin("glXDestroyPbuffer");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglXDestroyPbuffer(NULL, NULL); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglXDestroyPbuffer(NULL, NULL); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glXDestroyPbuffer",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXDestroyPbuffer: no proc */
+    trybegin("glXDestroyPbuffer"); note("no proc: glXDestroyPbuffer"); rep("glXDestroyPbuffer",-1,-1,0,0);
+    }
+
+    /* glXGetCurrentReadDrawable */
+    if (pglXGetCurrentReadDrawable) {
+        trybegin("glXGetCurrentReadDrawable");
+        pglGetError();
+        uint64_t _t0=qpf_us(); long long _r1=(long long)(intptr_t)(pglXGetCurrentReadDrawable()); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); long long _r2=(long long)(intptr_t)(pglXGetCurrentReadDrawable()); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        note("glXGetCurrentReadDrawable ret=%lld", _r1);
+        rep("glXGetCurrentReadDrawable",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXGetCurrentReadDrawable: no proc */
+    trybegin("glXGetCurrentReadDrawable"); note("no proc: glXGetCurrentReadDrawable"); rep("glXGetCurrentReadDrawable",-1,-1,0,0);
+    }
+
+    /* glXGetSelectedEvent */
+    if (pglXGetSelectedEvent) {
+        trybegin("glXGetSelectedEvent");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglXGetSelectedEvent(NULL, NULL, &s_ul); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglXGetSelectedEvent(NULL, NULL, &s_ul); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glXGetSelectedEvent",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXGetSelectedEvent: no proc */
+    trybegin("glXGetSelectedEvent"); note("no proc: glXGetSelectedEvent"); rep("glXGetSelectedEvent",-1,-1,0,0);
+    }
+
+    /* glXQueryContext */
+    if (pglXQueryContext) {
+        trybegin("glXQueryContext");
+        pglGetError();
+        uint64_t _t0=qpf_us(); long long _r1=(long long)(intptr_t)(pglXQueryContext(NULL, NULL, 0, &s_int)); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); long long _r2=(long long)(intptr_t)(pglXQueryContext(NULL, NULL, 0, &s_int)); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        note("glXQueryContext ret=%lld", _r1);
+        rep("glXQueryContext",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXQueryContext: no proc */
+    trybegin("glXQueryContext"); note("no proc: glXQueryContext"); rep("glXQueryContext",-1,-1,0,0);
+    }
+
+    /* glXQueryDrawable */
+    if (pglXQueryDrawable) {
+        trybegin("glXQueryDrawable");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglXQueryDrawable(NULL, NULL, 0, &s_u); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglXQueryDrawable(NULL, NULL, 0, &s_u); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glXQueryDrawable",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXQueryDrawable: no proc */
+    trybegin("glXQueryDrawable"); note("no proc: glXQueryDrawable"); rep("glXQueryDrawable",-1,-1,0,0);
+    }
+
+    /* glXSelectEvent */
+    if (pglXSelectEvent) {
+        trybegin("glXSelectEvent");
+        pglGetError();
+        uint64_t _t0=qpf_us(); pglXSelectEvent(NULL, NULL, 0); GLenum _e1=pglGetError(); uint64_t _t1=qpf_us();
+        uint64_t _t2=qpf_us(); pglXSelectEvent(NULL, NULL, 0); GLenum _e2=pglGetError(); uint64_t _t3=qpf_us();
+        rep("glXSelectEvent",(long long)_e1,(long long)_e2,_t1-_t0,_t3-_t2);
+    } else {
+    /* glXSelectEvent: no proc */
+    trybegin("glXSelectEvent"); note("no proc: glXSelectEvent"); rep("glXSelectEvent",-1,-1,0,0);
+    }
+}
+
 int main(void) {
     WNDCLASSA wc = {0};
     wc.style = CS_OWNDC;
@@ -4530,6 +4990,7 @@ int main(void) {
     if (!pglGetError) { fprintf(stderr, "glcov: RESULT 1\n"); return 1; }
     setup_gl();
     run_all();
+    run_extended();
     teardown_gl();
     wglMakeCurrent(0, 0);
     wglDeleteContext(rc);

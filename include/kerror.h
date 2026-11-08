@@ -49,6 +49,7 @@
 // Illegal seek
 #define K_ESPIPE         29
 #define K_EROFS          30
+#define K_EMLINK         31
 #define K_EPIPE          32
 #define K_ERANGE         34
 #define K_ENAMETOOLONG   36
@@ -58,6 +59,7 @@
 #define K_ELOOP          40
 #define K_EWOULDBLOCK    K_EAGAIN
 #define	K_ENODATA        61	
+#define K_EOVERFLOW      75
 #define K_EBADFD         77
 #define K_ENOTSOCK       88
 #define K_EDESTADDRREQ   89

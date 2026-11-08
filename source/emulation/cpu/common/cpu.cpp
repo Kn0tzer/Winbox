@@ -249,14 +249,17 @@ void CPU::jmp(U32 big, U32 selector, U32 offset, U32 oldEip) {
 void CPU::prepareFpuException(int code, int error) {
     const KProcessPtr& process = this->thread->process;
 
-    // Delivered via the SIGSEGV slot with an FPE code, as before; what
-    // changes is that delivery no longer depends on a guest handler
-    // existing. runSignal applies the default disposition itself (the
-    // guest process is killed) or ignores the signal, so an FPU fault
-    // in a handler-less guest ends that guest -- it used to kpanic and
-    // take the whole emulator down with it. (These are blocking
-    // signals, which signalfd can't handle; that part is unchanged.)
-    KSigAction* action = &process->sigActions[K_SIGSEGV];
+    // Delivered via the SIGFPE slot: Linux delivers x87 exceptions
+    // as SIGFPE with trap 16 (measured with raw signals on a real
+    // kernel), and Wine's i386 handler classifies trap 16/19 only
+    // inside its SIGFPE handler, so the SIGSEGV slot this used to
+    // write into could never produce the right Windows exception in
+    // the guest (frontier review D7). runSignal applies the default
+    // disposition itself (the guest process is killed) or ignores
+    // the signal, so an FPU fault in a handler-less guest ends that
+    // guest rather than the emulator. (These are blocking signals,
+    // which signalfd can't handle; that part is unchanged.)
+    KSigAction* action = &process->sigActions[K_SIGFPE];
     const bool delivered = action->handlerAndSigAction != K_SIG_IGN && action->handlerAndSigAction != K_SIG_DFL;
     action->sigInfo[0] = K_SIGFPE;
     action->sigInfo[1] = error; // always 0?
@@ -264,7 +267,7 @@ void CPU::prepareFpuException(int code, int error) {
     action->sigInfo[3] = 0; // address
     action->sigInfo[4] = 16; // trap #, TRAP_x86_ARITHTRAP
     bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
-    this->thread->runSignal(K_SIGSEGV, 13, error);
+    this->thread->runSignal(K_SIGFPE, 16, error);
 }
 
 void CPU::prepareException(int code, int error) {
@@ -304,11 +307,17 @@ void CPU::prepareException(int code, int error) {
         const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;
         action->sigInfo[0] = K_SIGFPE;
         action->sigInfo[1] = 0;
-        action->sigInfo[2] = K_FPE_INTOVF;
+        // A quotient overflow is still the divide trap: the host
+        // delivers SIGFPE with FPE_INTDIV and trap 0 for it, exactly
+        // like divide-by-zero (measured with raw signals). The
+        // FPE_INTOVF / trap 4 pair this used belongs to the INTO
+        // instruction, whose host delivery is SIGSEGV (frontier
+        // review D7).
+        action->sigInfo[2] = K_FPE_INTDIV;
         action->sigInfo[3] = this->eip.u32; // address
-        action->sigInfo[4] = 4; // trap #, TRAP_x86_OFLOW
+        action->sigInfo[4] = 0; // trap #, TRAP_x86_DIVIDE
         bw64LogGuestFault32("exception32", this->thread, 0, this->eip.u32, (U32)error, delivered);
-        this->thread->runSignal(K_SIGFPE, 4, error);
+        this->thread->runSignal(K_SIGFPE, 0, error);
     } else if (code==EXCEPTION_NP) {
         KSigAction* action = &process->sigActions[K_SIGSEGV];
         const bool delivered = action->handlerAndSigAction!=K_SIG_IGN && action->handlerAndSigAction!=K_SIG_DFL;

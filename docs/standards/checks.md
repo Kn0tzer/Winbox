@@ -97,6 +97,18 @@ partway has failed, however many PASS lines precede the abort.
   all). That failure is a load artifact: preserve the log and
   re-run when the queue drains; it is not evidence about the
   product, and it is never a reason to loosen the check.
+- Measured 2026-11-07 (record
+  `docs/reports/probe-parallel-20261107.md`, register
+  FD-196): on a build-saturated box, probe *starts*
+  starve regardless of slot counts — three suite boots
+  each failed at the 900 s slot wait without testing
+  anything while a relay of queued builds held the
+  `build-pending` claim for over 100 minutes. Slot
+  defaults are unchanged (heavy 2, light 2); the 2×
+  verification in `web/tests/parallel-probe-README.md`
+  remains the highest proven probe concurrency, and a
+  3× measurement under the current core split is
+  still owed.
 - Standing boot-census expectation: the `boot64-smoke` and
   `boot32-vkboot` consoles each show **0 `BW64-FAIL` lines and
   exactly 5 `BW64-INFO` served lines**. The console is not the

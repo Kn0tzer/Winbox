@@ -1,0 +1,29 @@
+linkat basic                                         -> 0
+  dst: exists mode=100644 nlink=2
+  src: exists mode=100644 nlink=2
+linkat missing source                                -> -2 (errno 2: No such file or directory)
+linkat existing target                               -> -17 (errno 17: File exists)
+linkat directory source                              -> -1 (errno 1: Operation not permitted)
+linkat null oldpath                                  -> -14 (errno 14: Bad address)
+linkat null newpath                                  -> -14 (errno 14: Bad address)
+linkat empty oldpath                                 -> -2 (errno 2: No such file or directory)
+linkat empty newpath                                 -> -2 (errno 2: No such file or directory)
+linkat bad flags 0x8000                              -> -22 (errno 22: Invalid argument)
+linkat bad flags + missing src                       -> -22 (errno 22: Invalid argument)
+linkat bad flags + null oldpath                      -> -22 (errno 22: Invalid argument)
+linkat bad dirfd 9999                                -> -9 (errno 9: Bad file descriptor)
+linkat dirfd is a file                               -> -20 (errno 20: Not a directory)
+linkat via dirfd                                     -> 0
+  sub/slink2: exists mode=100644 nlink=2
+linkat AT_EMPTY_PATH on file fd                      -> 0
+  dst11: exists mode=100644 nlink=3
+linkat empty path on fd, no flag                     -> -2 (errno 2: No such file or directory)
+linkat AT_EMPTY_PATH on pipe fd                      -> -18 (errno 18: Cross-device link)
+linkat symlink nofollow                              -> 0
+  dst14 (lstat): exists mode=120777 nlink=2
+linkat symlink AT_SYMLINK_FOLLOW                     -> 0
+  dst15 (lstat): exists mode=100644 nlink=4
+  src after follow: exists mode=100644 nlink=4
+linkat flags 0x200                                   -> -22 (errno 22: Invalid argument)
+linkat missing source in subdir path                 -> -2 (errno 2: No such file or directory)
+linkat through-file source path                      -> -20 (errno 20: Not a directory)

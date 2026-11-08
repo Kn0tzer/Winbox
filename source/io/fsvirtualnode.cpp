@@ -34,7 +34,14 @@ U64 FsVirtualNode::length() {
 }
 
 U32 FsVirtualNode::getMode() {
-    return this->mode;
+    // FD-195: compose the mode the way FsFileNode/FsMemNode do - the
+    // stored mode carries only permission bits, so without the type
+    // bits every virtual file stats with a file type of 0. Consumers
+    // that require S_IFREG (the systemd virtual-file reader gates on
+    // it) then refuse to read sysfs attribute/uevent files at all,
+    // which silently blinded the guest libudev: no uevent parse, no
+    // devnum, no devnode, no enumerated input devices.
+    return this->mode | (this->getType(false) << 12);
 }
 
 FsOpenNode* FsVirtualNode::open(U32 flags) {

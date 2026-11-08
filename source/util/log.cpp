@@ -207,8 +207,28 @@ void bw64UnlockLog() {
 #endif
 }
 
+#ifdef __TEST
+static BString g_testLogCapture;
+void bw64TestLogClear() {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
+    g_testLogCapture = BString();
+}
+bool bw64TestLogContains(const char* needle) {
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
+    return g_testLogCapture.contains(needle);
+}
+#endif
+
 void internal_log(BString msg, FILE* f) {
     BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(logMutex);
+#ifdef __TEST
+    // Bounded capture for test assertions (see log.h). 4 MB is far
+    // beyond any single test's log volume; past it, stop appending
+    // rather than grow without bound during a long suite run.
+    if (g_testLogCapture.length() < 4 * 1024 * 1024) {
+        g_testLogCapture.append(msg.str(), (int)msg.length());
+    }
+#endif
     if (KSystem::logFile.isOpen()) {
         KSystem::logFile.write(msg);
     }

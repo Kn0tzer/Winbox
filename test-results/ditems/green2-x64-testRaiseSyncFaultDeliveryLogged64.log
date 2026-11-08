@@ -1,0 +1,4 @@
+Running 1 Test tests with 1 threads starting at 106
+BW64-FAIL sync-fault64 pid=-1 tid=-1 sig=11 trap=14 addr=0xdead0000 err=5 si_code=2 delivered=1 count=1
+Test x64 raiseSyncFault deliveries are logged at the delivery point (FD-14) ... OK
+0 tests FAILED in 0s

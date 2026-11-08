@@ -10,6 +10,7 @@
 #ifdef BOXEDWINE_GUEST_X64
 #include "cpu64.h"
 #include "kmemory64.h"
+#include "ksignal.h" // K_SIGTRAP (INT3 terminator classification)
 #endif
 
 #include <cstdint>
@@ -38,8 +39,10 @@
 
 // ---------------------------------------------------------------------------
 // Test-only stubs for symbols the differential snippets can never reach
-// (no syscalls, no signals, no faults expected). If a snippet DOES fault,
-// raiseSyncFault throws DiffFault so the case is reported instead of hanging.
+// (no syscalls, no signals). If a snippet faults, raiseSyncFault records
+// the fault and reports it as undelivered — the product's no-handler
+// fallback then yields at the faulting RIP, and runEmu classifies the
+// recorded fault (see the raiseSyncFault stub below).
 // ---------------------------------------------------------------------------
 struct DiffFault : std::runtime_error {
     U32 signalNo = 0;
@@ -56,8 +59,25 @@ thread_local KThread* KThread::runningThread = nullptr;
 void jit64ReleaseState(Jit64State* state) {
     if (state) throw DiffFault("unexpected JIT state in cpu-diff harness");
 }
+// The product delivers a synchronous fault to a guest handler when one
+// exists and yields at the faulting RIP when none does (cpu64.cpp's
+// faultAtInstruction: "The test harness has no attached thread or signal
+// handlers, so an unhandled fault yields at the faulting RIP"). The
+// harness has no handlers, so it models the undelivered case: record
+// the fault for runEmu to classify and return false. The snippet
+// terminator INT3 (0xCC) arrives here as a K_SIGTRAP/#BP record at the
+// terminator address (INT3 has been delivered as a real #BP since
+// 066fd18ec); runEmu treats exactly that record as a clean stop.
+static U32 g_faultSignal = 0;
+static U32 g_faultTrap = 0;
+static U64 g_faultAddr = 0;
+static bool g_faultSeen = false;
 bool CPU64::raiseSyncFault(U32 sig, U32 trapNo, S32 /*siCode*/, U64 faultAddr, U32 /*errorCode*/) {
-    throw DiffFault("sync fault at guest addr", sig, trapNo, faultAddr);
+    g_faultSignal = sig;
+    g_faultTrap = trapNo;
+    g_faultAddr = faultAddr;
+    g_faultSeen = true;
+    return false;
 }
 bool CPU64::deliverPendingSignals() { return false; }
 
@@ -71,6 +91,9 @@ void klog_nonewline(const char* msg) { fprintf(stderr, "[emulator klog] %s", msg
 void internal_log(BString msg, FILE* f) {
     const char* s = msg.c_str();
     if (strstr(s, "INT3 at RIP=") != nullptr) return; // expected terminator noise
+    if (strstr(s, "guest-insnfault") != nullptr &&
+        strstr(s, "sig=5 trap=3") != nullptr)
+        return; // INT3 terminator #BP (no handler -> yield): expected
     fprintf(f ? f : stderr, "[emulator] %s\n", s);
 }
 void kpanic(const char* msg) {
@@ -78,6 +101,31 @@ void kpanic(const char* msg) {
     abort();
 }
 bool KSystem::useF64 = false; // matches ksystem.cpp for BOXEDWINE_GUEST_X64
+
+// Link-rot repair (2026-11-06): the emulator grew references the harness
+// build never linked. Each stub matches the product's native-build
+// semantics. guestCpuCount: ksystem.cpp returns the machine definition's
+// constant 2. The recover policy defaults OFF for native builds (log.h),
+// so the harness sees the same unhandled-opcode bail as a native product
+// build; the note/claim hooks are only reached when it is enabled. The
+// guest profiler is opt-in and off here; its hooks are observational
+// only. No KThread is registered in the harness, so the thread-registry
+// fallback finds none. g_splitLockMutex is the product's own global
+// (common/splitLock.h, defined in common/common_lock.cpp); the harness
+// runs snippets on one thread, so it is uncontended. The FsOpenNode
+// page notifications are page-cache bookkeeping the snippets never
+// trigger (no file-backed mappings are created).
+U32 KSystem::guestCpuCount() { return 2; }
+bool bw64RecoverEnabled() { return false; }
+void bw64RecoverNoteSkippedInstruction(bool /*loggedRip*/) {}
+void bw64RecoverNoteSigillFallback() {}
+bool bw64RecoverClaimRip(unsigned /*architecture*/, U64 /*rip*/) { return false; }
+bool bwGuestProfileEnabled() { return false; }
+void bwGuestProfileTick64(CPU64* /*cpu*/) {}
+KThread* bwCurrentThreadRegistryLookup() { return nullptr; }
+std::mutex g_splitLockMutex;
+void FsOpenNode::noteMappedPagesAdded(U32 /*pages*/) {}
+void FsOpenNode::noteMappedPagesReleased(U32 /*pages*/) {}
 
 // 32-bit KMemory methods referenced by fpu.cpp's 32-bit EA helpers.
 // Unreachable from 64-bit code paths (those use KMemory64); stubbed to fail
@@ -272,7 +320,10 @@ static std::vector<NativeResult> runNativeBatch(
 
 // ---------------------------------------------------------------------------
 // Emulator runner: drive CPU64 directly (mirrors cpu64SelfTest.cpp).
-// Snippet is terminated with 0xCC (INT3 -> yield, registers preserved).
+// Snippet is terminated with 0xCC: INT3 is delivered as #BP/SIGTRAP and,
+// with no guest handler, the product yields one byte past it with
+// registers preserved; runEmu classifies the recorded fault (see the
+// raiseSyncFault stub).
 // ---------------------------------------------------------------------------
 struct EmuResult {
     bool ok = false;
@@ -314,12 +365,28 @@ static EmuResult runEmu(const U8* code, size_t len, const U64 regsIn[16],
         cpu.reg[X64_RSP].setU64(RSP_SNIPPET); // == native post-call rsp
         cpu.rflags = flagsIn;
 
+        g_faultSeen = false;
         auto t0 = std::chrono::steady_clock::now();
         cpu.runBounded(insnLimit);
         auto t1 = std::chrono::steady_clock::now();
         r.elapsedNs =
             (U64)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
 
+        if (g_faultSeen) {
+            // A recorded fault that is not the INT3 terminator (#BP at
+            // the terminator address) ends the run as a fault; the CPU
+            // yielded at the faulting RIP per the no-handler fallback.
+            bool terminator = g_faultSignal == K_SIGTRAP && g_faultTrap == 3 &&
+                              g_faultAddr == CODE_BASE + len;
+            if (!terminator) {
+                r.faulted = true;
+                r.err = "sync fault at guest addr";
+                r.faultSignal = g_faultSignal;
+                r.faultTrap = g_faultTrap;
+                r.faultAddr = g_faultAddr;
+                return r;
+            }
+        }
         U64 expectRip = CODE_BASE + len + 1;
         r.yieldAtEnd = cpu.yield && cpu.rip == expectRip;
         if (!r.yieldAtEnd) {
@@ -1601,7 +1668,7 @@ static void buildStringCases(std::vector<TestCase>& out) {
         b.push_back(0xF3); b.push_back(0xAA);
         TestCase tc; tc.set = "int"; tc.name = "stosb"; tc.form = "rep";
         tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
-        tc.flagsIn = 0x202; tc.flagsMask = 0;
+        tc.flagsIn = 0x202; tc.flagsMask = 0; tc.skipRsiRdi = true;
         tc.checkMem = true; tc.memLen = 8;
         out.push_back(tc);
     }
@@ -1609,7 +1676,7 @@ static void buildStringCases(std::vector<TestCase>& out) {
     {
         std::vector<U8> b;
         // lea rsi, [rbx]
-        b.push_back(0x48); b.push_back(0x8D); b.push_back(0x36);
+        b.push_back(0x48); b.push_back(0x8D); b.push_back(0x33);
         // mov rcx, 4
         b.push_back(0x48); b.push_back(0xB9);
         for (int k = 0; k < 8; k++) b.push_back(k == 0 ? 4 : 0);
@@ -1619,7 +1686,13 @@ static void buildStringCases(std::vector<TestCase>& out) {
         tc.code = b; initRegs(tc, 0, MEM_SCRATCH);
         tc.flagsIn = 0x202; tc.flagsMask = 0; tc.skipRsiRdi = true;
         for (int i = 0; i < 4; i++) tc.memInit[i] = (U8)(0x10 + i);
-        // AL should be 0x13; we check via RAX in register comparison
+        // AL should be 0x13; we check via RAX in register comparison.
+        // checkMem must be set even though LODSB writes no memory: the
+        // native runner only patches RBX to its scratch page (and only
+        // loads scratchIn) for checkMem cases. Without it RBX stayed at
+        // the emulator's MEM_SCRATCH address, the native child faulted
+        // on the unmapped page, and this case never actually ran.
+        tc.checkMem = true; tc.memLen = 4;
         out.push_back(tc);
     }
 }
@@ -2546,6 +2619,327 @@ static void buildSseCases(std::vector<TestCase>& out) {
 }
 
 // ---------------------------------------------------------------------------
+// Control-flow test builders. Snippets branch inside themselves and leave
+// the outcome in a register; both sides execute identical bytes with
+// identical relative offsets, so outcomes compare directly. RSP stays
+// balanced per side (checked by the differ).
+// ---------------------------------------------------------------------------
+static void buildControlFlowCases(std::vector<TestCase>& out) {
+    auto mk = [&](const char* name, const char* form, const std::vector<U8>& code,
+                  U32 flagsIn, U32 flagsMask) {
+        TestCase tc; tc.set = "int"; tc.name = name; tc.form = form;
+        tc.code = code; initRegs(tc, 0, 0);
+        tc.flagsIn = flagsIn; tc.flagsMask = flagsMask;
+        out.push_back(tc);
+    };
+    // jcc: mov ecx,1; jcc +5; mov ecx,0 -> ecx = taken ? 1 : 0. The movs
+    // do not modify flags, so flagsIn drives each condition in both
+    // directions across the scenario set.
+    static const char* ccNames[16] = {"jo","jno","jb","jae","je","jne","jbe","ja",
+                                      "js","jns","jp","jnp","jl","jge","jle","jg"};
+    static const U32 ccFlags[] = {0x202, 0x203, 0x242, 0x282,
+                                  0xA02, 0x206, 0x243, 0xA83};
+    for (int cc = 0; cc < 16; cc++) {
+        for (U32 fl : ccFlags) {
+            std::vector<U8> b = {0xB9,1,0,0,0, (U8)(0x70 + cc), 5, 0xB9,0,0,0,0};
+            mk(ccNames[cc], "rel8", b, fl, F_ALL6);
+        }
+        for (U32 fl : ccFlags) {
+            std::vector<U8> b = {0xB9,1,0,0,0, 0x0F, (U8)(0x80 + cc), 5,0,0,0, 0xB9,0,0,0,0};
+            mk(ccNames[cc], "rel32", b, fl, F_ALL6);
+        }
+    }
+    // jmp rel8 / rel32: mov ecx,1; jmp +5; mov ecx,0 -> ecx must stay 1.
+    mk("jmp", "rel8", {0xB9,1,0,0,0, 0xEB,5, 0xB9,0,0,0,0}, 0x202, 0);
+    mk("jmp", "rel32", {0xB9,1,0,0,0, 0xE9,5,0,0,0, 0xB9,0,0,0,0}, 0x202, 0);
+    // jmp r64: the target is computed with a RIP-relative LEA (a per-side
+    // address, consumed by the jump and zeroed at the common exit).
+    mk("jmp", "r64", {0xB9,0,0,0,0, 0x48,0x8D,0x05,9,0,0,0, 0xFF,0xE0,
+                      0xB9,1,0,0,0, 0xEB,5, 0xB9,2,0,0,0, 0x31,0xC0}, 0x202, 0);
+    // call rel32: the subroutine sets ecx=0x600D; the caller copies to edx.
+    mk("call", "rel32", {0xB9,0,0,0,0, 0xE8,7,0,0,0, 0x89,0xCA, 0xEB,9,
+                         0x90,0x90,0x90, 0xB9,0x0D,0x60,0,0, 0xC3}, 0x202, 0);
+    // call r64 via LEA + FF D0; rax zeroed at the common exit.
+    mk("call", "r64", {0xB9,0,0,0,0, 0x48,0x8D,0x05,14,0,0,0, 0xFF,0xD0,
+                       0x89,0xCA, 0xEB,14, 0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,
+                       0xB9,0x0D,0x60,0,0, 0xC3, 0x31,0xC0}, 0x202, 0);
+    // ret imm16: the caller pushes one qword argument and the callee
+    // discards it; a wrong pop count unbalances RSP (checked per side).
+    mk("ret", "imm16", {0xB9,0,0,0,0, 0x68,0x34,0x12,0,0, 0xE8,10,0,0,0,
+                        0x89,0xCA, 0xEB,14, 0x90,0x90,0x90,0x90,0x90,0x90,
+                        0xB9,0x0D,0x60,0,0, 0xC2,8,0}, 0x202, 0);
+    // loop: eax counts the iterations, ecx ends at 0.
+    for (U32 n : {1u, 3u, 5u}) {
+        std::vector<U8> b = {0x31,0xC0, 0xB9,(U8)n,0,0,0, 0xFF,0xC0, 0xE2,0xFC};
+        mk("loop", "rel8", b, 0x202, 0);
+    }
+    // loope: a full run while ZF=1 (cmp edx,edx), an early exit when an
+    // inequality clears ZF (cmp eax,edx with edx=3).
+    mk("loope", "rel8", {0x31,0xC0, 0xB9,5,0,0,0, 0xFF,0xC0, 0x39,0xD2, 0xE1,0xFA}, 0x202, 0);
+    mk("loope", "rel8", {0x31,0xC0, 0xB9,5,0,0,0, 0xBA,3,0,0,0, 0xFF,0xC0, 0x39,0xD0, 0xE1,0xFA}, 0x202, 0);
+    // loopne: runs until ZF=1 (eax reaches edx=3) or the count ends with
+    // ZF still clear (cmp eax,100).
+    mk("loopne", "rel8", {0x31,0xC0, 0xB9,5,0,0,0, 0xBA,3,0,0,0, 0xFF,0xC0, 0x39,0xD0, 0xE0,0xFA}, 0x202, 0);
+    mk("loopne", "rel8", {0x31,0xC0, 0xB9,3,0,0,0, 0xFF,0xC0, 0x83,0xF8,0x64, 0xE0,0xF9}, 0x202, 0);
+    // jrcxz / jecxz: edx = taken ? 1 : 0.
+    for (U32 k : {0u, 7u}) {
+        std::vector<U8> b = {0xB9,(U8)k,0,0,0, 0xBA,1,0,0,0, 0xE3,5, 0xBA,0,0,0,0};
+        mk("jrcxz", "rel8", b, 0x202, 0);
+    }
+    // RCX = 2^32: jrcxz sees the whole register (not taken), while jecxz
+    // (67 prefix) sees only ECX (taken).
+    mk("jrcxz", "rel8", {0x48,0xB9,0,0,0,0,1,0,0,0, 0xBA,1,0,0,0, 0xE3,5, 0xBA,0,0,0,0}, 0x202, 0);
+    mk("jecxz", "rel8", {0x48,0xB9,0,0,0,0,1,0,0,0, 0xBA,1,0,0,0, 0x67,0xE3,5, 0xBA,0,0,0,0}, 0x202, 0);
+    // pushfq: flags from a cmp land in RAX under a defined-bits mask.
+    for (int i = 0; i < kNumPairs; i++) {
+        std::vector<U8> b;
+        eRR(b, 0x39, X64_RAX, X64_RBX); // cmp rax, rbx
+        b.push_back(0x9C);              // pushfq
+        b.push_back(0x58);              // pop rax
+        b.insert(b.end(), {0x48,0x25,0xD5,0x0E,0,0}); // and rax, 0xED5
+        TestCase tc; tc.set = "int"; tc.name = "pushfq"; tc.form = "pop-rax";
+        tc.code = b; initRegs(tc, kPairs[i][0], kPairs[i][1]);
+        tc.flagsIn = 0x202; tc.flagsMask = 0;
+        out.push_back(tc);
+    }
+    // popfq: a crafted flag word round-trips through pushfq into RAX.
+    // The trailing CLD matters: the 0xED7 word sets DF, and a snippet
+    // that returns with DF=1 corrupts the native runner child (its
+    // result-copying epilogue never clears DF, so its string copies
+    // run backwards). The measured value is already in RAX by then.
+    for (U64 crafted : {0x202ULL, 0x203ULL, 0xA02ULL, 0xED7ULL}) {
+        std::vector<U8> b = {0x48,0xB8};
+        for (int k = 0; k < 8; k++) b.push_back((U8)(crafted >> (8 * k)));
+        b.insert(b.end(), {0x50, 0x9D, 0x9C, 0x58, 0x48,0x25,0xD5,0x0E,0,0, 0xFC});
+        mk("popfq", "push-rax", b, 0x202, 0);
+    }
+    // lahf: AH receives the cmp flags; the compare runs on rcx/rdx so the
+    // patterned rax survives until lahf itself.
+    for (int i = 0; i < kNumPairs; i++) {
+        std::vector<U8> b = {0x39,0xD1, 0x9F}; // cmp rcx, rdx; lahf
+        TestCase tc; tc.set = "int"; tc.name = "lahf"; tc.form = "r64";
+        tc.code = b; initRegs(tc, 0x1122334455667788ULL, 0);
+        tc.r[X64_RCX] = kPairs[i][0]; tc.r[X64_RDX] = kPairs[i][1];
+        tc.flagsIn = 0x202; tc.flagsMask = F_ALL6;
+        out.push_back(tc);
+    }
+    // sahf: flags loaded from AH, observed via setcc into cl/dl/r8b/r9b.
+    for (U8 ah : {(U8)0x00, (U8)0xFF, (U8)0xD5, (U8)0x10}) {
+        std::vector<U8> b = {0x48,0xB8, 0,ah,0,0,0,0,0,0, // mov rax, ah<<8
+                             0x9E,                        // sahf
+                             0x0F,0x92,0xC1,              // setc cl
+                             0x0F,0x94,0xC2,              // sete dl
+                             0x41,0x0F,0x98,0xC0,         // sets r8b
+                             0x41,0x0F,0x9A,0xC1};        // setp r9b
+        TestCase tc; tc.set = "int"; tc.name = "sahf"; tc.form = "setcc-observe";
+        tc.code = b; initRegs(tc, 0, 0);
+        tc.flagsIn = 0x202;
+        tc.flagsMask = F_CF | F_PF | F_AF | F_ZF | F_SF;
+        out.push_back(tc);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String-operation widths and repeat modes beyond buildStringCases:
+// every width of MOVS/STOS/LODS/SCAS/CMPS under REP, single-step forms,
+// REPE/REPNE early exits, and DF=1 (backward) REP forms. RSI/RDI are
+// derived from RBX (the per-side scratch pointer) exactly like
+// buildStringCases; the pointer values are per-side and skipped, while
+// RCX, flags and scratch contents compare directly.
+// ---------------------------------------------------------------------------
+static void buildStringWideCases(std::vector<TestCase>& out) {
+    struct Width { const char* tag; int size; std::vector<U8> prefix; U8 op2; };
+    // op2 is the opcode for the w/d/q widths; the byte forms differ per op
+    // and are patched in below (op1).
+    const Width widths[4] = {
+        {"b", 1, {}, 0}, {"w", 2, {0x66}, 0}, {"d", 4, {}, 0}, {"q", 8, {0x48}, 0},
+    };
+    auto lea = [](std::vector<U8>& b, bool rdi, U32 disp) {
+        b.push_back(0x48); b.push_back(0x8D);
+        if (disp == 0) b.push_back(rdi ? 0x3B : 0x33);
+        else if (disp < 128) { b.push_back(rdi ? 0x7B : 0x73); b.push_back((U8)disp); }
+        else { b.push_back(rdi ? 0xBB : 0xB3);
+               for (int k = 0; k < 4; k++) b.push_back((U8)(disp >> (8 * k))); }
+    };
+    auto movRcx = [](std::vector<U8>& b, U32 n) {
+        b.push_back(0xB9);
+        for (int k = 0; k < 4; k++) b.push_back((U8)(n >> (8 * k)));
+    };
+    auto movRax = [](std::vector<U8>& b, U64 v) {
+        b.push_back(0x48); b.push_back(0xB8);
+        for (int k = 0; k < 8; k++) b.push_back((U8)(v >> (8 * k)));
+    };
+    auto base = [&](const char* name, const char* form) {
+        TestCase tc; tc.set = "int"; tc.name = name; tc.form = form;
+        initRegs(tc, 0, MEM_SCRATCH);
+        tc.flagsIn = 0x202; tc.flagsMask = 0; tc.skipRsiRdi = true;
+        tc.checkMem = true;
+        return tc;
+    };
+    auto op = [&](const Width& w, U8 opB, U8 opW) {
+        std::vector<U8> b = w.prefix;
+        b.push_back(w.size == 1 ? opB : opW);
+        return b;
+    };
+    char formBuf[32];
+    for (const Width& w : widths) {
+        const int n = 4; // elements per REP case
+        // movs, rep
+        {
+            TestCase tc = base("movs", (snprintf(formBuf, sizeof(formBuf), "rep-%s", w.tag), formBuf));
+            lea(tc.code, false, 0); lea(tc.code, true, 128); movRcx(tc.code, n);
+            tc.code.push_back(0xF3);
+            auto o = op(w, 0xA4, 0xA5); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            for (int i = 0; i < n * w.size; i++) tc.memInit[i] = (U8)(0x11 + i);
+            tc.memLen = 128 + n * w.size;
+            out.push_back(tc);
+        }
+        // stos, rep (rax = 0x5A.. lane pattern)
+        {
+            TestCase tc = base("stos", (snprintf(formBuf, sizeof(formBuf), "rep-%s", w.tag), formBuf));
+            movRax(tc.code, 0x5A5A5A5A5A5A5A5AULL);
+            lea(tc.code, true, 0); movRcx(tc.code, n);
+            tc.code.push_back(0xF3);
+            auto o = op(w, 0xAA, 0xAB); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            tc.memLen = n * w.size;
+            out.push_back(tc);
+        }
+        // lods, rep (3 elements; rax ends holding the last)
+        {
+            TestCase tc = base("lods", (snprintf(formBuf, sizeof(formBuf), "rep-%s", w.tag), formBuf));
+            lea(tc.code, false, 0); movRcx(tc.code, 3);
+            tc.code.push_back(0xF3);
+            auto o = op(w, 0xAC, 0xAD); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            const U64 elems[3] = {0x1122334455667788ULL, 0x99AABBCCDDEEFF00ULL,
+                                  0x0F1E2D3C4B5A6978ULL};
+            for (int i = 0; i < 3; i++) memcpy(tc.memInit + i * w.size, &elems[i], w.size);
+            tc.memLen = 3 * w.size;
+            out.push_back(tc);
+        }
+        // scas, repe: stop early on a mismatch, or run the count out.
+        for (int variant = 0; variant < 2; variant++) {
+            TestCase tc = base("scas", (snprintf(formBuf, sizeof(formBuf), "rep-%s", w.tag), formBuf));
+            const U64 V = 0x4242424242424242ULL, X = 0x9999999999999999ULL;
+            movRax(tc.code, V);
+            lea(tc.code, true, 0); movRcx(tc.code, n);
+            tc.code.push_back(0xF3);
+            auto o = op(w, 0xAE, 0xAF); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            const U64 elems[4] = {V, V, variant == 0 ? X : V, V};
+            for (int i = 0; i < 4; i++) memcpy(tc.memInit + i * w.size, &elems[i], w.size);
+            tc.flagsMask = F_ALL6; tc.memLen = n * w.size;
+            out.push_back(tc);
+        }
+        // cmps, repe: stop at the first differing element, or run out.
+        for (int variant = 0; variant < 2; variant++) {
+            TestCase tc = base("cmps", (snprintf(formBuf, sizeof(formBuf), "rep-%s", w.tag), formBuf));
+            lea(tc.code, false, 0); lea(tc.code, true, 128); movRcx(tc.code, n);
+            tc.code.push_back(0xF3);
+            auto o = op(w, 0xA6, 0xA7); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            for (int i = 0; i < 4; i++) {
+                U64 v = 0x3030303030303030ULL + (U64)i * 0x0101010101010101ULL;
+                memcpy(tc.memInit + i * w.size, &v, w.size);
+                U64 d = (variant == 0 && i == 2) ? v ^ 0xFFULL : v;
+                memcpy(tc.memInit + 128 + i * w.size, &d, w.size);
+            }
+            tc.flagsMask = F_ALL6; tc.memLen = 128 + n * w.size;
+            out.push_back(tc);
+        }
+    }
+    // Single-step forms (byte and qword widths).
+    for (const Width& w : {widths[0], widths[3]}) {
+        {
+            TestCase tc = base("movs", (snprintf(formBuf, sizeof(formBuf), "single-%s", w.tag), formBuf));
+            lea(tc.code, false, 0); lea(tc.code, true, 128);
+            auto o = op(w, 0xA4, 0xA5); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            for (int i = 0; i < w.size; i++) tc.memInit[i] = (U8)(0x21 + i);
+            tc.memLen = 128 + w.size;
+            out.push_back(tc);
+        }
+        {
+            TestCase tc = base("stos", (snprintf(formBuf, sizeof(formBuf), "single-%s", w.tag), formBuf));
+            movRax(tc.code, 0x5A5A5A5A5A5A5A5AULL);
+            lea(tc.code, true, 0);
+            auto o = op(w, 0xAA, 0xAB); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            tc.memLen = w.size;
+            out.push_back(tc);
+        }
+        {
+            TestCase tc = base("lods", (snprintf(formBuf, sizeof(formBuf), "single-%s", w.tag), formBuf));
+            lea(tc.code, false, 0);
+            auto o = op(w, 0xAC, 0xAD); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            const U64 v = 0x0F1E2D3C4B5A6978ULL;
+            memcpy(tc.memInit, &v, w.size);
+            tc.memLen = w.size;
+            out.push_back(tc);
+        }
+        {
+            TestCase tc = base("scas", (snprintf(formBuf, sizeof(formBuf), "single-%s", w.tag), formBuf));
+            const U64 V = 0x4242424242424242ULL;
+            movRax(tc.code, V);
+            lea(tc.code, true, 0);
+            auto o = op(w, 0xAE, 0xAF); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            memcpy(tc.memInit, &V, w.size);
+            tc.flagsMask = F_ALL6; tc.memLen = w.size;
+            out.push_back(tc);
+        }
+        {
+            TestCase tc = base("cmps", (snprintf(formBuf, sizeof(formBuf), "single-%s", w.tag), formBuf));
+            lea(tc.code, false, 0); lea(tc.code, true, 128);
+            auto o = op(w, 0xA6, 0xA7); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            const U64 a = 0x3030303030303030ULL, d = a ^ 0xFFULL;
+            memcpy(tc.memInit, &a, w.size); memcpy(tc.memInit + 128, &d, w.size);
+            tc.flagsMask = F_ALL6; tc.memLen = 128 + w.size;
+            out.push_back(tc);
+        }
+    }
+    // DF=1 (backward) REP forms: std ... cld around the string op.
+    {
+        TestCase tc = base("movs", "rep-b-df");
+        lea(tc.code, false, 7); lea(tc.code, true, 135); movRcx(tc.code, 8);
+        tc.code.insert(tc.code.end(), {0xFD, 0xF3, 0xA4, 0xFC});
+        for (int i = 0; i < 8; i++) tc.memInit[i] = (U8)(i + 1);
+        tc.memLen = 136;
+        out.push_back(tc);
+    }
+    {
+        TestCase tc = base("movs", "rep-q-df");
+        lea(tc.code, false, 24); lea(tc.code, true, 152); movRcx(tc.code, 4);
+        tc.code.insert(tc.code.end(), {0xFD, 0xF3, 0x48, 0xA5, 0xFC});
+        for (int i = 0; i < 32; i++) tc.memInit[i] = (U8)(0x31 + i);
+        tc.memLen = 160;
+        out.push_back(tc);
+    }
+    // REPNE SCAS (find the match scanning forward), byte and qword.
+    for (const Width& w : {widths[0], widths[3]}) {
+        for (int variant = 0; variant < 2; variant++) {
+            TestCase tc = base("scas", (snprintf(formBuf, sizeof(formBuf), "repne-%s", w.tag), formBuf));
+            const U64 V = 0x4242424242424242ULL, X = 0x9999999999999999ULL;
+            movRax(tc.code, V);
+            lea(tc.code, true, 0); movRcx(tc.code, 4);
+            tc.code.push_back(0xF2);
+            auto o = op(w, 0xAE, 0xAF); tc.code.insert(tc.code.end(), o.begin(), o.end());
+            const U64 elems[4] = {X, X, variant == 0 ? V : X, X};
+            for (int i = 0; i < 4; i++) memcpy(tc.memInit + i * w.size, &elems[i], w.size);
+            tc.flagsMask = F_ALL6; tc.memLen = 4 * w.size;
+            out.push_back(tc);
+        }
+    }
+    // REPNE CMPS (find an equal pair), byte width.
+    {
+        TestCase tc = base("cmps", "repne-b");
+        lea(tc.code, false, 0); lea(tc.code, true, 128); movRcx(tc.code, 4);
+        tc.code.push_back(0xF2); tc.code.push_back(0xA6);
+        for (int i = 0; i < 4; i++) {
+            tc.memInit[i] = (U8)(0x40 + i);
+            tc.memInit[128 + i] = (U8)(i == 2 ? 0x40 + i : 0x50 + i);
+        }
+        tc.flagsMask = F_ALL6; tc.memLen = 132;
+        out.push_back(tc);
+    }
+}
+
+
+// ---------------------------------------------------------------------------
 // Timing specs: one per (set,name,form)-ish. setup runs each iteration before
 // the instruction; baseline loop runs setup only. cost = (full-base)/N.
 // ---------------------------------------------------------------------------
@@ -2952,7 +3346,7 @@ static void buildCpuidCases(std::vector<TestCase>& out) {
     };
     add(0,"leaf 0 maximum basic leaf and vendor",7,0x756E6547,0x6C65746E,0x49656E69);
     add(1,"leaf 1 topology/features",(6u<<8)|(15u<<4)|3u,
-        (8u<<8)|(1u<<16),(1u<<0)|(1u<<9)|(1u<<13)|(1u<<19)|(1u<<20)|(1u<<23),
+        (8u<<8)|(2u<<16),(1u<<0)|(1u<<9)|(1u<<13)|(1u<<19)|(1u<<20)|(1u<<23),
         (1u<<0)|(1u<<4)|(1u<<5)|(1u<<8)|(1u<<15)|(1u<<19)|
         (1u<<23)|(1u<<24)|(1u<<25)|(1u<<26));
     add(7,"leaf 7 subleaf 0 has no extensions",0,0,0,0);
@@ -3067,12 +3461,14 @@ static void writeJson(const std::string& path,
 }
 
 int main(int argc, char** argv) {
+    const char* filter = nullptr;
     std::string outDir = "test-results/cpu-differential";
     g_runnerPath = "runner/runner.elf";
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc) outDir = argv[++i];
         if (!strcmp(argv[i], "--runner") && i + 1 < argc) g_runnerPath = argv[++i];
         if (!strcmp(argv[i], "--qemu") && i + 1 < argc) g_qemuPath = argv[++i];
+        if (!strcmp(argv[i], "--filter") && i + 1 < argc) filter = argv[++i];
     }
 
     std::vector<TestCase> cases;
@@ -3095,9 +3491,20 @@ int main(int argc, char** argv) {
     buildSse2ExtraCases(cases);
     buildCpuidCases(cases);
     buildFaultCases(cases);
-    // buildStringCases(cases); // DISABLED: harness cannot handle RSI/RDI per-side checks yet
+    buildStringCases(cases);
+    buildStringWideCases(cases);
+    buildControlFlowCases(cases);
     std::vector<TimingSpec> timings;
     buildTimings(timings);
+    if (filter) {
+        std::vector<TestCase> kept;
+        for (const TestCase& tc : cases) {
+            std::string key = tc.name + "/" + tc.form;
+            if (key.find(filter) != std::string::npos) kept.push_back(tc);
+        }
+        printf("filter '%s': %zu of %zu cases kept\n", filter, kept.size(), cases.size());
+        cases = kept;
+    }
 
     printf("cpu-diff: %zu cases, %zu timing specs\n", cases.size(), timings.size());
     printf("runner: %s via %s\n", g_runnerPath.c_str(), g_qemuPath.c_str());

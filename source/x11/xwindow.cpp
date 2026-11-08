@@ -91,7 +91,13 @@ XSetWindowAttributes* XSetWindowAttributes::get(KMemory* memory, U32 address, XS
 	}
 #ifndef UNALIGNED_MEMORY
 	if ((address & K_PAGE_MASK) + sizeof(XSetWindowAttributes) < K_PAGE_SIZE) {
-		return (XSetWindowAttributes*)memory->getRamPtr(address, sizeof(XSetWindowAttributes), true);
+		// getRamPtr can refuse (nullptr) when the page is unmapped or not
+		// writable; fall through to the checked read path in that case
+		// instead of returning the null to callers.
+		XSetWindowAttributes* result = (XSetWindowAttributes*)memory->getRamPtr(address, sizeof(XSetWindowAttributes), true);
+		if (result) {
+			return result;
+		}
 	}
 #endif
 	tmp->read(memory, address);

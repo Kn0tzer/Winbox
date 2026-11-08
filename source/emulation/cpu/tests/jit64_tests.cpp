@@ -42,7 +42,7 @@ static Jit64Op dec(U64 base, std::vector<U8> b) {
 static void testCoverageTable() {
     U32 n = 0;
     const Jit64CoveredOpcode* t = jit64CoveredOpcodes(&n);
-    CHECK(n == 40, "coverage table has %u entries, want 40", n);
+    CHECK(n == 42, "coverage table has %u entries, want 42", n);
     CHECK(t != nullptr, "coverage table null");
     // Spot-check rank order matches the profile.
     CHECK(t[0].op == 0x89, "rank1 op=0x%02x want 0x89", t[0].op);
@@ -75,6 +75,8 @@ static void testCoverageTable() {
     CHECK(t[35].op2 == 0x6E && t[35].kind == J64_SSE_MOVD, "sse rank5 want 0F6E/MOVD got %02x/%d", t[35].op2, (int)t[35].kind);
     CHECK(t[36].op == 0xFF && t[36].kind == J64_CALL_IND, "ff rank1 want FF/CALL_IND got %02x/%d", t[36].op, (int)t[36].kind);
     CHECK(t[37].op == 0xFF && t[37].kind == J64_JMP_IND, "ff rank2 want FF/JMP_IND got %02x/%d", t[37].op, (int)t[37].kind);
+    CHECK(t[40].op == 0x0F && t[40].op2 == 0x10 && t[40].kind == J64_SSE_MOVSCALAR, "scalar rank want 0F10/MOVSCALAR got %02x/%02x/%d", t[40].op, t[40].op2, (int)t[40].kind);
+    CHECK(t[41].op == 0x0F && t[41].op2 == 0x54 && t[41].kind == J64_SSE_LOGIC128, "logic rank want 0F54/LOGIC128 got %02x/%02x/%d", t[41].op, t[41].op2, (int)t[41].kind);
 }
 
 static void testSseDecodeClassify() {
@@ -155,17 +157,12 @@ static void testSseDecodeClassify() {
     // false, so the stream truncates and the interpreter runs them):
     // - the legacy MMX forms (0F 6E/6F/7E/7F with no 66 and no F3 use the
     //   x87 register stack, not XMM);
-    // - F3 0F 7E (MOVQ xmm, m64 — a different interpreter block);
-    // - F2/F3 0F 10/11 (MOVSD/MOVSS scalar forms);
     // - 66+F3 stacked prefixes on 0F 6F.
     Jit64Op x;
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x0F, 0x6E, 0xC0}, 3, x), "MMX movd must not decode");
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x0F, 0x6F, 0xC0}, 3, x), "MMX movq must not decode");
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x0F, 0x7F, 0xC0}, 3, x), "MMX movq-store must not decode");
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x0F, 0xEF, 0xC0}, 3, x), "MMX pxor must not decode");
-    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF3, 0x0F, 0x7E, 0xC0}, 4, x), "F3 0F7E MOVQ must not decode");
-    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF2, 0x0F, 0x10, 0xC0}, 4, x), "MOVSD must not decode");
-    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF3, 0x0F, 0x10, 0xC0}, 4, x), "MOVSS must not decode");
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x66, 0xF3, 0x0F, 0x6F, 0xC0}, 5, x), "66+F3 movdqa must not decode");
     CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF0, 0x66, 0x0F, 0xEF, 0xC0}, 5, x), "LOCK pxor must not decode");
     // 64 0F 10 00 (FS-segment EA): decode succeeds, classify declines —
@@ -192,6 +189,104 @@ static void testSseDecodeClassify() {
         CHECK(!jit64EmitWasm(block2, m), "forged MOVD size=2 must not emit");
         Jit64Block block3; block3.ops.assign(&a, &a + 1); // movdqa xmm0, xmm1
         CHECK(jit64EmitWasm(block3, m) && !m.empty(), "movdqa must emit");
+    }
+}
+
+// Scalar SSE moves (MOVSD/MOVSS/MOVQ load) and packed FP logic
+// (AND/ANDN/OR/XOR, PS and PD forms) — the FD-26 follow-up kinds
+// J64_SSE_MOVSCALAR / J64_SSE_LOGIC128.
+static void testSseScalarLogicDecodeClassify() {
+    // ---- MOVSD ----
+    Jit64Op a = dec(0x400000, {0xF2, 0x0F, 0x10, 0xC1});
+    CHECK(a.kind == J64_SSE_MOVSCALAR && a.sub == 0 && a.size == 8 &&
+          a.regField == 0 && a.rmIndex == 1 && !a.isMem && a.plan == JIT64_FAST,
+          "movsd xmm0, xmm1");
+    Jit64Op b = dec(0x400000, {0xF2, 0x0F, 0x10, 0x03});
+    CHECK(b.kind == J64_SSE_MOVSCALAR && b.sub == 0 && b.isMem && b.plan == JIT64_FAST,
+          "movsd xmm0, [rbx]");
+    Jit64Op c = dec(0x400000, {0xF2, 0x0F, 0x11, 0x03});
+    CHECK(c.kind == J64_SSE_MOVSCALAR && c.sub == 1 && c.isMem && c.plan == JIT64_FAST,
+          "movsd [rbx], xmm0");
+    // REX.W does not change the scalar form; REX.R extends the dest.
+    Jit64Op d = dec(0x400000, {0xF2, 0x48, 0x0F, 0x10, 0xC8});
+    CHECK(d.kind == J64_SSE_MOVSCALAR && d.sub == 0 && d.size == 8, "movsd with REX.W");
+    Jit64Op e = dec(0x400000, {0xF2, 0x44, 0x0F, 0x10, 0xC1});
+    CHECK(e.regField == 8 && e.rmIndex == 1, "movsd xmm8, xmm1 rf=%d", e.regField);
+    // ---- MOVSS ----
+    Jit64Op f = dec(0x400000, {0xF3, 0x0F, 0x10, 0xC8});
+    CHECK(f.kind == J64_SSE_MOVSCALAR && f.sub == 2 && f.size == 4 && f.plan == JIT64_FAST,
+          "movss form");
+    Jit64Op g = dec(0x400000, {0xF3, 0x0F, 0x11, 0x03});
+    CHECK(g.kind == J64_SSE_MOVSCALAR && g.sub == 3 && g.isMem && g.plan == JIT64_FAST,
+          "movss [rbx], xmm0");
+    // ---- MOVQ load (F3 0F 7E) shares the kind under its own sub. ----
+    Jit64Op h = dec(0x400000, {0xF3, 0x0F, 0x7E, 0xC8});
+    CHECK(h.kind == J64_SSE_MOVSCALAR && h.sub == 4 && h.size == 8 && h.plan == JIT64_FAST,
+          "movq load form");
+    Jit64Op i = dec(0x400000, {0xF3, 0x0F, 0x7E, 0x03});
+    CHECK(i.kind == J64_SSE_MOVSCALAR && i.sub == 4 && i.isMem && i.plan == JIT64_FAST,
+          "movq xmm0, [rbx]");
+    // 66+F3 stacked on 0F 7E stays undecoded (the interpreter would
+    // serve it from its MOVD block; the stream falls back to it).
+    Jit64Op x;
+    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0x66, 0xF3, 0x0F, 0x7E, 0xC0}, 5, x),
+          "66+F3 0F7E must not decode");
+    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF0, 0xF2, 0x0F, 0x10, 0xC0}, 5, x),
+          "LOCK movsd must not decode");
+    // ---- packed logic ----
+    Jit64Op j = dec(0x400000, {0x0F, 0x54, 0xC8});
+    CHECK(j.kind == J64_SSE_LOGIC128 && j.sub == 0x54 && j.size == 16 && j.plan == JIT64_FAST,
+          "andps form");
+    Jit64Op k = dec(0x400000, {0x66, 0x0F, 0x55, 0xD3});
+    CHECK(k.kind == J64_SSE_LOGIC128 && k.sub == 0x55 && k.regField == 2 && k.rmIndex == 3 &&
+          k.plan == JIT64_FAST, "andnpd xmm2, xmm3");
+    Jit64Op l = dec(0x400000, {0x0F, 0x56, 0x03});
+    CHECK(l.kind == J64_SSE_LOGIC128 && l.sub == 0x56 && l.isMem && l.plan == JIT64_FAST,
+          "orps xmm0, [rbx]");
+    Jit64Op m2 = dec(0x400000, {0x66, 0x0F, 0x57, 0xC0});
+    CHECK(m2.kind == J64_SSE_LOGIC128 && m2.sub == 0x57 && m2.plan == JIT64_FAST,
+          "xorpd xmm0, xmm0");
+    // REP-prefixed and LOCK-prefixed logic forms stay undecoded.
+    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF3, 0x0F, 0x54, 0xC0}, 4, x),
+          "F3 andps must not decode");
+    CHECK(!jit64DecodeOne(0x400000, (const U8[]){0xF0, 0x0F, 0x54, 0xC0}, 4, x),
+          "LOCK andps must not decode");
+    // Store classification: the scalar memory stores may store; loads,
+    // register forms and logic memory reads never do.
+    { Jit64Op m; CHECK(jit64DecodeOne(0x400000, (const U8[]){0xF2, 0x0F, 0x11, 0x03}, 4, m), "decode movsd store");
+      CHECK(jit64BlockMayStore(&m, 1), "movsd mem store mayStore false"); }
+    { Jit64Op m; CHECK(jit64DecodeOne(0x400000, (const U8[]){0xF3, 0x0F, 0x11, 0x03}, 4, m), "decode movss store");
+      CHECK(jit64BlockMayStore(&m, 1), "movss mem store mayStore false"); }
+    { Jit64Op m; CHECK(jit64DecodeOne(0x400000, (const U8[]){0xF2, 0x0F, 0x10, 0x03}, 4, m), "decode movsd load");
+      CHECK(!jit64BlockMayStore(&m, 1), "movsd mem load mayStore true"); }
+    { Jit64Op m; CHECK(jit64DecodeOne(0x400000, (const U8[]){0x0F, 0x54, 0x03}, 3, m), "decode andps mem");
+      CHECK(!jit64BlockMayStore(&m, 1), "andps mem mayStore true"); }
+    { Jit64Op m; CHECK(jit64DecodeOne(0x400000, (const U8[]){0xF2, 0x0F, 0x11, 0xC8}, 4, m), "decode movsd reg store");
+      CHECK(!jit64BlockMayStore(&m, 1), "movsd reg store mayStore true"); }
+    // Emitter validation: hand-forged scalar/logic ops outside the
+    // family must be refused; valid decoded ones must emit.
+    {
+        std::vector<U8> m;
+        auto refuses = [&m](Jit64Op f) {
+            Jit64Block blk; blk.ops.assign(&f, &f + 1);
+            return !jit64EmitWasm(blk, m);
+        };
+        Jit64Op f{};
+        f.kind = J64_SSE_MOVSCALAR; f.sub = 5; f.size = 8; f.rep = 0xF2;
+        CHECK(refuses(f), "forged movscalar sub 5 accepted");
+        f.sub = 0; f.size = 4;
+        CHECK(refuses(f), "forged movsd size 4 accepted");
+        f.sub = 2; // MOVSS sub under the wrong REP prefix (size already 4)
+        CHECK(refuses(f), "forged movss with F2 accepted");
+        Jit64Op g{};
+        g.kind = J64_SSE_LOGIC128; g.sub = 0x58; g.size = 16;
+        CHECK(refuses(g), "forged logic sub 0x58 accepted");
+        g.sub = 0x54; g.size = 8;
+        CHECK(refuses(g), "forged logic size 8 accepted");
+        Jit64Block blkA; blkA.ops.assign(&a, &a + 1); // movsd xmm0, xmm1
+        CHECK(jit64EmitWasm(blkA, m) && !m.empty(), "movsd must emit");
+        Jit64Block blkJ; blkJ.ops.assign(&j, &j + 1); // andps form
+        CHECK(jit64EmitWasm(blkJ, m) && !m.empty(), "andps must emit");
     }
 }
 
@@ -1774,6 +1869,7 @@ int main(int argc, char** argv) {
     printf("jit64 phase-1 unit tests\\n");
     testCoverageTable();
     testSseDecodeClassify();
+    testSseScalarLogicDecodeClassify();
     testRejectAttribution();
     testMovForms();
     testMov8Forms();

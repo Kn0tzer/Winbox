@@ -18,9 +18,6 @@
 
 #if !defined (__EMSCRIPTEN__) && (!defined (__TEST) || defined (__MACH__))
 
-#ifdef U64
-#undef U64
-#endif
 
 #include "boxedwine.h"
 #include <iostream>

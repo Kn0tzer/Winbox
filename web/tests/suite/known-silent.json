@@ -18,8 +18,8 @@
   },
   "source/kernel/syscall64.cpp": {
    "emptyCatch": 0,
-   "unloggedDefault": 7,
-   "unloggedErrno": 134
+   "unloggedDefault": 10,
+   "unloggedErrno": 138
   },
   "source/opengl/gl64bridge.cpp": {
    "emptyCatch": 1,
@@ -52,7 +52,7 @@
    "unloggedErrno": 0
   },
   "web/gl-webgpu.mjs": {
-   "emptyCatch": 4,
+   "emptyCatch": 5,
    "unloggedDefault": 0,
    "unloggedErrno": 0
   },

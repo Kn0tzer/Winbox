@@ -3952,7 +3952,13 @@ test('fuzz BT/BTS/BTR/BTC vs reference (600 cases)', async () => {
 // (MOVAPS/MOVDQA do not fault on misalignment there), PXOR is a plain
 // 128-bit XOR, a MOVD load zero-extends a 32-bit source and always zeroes
 // the high qword, and a 32-bit MOVD store to a register zero-extends the
-// destination. None of them touches RFLAGS. The model below applies the
+// destination. The scalar moves (MOVSD/MOVSS/MOVQ load) and the
+// packed logic ops (AND/ANDN/OR/XOR, PS and PD) follow the same blocks:
+// register-form scalar moves preserve the destination's upper bits
+// except the MOVQ load (high qword always zeroed), memory scalar loads
+// zero everything above the scalar, and the logic ops are plain
+// per-qword bit ops with ANDN as ~dst & src. None of them touches
+// RFLAGS. The model below applies the
 // same rules; the differential fuzz drives random op streams through
 // both the wasm module and the model.
 // ---------------------------------------------------------------------------
@@ -4223,6 +4229,215 @@ test('SSE fault: earlier ops commit, the faulting op does not', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Scalar SSE moves + packed FP logic (FD-26 follow-up kinds).
+test('SSE scalar moves: movsd register form preserves the high qword, memory load zeroes it', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0xF2, 0x0F, 0x10, 0xC1, // movsd xmm0, xmm1
+    0xF2, 0x0F, 0x10, 0x13, // movsd xmm2, [rbx]
+  ], { regs, rflags: 0x8D5,
+       memInit: memBytes(SBX, [...little(0x8877665544332211n, 8)]),
+       xmm: xmmInit({ 0: [0x0F0F0F0F0F0F0F0Fn, 0xF0F0F0F0F0F0F0F0n],
+                      1: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }) });
+  assert.deepEqual(xmmReg(out, 0), [0x0123456789ABCDEFn, 0xF0F0F0F0F0F0F0F0n], 'register movsd keeps dest high qword');
+  assert.deepEqual(xmmReg(out, 2), [0x8877665544332211n, 0n], 'memory movsd zeroes the high qword');
+  assert.deepEqual(xmmReg(out, 1), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n], 'source untouched');
+  assert.equal(out.rflags, 0x8D5, 'scalar moves must not touch RFLAGS');
+  expectEmitted(out, 2);
+});
+
+test('SSE scalar moves: movss moves only the low dword except on memory loads', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0xF3, 0x0F, 0x10, 0xC1, // movss xmm0, xmm1
+    0xF3, 0x0F, 0x10, 0x13, // movss xmm2, [rbx]
+    0xF3, 0x0F, 0x11, 0xD0, // movss xmm0, xmm2 (register store direction)
+  ], { regs, memInit: memBytes(SBX, [0x78, 0x56, 0x34, 0x12]),
+       xmm: xmmInit({ 0: [0xAAAAAAAABBBBBBBBn, 0xCCCCCCCCCCCCCCCCn],
+                      1: [0xDDDDDDDD22222222n, 0xEEEEEEEEEEEEEEEEn] }) });
+  assert.deepEqual(xmmReg(out, 2), [0x12345678n, 0n], 'memory movss load zero-extends');
+  assert.deepEqual(xmmReg(out, 0), [0xAAAAAAAA12345678n, 0xCCCCCCCCCCCCCCCCn],
+    'register movss forms replace only the low dword');
+  assert.deepEqual(xmmReg(out, 1), [0xDDDDDDDD22222222n, 0xEEEEEEEEEEEEEEEEn], 'source untouched');
+  expectEmitted(out, 3);
+});
+
+test('SSE scalar stores to memory write only the scalar bytes', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0xF2, 0x0F, 0x11, 0x03,       // movsd [rbx], xmm0
+    0xF3, 0x0F, 0x11, 0x4B, 0x10, // movss [rbx+16], xmm1
+    0xF2, 0x0F, 0x11, 0xC2,       // movsd xmm2, xmm0 (register store direction)
+  ], { regs, memInit: memBytes(SBX, new Array(32).fill(0xEE)),
+       xmm: xmmInit({ 0: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n],
+                      1: [0x1111111122222222n, 0x3333333333333333n],
+                      2: [0x4444444444444444n, 0x5555555555555555n] }) });
+  assert.equal(out.guestMem.read(SBX, 8), 0x0123456789ABCDEFn);
+  assert.equal(out.guestMem.read(SBX + 8n, 8), 0xEEEEEEEEEEEEEEEEn, 'bytes past the qword untouched');
+  assert.equal(out.guestMem.read(SBX + 16n, 4), 0x22222222n);
+  assert.equal(out.guestMem.read(SBX + 20n, 4), 0xEEEEEEEEn, 'bytes past the dword untouched');
+  assert.deepEqual(xmmReg(out, 2), [0x0123456789ABCDEFn, 0x5555555555555555n],
+    'register movsd store preserves the dest high qword');
+  expectEmitted(out, 3);
+});
+
+test('SSE movq load (F3 0F 7E) zeroes the high qword even in register form', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const out = await runSse([
+    0xF3, 0x0F, 0x7E, 0xC1, // movq xmm0, xmm1
+    0xF3, 0x0F, 0x7E, 0x13, // movq xmm2, [rbx]
+  ], { regs, memInit: memBytes(SBX, [...little(0xCAFEBABEDEADBEEFn, 8)]),
+       xmm: xmmInit({ 0: [0x1111111111111111n, 0x2222222222222222n],
+                      1: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n],
+                      2: [0x3333333333333333n, 0x4444444444444444n] }) });
+  assert.deepEqual(xmmReg(out, 0), [0x0123456789ABCDEFn, 0n], 'register movq load zeroes the high qword');
+  assert.deepEqual(xmmReg(out, 2), [0xCAFEBABEDEADBEEFn, 0n]);
+  assert.deepEqual(xmmReg(out, 1), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n], 'source untouched');
+  expectEmitted(out, 2);
+});
+
+test('SSE logic ops: and/andn/or/xor in PS and PD forms, register + memory', async () => {
+  const regs = zeroRegs(); regs[3] = SBX;
+  const A = 0xA5A5A5A5A5A5A5A5n, B = 0x5A5A5A5A5A5A5A5An;
+  const C = 0x0123456789ABCDEFn, D = 0xFEDCBA9876543210n;
+  const out = await runSse([
+    0x0F, 0x54, 0xC1,       // andps xmm0, xmm1
+    0x66, 0x0F, 0x55, 0xD3, // andnpd xmm2, xmm3
+    0x0F, 0x56, 0x23,       // orps xmm4, [rbx]
+    0x66, 0x0F, 0x57, 0xEB, // xorpd xmm5, xmm3
+    0x0F, 0x55, 0xF6,       // andnps xmm6, xmm6 -> ~x & x = 0
+  ], { regs, rflags: 0x8D5,
+       memInit: memBytes(SBX, [...little(B, 8), ...little(A, 8)]),
+       xmm: xmmInit({ 0: [A, C], 1: [B, D], 2: [A, B], 3: [B, A], 4: [C, D], 5: [A, A], 6: [C, D] }) });
+  assert.deepEqual(xmmReg(out, 0), [A & B, C & D]);
+  assert.deepEqual(xmmReg(out, 2), [(~A) & B, (~B) & A], 'andn is ~dst & src (operand order matters)');
+  assert.deepEqual(xmmReg(out, 4), [C | B, D | A]);
+  assert.deepEqual(xmmReg(out, 5), [A ^ B, 0n]);
+  assert.deepEqual(xmmReg(out, 6), [0n, 0n], 'andn x, x is zero');
+  assert.deepEqual(xmmReg(out, 3), [B, A], 'source untouched');
+  assert.equal(out.rflags, 0x8D5, 'SSE logic ops must not touch RFLAGS');
+  expectEmitted(out, 5);
+});
+
+// Differential fuzz for the scalar/logic kinds: random op streams
+// through the emitted module and a JS model transcribed from the
+// interpreter's scalar + logic blocks in cpu64.cpp.
+test('SSE scalar/logic differential fuzz vs interpreter model', async () => {
+  const next = mulberry32(0x5CA1A26);
+  const ru64 = () => (BigInt(Math.floor(next() * 0x100000000)) << 32n) | BigInt(Math.floor(next() * 0x100000000));
+  const pick = n => Math.floor(next() * n);
+  const HI32 = 0xFFFFFFFF00000000n, LO32 = 0xFFFFFFFFn;
+  function enc({ pre, op2, reg, rmReg = null, disp = null, rexW = false }) {
+    const bytes = [...pre];
+    const rexBits = (rexW ? 8 : 0) | (reg >= 8 ? 4 : 0) | (rmReg !== null && rmReg >= 8 ? 1 : 0);
+    if (rexBits) bytes.push(0x40 | rexBits);
+    bytes.push(0x0F, op2);
+    if (disp === null) bytes.push(0xC0 | ((reg & 7) << 3) | (rmReg & 7));
+    else if (disp === 0) bytes.push(((reg & 7) << 3) | 3);
+    else bytes.push(0x40 | ((reg & 7) << 3) | 3, disp);
+    return bytes;
+  }
+  for (let iter = 0; iter < 500; iter++) {
+    const regs0 = Array.from({ length: 16 }, () => ru64());
+    regs0[3] = SBX;
+    const xmm0 = Array.from({ length: 32 }, () => ru64());
+    const mem = makeGuestMem();
+    for (let i = 0; i < 96; i++) mem.bytes.set(SBX + BigInt(i), pick(256));
+    const memInit = new Map(mem.bytes);
+    const regs = [...regs0], xmm = [...xmm0];
+    const rflags = pick(0x10000);
+    const code = [];
+    const nOps = 1 + pick(4);
+    for (let k = 0; k < nOps; k++) {
+      const fam = pick(6);
+      const useMem = next() < 0.45;
+      const disp = useMem ? [0, 3, 8, 16, 24, 40][pick(6)] : null;
+      const addr = () => (regs[3] + BigInt(disp ?? 0)) & mask64;
+      const xr = pick(16), other = pick(16);
+      const rexW = next() < 0.3; // ignored by these forms in both engines
+      if (fam <= 1) { // packed logic: fam 0 = PS form, fam 1 = PD form
+        const op2 = [0x54, 0x55, 0x56, 0x57][pick(4)];
+        code.push(...enc({ pre: fam ? [0x66] : [], op2, reg: xr, rmReg: useMem ? null : other, disp, rexW }));
+        const s = useMem ? [mem.read(addr(), 8), mem.read((addr() + 8n) & mask64, 8)]
+                         : [xmm[2 * other], xmm[2 * other + 1]];
+        for (let h = 0; h < 2; h++) {
+          const d = xmm[2 * xr + h];
+          xmm[2 * xr + h] = op2 === 0x54 ? d & s[h]
+            : op2 === 0x55 ? (~d) & s[h]
+            : op2 === 0x56 ? d | s[h] : d ^ s[h];
+        }
+      } else if (fam === 2 || fam === 3) { // MOVSD load (2) / store (3)
+        code.push(...enc({ pre: [0xF2], op2: fam === 2 ? 0x10 : 0x11, reg: xr, rmReg: useMem ? null : other, disp, rexW }));
+        if (fam === 2) {
+          if (useMem) { xmm[2 * xr] = mem.read(addr(), 8); xmm[2 * xr + 1] = 0n; }
+          else xmm[2 * xr] = xmm[2 * other];
+        } else {
+          if (useMem) mem.write(addr(), 8, xmm[2 * xr]);
+          else xmm[2 * other] = xmm[2 * xr];
+        }
+      } else if (fam === 4) { // MOVSS load/store
+        const store = next() < 0.5;
+        code.push(...enc({ pre: [0xF3], op2: store ? 0x11 : 0x10, reg: xr, rmReg: useMem ? null : other, disp, rexW }));
+        if (!store) {
+          if (useMem) { xmm[2 * xr] = mem.read(addr(), 4); xmm[2 * xr + 1] = 0n; }
+          else xmm[2 * xr] = (xmm[2 * xr] & HI32) | (xmm[2 * other] & LO32);
+        } else {
+          if (useMem) mem.write(addr(), 4, xmm[2 * xr]);
+          else xmm[2 * other] = (xmm[2 * other] & HI32) | (xmm[2 * xr] & LO32);
+        }
+      } else { // MOVQ load (F3 0F 7E)
+        code.push(...enc({ pre: [0xF3], op2: 0x7E, reg: xr, rmReg: useMem ? null : other, disp, rexW }));
+        xmm[2 * xr] = useMem ? mem.read(addr(), 8) : xmm[2 * other];
+        xmm[2 * xr + 1] = 0n;
+      }
+    }
+    const out = await runSse(code, { regs: regs0, rflags, memInit, xmm: xmm0 });
+    assert.deepEqual(out.regs, regs, `iter ${iter} GPRs`);
+    assert.deepEqual(out.xmm, xmm, `iter ${iter} XMM`);
+    assert.equal(out.rflags, rflags >>> 0, `iter ${iter} RFLAGS`);
+    assert.equal(out.execCount, nOps, `iter ${iter} execCount`);
+    assert.equal(out.ripOut, (SSE_RIP + BigInt(code.length)) & mask64, `iter ${iter} RIP`);
+    const refKeys = [...mem.bytes.keys()].map(String).sort();
+    const outKeys = [...out.guestMem.bytes.keys()].map(String).sort();
+    assert.deepEqual(outKeys, refKeys, `iter ${iter} written addresses`);
+    for (const key of refKeys)
+      assert.equal(out.guestMem.bytes.get(BigInt(key)), mem.bytes.get(BigInt(key)), `iter ${iter} mem[${key}]`);
+  }
+}, 240000);
+
+test('SSE fault: movsd memory load denied leaves the xmm untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0xF2, 0x0F, 0x10, 0x0B], { // movsd xmm1, [rbx]
+    regs, xmm: xmmInit({ 1: [0x1111111111111111n, 0x2222222222222222n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 1), [0x1111111111111111n, 0x2222222222222222n]);
+});
+
+test('SSE fault: andps memory source denied leaves the destination untouched', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0x0F, 0x54, 0x1B], { // andps xmm3, [rbx]
+    regs, xmm: xmmInit({ 3: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+    denied: () => true,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.deepEqual(xmmReg(r, 3), [0x0123456789ABCDEFn, 0xFEDCBA9876543210n]);
+});
+
+test('SSE fault: movss store denied writes nothing', async () => {
+  const regs = zeroRegs(); regs[3] = 0x3000n;
+  const r = await runFault([0xF3, 0x0F, 0x11, 0x03], { // movss [rbx], xmm0
+    regs, xmm: xmmInit({ 0: [0x0123456789ABCDEFn, 0xFEDCBA9876543210n] }),
+    denied: (a, w) => w,
+  });
+  assert.equal(r.fault, 1);
+  assert.equal(r.execCount, 0);
+  assert.equal(r.guestMem.bytes.has(0x3000n), false, 'denied store published a byte');
+});
+
 // Control flow, bounded execution and inline invalidation.
 //
 // The JIT decoder ends a block AFTER its terminator (Jcc/JMP/CALL/RET), so the

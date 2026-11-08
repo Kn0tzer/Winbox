@@ -64,6 +64,16 @@ U32 KObject::readv(KThread* thread, U32 iov, S32 iovcnt) {
         if (toRead == 0) {
             continue;
         }
+        // FD-193: cap the combined transfer at the host's
+        // MAX_RW_COUNT (0x7ffff000); without it the U32 total
+        // below wrapped once the claimed segments passed
+        // 4 GiB.
+        if (toRead > 0x7ffff000u - len) {
+            toRead = 0x7ffff000u - len;
+        }
+        if (toRead == 0) {
+            break;
+        }
         S32 result = (S32)this->read(thread, buf, toRead);
         if (result < 0) {
             if (len > 0) {

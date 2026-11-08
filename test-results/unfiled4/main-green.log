@@ -1,0 +1,4 @@
+Running 1 Test tests with 1 threads starting at 663
+BW64-FAIL dir-list path=//data.bin native=/tmp/bw64unfiled32erEajp/data.bin outcome=directory presented as empty count=1
+Test vectored-read lengths, positioned reads on pipes, 32-bit linkat (FD-193/FD-194/FD-195) ... OK
+0 tests FAILED in 0s

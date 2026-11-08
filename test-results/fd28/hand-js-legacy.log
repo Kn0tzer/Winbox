@@ -1,0 +1,715 @@
+TAP version 13
+# Subtest: shared runtime uses an absolute, content-addressed range archive
+ok 1 - shared runtime uses an absolute, content-addressed range archive
+  ---
+  duration_ms: 1.413692
+  type: 'test'
+  ...
+# Subtest: dependency loading checks availability, exact size and range support without downloading the archive
+ok 2 - dependency loading checks availability, exact size and range support without downloading the archive
+  ---
+  duration_ms: 41.001729
+  type: 'test'
+  ...
+# Subtest: rejects incomplete or redirected dependency manifests before guest startup
+ok 3 - rejects incomplete or redirected dependency manifests before guest startup
+  ---
+  duration_ms: 0.755087
+  type: 'test'
+  ...
+# Subtest: direct folders produce valid ZIP ranges including boundaries and CRCs
+ok 4 - direct folders produce valid ZIP ranges including boundaries and CRCs
+  ---
+  duration_ms: 371.377827
+  type: 'test'
+  ...
+# Subtest: cached CRCs avoid scanning unchanged source data; payload is excluded from saved records
+ok 5 - cached CRCs avoid scanning unchanged source data; payload is excluded from saved records
+  ---
+  duration_ms: 7.130104
+  type: 'test'
+  ...
+# Subtest: directory permission is read-only and revocation is actionable
+ok 6 - directory permission is read-only and revocation is actionable
+  ---
+  duration_ms: 0.840248
+  type: 'test'
+  ...
+# Subtest: directory scans reject Windows collisions and preserve only unchanged CRC metadata
+ok 7 - directory scans reject Windows collisions and preserve only unchanged CRC metadata
+  ---
+  duration_ms: 10.153932
+  type: 'test'
+  ...
+# Subtest: split combined samplers retain their original Vulkan descriptor binding after Naga translation
+ok 8 - split combined samplers retain their original Vulkan descriptor binding after Naga translation
+  ---
+  duration_ms: 103.285371
+  type: 'test'
+  ...
+# Subtest: real DXVK SPIR-V 1.6 combined samplers preserve entrypoint interfaces
+ok 9 - real DXVK SPIR-V 1.6 combined samplers preserve entrypoint interfaces
+  ---
+  duration_ms: 19.257733
+  type: 'test'
+  ...
+# Subtest: real triangle shaders drop point builtins for every topology
+ok 10 - real triangle shaders drop point builtins for every topology
+  ---
+  duration_ms: 676.741979
+  type: 'test'
+  ...
+# Subtest: demote with continuing shader computation keeps executing and translates
+ok 11 - demote with continuing shader computation keeps executing and translates
+  ---
+  duration_ms: 80.429245
+  type: 'test'
+  ...
+# Subtest: shader cache accepts and separates point, non-point and unknown contexts
+ok 12 - shader cache accepts and separates point, non-point and unknown contexts
+  ---
+  duration_ms: 125.903174
+  type: 'test'
+  ...
+# Subtest: real naga immediate declarations become one shared push UBO per stage
+ok 13 - real naga immediate declarations become one shared push UBO per stage
+  ---
+  duration_ms: 111.927049
+  type: 'test'
+  ...
+# Subtest: enhancement renders at display resolution and respects GPU texture limits
+ok 14 - enhancement renders at display resolution and respects GPU texture limits
+  ---
+  duration_ms: 1.667335
+  type: 'test'
+  ...
+# Subtest: reject traversal, absolute paths, Windows aliases and control characters
+ok 15 - reject traversal, absolute paths, Windows aliases and control characters
+  ---
+  duration_ms: 5.135127
+  type: 'test'
+  ...
+# Subtest: enforce expansion, count and case insensitive collision budgets
+ok 16 - enforce expansion, count and case insensitive collision budgets
+  ---
+  duration_ms: 2.767425
+  type: 'test'
+  ...
+# Subtest: strip exactly one common enclosing folder without flattening siblings
+ok 17 - strip exactly one common enclosing folder without flattening siblings
+  ---
+  duration_ms: 0.999969
+  type: 'test'
+  ...
+# Subtest: ZIP export/import preserves UTF-8 names and contents
+ok 18 - ZIP export/import preserves UTF-8 names and contents
+  ---
+  duration_ms: 101.909319
+  type: 'test'
+  ...
+# Subtest: archive traversal rejected before extraction
+ok 19 - archive traversal rejected before extraction
+  ---
+  duration_ms: 21.641915
+  type: 'test'
+  ...
+# Subtest: PE detection validates header and distinguishes x64/x86
+ok 20 - PE detection validates header and distinguishes x64/x86
+  ---
+  duration_ms: 2.851786
+  type: 'test'
+  ...
+# Subtest: column-major matrix multiplication preserves identity
+ok 21 - column-major matrix multiplication preserves identity
+  ---
+  duration_ms: 4.44816
+  type: 'test'
+  ...
+# Subtest: guest quads triangulate and depth converts from GL to WebGPU
+ok 22 - guest quads triangulate and depth converts from GL to WebGPU
+  ---
+  duration_ms: 2.390181
+  type: 'test'
+  ...
+# Subtest: matrix and current color persist across frame boundaries
+ok 23 - matrix and current color persist across frame boundaries
+  ---
+  duration_ms: 0.897528
+  type: 'test'
+  ...
+# Subtest: unsupported shader/texture/light state fails instead of silently rendering wrong
+ok 24 - unsupported shader/texture/light state fails instead of silently rendering wrong
+  ---
+  duration_ms: 1.197371
+  type: 'test'
+  ...
+# Subtest: auto-selects the folder main executable over helpers and reads its PE header
+ok 25 - auto-selects the folder main executable over helpers and reads its PE header
+  ---
+  duration_ms: 5.595451
+  type: 'test'
+  ...
+# Subtest: Chromium selects its real main binary and applies the tested launch flags
+ok 26 - Chromium selects its real main binary and applies the tested launch flags
+  ---
+  duration_ms: 1.450013
+  type: 'test'
+  ...
+# Subtest: Source and FNA profiles use the detected program rather than installer tools
+ok 27 - Source and FNA profiles use the detected program rather than installer tools
+  ---
+  duration_ms: 1.472494
+  type: 'test'
+  ...
+# Subtest: never silently starts an uninstaller or malformed executable
+ok 28 - never silently starts an uninstaller or malformed executable
+  ---
+  duration_ms: 1.15633
+  type: 'test'
+  ...
+# Subtest: ranks names independently of upload order and supports nested entry points
+ok 29 - ranks names independently of upload order and supports nested entry points
+  ---
+  duration_ms: 1.945138
+  type: 'test'
+  ...
+# Subtest: runtime parameters preserve spaces/arguments and always select detected architecture
+ok 30 - runtime parameters preserve spaces/arguments and always select detected architecture
+  ---
+  duration_ms: 2.523503
+  type: 'test'
+  ...
+# Subtest: a game containing an embedded browser still selects the game
+ok 31 - a game containing an embedded browser still selects the game
+  ---
+  duration_ms: 0.723206
+  type: 'test'
+  ...
+# Subtest: Source and Unity launches select their native Direct3D libraries for demos and saved uploads
+ok 32 - Source and Unity launches select their native Direct3D libraries for demos and saved uploads
+  ---
+  duration_ms: 0.604045
+  type: 'test'
+  ...
+# Subtest: rejects a PE signature without the complete image headers and data
+ok 33 - rejects a PE signature without the complete image headers and data
+  ---
+  duration_ms: 1.420132
+  type: 'test'
+  ...
+# naga: vertex shader rejected by Naga (parse) — ANGLE keeps rendering
+# naga: lift failed (too-large) for fragment shader — ANGLE keeps rendering
+# naga: WebGL2RenderingContext unavailable — ANGLE fallback active
+# Subtest: lift of the wined3d FFP pair: 450 core + synthesized bindings + sampler split
+ok 34 - lift of the wined3d FFP pair: 450 core + synthesized bindings + sampler split
+  ---
+  duration_ms: 5.292448
+  type: 'test'
+  ...
+# Subtest: lifted FFP pair translates end-to-end through Naga to valid WGSL
+ok 35 - lifted FFP pair translates end-to-end through Naga to valid WGSL
+  ---
+  duration_ms: 126.408059
+  type: 'test'
+  ...
+# Subtest: KNOWN GAP parity: raw \#version 120 is rejected by Naga directly, lifted instead
+ok 36 - KNOWN GAP parity: raw \#version 120 is rejected by Naga directly, lifted instead
+  ---
+  duration_ms: 11.597424
+  type: 'test'
+  ...
+# Subtest: raw-120 fragment: FFP built-ins + texture2D + gl_FragData[0] lift cleanly
+ok 37 - raw-120 fragment: FFP built-ins + texture2D + gl_FragData[0] lift cleanly
+  ---
+  duration_ms: 5.132726
+  type: 'test'
+  ...
+# Subtest: duplicate \#version lines (wined3d bug) strip to exactly one stamped version
+ok 38 - duplicate \#version lines (wined3d bug) strip to exactly one stamped version
+  ---
+  duration_ms: 0.525245
+  type: 'test'
+  ...
+# Subtest: size guard: >1 MiB source rejected before translate (mirrors web/shader.mjs)
+ok 39 - size guard: >1 MiB source rejected before translate (mirrors web/shader.mjs)
+  ---
+  duration_ms: 0.301283
+  type: 'test'
+  ...
+# Subtest: stage inference parity with the bridge heuristic (both spellings)
+ok 40 - stage inference parity with the bridge heuristic (both spellings)
+  ---
+  duration_ms: 0.660726
+  type: 'test'
+  ...
+# Subtest: pipeline failure paths: malformed GLSL never throws, ring record shape holds
+ok 41 - pipeline failure paths: malformed GLSL never throws, ring record shape holds
+  ---
+  duration_ms: 16.145145
+  type: 'test'
+  ...
+# Subtest: pipeline: too-large and unsupported-version routes, counters and dedupe
+ok 42 - pipeline: too-large and unsupported-version routes, counters and dedupe
+  ---
+  duration_ms: 12.674514
+  type: 'test'
+  ...
+# Subtest: installNagaCapture degrades gracefully without WebGL2 (node smoke)
+ok 43 - installNagaCapture degrades gracefully without WebGL2 (node smoke)
+  ---
+  duration_ms: 1.442373
+  type: 'test'
+  ...
+# Subtest: browser e2e: ?naga=1 runtime boots, patched shaderSource capture works, zero page errors
+ok 44 - browser e2e: ?naga=1 runtime boots, patched shaderSource capture works, zero page errors # SKIP
+  ---
+  duration_ms: 0.332483
+  type: 'test'
+  ...
+# Subtest: Wisp rejects unsafe endpoints and destinations before opening a transport
+ok 45 - Wisp rejects unsafe endpoints and destinations before opening a transport
+  ---
+  duration_ms: 2.099899
+  type: 'test'
+  ...
+# [2026/11/07 - 05:48:56] info: new connection on /wisp/ from 127.0.0.1 (origin: undefined)
+# [2026/11/07 - 05:48:56] info: setting up new wisp v2 connection with id 9e3b925e
+# [2026/11/07 - 05:48:56] info: (9e3b925e) opening new TCP stream to 127.0.0.1:37801
+# Subtest: real Wisp client and server relay TCP bytes and close without leaks
+ok 46 - real Wisp client and server relay TCP bytes and close without leaks
+  ---
+  duration_ms: 62.796526
+  type: 'test'
+  ...
+# Subtest: SOCKFS routes peers through Wisp and retains destination information
+ok 47 - SOCKFS routes peers through Wisp and retains destination information
+  ---
+  duration_ms: 1.09981
+  type: 'test'
+  ...
+# Subtest: guest DNS returns a synthetic IPv4 address and safely declines IPv6
+ok 48 - guest DNS returns a synthetic IPv4 address and safely declines IPv6
+  ---
+  duration_ms: 0.614246
+  type: 'test'
+  ...
+# Subtest: DNS over TCP supports fragmented questions and pipelined replies
+ok 49 - DNS over TCP supports fragmented questions and pipelined replies
+  ---
+  duration_ms: 1.05853
+  type: 'test'
+  ...
+# [2026/11/07 - 05:48:56] info: (9e3b925e) wisp connection closed
+# Subtest: canvas fills matching runtime bounds without a status-row offset
+ok 50 - canvas fills matching runtime bounds without a status-row offset
+  ---
+  duration_ms: 1.919857
+  type: 'test'
+  ...
+# Subtest: fullscreen centers letterboxing and preserves the guest coordinate scale
+ok 51 - fullscreen centers letterboxing and preserves the guest coordinate scale
+  ---
+  duration_ms: 0.306723
+  type: 'test'
+  ...
+# Subtest: serve refuses a missing dist root loudly
+ok 52 - serve refuses a missing dist root loudly
+  ---
+  duration_ms: 7.511387
+  type: 'test'
+  ...
+# Subtest: serve refuses a root that is a file, not a directory
+ok 53 - serve refuses a root that is a file, not a directory
+  ---
+  duration_ms: 5.282088
+  type: 'test'
+  ...
+# Subtest: serve serves an existing directory and still 404s missing files
+ok 54 - serve serves an existing directory and still 404s missing files
+  ---
+  duration_ms: 63.404291
+  type: 'test'
+  ...
+# Subtest: stopping before restoration never opens or clears the saved-files database
+ok 55 - stopping before restoration never opens or clears the saved-files database
+  ---
+  duration_ms: 1.482253
+  type: 'test'
+  ...
+# Subtest: oversized writable backup is rejected before any Blob data is read
+ok 56 - oversized writable backup is rejected before any Blob data is read
+  ---
+  duration_ms: 1.037049
+  type: 'test'
+  ...
+# Subtest: an incomplete filesystem traversal fails before replacing saved files
+ok 57 - an incomplete filesystem traversal fails before replacing saved files
+  ---
+  duration_ms: 0.419803
+  type: 'test'
+  ...
+# Subtest: glsl vertex 450 translates to WGSL with position builtin
+ok 58 - glsl vertex 450 translates to WGSL with position builtin
+  ---
+  duration_ms: 76.130126
+  type: 'test'
+  ...
+# Subtest: glsl fragment with combined sampler translates
+ok 59 - glsl fragment with combined sampler translates
+  ---
+  duration_ms: 1.839377
+  type: 'test'
+  ...
+# Subtest: glsl compute translates with storage buffer
+ok 60 - glsl compute translates with storage buffer
+  ---
+  duration_ms: 1.360493
+  type: 'test'
+  ...
+# Subtest: wgsl round-trips through validate
+ok 61 - wgsl round-trips through validate
+  ---
+  duration_ms: 13.969486
+  type: 'test'
+  ...
+# Subtest: wgsl -> spir-v -> wgsl round-trips with valid magic
+ok 62 - wgsl -> spir-v -> wgsl round-trips with valid magic
+  ---
+  duration_ms: 45.322968
+  type: 'test'
+  ...
+# Subtest: KNOWN GAP: legacy GLSL 120 attribute syntax is rejected
+ok 63 - KNOWN GAP: legacy GLSL 120 attribute syntax is rejected
+  ---
+  duration_ms: 5.845413
+  type: 'test'
+  ...
+# Subtest: KNOWN GAP: tessellation control layout is rejected
+ok 64 - KNOWN GAP: tessellation control layout is rejected
+  ---
+  duration_ms: 2.899906
+  type: 'test'
+  ...
+# Subtest: KNOWN GAP: split sampler2D uniform is rejected (use combined texture+sampler)
+ok 65 - KNOWN GAP: split sampler2D uniform is rejected (use combined texture+sampler)
+  ---
+  duration_ms: 0.496685
+  type: 'test'
+  ...
+# Subtest: malformed SPIR-V is rejected, matching web/shader.mjs guards
+ok 66 - malformed SPIR-V is rejected, matching web/shader.mjs guards
+  ---
+  duration_ms: 4.49756
+  type: 'test'
+  ...
+# Subtest: raw vkcube fragment fails without the pre-pass (InvalidId root cause)
+ok 67 - raw vkcube fragment fails without the pre-pass (InvalidId root cause)
+  ---
+  duration_ms: 113.509223
+  type: 'test'
+  ...
+# Subtest: every corpus module converts through toWGSL(spirv) with the pre-pass
+ok 68 - every corpus module converts through toWGSL(spirv) with the pre-pass
+  ---
+  duration_ms: 5169.919547
+  type: 'test'
+  ...
+# Subtest: pre-pass is idempotent; clean modules pass through byte-identical
+ok 69 - pre-pass is idempotent; clean modules pass through byte-identical
+  ---
+  duration_ms: 734.925942
+  type: 'test'
+  ...
+# Subtest: spec-constant folds keep default values (p4 IEqual folds true)
+ok 70 - spec-constant folds keep default values (p4 IEqual folds true)
+  ---
+  duration_ms: 3.404831
+  type: 'test'
+  ...
+# Subtest: vector SpecConstantOp folds to scalar lanes + flattened composite
+ok 71 - vector SpecConstantOp folds to scalar lanes + flattened composite
+  ---
+  duration_ms: 5.439929
+  type: 'test'
+  ...
+# Subtest: DrawParameters base builtins become zero while VertexIndex stays a builtin load
+ok 72 - DrawParameters base builtins become zero while VertexIndex stays a builtin load
+  ---
+  duration_ms: 1.211731
+  type: 'test'
+  ...
+# Subtest: mid-shader discard, demote and terminate in an if continue to sampling and validate
+ok 73 - mid-shader discard, demote and terminate in an if continue to sampling and validate
+  ---
+  duration_ms: 74.821434
+  type: 'test'
+  ...
+# Subtest: kill in a non-entry function sets private state and defers kill to entry return
+ok 74 - kill in a non-entry function sets private state and defers kill to entry return
+  ---
+  duration_ms: 3.787634
+  type: 'test'
+  ...
+# Subtest: PointSize writes disappear and PointCoord loads become the center
+ok 75 - PointSize writes disappear and PointCoord loads become the center
+  ---
+  duration_ms: 77.740861
+  type: 'test'
+  ...
+# Subtest: toWGSL spirv input validation is unchanged
+ok 76 - toWGSL spirv input validation is unchanged
+  ---
+  duration_ms: 2.158179
+  type: 'test'
+  ...
+# Subtest: startup describes the stage before the first frame
+ok 77 - startup describes the stage before the first frame
+  ---
+  duration_ms: 4.796603
+  type: 'test'
+  ...
+# Subtest: logs describe activity without claiming that background output proves launch health
+ok 78 - logs describe activity without claiming that background output proves launch health
+  ---
+  duration_ms: 0.579765
+  type: 'test'
+  ...
+# Subtest: long silent startup is possible and is not a timeout failure
+ok 79 - long silent startup is possible and is not a timeout failure
+  ---
+  duration_ms: 3.416911
+  type: 'test'
+  ...
+# Subtest: visible frames clear startup reassurance and downloads retain progress
+ok 80 - visible frames clear startup reassurance and downloads retain progress
+  ---
+  duration_ms: 0.272443
+  type: 'test'
+  ...
+# Subtest: terminal target loader errors fail even when Wine services continue logging
+ok 81 - terminal target loader errors fail even when Wine services continue logging
+  ---
+  duration_ms: 4.045876
+  type: 'test'
+  ...
+# Subtest: stripNagaYNegation removes the temp-form Y negation
+ok 82 - stripNagaYNegation removes the temp-form Y negation
+  ---
+  duration_ms: 4.837364
+  type: 'test'
+  ...
+# Subtest: stripNagaYNegation removes the direct form
+ok 83 - stripNagaYNegation removes the direct form
+  ---
+  duration_ms: 1.496053
+  type: 'test'
+  ...
+# Subtest: stripNagaYNegation is a no-op without a negation
+ok 84 - stripNagaYNegation is a no-op without a negation
+  ---
+  duration_ms: 0.177201
+  type: 'test'
+  ...
+# Subtest: stripNagaYNegation does not touch other negations
+ok 85 - stripNagaYNegation does not touch other negations
+  ---
+  duration_ms: 4.274999
+  type: 'test'
+  ...
+# Subtest: v2VertexFormat(44) maps B8G8R8A8 to unorm8x4 (swizzled on upload)
+ok 86 - v2VertexFormat(44) maps B8G8R8A8 to unorm8x4 (swizzled on upload)
+  ---
+  duration_ms: 0.235562
+  type: 'test'
+  ...
+# Subtest: swizzleBgraVb swaps R/B per attribute element
+ok 87 - swizzleBgraVb swaps R/B per attribute element
+  ---
+  duration_ms: 4.38316
+  type: 'test'
+  ...
+# Subtest: swizzleBgraVb handles multiple attributes and partial tails
+ok 88 - swizzleBgraVb handles multiple attributes and partial tails
+  ---
+  duration_ms: 5.373649
+  type: 'test'
+  ...
+# Subtest: swizzleBgraVb with no offsets or bad stride returns a copy
+ok 89 - swizzleBgraVb with no offsets or bad stride returns a copy
+  ---
+  duration_ms: 0.218682
+  type: 'test'
+  ...
+# [vkwebgpu] unsupported VkFormat 9999; skipping image
+# Subtest: a well-formed chunk parses: header fields and record splitting
+ok 90 - a well-formed chunk parses: header fields and record splitting
+  ---
+  duration_ms: 5.984014
+  type: 'test'
+  ...
+# Subtest: malformed chunks are rejected with a reason
+ok 91 - malformed chunks are rejected with a reason
+  ---
+  duration_ms: 10.090331
+  type: 'test'
+  ...
+# Subtest: the assembler seals a frame split across chunks via MORE
+ok 92 - the assembler seals a frame split across chunks via MORE
+  ---
+  duration_ms: 3.203069
+  type: 'test'
+  ...
+# Subtest: a sequence gap drops the partial frame and counts the gap
+ok 93 - a sequence gap drops the partial frame and counts the gap
+  ---
+  duration_ms: 0.741206
+  type: 'test'
+  ...
+# Subtest: records outside a frame are ignored, not fatal
+ok 94 - records outside a frame are ignored, not fatal
+  ---
+  duration_ms: 0.459284
+  type: 'test'
+  ...
+# Subtest: two sampled views retain distinct linear and sRGB formats for the same image
+ok 95 - two sampled views retain distinct linear and sRGB formats for the same image
+  ---
+  duration_ms: 44.4056
+  type: 'test'
+  ...
+# Subtest: a DXVK-shaped frame decodes to the render model
+    # Subtest: render-target cache keys alias by VkImage identity
+    ok 1 - render-target cache keys alias by VkImage identity
+      ---
+      duration_ms: 1.449613
+      type: 'test'
+      ...
+    1..1
+ok 96 - a DXVK-shaped frame decodes to the render model
+  ---
+  duration_ms: 8.484836
+  type: 'test'
+  ...
+# Subtest: legacy sampler records retain defaults and comparison samplers map to WebGPU descriptors
+ok 97 - legacy sampler records retain defaults and comparison samplers map to WebGPU descriptors
+  ---
+  duration_ms: 4.712603
+  type: 'test'
+  ...
+# Subtest: malformed frames are rejected with a reason
+ok 98 - malformed frames are rejected with a reason
+  ---
+  duration_ms: 6.223776
+  type: 'test'
+  ...
+# Subtest: V2FrameQueue drops the oldest past its cap
+ok 99 - V2FrameQueue drops the oldest past its cap
+  ---
+  duration_ms: 0.751126
+  type: 'test'
+  ...
+# Subtest: takeLatest returns the newest and drains the queue
+ok 100 - takeLatest returns the newest and drains the queue
+  ---
+  duration_ms: 0.249842
+  type: 'test'
+  ...
+# Subtest: clear drains the queue for the resize hook
+ok 101 - clear drains the queue for the resize hook
+  ---
+  duration_ms: 0.184281
+  type: 'test'
+  ...
+# Subtest: push-constant WGSL is rewritten to the reserved group-3 UBO
+ok 102 - push-constant WGSL is rewritten to the reserved group-3 UBO
+  ---
+  duration_ms: 0.563445
+  type: 'test'
+  ...
+# Subtest: scanWgslResources honours naga binding assignment, incl. binding arrays
+ok 103 - scanWgslResources honours naga binding assignment, incl. binding arrays
+  ---
+  duration_ms: 5.028645
+  type: 'test'
+  ...
+# Subtest: MSAA sample counts clamp to what WebGPU guarantees
+ok 104 - MSAA sample counts clamp to what WebGPU guarantees
+  ---
+  duration_ms: 0.734806
+  type: 'test'
+  ...
+# Subtest: wgslUniformSizes computes the padded WGSL block size, incl. u-suffixed counts
+ok 105 - wgslUniformSizes computes the padded WGSL block size, incl. u-suffixed counts
+  ---
+  duration_ms: 15.782502
+  type: 'test'
+  ...
+# Subtest: parseMinBindingSize reads the group/binding/size out of a Dawn rejection
+ok 106 - parseMinBindingSize reads the group/binding/size out of a Dawn rejection
+  ---
+  duration_ms: 0.468764
+  type: 'test'
+  ...
+# Subtest: format maps cover the DXVK set and count the unknown
+ok 107 - format maps cover the DXVK set and count the unknown
+  ---
+  duration_ms: 19.326934
+  type: 'test'
+  ...
+# Subtest: v2Hex64 matches the host %016llx hash formatting
+ok 108 - v2Hex64 matches the host %016llx hash formatting
+  ---
+  duration_ms: 0.252603
+  type: 'test'
+  ...
+# Subtest: a well-formed manifest decodes to the WebGPU state the renderer needs
+ok 109 - a well-formed manifest decodes to the WebGPU state the renderer needs
+  ---
+  duration_ms: 6.035855
+  type: 'test'
+  ...
+# Subtest: the host's unterminated vs/fs objects are repaired
+ok 110 - the host's unterminated vs/fs objects are repaired
+  ---
+  duration_ms: 9.583606
+  type: 'test'
+  ...
+# Subtest: the repair is a no-op once the host closes the objects
+ok 111 - the repair is a no-op once the host closes the objects
+  ---
+  duration_ms: 5.105246
+  type: 'test'
+  ...
+# Subtest: a depth-test-free frame drops the depth attachment
+ok 112 - a depth-test-free frame drops the depth attachment
+  ---
+  duration_ms: 0.402844
+  type: 'test'
+  ...
+# Subtest: an overflowed frame is rejected rather than rendered
+ok 113 - an overflowed frame is rejected rather than rendered
+  ---
+  duration_ms: 2.680744
+  type: 'test'
+  ...
+# Subtest: garbage manifests are rejected with a reason
+ok 114 - garbage manifests are rejected with a reason
+  ---
+  duration_ms: 6.426018
+  type: 'test'
+  ...
+# Subtest: missing optional payloads degrade instead of throwing
+ok 115 - missing optional payloads degrade instead of throwing
+  ---
+  duration_ms: 0.308123
+  type: 'test'
+  ...
+1..115
+# tests 116
+# suites 0
+# pass 115
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 9282.335445

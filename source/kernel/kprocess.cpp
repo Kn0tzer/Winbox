@@ -836,11 +836,39 @@ KFileDescriptorPtr KProcess::allocFileDescriptor(const std::shared_ptr<KObject>&
 }
 
 U32 translateOpenError() {
+    // The fs layer preserves the host errno exactly across a failed
+    // node->open() (FsFileNode::open restores it before returning
+    // nullptr), so translate the full set open(2) can answer with
+    // instead of collapsing everything unlisted to EINVAL (frontier
+    // review D17). Errnos with no open(2) meaning stay on the EINVAL
+    // default, as do the nullptr returns that carry no host errno at
+    // all (virtual/dynamic-link/mem nodes refuse before any host call).
     switch (errno) {
     case EACCES: return -K_EACCES;
+    case EAGAIN: return -K_EAGAIN;
+    case EBUSY: return -K_EBUSY;
     case EEXIST: return -K_EEXIST;
-    case ENOENT: return -K_ENOENT;
+    case EFAULT: return -K_EFAULT;
+    case EFBIG: return -K_EFBIG;
+    case EINTR: return -K_EINTR;
+    case EIO: return -K_EIO;
     case EISDIR: return -K_EISDIR;
+    case ELOOP: return -K_ELOOP;
+    case EMFILE: return -K_EMFILE;
+    case EMLINK: return -K_EMLINK;
+    case ENAMETOOLONG: return -K_ENAMETOOLONG;
+    case ENFILE: return -K_ENFILE;
+    case ENODEV: return -K_ENODEV;
+    case ENOENT: return -K_ENOENT;
+    case ENOMEM: return -K_ENOMEM;
+    case ENOSPC: return -K_ENOSPC;
+    case ENOTDIR: return -K_ENOTDIR;
+    case ENXIO: return -K_ENXIO;
+    case EOVERFLOW: return -K_EOVERFLOW;
+    case EPERM: return -K_EPERM;
+    case EROFS: return -K_EROFS;
+    case ETXTBSY: return -K_ETXTBSY;
+    case EXDEV: return -K_EXDEV;
     }
     return -K_EINVAL;
 }
@@ -1916,6 +1944,58 @@ U32 KProcess::link(BString from, BString to) {
     return 0;
 }
 
+U32 KProcess::linkat(FD olddirfd, BString from, FD newdirfd, BString to, U32 flags) {
+    // FD-195: the dispatcher validated the flags already (the
+    // host answers -EINVAL for bits outside AT_SYMLINK_FOLLOW |
+    // AT_EMPTY_PATH ahead of even the null-path fault).
+    if ((flags & 0x1000) && from.length() == 0) {
+        // AT_EMPTY_PATH: the old name is the descriptor itself.
+        KFileDescriptorPtr oldFd = this->getFileDescriptor(olddirfd);
+        if (!oldFd) {
+            return -K_EBADF;
+        }
+        // The host answers -EXDEV for a descriptor that is not
+        // a file (measured: a pipe descriptor).
+        if (oldFd->kobject->type != KTYPE_FILE) {
+            return -K_EXDEV;
+        }
+        std::shared_ptr<KFile> f = std::dynamic_pointer_cast<KFile>(oldFd->kobject);
+        BString newDirectory;
+        U32 result = this->getCurrentDirectoryFromDirFD(newdirfd, newDirectory);
+        if (result) {
+            return result;
+        }
+        return this->link(f->openFile->node->path, Fs::getFullPath(newDirectory, to));
+    }
+    // FD-131: an empty path answers -ENOENT; as in renameat it
+    // is judged ahead of the dirfd answers.
+    if (from.length() == 0 || to.length() == 0) {
+        return -K_ENOENT;
+    }
+    BString oldDirectory;
+    U32 result = this->getCurrentDirectoryFromDirFD(olddirfd, oldDirectory);
+    if (result) {
+        return result;
+    }
+    BString fromPath;
+    if (flags & 0x400) { // AT_SYMLINK_FOLLOW: link the target
+        bool notDir = false;
+        std::shared_ptr<FsNode> followed = Fs::getNodeFromLocalPath(oldDirectory, from, true, nullptr, &notDir);
+        if (!followed) {
+            return notDir ? -K_ENOTDIR : -K_ENOENT;
+        }
+        fromPath = followed->path;
+    } else { // the symlink itself is linked, as KProcess::link does
+        fromPath = Fs::getFullPath(oldDirectory, from);
+    }
+    BString newDirectory;
+    result = this->getCurrentDirectoryFromDirFD(newdirfd, newDirectory);
+    if (result) {
+        return result;
+    }
+    return this->link(fromPath, Fs::getFullPath(newDirectory, to));
+}
+
 U32 KProcess::linkSharedBacking(BString from, BString to) {
     // FD-81: serve a hard link by sharing the source's backing
     // path when the backing store cannot create a host hard link
@@ -2176,7 +2256,35 @@ U32 KProcess::dup2(FD fildes, FD fildes2) {
     return fildes2;
 }
 
-U32 KProcess::getrusuage(KThread* thread, U32 who, U32 usage) {    
+void KProcess::cpuTimesMicroSeconds(U64& userMicroSeconds, U64& kernelMicroSeconds) {
+    userMicroSeconds = 0;
+    kernelMicroSeconds = 0;
+    BOXEDWINE_CRITICAL_SECTION_WITH_MUTEX(threadsMutex);
+    for (auto& t : this->threads) {
+        KThread* otherThread = t.value;
+        userMicroSeconds += otherThread->getThreadUserTime();
+        kernelMicroSeconds += otherThread->kernelTime;
+    }
+}
+
+U64 KProcess::cpuTimeMicroSeconds() {
+    U64 userMicroSeconds = 0;
+    U64 kernelMicroSeconds = 0;
+    this->cpuTimesMicroSeconds(userMicroSeconds, kernelMicroSeconds);
+    return userMicroSeconds + kernelMicroSeconds;
+}
+
+U32 KProcess::getrusuage(KThread* thread, U32 who, U32 usage) {
+    // Host order (raw grid): an unsupported who answers -EINVAL
+    // ahead of the usage-pointer fault; a null usage pointer then
+    // answers -EFAULT. Valid who values: 0 (RUSAGE_SELF), -1
+    // (RUSAGE_CHILDREN), 1 (RUSAGE_THREAD).
+    if (who != 0 && who != 1 && (S32)who != -1) {
+        return -K_EINVAL;
+    }
+    if (!usage) {
+        return -K_EFAULT;
+    }
     U32 userSeconds = 0;
     U32 userMicroSeconds = 0;
     U32 kernelSeconds = 0;
@@ -2528,8 +2636,21 @@ U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
     U32 valueMs = 0;
     U32 intervalMs = 0;
     if (apply) {
-        valueMs = memory->readd(newValue + 8) * 1000 + memory->readd(newValue + 12) / 1000;
-        intervalMs = memory->readd(newValue) * 1000 + memory->readd(newValue + 4) / 1000;
+        // Host validation (raw grid): a negative tv_sec or a tv_usec
+        // outside [0, 1000000) in either the value or the interval
+        // answers -EINVAL; the fields were previously folded into
+        // millisecond arithmetic unchecked (a usec of -1 became a
+        // ~49-day timer).
+        S32 valueSec = (S32)memory->readd(newValue + 8);
+        S32 valueUsec = (S32)memory->readd(newValue + 12);
+        S32 intervalSec = (S32)memory->readd(newValue);
+        S32 intervalUsec = (S32)memory->readd(newValue + 4);
+        if (valueSec < 0 || intervalSec < 0 || valueUsec < 0 || valueUsec >= 1000000 ||
+            intervalUsec < 0 || intervalUsec >= 1000000) {
+            return -K_EINVAL;
+        }
+        valueMs = (U32)valueSec * 1000 + (U32)valueUsec / 1000;
+        intervalMs = (U32)intervalSec * 1000 + (U32)intervalUsec / 1000;
     }
     S32 result = this->setitimerValues(which, apply, valueMs, intervalMs,
                                        oldValue ? &oldRemainingMs : nullptr,
@@ -2547,6 +2668,12 @@ U32 KProcess::setitimer(U32 which, U32 newValue, U32 oldValue) {
 }
 
 U32 KProcess::getitimer(U32 which, U32 oldValue) {
+    // Host order (raw grid): an invalid which answers -EINVAL ahead
+    // of the value-pointer fault.
+    S32 whichCheck = itimerCheckWhich(which);
+    if (whichCheck) {
+        return (U32)whichCheck;
+    }
     if (!oldValue) {
         return -K_EFAULT;
     }
@@ -2959,6 +3086,19 @@ U32 KProcess::readv(KThread* thread, FD handle, U32 iov, S32 iovcnt) {
     if (iovcnt > 0 && iov == 0) {
         return -K_EFAULT;
     }
+    // FD-193: a segment length that is negative read as s32
+    // answers -EINVAL before any byte moves (measured on the
+    // host's compat path). There is NO sum rule: segments of
+    // 1 GiB + 1 GiB + 1 byte read normally, so only the
+    // per-segment sign is judged here.
+    {
+        KMemory* mem = thread->memory;
+        for (S32 i = 0; i < iovcnt; i++) {
+            if ((S32)mem->readd(iov + i * 8 + 4) < 0) {
+                return -K_EINVAL;
+            }
+        }
+    }
     U32 result = fd->kobject->readv(thread, iov, iovcnt);
     if ((S32)result == 0) {
         std::shared_ptr<KFile> file = std::dynamic_pointer_cast<KFile>(fd->kobject);
@@ -2990,6 +3130,15 @@ U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offse
     if (fd == nullptr) {
         return -K_EBADF;
     }
+    // FD-194 (write twin): an unseekable object answers
+    // -ESPIPE ahead of the mode, iovcnt, array and flags
+    // answers, mirroring KProcess::preadv (measured: pwritev
+    // on either end of a pipe). The file-position mode is
+    // exempt: it writes, and takes the writev path after
+    // validation below.
+    if (!useFilePos && fd->kobject->type != KTYPE_FILE) {
+        return -K_ESPIPE;
+    }
     // FD-95 (batch-3 merge decision): the mode answer sits with
     // the descriptor check, ahead of the iovcnt range and iovec
     // array checks, mirroring KProcess::preadv and the host.
@@ -3005,6 +3154,14 @@ U32 KProcess::pwritev(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offse
     }
     if (isPwritev2 && (flags & ~0x3f)) {
         return -K_EOPNOTSUPP;
+    }
+    // FD-194 (write twin): the file-position mode without
+    // RWF_APPEND is a plain vectored write once validation
+    // has run. APPEND keeps the walk below (the host ABIs
+    // disagree on APPEND + position mode for a pipe; see
+    // FD-194's entry).
+    if (useFilePos && !(isPwritev2 && (flags & 0x10))) {
+        return this->writev(thread, handle, iov, iovcnt);
     }
     bool append = isPwritev2 && (flags & 0x10); // RWF_APPEND
     S64 base = off;
@@ -3061,6 +3218,15 @@ U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset
     if (fd == nullptr) {
         return -K_EBADF;
     }
+    // FD-194: an unseekable object answers -ESPIPE ahead of
+    // the mode, iovcnt, array and flags answers (the host's
+    // order, measured on the 6.17 kernel) -- a pipe's write
+    // end included, so this precedes the mode check below.
+    // The file-position mode is exempt: it reads, and takes
+    // the readv path after validation below.
+    if (!useFilePos && fd->kobject->type != KTYPE_FILE) {
+        return -K_ESPIPE;
+    }
     if (!fd->canRead()) {
         return -K_EBADF;
     }
@@ -3071,23 +3237,41 @@ U32 KProcess::preadv(KThread* thread, FD handle, U32 iov, S32 iovcnt, U64 offset
     if (iovcnt > 0 && (iov == 0 || !memory->canRead(iov, (U32)iovcnt * 8))) {
         return -K_EFAULT;
     }
+    // FD-193: a segment length that is negative read as s32
+    // answers -EINVAL, with the array checks and ahead of
+    // the flags check (the host's import order).
+    for (S32 i = 0; i < iovcnt; i++) {
+        if ((S32)memory->readd(iov + i * 8 + 4) < 0) {
+            return -K_EINVAL;
+        }
+    }
     if (isPreadv2 && (flags & ~0x3f)) {
         return -K_EOPNOTSUPP;
     }
-    S64 base = useFilePos ? fd->kobject->getPos() : off;
+    // FD-194: the file-position mode is a plain vectored
+    // read once validation has run (flags included, so a
+    // bad flag answers -EOPNOTSUPP ahead of any byte
+    // moving). KProcess::readv re-validates identically,
+    // walks at the current position (pipes included) and
+    // keeps the FD-83 notification shape.
+    if (useFilePos) {
+        return this->readv(thread, handle, iov, iovcnt);
+    }
+    S64 base = off;
     U32 total = 0;
     U32 err = 0;
     for (S32 i = 0; i < iovcnt; i++) {
         U32 segBase = memory->readd(iov + i * 8);
         U32 len = memory->readd(iov + i * 8 + 4);
         if (len == 0) continue;
+        // FD-193: cap the combined transfer at the host's
+        // MAX_RW_COUNT (0x7ffff000).
+        if (len > 0x7ffff000u - total) len = 0x7ffff000u - total;
+        if (len == 0) break;
         U32 got = this->pread64(thread, handle, segBase, len, (U64)(base + (S64)total));
         if ((S32)got < 0) { err = got; break; }
         total += got;
         if (got < len) break; // short read: EOF / drained
-    }
-    if (useFilePos && total > 0) {
-        fd->kobject->seek(base + (S64)total);
     }
     if (total == 0 && (S32)err < 0) {
         return err;
@@ -3362,7 +3546,10 @@ U32 KProcess::pread64(KThread* thread, FD fildes, U32 address, U32 len, U64 offs
         return -K_ESPIPE;
     }
     if (fd->kobject->type!=KTYPE_FILE) {
-        return -K_EINVAL;
+        // FD-194: every unseekable object answers -ESPIPE --
+        // the host's answer for eventfd, timerfd, epoll and
+        // inotify descriptors too, not just sockets.
+        return -K_ESPIPE;
     }
     std::shared_ptr<KFile> p = std::dynamic_pointer_cast<KFile>(fd->kobject);
     FsOpenNode* openNode = p->openFile;
@@ -3393,7 +3580,10 @@ U32 KProcess::pwrite64(KThread* thread, FD fildes, U32 address, U32 len, U64 off
         return -K_ESPIPE;
     }
     if (fd->kobject->type!=KTYPE_FILE) {
-        return -K_EINVAL;
+        // FD-194: every unseekable object answers -ESPIPE --
+        // the host's answer for eventfd, timerfd, epoll and
+        // inotify descriptors too, not just sockets.
+        return -K_ESPIPE;
     }
     std::shared_ptr<KFile> p = std::dynamic_pointer_cast<KFile>(fd->kobject);
     FsOpenNode* openNode = p->openFile;
