@@ -11157,6 +11157,101 @@ do not close the entry until they land.
   hid no silent path.
   CLOSED — see CL-187.
 
+- **FD-263 — A Direct3D 10 guest workload kills the
+  browser page with an uncaught WebAssembly trap:
+  "operation does not support unaligned accesses".**
+  *(High — can kill a running session. Filed by the
+  batch-11 merge lane, 2026-11-08.)* The batch-11
+  gate's browser suite failed `d3d10-comprehensive`
+  three times out of three (suite run and two focused
+  re-runs: 152,784 / 146,043 / 146,769 ms) with the
+  same signature: the page raises `pageerror:
+  RuntimeError: operation does not support unaligned
+  accesses` from the composed build's wasm (build
+  sha256 `e44fe64e…`; browser stack: function 4601 at
+  0x22ffbd, called from 11145 at 0x3ef8f3, from 11141
+  at 0x3ef70c, through the message entry point), and
+  the harness counts any page error as fatal. The
+  trap fires at a consistent stage — after the
+  guest's Vulkan WebGPU device has enumerated and a
+  further guest process has spawned — and the guest
+  itself continues afterwards; no D3D10 check in the
+  test reports a wrong result. The same test passed
+  the batch-10 gate on a focused re-run (177 s) on
+  the previous build. The shipped wasm carries no
+  name section, so the trapping operation is not yet
+  identified. Closing terms: the trapping operation
+  identified in a symbols build and the unaligned
+  path fixed (or proven to be a trap the guest itself
+  provoked, with the session surviving it), and
+  `d3d10-comprehensive` passing in a gate run.
+
+- **FD-264 — The 64-bit boot smoke test never sees
+  its payload run: a freshly booted 64-bit `cmd`
+  does not print within the test's waits.** *(Medium
+  — the regression guard for 64-bit starting is
+  blind, and 64-bit cold-start latency is
+  implicated. Filed by the batch-11 merge lane,
+  2026-11-08.)* `boot64-smoke` failed three times
+  out of three in the batch-11 gate (303,196 /
+  301,636 / 303,279 ms). The test's first two
+  milestones are met (the guest loader's execve and
+  user32 loading both appear) but the third — the
+  booted `cmd /c echo vkboot` producing its output
+  line — never arrives inside its 240 s wait, in any
+  run; a full search of the preserved consoles,
+  including after stripping terminal escape
+  sequences, finds "vkboot" only in launch and
+  process lines, never as program output. At each
+  kill the guest is alive and working through device
+  enumeration (registry `CompatibleIds` reads in the
+  wineserver trace), with no fault or error in the
+  stream. Every other 64-bit boot in the same suite
+  passed on the same composed prefix, including full
+  desktop boots at 120–195 s, and this test passed
+  the batch-10 gate. Not yet separated: how much of
+  the latency is this box's sustained load versus
+  enumeration work the composed 64-bit prefix newly
+  does at boot. Closing terms: `boot64-smoke`
+  passing in a gate run, with the boot-latency cause
+  named.
+
+- **FD-265 — The guest DNS test's witness lines
+  reach the console one character at a time through
+  a console host, so the test times out even though
+  the guest's name resolution, connection, and HTTP
+  read all complete.** *(Medium — the capability
+  works; its only end-to-end witness is blind, and
+  any console program spawned the same way is
+  suspect. Filed by the batch-11 merge lane,
+  2026-11-08.)* `winsock-dns` failed three times out
+  of three in the batch-11 gate (319,870 / 319,728 /
+  318,343 ms), each time at its 300 s wait for the
+  fixture's `BW_DNS done=1` line on the 32-bit
+  guest, including one run in a verified quiet
+  window (load ~1.0). The preserved console shows
+  what actually happens: the fixture (spawned as
+  pid 101) runs under a `conhost.exe`, and its
+  output arrives character-by-character wrapped in
+  cursor hide/show escape sequences — de-escaped,
+  the complete witness sequence is present
+  (`BW_DNS gai=`, `addr=`, `connect=`, `http=`, the
+  negative-name stages, `done=`). The relay's own
+  log independently shows a client performing the
+  fixture's exact script during one of the attempts
+  (a stream to example.com, then the made-up-name
+  check refused with ENOTFOUND, as designed). So the
+  guest resolves, connects, and reads exactly as
+  FD-04's discharged clause requires; what is broken
+  is the path by which this spawned console
+  process's output reaches the page — on the DNS
+  lane's branch the identical test passed with
+  plain, matchable lines. Closing terms:
+  `winsock-dns` passing in a gate run with the
+  witness lines arriving as contiguous text, and
+  the mechanism (why this spawn attaches a rendering
+  console host in the composed tree) named.
+
 ## B. Fixed on a lane branch — awaiting merge
 
 **Status correction (2026-11-05, cleanup/status lane):** this table
