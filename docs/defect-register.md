@@ -11159,7 +11159,8 @@ do not close the entry until they land.
 
 - **FD-263 — A Direct3D 10 guest workload kills the
   browser page with an uncaught WebAssembly trap:
-  "operation does not support unaligned accesses".**
+  "operation does not support unaligned accesses".
+  CLOSED 2026-11-08 — see CL-191.**
   *(High — can kill a running session. Filed by the
   batch-11 merge lane, 2026-11-08.)* The batch-11
   gate's browser suite failed `d3d10-comprehensive`
@@ -11184,7 +11185,32 @@ do not close the entry until they land.
   identified in a symbols build and the unaligned
   path fixed (or proven to be a trap the guest itself
   provoked, with the session surviving it), and
-  `d3d10-comprehensive` passing in a gate run.
+  `d3d10-comprehensive` passing in a gate run. FIXED 2026-11-08:
+  the trapping operation is musl's `__pthread_mutex_lock` (wasm
+  function 728, offset 0x2172b) executing an atomic compare-exchange
+  on a misaligned mutex address — the mutex at node+16 of a
+  proxying-context list node whose pointer was the bogus value `0x5`,
+  read from the dying thread's TLS slot for the `active_ctxs` key
+  during the key-destructor walk (`cancel_ctx` 4601 <-
+  `cancel_active_ctxs` 11145 <- `_emscripten_thread_exit`). The
+  slot was corrupted by the guest thread's emulator stack
+  overflowing its 64 KiB limit during process teardown and growing
+  down past the guard into the TLS key slots (16-slot read showed
+  stack-frame data: small integers and a float 1.0 across slots
+  0–15; no `pthread_setspecific` small-value write was ever observed).
+  Fix commit `5a34d6f8a` (branch lane-fd263): `-sDEFAULT_PTHREAD_STACK_SIZE=524288`
+  (512 KiB) on the wasm64-mt target in project/emscripten/makefile.
+  Proof: `d3d10-comprehensive` PASSES on the clean fix build in
+  196,279 ms (SUITE RESULT 1 passed / 0 failed, 0 page errors;
+  guest `tri10: RESULT 0`); the fixed wasm is byte-identical to the
+  shipped batch-11 wasm (`e44fe64e…`) and only the JavaScript glue
+  changes. Queue pipeline #64 on the fix tip: standard shape
+  (verify-source exact; citations exit 0; js-unit 352/2 known
+  bare-checkout artifacts; js-legacy 0; native-main 705/0;
+  native-x64 120/0; run-native 0). Record:
+  docs/reports/fd263-stack-overflow-20261108.md. Follow-ups: the
+  exact deep teardown path (~74 KiB) was not isolated, and the
+  wasm64-mt-jit target still uses the 64 KiB default.
 
 - **FD-264 — The 64-bit boot smoke test never sees
   its payload run: a freshly booted 64-bit `cmd`

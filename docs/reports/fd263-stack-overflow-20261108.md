@@ -143,9 +143,22 @@ is the safe channel there.
 
 ## Queue verdict
 
-(To be appended: `submit-check` on the fix tip; standard acceptance
-shape is citations 0, js-unit 352/2 known bare-checkout artifacts,
-js-legacy 0, native-main 0 FAILED, native-x64 0 FAILED, run-native 0.)
+Checking-service pipeline #64 on the fix tip `5a34d6f8a`
+(commit verified exact by verify-source; tree pristine):
+citations exit 0 (352 rows: 232 MATCH, 14 MATCH-INHERITED,
+99 UNCHECKABLE, 7 EXEMPT); js-unit 352 passed / 2 failed, the
+failures exactly the known bare-checkout artifacts
+(`provenance-artifacts`, `runtime-completeness`); js-legacy exit 0
+(0 fail); native-main 705 tests, 0 FAILED; native-x64 120 tests,
+0 FAILED; run-native exit 0. The pipeline status reads "failure"
+solely on the js-unit exit — the standing acceptance shape,
+identical to the batch-11 gate (pipeline 60). Evidence:
+`checks/evidence/pipeline-64/queue-logs/` (step logs 541–549).
+One infrastructure note, not a check failure: the publish-results
+step could not upload to MinIO (`XMinioStorageFull`, HTTP 507 —
+the storage backend hit its free-drive threshold, the box disk
+being full); the step logs were still harvested locally and the
+verdict was read from them firsthand.
 
 ## Open follow-ups
 
