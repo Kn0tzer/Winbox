@@ -94,4 +94,13 @@ composition). CL-190 names fixing commit `d1493310b` and this record.
 
 ## Queue verdict
 
-(To be appended after submit-check.)
+Checking-service pipeline 63 on tip `4f4709fe7` (evidence
+`checks/evidence/pipeline-63/queue-logs/`, read firsthand):
+verify-source exact on the tip, tree pristine; citations exit 0
+(232 MATCH / 14 MATCH-INHERITED, 0 drift); js-unit 352 passed, 2
+failed — exactly the two known bare-checkout artifacts
+(`provenance-artifacts`, `runtime-completeness`); js-legacy exit 0;
+native main 705 tests, 0 failed; native x64 120 tests, 0 failed;
+run-native exit 0. The pipeline's overall Woodpecker status reads
+"failure" driven solely by the js-unit step — the standing
+acceptance shape, identical to pipeline 60 (the batch-11 gate).
